@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import asyncio
+import csv
+import io
 import logging
 import secrets
 from contextlib import asynccontextmanager
@@ -10,7 +12,7 @@ from pathlib import Path
 from typing import Any
 
 from fastapi import FastAPI, Query, Request
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 
 from ems.alerts import data_quality, derive_alerts
@@ -39,7 +41,7 @@ from ems.sources.base import Source
 from ems.sources.battery import BatteryDriver
 from ems.sources.forecast import SolarForecastSource, day_kwh_p50
 from ems.sources.prices import PriceSource, current_price
-from ems.storage.history import HistoryStore
+from ems.storage.history import DERIVED_COLUMNS, RAW_COLUMNS, HistoryStore
 from ems.storage.settings import SettingsStore
 
 _log = logging.getLogger("ems.recorder")
@@ -417,6 +419,33 @@ def create_app(
                 for s in slots
             ],
         }
+
+    @app.get("/api/export")
+    async def export(
+        kind: str = Query(default="raw", pattern="^(raw|derived)$"),
+        fmt: str = Query(default="csv", pattern="^(csv|json)$", alias="format"),
+        limit: int = Query(default=1000, ge=1, le=2000),
+    ) -> Response:
+        # Download recent history (oldest→newest) as CSV or JSON. Read-only, open like reads.
+        columns = RAW_COLUMNS if kind == "raw" else DERIVED_COLUMNS
+        rows: list[dict] = []
+        if store is not None:
+            recent = store.recent_raw if kind == "raw" else store.recent_derived
+            rows = list(reversed(await recent(limit)))  # recent_* is newest-first; export ascending
+        if fmt == "json":
+            return JSONResponse(rows)
+        buf = io.StringIO()
+        writer = csv.DictWriter(buf, fieldnames=list(columns), extrasaction="ignore")
+        writer.writeheader()
+        writer.writerows(rows)
+        # Build the filename from a locally-asserted safe value (not the raw query param) so the
+        # header can never carry injected bytes even if the upstream regex guard were relaxed.
+        safe_kind = "raw" if kind == "raw" else "derived"
+        return Response(
+            content=buf.getvalue(),
+            media_type="text/csv",
+            headers={"Content-Disposition": f'attachment; filename="ems-{safe_kind}.csv"'},
+        )
 
     @app.get("/api/series")
     async def series(limit: int = Query(default=100, ge=1, le=2000)) -> dict:
