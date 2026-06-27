@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 
 import { OverrideCard } from "./Override";
 import { Settings } from "./Settings";
+import { SystemView } from "./System";
 import { applyTheme, readStoredTheme, storeTheme, type Theme } from "./theme";
 
 type Status = {
@@ -226,7 +227,7 @@ export function App() {
   const [chargeNeed, setChargeNeed] = useState<ChargeNeed | null>(null);
   const [savings, setSavings] = useState<number | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [view, setView] = useState<"dashboard" | "settings">("dashboard");
+  const [view, setView] = useState<"dashboard" | "settings" | "system">("dashboard");
   // Seed from the localStorage cache so the first paint matches the saved theme (no flash);
   // the fetch below reconciles with the server's canonical value.
   const [theme, setTheme] = useState<Theme>(readStoredTheme);
@@ -250,6 +251,9 @@ export function App() {
   }, [theme]);
 
   useEffect(() => {
+    // Only poll the dashboard endpoints while the dashboard is visible — Settings has no need
+    // for them and System runs its own poll. Avoids wasted load and a cross-tab error banner.
+    if (view !== "dashboard") return;
     let alive = true;
     async function getJson(url: string) {
       const r = await fetch(url);
@@ -294,7 +298,7 @@ export function App() {
       alive = false;
       clearInterval(id);
     };
-  }, []);
+  }, [view]);
 
   return (
     <div className="app">
@@ -335,6 +339,14 @@ export function App() {
           >
             Settings
           </button>
+          <button
+            className={`nav-btn${view === "system" ? " nav-active" : ""}`}
+            onClick={() => setView("system")}
+            data-testid="nav-system"
+            aria-current={view === "system" ? "page" : undefined}
+          >
+            System
+          </button>
         </nav>
       </header>
 
@@ -348,11 +360,15 @@ export function App() {
         </section>
       )}
 
-      {error && <div className="error" data-testid="error">Cannot reach EMS API: {error}</div>}
+      {view === "dashboard" && error && (
+        <div className="error" data-testid="error">Cannot reach EMS API: {error}</div>
+      )}
 
       {view === "settings" && (
         <Settings onSaved={(v) => setTheme((v["ui.theme"] as Theme) ?? "auto")} />
       )}
+
+      {view === "system" && <SystemView />}
 
       {view === "dashboard" && status && (
         <section className="grid" data-testid="status-grid">

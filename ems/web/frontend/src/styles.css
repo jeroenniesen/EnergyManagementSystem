@@ -279,6 +279,30 @@ body {
 .settings-msg-err { color: #f0a3a3; font-size: 0.85rem; }
 .settings-dirty { color: var(--amber); font-size: 0.8rem; }
 
+/* System diagnostics */
+.checks { list-style: none; margin: 16px 0 0; padding: 0; display: flex; flex-direction: column; gap: 1px; }
+.check {
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  align-items: center;
+  gap: 6px 12px;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  padding: 12px 16px;
+}
+.check:first-child { border-radius: 12px 12px 0 0; }
+.check:last-child { border-radius: 0 0 12px 12px; }
+.check-dot { width: 9px; height: 9px; border-radius: 50%; }
+.dot-ok { background: var(--green); }
+.dot-warn { background: var(--amber); }
+.dot-fail { background: #e05050; }
+.check-label { font-weight: 600; font-size: 0.9rem; }
+.check-detail { grid-column: 2; color: var(--muted); font-size: 0.8rem; }
+.check-status { font-size: 0.72rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.04em; }
+.check-status[data-status="ok"] { color: var(--green); }
+.check-status[data-status="warn"] { color: var(--amber); }
+.check-status[data-status="fail"] { color: #f0a3a3; }
+
 .loading, .footer { color: var(--muted); margin-top: 24px; font-size: 0.85rem; }
 .footer { border-top: 1px solid var(--line); padding-top: 16px; }
 

@@ -26,6 +26,7 @@ from ems.control.override import (
 from ems.control.override import (
     from_stored as override_from_stored,
 )
+from ems.diagnostics import build_diagnostics, overall_status
 from ems.domain import BatteryIntent
 from ems.freshness import FreshnessTracker
 from ems.load_model import reconstruct
@@ -268,6 +269,47 @@ def create_app(
             "plan_reason": reason,
             "override_active": override_active,
         }
+
+    @app.get("/api/diagnostics")
+    async def diagnostics_endpoint() -> dict:
+        now = datetime.now(UTC)
+        snap = freshness.snapshot(now) if freshness is not None else {}
+        prices_ok = price_source is not None
+        forecast_ok = solar_forecast is not None
+        # Actually probe the stores so a broken DB shows as a failed check, not a silent pass.
+        store_ok = False
+        if store is not None:
+            try:
+                await store.table_names()
+                store_ok = True
+            except Exception:
+                store_ok = False
+        settings_ok = False
+        if settings_store is not None:
+            try:
+                await settings_store.all()
+                settings_ok = True
+            except Exception:
+                settings_ok = False
+        # probe() is a SYNC, possibly-networked call — run it off the event loop and guard it so an
+        # unreachable battery shows as a warn check, not a 500 (and never blocks the loop).
+        p1_paired = False
+        battery_ok = battery is not None
+        if battery is not None:
+            try:
+                p1_paired = (await asyncio.to_thread(battery.probe)).p1_paired
+            except Exception:
+                battery_ok = False
+        checks = build_diagnostics(
+            dev_mode=dev_mode, dry_run=dry_run,
+            data_quality=data_quality(snap, prices_ok=prices_ok, forecast_ok=forecast_ok),
+            prices_ok=prices_ok, forecast_ok=forecast_ok,
+            battery_ok=battery_ok, p1_paired=p1_paired,
+            plan_ok=_current_plan() is not None,
+            store_ok=store_ok, settings_store_ok=settings_ok,
+            auth_required=web_auth_token is not None,
+        )
+        return {"overall": overall_status(checks), "checks": [c.to_dict() for c in checks]}
 
     @app.get("/api/charge-need")
     def charge_need_endpoint() -> dict:
