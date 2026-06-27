@@ -60,6 +60,7 @@ body {
   text-transform: uppercase;
 }
 .badge-dryrun { background: rgba(224, 162, 58, 0.16); color: var(--amber); }
+.badge-amber { background: rgba(224, 162, 58, 0.16); color: var(--amber); text-transform: none; letter-spacing: 0; }
 .badge-live { background: rgba(70, 200, 168, 0.16); color: var(--green); }
 .badge-muted { background: var(--panel-2); color: var(--muted); text-transform: none; letter-spacing: 0; font-weight: 500; }
 .badge-dq { letter-spacing: 0; }
@@ -116,6 +117,26 @@ body {
 .seg-hold_reserve { background: #5b6473; }
 .seg-discharge_for_load { background: var(--amber); }
 .plan-reason { color: var(--muted); font-size: 0.8rem; margin: 10px 0 0; }
+
+.override {
+  margin-top: 24px;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  padding: 18px;
+}
+.override-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.override-hint { color: var(--muted); font-size: 0.78rem; margin: 8px 0 14px; }
+.override-controls { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; }
+.override-controls select {
+  font: inherit;
+  color: var(--text);
+  background: var(--panel-2);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 8px 10px;
+}
+.override-controls select:focus { outline: none; border-color: var(--accent); }
 
 .decision {
   margin-top: 24px;

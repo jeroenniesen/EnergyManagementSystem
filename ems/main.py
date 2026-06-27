@@ -35,6 +35,7 @@ def build_app():
     db_path.parent.mkdir(parents=True, exist_ok=True)
     store = HistoryStore(str(db_path))
     settings_store = SettingsStore(str(db_path))
+    override_store = SettingsStore(str(db_path), table="runtime_state")
     freshness = FreshnessTracker()
     freshness.register(*SIGNALS)
     recorder = Recorder(source, store, freshness, cycle_seconds=cfg.cycle_seconds)
@@ -56,6 +57,7 @@ def build_app():
         battery=battery,
         controller=controller,
         settings_store=settings_store,
+        override_store=override_store,
         static_dir=_STATIC_DIR,
     )
     return app, cfg
