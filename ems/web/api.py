@@ -14,6 +14,18 @@ from fastapi.staticfiles import StaticFiles
 
 from ems.alerts import data_quality, derive_alerts
 from ems.control.mode_controller import ModeController
+from ems.control.override import (
+    MAX_MINUTES,
+    MIN_MINUTES,
+    Override,
+)
+from ems.control.override import (
+    NONE as OVERRIDE_NONE,
+)
+from ems.control.override import (
+    from_stored as override_from_stored,
+)
+from ems.domain import BatteryIntent
 from ems.freshness import FreshnessTracker
 from ems.load_model import reconstruct
 from ems.planner.rule_based import PlannerConfig, plan_rule_based
@@ -49,11 +61,16 @@ def create_app(
     battery: BatteryDriver | None = None,
     controller: ModeController | None = None,
     settings_store: SettingsStore | None = None,
+    override_store: SettingsStore | None = None,
     static_dir: str | Path | None = None,
 ) -> FastAPI:
     # In-memory effective-settings cache (defaults until the store loads in lifespan). Sync
     # endpoints read this; POST /api/settings refreshes it. Mutated in place (never rebound).
     settings_cache: dict[str, Any] = effective_settings({})
+    # Current manual override, cached in memory (expiry is evaluated per request). Mutated in
+    # place via the "ov" key so the closure stays valid; loaded in lifespan, set by POST /override.
+    override_box: dict[str, Override] = {"ov": OVERRIDE_NONE}
+    _OV_INTENT, _OV_EXP = "override.intent", "override.expires_at"
 
     def _apply_control_settings() -> None:
         """Push the control.* settings onto the live controller (preserves its switch counters)."""
@@ -86,6 +103,12 @@ def create_app(
             settings_cache.clear()
             settings_cache.update(loaded)
             _apply_control_settings()
+        if override_store is not None:
+            await override_store.init()
+            stored = await override_store.all()
+            override_box["ov"] = override_from_stored(
+                stored.get(_OV_INTENT), stored.get(_OV_EXP)
+            )
         # Start the read-only sense loop / recorder (SPEC §5.3). Take one awaited startup
         # sample so /api/series and /api/freshness are populated deterministically, then
         # run the periodic loop in the background.
@@ -115,6 +138,23 @@ def create_app(
         now = datetime.now(UTC)
         prices = price_source.slots()
         return now, prices, plan_rule_based(prices, now, _planner_cfg())
+
+    def _effective_intent(now: datetime):
+        """The intent the controller should act on now, honouring an active manual override.
+        Returns (intent | None, reason | None, override_active). An active override wins over
+        the plan — and works even with no price source (it's a control action, not a forecast)."""
+        ov = override_box["ov"]
+        if ov.active(now):
+            assert ov.intent is not None and ov.expires_at is not None
+            until = ov.expires_at.astimezone().strftime("%H:%M")
+            return ov.intent, f"manual override: {ov.intent.value} until {until}", True
+        pp = _current_plan()
+        if pp is None:
+            return None, None, False
+        cur = pp[2].intent_at(now)
+        if cur is None:
+            return None, None, False
+        return cur.intent, cur.reason, False
 
     @app.get("/health/live")
     def live() -> dict:
@@ -148,44 +188,86 @@ def create_app(
         now = datetime.now(UTC)
         snap = freshness.snapshot(now) if freshness is not None else {}
         # The controller's would-do outcome (read-only preview) feeds battery-failure alerts.
+        # Honour an active override so the outcome reflects what the controller would really do.
         outcome: str | None = None
-        pp = _current_plan()
-        if pp is not None and controller is not None:
-            cur = pp[2].intent_at(pp[0])
-            if cur is not None:
-                outcome = controller.preview(cur.intent, pp[0]).outcome
+        intent, _reason, override_active = _effective_intent(now)
+        if intent is not None and controller is not None:
+            outcome = controller.preview(intent, now).outcome
         prices_ok = price_source is not None  # price staleness isn't tracked in freshness yet
         forecast_ok = solar_forecast is not None
         alerts = derive_alerts(snap, dry_run=dry_run, decision_outcome=outcome)
+        out = [{"key": a.key, "severity": a.severity, "message": a.message} for a in alerts]
+        if override_active:
+            ov = override_box["ov"]
+            until = ov.expires_at.astimezone().strftime("%H:%M") if ov.expires_at else "?"
+            label = ov.intent.value if ov.intent else "?"
+            out.append({
+                "key": "manual_override_active", "severity": "warning",
+                "message": f"Manual override: forcing {label} until {until}",
+            })
         return {
             "data_quality": data_quality(snap, prices_ok=prices_ok, forecast_ok=forecast_ok),
-            "alerts": [
-                {"key": a.key, "severity": a.severity, "message": a.message} for a in alerts
-            ],
+            "alerts": out,
         }
 
     @app.get("/api/decision")
     def decision_endpoint() -> dict:
-        # What the controller would do for the plan's current intent, and why (incl. "why not").
-        pp = _current_plan()
-        if pp is None or controller is None:
+        # What the controller would do right now, and why. An active override wins over the plan.
+        if controller is None:
             return {"intent": None, "desired_mode": None, "applied": False,
-                    "outcome": "unconfigured", "reason": "no planner/controller"}
-        now, _prices, plan = pp
-        cur = plan.intent_at(now)
-        if cur is None:
+                    "outcome": "unconfigured", "reason": "no controller",
+                    "plan_reason": None, "override_active": False}
+        now = datetime.now(UTC)
+        intent, reason, override_active = _effective_intent(now)
+        if intent is None:
             return {"intent": None, "desired_mode": None, "applied": False,
-                    "outcome": "no_plan", "reason": "no plan slot for now"}
+                    "outcome": "no_plan", "reason": "no plan slot for now",
+                    "plan_reason": None, "override_active": False}
         # preview() is read-only — a GET must never write to the battery or mutate counters.
-        d = controller.preview(cur.intent, now)
+        d = controller.preview(intent, now)
         return {
             "intent": d.intent,
             "desired_mode": d.desired_mode,
             "applied": d.applied,
             "outcome": d.outcome,
             "reason": d.reason,
-            "plan_reason": cur.reason,
+            "plan_reason": reason,
+            "override_active": override_active,
         }
+
+    @app.get("/api/override")
+    def get_override() -> dict:
+        now = datetime.now(UTC)
+        return {**override_box["ov"].to_dict(now), "options": [i.value for i in BatteryIntent]}
+
+    @app.post("/api/override")
+    async def set_override(body: dict | None = None) -> JSONResponse:
+        if override_store is None:
+            return JSONResponse({"detail": "override store not configured"}, status_code=503)
+        body = body or {}
+        raw_intent = body.get("intent")
+        now = datetime.now(UTC)
+        # A null/"none"/missing intent clears the override (return to following the plan).
+        if raw_intent in (None, "", "none"):
+            await override_store.delete(_OV_INTENT, _OV_EXP)
+            override_box["ov"] = OVERRIDE_NONE
+            return JSONResponse(get_override())
+        errors: dict[str, str] = {}
+        try:
+            intent = BatteryIntent(raw_intent)
+        except ValueError:
+            errors["intent"] = f"must be one of: {', '.join(i.value for i in BatteryIntent)}"
+        minutes = body.get("minutes", 60)
+        if isinstance(minutes, bool) or not isinstance(minutes, (int, float)):
+            errors["minutes"] = "must be a number of minutes"
+        elif not (MIN_MINUTES <= minutes <= MAX_MINUTES):
+            errors["minutes"] = f"must be between {MIN_MINUTES} and {MAX_MINUTES}"
+        if errors:
+            return JSONResponse({"detail": "invalid override", "errors": errors}, status_code=422)
+        expires = now + timedelta(minutes=int(minutes))
+        await override_store.set_many({_OV_INTENT: intent.value, _OV_EXP: expires.isoformat()})
+        override_box["ov"] = Override(intent=intent, expires_at=expires)
+        return JSONResponse(get_override())
 
     @app.get("/api/battery")
     def battery_endpoint() -> dict:

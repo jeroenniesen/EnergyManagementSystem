@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 
+import { OverrideCard } from "./Override";
 import { Settings } from "./Settings";
 
 type Status = {
@@ -255,7 +256,7 @@ export function App() {
             className={`nav-btn${view === "dashboard" ? " nav-active" : ""}`}
             onClick={() => setView("dashboard")}
             data-testid="nav-dashboard"
-            aria-current={view === "dashboard"}
+            aria-current={view === "dashboard" ? "page" : undefined}
           >
             Dashboard
           </button>
@@ -263,7 +264,7 @@ export function App() {
             className={`nav-btn${view === "settings" ? " nav-active" : ""}`}
             onClick={() => setView("settings")}
             data-testid="nav-settings"
-            aria-current={view === "settings"}
+            aria-current={view === "settings" ? "page" : undefined}
           >
             Settings
           </button>
@@ -312,6 +313,8 @@ export function App() {
           )}
         </section>
       )}
+
+      {view === "dashboard" && status && <OverrideCard />}
 
       {view === "dashboard" && decision && decision.outcome !== "unconfigured" && (
         <section className="decision" data-testid="decision">

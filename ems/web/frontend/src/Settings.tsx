@@ -27,15 +27,55 @@ const GROUP_HINT: Record<string, string> = {
   ui: "How the dashboard looks.",
 };
 
+function NumberInput({
+  field,
+  value,
+  disabled,
+  onChange,
+}: {
+  field: SettingField;
+  value: number;
+  disabled: boolean;
+  onChange: (v: number) => void;
+}) {
+  // Hold the raw text locally so the user can transiently clear/retype a number without it
+  // snapping back to 0 mid-edit; only commit a coerced value on blur. Re-sync if the parent
+  // resets the value (Save/Reset).
+  const [raw, setRaw] = useState(String(value));
+  useEffect(() => {
+    setRaw(String(value));
+  }, [value]);
+  return (
+    <input
+      id={`set-${field.key}`}
+      type="number"
+      value={raw}
+      disabled={disabled}
+      min={field.min ?? undefined}
+      max={field.max ?? undefined}
+      step={field.step ?? (field.type === "int" ? 1 : "any")}
+      onChange={(e) => setRaw(e.target.value)}
+      onBlur={(e) => {
+        const n = e.target.value === "" ? (field.min ?? 0) : Number(e.target.value);
+        const coerced = field.type === "int" ? Math.round(n) : n;
+        setRaw(String(coerced));
+        onChange(coerced);
+      }}
+    />
+  );
+}
+
 function Field({
   field,
   value,
   error,
+  disabled,
   onChange,
 }: {
   field: SettingField;
   value: number | boolean | string;
   error?: string;
+  disabled: boolean;
   onChange: (v: number | boolean | string) => void;
 }) {
   const id = `set-${field.key}`;
@@ -46,12 +86,18 @@ function Field({
         id={id}
         type="checkbox"
         checked={Boolean(value)}
+        disabled={disabled}
         onChange={(e) => onChange(e.target.checked)}
       />
     );
   } else if (field.type === "enum") {
     control = (
-      <select id={id} value={String(value)} onChange={(e) => onChange(e.target.value)}>
+      <select
+        id={id}
+        value={String(value)}
+        disabled={disabled}
+        onChange={(e) => onChange(e.target.value)}
+      >
         {(field.options ?? []).map((o) => (
           <option key={o} value={o}>
             {o}
@@ -61,18 +107,11 @@ function Field({
     );
   } else {
     control = (
-      <input
-        id={id}
-        type="number"
+      <NumberInput
+        field={field}
         value={Number(value)}
-        min={field.min ?? undefined}
-        max={field.max ?? undefined}
-        step={field.step ?? (field.type === "int" ? 1 : "any")}
-        onChange={(e) => {
-          // Keep raw text empty-safe; coerce to number for the payload.
-          const n = e.target.value === "" ? 0 : Number(e.target.value);
-          onChange(field.type === "int" ? Math.round(n) : n);
-        }}
+        disabled={disabled}
+        onChange={onChange}
       />
     );
   }
@@ -183,6 +222,7 @@ export function Settings() {
                   field={f}
                   value={edited[f.key]}
                   error={errors[f.key]}
+                  disabled={status === "saving"}
                   onChange={(v) => set(f.key, v)}
                 />
               ))}
