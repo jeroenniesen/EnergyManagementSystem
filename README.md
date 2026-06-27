@@ -42,6 +42,39 @@ The north-star vision is in **[`GOAL.md`](./GOAL.md)**; agent/project convention
 
 `M0a` ingest + store + scaffolding → `M0b` React+Vite dashboard + setup → `M0c` prices/forecasts normalised → `M1a` battery **read-only capability probe** → `M1b` battery writes → `M2` winter arbitrage (dry-run → enable) → `M3` summer solar (dry-run → enable) → `M4` polish (savings, guardrails, auth, alerts, visual polish) → `M6` **optional ML layer** (Jetson-gated; advisory → ml). **EV control is a separate v2 spec**, not a milestone here. See `SPEC.md` §15.
 
+## Running it (dev / your Mac)
+
+The whole app runs locally with **no Home Assistant, battery, or GPU** (dev/mock mode, dry-run):
+
+```bash
+# Python 3.12 via uv
+curl -LsSf https://astral.sh/uv/install.sh | sh    # if you don't have uv
+uv sync --extra dev
+uv run pytest                                       # backend test suite
+
+# Build the React/Vite UI, then run the service
+cd ems/web/frontend && npm install && npm run build && cd ../../..
+uv run uvicorn ems.main:app --host 127.0.0.1 --port 8099    # open http://127.0.0.1:8099
+
+# Or in Docker (multi-stage build serves the bundled UI):
+docker compose -f docker-compose.dev.yml up --build          # http://localhost:8080
+
+# End-to-end (API + UI) tests:
+cd ems/web/frontend && npx playwright install chromium && npx playwright test
+```
+
 ## Status
 
-**Implementation-ready draft** — design complete and reviewed; several device-specific values still need **M0/M1 hardware validation** (see the validation checklist + *Known uncertainties* table in `SPEC.md`). Implementation not yet started. The `ems/` service tree is in `SPEC.md` §13.
+**Early implementation — a runnable, fail-safe *dry-run* energy manager.** Built and tested
+(part-by-part, each reviewed + Playwright-validated):
+
+- **Working now:** energy-model load reconstruction (§4) · SQLite history (WAL) · sense-loop
+  recorder · per-signal freshness · Tibber-shaped prices + Solcast-shaped forecast (mock/replay)
+  · rule-based winter-arbitrage **planner** · **mode controller** (intent→mode, idempotency,
+  dwell, daily cap, failure→AUTO) — **dry-run, no device writes** · battery capability probe
+  (mock) · alerts + data-quality + savings · **React dashboard** showing it all.
+- **Not yet:** live Home Assistant / Tibber / Solcast adapters (currently mock/replay) · live
+  battery writes (gated on the M1 hardware-probe `CONFIRM` items in `SPEC.md` §17) · the optional
+  ML layer (M6) · summer-solar strategy. The planner is prices-only (forecast/SoC/target-SoC next).
+
+The `ems/` service tree is in `SPEC.md` §13. Plans are in `docs/superpowers/plans/`.
