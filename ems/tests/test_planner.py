@@ -2,7 +2,7 @@ from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
 from ems.domain import BatteryIntent
-from ems.planner.rule_based import plan_rule_based
+from ems.planner.rule_based import PlannerConfig, plan_rule_based
 from ems.sources.prices import MockPriceSource, PriceSlot
 
 AMS = ZoneInfo("Europe/Amsterdam")
@@ -52,3 +52,19 @@ def test_intent_at_returns_covering_slot():
 def test_empty_prices_gives_empty_plan():
     plan = plan_rule_based([], MIDNIGHT)
     assert plan.slots == ()
+
+
+def test_no_charge_after_last_discharge():
+    # A cheap slot that occurs AFTER all profitable peaks must not be scheduled to charge
+    # (nothing to discharge into -> no wasted cycle).
+    slots = [
+        PriceSlot(MIDNIGHT + timedelta(minutes=0), 0.05),  # cheap A -> charge
+        PriceSlot(MIDNIGHT + timedelta(minutes=15), 0.05),  # cheap A -> charge
+        PriceSlot(MIDNIGHT + timedelta(minutes=30), 0.50),  # peak -> discharge
+        PriceSlot(MIDNIGHT + timedelta(minutes=45), 0.05),  # cheap B AFTER peak -> must be AUTO
+    ]
+    plan = plan_rule_based(slots, MIDNIGHT, PlannerConfig(charge_slots=3, discharge_slots=1))
+    by_start = {s.start: s.intent for s in plan.slots}
+    assert by_start[MIDNIGHT] is BatteryIntent.GRID_CHARGE_TO_TARGET
+    assert by_start[MIDNIGHT + timedelta(minutes=30)] is BatteryIntent.DISCHARGE_FOR_LOAD
+    assert by_start[MIDNIGHT + timedelta(minutes=45)] is BatteryIntent.ALLOW_SELF_CONSUMPTION

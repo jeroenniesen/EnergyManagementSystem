@@ -66,13 +66,18 @@ def plan_rule_based(
     charge_set = {p.start for p in charge_candidates}
     out: list[PlanSlot] = []
     for p in horizon:
-        if p.start in charge_set:
+        has_later_discharge = any(d > p.start for d in discharge_set)
+        if p.start in charge_set and has_later_discharge:
             intent = BatteryIntent.GRID_CHARGE_TO_TARGET
             reason = f"charge: cheap window €{p.eur_per_kwh:.2f}/kWh"
+        elif p.start in charge_set:
+            # Cheap, but no profitable peak remains to discharge into -> don't cycle for nothing.
+            intent = BatteryIntent.ALLOW_SELF_CONSUMPTION
+            reason = f"self-consumption: cheap but no peak ahead (€{p.eur_per_kwh:.2f}/kWh)"
         elif p.start in discharge_set:
             intent = BatteryIntent.DISCHARGE_FOR_LOAD
             reason = f"discharge: €{p.eur_per_kwh:.2f}/kWh > break-even €{breakeven:.2f}"
-        elif any(c < p.start for c in charge_set) and any(d > p.start for d in discharge_set):
+        elif has_later_discharge and any(c < p.start for c in charge_set):
             intent = BatteryIntent.HOLD_RESERVE
             reason = f"hold cheap energy for the coming peak (now €{p.eur_per_kwh:.2f}/kWh)"
         else:
