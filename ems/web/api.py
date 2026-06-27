@@ -3,12 +3,13 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import secrets
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
-from fastapi import FastAPI, Query
+from fastapi import FastAPI, Query, Request
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 
@@ -63,8 +64,23 @@ def create_app(
     controller: ModeController | None = None,
     settings_store: SettingsStore | None = None,
     override_store: SettingsStore | None = None,
+    web_auth_token: str | None = None,
     static_dir: str | Path | None = None,
 ) -> FastAPI:
+    def _authorized(request: Request) -> bool:
+        """True if the request may mutate. When no token is configured, writes are open (dev/LAN
+        default); otherwise an `Authorization: Bearer <token>` must match (constant-time)."""
+        if web_auth_token is None:
+            return True
+        scheme, _, token = request.headers.get("authorization", "").partition(" ")
+        try:
+            return scheme == "Bearer" and secrets.compare_digest(token, web_auth_token)
+        except TypeError:
+            # compare_digest raises on non-ASCII str; treat as a clean 401, never a 500.
+            return False
+
+    def _auth_error() -> JSONResponse:
+        return JSONResponse({"detail": "unauthorized — set an access token"}, status_code=401)
     # In-memory effective-settings cache (defaults until the store loads in lifespan). Sync
     # endpoints read this; POST /api/settings refreshes it. Mutated in place (never rebound).
     settings_cache: dict[str, Any] = effective_settings({})
@@ -177,6 +193,11 @@ def create_app(
     def ready() -> dict:
         return {"status": "ready", "dry_run": dry_run, "dev_mode": dev_mode}
 
+    @app.get("/api/auth")
+    def auth_status(request: Request) -> dict:
+        # Lets the UI show a token field only when writes are protected, and reflect auth state.
+        return {"required": web_auth_token is not None, "authenticated": _authorized(request)}
+
     @app.get("/api/freshness")
     def freshness_snapshot() -> dict:
         if freshness is None:
@@ -266,7 +287,9 @@ def create_app(
         return {**override_box["ov"].to_dict(now), "options": [i.value for i in BatteryIntent]}
 
     @app.post("/api/override")
-    async def set_override(body: dict | None = None) -> JSONResponse:
+    async def set_override(request: Request, body: dict | None = None) -> JSONResponse:
+        if not _authorized(request):
+            return _auth_error()
         if override_store is None:
             return JSONResponse({"detail": "override store not configured"}, status_code=503)
         body = body or {}
@@ -368,7 +391,9 @@ def create_app(
         return {"schema": schema_json(), "values": dict(settings_cache)}
 
     @app.post("/api/settings")
-    async def post_settings(body: dict | None = None) -> JSONResponse:
+    async def post_settings(request: Request, body: dict | None = None) -> JSONResponse:
+        if not _authorized(request):
+            return _auth_error()
         if settings_store is None:
             return JSONResponse(
                 {"detail": "settings store not configured"}, status_code=503

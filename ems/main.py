@@ -1,6 +1,7 @@
 """Entrypoint: build the app from config + a source, run uvicorn."""
 from __future__ import annotations
 
+import os
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
@@ -58,6 +59,9 @@ def build_app():
         controller=controller,
         settings_store=settings_store,
         override_store=override_store,
+        # Secret via env (never config/SQLite). Unset -> writes open (dev/LAN); set -> writes
+        # require Authorization: Bearer <token>. Reads (the dashboard) are always open.
+        web_auth_token=os.environ.get("EMS_WEB_TOKEN") or None,
         static_dir=_STATIC_DIR,
     )
     return app, cfg

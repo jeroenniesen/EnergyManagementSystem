@@ -1,5 +1,7 @@
 import { useEffect, useState } from "react";
 
+import { authHeaders, getToken, setToken } from "./auth";
+
 export type SettingField = {
   key: string;
   label: string;
@@ -143,6 +145,17 @@ export function Settings({ onSaved }: { onSaved?: (values: Values) => void } = {
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [status, setStatus] = useState<"idle" | "saving" | "saved" | "error">("idle");
   const [loadError, setLoadError] = useState<string | null>(null);
+  const [auth, setAuth] = useState<{ required: boolean; authenticated: boolean } | null>(null);
+  const [tokenInput, setTokenInput] = useState(getToken());
+
+  async function refreshAuth() {
+    try {
+      const r = await fetch("/api/auth", { headers: authHeaders() });
+      if (r.ok) setAuth(await r.json());
+    } catch {
+      /* leave auth as-is */
+    }
+  }
 
   useEffect(() => {
     let alive = true;
@@ -159,6 +172,7 @@ export function Settings({ onSaved }: { onSaved?: (values: Values) => void } = {
         if (alive) setLoadError(String(e));
       }
     })();
+    refreshAuth();
     return () => {
       alive = false;
     };
@@ -182,9 +196,14 @@ export function Settings({ onSaved }: { onSaved?: (values: Values) => void } = {
     try {
       const r = await fetch("/api/settings", {
         method: "POST",
-        headers: { "content-type": "application/json" },
+        headers: { "content-type": "application/json", ...authHeaders() },
         body: JSON.stringify(changed),
       });
+      if (r.status === 401) {
+        setErrors({ _: "Unauthorized — set a valid access token below." });
+        setStatus("error");
+        return;
+      }
       const b = await r.json();
       if (r.status === 422) {
         setErrors(b.errors ?? {});
@@ -214,6 +233,45 @@ export function Settings({ onSaved }: { onSaved?: (values: Values) => void } = {
   const groups = [...new Set(schema.map((f) => f.group))];
   return (
     <section data-testid="settings">
+      {auth?.required && (
+        <div className="settings-group" data-testid="settings-access">
+          <h2 className="settings-group-title">Access</h2>
+          <p className="settings-group-hint">
+            Saving changes is protected. Enter the access token to authorise writes.{" "}
+            {auth.authenticated ? (
+              <span className="settings-msg-ok">authorised</span>
+            ) : (
+              <span className="settings-msg-err">not authorised</span>
+            )}
+          </p>
+          <div className="settings-fields">
+            <div className="field">
+              <label className="field-label" htmlFor="set-access-token">
+                Access token
+              </label>
+              <input
+                id="set-access-token"
+                type="password"
+                value={tokenInput}
+                onChange={(e) => setTokenInput(e.target.value)}
+                data-testid="access-token"
+              />
+            </div>
+          </div>
+          <div className="settings-actions">
+            <button
+              className="btn-ghost"
+              data-testid="access-token-save"
+              onClick={() => {
+                setToken(tokenInput);
+                refreshAuth();
+              }}
+            >
+              Save token
+            </button>
+          </div>
+        </div>
+      )}
       {groups.map((g) => (
         <div className="settings-group" key={g}>
           <h2 className="settings-group-title">{GROUP_TITLE[g] ?? g}</h2>
