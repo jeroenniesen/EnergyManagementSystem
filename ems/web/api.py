@@ -16,6 +16,7 @@ from ems.control.mode_controller import ModeController
 from ems.freshness import FreshnessTracker
 from ems.load_model import reconstruct
 from ems.planner.rule_based import plan_rule_based
+from ems.savings import estimate_daily_savings_eur
 from ems.sense import Recorder
 from ems.sources.base import Source
 from ems.sources.battery import BatteryDriver
@@ -158,6 +159,16 @@ def create_app(
                 "max_discharge_w": cap.max_discharge_w,
             },
         }
+
+    @app.get("/api/savings")
+    def savings_endpoint() -> dict:
+        if price_source is None:
+            return {"today_eur": None}
+        now = datetime.now(UTC)
+        prices = price_source.slots()
+        plan = plan_rule_based(prices, now)
+        by_start = {p.start: p.eur_per_kwh for p in prices}
+        return {"today_eur": estimate_daily_savings_eur(plan, by_start)}
 
     @app.get("/api/plan")
     def plan_endpoint() -> dict:

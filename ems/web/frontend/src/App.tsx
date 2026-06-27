@@ -156,6 +156,7 @@ export function App() {
   const [battery, setBattery] = useState<Battery | null>(null);
   const [decision, setDecision] = useState<Decision | null>(null);
   const [alertsData, setAlertsData] = useState<AlertsResp | null>(null);
+  const [savings, setSavings] = useState<number | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
@@ -167,7 +168,7 @@ export function App() {
     }
     async function poll() {
       try {
-        const [s, ser, fr, pr, fc, pl, bat, dec, al] = await Promise.all([
+        const [s, ser, fr, pr, fc, pl, bat, dec, al, sv] = await Promise.all([
           getJson("/api/status"),
           getJson("/api/series?limit=50"),
           getJson("/api/freshness"),
@@ -177,6 +178,7 @@ export function App() {
           getJson("/api/battery"),
           getJson("/api/decision"),
           getJson("/api/alerts"),
+          getJson("/api/savings"),
         ]);
         if (!alive) return;
         setStatus(s);
@@ -188,6 +190,7 @@ export function App() {
         setBattery(bat);
         setDecision(dec);
         setAlertsData(al);
+        setSavings(sv?.today_eur ?? null);
         setError(null);
       } catch (e) {
         if (alive) setError(String(e));
@@ -255,6 +258,9 @@ export function App() {
               value={battery.current_mode}
               hint={battery.capabilities?.p1_paired ? "P1 paired" : "P1 not paired"}
             />
+          )}
+          {savings != null && (
+            <Metric label="Est. savings today" value={`€${savings.toFixed(2)}`} hint="arbitrage" />
           )}
         </section>
       )}
