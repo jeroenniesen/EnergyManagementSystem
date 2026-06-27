@@ -11,6 +11,20 @@
   font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
 }
 
+/* Light theme — applied when the app sets <html data-theme="light"> (auto resolves to this
+   when the OS prefers light). Dark is the default palette in :root above. */
+:root[data-theme="light"] {
+  --bg: #f4f6fa;
+  --panel: #ffffff;
+  --panel-2: #eef1f6;
+  --line: #d9dee7;
+  --text: #1b2330;
+  --muted: #5c6675;
+  --accent: #1f9e84;
+  --amber: #b07410;
+  --green: #1f9e84;
+}
+
 * { box-sizing: border-box; }
 
 body {

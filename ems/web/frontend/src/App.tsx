@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 
 import { OverrideCard } from "./Override";
 import { Settings } from "./Settings";
+import { applyTheme, readStoredTheme, storeTheme, type Theme } from "./theme";
 
 type Status = {
   dry_run: boolean;
@@ -183,6 +184,27 @@ export function App() {
   const [savings, setSavings] = useState<number | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [view, setView] = useState<"dashboard" | "settings">("dashboard");
+  // Seed from the localStorage cache so the first paint matches the saved theme (no flash);
+  // the fetch below reconciles with the server's canonical value.
+  const [theme, setTheme] = useState<Theme>(readStoredTheme);
+
+  useEffect(() => {
+    let alive = true;
+    fetch("/api/settings")
+      .then((r) => (r.ok ? r.json() : null))
+      .then((b) => {
+        if (alive && b?.values?.["ui.theme"]) setTheme(b.values["ui.theme"] as Theme);
+      })
+      .catch(() => {});
+    return () => {
+      alive = false;
+    };
+  }, []);
+  // Keep <html data-theme> in sync and cache the choice for the next load's first paint.
+  useEffect(() => {
+    storeTheme(theme);
+    return applyTheme(theme);
+  }, [theme]);
 
   useEffect(() => {
     let alive = true;
@@ -283,7 +305,9 @@ export function App() {
 
       {error && <div className="error" data-testid="error">Cannot reach EMS API: {error}</div>}
 
-      {view === "settings" && <Settings />}
+      {view === "settings" && (
+        <Settings onSaved={(v) => setTheme((v["ui.theme"] as Theme) ?? "auto")} />
+      )}
 
       {view === "dashboard" && status && (
         <section className="grid" data-testid="status-grid">
