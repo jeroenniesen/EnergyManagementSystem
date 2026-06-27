@@ -1,6 +1,12 @@
 import { expect, test } from "@playwright/test";
 
 test.describe("EMS API", () => {
+  test("favicon is served (no console 404)", async ({ request }) => {
+    const r = await request.get("/favicon.svg");
+    expect(r.ok()).toBeTruthy();
+    expect(r.headers()["content-type"]).toContain("svg");
+  });
+
   test("health endpoints", async ({ request }) => {
     const live = await request.get("/health/live");
     expect(live.ok()).toBeTruthy();

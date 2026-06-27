@@ -72,15 +72,22 @@ function Metric({ label, value, hint }: { label: string; value: string; hint?: s
 
 function PlanTimeline({ plan }: { plan: Plan }) {
   const slots = plan.slots.slice(0, 96);
+  const currentLabel = plan.current_intent
+    ? INTENT_LABEL[plan.current_intent] ?? plan.current_intent
+    : "—";
   return (
     <section className="prices" data-testid="plan">
       <div className="prices-head">
         <span className="metric-label">Plan — next 24h</span>
         <span className="price-now" data-testid="current-intent">
-          {plan.current_intent ? INTENT_LABEL[plan.current_intent] ?? plan.current_intent : "—"}
+          {currentLabel}
         </span>
       </div>
-      <div className="timeline" aria-hidden="true">
+      <div
+        className="timeline"
+        role="img"
+        aria-label={`Battery plan timeline for the next 24 hours; current action: ${currentLabel}`}
+      >
         {slots.map((s, i) => (
           <span
             key={i}
@@ -97,6 +104,8 @@ function PlanTimeline({ plan }: { plan: Plan }) {
 function PriceCurve({ prices }: { prices: Prices }) {
   const slots = prices.slots.slice(0, 96); // show ~today
   const max = Math.max(0.01, ...slots.map((s) => s.eur_per_kwh));
+  const min = Math.min(...slots.map((s) => s.eur_per_kwh));
+  const cur = prices.current_eur_per_kwh;
   return (
     <section className="prices" data-testid="prices">
       <div className="prices-head">
@@ -107,7 +116,13 @@ function PriceCurve({ prices }: { prices: Prices }) {
             : "—"}
         </span>
       </div>
-      <div className="bars" aria-hidden="true">
+      <div
+        className="bars"
+        role="img"
+        aria-label={`Electricity price curve; current ${
+          cur != null ? `€${cur.toFixed(2)}` : "—"
+        }/kWh, range €${min.toFixed(2)}–€${max.toFixed(2)}`}
+      >
         {slots.map((s, i) => (
           <span
             key={i}
@@ -132,7 +147,13 @@ function ForecastCurve({ forecast }: { forecast: Forecast }) {
           {forecast.today_kwh_p50 != null ? `${forecast.today_kwh_p50.toFixed(1)} kWh today` : "—"}
         </span>
       </div>
-      <div className="bars" aria-hidden="true">
+      <div
+        className="bars"
+        role="img"
+        aria-label={`Solar forecast (P50); ${
+          forecast.today_kwh_p50 != null ? forecast.today_kwh_p50.toFixed(1) : "—"
+        } kWh expected today, peak ~${Math.round(max)} W`}
+      >
         {slots.map((s, i) => (
           <span
             key={i}
@@ -216,7 +237,11 @@ export function App() {
             {status.dry_run ? "DRY-RUN" : "LIVE"}
           </span>
         )}
-        {status && <span className="badge badge-muted">source: {status.dev_mode}</span>}
+        {status && (
+          <span className="badge badge-muted" data-testid="data-source">
+            {status.dev_mode === "live" ? "live data" : "simulated data"}
+          </span>
+        )}
         {alertsData && (
           <span className={`badge badge-dq dq-${alertsData.data_quality}`} data-testid="data-quality">
             {alertsData.data_quality}
