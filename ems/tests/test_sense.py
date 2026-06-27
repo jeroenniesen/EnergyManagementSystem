@@ -14,6 +14,11 @@ class _BoomSource:
         raise RuntimeError("boom")
 
 
+class _BoomStore:
+    async def record(self, *_a, **_k):
+        raise RuntimeError("disk full")
+
+
 def test_sense_once_records_and_marks_fresh(tmp_path):
     store = HistoryStore(str(tmp_path / "ems.sqlite"))
     fresh = FreshnessTracker(stale_after_s=600)
@@ -83,3 +88,19 @@ def test_run_survives_source_error(tmp_path):
 
     rows = asyncio.run(run())
     assert rows == []  # nothing recorded, but the loop survived (task completed cleanly)
+
+
+def test_run_survives_store_error():
+    # Fail-safe: a store write failure (disk full, locked DB) must not crash the loop either.
+    fresh = FreshnessTracker()
+    fresh.register(*SIGNALS)
+    rec = Recorder(MockSource(), _BoomStore(), fresh, cycle_seconds=0.01)
+
+    async def run():
+        stop = asyncio.Event()
+        task = asyncio.create_task(rec.run(stop))
+        await asyncio.sleep(0.04)
+        stop.set()
+        await task  # must not raise
+
+    asyncio.run(run())  # completes cleanly == loop survived store errors

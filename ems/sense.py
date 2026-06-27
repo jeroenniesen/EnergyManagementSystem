@@ -36,7 +36,9 @@ class Recorder:
         self._clock = clock
 
     async def sense_once(self, now: datetime) -> None:
-        raw = self.source.read()
+        # Offload the source read to a thread: future live sources (HA/HomeWizard/Tibber) do
+        # blocking network I/O and must not stall the event loop (SPEC §5.3 / KISS for now).
+        raw = await asyncio.to_thread(self.source.read)
         derived = reconstruct(raw)
         await self.store.record(now.isoformat(), raw, derived)
         for sig in SIGNALS:

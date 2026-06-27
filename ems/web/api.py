@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 from pathlib import Path
@@ -15,6 +16,14 @@ from ems.load_model import reconstruct
 from ems.sense import Recorder
 from ems.sources.base import Source
 from ems.storage.history import HistoryStore
+
+_log = logging.getLogger("ems.recorder")
+
+
+def _recorder_died(task: asyncio.Task) -> None:
+    # The recorder is awaited only at shutdown; surface an unexpected death immediately.
+    if not task.cancelled() and (exc := task.exception()) is not None:
+        _log.error("Recorder task exited unexpectedly: %s", exc, exc_info=exc)
 
 
 def create_app(
@@ -43,6 +52,7 @@ def create_app(
             except Exception:
                 pass  # fail-safe: a bad first read must not block startup
             task = asyncio.create_task(recorder.run(stop))
+            task.add_done_callback(_recorder_died)
         try:
             yield
         finally:
