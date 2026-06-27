@@ -1,0 +1,52 @@
+import pytest
+
+from ems.domain import RawSample
+from ems.load_model import (
+    DerivedSample,
+    is_soc_jump_implausible,
+    normalise_solar,
+    reconstruct,
+)
+
+
+def _raw(grid, solar, batt, ev=0.0, soc=50.0):
+    return RawSample(
+        grid_power_w=grid,
+        solar_power_w=solar,
+        battery_power_w=batt,
+        ev_power_w=ev,
+        soc_pct=soc,
+    )
+
+
+@pytest.mark.parametrize(
+    "grid,solar,batt,ev,expected_house,expected_non_ev",
+    [
+        (1000, 0, 0, 0, 1000, 1000),  # grid-only
+        (-500, 1500, 0, 0, 1000, 1000),  # solar covers + export
+        (200, 0, 800, 0, 1000, 1000),  # battery covers
+        (1500, 0, -500, 0, 1000, 1000),  # charging from grid
+        (200, 1500, 0, 700, 1700, 1000),  # solar + EV charging
+    ],
+)
+def test_reconstruction_consistency_cases(grid, solar, batt, ev, expected_house, expected_non_ev):
+    d = reconstruct(_raw(grid, solar, batt, ev))
+    assert d == DerivedSample(house_load_w=expected_house, non_ev_load_w=expected_non_ev)
+
+
+def test_ev_not_subtracted_below_threshold():
+    # EV drawing 100 W (< 200 threshold) is treated as not charging -> not subtracted
+    d = reconstruct(_raw(300, 0, 0, ev=100), ev_charging_threshold_w=200.0)
+    assert d.house_load_w == 300
+    assert d.non_ev_load_w == 300
+
+
+def test_normalise_solar_clamps_negative():
+    assert normalise_solar(-5.0) == 0.0
+    assert normalise_solar(1234.0) == 1234.0
+
+
+def test_soc_jump_plausibility():
+    assert is_soc_jump_implausible(50.0, 69.0, 5.0) is False  # 19% in 5 min, ok
+    assert is_soc_jump_implausible(50.0, 75.0, 5.0) is True  # 25% in 5 min, implausible
+    assert is_soc_jump_implausible(None, 80.0, 5.0) is False  # no prior reading

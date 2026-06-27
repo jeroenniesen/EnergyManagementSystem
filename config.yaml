@@ -1,0 +1,9 @@
+# config.yaml (starter — subset of SPEC §9; grows with later milestones)
+site:
+  timezone: Europe/Amsterdam
+dev:
+  mode: mock          # mock | replay | live  (mock/replay need no HA/battery and force dry_run)
+control:
+  dry_run: true
+web:
+  port: 8080
