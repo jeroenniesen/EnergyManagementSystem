@@ -77,3 +77,26 @@ def test_series_rejects_out_of_range_limit():
     r2 = _client().get("/api/series?limit=999999")
     assert r2.status_code == 422  # le=2000
 
+
+def test_serves_spa_index_when_static_dir_present(tmp_path):
+    dist = tmp_path / "dist"
+    dist.mkdir()
+    (dist / "index.html").write_text("<!doctype html><title>EMS</title><div id=root></div>")
+    app = create_app(MockSource(), dry_run=True, dev_mode="mock", static_dir=str(dist))
+    client = TestClient(app)
+    assert client.get("/api/status").status_code == 200  # API still matched first
+    r = client.get("/")
+    assert r.status_code == 200
+    assert "EMS" in r.text  # SPA index served at "/"
+
+
+def test_unknown_api_path_returns_json_404(tmp_path):
+    # An unknown /api/* path must be JSON 404, not the SPA index served as 200.
+    dist = tmp_path / "dist"
+    dist.mkdir()
+    (dist / "index.html").write_text("<!doctype html><div id=root></div>")
+    app = create_app(MockSource(), dry_run=True, dev_mode="mock", static_dir=str(dist))
+    r = TestClient(app).get("/api/nonexistent")
+    assert r.status_code == 404
+    assert r.headers["content-type"].startswith("application/json")
+

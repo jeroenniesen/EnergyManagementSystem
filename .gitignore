@@ -19,6 +19,14 @@ ems/data/
 *.sqlite
 *.sqlite-*
 
+# Frontend (React/Vite) + Playwright
+node_modules/
+ems/web/static/dist/
+*.tsbuildinfo
+test-results/
+playwright-report/
+.playwright/
+
 # OS / editor
 .DS_Store
 .idea/
