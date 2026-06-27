@@ -68,4 +68,13 @@ test.describe("EMS API", () => {
     expect(s.p10_w).toBeLessThanOrEqual(s.p50_w);
     expect(s.p50_w).toBeLessThanOrEqual(s.p90_w);
   });
+
+  test("plan returns BatteryIntent slots and a current intent", async ({ request }) => {
+    const b = await (await request.get("/api/plan")).json();
+    expect(b.slots.length).toBeGreaterThan(0);
+    expect([
+      "allow_self_consumption", "grid_charge_to_target", "hold_reserve", "discharge_for_load",
+    ]).toContain(b.current_intent);
+    expect(b.slots[0]).toHaveProperty("reason");
+  });
 });

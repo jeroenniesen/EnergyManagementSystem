@@ -17,6 +17,20 @@ type PriceSlot = { start: string; eur_per_kwh: number };
 type Prices = { currency: string; current_eur_per_kwh: number | null; slots: PriceSlot[] };
 type ForecastSlot = { start: string; p10_w: number; p50_w: number; p90_w: number };
 type Forecast = { today_kwh_p50: number | null; slots: ForecastSlot[] };
+type PlanSlot = { start: string; intent: string; reason: string };
+type Plan = {
+  created_at: string | null;
+  current_intent: string | null;
+  current_reason: string | null;
+  slots: PlanSlot[];
+};
+
+const INTENT_LABEL: Record<string, string> = {
+  allow_self_consumption: "Self-consume",
+  grid_charge_to_target: "Charge",
+  hold_reserve: "Hold",
+  discharge_for_load: "Discharge",
+};
 
 const POLL_MS = 5000;
 
@@ -31,6 +45,30 @@ function Metric({ label, value, hint }: { label: string; value: string; hint?: s
       <span className="metric-value">{value}</span>
       {hint && <span className="metric-hint">{hint}</span>}
     </div>
+  );
+}
+
+function PlanTimeline({ plan }: { plan: Plan }) {
+  const slots = plan.slots.slice(0, 96);
+  return (
+    <section className="prices" data-testid="plan">
+      <div className="prices-head">
+        <span className="metric-label">Plan — next 24h</span>
+        <span className="price-now" data-testid="current-intent">
+          {plan.current_intent ? INTENT_LABEL[plan.current_intent] ?? plan.current_intent : "—"}
+        </span>
+      </div>
+      <div className="timeline" aria-hidden="true">
+        {slots.map((s, i) => (
+          <span
+            key={i}
+            className={`seg seg-${s.intent}`}
+            title={`${s.start.substring(11, 16)} — ${s.reason}`}
+          />
+        ))}
+      </div>
+      {plan.current_reason && <p className="plan-reason">{plan.current_reason}</p>}
+    </section>
   );
 }
 
@@ -92,6 +130,7 @@ export function App() {
   const [freshness, setFreshness] = useState<FreshnessMap | null>(null);
   const [prices, setPrices] = useState<Prices | null>(null);
   const [forecast, setForecast] = useState<Forecast | null>(null);
+  const [plan, setPlan] = useState<Plan | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
@@ -103,12 +142,13 @@ export function App() {
     }
     async function poll() {
       try {
-        const [s, ser, fr, pr, fc] = await Promise.all([
+        const [s, ser, fr, pr, fc, pl] = await Promise.all([
           getJson("/api/status"),
           getJson("/api/series?limit=50"),
           getJson("/api/freshness"),
           getJson("/api/prices"),
           getJson("/api/forecast"),
+          getJson("/api/plan"),
         ]);
         if (!alive) return;
         setStatus(s);
@@ -116,6 +156,7 @@ export function App() {
         setFreshness(fr);
         setPrices(pr);
         setForecast(fc);
+        setPlan(pl);
         setError(null);
       } catch (e) {
         if (alive) setError(String(e));
@@ -164,6 +205,8 @@ export function App() {
           <Metric label="Non-EV load" value={fmtW(status.non_ev_load_w)} hint="excludes car" />
         </section>
       )}
+
+      {plan && plan.slots.length > 0 && <PlanTimeline plan={plan} />}
 
       {prices && prices.slots.length > 0 && <PriceCurve prices={prices} />}
 

@@ -30,6 +30,15 @@ test.describe("EMS dashboard", () => {
     await expect(page.getByTestId("price-now")).toContainText("/ kWh");
   });
 
+  test("shows the plan timeline with a current intent", async ({ page }) => {
+    await page.goto("/");
+    const plan = page.getByTestId("plan");
+    await expect(plan).toBeVisible();
+    await expect(plan).toContainText("Plan — next 24h");
+    // current intent is one of the human labels
+    await expect(page.getByTestId("current-intent")).not.toHaveText("—");
+  });
+
   test("shows the solar forecast with today's kWh", async ({ page }) => {
     await page.goto("/");
     const fc = page.getByTestId("forecast");
