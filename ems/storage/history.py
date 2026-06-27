@@ -7,22 +7,6 @@ import aiosqlite
 from ems.domain import RawSample
 from ems.load_model import DerivedSample
 
-_SCHEMA = """
-CREATE TABLE IF NOT EXISTS raw_samples (
-    ts TEXT NOT NULL,
-    grid_power_w REAL NOT NULL,
-    solar_power_w REAL NOT NULL,
-    battery_power_w REAL NOT NULL,
-    ev_power_w REAL NOT NULL,
-    soc_pct REAL NOT NULL
-);
-CREATE TABLE IF NOT EXISTS derived_samples (
-    ts TEXT NOT NULL,
-    house_load_w REAL NOT NULL,
-    non_ev_load_w REAL NOT NULL
-);
-"""
-
 _RAW_COLS = ("ts", "grid_power_w", "solar_power_w", "battery_power_w", "ev_power_w", "soc_pct")
 _DERIVED_COLS = ("ts", "house_load_w", "non_ev_load_w")
 
@@ -35,8 +19,18 @@ class HistoryStore:
         self.db_path = db_path
 
     async def init(self) -> None:
+        # Create both tables in one transaction (single commit) so they appear atomically —
+        # a crash can't leave one table created and the other missing.
         async with aiosqlite.connect(self.db_path) as db:
-            await db.executescript(_SCHEMA)
+            await db.execute(
+                "CREATE TABLE IF NOT EXISTS raw_samples "
+                "(ts TEXT NOT NULL, grid_power_w REAL NOT NULL, solar_power_w REAL NOT NULL, "
+                "battery_power_w REAL NOT NULL, ev_power_w REAL NOT NULL, soc_pct REAL NOT NULL)"
+            )
+            await db.execute(
+                "CREATE TABLE IF NOT EXISTS derived_samples "
+                "(ts TEXT NOT NULL, house_load_w REAL NOT NULL, non_ev_load_w REAL NOT NULL)"
+            )
             await db.commit()
 
     async def record(self, ts: str, raw: RawSample, derived: DerivedSample) -> None:
@@ -52,6 +46,8 @@ class HistoryStore:
                 "INSERT INTO derived_samples (ts, house_load_w, non_ev_load_w) VALUES (?, ?, ?)",
                 (ts, derived.house_load_w, derived.non_ev_load_w),
             )
+            # Both INSERTs must share THIS single commit (atomic raw+derived pair).
+            # Do NOT add an intermediate commit between them — it would let the tables drift.
             await db.commit()
 
     async def recent_raw(self, limit: int = 100) -> list[dict]:

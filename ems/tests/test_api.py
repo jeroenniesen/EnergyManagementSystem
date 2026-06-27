@@ -59,3 +59,21 @@ def test_series_returns_recorded_samples(tmp_path):
     assert body["raw"][0]["grid_power_w"] == 200
     assert body["derived"][0]["house_load_w"] == 1000
 
+
+def test_lifespan_auto_inits_store(tmp_path):
+    # A fresh store (init NEVER called manually); the FastAPI lifespan must create the schema,
+    # so /api/series works without erroring. Using TestClient as a context manager runs lifespan.
+    store = HistoryStore(str(tmp_path / "ems.sqlite"))
+    app = create_app(MockSource(), dry_run=True, dev_mode="mock", store=store)
+    with TestClient(app) as client:
+        r = client.get("/api/series")
+        assert r.status_code == 200
+        assert r.json() == {"raw": [], "derived": []}
+
+
+def test_series_rejects_out_of_range_limit():
+    r = _client().get("/api/series?limit=0")
+    assert r.status_code == 422  # ge=1
+    r2 = _client().get("/api/series?limit=999999")
+    assert r2.status_code == 422  # le=2000
+

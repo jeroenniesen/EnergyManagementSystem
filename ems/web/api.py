@@ -1,7 +1,9 @@
 """Read-only status API (SPEC §9.1). No device writes in M0a."""
 from __future__ import annotations
 
-from fastapi import FastAPI
+from contextlib import asynccontextmanager
+
+from fastapi import FastAPI, Query
 
 from ems.load_model import reconstruct
 from ems.sources.base import Source
@@ -15,7 +17,14 @@ def create_app(
     dev_mode: str,
     store: HistoryStore | None = None,
 ) -> FastAPI:
-    app = FastAPI(title="Smart Energy Manager", version="0.0.1")
+    @asynccontextmanager
+    async def lifespan(_app: FastAPI):
+        # Guarantee the schema exists before anything touches the DB (no caller footgun).
+        if store is not None:
+            await store.init()
+        yield
+
+    app = FastAPI(title="Smart Energy Manager", version="0.0.1", lifespan=lifespan)
 
     @app.get("/health/live")
     def live() -> dict:
@@ -26,7 +35,7 @@ def create_app(
         return {"status": "ready", "dry_run": dry_run, "dev_mode": dev_mode}
 
     @app.get("/api/series")
-    async def series(limit: int = 100) -> dict:
+    async def series(limit: int = Query(default=100, ge=1, le=2000)) -> dict:
         if store is None:
             return {"raw": [], "derived": []}
         return {
