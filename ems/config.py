@@ -13,6 +13,8 @@ class Config:
     dev_mode: str
     dry_run: bool
     web_port: int
+    db_path: str
+    cycle_seconds: float
 
 
 def load_config(path: str | Path) -> Config:
@@ -21,6 +23,7 @@ def load_config(path: str | Path) -> Config:
     dev = data.get("dev", {}) or {}
     control = data.get("control", {}) or {}
     web = data.get("web", {}) or {}
+    history = data.get("history", {}) or {}
 
     dev_mode = dev.get("mode", "mock")
     dry_run = bool(control.get("dry_run", True))
@@ -32,4 +35,6 @@ def load_config(path: str | Path) -> Config:
         dev_mode=dev_mode,
         dry_run=dry_run,
         web_port=int(web.get("port", 8080)),
+        db_path=str(history.get("db_path", "ems/data/ems.sqlite")),
+        cycle_seconds=float(control.get("cycle_seconds", 300)),
     )

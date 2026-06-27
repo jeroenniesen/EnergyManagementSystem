@@ -7,7 +7,14 @@ def test_load_defaults_when_minimal(tmp_path: Path):
     p = tmp_path / "config.yaml"
     p.write_text("site:\n  timezone: Europe/Amsterdam\n")
     cfg = load_config(p)
-    assert cfg == Config(timezone="Europe/Amsterdam", dev_mode="mock", dry_run=True, web_port=8080)
+    assert cfg == Config(
+        timezone="Europe/Amsterdam",
+        dev_mode="mock",
+        dry_run=True,
+        web_port=8080,
+        db_path="ems/data/ems.sqlite",
+        cycle_seconds=300.0,
+    )
 
 
 def test_dev_mock_forces_dry_run(tmp_path: Path):

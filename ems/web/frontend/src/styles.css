@@ -74,6 +74,27 @@ body {
 .metric-value { font-size: 1.6rem; font-weight: 600; letter-spacing: -0.02em; font-variant-numeric: tabular-nums; }
 .metric-hint { font-size: 0.72rem; color: var(--muted); }
 
+.freshness {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin-top: 24px;
+}
+.freshness-title { font-size: 0.78rem; color: var(--muted); margin-right: 4px; }
+.chip {
+  font-size: 0.72rem;
+  padding: 3px 9px;
+  border-radius: 999px;
+  border: 1px solid var(--line);
+  background: var(--panel-2);
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+.chip-fresh { color: var(--green); border-color: rgba(70, 200, 168, 0.4); }
+.chip-stale { color: var(--amber); border-color: rgba(224, 162, 58, 0.4); }
+.chip-missing { color: #f0a3a3; border-color: rgba(220, 80, 80, 0.4); }
+
 .loading, .footer { color: var(--muted); margin-top: 24px; font-size: 0.85rem; }
 .footer { border-top: 1px solid var(--line); padding-top: 16px; }
 

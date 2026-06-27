@@ -1,16 +1,29 @@
 """Read-only status API (SPEC §9.1). No device writes in M0a."""
 from __future__ import annotations
 
+import asyncio
+import logging
 from contextlib import asynccontextmanager
+from datetime import UTC, datetime
 from pathlib import Path
 
 from fastapi import FastAPI, Query
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 
+from ems.freshness import FreshnessTracker
 from ems.load_model import reconstruct
+from ems.sense import Recorder
 from ems.sources.base import Source
 from ems.storage.history import HistoryStore
+
+_log = logging.getLogger("ems.recorder")
+
+
+def _recorder_died(task: asyncio.Task) -> None:
+    # The recorder is awaited only at shutdown; surface an unexpected death immediately.
+    if not task.cancelled() and (exc := task.exception()) is not None:
+        _log.error("Recorder task exited unexpectedly: %s", exc, exc_info=exc)
 
 
 def create_app(
@@ -19,6 +32,8 @@ def create_app(
     dry_run: bool,
     dev_mode: str,
     store: HistoryStore | None = None,
+    freshness: FreshnessTracker | None = None,
+    recorder: Recorder | None = None,
     static_dir: str | Path | None = None,
 ) -> FastAPI:
     @asynccontextmanager
@@ -26,7 +41,24 @@ def create_app(
         # Guarantee the schema exists before anything touches the DB (no caller footgun).
         if store is not None:
             await store.init()
-        yield
+        # Start the read-only sense loop / recorder (SPEC §5.3). Take one awaited startup
+        # sample so /api/series and /api/freshness are populated deterministically, then
+        # run the periodic loop in the background.
+        stop = asyncio.Event()
+        task = None
+        if recorder is not None:
+            try:
+                await recorder.record_now()
+            except Exception:
+                pass  # fail-safe: a bad first read must not block startup
+            task = asyncio.create_task(recorder.run(stop))
+            task.add_done_callback(_recorder_died)
+        try:
+            yield
+        finally:
+            if task is not None:
+                stop.set()
+                await task
 
     app = FastAPI(title="Smart Energy Manager", version="0.0.1", lifespan=lifespan)
 
@@ -37,6 +69,12 @@ def create_app(
     @app.get("/health/ready")
     def ready() -> dict:
         return {"status": "ready", "dry_run": dry_run, "dev_mode": dev_mode}
+
+    @app.get("/api/freshness")
+    def freshness_snapshot() -> dict:
+        if freshness is None:
+            return {}
+        return freshness.snapshot(datetime.now(UTC))
 
     @app.get("/api/series")
     async def series(limit: int = Query(default=100, ge=1, le=2000)) -> dict:
