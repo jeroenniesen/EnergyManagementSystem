@@ -22,6 +22,14 @@ test.describe("EMS dashboard", () => {
     await expect(page.getByTestId("error")).toHaveCount(0);
   });
 
+  test("shows the electricity price curve with a current price", async ({ page }) => {
+    await page.goto("/");
+    const prices = page.getByTestId("prices");
+    await expect(prices).toBeVisible();
+    await expect(prices).toContainText("Electricity price");
+    await expect(page.getByTestId("price-now")).toContainText("/ kWh");
+  });
+
   test("shows per-signal freshness chips", async ({ page }) => {
     await page.goto("/");
     const fr = page.getByTestId("freshness");

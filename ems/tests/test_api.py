@@ -90,6 +90,30 @@ def test_serves_spa_index_when_static_dir_present(tmp_path):
     assert "EMS" in r.text  # SPA index served at "/"
 
 
+def test_prices_endpoint_returns_slots_and_current():
+    from zoneinfo import ZoneInfo
+
+    from ems.sources.prices import MockPriceSource
+
+    app = create_app(
+        MockSource(),
+        dry_run=True,
+        dev_mode="mock",
+        price_source=MockPriceSource(ZoneInfo("Europe/Amsterdam")),
+    )
+    b = TestClient(app).get("/api/prices").json()
+    assert b["resolution"] == "quarter_hourly"
+    assert b["currency"] == "EUR"
+    assert len(b["slots"]) == 192  # today + tomorrow, 15-min
+    assert b["current_eur_per_kwh"] is not None
+
+
+def test_prices_endpoint_without_source():
+    b = _client().get("/api/prices").json()
+    assert b["slots"] == []
+    assert b["current_eur_per_kwh"] is None
+
+
 def test_unknown_api_path_returns_json_404(tmp_path):
     # An unknown /api/* path must be JSON 404, not the SPA index served as 200.
     dist = tmp_path / "dist"
