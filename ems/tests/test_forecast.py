@@ -22,6 +22,11 @@ def test_p50_zero_at_night_peak_midday():
     assert midday > 1500  # ~0.85 * 3000
 
 
+def test_p50_zero_at_exact_daylight_boundaries():
+    assert p50_watts(datetime(2026, 6, 27, 5, 0, tzinfo=AMS), 3.0) == 0.0
+    assert p50_watts(datetime(2026, 6, 27, 21, 0, tzinfo=AMS), 3.0) == 0.0
+
+
 def test_percentile_band_ordered():
     src = MockSolarForecastSource(AMS, clock=_clock_at(datetime(2026, 6, 27, 13, 0, tzinfo=UTC)))
     midday = next(s for s in src.slots() if s.p50_w > 0)

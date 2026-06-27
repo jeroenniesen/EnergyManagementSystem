@@ -36,7 +36,7 @@ def _utcnow() -> datetime:
 def p50_watts(local: datetime, kwp: float) -> float:
     """A daylight bell curve peaking ~13:30; zero outside ~05:00–21:00 (W)."""
     h = local.hour + local.minute / 60.0
-    if h < 5.0 or h > 21.0:
+    if h <= 5.0 or h >= 21.0:
         return 0.0
     x = (h - 13.5) / 4.0
     return max(0.0, math.exp(-x * x) * kwp * 1000.0 * 0.85)

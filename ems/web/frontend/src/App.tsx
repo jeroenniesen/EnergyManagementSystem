@@ -72,7 +72,7 @@ function ForecastCurve({ forecast }: { forecast: Forecast }) {
           {forecast.today_kwh_p50 != null ? `${forecast.today_kwh_p50.toFixed(1)} kWh today` : "—"}
         </span>
       </div>
-      <div className="bars">
+      <div className="bars" aria-hidden="true">
         {slots.map((s, i) => (
           <span
             key={i}
