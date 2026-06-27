@@ -179,6 +179,34 @@ def test_battery_endpoint_without_driver():
     assert b["capabilities"] is None
 
 
+def test_decision_endpoint_dry_run():
+    from zoneinfo import ZoneInfo
+
+    from ems.control.mode_controller import ModeController
+    from ems.lifecycle import Lifecycle
+    from ems.sources.battery import MockBatteryDriver
+    from ems.sources.prices import MockPriceSource
+
+    battery = MockBatteryDriver()
+    controller = ModeController(battery, Lifecycle(dry_run=True), dry_run=True)
+    app = create_app(
+        MockSource(),
+        dry_run=True,
+        dev_mode="mock",
+        price_source=MockPriceSource(ZoneInfo("Europe/Amsterdam")),
+        controller=controller,
+    )
+    b = TestClient(app).get("/api/decision").json()
+    assert b["outcome"] == "dry_run"  # never writes in dry-run
+    assert b["applied"] is False
+    assert battery.current_mode() == "auto"  # untouched
+
+
+def test_decision_endpoint_unconfigured():
+    b = _client().get("/api/decision").json()
+    assert b["outcome"] == "unconfigured"
+
+
 def test_unknown_api_path_returns_json_404(tmp_path):
     # An unknown /api/* path must be JSON 404, not the SPA index served as 200.
     dist = tmp_path / "dist"

@@ -11,6 +11,7 @@ from fastapi import FastAPI, Query
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 
+from ems.control.mode_controller import ModeController
 from ems.freshness import FreshnessTracker
 from ems.load_model import reconstruct
 from ems.planner.rule_based import plan_rule_based
@@ -41,6 +42,7 @@ def create_app(
     price_source: PriceSource | None = None,
     solar_forecast: SolarForecastSource | None = None,
     battery: BatteryDriver | None = None,
+    controller: ModeController | None = None,
     static_dir: str | Path | None = None,
 ) -> FastAPI:
     @asynccontextmanager
@@ -94,6 +96,27 @@ def create_app(
             "resolution": "quarter_hourly",
             "current_eur_per_kwh": current_price(slots, datetime.now(UTC)),
             "slots": [{"start": s.start.isoformat(), "eur_per_kwh": s.eur_per_kwh} for s in slots],
+        }
+
+    @app.get("/api/decision")
+    def decision_endpoint() -> dict:
+        # What the controller would do for the plan's current intent, and why (incl. "why not").
+        if price_source is None or controller is None:
+            return {"intent": None, "desired_mode": None, "applied": False,
+                    "outcome": "unconfigured", "reason": "no planner/controller"}
+        now = datetime.now(UTC)
+        cur = plan_rule_based(price_source.slots(), now).intent_at(now)
+        if cur is None:
+            return {"intent": None, "desired_mode": None, "applied": False,
+                    "outcome": "no_plan", "reason": "no plan slot for now"}
+        d = controller.decide(cur.intent, now)
+        return {
+            "intent": d.intent,
+            "desired_mode": d.desired_mode,
+            "applied": d.applied,
+            "outcome": d.outcome,
+            "reason": d.reason,
+            "plan_reason": cur.reason,
         }
 
     @app.get("/api/battery")

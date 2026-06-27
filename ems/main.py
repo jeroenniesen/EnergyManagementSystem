@@ -7,7 +7,9 @@ from zoneinfo import ZoneInfo
 import uvicorn
 
 from ems.config import load_config
+from ems.control.mode_controller import ModeController
 from ems.freshness import FreshnessTracker
+from ems.lifecycle import Lifecycle
 from ems.sense import SIGNALS, Recorder
 from ems.sources.battery import MockBatteryDriver
 from ems.sources.forecast import MockSolarForecastSource
@@ -38,6 +40,8 @@ def build_app():
     price_source = MockPriceSource(tz)
     solar_forecast = MockSolarForecastSource(tz)
     battery = MockBatteryDriver()
+    lifecycle = Lifecycle(dry_run=cfg.dry_run)
+    controller = ModeController(battery, lifecycle, dry_run=cfg.dry_run)
     app = create_app(
         source,
         dry_run=cfg.dry_run,
@@ -48,6 +52,7 @@ def build_app():
         price_source=price_source,
         solar_forecast=solar_forecast,
         battery=battery,
+        controller=controller,
         static_dir=_STATIC_DIR,
     )
     return app, cfg

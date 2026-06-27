@@ -84,4 +84,11 @@ test.describe("EMS API", () => {
     expect(b.capabilities.services).toContain("charge");
     expect(b.capabilities.p1_paired).toBe(true);
   });
+
+  test("decision is dry-run (no writes) in dev mode", async ({ request }) => {
+    const b = await (await request.get("/api/decision")).json();
+    expect(b.outcome).toBe("dry_run");
+    expect(b.applied).toBe(false);
+    expect(b.reason).toContain("dry-run");
+  });
 });

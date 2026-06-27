@@ -25,6 +25,14 @@ type Plan = {
   slots: PlanSlot[];
 };
 
+type Decision = {
+  intent: string | null;
+  desired_mode: string | null;
+  applied: boolean;
+  outcome: string;
+  reason: string;
+};
+
 type Battery = {
   current_mode: string | null;
   capabilities: {
@@ -142,6 +150,7 @@ export function App() {
   const [forecast, setForecast] = useState<Forecast | null>(null);
   const [plan, setPlan] = useState<Plan | null>(null);
   const [battery, setBattery] = useState<Battery | null>(null);
+  const [decision, setDecision] = useState<Decision | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
@@ -153,7 +162,7 @@ export function App() {
     }
     async function poll() {
       try {
-        const [s, ser, fr, pr, fc, pl, bat] = await Promise.all([
+        const [s, ser, fr, pr, fc, pl, bat, dec] = await Promise.all([
           getJson("/api/status"),
           getJson("/api/series?limit=50"),
           getJson("/api/freshness"),
@@ -161,6 +170,7 @@ export function App() {
           getJson("/api/forecast"),
           getJson("/api/plan"),
           getJson("/api/battery"),
+          getJson("/api/decision"),
         ]);
         if (!alive) return;
         setStatus(s);
@@ -170,6 +180,7 @@ export function App() {
         setForecast(fc);
         setPlan(pl);
         setBattery(bat);
+        setDecision(dec);
         setError(null);
       } catch (e) {
         if (alive) setError(String(e));
@@ -223,6 +234,17 @@ export function App() {
               hint={battery.capabilities?.p1_paired ? "P1 paired" : "P1 not paired"}
             />
           )}
+        </section>
+      )}
+
+      {decision && decision.outcome !== "unconfigured" && (
+        <section className="decision" data-testid="decision">
+          <span className="metric-label">Controller</span>
+          <p className="decision-line">
+            <span className="decision-outcome">{decision.outcome}</span>
+            {" — "}
+            {decision.reason}
+          </p>
         </section>
       )}
 

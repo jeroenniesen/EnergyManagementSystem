@@ -100,6 +100,17 @@ body {
 .seg-discharge_for_load { background: var(--amber); }
 .plan-reason { color: var(--muted); font-size: 0.8rem; margin: 10px 0 0; }
 
+.decision {
+  margin-top: 24px;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-left: 3px solid var(--accent);
+  border-radius: 12px;
+  padding: 14px 18px;
+}
+.decision-line { margin: 6px 0 0; font-size: 0.9rem; }
+.decision-outcome { color: var(--accent); font-weight: 600; font-variant-numeric: tabular-nums; }
+
 .freshness {
   display: flex;
   flex-wrap: wrap;
