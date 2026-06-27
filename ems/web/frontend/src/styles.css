@@ -90,6 +90,7 @@ body {
   background: linear-gradient(to top, var(--accent), rgba(70, 200, 168, 0.35));
   border-radius: 2px 2px 0 0;
 }
+.bar-solar { background: linear-gradient(to top, var(--amber), rgba(224, 162, 58, 0.3)); }
 
 .freshness {
   display: flex;

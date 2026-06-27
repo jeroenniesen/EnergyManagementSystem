@@ -114,6 +114,29 @@ def test_prices_endpoint_without_source():
     assert b["current_eur_per_kwh"] is None
 
 
+def test_forecast_endpoint_returns_slots_and_today_kwh():
+    from zoneinfo import ZoneInfo
+
+    from ems.sources.forecast import MockSolarForecastSource
+
+    app = create_app(
+        MockSource(),
+        dry_run=True,
+        dev_mode="mock",
+        solar_forecast=MockSolarForecastSource(ZoneInfo("Europe/Amsterdam")),
+    )
+    b = TestClient(app).get("/api/forecast").json()
+    assert len(b["slots"]) == 192
+    assert b["today_kwh_p50"] is not None
+    assert b["slots"][0]["p10_w"] <= b["slots"][0]["p50_w"] <= b["slots"][0]["p90_w"]
+
+
+def test_forecast_endpoint_without_source():
+    b = _client().get("/api/forecast").json()
+    assert b["slots"] == []
+    assert b["today_kwh_p50"] is None
+
+
 def test_unknown_api_path_returns_json_404(tmp_path):
     # An unknown /api/* path must be JSON 404, not the SPA index served as 200.
     dist = tmp_path / "dist"

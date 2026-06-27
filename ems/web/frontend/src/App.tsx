@@ -15,6 +15,8 @@ type Series = { raw: Record<string, number>[]; derived: Record<string, number>[]
 type FreshnessMap = Record<string, string>;
 type PriceSlot = { start: string; eur_per_kwh: number };
 type Prices = { currency: string; current_eur_per_kwh: number | null; slots: PriceSlot[] };
+type ForecastSlot = { start: string; p10_w: number; p50_w: number; p90_w: number };
+type Forecast = { today_kwh_p50: number | null; slots: ForecastSlot[] };
 
 const POLL_MS = 5000;
 
@@ -59,11 +61,37 @@ function PriceCurve({ prices }: { prices: Prices }) {
   );
 }
 
+function ForecastCurve({ forecast }: { forecast: Forecast }) {
+  const slots = forecast.slots.slice(0, 96);
+  const max = Math.max(1, ...slots.map((s) => s.p90_w));
+  return (
+    <section className="prices" data-testid="forecast">
+      <div className="prices-head">
+        <span className="metric-label">Solar forecast (P50)</span>
+        <span className="price-now" data-testid="forecast-today">
+          {forecast.today_kwh_p50 != null ? `${forecast.today_kwh_p50.toFixed(1)} kWh today` : "—"}
+        </span>
+      </div>
+      <div className="bars">
+        {slots.map((s, i) => (
+          <span
+            key={i}
+            className="bar bar-solar"
+            style={{ height: `${(s.p50_w / max) * 100}%` }}
+            title={`${s.start.substring(11, 16)} — ${Math.round(s.p50_w)} W (P50)`}
+          />
+        ))}
+      </div>
+    </section>
+  );
+}
+
 export function App() {
   const [status, setStatus] = useState<Status | null>(null);
   const [series, setSeries] = useState<Series | null>(null);
   const [freshness, setFreshness] = useState<FreshnessMap | null>(null);
   const [prices, setPrices] = useState<Prices | null>(null);
+  const [forecast, setForecast] = useState<Forecast | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
@@ -75,17 +103,19 @@ export function App() {
     }
     async function poll() {
       try {
-        const [s, ser, fr, pr] = await Promise.all([
+        const [s, ser, fr, pr, fc] = await Promise.all([
           getJson("/api/status"),
           getJson("/api/series?limit=50"),
           getJson("/api/freshness"),
           getJson("/api/prices"),
+          getJson("/api/forecast"),
         ]);
         if (!alive) return;
         setStatus(s);
         setSeries(ser);
         setFreshness(fr);
         setPrices(pr);
+        setForecast(fc);
         setError(null);
       } catch (e) {
         if (alive) setError(String(e));
@@ -136,6 +166,8 @@ export function App() {
       )}
 
       {prices && prices.slots.length > 0 && <PriceCurve prices={prices} />}
+
+      {forecast && forecast.slots.length > 0 && <ForecastCurve forecast={forecast} />}
 
       {freshness && Object.keys(freshness).length > 0 && (
         <section className="freshness" data-testid="freshness">

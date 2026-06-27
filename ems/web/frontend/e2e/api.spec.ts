@@ -59,4 +59,13 @@ test.describe("EMS API", () => {
     expect(typeof b.current_eur_per_kwh).toBe("number");
     expect(b.slots[0]).toHaveProperty("eur_per_kwh");
   });
+
+  test("forecast returns P10<=P50<=P90 slots and today kWh", async ({ request }) => {
+    const b = await (await request.get("/api/forecast")).json();
+    expect(b.slots.length).toBe(192);
+    expect(typeof b.today_kwh_p50).toBe("number");
+    const s = b.slots[48]; // midday-ish
+    expect(s.p10_w).toBeLessThanOrEqual(s.p50_w);
+    expect(s.p50_w).toBeLessThanOrEqual(s.p90_w);
+  });
 });

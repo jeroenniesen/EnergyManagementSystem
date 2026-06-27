@@ -15,6 +15,7 @@ from ems.freshness import FreshnessTracker
 from ems.load_model import reconstruct
 from ems.sense import Recorder
 from ems.sources.base import Source
+from ems.sources.forecast import SolarForecastSource, day_kwh_p50
 from ems.sources.prices import PriceSource, current_price
 from ems.storage.history import HistoryStore
 
@@ -36,6 +37,7 @@ def create_app(
     freshness: FreshnessTracker | None = None,
     recorder: Recorder | None = None,
     price_source: PriceSource | None = None,
+    solar_forecast: SolarForecastSource | None = None,
     static_dir: str | Path | None = None,
 ) -> FastAPI:
     @asynccontextmanager
@@ -89,6 +91,20 @@ def create_app(
             "resolution": "quarter_hourly",
             "current_eur_per_kwh": current_price(slots, datetime.now(UTC)),
             "slots": [{"start": s.start.isoformat(), "eur_per_kwh": s.eur_per_kwh} for s in slots],
+        }
+
+    @app.get("/api/forecast")
+    def forecast() -> dict:
+        if solar_forecast is None:
+            return {"today_kwh_p50": None, "slots": []}
+        slots = solar_forecast.slots()
+        return {
+            "today_kwh_p50": round(day_kwh_p50(slots), 2),
+            "slots": [
+                {"start": s.start.isoformat(), "p10_w": s.p10_w, "p50_w": s.p50_w,
+                 "p90_w": s.p90_w}
+                for s in slots
+            ],
         }
 
     @app.get("/api/series")

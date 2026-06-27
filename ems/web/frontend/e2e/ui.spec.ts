@@ -30,6 +30,14 @@ test.describe("EMS dashboard", () => {
     await expect(page.getByTestId("price-now")).toContainText("/ kWh");
   });
 
+  test("shows the solar forecast with today's kWh", async ({ page }) => {
+    await page.goto("/");
+    const fc = page.getByTestId("forecast");
+    await expect(fc).toBeVisible();
+    await expect(fc).toContainText("Solar forecast");
+    await expect(page.getByTestId("forecast-today")).toContainText("kWh today");
+  });
+
   test("shows per-signal freshness chips", async ({ page }) => {
     await page.goto("/");
     const fr = page.getByTestId("freshness");
