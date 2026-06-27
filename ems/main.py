@@ -26,13 +26,15 @@ _STATIC_DIR = Path(__file__).parent / "web" / "static" / "dist"
 
 
 def _build_sources(cfg, tz):
-    """Return (source, price_source, battery_endpoint, dev_mode, dry_run).
+    """Return (source, price_source, battery_endpoint, controller_driver, dev_mode, dry_run).
 
-    Live mode reads the HomeWizard meters + (optionally) the Indevolt battery, READ-ONLY. It never
-    wires a battery WRITER and forces dry_run on — we only sense the battery, never command it.
+    Live mode reads the HomeWizard meters + (optionally) the Indevolt battery. The control "hands"
+    are the real IndevoltBatteryDriver, but it is wired UNARMED and with NO write transport, and
+    dry_run is forced on — so the battery is sensed, never commanded (triple-gated).
     """
     if cfg.sources_mode == "live":
         from ems.sources.indevolt import IndevoltReadClient
+        from ems.sources.indevolt_driver import IndevoltBatteryDriver
         from ems.sources.live import HomeWizardMeter, LiveSource
 
         key = os.environ.get("INDEVOLT_KEY") or None
@@ -47,10 +49,17 @@ def _build_sources(cfg, tz):
             car=HomeWizardMeter(cfg.car_ip),
             battery=battery_reader,
         )
-        # No live battery capabilities until the probe (device key) exists -> honest "no driver".
+        # The real hands — armed=False, no rpc_post (refusing stub) => cannot write; reused as the
+        # /api/battery probe source too. dry_run is forced on so decide() never calls apply().
+        controller_driver = (
+            IndevoltBatteryDriver(cfg.indevolt_ip, key=key, port=cfg.indevolt_port, armed=False)
+            if cfg.indevolt_ip
+            else MockBatteryDriver()
+        )
         dev_mode, dry_run, battery_endpoint = "live", True, None
     else:
         source = MockSource()
+        controller_driver = MockBatteryDriver()
         dev_mode, dry_run, battery_endpoint = cfg.dev_mode, cfg.dry_run, MockBatteryDriver()
 
     if cfg.prices_provider == "tibber":
@@ -59,7 +68,7 @@ def _build_sources(cfg, tz):
         price_source = TibberPriceSource(os.environ.get("TIBBER_TOKEN", ""), tz=tz)
     else:
         price_source = MockPriceSource(tz)
-    return source, price_source, battery_endpoint, dev_mode, dry_run
+    return source, price_source, battery_endpoint, controller_driver, dev_mode, dry_run
 
 
 def build_app():
@@ -75,13 +84,16 @@ def build_app():
     freshness = FreshnessTracker()
     freshness.register(*SIGNALS)
     tz = ZoneInfo(cfg.timezone)
-    source, price_source, battery_endpoint, dev_mode, dry_run = _build_sources(cfg, tz)
+    source, price_source, battery_endpoint, controller_driver, dev_mode, dry_run = _build_sources(
+        cfg, tz
+    )
     recorder = Recorder(source, store, freshness, cycle_seconds=cfg.cycle_seconds)
     solar_forecast = MockSolarForecastSource(tz)  # forecast stays mock (no Solcast key / lat-lon)
     lifecycle = Lifecycle(dry_run=dry_run)
-    # The controller's driver is ALWAYS the mock (preview-only, never writes in dry-run). There is
-    # deliberately no live battery writer in the codebase — the live path only senses the battery.
-    controller = ModeController(MockBatteryDriver(), lifecycle, dry_run=dry_run)
+    # The controller's driver is the mock (dev) or the real-but-UNARMED Indevolt driver (live).
+    # dry_run is forced on for live, so decide() never calls apply(); even if it did, an unarmed
+    # driver with no write transport cannot touch the battery.
+    controller = ModeController(controller_driver, lifecycle, dry_run=dry_run)
     app = create_app(
         source,
         dry_run=dry_run,

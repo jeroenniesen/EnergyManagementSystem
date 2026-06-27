@@ -39,10 +39,31 @@ When the battery is unreadable, `soc`/`battery` age to MISSING, data-quality goe
 the decision falls back to **AUTO** (self-consumption) — fail-safe by design. You can watch this on
 the **System** page (per-signal sensor checks) and the dashboard freshness chips.
 
+## Hands (battery control)
+
+The real control driver — `IndevoltBatteryDriver` (`ems/sources/indevolt_driver.py`) — IS
+implemented and wired into the live control loop. It maps a `PhysicalMode` to the documented
+SetData registers (mode 47005 · state 47015 · power 47016 · target-SoC 47017) and confirms each
+write by re-reading. The full chain (plan intent → `ModeController.decide()` → `driver.apply()` →
+correct `SetData`, confirmed) is unit-tested end-to-end against a mock device.
+
+It is **triple-gated so it cannot change your battery** in the shipped wiring:
+1. `armed=False` — `apply()` refuses and returns "unconfirmed" without writing.
+2. No write transport — `rpc_post` defaults to a stub that raises; a live write requires the
+   operator to inject a real POST transport (main.py injects none).
+3. `dry_run` is forced on for live, so `decide()` never reaches `apply()`.
+
+To actually control the battery you would: provision Indevolt OpenData + supply `INDEVOLT_KEY`,
+inject a real SetData transport, construct the driver with `armed=True` (the flag is read-only
+after construction), and lift `dry_run` — a deliberate, vetted, operator-armed step. **I did not
+do this** (you asked me not to change the battery).
+
+Arming follow-up: `apply(mode)` currently targets 100% SoC on CHARGE/DISCHARGE; before arming,
+wire the plan's target SoC / power through to `setdata_registers` (it already accepts them).
+
 ## What's intentionally NOT done
 
-- **No battery control.** "Hands" toward the real battery are deliberately absent per the
-  read-only constraint; the mode controller only *previews* in dry-run.
+- **No live battery write was ever issued** — by design (the triple gate above).
 - **Solar forecast stays mock** (no Solcast key / configured lat-lon yet).
 - Daylight sign conventions for solar/EV were validated at night (both ~0 W); confirm the solar
   sign during production (the adapter takes the magnitude, which is correct for a one-way PV meter).
