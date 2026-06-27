@@ -9,6 +9,7 @@ import uvicorn
 from ems.config import load_config
 from ems.freshness import FreshnessTracker
 from ems.sense import SIGNALS, Recorder
+from ems.sources.battery import MockBatteryDriver
 from ems.sources.forecast import MockSolarForecastSource
 from ems.sources.mock import MockSource
 from ems.sources.prices import MockPriceSource
@@ -36,6 +37,7 @@ def build_app():
     tz = ZoneInfo(cfg.timezone)
     price_source = MockPriceSource(tz)
     solar_forecast = MockSolarForecastSource(tz)
+    battery = MockBatteryDriver()
     app = create_app(
         source,
         dry_run=cfg.dry_run,
@@ -45,6 +47,7 @@ def build_app():
         recorder=recorder,
         price_source=price_source,
         solar_forecast=solar_forecast,
+        battery=battery,
         static_dir=_STATIC_DIR,
     )
     return app, cfg

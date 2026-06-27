@@ -25,6 +25,16 @@ type Plan = {
   slots: PlanSlot[];
 };
 
+type Battery = {
+  current_mode: string | null;
+  capabilities: {
+    services: string[];
+    p1_paired: boolean;
+    max_charge_w: number;
+    max_discharge_w: number;
+  } | null;
+};
+
 const INTENT_LABEL: Record<string, string> = {
   allow_self_consumption: "Self-consume",
   grid_charge_to_target: "Charge",
@@ -131,6 +141,7 @@ export function App() {
   const [prices, setPrices] = useState<Prices | null>(null);
   const [forecast, setForecast] = useState<Forecast | null>(null);
   const [plan, setPlan] = useState<Plan | null>(null);
+  const [battery, setBattery] = useState<Battery | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
@@ -142,13 +153,14 @@ export function App() {
     }
     async function poll() {
       try {
-        const [s, ser, fr, pr, fc, pl] = await Promise.all([
+        const [s, ser, fr, pr, fc, pl, bat] = await Promise.all([
           getJson("/api/status"),
           getJson("/api/series?limit=50"),
           getJson("/api/freshness"),
           getJson("/api/prices"),
           getJson("/api/forecast"),
           getJson("/api/plan"),
+          getJson("/api/battery"),
         ]);
         if (!alive) return;
         setStatus(s);
@@ -157,6 +169,7 @@ export function App() {
         setPrices(pr);
         setForecast(fc);
         setPlan(pl);
+        setBattery(bat);
         setError(null);
       } catch (e) {
         if (alive) setError(String(e));
@@ -203,6 +216,13 @@ export function App() {
             hint={status.battery_power_w >= 0 ? "discharging" : "charging"}
           />
           <Metric label="Non-EV load" value={fmtW(status.non_ev_load_w)} hint="excludes car" />
+          {battery?.current_mode && (
+            <Metric
+              label="Battery mode"
+              value={battery.current_mode}
+              hint={battery.capabilities?.p1_paired ? "P1 paired" : "P1 not paired"}
+            />
+          )}
         </section>
       )}
 

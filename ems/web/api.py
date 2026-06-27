@@ -16,6 +16,7 @@ from ems.load_model import reconstruct
 from ems.planner.rule_based import plan_rule_based
 from ems.sense import Recorder
 from ems.sources.base import Source
+from ems.sources.battery import BatteryDriver
 from ems.sources.forecast import SolarForecastSource, day_kwh_p50
 from ems.sources.prices import PriceSource, current_price
 from ems.storage.history import HistoryStore
@@ -39,6 +40,7 @@ def create_app(
     recorder: Recorder | None = None,
     price_source: PriceSource | None = None,
     solar_forecast: SolarForecastSource | None = None,
+    battery: BatteryDriver | None = None,
     static_dir: str | Path | None = None,
 ) -> FastAPI:
     @asynccontextmanager
@@ -92,6 +94,24 @@ def create_app(
             "resolution": "quarter_hourly",
             "current_eur_per_kwh": current_price(slots, datetime.now(UTC)),
             "slots": [{"start": s.start.isoformat(), "eur_per_kwh": s.eur_per_kwh} for s in slots],
+        }
+
+    @app.get("/api/battery")
+    def battery_endpoint() -> dict:
+        if battery is None:
+            return {"current_mode": None, "capabilities": None}
+        cap = battery.probe()
+        return {
+            "current_mode": battery.current_mode(),
+            "capabilities": {
+                "services": list(cap.services),
+                "energy_mode_options": list(cap.energy_mode_options),
+                "has_standby": cap.has_standby,
+                "has_grid_charge_switch": cap.has_grid_charge_switch,
+                "p1_paired": cap.p1_paired,
+                "max_charge_w": cap.max_charge_w,
+                "max_discharge_w": cap.max_discharge_w,
+            },
         }
 
     @app.get("/api/plan")

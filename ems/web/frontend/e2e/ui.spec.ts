@@ -14,6 +14,8 @@ test.describe("EMS dashboard", () => {
     await expect(grid).toContainText("House load");
     await expect(grid).toContainText("1.00 kW");
     await expect(grid).toContainText("55 %");
+    await expect(grid).toContainText("Battery mode");
+    await expect(grid).toContainText("auto");
   });
 
   test("no API error banner when backend is up", async ({ page }) => {

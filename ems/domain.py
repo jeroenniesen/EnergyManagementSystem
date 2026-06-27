@@ -18,6 +18,28 @@ class PlannerMode(StrEnum):
     ADVISORY = "advisory"
 
 
+class PhysicalMode(StrEnum):
+    """What the controller actually commands the battery into (SPEC §7.2)."""
+
+    AUTO = "auto"  # vendor self-consumption (P1-zeroing)
+    CHARGE = "charge"  # force charge to a target SoC
+    DISCHARGE = "discharge"  # force discharge (deliberate export)
+    IDLE = "idle"  # hold SoC
+
+
+@dataclass(frozen=True)
+class CapabilityReport:
+    """Result of the M1a capability probe (SPEC §6.5)."""
+
+    services: tuple[str, ...]  # e.g. ("charge", "discharge")
+    energy_mode_options: tuple[str, ...]
+    has_standby: bool
+    has_grid_charge_switch: bool
+    p1_paired: bool  # is the Indevolt reading the P1 meter?
+    max_charge_w: float
+    max_discharge_w: float
+
+
 @dataclass(frozen=True)
 class RawSample:
     """Sign-normalised instantaneous readings (SPEC §4.1)."""
