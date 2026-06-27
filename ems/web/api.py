@@ -73,6 +73,15 @@ def create_app(
 
     app = FastAPI(title="Smart Energy Manager", version="0.0.1", lifespan=lifespan)
 
+    def _current_plan():
+        """Single source of the current plan (DRY) so /api/plan, /api/savings, /api/decision and
+        /api/alerts all reflect the same computation. Returns (now, prices, plan) or None."""
+        if price_source is None:
+            return None
+        now = datetime.now(UTC)
+        prices = price_source.slots()
+        return now, prices, plan_rule_based(prices, now)
+
     @app.get("/health/live")
     def live() -> dict:
         return {"status": "alive"}
@@ -106,10 +115,11 @@ def create_app(
         snap = freshness.snapshot(now) if freshness is not None else {}
         # The controller's would-do outcome (read-only preview) feeds battery-failure alerts.
         outcome: str | None = None
-        if price_source is not None and controller is not None:
-            cur = plan_rule_based(price_source.slots(), now).intent_at(now)
+        pp = _current_plan()
+        if pp is not None and controller is not None:
+            cur = pp[2].intent_at(pp[0])
             if cur is not None:
-                outcome = controller.preview(cur.intent, now).outcome
+                outcome = controller.preview(cur.intent, pp[0]).outcome
         prices_ok = price_source is not None  # price staleness isn't tracked in freshness yet
         forecast_ok = solar_forecast is not None
         alerts = derive_alerts(snap, dry_run=dry_run, decision_outcome=outcome)
@@ -123,11 +133,12 @@ def create_app(
     @app.get("/api/decision")
     def decision_endpoint() -> dict:
         # What the controller would do for the plan's current intent, and why (incl. "why not").
-        if price_source is None or controller is None:
+        pp = _current_plan()
+        if pp is None or controller is None:
             return {"intent": None, "desired_mode": None, "applied": False,
                     "outcome": "unconfigured", "reason": "no planner/controller"}
-        now = datetime.now(UTC)
-        cur = plan_rule_based(price_source.slots(), now).intent_at(now)
+        now, _prices, plan = pp
+        cur = plan.intent_at(now)
         if cur is None:
             return {"intent": None, "desired_mode": None, "applied": False,
                     "outcome": "no_plan", "reason": "no plan slot for now"}
@@ -162,21 +173,20 @@ def create_app(
 
     @app.get("/api/savings")
     def savings_endpoint() -> dict:
-        if price_source is None:
+        pp = _current_plan()
+        if pp is None:
             return {"today_eur": None}
-        now = datetime.now(UTC)
-        prices = price_source.slots()
-        plan = plan_rule_based(prices, now)
+        _now, prices, plan = pp
         by_start = {p.start: p.eur_per_kwh for p in prices}
         return {"today_eur": estimate_daily_savings_eur(plan, by_start)}
 
     @app.get("/api/plan")
     def plan_endpoint() -> dict:
-        if price_source is None:
+        pp = _current_plan()
+        if pp is None:
             return {"created_at": None, "current_intent": None,
                     "current_reason": None, "slots": []}
-        now = datetime.now(UTC)
-        plan = plan_rule_based(price_source.slots(), now)
+        now, _prices, plan = pp
         cur = plan.intent_at(now)
         return {
             "created_at": plan.created_at.isoformat(),
