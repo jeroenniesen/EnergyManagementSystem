@@ -8,7 +8,8 @@ Baseline before this series: backend 103 → (loop 0 handoff fixes) 103, e2e 23 
 | Loop | Feature | Backend | Frontend | Tests | Reviewer |
 |------|---------|---------|----------|-------|----------|
 | 1 | Runtime settings store + schema-driven `/api/settings` + Settings UI tab | `ems/settings.py`, `ems/storage/settings.py`, `/api/settings` GET/POST, live PlannerConfig + ModeController wiring | `Settings.tsx` (grouped form), Dashboard/Settings tabs | 124 pytest | backend: atomic cache swap, missing-body→422, dwell floor 60s, switch ceiling 20; frontend: saving-disable, number-input blur-commit, aria-current=page |
-| 2 | Manual operator override (force one intent, time-boxed, auto-expire) | `ems/control/override.py`, generalised KV store (`table=`), `/api/override` GET/POST, override-aware `_effective_intent` in decision+alerts | `Override.tsx` dashboard card (apply/clear + duration) | 136 pytest, 30 e2e | (running) |
+| 2 | Manual operator override (force one intent, time-boxed, auto-expire) | `ems/control/override.py`, generalised KV store (`table=`), `/api/override` GET/POST, override-aware `_effective_intent` in decision+alerts | `Override.tsx` dashboard card (apply/clear + duration) | 136 pytest, 30 e2e | confirmed fail-safe + single-writer; fixed `assert`→guard (`-O`-safe) in seconds_remaining |
+| 3 | Theme applied (auto/light/dark) — completes the appearance setting | (none) | `theme.ts` (applyTheme + OS-auto), App wiring + `onSaved`, light-theme CSS vars | 136 pytest, 32 e2e | (running) |
 
 ## Planned remaining loops (subject to revision as gaps are found)
 - L3: Theme (auto/light/dark) applied to the DOM — completes the appearance setting.

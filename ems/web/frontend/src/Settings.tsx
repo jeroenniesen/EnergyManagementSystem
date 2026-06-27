@@ -132,7 +132,7 @@ function Field({
   );
 }
 
-export function Settings() {
+export function Settings({ onSaved }: { onSaved?: (values: Values) => void } = {}) {
   const [schema, setSchema] = useState<SettingField[] | null>(null);
   const [values, setValues] = useState<Values>({});
   const [edited, setEdited] = useState<Values>({});
@@ -191,6 +191,7 @@ export function Settings() {
       setValues(b.values);
       setEdited(b.values);
       setStatus("saved");
+      onSaved?.(b.values); // let the app re-apply theme / other live-effect settings immediately
     } catch (e) {
       setErrors({ _: String(e) });
       setStatus("error");
