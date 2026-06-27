@@ -15,6 +15,7 @@ secrets.yaml
 
 # Runtime data (SQLite history, runtime settings)
 ems/data/
+/data/
 *.sqlite
 *.sqlite-*
 
