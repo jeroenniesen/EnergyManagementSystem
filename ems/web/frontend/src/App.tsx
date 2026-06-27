@@ -1,5 +1,7 @@
 import { useEffect, useState } from "react";
 
+import { Settings } from "./Settings";
+
 type Status = {
   dry_run: boolean;
   dev_mode: string;
@@ -179,6 +181,7 @@ export function App() {
   const [alertsData, setAlertsData] = useState<AlertsResp | null>(null);
   const [savings, setSavings] = useState<number | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [view, setView] = useState<"dashboard" | "settings">("dashboard");
 
   useEffect(() => {
     let alive = true;
@@ -247,6 +250,24 @@ export function App() {
             {alertsData.data_quality}
           </span>
         )}
+        <nav className="nav" aria-label="Views">
+          <button
+            className={`nav-btn${view === "dashboard" ? " nav-active" : ""}`}
+            onClick={() => setView("dashboard")}
+            data-testid="nav-dashboard"
+            aria-current={view === "dashboard"}
+          >
+            Dashboard
+          </button>
+          <button
+            className={`nav-btn${view === "settings" ? " nav-active" : ""}`}
+            onClick={() => setView("settings")}
+            data-testid="nav-settings"
+            aria-current={view === "settings"}
+          >
+            Settings
+          </button>
+        </nav>
       </header>
 
       {alertsData && alertsData.alerts.length > 0 && (
@@ -261,7 +282,9 @@ export function App() {
 
       {error && <div className="error" data-testid="error">Cannot reach EMS API: {error}</div>}
 
-      {status && (
+      {view === "settings" && <Settings />}
+
+      {view === "dashboard" && status && (
         <section className="grid" data-testid="status-grid">
           <Metric label="State of charge" value={`${status.soc_pct.toFixed(0)} %`} />
           <Metric
@@ -290,7 +313,7 @@ export function App() {
         </section>
       )}
 
-      {decision && decision.outcome !== "unconfigured" && (
+      {view === "dashboard" && decision && decision.outcome !== "unconfigured" && (
         <section className="decision" data-testid="decision">
           <span className="metric-label">Controller</span>
           <p className="decision-line">
@@ -302,13 +325,15 @@ export function App() {
         </section>
       )}
 
-      {plan && plan.slots.length > 0 && <PlanTimeline plan={plan} />}
+      {view === "dashboard" && plan && plan.slots.length > 0 && <PlanTimeline plan={plan} />}
 
-      {prices && prices.slots.length > 0 && <PriceCurve prices={prices} />}
+      {view === "dashboard" && prices && prices.slots.length > 0 && <PriceCurve prices={prices} />}
 
-      {forecast && forecast.slots.length > 0 && <ForecastCurve forecast={forecast} />}
+      {view === "dashboard" && forecast && forecast.slots.length > 0 && (
+        <ForecastCurve forecast={forecast} />
+      )}
 
-      {freshness && Object.keys(freshness).length > 0 && (
+      {view === "dashboard" && freshness && Object.keys(freshness).length > 0 && (
         <section className="freshness" data-testid="freshness">
           <span className="freshness-title">Signal freshness</span>
           {Object.entries(freshness).map(([sig, st]) => (
@@ -319,7 +344,7 @@ export function App() {
         </section>
       )}
 
-      {!status && !error && <div className="loading">Loading…</div>}
+      {view === "dashboard" && !status && !error && <div className="loading">Loading…</div>}
 
       <footer className="footer" data-testid="series-count">
         history samples: {series ? series.raw.length : 0}

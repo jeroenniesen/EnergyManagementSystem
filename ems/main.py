@@ -16,6 +16,7 @@ from ems.sources.forecast import MockSolarForecastSource
 from ems.sources.mock import MockSource
 from ems.sources.prices import MockPriceSource
 from ems.storage.history import HistoryStore
+from ems.storage.settings import SettingsStore
 from ems.web.api import create_app
 
 _REPO_ROOT = Path(__file__).parent.parent
@@ -33,6 +34,7 @@ def build_app():
         db_path = _REPO_ROOT / db_path
     db_path.parent.mkdir(parents=True, exist_ok=True)
     store = HistoryStore(str(db_path))
+    settings_store = SettingsStore(str(db_path))
     freshness = FreshnessTracker()
     freshness.register(*SIGNALS)
     recorder = Recorder(source, store, freshness, cycle_seconds=cfg.cycle_seconds)
@@ -53,6 +55,7 @@ def build_app():
         solar_forecast=solar_forecast,
         battery=battery,
         controller=controller,
+        settings_store=settings_store,
         static_dir=_STATIC_DIR,
     )
     return app, cfg
