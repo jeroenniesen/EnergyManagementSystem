@@ -21,4 +21,13 @@ test.describe("EMS dashboard", () => {
     await expect(page.getByTestId("status-grid")).toBeVisible();
     await expect(page.getByTestId("error")).toHaveCount(0);
   });
+
+  test("shows the error banner when the status API returns 500", async ({ page }) => {
+    await page.route("**/api/status", (route) =>
+      route.fulfill({ status: 500, contentType: "application/json", body: '{"detail":"boom"}' }),
+    );
+    await page.goto("/");
+    await expect(page.getByTestId("error")).toBeVisible();
+    await expect(page.getByTestId("status-grid")).toHaveCount(0);
+  });
 });

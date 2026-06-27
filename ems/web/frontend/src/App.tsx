@@ -36,11 +36,16 @@ export function App() {
 
   useEffect(() => {
     let alive = true;
+    async function getJson(url: string) {
+      const r = await fetch(url);
+      if (!r.ok) throw new Error(`HTTP ${r.status}`);
+      return r.json();
+    }
     async function poll() {
       try {
         const [s, ser] = await Promise.all([
-          fetch("/api/status").then((r) => r.json()),
-          fetch("/api/series?limit=50").then((r) => r.json()),
+          getJson("/api/status"),
+          getJson("/api/series?limit=50"),
         ]);
         if (!alive) return;
         setStatus(s);

@@ -89,3 +89,14 @@ def test_serves_spa_index_when_static_dir_present(tmp_path):
     assert r.status_code == 200
     assert "EMS" in r.text  # SPA index served at "/"
 
+
+def test_unknown_api_path_returns_json_404(tmp_path):
+    # An unknown /api/* path must be JSON 404, not the SPA index served as 200.
+    dist = tmp_path / "dist"
+    dist.mkdir()
+    (dist / "index.html").write_text("<!doctype html><div id=root></div>")
+    app = create_app(MockSource(), dry_run=True, dev_mode="mock", static_dir=str(dist))
+    r = TestClient(app).get("/api/nonexistent")
+    assert r.status_code == 404
+    assert r.headers["content-type"].startswith("application/json")
+

@@ -5,6 +5,7 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import FastAPI, Query
+from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from ems.load_model import reconstruct
@@ -60,6 +61,13 @@ def create_app(
             "house_load_w": derived.house_load_w,
             "non_ev_load_w": derived.non_ev_load_w,
         }
+
+    # Unknown /api/* paths must return a JSON 404 — NOT fall through to the SPA catch-all
+    # below (which would serve index.html with a 200, silently breaking API clients).
+    # Registered routes above are matched first; this only catches the rest under /api.
+    @app.api_route("/api/{rest:path}", methods=["GET", "POST", "PUT", "DELETE", "PATCH"])
+    def api_not_found(rest: str) -> JSONResponse:
+        return JSONResponse({"detail": f"/api/{rest} not found"}, status_code=404)
 
     # Serve the built React/Vite SPA (no runtime CDN). Mounted LAST so /api and /health
     # routes are matched first; html=True serves index.html at "/".

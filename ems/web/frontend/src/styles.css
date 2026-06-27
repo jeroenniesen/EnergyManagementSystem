@@ -71,7 +71,7 @@ body {
   padding: 18px;
 }
 .metric-label { font-size: 0.78rem; color: var(--muted); }
-.metric-value { font-size: 1.6rem; font-weight: 650; letter-spacing: -0.02em; font-variant-numeric: tabular-nums; }
+.metric-value { font-size: 1.6rem; font-weight: 600; letter-spacing: -0.02em; font-variant-numeric: tabular-nums; }
 .metric-hint { font-size: 0.72rem; color: var(--muted); }
 
 .loading, .footer { color: var(--muted); margin-top: 24px; font-size: 0.85rem; }
