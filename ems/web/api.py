@@ -4,8 +4,9 @@ from __future__ import annotations
 import asyncio
 import logging
 from contextlib import asynccontextmanager
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from typing import Any
 
 from fastapi import FastAPI, Query
 from fastapi.responses import JSONResponse
@@ -15,14 +16,16 @@ from ems.alerts import data_quality, derive_alerts
 from ems.control.mode_controller import ModeController
 from ems.freshness import FreshnessTracker
 from ems.load_model import reconstruct
-from ems.planner.rule_based import plan_rule_based
+from ems.planner.rule_based import PlannerConfig, plan_rule_based
 from ems.savings import estimate_daily_savings_eur
 from ems.sense import Recorder
+from ems.settings import effective_settings, schema_json, validate_settings
 from ems.sources.base import Source
 from ems.sources.battery import BatteryDriver
 from ems.sources.forecast import SolarForecastSource, day_kwh_p50
 from ems.sources.prices import PriceSource, current_price
 from ems.storage.history import HistoryStore
+from ems.storage.settings import SettingsStore
 
 _log = logging.getLogger("ems.recorder")
 
@@ -45,13 +48,44 @@ def create_app(
     solar_forecast: SolarForecastSource | None = None,
     battery: BatteryDriver | None = None,
     controller: ModeController | None = None,
+    settings_store: SettingsStore | None = None,
     static_dir: str | Path | None = None,
 ) -> FastAPI:
+    # In-memory effective-settings cache (defaults until the store loads in lifespan). Sync
+    # endpoints read this; POST /api/settings refreshes it. Mutated in place (never rebound).
+    settings_cache: dict[str, Any] = effective_settings({})
+
+    def _apply_control_settings() -> None:
+        """Push the control.* settings onto the live controller (preserves its switch counters)."""
+        if controller is None:
+            return
+        controller.max_switches_per_day = settings_cache["control.max_switches_per_day"]
+        controller.min_dwell = timedelta(seconds=settings_cache["control.min_dwell_seconds"])
+        controller.allow_export_discharge = settings_cache["control.allow_export_discharge"]
+
+    def _planner_cfg() -> PlannerConfig:
+        s = settings_cache
+        return PlannerConfig(
+            round_trip_efficiency=s["planner.round_trip_efficiency"],
+            degradation_eur_per_kwh=s["planner.degradation_eur_per_kwh"],
+            risk_margin_eur_per_kwh=s["planner.risk_margin_eur_per_kwh"],
+            charge_slots=s["planner.charge_slots"],
+            discharge_slots=s["planner.discharge_slots"],
+        )
+
     @asynccontextmanager
     async def lifespan(_app: FastAPI):
         # Guarantee the schema exists before anything touches the DB (no caller footgun).
         if store is not None:
             await store.init()
+        if settings_store is not None:
+            await settings_store.init()
+            # Build the new dict BEFORE touching the cache, then swap with no await between
+            # clear() and update() — otherwise a concurrent reader could observe an empty cache.
+            loaded = effective_settings(await settings_store.all())
+            settings_cache.clear()
+            settings_cache.update(loaded)
+            _apply_control_settings()
         # Start the read-only sense loop / recorder (SPEC §5.3). Take one awaited startup
         # sample so /api/series and /api/freshness are populated deterministically, then
         # run the periodic loop in the background.
@@ -80,7 +114,7 @@ def create_app(
             return None
         now = datetime.now(UTC)
         prices = price_source.slots()
-        return now, prices, plan_rule_based(prices, now)
+        return now, prices, plan_rule_based(prices, now, _planner_cfg())
 
     @app.get("/health/live")
     def live() -> dict:
@@ -220,6 +254,32 @@ def create_app(
             "raw": await store.recent_raw(limit),
             "derived": await store.recent_derived(limit),
         }
+
+    @app.get("/api/settings")
+    def get_settings() -> dict:
+        # The UI renders a form from `schema` and fills it from `values` (effective config).
+        return {"schema": schema_json(), "values": dict(settings_cache)}
+
+    @app.post("/api/settings")
+    async def post_settings(body: dict | None = None) -> JSONResponse:
+        if settings_store is None:
+            return JSONResponse(
+                {"detail": "settings store not configured"}, status_code=503
+            )
+        # Pass body straight through: validate_settings guards non-dict, so a missing/None body
+        # becomes a 422 ("expected a JSON object") rather than a silent 200 no-op.
+        clean, errors = validate_settings(body)
+        if errors:
+            # Reject the whole payload if ANY key is invalid — partial saves are confusing.
+            return JSONResponse(
+                {"detail": "invalid settings", "errors": errors}, status_code=422
+            )
+        await settings_store.set_many(clean)
+        refreshed = effective_settings(await settings_store.all())
+        settings_cache.clear()
+        settings_cache.update(refreshed)
+        _apply_control_settings()
+        return JSONResponse({"values": dict(settings_cache)})
 
     @app.get("/api/status")
     def status() -> dict:
