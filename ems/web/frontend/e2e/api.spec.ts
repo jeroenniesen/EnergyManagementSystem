@@ -77,4 +77,11 @@ test.describe("EMS API", () => {
     ]).toContain(b.current_intent);
     expect(b.slots[0]).toHaveProperty("reason");
   });
+
+  test("battery exposes current mode and probed capabilities", async ({ request }) => {
+    const b = await (await request.get("/api/battery")).json();
+    expect(["auto", "charge", "discharge", "idle"]).toContain(b.current_mode);
+    expect(b.capabilities.services).toContain("charge");
+    expect(b.capabilities.p1_paired).toBe(true);
+  });
 });

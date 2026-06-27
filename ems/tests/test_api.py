@@ -162,6 +162,23 @@ def test_plan_endpoint_without_source():
     assert b["current_intent"] is None
 
 
+def test_battery_endpoint_returns_mode_and_capabilities():
+    from ems.sources.battery import MockBatteryDriver
+
+    app = create_app(MockSource(), dry_run=True, dev_mode="mock", battery=MockBatteryDriver())
+    b = TestClient(app).get("/api/battery").json()
+    assert b["current_mode"] == "auto"
+    assert "charge" in b["capabilities"]["services"]
+    assert b["capabilities"]["p1_paired"] is True
+    assert b["capabilities"]["max_charge_w"] == 4000.0
+
+
+def test_battery_endpoint_without_driver():
+    b = _client().get("/api/battery").json()
+    assert b["current_mode"] is None
+    assert b["capabilities"] is None
+
+
 def test_unknown_api_path_returns_json_404(tmp_path):
     # An unknown /api/* path must be JSON 404, not the SPA index served as 200.
     dist = tmp_path / "dist"
