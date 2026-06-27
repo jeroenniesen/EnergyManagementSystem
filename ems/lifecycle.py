@@ -11,6 +11,8 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 from enum import StrEnum
 
+from ems.timeutil import require_aware
+
 
 class OwnershipState(StrEnum):
     INACTIVE = "inactive"
@@ -31,9 +33,18 @@ class Lifecycle:
     _plan_loaded: bool = False
     _override_until: datetime | None = None
 
+    def _reset_readiness(self) -> None:
+        self._sensors_ok = False
+        self._probe_ok = False
+        self._plan_loaded = False
+
     # --- boot sequence (observe first, validate, load plan, then maybe act) ---
     def start(self, now: datetime) -> None:
+        # A (re)start must re-run the whole readiness sequence before acting again (SPEC §13.3).
+        require_aware(now, "now")
         self.boot_at = now
+        self._reset_readiness()
+        self._override_until = None
         self.state = OwnershipState.OBSERVING
 
     def mark_sensors_validated(self) -> None:
@@ -47,6 +58,7 @@ class Lifecycle:
 
     # --- grace + readiness ---
     def grace_elapsed(self, now: datetime) -> bool:
+        require_aware(now, "now")
         if self.boot_at is None:
             return False
         return (now - self.boot_at).total_seconds() >= self.startup_grace_seconds
@@ -62,19 +74,25 @@ class Lifecycle:
 
     # --- manual override overlay ---
     def manual_override(self, now: datetime, duration_s: float) -> None:
+        require_aware(now, "now")
         self._override_until = now + timedelta(seconds=duration_s)
         self.state = OwnershipState.MANUAL_OVERRIDE
 
     def override_active(self, now: datetime) -> bool:
+        require_aware(now, "now")
         return self._override_until is not None and now < self._override_until
 
     def return_to_default(self) -> None:
-        """Emergency 'return to Indevolt default': clear any override, drop to OBSERVING."""
+        """Emergency 'return to Indevolt default': clear any override, drop to OBSERVING, and
+        reset readiness so the EMS will NOT self-advance back to CONTROLLING on the next tick —
+        it stays hands-off until the readiness sequence is re-run (SPEC §9.1/§13.3)."""
         self._override_until = None
+        self._reset_readiness()
         self.state = OwnershipState.OBSERVING
 
     # --- the per-cycle advance ---
     def tick(self, now: datetime) -> OwnershipState:
+        require_aware(now, "now")
         # Expire a lapsed override first.
         if self._override_until is not None and now >= self._override_until:
             self._override_until = None
@@ -86,4 +104,5 @@ class Lifecycle:
 
     def can_command(self, now: datetime) -> bool:
         """True only when actively controlling — never in dry-run, observing, or override."""
+        require_aware(now, "now")
         return self.state is OwnershipState.CONTROLLING and not self.override_active(now)

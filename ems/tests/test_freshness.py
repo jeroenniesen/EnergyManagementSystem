@@ -1,5 +1,7 @@
 from datetime import UTC, datetime, timedelta
 
+import pytest
+
 from ems.freshness import Freshness, FreshnessTracker, classify
 
 T0 = datetime(2026, 6, 27, 10, 0, tzinfo=UTC)
@@ -32,3 +34,22 @@ def test_tracker_age_and_snapshot():
     assert tr.age_seconds("absent", T0) is None
     snap = tr.snapshot(T0)
     assert snap == {"grid": "fresh"}
+
+
+def test_snapshot_surfaces_registered_missing_signals():
+    # A registered signal that never reported must surface as MISSING, not be omitted (SPEC §4.7).
+    tr = FreshnessTracker(stale_after_s=600)
+    tr.register("grid", "solar", "soc")
+    tr.mark("grid", T0 - timedelta(seconds=10))
+    snap = tr.snapshot(T0)
+    assert snap["grid"] == "fresh"
+    assert snap["solar"] == "missing"
+    assert snap["soc"] == "missing"
+
+
+def test_naive_datetime_rejected():
+    tr = FreshnessTracker()
+    with pytest.raises(ValueError):
+        tr.mark("grid", datetime(2026, 6, 27, 10, 0))  # naive
+    with pytest.raises(ValueError):
+        classify(None, datetime(2026, 6, 27, 10, 0), 600)  # naive now

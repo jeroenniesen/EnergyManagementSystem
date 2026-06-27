@@ -1,5 +1,7 @@
 from datetime import UTC, datetime, timedelta
 
+import pytest
+
 from ems.lifecycle import Lifecycle, OwnershipState
 
 T0 = datetime(2026, 6, 27, 10, 0, tzinfo=UTC)
@@ -68,3 +70,33 @@ def test_return_to_default_goes_observing_and_clears_override():
     lc.return_to_default()
     assert lc.state is OwnershipState.OBSERVING
     assert lc.override_active(T0 + timedelta(seconds=200)) is False
+
+
+def test_return_to_default_stays_observing_after_tick():
+    # Emergency stop must NOT auto-resume commanding on the next tick (SPEC §9.1).
+    lc = Lifecycle(dry_run=False, startup_grace_seconds=120)
+    lc.start(T0)
+    _ready(lc)
+    lc.tick(T0 + timedelta(seconds=121))  # CONTROLLING
+    lc.return_to_default()
+    lc.tick(T0 + timedelta(seconds=400))  # readiness was reset -> must stay OBSERVING
+    assert lc.state is OwnershipState.OBSERVING
+    assert lc.can_command(T0 + timedelta(seconds=400)) is False
+
+
+def test_restart_requires_revalidation():
+    # A second start() resets readiness; the EMS may not re-advance without re-validating.
+    lc = Lifecycle(dry_run=False, startup_grace_seconds=120)
+    lc.start(T0)
+    _ready(lc)
+    lc.tick(T0 + timedelta(seconds=121))  # CONTROLLING
+    lc.start(T0 + timedelta(seconds=300))  # restart
+    lc.tick(T0 + timedelta(seconds=500))  # grace elapsed, but checks reset -> OBSERVING
+    assert lc.state is OwnershipState.OBSERVING
+    assert lc.can_command(T0 + timedelta(seconds=500)) is False
+
+
+def test_naive_now_is_rejected():
+    lc = Lifecycle(dry_run=False)
+    with pytest.raises(ValueError):
+        lc.start(datetime(2026, 6, 27, 10, 0))  # naive datetime (SPEC §13.1)
