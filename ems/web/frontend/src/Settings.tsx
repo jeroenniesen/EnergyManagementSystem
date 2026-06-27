@@ -19,11 +19,13 @@ type Values = Record<string, number | boolean | string>;
 const GROUP_TITLE: Record<string, string> = {
   planner: "Planner economics",
   control: "Control & safety",
+  site: "Solar array",
   ui: "Appearance",
 };
 const GROUP_HINT: Record<string, string> = {
   planner: "Tune the arbitrage maths — the plan recomputes from these immediately.",
   control: "Safety limits applied to the battery mode controller.",
+  site: "Your PV array — the solar forecast recomputes from these immediately.",
   ui: "How the dashboard looks.",
 };
 

@@ -80,6 +80,17 @@ def create_app(
         controller.min_dwell = timedelta(seconds=settings_cache["control.min_dwell_seconds"])
         controller.allow_export_discharge = settings_cache["control.allow_export_discharge"]
 
+    def _apply_site_settings() -> None:
+        """Push the site.* array settings onto the solar forecast source so the forecast responds
+        live. Gated on an explicit opt-in marker so we never clobber a real adapter that happens
+        to expose kwp/tilt/azimuth for its own purpose (it sets _ems_site_configurable=False)."""
+        if solar_forecast is None or not getattr(
+            solar_forecast, "_ems_site_configurable", False
+        ):
+            return
+        for attr in ("kwp", "tilt", "azimuth"):
+            setattr(solar_forecast, attr, settings_cache[f"site.{attr}"])
+
     def _planner_cfg() -> PlannerConfig:
         s = settings_cache
         return PlannerConfig(
@@ -103,6 +114,7 @@ def create_app(
             settings_cache.clear()
             settings_cache.update(loaded)
             _apply_control_settings()
+            _apply_site_settings()
         if override_store is not None:
             await override_store.init()
             stored = await override_store.all()
@@ -361,6 +373,7 @@ def create_app(
         settings_cache.clear()
         settings_cache.update(refreshed)
         _apply_control_settings()
+        _apply_site_settings()
         return JSONResponse({"values": dict(settings_cache)})
 
     @app.get("/api/status")

@@ -5,10 +5,12 @@ from ems.sources.forecast import (
     SLOTS_PER_DAY,
     MockSolarForecastSource,
     day_kwh_p50,
+    orientation_factor,
     p50_watts,
 )
 
 AMS = ZoneInfo("Europe/Amsterdam")
+NOON = datetime(2026, 6, 27, 10, 0, tzinfo=UTC)
 
 
 def _clock_at(dt):
@@ -42,3 +44,23 @@ def test_day_kwh_positive_in_summer():
     src = MockSolarForecastSource(AMS, clock=_clock_at(datetime(2026, 6, 27, 10, 0, tzinfo=UTC)))
     kwh = day_kwh_p50(src.slots())
     assert 5.0 < kwh < 30.0  # plausible daily kWh for 3 kWp
+
+
+def test_orientation_factor_best_facing_south_at_35_deg():
+    # Optimal (south, 35°) is the reference 1.0; tilted/rotated away derates; never below the floor.
+    assert orientation_factor(35.0, 0.0) == 1.0
+    assert orientation_factor(0.0, 0.0) < 1.0  # flat
+    assert orientation_factor(35.0, 90.0) < orientation_factor(35.0, 0.0)  # west vs south
+    assert orientation_factor(90.0, 180.0) >= 0.3 * 0.3  # floored, never zero
+
+
+def test_kwp_scales_forecast_energy():
+    small = MockSolarForecastSource(AMS, kwp=2.0, clock=_clock_at(NOON))
+    big = MockSolarForecastSource(AMS, kwp=6.0, clock=_clock_at(NOON))
+    assert day_kwh_p50(big.slots()) > day_kwh_p50(small.slots())
+
+
+def test_orientation_reduces_forecast_energy():
+    south = MockSolarForecastSource(AMS, clock=_clock_at(NOON), tilt=35.0, azimuth=0.0)
+    west_flat = MockSolarForecastSource(AMS, clock=_clock_at(NOON), tilt=10.0, azimuth=120.0)
+    assert day_kwh_p50(west_flat.slots()) < day_kwh_p50(south.slots())

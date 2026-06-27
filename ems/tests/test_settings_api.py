@@ -5,6 +5,7 @@ from fastapi.testclient import TestClient
 from ems.control.mode_controller import ModeController
 from ems.lifecycle import Lifecycle
 from ems.sources.battery import MockBatteryDriver
+from ems.sources.forecast import MockSolarForecastSource
 from ems.sources.mock import MockSource
 from ems.sources.prices import MockPriceSource
 from ems.storage.settings import SettingsStore
@@ -95,3 +96,16 @@ def test_planner_settings_change_the_plan(tmp_path):
         c.post("/api/settings", json={"planner.risk_margin_eur_per_kwh": 0.5})
         plan = c.get("/api/plan").json()
     assert all(s["intent"] == "allow_self_consumption" for s in plan["slots"])
+
+
+def test_site_settings_reshape_the_forecast(tmp_path):
+    # Raising kWp lifts the forecast; rotating the array away from south lowers it — live.
+    app = _app(tmp_path, solar_forecast=MockSolarForecastSource(ZoneInfo("Europe/Amsterdam")))
+    with TestClient(app) as c:
+        base = c.get("/api/forecast").json()["today_kwh_p50"]
+        c.post("/api/settings", json={"site.kwp": 9.0})
+        bigger = c.get("/api/forecast").json()["today_kwh_p50"]
+        c.post("/api/settings", json={"site.kwp": 9.0, "site.azimuth": 120.0, "site.tilt": 5.0})
+        rotated = c.get("/api/forecast").json()["today_kwh_p50"]
+    assert bigger > base
+    assert rotated < bigger  # same kWp, worse orientation

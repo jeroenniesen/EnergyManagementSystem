@@ -42,26 +42,49 @@ def p50_watts(local: datetime, kwp: float) -> float:
     return max(0.0, math.exp(-x * x) * kwp * 1000.0 * 0.85)
 
 
+def orientation_factor(tilt_deg: float, azimuth_deg: float) -> float:
+    """Mock derate for array orientation: best at ~35° tilt facing due south (azimuth 0, per the
+    SPEC raw convention where 0=South). A simple cosine falloff away from optimal, floored at 0.3
+    so a badly-oriented array still produces something. Real adapters (Solcast/Forecast.Solar)
+    bake orientation into their own estimate; this only shapes the credential-free mock so the
+    UI controls visibly change the curve."""
+    tilt_f = max(0.3, math.cos(math.radians(tilt_deg - 35.0)))
+    az_f = max(0.3, math.cos(math.radians(azimuth_deg)))
+    return tilt_f * az_f
+
+
 class MockSolarForecastSource:
+    # Opt-in marker: the API may push site.* settings (kwp/tilt/azimuth) onto this source. Real
+    # adapters that configure orientation on their own side leave this False so their attributes
+    # are never clobbered.
+    _ems_site_configurable = True
+
     def __init__(
         self,
         tz: ZoneInfo,
         kwp: float = 3.0,
         clock: Callable[[], datetime] = _utcnow,
         horizon_slots: int = 2 * SLOTS_PER_DAY,
+        tilt: float = 35.0,
+        azimuth: float = 0.0,
     ) -> None:
         self.tz = tz
         self.kwp = kwp
         self._clock = clock
         self.horizon_slots = horizon_slots
+        # Live array config (mutable): the API pushes site.* settings here so the forecast
+        # responds immediately. Defaults (35°, due south) give factor 1.0 — the prior behaviour.
+        self.tilt = tilt
+        self.azimuth = azimuth
 
     def slots(self) -> list[ForecastSlot]:
         now_local = self._clock().astimezone(self.tz)
         midnight = now_local.replace(hour=0, minute=0, second=0, microsecond=0)
+        orient = orientation_factor(self.tilt, self.azimuth)
         out: list[ForecastSlot] = []
         for i in range(self.horizon_slots):
             start = (midnight + i * SLOT).astimezone(self.tz)
-            p50 = p50_watts(start, self.kwp)
+            p50 = p50_watts(start, self.kwp) * orient
             out.append(ForecastSlot(start=start, p10_w=0.6 * p50, p50_w=p50, p90_w=1.15 * p50))
         return out
 
