@@ -16,6 +16,7 @@ from fastapi.responses import JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 
 from ems.alerts import data_quality, derive_alerts
+from ems.control.failsafe import failsafe_intent
 from ems.control.mode_controller import ModeController
 from ems.control.override import (
     MAX_MINUTES,
@@ -171,10 +172,19 @@ def create_app(
         prices = price_source.slots()
         return now, prices, plan_rule_based(prices, now, _planner_cfg())
 
+    def _data_quality(now: datetime) -> str:
+        """Single source of the current data-quality level (SPEC §8.11)."""
+        snap = freshness.snapshot(now) if freshness is not None else {}
+        return data_quality(
+            snap, prices_ok=price_source is not None, forecast_ok=solar_forecast is not None
+        )
+
     def _effective_intent(now: datetime):
-        """The intent the controller should act on now, honouring an active manual override.
-        Returns (intent | None, reason | None, override_active). An active override wins over
-        the plan — and works even with no price source (it's a control action, not a forecast)."""
+        """The intent the controller should act on now, honouring an active manual override and the
+        data-quality fail-safe. Returns (intent | None, reason | None, override_active). An active
+        override wins over the plan AND the fail-safe (deliberate, time-boxed operator action — the
+        UI shows the data-quality badge). The planner path is gated: unsafe data falls back to
+        self-consumption (CLAUDE.md "fail safe"). Works even with no price source."""
         ov = override_box["ov"]
         if ov.active(now):
             assert ov.intent is not None and ov.expires_at is not None
@@ -186,6 +196,9 @@ def create_app(
         cur = pp[2].intent_at(now)
         if cur is None:
             return None, None, False
+        safe, fs_reason = failsafe_intent(cur.intent, _data_quality(now))
+        if fs_reason is not None:
+            return safe, fs_reason, False
         return cur.intent, cur.reason, False
 
     @app.get("/health/live")
@@ -223,15 +236,18 @@ def create_app(
     @app.get("/api/alerts")
     def alerts_endpoint() -> dict:
         now = datetime.now(UTC)
+        # Take ONE snapshot and derive both the alert list and the data-quality badge from it, so
+        # they can never disagree (a second snapshot could shift if the recorder marks a signal).
         snap = freshness.snapshot(now) if freshness is not None else {}
+        dq = data_quality(
+            snap, prices_ok=price_source is not None, forecast_ok=solar_forecast is not None
+        )
         # The controller's would-do outcome (read-only preview) feeds battery-failure alerts.
         # Honour an active override so the outcome reflects what the controller would really do.
         outcome: str | None = None
         intent, _reason, override_active = _effective_intent(now)
         if intent is not None and controller is not None:
             outcome = controller.preview(intent, now).outcome
-        prices_ok = price_source is not None  # price staleness isn't tracked in freshness yet
-        forecast_ok = solar_forecast is not None
         alerts = derive_alerts(snap, dry_run=dry_run, decision_outcome=outcome)
         out = [{"key": a.key, "severity": a.severity, "message": a.message} for a in alerts]
         if override_active:
@@ -242,10 +258,7 @@ def create_app(
                 "key": "manual_override_active", "severity": "warning",
                 "message": f"Manual override: forcing {label} until {until}",
             })
-        return {
-            "data_quality": data_quality(snap, prices_ok=prices_ok, forecast_ok=forecast_ok),
-            "alerts": out,
-        }
+        return {"data_quality": dq, "alerts": out}
 
     @app.get("/api/decision")
     def decision_endpoint() -> dict:
@@ -275,7 +288,6 @@ def create_app(
     @app.get("/api/diagnostics")
     async def diagnostics_endpoint() -> dict:
         now = datetime.now(UTC)
-        snap = freshness.snapshot(now) if freshness is not None else {}
         prices_ok = price_source is not None
         forecast_ok = solar_forecast is not None
         # Actually probe the stores so a broken DB shows as a failed check, not a silent pass.
@@ -304,7 +316,7 @@ def create_app(
                 battery_ok = False
         checks = build_diagnostics(
             dev_mode=dev_mode, dry_run=dry_run,
-            data_quality=data_quality(snap, prices_ok=prices_ok, forecast_ok=forecast_ok),
+            data_quality=_data_quality(now),
             prices_ok=prices_ok, forecast_ok=forecast_ok,
             battery_ok=battery_ok, p1_paired=p1_paired,
             plan_ok=_current_plan() is not None,
