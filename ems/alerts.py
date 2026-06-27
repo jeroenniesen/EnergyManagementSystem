@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 # Signals whose staleness/absence makes control unsafe (can't reconstruct load / know SoC).
-_CRITICAL_SIGNALS = ("grid", "soc")
+CRITICAL_SIGNALS = ("grid", "soc")
 
 
 @dataclass(frozen=True)
@@ -26,10 +26,10 @@ def derive_alerts(
         alerts.append(Alert("dry_run_active", "info", "Dry-run: no battery writes"))
     for sig, state in sorted(freshness.items()):
         if state == "missing":
-            sev = "critical" if sig in _CRITICAL_SIGNALS else "warning"
+            sev = "critical" if sig in CRITICAL_SIGNALS else "warning"
             alerts.append(Alert(f"{sig}_missing", sev, f"{sig} signal missing"))
         elif state == "stale":
-            sev = "critical" if sig in _CRITICAL_SIGNALS else "warning"
+            sev = "critical" if sig in CRITICAL_SIGNALS else "warning"
             alerts.append(Alert(f"{sig}_stale", sev, f"{sig} signal stale"))
     if decision_outcome == "failed_unrecovered":
         alerts.append(Alert("battery_write_failed_unrecovered", "critical",
@@ -46,7 +46,7 @@ def data_quality(freshness: dict[str, str], *, prices_ok: bool, forecast_ok: boo
     Precedence (most severe first): unsafe > price_fallback > degraded > complete. So a missing
     price with a simultaneously-stale non-critical signal reports price_fallback (the per-signal
     staleness still surfaces separately as an alert)."""
-    for sig in _CRITICAL_SIGNALS:
+    for sig in CRITICAL_SIGNALS:
         if freshness.get(sig, "missing") != "fresh":
             return "unsafe"  # can't safely reconstruct/plan
     if not prices_ok:

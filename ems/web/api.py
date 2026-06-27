@@ -322,6 +322,7 @@ def create_app(
             plan_ok=_current_plan() is not None,
             store_ok=store_ok, settings_store_ok=settings_ok,
             auth_required=web_auth_token is not None,
+            freshness=freshness.snapshot(now) if freshness is not None else None,
         )
         return {"overall": overall_status(checks), "checks": [c.to_dict() for c in checks]}
 

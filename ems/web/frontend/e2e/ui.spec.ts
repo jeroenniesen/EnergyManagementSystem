@@ -109,6 +109,8 @@ test.describe("EMS dashboard", () => {
     await expect(page.getByTestId("check-history_store")).toContainText("reachable");
     await expect(page.getByTestId("check-battery")).toBeVisible();
     await expect(page.getByTestId("check-auth")).toContainText("open");
+    // Per-signal live sensor checks (the "senses"): mock backend reports all signals fresh.
+    await expect(page.getByTestId("check-sensor.grid")).toContainText("fresh");
     await expect(page.getByTestId("system-overall")).toBeVisible();
     // Export links present with the right download hrefs.
     await expect(page.getByTestId("export-raw")).toHaveAttribute(
