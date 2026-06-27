@@ -28,6 +28,7 @@ from ems.control.override import (
 from ems.domain import BatteryIntent
 from ems.freshness import FreshnessTracker
 from ems.load_model import reconstruct
+from ems.planner.charge_need import compute_charge_need
 from ems.planner.rule_based import PlannerConfig, plan_rule_based
 from ems.savings import estimate_daily_savings_eur
 from ems.sense import Recorder
@@ -246,6 +247,18 @@ def create_app(
             "plan_reason": reason,
             "override_active": override_active,
         }
+
+    @app.get("/api/charge-need")
+    def charge_need_endpoint() -> dict:
+        # Advisory: how much the battery should hold by tonight, from current SoC + battery config.
+        s = settings_cache
+        return compute_charge_need(
+            soc_pct=source.read().soc_pct,
+            usable_kwh=s["battery.usable_kwh"],
+            min_reserve_soc=s["battery.min_reserve_soc"],
+            night_reserve_kwh=s["battery.night_reserve_kwh"],
+            overnight_load_kwh=s["battery.overnight_load_kwh"],
+        ).to_dict()
 
     @app.get("/api/override")
     def get_override() -> dict:

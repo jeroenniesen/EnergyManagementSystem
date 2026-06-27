@@ -132,12 +132,33 @@ body {
 .seg-discharge_for_load { background: var(--amber); }
 .plan-reason { color: var(--muted); font-size: 0.8rem; margin: 10px 0 0; }
 
-.override {
+.override, .charge-need {
   margin-top: 24px;
   background: var(--panel);
   border: 1px solid var(--line);
   border-radius: 14px;
   padding: 18px;
+}
+.charge-bar {
+  position: relative;
+  height: 14px;
+  margin: 14px 0 4px;
+  background: var(--panel-2);
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  overflow: hidden;
+}
+.charge-bar-fill {
+  position: absolute;
+  left: 0; top: 0; bottom: 0;
+  background: linear-gradient(to right, rgba(70, 200, 168, 0.5), var(--accent));
+}
+.charge-bar-target {
+  position: absolute;
+  top: 0; bottom: 0;
+  width: 2px;
+  background: var(--text);
+  transform: translateX(-1px);
 }
 .override-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
 .override-hint { color: var(--muted); font-size: 0.78rem; margin: 8px 0 14px; }

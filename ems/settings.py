@@ -73,6 +73,27 @@ SETTINGS_SCHEMA: tuple[SettingsField, ...] = (
         "control.allow_export_discharge", "Allow export discharge", "bool", False, "control",
         help="Permit forced DISCHARGE for export. Off = serve load via vendor AUTO (fail-safe).",
     ),
+    # Battery & reserve — feed the "tonight's charge target" readout (SPEC §8.3 step 1).
+    SettingsField(
+        "battery.usable_kwh", "Usable capacity", "number", 10.8, "battery",
+        help="Usable energy of the battery cluster (SolidFlex 2000 ×2 ≈ 10.8 kWh).",
+        min=1.0, max=50.0, step=0.1, unit="kWh",
+    ),
+    SettingsField(
+        "battery.min_reserve_soc", "Reserve floor", "number", 10.0, "battery",
+        help="State of charge the EMS never discharges below.",
+        min=0.0, max=50.0, step=1.0, unit="%",
+    ),
+    SettingsField(
+        "battery.night_reserve_kwh", "Night reserve", "number", 2.0, "battery",
+        help="Extra buffer to hold for the night, on top of the expected load.",
+        min=0.0, max=20.0, step=0.5, unit="kWh",
+    ),
+    SettingsField(
+        "battery.overnight_load_kwh", "Overnight load", "number", 6.0, "battery",
+        help="Estimated house consumption from sunset to sunrise.",
+        min=0.0, max=50.0, step=0.5, unit="kWh",
+    ),
     # Solar array — change these and /api/forecast recomputes immediately (mock derate; real
     # adapters configure orientation on their own side).
     SettingsField(
