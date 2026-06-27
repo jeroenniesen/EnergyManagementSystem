@@ -31,6 +31,7 @@ type Decision = {
   applied: boolean;
   outcome: string;
   reason: string;
+  plan_reason?: string | null;
 };
 
 type Battery = {
@@ -245,6 +246,7 @@ export function App() {
             {" — "}
             {decision.reason}
           </p>
+          {decision.plan_reason && <p className="plan-reason">plan: {decision.plan_reason}</p>}
         </section>
       )}
 

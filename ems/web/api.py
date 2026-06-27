@@ -109,7 +109,8 @@ def create_app(
         if cur is None:
             return {"intent": None, "desired_mode": None, "applied": False,
                     "outcome": "no_plan", "reason": "no plan slot for now"}
-        d = controller.decide(cur.intent, now)
+        # preview() is read-only — a GET must never write to the battery or mutate counters.
+        d = controller.preview(cur.intent, now)
         return {
             "intent": d.intent,
             "desired_mode": d.desired_mode,

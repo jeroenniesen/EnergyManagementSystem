@@ -78,3 +78,31 @@ def test_failed_apply_recovers_to_auto():
     assert dec.outcome == "failed_recovered"
     assert dec.desired_mode is PhysicalMode.AUTO
     assert d.current_mode() is PhysicalMode.AUTO  # recovered to safe mode
+
+
+def test_failed_apply_and_failed_recovery_is_flagged():
+    d = FailingMockBatteryDriver(fail_times=2)  # both the apply AND the AUTO recovery fail
+    ctl = ModeController(d, _controlling_lifecycle(), dry_run=False)
+    dec = ctl.decide(BatteryIntent.GRID_CHARGE_TO_TARGET, T0 + timedelta(seconds=200))
+    assert dec.outcome == "failed_unrecovered"
+    assert dec.applied is False
+
+
+def test_preview_never_writes_even_when_controlling():
+    d = MockBatteryDriver()
+    ctl = ModeController(d, _controlling_lifecycle(), dry_run=False)
+    dec = ctl.preview(BatteryIntent.GRID_CHARGE_TO_TARGET, T0 + timedelta(seconds=200))
+    assert dec.outcome == "would_apply"
+    assert dec.applied is False
+    assert d.current_mode() is PhysicalMode.AUTO  # NOT written
+    assert ctl.switches_today == 0  # NOT mutated
+
+
+def test_switch_cap_resets_on_a_new_local_day():
+    d = MockBatteryDriver()
+    ctl = ModeController(d, _controlling_lifecycle(), dry_run=False, max_switches_per_day=1)
+    ctl.decide(BatteryIntent.GRID_CHARGE_TO_TARGET, T0 + timedelta(seconds=200))  # switch 1/1
+    blocked = ctl.decide(BatteryIntent.HOLD_RESERVE, T0 + timedelta(seconds=900))  # same day
+    assert blocked.outcome == "cap_reached"
+    next_day = ctl.decide(BatteryIntent.HOLD_RESERVE, T0 + timedelta(days=1, seconds=200))
+    assert next_day.outcome == "applied"  # counter reset at the new local date
