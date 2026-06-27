@@ -7,8 +7,18 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from ems.alerts import CRITICAL_SIGNALS  # single source of truth (no drift)
+
 # Severity ordering for rolling up an overall status.
 _RANK = {"ok": 0, "warn": 1, "fail": 2}
+# Friendly per-signal labels for the live sensor checks.
+_SIGNAL_LABEL = {
+    "grid": "Sensor: grid (P1)",
+    "solar": "Sensor: solar",
+    "ev": "Sensor: EV",
+    "battery": "Sensor: battery power",
+    "soc": "Sensor: battery SoC",
+}
 
 
 @dataclass(frozen=True)
@@ -47,11 +57,12 @@ def build_diagnostics(
     store_ok: bool,
     settings_store_ok: bool,
     auth_required: bool,
+    freshness: dict[str, str] | None = None,
 ) -> list[Check]:
     dq_status = {"complete": "ok", "degraded": "warn", "price_fallback": "warn"}.get(
         data_quality, "fail"
     )
-    return [
+    checks = [
         Check("mode", "Run mode", "ok",
               f"{dev_mode}, dry-run {'on' if dry_run else 'off'}"),
         Check("history_store", "History store", "ok" if store_ok else "fail",
@@ -72,3 +83,14 @@ def build_diagnostics(
               "protected by a token" if auth_required
               else "open — set EMS_WEB_TOKEN to require a token for writes"),
     ]
+    # Per-signal live sensor visibility: shows exactly which devices are reporting (the "senses").
+    for sig, state in (freshness or {}).items():
+        if state == "fresh":
+            status = "ok"
+        elif state == "missing":
+            status = "fail" if sig in CRITICAL_SIGNALS else "warn"
+        else:  # stale
+            status = "fail" if sig in CRITICAL_SIGNALS else "warn"
+        label = _SIGNAL_LABEL.get(sig, f"Sensor: {sig}")
+        checks.append(Check(f"sensor.{sig}", label, status, state))
+    return checks

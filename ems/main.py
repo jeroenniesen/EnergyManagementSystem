@@ -25,10 +25,45 @@ _REPO_ROOT = Path(__file__).parent.parent
 _STATIC_DIR = Path(__file__).parent / "web" / "static" / "dist"
 
 
+def _build_sources(cfg, tz):
+    """Return (source, price_source, battery_endpoint, dev_mode, dry_run).
+
+    Live mode reads the HomeWizard meters + (optionally) the Indevolt battery, READ-ONLY. It never
+    wires a battery WRITER and forces dry_run on — we only sense the battery, never command it.
+    """
+    if cfg.sources_mode == "live":
+        from ems.sources.indevolt import IndevoltReadClient
+        from ems.sources.live import HomeWizardMeter, LiveSource
+
+        key = os.environ.get("INDEVOLT_KEY") or None
+        battery_reader = (
+            IndevoltReadClient(cfg.indevolt_ip, key=key, port=cfg.indevolt_port)
+            if cfg.indevolt_ip
+            else None
+        )
+        source = LiveSource(
+            p1=HomeWizardMeter(cfg.p1_ip),
+            solar=HomeWizardMeter(cfg.solar_ip),
+            car=HomeWizardMeter(cfg.car_ip),
+            battery=battery_reader,
+        )
+        # No live battery capabilities until the probe (device key) exists -> honest "no driver".
+        dev_mode, dry_run, battery_endpoint = "live", True, None
+    else:
+        source = MockSource()
+        dev_mode, dry_run, battery_endpoint = cfg.dev_mode, cfg.dry_run, MockBatteryDriver()
+
+    if cfg.prices_provider == "tibber":
+        from ems.sources.tibber import TibberPriceSource
+
+        price_source = TibberPriceSource(os.environ.get("TIBBER_TOKEN", ""), tz=tz)
+    else:
+        price_source = MockPriceSource(tz)
+    return source, price_source, battery_endpoint, dev_mode, dry_run
+
+
 def build_app():
     cfg = load_config("config.yaml")
-    # M0a: only the mock source exists; live sources arrive with the HA client (later M0a task).
-    source = MockSource()
     # Anchor a relative db_path to the repo root so it doesn't depend on the process CWD.
     db_path = Path(cfg.db_path)
     if not db_path.is_absolute():
@@ -39,23 +74,24 @@ def build_app():
     override_store = SettingsStore(str(db_path), table="runtime_state")
     freshness = FreshnessTracker()
     freshness.register(*SIGNALS)
-    recorder = Recorder(source, store, freshness, cycle_seconds=cfg.cycle_seconds)
     tz = ZoneInfo(cfg.timezone)
-    price_source = MockPriceSource(tz)
-    solar_forecast = MockSolarForecastSource(tz)
-    battery = MockBatteryDriver()
-    lifecycle = Lifecycle(dry_run=cfg.dry_run)
-    controller = ModeController(battery, lifecycle, dry_run=cfg.dry_run)
+    source, price_source, battery_endpoint, dev_mode, dry_run = _build_sources(cfg, tz)
+    recorder = Recorder(source, store, freshness, cycle_seconds=cfg.cycle_seconds)
+    solar_forecast = MockSolarForecastSource(tz)  # forecast stays mock (no Solcast key / lat-lon)
+    lifecycle = Lifecycle(dry_run=dry_run)
+    # The controller's driver is ALWAYS the mock (preview-only, never writes in dry-run). There is
+    # deliberately no live battery writer in the codebase — the live path only senses the battery.
+    controller = ModeController(MockBatteryDriver(), lifecycle, dry_run=dry_run)
     app = create_app(
         source,
-        dry_run=cfg.dry_run,
-        dev_mode=cfg.dev_mode,
+        dry_run=dry_run,
+        dev_mode=dev_mode,
         store=store,
         freshness=freshness,
         recorder=recorder,
         price_source=price_source,
         solar_forecast=solar_forecast,
-        battery=battery,
+        battery=battery_endpoint,
         controller=controller,
         settings_store=settings_store,
         override_store=override_store,

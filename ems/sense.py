@@ -36,12 +36,19 @@ class Recorder:
         self._clock = clock
 
     async def sense_once(self, now: datetime) -> None:
-        # Offload the source read to a thread: future live sources (HA/HomeWizard/Tibber) do
-        # blocking network I/O and must not stall the event loop (SPEC §5.3 / KISS for now).
-        raw = await asyncio.to_thread(self.source.read)
+        # Offload the source read to a thread: live sources (HomeWizard/Tibber/Indevolt) do
+        # blocking network I/O and must not stall the event loop (SPEC §5.3).
+        # A source may implement read_sample() -> (RawSample, fresh signals) to report partial
+        # availability; otherwise read() is treated as all-fresh (e.g. the deterministic mock).
+        read_sample = getattr(self.source, "read_sample", None)
+        if read_sample is not None:
+            raw, fresh = await asyncio.to_thread(read_sample)
+        else:
+            raw = await asyncio.to_thread(self.source.read)
+            fresh = set(SIGNALS)
         derived = reconstruct(raw)
         await self.store.record(now.isoformat(), raw, derived)
-        for sig in SIGNALS:
+        for sig in fresh:
             self.freshness.mark(sig, now)
 
     async def record_now(self) -> None:

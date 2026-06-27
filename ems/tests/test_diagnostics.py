@@ -53,3 +53,21 @@ def test_auth_check_reflects_protection():
 
 def test_overall_status_empty_is_ok():
     assert overall_status([]) == "ok"
+
+
+def test_per_signal_sensor_checks_from_freshness():
+    fr = {"grid": "fresh", "solar": "fresh", "ev": "fresh",
+          "battery": "missing", "soc": "missing"}
+    checks = build_diagnostics(**_facts(), freshness=fr)
+    by_key = {c.key: c for c in checks}
+    assert by_key["sensor.grid"].status == "ok"
+    assert by_key["sensor.battery"].status == "warn"  # non-critical signal missing -> warn
+    assert by_key["sensor.soc"].status == "fail"  # critical signal missing -> fail
+    # A stale critical signal is also a failure.
+    stale = {c.key: c for c in build_diagnostics(**_facts(), freshness={"grid": "stale"})}
+    assert stale["sensor.grid"].status == "fail"
+
+
+def test_no_sensor_checks_without_freshness():
+    keys = {c.key for c in build_diagnostics(**_facts())}
+    assert not any(k.startswith("sensor.") for k in keys)
