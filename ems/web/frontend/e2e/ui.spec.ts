@@ -110,6 +110,12 @@ test.describe("EMS dashboard", () => {
     await expect(page.getByTestId("check-battery")).toBeVisible();
     await expect(page.getByTestId("check-auth")).toContainText("open");
     await expect(page.getByTestId("system-overall")).toBeVisible();
+    // Export links present with the right download hrefs.
+    await expect(page.getByTestId("export-raw")).toHaveAttribute(
+      "href",
+      "/api/export?kind=raw&format=csv",
+    );
+    await expect(page.getByTestId("export-derived")).toBeVisible();
     // Dashboard panels hidden while on the System view.
     await expect(page.getByTestId("status-grid")).toHaveCount(0);
   });

@@ -279,6 +279,10 @@ body {
 .settings-msg-err { color: #f0a3a3; font-size: 0.85rem; }
 .settings-dirty { color: var(--amber); font-size: 0.8rem; }
 
+.export { margin-top: 24px; }
+.export-links { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 10px; }
+.export-links a { text-decoration: none; }
+
 /* System diagnostics */
 .checks { list-style: none; margin: 16px 0 0; padding: 0; display: flex; flex-direction: column; gap: 1px; }
 .check {

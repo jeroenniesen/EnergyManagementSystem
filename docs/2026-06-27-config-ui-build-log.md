@@ -13,9 +13,9 @@ Baseline before this series: backend 103 → (loop 0 handoff fixes) 103, e2e 23 
 | 4 | PV-array settings (kWp/tilt/azimuth) wired live into the solar forecast | `orientation_factor`, mutable forecast attrs, `_apply_site_settings`, 3 site.* fields | "Solar array" settings group | 140 pytest, 32 e2e | duck-typing → explicit `_ems_site_configurable` opt-in marker |
 | 5 | Battery/reserve settings + advisory charge-need readout | `charge_need.py`, 4 battery.* fields, `/api/charge-need` | ChargeTarget card (SoC bar + target + reason) | 147 pytest, 33 e2e | clamp target marker visible at 100% |
 | 6 | Bearer-token auth on the two mutating endpoints; reads stay open | `_authorized`/`_auth_error`, `/api/auth`, gated POSTs, `EMS_WEB_TOKEN` env | `auth.ts`, Settings Access section + token on writes, Override 401 msg | 154 pytest, 35 e2e | non-ASCII token → clean 401 (wrap compare_digest) |
-| 7 | "System" diagnostics page — readiness checks + overall status | `diagnostics.py`, `/api/diagnostics` (probes stores/battery/plan) | `System.tsx` nav tab + checks list | 162 pytest, 36 e2e | (running) |
+| 7 | "System" diagnostics page — readiness checks + overall status | `diagnostics.py`, `/api/diagnostics` (probes stores/battery/plan) | `System.tsx` nav tab + checks list | 164 pytest, 36 e2e | battery.probe via to_thread+guard (no loop block/500); Check validates status; poll gated to dashboard view |
+| 8 | CSV/JSON history export | public column consts, `/api/export?kind&format&limit` | System view download links | 169 pytest, 38 e2e | (running) |
 
 ## Planned remaining loops
-- L8: Data export (`/api/export` CSV/JSON) + UI download.
-- L9: Plan validator / accessibility & polish sweep.
+- L9: Data-quality fail-safe gate — unsafe data forces self-consumption (AUTO) in the decision (SPEC §8.11 / CLAUDE.md "fail safe").
 - L10: Assess remaining SPEC gaps; write the build/gap report.

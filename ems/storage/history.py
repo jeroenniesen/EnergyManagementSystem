@@ -11,6 +11,9 @@ from ems.load_model import DerivedSample
 
 _RAW_COLS = ("ts", "grid_power_w", "solar_power_w", "battery_power_w", "ev_power_w", "soc_pct")
 _DERIVED_COLS = ("ts", "house_load_w", "non_ev_load_w")
+# Public column order for CSV export (header is stable even when there are no rows yet).
+RAW_COLUMNS = _RAW_COLS
+DERIVED_COLUMNS = _DERIVED_COLS
 _BUSY_TIMEOUT_MS = 3000
 
 

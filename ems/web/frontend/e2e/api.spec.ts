@@ -104,6 +104,20 @@ test.describe("EMS API", () => {
     expect(b.alerts.some((a: { key: string }) => a.key === "dry_run_active")).toBe(true);
   });
 
+  test("export returns a CSV download with the expected header", async ({ request }) => {
+    const r = await request.get("/api/export?kind=raw&format=csv");
+    expect(r.ok()).toBeTruthy();
+    expect(r.headers()["content-type"]).toContain("text/csv");
+    expect(r.headers()["content-disposition"]).toContain("attachment");
+    expect((await r.text()).split("\n")[0].trim()).toBe(
+      "ts,grid_power_w,solar_power_w,battery_power_w,ev_power_w,soc_pct",
+    );
+  });
+
+  test("export rejects an invalid kind", async ({ request }) => {
+    expect((await request.get("/api/export?kind=bogus")).status()).toBe(422);
+  });
+
   test("savings returns a non-negative estimate", async ({ request }) => {
     const b = await (await request.get("/api/savings")).json();
     expect(typeof b.today_eur).toBe("number");
