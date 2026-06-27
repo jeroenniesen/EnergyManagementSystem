@@ -97,4 +97,10 @@ test.describe("EMS API", () => {
     expect(["complete", "degraded", "price_fallback", "unsafe"]).toContain(b.data_quality);
     expect(b.alerts.some((a: { key: string }) => a.key === "dry_run_active")).toBe(true);
   });
+
+  test("savings returns a non-negative estimate", async ({ request }) => {
+    const b = await (await request.get("/api/savings")).json();
+    expect(typeof b.today_eur).toBe("number");
+    expect(b.today_eur).toBeGreaterThanOrEqual(0);
+  });
 });

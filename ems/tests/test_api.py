@@ -241,6 +241,19 @@ def test_alerts_endpoint_unsafe_without_freshness():
     assert b["data_quality"] == "unsafe"
 
 
+def test_savings_endpoint():
+    from zoneinfo import ZoneInfo
+
+    from ems.sources.prices import MockPriceSource
+
+    app = create_app(
+        MockSource(), dry_run=True, dev_mode="mock",
+        price_source=MockPriceSource(ZoneInfo("Europe/Amsterdam")),
+    )
+    assert TestClient(app).get("/api/savings").json()["today_eur"] >= 0
+    assert _client().get("/api/savings").json()["today_eur"] is None  # no source
+
+
 def test_unknown_api_path_returns_json_404(tmp_path):
     # An unknown /api/* path must be JSON 404, not the SPA index served as 200.
     dist = tmp_path / "dist"
