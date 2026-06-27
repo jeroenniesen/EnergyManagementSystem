@@ -22,6 +22,13 @@ test.describe("EMS dashboard", () => {
     await expect(page.getByTestId("error")).toHaveCount(0);
   });
 
+  test("shows per-signal freshness chips", async ({ page }) => {
+    await page.goto("/");
+    const fr = page.getByTestId("freshness");
+    await expect(fr).toBeVisible();
+    await expect(fr).toContainText("grid: fresh");
+  });
+
   test("shows the error banner when the status API returns 500", async ({ page }) => {
     await page.route("**/api/status", (route) =>
       route.fulfill({ status: 500, contentType: "application/json", body: '{"detail":"boom"}' }),

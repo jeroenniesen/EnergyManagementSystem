@@ -5,5 +5,8 @@ dev:
   mode: mock          # mock | replay | live  (mock/replay need no HA/battery and force dry_run)
 control:
   dry_run: true
+  cycle_seconds: 5     # dev: collect a sample every 5s so the dashboard updates live (prod default 300)
+history:
+  db_path: ems/data/ems.sqlite
 web:
   port: 8080

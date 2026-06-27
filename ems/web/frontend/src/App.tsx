@@ -12,6 +12,7 @@ type Status = {
 };
 
 type Series = { raw: Record<string, number>[]; derived: Record<string, number>[] };
+type FreshnessMap = Record<string, string>;
 
 const POLL_MS = 5000;
 
@@ -32,6 +33,7 @@ function Metric({ label, value, hint }: { label: string; value: string; hint?: s
 export function App() {
   const [status, setStatus] = useState<Status | null>(null);
   const [series, setSeries] = useState<Series | null>(null);
+  const [freshness, setFreshness] = useState<FreshnessMap | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
@@ -43,13 +45,15 @@ export function App() {
     }
     async function poll() {
       try {
-        const [s, ser] = await Promise.all([
+        const [s, ser, fr] = await Promise.all([
           getJson("/api/status"),
           getJson("/api/series?limit=50"),
+          getJson("/api/freshness"),
         ]);
         if (!alive) return;
         setStatus(s);
         setSeries(ser);
+        setFreshness(fr);
         setError(null);
       } catch (e) {
         if (alive) setError(String(e));
@@ -96,6 +100,17 @@ export function App() {
             hint={status.battery_power_w >= 0 ? "discharging" : "charging"}
           />
           <Metric label="Non-EV load" value={fmtW(status.non_ev_load_w)} hint="excludes car" />
+        </section>
+      )}
+
+      {freshness && Object.keys(freshness).length > 0 && (
+        <section className="freshness" data-testid="freshness">
+          <span className="freshness-title">Signal freshness</span>
+          {Object.entries(freshness).map(([sig, st]) => (
+            <span key={sig} className={`chip chip-${st}`} data-signal={sig}>
+              {sig}: {st}
+            </span>
+          ))}
         </section>
       )}
 

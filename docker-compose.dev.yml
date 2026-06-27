@@ -4,5 +4,5 @@ services:
     build: .
     ports: ["8080:8080"]
     volumes:
-      - ./ems/data:/data   # SQLite history lands here in a later M0a task
+      - ./ems/data:/app/ems/data   # SQLite history persists (matches history.db_path)
     restart: unless-stopped

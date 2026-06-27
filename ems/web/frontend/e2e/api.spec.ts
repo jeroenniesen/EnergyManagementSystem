@@ -35,4 +35,20 @@ test.describe("EMS API", () => {
     expect((await request.get("/api/series?limit=0")).status()).toBe(422);
     expect((await request.get("/api/series?limit=999999")).status()).toBe(422);
   });
+
+  test("freshness reports per-signal state after the startup sample", async ({ request }) => {
+    const r = await request.get("/api/freshness");
+    expect(r.ok()).toBeTruthy();
+    const b = await r.json();
+    expect(Object.keys(b)).toEqual(
+      expect.arrayContaining(["grid", "solar", "ev", "battery", "soc"]),
+    );
+    expect(b.grid).toBe("fresh"); // recorder took an awaited startup sample
+  });
+
+  test("series contains at least the startup sample", async ({ request }) => {
+    const b = await (await request.get("/api/series")).json();
+    expect(b.raw.length).toBeGreaterThanOrEqual(1);
+    expect(b.derived.length).toBeGreaterThanOrEqual(1);
+  });
 });
