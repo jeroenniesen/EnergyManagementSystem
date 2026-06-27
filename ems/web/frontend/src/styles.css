@@ -54,6 +54,15 @@ body {
 .badge-dryrun { background: rgba(224, 162, 58, 0.16); color: var(--amber); }
 .badge-live { background: rgba(70, 200, 168, 0.16); color: var(--green); }
 .badge-muted { background: var(--panel-2); color: var(--muted); text-transform: none; letter-spacing: 0; font-weight: 500; }
+.badge-dq { letter-spacing: 0; }
+.dq-complete { background: rgba(70, 200, 168, 0.16); color: var(--green); }
+.dq-degraded, .dq-price_fallback { background: rgba(224, 162, 58, 0.16); color: var(--amber); }
+.dq-unsafe { background: rgba(220, 80, 80, 0.18); color: #f0a3a3; }
+
+.alerts { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 20px; }
+.alert-info { color: var(--muted); }
+.alert-warning { color: var(--amber); border-color: rgba(224, 162, 58, 0.4); }
+.alert-critical { color: #f0a3a3; border-color: rgba(220, 80, 80, 0.4); }
 
 .grid {
   display: grid;

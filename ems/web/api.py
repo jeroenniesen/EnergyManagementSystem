@@ -11,6 +11,7 @@ from fastapi import FastAPI, Query
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 
+from ems.alerts import data_quality, derive_alerts
 from ems.control.mode_controller import ModeController
 from ems.freshness import FreshnessTracker
 from ems.load_model import reconstruct
@@ -96,6 +97,26 @@ def create_app(
             "resolution": "quarter_hourly",
             "current_eur_per_kwh": current_price(slots, datetime.now(UTC)),
             "slots": [{"start": s.start.isoformat(), "eur_per_kwh": s.eur_per_kwh} for s in slots],
+        }
+
+    @app.get("/api/alerts")
+    def alerts_endpoint() -> dict:
+        now = datetime.now(UTC)
+        snap = freshness.snapshot(now) if freshness is not None else {}
+        # The controller's would-do outcome (read-only preview) feeds battery-failure alerts.
+        outcome: str | None = None
+        if price_source is not None and controller is not None:
+            cur = plan_rule_based(price_source.slots(), now).intent_at(now)
+            if cur is not None:
+                outcome = controller.preview(cur.intent, now).outcome
+        prices_ok = price_source is not None and snap.get("price", "fresh") != "stale"
+        forecast_ok = solar_forecast is not None
+        alerts = derive_alerts(snap, dry_run=dry_run, decision_outcome=outcome)
+        return {
+            "data_quality": data_quality(snap, prices_ok=prices_ok, forecast_ok=forecast_ok),
+            "alerts": [
+                {"key": a.key, "severity": a.severity, "message": a.message} for a in alerts
+            ],
         }
 
     @app.get("/api/decision")

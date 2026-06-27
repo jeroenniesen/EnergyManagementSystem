@@ -207,6 +207,34 @@ def test_decision_endpoint_unconfigured():
     assert b["outcome"] == "unconfigured"
 
 
+def test_alerts_endpoint_reports_dry_run_and_data_quality():
+    from zoneinfo import ZoneInfo
+
+    from ems.freshness import FreshnessTracker
+    from ems.sense import SIGNALS
+    from ems.sources.forecast import MockSolarForecastSource
+    from ems.sources.prices import MockPriceSource
+
+    fr = FreshnessTracker()
+    fr.register(*SIGNALS)
+    from datetime import UTC, datetime
+
+    now = datetime.now(UTC)
+    for sig in SIGNALS:
+        fr.mark(sig, now)
+    app = create_app(
+        MockSource(),
+        dry_run=True,
+        dev_mode="mock",
+        freshness=fr,
+        price_source=MockPriceSource(ZoneInfo("Europe/Amsterdam")),
+        solar_forecast=MockSolarForecastSource(ZoneInfo("Europe/Amsterdam")),
+    )
+    b = TestClient(app).get("/api/alerts").json()
+    assert b["data_quality"] == "complete"
+    assert any(a["key"] == "dry_run_active" for a in b["alerts"])
+
+
 def test_unknown_api_path_returns_json_404(tmp_path):
     # An unknown /api/* path must be JSON 404, not the SPA index served as 200.
     dist = tmp_path / "dist"

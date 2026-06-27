@@ -34,6 +34,9 @@ type Decision = {
   plan_reason?: string | null;
 };
 
+type AlertItem = { key: string; severity: string; message: string };
+type AlertsResp = { data_quality: string; alerts: AlertItem[] };
+
 type Battery = {
   current_mode: string | null;
   capabilities: {
@@ -152,6 +155,7 @@ export function App() {
   const [plan, setPlan] = useState<Plan | null>(null);
   const [battery, setBattery] = useState<Battery | null>(null);
   const [decision, setDecision] = useState<Decision | null>(null);
+  const [alertsData, setAlertsData] = useState<AlertsResp | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
@@ -163,7 +167,7 @@ export function App() {
     }
     async function poll() {
       try {
-        const [s, ser, fr, pr, fc, pl, bat, dec] = await Promise.all([
+        const [s, ser, fr, pr, fc, pl, bat, dec, al] = await Promise.all([
           getJson("/api/status"),
           getJson("/api/series?limit=50"),
           getJson("/api/freshness"),
@@ -172,6 +176,7 @@ export function App() {
           getJson("/api/plan"),
           getJson("/api/battery"),
           getJson("/api/decision"),
+          getJson("/api/alerts"),
         ]);
         if (!alive) return;
         setStatus(s);
@@ -182,6 +187,7 @@ export function App() {
         setPlan(pl);
         setBattery(bat);
         setDecision(dec);
+        setAlertsData(al);
         setError(null);
       } catch (e) {
         if (alive) setError(String(e));
@@ -208,7 +214,22 @@ export function App() {
           </span>
         )}
         {status && <span className="badge badge-muted">source: {status.dev_mode}</span>}
+        {alertsData && (
+          <span className={`badge badge-dq dq-${alertsData.data_quality}`} data-testid="data-quality">
+            {alertsData.data_quality}
+          </span>
+        )}
       </header>
+
+      {alertsData && alertsData.alerts.length > 0 && (
+        <section className="alerts" data-testid="alerts">
+          {alertsData.alerts.map((a) => (
+            <span key={a.key} className={`chip alert-${a.severity}`}>
+              {a.message}
+            </span>
+          ))}
+        </section>
+      )}
 
       {error && <div className="error" data-testid="error">Cannot reach EMS API: {error}</div>}
 
