@@ -2,9 +2,10 @@
 `MockBatteryDriver` is a CapabilityReport-driven in-memory Indevolt for dev/tests (no HA/hardware).
 
 `intent_to_mode` maps a planner BatteryIntent to the physical mode the controller commands.
-Per SPEC §8.3, "serve load during a peak" is really vendor self-consumption; the forced DISCHARGE
-mode is for deliberate export. For this first mock cut we map DISCHARGE_FOR_LOAD -> DISCHARGE;
-the serve-load-via-AUTO refinement (gated on the M1 P1-zeroing probe) comes with live control.
+Per SPEC §8.3, "serve load during a peak" is really vendor self-consumption, so DISCHARGE_FOR_LOAD
+maps to AUTO by **default**; the forced DISCHARGE mode is reserved for deliberate grid export and is
+only used when `allow_export_discharge=True`. P1-zeroing stays the vendor's job (SPEC §2) — the EMS
+never tries to track instantaneous power.
 """
 from __future__ import annotations
 

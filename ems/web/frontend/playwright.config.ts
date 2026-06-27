@@ -25,7 +25,11 @@ export default defineConfig({
     url: "http://127.0.0.1:8099/health/live",
     reuseExistingServer: false,
     timeout: 60000,
-    env: { PATH: `${process.env.HOME}/.local/bin:${process.env.PATH ?? ""}` },
+    // Repo-local uv cache so the webServer start is hermetic (no shared/sandboxed user cache).
+    env: {
+      PATH: `${process.env.HOME}/.local/bin:${process.env.PATH ?? ""}`,
+      UV_CACHE_DIR: ".uv-cache",
+    },
   },
 });
 
