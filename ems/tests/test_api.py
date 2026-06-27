@@ -137,6 +137,31 @@ def test_forecast_endpoint_without_source():
     assert b["today_kwh_p50"] is None
 
 
+def test_plan_endpoint_returns_slots_and_current_intent():
+    from zoneinfo import ZoneInfo
+
+    from ems.sources.prices import MockPriceSource
+
+    app = create_app(
+        MockSource(),
+        dry_run=True,
+        dev_mode="mock",
+        price_source=MockPriceSource(ZoneInfo("Europe/Amsterdam")),
+    )
+    b = TestClient(app).get("/api/plan").json()
+    assert len(b["slots"]) > 0
+    assert b["current_intent"] in {
+        "allow_self_consumption", "grid_charge_to_target", "hold_reserve", "discharge_for_load",
+    }
+    assert b["slots"][0]["reason"]
+
+
+def test_plan_endpoint_without_source():
+    b = _client().get("/api/plan").json()
+    assert b["slots"] == []
+    assert b["current_intent"] is None
+
+
 def test_unknown_api_path_returns_json_404(tmp_path):
     # An unknown /api/* path must be JSON 404, not the SPA index served as 200.
     dist = tmp_path / "dist"

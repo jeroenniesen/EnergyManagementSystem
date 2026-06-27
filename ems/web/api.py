@@ -13,6 +13,7 @@ from fastapi.staticfiles import StaticFiles
 
 from ems.freshness import FreshnessTracker
 from ems.load_model import reconstruct
+from ems.planner.rule_based import plan_rule_based
 from ems.sense import Recorder
 from ems.sources.base import Source
 from ems.sources.forecast import SolarForecastSource, day_kwh_p50
@@ -91,6 +92,24 @@ def create_app(
             "resolution": "quarter_hourly",
             "current_eur_per_kwh": current_price(slots, datetime.now(UTC)),
             "slots": [{"start": s.start.isoformat(), "eur_per_kwh": s.eur_per_kwh} for s in slots],
+        }
+
+    @app.get("/api/plan")
+    def plan_endpoint() -> dict:
+        if price_source is None:
+            return {"created_at": None, "current_intent": None,
+                    "current_reason": None, "slots": []}
+        now = datetime.now(UTC)
+        plan = plan_rule_based(price_source.slots(), now)
+        cur = plan.intent_at(now)
+        return {
+            "created_at": plan.created_at.isoformat(),
+            "current_intent": cur.intent if cur else None,
+            "current_reason": cur.reason if cur else None,
+            "slots": [
+                {"start": s.start.isoformat(), "intent": s.intent, "reason": s.reason}
+                for s in plan.slots
+            ],
         }
 
     @app.get("/api/forecast")

@@ -92,6 +92,14 @@ body {
 }
 .bar-solar { background: linear-gradient(to top, var(--amber), rgba(224, 162, 58, 0.3)); }
 
+.timeline { display: flex; gap: 1px; height: 22px; border-radius: 4px; overflow: hidden; }
+.seg { flex: 1 1 0; min-width: 1px; }
+.seg-allow_self_consumption { background: #2a313c; }
+.seg-grid_charge_to_target { background: var(--green); }
+.seg-hold_reserve { background: #5b6473; }
+.seg-discharge_for_load { background: var(--amber); }
+.plan-reason { color: var(--muted); font-size: 0.8rem; margin: 10px 0 0; }
+
 .freshness {
   display: flex;
   flex-wrap: wrap;
