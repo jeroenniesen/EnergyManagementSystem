@@ -7,6 +7,7 @@ dependencies = [
     "fastapi>=0.110",
     "uvicorn[standard]>=0.29",
     "pyyaml>=6.0",
+    "aiosqlite>=0.20",
 ]
 
 [project.optional-dependencies]
