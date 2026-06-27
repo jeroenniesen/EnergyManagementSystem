@@ -18,9 +18,15 @@ def test_stale_critical_signal_is_critical():
 
 def test_battery_failure_outcomes_map_to_severity():
     a1 = derive_alerts(ALL_FRESH, dry_run=False, decision_outcome="failed_unrecovered")
-    assert any(a.key == "battery_write_failed" and a.severity == "critical" for a in a1)
+    assert any(a.key == "battery_write_failed_unrecovered" and a.severity == "critical" for a in a1)
     a2 = derive_alerts(ALL_FRESH, dry_run=False, decision_outcome="failed_recovered")
-    assert any(a.key == "battery_write_failed" and a.severity == "warning" for a in a2)
+    assert any(a.key == "battery_write_failed_recovered" and a.severity == "warning" for a in a2)
+
+
+def test_data_quality_precedence_price_fallback_over_degraded():
+    # Missing price + a stale non-critical signal -> price_fallback (more severe sibling).
+    fr = {**ALL_FRESH, "solar": "stale"}
+    assert data_quality(fr, prices_ok=False, forecast_ok=True) == "price_fallback"
 
 
 def test_data_quality_levels():

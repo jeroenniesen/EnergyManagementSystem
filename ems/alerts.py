@@ -32,16 +32,20 @@ def derive_alerts(
             sev = "critical" if sig in _CRITICAL_SIGNALS else "warning"
             alerts.append(Alert(f"{sig}_stale", sev, f"{sig} signal stale"))
     if decision_outcome == "failed_unrecovered":
-        alerts.append(Alert("battery_write_failed", "critical",
+        alerts.append(Alert("battery_write_failed_unrecovered", "critical",
                             "Battery write AND AUTO recovery both unconfirmed"))
     elif decision_outcome == "failed_recovered":
-        alerts.append(Alert("battery_write_failed", "warning",
+        alerts.append(Alert("battery_write_failed_recovered", "warning",
                             "Battery write unconfirmed; reverted to AUTO"))
     return alerts
 
 
 def data_quality(freshness: dict[str, str], *, prices_ok: bool, forecast_ok: bool) -> str:
-    """complete | degraded | price_fallback | unsafe (SPEC §8.11)."""
+    """complete | degraded | price_fallback | unsafe (SPEC §8.11).
+
+    Precedence (most severe first): unsafe > price_fallback > degraded > complete. So a missing
+    price with a simultaneously-stale non-critical signal reports price_fallback (the per-signal
+    staleness still surfaces separately as an alert)."""
     for sig in _CRITICAL_SIGNALS:
         if freshness.get(sig, "missing") != "fresh":
             return "unsafe"  # can't safely reconstruct/plan

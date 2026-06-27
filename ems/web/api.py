@@ -109,7 +109,7 @@ def create_app(
             cur = plan_rule_based(price_source.slots(), now).intent_at(now)
             if cur is not None:
                 outcome = controller.preview(cur.intent, now).outcome
-        prices_ok = price_source is not None and snap.get("price", "fresh") != "stale"
+        prices_ok = price_source is not None  # price staleness isn't tracked in freshness yet
         forecast_ok = solar_forecast is not None
         alerts = derive_alerts(snap, dry_run=dry_run, decision_outcome=outcome)
         return {

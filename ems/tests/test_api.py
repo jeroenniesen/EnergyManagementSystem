@@ -235,6 +235,12 @@ def test_alerts_endpoint_reports_dry_run_and_data_quality():
     assert any(a["key"] == "dry_run_active" for a in b["alerts"])
 
 
+def test_alerts_endpoint_unsafe_without_freshness():
+    # No freshness tracker wired -> critical signals missing -> unsafe (cold start).
+    b = _client().get("/api/alerts").json()
+    assert b["data_quality"] == "unsafe"
+
+
 def test_unknown_api_path_returns_json_404(tmp_path):
     # An unknown /api/* path must be JSON 404, not the SPA index served as 200.
     dist = tmp_path / "dist"
