@@ -1,5 +1,7 @@
 import { useEffect, useState } from "react";
 
+import { authHeaders } from "./auth";
+
 type OverrideState = {
   intent: string | null;
   expires_at: string | null;
@@ -56,11 +58,13 @@ export function OverrideCard() {
     try {
       const r = await fetch("/api/override", {
         method: "POST",
-        headers: { "content-type": "application/json" },
+        headers: { "content-type": "application/json", ...authHeaders() },
         body: JSON.stringify(payload),
       });
       const b = await r.json();
-      if (r.status === 422) {
+      if (r.status === 401) {
+        setErr("Unauthorized — set an access token in Settings.");
+      } else if (r.status === 422) {
         setErr(Object.values(b.errors ?? {}).join("; ") || "invalid override");
       } else if (!r.ok) {
         throw new Error(b.detail ?? `HTTP ${r.status}`);
