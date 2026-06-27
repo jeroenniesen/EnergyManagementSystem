@@ -10,3 +10,16 @@ history:
   db_path: ems/data/ems.sqlite
 web:
   port: 8080
+
+# Telemetry sources. Default 'mock' runs credential-free. Set mode: live (or env EMS_SOURCES=live)
+# to read the real devices below — READ-ONLY sensing; the battery is never commanded.
+sources:
+  mode: mock           # mock | live
+prices:
+  provider: mock       # mock | tibber  (tibber needs the TIBBER_TOKEN env var)
+devices:               # local LAN addresses (read-only)
+  p1_ip: 192.168.50.92
+  solar_ip: 192.168.50.37
+  car_ip: 192.168.50.98
+  indevolt_ip: 192.168.50.53   # main tower; cluster read as one logical device
+  indevolt_port: 8080
