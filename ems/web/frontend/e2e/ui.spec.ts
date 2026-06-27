@@ -1,6 +1,26 @@
 import { expect, test } from "@playwright/test";
 
 test.describe("EMS dashboard", () => {
+  test("the whole dashboard explains itself (all panels render together)", async ({ page }) => {
+    // GOAL §2 litmus: a first-time viewer sees status, price, forecast, plan, controller
+    // decision, freshness and data-quality all on one screen, with no error banner.
+    await page.goto("/");
+    for (const id of [
+      "run-mode-badge",
+      "data-quality",
+      "status-grid",
+      "decision",
+      "plan",
+      "prices",
+      "forecast",
+      "freshness",
+      "alerts",
+    ]) {
+      await expect(page.getByTestId(id), `panel ${id} should render`).toBeVisible();
+    }
+    await expect(page.getByTestId("error")).toHaveCount(0);
+  });
+
   test("renders the status dashboard with reconstructed load", async ({ page }) => {
     await page.goto("/");
     await expect(page.getByRole("heading", { name: "Smart Energy Manager" })).toBeVisible();
