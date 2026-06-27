@@ -73,6 +73,22 @@ SETTINGS_SCHEMA: tuple[SettingsField, ...] = (
         "control.allow_export_discharge", "Allow export discharge", "bool", False, "control",
         help="Permit forced DISCHARGE for export. Off = serve load via vendor AUTO (fail-safe).",
     ),
+    # Solar array — change these and /api/forecast recomputes immediately (mock derate; real
+    # adapters configure orientation on their own side).
+    SettingsField(
+        "site.kwp", "Array size", "number", 3.0, "site",
+        help="Installed PV peak power.", min=0.5, max=30.0, step=0.1, unit="kWp",
+    ),
+    SettingsField(
+        "site.tilt", "Panel tilt", "number", 35.0, "site",
+        help="Tilt from horizontal (0 = flat, 90 = vertical). Optimal ≈ 35°.",
+        min=0.0, max=90.0, step=1.0, unit="°",
+    ),
+    SettingsField(
+        "site.azimuth", "Panel azimuth", "number", 0.0, "site",
+        help="Compass orientation: 0 = due south, −90 = east, +90 = west.",
+        min=-180.0, max=180.0, step=5.0, unit="°",
+    ),
     # Presentation.
     SettingsField(
         "ui.theme", "Theme", "enum", "auto", "ui",
