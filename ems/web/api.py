@@ -5,9 +5,16 @@ from fastapi import FastAPI
 
 from ems.load_model import reconstruct
 from ems.sources.base import Source
+from ems.storage.history import HistoryStore
 
 
-def create_app(source: Source, *, dry_run: bool, dev_mode: str) -> FastAPI:
+def create_app(
+    source: Source,
+    *,
+    dry_run: bool,
+    dev_mode: str,
+    store: HistoryStore | None = None,
+) -> FastAPI:
     app = FastAPI(title="Smart Energy Manager", version="0.0.1")
 
     @app.get("/health/live")
@@ -17,6 +24,15 @@ def create_app(source: Source, *, dry_run: bool, dev_mode: str) -> FastAPI:
     @app.get("/health/ready")
     def ready() -> dict:
         return {"status": "ready", "dry_run": dry_run, "dev_mode": dev_mode}
+
+    @app.get("/api/series")
+    async def series(limit: int = 100) -> dict:
+        if store is None:
+            return {"raw": [], "derived": []}
+        return {
+            "raw": await store.recent_raw(limit),
+            "derived": await store.recent_derived(limit),
+        }
 
     @app.get("/api/status")
     def status() -> dict:
