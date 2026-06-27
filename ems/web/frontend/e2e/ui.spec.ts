@@ -32,6 +32,12 @@ test.describe("EMS dashboard", () => {
     await expect(page.getByTestId("price-now")).toContainText("/ kWh");
   });
 
+  test("shows a data-quality badge and the dry-run alert", async ({ page }) => {
+    await page.goto("/");
+    await expect(page.getByTestId("data-quality")).toBeVisible();
+    await expect(page.getByTestId("alerts")).toContainText("Dry-run");
+  });
+
   test("shows the controller decision (dry-run) panel", async ({ page }) => {
     await page.goto("/");
     const dec = page.getByTestId("decision");

@@ -91,4 +91,10 @@ test.describe("EMS API", () => {
     expect(b.applied).toBe(false);
     expect(b.reason).toContain("dry-run");
   });
+
+  test("alerts reports a data-quality level and the dry-run alert", async ({ request }) => {
+    const b = await (await request.get("/api/alerts")).json();
+    expect(["complete", "degraded", "price_fallback", "unsafe"]).toContain(b.data_quality);
+    expect(b.alerts.some((a: { key: string }) => a.key === "dry_run_active")).toBe(true);
+  });
 });
