@@ -1,0 +1,8 @@
+# Local dev / Mac testing (SPEC §11.6) — dev/mock mode, no HA/battery/GPU.
+services:
+  ems:
+    build: .
+    ports: ["8080:8080"]
+    volumes:
+      - ./ems/data:/data   # SQLite history lands here in a later M0a task
+    restart: unless-stopped
