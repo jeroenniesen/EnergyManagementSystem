@@ -51,7 +51,7 @@ function PriceCurve({ prices }: { prices: Prices }) {
             key={i}
             className="bar"
             style={{ height: `${(s.eur_per_kwh / max) * 100}%` }}
-            title={`${new Date(s.start).getHours()}:00 — €${s.eur_per_kwh.toFixed(2)}`}
+            title={`${s.start.substring(11, 16)} — €${s.eur_per_kwh.toFixed(2)}`}
           />
         ))}
       </div>

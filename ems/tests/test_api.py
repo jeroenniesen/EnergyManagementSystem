@@ -108,6 +108,12 @@ def test_prices_endpoint_returns_slots_and_current():
     assert b["current_eur_per_kwh"] is not None
 
 
+def test_prices_endpoint_without_source():
+    b = _client().get("/api/prices").json()
+    assert b["slots"] == []
+    assert b["current_eur_per_kwh"] is None
+
+
 def test_unknown_api_path_returns_json_404(tmp_path):
     # An unknown /api/* path must be JSON 404, not the SPA index served as 200.
     dist = tmp_path / "dist"
