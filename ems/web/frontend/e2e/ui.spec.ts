@@ -100,6 +100,20 @@ test.describe("EMS dashboard", () => {
     await expect(fr).toContainText("grid: fresh");
   });
 
+  test("System tab shows the readiness checks", async ({ page }) => {
+    await page.goto("/");
+    await page.getByTestId("nav-system").click();
+    await expect(page.getByTestId("system")).toBeVisible();
+    await expect(page.getByTestId("checks")).toBeVisible();
+    // Fully wired mock backend -> history store reachable, battery probed, writes open.
+    await expect(page.getByTestId("check-history_store")).toContainText("reachable");
+    await expect(page.getByTestId("check-battery")).toBeVisible();
+    await expect(page.getByTestId("check-auth")).toContainText("open");
+    await expect(page.getByTestId("system-overall")).toBeVisible();
+    // Dashboard panels hidden while on the System view.
+    await expect(page.getByTestId("status-grid")).toHaveCount(0);
+  });
+
   test("shows the error banner when the status API returns 500", async ({ page }) => {
     await page.route("**/api/status", (route) =>
       route.fulfill({ status: 500, contentType: "application/json", body: '{"detail":"boom"}' }),
