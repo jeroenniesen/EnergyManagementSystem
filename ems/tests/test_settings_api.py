@@ -98,6 +98,19 @@ def test_planner_settings_change_the_plan(tmp_path):
     assert all(s["intent"] == "allow_self_consumption" for s in plan["slots"])
 
 
+def test_charge_need_reflects_battery_settings(tmp_path):
+    # MockSource SoC = 55%. Defaults give a deficit; shrinking the overnight load flips on_track.
+    with TestClient(_app(tmp_path)) as c:
+        base = c.get("/api/charge-need").json()
+        assert base["current_soc_pct"] == 55.0
+        assert base["on_track"] is False
+        c.post("/api/settings", json={"battery.overnight_load_kwh": 0.0,
+                                      "battery.night_reserve_kwh": 0.0})
+        relaxed = c.get("/api/charge-need").json()
+    assert relaxed["on_track"] is True  # now only the reserve floor is needed
+    assert relaxed["target_kwh"] < base["target_kwh"]
+
+
 def test_site_settings_reshape_the_forecast(tmp_path):
     # Raising kWp lifts the forecast; rotating the array away from south lowers it — live.
     app = _app(tmp_path, solar_forecast=MockSolarForecastSource(ZoneInfo("Europe/Amsterdam")))

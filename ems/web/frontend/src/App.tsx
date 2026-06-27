@@ -38,6 +38,14 @@ type Decision = {
   plan_reason?: string | null;
 };
 
+type ChargeNeed = {
+  current_soc_pct: number;
+  target_soc_pct: number;
+  deficit_kwh: number;
+  on_track: boolean;
+  reason: string;
+};
+
 type AlertItem = { key: string; severity: string; message: string };
 type AlertsResp = { data_quality: string; alerts: AlertItem[] };
 
@@ -71,6 +79,40 @@ function Metric({ label, value, hint }: { label: string; value: string; hint?: s
       <span className="metric-value">{value}</span>
       {hint && <span className="metric-hint">{hint}</span>}
     </div>
+  );
+}
+
+function ChargeTarget({ n }: { n: ChargeNeed }) {
+  return (
+    <section className="charge-need" data-testid="charge-need">
+      <div className="override-head">
+        <span className="metric-label">Tonight&apos;s charge target</span>
+        <span
+          className={`badge ${n.on_track ? "badge-live" : "badge-amber"}`}
+          data-testid="charge-need-status"
+        >
+          {n.on_track ? "on track" : `need ${n.deficit_kwh.toFixed(1)} kWh`}
+        </span>
+      </div>
+      <div
+        className="charge-bar"
+        role="img"
+        aria-label={`Battery at ${n.current_soc_pct.toFixed(0)}%, target ${n.target_soc_pct.toFixed(
+          0,
+        )}%`}
+      >
+        <div className="charge-bar-fill" style={{ width: `${n.current_soc_pct}%` }} />
+        <div
+          className="charge-bar-target"
+          // Clamp so the 2px marker stays visible inside the clipped bar at a 100% target.
+          style={{ left: `min(${n.target_soc_pct}%, calc(100% - 2px))` }}
+          title={`target ${n.target_soc_pct.toFixed(0)}%`}
+        />
+      </div>
+      <p className="plan-reason" data-testid="charge-need-reason">
+        {n.reason}
+      </p>
+    </section>
   );
 }
 
@@ -181,6 +223,7 @@ export function App() {
   const [battery, setBattery] = useState<Battery | null>(null);
   const [decision, setDecision] = useState<Decision | null>(null);
   const [alertsData, setAlertsData] = useState<AlertsResp | null>(null);
+  const [chargeNeed, setChargeNeed] = useState<ChargeNeed | null>(null);
   const [savings, setSavings] = useState<number | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [view, setView] = useState<"dashboard" | "settings">("dashboard");
@@ -215,7 +258,7 @@ export function App() {
     }
     async function poll() {
       try {
-        const [s, ser, fr, pr, fc, pl, bat, dec, al, sv] = await Promise.all([
+        const [s, ser, fr, pr, fc, pl, bat, dec, al, sv, cn] = await Promise.all([
           getJson("/api/status"),
           getJson("/api/series?limit=50"),
           getJson("/api/freshness"),
@@ -226,6 +269,7 @@ export function App() {
           getJson("/api/decision"),
           getJson("/api/alerts"),
           getJson("/api/savings"),
+          getJson("/api/charge-need"),
         ]);
         if (!alive) return;
         setStatus(s);
@@ -238,6 +282,7 @@ export function App() {
         setDecision(dec);
         setAlertsData(al);
         setSavings(sv?.today_eur ?? null);
+        setChargeNeed(cn ?? null);
         setError(null);
       } catch (e) {
         if (alive) setError(String(e));
@@ -337,6 +382,8 @@ export function App() {
           )}
         </section>
       )}
+
+      {view === "dashboard" && chargeNeed && <ChargeTarget n={chargeNeed} />}
 
       {view === "dashboard" && status && <OverrideCard />}
 

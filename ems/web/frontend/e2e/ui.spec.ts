@@ -83,6 +83,16 @@ test.describe("EMS dashboard", () => {
     await expect(page.getByTestId("forecast-today")).toContainText("kWh today");
   });
 
+  test("shows tonight's charge target with an explanation", async ({ page }) => {
+    await page.goto("/");
+    const cn = page.getByTestId("charge-need");
+    await expect(cn).toBeVisible();
+    await expect(cn).toContainText("Tonight's charge target");
+    // MockSource SoC 55% vs default target ~84% -> a non-empty, explanatory reason.
+    await expect(page.getByTestId("charge-need-reason")).not.toHaveText("");
+    await expect(page.getByTestId("charge-need-status")).toBeVisible();
+  });
+
   test("shows per-signal freshness chips", async ({ page }) => {
     await page.goto("/");
     const fr = page.getByTestId("freshness");
