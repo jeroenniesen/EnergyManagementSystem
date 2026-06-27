@@ -74,6 +74,23 @@ body {
 .metric-value { font-size: 1.6rem; font-weight: 600; letter-spacing: -0.02em; font-variant-numeric: tabular-nums; }
 .metric-hint { font-size: 0.72rem; color: var(--muted); }
 
+.prices {
+  margin-top: 24px;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  padding: 18px;
+}
+.prices-head { display: flex; align-items: baseline; justify-content: space-between; margin-bottom: 12px; }
+.price-now { font-size: 1.3rem; font-weight: 600; letter-spacing: -0.02em; font-variant-numeric: tabular-nums; }
+.bars { display: flex; align-items: flex-end; gap: 2px; height: 80px; }
+.bar {
+  flex: 1 1 0;
+  min-width: 2px;
+  background: linear-gradient(to top, var(--accent), rgba(70, 200, 168, 0.35));
+  border-radius: 2px 2px 0 0;
+}
+
 .freshness {
   display: flex;
   flex-wrap: wrap;

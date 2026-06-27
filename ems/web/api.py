@@ -15,6 +15,7 @@ from ems.freshness import FreshnessTracker
 from ems.load_model import reconstruct
 from ems.sense import Recorder
 from ems.sources.base import Source
+from ems.sources.prices import PriceSource, current_price
 from ems.storage.history import HistoryStore
 
 _log = logging.getLogger("ems.recorder")
@@ -34,6 +35,7 @@ def create_app(
     store: HistoryStore | None = None,
     freshness: FreshnessTracker | None = None,
     recorder: Recorder | None = None,
+    price_source: PriceSource | None = None,
     static_dir: str | Path | None = None,
 ) -> FastAPI:
     @asynccontextmanager
@@ -75,6 +77,19 @@ def create_app(
         if freshness is None:
             return {}
         return freshness.snapshot(datetime.now(UTC))
+
+    @app.get("/api/prices")
+    def prices() -> dict:
+        if price_source is None:
+            return {"currency": "EUR", "resolution": "quarter_hourly",
+                    "current_eur_per_kwh": None, "slots": []}
+        slots = price_source.slots()
+        return {
+            "currency": "EUR",
+            "resolution": "quarter_hourly",
+            "current_eur_per_kwh": current_price(slots, datetime.now(UTC)),
+            "slots": [{"start": s.start.isoformat(), "eur_per_kwh": s.eur_per_kwh} for s in slots],
+        }
 
     @app.get("/api/series")
     async def series(limit: int = Query(default=100, ge=1, le=2000)) -> dict:

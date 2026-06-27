@@ -13,6 +13,8 @@ type Status = {
 
 type Series = { raw: Record<string, number>[]; derived: Record<string, number>[] };
 type FreshnessMap = Record<string, string>;
+type PriceSlot = { start: string; eur_per_kwh: number };
+type Prices = { currency: string; current_eur_per_kwh: number | null; slots: PriceSlot[] };
 
 const POLL_MS = 5000;
 
@@ -30,10 +32,38 @@ function Metric({ label, value, hint }: { label: string; value: string; hint?: s
   );
 }
 
+function PriceCurve({ prices }: { prices: Prices }) {
+  const slots = prices.slots.slice(0, 96); // show ~today
+  const max = Math.max(0.01, ...slots.map((s) => s.eur_per_kwh));
+  return (
+    <section className="prices" data-testid="prices">
+      <div className="prices-head">
+        <span className="metric-label">Electricity price</span>
+        <span className="price-now" data-testid="price-now">
+          {prices.current_eur_per_kwh != null
+            ? `€${prices.current_eur_per_kwh.toFixed(2)} / kWh`
+            : "—"}
+        </span>
+      </div>
+      <div className="bars" aria-hidden="true">
+        {slots.map((s, i) => (
+          <span
+            key={i}
+            className="bar"
+            style={{ height: `${(s.eur_per_kwh / max) * 100}%` }}
+            title={`${new Date(s.start).getHours()}:00 — €${s.eur_per_kwh.toFixed(2)}`}
+          />
+        ))}
+      </div>
+    </section>
+  );
+}
+
 export function App() {
   const [status, setStatus] = useState<Status | null>(null);
   const [series, setSeries] = useState<Series | null>(null);
   const [freshness, setFreshness] = useState<FreshnessMap | null>(null);
+  const [prices, setPrices] = useState<Prices | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
@@ -45,15 +75,17 @@ export function App() {
     }
     async function poll() {
       try {
-        const [s, ser, fr] = await Promise.all([
+        const [s, ser, fr, pr] = await Promise.all([
           getJson("/api/status"),
           getJson("/api/series?limit=50"),
           getJson("/api/freshness"),
+          getJson("/api/prices"),
         ]);
         if (!alive) return;
         setStatus(s);
         setSeries(ser);
         setFreshness(fr);
+        setPrices(pr);
         setError(null);
       } catch (e) {
         if (alive) setError(String(e));
@@ -102,6 +134,8 @@ export function App() {
           <Metric label="Non-EV load" value={fmtW(status.non_ev_load_w)} hint="excludes car" />
         </section>
       )}
+
+      {prices && prices.slots.length > 0 && <PriceCurve prices={prices} />}
 
       {freshness && Object.keys(freshness).length > 0 && (
         <section className="freshness" data-testid="freshness">

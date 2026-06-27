@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 import uvicorn
 
@@ -9,6 +10,7 @@ from ems.config import load_config
 from ems.freshness import FreshnessTracker
 from ems.sense import SIGNALS, Recorder
 from ems.sources.mock import MockSource
+from ems.sources.prices import MockPriceSource
 from ems.storage.history import HistoryStore
 from ems.web.api import create_app
 
@@ -30,6 +32,7 @@ def build_app():
     freshness = FreshnessTracker()
     freshness.register(*SIGNALS)
     recorder = Recorder(source, store, freshness, cycle_seconds=cfg.cycle_seconds)
+    price_source = MockPriceSource(ZoneInfo(cfg.timezone))
     app = create_app(
         source,
         dry_run=cfg.dry_run,
@@ -37,6 +40,7 @@ def build_app():
         store=store,
         freshness=freshness,
         recorder=recorder,
+        price_source=price_source,
         static_dir=_STATIC_DIR,
     )
     return app, cfg
