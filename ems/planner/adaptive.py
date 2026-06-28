@@ -74,18 +74,25 @@ def plan_adaptive(
     )
     shortfall_kwh = max(0.0, coverable_kwh - avail_now_kwh - solar_to_batt_kwh)
 
-    # Serve the EXPENSIVE deficit slots from the battery (peak-shave); buy the shortfall in the
-    # cheapest affordable slots BEFORE the last expensive slot, so the pack is full going in.
+    # Serve the EXPENSIVE deficit slots from the battery (peak-shave); buy the shortfall BEFORE the
+    # last of them so the pack is full going in.
     expensive = [p.start for p in future if net_w(p) > 0 and p.eur_per_kwh > breakeven]
+    discharge_set = set(expensive)
     last_need = max(expensive) if expensive else None
     per_slot_kwh = cfg.max_charge_w * _DH / 1000.0 * eta
     n_charge = (math.ceil(shortfall_kwh / per_slot_kwh)
                 if per_slot_kwh > 0 and shortfall_kwh > 1e-9 else 0)
-    candidates = [p for p in future
-                  if (last_need is None or p.start < last_need) and p.eur_per_kwh <= breakeven]
-    candidates.sort(key=lambda p: (p.eur_per_kwh, p.start))
-    charge_set = {p.start for p in candidates[:n_charge]}
-    discharge_set = set(expensive)
+    if discharge_set:
+        # Shaving a peak: any pre-peak slot CHEAPER THAN THE PEAK is worth charging in (it beats
+        # importing at the peak). Using this — not the strict break-even — avoids silently
+        # under-charging when too few slots sit below break-even, so the pack still fills.
+        peak_min = min(p.eur_per_kwh for p in future if p.start in discharge_set)
+        pool = [p for p in future if p.start < last_need and p.eur_per_kwh < peak_min]
+    else:
+        # No expensive peak ahead: only charge if genuinely cheap, to avoid pointless cycling.
+        pool = [p for p in future if p.eur_per_kwh <= breakeven]
+    pool.sort(key=lambda p: (p.eur_per_kwh, p.start))
+    charge_set = {p.start for p in pool[:n_charge]}
 
     out: list[PlanSlot] = []
     for p in future:

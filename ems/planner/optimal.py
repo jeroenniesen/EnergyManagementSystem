@@ -92,7 +92,10 @@ def plan_optimal(
             return None  # forbid crossing reserve / capacity
         return min(n - 1, max(0, round(soc / step)))
 
-    # Backward induction. value[i] = min cost-to-go from this slot at SoC level i.
+    # Backward induction. value[i] = min cost-to-go from this slot at SoC level i. Terminal value is
+    # zero (cost-only objective). CAVEAT: with no terminal-SoC reward the optimum may discharge to
+    # reserve in the final slots — harmless run ROLLING (each replan has a fresh ~24h horizon, as
+    # the backtest does) but a single fixed-horizon overnight plan should add a terminal SoC term.
     value = [0.0] * n
     policy: list[list[float]] = []  # per slot: best battery_w for each level
     for slot in reversed(future):
@@ -115,7 +118,8 @@ def plan_optimal(
     cur = min(n - 1, max(reserve_lvl, round((soc_pct / 100.0 * usable) / step)))
     out: list[PlanSlot] = []
     for idx, slot in enumerate(future):
-        bw = policy[idx][cur] if value else 0.0
+        # Guard against a dead-end (all-INF) level: idle rather than read a default policy.
+        bw = policy[idx][cur] if value[cur] < _INF else 0.0
         if bw < -1e-6:
             intent, reason = BatteryIntent.GRID_CHARGE_TO_TARGET, \
                 f"optimal: charge at €{slot.eur_per_kwh:.2f}/kWh"

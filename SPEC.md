@@ -346,6 +346,8 @@ Selection is **configurable** (calendar month, rolling solar-forecast threshold,
 ### 8.3 Winter strategy — "buy the dip, spend the peak" (with honest economics)
 **Objective:** charge at the cheapest window(s), discharge at the most expensive, **serving load** (not dumping power), never running empty before the evening peak.
 
+> **Implemented + validated (charging-algorithm research, [`docs/charging-algorithm-research.md`](docs/charging-algorithm-research.md)).** A backtest (`ems/sim.py`, four NL weather days, rolling replan) found the fixed night-carry target under-sized dull days *and* grid-charged overnight to chase the target even when morning sun would refill it for free (≈8 kWh wasted). The fix — **`ems/planner/adaptive.py`** (`plan_adaptive`) — sizes the battery to the *forecast* evening+overnight deficit, nets out conservative P10 solar, and grid-charges only the shortfall in the cheapest slots **before** the peak (so it shaves it). It is now the live **summer** engine. A DP cost-optimizer (`ems/planner/optimal.py`) confirms the heuristic is within **4% of the global optimum** (and keeps higher self-sufficiency); it stays as a yardstick / optional optimal mode. Result: 4-day grid cost €8.20 → €2.32 (−72%), never below reserve, safe under a 40%-rosy forecast.
+
 1. Normalise prices to 15-min slots; rank them.
 2. **Profitability test (replaces the fixed `arbitrage_min_spread_eur`).** A discharge slot is worth serving from stored energy only if:
    ```
