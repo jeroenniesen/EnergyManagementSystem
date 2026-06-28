@@ -8,6 +8,10 @@
   --accent: #46c8a8;
   --amber: #e0a23a;
   --green: #46c8a8;
+  --summer: #f0a830; /* warm sun */
+  --winter: #5aa2e0; /* cool sky */
+  --summer-tint: rgba(240, 168, 48, 0.12);
+  --winter-tint: rgba(90, 162, 224, 0.12);
   font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
 }
 
@@ -23,6 +27,10 @@
   --accent: #1f9e84;
   --amber: #b07410;
   --green: #1f9e84;
+  --summer: #d98a1f;
+  --winter: #2f7fc4;
+  --summer-tint: rgba(217, 138, 31, 0.12);
+  --winter-tint: rgba(47, 127, 196, 0.12);
 }
 
 * { box-sizing: border-box; }
@@ -177,7 +185,7 @@ body {
   border-radius: 14px;
   padding: 18px;
 }
-.seg {
+.strategy-seg {
   display: flex;
   gap: 4px;
   background: var(--panel-2);
@@ -202,13 +210,28 @@ body {
   transition: background 0.15s ease, color 0.15s ease;
 }
 .seg-btn:hover { color: var(--text); }
+.seg-btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 .seg-active {
   background: var(--panel);
   color: var(--text);
   box-shadow: 0 1px 3px rgba(0, 0, 0, 0.18);
 }
-.seg-icon { font-size: 1.05rem; line-height: 1; }
+/* The selected season tints its own pill — a quiet, meaningful accent. */
+.seg-active.seg-summer { color: var(--summer); background: var(--summer-tint); }
+.seg-active.seg-winter { color: var(--winter); background: var(--winter-tint); }
+.seg-icon { font-size: 1.05rem; line-height: 1; transition: transform 0.15s ease; }
+.seg-icon-summer { color: var(--summer); }
+.seg-icon-winter { color: var(--winter); }
+.seg-icon-auto { color: var(--accent); }
+.seg-active .seg-icon { transform: scale(1.12); }
 .strategy-summary { margin: 12px 0 0; color: var(--muted); font-size: 0.9rem; }
+
+/* The whole card carries a hairline of the running season — calm, not loud. */
+.strategy-card.season-summer { border-top: 2px solid var(--summer); }
+.strategy-card.season-winter { border-top: 2px solid var(--winter); }
+.strategy-badge { background: var(--panel-2); color: var(--muted); text-transform: none; }
+.season-summer .strategy-badge { color: var(--summer); background: var(--summer-tint); }
+.season-winter .strategy-badge { color: var(--winter); background: var(--winter-tint); }
 
 /* Battery SoC — history + 24h forecast */
 .socchart {

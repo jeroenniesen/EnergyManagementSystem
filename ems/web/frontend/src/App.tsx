@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 import { OverrideCard } from "./Override";
 import { PlanDetail, type PlanDetailData } from "./PlanDetail";
@@ -201,6 +201,9 @@ export function App() {
   // Seed from the localStorage cache so the first paint matches the saved theme (no flash);
   // the fetch below reconciles with the server's canonical value.
   const [theme, setTheme] = useState<Theme>(readStoredTheme);
+  // While a strategy write is in flight, suppress the background poll's strategy update so the
+  // optimistic selection doesn't flicker back to the old value mid-request.
+  const strategyPending = useRef(false);
 
   useEffect(() => {
     let alive = true;
@@ -255,7 +258,7 @@ export function App() {
         setForecast(fc);
         setPlanDetail(pl);
         setEnergy(ef);
-        setStrategy(st);
+        if (!strategyPending.current) setStrategy(st); // don't clobber an in-flight change
         setBattery(bat);
         setDecision(dec);
         setAlertsData(al);
@@ -275,18 +278,30 @@ export function App() {
   }, [view]);
 
   async function setStrategyMode(mode: string) {
-    // Strategy is a live setting — it takes effect on the next plan poll. Update the card at once.
-    setStrategy((s) => (s ? { ...s, mode } : s));
+    // Strategy is a live setting — it takes effect on the next plan poll. Update the card at once,
+    // but revert if the write fails (don't leave the UI showing a mode the server didn't accept).
+    const prev = strategy;
+    strategyPending.current = true;
+    // Derive auto/active too, so the card is instantly self-consistent (no "Winter selected but
+    // running summer" flash): a forced mode runs that season; auto keeps the current season until
+    // the refetch confirms.
+    setStrategy((s) =>
+      s ? { ...s, mode, auto: mode === "auto", active: mode === "auto" ? s.active : mode } : s,
+    );
     try {
-      await fetch("/api/settings", {
+      const res = await fetch("/api/settings", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ "strategy.mode": mode }),
       });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const r = await fetch("/api/strategy");
       if (r.ok) setStrategy(await r.json());
+      else setStrategy(prev);
     } catch {
-      /* the next poll reconciles */
+      setStrategy(prev); // revert on any failure
+    } finally {
+      strategyPending.current = false;
     }
   }
 

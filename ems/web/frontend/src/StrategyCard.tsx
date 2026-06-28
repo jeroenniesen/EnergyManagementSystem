@@ -1,5 +1,6 @@
 // The headline control: pick how the battery is run. Auto follows the season; Summer fills from
 // the panels and runs the night on the battery; Winter charges cheap and discharges the peaks.
+import { useRef } from "react";
 
 export type Strategy = {
   mode: string; // auto | summer | winter (the user's choice)
@@ -23,34 +24,53 @@ export function StrategyCard({
   strategy: Strategy | null;
   onChange: (mode: string) => void;
 }) {
+  const refs = useRef<(HTMLButtonElement | null)[]>([]);
   if (!strategy) return null;
+
+  const idx = Math.max(0, OPTIONS.findIndex((o) => o.key === strategy.mode));
+  // Arrow keys move through the segmented control like a native radio group.
+  function onKeyDown(e: React.KeyboardEvent) {
+    const fwd = e.key === "ArrowRight" || e.key === "ArrowDown";
+    const back = e.key === "ArrowLeft" || e.key === "ArrowUp";
+    if (!fwd && !back) return;
+    e.preventDefault();
+    const next = (idx + (fwd ? 1 : -1) + OPTIONS.length) % OPTIONS.length;
+    onChange(OPTIONS[next].key);
+    refs.current[next]?.focus();
+  }
+
   return (
-    <section className="strategy-card" data-testid="strategy-card">
+    <section className={`strategy-card season-${strategy.active}`} data-testid="strategy-card">
       <div className="prices-head">
         <span className="metric-label">Strategy</span>
         {strategy.auto && (
-          <span className="badge badge-muted" data-testid="strategy-active">
+          <span className="badge strategy-badge" data-testid="strategy-active">
             Auto · running {strategy.active}
           </span>
         )}
       </div>
-      <div className="seg" role="radiogroup" aria-label="Energy strategy">
-        {OPTIONS.map((o) => (
-          <button
-            key={o.key}
-            type="button"
-            role="radio"
-            aria-checked={strategy.mode === o.key}
-            className={`seg-btn${strategy.mode === o.key ? " seg-active" : ""}`}
-            data-testid={`strategy-${o.key}`}
-            onClick={() => onChange(o.key)}
-          >
-            <span className="seg-icon" aria-hidden="true">
-              {o.icon}
-            </span>
-            {o.label}
-          </button>
-        ))}
+      <div className="strategy-seg" role="radiogroup" aria-label="Energy strategy" onKeyDown={onKeyDown}>
+        {OPTIONS.map((o, i) => {
+          const selected = strategy.mode === o.key;
+          return (
+            <button
+              key={o.key}
+              ref={(el) => (refs.current[i] = el)}
+              type="button"
+              role="radio"
+              aria-checked={selected}
+              tabIndex={selected ? 0 : -1}
+              className={`seg-btn${selected ? ` seg-active seg-${o.key}` : ""}`}
+              data-testid={`strategy-${o.key}`}
+              onClick={() => onChange(o.key)}
+            >
+              <span className={`seg-icon seg-icon-${o.key}`} aria-hidden="true">
+                {o.icon}
+              </span>
+              {o.label}
+            </button>
+          );
+        })}
       </div>
       <p className="strategy-summary" data-testid="strategy-summary">
         {strategy.summary}

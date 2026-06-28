@@ -122,6 +122,33 @@ test.describe("EMS dashboard", () => {
     await expect(page.getByTestId("strategy-summary")).toContainText("Arbitrage");
   });
 
+  test("strategy card is operable with the keyboard (arrow keys)", async ({ page }) => {
+    let mode = "auto";
+    await page.route("**/api/strategy", (route) =>
+      route.fulfill({
+        status: 200, contentType: "application/json",
+        body: JSON.stringify({
+          mode, active: mode === "winter" ? "winter" : "summer", auto: mode === "auto",
+          summary: "x", grid_topup: true, max_topup_price: 0.3,
+        }),
+      }),
+    );
+    await page.route("**/api/settings", async (route) => {
+      if (route.request().method() === "POST") {
+        mode = JSON.parse(route.request().postData() || "{}")["strategy.mode"] ?? mode;
+        await route.fulfill({ status: 200, contentType: "application/json", body: "{\"values\":{}}" });
+      } else {
+        await route.continue();
+      }
+    });
+    await page.goto("/");
+    await page.getByTestId("strategy-auto").focus();
+    await page.keyboard.press("ArrowRight"); // Auto -> Summer
+    await expect(page.getByTestId("strategy-summer")).toHaveAttribute("aria-checked", "true");
+    await page.keyboard.press("ArrowRight"); // Summer -> Winter
+    await expect(page.getByTestId("strategy-winter")).toHaveAttribute("aria-checked", "true");
+  });
+
   test("shows the SoC history+forecast chart with a narrative and legend", async ({ page }) => {
     await page.goto("/");
     const soc = page.getByTestId("soc-forecast");
