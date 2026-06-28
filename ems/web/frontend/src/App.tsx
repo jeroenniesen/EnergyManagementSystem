@@ -420,7 +420,7 @@ export function App() {
             <span className="metric-label">Controller</span>
             {decision.car_charging && (
               <span className="badge badge-car" data-testid="car-charging">
-                🚗 Car charging — battery held
+                <Icon name="car" /> Car charging — battery held
               </span>
             )}
           </div>

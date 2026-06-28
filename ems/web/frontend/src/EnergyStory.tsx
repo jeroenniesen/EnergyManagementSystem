@@ -2,6 +2,8 @@
 // "Last 24h" proves it worked. Same layers both ways — SoC line, electricity price, battery action,
 // solar — plus a plain-language headline and the numbers that matter (€, kWh, self-sufficiency).
 
+import { Icon } from "./icons";
+
 export type StorySlot = {
   start: string;
   soc_pct: number | null;
@@ -190,7 +192,7 @@ export function EnergyStory({
 
       {peakInsight && (
         <p className="story-insight" data-testid="story-insight">
-          ⚡ {peakInsight}
+          <Icon name="bolt" /> {peakInsight}
         </p>
       )}
 

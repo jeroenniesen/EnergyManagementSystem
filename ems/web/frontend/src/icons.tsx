@@ -13,7 +13,8 @@ export type IconName =
   | "sliders"
   | "euro"
   | "auto"
-  | "winter";
+  | "winter"
+  | "car";
 
 const PATHS: Record<IconName, React.ReactNode> = {
   // Battery outline (how full it is) — body fills the canvas, terminal nub flush to its right.
@@ -85,6 +86,17 @@ const PATHS: Record<IconName, React.ReactNode> = {
       <path d="M21 3v5h-5" />
       <path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16" />
       <path d="M3 21v-5h5" />
+    </>
+  ),
+  // Car (EV charging).
+  car: (
+    <>
+      <path d="M3 13l2-5.2A2 2 0 0 1 6.9 6.5h10.2a2 2 0 0 1 1.9 1.3L21 13v3a1 1 0 0 1-1 1h-1" />
+      <path d="M5 17H4a1 1 0 0 1-1-1v-3" />
+      <path d="M3 13h18" />
+      <circle cx="7.5" cy="17" r="1.8" />
+      <circle cx="16.5" cy="17" r="1.8" />
+      <path d="M9.3 17h5.4" />
     </>
   ),
   // Snowflake (winter strategy).

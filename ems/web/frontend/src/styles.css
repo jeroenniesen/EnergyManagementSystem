@@ -234,7 +234,8 @@ body {
 }
 .story-check-ok { color: var(--green-text); border-left: 3px solid var(--green); }
 .story-check-warn { color: var(--amber-text); border-left: 3px solid var(--amber); }
-.story-insight { margin: 8px 0 0; font-size: 0.9rem; color: var(--muted); }
+.story-insight { display: flex; align-items: center; gap: 7px; margin: 8px 0 0; font-size: 0.9rem; color: var(--muted); }
+.story-insight svg { flex: none; color: var(--amber); }
 .story-toggle {
   display: inline-flex; gap: 4px; background: var(--panel-2);
   border: 1px solid var(--line); border-radius: 12px; padding: 4px;
@@ -485,7 +486,12 @@ body {
 .decision-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
 .decision-line { margin: 6px 0 0; font-size: 0.9rem; }
 .decision-outcome { color: var(--accent-text); font-weight: 600; font-variant-numeric: tabular-nums; }
-.badge-car { background: var(--summer-tint); color: var(--summer-text); text-transform: none; letter-spacing: 0; }
+.badge-car {
+  display: inline-flex; align-items: center; gap: 5px;
+  background: var(--summer-tint); color: var(--summer-text);
+  text-transform: none; letter-spacing: 0;
+}
+.badge-car svg { flex: none; }
 
 .freshness {
   display: flex;
