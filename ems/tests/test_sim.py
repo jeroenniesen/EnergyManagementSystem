@@ -65,6 +65,26 @@ def test_adaptive_beats_current_on_cost_under_rolling_replanning():
     assert total_adp < total_cur - 1.0  # a clear, material saving over the four days
 
 
+def test_adaptive_is_near_optimal():
+    # The DP optimiser is the cost yardstick. The fast adaptive heuristic should land within a small
+    # gap of it across the four days — validating the heuristic is near-optimal, not just "better".
+    from ems.planner.optimal import OptimalConfig, plan_optimal
+    total_adp = total_opt = 0.0
+    for sc in nl_scenarios(AMS):
+        adp = simulate_rolling(
+            sc, lambda now, soc, sc=sc: plan_adaptive(
+                sc.prices, sc.forecast, now, soc_pct=soc, load_w_by=sc.load_w,
+                cfg=AdaptiveConfig(usable_kwh=10.8)))
+        opt = simulate_rolling(
+            sc, lambda now, soc, sc=sc: plan_optimal(
+                sc.prices, sc.forecast, now, soc_pct=soc, load_w_by=sc.load_w,
+                cfg=OptimalConfig(usable_kwh=10.8)))
+        total_adp += adp.grid_cost_eur
+        total_opt += opt.grid_cost_eur
+    # Within €0.50 over four days (≈ a few %). The optimum is a lower bound on achievable cost.
+    assert total_adp <= total_opt + 0.50
+
+
 def test_scenarios_cover_the_expected_solar_range():
     # Realised daily solar (kWh) should span a realistic NL 3 kWp range across the four days.
     by = {s.name: sum(s.actual_solar_w.values()) * 0.25 / 1000.0 for s in nl_scenarios(AMS)}
