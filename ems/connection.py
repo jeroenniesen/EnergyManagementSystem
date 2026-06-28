@@ -30,6 +30,7 @@ def _seed_from_config(cfg) -> dict:
         "meters.solar_ip": cfg.solar_ip,
         "meters.car_ip": cfg.car_ip,
         "battery.indevolt_ip": cfg.indevolt_ip,
+        "battery.indevolt_ips_extra": cfg.indevolt_ips_extra,
         "battery.indevolt_port": cfg.indevolt_port,
     }
     token = os.environ.get("TIBBER_TOKEN")

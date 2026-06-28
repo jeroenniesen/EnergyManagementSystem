@@ -23,6 +23,7 @@ class Config:
     solar_ip: str = ""
     car_ip: str = ""
     indevolt_ip: str = ""
+    indevolt_ips_extra: str = ""  # additional tower IPs, comma-separated (multi-battery cluster)
     indevolt_port: int = 8080
 
 
@@ -59,5 +60,6 @@ def load_config(path: str | Path) -> Config:
         solar_ip=str(devices.get("solar_ip", "")),
         car_ip=str(devices.get("car_ip", "")),
         indevolt_ip=str(devices.get("indevolt_ip", "")),
+        indevolt_ips_extra=str(devices.get("indevolt_ips_extra", "")),
         indevolt_port=int(devices.get("indevolt_port", 8080)),
     )

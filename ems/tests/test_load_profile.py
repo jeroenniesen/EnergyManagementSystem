@@ -42,6 +42,14 @@ def test_no_history_uses_the_caller_fallback():
     assert prof.expected_w(datetime(2026, 6, 28, 12, 0, tzinfo=UTC)) == 450.0
 
 
+def test_cold_start_with_too_few_samples_uses_the_baseline_not_the_lone_reading():
+    # One noisy live sample (2754 W) must NOT become the whole-day load; below min_samples we use
+    # the baseline. This is the fresh-DB case right after first boot.
+    rows = [_row("2026-06-20T18:00:00+00:00", 2754.0)]
+    prof = build_load_profile(rows, AMS, fallback_w=500.0, min_samples=3)
+    assert prof.expected_w(datetime(2026, 6, 28, 18, 0, tzinfo=UTC)) == 500.0
+
+
 def test_malformed_rows_are_ignored():
     rows = [
         _row("not-a-date", 700.0),

@@ -21,5 +21,6 @@ devices:               # local LAN addresses (read-only)
   p1_ip: 192.168.50.92
   solar_ip: 192.168.50.37
   car_ip: 192.168.50.98
-  indevolt_ip: 192.168.50.53   # main tower; cluster read as one logical device
+  indevolt_ip: 192.168.50.53          # master tower (control writes target this one)
+  indevolt_ips_extra: 192.168.50.22   # additional towers (comma-separated); read + averaged
   indevolt_port: 8080

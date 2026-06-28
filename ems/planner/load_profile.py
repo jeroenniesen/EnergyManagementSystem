@@ -34,8 +34,9 @@ def build_load_profile(
     """Learn an hourly load profile from history rows ({"ts": ISO, "house_load_w": float}).
 
     Rows that don't parse or lack a load are skipped. An hour with fewer than `min_samples` valid
-    readings falls back to the overall mean (still data-driven); `fallback_w` is used only when
-    there is no usable history at all."""
+    readings falls back to the overall mean (still data-driven); `fallback_w` is used when there
+    are fewer than `min_samples` readings in total — so a cold start with one or two noisy live
+    samples doesn't project a whole day at that single instantaneous load."""
     buckets: dict[int, list[float]] = defaultdict(list)
     all_loads: list[float] = []
     for row in rows:
@@ -52,6 +53,8 @@ def build_load_profile(
         buckets[dt.astimezone(tz).hour].append(value)
         all_loads.append(value)
 
-    overall = sum(all_loads) / len(all_loads) if all_loads else fallback_w
+    # Trust the overall mean only once there's a meaningful sample; otherwise a single live reading
+    # would set the whole-day load (cold-start artifact). Below the threshold, use the baseline.
+    overall = sum(all_loads) / len(all_loads) if len(all_loads) >= min_samples else fallback_w
     by_hour = {h: sum(v) / len(v) for h, v in buckets.items() if len(v) >= min_samples}
     return LoadProfile(by_hour=by_hour, fallback_w=overall, tz=tz)
