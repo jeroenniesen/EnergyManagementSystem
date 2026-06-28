@@ -1,12 +1,38 @@
 from datetime import UTC, datetime
 
 from ems.domain import BatteryIntent
-from ems.planner.explain import build_plan_detail, plan_metrics
+from ems.planner.explain import build_plan_detail, plan_metrics, summarize_projection
+from ems.planner.projection import ProjectedSlot
 from ems.planner.schedule import SLOT, Plan, PlanSlot
 from ems.sources.forecast import ForecastSlot
 from ems.sources.prices import PriceSlot
 
 NOW = datetime(2026, 6, 28, 0, 0, tzinfo=UTC)
+
+
+def test_summarize_projection_empty():
+    s = summarize_projection([])
+    assert s["soc_end_pct"] is None
+    assert s["import_kwh"] == 0.0
+    assert "No projection" in s["summary"]
+
+
+def test_summarize_projection_reports_peak_trough_end_and_energy():
+    # 4 slots: charge to a peak, then drain. import 4 kW for one slot = 1 kWh.
+    PS = ProjectedSlot
+    proj = [
+        PS(NOW + 0 * SLOT, BatteryIntent.GRID_CHARGE_TO_TARGET, 60.0, -4000, 4000, 0, 0),
+        PS(NOW + 1 * SLOT, BatteryIntent.HOLD_RESERVE, 90.0, 0, 0, 0, 0),
+        PS(NOW + 2 * SLOT, BatteryIntent.DISCHARGE_FOR_LOAD, 70.0, 2000, 0, 0, 2000),
+        PS(NOW + 3 * SLOT, BatteryIntent.ALLOW_SELF_CONSUMPTION, 40.0, 0, -1000, 1000, 0),
+    ]
+    s = summarize_projection(proj)
+    assert s["soc_max_pct"] == 90.0 and s["soc_max_at"] == (NOW + SLOT).isoformat()
+    assert s["soc_min_pct"] == 40.0
+    assert s["soc_end_pct"] == 40.0
+    assert s["import_kwh"] == 1.0  # 4000 W × 0.25 h
+    assert s["export_kwh"] == 0.25  # 1000 W × 0.25 h
+    assert "%" in s["summary"]
 
 
 def _plan(intents):

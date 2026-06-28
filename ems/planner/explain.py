@@ -10,6 +10,7 @@ from collections import Counter
 from datetime import datetime
 
 from ems.domain import BatteryIntent
+from ems.planner.projection import SLOT_HOURS, ProjectedSlot
 from ems.planner.schedule import Plan
 from ems.savings import estimate_daily_savings_eur
 from ems.sources.forecast import ForecastSlot
@@ -56,6 +57,36 @@ def plan_metrics(plan: Plan, prices: list[PriceSlot]) -> dict:
         "discharge_slots": counts.get(BatteryIntent.DISCHARGE_FOR_LOAD, 0),
         "hold_slots": counts.get(BatteryIntent.HOLD_RESERVE, 0),
         "self_consume_slots": counts.get(BatteryIntent.ALLOW_SELF_CONSUMPTION, 0),
+    }
+
+
+def summarize_projection(projected: list[ProjectedSlot]) -> dict:
+    """Headline numbers + a plain-English narrative of the projected next-24h energy behaviour.
+    Clock times are left to the UI (the timestamps are returned); the text stays tz-agnostic.
+    `*_kwh` integrate power over the 15-min slots (energy = W × 0.25 h ÷ 1000)."""
+    if not projected:
+        return {"summary": "No projection yet.", "soc_end_pct": None, "soc_min_pct": None,
+                "soc_max_pct": None, "soc_min_at": None, "soc_max_at": None,
+                "import_kwh": 0.0, "export_kwh": 0.0, "solar_kwh": 0.0, "load_kwh": 0.0}
+    lo = min(projected, key=lambda p: p.soc_pct)
+    hi = max(projected, key=lambda p: p.soc_pct)
+    end = projected[-1].soc_pct
+    imp = sum(p.grid_w for p in projected if p.grid_w > 0) * SLOT_HOURS / 1000.0
+    exp = sum(-p.grid_w for p in projected if p.grid_w < 0) * SLOT_HOURS / 1000.0
+    solar = sum(p.solar_w for p in projected) * SLOT_HOURS / 1000.0
+    load = sum(p.load_w for p in projected) * SLOT_HOURS / 1000.0
+    summary = (
+        f"Battery peaks near {round(hi.soc_pct)}% and dips to {round(lo.soc_pct)}%, "
+        f"ending the next 24h around {round(end)}%. Projected grid: {imp:.1f} kWh in / "
+        f"{exp:.1f} kWh out, on {solar:.1f} kWh solar and {load:.1f} kWh of load."
+    )
+    return {
+        "summary": summary,
+        "soc_end_pct": round(end, 1),
+        "soc_min_pct": round(lo.soc_pct, 1), "soc_min_at": lo.start.isoformat(),
+        "soc_max_pct": round(hi.soc_pct, 1), "soc_max_at": hi.start.isoformat(),
+        "import_kwh": round(imp, 2), "export_kwh": round(exp, 2),
+        "solar_kwh": round(solar, 2), "load_kwh": round(load, 2),
     }
 
 

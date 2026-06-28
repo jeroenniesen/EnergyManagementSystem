@@ -49,6 +49,7 @@ def build_app():
         source,
         dry_run=dry_run,
         dev_mode=dev_mode,
+        tz=tz,
         store=store,
         freshness=freshness,
         recorder=recorder,

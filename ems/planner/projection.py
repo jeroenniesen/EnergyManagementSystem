@@ -22,6 +22,8 @@ from datetime import datetime, timedelta
 from ems.domain import BatteryIntent
 from ems.planner.schedule import SLOT
 
+SLOT_HOURS = SLOT.total_seconds() / 3600.0  # 0.25 h — energy = power × this per slot
+
 
 @dataclass(frozen=True)
 class BatteryModel:
@@ -56,7 +58,11 @@ def project_energy(
     model: BatteryModel,
     slot: timedelta = SLOT,
 ) -> list[ProjectedSlot]:
-    """Simulate SoC + grid flow over `plan_slots` (each needs `.start` and `.intent`)."""
+    """Simulate SoC + grid flow over `plan_slots` (each needs `.start` and `.intent`).
+
+    Contract: `load_w_by` MUST cover every slot start — a missing load silently reads 0 W and
+    under-predicts the drain (the API builds it for every plan slot). `solar_w_by` may be sparse;
+    a missing entry means 0 W solar (correct for night/pre-dawn slots)."""
     usable = model.usable_kwh
     reserve_kwh = model.reserve_soc_pct / 100.0 * usable
     eta = math.sqrt(_clamp(model.round_trip_efficiency, 1e-6, 1.0))

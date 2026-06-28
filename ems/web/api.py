@@ -10,6 +10,7 @@ from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
+from zoneinfo import ZoneInfo
 
 from fastapi import FastAPI, Query, Request
 from fastapi.responses import JSONResponse, Response
@@ -36,7 +37,9 @@ from ems.freshness import FreshnessTracker
 from ems.lifecycle import OwnershipState
 from ems.load_model import reconstruct
 from ems.planner.charge_need import compute_charge_need
-from ems.planner.explain import build_plan_detail, plan_metrics
+from ems.planner.explain import build_plan_detail, plan_metrics, summarize_projection
+from ems.planner.load_profile import build_load_profile
+from ems.planner.projection import BatteryModel, project_energy
 from ems.planner.rule_based import PlannerConfig, plan_rule_based
 from ems.savings import estimate_daily_savings_eur
 from ems.sense import Recorder
@@ -75,6 +78,7 @@ def create_app(
     *,
     dry_run: bool,
     dev_mode: str,
+    tz: ZoneInfo | None = None,
     store: HistoryStore | None = None,
     freshness: FreshnessTracker | None = None,
     recorder: Recorder | None = None,
@@ -532,6 +536,63 @@ def create_app(
         now, prices_, plan = pp
         fc = solar_forecast.slots() if solar_forecast is not None else None
         return build_plan_detail(now, prices_, plan, fc)
+
+    def _battery_model() -> BatteryModel:
+        s = settings_cache
+        return BatteryModel(
+            usable_kwh=s["battery.usable_kwh"],
+            max_charge_w=s["battery.max_charge_w"],
+            max_discharge_w=s["battery.max_discharge_w"],
+            round_trip_efficiency=s["planner.round_trip_efficiency"],
+            reserve_soc_pct=s["battery.min_reserve_soc"],
+        )
+
+    @app.get("/api/energy-forecast")
+    async def energy_forecast() -> dict:
+        # The headline "what will my energy do over the next 24h": recorded SoC (past) + a forward
+        # projection (future) of SoC and grid flow, driven by the plan, the solar forecast and the
+        # learned load profile. Read-only.
+        site_tz = tz or ZoneInfo("UTC")
+        reserve_pct = settings_cache["battery.min_reserve_soc"]
+        history: list[dict] = []
+        if store is not None:
+            rows = await store.recent_raw(288)  # ~24h at the 5-min cycle
+            history = [{"ts": r["ts"], "soc_pct": r["soc_pct"]} for r in reversed(rows)]
+        empty = {"now": datetime.now(UTC).isoformat(), "current_soc_pct": None,
+                 "reserve_soc_pct": reserve_pct, "history": history, "projection": [],
+                 "summary": "No plan yet."}
+        pp = _current_plan()
+        if pp is None or solar_forecast is None:
+            return empty
+        now, _prices, plan = pp
+        if not plan.slots:
+            return empty
+        raw = source.read()
+        solar_by = {f.start: f.p50_w for f in solar_forecast.slots()}
+        # Learn the expected load from ~7 days of derived history; fall back to the overnight
+        # estimate spread across a ~12h night when there's little history.
+        drows = await store.recent_derived(2016) if store is not None else []
+        fallback_w = settings_cache["battery.overnight_load_kwh"] * 1000.0 / 12.0
+        profile = build_load_profile(drows, site_tz, fallback_w=fallback_w)
+        load_by = {s.start: profile.expected_w(s.start) for s in plan.slots}
+        projected = project_energy(
+            plan.slots, start_soc_pct=raw.soc_pct, solar_w_by=solar_by,
+            load_w_by=load_by, model=_battery_model(),
+        )
+        return {
+            "now": now.isoformat(),
+            "current_soc_pct": round(raw.soc_pct, 1),
+            "reserve_soc_pct": reserve_pct,
+            "history": history,
+            "projection": [
+                {"start": p.start.isoformat(), "intent": p.intent,
+                 "soc_pct": round(p.soc_pct, 1), "battery_w": round(p.battery_w, 1),
+                 "grid_w": round(p.grid_w, 1), "solar_w": round(p.solar_w, 1),
+                 "load_w": round(p.load_w, 1)}
+                for p in projected
+            ],
+            **summarize_projection(projected),
+        }
 
     @app.get("/api/forecast")
     def forecast() -> dict:

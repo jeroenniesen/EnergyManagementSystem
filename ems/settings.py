@@ -93,6 +93,16 @@ SETTINGS_SCHEMA: tuple[SettingsField, ...] = (
         min=0.0, max=50.0, step=1.0, unit="%",
     ),
     SettingsField(
+        "battery.max_charge_w", "Max charge power", "number", 4000.0, "battery",
+        help="Peak charge power of the cluster — used to project how fast it fills.",
+        min=200.0, max=20000.0, step=100.0, unit="W", advanced=True,
+    ),
+    SettingsField(
+        "battery.max_discharge_w", "Max discharge power", "number", 4000.0, "battery",
+        help="Peak discharge power of the cluster — used to project how fast it drains.",
+        min=200.0, max=20000.0, step=100.0, unit="W", advanced=True,
+    ),
+    SettingsField(
         "battery.night_reserve_kwh", "Night reserve", "number", 2.0, "battery",
         help="Extra buffer to hold for the night, on top of the expected load.",
         min=0.0, max=20.0, step=0.5, unit="kWh",
