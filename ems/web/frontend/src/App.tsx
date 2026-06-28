@@ -86,6 +86,22 @@ function Metric({
   );
 }
 
+function SkeletonGrid() {
+  // Shown for the brief moment before the first /api/status resolves (a live read can take a
+  // couple of seconds). A shimmer placeholder reads as "loading" far better than a bare word.
+  return (
+    <section className="grid" data-testid="status-skeleton" aria-hidden="true">
+      {Array.from({ length: 6 }).map((_, i) => (
+        <div className="metric skel" key={i}>
+          <span className="skel-line skel-line-sm" />
+          <span className="skel-line skel-line-lg" />
+          <span className="skel-line skel-line-sm" />
+        </div>
+      ))}
+    </section>
+  );
+}
+
 function ChargeTarget({ n }: { n: ChargeNeed }) {
   return (
     <section className="charge-need" data-testid="charge-need">
@@ -377,6 +393,8 @@ export function App() {
         </section>
       )}
 
+      {view === "dashboard" && !status && !error && <SkeletonGrid />}
+
       {view === "dashboard" && strategy && (
         <StrategyCard
           strategy={strategy}
@@ -435,7 +453,6 @@ export function App() {
         </section>
       )}
 
-      {view === "dashboard" && !status && !error && <div className="loading">Loading…</div>}
     </div>
   );
 }
