@@ -258,6 +258,31 @@ class ExternalLlmExplainer:
             )
         return Explanation(text, "external_llm", question)
 
+    def validate(self, context: str) -> Explanation:
+        """An independent advisory review of the current plan, grounded ONLY in `context`. Purely
+        advisory — it cannot change anything. Numeric guard + fallback as elsewhere. `source` is
+        external_llm (reviewed) | guard (rejected) | error."""
+        system = (
+            "You are reviewing a home-battery energy plan as an independent advisor. You CANNOT "
+            "change anything — this is advisory only. Based ONLY on the CONTEXT, briefly assess "
+            "whether the plan looks reasonable for a home on dynamic electricity prices, and flag "
+            "any concern. 2-3 sentences. Never state a number that is not in the context. "
+            f"Answer in {self._language}."
+        )
+        try:
+            resp = self._chat_post(
+                [{"role": "system", "content": system},
+                 {"role": "user", "content": f"CONTEXT:\n{context}\n\nReview:"}],
+                {"model": self._model, "max_tokens": self._max_tokens,
+                 "temperature": self._temperature},
+            )
+            text = (resp["choices"][0]["message"]["content"] or "").strip()
+        except Exception:
+            return Explanation("Validation unavailable.", "error", context)
+        if not text or _has_ungrounded_number(text, context):
+            return Explanation("Validation withheld (ungrounded).", "guard", context)
+        return Explanation(text, "external_llm", context)
+
 
 def make_openai_chat_post(base_url: str, api_key: str, *, timeout: float = 8.0) -> ChatPost:
     """Build a `ChatPost` transport for any OpenAI-compatible chat endpoint (e.g. MiniMax). httpx is

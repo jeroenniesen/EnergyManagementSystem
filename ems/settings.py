@@ -258,6 +258,12 @@ SETTINGS_SCHEMA: tuple[SettingsField, ...] = (
         help="Give up on the AI after this many seconds and use the built-in text instead.",
         min=1.0, max=30.0, step=1.0, unit="s", advanced=True,
     ),
+    SettingsField(
+        "explainer.validate_hours", "AI second-opinion interval", "number", 24.0, "ai",
+        help="How often the AI reviews the current plan as an independent advisory check (logged "
+        "in the Audit tab). 0 turns it off. Only runs when AI is on; never changes anything.",
+        min=0.0, max=168.0, step=1.0, unit="h",
+    ),
     # --- Appearance ---
     SettingsField(
         "ui.theme", "Theme", "enum", "auto", "ui",

@@ -137,3 +137,25 @@ def test_chat_context_is_redacted(tmp_path, monkeypatch):
     assert "winter" in blob  # real plan facts ARE grounded on...
     for forbidden in ("192.168", "secret-key-123", "52.13", "5.29"):  # ...but nothing identifying
         assert forbidden not in blob
+
+
+# ---- scheduled AI second-opinion (validation) -------------------------------------------------
+
+def test_ai_validation_off_by_default(tmp_path):
+    with TestClient(_app(tmp_path)) as c:
+        b = c.get("/api/ai/validation").json()
+        assert b["latest"] is None and b["active"] is False
+        assert c.post("/api/ai/validate").json()["latest"] is None  # no-op when off
+
+
+def test_ai_validation_runs_and_surfaces_when_enabled(tmp_path, monkeypatch):
+    _enable_ai(monkeypatch, answer="The plan looks reasonable: it charges in the cheap window and "
+               "covers the evening peak from the battery.")
+    with TestClient(_app(tmp_path)) as c:
+        c.post("/api/settings", json={
+            "strategy.mode": "winter", "explainer.mode": "external_llm", "explainer.api_key": "k",
+        })
+        r = c.post("/api/ai/validate").json()
+        assert r["active"] is True and r["latest"] and "reasonable" in r["latest"]["text"]
+        # the latest is surfaced read-only for the dashboard
+        assert c.get("/api/ai/validation").json()["latest"]["text"] == r["latest"]["text"]

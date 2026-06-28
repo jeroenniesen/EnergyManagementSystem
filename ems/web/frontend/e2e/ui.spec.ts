@@ -344,6 +344,28 @@ test.describe("EMS dashboard", () => {
     await expect(page.getByTestId("audit-list")).toContainText("Changed 1 setting");
   });
 
+  test("the AI second-opinion card is hidden when AI is off", async ({ page }) => {
+    await page.goto("/");
+    await expect(page.getByTestId("status-grid")).toBeVisible();
+    await expect(page.getByTestId("ai-validation")).toHaveCount(0);
+  });
+
+  test("the AI second-opinion card shows a review when enabled (mocked)", async ({ page }) => {
+    await page.route("**/api/ai/validation", (route) =>
+      route.fulfill({
+        status: 200, contentType: "application/json",
+        body: JSON.stringify({
+          latest: { text: "The plan looks sound — charging cheap and covering the peak.",
+            ts: "2026-06-28T18:00:00+00:00", source: "external_llm" },
+          active: true,
+        }),
+      }),
+    );
+    await page.goto("/");
+    await expect(page.getByTestId("ai-validation-text")).toContainText("plan looks sound");
+    await expect(page.getByTestId("ai-check")).toBeVisible();
+  });
+
   test("shows the error banner when the status API returns 500", async ({ page }) => {
     await page.route("**/api/status", (route) =>
       route.fulfill({ status: 500, contentType: "application/json", body: '{"detail":"boom"}' }),

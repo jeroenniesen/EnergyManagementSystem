@@ -213,6 +213,8 @@ def create_app(
     # per (reason, language) so a 5 s dashboard poll never re-hits the LLM — only a CHANGED reason
     # does, keeping calls to a handful a day (and cost to cents).
     explainer_box: dict[str, Any] = {"ex": TemplateExplainer(), "cache": {}}
+    # Latest AI second-opinion (advisory review of the plan), surfaced read-only in the UI.
+    validation_box: dict[str, Any] = {"latest": None}
 
     def _apply_explainer_settings() -> None:
         """(Re)build the explainer from the settings cache. external_llm needs a key; otherwise we
@@ -381,6 +383,20 @@ def create_app(
             except Exception:
                 _log.exception("decision audit failed; will retry next cycle (fail-safe)")
 
+    async def _ai_validation_loop(stop: asyncio.Event) -> None:
+        """Scheduled, advisory AI review of the plan. Interval = explainer.validate_hours (re-read
+        each cycle so it's live-tunable; 0 = off → idle-poll every 6 h). Off the control path."""
+        while True:
+            hours = float(settings_cache.get("explainer.validate_hours", 0) or 0)
+            timeout = hours * 3600 if hours > 0 else 6 * 3600
+            try:
+                await asyncio.wait_for(stop.wait(), timeout=timeout)
+                return
+            except TimeoutError:
+                pass
+            if float(settings_cache.get("explainer.validate_hours", 0) or 0) > 0:
+                await _run_validation()  # already guarded + never raises
+
     @asynccontextmanager
     async def lifespan(_app: FastAPI):
         # Guarantee the schema exists before anything touches the DB (no caller footgun).
@@ -429,11 +445,14 @@ def create_app(
         if audit_store is not None and controller is not None:
             audit_task = asyncio.create_task(_audit_decision_loop(stop))
             audit_task.add_done_callback(_task_died("Decision audit"))
+        # Scheduled AI second-opinion (advisory, off control path; no-op until AI is on).
+        validate_task = asyncio.create_task(_ai_validation_loop(stop))
+        validate_task.add_done_callback(_task_died("AI validation"))
         try:
             yield
         finally:
             stop.set()
-            for t in (task, control_task, audit_task):
+            for t in (task, control_task, audit_task, validate_task):
                 if t is not None:
                     await t
 
@@ -551,6 +570,27 @@ def create_app(
         except Exception:
             pass
         return "\n".join(lines)
+
+    async def _run_validation() -> dict | None:
+        """Run one advisory AI review of the current plan (off the control path). Stores the latest
+        for the UI and logs it to the audit trail. Returns the result, or None when AI is off.
+        Never raises."""
+        if not _explainer_active():
+            return None
+        try:
+            out = await asyncio.to_thread(explainer_box["ex"].validate, _chat_context())
+        except Exception:
+            _log.exception("AI validation call failed")
+            return None
+        if out.source != "external_llm":
+            return None  # guard/error → don't store advisory noise
+        ts = datetime.now(UTC).isoformat()
+        validation_box["latest"] = {"text": out.text, "ts": ts, "source": out.source}
+        if audit_store is not None:
+            await audit_store.append(
+                ts, "ai_validation", f"AI second opinion: {out.text}", {"text": out.text},
+            )
+        return validation_box["latest"]
 
     def _control_tick(now: datetime) -> None:
         """Operational mode ONLY (never called in dry-run): advance the ownership lifecycle and,
@@ -1186,6 +1226,23 @@ def create_app(
         if audit_store is None:
             return {"entries": []}
         return {"entries": await audit_store.recent(limit, category)}
+
+    @app.get("/api/ai/validation")
+    def ai_validation_latest() -> dict:
+        """The latest AI second-opinion (advisory), for the dashboard. null until one has run."""
+        return {"latest": validation_box["latest"], "active": _explainer_active()}
+
+    @app.post("/api/ai/validate")
+    async def ai_validate_now(request: Request) -> JSONResponse:
+        """Run an AI second-opinion on demand (the dashboard's "check now"). Advisory; off → 200
+        with latest=null. Auth-gated like other writes; never 500s."""
+        if not _authorized(request):
+            return _auth_error()
+        try:
+            result = await _run_validation()
+        except Exception:
+            result = None
+        return JSONResponse({"latest": result, "active": _explainer_active()})
 
     @app.get("/api/explainer")
     def explainer_status() -> dict:

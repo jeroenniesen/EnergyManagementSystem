@@ -737,6 +737,16 @@ body {
 .check-status[data-status="warn"] { color: var(--amber-text); }
 .check-status[data-status="fail"] { color: var(--error); }
 
+/* AI second-opinion card */
+.ai-validation {
+  margin-top: 24px; background: var(--panel); border: 1px solid var(--line);
+  border-left: 3px solid var(--accent); border-radius: var(--radius); padding: 14px 18px;
+  box-shadow: var(--shadow);
+}
+.ai-validation-text { margin: 8px 0 0; font-size: 0.92rem; line-height: 1.5; color: var(--text); }
+.ai-validation-meta { margin: 8px 0 0; font-size: 0.74rem; color: var(--muted); }
+.ai-check-btn { padding: 5px 12px; font-size: 0.8rem; }
+
 /* Chat assistant */
 .chat {
   margin-top: 24px; background: var(--panel); border: 1px solid var(--line);

@@ -16,6 +16,7 @@ import {
 import { OverrideCard } from "./Override";
 import { Settings } from "./Settings";
 import { type Strategy, StrategyCard } from "./StrategyCard";
+import { AiValidationCard } from "./AiValidationCard";
 import { AuditView } from "./AuditView";
 import { ChatPanel } from "./ChatPanel";
 import { SystemView } from "./System";
@@ -544,6 +545,8 @@ export function App() {
           )}
         </section>
       )}
+
+      {view === "dashboard" && <AiValidationCard />}
 
       {view === "dashboard" && freshness && Object.keys(freshness).length > 0 && (
         <section className="freshness" data-testid="freshness">
