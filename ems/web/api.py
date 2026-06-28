@@ -3,7 +3,9 @@ from __future__ import annotations
 
 import asyncio
 import csv
+import hashlib
 import io
+import json
 import logging
 import secrets
 from contextlib import asynccontextmanager
@@ -68,6 +70,7 @@ from ems.sources.forecast import SolarForecastSource, day_kwh_p50
 from ems.sources.indevolt import aggregate_soc
 from ems.sources.prices import PriceSource, current_price
 from ems.storage.audit import AuditStore
+from ems.storage.cache import CacheStore
 from ems.storage.history import DERIVED_COLUMNS, RAW_COLUMNS, HistoryStore
 from ems.storage.settings import SettingsStore
 
@@ -84,6 +87,14 @@ def _task_died(name: str):
 
 
 _recorder_died = _task_died("Recorder")
+
+
+def _explain_cache_key(reason: str, language: str, model: str) -> str:
+    """Stable persistent-cache key for a phrased explanation. Includes model + language so changing
+    either refreshes; the (possibly long) reason is hashed to a fixed-size key. No secrets enter it
+    — only the deterministic reason, language and model name."""
+    raw = f"{model}|{language}|{reason}".encode()
+    return "explain:" + hashlib.sha256(raw).hexdigest()
 
 # --- Unified energy-story slot/totals (shared by the past + next windows so they never drift) ---
 _INTENT_ACTION = {
@@ -163,6 +174,7 @@ def create_app(
     settings_store: SettingsStore | None = None,
     override_store: SettingsStore | None = None,
     audit_store: AuditStore | None = None,
+    cache_store: CacheStore | None = None,
     control_cycle_seconds: float = 300.0,
     web_auth_token: str | None = None,
     static_dir: str | Path | None = None,
@@ -237,20 +249,45 @@ def create_app(
         return isinstance(explainer_box["ex"], ExternalLlmExplainer)
 
     async def _explain(reason: str, facts: dict) -> dict:
-        """Phrase a deterministic reason via the active explainer — memoised per (reason, language),
-        run off-thread, always falling back to the verbatim reason. The cache holds the in-flight
-        Task, so concurrent polls for the same reason share ONE LLM call (never re-hit it)."""
+        """Phrase a deterministic reason via the active explainer. Two cache layers, so an identical
+        decision is explained at most once: an in-memory Task cache per (reason, language) coalesces
+        concurrent polls into ONE in-flight call, and a persistent SQLite cache (keyed by
+        model|language|reason) means a restart doesn't re-spend tokens re-explaining the same
+        decision. Only real LLM answers are persisted — template/error fallbacks are not, so AI
+        retries next time. Always falls back to the verbatim reason."""
         if not reason or not _explainer_active():
             return {"text": reason, "source": "template"}
-        key = (reason, settings_cache.get("explainer.language", "English"))
+        lang = settings_cache.get("explainer.language", "English")
+        key = (reason, lang)
         cache = explainer_box["cache"]
         if key not in cache:
             async def _run() -> dict:
+                ckey = _explain_cache_key(reason, lang, settings_cache.get("explainer.model", ""))
+                if cache_store is not None:
+                    try:
+                        hit = await asyncio.to_thread(cache_store.get, ckey)
+                    except Exception:
+                        hit = None
+                    if hit:
+                        try:
+                            return json.loads(hit)
+                        except (ValueError, TypeError):
+                            pass  # corrupt entry → fall through and regenerate
                 try:
                     expl = await asyncio.to_thread(explainer_box["ex"].explain, reason, facts)
-                    return {"text": expl.text, "source": expl.source}
+                    out = {"text": expl.text, "source": expl.source}
                 except Exception:
                     return {"text": reason, "source": "template"}
+                if cache_store is not None and out["source"] == "external_llm":
+                    ttl = float(settings_cache.get("explainer.cache_hours", 168.0)) * 3600.0
+                    if ttl > 0:
+                        try:
+                            await asyncio.to_thread(
+                                cache_store.set, ckey, json.dumps(out), ttl
+                            )
+                        except Exception:
+                            pass  # cache write is best-effort; never fail the request over it
+                return out
             cache[key] = asyncio.ensure_future(_run())
         return await cache[key]
 
@@ -420,6 +457,10 @@ def create_app(
             )
         if audit_store is not None:
             await audit_store.init()
+        if cache_store is not None:
+            await asyncio.to_thread(cache_store.init)
+            # One-off housekeeping at boot so the cache table can't grow without bound.
+            await asyncio.to_thread(cache_store.purge_expired)
         # Start the read-only sense loop / recorder (SPEC §5.3). Take one awaited startup
         # sample so /api/series and /api/freshness are populated deterministically, then
         # run the periodic loop in the background.

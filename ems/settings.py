@@ -268,6 +268,12 @@ SETTINGS_SCHEMA: tuple[SettingsField, ...] = (
         "in the Audit tab). 0 turns it off. Only runs when AI is on; never changes anything.",
         min=0.0, max=168.0, step=1.0, unit="h",
     ),
+    SettingsField(
+        "explainer.cache_hours", "AI explanation cache", "number", 168.0, "ai",
+        help="Reuse a generated explanation for an identical decision for this long (it survives "
+        "restarts), so the same decision isn't re-sent to the AI and tokens aren't re-spent. "
+        "0 disables the persistent cache.", min=0.0, max=720.0, step=1.0, unit="h", advanced=True,
+    ),
     # --- Appearance ---
     SettingsField(
         "ui.theme", "Theme", "enum", "auto", "ui",

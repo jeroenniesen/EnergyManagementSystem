@@ -14,6 +14,7 @@ from ems.freshness import FreshnessTracker
 from ems.lifecycle import Lifecycle
 from ems.sense import SIGNALS, Recorder
 from ems.storage.audit import AuditStore
+from ems.storage.cache import CacheStore
 from ems.storage.history import HistoryStore
 from ems.storage.settings import SettingsStore
 from ems.web.api import create_app
@@ -34,6 +35,7 @@ def build_app():
     settings_store = SettingsStore(str(db_path))
     override_store = SettingsStore(str(db_path), table="runtime_state")
     audit_store = AuditStore(str(db_path))
+    cache_store = CacheStore(str(db_path))
     freshness = FreshnessTracker()
     freshness.register(*SIGNALS)
     tz = ZoneInfo(cfg.timezone)
@@ -62,6 +64,7 @@ def build_app():
         settings_store=settings_store,
         override_store=override_store,
         audit_store=audit_store,
+        cache_store=cache_store,
         control_cycle_seconds=cfg.cycle_seconds,
         web_auth_token=os.environ.get("EMS_WEB_TOKEN") or None,
         static_dir=_STATIC_DIR,

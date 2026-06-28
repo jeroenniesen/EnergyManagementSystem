@@ -16,6 +16,7 @@ from ems.planner.schedule import SLOT
 from ems.sources.battery import MockBatteryDriver
 from ems.sources.forecast import MockSolarForecastSource
 from ems.sources.prices import PriceSlot
+from ems.storage.cache import CacheStore
 from ems.storage.settings import SettingsStore
 from ems.web.api import create_app
 
@@ -46,7 +47,7 @@ def _app(tmp_path):
     return create_app(
         _Source(), dry_run=True, dev_mode="mock", tz=AMS,
         price_source=_FlatPrices(), solar_forecast=MockSolarForecastSource(AMS),
-        controller=controller, settings_store=SettingsStore(db),
+        controller=controller, settings_store=SettingsStore(db), cache_store=CacheStore(db),
     )
 
 
@@ -88,6 +89,32 @@ def test_external_llm_rephrases_and_caches(tmp_path, monkeypatch):
         assert d["plan_reason"]  # the deterministic reason is still present alongside
         c.get("/api/decision").json()  # second poll, same reason
         assert calls["n"] == 1  # cached — polling never re-hits the LLM
+
+
+def test_explanation_cache_survives_restart(tmp_path, monkeypatch):
+    """The persistent cache means a restart doesn't re-spend tokens re-explaining the same decision:
+    a fresh app on the same DB serves the stored phrasing without a second LLM call."""
+    calls = {"n": 0}
+
+    def fake_factory(base_url, api_key, *, timeout=8.0):
+        def chat_post(messages, params):
+            calls["n"] += 1
+            return {"choices": [{"message": {"content": "Running your home on the battery now."}}]}
+        return chat_post
+
+    monkeypatch.setattr(api, "make_openai_chat_post", fake_factory)
+    cfg = {"strategy.mode": "winter", "explainer.mode": "external_llm", "explainer.api_key": "k"}
+    with TestClient(_app(tmp_path)) as c:
+        c.post("/api/settings", json=cfg)
+        assert c.get("/api/decision").json()["explanation_source"] == "external_llm"
+    assert calls["n"] == 1
+    # "restart": a brand-new app on the SAME db (fresh in-memory cache, settings reloaded from
+    # store). The persistent cache must serve the explanation — no second LLM call.
+    with TestClient(_app(tmp_path)) as c:
+        d = c.get("/api/decision").json()
+        assert d["explanation_source"] == "external_llm"
+        assert d["plan_reason_explained"] == "Running your home on the battery now."
+    assert calls["n"] == 1  # NOT re-spent across the restart
 
 
 # ---- chat -------------------------------------------------------------------------------------
