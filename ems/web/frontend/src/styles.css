@@ -367,9 +367,14 @@ body {
 .seg-active .seg-icon { transform: scale(1.12); }
 .strategy-summary { margin: 12px 0 0; color: var(--muted); font-size: 0.9rem; }
 
-/* The whole card carries a hairline of the running season — calm, not loud. */
-.strategy-card.season-summer { border-top: 2px solid var(--summer); }
-.strategy-card.season-winter { border-top: 2px solid var(--winter); }
+/* The running season is shown as a soft tint that washes down from the top of the card and fades
+   into the surface — a calm, intentional cue rather than a loud coloured border. */
+.strategy-card.season-summer {
+  background: linear-gradient(var(--summer-tint), transparent 96px), var(--panel);
+}
+.strategy-card.season-winter {
+  background: linear-gradient(var(--winter-tint), transparent 96px), var(--panel);
+}
 .strategy-badge { background: var(--panel-2); color: var(--muted); text-transform: none; }
 .season-summer .strategy-badge { color: var(--summer-text); background: var(--summer-tint); }
 .season-winter .strategy-badge { color: var(--winter); background: var(--winter-tint); }
@@ -519,8 +524,20 @@ body {
   background: var(--panel-2);
   border: 1px solid var(--line);
   border-radius: 8px;
-  padding: 8px 10px;
+  padding: 8px 32px 8px 10px;
 }
+
+/* Native selects → one custom chevron so the dropdowns match the rest of the controls. The
+   mid-grey caret reads on both the dark and light panel-2 fills. */
+.override-controls select,
+.field select {
+  appearance: none;
+  -webkit-appearance: none;
+  background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%238b95a5' stroke-width='2.5' stroke-linecap='round' stroke-linejoin='round'><path d='m6 9 6 6 6-6'/></svg>");
+  background-repeat: no-repeat;
+  background-position: right 11px center;
+}
+.field select { padding-right: 32px; }
 .override-controls select:focus { outline: none; border-color: var(--accent); }
 .override-controls select:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
 
