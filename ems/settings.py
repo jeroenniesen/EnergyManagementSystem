@@ -221,6 +221,43 @@ SETTINGS_SCHEMA: tuple[SettingsField, ...] = (
         "24 ≈ 6 hours.",
         min=1, max=96, unit="× 15 min", advanced=True,
     ),
+    # --- AI explanations (optional, OFF by default; the one off-device feature — SPEC §12) ---
+    SettingsField(
+        "explainer.mode", "AI explanations", "enum", "template", "ai",
+        help="Off (default) shows the built-in plain-language reasons. On sends a tiny, "
+        "non-identifying summary (the decision + the few numbers it cites — never your address, "
+        "history or tokens) to a cloud AI to phrase it more naturally and to power the chat. "
+        "Falls back to the built-in text if the AI is slow or unavailable.",
+        options=("template", "external_llm"),
+    ),
+    SettingsField(
+        "explainer.language", "Explanation language", "enum", "English", "ai",
+        help="Language for AI explanations and chat answers.",
+        options=("English", "Dutch"),
+    ),
+    SettingsField(
+        "explainer.api_key", "MiniMax API key", "secret", "", "ai",
+        help="Your MiniMax API key (from platform.minimax.io). Stored locally as a secret, never "
+        "logged. Leave blank to keep the current value.",
+    ),
+    SettingsField(
+        "explainer.model", "AI model", "text", "MiniMax-M2.5", "ai",
+        help="The chat model id, e.g. MiniMax-M2.5 (cheap, fine for explanations).", advanced=True,
+    ),
+    SettingsField(
+        "explainer.base_url", "AI endpoint", "text", "https://api.minimax.io/v1", "ai",
+        help="OpenAI-compatible chat endpoint. Point this at any compatible provider (or a "
+        "zero-retention gateway) — the app isn't locked to one vendor.", advanced=True,
+    ),
+    SettingsField(
+        "explainer.max_tokens", "AI reply length", "int", 200, "ai",
+        help="Maximum length of an AI reply, in tokens.", min=20, max=2000, advanced=True,
+    ),
+    SettingsField(
+        "explainer.timeout_seconds", "AI timeout", "number", 8.0, "ai",
+        help="Give up on the AI after this many seconds and use the built-in text instead.",
+        min=1.0, max=30.0, step=1.0, unit="s", advanced=True,
+    ),
     # --- Appearance ---
     SettingsField(
         "ui.theme", "Theme", "enum", "auto", "ui",

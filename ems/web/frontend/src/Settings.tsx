@@ -28,8 +28,8 @@ type PlanMetrics = {
 type Impact = { current: PlanMetrics | null; proposed: PlanMetrics | null };
 
 // Group display order + titles. Connection-type groups first (what most people need), tuning last.
-const GROUP_ORDER =
-  ["strategy", "connection", "meters", "battery", "prices", "site", "control", "planner", "ui"];
+const GROUP_ORDER = ["strategy", "connection", "meters", "battery", "prices", "site", "control",
+  "planner", "ai", "ui"];
 const GROUP_TITLE: Record<string, string> = {
   strategy: "Strategy",
   connection: "Connection",
@@ -39,6 +39,7 @@ const GROUP_TITLE: Record<string, string> = {
   site: "Solar & location",
   control: "Control & safety",
   planner: "Planner economics",
+  ai: "AI explanations & chat",
   ui: "Appearance",
 };
 const GROUP_HINT: Record<string, string> = {
@@ -50,6 +51,8 @@ const GROUP_HINT: Record<string, string> = {
   site: "Location & array — these drive the solar forecast.",
   control: "Safety limits applied to the battery mode controller.",
   planner: "The arbitrage maths — the plan recomputes from these immediately.",
+  ai: "Optional. Off by default. Turn on to get natural-language explanations and the chat — a tiny, "
+    + "redacted summary is sent to MiniMax; never your address, history or tokens.",
   ui: "How the dashboard looks.",
 };
 

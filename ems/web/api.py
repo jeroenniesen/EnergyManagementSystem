@@ -38,7 +38,14 @@ from ems.lifecycle import OwnershipState
 from ems.load_model import reconstruct
 from ems.planner.adaptive import AdaptiveConfig
 from ems.planner.charge_need import compute_charge_need
-from ems.planner.explain import build_plan_detail, plan_metrics, summarize_projection
+from ems.planner.explain import (
+    ExternalLlmExplainer,
+    TemplateExplainer,
+    build_plan_detail,
+    make_openai_chat_post,
+    plan_metrics,
+    summarize_projection,
+)
 from ems.planner.load_profile import build_load_profile
 from ems.planner.projection import BatteryModel, project_energy
 from ems.planner.rule_based import PlannerConfig, plan_rule_based
@@ -198,6 +205,47 @@ def create_app(
         for attr in ("kwp", "tilt", "azimuth"):
             setattr(solar_forecast, attr, settings_cache[f"site.{attr}"])
 
+    # The AI explainer. OFF by default → TemplateExplainer (returns the deterministic reason
+    # verbatim, never fails). Rebuilt in place from settings on save. `cache` memoises the phrasing
+    # per (reason, language) so a 5 s dashboard poll never re-hits the LLM — only a CHANGED reason
+    # does, keeping calls to a handful a day (and cost to cents).
+    explainer_box: dict[str, Any] = {"ex": TemplateExplainer(), "cache": {}}
+
+    def _apply_explainer_settings() -> None:
+        """(Re)build the explainer from the settings cache. external_llm needs a key; otherwise we
+        stay on the offline template. Privacy/fail-safe live in ExternalLlmExplainer itself."""
+        s = settings_cache
+        explainer_box["cache"] = {}  # settings changed → drop memoised phrasings
+        if s.get("explainer.mode") == "external_llm" and s.get("explainer.api_key"):
+            chat_post = make_openai_chat_post(
+                s["explainer.base_url"], s["explainer.api_key"],
+                timeout=float(s["explainer.timeout_seconds"]),
+            )
+            explainer_box["ex"] = ExternalLlmExplainer(
+                chat_post, model=s["explainer.model"], language=s["explainer.language"],
+                max_tokens=int(s["explainer.max_tokens"]),
+            )
+        else:
+            explainer_box["ex"] = TemplateExplainer()
+
+    def _explainer_active() -> bool:
+        return isinstance(explainer_box["ex"], ExternalLlmExplainer)
+
+    async def _explain(reason: str, facts: dict) -> dict:
+        """Phrase a deterministic reason via the active explainer — memoised per (reason, language),
+        run off-thread, and always falling back to the verbatim reason. Returns {text, source}."""
+        if not reason or not _explainer_active():
+            return {"text": reason, "source": "template"}
+        key = (reason, settings_cache.get("explainer.language", "English"))
+        cache = explainer_box["cache"]
+        if key not in cache:
+            try:
+                expl = await asyncio.to_thread(explainer_box["ex"].explain, reason, facts)
+                cache[key] = {"text": expl.text, "source": expl.source}
+            except Exception:
+                cache[key] = {"text": reason, "source": "template"}
+        return cache[key]
+
     def _planner_cfg_from(s: dict) -> PlannerConfig:
         return PlannerConfig(
             round_trip_efficiency=s["planner.round_trip_efficiency"],
@@ -310,6 +358,7 @@ def create_app(
             settings_cache.update(loaded)
             _apply_control_settings()
             _apply_site_settings()
+            _apply_explainer_settings()
         if override_store is not None:
             await override_store.init()
             stored = await override_store.all()
@@ -488,7 +537,7 @@ def create_app(
         return {"data_quality": dq, "alerts": out}
 
     @app.get("/api/decision")
-    def decision_endpoint() -> dict:
+    async def decision_endpoint() -> dict:
         # What the controller would do right now, and why. An active override wins over the plan.
         if controller is None:
             return {"intent": None, "desired_mode": None, "applied": False,
@@ -503,6 +552,10 @@ def create_app(
                     "plan_reason": None, "override_active": False, "car_charging": car_charging}
         # preview() is read-only — a GET must never write to the battery or mutate counters.
         d = controller.preview(intent, now)
+        # Phrase the deterministic plan reason via the explainer (verbatim unless AI is on; cached).
+        explained = await _explain(
+            reason, {"intent": str(intent), "desired_mode": str(d.desired_mode)}
+        )
         return {
             "intent": d.intent,
             "desired_mode": d.desired_mode,
@@ -510,6 +563,8 @@ def create_app(
             "outcome": d.outcome,
             "reason": d.reason,
             "plan_reason": reason,
+            "plan_reason_explained": explained["text"],
+            "explanation_source": explained["source"],
             "override_active": override_active,
             # Surfaced so the dashboard can show "car charging — battery held".
             "car_charging": car_charging,
@@ -974,6 +1029,7 @@ def create_app(
         settings_cache.update(refreshed)
         _apply_control_settings()
         _apply_site_settings()
+        _apply_explainer_settings()
         # Tell the caller if any saved key needs a restart to take effect (connection / operational
         # mode are read at startup) — so the UI never implies operational control is live when it
         # isn't. Mask secrets in the response exactly like GET — never echo a stored token back.
@@ -997,6 +1053,15 @@ def create_app(
             "battery_power_w": raw.battery_power_w,
             "house_load_w": derived.house_load_w,
             "non_ev_load_w": derived.non_ev_load_w,
+        }
+
+    @app.get("/api/explainer")
+    def explainer_status() -> dict:
+        """Whether AI explanations/chat are active, for the UI to show state + gate the chat."""
+        return {
+            "mode": settings_cache.get("explainer.mode", "template"),
+            "active": _explainer_active(),
+            "language": settings_cache.get("explainer.language", "English"),
         }
 
     # Unknown /api/* paths must return a JSON 404 — NOT fall through to the SPA catch-all

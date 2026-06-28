@@ -8,10 +8,13 @@ dependencies = [
     "uvicorn[standard]>=0.29",
     "pyyaml>=6.0",
     "aiosqlite>=0.20",
+    # Lightweight HTTP client used at runtime by the live device/price sources and the optional
+    # external-LLM explainer (loaded lazily, behind their feature flags). No GPU/ML deps.
+    "httpx>=0.27",
 ]
 
 [project.optional-dependencies]
-dev = ["pytest>=8.0", "httpx>=0.27", "ruff>=0.4"]
+dev = ["pytest>=8.0", "ruff>=0.4"]
 
 [build-system]
 requires = ["hatchling"]

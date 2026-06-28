@@ -39,6 +39,8 @@ type Decision = {
   outcome: string;
   reason: string;
   plan_reason?: string | null;
+  plan_reason_explained?: string | null;
+  explanation_source?: string;
   car_charging?: boolean;
 };
 
@@ -505,7 +507,18 @@ export function App() {
             {" — "}
             {decision.reason}
           </p>
-          {decision.plan_reason && <p className="plan-reason">plan: {decision.plan_reason}</p>}
+          {decision.plan_reason && (
+            <p className="plan-reason">
+              plan: {decision.explanation_source === "external_llm" && decision.plan_reason_explained
+                ? decision.plan_reason_explained
+                : decision.plan_reason}
+              {decision.explanation_source === "external_llm" && (
+                <span className="ai-tag" title="Phrased by AI from the system's own decision — the numbers are the real ones.">
+                  AI
+                </span>
+              )}
+            </p>
+          )}
         </section>
       )}
 

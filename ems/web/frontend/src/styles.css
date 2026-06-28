@@ -487,6 +487,12 @@ body {
 .seg-hold_reserve { background: #5b6473; }
 .seg-discharge_for_load { background: var(--amber); }
 .plan-reason { color: var(--muted); font-size: 0.8rem; margin: 10px 0 0; }
+.ai-tag {
+  display: inline-block; margin-left: 8px; font-size: 0.58rem; font-weight: 700;
+  letter-spacing: 0.06em; text-transform: uppercase; padding: 1px 6px; border-radius: 999px;
+  vertical-align: middle; cursor: help;
+  background: color-mix(in srgb, var(--accent) 16%, transparent); color: var(--accent-text);
+}
 
 .override, .charge-need {
   margin-top: 24px;

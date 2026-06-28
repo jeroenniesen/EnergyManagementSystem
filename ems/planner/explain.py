@@ -227,6 +227,27 @@ class ExternalLlmExplainer:
         return Explanation(text=text, source="external_llm", base_reason=reason)
 
 
+def make_openai_chat_post(base_url: str, api_key: str, *, timeout: float = 8.0) -> ChatPost:
+    """Build a `ChatPost` transport for any OpenAI-compatible chat endpoint (e.g. MiniMax). httpx is
+    imported lazily inside the call so the core/Pi path carries no hard network dependency (the same
+    pattern the live device/price sources use)."""
+    url = base_url.rstrip("/") + "/chat/completions"
+
+    def chat_post(messages: list[dict], params: dict) -> dict:
+        import httpx
+
+        resp = httpx.post(
+            url,
+            headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+            json={"messages": messages, **params},
+            timeout=timeout,
+        )
+        resp.raise_for_status()
+        return resp.json()
+
+    return chat_post
+
+
 def build_plan_detail(
     now: datetime,
     prices: list[PriceSlot],
