@@ -18,6 +18,7 @@
   --summer: #f0a830; /* warm sun */
   --summer-text: #f0a830; /* summer used as text (graphics keep --summer) */
   --winter: #5aa2e0; /* cool sky */
+  --winter-text: #5aa2e0; /* winter used as small text */
   --summer-tint: rgba(240, 168, 48, 0.12);
   --winter-tint: rgba(90, 162, 224, 0.12);
   font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
@@ -43,6 +44,7 @@
   --summer: #d98a1f;
   --summer-text: #8a5800; /* darker summer/amber for text — AA on white */
   --winter: #2f7fc4;
+  --winter-text: #1f5e96; /* darker blue for text — AA on white / tints */
   --summer-tint: rgba(217, 138, 31, 0.12);
   --winter-tint: rgba(47, 127, 196, 0.12);
 }
@@ -491,7 +493,8 @@ body {
   display: inline-block; margin-left: 8px; font-size: 0.58rem; font-weight: 700;
   letter-spacing: 0.06em; text-transform: uppercase; padding: 1px 6px; border-radius: 999px;
   vertical-align: middle; cursor: help;
-  background: color-mix(in srgb, var(--accent) 16%, transparent); color: var(--accent-text);
+  background: var(--panel-2); color: var(--accent-text);
+  border: 1px solid color-mix(in srgb, var(--accent) 35%, transparent);
 }
 
 .override, .charge-need {
@@ -832,21 +835,19 @@ body {
 .audit-list { list-style: none; margin: 14px 0 0; padding: 0; display: flex; flex-direction: column; }
 .audit-row {
   display: grid; grid-template-columns: auto 1fr auto; align-items: center; gap: 8px 14px;
-  padding: 11px 4px; border-bottom: 1px solid var(--line); font-size: 0.9rem;
+  padding: 11px 8px; border-bottom: 1px solid var(--line); font-size: 0.9rem; border-radius: 8px;
 }
 .audit-row:last-child { border-bottom: 0; }
+.audit-row:hover { background: var(--panel-2); }
+/* Neutral pill, colour carried by the text token (all AA on panel-2) for a calm, readable log. */
 .audit-cat {
   font-size: 0.6rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.05em;
   padding: 2px 8px; border-radius: 999px; background: var(--panel-2); color: var(--muted);
   white-space: nowrap; min-width: 62px; text-align: center;
 }
-.audit-cat-battery_decision {
-  background: color-mix(in srgb, var(--accent) 16%, transparent); color: var(--accent-text);
-}
-.audit-cat-config_change {
-  background: color-mix(in srgb, var(--winter) 18%, transparent); color: var(--winter);
-}
-.audit-cat-manual_override { background: var(--summer-tint); color: var(--summer-text); }
+.audit-cat-battery_decision { color: var(--accent-text); }
+.audit-cat-manual_override { color: var(--summer-text); }
+.audit-cat-ai_validation { color: var(--winter-text); }
 .audit-summary { color: var(--text); }
 .audit-time {
   color: var(--muted); font-size: 0.78rem; white-space: nowrap; font-variant-numeric: tabular-nums;
