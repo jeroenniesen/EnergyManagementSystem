@@ -79,6 +79,18 @@ def test_purge_expired_counts_and_keeps_live(tmp_path):
     assert s.get("live") == "y" and s.count() == 1
 
 
+def test_breakdown_groups_live_rows_by_prefix(tmp_path):
+    clk = _Clock()
+    s = _store(tmp_path, clk)
+    s.set("explain:a", "1", ttl_seconds=100)
+    s.set("explain:b", "2", ttl_seconds=100)
+    s.set("tibber:prices", "3", ttl_seconds=100)
+    s.set("forecast_solar:slots", "4", ttl_seconds=1)
+    clk.t += 5  # expire the forecast row → excluded from the live breakdown
+    b = s.breakdown()
+    assert b == {"total": 3, "explain": 2, "tibber": 1}
+
+
 def test_persists_across_instances(tmp_path):
     clk = _Clock()
     path = str(tmp_path / "cache.sqlite")

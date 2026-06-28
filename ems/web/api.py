@@ -820,7 +820,15 @@ def create_app(
             auth_required=web_auth_token is not None,
             freshness=freshness.snapshot(now) if freshness is not None else None,
         )
-        return {"overall": overall_status(checks), "checks": [c.to_dict() for c in checks]}
+        # Observability: how much is currently cached (reused instead of refetched / re-spent).
+        cache_stats = None
+        if cache_store is not None:
+            try:
+                cache_stats = await asyncio.to_thread(cache_store.breakdown)
+            except Exception:
+                cache_stats = None
+        return {"overall": overall_status(checks), "checks": [c.to_dict() for c in checks],
+                "cache": cache_stats}
 
     @app.get("/api/charge-need")
     def charge_need_endpoint() -> dict:

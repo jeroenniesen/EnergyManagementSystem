@@ -113,3 +113,19 @@ class CacheStore:
             return int(con.execute("SELECT COUNT(*) FROM cache").fetchone()[0])
         finally:
             con.close()
+
+    def breakdown(self) -> dict[str, int]:
+        """{'total': N, '<prefix>': count, ...} over the LIVE (unexpired) rows, grouped by the key
+        prefix before ':'. For observability — showing how much is reused instead of refetched."""
+        now = self._clock()
+        con = self._conn()
+        try:
+            rows = con.execute("SELECT key FROM cache WHERE expires_at > ?", (now,)).fetchall()
+        finally:
+            con.close()
+        out: dict[str, int] = {"total": 0}
+        for (k,) in rows:
+            out["total"] += 1
+            kind = k.split(":", 1)[0] if ":" in k else "other"
+            out[kind] = out.get(kind, 0) + 1
+        return out

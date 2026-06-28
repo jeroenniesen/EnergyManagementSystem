@@ -49,3 +49,33 @@ price/forecast sources.
   UI surfacing, docs, TTL tuning, live verification.
 
 Hard rule preserved throughout: **meter/SoC data is never served from the long external caches.**
+
+## Implemented (2026-06-28)
+
+A single sync `ems/storage/cache.py::CacheStore` (TTL'd key→value in the shared SQLite DB) now
+backs all three external concerns:
+
+- **AI explanations** — `_explain` consults the persistent cache (key `sha256(model|language|reason)`)
+  before calling the LLM and persists only real answers (TTL `explainer.cache_hours`, default 168h).
+  Restart no longer re-spends tokens. The in-memory cache is now just in-flight coalescing, bounded
+  FIFO at 256 entries.
+- **Tibber & Forecast.Solar** — added a **single-flight lock** (double-checked) so concurrent
+  cache-miss callers share one upstream request (kills the 429 burst), plus **warm-start** from a
+  persisted snapshot (back-dated by its age) so a restart inside the TTL does no fetch.
+- **Housekeeping** — expired rows purged at boot and every ~6h; `breakdown()` surfaced on
+  `/api/diagnostics` (`cache` field) for visibility.
+
+### Verified
+
+- Unit + integration tests (CacheStore TTL/warm-start/purge/breakdown, single-flight under 8
+  concurrent threads, restart-reuse, meter-never-cached guardrail). Full gate: 377 pytest, 54 e2e
+  (clean DB), ruff clean, build 60.6 KB gz.
+- **Live**: polling `/api/decision` populated `explain:` (TTL 604800s); polling prices/plan
+  populated `tibber:prices` + `forecast_solar:slots`; a restart-then-poll left both snapshots'
+  `created_at` **unchanged** → zero upstream Tibber/Forecast.Solar calls on restart within the TTL.
+
+### Net effect
+
+Steady state: Tibber/Forecast.Solar ≈ one request per TTL window regardless of dashboard poll rate,
+and **no** burst on cache expiry or restart. AI: each distinct decision explained once per
+`cache_hours`, surviving restarts. Meters stay live (≤30 s in-memory coalescing only).
