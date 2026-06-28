@@ -54,6 +54,7 @@ from ems.planner.rule_based import PlannerConfig, plan_rule_based
 from ems.planner.strategy import build_plan, select_strategy
 from ems.planner.summer import SummerConfig, sunset_after
 from ems.planner.validator import PlanValidation, validate_plan
+from ems.readiness import Readiness, compute_readiness
 from ems.retrospect import build_past_story, past_headline
 from ems.savings import estimate_daily_savings_eur
 from ems.sense import Recorder
@@ -769,9 +770,37 @@ def create_app(
     def live() -> dict:
         return {"status": "alive"}
 
+    def _readiness(now: datetime) -> Readiness:
+        """Layered readiness for a control system (energy review #7): alive / dashboard / sensing /
+        planning / control. Robust — every input is guarded so health never raises."""
+        try:
+            dq = _data_quality(now)
+        except Exception:
+            dq = "unsafe"
+        plan_valid = True
+        plan_ok = False
+        try:
+            pp = _current_plan()
+            plan_ok = pp is not None and bool(pp[2].slots)
+            if pp is not None:
+                plan_valid = _validate_plan_obj(pp[2], now).ok
+        except Exception:
+            plan_ok, plan_valid = False, False
+        return compute_readiness(
+            store_ok=store is not None,
+            sensing_ok=dq != "unsafe",
+            plan_ok=plan_ok,
+            data_quality=dq,
+            plan_valid=plan_valid,
+            operational=not dry_run,
+            capability_ok=_capability_box["cap"] is not None,
+        )
+
     @app.get("/health/ready")
     def ready() -> dict:
-        return {"status": "ready", "dry_run": dry_run, "dev_mode": dev_mode}
+        r = _readiness(datetime.now(UTC))
+        return {"status": "ready" if r.dashboard_ready else "starting",
+                "dry_run": dry_run, "dev_mode": dev_mode, "readiness": r.to_dict()}
 
     @app.get("/api/auth")
     def auth_status(request: Request) -> dict:
@@ -908,7 +937,7 @@ def create_app(
             except Exception:
                 cache_stats = None
         return {"overall": overall_status(checks), "checks": [c.to_dict() for c in checks],
-                "cache": cache_stats}
+                "cache": cache_stats, "readiness": _readiness(now).to_dict()}
 
     @app.get("/api/charge-need")
     def charge_need_endpoint() -> dict:
