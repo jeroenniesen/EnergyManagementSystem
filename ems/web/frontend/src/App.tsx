@@ -4,6 +4,7 @@ import { OverrideCard } from "./Override";
 import { PlanDetail, type PlanDetailData } from "./PlanDetail";
 import { Settings } from "./Settings";
 import { type Battery, type EnergyForecast, SocForecast } from "./SocForecast";
+import { type Strategy, StrategyCard } from "./StrategyCard";
 import { SystemView } from "./System";
 import { applyTheme, readStoredTheme, storeTheme, type Theme } from "./theme";
 
@@ -189,6 +190,7 @@ export function App() {
   const [forecast, setForecast] = useState<Forecast | null>(null);
   const [planDetail, setPlanDetail] = useState<PlanDetailData | null>(null);
   const [energy, setEnergy] = useState<EnergyForecast | null>(null);
+  const [strategy, setStrategy] = useState<Strategy | null>(null);
   const [battery, setBattery] = useState<Battery | null>(null);
   const [decision, setDecision] = useState<Decision | null>(null);
   const [alertsData, setAlertsData] = useState<AlertsResp | null>(null);
@@ -230,7 +232,7 @@ export function App() {
     }
     async function poll() {
       try {
-        const [s, ser, fr, pr, fc, pl, ef, bat, dec, al, sv, cn] = await Promise.all([
+        const [s, ser, fr, pr, fc, pl, ef, st, bat, dec, al, sv, cn] = await Promise.all([
           getJson("/api/status"),
           getJson("/api/series?limit=50"),
           getJson("/api/freshness"),
@@ -238,6 +240,7 @@ export function App() {
           getJson("/api/forecast"),
           getJson("/api/plan-detail"),
           getJson("/api/energy-forecast"),
+          getJson("/api/strategy"),
           getJson("/api/battery"),
           getJson("/api/decision"),
           getJson("/api/alerts"),
@@ -252,6 +255,7 @@ export function App() {
         setForecast(fc);
         setPlanDetail(pl);
         setEnergy(ef);
+        setStrategy(st);
         setBattery(bat);
         setDecision(dec);
         setAlertsData(al);
@@ -269,6 +273,22 @@ export function App() {
       clearInterval(id);
     };
   }, [view]);
+
+  async function setStrategyMode(mode: string) {
+    // Strategy is a live setting — it takes effect on the next plan poll. Update the card at once.
+    setStrategy((s) => (s ? { ...s, mode } : s));
+    try {
+      await fetch("/api/settings", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ "strategy.mode": mode }),
+      });
+      const r = await fetch("/api/strategy");
+      if (r.ok) setStrategy(await r.json());
+    } catch {
+      /* the next poll reconciles */
+    }
+  }
 
   return (
     <div className="app">
@@ -367,6 +387,10 @@ export function App() {
             <Metric label="Est. savings today" value={`€${savings.toFixed(2)}`} hint="arbitrage" />
           )}
         </section>
+      )}
+
+      {view === "dashboard" && strategy && (
+        <StrategyCard strategy={strategy} onChange={setStrategyMode} />
       )}
 
       {view === "dashboard" && energy && <SocForecast forecast={energy} battery={battery} />}

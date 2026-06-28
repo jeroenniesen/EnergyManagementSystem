@@ -9,6 +9,7 @@ test.describe("EMS dashboard", () => {
       "run-mode-badge",
       "data-quality",
       "status-grid",
+      "strategy-card",
       "soc-forecast",
       "decision",
       "plan-detail",
@@ -77,6 +78,48 @@ test.describe("EMS dashboard", () => {
     // The legend explains the action colours.
     await expect(page.getByTestId("plan-legend")).toContainText("Charge");
     await expect(page.getByTestId("plan-legend")).toContainText("Discharge");
+  });
+
+  test("shows the strategy card with a season picker and explanation", async ({ page }) => {
+    await page.goto("/");
+    const card = page.getByTestId("strategy-card");
+    await expect(card).toBeVisible();
+    await expect(page.getByTestId("strategy-auto")).toBeVisible();
+    await expect(page.getByTestId("strategy-summer")).toBeVisible();
+    await expect(page.getByTestId("strategy-winter")).toBeVisible();
+    await expect(page.getByTestId("strategy-summary")).not.toHaveText("");
+    // Default is Auto -> the Auto option is selected and the resolved season is shown.
+    await expect(page.getByTestId("strategy-auto")).toHaveAttribute("aria-checked", "true");
+    await expect(page.getByTestId("strategy-active")).toContainText("Auto");
+  });
+
+  test("strategy card switches the running strategy", async ({ page }) => {
+    let mode = "auto";
+    await page.route("**/api/strategy", (route) =>
+      route.fulfill({
+        status: 200, contentType: "application/json",
+        body: JSON.stringify({
+          mode, active: mode === "winter" ? "winter" : "summer", auto: mode === "auto",
+          summary: mode === "winter"
+            ? "Arbitrage — charge in the cheapest hours and discharge the peaks."
+            : "Solar-first — fill the battery from your panels.",
+          grid_topup: true, max_topup_price: 0.3,
+        }),
+      }),
+    );
+    await page.route("**/api/settings", async (route) => {
+      if (route.request().method() === "POST") {
+        mode = JSON.parse(route.request().postData() || "{}")["strategy.mode"] ?? mode;
+        await route.fulfill({ status: 200, contentType: "application/json", body: "{\"values\":{}}" });
+      } else {
+        await route.continue();
+      }
+    });
+    await page.goto("/");
+    await expect(page.getByTestId("strategy-summary")).toContainText("Solar-first");
+    await page.getByTestId("strategy-winter").click();
+    await expect(page.getByTestId("strategy-winter")).toHaveAttribute("aria-checked", "true");
+    await expect(page.getByTestId("strategy-summary")).toContainText("Arbitrage");
   });
 
   test("shows the SoC history+forecast chart with a narrative and legend", async ({ page }) => {

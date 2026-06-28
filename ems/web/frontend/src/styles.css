@@ -169,6 +169,47 @@ body {
 .legend-predicted { border-top-color: var(--amber); border-top-style: dashed; }
 .legend-reserve { border-top-color: var(--muted); border-top-style: dotted; }
 
+/* Strategy card — the headline control */
+.strategy-card {
+  margin-top: 24px;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  padding: 18px;
+}
+.seg {
+  display: flex;
+  gap: 4px;
+  background: var(--panel-2);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  padding: 4px;
+}
+.seg-btn {
+  flex: 1 1 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  padding: 10px 12px;
+  border: 0;
+  border-radius: 9px;
+  background: transparent;
+  color: var(--muted);
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 0.15s ease, color 0.15s ease;
+}
+.seg-btn:hover { color: var(--text); }
+.seg-active {
+  background: var(--panel);
+  color: var(--text);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.18);
+}
+.seg-icon { font-size: 1.05rem; line-height: 1; }
+.strategy-summary { margin: 12px 0 0; color: var(--muted); font-size: 0.9rem; }
+
 /* Battery SoC — history + 24h forecast */
 .socchart {
   margin-top: 24px;
