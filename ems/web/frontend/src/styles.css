@@ -857,6 +857,13 @@ body {
   .audit-time { grid-column: 2; }
 }
 
+/* Gentle reveal for newly-shown content (accordion bodies, incoming chat messages). */
+@keyframes ai-fade-in { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: none; } }
+.settings-group-body, .chat-msg { animation: ai-fade-in 0.18s ease; }
+@media (prefers-reduced-motion: reduce) {
+  .settings-group-body, .chat-msg { animation: none; }
+}
+
 .loading, .footer { color: var(--muted); margin-top: 24px; font-size: 0.85rem; }
 .footer { border-top: 1px solid var(--line); padding-top: 16px; }
 
