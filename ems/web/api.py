@@ -211,20 +211,43 @@ def create_app(
         return _planner_cfg_from(settings_cache)
 
     site_tz = tz or ZoneInfo("UTC")
-    # The live SoC read (battery cluster) is slow; cache it briefly so a single dashboard poll —
-    # which fans out to several plan-consuming endpoints — doesn't read the battery many times over.
-    _soc_cache: dict[str, Any] = {"soc": None, "at": None}
+    # The live read (battery cluster + meters) is slow; cache the whole sample briefly so a single
+    # dashboard poll — fanning out to several endpoints — doesn't read the hardware many times over.
+    _sample_cache: dict[str, Any] = {"sample": None, "at": None}
+
+    def _current_sample(now: datetime):
+        cached_at = _sample_cache["at"]
+        if (cached_at is not None and (now - cached_at).total_seconds() < 30
+                and _sample_cache["sample"] is not None):
+            return _sample_cache["sample"]
+        try:
+            _sample_cache["sample"], _sample_cache["at"] = source.read(), now
+        except Exception:
+            pass  # keep the last good sample (fail-safe)
+        return _sample_cache["sample"]
 
     def _current_soc(now: datetime) -> float:
-        cached_at = _soc_cache["at"]
-        if cached_at is not None and (now - cached_at).total_seconds() < 30:
-            return _soc_cache["soc"]
-        try:
-            soc = float(source.read().soc_pct)
-        except Exception:
-            soc = _soc_cache["soc"] if _soc_cache["soc"] is not None else 0.0
-        _soc_cache["soc"], _soc_cache["at"] = soc, now
-        return soc
+        s = _current_sample(now)
+        return float(s.soc_pct) if s is not None else 0.0
+
+    def _car_charging(now: datetime) -> bool:
+        s = _current_sample(now)
+        return s is not None and float(s.ev_power_w) > settings_cache[
+            "control.car_charging_threshold_w"]
+
+    def _car_guard(now: datetime, intent, reason):
+        """Never feed the car from the home battery: while the car is charging, force any
+        discharging intent to HOLD (the battery holds / may still charge from solar; solar + grid
+        cover the car). GRID_CHARGE/HOLD pass through. Re-evaluated every cycle, so it engages as
+        soon as the car plugs in and releases when it stops."""
+        if (intent is None or not settings_cache["control.hold_battery_when_car_charging"]
+                or not _car_charging(now)):
+            return intent, reason
+        if intent in (BatteryIntent.DISCHARGE_FOR_LOAD, BatteryIntent.ALLOW_SELF_CONSUMPTION):
+            return (BatteryIntent.HOLD_RESERVE,
+                    "car charging — holding the battery so it won't discharge into the car "
+                    "(solar + grid cover the car)")
+        return intent, reason
 
     def _night_target_soc(soc_pct: float):
         """The night-carry target (overnight load + reserve + floor), via compute_charge_need."""
@@ -361,17 +384,22 @@ def create_app(
         if ov.active(now):
             assert ov.intent is not None and ov.expires_at is not None
             until = ov.expires_at.astimezone().strftime("%H:%M")
-            return ov.intent, f"manual override: {ov.intent.value} until {until}", True
-        pp = _current_plan()
-        if pp is None:
-            return None, None, False
-        cur = pp[2].intent_at(now)
-        if cur is None:
-            return None, None, False
-        safe, fs_reason = failsafe_intent(cur.intent, _data_quality(now))
-        if fs_reason is not None:
-            return safe, fs_reason, False
-        return cur.intent, cur.reason, False
+            intent, reason, override_active = ov.intent, (
+                f"manual override: {ov.intent.value} until {until}"), True
+        else:
+            pp = _current_plan()
+            if pp is None:
+                return None, None, False
+            cur = pp[2].intent_at(now)
+            if cur is None:
+                return None, None, False
+            safe, fs_reason = failsafe_intent(cur.intent, _data_quality(now))
+            intent, reason = ((safe, fs_reason) if fs_reason is not None
+                              else (cur.intent, cur.reason))
+            override_active = False
+        # Final guardrail (over the plan AND a manual override): never discharge into the car.
+        intent, reason = _car_guard(now, intent, reason)
+        return intent, reason, override_active
 
     def _control_tick(now: datetime) -> None:
         """Operational mode ONLY (never called in dry-run): advance the ownership lifecycle and,
@@ -466,11 +494,12 @@ def create_app(
                     "outcome": "unconfigured", "reason": "no controller",
                     "plan_reason": None, "override_active": False}
         now = datetime.now(UTC)
+        car_charging = _car_charging(now)
         intent, reason, override_active = _effective_intent(now)
         if intent is None:
             return {"intent": None, "desired_mode": None, "applied": False,
                     "outcome": "no_plan", "reason": "no plan slot for now",
-                    "plan_reason": None, "override_active": False}
+                    "plan_reason": None, "override_active": False, "car_charging": car_charging}
         # preview() is read-only — a GET must never write to the battery or mutate counters.
         d = controller.preview(intent, now)
         return {
@@ -481,6 +510,8 @@ def create_app(
             "reason": d.reason,
             "plan_reason": reason,
             "override_active": override_active,
+            # Surfaced so the dashboard can show "car charging — battery held".
+            "car_charging": car_charging,
         }
 
     @app.get("/api/diagnostics")

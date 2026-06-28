@@ -177,6 +177,17 @@ SETTINGS_SCHEMA: tuple[SettingsField, ...] = (
         help="Permit forced DISCHARGE for export. Off = serve load via vendor AUTO (fail-safe).",
         advanced=True,
     ),
+    SettingsField(
+        "control.hold_battery_when_car_charging", "Hold battery while the car charges", "bool",
+        True, "control",
+        help="When the car is charging, never discharge the home battery into it — the car is "
+        "served by solar + grid instead (the battery may still charge). Re-checked every cycle.",
+    ),
+    SettingsField(
+        "control.car_charging_threshold_w", "Car-charging threshold", "number", 500.0, "control",
+        help="EV power above this counts as 'charging' for the hold-battery rule.",
+        min=100.0, max=11000.0, step=100.0, unit="W", advanced=True,
+    ),
     # --- Planner economics (advanced — change these and /api/plan recomputes, SPEC §8.3) ---
     SettingsField(
         "planner.round_trip_efficiency", "Round-trip efficiency", "number", 0.90, "planner",
