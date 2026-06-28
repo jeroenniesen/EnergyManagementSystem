@@ -72,7 +72,7 @@ export function SystemView() {
       </div>
     );
   }
-  if (!diag) return <div className="loading">Loading diagnostics…</div>;
+  if (!diag) return <div className="loading">Checking the system…</div>;
 
   const r = diag.readiness;
   // Tone the control-readiness sentence: safe-and-watching is reassuring, sensing-down needs attention.

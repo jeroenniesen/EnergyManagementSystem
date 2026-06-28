@@ -53,10 +53,10 @@ test.describe("EMS dashboard", () => {
     await expect(page.getByTestId("error")).toHaveCount(0);
   });
 
-  test("shows a data-quality badge and the dry-run alert", async ({ page }) => {
+  test("shows a data-quality badge and the watch-only alert", async ({ page }) => {
     await page.goto("/");
     await expect(page.getByTestId("data-quality")).toBeVisible();
-    await expect(page.getByTestId("alerts")).toContainText("Dry-run");
+    await expect(page.getByTestId("alerts")).toContainText("Watch-only");
   });
 
   test("shows the controller decision (dry-run) panel", async ({ page }) => {

@@ -62,6 +62,8 @@ type AlertItem = { key: string; severity: string; message: string };
 type AlertsResp = { data_quality: string; alerts: AlertItem[] };
 
 const POLL_MS = 5000;
+// Alert hierarchy: control-blocking (critical) above degraded (warning) above info (energy review).
+const SEVERITY_RANK: Record<string, number> = { critical: 3, warning: 2, info: 1 };
 
 function fmtW(w: number): string {
   return Math.abs(w) >= 1000 ? `${(w / 1000).toFixed(2)} kW` : `${Math.round(w)} W`;
@@ -405,11 +407,14 @@ export function App() {
 
       {alertsData && alertsData.alerts.length > 0 && (
         <section className="alerts" data-testid="alerts">
-          {alertsData.alerts.map((a) => (
-            <span key={a.key} className={`chip alert-${a.severity}`}>
-              {a.message}
-            </span>
-          ))}
+          {/* Sort by severity so a control-blocking issue never sits below a watch-only note. */}
+          {[...alertsData.alerts]
+            .sort((a, b) => (SEVERITY_RANK[b.severity] ?? 0) - (SEVERITY_RANK[a.severity] ?? 0))
+            .map((a) => (
+              <span key={a.key} className={`chip alert-${a.severity}`} data-severity={a.severity}>
+                {a.message}
+              </span>
+            ))}
         </section>
       )}
 

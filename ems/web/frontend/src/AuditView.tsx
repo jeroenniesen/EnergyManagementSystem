@@ -60,7 +60,7 @@ export function AuditView() {
         newest first. Read-only.
       </p>
       {entries === null ? (
-        <div className="loading">Loading…</div>
+        <div className="loading">Reading the change log…</div>
       ) : entries.length === 0 ? (
         <p className="plan-reason" data-testid="audit-empty">
           No changes recorded yet — decisions appear here as the system runs.

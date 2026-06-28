@@ -122,8 +122,15 @@ body {
 
 .alerts { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 20px; }
 .alert-info { color: var(--muted); }
-.alert-warning { color: var(--amber-text); border-color: rgba(224, 162, 58, 0.4); }
-.alert-critical { color: var(--error); border-color: rgba(220, 80, 80, 0.4); }
+.alert-warning {
+  color: var(--amber-text); border-color: rgba(224, 162, 58, 0.45);
+  background: rgba(224, 162, 58, 0.08);
+}
+/* Control-blocking: a filled, bordered chip so an unsafe battery input can't read as a footnote. */
+.alert-critical {
+  color: var(--error); border-color: rgba(220, 80, 80, 0.55);
+  background: rgba(220, 80, 80, 0.12); font-weight: 600;
+}
 
 .grid {
   display: grid;

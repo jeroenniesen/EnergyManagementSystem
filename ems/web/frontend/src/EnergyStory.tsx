@@ -231,7 +231,7 @@ export function EnergyStory({
       {slots.length === 0 ? (
         <p className="plan-reason" data-testid="story-empty">
           {switching
-            ? "Loading…"
+            ? "Building the story…"
             : isPast
             ? "No history yet — leave the system running and the last-24h story fills in."
             : "No plan yet — prices/forecast are still loading."}
