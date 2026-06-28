@@ -19,6 +19,13 @@ export type SettingField = {
 };
 type SettingsResp = { schema: SettingField[]; values: Record<string, number | boolean | string> };
 type Values = Record<string, number | boolean | string>;
+type PlanMetrics = {
+  summary: string;
+  savings_eur: number;
+  charge_slots: number;
+  discharge_slots: number;
+};
+type Impact = { current: PlanMetrics | null; proposed: PlanMetrics | null };
 
 // Group display order + titles. Connection-type groups first (what most people need), tuning last.
 const GROUP_ORDER = ["connection", "meters", "battery", "prices", "site", "control", "planner", "ui"];
@@ -153,6 +160,7 @@ export function Settings({ onSaved }: { onSaved?: (values: Values) => void } = {
   const [auth, setAuth] = useState<{ required: boolean; authenticated: boolean } | null>(null);
   const [tokenInput, setTokenInput] = useState(getToken());
   const [showAdvanced, setShowAdvanced] = useState(false);
+  const [impact, setImpact] = useState<Impact | null>(null);
 
   async function refreshAuth() {
     try {
@@ -200,6 +208,37 @@ export function Settings({ onSaved }: { onSaved?: (values: Values) => void } = {
   const restartChanged = (schema ?? []).some(
     (f) => f.applies === "restart" && f.key in changed,
   );
+
+  // Live "impact on the algorithm": when planner economics are edited, recompute the plan with the
+  // proposed values (debounced, read-only) and show the before/after so the effect is visible.
+  const plannerEdits = Object.fromEntries(
+    Object.entries(changed).filter(([k]) => k.startsWith("planner.")),
+  );
+  const plannerKey = JSON.stringify(plannerEdits);
+  useEffect(() => {
+    if (plannerKey === "{}") {
+      setImpact(null);
+      return;
+    }
+    let alive = true; // ignore a stale/in-flight result if the edit changes or we unmount
+    const id = setTimeout(async () => {
+      try {
+        const r = await fetch("/api/plan-preview", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: plannerKey,
+        });
+        const b = r.ok ? await r.json() : null;
+        if (alive && b) setImpact(b);
+      } catch {
+        /* ignore preview errors */
+      }
+    }, 450);
+    return () => {
+      alive = false;
+      clearTimeout(id);
+    };
+  }, [plannerKey]);
 
   async function save() {
     setStatus("saving");
@@ -309,6 +348,33 @@ export function Settings({ onSaved }: { onSaved?: (values: Values) => void } = {
           </div>
         </div>
       ))}
+
+      {impact?.current && impact?.proposed && (
+        <div className="impact" data-testid="settings-impact">
+          <span className="metric-label">Impact on the plan (next 24h)</span>
+          <div className="impact-row">
+            <span className="impact-col">
+              <span className="impact-tag">now</span>
+              <span className="impact-text">{impact.current.summary}</span>
+              <span className="impact-savings">
+                ~€{impact.current.savings_eur.toFixed(2)}/day · {impact.current.charge_slots} charge /{" "}
+                {impact.current.discharge_slots} discharge
+              </span>
+            </span>
+            <span className="impact-arrow">→</span>
+            <span className="impact-col">
+              <span className="impact-tag impact-tag-new">after save</span>
+              <span className="impact-text" data-testid="impact-proposed">
+                {impact.proposed.summary}
+              </span>
+              <span className="impact-savings">
+                ~€{impact.proposed.savings_eur.toFixed(2)}/day · {impact.proposed.charge_slots} charge
+                / {impact.proposed.discharge_slots} discharge
+              </span>
+            </span>
+          </div>
+        </div>
+      )}
 
       <div className="settings-actions">
         <button className="btn-primary" onClick={save} disabled={!dirty || status === "saving"}

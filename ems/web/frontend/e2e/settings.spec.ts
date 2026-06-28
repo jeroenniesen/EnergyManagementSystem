@@ -60,6 +60,49 @@ test.describe("EMS settings", () => {
     await expect(page.getByTestId("field-meters.p1_ip")).toContainText("restart");
   });
 
+  test("changing a planner setting shows a before/after plan-impact preview", async ({ page }) => {
+    const SCHEMA_ADV = [
+      {
+        key: "planner.charge_slots", label: "Charge window", type: "int", default: 12,
+        group: "planner", help: "", min: 1, max: 96, options: null, step: null, unit: "slots",
+        advanced: true, applies: "live",
+      },
+    ];
+    await page.route("**/api/settings", async (route) => {
+      if (route.request().method() === "GET") {
+        await route.fulfill({
+          status: 200, contentType: "application/json",
+          body: JSON.stringify({ schema: SCHEMA_ADV, values: { "planner.charge_slots": 12 } }),
+        });
+      } else {
+        await route.fulfill({ status: 200, contentType: "application/json", body: "{}" });
+      }
+    });
+    await page.route("**/api/plan-preview", async (route) => {
+      const body = JSON.parse(route.request().postData() || "{}");
+      const proposed = body["planner.charge_slots"] ?? 12;
+      await route.fulfill({
+        status: 200, contentType: "application/json",
+        body: JSON.stringify({
+          current: { summary: "charge 12×15m", savings_eur: 1.2, charge_slots: 12, discharge_slots: 8 },
+          proposed: {
+            summary: `charge ${proposed}×15m`, savings_eur: 0.7,
+            charge_slots: proposed, discharge_slots: 8,
+          },
+        }),
+      });
+    });
+    await page.goto("/");
+    await page.getByTestId("nav-settings").click();
+    await page.getByTestId("advanced-toggle").check();
+    const input = page.locator("#set-planner\\.charge_slots");
+    await input.fill("4");
+    await input.blur();
+    // The impact panel appears (debounced) and shows the proposed plan.
+    await expect(page.getByTestId("settings-impact")).toBeVisible();
+    await expect(page.getByTestId("impact-proposed")).toContainText("charge 4×15m");
+  });
+
   test("editing enables Save and shows a saved confirmation", async ({ page }) => {
     let saved: Record<string, unknown> = {};
     await page.route("**/api/settings", async (route) => {

@@ -34,7 +34,7 @@ from ems.domain import BatteryIntent
 from ems.freshness import FreshnessTracker
 from ems.load_model import reconstruct
 from ems.planner.charge_need import compute_charge_need
-from ems.planner.explain import build_plan_detail
+from ems.planner.explain import build_plan_detail, plan_metrics
 from ems.planner.rule_based import PlannerConfig, plan_rule_based
 from ems.savings import estimate_daily_savings_eur
 from ems.sense import Recorder
@@ -113,8 +113,7 @@ def create_app(
         for attr in ("kwp", "tilt", "azimuth"):
             setattr(solar_forecast, attr, settings_cache[f"site.{attr}"])
 
-    def _planner_cfg() -> PlannerConfig:
-        s = settings_cache
+    def _planner_cfg_from(s: dict) -> PlannerConfig:
         return PlannerConfig(
             round_trip_efficiency=s["planner.round_trip_efficiency"],
             degradation_eur_per_kwh=s["planner.degradation_eur_per_kwh"],
@@ -122,6 +121,9 @@ def create_app(
             charge_slots=s["planner.charge_slots"],
             discharge_slots=s["planner.discharge_slots"],
         )
+
+    def _planner_cfg() -> PlannerConfig:
+        return _planner_cfg_from(settings_cache)
 
     @asynccontextmanager
     async def lifespan(_app: FastAPI):
@@ -418,6 +420,23 @@ def create_app(
                 {"start": s.start.isoformat(), "intent": s.intent, "reason": s.reason}
                 for s in plan.slots
             ],
+        }
+
+    @app.post("/api/plan-preview")
+    def plan_preview(body: dict | None = None) -> dict:
+        # What-if: recompute the plan with PROPOSED (unsaved) settings so the UI can show the impact
+        # of a change before saving. Read-only — no persistence, no battery.
+        if price_source is None:
+            return {"current": None, "proposed": None}
+        now = datetime.now(UTC)
+        prices_ = price_source.slots()
+        clean, _errors = validate_settings(body or {})
+        merged = {**settings_cache, **clean}
+        cur = plan_rule_based(prices_, now, _planner_cfg_from(settings_cache))
+        prop = plan_rule_based(prices_, now, _planner_cfg_from(merged))
+        return {
+            "current": plan_metrics(cur, prices_),
+            "proposed": plan_metrics(prop, prices_),
         }
 
     @app.get("/api/plan-detail")

@@ -1,7 +1,7 @@
 from datetime import UTC, datetime
 
 from ems.domain import BatteryIntent
-from ems.planner.explain import build_plan_detail
+from ems.planner.explain import build_plan_detail, plan_metrics
 from ems.planner.schedule import SLOT, Plan, PlanSlot
 from ems.sources.forecast import ForecastSlot
 from ems.sources.prices import PriceSlot
@@ -48,6 +48,19 @@ def test_missing_price_or_solar_is_none_not_crash():
     d = build_plan_detail(NOW, [], plan, None)  # no prices, no forecast
     assert d["slots"][0]["eur_per_kwh"] is None
     assert d["slots"][0]["solar_w"] is None
+
+
+def test_plan_metrics_counts_and_savings():
+    plan = _plan([
+        BatteryIntent.GRID_CHARGE_TO_TARGET,
+        BatteryIntent.DISCHARGE_FOR_LOAD,
+        BatteryIntent.ALLOW_SELF_CONSUMPTION,
+    ])
+    prices = [PriceSlot(NOW, 0.10), PriceSlot(NOW + SLOT, 0.40), PriceSlot(NOW + 2 * SLOT, 0.20)]
+    m = plan_metrics(plan, prices)
+    assert m["charge_slots"] == 1 and m["discharge_slots"] == 1 and m["self_consume_slots"] == 1
+    assert isinstance(m["savings_eur"], float) and m["savings_eur"] >= 0
+    assert "charge" in m["summary"]
 
 
 def test_empty_plan_summary():

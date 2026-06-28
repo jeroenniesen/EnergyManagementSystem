@@ -11,6 +11,7 @@ from datetime import datetime
 
 from ems.domain import BatteryIntent
 from ems.planner.schedule import Plan
+from ems.savings import estimate_daily_savings_eur
 from ems.sources.forecast import ForecastSlot
 from ems.sources.prices import PriceSlot
 
@@ -42,6 +43,20 @@ def _summary(slots, price_by: dict[datetime, float]) -> str:
     if sc:
         parts.append(f"self-consume {sc}×15m")
     return "Next 24h — " + ", ".join(parts) + "." if parts else "Next 24h — self-consumption."
+
+
+def plan_metrics(plan: Plan, prices: list[PriceSlot]) -> dict:
+    """Headline metrics for a plan — used to show the IMPACT of a settings change (before/after)."""
+    price_by = {p.start: p.eur_per_kwh for p in prices}
+    counts = Counter(s.intent for s in plan.slots)
+    return {
+        "summary": _summary(plan.slots, price_by),
+        "savings_eur": round(estimate_daily_savings_eur(plan, price_by), 2),
+        "charge_slots": counts.get(BatteryIntent.GRID_CHARGE_TO_TARGET, 0),
+        "discharge_slots": counts.get(BatteryIntent.DISCHARGE_FOR_LOAD, 0),
+        "hold_slots": counts.get(BatteryIntent.HOLD_RESERVE, 0),
+        "self_consume_slots": counts.get(BatteryIntent.ALLOW_SELF_CONSUMPTION, 0),
+    }
 
 
 def build_plan_detail(

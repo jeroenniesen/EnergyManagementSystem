@@ -126,6 +126,20 @@ def test_charge_need_reflects_battery_settings(tmp_path):
     assert relaxed["target_kwh"] < base["target_kwh"]
 
 
+def test_plan_preview_shows_impact_of_proposed_settings(tmp_path):
+    # A huge risk margin makes no trade clear break-even -> the proposed plan has 0 charge slots,
+    # while the current (default) plan still trades. The preview returns both for a before/after.
+    app = _app(tmp_path, price_source=MockPriceSource(ZoneInfo("Europe/Amsterdam")))
+    with TestClient(app) as c:
+        r = c.post("/api/plan-preview", json={"planner.risk_margin_eur_per_kwh": 0.5})
+        assert r.status_code == 200
+        b = r.json()
+        assert b["current"]["charge_slots"] >= 0
+        assert b["proposed"]["charge_slots"] == 0  # nothing clears break-even with a 0.5 margin
+        assert b["proposed"]["discharge_slots"] == 0
+        assert "summary" in b["current"] and "savings_eur" in b["proposed"]
+
+
 def test_site_settings_reshape_the_forecast(tmp_path):
     # Raising kWp lifts the forecast; rotating the array away from south lowers it — live.
     app = _app(tmp_path, solar_forecast=MockSolarForecastSource(ZoneInfo("Europe/Amsterdam")))

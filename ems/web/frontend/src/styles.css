@@ -314,6 +314,21 @@ body {
 .field-error input, .field-error select { border-color: rgba(220, 80, 80, 0.6); }
 .field-err { color: #f0a3a3; font-size: 0.74rem; margin: 0; }
 
+.impact {
+  margin-top: 20px; background: var(--panel-2); border: 1px solid var(--line);
+  border-radius: 12px; padding: 14px 16px;
+}
+.impact-row { display: flex; align-items: center; gap: 14px; margin-top: 8px; flex-wrap: wrap; }
+.impact-col { display: flex; flex-direction: column; gap: 3px; flex: 1 1 240px; }
+.impact-arrow { color: var(--muted); font-size: 1.2rem; }
+.impact-tag {
+  font-size: 0.62rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.05em;
+  color: var(--muted); align-self: flex-start;
+}
+.impact-tag-new { color: var(--accent); }
+.impact-text { font-size: 0.85rem; color: var(--text); }
+.impact-savings { font-size: 0.74rem; color: var(--muted); font-variant-numeric: tabular-nums; }
+
 .settings-actions { display: flex; align-items: center; gap: 12px; margin-top: 24px; }
 .btn-primary {
   font: inherit;
