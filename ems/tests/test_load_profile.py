@@ -25,30 +25,32 @@ def test_hourly_average_is_used_for_a_well_sampled_hour():
     assert prof.expected_w(datetime(2026, 6, 28, 18, 5, tzinfo=UTC)) == 800.0
 
 
-def test_sparse_hour_falls_back_to_the_overall_mean():
+def test_sparse_hour_falls_back_to_the_typical_day_shape():
     rows = [
         _row("2026-06-20T18:00:00+00:00", 600.0),
         _row("2026-06-20T18:20:00+00:00", 800.0),
         _row("2026-06-20T18:40:00+00:00", 1000.0),
         _row("2026-06-20T05:00:00+00:00", 300.0),  # lone sample in another hour
     ]
-    prof = build_load_profile(rows, AMS, fallback_w=999.0, min_samples=3)
-    # 07:00 local (05:00Z) has only one sample (< min_samples) -> overall mean, not fallback_w.
-    overall = (600 + 800 + 1000 + 300) / 4
-    assert prof.expected_w(datetime(2026, 6, 28, 5, 30, tzinfo=UTC)) == overall
+    prof = build_load_profile(rows, AMS, min_samples=3)
+    # 07:00 local (05:00Z) has only one sample (< min_samples) -> the typical morning value (600 W),
+    # NOT a flat overall mean of the high evening samples.
+    assert prof.expected_w(datetime(2026, 6, 28, 5, 30, tzinfo=UTC)) == 600.0
 
 
-def test_no_history_uses_the_caller_fallback():
-    prof = build_load_profile([], AMS, fallback_w=450.0)
-    assert prof.expected_w(datetime(2026, 6, 28, 12, 0, tzinfo=UTC)) == 450.0
+def test_no_history_uses_the_typical_day_shape():
+    # No data at all -> a realistic shaped day, not a flat constant: low overnight < daytime.
+    prof = build_load_profile([], AMS)
+    assert prof.expected_w(datetime(2026, 6, 28, 12, 0, tzinfo=UTC)) == 400.0  # daytime base
+    assert prof.expected_w(datetime(2026, 6, 28, 2, 0, tzinfo=UTC)) == 250.0  # overnight, lower
 
 
-def test_cold_start_with_too_few_samples_uses_the_baseline_not_the_lone_reading():
-    # One noisy live sample (2754 W) must NOT become the whole-day load; below min_samples we use
-    # the baseline. This is the fresh-DB case right after first boot.
-    rows = [_row("2026-06-20T18:00:00+00:00", 2754.0)]
-    prof = build_load_profile(rows, AMS, fallback_w=500.0, min_samples=3)
-    assert prof.expected_w(datetime(2026, 6, 28, 18, 0, tzinfo=UTC)) == 500.0
+def test_cold_start_high_burst_is_not_projected_flat_across_the_day():
+    # A handful of high samples (2754 W) in ONE hour must NOT become the whole-day load — the
+    # daytime baseline stays low (so solar can exceed it and charge). This was the live bug.
+    rows = [_row("2026-06-20T18:00:00+00:00", 2754.0)]  # one 20:00-local sample
+    prof = build_load_profile(rows, AMS, min_samples=3)
+    assert prof.expected_w(datetime(2026, 6, 28, 12, 0, tzinfo=UTC)) == 400.0  # midday stays sane
 
 
 def test_malformed_rows_are_ignored():
