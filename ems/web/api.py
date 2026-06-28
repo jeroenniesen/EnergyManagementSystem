@@ -256,6 +256,7 @@ def create_app(
             min_reserve_soc=settings_cache["battery.min_reserve_soc"],
             night_reserve_kwh=settings_cache["battery.night_reserve_kwh"],
             overnight_load_kwh=settings_cache["battery.overnight_load_kwh"],
+            round_trip_efficiency=settings_cache["planner.round_trip_efficiency"],
         )
 
     def _summer_cfg(soc_pct: float) -> SummerConfig:
@@ -565,6 +566,7 @@ def create_app(
             min_reserve_soc=s["battery.min_reserve_soc"],
             night_reserve_kwh=s["battery.night_reserve_kwh"],
             overnight_load_kwh=s["battery.overnight_load_kwh"],
+            round_trip_efficiency=s["planner.round_trip_efficiency"],
         ).to_dict()
 
     @app.get("/api/override")
@@ -765,6 +767,7 @@ def create_app(
             min_reserve_soc=settings_cache["battery.min_reserve_soc"],
             night_reserve_kwh=settings_cache["battery.night_reserve_kwh"],
             overnight_load_kwh=settings_cache["battery.overnight_load_kwh"],
+            round_trip_efficiency=settings_cache["planner.round_trip_efficiency"],
         )
         # The adaptive (summer) charger sizes its own charge slots, so the projection must NOT cap
         # them at the night target (that would undo demand-aware peak-shaving). Winter's fixed-slot

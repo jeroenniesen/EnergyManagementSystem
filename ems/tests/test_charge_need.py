@@ -48,3 +48,12 @@ def test_zero_capacity_is_safe():
 def test_soc_is_clamped():
     assert _need(150.0).current_soc_pct == 100.0
     assert _need(-10.0).current_soc_pct == 0.0
+
+
+def test_efficiency_raises_target_to_cover_round_trip_losses():
+    # overnight load + night reserve are AC energy to DELIVER; at 81% round-trip (eta = 0.9) the
+    # pack must hold (5 + 2) / 0.9 = 7.78 kWh DC, plus the 1 kWh reserve floor = 8.78 kWh.
+    n = _need(50.0, round_trip_efficiency=0.81)
+    assert round(n.target_kwh, 2) == 8.78
+    # The default efficiency (1.0) leaves the plain sum unchanged (back-compatible with callers).
+    assert _need(50.0).target_kwh == 8.0
