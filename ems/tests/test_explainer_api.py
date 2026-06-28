@@ -176,6 +176,18 @@ def test_chat_off_by_default(tmp_path):
         assert b["source"] == "disabled" and "Settings" in b["answer"]
 
 
+def test_faq_answers_deterministically_without_ai(tmp_path):
+    # Grounded FAQ must work even with AI off (emotional review #8): 'Is my battery safe?' always
+    # has an answer, built from readiness/plan — not the LLM.
+    with TestClient(_app(tmp_path)) as c:
+        b = c.get("/api/faq").json()
+    assert b["ai_on"] is False
+    keys = {i["key"] for i in b["items"]}
+    assert "battery_safe" in keys
+    safe = next(i for i in b["items"] if i["key"] == "battery_safe")
+    assert safe["answer"] and isinstance(safe["answer"], str)
+
+
 def test_chat_rejects_empty_question(tmp_path):
     with TestClient(_app(tmp_path)) as c:
         assert c.post("/api/chat", json={"question": "   "}).status_code == 400

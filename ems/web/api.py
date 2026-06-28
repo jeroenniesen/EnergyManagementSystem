@@ -1481,6 +1481,36 @@ def create_app(
             "language": settings_cache.get("explainer.language", "English"),
         }
 
+    @app.get("/api/faq")
+    def faq_endpoint() -> dict:
+        """Grounded, DETERMINISTIC answers to the few questions a homeowner actually asks — built
+        from the current decision/readiness/plan, NOT the AI (emotional review #8). Works with AI
+        off, so 'Is my battery safe?' always has an answer. Every block is defensive."""
+        now = datetime.now(UTC)
+        items: list[dict] = []
+        try:
+            rd = _readiness(now)
+            safe = rd.summary
+            if dry_run:
+                safe += " EMS is read-only here — it can't command the battery."
+            items.append({"key": "battery_safe", "question": "Is my battery safe?", "answer": safe})
+        except Exception:
+            pass
+        try:
+            intent, reason, *_ = _effective_intent(now)
+            if intent is not None and reason:
+                items.append({"key": "why_mode", "question": "Why is it in this mode?",
+                              "answer": reason})
+        except Exception:
+            pass
+        try:
+            need = _night_target_soc(_current_soc(now))
+            items.append({"key": "tonight", "question": "What happens tonight?",
+                          "answer": need.reason})
+        except Exception:
+            pass
+        return {"items": items, "ai_on": _explainer_active()}
+
     @app.post("/api/chat")
     async def chat_endpoint(request: Request) -> JSONResponse:
         """Ask the assistant about the current decisions/dashboard. Grounded ONLY on a redacted

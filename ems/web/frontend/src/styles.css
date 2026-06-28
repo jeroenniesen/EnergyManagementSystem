@@ -768,6 +768,21 @@ body {
 .dot-fail { background: #e05050; }
 .check-label { font-weight: 600; font-size: 0.9rem; }
 .check-detail { grid-column: 2; color: var(--muted); font-size: 0.8rem; }
+.check-recovery {
+  grid-column: 1 / -1; margin-top: 4px; font-size: 0.78rem; color: var(--amber-text);
+}
+.check-group { margin-top: 16px; }
+.check-group-title {
+  font-size: 0.74rem; text-transform: uppercase; letter-spacing: 0.05em;
+  color: var(--muted); margin: 0; font-weight: 700;
+}
+.system-readiness {
+  margin: 12px 0 4px; padding: 10px 14px; border-radius: 10px; font-weight: 550;
+  border: 1px solid var(--border);
+}
+.faq { margin: 4px 0 14px; display: flex; flex-direction: column; gap: 8px; }
+.faq-item { display: flex; flex-direction: column; align-items: flex-start; gap: 6px; }
+.faq-answer { margin: 0 0 4px; color: var(--muted); font-size: 0.85rem; line-height: 1.45; }
 .check-status { font-size: 0.72rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.04em; }
 .check-status[data-status="ok"] { color: var(--green-text); }
 .check-status[data-status="warn"] { color: var(--amber-text); }

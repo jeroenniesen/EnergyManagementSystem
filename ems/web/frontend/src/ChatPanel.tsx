@@ -5,6 +5,7 @@ import { useEffect, useRef, useState } from "react";
 import { authHeaders } from "./auth";
 
 type Msg = { role: "you" | "assistant"; text: string; source?: string };
+type Faq = { key: string; question: string; answer: string };
 
 const SUGGESTIONS = [
   "Why isn't the battery charging right now?",
@@ -18,6 +19,8 @@ export function ChatPanel() {
   const [msgs, setMsgs] = useState<Msg[]>([]);
   const [input, setInput] = useState("");
   const [busy, setBusy] = useState(false);
+  const [faq, setFaq] = useState<Faq[]>([]);
+  const [openFaq, setOpenFaq] = useState<string | null>(null);
   const endRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -30,6 +33,11 @@ export function ChatPanel() {
         }
       })
       .catch(() => setActive(false));
+    // Grounded FAQ answers come from the deterministic plan/readiness — they work with AI off.
+    fetch("/api/faq")
+      .then((r) => (r.ok ? r.json() : null))
+      .then((b) => b && setFaq(b.items ?? []))
+      .catch(() => {});
   }, []);
   useEffect(() => {
     endRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -68,10 +76,36 @@ export function ChatPanel() {
         )}
       </div>
 
+      {faq.length > 0 && (
+        <div className="faq" data-testid="faq">
+          <p className="chat-suggest-lead">
+            Quick answers{active === false ? " — these work without AI" : ""}:
+          </p>
+          {faq.map((f) => (
+            <div key={f.key} className="faq-item">
+              <button
+                type="button"
+                className="chat-chip"
+                data-testid={`faq-${f.key}`}
+                aria-expanded={openFaq === f.key}
+                onClick={() => setOpenFaq(openFaq === f.key ? null : f.key)}
+              >
+                {f.question}
+              </button>
+              {openFaq === f.key && (
+                <p className="faq-answer" data-testid={`faq-answer-${f.key}`}>
+                  {f.answer}
+                </p>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+
       {active === false ? (
         <p className="plan-reason" data-testid="chat-disabled">
-          The chat is powered by AI, which is currently off. Turn on <b>AI explanations &amp; chat</b>{" "}
-          in Settings to ask questions about your battery&apos;s decisions and the dashboard.
+          The answers above always work. For free-form questions, turn on{" "}
+          <b>AI explanations &amp; chat</b> in Settings.
         </p>
       ) : (
         <>

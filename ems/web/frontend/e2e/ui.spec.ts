@@ -305,6 +305,22 @@ test.describe("EMS dashboard", () => {
     await expect(page.getByTestId("chat-disabled")).toBeVisible();
   });
 
+  test("grounded FAQ answers work even with AI off", async ({ page }) => {
+    await page.goto("/");
+    await page.getByTestId("nav-chat").click();
+    await expect(page.getByTestId("faq")).toBeVisible();
+    // Clicking a question reveals a deterministic answer (no AI needed).
+    await page.getByTestId("faq-battery_safe").click();
+    await expect(page.getByTestId("faq-answer-battery_safe")).toBeVisible();
+  });
+
+  test("System tab groups checks with a readiness sentence", async ({ page }) => {
+    await page.goto("/");
+    await page.getByTestId("nav-system").click();
+    await expect(page.getByTestId("system-readiness")).toBeVisible();
+    await expect(page.getByTestId("check-group-Battery & control")).toBeVisible();
+  });
+
   test("the chat answers a question when AI is enabled (mocked)", async ({ page }) => {
     await page.route("**/api/explainer", (route) =>
       route.fulfill({
