@@ -96,8 +96,20 @@ function ChargeTarget({ n }: { n: ChargeNeed }) {
   );
 }
 
-function PriceCurve({ prices }: { prices: Prices }) {
-  const slots = prices.slots.slice(0, 96); // show ~today
+// All forward graphs share ONE timespan (the plan's window: now → end of the plan), so the price
+// dips, the planned actions, the solar and the SoC line all sit at the same x-position.
+type Win = { start: number; end: number };
+const SLOT_MS = 15 * 60 * 1000;
+function inWindow<T extends { start: string }>(slots: T[], win: Win | null): T[] {
+  if (!win) return slots.slice(0, 96);
+  return slots.filter((s) => {
+    const t = Date.parse(s.start);
+    return t >= win.start && t < win.end;
+  });
+}
+
+function PriceCurve({ prices, win }: { prices: Prices; win: Win | null }) {
+  const slots = inWindow(prices.slots, win);
   const max = Math.max(0.01, ...slots.map((s) => s.eur_per_kwh));
   const min = Math.min(...slots.map((s) => s.eur_per_kwh));
   const cur = prices.current_eur_per_kwh;
@@ -128,15 +140,15 @@ function PriceCurve({ prices }: { prices: Prices }) {
         ))}
       </div>
       <div className="chart-legend">
-        <span>Each bar = a 15-min slot (today, 00:00→24:00)</span>
+        <span>Each bar = a 15-min slot over the next 24h (same window as the plan)</span>
         <span>Taller = more expensive · range €{min.toFixed(2)}–€{max.toFixed(2)}/kWh</span>
       </div>
     </section>
   );
 }
 
-function ForecastCurve({ forecast }: { forecast: Forecast }) {
-  const slots = forecast.slots.slice(0, 96);
+function ForecastCurve({ forecast, win }: { forecast: Forecast; win: Win | null }) {
+  const slots = inWindow(forecast.slots, win);
   const max = Math.max(1, ...slots.map((s) => s.p90_w));
   return (
     <section className="prices" data-testid="forecast">
@@ -175,8 +187,8 @@ function ForecastCurve({ forecast }: { forecast: Forecast }) {
         ))}
       </div>
       <div className="chart-legend">
-        <span>Each bar = expected PV power (P50) per 15-min slot</span>
-        <span>Peak today ~{Math.round(max)} W</span>
+        <span>Each bar = expected PV power (P50) per 15-min slot — next 24h (same window)</span>
+        <span>Peak ~{Math.round(max)} W</span>
       </div>
     </section>
   );
@@ -297,6 +309,16 @@ export function App() {
   function setGridTopup(on: boolean) {
     return patchStrategy({ "strategy.summer_grid_topup": on }, { grid_topup: on });
   }
+
+  // The shared timespan for every forward graph = the plan's own window (first slot → last slot).
+  // The price & solar curves are clipped to it so they line up with the plan tile and SoC chart.
+  const planSlots = planDetail?.slots ?? [];
+  const win: Win | null = planSlots.length
+    ? {
+        start: Date.parse(planSlots[0].start),
+        end: Date.parse(planSlots[planSlots.length - 1].start) + SLOT_MS,
+      }
+    : null;
 
   return (
     <div className="app">
@@ -428,10 +450,12 @@ export function App() {
         <PlanDetail detail={planDetail} />
       )}
 
-      {view === "dashboard" && prices && prices.slots.length > 0 && <PriceCurve prices={prices} />}
+      {view === "dashboard" && prices && prices.slots.length > 0 && (
+        <PriceCurve prices={prices} win={win} />
+      )}
 
       {view === "dashboard" && forecast && forecast.slots.length > 0 && (
-        <ForecastCurve forecast={forecast} />
+        <ForecastCurve forecast={forecast} win={win} />
       )}
 
       {view === "dashboard" && freshness && Object.keys(freshness).length > 0 && (
