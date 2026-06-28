@@ -272,7 +272,9 @@ def make_openai_chat_post(base_url: str, api_key: str, *, timeout: float = 8.0) 
             url,
             headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
             json={"messages": messages, **params},
-            timeout=timeout,
+            # Structured timeout so a stalled TCP connect fails fast (3 s) instead of holding a
+            # worker thread for the full window — important on a single-threaded Pi.
+            timeout=httpx.Timeout(timeout, connect=3.0),
         )
         resp.raise_for_status()
         return resp.json()

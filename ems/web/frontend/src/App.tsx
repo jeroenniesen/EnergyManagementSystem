@@ -16,6 +16,7 @@ import {
 import { OverrideCard } from "./Override";
 import { Settings } from "./Settings";
 import { type Strategy, StrategyCard } from "./StrategyCard";
+import { AuditView } from "./AuditView";
 import { ChatPanel } from "./ChatPanel";
 import { SystemView } from "./System";
 import { applyTheme, readStoredTheme, storeTheme, type Theme } from "./theme";
@@ -219,7 +220,8 @@ export function App() {
   const [chargeNeed, setChargeNeed] = useState<ChargeNeed | null>(null);
   const [savings, setSavings] = useState<number | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [view, setView] = useState<"dashboard" | "chat" | "settings" | "system">("dashboard");
+  const [view, setView] =
+    useState<"dashboard" | "chat" | "audit" | "settings" | "system">("dashboard");
   // Seed from the localStorage cache so the first paint matches the saved theme (no flash);
   // the fetch below reconciles with the server's canonical value.
   const [theme, setTheme] = useState<Theme>(readStoredTheme);
@@ -379,6 +381,14 @@ export function App() {
             Settings
           </button>
           <button
+            className={`nav-btn${view === "audit" ? " nav-active" : ""}`}
+            onClick={() => setView("audit")}
+            data-testid="nav-audit"
+            aria-current={view === "audit" ? "page" : undefined}
+          >
+            Audit
+          </button>
+          <button
             className={`nav-btn${view === "system" ? " nav-active" : ""}`}
             onClick={() => setView("system")}
             data-testid="nav-system"
@@ -408,6 +418,8 @@ export function App() {
       )}
 
       {view === "chat" && <ChatPanel />}
+
+      {view === "audit" && <AuditView />}
 
       {view === "system" && <SystemView />}
 

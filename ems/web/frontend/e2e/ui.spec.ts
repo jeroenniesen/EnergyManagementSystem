@@ -316,6 +316,34 @@ test.describe("EMS dashboard", () => {
     await expect(page.getByTestId("chat-log")).toContainText("running the house");
   });
 
+  test("the Audit tab shows the change log", async ({ page }) => {
+    await page.goto("/");
+    await page.getByTestId("nav-audit").click();
+    await expect(page.getByTestId("audit")).toBeVisible();
+    await expect(page.getByTestId("audit")).toContainText("Audit log");
+    await expect(page.getByTestId("audit-filter")).toBeVisible();
+  });
+
+  test("the audit log renders decision + config entries (mocked)", async ({ page }) => {
+    await page.route("**/api/audit**", (route) =>
+      route.fulfill({
+        status: 200, contentType: "application/json",
+        body: JSON.stringify({
+          entries: [
+            { id: 2, ts: "2026-06-28T18:00:00+00:00", category: "battery_decision",
+              summary: "Would set battery to charge — cheap window", detail: {} },
+            { id: 1, ts: "2026-06-28T17:00:00+00:00", category: "config_change",
+              summary: "Changed 1 setting(s): battery.min_reserve_soc", detail: {} },
+          ],
+        }),
+      }),
+    );
+    await page.goto("/");
+    await page.getByTestId("nav-audit").click();
+    await expect(page.getByTestId("audit-list")).toContainText("Would set battery to charge");
+    await expect(page.getByTestId("audit-list")).toContainText("Changed 1 setting");
+  });
+
   test("shows the error banner when the status API returns 500", async ({ page }) => {
     await page.route("**/api/status", (route) =>
       route.fulfill({ status: 500, contentType: "application/json", body: '{"detail":"boom"}' }),

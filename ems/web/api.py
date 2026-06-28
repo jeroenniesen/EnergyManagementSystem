@@ -55,6 +55,7 @@ from ems.retrospect import build_past_story, past_headline
 from ems.savings import estimate_daily_savings_eur
 from ems.sense import Recorder
 from ems.settings import (
+    SECRET_KEYS,
     SETTINGS_BY_KEY,
     effective_settings,
     public_values,
@@ -66,6 +67,7 @@ from ems.sources.battery import BatteryDriver
 from ems.sources.forecast import SolarForecastSource, day_kwh_p50
 from ems.sources.indevolt import aggregate_soc
 from ems.sources.prices import PriceSource, current_price
+from ems.storage.audit import AuditStore
 from ems.storage.history import DERIVED_COLUMNS, RAW_COLUMNS, HistoryStore
 from ems.storage.settings import SettingsStore
 
@@ -160,6 +162,7 @@ def create_app(
     controller: ModeController | None = None,
     settings_store: SettingsStore | None = None,
     override_store: SettingsStore | None = None,
+    audit_store: AuditStore | None = None,
     control_cycle_seconds: float = 300.0,
     web_auth_token: str | None = None,
     static_dir: str | Path | None = None,
@@ -233,18 +236,21 @@ def create_app(
 
     async def _explain(reason: str, facts: dict) -> dict:
         """Phrase a deterministic reason via the active explainer — memoised per (reason, language),
-        run off-thread, and always falling back to the verbatim reason. Returns {text, source}."""
+        run off-thread, always falling back to the verbatim reason. The cache holds the in-flight
+        Task, so concurrent polls for the same reason share ONE LLM call (never re-hit it)."""
         if not reason or not _explainer_active():
             return {"text": reason, "source": "template"}
         key = (reason, settings_cache.get("explainer.language", "English"))
         cache = explainer_box["cache"]
         if key not in cache:
-            try:
-                expl = await asyncio.to_thread(explainer_box["ex"].explain, reason, facts)
-                cache[key] = {"text": expl.text, "source": expl.source}
-            except Exception:
-                cache[key] = {"text": reason, "source": "template"}
-        return cache[key]
+            async def _run() -> dict:
+                try:
+                    expl = await asyncio.to_thread(explainer_box["ex"].explain, reason, facts)
+                    return {"text": expl.text, "source": expl.source}
+                except Exception:
+                    return {"text": reason, "source": "template"}
+            cache[key] = asyncio.ensure_future(_run())
+        return await cache[key]
 
     def _planner_cfg_from(s: dict) -> PlannerConfig:
         return PlannerConfig(
@@ -344,6 +350,37 @@ def create_app(
             risk_margin_eur_per_kwh=s["planner.risk_margin_eur_per_kwh"],
         )
 
+    async def _audit_decision_loop(stop: asyncio.Event) -> None:
+        """Record a plan/mode decision whenever it CHANGES (deduped) — a faithful, compact history
+        in ANY mode. Advisory + off the control path: it only reads/previews, never writes the
+        battery. Seeds the last mode from the latest audit entry so a restart never double-logs."""
+        last_mode = await audit_store.last_decision_mode()
+        while True:
+            try:
+                await asyncio.wait_for(stop.wait(), timeout=control_cycle_seconds)
+                return
+            except TimeoutError:
+                pass
+            try:
+                now = datetime.now(UTC)
+                intent, reason, override_active = await asyncio.to_thread(_effective_intent, now)
+                if intent is None:
+                    continue
+                d = await asyncio.to_thread(controller.preview, intent, now)
+                mode = str(d.desired_mode)
+                if mode == last_mode:
+                    continue
+                last_mode = mode
+                verb = "Would set" if dry_run else "Set"
+                await audit_store.append(
+                    now.isoformat(), "battery_decision",
+                    f"{verb} battery to {mode} — {reason}",
+                    {"intent": str(intent), "desired_mode": mode, "reason": reason,
+                     "override": override_active, "applied": d.applied, "dry_run": dry_run},
+                )
+            except Exception:
+                _log.exception("decision audit failed; will retry next cycle (fail-safe)")
+
     @asynccontextmanager
     async def lifespan(_app: FastAPI):
         # Guarantee the schema exists before anything touches the DB (no caller footgun).
@@ -365,6 +402,8 @@ def create_app(
             override_box["ov"] = override_from_stored(
                 stored.get(_OV_INTENT), stored.get(_OV_EXP)
             )
+        if audit_store is not None:
+            await audit_store.init()
         # Start the read-only sense loop / recorder (SPEC §5.3). Take one awaited startup
         # sample so /api/series and /api/freshness are populated deterministically, then
         # run the periodic loop in the background.
@@ -385,11 +424,16 @@ def create_app(
                 ControlLoop(_control_tick, control_cycle_seconds).run(stop)
             )
             control_task.add_done_callback(_task_died("Control loop"))
+        # Decision/plan audit loop — advisory, runs in ANY mode (dry-run too), off the control path.
+        audit_task = None
+        if audit_store is not None and controller is not None:
+            audit_task = asyncio.create_task(_audit_decision_loop(stop))
+            audit_task.add_done_callback(_task_died("Decision audit"))
         try:
             yield
         finally:
             stop.set()
-            for t in (task, control_task):
+            for t in (task, control_task, audit_task):
                 if t is not None:
                     await t
 
@@ -699,6 +743,11 @@ def create_app(
         if raw_intent in (None, "", "none"):
             await override_store.delete(_OV_INTENT, _OV_EXP)
             override_box["ov"] = OVERRIDE_NONE
+            if audit_store is not None:
+                await audit_store.append(
+                    now.isoformat(), "manual_override",
+                    "Manual override cleared — back to the automatic plan", {"action": "clear"},
+                )
             return JSONResponse(get_override())
         errors: dict[str, str] = {}
         try:
@@ -715,6 +764,13 @@ def create_app(
         expires = now + timedelta(minutes=int(minutes))
         await override_store.set_many({_OV_INTENT: intent.value, _OV_EXP: expires.isoformat()})
         override_box["ov"] = Override(intent=intent, expires_at=expires)
+        if audit_store is not None:
+            await audit_store.append(
+                now.isoformat(), "manual_override",
+                f"Manual override: {intent.value} for {int(minutes)} min",
+                {"action": "set", "intent": intent.value, "minutes": int(minutes),
+                 "expires_at": expires.isoformat()},
+            )
         return JSONResponse(get_override())
 
     def _battery_cluster() -> tuple[list[dict], dict | None]:
@@ -1087,6 +1143,15 @@ def create_app(
         _apply_control_settings()
         _apply_site_settings()
         _apply_explainer_settings()
+        if audit_store is not None and clean:
+            # Record WHICH settings changed — keys only, never values (so a token/secret is never
+            # written to the audit log). Secret keys are flagged so the entry reads sensibly.
+            keys = sorted(clean)
+            await audit_store.append(
+                datetime.now(UTC).isoformat(), "config_change",
+                f"Changed {len(keys)} setting(s): {', '.join(keys)}",
+                {"keys": keys, "secrets": sorted(k for k in keys if k in SECRET_KEYS)},
+            )
         # Tell the caller if any saved key needs a restart to take effect (connection / operational
         # mode are read at startup) — so the UI never implies operational control is live when it
         # isn't. Mask secrets in the response exactly like GET — never echo a stored token back.
@@ -1111,6 +1176,16 @@ def create_app(
             "house_load_w": derived.house_load_w,
             "non_ev_load_w": derived.non_ev_load_w,
         }
+
+    @app.get("/api/audit")
+    async def audit_endpoint(
+        limit: int = Query(default=100, ge=1, le=500), category: str | None = None,
+    ) -> dict:
+        """The audit trail: every plan/battery-mode decision, config change and manual override —
+        newest first. Read-only. Empty when no audit store is configured."""
+        if audit_store is None:
+            return {"entries": []}
+        return {"entries": await audit_store.recent(limit, category)}
 
     @app.get("/api/explainer")
     def explainer_status() -> dict:
