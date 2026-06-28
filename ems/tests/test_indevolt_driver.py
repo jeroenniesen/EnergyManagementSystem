@@ -45,7 +45,10 @@ def test_setdata_write_mapping():
     assert setdata_writes(PhysicalMode.CHARGE, power_w=1500, target_soc=90) == [
         (47005, [4]), (47015, [1]), (47016, [1500]), (47017, [90])
     ]
-    assert setdata_writes(PhysicalMode.DISCHARGE)[1] == (47015, [2])
+    assert setdata_writes(PhysicalMode.DISCHARGE, target_soc=10)[1] == (47015, [2])
+    # No default-to-full: a CHARGE/DISCHARGE write without an explicit target is a hard error.
+    with pytest.raises(ValueError):
+        setdata_writes(PhysicalMode.CHARGE)
 
 
 def test_mode_from_data():
@@ -65,19 +68,26 @@ def test_armed_is_read_only():
 
 def test_unarmed_driver_never_writes():
     fake = FakeIndevolt()
-    assert _driver(fake, armed=False).apply(PhysicalMode.CHARGE) is False
+    assert _driver(fake, armed=False).apply(PhysicalMode.CHARGE, target_soc=90) is False
+    assert fake.writes == []
+
+
+def test_charge_without_target_is_refused_no_write():
+    # The driver must NEVER charge to a default — a target-less charge is refused before any write.
+    fake = FakeIndevolt(mode=1, state=1000)
+    assert _driver(fake).apply(PhysicalMode.CHARGE) is False
     assert fake.writes == []
 
 
 def test_default_driver_has_no_write_transport():
     drv = IndevoltBatteryDriver("x", armed=True, reader=FakeIndevolt())  # rpc_post = refusing stub
-    assert drv.apply(PhysicalMode.CHARGE) is False
+    assert drv.apply(PhysicalMode.CHARGE, target_soc=90) is False
 
 
 def test_armed_apply_issues_correct_writes_and_confirms():
     fake = FakeIndevolt(mode=1, state=1000)  # starts in self-consumption
-    assert _driver(fake).apply(PhysicalMode.CHARGE) is True
-    assert fake.writes == [(47005, [4]), (47015, [1]), (47016, [2000]), (47017, [100])]
+    assert _driver(fake).apply(PhysicalMode.CHARGE, target_soc=85, power_w=1800) is True
+    assert fake.writes == [(47005, [4]), (47015, [1]), (47016, [1800]), (47017, [85])]
 
 
 def test_apply_false_when_confirm_mismatches():
@@ -86,7 +96,7 @@ def test_apply_false_when_confirm_mismatches():
             self.writes.append((point, values))
             return {"result": True}
 
-    assert _driver(StuckSelf()).apply(PhysicalMode.CHARGE) is False
+    assert _driver(StuckSelf()).apply(PhysicalMode.CHARGE, target_soc=90) is False
 
 
 def test_probe_reports_capabilities_else_unavailable():
@@ -108,7 +118,8 @@ def test_full_control_chain_commands_driver_when_controlling():
     lc.mark_plan_loaded()
     assert lc.tick(NOW).value == "controlling"
     decision = ModeController(driver, lc, dry_run=False).decide(
-        BatteryIntent.GRID_CHARGE_TO_TARGET, NOW
+        BatteryIntent.GRID_CHARGE_TO_TARGET, NOW, target_soc=80, power_w=2000
     )
     assert decision.applied is True and decision.outcome == "applied"
     assert (47015, [1]) in fake.writes  # commanded charge state
+    assert (47017, [80]) in fake.writes  # ...to the plan's target SoC, not a default 100

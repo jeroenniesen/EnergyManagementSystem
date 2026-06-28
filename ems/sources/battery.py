@@ -36,18 +36,28 @@ def intent_to_mode(intent: BatteryIntent, *, allow_export_discharge: bool = Fals
 class BatteryDriver(Protocol):
     def probe(self) -> CapabilityReport: ...
     def current_mode(self) -> PhysicalMode: ...
-    def apply(self, mode: PhysicalMode) -> bool:
-        """Set the battery to `mode`. Returns True only if the transition was **confirmed**
-        (post-write poll matched). False = command sent but unconfirmed; the caller must run
-        the SPEC §6.5 failure path (retry → AUTO → alert). Never raise for an unconfirmed write."""
+    def apply(
+        self, mode: PhysicalMode, *, target_soc: float | None = None,
+        power_w: float | None = None,
+    ) -> bool:
+        """Set the battery to `mode`, charging/discharging toward `target_soc` (% — the
+        AUTHORITATIVE stop) at `power_w`. A real driver MUST refuse a CHARGE/DISCHARGE with no
+        `target_soc` rather than default to full (energy review #3/#4). Returns True only if the
+        transition was **confirmed** (post-write poll matched). False = command sent but unconfirmed
+        OR refused (e.g. missing target); the caller runs the SPEC §6.5 failure path (retry → AUTO →
+        alert). Never raise for an unconfirmed write."""
         ...
 
 
 class MockBatteryDriver:
-    """Fake Indevolt: a SolidFlex-2000-shaped cluster. `apply` is idempotent and self-confirms."""
+    """Fake Indevolt: a SolidFlex-2000-shaped cluster. `apply` is idempotent and self-confirms.
+    It records the last commanded target/power so tests can assert the energy contract was passed
+    through, but (being a mode-only mock) it does not require a target to confirm."""
 
     def __init__(self) -> None:
         self._mode = PhysicalMode.AUTO
+        self.last_target_soc: float | None = None
+        self.last_power_w: float | None = None
         self._capabilities = CapabilityReport(
             services=("charge", "discharge"),
             energy_mode_options=("self_consumed_prioritized", "real_time_control"),
@@ -64,9 +74,13 @@ class MockBatteryDriver:
     def current_mode(self) -> PhysicalMode:
         return self._mode
 
-    def apply(self, mode: PhysicalMode) -> bool:
+    def apply(
+        self, mode: PhysicalMode, *, target_soc: float | None = None,
+        power_w: float | None = None,
+    ) -> bool:
         # Idempotent: re-applying the current mode is a no-op but still "confirmed".
         self._mode = mode
+        self.last_target_soc, self.last_power_w = target_soc, power_w
         return True
 
 
@@ -78,8 +92,11 @@ class FailingMockBatteryDriver(MockBatteryDriver):
         super().__init__()
         self._remaining = fail_times
 
-    def apply(self, mode: PhysicalMode) -> bool:
+    def apply(
+        self, mode: PhysicalMode, *, target_soc: float | None = None,
+        power_w: float | None = None,
+    ) -> bool:
         if self._remaining > 0:
             self._remaining -= 1
             return False  # command not confirmed; mode unchanged
-        return super().apply(mode)
+        return super().apply(mode, target_soc=target_soc, power_w=power_w)

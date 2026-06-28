@@ -66,18 +66,21 @@ def make_setdata_post(ip: str, port: int = 8080, timeout: float = 4.0) -> SetDat
 
 
 def setdata_writes(
-    mode: PhysicalMode, *, power_w: int = 2000, target_soc: int = 100
+    mode: PhysicalMode, *, power_w: int = 2000, target_soc: int | None = None
 ) -> list[tuple[int, list[int]]]:
-    """Ordered (point, [values]) SetData writes to command `mode` (SPEC api-reference §)."""
+    """Ordered (point, [values]) SetData writes to command `mode` (SPEC api-reference §).
+
+    `target_soc` is REQUIRED for CHARGE/DISCHARGE and has no default — a missing target is a
+    programming error, never silently "charge to 100%" (energy review #3). AUTO/IDLE ignore it."""
     if mode is PhysicalMode.AUTO:
         return [(P_MODE, [_MODE_SELF])]  # vendor self-consumption (P1-zeroing)
     if mode is PhysicalMode.IDLE:
         return [(P_MODE, [_MODE_REALTIME]), (P_STATE, [_W_IDLE])]
-    if mode is PhysicalMode.CHARGE:
-        return [(P_MODE, [_MODE_REALTIME]), (P_STATE, [_W_CHARGE]),
-                (P_POWER, [int(power_w)]), (P_SOC, [int(target_soc)])]
-    if mode is PhysicalMode.DISCHARGE:
-        return [(P_MODE, [_MODE_REALTIME]), (P_STATE, [_W_DISCHARGE]),
+    if mode in (PhysicalMode.CHARGE, PhysicalMode.DISCHARGE):
+        if target_soc is None:
+            raise ValueError(f"{mode} requires an explicit target_soc (no default-to-full)")
+        state = _W_CHARGE if mode is PhysicalMode.CHARGE else _W_DISCHARGE
+        return [(P_MODE, [_MODE_REALTIME]), (P_STATE, [state]),
                 (P_POWER, [int(power_w)]), (P_SOC, [int(target_soc)])]
     raise ValueError(f"unmapped mode {mode}")  # pragma: no cover
 
@@ -136,14 +139,24 @@ class IndevoltBatteryDriver:
     def current_mode(self) -> PhysicalMode:
         return mode_from_data(self.reader.read_keys([K_MODE, K_STATE]))
 
-    def apply(self, mode: PhysicalMode) -> bool:
-        """Command the battery into `mode`. Refuses (returns False, no write) unless armed.
-        Returns True only if a post-write re-read confirms the mode (SPEC §6.5)."""
+    def apply(
+        self, mode: PhysicalMode, *, target_soc: float | None = None,
+        power_w: float | None = None,
+    ) -> bool:
+        """Command the battery into `mode`, charging/discharging toward `target_soc` at `power_w`.
+        Refuses (returns False, no write) unless armed, AND refuses a CHARGE/DISCHARGE with no
+        target_soc — it will NEVER default to charging to full (energy review #3/#4). Returns True
+        only if a post-write re-read confirms the mode (SPEC §6.5)."""
         if not self._armed:
             _log.warning("apply(%s) refused — driver not armed (read-only safety)", mode)
             return False
+        if mode in (PhysicalMode.CHARGE, PhysicalMode.DISCHARGE) and target_soc is None:
+            _log.warning("apply(%s) refused — no target SoC supplied (won't default to full)", mode)
+            return False
+        power = int(power_w) if power_w is not None else self.charge_power_w
+        soc = int(target_soc) if target_soc is not None else None
         try:
-            for point, values in setdata_writes(mode, power_w=self.charge_power_w):
+            for point, values in setdata_writes(mode, power_w=power, target_soc=soc):
                 self._post(point, values)
         except Exception as exc:
             _log.error("Indevolt SetData failed: %s", exc)

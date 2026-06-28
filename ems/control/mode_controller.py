@@ -84,23 +84,33 @@ class ModeController:
             )
         return None
 
-    def preview(self, intent: BatteryIntent, now: datetime) -> ActionDecision:
+    def preview(
+        self, intent: BatteryIntent, now: datetime, *,
+        target_soc: float | None = None, power_w: float | None = None,
+    ) -> ActionDecision:
         """Read-only: what decide() WOULD do right now. Never writes or mutates state."""
         desired = self._desired(intent)
         blocked = self._gate(intent, now, desired)
         if blocked is not None:
             return blocked
-        return ActionDecision(intent, desired, False, "would_apply", f"would set {desired}")
+        suffix = (f" to {target_soc:.0f}%"
+                  if target_soc is not None
+                  and desired in (PhysicalMode.CHARGE, PhysicalMode.DISCHARGE) else "")
+        return ActionDecision(intent, desired, False, "would_apply", f"would set {desired}{suffix}")
 
-    def decide(self, intent: BatteryIntent, now: datetime) -> ActionDecision:
-        """Write path: applies at most one mode change. The ONLY caller of driver.apply."""
+    def decide(
+        self, intent: BatteryIntent, now: datetime, *,
+        target_soc: float | None = None, power_w: float | None = None,
+    ) -> ActionDecision:
+        """Write path: applies at most one mode change. The ONLY caller of driver.apply. The plan's
+        target SoC + power are passed through to the driver (which refuses a target-less charge)."""
         desired = self._desired(intent)
         blocked = self._gate(intent, now, desired)
         if blocked is not None:
             return blocked
 
         self._reset_counter_if_new_day(now)
-        if not self.driver.apply(desired):
+        if not self.driver.apply(desired, target_soc=target_soc, power_w=power_w):
             # Unconfirmed -> revert to the safe vendor mode (SPEC §6.5). Check recovery too.
             recovered = self.driver.apply(PhysicalMode.AUTO)
             outcome = "failed_recovered" if recovered else "failed_unrecovered"

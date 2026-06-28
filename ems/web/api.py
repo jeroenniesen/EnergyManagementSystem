@@ -424,10 +424,14 @@ def create_app(
                 pass
             try:
                 now = datetime.now(UTC)
-                intent, reason, override_active = await asyncio.to_thread(_effective_intent, now)
+                intent, reason, override_active, tgt, pw = await asyncio.to_thread(
+                    _effective_intent, now
+                )
                 if intent is None:
                     continue
-                d = await asyncio.to_thread(controller.preview, intent, now)
+                d = await asyncio.to_thread(
+                    controller.preview, intent, now, target_soc=tgt, power_w=pw
+                )
                 mode = str(d.desired_mode)
                 if mode == last_mode:
                     continue
@@ -558,11 +562,19 @@ def create_app(
         )
 
     def _effective_intent(now: datetime):
-        """The intent the controller should act on now, honouring an active manual override and the
-        data-quality fail-safe. Returns (intent | None, reason | None, override_active). An active
-        override wins over the plan AND the fail-safe (deliberate, time-boxed operator action — the
-        UI shows the data-quality badge). The planner path is gated: unsafe data falls back to
-        self-consumption (CLAUDE.md "fail safe"). Works even with no price source."""
+        """The intent the controller should act on now + its energy sizing, honouring an active
+        manual override and the data-quality fail-safe. Returns
+        (intent | None, reason | None, override_active, target_soc | None, power_w | None).
+
+        An active override wins over the plan AND the fail-safe (deliberate, time-boxed operator
+        action — the UI shows the data-quality badge). The planner path is gated: unsafe data falls
+        back to self-consumption (CLAUDE.md "fail safe"). Sizing (target_soc/power_w) is taken from
+        the SAME plan slot we resolved, and ONLY when the final intent still matches that slot's
+        intent — an override, a fail-safe or a car-guard substitution carries no sizing, so a stale
+        target can never leak to the driver. A target is emitted only for a physical CHARGE
+        (the slot target SoC) or, when export-discharge is enabled, a forced DISCHARGE (the reserve
+        floor); a DISCHARGE_FOR_LOAD that maps to AUTO needs none."""
+        cur = None
         ov = override_box["ov"]
         if ov.active(now):
             assert ov.intent is not None and ov.expires_at is not None
@@ -572,17 +584,24 @@ def create_app(
         else:
             pp = _current_plan()
             if pp is None:
-                return None, None, False
+                return None, None, False, None, None
             cur = pp[2].intent_at(now)
             if cur is None:
-                return None, None, False
+                return None, None, False, None, None
             safe, fs_reason = failsafe_intent(cur.intent, _data_quality(now))
             intent, reason = ((safe, fs_reason) if fs_reason is not None
                               else (cur.intent, cur.reason))
             override_active = False
         # Final guardrail (over the plan AND a manual override): never discharge into the car.
         intent, reason = _car_guard(now, intent, reason)
-        return intent, reason, override_active
+        target_soc = power_w = None
+        if not override_active and cur is not None and intent is cur.intent:
+            if intent is BatteryIntent.GRID_CHARGE_TO_TARGET:
+                target_soc, power_w = cur.target_soc, cur.power_w
+            elif (intent is BatteryIntent.DISCHARGE_FOR_LOAD and controller is not None
+                  and controller.allow_export_discharge):
+                target_soc, power_w = cur.floor_soc, cur.power_w  # forced discharge → reserve floor
+        return intent, reason, override_active, target_soc, power_w
 
     def _chat_context() -> str:
         """A compact, REDACTED snapshot for the chat to ground on — only non-identifying facts (the
@@ -595,7 +614,7 @@ def create_app(
         except Exception:
             pass
         try:
-            intent, reason, override_active = _effective_intent(now)
+            intent, reason, override_active, _t, _p = _effective_intent(now)
             if intent is not None:
                 lines.append(
                     f"Current decision: {intent} — {reason}"
@@ -684,9 +703,9 @@ def create_app(
             lc.mark_plan_loaded()
         lc.tick(now)
         if lc.can_command(now):
-            intent, _reason, _override = _effective_intent(now)
+            intent, _reason, _override, tgt, pw = _effective_intent(now)
             if intent is not None:
-                controller.decide(intent, now)
+                controller.decide(intent, now, target_soc=tgt, power_w=pw)
 
     @app.get("/health/live")
     def live() -> dict:
@@ -732,9 +751,9 @@ def create_app(
         # The controller's would-do outcome (read-only preview) feeds battery-failure alerts.
         # Honour an active override so the outcome reflects what the controller would really do.
         outcome: str | None = None
-        intent, _reason, override_active = _effective_intent(now)
+        intent, _reason, override_active, tgt, pw = _effective_intent(now)
         if intent is not None and controller is not None:
-            outcome = controller.preview(intent, now).outcome
+            outcome = controller.preview(intent, now, target_soc=tgt, power_w=pw).outcome
         alerts = derive_alerts(snap, dry_run=dry_run, decision_outcome=outcome)
         out = [{"key": a.key, "severity": a.severity, "message": a.message} for a in alerts]
         if override_active:
@@ -756,13 +775,13 @@ def create_app(
                     "plan_reason": None, "override_active": False}
         now = datetime.now(UTC)
         car_charging = _car_charging(now)
-        intent, reason, override_active = _effective_intent(now)
+        intent, reason, override_active, tgt, pw = _effective_intent(now)
         if intent is None:
             return {"intent": None, "desired_mode": None, "applied": False,
                     "outcome": "no_plan", "reason": "no plan slot for now",
                     "plan_reason": None, "override_active": False, "car_charging": car_charging}
         # preview() is read-only — a GET must never write to the battery or mutate counters.
-        d = controller.preview(intent, now)
+        d = controller.preview(intent, now, target_soc=tgt, power_w=pw)
         # Phrase the deterministic plan reason via the explainer (verbatim unless AI is on; cached).
         explained = await _explain(
             reason, {"intent": str(intent), "desired_mode": str(d.desired_mode)}
