@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 
 import { OverrideCard } from "./Override";
+import { PlanDetail, type PlanDetailData } from "./PlanDetail";
 import { Settings } from "./Settings";
 import { SystemView } from "./System";
 import { applyTheme, readStoredTheme, storeTheme, type Theme } from "./theme";
@@ -22,13 +23,6 @@ type PriceSlot = { start: string; eur_per_kwh: number };
 type Prices = { currency: string; current_eur_per_kwh: number | null; slots: PriceSlot[] };
 type ForecastSlot = { start: string; p10_w: number; p50_w: number; p90_w: number };
 type Forecast = { today_kwh_p50: number | null; source?: string | null; slots: ForecastSlot[] };
-type PlanSlot = { start: string; intent: string; reason: string };
-type Plan = {
-  created_at: string | null;
-  current_intent: string | null;
-  current_reason: string | null;
-  slots: PlanSlot[];
-};
 
 type Decision = {
   intent: string | null;
@@ -58,13 +52,6 @@ type Battery = {
     max_charge_w: number;
     max_discharge_w: number;
   } | null;
-};
-
-const INTENT_LABEL: Record<string, string> = {
-  allow_self_consumption: "Self-consume",
-  grid_charge_to_target: "Charge",
-  hold_reserve: "Hold",
-  discharge_for_load: "Discharge",
 };
 
 const POLL_MS = 5000;
@@ -117,37 +104,6 @@ function ChargeTarget({ n }: { n: ChargeNeed }) {
   );
 }
 
-function PlanTimeline({ plan }: { plan: Plan }) {
-  const slots = plan.slots.slice(0, 96);
-  const currentLabel = plan.current_intent
-    ? INTENT_LABEL[plan.current_intent] ?? plan.current_intent
-    : "—";
-  return (
-    <section className="prices" data-testid="plan">
-      <div className="prices-head">
-        <span className="metric-label">Plan — next 24h</span>
-        <span className="price-now" data-testid="current-intent">
-          {currentLabel}
-        </span>
-      </div>
-      <div
-        className="timeline"
-        role="img"
-        aria-label={`Battery plan timeline for the next 24 hours; current action: ${currentLabel}`}
-      >
-        {slots.map((s, i) => (
-          <span
-            key={i}
-            className={`seg seg-${s.intent}`}
-            title={`${s.start.substring(11, 16)} — ${s.reason}`}
-          />
-        ))}
-      </div>
-      {plan.current_reason && <p className="plan-reason">{plan.current_reason}</p>}
-    </section>
-  );
-}
-
 function PriceCurve({ prices }: { prices: Prices }) {
   const slots = prices.slots.slice(0, 96); // show ~today
   const max = Math.max(0.01, ...slots.map((s) => s.eur_per_kwh));
@@ -178,6 +134,10 @@ function PriceCurve({ prices }: { prices: Prices }) {
             title={`${s.start.substring(11, 16)} — €${s.eur_per_kwh.toFixed(2)}`}
           />
         ))}
+      </div>
+      <div className="chart-legend">
+        <span>Each bar = a 15-min slot (today, 00:00→24:00)</span>
+        <span>Taller = more expensive · range €{min.toFixed(2)}–€{max.toFixed(2)}/kWh</span>
       </div>
     </section>
   );
@@ -222,6 +182,10 @@ function ForecastCurve({ forecast }: { forecast: Forecast }) {
           />
         ))}
       </div>
+      <div className="chart-legend">
+        <span>Each bar = expected PV power (P50) per 15-min slot</span>
+        <span>Peak today ~{Math.round(max)} W</span>
+      </div>
     </section>
   );
 }
@@ -232,7 +196,7 @@ export function App() {
   const [freshness, setFreshness] = useState<FreshnessMap | null>(null);
   const [prices, setPrices] = useState<Prices | null>(null);
   const [forecast, setForecast] = useState<Forecast | null>(null);
-  const [plan, setPlan] = useState<Plan | null>(null);
+  const [planDetail, setPlanDetail] = useState<PlanDetailData | null>(null);
   const [battery, setBattery] = useState<Battery | null>(null);
   const [decision, setDecision] = useState<Decision | null>(null);
   const [alertsData, setAlertsData] = useState<AlertsResp | null>(null);
@@ -280,7 +244,7 @@ export function App() {
           getJson("/api/freshness"),
           getJson("/api/prices"),
           getJson("/api/forecast"),
-          getJson("/api/plan"),
+          getJson("/api/plan-detail"),
           getJson("/api/battery"),
           getJson("/api/decision"),
           getJson("/api/alerts"),
@@ -293,7 +257,7 @@ export function App() {
         setFreshness(fr);
         setPrices(pr);
         setForecast(fc);
-        setPlan(pl);
+        setPlanDetail(pl);
         setBattery(bat);
         setDecision(dec);
         setAlertsData(al);
@@ -427,7 +391,9 @@ export function App() {
         </section>
       )}
 
-      {view === "dashboard" && plan && plan.slots.length > 0 && <PlanTimeline plan={plan} />}
+      {view === "dashboard" && planDetail && planDetail.slots.length > 0 && (
+        <PlanDetail detail={planDetail} />
+      )}
 
       {view === "dashboard" && prices && prices.slots.length > 0 && <PriceCurve prices={prices} />}
 

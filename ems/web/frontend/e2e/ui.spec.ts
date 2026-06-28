@@ -10,7 +10,7 @@ test.describe("EMS dashboard", () => {
       "data-quality",
       "status-grid",
       "decision",
-      "plan",
+      "plan-detail",
       "prices",
       "forecast",
       "freshness",
@@ -66,13 +66,16 @@ test.describe("EMS dashboard", () => {
     await expect(dec).toContainText("dry-run");
   });
 
-  test("shows the plan timeline with a current intent", async ({ page }) => {
+  test("shows the aligned next-24h plan tile with a summary and legend", async ({ page }) => {
     await page.goto("/");
-    const plan = page.getByTestId("plan");
+    const plan = page.getByTestId("plan-detail");
     await expect(plan).toBeVisible();
-    await expect(plan).toContainText("Plan — next 24h");
-    // current intent is one of the human labels
-    await expect(page.getByTestId("current-intent")).not.toHaveText("—");
+    await expect(plan).toContainText("Next 24 hours");
+    // Plain-English summary of what the algorithm will do.
+    await expect(page.getByTestId("plan-summary")).not.toHaveText("");
+    // The legend explains the action colours.
+    await expect(page.getByTestId("plan-legend")).toContainText("Charge");
+    await expect(page.getByTestId("plan-legend")).toContainText("Discharge");
   });
 
   test("shows the solar forecast with today's kWh", async ({ page }) => {

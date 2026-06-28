@@ -34,6 +34,7 @@ from ems.domain import BatteryIntent
 from ems.freshness import FreshnessTracker
 from ems.load_model import reconstruct
 from ems.planner.charge_need import compute_charge_need
+from ems.planner.explain import build_plan_detail
 from ems.planner.rule_based import PlannerConfig, plan_rule_based
 from ems.savings import estimate_daily_savings_eur
 from ems.sense import Recorder
@@ -418,6 +419,16 @@ def create_app(
                 for s in plan.slots
             ],
         }
+
+    @app.get("/api/plan-detail")
+    def plan_detail() -> dict:
+        # Plan + prices + solar joined on ONE timeline (the plan's slots) so the UI can align them.
+        pp = _current_plan()
+        if pp is None:
+            return {"current_intent": None, "summary": "No plan yet.", "slots": []}
+        now, prices_, plan = pp
+        fc = solar_forecast.slots() if solar_forecast is not None else None
+        return build_plan_detail(now, prices_, plan, fc)
 
     @app.get("/api/forecast")
     def forecast() -> dict:

@@ -130,6 +130,43 @@ body {
 }
 .bar-solar { background: linear-gradient(to top, var(--amber), rgba(224, 162, 58, 0.3)); }
 
+/* Next-24h aligned plan tile */
+.plandetail {
+  margin-top: 24px;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  padding: 18px;
+}
+.plan-summary {
+  margin: 6px 0 14px;
+  font-size: 0.95rem;
+  color: var(--text);
+  background: var(--panel-2);
+  border-left: 3px solid var(--accent);
+  border-radius: 6px;
+  padding: 8px 12px;
+}
+.track-label { font-size: 0.72rem; color: var(--muted); margin: 8px 0 3px; }
+.track { display: flex; align-items: flex-end; gap: 1px; width: 100%; }
+.track-price { height: 56px; }
+.track-solar { height: 40px; }
+.track-plan { height: 16px; align-items: stretch; border-radius: 4px; overflow: hidden; }
+.tbar { flex: 1 1 0; min-width: 1px; border-radius: 1px 1px 0 0; }
+.tbar-price { background: linear-gradient(to top, var(--accent), rgba(70, 200, 168, 0.35)); }
+.tbar-solar { background: linear-gradient(to top, var(--amber), rgba(224, 162, 58, 0.3)); }
+.pseg { flex: 1 1 0; min-width: 1px; }
+.time-axis { display: flex; gap: 1px; margin-top: 4px; }
+.tick {
+  flex: 1 1 0; min-width: 1px; font-size: 0.6rem; color: var(--muted);
+  font-variant-numeric: tabular-nums; white-space: nowrap; overflow: visible;
+}
+.legend { display: flex; flex-wrap: wrap; gap: 12px; margin-top: 14px; }
+.legend-item { display: inline-flex; align-items: center; gap: 6px; font-size: 0.75rem; color: var(--muted); }
+.legend-swatch { width: 12px; height: 12px; border-radius: 3px; display: inline-block; }
+
+.chart-legend { display: flex; flex-wrap: wrap; gap: 12px; margin-top: 8px; font-size: 0.72rem; color: var(--muted); }
+
 .timeline { display: flex; gap: 1px; height: 22px; border-radius: 4px; overflow: hidden; }
 .seg { flex: 1 1 0; min-width: 1px; }
 .seg-allow_self_consumption { background: #2a313c; }
