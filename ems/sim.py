@@ -15,8 +15,9 @@ from dataclasses import dataclass
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
+from ems.domain import BatteryIntent
 from ems.planner.projection import BatteryModel, project_energy
-from ems.planner.schedule import SLOT, Plan
+from ems.planner.schedule import SLOT, Plan, PlanSlot
 from ems.sources.forecast import ForecastSlot
 from ems.sources.prices import PriceSlot
 
@@ -143,13 +144,59 @@ def simulate(
                for p in projected)
     socs = [p.soc_pct for p in projected]
     soc_min = min(socs) if socs else scenario.start_soc_pct
+    return _score(scenario.name, imp, exp, solar, load, charge, discharge, cost, socs, soc_min,
+                  model)
+
+
+def _score(name, imp, exp, solar, load, charge, discharge, cost, socs, soc_min, model) -> SimResult:
     return SimResult(
-        name=scenario.name,
+        name=name,
         grid_cost_eur=round(cost, 3),
         import_kwh=round(imp, 2), export_kwh=round(exp, 2), solar_kwh=round(solar, 2),
         self_sufficiency_pct=round(max(0.0, (load - imp) / load * 100.0), 1) if load > 0 else 0.0,
         soc_min_pct=round(soc_min, 1),
-        soc_end_pct=round(socs[-1], 1) if socs else scenario.start_soc_pct,
+        soc_end_pct=round(socs[-1], 1) if socs else 0.0,
         cycles=round((charge + discharge) / (2 * model.usable_kwh), 2) if model.usable_kwh else 0.0,
         night_ok=soc_min >= model.reserve_soc_pct - 0.5,
     )
+
+
+def simulate_rolling(
+    scenario: Scenario,
+    replan: Callable[[datetime, float], Plan],
+    *,
+    model: BatteryModel = _DEFAULT_MODEL,
+) -> SimResult:
+    """The realistic test: re-plan every slot with the CURRENT SoC (as the live loop does), apply
+    only that slot's action, step forward on the realised solar/load. This captures the system's
+    adaptivity — it commits little early and tops up late as the day's true solar lands."""
+    price_by = {p.start: p.eur_per_kwh for p in scenario.prices}
+    starts = sorted(scenario.actual_solar_w)
+
+    def kwh(w: float) -> float:
+        return w * _DH / 1000.0
+
+    soc = scenario.start_soc_pct
+    imp = exp = solar = load = charge = discharge = cost = 0.0
+    socs: list[float] = []
+    for t in starts:
+        plan = replan(t, soc)
+        slot = plan.intent_at(t)
+        intent = slot.intent if slot else BatteryIntent.ALLOW_SELF_CONSUMPTION
+        step = project_energy(
+            [PlanSlot(t, intent, "")], start_soc_pct=soc,
+            solar_w_by={t: scenario.actual_solar_w[t]}, load_w_by={t: scenario.load_w[t]},
+            model=model,
+        )[0]
+        soc = step.soc_pct
+        socs.append(soc)
+        imp += kwh(max(0.0, step.grid_w))
+        exp += kwh(max(0.0, -step.grid_w))
+        solar += kwh(step.solar_w)
+        load += kwh(step.load_w)
+        charge += kwh(max(0.0, -step.battery_w))
+        discharge += kwh(max(0.0, step.battery_w))
+        cost += (kwh(max(0.0, step.grid_w)) - kwh(max(0.0, -step.grid_w))) * price_by.get(t, 0.0)
+    soc_min = min(socs) if socs else scenario.start_soc_pct
+    return _score(scenario.name, imp, exp, solar, load, charge, discharge, cost, socs, soc_min,
+                  model)
