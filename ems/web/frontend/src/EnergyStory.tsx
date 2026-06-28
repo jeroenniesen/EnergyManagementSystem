@@ -102,10 +102,22 @@ export function EnergyStory({
   const maxPrice = Math.max(0.01, ...slots.map((s) => s.eur_per_kwh ?? 0));
   const maxSolar = Math.max(1, ...slots.map((s) => s.solar_w));
   const everyN = Math.max(1, Math.round(slots.length / 6));
+  const isPast = window === "past";
+  // Domain insight a dynamic-tariff user cares about most: did the battery cover the day's most
+  // expensive hour instead of buying it? Show it only when it's a win (don't nag otherwise).
+  const priced = slots.filter((s) => s.eur_per_kwh != null);
+  const peak = priced.length
+    ? priced.reduce((a, b) => ((b.eur_per_kwh as number) > (a.eur_per_kwh as number) ? b : a))
+    : null;
+  const peakInsight =
+    peak && (peak.eur_per_kwh as number) > 0 && peak.battery_w > 50
+      ? `${isPast ? "Covered" : "Covers"} the day's €${(peak.eur_per_kwh as number).toFixed(2)}/kWh ` +
+        "peak from the battery — not the grid."
+      : null;
+
   const nowMs = story ? Date.parse(story.now) : NaN;
   const dl = story?.target_deadline ? Date.parse(story.target_deadline) : NaN;
   const showDeadline = Number.isFinite(dl) && dl >= t0 && dl <= t1;
-  const isPast = window === "past";
 
   return (
     <section className="story" data-testid="energy-story">
@@ -147,6 +159,12 @@ export function EnergyStory({
       <p className="story-headline" data-testid="story-headline">
         {story?.headline ?? "…"}
       </p>
+
+      {peakInsight && (
+        <p className="story-insight" data-testid="story-insight">
+          ⚡ {peakInsight}
+        </p>
+      )}
 
       {isPast && t && t.soc_min_pct != null && story && (
         <p

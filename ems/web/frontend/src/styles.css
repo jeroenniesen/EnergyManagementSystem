@@ -197,6 +197,7 @@ body {
 }
 .story-check-ok { color: var(--green); border-left: 3px solid var(--green); }
 .story-check-warn { color: var(--amber); border-left: 3px solid var(--amber); }
+.story-insight { margin: 8px 0 0; font-size: 0.9rem; color: var(--muted); }
 .story-toggle {
   display: inline-flex; gap: 4px; background: var(--panel-2);
   border: 1px solid var(--line); border-radius: 12px; padding: 4px;
