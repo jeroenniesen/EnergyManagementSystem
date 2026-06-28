@@ -1358,6 +1358,22 @@ def create_app(
         head += f", {ss:.0f}% self-sufficient." if ss is not None else "."
         return head
 
+    def _trust_markers(projected, totals: dict, reserve_pct: float, target_pct: float) -> list[str]:
+        """A few quiet, TRUE-only confirmations the plan is taking care of the home (emotional
+        review): reserve respected, on track for the target, no needless grid top-up, peak covered.
+        Only true markers are returned — no hype, no false positives."""
+        markers: list[str] = []
+        socs = [p.soc_pct for p in projected]
+        if socs and min(socs) >= reserve_pct - 1e-6:
+            markers.append("Reserve respected")
+        if socs and target_pct > 0 and socs[-1] >= target_pct - 1.0:
+            markers.append("On track for tonight's target")
+        if totals.get("charge_kwh", 0.0) < 0.1:
+            markers.append("No grid top-up needed")
+        if any(p.intent is BatteryIntent.DISCHARGE_FOR_LOAD for p in projected):
+            markers.append("Battery covers the evening peak")
+        return markers
+
     async def _next_story(reserve_pct: float) -> dict:
         fp = await _forward_projection()
         if fp is None:
@@ -1378,6 +1394,10 @@ def create_app(
             # The price right now = the first slot (it covers the current quarter-hour).
             "current_price_eur_per_kwh": slots[0]["eur_per_kwh"] if slots else None,
             "slots": slots, "totals": totals, "headline": _next_headline(totals, need),
+            # Quiet, true-only trust markers (emotional review): proof the plan is doing right by
+            # the home — never celebratory, only shown when genuinely true.
+            "trust_markers": _trust_markers(fp["projected"], totals, reserve_pct,
+                                            need.target_soc_pct),
         }
 
     async def _past_story(reserve_pct: float) -> dict:

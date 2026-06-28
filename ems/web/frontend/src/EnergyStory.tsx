@@ -40,6 +40,7 @@ export type EnergyStoryData = {
   slots: StorySlot[];
   totals: StoryTotals;
   headline: string;
+  trust_markers?: string[];
 };
 
 const ACTION_LEGEND = [
@@ -195,6 +196,16 @@ export function EnergyStory({
       <p className="story-headline" data-testid="story-headline">
         {story?.headline ?? "…"}
       </p>
+
+      {story?.trust_markers && story.trust_markers.length > 0 && (
+        <div className="trust-markers" data-testid="trust-markers">
+          {story.trust_markers.map((m) => (
+            <span key={m} className="trust-marker">
+              <Icon name="check" /> {m}
+            </span>
+          ))}
+        </div>
+      )}
 
       {peakInsight && (
         <p className="story-insight" data-testid="story-insight">

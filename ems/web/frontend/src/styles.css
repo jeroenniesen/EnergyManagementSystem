@@ -914,6 +914,14 @@ body {
   border-color: rgba(220, 80, 80, 0.4); }
 .decision-target { color: var(--muted); }
 .strategy-why { color: var(--muted); font-size: 0.8rem; margin: 6px 0 0; font-style: italic; }
+/* Quiet success markers in the Energy Story — calm confirmation, deliberately understated. */
+.trust-markers { display: flex; flex-wrap: wrap; gap: 8px; margin: 4px 0 12px; }
+.trust-marker {
+  display: inline-flex; align-items: center; gap: 5px; font-size: 0.76rem;
+  color: var(--green-text); padding: 3px 9px; border-radius: 999px;
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
+}
+.trust-marker svg { width: 13px; height: 13px; }
 
 .error {
   background: rgba(220, 80, 80, 0.12);
