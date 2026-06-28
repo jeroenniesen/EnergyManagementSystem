@@ -42,7 +42,7 @@ from ems.planner.load_profile import build_load_profile
 from ems.planner.projection import BatteryModel, project_energy
 from ems.planner.rule_based import PlannerConfig, plan_rule_based
 from ems.planner.strategy import build_plan, select_strategy
-from ems.planner.summer import SummerConfig
+from ems.planner.summer import SummerConfig, sunset_after
 from ems.savings import estimate_daily_savings_eur
 from ems.sense import Recorder
 from ems.settings import (
@@ -635,7 +635,8 @@ def create_app(
             history = [{"ts": r["ts"], "soc_pct": r["soc_pct"]} for r in reversed(rows)]
         empty = {"now": datetime.now(UTC).isoformat(), "current_soc_pct": None,
                  "reserve_soc_pct": reserve_pct, "history": history, "projection": [],
-                 "summary": "No plan yet."}
+                 "summary": "No plan yet.", "target_soc_pct": None, "target_kwh": None,
+                 "target_deadline": None}
         pp = _current_plan()
         if pp is None or solar_forecast is None:
             return empty
@@ -643,7 +644,8 @@ def create_app(
         if not plan.slots:
             return empty
         raw = source.read()
-        solar_by = {f.start: f.p50_w for f in solar_forecast.slots()}
+        fc_slots = solar_forecast.slots()
+        solar_by = {f.start: f.p50_w for f in fc_slots}
         # Learn the expected load from ~7 days of derived history; fall back to the overnight
         # estimate spread across a ~12h night when there's little history.
         drows = await store.recent_derived(2016) if store is not None else []
@@ -663,10 +665,15 @@ def create_app(
             load_w_by=load_by, model=_battery_model(),
             charge_target_soc_pct=need.target_soc_pct,
         )
+        # The milestone the chart marks: be at the night-carry target by sunset (summer deadline).
+        deadline = sunset_after(fc_slots, now)
         return {
             "now": now.isoformat(),
             "current_soc_pct": round(raw.soc_pct, 1),
             "reserve_soc_pct": reserve_pct,
+            "target_soc_pct": round(need.target_soc_pct, 1),
+            "target_kwh": round(need.target_kwh, 1),
+            "target_deadline": deadline.isoformat() if deadline is not None else None,
             "history": history,
             "projection": [
                 {"start": p.start.isoformat(), "intent": p.intent,

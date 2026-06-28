@@ -23,6 +23,22 @@ from ems.sources.prices import PriceSlot
 _DAYLIGHT_W = 20.0  # a slot counts as daytime above this P50 solar power
 
 
+def sunset_after(forecast: list[ForecastSlot], now: datetime) -> datetime | None:
+    """Start of the LAST slot of the next daylight period — the deadline to be charged for the
+    night (the first contiguous run of daytime slots at/after `now`). None if no sun ahead."""
+    run: list[datetime] = []
+    for f in forecast:
+        if f.start + SLOT <= now:
+            continue
+        if f.p50_w > _DAYLIGHT_W:
+            if run and f.start - run[-1] > SLOT:
+                break
+            run.append(f.start)
+        elif run:
+            break
+    return run[-1] if run else None
+
+
 @dataclass(frozen=True)
 class SummerConfig:
     usable_kwh: float

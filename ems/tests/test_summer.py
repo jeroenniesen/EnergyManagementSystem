@@ -5,7 +5,7 @@ from datetime import UTC, datetime
 
 from ems.domain import BatteryIntent
 from ems.planner.schedule import SLOT
-from ems.planner.summer import SummerConfig, plan_summer
+from ems.planner.summer import SummerConfig, plan_summer, sunset_after
 from ems.sources.forecast import ForecastSlot
 from ems.sources.prices import PriceSlot
 
@@ -118,6 +118,17 @@ def test_topup_slot_count_respects_efficiency():
                        cfg=_cfg(round_trip_efficiency=0.81, max_charge_w=4000.0))
     charge = [s for s in plan.slots if s.intent is BatteryIntent.GRID_CHARGE_TO_TARGET]
     assert len(charge) == 4
+
+
+def test_sunset_after_finds_the_next_daylight_end():
+    # Sun in slots 2..5 (others dark) -> sunset is the start of slot 5.
+    fc = _forecast([0.0, 0.0, 1500.0, 2500.0, 2500.0, 800.0, 0.0, 0.0])
+    assert sunset_after(fc, T0) == T0 + 5 * SLOT
+    # No sun at all -> None.
+    assert sunset_after(_forecast([0.0] * 6), T0) is None
+    # Stops at the first daylight run (today), ignoring tomorrow's sun after a gap.
+    two_days = _forecast([2000.0, 2000.0] + [0.0] * 4 + [2000.0, 2000.0])
+    assert sunset_after(two_days, T0) == T0 + 1 * SLOT
 
 
 def test_empty_prices_yields_empty_plan():

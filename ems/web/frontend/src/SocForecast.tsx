@@ -27,6 +27,9 @@ export type EnergyForecast = {
   now: string;
   current_soc_pct: number | null;
   reserve_soc_pct: number;
+  target_soc_pct: number | null; // night-carry target (the milestone)
+  target_kwh: number | null;
+  target_deadline: string | null; // be at the target by here (sunset); null in winter / no sun
   history: { ts: string; soc_pct: number }[];
   projection: { start: string; intent: string; soc_pct: number }[];
   summary: string;
@@ -44,6 +47,7 @@ type Pt = { t: number; soc: number };
 const W = 1000;
 const H = 240;
 const PAD = { l: 30, r: 12, t: 12, b: 22 };
+const SLOT_MS = 15 * 60 * 1000; // projection SoC is the END-of-slot value
 
 function clock(ms: number): string {
   return new Date(ms).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
@@ -107,7 +111,9 @@ export function SocForecast({
     .map((h) => ({ t: Date.parse(h.ts), soc: h.soc_pct }))
     .filter((p) => Number.isFinite(p.t));
   const proj: Pt[] = forecast.projection
-    .map((p) => ({ t: Date.parse(p.start), soc: p.soc_pct }))
+    // SoC is the value at the END of each slot; plot it there so the line only moves forward from
+    // "now" (the first slot starts just before now — plotting at its start would hook backwards).
+    .map((p) => ({ t: Date.parse(p.start) + SLOT_MS, soc: p.soc_pct }))
     .filter((p) => Number.isFinite(p.t));
 
   // Bridge both lines through (now, current SoC) so actual meets predicted with no gap. Guard the
@@ -141,6 +147,10 @@ export function SocForecast({
   const reserveY = y(forecast.reserve_soc_pct);
   const nTicks = 6;
   const xTicks = Array.from({ length: nTicks + 1 }, (_, i) => minT + (spanT * i) / nTicks);
+
+  // The sunset deadline marker — only when it falls inside the visible window.
+  const dl = forecast.target_deadline ? Date.parse(forecast.target_deadline) : NaN;
+  const deadlineT = Number.isFinite(dl) && dl >= minT && dl <= maxT ? dl : null;
 
   const label =
     `Battery state of charge over time. ` +
@@ -185,6 +195,47 @@ export function SocForecast({
           data-testid="soc-reserve-line"
         />
 
+        {/* night-carry target — the milestone the planner charges toward by sunset */}
+        {forecast.target_soc_pct != null && (
+          <>
+            <line
+              className="soc-target"
+              x1={PAD.l}
+              y1={y(forecast.target_soc_pct)}
+              x2={W - PAD.r}
+              y2={y(forecast.target_soc_pct)}
+              data-testid="soc-target-line"
+            />
+            <text
+              className="soc-axis soc-target-label"
+              x={W - PAD.r}
+              y={y(forecast.target_soc_pct) - 5}
+              textAnchor="end"
+            >
+              target {Math.round(forecast.target_soc_pct)}%
+              {forecast.target_kwh != null ? ` · ${forecast.target_kwh.toFixed(1)} kWh` : ""}
+            </text>
+          </>
+        )}
+
+        {/* sunset: be at the target by here */}
+        {deadlineT != null && (
+          <>
+            <line
+              className="soc-deadline"
+              x1={x(deadlineT)}
+              y1={PAD.t}
+              x2={x(deadlineT)}
+              y2={H - PAD.b}
+              data-testid="soc-deadline"
+            />
+            <text className="soc-axis soc-deadline-label" x={x(deadlineT)} y={PAD.t + 11}
+              textAnchor="middle">
+              ☼ sunset
+            </text>
+          </>
+        )}
+
         {/* now divider: solid history to the left, dashed prediction to the right */}
         <line className="soc-now" x1={x(nowT)} y1={PAD.t} x2={x(nowT)} y2={H - PAD.b} />
 
@@ -210,6 +261,15 @@ export function SocForecast({
         {forecast.summary}
       </p>
       <div className="soc-stats" data-testid="soc-stats">
+        {forecast.target_soc_pct != null && (
+          <span>
+            Target{" "}
+            <b>
+              {forecast.target_soc_pct.toFixed(0)}%
+              {forecast.target_kwh != null ? ` · ${forecast.target_kwh.toFixed(1)} kWh` : ""}
+            </b>
+          </span>
+        )}
         <span>
           Peak <b>{forecast.soc_max_pct != null ? `${forecast.soc_max_pct.toFixed(0)}%` : "—"}</b>
         </span>
@@ -234,6 +294,11 @@ export function SocForecast({
         <span className="legend-item">
           <span className="legend-line legend-predicted" /> Predicted
         </span>
+        {forecast.target_soc_pct != null && (
+          <span className="legend-item">
+            <span className="legend-line legend-target" /> Night target
+          </span>
+        )}
         <span className="legend-item">
           <span className="legend-line legend-reserve" /> Reserve floor
         </span>

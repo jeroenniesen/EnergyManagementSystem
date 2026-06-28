@@ -192,9 +192,12 @@ test.describe("EMS dashboard", () => {
     await expect(page.getByTestId("soc-predicted")).toBeVisible(); // the dashed prediction line
     // A horizontal <line> has a zero-height box, so assert it rendered rather than "visible".
     await expect(page.getByTestId("soc-reserve-line")).toBeAttached();
+    // The night-carry target milestone line is drawn + named in the legend.
+    await expect(page.getByTestId("soc-target-line")).toBeAttached();
     await expect(page.getByTestId("soc-narrative")).not.toHaveText("");
     await expect(page.getByTestId("soc-legend")).toContainText("Recorded");
     await expect(page.getByTestId("soc-legend")).toContainText("Predicted");
+    await expect(page.getByTestId("soc-legend")).toContainText("Night target");
   });
 
   test("shows a per-tower breakdown for a multi-battery cluster", async ({ page }) => {
