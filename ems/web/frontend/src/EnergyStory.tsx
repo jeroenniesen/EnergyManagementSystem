@@ -294,6 +294,30 @@ export function EnergyStory({
             aria-label={socChartLabel}
             data-testid="story-soc"
           >
+            <defs>
+              <linearGradient
+                id="socGradPast"
+                x1="0"
+                y1={PAD.t}
+                x2="0"
+                y2={H - PAD.b}
+                gradientUnits="userSpaceOnUse"
+              >
+                <stop offset="0%" style={{ stopColor: "var(--accent)", stopOpacity: 0.3 }} />
+                <stop offset="100%" style={{ stopColor: "var(--accent)", stopOpacity: 0 }} />
+              </linearGradient>
+              <linearGradient
+                id="socGradNext"
+                x1="0"
+                y1={PAD.t}
+                x2="0"
+                y2={H - PAD.b}
+                gradientUnits="userSpaceOnUse"
+              >
+                <stop offset="0%" style={{ stopColor: "var(--amber)", stopOpacity: 0.26 }} />
+                <stop offset="100%" style={{ stopColor: "var(--amber)", stopOpacity: 0 }} />
+              </linearGradient>
+            </defs>
             {[0, 50, 100].map((g) => (
               <g key={g}>
                 <line className="soc-grid" x1={PAD.l} y1={y(g)} x2={W - PAD.r} y2={y(g)} />
@@ -337,7 +361,7 @@ export function EnergyStory({
               <line className="soc-now" x1={x(nowMs)} y1={PAD.t} x2={x(nowMs)} y2={H - PAD.b} />
             )}
             {pts.length >= 2 && (
-              <polygon className={isPast ? "soc-area-past" : "soc-area-next"} points={socArea} />
+              <polygon fill={isPast ? "url(#socGradPast)" : "url(#socGradNext)"} points={socArea} />
             )}
             {pts.length >= 2 && (
               <polyline
