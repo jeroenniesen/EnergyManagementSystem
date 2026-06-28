@@ -46,13 +46,17 @@ def load_config(path: str | Path) -> Config:
     # Env overrides let you flip on live sensing for a run without editing config.yaml.
     sources_mode = os.environ.get("EMS_SOURCES") or sources.get("mode", "mock")
     prices_provider = os.environ.get("EMS_PRICES") or prices.get("provider", "mock")
+    # EMS_DB_PATH points the whole app at an alternate SQLite file. Used by the e2e harness to boot
+    # against an isolated throwaway DB so tests never read the operator's persisted settings or live
+    # devices (energy review §VerificationRun / #8). Empty/unset keeps the configured db_path.
+    db_path = os.environ.get("EMS_DB_PATH") or str(history.get("db_path", "ems/data/ems.sqlite"))
 
     return Config(
         timezone=site.get("timezone", "Europe/Amsterdam"),
         dev_mode=dev_mode,
         dry_run=dry_run,
         web_port=int(web.get("port", 8080)),
-        db_path=str(history.get("db_path", "ems/data/ems.sqlite")),
+        db_path=db_path,
         cycle_seconds=float(control.get("cycle_seconds", 300)),
         sources_mode=sources_mode,
         prices_provider=prices_provider,

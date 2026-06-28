@@ -19,8 +19,13 @@ export default defineConfig({
   },
   reporter: [["list"]],
   // Start the FastAPI app (serving the built SPA from ems/web/static/dist) for the test run.
+  // HERMETIC: a fresh throwaway DB (rm'd first) via EMS_DB_PATH + forced mock sources/prices, so the
+  // run never reads the operator's persisted settings, never touches live LAN devices, and AI stays
+  // off (default). Without this, the app booted the operator's live/AI settings and e2e failed.
   webServer: {
-    command: "uv run uvicorn ems.main:app --host 127.0.0.1 --port 8099",
+    command:
+      "rm -f .e2e-data/ems.sqlite* && mkdir -p .e2e-data && " +
+      "uv run uvicorn ems.main:app --host 127.0.0.1 --port 8099",
     cwd: repoRoot,
     url: "http://127.0.0.1:8099/health/live",
     reuseExistingServer: false,
@@ -29,6 +34,9 @@ export default defineConfig({
     env: {
       PATH: `${process.env.HOME}/.local/bin:${process.env.PATH ?? ""}`,
       UV_CACHE_DIR: ".uv-cache",
+      EMS_DB_PATH: ".e2e-data/ems.sqlite",
+      EMS_SOURCES: "mock",
+      EMS_PRICES: "mock",
     },
   },
 });
