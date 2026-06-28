@@ -15,6 +15,7 @@ from ems.lifecycle import Lifecycle
 from ems.sense import SIGNALS, Recorder
 from ems.storage.audit import AuditStore
 from ems.storage.cache import CacheStore
+from ems.storage.control_state import ControlStateStore
 from ems.storage.history import HistoryStore
 from ems.storage.settings import SettingsStore
 from ems.web.api import create_app
@@ -49,7 +50,13 @@ def build_app():
     )
     recorder = Recorder(source, store, freshness, cycle_seconds=cfg.cycle_seconds)
     lifecycle = Lifecycle(dry_run=dry_run)
-    controller = ModeController(controller_driver, lifecycle, dry_run=dry_run)
+    # Persist the controller's safety counters/dwell/last-action across restarts (SPEC §13.3) so a
+    # reboot doesn't reset the daily switch cap or min-dwell, then reload them.
+    control_state_store = ControlStateStore(str(db_path))
+    control_state_store.init()
+    controller = ModeController(controller_driver, lifecycle, dry_run=dry_run,
+                                on_state_change=control_state_store.save)
+    controller.restore_state(control_state_store.load())
     app = create_app(
         source,
         dry_run=dry_run,

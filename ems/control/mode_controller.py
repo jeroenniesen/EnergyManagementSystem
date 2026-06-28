@@ -9,6 +9,7 @@ restarts (runtime_state.py) — a documented follow-up.
 """
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from zoneinfo import ZoneInfo
@@ -16,6 +17,16 @@ from zoneinfo import ZoneInfo
 from ems.domain import BatteryIntent, PhysicalMode
 from ems.lifecycle import Lifecycle
 from ems.sources.battery import BatteryDriver, intent_to_mode
+
+
+def _mode_or_none(value: object) -> PhysicalMode | None:
+    """A PhysicalMode from its stored value, or None for empty/unknown (tolerant of bad blobs)."""
+    if not value:
+        return None
+    try:
+        return PhysicalMode(value)
+    except ValueError:
+        return None
 
 
 @dataclass(frozen=True)
@@ -40,6 +51,7 @@ class ModeController:
         max_switches_per_day: int = 10,
         min_dwell_seconds: float = 600.0,
         tz: ZoneInfo | None = None,
+        on_state_change: Callable[[dict], None] | None = None,
     ) -> None:
         self.driver = driver
         self.lifecycle = lifecycle
@@ -51,6 +63,51 @@ class ModeController:
         self.switches_today = 0
         self.last_switch_at: datetime | None = None
         self._counter_date: date | None = None
+        # Persisted across restarts (SPEC §13.3) so dwell + the daily cap survive a reboot, and so
+        # we can hand the battery back to the mode it was in before EMS took control.
+        self.last_requested_action: PhysicalMode | None = None
+        self.last_confirmed_action: PhysicalMode | None = None
+        self.original_vendor_mode: PhysicalMode | None = None
+        # Called (with state_snapshot()) whenever persistable state changes; the caller persists it.
+        self._on_state_change = on_state_change
+
+    def state_snapshot(self) -> dict:
+        """JSON-serialisable persistable control state (counters, dwell, last actions, vendor mode).
+        Modes are stored as their PhysicalMode value; datetimes/dates as ISO strings."""
+        return {
+            "switches_today": self.switches_today,
+            "last_switch_at": self.last_switch_at.isoformat() if self.last_switch_at else None,
+            "counter_date": self._counter_date.isoformat() if self._counter_date else None,
+            "last_requested_action": self.last_requested_action.value
+            if self.last_requested_action else None,
+            "last_confirmed_action": self.last_confirmed_action.value
+            if self.last_confirmed_action else None,
+            "original_vendor_mode": self.original_vendor_mode.value
+            if self.original_vendor_mode else None,
+        }
+
+    def restore_state(self, state: dict | None) -> None:
+        """Load a state_snapshot() (e.g. at startup) — tolerant of missing/garbage fields."""
+        if not state:
+            return
+        try:
+            self.switches_today = int(state.get("switches_today") or 0)
+            lsa = state.get("last_switch_at")
+            self.last_switch_at = datetime.fromisoformat(lsa) if lsa else None
+            cd = state.get("counter_date")
+            self._counter_date = date.fromisoformat(cd) if cd else None
+            self.last_requested_action = _mode_or_none(state.get("last_requested_action"))
+            self.last_confirmed_action = _mode_or_none(state.get("last_confirmed_action"))
+            self.original_vendor_mode = _mode_or_none(state.get("original_vendor_mode"))
+        except (ValueError, TypeError):
+            pass  # a corrupt blob must not crash startup — start from a clean in-memory state
+
+    def _persist(self) -> None:
+        if self._on_state_change is not None:
+            try:
+                self._on_state_change(self.state_snapshot())
+            except Exception:
+                pass  # persistence is best-effort; never fail a control decision over it
 
     def _desired(self, intent: BatteryIntent) -> PhysicalMode:
         return intent_to_mode(intent, allow_export_discharge=self.allow_export_discharge)
@@ -110,6 +167,13 @@ class ModeController:
             return blocked
 
         self._reset_counter_if_new_day(now)
+        # Capture the mode the battery was in BEFORE EMS first took control (to hand it back later).
+        if self.original_vendor_mode is None:
+            try:
+                self.original_vendor_mode = self.driver.current_mode()
+            except Exception:
+                pass
+        self.last_requested_action = desired
         if not self.driver.apply(desired, target_soc=target_soc, power_w=power_w):
             # Unconfirmed -> revert to the safe vendor mode (SPEC §6.5). Check recovery too.
             recovered = self.driver.apply(PhysicalMode.AUTO)
@@ -119,9 +183,13 @@ class ModeController:
                 if recovered
                 else f"{desired} unconfirmed AND AUTO recovery unconfirmed — ALERT"
             )
+            self.last_confirmed_action = PhysicalMode.AUTO if recovered else None
+            self._persist()
             return ActionDecision(intent, PhysicalMode.AUTO, recovered, outcome, reason)
         self.switches_today += 1
         self.last_switch_at = now
+        self.last_confirmed_action = desired
+        self._persist()
         return ActionDecision(intent, desired, True, "applied", f"set {desired}")
 
     def _reset_counter_if_new_day(self, now: datetime) -> None:
