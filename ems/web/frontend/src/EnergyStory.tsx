@@ -196,22 +196,24 @@ export function EnergyStory({
         </p>
       )}
 
-      {isPast && t && t.soc_min_pct != null && story && (
-        <p
-          className={`story-check ${
-            t.soc_min_pct >= story.reserve_soc_pct - 0.5 ? "story-check-ok" : "story-check-warn"
-          }`}
-          data-testid="story-validation"
-        >
-          {t.soc_min_pct >= story.reserve_soc_pct - 0.5
-            ? `✓ The battery stayed above its ${story.reserve_soc_pct.toFixed(0)}% reserve all day` +
-              (story.target_soc_pct != null && (t.soc_max_pct ?? 0) >= story.target_soc_pct - 1
-                ? ` and reached the ${story.target_soc_pct.toFixed(0)}% night target.`
-                : ".")
-            : `⚠ The battery dipped to ${t.soc_min_pct.toFixed(0)}% — below the ` +
-              `${story.reserve_soc_pct.toFixed(0)}% reserve floor.`}
-        </p>
-      )}
+      {isPast && t && t.soc_min_pct != null && story && (() => {
+        const ok = (t.soc_min_pct as number) >= story.reserve_soc_pct - 0.5;
+        const msg = ok
+          ? `The battery stayed above its ${story.reserve_soc_pct.toFixed(0)}% reserve all day` +
+            (story.target_soc_pct != null && (t.soc_max_pct ?? 0) >= story.target_soc_pct - 1
+              ? ` and reached the ${story.target_soc_pct.toFixed(0)}% night target.`
+              : ".")
+          : `The battery dipped to ${(t.soc_min_pct as number).toFixed(0)}% — below the ` +
+            `${story.reserve_soc_pct.toFixed(0)}% reserve floor.`;
+        return (
+          <p
+            className={`story-check ${ok ? "story-check-ok" : "story-check-warn"}`}
+            data-testid="story-validation"
+          >
+            <Icon name={ok ? "check" : "alert"} /> {msg}
+          </p>
+        );
+      })()}
 
       {isPast && slots.length > 0 && (t1 - t0) / 3_600_000 < 6 && (
         <p className="plan-reason" data-testid="story-thin">

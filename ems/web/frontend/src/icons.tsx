@@ -14,7 +14,9 @@ export type IconName =
   | "euro"
   | "auto"
   | "winter"
-  | "car";
+  | "car"
+  | "check"
+  | "alert";
 
 const PATHS: Record<IconName, React.ReactNode> = {
   // Battery outline (how full it is) — body fills the canvas, terminal nub flush to its right.
@@ -86,6 +88,21 @@ const PATHS: Record<IconName, React.ReactNode> = {
       <path d="M21 3v5h-5" />
       <path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16" />
       <path d="M3 21v-5h5" />
+    </>
+  ),
+  // Circle-check (a plan check that passed).
+  check: (
+    <>
+      <circle cx="12" cy="12" r="9" />
+      <path d="m8.5 12 2.5 2.5 4.5-5" />
+    </>
+  ),
+  // Alert triangle (a plan check that needs attention).
+  alert: (
+    <>
+      <path d="M10.3 4.3 2.6 17.8a1.5 1.5 0 0 0 1.3 2.2h16.2a1.5 1.5 0 0 0 1.3-2.2L13.7 4.3a1.5 1.5 0 0 0-2.6 0Z" />
+      <path d="M12 9v4" />
+      <path d="M12 17h.01" />
     </>
   ),
   // Car (EV charging).
