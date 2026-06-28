@@ -43,6 +43,10 @@ test.describe("EMS operator override", () => {
 
     await page.getByTestId("override-intent").selectOption("grid_charge_to_target");
     await page.getByTestId("override-apply").click();
+    // Charging is a risky action → a confirmation step with the consequence appears first.
+    await expect(page.getByTestId("override-confirm-panel")).toBeVisible();
+    await expect(page.getByTestId("override-consequence")).toContainText("grid");
+    await page.getByTestId("override-confirm").click();
     await expect(page.getByTestId("override-active")).toBeVisible();
     await expect(page.getByTestId("override-active")).toContainText("Charge");
 

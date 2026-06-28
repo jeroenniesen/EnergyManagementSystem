@@ -512,7 +512,9 @@ export function App() {
 
       {view === "dashboard" && chargeNeed && <ChargeTarget n={chargeNeed} />}
 
-      {view === "dashboard" && status && <OverrideCard />}
+      {view === "dashboard" && status && (
+        <OverrideCard dataQuality={alertsData?.data_quality} />
+      )}
 
       {view === "dashboard" && decision && decision.outcome !== "unconfigured" && (
         <section className="decision" data-testid="decision">

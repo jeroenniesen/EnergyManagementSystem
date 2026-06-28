@@ -610,7 +610,7 @@ def create_app(
     def _effective_intent(now: datetime):
         """The intent the controller should act on now + its energy sizing, honouring an active
         manual override and the data-quality fail-safe. Returns
-        (intent | None, reason | None, override_active, target_soc | None, power_w | None).
+        (intent|None, reason|None, override_active, target_soc|None, power_w|None, validation|None).
 
         An active override wins over the plan AND the fail-safe (deliberate, time-boxed operator
         action — the UI shows the data-quality badge). The planner path is gated: unsafe data falls
@@ -626,8 +626,17 @@ def create_app(
         if ov.active(now):
             assert ov.intent is not None and ov.expires_at is not None
             until = ov.expires_at.astimezone().strftime("%H:%M")
-            intent, reason, override_active = ov.intent, (
-                f"manual override: {ov.intent.value} until {until}"), True
+            intent, override_active = ov.intent, True
+            # Gate a RISKY override (anything other than self-consumption) on data quality: EMS
+            # won't force charge/discharge/hold when critical data is unsafe — it can't trust SoC or
+            # reachability. Returning to self-consumption is always allowed (energy review #5).
+            risky = intent is not BatteryIntent.ALLOW_SELF_CONSUMPTION
+            if risky and _data_quality(now) == "unsafe":
+                intent = BatteryIntent.ALLOW_SELF_CONSUMPTION
+                reason = (f"manual override held — sensor data is unsafe, so EMS won't force "
+                          f"{ov.intent.value}; holding self-consumption until {until}")
+            else:
+                reason = f"manual override: {ov.intent.value} until {until}"
         else:
             pp = _current_plan()
             if pp is None:
@@ -654,7 +663,17 @@ def create_app(
         # Final guardrail (over the plan AND a manual override): never discharge into the car.
         intent, reason = _car_guard(now, intent, reason)
         target_soc = power_w = None
-        if not override_active and cur is not None and intent is cur.intent:
+        if override_active:
+            # A manual override is an EXPLICIT operator command, so it carries its own target —
+            # "charge now" means charge toward full (deliberate, not the planner's silent default),
+            # a forced discharge stops at the reserve floor. (Gated overrides held to
+            # self-consumption fall through with no target, which is correct.)
+            if intent is BatteryIntent.GRID_CHARGE_TO_TARGET:
+                target_soc = 100.0
+            elif (intent is BatteryIntent.DISCHARGE_FOR_LOAD and controller is not None
+                  and controller.allow_export_discharge):
+                target_soc = settings_cache["battery.min_reserve_soc"]
+        elif cur is not None and intent is cur.intent:
             if intent is BatteryIntent.GRID_CHARGE_TO_TARGET:
                 target_soc, power_w = cur.target_soc, cur.power_w
             elif (intent is BatteryIntent.DISCHARGE_FOR_LOAD and controller is not None
@@ -846,11 +865,14 @@ def create_app(
         if override_active:
             ov = override_box["ov"]
             until = ov.expires_at.astimezone().strftime("%H:%M") if ov.expires_at else "?"
-            label = ov.intent.value if ov.intent else "?"
-            out.append({
-                "key": "manual_override_active", "severity": "warning",
-                "message": f"Manual override: forcing {label} until {until}",
-            })
+            # If the override was HELD (gated on unsafe data), say so — never claim it's "forcing"
+            # the requested action when the battery is actually held at self-consumption.
+            held = ov.intent is not None and intent is not ov.intent
+            msg = (f"Manual override held until {until} — data unsafe, so EMS is holding "
+                   "self-consumption instead of forcing the requested action"
+                   if held else
+                   f"Manual override: forcing {intent.value if intent else '?'} until {until}")
+            out.append({"key": "manual_override_active", "severity": "warning", "message": msg})
         return {"data_quality": dq, "alerts": out}
 
     @app.get("/api/decision")

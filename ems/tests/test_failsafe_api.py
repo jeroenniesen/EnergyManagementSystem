@@ -49,15 +49,38 @@ def test_complete_data_does_not_trigger_failsafe():
     assert "fail-safe" not in (b["plan_reason"] or "")
 
 
-def test_manual_override_bypasses_failsafe_under_unsafe_data(tmp_path):
-    # An explicit, time-boxed operator override is honoured even with unsafe data (deliberate).
-    app = create_app(
+def _override_app(tmp_path, *, freshness=None):
+    return create_app(
         MockSource(), dry_run=True, dev_mode="mock",
-        price_source=MockPriceSource(AMS), controller=_controller(),
+        price_source=MockPriceSource(AMS), controller=_controller(), freshness=freshness,
         override_store=SettingsStore(str(tmp_path / "ems.sqlite"), table="runtime_state"),
     )
-    with TestClient(app) as c:
+
+
+def test_risky_override_is_HELD_under_unsafe_data(tmp_path):
+    # Energy review #5: EMS must NOT force charge/discharge when critical data is unsafe — it can't
+    # trust SoC/reachability. The override stays "active" but is held to self-consumption.
+    with TestClient(_override_app(tmp_path)) as c:  # no freshness → unsafe
         c.post("/api/override", json={"intent": "grid_charge_to_target", "minutes": 30})
         b = c.get("/api/decision").json()
-    assert b["intent"] == "grid_charge_to_target"
-    assert b["override_active"] is True
+        alerts = c.get("/api/alerts").json()["alerts"]
+    assert b["intent"] == "allow_self_consumption"
+    assert b["override_active"] is True and "held" in b["plan_reason"]
+    # The alert must say HELD — never claim it's actually forcing the requested charge.
+    ov_alert = next(a for a in alerts if a["key"] == "manual_override_active")
+    assert "held" in ov_alert["message"]
+    assert "forcing grid_charge_to_target" not in ov_alert["message"]
+
+
+def test_risky_override_is_honoured_when_data_is_safe(tmp_path):
+    with TestClient(_override_app(tmp_path, freshness=_fresh_tracker())) as c:
+        c.post("/api/override", json={"intent": "grid_charge_to_target", "minutes": 30})
+        b = c.get("/api/decision").json()
+    assert b["intent"] == "grid_charge_to_target" and b["override_active"] is True
+
+
+def test_self_consumption_override_is_always_allowed_even_unsafe(tmp_path):
+    with TestClient(_override_app(tmp_path)) as c:  # unsafe data
+        c.post("/api/override", json={"intent": "allow_self_consumption", "minutes": 30})
+        b = c.get("/api/decision").json()
+    assert b["intent"] == "allow_self_consumption" and b["override_active"] is True

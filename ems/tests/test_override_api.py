@@ -1,14 +1,27 @@
+from datetime import UTC, datetime
 from zoneinfo import ZoneInfo
 
 from fastapi.testclient import TestClient
 
 from ems.control.mode_controller import ModeController
+from ems.freshness import FreshnessTracker
 from ems.lifecycle import Lifecycle
+from ems.sense import SIGNALS
 from ems.sources.battery import MockBatteryDriver
 from ems.sources.mock import MockSource
 from ems.sources.prices import MockPriceSource
 from ems.storage.settings import SettingsStore
 from ems.web.api import create_app
+
+
+def _fresh_tracker():
+    # All signals fresh → data quality not unsafe, so a risky override is honoured (not gated).
+    fr = FreshnessTracker()
+    fr.register(*SIGNALS)
+    now = datetime.now(UTC)
+    for s in SIGNALS:
+        fr.mark(s, now)
+    return fr
 
 
 def _app(tmp_path, **kw):
@@ -71,7 +84,7 @@ def test_active_override_drives_the_decision(tmp_path):
     # The decision must reflect the forced intent, beating whatever the planner would pick.
     controller = ModeController(MockBatteryDriver(), Lifecycle(dry_run=True), dry_run=True)
     app = _app(
-        tmp_path, controller=controller,
+        tmp_path, controller=controller, freshness=_fresh_tracker(),
         price_source=MockPriceSource(ZoneInfo("Europe/Amsterdam")),
     )
     with TestClient(app) as c:
@@ -85,7 +98,7 @@ def test_active_override_drives_the_decision(tmp_path):
 def test_override_works_without_price_source(tmp_path):
     # An override is a control action, not a forecast — it must apply even with no prices/plan.
     controller = ModeController(MockBatteryDriver(), Lifecycle(dry_run=True), dry_run=True)
-    app = _app(tmp_path, controller=controller)  # no price_source
+    app = _app(tmp_path, controller=controller, freshness=_fresh_tracker())  # no price_source
     with TestClient(app) as c:
         c.post("/api/override", json={"intent": "hold_reserve", "minutes": 60})
         d = c.get("/api/decision").json()
