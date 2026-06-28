@@ -737,6 +737,44 @@ body {
 .check-status[data-status="warn"] { color: var(--amber-text); }
 .check-status[data-status="fail"] { color: var(--error); }
 
+/* Chat assistant */
+.chat {
+  margin-top: 24px; background: var(--panel); border: 1px solid var(--line);
+  border-radius: var(--radius); padding: 18px; box-shadow: var(--shadow);
+}
+.chat-intro { color: var(--muted); font-size: 0.85rem; margin: 8px 0 14px; }
+.chat-log {
+  display: flex; flex-direction: column; gap: 12px;
+  min-height: 220px; max-height: 52vh; overflow-y: auto; padding: 4px;
+}
+.chat-msg { display: flex; flex-direction: column; gap: 3px; max-width: 88%; }
+.chat-you { align-self: flex-end; align-items: flex-end; }
+.chat-assistant { align-self: flex-start; }
+.chat-who {
+  font-size: 0.62rem; text-transform: uppercase; letter-spacing: 0.05em; color: var(--muted);
+}
+.chat-text {
+  margin: 0; font-size: 0.92rem; line-height: 1.5; padding: 10px 14px; border-radius: 12px;
+  background: var(--panel-2);
+}
+.chat-you .chat-text { background: color-mix(in srgb, var(--accent) 16%, var(--panel-2)); }
+.chat-typing { color: var(--muted); letter-spacing: 3px; }
+.chat-form { display: flex; gap: 10px; margin-top: 14px; }
+.chat-input {
+  flex: 1; font: inherit; color: var(--text); background: var(--panel-2);
+  border: 1px solid var(--line); border-radius: 10px; padding: 10px 14px;
+}
+.chat-input:focus { outline: none; border-color: var(--accent); }
+.chat-input:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.chat-suggest { display: flex; flex-wrap: wrap; gap: 8px; }
+.chat-chip {
+  font: inherit; font-size: 0.82rem; color: var(--accent-text); background: var(--panel-2);
+  border: 1px solid var(--line); border-radius: 999px; padding: 7px 14px; cursor: pointer;
+  transition: border-color 0.15s ease;
+}
+.chat-chip:hover { border-color: var(--accent); }
+.chat-chip:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
 .loading, .footer { color: var(--muted); margin-top: 24px; font-size: 0.85rem; }
 .footer { border-top: 1px solid var(--line); padding-top: 16px; }
 

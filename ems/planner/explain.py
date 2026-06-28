@@ -226,6 +226,38 @@ class ExternalLlmExplainer:
             return self._fallback.explain(reason)  # empty or invented a number → template
         return Explanation(text=text, source="external_llm", base_reason=reason)
 
+    def chat(self, question: str, context: str) -> Explanation:
+        """Answer a user question grounded ONLY in `context` (a redacted snapshot of the plan +
+        dashboard). Same numeric guard + graceful fallbacks as explain(): an answer that invents a
+        number not in the context is replaced with a safe "I don't have that" message. `source` is
+        external_llm (answered) | guard (rejected) | error (LLM unreachable)."""
+        system = (
+            "You are the assistant inside a home-battery energy manager. Answer the user's "
+            "question using ONLY the CONTEXT below. If the context does not contain the answer, "
+            "say you don't have that information — do not guess. Never state a number that is not "
+            f"in the context. Be concise (2-3 sentences). Answer in {self._language}."
+        )
+        user = f"CONTEXT:\n{context}\n\nQUESTION: {question}"
+        try:
+            resp = self._chat_post(
+                [{"role": "system", "content": system}, {"role": "user", "content": user}],
+                {"model": self._model, "max_tokens": self._max_tokens,
+                 "temperature": self._temperature},
+            )
+            text = (resp["choices"][0]["message"]["content"] or "").strip()
+        except Exception:
+            return Explanation(
+                "Sorry — the assistant isn't reachable right now.", "error", question
+            )
+        if not text:
+            return Explanation("Sorry — I couldn't produce an answer.", "error", question)
+        if _has_ungrounded_number(text, context + " " + question):
+            return Explanation(
+                "I can only answer from the current plan and dashboard, and I don't have that "
+                "exact figure.", "guard", question,
+            )
+        return Explanation(text, "external_llm", question)
+
 
 def make_openai_chat_post(base_url: str, api_key: str, *, timeout: float = 8.0) -> ChatPost:
     """Build a `ChatPost` transport for any OpenAI-compatible chat endpoint (e.g. MiniMax). httpx is

@@ -451,6 +451,63 @@ def create_app(
         intent, reason = _car_guard(now, intent, reason)
         return intent, reason, override_active
 
+    def _chat_context() -> str:
+        """A compact, REDACTED snapshot for the chat to ground on — only non-identifying facts (the
+        plan, prices, power/percentage figures), NEVER location, IPs, raw history, or tokens. Every
+        block is defensive: building the context must never raise."""
+        now = datetime.now(UTC)
+        lines = [f"Now (UTC): {now:%Y-%m-%d %H:%M}", f"Strategy: {_active_strategy(now)}"]
+        try:
+            lines.append(f"Battery level now: {_current_soc(now):.0f}%")
+        except Exception:
+            pass
+        try:
+            intent, reason, override_active = _effective_intent(now)
+            if intent is not None:
+                lines.append(
+                    f"Current decision: {intent} — {reason}"
+                    + (" (manual override active)" if override_active else "")
+                )
+        except Exception:
+            pass
+        pp = _current_plan()
+        if pp is not None:
+            _now, prices, plan = pp
+            try:
+                fc = solar_forecast.slots() if solar_forecast is not None else None
+                lines.append(f"Plan: {build_plan_detail(_now, prices, plan, fc)['summary']}")
+            except Exception:
+                pass
+            try:
+                by = {p.start: p.eur_per_kwh for p in prices}
+                lines.append(
+                    f"Estimated savings today vs no smart control: "
+                    f"€{estimate_daily_savings_eur(plan, by):.2f}"
+                )
+            except Exception:
+                pass
+            future = [p for p in prices if p.start >= _now]
+            if future:
+                lines.append(
+                    f"Cheapest price ahead €{min(p.eur_per_kwh for p in future):.2f}/kWh, "
+                    f"priciest €{max(p.eur_per_kwh for p in future):.2f}/kWh"
+                )
+        try:
+            need = compute_charge_need(
+                soc_pct=_current_soc(now), usable_kwh=settings_cache["battery.usable_kwh"],
+                min_reserve_soc=settings_cache["battery.min_reserve_soc"],
+                night_reserve_kwh=settings_cache["battery.night_reserve_kwh"],
+                overnight_load_kwh=settings_cache["battery.overnight_load_kwh"],
+                round_trip_efficiency=settings_cache["planner.round_trip_efficiency"],
+            )
+            lines.append(
+                f"Tonight's target level: {need.target_soc_pct:.0f}%; "
+                f"reserve floor: {settings_cache['battery.min_reserve_soc']:.0f}%"
+            )
+        except Exception:
+            pass
+        return "\n".join(lines)
+
     def _control_tick(now: datetime) -> None:
         """Operational mode ONLY (never called in dry-run): advance the ownership lifecycle and,
         once CONTROLLING, apply the current intent — the single battery write per cycle. Every
@@ -1063,6 +1120,34 @@ def create_app(
             "active": _explainer_active(),
             "language": settings_cache.get("explainer.language", "English"),
         }
+
+    @app.post("/api/chat")
+    async def chat_endpoint(request: Request) -> JSONResponse:
+        """Ask the assistant about the current decisions/dashboard. Grounded ONLY on a redacted
+        snapshot (_chat_context); advisory, never touches control. Off → a friendly nudge to enable
+        it. Any failure degrades to a safe message, never a 500."""
+        if not _authorized(request):
+            return _auth_error()
+        try:
+            data = await request.json()
+        except Exception:
+            data = {}
+        question = (data.get("question") or "").strip()[:500] if isinstance(data, dict) else ""
+        if not question:
+            return JSONResponse({"detail": "empty question"}, status_code=400)
+        if not _explainer_active():
+            return JSONResponse({
+                "answer": "AI chat is off. Turn on AI explanations in Settings to use it.",
+                "source": "disabled",
+            })
+        try:
+            out = await asyncio.to_thread(explainer_box["ex"].chat, question, _chat_context())
+            return JSONResponse({"answer": out.text, "source": out.source})
+        except Exception:
+            _log.exception("chat failed")
+            return JSONResponse(
+                {"answer": "Sorry — the assistant isn't available right now.", "source": "error"}
+            )
 
     # Unknown /api/* paths must return a JSON 404 — NOT fall through to the SPA catch-all
     # below (which would serve index.html with a 200, silently breaking API clients).

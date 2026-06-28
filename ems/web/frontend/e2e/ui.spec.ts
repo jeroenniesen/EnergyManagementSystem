@@ -287,6 +287,35 @@ test.describe("EMS dashboard", () => {
     await expect(page.getByTestId("status-grid")).toHaveCount(0);
   });
 
+  test("the Chat tab shows the assistant, off until AI is enabled", async ({ page }) => {
+    await page.goto("/");
+    await page.getByTestId("nav-chat").click();
+    await expect(page.getByTestId("chat")).toBeVisible();
+    // The mock backend has AI off by default → the chat shows the enable-in-Settings hint.
+    await expect(page.getByTestId("chat-disabled")).toBeVisible();
+  });
+
+  test("the chat answers a question when AI is enabled (mocked)", async ({ page }) => {
+    await page.route("**/api/explainer", (route) =>
+      route.fulfill({
+        status: 200, contentType: "application/json",
+        body: JSON.stringify({ mode: "external_llm", active: true, language: "English" }),
+      }),
+    );
+    await page.route("**/api/chat", (route) =>
+      route.fulfill({
+        status: 200, contentType: "application/json",
+        body: JSON.stringify({ answer: "Your battery is full and running the house.", source: "external_llm" }),
+      }),
+    );
+    await page.goto("/");
+    await page.getByTestId("nav-chat").click();
+    await expect(page.getByTestId("chat-input")).toBeVisible();
+    await page.getByTestId("chat-input").fill("why isn't it charging?");
+    await page.getByTestId("chat-send").click();
+    await expect(page.getByTestId("chat-log")).toContainText("running the house");
+  });
+
   test("shows the error banner when the status API returns 500", async ({ page }) => {
     await page.route("**/api/status", (route) =>
       route.fulfill({ status: 500, contentType: "application/json", body: '{"detail":"boom"}' }),

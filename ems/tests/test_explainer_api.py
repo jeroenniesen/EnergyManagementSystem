@@ -88,3 +88,52 @@ def test_external_llm_rephrases_and_caches(tmp_path, monkeypatch):
         assert d["plan_reason"]  # the deterministic reason is still present alongside
         c.get("/api/decision").json()  # second poll, same reason
         assert calls["n"] == 1  # cached — polling never re-hits the LLM
+
+
+# ---- chat -------------------------------------------------------------------------------------
+
+def _enable_ai(monkeypatch, capture=None, answer="Your home is running on the battery now."):
+    def fake_factory(base_url, api_key, *, timeout=8.0):
+        def chat_post(messages, params):
+            if capture is not None:
+                capture["msgs"] = messages
+            return {"choices": [{"message": {"content": answer}}]}
+        return chat_post
+    monkeypatch.setattr(api, "make_openai_chat_post", fake_factory)
+
+
+def test_chat_off_by_default(tmp_path):
+    with TestClient(_app(tmp_path)) as c:
+        b = c.post("/api/chat", json={"question": "why?"}).json()
+        assert b["source"] == "disabled" and "Settings" in b["answer"]
+
+
+def test_chat_rejects_empty_question(tmp_path):
+    with TestClient(_app(tmp_path)) as c:
+        assert c.post("/api/chat", json={"question": "   "}).status_code == 400
+
+
+def test_chat_answers_grounded_when_enabled(tmp_path, monkeypatch):
+    _enable_ai(monkeypatch)
+    with TestClient(_app(tmp_path)) as c:
+        c.post("/api/settings", json={
+            "strategy.mode": "winter", "explainer.mode": "external_llm", "explainer.api_key": "k",
+        })
+        b = c.post("/api/chat", json={"question": "Why isn't the battery charging?"}).json()
+        assert b["source"] == "external_llm"
+        assert "battery" in b["answer"].lower()
+
+
+def test_chat_context_is_redacted(tmp_path, monkeypatch):
+    capture: dict = {}
+    _enable_ai(monkeypatch, capture=capture, answer="All good.")
+    with TestClient(_app(tmp_path)) as c:
+        c.post("/api/settings", json={
+            "strategy.mode": "winter", "explainer.mode": "external_llm",
+            "explainer.api_key": "secret-key-123",
+        })
+        c.post("/api/chat", json={"question": "what's my status?"})
+    blob = " ".join(m["content"] for m in capture["msgs"])
+    assert "winter" in blob  # real plan facts ARE grounded on...
+    for forbidden in ("192.168", "secret-key-123", "52.13", "5.29"):  # ...but nothing identifying
+        assert forbidden not in blob
