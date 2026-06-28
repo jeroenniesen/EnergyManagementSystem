@@ -9,7 +9,8 @@ AMS = ZoneInfo("Europe/Amsterdam")
 
 
 def _row(iso: str, load: float) -> dict:
-    return {"ts": iso, "house_load_w": load}
+    # Default profile field is non_ev_load_w (battery offsets the house, not the EV — SPEC §4.5).
+    return {"ts": iso, "non_ev_load_w": load}
 
 
 def test_hourly_average_is_used_for_a_well_sampled_hour():
@@ -61,6 +62,22 @@ def test_malformed_rows_are_ignored():
     prof = build_load_profile(rows, AMS, fallback_w=0.0, min_samples=3)
     # Only the three valid 12:00-local samples count.
     assert prof.expected_w(datetime(2026, 6, 28, 10, 0, tzinfo=UTC)) == 400.0
+
+
+def test_default_field_is_non_ev_load_so_ev_charging_is_excluded():
+    # Rows carry a huge house load (EV charging) AND a modest non-EV load. The profile must learn
+    # the non-EV baseline, not the 11 kW car charge.
+    rows = [{"ts": "2026-06-20T18:00:00+00:00", "house_load_w": 11000.0,
+             "non_ev_load_w": 900.0} for _ in range(3)]
+    prof = build_load_profile(rows, AMS, fallback_w=0.0, min_samples=3)
+    assert prof.expected_w(datetime(2026, 6, 28, 18, 0, tzinfo=UTC)) == 900.0
+
+
+def test_field_param_can_select_house_load():
+    rows = [{"ts": "2026-06-20T18:00:00+00:00", "house_load_w": 11000.0,
+             "non_ev_load_w": 900.0} for _ in range(3)]
+    prof = build_load_profile(rows, AMS, fallback_w=0.0, min_samples=3, field="house_load_w")
+    assert prof.expected_w(datetime(2026, 6, 28, 18, 0, tzinfo=UTC)) == 11000.0
 
 
 def test_naive_timestamps_are_treated_as_utc():

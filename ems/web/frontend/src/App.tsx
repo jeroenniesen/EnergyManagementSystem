@@ -3,6 +3,7 @@ import { useEffect, useState } from "react";
 import { OverrideCard } from "./Override";
 import { PlanDetail, type PlanDetailData } from "./PlanDetail";
 import { Settings } from "./Settings";
+import { type Battery, type EnergyForecast, SocForecast } from "./SocForecast";
 import { SystemView } from "./System";
 import { applyTheme, readStoredTheme, storeTheme, type Theme } from "./theme";
 
@@ -43,16 +44,6 @@ type ChargeNeed = {
 
 type AlertItem = { key: string; severity: string; message: string };
 type AlertsResp = { data_quality: string; alerts: AlertItem[] };
-
-type Battery = {
-  current_mode: string | null;
-  capabilities: {
-    services: string[];
-    p1_paired: boolean;
-    max_charge_w: number;
-    max_discharge_w: number;
-  } | null;
-};
 
 const POLL_MS = 5000;
 
@@ -197,6 +188,7 @@ export function App() {
   const [prices, setPrices] = useState<Prices | null>(null);
   const [forecast, setForecast] = useState<Forecast | null>(null);
   const [planDetail, setPlanDetail] = useState<PlanDetailData | null>(null);
+  const [energy, setEnergy] = useState<EnergyForecast | null>(null);
   const [battery, setBattery] = useState<Battery | null>(null);
   const [decision, setDecision] = useState<Decision | null>(null);
   const [alertsData, setAlertsData] = useState<AlertsResp | null>(null);
@@ -238,13 +230,14 @@ export function App() {
     }
     async function poll() {
       try {
-        const [s, ser, fr, pr, fc, pl, bat, dec, al, sv, cn] = await Promise.all([
+        const [s, ser, fr, pr, fc, pl, ef, bat, dec, al, sv, cn] = await Promise.all([
           getJson("/api/status"),
           getJson("/api/series?limit=50"),
           getJson("/api/freshness"),
           getJson("/api/prices"),
           getJson("/api/forecast"),
           getJson("/api/plan-detail"),
+          getJson("/api/energy-forecast"),
           getJson("/api/battery"),
           getJson("/api/decision"),
           getJson("/api/alerts"),
@@ -258,6 +251,7 @@ export function App() {
         setPrices(pr);
         setForecast(fc);
         setPlanDetail(pl);
+        setEnergy(ef);
         setBattery(bat);
         setDecision(dec);
         setAlertsData(al);
@@ -374,6 +368,8 @@ export function App() {
           )}
         </section>
       )}
+
+      {view === "dashboard" && energy && <SocForecast forecast={energy} battery={battery} />}
 
       {view === "dashboard" && chargeNeed && <ChargeTarget n={chargeNeed} />}
 

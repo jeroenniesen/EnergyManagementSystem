@@ -9,6 +9,7 @@ test.describe("EMS dashboard", () => {
       "run-mode-badge",
       "data-quality",
       "status-grid",
+      "soc-forecast",
       "decision",
       "plan-detail",
       "prices",
@@ -76,6 +77,48 @@ test.describe("EMS dashboard", () => {
     // The legend explains the action colours.
     await expect(page.getByTestId("plan-legend")).toContainText("Charge");
     await expect(page.getByTestId("plan-legend")).toContainText("Discharge");
+  });
+
+  test("shows the SoC history+forecast chart with a narrative and legend", async ({ page }) => {
+    await page.goto("/");
+    const soc = page.getByTestId("soc-forecast");
+    await expect(soc).toBeVisible();
+    await expect(page.getByTestId("soc-svg")).toBeVisible();
+    await expect(page.getByTestId("soc-predicted")).toBeVisible(); // the dashed prediction line
+    // A horizontal <line> has a zero-height box, so assert it rendered rather than "visible".
+    await expect(page.getByTestId("soc-reserve-line")).toBeAttached();
+    await expect(page.getByTestId("soc-narrative")).not.toHaveText("");
+    await expect(page.getByTestId("soc-legend")).toContainText("Recorded");
+    await expect(page.getByTestId("soc-legend")).toContainText("Predicted");
+  });
+
+  test("shows a per-tower breakdown for a multi-battery cluster", async ({ page }) => {
+    // Live-only data — route-mock /api/battery to a two-tower cluster.
+    await page.route("**/api/battery", (route) =>
+      route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          current_mode: null,
+          capabilities: null,
+          aggregate: {
+            soc_pct: 49.5, power_w: -490, capacity_kwh: 10.98,
+            online_towers: 2, total_towers: 2,
+          },
+          towers: [
+            { ip: "192.168.50.53", role: "master", soc_pct: 50, power_w: -250,
+              capacity_kwh: 5.38, online: true },
+            { ip: "192.168.50.22", role: "slave", soc_pct: 49, power_w: -240,
+              capacity_kwh: 5.6, online: true },
+          ],
+        }),
+      }),
+    );
+    await page.goto("/");
+    await expect(page.getByTestId("tower-chip-aggregate")).toContainText("cluster avg");
+    await expect(page.getByTestId("tower-chip")).toHaveCount(2);
+    await expect(page.getByTestId("tower-chips")).toContainText("master");
+    await expect(page.getByTestId("tower-chips")).toContainText("slave");
   });
 
   test("shows the solar forecast with today's kWh", async ({ page }) => {

@@ -29,9 +29,14 @@ class LoadProfile:
 
 
 def build_load_profile(
-    rows: list[dict], tz: ZoneInfo, *, fallback_w: float, min_samples: int = 3
+    rows: list[dict], tz: ZoneInfo, *, fallback_w: float, min_samples: int = 3,
+    field: str = "non_ev_load_w",
 ) -> LoadProfile:
-    """Learn an hourly load profile from history rows ({"ts": ISO, "house_load_w": float}).
+    """Learn an hourly load profile from history rows ({"ts": ISO, <field>: float}).
+
+    `field` defaults to `non_ev_load_w` — the house load EXCLUDING EV charging (SPEC §4.5): the
+    battery offsets the baseline house, not the intermittent ~10 kW car charge, so the projection
+    must not assume the Tesla is plugged in all day.
 
     Rows that don't parse or lack a load are skipped. An hour with fewer than `min_samples` valid
     readings falls back to the overall mean (still data-driven); `fallback_w` is used when there
@@ -40,7 +45,7 @@ def build_load_profile(
     buckets: dict[int, list[float]] = defaultdict(list)
     all_loads: list[float] = []
     for row in rows:
-        ts, load = row.get("ts"), row.get("house_load_w")
+        ts, load = row.get("ts"), row.get(field)
         if not isinstance(ts, str) or load is None:
             continue
         try:

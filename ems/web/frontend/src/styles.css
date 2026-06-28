@@ -164,6 +164,49 @@ body {
 .legend { display: flex; flex-wrap: wrap; gap: 12px; margin-top: 14px; }
 .legend-item { display: inline-flex; align-items: center; gap: 6px; font-size: 0.75rem; color: var(--muted); }
 .legend-swatch { width: 12px; height: 12px; border-radius: 3px; display: inline-block; }
+.legend-line { width: 18px; height: 0; border-top-width: 2px; border-top-style: solid; display: inline-block; }
+.legend-actual { border-top-color: var(--accent); }
+.legend-predicted { border-top-color: var(--amber); border-top-style: dashed; }
+.legend-reserve { border-top-color: var(--muted); border-top-style: dotted; }
+
+/* Battery SoC — history + 24h forecast */
+.socchart {
+  margin-top: 24px;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  padding: 18px;
+}
+.tower-chips { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 12px; }
+.tower-chip {
+  display: inline-flex; flex-direction: column; gap: 1px;
+  background: var(--panel-2); border: 1px solid var(--line); border-radius: 10px;
+  padding: 6px 12px; min-width: 92px;
+}
+.tower-chip-agg { border-color: var(--accent); }
+.tower-chip-off { opacity: 0.55; }
+.tower-chip-soc { font-size: 1.15rem; font-weight: 600; font-variant-numeric: tabular-nums; }
+.tower-chip-meta { font-size: 0.68rem; color: var(--muted); }
+/* viewBox 1000x240; height:auto keeps the aspect ratio (xMidYMid meet) so axis text never
+   stretches horizontally on narrow screens (WCAG readability). */
+.soc-svg { width: 100%; height: auto; display: block; }
+.soc-grid { stroke: var(--line); stroke-width: 1; }
+.soc-axis { fill: var(--muted); font-size: 13px; }
+.soc-xtick { text-anchor: middle; }
+.soc-reserve { stroke: var(--muted); stroke-width: 1.5; stroke-dasharray: 2 4; }
+.soc-now { stroke: var(--muted); stroke-width: 1; opacity: 0.6; }
+.soc-actual { fill: none; stroke: var(--accent); stroke-width: 2.5; vector-effect: non-scaling-stroke; }
+.soc-predicted {
+  fill: none; stroke: var(--amber); stroke-width: 2.5; stroke-dasharray: 6 4;
+  vector-effect: non-scaling-stroke;
+}
+.soc-narrative {
+  margin: 12px 0 8px; font-size: 0.95rem; color: var(--text);
+  background: var(--panel-2); border-left: 3px solid var(--amber);
+  border-radius: 6px; padding: 8px 12px;
+}
+.soc-stats { display: flex; flex-wrap: wrap; gap: 16px; font-size: 0.82rem; color: var(--muted); }
+.soc-stats b { color: var(--text); font-variant-numeric: tabular-nums; }
 
 .chart-legend { display: flex; flex-wrap: wrap; gap: 12px; margin-top: 8px; font-size: 0.72rem; color: var(--muted); }
 
