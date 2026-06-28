@@ -29,16 +29,35 @@ test.describe("EMS settings", () => {
     expect(Object.keys(b.values)).toContain("planner.charge_slots");
   });
 
-  test("Settings tab renders a grouped, schema-driven form", async ({ page }) => {
+  test("Settings tab renders grouped basic settings; advanced is hidden by default", async ({
+    page,
+  }) => {
     await page.goto("/");
     await page.getByTestId("nav-settings").click();
     const s = page.getByTestId("settings");
     await expect(s).toBeVisible();
-    await expect(s).toContainText("Planner economics");
-    await expect(s).toContainText("Control & safety");
+    // Basic, device-oriented groups are shown by default.
+    await expect(s).toContainText("Connection");
+    await expect(s).toContainText("Energy meters (HomeWizard)");
+    await expect(page.getByTestId("field-meters.p1_ip")).toBeVisible();
     await expect(page.getByTestId("field-ui.theme")).toBeVisible();
+    // Advanced planner economics are hidden until the toggle is enabled.
+    await expect(page.getByTestId("field-planner.round_trip_efficiency")).toHaveCount(0);
+    await page.getByTestId("advanced-toggle").check();
+    await expect(page.getByTestId("field-planner.round_trip_efficiency")).toBeVisible();
     // The dashboard panels must be hidden while the Settings view is active.
     await expect(page.getByTestId("status-grid")).toHaveCount(0);
+  });
+
+  test("device IPs and the Tibber token are configurable (grouped by type)", async ({ page }) => {
+    await page.goto("/");
+    await page.getByTestId("nav-settings").click();
+    // Devices are no longer hard-wired — they're editable fields grouped by type.
+    await expect(page.getByTestId("field-meters.p1_ip")).toBeVisible();
+    await expect(page.getByTestId("field-battery.indevolt_ip")).toBeVisible();
+    await expect(page.getByTestId("field-prices.tibber_token")).toBeVisible();
+    // Connection fields are flagged as needing a restart.
+    await expect(page.getByTestId("field-meters.p1_ip")).toContainText("restart");
   });
 
   test("editing enables Save and shows a saved confirmation", async ({ page }) => {

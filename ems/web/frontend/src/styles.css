@@ -236,7 +236,25 @@ body {
   gap: 16px;
 }
 .field { display: flex; flex-direction: column; gap: 6px; }
-.field-label { font-size: 0.85rem; font-weight: 500; }
+.field-label { font-size: 0.85rem; font-weight: 500; display: flex; align-items: center; gap: 6px; }
+.field-badge {
+  font-size: 0.6rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.05em;
+  color: var(--amber); background: rgba(224, 162, 58, 0.16);
+  padding: 1px 6px; border-radius: 999px;
+}
+.field input[type="text"], .field input[type="password"] {
+  font: inherit; color: var(--text); background: var(--panel-2);
+  border: 1px solid var(--line); border-radius: 8px; padding: 7px 10px; width: 100%;
+}
+.field input[type="text"]:focus, .field input[type="password"]:focus {
+  outline: none; border-color: var(--accent);
+}
+.settings-top { display: flex; justify-content: flex-end; margin-top: 8px; }
+.adv-toggle {
+  display: inline-flex; align-items: center; gap: 8px;
+  font-size: 0.82rem; color: var(--muted); cursor: pointer;
+}
+.adv-toggle input { width: 16px; height: 16px; accent-color: var(--accent); }
 .field-unit { color: var(--muted); font-weight: 400; }
 .field input[type="number"], .field select {
   font: inherit;

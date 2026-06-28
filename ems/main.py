@@ -8,14 +8,11 @@ from zoneinfo import ZoneInfo
 import uvicorn
 
 from ems.config import load_config
+from ems.connection import build_wiring, effective_connection
 from ems.control.mode_controller import ModeController
 from ems.freshness import FreshnessTracker
 from ems.lifecycle import Lifecycle
 from ems.sense import SIGNALS, Recorder
-from ems.sources.battery import MockBatteryDriver
-from ems.sources.forecast import MockSolarForecastSource
-from ems.sources.mock import MockSource
-from ems.sources.prices import MockPriceSource
 from ems.storage.history import HistoryStore
 from ems.storage.settings import SettingsStore
 from ems.web.api import create_app
@@ -23,53 +20,6 @@ from ems.web.api import create_app
 _REPO_ROOT = Path(__file__).parent.parent
 # Built SPA (ems/web/static/dist) — present after `npm run build`; absent in pure-API dev.
 _STATIC_DIR = Path(__file__).parent / "web" / "static" / "dist"
-
-
-def _build_sources(cfg, tz):
-    """Return (source, price_source, battery_endpoint, controller_driver, dev_mode, dry_run).
-
-    Live mode reads the HomeWizard meters + (optionally) the Indevolt battery. The control "hands"
-    are the real IndevoltBatteryDriver, but it is wired UNARMED and with NO write transport, and
-    dry_run is forced on — so the battery is sensed, never commanded (triple-gated).
-    """
-    if cfg.sources_mode == "live":
-        from ems.sources.indevolt import IndevoltReadClient
-        from ems.sources.indevolt_driver import IndevoltBatteryDriver
-        from ems.sources.live import HomeWizardMeter, LiveSource
-
-        # The Indevolt local API reads keyless (no device key needed).
-        battery_reader = (
-            IndevoltReadClient(cfg.indevolt_ip, port=cfg.indevolt_port)
-            if cfg.indevolt_ip
-            else None
-        )
-        source = LiveSource(
-            p1=HomeWizardMeter(cfg.p1_ip),
-            solar=HomeWizardMeter(cfg.solar_ip),
-            car=HomeWizardMeter(cfg.car_ip),
-            battery=battery_reader,
-        )
-        # The real hands — armed=False, no rpc_post (refusing stub) => cannot write. dry_run is
-        # forced on so decide() never calls apply(). battery_endpoint stays None (the battery
-        # sense flows via LiveSource -> /api/status + freshness).
-        controller_driver = (
-            IndevoltBatteryDriver(cfg.indevolt_ip, port=cfg.indevolt_port, armed=False)
-            if cfg.indevolt_ip
-            else MockBatteryDriver()
-        )
-        dev_mode, dry_run, battery_endpoint = "live", True, None
-    else:
-        source = MockSource()
-        controller_driver = MockBatteryDriver()
-        dev_mode, dry_run, battery_endpoint = cfg.dev_mode, cfg.dry_run, MockBatteryDriver()
-
-    if cfg.prices_provider == "tibber":
-        from ems.sources.tibber import TibberPriceSource
-
-        price_source = TibberPriceSource(os.environ.get("TIBBER_TOKEN", ""), tz=tz)
-    else:
-        price_source = MockPriceSource(tz)
-    return source, price_source, battery_endpoint, controller_driver, dev_mode, dry_run
 
 
 def build_app():
@@ -85,11 +35,15 @@ def build_app():
     freshness = FreshnessTracker()
     freshness.register(*SIGNALS)
     tz = ZoneInfo(cfg.timezone)
-    source, price_source, battery_endpoint, controller_driver, dev_mode, dry_run = _build_sources(
-        cfg, tz
+    # Connection (which devices/services) comes from the settings store (UI), seeded from
+    # config.yaml + env on first boot. Built read-only; the battery driver is unarmed and dry_run
+    # is forced on — no live write path exists (arming is a separate step, Loop 5).
+    eff = effective_connection(str(db_path), cfg)
+    source, price_source, solar_forecast, battery_endpoint, controller_driver, dev_mode = (
+        build_wiring(eff, tz)
     )
+    dry_run = True
     recorder = Recorder(source, store, freshness, cycle_seconds=cfg.cycle_seconds)
-    solar_forecast = MockSolarForecastSource(tz)  # forecast stays mock (no Solcast key / lat-lon)
     lifecycle = Lifecycle(dry_run=dry_run)
     # The controller's driver is the mock (dev) or the real-but-UNARMED Indevolt driver (live).
     # dry_run is forced on for live, so decide() never calls apply(); even if it did, an unarmed

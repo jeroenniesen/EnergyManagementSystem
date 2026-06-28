@@ -52,6 +52,21 @@ def test_post_invalid_settings_returns_422_and_does_not_persist(tmp_path):
         assert c.get("/api/settings").json()["values"]["planner.charge_slots"] == 12
 
 
+def test_secret_token_is_masked_in_get_and_post_responses(tmp_path):
+    with TestClient(_app(tmp_path)) as c:
+        post = c.post("/api/settings", json={"prices.tibber_token": "super-secret-token"})
+        assert post.status_code == 200
+        # The POST response must NOT echo the stored token back.
+        assert post.json()["values"]["prices.tibber_token"] == ""
+        assert post.json()["values"]["prices.tibber_token.__set"] is True
+        got = c.get("/api/settings").json()["values"]
+        assert got["prices.tibber_token"] == ""  # GET also masks
+        assert got["prices.tibber_token.__set"] is True
+        # A blank token submission keeps the stored one (no clobber).
+        c.post("/api/settings", json={"prices.tibber_token": ""})
+        assert c.get("/api/settings").json()["values"]["prices.tibber_token.__set"] is True
+
+
 def test_post_settings_without_store_returns_503():
     app = create_app(MockSource(), dry_run=True, dev_mode="mock")  # no settings_store
     r = TestClient(app).post("/api/settings", json={"ui.theme": "dark"})

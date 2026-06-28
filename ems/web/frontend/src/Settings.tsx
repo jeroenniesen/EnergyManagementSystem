@@ -5,7 +5,7 @@ import { authHeaders, getToken, setToken } from "./auth";
 export type SettingField = {
   key: string;
   label: string;
-  type: "number" | "int" | "bool" | "enum";
+  type: "number" | "int" | "bool" | "enum" | "text" | "secret";
   default: number | boolean | string;
   group: string;
   help: string;
@@ -14,22 +14,32 @@ export type SettingField = {
   options: string[] | null;
   step: number | null;
   unit: string;
+  advanced: boolean;
+  applies: "live" | "restart";
 };
 type SettingsResp = { schema: SettingField[]; values: Record<string, number | boolean | string> };
 type Values = Record<string, number | boolean | string>;
 
+// Group display order + titles. Connection-type groups first (what most people need), tuning last.
+const GROUP_ORDER = ["connection", "meters", "battery", "prices", "site", "control", "planner", "ui"];
 const GROUP_TITLE: Record<string, string> = {
-  planner: "Planner economics",
+  connection: "Connection",
+  meters: "Energy meters (HomeWizard)",
+  battery: "Battery (Indevolt)",
+  prices: "Electricity prices (Tibber)",
+  site: "Solar & location",
   control: "Control & safety",
-  battery: "Battery & reserve",
-  site: "Solar array",
+  planner: "Planner economics",
   ui: "Appearance",
 };
 const GROUP_HINT: Record<string, string> = {
-  planner: "Tune the arbitrage maths — the plan recomputes from these immediately.",
+  connection: "Read your real devices, or run the built-in simulator.",
+  meters: "Local IP addresses of your HomeWizard meters.",
+  battery: "Battery address, capacity and reserves.",
+  prices: "Your Tibber token for live day-ahead prices.",
+  site: "Location & array — these drive the solar forecast.",
   control: "Safety limits applied to the battery mode controller.",
-  battery: "Capacity and reserves — drive tonight's charge target.",
-  site: "Your PV array — the solar forecast recomputes from these immediately.",
+  planner: "The arbitrage maths — the plan recomputes from these immediately.",
   ui: "How the dashboard looks.",
 };
 
@@ -44,9 +54,7 @@ function NumberInput({
   disabled: boolean;
   onChange: (v: number) => void;
 }) {
-  // Hold the raw text locally so the user can transiently clear/retype a number without it
-  // snapping back to 0 mid-edit; only commit a coerced value on blur. Re-sync if the parent
-  // resets the value (Save/Reset).
+  // Hold the raw text locally so the user can transiently clear/retype without it snapping to 0.
   const [raw, setRaw] = useState(String(value));
   useEffect(() => {
     setRaw(String(value));
@@ -76,49 +84,47 @@ function Field({
   value,
   error,
   disabled,
+  secretSet,
   onChange,
 }: {
   field: SettingField;
   value: number | boolean | string;
   error?: string;
   disabled: boolean;
+  secretSet?: boolean;
   onChange: (v: number | boolean | string) => void;
 }) {
   const id = `set-${field.key}`;
   let control;
   if (field.type === "bool") {
     control = (
-      <input
-        id={id}
-        type="checkbox"
-        checked={Boolean(value)}
-        disabled={disabled}
-        onChange={(e) => onChange(e.target.checked)}
-      />
+      <input id={id} type="checkbox" checked={Boolean(value)} disabled={disabled}
+        onChange={(e) => onChange(e.target.checked)} />
     );
   } else if (field.type === "enum") {
     control = (
-      <select
-        id={id}
-        value={String(value)}
-        disabled={disabled}
-        onChange={(e) => onChange(e.target.value)}
-      >
+      <select id={id} value={String(value)} disabled={disabled}
+        onChange={(e) => onChange(e.target.value)}>
         {(field.options ?? []).map((o) => (
-          <option key={o} value={o}>
-            {o}
-          </option>
+          <option key={o} value={o}>{o}</option>
         ))}
       </select>
     );
+  } else if (field.type === "text" || field.type === "secret") {
+    control = (
+      <input
+        id={id}
+        type={field.type === "secret" ? "password" : "text"}
+        value={String(value)}
+        disabled={disabled}
+        placeholder={field.type === "secret" && secretSet ? "•••• set (leave blank to keep)" : ""}
+        autoComplete={field.type === "secret" ? "new-password" : "off"}
+        onChange={(e) => onChange(e.target.value)}
+      />
+    );
   } else {
     control = (
-      <NumberInput
-        field={field}
-        value={Number(value)}
-        disabled={disabled}
-        onChange={onChange}
-      />
+      <NumberInput field={field} value={Number(value)} disabled={disabled} onChange={onChange} />
     );
   }
   return (
@@ -126,13 +132,12 @@ function Field({
       <label htmlFor={id} className="field-label">
         {field.label}
         {field.unit && <span className="field-unit"> ({field.unit})</span>}
+        {field.applies === "restart" && <span className="field-badge">restart</span>}
       </label>
       {control}
       {field.help && <p className="field-help">{field.help}</p>}
       {error && (
-        <p className="field-err" data-testid={`err-${field.key}`}>
-          {error}
-        </p>
+        <p className="field-err" data-testid={`err-${field.key}`}>{error}</p>
       )}
     </div>
   );
@@ -147,6 +152,7 @@ export function Settings({ onSaved }: { onSaved?: (values: Values) => void } = {
   const [loadError, setLoadError] = useState<string | null>(null);
   const [auth, setAuth] = useState<{ required: boolean; authenticated: boolean } | null>(null);
   const [tokenInput, setTokenInput] = useState(getToken());
+  const [showAdvanced, setShowAdvanced] = useState(false);
 
   async function refreshAuth() {
     try {
@@ -183,12 +189,17 @@ export function Settings({ onSaved }: { onSaved?: (values: Values) => void } = {
     setStatus("idle");
   }
 
-  // Only send keys whose value actually changed (a true partial update).
+  // Only send schema keys whose value actually changed (skip the "<key>.__set" secret flags).
+  const schemaKeys = new Set((schema ?? []).map((f) => f.key));
   const changed: Values = {};
   for (const k of Object.keys(edited)) {
-    if (edited[k] !== values[k]) changed[k] = edited[k];
+    if (schemaKeys.has(k) && edited[k] !== values[k]) changed[k] = edited[k];
   }
   const dirty = Object.keys(changed).length > 0;
+  // Did any changed field require a restart to take effect?
+  const restartChanged = (schema ?? []).some(
+    (f) => f.applies === "restart" && f.key in changed,
+  );
 
   async function save() {
     setStatus("saving");
@@ -214,7 +225,7 @@ export function Settings({ onSaved }: { onSaved?: (values: Values) => void } = {
       setValues(b.values);
       setEdited(b.values);
       setStatus("saved");
-      onSaved?.(b.values); // let the app re-apply theme / other live-effect settings immediately
+      onSaved?.(b.values);
     } catch (e) {
       setErrors({ _: String(e) });
       setStatus("error");
@@ -230,14 +241,31 @@ export function Settings({ onSaved }: { onSaved?: (values: Values) => void } = {
   }
   if (!schema) return <div className="loading">Loading settings…</div>;
 
-  const groups = [...new Set(schema.map((f) => f.group))];
+  const visible = schema.filter((f) => showAdvanced || !f.advanced);
+  const groups = GROUP_ORDER.filter((g) => visible.some((f) => f.group === g)).concat(
+    [...new Set(visible.map((f) => f.group))].filter((g) => !GROUP_ORDER.includes(g)),
+  );
+  const hiddenAdvanced = schema.filter((f) => f.advanced).length;
+
   return (
     <section data-testid="settings">
+      <div className="settings-top">
+        <label className="adv-toggle">
+          <input
+            type="checkbox"
+            checked={showAdvanced}
+            onChange={(e) => setShowAdvanced(e.target.checked)}
+            data-testid="advanced-toggle"
+          />
+          Show advanced settings{hiddenAdvanced ? ` (${hiddenAdvanced})` : ""}
+        </label>
+      </div>
+
       {auth?.required && (
         <div className="settings-group" data-testid="settings-access">
           <h2 className="settings-group-title">Access</h2>
           <p className="settings-group-hint">
-            Saving changes is protected. Enter the access token to authorise writes.{" "}
+            Saving is protected. Enter the access token to authorise writes.{" "}
             {auth.authenticated ? (
               <span className="settings-msg-ok">authorised</span>
             ) : (
@@ -246,38 +274,26 @@ export function Settings({ onSaved }: { onSaved?: (values: Values) => void } = {
           </p>
           <div className="settings-fields">
             <div className="field">
-              <label className="field-label" htmlFor="set-access-token">
-                Access token
-              </label>
-              <input
-                id="set-access-token"
-                type="password"
-                value={tokenInput}
-                onChange={(e) => setTokenInput(e.target.value)}
-                data-testid="access-token"
-              />
+              <label className="field-label" htmlFor="set-access-token">Access token</label>
+              <input id="set-access-token" type="password" value={tokenInput}
+                onChange={(e) => setTokenInput(e.target.value)} data-testid="access-token" />
             </div>
           </div>
           <div className="settings-actions">
-            <button
-              className="btn-ghost"
-              data-testid="access-token-save"
-              onClick={() => {
-                setToken(tokenInput);
-                refreshAuth();
-              }}
-            >
+            <button className="btn-ghost" data-testid="access-token-save"
+              onClick={() => { setToken(tokenInput); refreshAuth(); }}>
               Save token
             </button>
           </div>
         </div>
       )}
+
       {groups.map((g) => (
         <div className="settings-group" key={g}>
           <h2 className="settings-group-title">{GROUP_TITLE[g] ?? g}</h2>
           {GROUP_HINT[g] && <p className="settings-group-hint">{GROUP_HINT[g]}</p>}
           <div className="settings-fields">
-            {schema
+            {visible
               .filter((f) => f.group === g)
               .map((f) => (
                 <Field
@@ -286,42 +302,33 @@ export function Settings({ onSaved }: { onSaved?: (values: Values) => void } = {
                   value={edited[f.key]}
                   error={errors[f.key]}
                   disabled={status === "saving"}
+                  secretSet={Boolean(values[`${f.key}.__set`])}
                   onChange={(v) => set(f.key, v)}
                 />
               ))}
           </div>
         </div>
       ))}
+
       <div className="settings-actions">
-        <button
-          className="btn-primary"
-          onClick={save}
-          disabled={!dirty || status === "saving"}
-          data-testid="settings-save"
-        >
+        <button className="btn-primary" onClick={save} disabled={!dirty || status === "saving"}
+          data-testid="settings-save">
           {status === "saving" ? "Saving…" : "Save changes"}
         </button>
-        <button
-          className="btn-ghost"
-          onClick={() => {
-            setEdited(values);
-            setErrors({});
-            setStatus("idle");
-          }}
-          disabled={!dirty}
-        >
+        <button className="btn-ghost" onClick={() => { setEdited(values); setErrors({}); setStatus("idle"); }}
+          disabled={!dirty}>
           Reset
         </button>
         {status === "saved" && (
           <span className="settings-msg-ok" data-testid="settings-saved">
-            Saved
+            Saved{restartChanged ? " — restart to apply connection changes" : ""}
           </span>
         )}
-        {status === "error" && errors._ && (
-          <span className="settings-msg-err">{errors._}</span>
-        )}
+        {status === "error" && errors._ && <span className="settings-msg-err">{errors._}</span>}
         {dirty && status !== "saved" && (
-          <span className="settings-dirty">unsaved changes</span>
+          <span className="settings-dirty">
+            unsaved changes{restartChanged ? " (some apply on restart)" : ""}
+          </span>
         )}
       </div>
     </section>

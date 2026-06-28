@@ -37,7 +37,7 @@ from ems.planner.charge_need import compute_charge_need
 from ems.planner.rule_based import PlannerConfig, plan_rule_based
 from ems.savings import estimate_daily_savings_eur
 from ems.sense import Recorder
-from ems.settings import effective_settings, schema_json, validate_settings
+from ems.settings import effective_settings, public_values, schema_json, validate_settings
 from ems.sources.base import Source
 from ems.sources.battery import BatteryDriver
 from ems.sources.forecast import SolarForecastSource, day_kwh_p50
@@ -472,7 +472,8 @@ def create_app(
     @app.get("/api/settings")
     def get_settings() -> dict:
         # The UI renders a form from `schema` and fills it from `values` (effective config).
-        return {"schema": schema_json(), "values": dict(settings_cache)}
+        # Secrets are masked (a parallel "<key>.__set" flag tells the UI whether one is stored).
+        return {"schema": schema_json(), "values": public_values(settings_cache)}
 
     @app.post("/api/settings")
     async def post_settings(request: Request, body: dict | None = None) -> JSONResponse:
@@ -496,7 +497,8 @@ def create_app(
         settings_cache.update(refreshed)
         _apply_control_settings()
         _apply_site_settings()
-        return JSONResponse({"values": dict(settings_cache)})
+        # Mask secrets in the response exactly like GET — never echo a stored token back.
+        return JSONResponse({"values": public_values(dict(settings_cache))})
 
     @app.get("/api/status")
     def status() -> dict:
