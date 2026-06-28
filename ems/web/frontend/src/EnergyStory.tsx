@@ -84,7 +84,7 @@ function Stat({
 }
 
 export function EnergyStory({
-  story,
+  story: rawStory,
   window,
   onWindow,
 }: {
@@ -92,6 +92,12 @@ export function EnergyStory({
   window: "past" | "next";
   onWindow: (w: "past" | "next") => void;
 }) {
+  // The toggle flips `window` instantly, but the matching data arrives one fetch later. Until it
+  // does, the previously-loaded story is for the OTHER window — ignore it so we never render "Next"
+  // with last-24h content (or vice-versa). `switching` lets us show a neutral "Loading…" rather
+  // than the cold-start empty message. (Also makes out-of-order responses self-correct.)
+  const switching = rawStory != null && rawStory.window !== window;
+  const story = switching ? null : rawStory;
   const slots = story?.slots ?? [];
   const t = story?.totals;
 
@@ -224,7 +230,9 @@ export function EnergyStory({
 
       {slots.length === 0 ? (
         <p className="plan-reason" data-testid="story-empty">
-          {isPast
+          {switching
+            ? "Loading…"
+            : isPast
             ? "No history yet — leave the system running and the last-24h story fills in."
             : "No plan yet — prices/forecast are still loading."}
         </p>
