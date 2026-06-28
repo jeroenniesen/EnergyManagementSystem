@@ -110,9 +110,20 @@ body {
   border-radius: 14px;
   padding: 18px;
 }
+.metric-label-row { display: flex; align-items: center; gap: 7px; }
+.metric-icon { color: var(--muted); flex: none; }
 .metric-label { font-size: 0.78rem; color: var(--muted); }
 .metric-value { font-size: 1.6rem; font-weight: 600; letter-spacing: -0.02em; font-variant-numeric: tabular-nums; }
 .metric-hint { font-size: 0.72rem; color: var(--muted); }
+
+/* The money saved is the headline number — give its tile a quiet accent so the eye lands there. */
+.metric-accent {
+  border-color: var(--accent);
+  background: rgba(70, 200, 168, 0.08); /* fallback for engines without color-mix() */
+  background: color-mix(in srgb, var(--accent) 8%, var(--panel));
+}
+.metric-accent .metric-icon,
+.metric-accent .metric-value { color: var(--accent); }
 
 .prices {
   margin-top: 24px;
@@ -273,7 +284,7 @@ body {
 /* The selected season tints its own pill — a quiet, meaningful accent. */
 .seg-active.seg-summer { color: var(--summer); background: var(--summer-tint); }
 .seg-active.seg-winter { color: var(--winter); background: var(--winter-tint); }
-.seg-icon { font-size: 1.05rem; line-height: 1; transition: transform 0.15s ease; }
+.seg-icon { width: 17px; height: 17px; line-height: 1; transition: transform 0.15s ease; }
 .seg-icon-summer { color: var(--summer); }
 .seg-icon-winter { color: var(--winter); }
 .seg-icon-auto { color: var(--accent); }

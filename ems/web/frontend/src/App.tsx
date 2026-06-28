@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 
 import { type Battery, BatteryChips } from "./BatteryChips";
 import { type EnergyStoryData, EnergyStory } from "./EnergyStory";
+import { Icon, type IconName } from "./icons";
 import {
   DATA_QUALITY,
   DATA_SOURCE,
@@ -63,15 +64,22 @@ function Metric({
   value,
   hint,
   title,
+  icon,
+  accent,
 }: {
   label: string;
   value: string;
   hint?: string;
   title?: string;
+  icon?: IconName;
+  accent?: boolean;
 }) {
   return (
-    <div className="metric" title={title}>
-      <span className="metric-label">{label}</span>
+    <div className={`metric${accent ? " metric-accent" : ""}`} title={title}>
+      <span className="metric-label-row">
+        {icon && <Icon name={icon} className="metric-icon" />}
+        <span className="metric-label">{label}</span>
+      </span>
       <span className="metric-value">{value}</span>
       {hint && <span className="metric-hint">{hint}</span>}
     </div>
@@ -306,36 +314,56 @@ export function App() {
 
       {view === "dashboard" && status && (
         <section className="grid" data-testid="status-grid">
+          {savings != null && (
+            <Metric
+              label="Saved today"
+              value={`€${savings.toFixed(2)}`}
+              hint="vs. no smart control"
+              title="Rough estimate of what smart charging saved today compared with leaving the battery on its own."
+              icon="euro"
+              accent
+            />
+          )}
           <Metric
             label="Battery level"
             value={`${status.soc_pct.toFixed(0)} %`}
             hint="how full it is"
             title="How much charge is in the home battery right now."
+            icon="battery-level"
           />
           <Metric
             label="House load"
             value={fmtW(status.house_load_w)}
             hint="what your home is using now"
             title="Everything your home is drawing right now, from solar, battery and the grid combined."
+            icon="home"
           />
           <Metric
             label="Grid"
             value={fmtW(status.grid_power_w)}
             hint={status.grid_power_w >= 0 ? "from the grid" : "to the grid"}
             title="Power flowing in from the grid (buying) or back out to it (selling)."
+            icon="grid"
           />
-          <Metric label="Solar" value={fmtW(status.solar_power_w)} hint="from your panels" />
+          <Metric
+            label="Solar"
+            value={fmtW(status.solar_power_w)}
+            hint="from your panels"
+            icon="solar"
+          />
           <Metric
             label="Battery"
             value={fmtW(status.battery_power_w)}
             hint={status.battery_power_w >= 0 ? "powering the house" : "charging up"}
             title="Power leaving the battery to run the house, or going in to charge it."
+            icon="bolt"
           />
           <Metric
             label="Home use"
             value={fmtW(status.non_ev_load_w)}
             hint="excluding the car"
             title="What the home uses, not counting car charging."
+            icon="bulb"
           />
           {battery?.current_mode && (
             <Metric
@@ -343,14 +371,7 @@ export function App() {
               value={PHYSICAL_MODE[battery.current_mode] ?? humanize(battery.current_mode)}
               hint={battery.capabilities?.p1_paired ? "balancing to your meter" : "standalone"}
               title="The mode the battery is currently running in."
-            />
-          )}
-          {savings != null && (
-            <Metric
-              label="Saved today"
-              value={`€${savings.toFixed(2)}`}
-              hint="vs. no smart control"
-              title="Rough estimate of what smart charging saved today compared with leaving the battery on its own."
+              icon="sliders"
             />
           )}
         </section>

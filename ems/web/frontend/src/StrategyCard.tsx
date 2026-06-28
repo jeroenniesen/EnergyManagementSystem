@@ -2,6 +2,8 @@
 // the panels and runs the night on the battery; Winter charges cheap and discharges the peaks.
 import { useRef } from "react";
 
+import { Icon, type IconName } from "./icons";
+
 export type Strategy = {
   mode: string; // auto | summer | winter (the user's choice)
   active: string; // summer | winter (what's actually running)
@@ -11,10 +13,10 @@ export type Strategy = {
   max_topup_price: number;
 };
 
-const OPTIONS = [
-  { key: "auto", label: "Auto", icon: "◐" },
-  { key: "summer", label: "Summer", icon: "☀" },
-  { key: "winter", label: "Winter", icon: "❄" },
+const OPTIONS: { key: string; label: string; icon: IconName }[] = [
+  { key: "auto", label: "Auto", icon: "auto" },
+  { key: "summer", label: "Summer", icon: "solar" },
+  { key: "winter", label: "Winter", icon: "winter" },
 ];
 
 export function StrategyCard({
@@ -68,9 +70,7 @@ export function StrategyCard({
               data-testid={`strategy-${o.key}`}
               onClick={() => onChange(o.key)}
             >
-              <span className={`seg-icon seg-icon-${o.key}`} aria-hidden="true">
-                {o.icon}
-              </span>
+              <Icon name={o.icon} className={`seg-icon seg-icon-${o.key}`} />
               {o.label}
             </button>
           );
