@@ -36,6 +36,7 @@ from ems.domain import BatteryIntent
 from ems.freshness import FreshnessTracker
 from ems.lifecycle import OwnershipState
 from ems.load_model import reconstruct
+from ems.planner.adaptive import AdaptiveConfig
 from ems.planner.charge_need import compute_charge_need
 from ems.planner.explain import build_plan_detail, plan_metrics, summarize_projection
 from ems.planner.load_profile import build_load_profile
@@ -249,6 +250,28 @@ def create_app(
     def _active_strategy(now: datetime) -> str:
         return select_strategy(now, settings_cache["strategy.mode"], site_tz)
 
+    # Cached expected-load profile (learned async in _forward_projection) so the sync _current_plan
+    # can feed the adaptive charger without its own DB read. None until the first projection runs.
+    _load_profile_box: dict[str, Any] = {"profile": None}
+
+    def _load_by(starts: list[datetime]) -> dict[datetime, float]:
+        prof = _load_profile_box["profile"]
+        if prof is None:  # cold start: a flat overnight-derived baseline
+            fallback = settings_cache["battery.overnight_load_kwh"] * 1000.0 / 12.0
+            return {s: fallback for s in starts}
+        return {s: prof.expected_w(s) for s in starts}
+
+    def _adaptive_cfg() -> AdaptiveConfig:
+        s = settings_cache
+        return AdaptiveConfig(
+            usable_kwh=s["battery.usable_kwh"],
+            reserve_soc_pct=s["battery.min_reserve_soc"],
+            round_trip_efficiency=s["planner.round_trip_efficiency"],
+            max_charge_w=s["battery.max_charge_w"],
+            degradation_eur_per_kwh=s["planner.degradation_eur_per_kwh"],
+            risk_margin_eur_per_kwh=s["planner.risk_margin_eur_per_kwh"],
+        )
+
     @asynccontextmanager
     async def lifespan(_app: FastAPI):
         # Guarantee the schema exists before anything touches the DB (no caller footgun).
@@ -308,13 +331,16 @@ def create_app(
         now = datetime.now(UTC)
         prices = price_source.slots()
         strategy = _active_strategy(now)
-        # Only the summer strategy needs the (slow) live SoC + the solar forecast.
+        # Summer uses the adaptive (demand-aware peak-shaving) charger; it needs the live SoC, the
+        # solar forecast and the expected-load profile. Winter (arbitrage) needs none of these.
         soc = _current_soc(now) if strategy == "summer" else 0.0
         forecast = (solar_forecast.slots()
                     if strategy == "summer" and solar_forecast is not None else [])
+        load_by = _load_by([p.start for p in prices]) if strategy == "summer" else None
         plan = build_plan(
             strategy, prices=prices, forecast=forecast, now=now, soc_pct=soc,
             winter_cfg=_planner_cfg(), summer_cfg=_summer_cfg(soc),
+            load_w_by=load_by, adaptive_cfg=_adaptive_cfg(),
         )
         return now, prices, plan
 
@@ -701,18 +727,22 @@ def create_app(
         drows = await store.recent_derived(2016) if store is not None else []
         fallback_w = settings_cache["battery.overnight_load_kwh"] * 1000.0 / 12.0
         profile = build_load_profile(drows, site_tz, fallback_w=fallback_w)
+        _load_profile_box["profile"] = profile  # share with the sync _current_plan (adaptive)
         load_by = {s.start: profile.expected_w(s.start) for s in plan.slots}
-        # Size grid-charging to the night-carry target (overnight load + reserve), not to full.
         need = compute_charge_need(
             soc_pct=soc, usable_kwh=settings_cache["battery.usable_kwh"],
             min_reserve_soc=settings_cache["battery.min_reserve_soc"],
             night_reserve_kwh=settings_cache["battery.night_reserve_kwh"],
             overnight_load_kwh=settings_cache["battery.overnight_load_kwh"],
         )
+        # The adaptive (summer) charger sizes its own charge slots, so the projection must NOT cap
+        # them at the night target (that would undo demand-aware peak-shaving). Winter's fixed-slot
+        # plan keeps the cap as a safety ceiling.
+        cap = None if _active_strategy(now) == "summer" else need.target_soc_pct
         projected = project_energy(
             plan.slots, start_soc_pct=soc, solar_w_by=solar_by,
             load_w_by=load_by, model=_battery_model(),
-            charge_target_soc_pct=need.target_soc_pct,
+            charge_target_soc_pct=cap,
         )
         return {"now": now, "current_soc": soc, "projected": projected, "need": need,
                 "deadline": sunset_after(fc_slots, now),

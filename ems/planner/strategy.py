@@ -13,6 +13,7 @@ from __future__ import annotations
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
+from ems.planner.adaptive import AdaptiveConfig, plan_adaptive
 from ems.planner.rule_based import PlannerConfig, plan_rule_based
 from ems.planner.schedule import Plan
 from ems.planner.summer import SummerConfig, plan_summer
@@ -47,8 +48,17 @@ def build_plan(
     soc_pct: float,
     winter_cfg: PlannerConfig,
     summer_cfg: SummerConfig,
+    load_w_by: dict[datetime, float] | None = None,
+    adaptive_cfg: AdaptiveConfig | None = None,
 ) -> Plan:
-    """Dispatch to the chosen strategy's planner. `strategy` is already resolved (not 'auto')."""
+    """Dispatch to the chosen strategy's planner. `strategy` is already resolved (not 'auto').
+
+    Summer uses the demand-aware adaptive charger (peak-shaving, near-optimal — validated by the
+    backtest) when an expected-load profile + AdaptiveConfig are supplied; otherwise it falls back
+    to the simpler solar-first planner."""
     if strategy == "summer":
+        if adaptive_cfg is not None and load_w_by is not None:
+            return plan_adaptive(prices, forecast or [], now, soc_pct=soc_pct,
+                                 load_w_by=load_w_by, cfg=adaptive_cfg)
         return plan_summer(prices, forecast or [], now, soc_pct=soc_pct, cfg=summer_cfg)
     return plan_rule_based(prices, now, winter_cfg)
