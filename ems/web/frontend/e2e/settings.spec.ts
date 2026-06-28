@@ -60,6 +60,19 @@ test.describe("EMS settings", () => {
     await expect(page.getByTestId("field-meters.p1_ip")).toContainText("restart");
   });
 
+  test("operational-mode toggle is present, off by default, and flagged restart", async ({
+    page,
+  }) => {
+    await page.goto("/");
+    await page.getByTestId("nav-settings").click();
+    const op = page.getByTestId("field-control.operational");
+    await expect(op).toBeVisible();
+    await expect(op).toContainText("Operational mode");
+    await expect(op).toContainText("restart");
+    // Default OFF (dry-run) — the checkbox is unchecked, so the battery is never commanded.
+    await expect(op.locator("#set-control\\.operational")).not.toBeChecked();
+  });
+
   test("changing a planner setting shows a before/after plan-impact preview", async ({ page }) => {
     const SCHEMA_ADV = [
       {

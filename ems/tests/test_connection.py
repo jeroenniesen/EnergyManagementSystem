@@ -48,11 +48,12 @@ def test_schema_exposes_advanced_and_applies():
 
 
 def test_build_wiring_defaults_to_mock():
-    src, price, forecast, batt_ep, driver, dev_mode = build_wiring(effective_settings({}), AMS)
+    src, price, _fc, batt_ep, _driver, dev_mode, dry_run = build_wiring(effective_settings({}), AMS)
     assert isinstance(src, MockSource)
     assert isinstance(price, MockPriceSource)
     assert dev_mode == "mock"
     assert batt_ep is not None  # mock battery endpoint present
+    assert dry_run is True  # default is always safe dry-run
 
 
 def test_build_wiring_live_devices_when_configured():
@@ -63,12 +64,13 @@ def test_build_wiring_live_devices_when_configured():
         "meters.car_ip": "192.168.50.98",
         "battery.indevolt_ip": "192.168.50.53",
     })
-    src, _price, _fc, batt_ep, driver, dev_mode = build_wiring(eff, AMS)
+    src, _price, _fc, batt_ep, driver, dev_mode, dry_run = build_wiring(eff, AMS)
     # LiveSource composes the three meters; never touches hardware at construction.
     assert dev_mode == "live"
     assert hasattr(src, "read_sample")  # LiveSource
     assert batt_ep is None  # /api/battery null until probe; driver is the unarmed Indevolt driver
     assert driver.armed is False
+    assert dry_run is True  # operational not enabled -> still dry-run
 
 
 def test_build_wiring_live_prices_when_token_present():
@@ -83,3 +85,30 @@ def test_build_wiring_live_prices_ignored_without_token():
     eff = effective_settings({"connection.use_live_prices": True})  # no token
     _src, price, *_ = build_wiring(eff, AMS)
     assert isinstance(price, MockPriceSource)
+
+
+def test_operational_arms_driver_and_lifts_dry_run():
+    eff = effective_settings({
+        "connection.use_live_devices": True, "meters.p1_ip": "192.168.50.92",
+        "battery.indevolt_ip": "192.168.50.53", "control.operational": True,
+    })
+    *_, driver, dev_mode, dry_run = build_wiring(eff, AMS)
+    assert dev_mode == "live"
+    assert driver.armed is True  # operational -> armed with a real SetData transport
+    assert dry_run is False
+
+
+def test_operational_without_a_battery_stays_dry_run():
+    # Operational only means something with a real battery to command — else stay safe.
+    eff = effective_settings({
+        "connection.use_live_devices": True, "meters.p1_ip": "192.168.50.92",
+        "control.operational": True,  # but no battery.indevolt_ip
+    })
+    *_, _driver, _dev_mode, dry_run = build_wiring(eff, AMS)
+    assert dry_run is True
+
+
+def test_operational_ignored_without_live_devices():
+    eff = effective_settings({"control.operational": True})  # mock devices
+    *_, _driver, _dev_mode, dry_run = build_wiring(eff, AMS)
+    assert dry_run is True

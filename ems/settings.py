@@ -122,6 +122,13 @@ SETTINGS_SCHEMA: tuple[SettingsField, ...] = (
     ),
     # --- Control safety limits (pushed onto the mode controller live, SPEC §6.5) ---
     SettingsField(
+        "control.operational", "Operational mode (control the battery)", "bool", False, "control",
+        help="OFF = dry-run: decisions are shown but the battery is never changed (safe default). "
+        "ON = the EMS actually commands the battery, honouring all the safety limits below. "
+        "Takes effect on restart.",
+        applies="restart",
+    ),
+    SettingsField(
         "control.max_switches_per_day", "Max mode switches/day", "int", 10, "control",
         help="Hard cap on battery mode writes per day (SPEC target: under 10). Ceiling 20.",
         min=1, max=20,

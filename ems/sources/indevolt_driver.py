@@ -44,6 +44,27 @@ def _refusing_post(point: int, values: list[int]) -> object:
     )
 
 
+def make_setdata_post(ip: str, port: int = 8080, timeout: float = 4.0) -> SetDataPost:
+    """Build a REAL SetData write transport (point, [values]) -> response, matching the official
+    integration: POST /rpc/Indevolt.SetData?config={"f":16,"t":<point>,"v":[<values>]}.
+
+    Returned ONLY when the operator explicitly enables operational mode; an unarmed driver never
+    calls it. This is the single place the EMS can change the battery."""
+    import json as _json
+
+    url = f"http://{ip}:{port}/rpc/Indevolt.SetData"
+
+    def post(point: int, values: list[int]) -> object:
+        import httpx
+
+        config = _json.dumps({"f": 16, "t": point, "v": list(values)}).replace(" ", "")
+        r = httpx.post(url, params={"config": config}, timeout=timeout)
+        r.raise_for_status()
+        return r.json()
+
+    return post
+
+
 def setdata_writes(
     mode: PhysicalMode, *, power_w: int = 2000, target_soc: int = 100
 ) -> list[tuple[int, list[int]]]:

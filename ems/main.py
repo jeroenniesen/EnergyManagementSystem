@@ -35,19 +35,15 @@ def build_app():
     freshness = FreshnessTracker()
     freshness.register(*SIGNALS)
     tz = ZoneInfo(cfg.timezone)
-    # Connection (which devices/services) comes from the settings store (UI), seeded from
-    # config.yaml + env on first boot. Built read-only; the battery driver is unarmed and dry_run
-    # is forced on — no live write path exists (arming is a separate step, Loop 5).
+    # Connection + run-mode come from the settings store (UI), seeded from config.yaml + env on
+    # first boot. dry_run is True (battery untouched) UNLESS control.operational is on with a live
+    # Indevolt — only then is the driver armed and the control loop started.
     eff = effective_connection(str(db_path), cfg)
-    source, price_source, solar_forecast, battery_endpoint, controller_driver, dev_mode = (
+    source, price_source, solar_forecast, battery_endpoint, controller_driver, dev_mode, dry_run = (
         build_wiring(eff, tz)
     )
-    dry_run = True
     recorder = Recorder(source, store, freshness, cycle_seconds=cfg.cycle_seconds)
     lifecycle = Lifecycle(dry_run=dry_run)
-    # The controller's driver is the mock (dev) or the real-but-UNARMED Indevolt driver (live).
-    # dry_run is forced on for live, so decide() never calls apply(); even if it did, an unarmed
-    # driver with no write transport cannot touch the battery.
     controller = ModeController(controller_driver, lifecycle, dry_run=dry_run)
     app = create_app(
         source,
@@ -62,8 +58,7 @@ def build_app():
         controller=controller,
         settings_store=settings_store,
         override_store=override_store,
-        # Secret via env (never config/SQLite). Unset -> writes open (dev/LAN); set -> writes
-        # require Authorization: Bearer <token>. Reads (the dashboard) are always open.
+        control_cycle_seconds=cfg.cycle_seconds,
         web_auth_token=os.environ.get("EMS_WEB_TOKEN") or None,
         static_dir=_STATIC_DIR,
     )

@@ -17,6 +17,7 @@ from fastapi.staticfiles import StaticFiles
 
 from ems.alerts import data_quality, derive_alerts
 from ems.control.failsafe import failsafe_intent
+from ems.control.loop import ControlLoop
 from ems.control.mode_controller import ModeController
 from ems.control.override import (
     MAX_MINUTES,
@@ -32,13 +33,20 @@ from ems.control.override import (
 from ems.diagnostics import build_diagnostics, overall_status
 from ems.domain import BatteryIntent
 from ems.freshness import FreshnessTracker
+from ems.lifecycle import OwnershipState
 from ems.load_model import reconstruct
 from ems.planner.charge_need import compute_charge_need
 from ems.planner.explain import build_plan_detail, plan_metrics
 from ems.planner.rule_based import PlannerConfig, plan_rule_based
 from ems.savings import estimate_daily_savings_eur
 from ems.sense import Recorder
-from ems.settings import effective_settings, public_values, schema_json, validate_settings
+from ems.settings import (
+    SETTINGS_BY_KEY,
+    effective_settings,
+    public_values,
+    schema_json,
+    validate_settings,
+)
 from ems.sources.base import Source
 from ems.sources.battery import BatteryDriver
 from ems.sources.forecast import SolarForecastSource, day_kwh_p50
@@ -49,10 +57,16 @@ from ems.storage.settings import SettingsStore
 _log = logging.getLogger("ems.recorder")
 
 
-def _recorder_died(task: asyncio.Task) -> None:
-    # The recorder is awaited only at shutdown; surface an unexpected death immediately.
-    if not task.cancelled() and (exc := task.exception()) is not None:
-        _log.error("Recorder task exited unexpectedly: %s", exc, exc_info=exc)
+def _task_died(name: str):
+    def _cb(task: asyncio.Task) -> None:
+        # Background tasks are awaited only at shutdown; surface an unexpected death immediately.
+        if not task.cancelled() and (exc := task.exception()) is not None:
+            _log.error("%s task exited unexpectedly: %s", name, exc, exc_info=exc)
+
+    return _cb
+
+
+_recorder_died = _task_died("Recorder")
 
 
 def create_app(
@@ -69,6 +83,7 @@ def create_app(
     controller: ModeController | None = None,
     settings_store: SettingsStore | None = None,
     override_store: SettingsStore | None = None,
+    control_cycle_seconds: float = 300.0,
     web_auth_token: str | None = None,
     static_dir: str | Path | None = None,
 ) -> FastAPI:
@@ -157,12 +172,21 @@ def create_app(
                 pass  # fail-safe: a bad first read must not block startup
             task = asyncio.create_task(recorder.run(stop))
             task.add_done_callback(_recorder_died)
+        # The control loop (battery writes) runs ONLY in operational mode (not dry_run). In dry-run
+        # it is never started, so the dashboard previews but the battery is never touched.
+        control_task = None
+        if not dry_run and controller is not None:
+            control_task = asyncio.create_task(
+                ControlLoop(_control_tick, control_cycle_seconds).run(stop)
+            )
+            control_task.add_done_callback(_task_died("Control loop"))
         try:
             yield
         finally:
-            if task is not None:
-                stop.set()
-                await task
+            stop.set()
+            for t in (task, control_task):
+                if t is not None:
+                    await t
 
     app = FastAPI(title="Smart Energy Manager", version="0.0.1", lifespan=lifespan)
 
@@ -203,6 +227,32 @@ def create_app(
         if fs_reason is not None:
             return safe, fs_reason, False
         return cur.intent, cur.reason, False
+
+    def _control_tick(now: datetime) -> None:
+        """Operational mode ONLY (never called in dry-run): advance the ownership lifecycle and,
+        once CONTROLLING, apply the current intent — the single battery write per cycle. Every
+        safety gate (dwell, daily cap, fail-safe AUTO on unsafe data, override) is enforced by
+        ModeController.decide / _effective_intent."""
+        if controller is None:
+            return
+        lc = controller.lifecycle
+        if lc.state is OwnershipState.INACTIVE:
+            lc.start(now)
+        # Readiness sequence (SPEC §13.3): validated sensors, a reachable battery, a loaded plan.
+        if _data_quality(now) != "unsafe":
+            lc.mark_sensors_validated()
+        try:
+            controller.driver.current_mode()  # read-only reachability check
+            lc.mark_probe_ok()
+        except Exception:
+            pass  # battery unreadable -> not probe-ok -> stays observing, never commands
+        if _current_plan() is not None:
+            lc.mark_plan_loaded()
+        lc.tick(now)
+        if lc.can_command(now):
+            intent, _reason, _override = _effective_intent(now)
+            if intent is not None:
+                controller.decide(intent, now)
 
     @app.get("/health/live")
     def live() -> dict:
@@ -529,8 +579,15 @@ def create_app(
         settings_cache.update(refreshed)
         _apply_control_settings()
         _apply_site_settings()
-        # Mask secrets in the response exactly like GET — never echo a stored token back.
-        return JSONResponse({"values": public_values(dict(settings_cache))})
+        # Tell the caller if any saved key needs a restart to take effect (connection / operational
+        # mode are read at startup) — so the UI never implies operational control is live when it
+        # isn't. Mask secrets in the response exactly like GET — never echo a stored token back.
+        restart_required = any(
+            k in SETTINGS_BY_KEY and SETTINGS_BY_KEY[k].applies == "restart" for k in clean
+        )
+        return JSONResponse(
+            {"values": public_values(dict(settings_cache)), "restart_required": restart_required}
+        )
 
     @app.get("/api/status")
     def status() -> dict:

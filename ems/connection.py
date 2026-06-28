@@ -84,8 +84,9 @@ def effective_connection(db_path: str, cfg) -> dict:
 
 
 def build_wiring(eff: dict, tz: ZoneInfo):
-    """Build (source, price_source, solar_forecast, battery_endpoint, controller_driver, dev_mode)
-    from effective settings. Read-only; the battery driver is unarmed."""
+    """Build (source, price_source, solar_forecast, battery_endpoint, controller_driver, dev_mode,
+    dry_run) from effective settings. The battery driver is unarmed and dry_run is True UNLESS
+    control.operational is on AND a live Indevolt is configured (then armed + dry_run False)."""
     from ems.sources.battery import MockBatteryDriver
     from ems.sources.forecast import MockSolarForecastSource
     from ems.sources.mock import MockSource
@@ -94,13 +95,17 @@ def build_wiring(eff: dict, tz: ZoneInfo):
     use_live_devices = bool(eff.get("connection.use_live_devices")) and bool(
         eff.get("meters.p1_ip")
     )
+    # Operational mode only means anything with a real battery to command. It ARMS the driver with
+    # a real SetData transport and lifts dry_run. Default off -> dry_run, battery never written.
+    operational = False
     if use_live_devices:
         from ems.sources.indevolt import IndevoltReadClient
-        from ems.sources.indevolt_driver import IndevoltBatteryDriver
+        from ems.sources.indevolt_driver import IndevoltBatteryDriver, make_setdata_post
         from ems.sources.live import HomeWizardMeter, LiveSource
 
         ip = eff.get("battery.indevolt_ip") or ""
         port = int(eff.get("battery.indevolt_port") or 8080)
+        operational = bool(eff.get("control.operational")) and bool(ip)
         battery_reader = IndevoltReadClient(ip, port=port) if ip else None
         source = LiveSource(
             p1=HomeWizardMeter(eff["meters.p1_ip"]),
@@ -108,9 +113,14 @@ def build_wiring(eff: dict, tz: ZoneInfo):
             car=HomeWizardMeter(eff.get("meters.car_ip") or eff["meters.p1_ip"]),
             battery=battery_reader,
         )
-        controller_driver = (
-            IndevoltBatteryDriver(ip, port=port, armed=False) if ip else MockBatteryDriver()
-        )
+        if operational:
+            controller_driver = IndevoltBatteryDriver(
+                ip, port=port, armed=True, rpc_post=make_setdata_post(ip, port)
+            )
+        elif ip:
+            controller_driver = IndevoltBatteryDriver(ip, port=port, armed=False)
+        else:
+            controller_driver = MockBatteryDriver()
         dev_mode, battery_endpoint = "live", None
     else:
         source = MockSource()
@@ -137,4 +147,6 @@ def build_wiring(eff: dict, tz: ZoneInfo):
         )
     else:
         solar_forecast = MockSolarForecastSource(tz)
-    return source, price_source, solar_forecast, battery_endpoint, controller_driver, dev_mode
+    dry_run = not operational  # operational (armed + live battery) is the ONLY way dry_run lifts
+    return (source, price_source, solar_forecast, battery_endpoint, controller_driver, dev_mode,
+            dry_run)

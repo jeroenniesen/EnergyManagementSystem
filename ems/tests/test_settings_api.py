@@ -67,6 +67,16 @@ def test_secret_token_is_masked_in_get_and_post_responses(tmp_path):
         assert c.get("/api/settings").json()["values"]["prices.tibber_token.__set"] is True
 
 
+def test_post_flags_restart_required_for_connection_settings(tmp_path):
+    with TestClient(_app(tmp_path)) as c:
+        # A connection/operational setting needs a restart to take effect.
+        r = c.post("/api/settings", json={"control.operational": True})
+        assert r.json()["restart_required"] is True
+        # A live setting does not.
+        r2 = c.post("/api/settings", json={"ui.theme": "dark"})
+        assert r2.json()["restart_required"] is False
+
+
 def test_post_settings_without_store_returns_503():
     app = create_app(MockSource(), dry_run=True, dev_mode="mock")  # no settings_store
     r = TestClient(app).post("/api/settings", json={"ui.theme": "dark"})
