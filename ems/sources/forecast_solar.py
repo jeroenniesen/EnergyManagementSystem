@@ -12,9 +12,11 @@ P90 = 1.15×) — same risk shape as the model, honestly labelled as derived.
 """
 from __future__ import annotations
 
+import json
 import logging
+import threading
 from collections.abc import Callable
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from zoneinfo import ZoneInfo
 
 from ems.sources.forecast import SLOT, SLOTS_PER_DAY, ForecastSlot, MockSolarForecastSource
@@ -22,6 +24,26 @@ from ems.sources.forecast import SLOT, SLOTS_PER_DAY, ForecastSlot, MockSolarFor
 _log = logging.getLogger("ems.sources.forecast_solar")
 
 JsonGet = Callable[[str], dict]
+
+# How long a persisted forecast snapshot is kept for warm-start (read via get_with_age, which
+# ignores expiry; the TTL only governs eventual purge). Forecasts move during the day, so shorter.
+_PERSIST_TTL_SECONDS = 6 * 3600.0
+_CACHE_KEY = "forecast_solar:slots"
+
+
+def _serialize_slots(slots: list[ForecastSlot]) -> str:
+    return json.dumps(
+        [{"s": s.start.isoformat(), "a": s.p10_w, "b": s.p50_w, "c": s.p90_w} for s in slots]
+    )
+
+
+def _deserialize_slots(blob: str) -> list[ForecastSlot]:
+    try:
+        raw = json.loads(blob)
+        return [ForecastSlot(start=datetime.fromisoformat(r["s"]), p10_w=float(r["a"]),
+                             p50_w=float(r["b"]), p90_w=float(r["c"])) for r in raw]
+    except (ValueError, TypeError, KeyError):
+        return []
 
 
 def _utcnow() -> datetime:
@@ -80,6 +102,8 @@ class ForecastSolarSource:
         http_get: JsonGet | None = None,
         clock: Callable[[], datetime] = _utcnow,
         fallback: object | None = None,
+        cache_store: object | None = None,
+        cache_key: str = _CACHE_KEY,
     ) -> None:
         self.tz = tz
         self.lat, self.lon, self.tilt, self.azimuth, self.kwp = lat, lon, tilt, azimuth, kwp
@@ -93,6 +117,38 @@ class ForecastSolarSource:
         )
         self._cache: tuple[datetime, list[ForecastSlot]] | None = None
         self.source_label = "forecast.solar"
+        # Single-flight so a dashboard poll fan-out (sync endpoints in the threadpool) can't fire
+        # several simultaneous Forecast.Solar requests when the TTL lapses (its free tier is
+        # ~12 calls/h/IP). One caller fetches; the rest read the now-fresh cache.
+        self._lock = threading.Lock()
+        self._cache_store = cache_store
+        self._cache_key = cache_key
+        self._warm_start()
+
+    def _warm_start(self) -> None:
+        """Seed the cache from a persisted snapshot, back-dating its timestamp by the snapshot's age
+        so the normal TTL check decides freshness: a quick restart serves it (no refetch); an old
+        snapshot is past the TTL and triggers exactly one fetch on the first call."""
+        if self._cache_store is None:
+            return
+        try:
+            got = self._cache_store.get_with_age(self._cache_key)
+        except Exception:
+            got = None
+        if not got:
+            return
+        blob, age = got
+        slots = _deserialize_slots(blob)
+        if slots:
+            self._cache = (self._clock() - timedelta(seconds=age), slots)
+
+    def _persist(self, slots: list[ForecastSlot]) -> None:
+        if self._cache_store is None:
+            return
+        try:
+            self._cache_store.set(self._cache_key, _serialize_slots(slots), _PERSIST_TTL_SECONDS)
+        except Exception:
+            pass  # best-effort
 
     @property
     def url(self) -> str:
@@ -105,20 +161,28 @@ class ForecastSolarSource:
         now = self._clock()
         if self._cache is not None and (now - self._cache[0]).total_seconds() < self.ttl_seconds:
             return self._cache[1]
-        local = now.astimezone(self.tz)
-        midnight = local.replace(hour=0, minute=0, second=0, microsecond=0)
-        try:
-            data = self._get(self.url)
-            # Fall back only when the response is truly empty — NOT when production is honestly
-            # zero (winter/high-latitude/commissioning), which is a valid live answer.
-            if not (((data or {}).get("result") or {}).get("watts") or {}):
-                raise ValueError("Forecast.Solar returned empty watts")
-            slots = parse_watts(data, self.tz, midnight, self.horizon_slots)
-            self.source_label = "forecast.solar"
-        except Exception as exc:
-            _log.warning("Forecast.Solar fetch failed (%s: %s); using model fallback",
-                         type(exc).__name__, exc)
-            slots = self._fallback.slots()
-            self.source_label = "model (fallback)"
-        self._cache = (now, slots)
-        return slots
+        with self._lock:
+            # Double-checked: a concurrent caller may have refreshed while we waited on the lock.
+            now = self._clock()
+            cached = self._cache
+            if cached is not None and (now - cached[0]).total_seconds() < self.ttl_seconds:
+                return cached[1]
+            local = now.astimezone(self.tz)
+            midnight = local.replace(hour=0, minute=0, second=0, microsecond=0)
+            try:
+                data = self._get(self.url)
+                # Fall back only when the response is truly empty — NOT when production is honestly
+                # zero (winter/high-latitude/commissioning), which is a valid live answer.
+                if not (((data or {}).get("result") or {}).get("watts") or {}):
+                    raise ValueError("Forecast.Solar returned empty watts")
+                slots = parse_watts(data, self.tz, midnight, self.horizon_slots)
+                self.source_label = "forecast.solar"
+                self._cache = (now, slots)
+                self._persist(slots)  # only persist a real live forecast, never the model fallback
+            except Exception as exc:
+                _log.warning("Forecast.Solar fetch failed (%s: %s); using model fallback",
+                             type(exc).__name__, exc)
+                slots = self._fallback.slots()
+                self.source_label = "model (fallback)"
+                self._cache = (now, slots)
+            return slots

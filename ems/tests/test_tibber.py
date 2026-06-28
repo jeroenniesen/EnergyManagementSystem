@@ -1,6 +1,24 @@
+import threading
+import time
 from datetime import UTC, datetime, timedelta
 
-from ems.sources.tibber import TibberPriceSource, parse_price_info
+from ems.sources.tibber import TibberPriceSource, _serialize_slots, parse_price_info
+
+
+class _FakeCache:
+    """In-memory CacheStore double: presettable snapshot + fixed reported age; captures sets."""
+
+    def __init__(self, preset: dict | None = None, age: float = 0.0) -> None:
+        self.data = dict(preset or {})
+        self.age = age
+        self.sets: list[tuple] = []
+
+    def get_with_age(self, key):
+        return (self.data[key], self.age) if key in self.data else None
+
+    def set(self, key, value, ttl_seconds):
+        self.data[key] = value
+        self.sets.append((key, value, ttl_seconds))
 
 
 class _Clock:
@@ -153,3 +171,61 @@ def test_first_ever_failure_returns_empty_then_recovers():
     clock.advance(seconds=61)  # past the retry backoff
     assert len(src.slots()) == 12  # recovers on the next allowed fetch
     assert n["c"] == 2
+
+
+def test_single_flight_one_fetch_under_concurrent_cache_miss():
+    """A dashboard refresh fans out to several threadpool workers; on a cache miss they all call
+    slots() at once. Single-flight must collapse that into ONE upstream request (no 429 storm)."""
+    n = {"c": 0}
+    barrier = threading.Barrier(8)
+
+    def slow_post(url, token, body):
+        n["c"] += 1
+        time.sleep(0.05)  # widen the race window so concurrent callers genuinely overlap
+        return DATA
+
+    src = TibberPriceSource("tok", http_post=slow_post)  # fresh: first call is a miss
+    results: list[int] = []
+
+    def worker():
+        barrier.wait()
+        results.append(len(src.slots()))
+
+    threads = [threading.Thread(target=worker) for _ in range(8)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    assert results == [12] * 8  # everyone got prices
+    assert n["c"] == 1  # ...from a single fetch
+
+
+def test_warm_start_serves_persisted_snapshot_without_refetch():
+    snapshot = _serialize_slots(parse_price_info(DATA))
+    cache = _FakeCache(preset={"tibber:prices": snapshot}, age=60.0)  # 60s old, TTL 15min
+    n = {"c": 0}
+
+    def counting_post(url, token, body):
+        n["c"] += 1
+        return DATA
+
+    src = TibberPriceSource("tok", http_post=counting_post, cache_store=cache,
+                            cache_ttl=timedelta(minutes=15))
+    assert len(src.slots()) == 12  # served from the warm-started snapshot
+    assert n["c"] == 0  # no network call — restart did not refetch
+
+
+def test_stale_snapshot_triggers_exactly_one_refetch_and_persists():
+    snapshot = _serialize_slots(parse_price_info(DATA))
+    cache = _FakeCache(preset={"tibber:prices": snapshot}, age=3600.0)  # 1h old, past the TTL
+    n = {"c": 0}
+
+    def counting_post(url, token, body):
+        n["c"] += 1
+        return DATA
+
+    src = TibberPriceSource("tok", http_post=counting_post, cache_store=cache,
+                            cache_ttl=timedelta(minutes=15))
+    assert len(src.slots()) == 12
+    assert n["c"] == 1  # stale snapshot → one fresh fetch
+    assert any(k == "tibber:prices" for k, _, _ in cache.sets)  # and the fresh result is persisted

@@ -1,10 +1,28 @@
+import threading
+import time
 from datetime import UTC, datetime
 from zoneinfo import ZoneInfo
 
-from ems.sources.forecast_solar import ForecastSolarSource, parse_watts
+from ems.sources.forecast_solar import ForecastSolarSource, _serialize_slots, parse_watts
 
 AMS = ZoneInfo("Europe/Amsterdam")
 NOON_UTC = datetime(2026, 6, 28, 12, 0, tzinfo=UTC)
+
+
+class _FakeCache:
+    """In-memory CacheStore double with a presettable snapshot + fixed reported age."""
+
+    def __init__(self, preset: dict | None = None, age: float = 0.0) -> None:
+        self.data = dict(preset or {})
+        self.age = age
+        self.sets: list[tuple] = []
+
+    def get_with_age(self, key):
+        return (self.data[key], self.age) if key in self.data else None
+
+    def set(self, key, value, ttl_seconds):
+        self.data[key] = value
+        self.sets.append((key, value, ttl_seconds))
 SAMPLE = {"result": {"watts": {
     "2026-06-28 06:00:00": 0,
     "2026-06-28 09:00:00": 1200,
@@ -78,3 +96,59 @@ def test_zero_production_response_is_kept_not_fallback():
     slots = src.slots()
     assert src.source_label == "forecast.solar"
     assert all(s.p50_w == 0 for s in slots)
+
+
+def test_single_flight_one_fetch_under_concurrent_cache_miss():
+    n = {"c": 0}
+    barrier = threading.Barrier(8)
+
+    def slow(_url):
+        n["c"] += 1
+        time.sleep(0.05)
+        return SAMPLE
+
+    src = _src(http_get=slow)
+    out: list[int] = []
+
+    def worker():
+        barrier.wait()
+        out.append(len(src.slots()))
+
+    threads = [threading.Thread(target=worker) for _ in range(8)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    assert n["c"] == 1  # the free tier is ~12/h — concurrent misses must collapse to one fetch
+
+
+def _snapshot_blob():
+    midnight = datetime(2026, 6, 28, 0, 0, tzinfo=AMS)
+    return _serialize_slots(parse_watts(SAMPLE, AMS, midnight, 2 * 96))
+
+
+def test_warm_start_serves_snapshot_without_refetch():
+    cache = _FakeCache(preset={"forecast_solar:slots": _snapshot_blob()}, age=60.0)  # < 30min TTL
+    n = {"c": 0}
+
+    def fake(_url):
+        n["c"] += 1
+        return SAMPLE
+
+    src = _src(http_get=fake, cache_store=cache)
+    assert len(src.slots()) > 0
+    assert n["c"] == 0  # warm-started — a restart did not refetch the rate-limited API
+
+
+def test_stale_snapshot_refetches_once_and_persists():
+    cache = _FakeCache(preset={"forecast_solar:slots": _snapshot_blob()}, age=4000.0)  # > 30min TTL
+    n = {"c": 0}
+
+    def fake(_url):
+        n["c"] += 1
+        return SAMPLE
+
+    src = _src(http_get=fake, cache_store=cache)
+    src.slots()
+    assert n["c"] == 1
+    assert any(k == "forecast_solar:slots" for k, _, _ in cache.sets)  # fresh forecast persisted

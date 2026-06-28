@@ -36,6 +36,7 @@ def build_app():
     override_store = SettingsStore(str(db_path), table="runtime_state")
     audit_store = AuditStore(str(db_path))
     cache_store = CacheStore(str(db_path))
+    cache_store.init()  # ensure the table exists before sources warm-start from it below
     freshness = FreshnessTracker()
     freshness.register(*SIGNALS)
     tz = ZoneInfo(cfg.timezone)
@@ -44,7 +45,7 @@ def build_app():
     # Indevolt — only then is the driver armed and the control loop started.
     eff = effective_connection(str(db_path), cfg)
     source, price_source, solar_forecast, battery_endpoint, controller_driver, dev_mode, dry_run = (
-        build_wiring(eff, tz)
+        build_wiring(eff, tz, cache_store=cache_store)
     )
     recorder = Recorder(source, store, freshness, cycle_seconds=cfg.cycle_seconds)
     lifecycle = Lifecycle(dry_run=dry_run)

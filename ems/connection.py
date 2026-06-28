@@ -95,10 +95,13 @@ def effective_connection(db_path: str, cfg) -> dict:
     return effective_settings(_read_store(db_path))
 
 
-def build_wiring(eff: dict, tz: ZoneInfo):
+def build_wiring(eff: dict, tz: ZoneInfo, cache_store: object | None = None):
     """Build (source, price_source, solar_forecast, battery_endpoint, controller_driver, dev_mode,
     dry_run) from effective settings. The battery driver is unarmed and dry_run is True UNLESS
-    control.operational is on AND a live Indevolt is configured (then armed + dry_run False)."""
+    control.operational is on AND a live Indevolt is configured (then armed + dry_run False).
+
+    `cache_store` (optional) is handed to the rate-limited external sources (Tibber, Forecast.Solar)
+    so they warm-start from a persisted snapshot after a restart and don't immediately refetch."""
     from ems.sources.battery import MockBatteryDriver
     from ems.sources.forecast import MockSolarForecastSource
     from ems.sources.mock import MockSource
@@ -153,7 +156,7 @@ def build_wiring(eff: dict, tz: ZoneInfo):
     if eff.get("connection.use_live_prices") and token:
         from ems.sources.tibber import TibberPriceSource
 
-        price_source = TibberPriceSource(token, tz=tz)
+        price_source = TibberPriceSource(token, tz=tz, cache_store=cache_store)
     else:
         price_source = MockPriceSource(tz)
 
@@ -165,7 +168,7 @@ def build_wiring(eff: dict, tz: ZoneInfo):
         solar_forecast = ForecastSolarSource(
             tz=tz, lat=float(eff["site.lat"]), lon=float(eff["site.lon"]),
             tilt=float(eff["site.tilt"]), azimuth=float(eff["site.azimuth"]),
-            kwp=float(eff["site.kwp"]),
+            kwp=float(eff["site.kwp"]), cache_store=cache_store,
         )
     else:
         solar_forecast = MockSolarForecastSource(tz)

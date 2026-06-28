@@ -7,7 +7,9 @@ tests run against recorded GraphQL payloads, never the live API.
 """
 from __future__ import annotations
 
+import json
 import logging
+import threading
 from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 from zoneinfo import ZoneInfo
@@ -23,6 +25,23 @@ _CACHE_TTL = timedelta(minutes=15)
 # After a failed/empty fetch, wait at least this long before trying again — short enough to recover
 # quickly, long enough that a persistent 429 isn't hammered at the 5 s poll rate.
 _RETRY_TTL = timedelta(seconds=60)
+# How long a persisted snapshot is kept for warm-start (so a restart doesn't immediately refetch).
+# Read via get_with_age (ignores expiry); the TTL only governs eventual purge housekeeping.
+_PERSIST_TTL = timedelta(days=7)
+_CACHE_KEY = "tibber:prices"
+
+
+def _serialize_slots(slots: list[PriceSlot]) -> str:
+    return json.dumps([{"s": s.start.isoformat(), "e": s.eur_per_kwh} for s in slots])
+
+
+def _deserialize_slots(blob: str) -> list[PriceSlot]:
+    try:
+        raw = json.loads(blob)
+        return [PriceSlot(start=datetime.fromisoformat(r["s"]), eur_per_kwh=float(r["e"]))
+                for r in raw]
+    except (ValueError, TypeError, KeyError):
+        return []
 
 ENDPOINT = "https://api.tibber.com/v1-beta/gql"
 # priceInfo.today/tomorrow are hourly {total (€/kWh), startsAt (ISO, tz-aware)}.
@@ -95,6 +114,8 @@ class TibberPriceSource:
         cache_ttl: timedelta = _CACHE_TTL,
         retry_ttl: timedelta = _RETRY_TTL,
         clock: Callable[[], datetime] | None = None,
+        cache_store: object | None = None,
+        cache_key: str = _CACHE_KEY,
     ) -> None:
         self.token = token
         self.tz = tz
@@ -106,28 +127,72 @@ class TibberPriceSource:
         self._clock = clock or (lambda: datetime.now(UTC))
         self._cached: list[PriceSlot] = []
         self._next_fetch_at: datetime | None = None  # earliest time we may hit the API again
+        # Single-flight: when the TTL lapses, only ONE concurrent caller fetches; the rest wait and
+        # then read the now-fresh cache. Prevents a dashboard poll fan-out (sync endpoints run in
+        # the threadpool) from firing several simultaneous Tibber requests → HTTP 429.
+        self._lock = threading.Lock()
+        self._cache_store = cache_store
+        self._cache_key = cache_key
+        self._warm_start()
+
+    def _warm_start(self) -> None:
+        """Seed the in-memory cache from a persisted snapshot so a restart doesn't immediately
+        refetch. We keep the snapshot as last-good regardless of age; we skip the next fetch only if
+        it's still within the TTL (older → fetch once on the first call, via single-flight)."""
+        if self._cache_store is None:
+            return
+        try:
+            got = self._cache_store.get_with_age(self._cache_key)
+        except Exception:
+            got = None
+        if not got:
+            return
+        blob, age = got
+        slots = _deserialize_slots(blob)
+        if not slots:
+            return
+        self._cached = slots
+        remaining = self._cache_ttl.total_seconds() - age
+        if remaining > 0:
+            self._next_fetch_at = self._clock() + timedelta(seconds=remaining)
+        # else: leave _next_fetch_at None so the first slots() refetches (once), keeping last-good.
+
+    def _persist(self, slots: list[PriceSlot]) -> None:
+        if self._cache_store is None:
+            return
+        try:
+            self._cache_store.set(
+                self._cache_key, _serialize_slots(slots), _PERSIST_TTL.total_seconds()
+            )
+        except Exception:
+            pass  # persistence is best-effort; never break a price read over it
 
     def slots(self) -> list[PriceSlot]:
         if not self.token:
             _log.warning("Tibber token not set; no prices")
             return []
-        now = self._clock()
         # Throttle: serve the cache until the next allowed fetch. One request per window regardless
         # of how often the dashboard polls — successes hold for cache_ttl, failures for retry_ttl.
-        if self._next_fetch_at is not None and now < self._next_fetch_at:
+        if self._next_fetch_at is not None and self._clock() < self._next_fetch_at:
             return self._cached
-        try:
-            data = self._post(self.endpoint, self.token, {"query": PRICE_QUERY})
-            parsed = parse_price_info(data, self.home_index)
-            if parsed:
-                self._cached = parsed
-                self._next_fetch_at = now + self._cache_ttl
-            else:  # empty (no error): keep any last-good prices, retry soon
+        with self._lock:
+            # Double-checked: a concurrent caller may have refreshed while we waited on the lock.
+            now = self._clock()
+            if self._next_fetch_at is not None and now < self._next_fetch_at:
+                return self._cached
+            try:
+                data = self._post(self.endpoint, self.token, {"query": PRICE_QUERY})
+                parsed = parse_price_info(data, self.home_index)
+                if parsed:
+                    self._cached = parsed
+                    self._next_fetch_at = now + self._cache_ttl
+                    self._persist(parsed)
+                else:  # empty (no error): keep any last-good prices, retry soon
+                    self._next_fetch_at = now + self._retry_ttl
+                return self._cached
+            except Exception as exc:
+                # Fail-safe: keep serving the last good prices; back off so we don't hammer a 429.
                 self._next_fetch_at = now + self._retry_ttl
-            return self._cached
-        except Exception as exc:
-            # Fail-safe: keep serving the last good prices; back off so we don't hammer a 429.
-            self._next_fetch_at = now + self._retry_ttl
-            _log.warning("Tibber price fetch failed (%s: %s); %s", type(exc).__name__, exc,
-                         "serving cached prices" if self._cached else "no prices yet")
-            return self._cached
+                _log.warning("Tibber price fetch failed (%s: %s); %s", type(exc).__name__, exc,
+                             "serving cached prices" if self._cached else "no prices yet")
+                return self._cached
