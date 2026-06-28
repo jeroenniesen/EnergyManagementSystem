@@ -1,13 +1,94 @@
 from datetime import UTC, datetime
 
 from ems.domain import BatteryIntent
-from ems.planner.explain import build_plan_detail, plan_metrics, summarize_projection
+from ems.planner.explain import (
+    ExternalLlmExplainer,
+    TemplateExplainer,
+    _has_ungrounded_number,
+    build_plan_detail,
+    plan_metrics,
+    summarize_projection,
+)
 from ems.planner.projection import ProjectedSlot
 from ems.planner.schedule import SLOT, Plan, PlanSlot
 from ems.sources.forecast import ForecastSlot
 from ems.sources.prices import PriceSlot
 
 NOW = datetime(2026, 6, 28, 0, 0, tzinfo=UTC)
+
+# ---- Explainer port (M6c prototype: TemplateExplainer + ExternalLlmExplainer) ----------------
+
+REASON = "Charging in the cheapest 3-hour window at €0.30/kWh to reach 72% by 07:00."
+FACTS = {"price_eur_kwh": 0.30, "target_pct": 72}
+
+
+def _fake_post(content):
+    """A fake OpenAI-compatible chat transport returning a fixed assistant message."""
+    def post(messages, params):
+        return {"choices": [{"message": {"content": content}}]}
+    return post
+
+
+def test_template_explainer_returns_reason_verbatim():
+    e = TemplateExplainer().explain(REASON, FACTS)
+    assert e.text == REASON and e.source == "template" and e.base_reason == REASON
+
+
+def test_external_explainer_happy_path_is_grounded_and_tagged():
+    out = "We laden op in het goedkoopste venster van €0,30/kWh tot 72%."  # Dutch, grounded
+    e = ExternalLlmExplainer(_fake_post(out), model="MiniMax-M2.5", language="Dutch").explain(
+        REASON, FACTS
+    )
+    assert e.source == "external_llm"
+    assert e.text == out
+    assert e.base_reason == REASON  # traceability: tied to the deterministic reason
+
+
+def test_external_explainer_rejects_invented_number_falls_back_to_template():
+    out = "Charging now because the price will spike to €0.95/kWh tonight."  # 0.95 not in inputs
+    e = ExternalLlmExplainer(_fake_post(out), model="m").explain(REASON, FACTS)
+    assert e.source == "template" and e.text == REASON
+
+
+def test_external_explainer_falls_back_on_transport_error():
+    def boom(messages, params):
+        raise TimeoutError("slow")
+
+    e = ExternalLlmExplainer(boom, model="m").explain(REASON, FACTS)
+    assert e.source == "template" and e.text == REASON
+
+
+def test_external_explainer_falls_back_on_empty_or_bad_response():
+    assert ExternalLlmExplainer(_fake_post("   "), model="m").explain(REASON, FACTS).source == \
+        "template"
+
+    def bad_shape(messages, params):
+        return {"unexpected": True}
+
+    assert ExternalLlmExplainer(bad_shape, model="m").explain(REASON, FACTS).source == "template"
+
+
+def test_external_explainer_payload_is_minimal_and_redacted():
+    captured = {}
+
+    def capture(messages, params):
+        captured["messages"] = messages
+        return {"choices": [{"message": {"content": "Opladen tot 72% voor €0,30/kWh."}}]}
+
+    ExternalLlmExplainer(capture, model="m", language="Dutch").explain(REASON, FACTS)
+    blob = " ".join(m["content"] for m in captured["messages"])
+    # the deterministic reason + the cited facts ARE sent...
+    assert REASON in blob and "0.3" in blob and "72" in blob
+    assert "Dutch" in blob  # the requested language is in the instruction
+    # ...and nothing identifying leaks (none was passed in — the caller controls the facts dict).
+    for forbidden in ("192.168", "secret", "token", "latitude", "52.13", "Amsterdam"):
+        assert forbidden not in blob
+
+
+def test_grounding_guard_accepts_reformatted_numbers_rejects_new_ones():
+    src = "charge at €0.30/kWh to 72%"
+    assert not _has_ungrounded_number("Opladen tot 72 procent voor €0,30/kWh.", src)
+    assert _has_ungrounded_number("Charging to 85%.", src)  # 85 was never in the inputs
 
 
 def test_summarize_projection_empty():

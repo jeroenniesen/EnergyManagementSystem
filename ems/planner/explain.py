@@ -6,8 +6,12 @@ line up exactly with the charge actions. Pure + unit-tested.
 """
 from __future__ import annotations
 
+import re
 from collections import Counter
+from collections.abc import Callable
+from dataclasses import dataclass
 from datetime import datetime
+from typing import Protocol
 
 from ems.domain import BatteryIntent
 from ems.planner.projection import SLOT_HOURS, ProjectedSlot
@@ -91,6 +95,136 @@ def summarize_projection(projected: list[ProjectedSlot]) -> dict:
         "import_kwh": round(imp, 2), "export_kwh": round(exp, 2),
         "solar_kwh": round(solar, 2), "load_kwh": round(load, 2),
     }
+
+
+# ---------------------------------------------------------------------------------------------
+# Explainer port (SPEC §8.6 / docs/ml-layer.md §7) — M6c prototype.
+#
+# The deterministic reason is ALWAYS computed elsewhere (the planner / mode_controller). An
+# Explainer only *rephrases* it into natural prose; it may never invent a number or touch control.
+# `TemplateExplainer` (offline, default) returns the reason verbatim. `ExternalLlmExplainer` sends a
+# MINIMAL REDACTED payload (the reason + the few cited facts — never raw history, location, or
+# secrets) to an OpenAI-compatible chat API (e.g. MiniMax), with a grounding guard that rejects any
+# output containing a number not present in the inputs, and falls back to the template on ANY
+# failure. The HTTP transport is INJECTED (a `chat_post` callable) so the adapter carries no network
+# dependency and is fully unit-testable with a fake — mirroring `indevolt_driver.make_setdata_post`.
+# ---------------------------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class Explanation:
+    """A phrased explanation, tagged with its source and the deterministic reason it came from
+    (traceability requirement, docs/ml-layer.md §7)."""
+
+    text: str
+    source: str       # "template" | "external_llm" | "local_llm"
+    base_reason: str  # the deterministic reason this was derived from
+
+
+class Explainer(Protocol):
+    def explain(self, reason: str, facts: dict | None = None) -> Explanation: ...
+
+
+class TemplateExplainer:
+    """Offline default: the deterministic reason, verbatim. Always available, never fails."""
+
+    def explain(self, reason: str, facts: dict | None = None) -> Explanation:
+        return Explanation(text=reason, source="template", base_reason=reason)
+
+
+# An OpenAI-compatible chat transport: (messages, params) -> response dict in OpenAI shape
+# ({"choices": [{"message": {"content": "..."}}]}). Injected so no httpx import lives here.
+ChatPost = Callable[[list[dict], dict], dict]
+
+_NUM_RE = re.compile(r"-?\d[\d.,]*")
+
+
+def _number_candidates(token: str) -> set[str]:
+    """The plausible normalised forms of one numeric token, so 0.30 / 0,30 / €0.30 can match. Comma
+    is tried as both a decimal point and a thousands separator; each variant is parsed to a
+    canonical float string where possible (else kept as the cleaned token)."""
+    cleaned = token.strip().strip(".,")
+    cands: set[str] = set()
+    for variant in {cleaned, cleaned.replace(",", "."), cleaned.replace(",", "")}:
+        try:
+            cands.add(f"{float(variant):g}")
+        except ValueError:
+            if variant:
+                cands.add(variant)
+    return cands
+
+
+def _allowed_numbers(source: str) -> set[str]:
+    """Every normalised numeric form present in the grounding source (reason + cited facts)."""
+    allowed: set[str] = set()
+    for tok in _NUM_RE.findall(source):
+        allowed |= _number_candidates(tok)
+    return allowed
+
+
+def _has_ungrounded_number(text: str, allowed_source: str) -> bool:
+    """True if `text` contains a number whose every interpretation is absent from `allowed_source`.
+    A token is grounded if ANY of its candidate forms is allowed (so reformatted/localised numbers
+    pass); only a token with no matching candidate is ungrounded. Conservative by design — an
+    unmatched number → reject and fall back to the template, never accept an invented figure. (The
+    numeric guard is the safety-critical check; qualitative drift is mitigated by the rephrase-only
+    prompt + low temperature.)"""
+    allowed = _allowed_numbers(allowed_source)
+    for tok in _NUM_RE.findall(text):
+        cands = _number_candidates(tok)
+        if cands and not (cands & allowed):
+            return True
+    return False
+
+
+class ExternalLlmExplainer:
+    """Rephrase the deterministic reason via an OpenAI-compatible chat API (e.g. MiniMax). The
+    bounded, opt-in, off-device exception (SPEC §12): minimal redacted payload, grounded,
+    template fallback on any failure."""
+
+    def __init__(
+        self,
+        chat_post: ChatPost,
+        *,
+        model: str,
+        language: str = "English",
+        max_tokens: int = 200,
+        temperature: float = 0.2,
+    ) -> None:
+        self._chat_post = chat_post
+        self._model = model
+        self._language = language
+        self._max_tokens = max_tokens
+        self._temperature = temperature
+        self._fallback = TemplateExplainer()
+
+    def _messages(self, reason: str, facts: dict) -> list[dict]:
+        # The ONLY dynamic content sent off-device: the deterministic reason + the cited facts.
+        # Never raw history, location, tokens, or secrets — the caller passes a minimal facts dict.
+        facts_line = "; ".join(f"{k}={v}" for k, v in facts.items()) if facts else "(none)"
+        system = (
+            f"You rephrase a home-battery system's decision into one clear sentence in "
+            f"{self._language}. Use ONLY the facts given. Do NOT introduce any number, price, "
+            f"percentage, time, or claim that is not in the input. Do not give advice."
+        )
+        user = f"Decision: {reason}\nFacts: {facts_line}\nRephrase in {self._language}:"
+        return [{"role": "system", "content": system}, {"role": "user", "content": user}]
+
+    def explain(self, reason: str, facts: dict | None = None) -> Explanation:
+        facts = facts or {}
+        try:
+            resp = self._chat_post(
+                self._messages(reason, facts),
+                {"model": self._model, "max_tokens": self._max_tokens,
+                 "temperature": self._temperature},
+            )
+            text = (resp["choices"][0]["message"]["content"] or "").strip()
+        except Exception:
+            return self._fallback.explain(reason)  # network error / timeout / bad shape → template
+        allowed_source = reason + " " + " ".join(str(v) for v in facts.values())
+        if not text or _has_ungrounded_number(text, allowed_source):
+            return self._fallback.explain(reason)  # empty or invented a number → template
+        return Explanation(text=text, source="external_llm", base_reason=reason)
 
 
 def build_plan_detail(
