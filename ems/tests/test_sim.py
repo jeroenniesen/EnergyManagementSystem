@@ -85,6 +85,18 @@ def test_adaptive_is_near_optimal():
     assert total_adp <= total_opt + 0.50
 
 
+def test_adaptive_stays_safe_under_an_optimistic_forecast():
+    # Even when the forecast over-predicts solar by 40% (claims sunnier than reality), the
+    # conservative P10 sizing + per-slot replanning must keep the battery above its reserve floor
+    # on every day — the safety guarantee.
+    for sc in nl_scenarios(AMS, forecast_bias=1.4):
+        r = simulate_rolling(
+            sc, lambda now, soc, sc=sc: plan_adaptive(
+                sc.prices, sc.forecast, now, soc_pct=soc, load_w_by=sc.load_w,
+                cfg=AdaptiveConfig(usable_kwh=10.8)))
+        assert r.night_ok, f"{sc.name}: dropped below reserve under a rosy forecast"
+
+
 def test_scenarios_cover_the_expected_solar_range():
     # Realised daily solar (kWh) should span a realistic NL 3 kWp range across the four days.
     by = {s.name: sum(s.actual_solar_w.values()) * 0.25 / 1000.0 for s in nl_scenarios(AMS)}
