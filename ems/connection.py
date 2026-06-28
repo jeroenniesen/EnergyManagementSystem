@@ -132,10 +132,15 @@ def build_wiring(eff: dict, tz: ZoneInfo, cache_store: object | None = None):
             if tower_ips
             else None
         )
+        # A missing solar/car meter is left absent (None) — NEVER substituted with the P1 IP. P1 is
+        # net grid flow, not PV production or EV load; impersonating corrupts load reconstruction,
+        # the EV guard and forecast learning (energy review #2). The signal just degrades.
+        solar_ip = eff.get("meters.solar_ip")
+        car_ip = eff.get("meters.car_ip")
         source = LiveSource(
             p1=HomeWizardMeter(eff["meters.p1_ip"]),
-            solar=HomeWizardMeter(eff.get("meters.solar_ip") or eff["meters.p1_ip"]),
-            car=HomeWizardMeter(eff.get("meters.car_ip") or eff["meters.p1_ip"]),
+            solar=HomeWizardMeter(str(solar_ip)) if solar_ip else None,
+            car=HomeWizardMeter(str(car_ip)) if car_ip else None,
             battery=battery_reader,
         )
         if operational:

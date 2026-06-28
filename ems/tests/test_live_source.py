@@ -54,6 +54,17 @@ def test_live_source_composes_meters_into_sample():
     assert "battery" not in fresh and "soc" not in fresh
 
 
+def test_absent_solar_car_meters_degrade_not_impersonate_p1():
+    # P1 reads a big net import; if solar/car were (wrongly) substituted with P1 they'd read 1500.
+    # Absent meters must instead leave solar/ev at 0 and NOT mark them fresh (→ degrade).
+    p1 = _meter({"active_power_w": 1500})
+    src = LiveSource(p1=p1, solar=None, car=None)
+    sample, fresh = src.read_sample()
+    assert sample.grid_power_w == 1500.0
+    assert sample.solar_power_w == 0.0 and sample.ev_power_w == 0.0  # NOT 1500 (no impersonation)
+    assert fresh == {"grid"}  # solar/ev never read → age to missing → data quality degrades
+
+
 def test_failed_meter_keeps_last_value_and_drops_from_fresh():
     boom_calls = {"n": 0}
 

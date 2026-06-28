@@ -73,6 +73,19 @@ def test_build_wiring_live_devices_when_configured():
     assert dry_run is True  # operational not enabled -> still dry-run
 
 
+def test_build_wiring_omits_missing_solar_car_meters_no_p1_impersonation():
+    # Only P1 configured → solar/car meters must be ABSENT (None), never the P1 meter reused.
+    eff = effective_settings({
+        "connection.use_live_devices": True,
+        "meters.p1_ip": "192.168.50.92",
+        "meters.solar_ip": "",
+        "meters.car_ip": "",
+    })
+    src, *_ = build_wiring(eff, AMS)
+    assert src.solar is None and src.car is None  # degraded, not impersonated
+    assert src.p1 is not None and src.p1.ip == "192.168.50.92"
+
+
 def test_build_wiring_live_prices_when_token_present():
     eff = effective_settings({"connection.use_live_prices": True, "prices.tibber_token": "tok"})
     _src, price, *_ = build_wiring(eff, AMS)

@@ -82,10 +82,14 @@ class LiveSource:
         self,
         *,
         p1: HomeWizardMeter,
-        solar: HomeWizardMeter,
-        car: HomeWizardMeter,
+        solar: HomeWizardMeter | None = None,
+        car: HomeWizardMeter | None = None,
         battery: BatteryReader | None = None,
     ) -> None:
+        # A meter the operator hasn't configured is None — NOT the P1 meter standing in for it. P1
+        # is net grid flow; reusing it as the solar/EV meter would corrupt load reconstruction, the
+        # EV guard and forecast learning (energy review #2). An absent meter never reports fresh, so
+        # its signal ages to missing and the data-quality badge degrades the feature.
         self.p1 = p1
         self.solar = solar
         self.car = car
@@ -108,8 +112,10 @@ class LiveSource:
                              signal, type(exc).__name__, exc)
 
         attempt("grid", lambda: grid_w(self.p1.read()))
-        attempt("solar", lambda: solar_w(self.solar.read()))
-        attempt("ev", lambda: ev_w(self.car.read()))
+        if self.solar is not None:
+            attempt("solar", lambda: solar_w(self.solar.read()))
+        if self.car is not None:
+            attempt("ev", lambda: ev_w(self.car.read()))
         if self.battery is not None:
             try:
                 power_w, soc = self.battery.read_power_soc()
