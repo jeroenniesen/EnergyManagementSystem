@@ -34,7 +34,7 @@ def _all_auto(prices: list[PriceSlot], now: datetime, note: str) -> Plan:
         )
         for p in prices
     )
-    return Plan(created_at=now, slots=slots)
+    return Plan(created_at=now, slots=slots, strategy="winter")
 
 
 def plan_rule_based(
@@ -84,4 +84,7 @@ def plan_rule_based(
             intent = BatteryIntent.ALLOW_SELF_CONSUMPTION
             reason = f"self-consumption (€{p.eur_per_kwh:.2f}/kWh)"
         out.append(PlanSlot(p.start, intent, reason))
-    return Plan(created_at=now, slots=tuple(out))
+    # Deadline = the first profitable peak: the cheap window must have charged before it.
+    # (Slot-level target SoC for winter arbitrage is sized in the demand-aware upgrade, Polish 2.)
+    first_peak = min(discharge_set) if discharge_set else None
+    return Plan(created_at=now, slots=tuple(out), strategy="winter", deadline=first_peak)

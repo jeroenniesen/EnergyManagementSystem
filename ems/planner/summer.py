@@ -106,9 +106,9 @@ def plan_summer(
     shortfall_kwh = max(0.0, target_kwh - current_kwh - solar_charge_kwh)
 
     # Buy only the shortfall, in the cheapest affordable slots before the charge deadline.
+    per_slot_kwh = cfg.max_charge_w * dh / 1000.0 * eta
     grid_set: set[datetime] = set()
     if cfg.allow_grid_topup and shortfall_kwh > 1e-9:
-        per_slot_kwh = cfg.max_charge_w * dh / 1000.0 * eta
         needed = math.ceil(shortfall_kwh / per_slot_kwh) if per_slot_kwh > 0 else 0
         affordable = [
             p for p in future
@@ -118,6 +118,8 @@ def plan_summer(
         affordable.sort(key=lambda p: (p.eur_per_kwh, p.start))
         grid_set = {p.start for p in affordable[:needed]}
 
+    target_soc_clamped = max(0.0, min(100.0, cfg.target_soc_pct))
+
     out: list[PlanSlot] = []
     for p in future:
         solar_w = p50_by.get(p.start, 0.0)
@@ -125,11 +127,20 @@ def plan_summer(
             intent = BatteryIntent.GRID_CHARGE_TO_TARGET
             reason = (f"grid top-up: cheap €{p.eur_per_kwh:.2f}/kWh to reach the night target "
                       f"the sun won't cover")
-        elif solar_w > _DAYLIGHT_W:
+            # Charge to the night-carry target (NOT to full): the calculated shortfall, by sunset.
+            out.append(PlanSlot(
+                p.start, intent, reason, target_soc=target_soc_clamped,
+                target_kwh=round(per_slot_kwh, 3), power_w=cfg.max_charge_w,
+                deadline=charge_deadline,
+            ))
+            continue
+        if solar_w > _DAYLIGHT_W:
             intent = BatteryIntent.ALLOW_SELF_CONSUMPTION
             reason = f"solar-first: charging from your panels ({solar_w:.0f} W) / self-consumption"
         else:
             intent = BatteryIntent.ALLOW_SELF_CONSUMPTION
             reason = "overnight: running the house on the battery"
-        out.append(PlanSlot(p.start, intent, reason))
-    return Plan(created_at=now, slots=tuple(out))
+        out.append(PlanSlot(p.start, intent, reason, target_soc=target_soc_clamped,
+                            deadline=charge_deadline))
+    return Plan(created_at=now, slots=tuple(out), strategy="summer",
+                target_soc=target_soc_clamped, deadline=charge_deadline)

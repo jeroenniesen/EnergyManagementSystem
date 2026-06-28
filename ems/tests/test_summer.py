@@ -30,6 +30,25 @@ def _cfg(**kw) -> SummerConfig:
     return SummerConfig(**base)
 
 
+def test_grid_charge_slots_carry_target_soc_power_not_full():
+    # Night now (no sun) + low SoC → must grid-charge the shortfall. Those slots must carry the
+    # night-carry TARGET (80%, not 100%) and a power, so the driver charges the shortfall, not full.
+    prices = _prices(16, eur=0.10)
+    fc = _forecast([0.0] * 16)  # no daylight
+    plan = plan_summer(prices, fc, T0, soc_pct=10.0, cfg=_cfg(target_soc_pct=80.0))
+    charge = [s for s in plan.slots if s.intent is BatteryIntent.GRID_CHARGE_TO_TARGET]
+    assert charge, "a low-SoC dark night should grid-charge"
+    for s in charge:
+        assert s.target_soc == 80.0  # NOT 100 — the calculated night target
+        assert s.power_w == 4000.0 and s.target_kwh and s.target_kwh > 0
+    assert plan.strategy == "summer" and plan.target_soc == 80.0  # plan-level contract
+
+
+def test_plan_slot_end_defaults_to_start_plus_slot():
+    plan = plan_summer(_prices(4), _forecast([0.0] * 4), T0, soc_pct=50.0, cfg=_cfg())
+    assert plan.slots[0].slot_end == plan.slots[0].start + SLOT
+
+
 def test_solar_covers_the_night_so_no_grid_topup():
     # 16 slots, all bright sun (3 kW) -> plenty to fill 50% -> 80% (3 kWh) from solar alone.
     prices = _prices(16)

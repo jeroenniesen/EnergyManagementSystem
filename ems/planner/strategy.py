@@ -10,6 +10,7 @@ the same `Plan`, so the projection, validator, UI and controller paths are uncha
 """
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
@@ -58,7 +59,11 @@ def build_plan(
     to the simpler solar-first planner."""
     if strategy == "summer":
         if adaptive_cfg is not None and load_w_by is not None:
-            return plan_adaptive(prices, forecast or [], now, soc_pct=soc_pct,
+            plan = plan_adaptive(prices, forecast or [], now, soc_pct=soc_pct,
                                  load_w_by=load_w_by, cfg=adaptive_cfg)
-        return plan_summer(prices, forecast or [], now, soc_pct=soc_pct, cfg=summer_cfg)
-    return plan_rule_based(prices, now, winter_cfg)
+        else:
+            plan = plan_summer(prices, forecast or [], now, soc_pct=soc_pct, cfg=summer_cfg)
+    else:
+        plan = plan_rule_based(prices, now, winter_cfg)
+    # The resolved strategy is authoritative on the returned plan (whichever planner ran).
+    return replace(plan, strategy=strategy)

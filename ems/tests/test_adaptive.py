@@ -73,5 +73,21 @@ def test_sizes_charge_to_the_deficit_not_a_fixed_window():
     assert n_big > n_small
 
 
+def test_charge_and_discharge_slots_carry_the_energy_contract():
+    # charge slots → target SoC + power + reserve floor + deadline; discharge slots → floor + power.
+    prices = _prices([0.10] * 4 + [0.40] * 4)
+    fc = _fc([0.0] * 8)
+    load = _load([200.0] * 4 + [3000.0] * 4)
+    plan = plan_adaptive(prices, fc, T0, soc_pct=15.0, load_w_by=load, cfg=_cfg(reserve_soc_pct=10))
+    # Direct call: the all-seasons planner leaves strategy unlabelled (build_plan stamps it).
+    assert plan.strategy is None and plan.target_soc is not None and plan.deadline is not None
+    for s in plan.slots:
+        if s.intent is BatteryIntent.GRID_CHARGE_TO_TARGET:
+            assert s.target_soc is not None and 0 < s.target_soc <= 100
+            assert s.power_w == 4000.0 and s.floor_soc == 10.0 and s.deadline is not None
+        if s.intent is BatteryIntent.DISCHARGE_FOR_LOAD:
+            assert s.floor_soc == 10.0 and s.power_w is not None
+
+
 def test_empty_prices_yields_empty_plan():
     assert plan_adaptive([], [], T0, soc_pct=50.0, load_w_by={}, cfg=_cfg()).slots == ()

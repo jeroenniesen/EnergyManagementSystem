@@ -98,20 +98,38 @@ def plan_adaptive(
     pool.sort(key=lambda p: (p.eur_per_kwh, p.start))
     charge_set = {p.start for p in pool[:n_charge]}
 
+    # The SoC the plan should reach (reserve + the demand it must cover), and by when.
+    target_soc_pct = (min(100.0, (reserve_kwh + coverable_kwh) / usable * 100.0)
+                      if usable > 0 else 0.0)
+    floor_soc = max(0.0, min(100.0, cfg.reserve_soc_pct))
+
     out: list[PlanSlot] = []
     for p in future:
         solar = p50.get(p.start, 0.0)
         if p.start in charge_set:
             intent = BatteryIntent.GRID_CHARGE_TO_TARGET
             reason = f"charge: cheap €{p.eur_per_kwh:.2f}/kWh to cover the coming peak + night"
-        elif p.start in discharge_set:
+            out.append(PlanSlot(
+                p.start, intent, reason, target_soc=target_soc_pct,
+                target_kwh=round(per_slot_kwh, 3), power_w=cfg.max_charge_w,
+                floor_soc=floor_soc, deadline=last_need,
+            ))
+            continue
+        if p.start in discharge_set:
             intent = BatteryIntent.DISCHARGE_FOR_LOAD
             reason = f"shave the €{p.eur_per_kwh:.2f}/kWh peak from the battery"
-        elif solar > load_w_by.get(p.start, 0.0):
+            out.append(PlanSlot(p.start, intent, reason, power_w=round(max(0.0, net_w(p)), 1),
+                                floor_soc=floor_soc, deadline=last_need))
+            continue
+        if solar > load_w_by.get(p.start, 0.0):
             intent = BatteryIntent.ALLOW_SELF_CONSUMPTION
             reason = f"solar-first: charging from your panels ({solar:.0f} W)"
         else:
             intent = BatteryIntent.ALLOW_SELF_CONSUMPTION
             reason = "running the house on the battery"
-        out.append(PlanSlot(p.start, intent, reason))
-    return Plan(created_at=now, slots=tuple(out))
+        out.append(PlanSlot(p.start, intent, reason, target_soc=target_soc_pct, floor_soc=floor_soc,
+                            deadline=last_need))
+    # No season label here: this planner serves both seasons. build_plan stamps the resolved
+    # strategy; a direct caller gets an honest None rather than a misleading "summer".
+    return Plan(created_at=now, slots=tuple(out), strategy=None, target_soc=target_soc_pct,
+                deadline=last_need)
