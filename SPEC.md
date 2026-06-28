@@ -224,7 +224,9 @@ All options below are free; one **primary** + one **fallback**, PVGIS once for a
 ### 6.5 Indevolt battery (the controlled device) — corrected command surface + capability probe
 Indevolt is a German brand (Power Genius GmbH). Your system is a **SolidFlex 2000 (Gen-2), two towers in a cluster (≈10.8 kWh total), latest firmware**, with a local **"OpenData" API**.
 
-> **Cluster note:** control the cluster as a *single* logical device — SoC/power are cluster-wide, one command applies to the whole cluster. Combined inverter power ≈ **~2 kW/tower → ~4 kW** — **CONFIRM@M1** the exact ceiling from HA power sensors / `Indevolt.GetData` (drops if you set a feed-in/output limit).
+> **Cluster note:** control the cluster as a *single* logical device — one command applies to the whole cluster. Combined inverter power ≈ **~2 kW/tower → ~4 kW** — **CONFIRM@M1** the exact ceiling from HA power sensors / `Indevolt.GetData` (drops if you set a feed-in/output limit).
+>
+> **Implemented (read):** each tower reports its **own** SoC + rated capacity, so the system SoC is the **capacity-weighted average** across all configured towers, and power is their signed sum (`ems/sources/indevolt.py` `IndevoltClusterReader`; aggregation + fail-safe in [`docs/energy-model.md`](docs/energy-model.md) §9). Confirmed live: master `…53` 5.38 kWh + slave `…22` 5.60 kWh ⇒ **10.98 kWh**. The master (`battery.indevolt_ip`) is the write target; additional towers are listed in `battery.indevolt_ips_extra` and shown per-tower in the UI.
 
 **The command surface is *probed*, not assumed (corrected).** The official HA integration (repo `INDEVOLT/homeassistant-indevolt`) provides **fewer services than earlier drafts claimed**. Verified against the HA docs:
 - **Services that exist:** `indevolt.charge` and `indevolt.discharge` (both run *until a target SoC*; treat `power` + `target_soc` as candidate params and **confirm at probe**).
@@ -367,6 +369,8 @@ Selection is **configurable** (calendar month, rolling solar-forecast threshold,
 
 ### 8.5 SoC projection lives in the planner (not just the UI)
 The planner computes a **projected-SoC curve** across the horizon as it builds the schedule, applying **charge/discharge efficiency** to each slot. The plan is **rejected/adjusted** if the projection would (a) drop below `min_reserve_soc`, (b) exceed usable capacity, or (c) fail to reserve enough for the evening peak (§8.3, step 5). The same curve feeds the UI's expected-vs-actual chart (§9.1).
+
+> **Implemented (read/UI side):** `ems/planner/projection.py` simulates SoC + grid flow forward over the plan's slots from the current (cluster) SoC, the solar P50 forecast and a learned **non-EV** load profile (`ems/planner/load_profile.py`); it is served by **`GET /api/energy-forecast`** (recorded SoC history + 24h projection + summary) and rendered as the **SoC history-and-forecast chart**. Modelling choices + assumptions are documented in [`docs/energy-model.md`](docs/energy-model.md) §10. Wiring this same curve into the planner's pre-apply validator (the reject/adjust above) remains a later step.
 
 ### 8.6 The output: a mode schedule
 ```

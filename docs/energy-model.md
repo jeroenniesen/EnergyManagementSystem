@@ -123,3 +123,44 @@ trigger             EMS                              external
  │     enforce invariants (reserve, capacity), no-trade if savings<min
  │  publish plan + per-slot reasons ────────────►  UI / MQTT
 ```
+
+## 9. Multi-tower cluster SoC (read aggregation)
+
+The battery is a **cluster of N Indevolt towers** read as one logical device (SPEC §6.5). Each tower
+reports its **own** SoC and rated capacity over OpenData (`Indevolt.GetData`), so the system SoC is
+**not** any single tower's reading — it is the **capacity-weighted average**:
+
+```
+soc_system = Σ(soc_i · capacity_i) / Σ(capacity_i)      (plain mean if capacities are unknown)
+power_system = Σ power_i            (signed: +discharge / −charge)
+```
+
+Confirmed live (2026-06-28): master `…53` 50 % / 5.38 kWh, slave `…22` 49 % / 5.60 kWh → cluster
+**49.5 %**, **10.98 kWh** rated. Capacity + master/slave role are read once and cached (static);
+SoC/power are read each cycle. **Fail-safe:** the aggregate is taken over whatever towers respond;
+only if *every* tower is unreachable does SoC age to not-fresh. The role register (`606`) arrives
+from the firmware as a **string** and is coerced. Read-only — control writes still target the
+master (`battery.indevolt_ip`); extra towers go in `battery.indevolt_ips_extra`.
+
+## 10. 24-hour energy projection (`/api/energy-forecast`)
+
+Realises the §8.5 projected-SoC curve for the UI's history-vs-forecast chart (§9.1). Simulates the
+battery **forward, slot by slot** from the current SoC, the solar forecast (P50), the expected load
+and each slot's plan intent, emitting per-slot projected **SoC %, battery power and grid in/out**.
+The AC balance `grid = load − solar − battery` holds exactly every slot.
+
+**Modelling choices (know these when validating the prediction):**
+- **Expected load = learned NON-EV house load**, not total house load. `house_load_w` includes EV
+  charging (the Tesla draws ~10 kW intermittently); the battery offsets the house baseline, not the
+  car, so the profile uses `non_ev_load_w` (§4.5). It is the mean by **hour-of-day** from recent
+  history (so within an hour the four 15-min slots share one value); a cold start (< 3 samples)
+  uses the overnight-load baseline until real history accrues.
+- **Round-trip efficiency** is split evenly, `η = √rte`, applied on both charge (store gains AC·η)
+  and discharge (store loses AC/η), so a full store-then-return cycle loses exactly `rte`.
+- Charge/discharge are bounded by **both** the power limits (`battery.max_charge_w` /
+  `max_discharge_w`) **and** the SoC headroom/availability in the slot, so projected SoC stays in
+  `[0, usable]` and never discharges below `min_reserve_soc`.
+- Per intent: `GRID_CHARGE_TO_TARGET` charges at full power regardless of solar; `HOLD_RESERVE`
+  never discharges but soaks solar surplus; `ALLOW_SELF_CONSUMPTION` tracks net load both ways;
+  `DISCHARGE_FOR_LOAD` covers the deficit (and **exports** any solar surplus rather than charging).
+  If the battery can't fully cover a peak, the slot honestly shows residual **grid import**.
