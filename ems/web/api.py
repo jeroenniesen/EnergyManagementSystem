@@ -97,6 +97,19 @@ def _explain_cache_key(reason: str, language: str, model: str) -> str:
     return "explain:" + hashlib.sha256(raw).hexdigest()
 
 
+# The in-memory explanation cache only coalesces concurrent/in-flight polls now that the persistent
+# store handles reuse across restarts. Bound it so a long-running process can't grow it without
+# limit; an evicted entry just costs one cheap persistent-cache lookup next time it's asked for.
+_EXPLAIN_MEM_CACHE_MAX = 256
+
+
+def _bounded_put(cache: dict, key, value, maxn: int) -> None:
+    """Insert into an insertion-ordered dict, evicting oldest entries past `maxn` (simple FIFO)."""
+    cache[key] = value
+    while len(cache) > maxn:
+        cache.pop(next(iter(cache)))
+
+
 # Live meter/SoC reads are deliberately NEVER served from the persistent external cache (Tibber /
 # Forecast.Solar / AI) — they must always reflect the hardware. The only caching applied to a live
 # read is this short *in-memory* coalescing window, so a single dashboard refresh that fans out to
@@ -296,7 +309,7 @@ def create_app(
                         except Exception:
                             pass  # cache write is best-effort; never fail the request over it
                 return out
-            cache[key] = asyncio.ensure_future(_run())
+            _bounded_put(cache, key, asyncio.ensure_future(_run()), _EXPLAIN_MEM_CACHE_MAX)
         return await cache[key]
 
     def _planner_cfg_from(s: dict) -> PlannerConfig:
@@ -440,6 +453,13 @@ def create_app(
                 return
             except TimeoutError:
                 pass
+            # Housekeeping for a 24/7 process that rarely restarts: drop expired cache rows so the
+            # table can't accumulate stale explanation/price/forecast snapshots indefinitely.
+            if cache_store is not None:
+                try:
+                    await asyncio.to_thread(cache_store.purge_expired)
+                except Exception:
+                    pass
             if float(settings_cache.get("explainer.validate_hours", 0) or 0) > 0:
                 await _run_validation()  # already guarded + never raises
 

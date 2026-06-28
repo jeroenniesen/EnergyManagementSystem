@@ -2,6 +2,17 @@
 from __future__ import annotations
 
 from ems.storage.cache import CacheStore
+from ems.web.api import _bounded_put
+
+
+def test_bounded_put_evicts_oldest_past_capacity():
+    cache: dict = {}
+    for i in range(5):
+        _bounded_put(cache, f"k{i}", i, maxn=3)
+    assert list(cache) == ["k2", "k3", "k4"]  # oldest two evicted, newest kept
+    # re-inserting an existing newest key never evicts the entry we just need
+    _bounded_put(cache, "k4", 99, maxn=3)
+    assert cache["k4"] == 99 and len(cache) == 3
 
 
 class _Clock:
