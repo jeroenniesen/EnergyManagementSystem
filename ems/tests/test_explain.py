@@ -5,6 +5,7 @@ from ems.planner.explain import (
     ExternalLlmExplainer,
     TemplateExplainer,
     _has_ungrounded_number,
+    _llm_error_message,
     build_plan_detail,
     plan_metrics,
     summarize_projection,
@@ -89,6 +90,23 @@ def test_grounding_guard_accepts_reformatted_numbers_rejects_new_ones():
     src = "charge at €0.30/kWh to 72%"
     assert not _has_ungrounded_number("Opladen tot 72 procent voor €0,30/kWh.", src)
     assert _has_ungrounded_number("Charging to 85%.", src)  # 85 was never in the inputs
+
+
+def test_llm_error_message_is_actionable_by_http_status():
+    class _Resp:
+        def __init__(self, sc):
+            self.status_code = sc
+
+    class _HttpErr(Exception):
+        def __init__(self, sc):
+            self.response = _Resp(sc)
+
+    assert "402" in _llm_error_message(_HttpErr(402))
+    assert "credit" in _llm_error_message(_HttpErr(402)).lower()
+    assert "401" in _llm_error_message(_HttpErr(401))
+    assert "429" in _llm_error_message(_HttpErr(429))
+    # No HTTP status (e.g. a timeout / connection error) → the generic, still-reassuring message.
+    assert "reachable" in _llm_error_message(TimeoutError("slow")).lower()
 
 
 def test_summarize_projection_empty():

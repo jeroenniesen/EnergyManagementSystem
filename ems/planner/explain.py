@@ -6,6 +6,7 @@ line up exactly with the charge actions. Pure + unit-tested.
 """
 from __future__ import annotations
 
+import logging
 import re
 from collections import Counter
 from collections.abc import Callable
@@ -19,6 +20,33 @@ from ems.planner.schedule import Plan
 from ems.savings import estimate_daily_savings_eur
 from ems.sources.forecast import ForecastSlot
 from ems.sources.prices import PriceSlot
+
+_log = logging.getLogger("ems.explainer")
+
+
+def _llm_error_message(e: Exception) -> str:
+    """A user-facing, actionable reason for an LLM failure. Reads the HTTP status off the exception
+    by duck-typing (no hard httpx import here); never includes the key. The built-in text always
+    keeps working, so every message reassures that."""
+    status = getattr(getattr(e, "response", None), "status_code", None)
+    if status == 402:
+        return (
+            "The AI service says payment is required (402) — your MiniMax account needs API credit "
+            "(the developer API is pay-as-you-go, separate from a chat subscription). The built-in "
+            "explanations still work."
+        )
+    if status in (401, 403):
+        return (
+            f"The AI service rejected the API key ({status}) — check your MiniMax key. "
+            "The built-in explanations still work."
+        )
+    if status == 429:
+        return (
+            "The AI service is rate-limited (429) right now. The built-in explanations still work."
+        )
+    if status is not None:
+        return f"The AI service returned an error ({status}). The built-in explanations still work."
+    return "The AI service isn't reachable right now. The built-in explanations still work."
 
 _INTENT_LABEL = {
     BatteryIntent.ALLOW_SELF_CONSUMPTION: "self-consume",
@@ -219,8 +247,10 @@ class ExternalLlmExplainer:
                  "temperature": self._temperature},
             )
             text = (resp["choices"][0]["message"]["content"] or "").strip()
-        except Exception:
-            return self._fallback.explain(reason)  # network error / timeout / bad shape → template
+        except Exception as e:
+            # network error / timeout / bad shape → template. Log the cause (no key in the error).
+            _log.warning("explain: LLM call failed (%s); using template", e)
+            return self._fallback.explain(reason)
         allowed_source = reason + " " + " ".join(str(v) for v in facts.values())
         if not text or _has_ungrounded_number(text, allowed_source):
             return self._fallback.explain(reason)  # empty or invented a number → template
@@ -245,10 +275,9 @@ class ExternalLlmExplainer:
                  "temperature": self._temperature},
             )
             text = (resp["choices"][0]["message"]["content"] or "").strip()
-        except Exception:
-            return Explanation(
-                "Sorry — the assistant isn't reachable right now.", "error", question
-            )
+        except Exception as e:
+            _log.warning("chat: LLM call failed (%s)", e)
+            return Explanation(_llm_error_message(e), "error", question)
         if not text:
             return Explanation("Sorry — I couldn't produce an answer.", "error", question)
         if _has_ungrounded_number(text, context + " " + question):
@@ -277,7 +306,8 @@ class ExternalLlmExplainer:
                  "temperature": self._temperature},
             )
             text = (resp["choices"][0]["message"]["content"] or "").strip()
-        except Exception:
+        except Exception as e:
+            _log.warning("validate: LLM call failed (%s)", e)
             return Explanation("Validation unavailable.", "error", context)
         if not text or _has_ungrounded_number(text, context):
             return Explanation("Validation withheld (ungrounded).", "guard", context)
