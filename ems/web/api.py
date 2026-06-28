@@ -50,6 +50,7 @@ from ems.settings import (
 from ems.sources.base import Source
 from ems.sources.battery import BatteryDriver
 from ems.sources.forecast import SolarForecastSource, day_kwh_p50
+from ems.sources.indevolt import aggregate_soc
 from ems.sources.prices import PriceSource, current_price
 from ems.storage.history import DERIVED_COLUMNS, RAW_COLUMNS, HistoryStore
 from ems.storage.settings import SettingsStore
@@ -427,23 +428,56 @@ def create_app(
         override_box["ov"] = Override(intent=intent, expires_at=expires)
         return JSONResponse(get_override())
 
+    def _battery_cluster() -> tuple[list[dict], dict | None]:
+        """Per-tower readings + the cluster aggregate, read once from the live cluster reader.
+        Empty/None for the mock source (which has no per-tower battery reader)."""
+        reader = getattr(source, "battery", None)
+        if reader is None or not hasattr(reader, "read_towers"):
+            return [], None
+        try:
+            towers = reader.read_towers()
+        except Exception:
+            return [], None  # never let a battery read break the endpoint
+        rows = [
+            {"ip": t.ip, "role": t.role, "soc_pct": t.soc_pct, "power_w": t.power_w,
+             "capacity_kwh": t.capacity_kwh, "online": t.online}
+            for t in towers
+        ]
+        online = [t for t in towers if t.online and t.soc_pct is not None]
+        if not online:
+            return rows, None
+        caps = [t.capacity_kwh for t in online]
+        all_caps = all(c and c > 0 for c in caps)
+        aggregate = {
+            "soc_pct": round(aggregate_soc(online), 1),
+            "power_w": round(sum(t.power_w for t in online), 1),
+            "capacity_kwh": round(sum(caps), 2) if all_caps else None,
+            "online_towers": len(online),
+            "total_towers": len(towers),
+        }
+        return rows, aggregate
+
     @app.get("/api/battery")
     def battery_endpoint() -> dict:
-        if battery is None:
-            return {"current_mode": None, "capabilities": None}
-        cap = battery.probe()
-        return {
-            "current_mode": battery.current_mode(),
-            "capabilities": {
-                "services": list(cap.services),
-                "energy_mode_options": list(cap.energy_mode_options),
-                "has_standby": cap.has_standby,
-                "has_grid_charge_switch": cap.has_grid_charge_switch,
-                "p1_paired": cap.p1_paired,
-                "max_charge_w": cap.max_charge_w,
-                "max_discharge_w": cap.max_discharge_w,
-            },
+        towers, aggregate = _battery_cluster()
+        out: dict[str, Any] = {
+            "current_mode": None, "capabilities": None,
+            "towers": towers, "aggregate": aggregate,
         }
+        if battery is None:
+            return out
+        cap = battery.probe()
+        out["current_mode"] = battery.current_mode()
+        out["capabilities"] = {
+            "services": list(cap.services),
+            "energy_mode_options": list(cap.energy_mode_options),
+            "has_standby": cap.has_standby,
+            "has_grid_charge_switch": cap.has_grid_charge_switch,
+            "p1_paired": cap.p1_paired,
+            "max_charge_w": cap.max_charge_w,
+            "max_discharge_w": cap.max_discharge_w,
+        }
+        return out
 
     @app.get("/api/savings")
     def savings_endpoint() -> dict:

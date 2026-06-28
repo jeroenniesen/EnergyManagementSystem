@@ -68,12 +68,19 @@ SETTINGS_SCHEMA: tuple[SettingsField, ...] = (
     ),
     # --- Battery (Indevolt) — connection + capacity/reserve ---
     SettingsField(
-        "battery.indevolt_ip", "Indevolt IP", "text", "", "battery",
-        help="Indevolt main tower (the cluster is read as one device).", applies="restart",
+        "battery.indevolt_ip", "Indevolt main tower IP", "text", "", "battery",
+        help="The master tower. Used for control writes; the cluster is commanded as one device.",
+        applies="restart",
+    ),
+    SettingsField(
+        "battery.indevolt_ips_extra", "Additional tower IPs", "text", "", "battery",
+        help="Other Indevolt towers (comma-separated). Each is read; the dashboard shows the "
+        "capacity-weighted average SoC of the whole cluster.", applies="restart",
     ),
     SettingsField(
         "battery.indevolt_port", "Indevolt port", "int", 8080, "battery",
-        help="Local API port.", min=1, max=65535, advanced=True, applies="restart",
+        help="Local API port (same for every tower).", min=1, max=65535, advanced=True,
+        applies="restart",
     ),
     SettingsField(
         "battery.usable_kwh", "Usable capacity", "number", 10.8, "battery",

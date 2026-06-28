@@ -77,6 +77,17 @@ def _seed_store(db_path: str, seed: dict) -> None:
         con.close()
 
 
+def _battery_ips(main_ip: str, extra: object) -> list[str]:
+    """Ordered, de-duplicated tower IPs: the master first, then any comma-separated extras.
+    Blanks are dropped; the master is never listed twice."""
+    ips: list[str] = []
+    for candidate in [main_ip, *str(extra or "").split(",")]:
+        a = candidate.strip()
+        if a and a not in ips:
+            ips.append(a)
+    return ips
+
+
 def effective_connection(db_path: str, cfg) -> dict:
     """Effective settings (defaults + store), after seeding connection values from config/env."""
     _seed_store(db_path, _seed_from_config(cfg))
@@ -99,14 +110,21 @@ def build_wiring(eff: dict, tz: ZoneInfo):
     # a real SetData transport and lifts dry_run. Default off -> dry_run, battery never written.
     operational = False
     if use_live_devices:
-        from ems.sources.indevolt import IndevoltReadClient
+        from ems.sources.indevolt import IndevoltClusterReader, IndevoltReadClient
         from ems.sources.indevolt_driver import IndevoltBatteryDriver, make_setdata_post
         from ems.sources.live import HomeWizardMeter, LiveSource
 
         ip = eff.get("battery.indevolt_ip") or ""
         port = int(eff.get("battery.indevolt_port") or 8080)
         operational = bool(eff.get("control.operational")) and bool(ip)
-        battery_reader = IndevoltReadClient(ip, port=port) if ip else None
+        # Read the whole cluster (master + any extra towers) as one logical battery; the
+        # dashboard SoC is the capacity-weighted average. Writes still target the master (`ip`).
+        tower_ips = _battery_ips(ip, eff.get("battery.indevolt_ips_extra"))
+        battery_reader = (
+            IndevoltClusterReader([IndevoltReadClient(a, port=port) for a in tower_ips])
+            if tower_ips
+            else None
+        )
         source = LiveSource(
             p1=HomeWizardMeter(eff["meters.p1_ip"]),
             solar=HomeWizardMeter(eff.get("meters.solar_ip") or eff["meters.p1_ip"]),

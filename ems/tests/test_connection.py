@@ -1,6 +1,6 @@
 from zoneinfo import ZoneInfo
 
-from ems.connection import build_wiring
+from ems.connection import _battery_ips, build_wiring
 from ems.settings import (
     SETTINGS_BY_KEY,
     effective_settings,
@@ -112,3 +112,23 @@ def test_operational_ignored_without_live_devices():
     eff = effective_settings({"control.operational": True})  # mock devices
     *_, _driver, _dev_mode, dry_run = build_wiring(eff, AMS)
     assert dry_run is True
+
+
+def test_battery_ips_orders_master_first_and_dedupes():
+    assert _battery_ips("192.168.50.53", "192.168.50.22, 192.168.50.99") == [
+        "192.168.50.53", "192.168.50.22", "192.168.50.99",
+    ]
+    # blanks dropped, master never duplicated, whitespace trimmed
+    assert _battery_ips("10.0.0.1", " 10.0.0.1 , , 10.0.0.2 ") == ["10.0.0.1", "10.0.0.2"]
+    assert _battery_ips("", None) == []
+
+
+def test_live_devices_build_a_multi_tower_cluster_reader():
+    eff = effective_settings({
+        "connection.use_live_devices": True, "meters.p1_ip": "192.168.50.92",
+        "battery.indevolt_ip": "192.168.50.53",
+        "battery.indevolt_ips_extra": "192.168.50.22",
+    })
+    src, *_ = build_wiring(eff, AMS)
+    # LiveSource holds a cluster reader spanning both towers (never touches hardware at build).
+    assert [c.ip for c in src.battery._clients] == ["192.168.50.53", "192.168.50.22"]

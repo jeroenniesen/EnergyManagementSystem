@@ -20,12 +20,15 @@ from __future__ import annotations
 import json
 import logging
 from collections.abc import Callable, Iterable
+from dataclasses import dataclass
 
 _log = logging.getLogger("ems.sources.indevolt")
 
 DEFAULT_PORT = 8080
 K_SOC, K_POWER, K_STATE, K_MODE, K_CAPACITY, K_METER_CONN = 6002, 6000, 6001, 7101, 142, 7120
+K_ROLE = 606  # Master/Slave identification (1000 master · 1001 slave · 1002 none)
 _STATE_CHARGING, _STATE_DISCHARGING = 1001, 1002
+_ROLE_LABEL = {1000: "master", 1001: "slave", 1002: "none"}
 
 # (keys) -> {"<key>": value}. Default does the real POST; tests inject a stub.
 GetDataPost = Callable[[Iterable[int]], dict]
@@ -90,3 +93,83 @@ class IndevoltReadClient:
             return signed_battery_power(float(mag), state), float(soc)
         except (TypeError, ValueError) as exc:
             raise BatteryUnavailable(f"Indevolt SoC/power not numeric: {exc}") from exc
+
+
+@dataclass(frozen=True)
+class TowerReading:
+    """One tower's read-only state. `soc_pct`/`power_w` are None/0 when the tower is offline this
+    cycle; `capacity_kwh`/`role` may be cached from an earlier read."""
+
+    ip: str
+    soc_pct: float | None
+    power_w: float
+    capacity_kwh: float | None
+    role: str | None
+    online: bool
+
+
+def aggregate_soc(readings: list[TowerReading]) -> float:
+    """System SoC % from per-tower readings. Capacity-weighted when every tower reports a usable
+    capacity (a half-full big tower outweighs a half-full small one); plain mean otherwise.
+    Readings without a SoC are ignored; raises ValueError if none has one."""
+    valid = [r for r in readings if r.soc_pct is not None]
+    if not valid:
+        raise ValueError("aggregate_soc requires at least one reading with a SoC")
+    caps = [r.capacity_kwh for r in valid]
+    if all(c and c > 0 for c in caps):
+        return sum(r.soc_pct * r.capacity_kwh for r in valid) / sum(caps)  # type: ignore[operator,arg-type]
+    return sum(r.soc_pct for r in valid) / len(valid)  # type: ignore[misc]
+
+
+class IndevoltClusterReader:
+    """Read several Indevolt towers as ONE logical battery (SPEC §6.5). Aggregates SoC
+    (capacity-weighted) and power (signed sum) and exposes per-tower detail. Implements the
+    LiveSource BatteryReader protocol (`read_power_soc()`), so a single- or multi-tower cluster is
+    wired identically. Read-only: never writes. Tolerant of a tower dropping out — it aggregates
+    over whatever is reachable and only fails when NONE responds (fail-safe)."""
+
+    # SoC/power are dynamic (read every cycle); capacity/role are static (read once, then cached).
+    _KEYS = (K_SOC, K_POWER, K_STATE, K_ROLE, K_CAPACITY)
+
+    def __init__(self, clients: list[IndevoltReadClient]) -> None:
+        self._clients = list(clients)
+        self._cap_cache: dict[str, float] = {}
+        self._role_cache: dict[str, str] = {}
+
+    def _read_one(self, client: IndevoltReadClient) -> TowerReading:
+        try:
+            data = client.read_keys(self._KEYS)
+            soc = float(data[str(K_SOC)])
+            power = signed_battery_power(float(data[str(K_POWER)]), data.get(str(K_STATE)))
+        except Exception as exc:  # one tower down must not sink the cluster read
+            _log.warning("Indevolt tower %s read failed (%s: %s)", client.ip,
+                         type(exc).__name__, exc)
+            # Offline this cycle: no current SoC/power (None/0 per the contract); capacity/role
+            # may still be shown from an earlier read.
+            return TowerReading(client.ip, None, 0.0,
+                                self._cap_cache.get(client.ip),
+                                self._role_cache.get(client.ip), online=False)
+        cap = data.get(str(K_CAPACITY))
+        if cap is not None and float(cap) > 0:
+            self._cap_cache[client.ip] = float(cap)
+        # The device returns the role register as a STRING ("1000"); coerce before mapping.
+        role = None
+        raw_role = data.get(str(K_ROLE))
+        if raw_role is not None:
+            try:
+                role = _ROLE_LABEL.get(int(raw_role))
+            except (TypeError, ValueError):
+                role = None
+        if role is not None:
+            self._role_cache[client.ip] = role
+        return TowerReading(client.ip, soc, power, self._cap_cache.get(client.ip),
+                            self._role_cache.get(client.ip), online=True)
+
+    def read_towers(self) -> list[TowerReading]:
+        return [self._read_one(c) for c in self._clients]
+
+    def read_power_soc(self) -> tuple[float, float]:
+        online = [t for t in self.read_towers() if t.online and t.soc_pct is not None]
+        if not online:
+            raise BatteryUnavailable("no Indevolt tower reachable")
+        return sum(t.power_w for t in online), aggregate_soc(online)
