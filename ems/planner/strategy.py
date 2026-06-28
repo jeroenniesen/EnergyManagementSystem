@@ -92,14 +92,23 @@ def build_plan(
     """Dispatch to the chosen strategy's planner. `strategy` is already resolved (not 'auto').
 
     Summer uses the demand-aware adaptive charger (peak-shaving, near-optimal — validated by the
-    backtest) when an expected-load profile + AdaptiveConfig are supplied; otherwise it falls back
-    to the simpler solar-first planner."""
+    backtest) when a load profile + AdaptiveConfig are supplied, else the simpler solar-first
+    planner. Winter uses the arbitrage planner, which — when a load profile + battery sizing are
+    supplied — sizes the grid top-up to the evening peak load above reserve and carries target SoC +
+    deadline (energy review P1.2: no longer price-only), keeping its distinct charge-cheap/
+    discharge-peaks character so the season choice still changes the plan."""
     if strategy == "summer":
         if adaptive_cfg is not None and load_w_by is not None:
             plan = plan_adaptive(prices, forecast or [], now, soc_pct=soc_pct,
                                  load_w_by=load_w_by, cfg=adaptive_cfg)
         else:
             plan = plan_summer(prices, forecast or [], now, soc_pct=soc_pct, cfg=summer_cfg)
+    elif load_w_by is not None and adaptive_cfg is not None:
+        plan = plan_rule_based(
+            prices, now, winter_cfg, soc_pct=soc_pct, load_w_by=load_w_by,
+            usable_kwh=adaptive_cfg.usable_kwh, reserve_soc_pct=adaptive_cfg.reserve_soc_pct,
+            max_charge_w=adaptive_cfg.max_charge_w,
+        )
     else:
         plan = plan_rule_based(prices, now, winter_cfg)
     # The resolved strategy is authoritative on the returned plan (whichever planner ran).

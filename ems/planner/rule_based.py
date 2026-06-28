@@ -7,12 +7,17 @@ the projected-SoC curve, and the ML planner behind the same Plan interface.
 """
 from __future__ import annotations
 
+import logging
+import math
 from dataclasses import dataclass
 from datetime import datetime
 
 from ems.domain import BatteryIntent
 from ems.planner.schedule import SLOT, Plan, PlanSlot
 from ems.sources.prices import PriceSlot
+
+_log = logging.getLogger("ems.planner.rule_based")
+_DH = 0.25  # hours per 15-min slot
 
 
 @dataclass(frozen=True)
@@ -38,12 +43,25 @@ def _all_auto(prices: list[PriceSlot], now: datetime, note: str) -> Plan:
 
 
 def plan_rule_based(
-    prices: list[PriceSlot], now: datetime, cfg: PlannerConfig | None = None
+    prices: list[PriceSlot],
+    now: datetime,
+    cfg: PlannerConfig | None = None,
+    *,
+    soc_pct: float = 0.0,
+    load_w_by: dict[datetime, float] | None = None,
+    usable_kwh: float = 10.0,
+    reserve_soc_pct: float = 10.0,
+    max_charge_w: float = 4000.0,
 ) -> Plan:
+    """Winter arbitrage: charge the cheap window, discharge the profitable peaks. When a load
+    profile + battery sizing are supplied it is **demand-sized** (energy review P1.2): the cheap-
+    window charge is sized to the energy the expensive (discharge) window will actually need above
+    the reserve already in the pack, and the charge slots carry a target SoC + deadline. Without a
+    load profile it falls back to the original fixed-count behaviour (no target)."""
     cfg = cfg or PlannerConfig()
     horizon = [p for p in prices if p.start + SLOT > now][: cfg.horizon_slots]
     if not horizon:
-        return Plan(created_at=now, slots=())
+        return Plan(created_at=now, slots=(), strategy="winter")
 
     by_price = sorted(horizon, key=lambda p: p.eur_per_kwh)
     charge_candidates = by_price[: cfg.charge_slots]
@@ -63,14 +81,51 @@ def plan_rule_based(
         # No profitable peak -> no-trade: never cycle the battery for nothing (SPEC §8.3).
         return _all_auto(horizon, now, "no-trade: spread below break-even")
 
-    charge_set = {p.start for p in charge_candidates}
+    first_peak = min(discharge_set)
+    eta = math.sqrt(max(1e-6, min(1.0, cfg.round_trip_efficiency)))
+    target_soc: float | None = None
+    floor = reserve_soc_pct if load_w_by is not None else None
+    per_slot_kwh = round(max_charge_w * _DH / 1000.0 * eta, 3) if load_w_by is not None else None
+    if load_w_by is not None:
+        # Demand-sized: the energy the expensive window needs from the battery, above what's already
+        # stored over reserve. Size the cheap-window charge (pre-peak) to exactly that shortfall.
+        reserve_kwh = reserve_soc_pct / 100.0 * usable_kwh
+        avail_now_kwh = max(0.0, soc_pct / 100.0 * usable_kwh - reserve_kwh)
+        peak_load_kwh = sum(load_w_by.get(d, 0.0) for d in discharge_set) * _DH / 1000.0
+        # Sizing to LOAD: if the peak window has no house load to serve, there's nothing to shave —
+        # don't discharge for price alone (this system doesn't export). Treat as no-trade.
+        if peak_load_kwh <= 1e-9:
+            return _all_auto(horizon, now, "no-trade: no house load in the expensive window")
+        shortfall_dc = max(0.0, peak_load_kwh / eta - avail_now_kwh)
+        slot_kwh = max_charge_w * _DH / 1000.0 * eta
+        n_charge = math.ceil(shortfall_dc / slot_kwh) if slot_kwh > 0 and shortfall_dc > 1e-9 else 0
+        # Pool = ALL pre-peak horizon slots (cheapest first) — NOT the globally-cheapest N, which in
+        # winter are often the post-peak overnight hours and would starve the pre-peak window.
+        # n_charge already caps the result (mirrors plan_adaptive).
+        pre_peak = sorted((p for p in horizon if p.start < first_peak),
+                          key=lambda p: (p.eur_per_kwh, p.start))
+        charge_set = {p.start for p in pre_peak[:n_charge]}
+        if len(pre_peak) < n_charge:  # not enough cheap room before the peak → will under-charge
+            _log.warning("winter planner under-charge: need %d pre-peak slots, only %d available "
+                         "(shortfall %.2f kWh) — battery may enter the peak short",
+                         n_charge, len(pre_peak), shortfall_dc)
+        target_soc = min(100.0, (reserve_kwh + avail_now_kwh + shortfall_dc) / usable_kwh * 100.0)
+    else:
+        charge_set = {p.start for p in charge_candidates}
+
     out: list[PlanSlot] = []
     for p in horizon:
         has_later_discharge = any(d > p.start for d in discharge_set)
         if p.start in charge_set and has_later_discharge:
-            intent = BatteryIntent.GRID_CHARGE_TO_TARGET
-            reason = f"charge: cheap window €{p.eur_per_kwh:.2f}/kWh"
-        elif p.start in charge_set:
+            out.append(PlanSlot(
+                p.start, BatteryIntent.GRID_CHARGE_TO_TARGET,
+                f"charge: cheap window €{p.eur_per_kwh:.2f}/kWh", target_soc=target_soc,
+                target_kwh=per_slot_kwh,
+                power_w=(max_charge_w if load_w_by is not None else None),
+                floor_soc=floor, deadline=first_peak,
+            ))
+            continue
+        if p.start in charge_set:
             # Cheap, but no profitable peak remains to discharge into -> don't cycle for nothing.
             intent = BatteryIntent.ALLOW_SELF_CONSUMPTION
             reason = f"self-consumption: cheap but no peak ahead (€{p.eur_per_kwh:.2f}/kWh)"
@@ -83,8 +138,6 @@ def plan_rule_based(
         else:
             intent = BatteryIntent.ALLOW_SELF_CONSUMPTION
             reason = f"self-consumption (€{p.eur_per_kwh:.2f}/kWh)"
-        out.append(PlanSlot(p.start, intent, reason))
-    # Deadline = the first profitable peak: the cheap window must have charged before it.
-    # (Slot-level target SoC for winter arbitrage is sized in the demand-aware upgrade, Polish 2.)
-    first_peak = min(discharge_set) if discharge_set else None
-    return Plan(created_at=now, slots=tuple(out), strategy="winter", deadline=first_peak)
+        out.append(PlanSlot(p.start, intent, reason, floor_soc=floor))
+    return Plan(created_at=now, slots=tuple(out), strategy="winter", target_soc=target_soc,
+                deadline=first_peak)

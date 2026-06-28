@@ -41,19 +41,22 @@ def test_forcing_summer_makes_the_strategy_active_and_explained(tmp_path):
 
 
 def test_strategy_choice_changes_the_plan(tmp_path):
-    # Winter arbitrage charges the cheap window (GRID_CHARGE); summer solar-first (mock sun) does
-    # not force a winter-style charge. The two strategies must produce different plans.
+    # The toggle resolves the active strategy AND produces a materially different plan: winter is
+    # price-arbitrage (now demand-sized — it only charges if the peak needs it above the stored
+    # reserve), summer is solar-first. The plans differ in their per-slot reasoning regardless of
+    # whether the high mock SoC happens to need a winter grid charge.
     with TestClient(_app(tmp_path)) as c:
         c.post("/api/settings", json={"strategy.mode": "winter"})
         winter = c.get("/api/plan").json()
+        w_active = c.get("/api/strategy").json()["active"]
         c.post("/api/settings", json={"strategy.mode": "summer"})
         summer = c.get("/api/plan").json()
-    winter_intents = {s["intent"] for s in winter["slots"]}
-    summer_intents = [s["intent"] for s in summer["slots"]]
-    assert "grid_charge_to_target" in winter_intents
-    # Summer with the mock midday sun fills from solar -> mostly self-consumption, not a winter
-    # charge-the-cheap-window plan.
-    assert summer_intents != [s["intent"] for s in winter["slots"]]
+        s_active = c.get("/api/strategy").json()["active"]
+    assert w_active == "winter" and s_active == "summer"
+    # Distinct planners → distinct reasoning (winter cites break-even/peaks, summer cites solar).
+    w_reasons = " ".join(s["reason"] for s in winter["slots"])
+    s_reasons = " ".join(s["reason"] for s in summer["slots"])
+    assert w_reasons != s_reasons
 
 
 def test_plan_detail_includes_active_strategy(tmp_path):

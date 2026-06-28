@@ -586,12 +586,12 @@ def create_app(
         now = datetime.now(UTC)
         prices = price_source.slots()
         strategy = _active_strategy(now)
-        # Summer uses the adaptive (demand-aware peak-shaving) charger; it needs the live SoC, the
-        # solar forecast and the expected-load profile. Winter (arbitrage) needs none of these.
-        soc = _current_soc(now) if strategy == "summer" else 0.0
-        forecast = (solar_forecast.slots()
-                    if strategy == "summer" and solar_forecast is not None else [])
-        load_by = _load_by([p.start for p in prices]) if strategy == "summer" else None
+        # BOTH seasons now use the adaptive (demand-aware) charger, so both need the live SoC, the
+        # solar forecast and the expected-load profile — winter sizes the top-up to the evening
+        # peak load above reserve, not just the cheapest slots (energy review P1.2).
+        soc = _current_soc(now)
+        forecast = solar_forecast.slots() if solar_forecast is not None else []
+        load_by = _load_by([p.start for p in prices])
         plan = build_plan(
             strategy, prices=prices, forecast=forecast, now=now, soc_pct=soc,
             winter_cfg=_planner_cfg(), summer_cfg=_summer_cfg(soc),
@@ -617,13 +617,11 @@ def create_app(
             soc = _current_soc(now)
             solar_by = {f.start: f.p50_w for f in solar_forecast.slots()}
             load_by = _load_by([s.start for s in plan.slots])
-            # Summer's adaptive charger sizes its own slots — don't cap the projection at the night
-            # target (mirrors _forward_projection); winter keeps the cap as a ceiling.
-            cap = (None if _active_strategy(now) == "summer"
-                   else _night_target_soc(soc).target_soc_pct)
+            # Both seasons now use the adaptive charger, which sizes its own charge slots — don't
+            # re-cap the projection at the night target (that would undo demand-aware sizing).
             return project_energy(
                 plan.slots, start_soc_pct=soc, solar_w_by=solar_by, load_w_by=load_by,
-                model=_battery_model(), charge_target_soc_pct=cap,
+                model=_battery_model(), charge_target_soc_pct=None,
             )
         except Exception:
             return None  # projection is best-effort; its absence just skips those checks
@@ -1239,14 +1237,12 @@ def create_app(
             overnight_load_kwh=settings_cache["battery.overnight_load_kwh"],
             round_trip_efficiency=settings_cache["planner.round_trip_efficiency"],
         )
-        # The adaptive (summer) charger sizes its own charge slots, so the projection must NOT cap
-        # them at the night target (that would undo demand-aware peak-shaving). Winter's fixed-slot
-        # plan keeps the cap as a safety ceiling.
-        cap = None if _active_strategy(now) == "summer" else need.target_soc_pct
+        # Both seasons use the adaptive charger, which sizes its own charge slots — the projection
+        # must NOT cap them at the night target (that would undo demand-aware peak-shaving).
         projected = project_energy(
             plan.slots, start_soc_pct=soc, solar_w_by=solar_by,
             load_w_by=load_by, model=_battery_model(),
-            charge_target_soc_pct=cap,
+            charge_target_soc_pct=None,
         )
         return {"now": now, "current_soc": soc, "projected": projected, "need": need,
                 "deadline": sunset_after(fc_slots, now),

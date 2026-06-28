@@ -4,6 +4,7 @@ from datetime import UTC, datetime
 from zoneinfo import ZoneInfo
 
 from ems.domain import BatteryIntent
+from ems.planner.adaptive import AdaptiveConfig
 from ems.planner.rule_based import PlannerConfig
 from ems.planner.schedule import SLOT
 from ems.planner.strategy import build_plan, select_strategy, select_strategy_with_reason
@@ -89,4 +90,51 @@ def test_build_plan_dispatches_to_winter():
         winter_cfg=PlannerConfig(), summer_cfg=SummerConfig(usable_kwh=10.0, target_soc_pct=80.0),
     )
     # Winter arbitrage charges the cheap window for the expensive peak.
+    assert BatteryIntent.GRID_CHARGE_TO_TARGET in {s.intent for s in plan.slots}
+
+
+def test_winter_is_demand_sized_when_a_load_profile_is_present():
+    # Energy review P1.2: with a load profile + adaptive cfg, WINTER goes through the demand-aware
+    # adaptive planner — sizing the top-up to the evening peak load and carrying a target SoC.
+    t0 = datetime(2026, 1, 10, 12, 0, tzinfo=UTC)
+    # 12 cheap morning slots then a 4-slot expensive evening peak (so the cheapest-12 window is all
+    # cheap and break-even is low enough that the peak clears).
+    prices = [PriceSlot(t0 + i * SLOT, 0.10 if i < 12 else 0.40) for i in range(16)]
+    fc = [ForecastSlot(t0 + i * SLOT, 0.0, 0.0, 0.0) for i in range(16)]  # winter: no solar
+    load = {t0 + i * SLOT: (200.0 if i < 12 else 3000.0) for i in range(16)}  # big evening peak
+    plan = build_plan(
+        "winter", prices=prices, forecast=fc, now=t0, soc_pct=20.0,
+        winter_cfg=PlannerConfig(), summer_cfg=SummerConfig(usable_kwh=10.0, target_soc_pct=80.0),
+        load_w_by=load, adaptive_cfg=AdaptiveConfig(usable_kwh=10.0),
+    )
+    assert plan.strategy == "winter"  # still the distinct arbitrage planner, just demand-sized
+    charge = [s for s in plan.slots if s.intent is BatteryIntent.GRID_CHARGE_TO_TARGET]
+    assert charge and all(s.start < t0 + 12 * SLOT for s in charge)  # cheap pre-peak window
+    assert all(s.target_soc is not None for s in charge)  # demand-sized target now carried
+    assert plan.target_soc is not None and plan.deadline == t0 + 12 * SLOT
+
+
+def test_winter_demand_sized_no_discharge_when_no_load_at_the_peak():
+    # Load profile present but the expensive window has NO house load → nothing to shave, and this
+    # system doesn't export, so it must NOT discharge for price alone → no-trade (review fix #3).
+    t0 = datetime(2026, 1, 10, 12, 0, tzinfo=UTC)
+    prices = [PriceSlot(t0 + i * SLOT, 0.10 if i < 12 else 0.40) for i in range(16)]
+    load = {t0 + i * SLOT: (3000.0 if i < 12 else 0.0) for i in range(16)}  # zero load at the peak
+    plan = build_plan(
+        "winter", prices=prices, forecast=[], now=t0, soc_pct=20.0,
+        winter_cfg=PlannerConfig(), summer_cfg=SummerConfig(usable_kwh=10.0, target_soc_pct=80.0),
+        load_w_by=load, adaptive_cfg=AdaptiveConfig(usable_kwh=10.0),
+    )
+    assert all(s.intent is BatteryIntent.ALLOW_SELF_CONSUMPTION for s in plan.slots)
+
+
+def test_winter_falls_back_to_rule_based_without_a_load_profile():
+    # No load profile → the simple price-arbitrage planner still runs (and is labelled winter).
+    t0 = datetime(2026, 1, 10, 0, 0, tzinfo=UTC)
+    prices = [PriceSlot(t0 + i * SLOT, 0.05 if i < 24 else 0.40) for i in range(48)]
+    plan = build_plan(
+        "winter", prices=prices, forecast=None, now=t0, soc_pct=50.0,
+        winter_cfg=PlannerConfig(), summer_cfg=SummerConfig(usable_kwh=10.0, target_soc_pct=80.0),
+    )
+    assert plan.strategy == "winter"
     assert BatteryIntent.GRID_CHARGE_TO_TARGET in {s.intent for s in plan.slots}
