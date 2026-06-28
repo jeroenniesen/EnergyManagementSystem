@@ -36,6 +36,23 @@ class SettingsField:
 
 # The editable surface. Keep keys stable — they are persisted and consumed by the UI.
 SETTINGS_SCHEMA: tuple[SettingsField, ...] = (
+    # --- Strategy: how the battery is run (the headline choice) ---
+    SettingsField(
+        "strategy.mode", "Strategy", "enum", "auto", "strategy",
+        help="Auto follows the season. Summer fills from your panels and runs the night on the "
+        "battery. Winter charges cheap and discharges the expensive peaks.",
+        options=("auto", "summer", "winter"),
+    ),
+    SettingsField(
+        "strategy.summer_grid_topup", "Summer: top up from the grid", "bool", True, "strategy",
+        help="If the sun won't fill the battery for the night, buy the shortfall in the cheapest "
+        "hours. Off = use only solar (the battery may not last the whole night).",
+    ),
+    SettingsField(
+        "strategy.summer_max_topup_price", "Summer: max top-up price", "number", 0.30, "strategy",
+        help="Never grid-charge in summer above this price.",
+        min=0.0, max=2.0, step=0.01, unit="€/kWh", advanced=True,
+    ),
     # --- Connection: which sources to use (device/service wiring; applied at startup) ---
     SettingsField(
         "connection.use_live_devices", "Use live devices", "bool", False, "connection",

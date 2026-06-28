@@ -41,6 +41,8 @@ from ems.planner.explain import build_plan_detail, plan_metrics, summarize_proje
 from ems.planner.load_profile import build_load_profile
 from ems.planner.projection import BatteryModel, project_energy
 from ems.planner.rule_based import PlannerConfig, plan_rule_based
+from ems.planner.strategy import build_plan, select_strategy
+from ems.planner.summer import SummerConfig
 from ems.savings import estimate_daily_savings_eur
 from ems.sense import Recorder
 from ems.settings import (
@@ -145,6 +147,46 @@ def create_app(
     def _planner_cfg() -> PlannerConfig:
         return _planner_cfg_from(settings_cache)
 
+    site_tz = tz or ZoneInfo("UTC")
+    # The live SoC read (battery cluster) is slow; cache it briefly so a single dashboard poll —
+    # which fans out to several plan-consuming endpoints — doesn't read the battery many times over.
+    _soc_cache: dict[str, Any] = {"soc": None, "at": None}
+
+    def _current_soc(now: datetime) -> float:
+        cached_at = _soc_cache["at"]
+        if cached_at is not None and (now - cached_at).total_seconds() < 30:
+            return _soc_cache["soc"]
+        try:
+            soc = float(source.read().soc_pct)
+        except Exception:
+            soc = _soc_cache["soc"] if _soc_cache["soc"] is not None else 0.0
+        _soc_cache["soc"], _soc_cache["at"] = soc, now
+        return soc
+
+    def _night_target_soc(soc_pct: float):
+        """The night-carry target (overnight load + reserve + floor), via compute_charge_need."""
+        return compute_charge_need(
+            soc_pct=soc_pct, usable_kwh=settings_cache["battery.usable_kwh"],
+            min_reserve_soc=settings_cache["battery.min_reserve_soc"],
+            night_reserve_kwh=settings_cache["battery.night_reserve_kwh"],
+            overnight_load_kwh=settings_cache["battery.overnight_load_kwh"],
+        )
+
+    def _summer_cfg(soc_pct: float) -> SummerConfig:
+        s = settings_cache
+        return SummerConfig(
+            usable_kwh=s["battery.usable_kwh"],
+            target_soc_pct=_night_target_soc(soc_pct).target_soc_pct,
+            round_trip_efficiency=s["planner.round_trip_efficiency"],
+            max_charge_w=s["battery.max_charge_w"],
+            expected_load_w=s["battery.overnight_load_kwh"] * 1000.0 / 12.0,
+            allow_grid_topup=s["strategy.summer_grid_topup"],
+            max_topup_price_eur_per_kwh=s["strategy.summer_max_topup_price"],
+        )
+
+    def _active_strategy(now: datetime) -> str:
+        return select_strategy(now, settings_cache["strategy.mode"], site_tz)
+
     @asynccontextmanager
     async def lifespan(_app: FastAPI):
         # Guarantee the schema exists before anything touches the DB (no caller footgun).
@@ -197,12 +239,22 @@ def create_app(
 
     def _current_plan():
         """Single source of the current plan (DRY) so /api/plan, /api/savings, /api/decision and
-        /api/alerts all reflect the same computation. Returns (now, prices, plan) or None."""
+        /api/alerts all reflect the same computation. Dispatches to the active strategy
+        (summer solar-first / winter arbitrage). Returns (now, prices, plan) or None."""
         if price_source is None:
             return None
         now = datetime.now(UTC)
         prices = price_source.slots()
-        return now, prices, plan_rule_based(prices, now, _planner_cfg())
+        strategy = _active_strategy(now)
+        # Only the summer strategy needs the (slow) live SoC + the solar forecast.
+        soc = _current_soc(now) if strategy == "summer" else 0.0
+        forecast = (solar_forecast.slots()
+                    if strategy == "summer" and solar_forecast is not None else [])
+        plan = build_plan(
+            strategy, prices=prices, forecast=forecast, now=now, soc_pct=soc,
+            winter_cfg=_planner_cfg(), summer_cfg=_summer_cfg(soc),
+        )
+        return now, prices, plan
 
     def _data_quality(now: datetime) -> str:
         """Single source of the current data-quality level (SPEC §8.11)."""
@@ -532,10 +584,33 @@ def create_app(
         # Plan + prices + solar joined on ONE timeline (the plan's slots) so the UI can align them.
         pp = _current_plan()
         if pp is None:
-            return {"current_intent": None, "summary": "No plan yet.", "slots": []}
+            return {"current_intent": None, "summary": "No plan yet.", "slots": [],
+                    "strategy": _active_strategy(datetime.now(UTC))}
         now, prices_, plan = pp
         fc = solar_forecast.slots() if solar_forecast is not None else None
-        return build_plan_detail(now, prices_, plan, fc)
+        return {**build_plan_detail(now, prices_, plan, fc), "strategy": _active_strategy(now)}
+
+    _STRATEGY_DESC = {
+        "summer": "Solar-first — fill the battery from your panels and run the night on it; "
+                  "top up from the grid only if the sun falls short.",
+        "winter": "Arbitrage — charge the battery in the cheapest hours and discharge it during "
+                  "the expensive evening peaks.",
+    }
+
+    @app.get("/api/strategy")
+    def strategy_endpoint() -> dict:
+        # What strategy is running, why, and its key knobs — drives the dashboard strategy card.
+        now = datetime.now(UTC)
+        mode = settings_cache["strategy.mode"]
+        active = _active_strategy(now)
+        return {
+            "mode": mode,  # auto | summer | winter (the user's choice)
+            "active": active,  # the resolved strategy actually running
+            "auto": mode == "auto",
+            "summary": _STRATEGY_DESC.get(active, ""),
+            "grid_topup": settings_cache["strategy.summer_grid_topup"],
+            "max_topup_price": settings_cache["strategy.summer_max_topup_price"],
+        }
 
     def _battery_model() -> BatteryModel:
         s = settings_cache

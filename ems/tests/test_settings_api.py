@@ -115,10 +115,12 @@ def test_safety_limits_reject_unsafe_values_and_leave_controller_safe(tmp_path):
 
 
 def test_planner_settings_change_the_plan(tmp_path):
-    # With an impossibly large risk margin, no trade can clear break-even -> all self-consumption.
+    # Planner economics drive the WINTER arbitrage plan; pin the strategy so the season doesn't
+    # decide. With an impossibly large risk margin, no trade clears break-even -> all self-consume.
     app = _app(tmp_path, price_source=MockPriceSource(ZoneInfo("Europe/Amsterdam")))
     with TestClient(app) as c:
-        c.post("/api/settings", json={"planner.risk_margin_eur_per_kwh": 0.5})
+        c.post("/api/settings", json={"strategy.mode": "winter",
+                                      "planner.risk_margin_eur_per_kwh": 0.5})
         plan = c.get("/api/plan").json()
     assert all(s["intent"] == "allow_self_consumption" for s in plan["slots"])
 
