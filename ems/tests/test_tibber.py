@@ -1,4 +1,20 @@
+from datetime import UTC, datetime, timedelta
+
 from ems.sources.tibber import TibberPriceSource, parse_price_info
+
+
+class _Clock:
+    """A controllable clock for TTL tests."""
+
+    def __init__(self, t: datetime) -> None:
+        self.t = t
+
+    def __call__(self) -> datetime:
+        return self.t
+
+    def advance(self, **kw) -> None:
+        self.t += timedelta(**kw)
+
 
 # Shape of a real Tibber priceInfo response (trimmed): hourly total in EUR/kWh + tz-aware startsAt.
 DATA = {
@@ -77,3 +93,63 @@ def test_graphql_error_degrades_to_empty():
         raise RuntimeError("Tibber GraphQL error: invalid token")
 
     assert TibberPriceSource("bad", http_post=boom).slots() == []  # graceful, no raise
+
+
+def test_repeated_calls_hit_the_network_only_once_within_the_ttl():
+    n = {"c": 0}
+
+    def counting_post(url, token, body):
+        n["c"] += 1
+        return DATA
+
+    clock = _Clock(datetime(2026, 6, 28, 12, 0, tzinfo=UTC))
+    src = TibberPriceSource("tok", http_post=counting_post, clock=clock,
+                            cache_ttl=timedelta(minutes=15))
+    for _ in range(10):  # a burst of dashboard polls
+        assert len(src.slots()) == 12
+    assert n["c"] == 1  # cached — only one Tibber request despite 10 calls
+
+    clock.advance(minutes=16)  # past the TTL
+    src.slots()
+    assert n["c"] == 2  # refetched once the cache expired (e.g. to pick up tomorrow)
+
+
+def test_429_serves_last_good_prices_instead_of_dropping_them():
+    # First call succeeds and caches; later Tibber starts 429ing. The source must keep serving the
+    # cached day-ahead prices, not collapse the plan/prediction to nothing.
+    state = {"fail": False}
+
+    def flaky_post(url, token, body):
+        if state["fail"]:
+            raise RuntimeError("Client error '429 Too Many Requests'")
+        return DATA
+
+    clock = _Clock(datetime(2026, 6, 28, 12, 0, tzinfo=UTC))
+    src = TibberPriceSource("tok", http_post=flaky_post, clock=clock,
+                            cache_ttl=timedelta(minutes=15))
+    assert len(src.slots()) == 12  # good fetch, cached
+    state["fail"] = True
+    clock.advance(minutes=16)  # force a refetch attempt -> it 429s
+    assert len(src.slots()) == 12  # last-good prices, NOT []
+
+
+def test_first_ever_failure_returns_empty_then_recovers():
+    state = {"fail": True}
+    n = {"c": 0}
+
+    def flaky_post(url, token, body):
+        n["c"] += 1
+        if state["fail"]:
+            raise RuntimeError("429")
+        return DATA
+
+    clock = _Clock(datetime(2026, 6, 28, 12, 0, tzinfo=UTC))
+    src = TibberPriceSource("tok", http_post=flaky_post, clock=clock,
+                            retry_ttl=timedelta(seconds=60))
+    assert src.slots() == []  # no cache yet -> empty (fail-safe)
+    assert src.slots() == []  # within the retry backoff: does NOT re-hit the API (no 429 storm)
+    assert n["c"] == 1  # only the first attempt hit the network
+    state["fail"] = False
+    clock.advance(seconds=61)  # past the retry backoff
+    assert len(src.slots()) == 12  # recovers on the next allowed fetch
+    assert n["c"] == 2
