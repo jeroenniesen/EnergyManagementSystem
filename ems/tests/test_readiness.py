@@ -1,5 +1,5 @@
 """Layered readiness: each layer implies the ones above; the summary is calm + honest."""
-from ems.readiness import compute_readiness
+from ems.readiness import compute_readiness, home_state
 
 
 def _r(**kw):
@@ -46,3 +46,31 @@ def test_operational_but_invalid_plan_is_paused_not_controlling():
 def test_operational_but_no_capability_is_not_control_ready():
     r = _r(operational=True, capability_ok=False)
     assert not r.control_ready
+
+
+# ---- home_state headline ----------------------------------------------------------------------
+
+def test_home_state_attention_when_sensing_down():
+    hs = home_state(_r(sensing_ok=False), intent="allow_self_consumption", override_active=False)
+    assert hs["tone"] == "attention" and "Needs attention" in hs["headline"]
+
+
+def test_home_state_override_is_manual_control():
+    hs = home_state(_r(), intent="grid_charge_to_target", override_active=True)
+    assert hs["tone"] == "controlling" and "manual control" in hs["headline"]
+
+
+def test_home_state_observe_only_is_watching_not_controlling():
+    # dry-run install: EMS never claims to control — it's watching.
+    hs = home_state(_r(operational=False), intent="grid_charge_to_target", override_active=False)
+    assert hs["tone"] == "watching" and hs["headline"].startswith("Watching")
+
+
+def test_home_state_control_ready_self_consumption_is_good():
+    hs = home_state(_r(operational=True), intent="allow_self_consumption", override_active=False)
+    assert hs["tone"] == "good" and "All good" in hs["headline"]
+
+
+def test_home_state_carries_simulated_flag():
+    assert home_state(_r(), intent="hold_reserve", override_active=False, simulated=True)[
+        "simulated"] is True

@@ -54,7 +54,7 @@ from ems.planner.rule_based import PlannerConfig, plan_rule_based
 from ems.planner.strategy import build_plan, select_strategy
 from ems.planner.summer import SummerConfig, sunset_after
 from ems.planner.validator import PlanValidation, validate_plan
-from ems.readiness import Readiness, compute_readiness
+from ems.readiness import Readiness, compute_readiness, home_state
 from ems.retrospect import build_past_story, past_headline
 from ems.savings import estimate_daily_savings_eur
 from ems.sense import Recorder
@@ -910,6 +910,14 @@ def create_app(
             # §8.11 plan validation (status + findings) so the UI can show why control is held —
             # reuse the result _effective_intent already computed (no second plan rebuild).
             "plan_validation": (val.to_dict() if val is not None else None),
+            # The energy amount travelling with the mode (energy review P2.4): the SoC the
+            # controller would aim for now (None for self-consumption/hold) → UI "aiming for X%".
+            "target_soc": tgt,
+            # The single top-of-dashboard headline + tone the homeowner reads first (emotional #1).
+            "home_state": home_state(
+                _readiness(now), intent=str(d.intent), override_active=override_active,
+                simulated=dev_mode != "live",
+            ),
         }
 
     @app.get("/api/diagnostics")

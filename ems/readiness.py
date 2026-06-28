@@ -72,3 +72,34 @@ def compute_readiness(
         alive=alive, dashboard_ready=dashboard_ready, sensing_ready=sensing_ready,
         planning_ready=planning_ready, control_ready=control_ready, summary=summary,
     )
+
+
+_ACTION_PHRASE = {
+    "grid_charge_to_target": "topping up the battery",
+    "discharge_for_load": "running the house on your battery",
+    "hold_reserve": "holding the battery for later",
+    "allow_self_consumption": "the battery is running the house",
+}
+
+
+def home_state(
+    readiness: Readiness, *, intent: str | None, override_active: bool, simulated: bool = False,
+) -> dict:
+    """The single top-of-dashboard headline + tone the homeowner reads first (emotional review #1):
+    answers safe / watching / controlling / needs-attention. `tone` ∈
+    good | watching | controlling | attention. In observe-only (not control_ready) mode EMS is
+    'watching' — it never claims to be controlling the battery."""
+    if not readiness.sensing_ready:
+        return {"headline": "Needs attention — battery or meter data is unavailable",
+                "tone": "attention", "simulated": simulated}
+    if override_active:
+        return {"headline": "You're in manual control", "tone": "controlling",
+                "simulated": simulated}
+    phrase = _ACTION_PHRASE.get(intent or "", "the battery is safe")
+    if readiness.control_ready:
+        if intent == "allow_self_consumption":
+            return {"headline": f"All good — {phrase}", "tone": "good", "simulated": simulated}
+        return {"headline": phrase[:1].upper() + phrase[1:], "tone": "controlling",
+                "simulated": simulated}
+    # Observe-only: EMS watches and advises; the battery runs on its own.
+    return {"headline": f"Watching — {phrase}", "tone": "watching", "simulated": simulated}

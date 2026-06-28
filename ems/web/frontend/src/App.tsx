@@ -4,6 +4,7 @@ import { type Battery, BatteryChips } from "./BatteryChips";
 import { type EnergyStoryData, EnergyStory } from "./EnergyStory";
 import { Icon, type IconName } from "./icons";
 import {
+  CONFIDENCE,
   DATA_QUALITY,
   DATA_SOURCE,
   FRESHNESS_STATE,
@@ -45,6 +46,8 @@ type Decision = {
   plan_reason_explained?: string | null;
   explanation_source?: string;
   car_charging?: boolean;
+  target_soc?: number | null;
+  home_state?: { headline: string; tone: string; simulated: boolean };
 };
 
 type ChargeNeed = {
@@ -414,6 +417,26 @@ export function App() {
         <div className="error" data-testid="error">Cannot reach EMS API: {error}</div>
       )}
 
+      {view === "dashboard" && decision?.home_state && (
+        <section
+          className={`home-banner home-${decision.home_state.tone}`}
+          data-testid="home-state"
+          data-tone={decision.home_state.tone}
+        >
+          <span className="home-headline">{decision.home_state.headline}</span>
+          {decision.home_state.simulated && (
+            <span className="badge badge-amber" data-testid="home-sim">
+              Demo data — not your live battery
+            </span>
+          )}
+          {alertsData && CONFIDENCE[alertsData.data_quality] && (
+            <span className="home-confidence" data-testid="home-confidence">
+              {CONFIDENCE[alertsData.data_quality]}
+            </span>
+          )}
+        </section>
+      )}
+
       {view === "settings" && (
         <Settings onSaved={(v) => setTheme((v["ui.theme"] as Theme) ?? "auto")} />
       )}
@@ -532,6 +555,11 @@ export function App() {
             </span>
             {" — "}
             {decision.reason}
+            {decision.target_soc != null && (
+              <span className="decision-target" data-testid="decision-target">
+                {" "}· aiming for {Math.round(decision.target_soc)}%
+              </span>
+            )}
           </p>
           {decision.plan_reason && (
             <p className="plan-reason">

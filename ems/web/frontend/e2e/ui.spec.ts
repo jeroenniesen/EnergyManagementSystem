@@ -8,6 +8,7 @@ test.describe("EMS dashboard", () => {
     for (const id of [
       "run-mode-badge",
       "data-quality",
+      "home-state",
       "status-grid",
       "strategy-card",
       "energy-story",
@@ -18,6 +19,14 @@ test.describe("EMS dashboard", () => {
       await expect(page.getByTestId(id), `panel ${id} should render`).toBeVisible();
     }
     await expect(page.getByTestId("error")).toHaveCount(0);
+  });
+
+  test("the home-state banner leads with a calm headline + confidence", async ({ page }) => {
+    await page.goto("/");
+    const banner = page.getByTestId("home-state");
+    await expect(banner).toBeVisible();
+    await expect(banner).toHaveAttribute("data-tone", /good|watching|controlling|attention/);
+    await expect(page.getByTestId("home-confidence")).toBeVisible();
   });
 
   test("renders the status dashboard with reconstructed load", async ({ page }) => {

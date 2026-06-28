@@ -46,6 +46,14 @@ export const DATA_QUALITY: Record<string, Labelled> = {
   },
 };
 
+/** Plain-language confidence behind the current plan, keyed by data-quality level. */
+export const CONFIDENCE: Record<string, string> = {
+  complete: "High confidence — all data is fresh.",
+  degraded: "Good — some non-critical data is delayed or estimated.",
+  price_fallback: "Using a fallback price curve — price-based moves are paused.",
+  unsafe: "Plan paused until battery/meter data returns; the battery is safe.",
+};
+
 /** System-view overall health badge (same palette as data quality). */
 export const SYSTEM_OVERALL: Record<string, Labelled> = {
   ok: { label: "All good", title: "Every readiness check passed." },
