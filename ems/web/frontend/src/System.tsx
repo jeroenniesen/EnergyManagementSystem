@@ -1,5 +1,7 @@
 import { useEffect, useState } from "react";
 
+import { SYSTEM_OVERALL } from "./labels";
+
 type Check = { key: string; label: string; status: "ok" | "warn" | "fail"; detail: string };
 type Diag = { overall: "ok" | "warn" | "fail"; checks: Check[] };
 
@@ -50,8 +52,9 @@ export function SystemView() {
         <span
           className={`badge badge-dq dq-${OVERALL_DQ[diag.overall] ?? "degraded"}`}
           data-testid="system-overall"
+          title={SYSTEM_OVERALL[diag.overall]?.title}
         >
-          {diag.overall}
+          {SYSTEM_OVERALL[diag.overall]?.label ?? diag.overall}
         </span>
       </div>
       <ul className="checks" data-testid="checks">

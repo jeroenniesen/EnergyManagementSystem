@@ -42,11 +42,14 @@ export type EnergyStoryData = {
 
 const ACTION_LEGEND = [
   { key: "charge", label: "Charge" },
-  { key: "discharge", label: "Discharge" },
-  { key: "self_consume", label: "Self-consume" },
+  { key: "discharge", label: "Power the house" },
+  { key: "self_consume", label: "Use solar first" },
   { key: "hold", label: "Hold" },
   { key: "idle", label: "Idle" },
 ];
+const ACTION_LABEL: Record<string, string> = Object.fromEntries(
+  ACTION_LEGEND.map((a) => [a.key, a.label]),
+);
 
 const W = 1000;
 const H = 190;
@@ -57,9 +60,19 @@ function clock(ms: number): string {
   return new Date(ms).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
 }
 
-function Stat({ label, value, accent }: { label: string; value: string; accent?: string }) {
+function Stat({
+  label,
+  value,
+  accent,
+  title,
+}: {
+  label: string;
+  value: string;
+  accent?: string;
+  title?: string;
+}) {
   return (
-    <div className="story-stat">
+    <div className="story-stat" title={title}>
       <span className="story-stat-value" style={accent ? { color: accent } : undefined}>
         {value}
       </span>
@@ -118,6 +131,21 @@ export function EnergyStory({
   const nowMs = story ? Date.parse(story.now) : NaN;
   const dl = story?.target_deadline ? Date.parse(story.target_deadline) : NaN;
   const showDeadline = Number.isFinite(dl) && dl >= t0 && dl <= t1;
+
+  // A spoken-word description of the chart for screen readers — the SVG line alone is invisible
+  // to them, so spell out the start, low point, target and reserve floor.
+  const socChartLabel = (() => {
+    if (!story || !t || pts.length === 0) return "Battery level over time";
+    const span24 = isPast ? "the last 24 hours" : "the next 24 hours";
+    const parts = [`Battery level over ${span24}.`];
+    if (t.soc_start_pct != null) parts.push(`Starts at ${Math.round(t.soc_start_pct)}%.`);
+    if (t.soc_min_pct != null) parts.push(`Lowest ${Math.round(t.soc_min_pct)}%.`);
+    if (story.target_soc_pct != null) {
+      parts.push(`Target ${Math.round(story.target_soc_pct)}%.`);
+    }
+    parts.push(`Reserve floor ${Math.round(story.reserve_soc_pct)}%.`);
+    return parts.join(" ");
+  })();
 
   return (
     <section className="story" data-testid="energy-story">
@@ -208,34 +236,50 @@ export function EnergyStory({
               )}
               {t.self_sufficiency_pct != null && (
                 <Stat
-                  label="self-sufficient"
+                  label="powered by you"
                   value={`${t.self_sufficiency_pct.toFixed(0)}%`}
                   accent="var(--accent)"
+                  title="Share of your electricity that came from your own solar and battery instead of the grid."
                 />
               )}
-              <Stat label="grid import" value={`${t.import_kwh.toFixed(1)} kWh`} />
-              {t.export_kwh > 0.05 && <Stat label="exported" value={`${t.export_kwh.toFixed(1)} kWh`} />}
+              <Stat
+                label="from the grid"
+                value={`${t.import_kwh.toFixed(1)} kWh`}
+                title="Energy bought from the grid over this period."
+              />
+              {t.export_kwh > 0.05 && (
+                <Stat
+                  label="back to grid"
+                  value={`${t.export_kwh.toFixed(1)} kWh`}
+                  title="Surplus solar sent back to the grid."
+                />
+              )}
               <Stat label="solar" value={`${t.solar_kwh.toFixed(1)} kWh`} accent="var(--summer)" />
               <Stat
-                label={isPast ? "battery used" : "battery in/out"}
+                label={isPast ? "battery used" : "battery in / out"}
                 value={
                   isPast
                     ? `${t.discharge_kwh.toFixed(1)} kWh`
                     : `${t.charge_kwh.toFixed(1)}/${t.discharge_kwh.toFixed(1)} kWh`
+                }
+                title={
+                  isPast
+                    ? "Energy the battery delivered to the home."
+                    : "Energy charged into the battery / delivered from it over the plan."
                 }
               />
             </div>
           )}
 
           <div className="track-label">
-            State of charge {isPast ? "(recorded)" : "(projected)"}
+            Battery level {isPast ? "(measured)" : "(forecast)"}
           </div>
           <svg
             className="soc-svg"
             viewBox={`0 0 ${W} ${H}`}
             preserveAspectRatio="xMidYMid meet"
             role="img"
-            aria-label={story?.headline ?? "State of charge"}
+            aria-label={socChartLabel}
             data-testid="story-soc"
           >
             {[0, 50, 100].map((g) => (
@@ -295,7 +339,7 @@ export function EnergyStory({
           <div className="legend soc-mini-legend">
             <span className="legend-item">
               <span className={`legend-line ${isPast ? "legend-actual" : "legend-predicted"}`} />
-              {isPast ? "Recorded SoC" : "Projected SoC"}
+              {isPast ? "Battery level (measured)" : "Battery level (forecast)"}
             </span>
             {story?.target_soc_pct != null && (
               <span className="legend-item">
@@ -303,7 +347,7 @@ export function EnergyStory({
               </span>
             )}
             <span className="legend-item">
-              <span className="legend-line legend-reserve" /> Reserve floor
+              <span className="legend-line legend-reserve" /> Minimum reserve
             </span>
             {showDeadline && (
               <span className="legend-item">
@@ -330,7 +374,7 @@ export function EnergyStory({
               <span
                 key={i}
                 className={`pseg seg-${s.action}`}
-                title={`${clock(Date.parse(s.start))} — ${s.action}`}
+                title={`${clock(Date.parse(s.start))} — ${ACTION_LABEL[s.action] ?? s.action}`}
               />
             ))}
           </div>

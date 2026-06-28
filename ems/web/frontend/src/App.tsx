@@ -2,6 +2,16 @@ import { useEffect, useRef, useState } from "react";
 
 import { type Battery, BatteryChips } from "./BatteryChips";
 import { type EnergyStoryData, EnergyStory } from "./EnergyStory";
+import {
+  DATA_QUALITY,
+  DATA_SOURCE,
+  FRESHNESS_STATE,
+  humanize,
+  OUTCOME_LABEL,
+  PHYSICAL_MODE,
+  RUN_MODE,
+  SIGNAL_NAME,
+} from "./labels";
 import { OverrideCard } from "./Override";
 import { Settings } from "./Settings";
 import { type Strategy, StrategyCard } from "./StrategyCard";
@@ -19,7 +29,6 @@ type Status = {
   non_ev_load_w: number;
 };
 
-type Series = { raw: Record<string, number>[]; derived: Record<string, number>[] };
 type FreshnessMap = Record<string, string>;
 
 type Decision = {
@@ -49,9 +58,19 @@ function fmtW(w: number): string {
   return Math.abs(w) >= 1000 ? `${(w / 1000).toFixed(2)} kW` : `${Math.round(w)} W`;
 }
 
-function Metric({ label, value, hint }: { label: string; value: string; hint?: string }) {
+function Metric({
+  label,
+  value,
+  hint,
+  title,
+}: {
+  label: string;
+  value: string;
+  hint?: string;
+  title?: string;
+}) {
   return (
-    <div className="metric">
+    <div className="metric" title={title}>
       <span className="metric-label">{label}</span>
       <span className="metric-value">{value}</span>
       {hint && <span className="metric-hint">{hint}</span>}
@@ -96,7 +115,6 @@ function ChargeTarget({ n }: { n: ChargeNeed }) {
 
 export function App() {
   const [status, setStatus] = useState<Status | null>(null);
-  const [series, setSeries] = useState<Series | null>(null);
   const [freshness, setFreshness] = useState<FreshnessMap | null>(null);
   const [story, setStory] = useState<EnergyStoryData | null>(null);
   const [storyWindow, setStoryWindow] = useState<"past" | "next">("next");
@@ -152,7 +170,6 @@ export function App() {
       getJson("/api/status")
         .then((v) => { if (alive) { setStatus(v); setError(null); } })
         .catch((e) => { if (alive) setError(String(e)); });
-      fill("/api/series?limit=50", setSeries);
       fill("/api/freshness", setFreshness);
       fill(`/api/energy-story?window=${storyWindow}`, setStory);
       fill("/api/strategy", (v: Strategy) => { if (!strategyPending.current) setStrategy(v); });
@@ -213,18 +230,30 @@ export function App() {
           <span
             className={`badge ${status.dry_run ? "badge-dryrun" : "badge-live"}`}
             data-testid="run-mode-badge"
+            title={status.dry_run ? RUN_MODE.dry.title : RUN_MODE.live.title}
           >
-            {status.dry_run ? "DRY-RUN" : "LIVE"}
+            {status.dry_run ? RUN_MODE.dry.label : RUN_MODE.live.label}
           </span>
         )}
         {status && (
-          <span className="badge badge-muted" data-testid="data-source">
-            {status.dev_mode === "live" ? "live data" : "simulated data"}
+          <span
+            className="badge badge-muted"
+            data-testid="data-source"
+            title={status.dev_mode === "live" ? DATA_SOURCE.live.title : DATA_SOURCE.sim.title}
+          >
+            {status.dev_mode === "live" ? DATA_SOURCE.live.label : DATA_SOURCE.sim.label}
           </span>
         )}
         {alertsData && (
-          <span className={`badge badge-dq dq-${alertsData.data_quality}`} data-testid="data-quality">
-            {alertsData.data_quality}
+          <span
+            className={`badge badge-dq dq-${alertsData.data_quality}`}
+            data-testid="data-quality"
+            title={
+              DATA_QUALITY[alertsData.data_quality]?.title ??
+              "How fresh and complete the data behind the plan is."
+            }
+          >
+            {DATA_QUALITY[alertsData.data_quality]?.label ?? humanize(alertsData.data_quality)}
           </span>
         )}
         <nav className="nav" aria-label="Views">
@@ -277,29 +306,52 @@ export function App() {
 
       {view === "dashboard" && status && (
         <section className="grid" data-testid="status-grid">
-          <Metric label="State of charge" value={`${status.soc_pct.toFixed(0)} %`} />
+          <Metric
+            label="Battery level"
+            value={`${status.soc_pct.toFixed(0)} %`}
+            hint="how full it is"
+            title="How much charge is in the home battery right now."
+          />
           <Metric
             label="House load"
             value={fmtW(status.house_load_w)}
-            hint="reconstructed: grid + solar + battery"
+            hint="what your home is using now"
+            title="Everything your home is drawing right now, from solar, battery and the grid combined."
           />
-          <Metric label="Grid" value={fmtW(status.grid_power_w)} hint={status.grid_power_w >= 0 ? "import" : "export"} />
-          <Metric label="Solar" value={fmtW(status.solar_power_w)} hint="production" />
+          <Metric
+            label="Grid"
+            value={fmtW(status.grid_power_w)}
+            hint={status.grid_power_w >= 0 ? "from the grid" : "to the grid"}
+            title="Power flowing in from the grid (buying) or back out to it (selling)."
+          />
+          <Metric label="Solar" value={fmtW(status.solar_power_w)} hint="from your panels" />
           <Metric
             label="Battery"
             value={fmtW(status.battery_power_w)}
-            hint={status.battery_power_w >= 0 ? "discharging" : "charging"}
+            hint={status.battery_power_w >= 0 ? "powering the house" : "charging up"}
+            title="Power leaving the battery to run the house, or going in to charge it."
           />
-          <Metric label="Non-EV load" value={fmtW(status.non_ev_load_w)} hint="excludes car" />
+          <Metric
+            label="Home use"
+            value={fmtW(status.non_ev_load_w)}
+            hint="excluding the car"
+            title="What the home uses, not counting car charging."
+          />
           {battery?.current_mode && (
             <Metric
               label="Battery mode"
-              value={battery.current_mode}
-              hint={battery.capabilities?.p1_paired ? "P1 paired" : "P1 not paired"}
+              value={PHYSICAL_MODE[battery.current_mode] ?? humanize(battery.current_mode)}
+              hint={battery.capabilities?.p1_paired ? "balancing to your meter" : "standalone"}
+              title="The mode the battery is currently running in."
             />
           )}
           {savings != null && (
-            <Metric label="Est. savings today" value={`€${savings.toFixed(2)}`} hint="arbitrage" />
+            <Metric
+              label="Saved today"
+              value={`€${savings.toFixed(2)}`}
+              hint="vs. no smart control"
+              title="Rough estimate of what smart charging saved today compared with leaving the battery on its own."
+            />
           )}
         </section>
       )}
@@ -334,7 +386,9 @@ export function App() {
             )}
           </div>
           <p className="decision-line">
-            <span className="decision-outcome">{decision.outcome}</span>
+            <span className="decision-outcome">
+              {OUTCOME_LABEL[decision.outcome] ?? humanize(decision.outcome)}
+            </span>
             {" — "}
             {decision.reason}
           </p>
@@ -344,20 +398,23 @@ export function App() {
 
       {view === "dashboard" && freshness && Object.keys(freshness).length > 0 && (
         <section className="freshness" data-testid="freshness">
-          <span className="freshness-title">Signal freshness</span>
+          <span className="freshness-title" title="Whether each piece of live data is current.">
+            Data status
+          </span>
           {Object.entries(freshness).map(([sig, st]) => (
-            <span key={sig} className={`chip chip-${st}`} data-signal={sig}>
-              {sig}: {st}
+            <span
+              key={sig}
+              className={`chip chip-${st}`}
+              data-signal={sig}
+              title={`${SIGNAL_NAME[sig] ?? humanize(sig)} — ${FRESHNESS_STATE[st] ?? st}`}
+            >
+              {SIGNAL_NAME[sig] ?? humanize(sig)}: {FRESHNESS_STATE[st] ?? st}
             </span>
           ))}
         </section>
       )}
 
       {view === "dashboard" && !status && !error && <div className="loading">Loading…</div>}
-
-      <footer className="footer" data-testid="series-count">
-        history samples: {series ? series.raw.length : 0}
-      </footer>
     </div>
   );
 }

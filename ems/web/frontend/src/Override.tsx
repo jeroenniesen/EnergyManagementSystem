@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 
 import { authHeaders } from "./auth";
+import { humanize } from "./labels";
 
 type OverrideState = {
   intent: string | null;
@@ -11,11 +12,12 @@ type OverrideState = {
 };
 
 const INTENT_LABEL: Record<string, string> = {
-  allow_self_consumption: "Self-consume (pause EMS)",
-  grid_charge_to_target: "Charge",
-  hold_reserve: "Hold",
-  discharge_for_load: "Discharge",
+  allow_self_consumption: "Let the battery manage itself",
+  grid_charge_to_target: "Charge the battery now",
+  hold_reserve: "Hold (don't charge or use)",
+  discharge_for_load: "Power the house from the battery",
 };
+const intentLabel = (intent: string): string => INTENT_LABEL[intent] ?? humanize(intent);
 const DURATIONS = [
   { label: "30 min", minutes: 30 },
   { label: "1 hour", minutes: 60 },
@@ -83,10 +85,10 @@ export function OverrideCard() {
   return (
     <section className="override" data-testid="override">
       <div className="override-head">
-        <span className="metric-label">Operator override</span>
+        <span className="metric-label">Manual control</span>
         {state.active ? (
           <span className="badge badge-amber" data-testid="override-active">
-            forcing {INTENT_LABEL[state.intent ?? ""] ?? state.intent} ·{" "}
+            forcing {intentLabel(state.intent ?? "")} ·{" "}
             {Math.ceil(state.seconds_remaining / 60)}m left
           </span>
         ) : (
@@ -96,8 +98,9 @@ export function OverrideCard() {
         )}
       </div>
       <p className="override-hint">
-        Force the battery into one mode for a fixed time, overruling the planner. It expires
-        automatically. "Self-consume" hands control back to the battery (pause the EMS).
+        Take over for a fixed time and tell the battery exactly what to do — this overrules the
+        automatic plan and ends on its own when the time is up. &ldquo;Let the battery manage
+        itself&rdquo; hands control back to the battery&apos;s own self-use mode.
       </p>
       <div className="override-controls">
         <select
@@ -109,7 +112,7 @@ export function OverrideCard() {
           <option value="">Choose a mode…</option>
           {state.options.map((o) => (
             <option key={o} value={o}>
-              {INTENT_LABEL[o] ?? o}
+              {intentLabel(o)}
             </option>
           ))}
         </select>

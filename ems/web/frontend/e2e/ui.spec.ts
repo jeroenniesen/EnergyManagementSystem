@@ -24,8 +24,8 @@ test.describe("EMS dashboard", () => {
     await page.goto("/");
     await expect(page.getByRole("heading", { name: "Smart Energy Manager" })).toBeVisible();
 
-    // DRY-RUN badge must be visible (M0a is read-only).
-    await expect(page.getByTestId("run-mode-badge")).toHaveText("DRY-RUN");
+    // Run-mode badge in plain language (dry-run => "Watching only"; M0a is read-only).
+    await expect(page.getByTestId("run-mode-badge")).toHaveText("Watching only");
 
     // The status grid renders, including the reconstructed house-load value (1.00 kW).
     const grid = page.getByTestId("status-grid");
@@ -35,7 +35,7 @@ test.describe("EMS dashboard", () => {
     await expect(grid).toContainText("55 %");
     await expect(grid).toContainText("Battery mode");
     await expect(grid).toContainText("auto");
-    await expect(grid).toContainText("Est. savings today");
+    await expect(grid).toContainText("Saved today");
   });
 
   test("no API error banner when backend is up", async ({ page }) => {
@@ -253,7 +253,7 @@ test.describe("EMS dashboard", () => {
     await page.goto("/");
     const fr = page.getByTestId("freshness");
     await expect(fr).toBeVisible();
-    await expect(fr).toContainText("grid: fresh");
+    await expect(fr).toContainText("Grid meter: up to date");
   });
 
   test("System tab shows the readiness checks", async ({ page }) => {

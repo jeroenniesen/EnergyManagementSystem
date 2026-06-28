@@ -66,8 +66,9 @@ SETTINGS_SCHEMA: tuple[SettingsField, ...] = (
     ),
     # --- Energy meters (HomeWizard local API) ---
     SettingsField(
-        "meters.p1_ip", "P1 grid meter IP", "text", "", "meters",
-        help="HomeWizard P1 meter (net grid import/export).", applies="restart",
+        "meters.p1_ip", "Grid meter IP (P1)", "text", "", "meters",
+        help="HomeWizard meter on your home's grid connection — measures power bought and sold.",
+        applies="restart",
     ),
     SettingsField(
         "meters.solar_ip", "Solar meter IP", "text", "", "meters",
@@ -105,8 +106,9 @@ SETTINGS_SCHEMA: tuple[SettingsField, ...] = (
         min=1.0, max=50.0, step=0.1, unit="kWh",
     ),
     SettingsField(
-        "battery.min_reserve_soc", "Reserve floor", "number", 10.0, "battery",
-        help="State of charge the EMS never discharges below.",
+        "battery.min_reserve_soc", "Minimum reserve", "number", 10.0, "battery",
+        help="The system always keeps at least this much charge in the battery and never goes "
+        "below it — your safety buffer.",
         min=0.0, max=50.0, step=1.0, unit="%",
     ),
     SettingsField(
@@ -156,10 +158,10 @@ SETTINGS_SCHEMA: tuple[SettingsField, ...] = (
     ),
     # --- Control safety limits (pushed onto the mode controller live, SPEC §6.5) ---
     SettingsField(
-        "control.operational", "Operational mode (control the battery)", "bool", False, "control",
-        help="OFF = dry-run: decisions are shown but the battery is never changed (safe default). "
-        "ON = the EMS actually commands the battery, honouring all the safety limits below. "
-        "Takes effect on restart.",
+        "control.operational", "Let the system control the battery", "bool", False, "control",
+        help="OFF (safe default): the system only shows what it would do — your battery is never "
+        "changed. ON: the system actually switches the battery's mode, within all the safety "
+        "limits below. Takes effect after a restart.",
         applies="restart",
     ),
     SettingsField(
@@ -191,28 +193,33 @@ SETTINGS_SCHEMA: tuple[SettingsField, ...] = (
     # --- Planner economics (advanced — change these and /api/plan recomputes, SPEC §8.3) ---
     SettingsField(
         "planner.round_trip_efficiency", "Round-trip efficiency", "number", 0.90, "planner",
-        help="Battery charge→discharge efficiency. Lower means fewer trades clear break-even.",
+        help="How much energy survives a charge-then-discharge cycle (0.90 = 90%). Lower means the "
+        "system only acts when the savings clearly beat the losses.",
         min=0.5, max=1.0, step=0.01, advanced=True,
     ),
     SettingsField(
-        "planner.degradation_eur_per_kwh", "Degradation cost", "number", 0.05, "planner",
-        help="Wear cost charged against every stored kWh.",
+        "planner.degradation_eur_per_kwh", "Battery wear cost", "number", 0.05, "planner",
+        help="A small cost counted for every kWh stored, so the system won't cycle the battery for "
+        "tiny gains.",
         min=0.0, max=0.5, step=0.01, unit="€/kWh", advanced=True,
     ),
     SettingsField(
-        "planner.risk_margin_eur_per_kwh", "Risk margin", "number", 0.02, "planner",
-        help="Extra spread required before a trade is judged worthwhile.",
+        "planner.risk_margin_eur_per_kwh", "Safety margin", "number", 0.02, "planner",
+        help="Extra price gap the system needs before it bothers to trade — a buffer against "
+        "forecast error.",
         min=0.0, max=0.5, step=0.01, unit="€/kWh", advanced=True,
     ),
     SettingsField(
         "planner.charge_slots", "Charge window", "int", 12, "planner",
-        help="How many of the cheapest 15-min slots to charge in (12 ≈ 3h).",
-        min=1, max=96, unit="slots", advanced=True,
+        help="How long to charge in the cheapest part of the day. Each step is 15 minutes, so "
+        "12 ≈ 3 hours.",
+        min=1, max=96, unit="× 15 min", advanced=True,
     ),
     SettingsField(
         "planner.discharge_slots", "Discharge window", "int", 24, "planner",
-        help="Maximum number of expensive slots to discharge into (24 ≈ 6h).",
-        min=1, max=96, unit="slots", advanced=True,
+        help="Most the battery will cover during expensive hours. Each step is 15 minutes, so "
+        "24 ≈ 6 hours.",
+        min=1, max=96, unit="× 15 min", advanced=True,
     ),
     # --- Appearance ---
     SettingsField(

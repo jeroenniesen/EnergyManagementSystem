@@ -67,7 +67,7 @@ test.describe("EMS settings", () => {
     await page.getByTestId("nav-settings").click();
     const op = page.getByTestId("field-control.operational");
     await expect(op).toBeVisible();
-    await expect(op).toContainText("Operational mode");
+    await expect(op).toContainText("control the battery");
     await expect(op).toContainText("restart");
     // Default OFF (dry-run) — the checkbox is unchecked, so the battery is never commanded.
     await expect(op.locator("#set-control\\.operational")).not.toBeChecked();
