@@ -422,10 +422,12 @@ def create_app(
     @app.get("/api/forecast")
     def forecast() -> dict:
         if solar_forecast is None:
-            return {"today_kwh_p50": None, "slots": []}
+            return {"today_kwh_p50": None, "source": None, "slots": []}
         slots = solar_forecast.slots()
         return {
             "today_kwh_p50": round(day_kwh_p50(slots), 2),
+            # "forecast.solar" (live) | "model" / "model (fallback)" — so the UI is honest.
+            "source": getattr(solar_forecast, "source_label", "model"),
             "slots": [
                 {"start": s.start.isoformat(), "p10_w": s.p10_w, "p50_w": s.p50_w,
                  "p90_w": s.p90_w}

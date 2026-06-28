@@ -125,5 +125,16 @@ def build_wiring(eff: dict, tz: ZoneInfo):
     else:
         price_source = MockPriceSource(tz)
 
-    solar_forecast = MockSolarForecastSource(tz)  # Loop 2 will make this live from site.lat/lon
+    # Solar forecast: live Forecast.Solar (keyless, from the configured location) when live devices
+    # are on; otherwise the model curve. Forecast.Solar is cached + falls back to the model.
+    if use_live_devices and eff.get("site.lat") is not None and eff.get("site.lon") is not None:
+        from ems.sources.forecast_solar import ForecastSolarSource
+
+        solar_forecast = ForecastSolarSource(
+            tz=tz, lat=float(eff["site.lat"]), lon=float(eff["site.lon"]),
+            tilt=float(eff["site.tilt"]), azimuth=float(eff["site.azimuth"]),
+            kwp=float(eff["site.kwp"]),
+        )
+    else:
+        solar_forecast = MockSolarForecastSource(tz)
     return source, price_source, solar_forecast, battery_endpoint, controller_driver, dev_mode

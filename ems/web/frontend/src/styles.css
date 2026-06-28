@@ -113,7 +113,13 @@ body {
   border-radius: 14px;
   padding: 18px;
 }
-.prices-head { display: flex; align-items: baseline; justify-content: space-between; margin-bottom: 12px; }
+.prices-head { display: flex; align-items: baseline; justify-content: space-between; margin-bottom: 12px; gap: 8px; }
+.src-tag {
+  margin-left: 8px; font-size: 0.62rem; font-weight: 700; text-transform: uppercase;
+  letter-spacing: 0.04em; padding: 2px 7px; border-radius: 999px; vertical-align: middle;
+}
+.src-live { background: rgba(70, 200, 168, 0.16); color: var(--green); }
+.src-sim { background: var(--panel-2); color: var(--muted); }
 .price-now { font-size: 1.3rem; font-weight: 600; letter-spacing: -0.02em; font-variant-numeric: tabular-nums; }
 .bars { display: flex; align-items: flex-end; gap: 2px; height: 80px; }
 .bar {

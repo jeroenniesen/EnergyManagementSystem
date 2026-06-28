@@ -21,7 +21,7 @@ type FreshnessMap = Record<string, string>;
 type PriceSlot = { start: string; eur_per_kwh: number };
 type Prices = { currency: string; current_eur_per_kwh: number | null; slots: PriceSlot[] };
 type ForecastSlot = { start: string; p10_w: number; p50_w: number; p90_w: number };
-type Forecast = { today_kwh_p50: number | null; slots: ForecastSlot[] };
+type Forecast = { today_kwh_p50: number | null; source?: string | null; slots: ForecastSlot[] };
 type PlanSlot = { start: string; intent: string; reason: string };
 type Plan = {
   created_at: string | null;
@@ -189,7 +189,19 @@ function ForecastCurve({ forecast }: { forecast: Forecast }) {
   return (
     <section className="prices" data-testid="forecast">
       <div className="prices-head">
-        <span className="metric-label">Solar forecast (P50)</span>
+        <span className="metric-label">
+          Solar forecast (P50)
+          <span
+            className={`src-tag ${forecast.source === "forecast.solar" ? "src-live" : "src-sim"}`}
+            data-testid="forecast-source"
+          >
+            {forecast.source === "forecast.solar"
+              ? "live · forecast.solar"
+              : forecast.source && forecast.source.startsWith("model")
+                ? "estimated (model)"
+                : "estimated"}
+          </span>
+        </span>
         <span className="price-now" data-testid="forecast-today">
           {forecast.today_kwh_p50 != null ? `${forecast.today_kwh_p50.toFixed(1)} kWh today` : "—"}
         </span>
