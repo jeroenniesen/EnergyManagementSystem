@@ -75,9 +75,12 @@ def summarize_projection(projected: list[ProjectedSlot]) -> dict:
     exp = sum(-p.grid_w for p in projected if p.grid_w < 0) * SLOT_HOURS / 1000.0
     solar = sum(p.solar_w for p in projected) * SLOT_HOURS / 1000.0
     load = sum(p.load_w for p in projected) * SLOT_HOURS / 1000.0
+    # Honest, shape-agnostic phrasing: report peak / end / lowest as facts (the "lowest" is often
+    # just the starting slot, so never imply a mid-window "dip" that doesn't happen). "Planned
+    # window" not "24h" — the horizon is only as long as prices are published (≈11h until tomorrow).
     summary = (
-        f"Battery peaks near {round(hi.soc_pct)}% and dips to {round(lo.soc_pct)}%, "
-        f"ending the next 24h around {round(end)}%. Projected grid: {imp:.1f} kWh in / "
+        f"Projected SoC peaks at {round(hi.soc_pct)}% and ends the planned window near "
+        f"{round(end)}% (lowest {round(lo.soc_pct)}%). Projected grid: {imp:.1f} kWh in / "
         f"{exp:.1f} kWh out, on {solar:.1f} kWh solar and {load:.1f} kWh of load."
     )
     return {

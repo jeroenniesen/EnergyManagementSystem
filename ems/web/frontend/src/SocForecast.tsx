@@ -121,7 +121,7 @@ export function SocForecast({
     return (
       <section className="socchart" data-testid="soc-forecast">
         <div className="prices-head">
-          <span className="metric-label">Battery SoC — history &amp; 24h forecast</span>
+          <span className="metric-label">Battery SoC — recorded &amp; forecast</span>
         </div>
         {battery && <TowerChips battery={battery} />}
         <p className="plan-reason" data-testid="soc-forecast-empty">
@@ -150,7 +150,7 @@ export function SocForecast({
   return (
     <section className="socchart" data-testid="soc-forecast">
       <div className="prices-head">
-        <span className="metric-label">Battery SoC — history &amp; 24h forecast</span>
+        <span className="metric-label">Battery SoC — recorded &amp; forecast</span>
         <span className="price-now" data-testid="soc-now">
           {cur != null ? `${cur.toFixed(0)}% now` : "—"}
         </span>
