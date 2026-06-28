@@ -241,8 +241,9 @@ SETTINGS_SCHEMA: tuple[SettingsField, ...] = (
         "logged. Leave blank to keep the current value.",
     ),
     SettingsField(
-        "explainer.model", "AI model", "text", "MiniMax-M2.5", "ai",
-        help="The chat model id, e.g. MiniMax-M2.5 (cheap, fine for explanations).", advanced=True,
+        "explainer.model", "AI model", "text", "MiniMax-M2.7", "ai",
+        help="The chat model id. MiniMax-M2.7 is a cheap, capable default included in current "
+        "MiniMax tiers (M2.5 is legacy and may not be on your plan).", advanced=True,
     ),
     SettingsField(
         "explainer.base_url", "AI endpoint", "text", "https://api.minimax.io/v1", "ai",

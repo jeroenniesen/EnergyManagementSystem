@@ -98,11 +98,15 @@ def test_llm_error_message_is_actionable_by_http_status():
             self.status_code = sc
 
     class _HttpErr(Exception):
-        def __init__(self, sc):
+        def __init__(self, sc, text=""):
             self.response = _Resp(sc)
+            self.response.text = text
 
     assert "402" in _llm_error_message(_HttpErr(402))
     assert "credit" in _llm_error_message(_HttpErr(402)).lower()
+    # A 402 whose body names the balance → the specific, actionable "top up Balance" message.
+    bal = _llm_error_message(_HttpErr(402, '{"error":{"type":"insufficient_balance_error"}}'))
+    assert "balance" in bal.lower() and "minimax.io" in bal.lower()
     assert "401" in _llm_error_message(_HttpErr(401))
     assert "429" in _llm_error_message(_HttpErr(429))
     # No HTTP status (e.g. a timeout / connection error) → the generic, still-reassuring message.

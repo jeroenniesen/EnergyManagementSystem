@@ -24,12 +24,27 @@ from ems.sources.prices import PriceSlot
 _log = logging.getLogger("ems.explainer")
 
 
+def _llm_log(where: str, e: Exception) -> None:
+    """Log an LLM failure with the provider's error BODY (the actual reason — e.g. insufficient
+    balance / model not authorised). The body is MiniMax's own error JSON; it never contains the
+    API key (that lives only in the request header)."""
+    body = (getattr(getattr(e, "response", None), "text", "") or "")[:400].replace("\n", " ")
+    _log.warning("%s: LLM call failed (%s) body=%s", where, e, body)
+
+
 def _llm_error_message(e: Exception) -> str:
     """A user-facing, actionable reason for an LLM failure. Reads the HTTP status off the exception
     by duck-typing (no hard httpx import here); never includes the key. The built-in text always
     keeps working, so every message reassures that."""
     status = getattr(getattr(e, "response", None), "status_code", None)
+    body = (getattr(getattr(e, "response", None), "text", "") or "").lower()
     if status == 402:
+        if "balance" in body:
+            return (
+                "MiniMax: insufficient balance (402). The chat API is billed from your "
+                "pay-as-you-go Balance — separate from a Token-Plan subscription or gift credits. "
+                "Top it up at platform.minimax.io. The built-in explanations still work."
+            )
         return (
             "The AI service says payment is required (402) — your MiniMax account needs API credit "
             "(the developer API is pay-as-you-go, separate from a chat subscription). The built-in "
@@ -249,7 +264,7 @@ class ExternalLlmExplainer:
             text = (resp["choices"][0]["message"]["content"] or "").strip()
         except Exception as e:
             # network error / timeout / bad shape → template. Log the cause (no key in the error).
-            _log.warning("explain: LLM call failed (%s); using template", e)
+            _llm_log("explain", e)
             return self._fallback.explain(reason)
         allowed_source = reason + " " + " ".join(str(v) for v in facts.values())
         if not text or _has_ungrounded_number(text, allowed_source):
@@ -276,7 +291,7 @@ class ExternalLlmExplainer:
             )
             text = (resp["choices"][0]["message"]["content"] or "").strip()
         except Exception as e:
-            _log.warning("chat: LLM call failed (%s)", e)
+            _llm_log("chat", e)
             return Explanation(_llm_error_message(e), "error", question)
         if not text:
             return Explanation("Sorry — I couldn't produce an answer.", "error", question)
@@ -307,7 +322,7 @@ class ExternalLlmExplainer:
             )
             text = (resp["choices"][0]["message"]["content"] or "").strip()
         except Exception as e:
-            _log.warning("validate: LLM call failed (%s)", e)
+            _llm_log("validate", e)
             return Explanation("Validation unavailable.", "error", context)
         if not text or _has_ungrounded_number(text, context):
             return Explanation("Validation withheld (ungrounded).", "guard", context)
