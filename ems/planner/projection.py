@@ -56,9 +56,14 @@ def project_energy(
     solar_w_by: dict[datetime, float],
     load_w_by: dict[datetime, float],
     model: BatteryModel,
+    charge_target_soc_pct: float | None = None,
     slot: timedelta = SLOT,
 ) -> list[ProjectedSlot]:
     """Simulate SoC + grid flow over `plan_slots` (each needs `.start` and `.intent`).
+
+    `charge_target_soc_pct` caps `GRID_CHARGE_TO_TARGET`: the battery buys from the grid only up to
+    this SoC (the energy needed to carry the night — SPEC §8: a target SoC derived from required
+    kWh), instead of force-charging to full. None = charge to capacity (legacy behaviour).
 
     Contract: `load_w_by` MUST cover every slot start — a missing load silently reads 0 W and
     under-predicts the drain (the API builds it for every plan slot). `solar_w_by` may be sparse;
@@ -68,6 +73,9 @@ def project_energy(
     eta = math.sqrt(_clamp(model.round_trip_efficiency, 1e-6, 1.0))
     dh = slot.total_seconds() / 3600.0
     soc_kwh = _clamp(start_soc_pct, 0.0, 100.0) / 100.0 * usable
+    # Grid-charge ceiling in kWh (enough for the night, no more). None -> full usable capacity.
+    target_kwh = (usable if charge_target_soc_pct is None
+                  else _clamp(charge_target_soc_pct, 0.0, 100.0) / 100.0 * usable)
 
     out: list[ProjectedSlot] = []
     for ps in plan_slots:
@@ -82,7 +90,9 @@ def project_energy(
         max_discharge_ac = min(model.max_discharge_w, avail_kwh * eta / dh * 1000.0)
 
         if ps.intent is BatteryIntent.GRID_CHARGE_TO_TARGET:
-            battery_w = -max_charge_ac  # force-charge at full available power
+            # Charge at full power, but only up to the night-carry target (don't over-buy).
+            room_to_target_ac = max(0.0, target_kwh - soc_kwh) / eta / dh * 1000.0
+            battery_w = -min(max_charge_ac, room_to_target_ac)
         elif ps.intent is BatteryIntent.HOLD_RESERVE:
             # Hold charge for a coming peak: never discharge, but soak free solar surplus.
             battery_w = -min(-net, max_charge_ac) if net < 0 else 0.0

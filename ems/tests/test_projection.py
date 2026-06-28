@@ -112,6 +112,29 @@ def test_grid_balance_identity_holds_every_slot():
         assert math.isclose(slot.grid_w, slot.load_w - slot.solar_w - slot.battery_w, abs_tol=1e-6)
 
 
+def test_grid_charge_stops_at_the_night_carry_target():
+    # With a target of 80%, grid-charging fills 50% -> 80% and then holds; it must NOT reach 100%.
+    slots = [PlanSlot(T0 + i * SLOT, BatteryIntent.GRID_CHARGE_TO_TARGET, "") for i in range(40)]
+    out = project_energy(
+        slots, start_soc_pct=50.0, solar_w_by={}, load_w_by={s.start: 0.0 for s in slots},
+        model=_model(), charge_target_soc_pct=80.0,
+    )
+    socs = [s.soc_pct for s in out]
+    assert max(socs) == pytest.approx(80.0)  # capped at the target
+    assert socs[-1] == pytest.approx(80.0)  # holds there, never climbs to 100
+    # Once at target the battery stops drawing from the grid (no over-buy).
+    assert out[-1].battery_w == 0.0
+    assert out[-1].grid_w == 0.0  # load is 0 here, nothing imported
+
+
+def test_no_target_still_charges_to_full():
+    # Legacy behaviour preserved when no target is given.
+    slots = [PlanSlot(T0 + i * SLOT, BatteryIntent.GRID_CHARGE_TO_TARGET, "") for i in range(40)]
+    out = project_energy(slots, start_soc_pct=50.0, solar_w_by={},
+                         load_w_by={s.start: 0.0 for s in slots}, model=_model())
+    assert max(s.soc_pct for s in out) == 100.0
+
+
 def test_soc_never_exceeds_100_across_a_long_charge():
     out = _run([PlanSlot(T0 + i * SLOT, BatteryIntent.GRID_CHARGE_TO_TARGET, "")
                 for i in range(40)], start_soc_pct=50.0)

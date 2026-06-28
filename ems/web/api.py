@@ -575,9 +575,18 @@ def create_app(
         fallback_w = settings_cache["battery.overnight_load_kwh"] * 1000.0 / 12.0
         profile = build_load_profile(drows, site_tz, fallback_w=fallback_w)
         load_by = {s.start: profile.expected_w(s.start) for s in plan.slots}
+        # Size grid-charging to the night-carry target (overnight load + reserve), not to full —
+        # buy enough to get through the night, no more (SPEC §8 GRID_CHARGE_TO_TARGET).
+        need = compute_charge_need(
+            soc_pct=raw.soc_pct, usable_kwh=settings_cache["battery.usable_kwh"],
+            min_reserve_soc=settings_cache["battery.min_reserve_soc"],
+            night_reserve_kwh=settings_cache["battery.night_reserve_kwh"],
+            overnight_load_kwh=settings_cache["battery.overnight_load_kwh"],
+        )
         projected = project_energy(
             plan.slots, start_soc_pct=raw.soc_pct, solar_w_by=solar_by,
             load_w_by=load_by, model=_battery_model(),
+            charge_target_soc_pct=need.target_soc_pct,
         )
         return {
             "now": now.isoformat(),
