@@ -66,6 +66,8 @@ function Metric({
   title,
   icon,
   accent,
+  onClick,
+  testId,
 }: {
   label: string;
   value: string;
@@ -73,15 +75,79 @@ function Metric({
   title?: string;
   icon?: IconName;
   accent?: boolean;
+  onClick?: () => void;
+  testId?: string;
 }) {
-  return (
-    <div className={`metric${accent ? " metric-accent" : ""}`} title={title}>
+  const inner = (
+    <>
       <span className="metric-label-row">
         {icon && <Icon name={icon} className="metric-icon" />}
         <span className="metric-label">{label}</span>
       </span>
       <span className="metric-value">{value}</span>
       {hint && <span className="metric-hint">{hint}</span>}
+    </>
+  );
+  const cls = `metric${accent ? " metric-accent" : ""}${onClick ? " metric-clickable" : ""}`;
+  if (onClick) {
+    return (
+      <button type="button" className={cls} title={title} onClick={onClick} data-testid={testId}>
+        {inner}
+      </button>
+    );
+  }
+  return (
+    <div className={cls} title={title} data-testid={testId}>
+      {inner}
+    </div>
+  );
+}
+
+function Modal({
+  title,
+  onClose,
+  children,
+  testId,
+}: {
+  title: string;
+  onClose: () => void;
+  children: React.ReactNode;
+  testId?: string;
+}) {
+  const closeRef = useRef<HTMLButtonElement>(null);
+  useEffect(() => {
+    closeRef.current?.focus();
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") onClose();
+    };
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+  }, [onClose]);
+  return (
+    <div className="modal-backdrop" onClick={onClose}>
+      <div
+        className="modal"
+        role="dialog"
+        aria-modal="true"
+        aria-label={title}
+        onClick={(e) => e.stopPropagation()}
+        data-testid={testId}
+      >
+        <div className="modal-head">
+          <span className="metric-label">{title}</span>
+          <button
+            ref={closeRef}
+            type="button"
+            className="modal-close"
+            onClick={onClose}
+            aria-label="Close"
+            data-testid="modal-close"
+          >
+            ×
+          </button>
+        </div>
+        {children}
+      </div>
     </div>
   );
 }
@@ -144,6 +210,7 @@ export function App() {
   const [storyWindow, setStoryWindow] = useState<"past" | "next">("next");
   const [strategy, setStrategy] = useState<Strategy | null>(null);
   const [battery, setBattery] = useState<Battery | null>(null);
+  const [showBattery, setShowBattery] = useState(false);
   const [decision, setDecision] = useState<Decision | null>(null);
   const [alertsData, setAlertsData] = useState<AlertsResp | null>(null);
   const [chargeNeed, setChargeNeed] = useState<ChargeNeed | null>(null);
@@ -246,6 +313,9 @@ export function App() {
     return patchStrategy({ "strategy.summer_grid_topup": on }, { grid_topup: on });
   }
 
+  // The battery tile opens a per-tower breakdown only when there's a cluster to break down.
+  const batteryHasDetail = !!(battery && (battery.aggregate || battery.towers.length > 0));
+
   return (
     <div className="app">
       <header className="topbar">
@@ -343,9 +413,15 @@ export function App() {
           <Metric
             label="Battery level"
             value={`${status.soc_pct.toFixed(0)} %`}
-            hint="how full it is"
-            title="How much charge is in the home battery right now."
+            hint={batteryHasDetail ? "see each battery →" : "how full it is"}
+            title={
+              batteryHasDetail
+                ? "How full the home battery is — click to see each battery."
+                : "How much charge is in the home battery right now."
+            }
             icon="battery-level"
+            onClick={batteryHasDetail ? () => setShowBattery(true) : undefined}
+            testId="battery-tile"
           />
           <Metric
             label="House load"
@@ -404,8 +480,6 @@ export function App() {
         />
       )}
 
-      {view === "dashboard" && <BatteryChips battery={battery} />}
-
       {view === "dashboard" && (
         <EnergyStory story={story} window={storyWindow} onWindow={setStoryWindow} />
       )}
@@ -453,6 +527,11 @@ export function App() {
         </section>
       )}
 
+      {view === "dashboard" && showBattery && batteryHasDetail && (
+        <Modal title="Battery — per tower" onClose={() => setShowBattery(false)} testId="battery-modal">
+          <BatteryChips battery={battery} />
+        </Modal>
+      )}
     </div>
   );
 }

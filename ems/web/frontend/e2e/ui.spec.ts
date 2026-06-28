@@ -233,10 +233,19 @@ test.describe("EMS dashboard", () => {
       }),
     );
     await page.goto("/");
+    // The per-tower breakdown lives behind the battery tile now; it becomes clickable once the
+    // cluster data loads (the hint switches to "see each battery").
+    const tile = page.getByTestId("battery-tile");
+    await expect(tile).toContainText("see each battery");
+    await tile.click();
+    await expect(page.getByTestId("battery-modal")).toBeVisible();
     await expect(page.getByTestId("tower-chip-aggregate")).toContainText("cluster avg");
     await expect(page.getByTestId("tower-chip")).toHaveCount(2);
     await expect(page.getByTestId("tower-chips")).toContainText("master");
     await expect(page.getByTestId("tower-chips")).toContainText("slave");
+    // Escape closes the dialog.
+    await page.keyboard.press("Escape");
+    await expect(page.getByTestId("battery-modal")).toHaveCount(0);
   });
 
   test("shows tonight's charge target with an explanation", async ({ page }) => {
