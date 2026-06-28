@@ -70,6 +70,12 @@ class HistoryStore:
     async def recent_derived(self, limit: int = 100) -> list[dict]:
         return await self._recent("derived_samples", _DERIVED_COLS, limit)
 
+    async def recent_raw_since(self, cutoff_iso: str, limit: int = 6000) -> list[dict]:
+        return await self._since("raw_samples", _RAW_COLS, cutoff_iso, limit)
+
+    async def recent_derived_since(self, cutoff_iso: str, limit: int = 6000) -> list[dict]:
+        return await self._since("derived_samples", _DERIVED_COLS, cutoff_iso, limit)
+
     async def _recent(self, table: str, cols: tuple[str, ...], limit: int) -> list[dict]:
         # table/cols are module constants (never user input) — no injection surface.
         query = f"SELECT {', '.join(cols)} FROM {table} ORDER BY rowid DESC LIMIT ?"
@@ -78,6 +84,18 @@ class HistoryStore:
             cur = await db.execute(query, (limit,))
             rows = await cur.fetchall()
             return [dict(r) for r in rows]
+
+    async def _since(
+        self, table: str, cols: tuple[str, ...], cutoff_iso: str, limit: int
+    ) -> list[dict]:
+        # Rows at/after `cutoff_iso` (newest-first, capped). `ts` is UTC-ISO so a lexicographic
+        # comparison is a correct time comparison. table/cols are module constants — no injection.
+        query = (f"SELECT {', '.join(cols)} FROM {table} WHERE ts >= ? "
+                 f"ORDER BY rowid DESC LIMIT ?")
+        async with self._conn() as db:
+            db.row_factory = aiosqlite.Row
+            cur = await db.execute(query, (cutoff_iso, limit))
+            return [dict(r) for r in await cur.fetchall()]
 
     async def table_names(self) -> set[str]:
         async with self._conn() as db:
