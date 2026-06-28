@@ -55,9 +55,12 @@ def grid_w(p1: dict) -> float:
 
 
 def solar_w(meter: dict) -> float:
-    """PV production is >= 0. A dedicated solar meter only ever has one-way flow, so the magnitude
-    is the production regardless of CT orientation."""
-    return abs(float(meter["active_power_w"]))
+    """PV production (>= 0). This solar meter registers production as EXPORT — `active_power_w` is
+    NEGATIVE while producing and its import register stays ~0 (confirmed live 2026-06-28: −2027 W at
+    2 kW production). So production = −active_power_w, clamped at 0. Per docs/energy-model.md we
+    negate-and-clamp rather than take the magnitude, so a tiny night-time inverter *draw* (small
+    positive) reads 0 instead of fake production."""
+    return max(0.0, -float(meter["active_power_w"]))
 
 
 def ev_w(meter: dict) -> float:

@@ -50,7 +50,14 @@ the **System** page (per-signal sensor checks) and the dashboard freshness chips
 The local API on `192.168.50.53:8080` responds to **only** `Indevolt.GetData`, and it returns `{}`
 for every `config` value tried (Modbus/502 is closed). To read SoC/power I need three things:
 
-> **Request to Indevolt support / installer:**
+Diagnosis (2026-06-28): the local API is **already enabled** — `GET /rpc/Sys.GetConfig` returns
+the device identity unauthenticated (`type: CMS-SF2000, sn: 3301958491, fw V1.4.0C…`). So there is
+no "OpenData" toggle to find in the app; the device is reachable. What's missing is the **API
+documentation**: `Indevolt.GetData` requires a `config` parameter and returns `{}` for every value
+tried (and there's no other data-returning method), so I can't guess the data-profile syntax or the
+SoC/power register ids. That comes from Indevolt's OpenData API spec, not an app setting.
+
+> **Request to Indevolt support / installer (include device sn 3301958491, type CMS-SF2000):**
 > "I've enabled the local OpenData API on my SolidFlex cluster (`Indevolt.GetData` on port 8080
 > responds). I want to **read** battery State of Charge and instantaneous power over the local API
 > (read-only — no control). Please tell me:

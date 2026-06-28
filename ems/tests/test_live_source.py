@@ -14,10 +14,12 @@ def test_grid_is_net_flow_signed():
     assert grid_w({"active_power_w": -800}) == -800.0  # exporting
 
 
-def test_solar_is_nonnegative_magnitude():
-    assert solar_w(SOLAR) == 0.0
-    assert solar_w({"active_power_w": -2400}) == 2400.0  # production registered as export
-    assert solar_w({"active_power_w": 1800}) == 1800.0
+def test_solar_is_production_negated_and_clamped():
+    # This meter registers production as export (negative active_power_w); production = -x, >=0.
+    assert solar_w(SOLAR) == 0.0  # night / idle
+    assert solar_w({"active_power_w": -2400}) == 2400.0  # producing 2.4 kW
+    # A small POSITIVE reading is an inverter night-draw, NOT production -> clamp to 0 (no fake PV).
+    assert solar_w({"active_power_w": 12}) == 0.0
 
 
 def test_ev_is_nonnegative_consumption():
