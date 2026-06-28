@@ -29,6 +29,7 @@ type Decision = {
   outcome: string;
   reason: string;
   plan_reason?: string | null;
+  car_charging?: boolean;
 };
 
 type ChargeNeed = {
@@ -324,7 +325,14 @@ export function App() {
 
       {view === "dashboard" && decision && decision.outcome !== "unconfigured" && (
         <section className="decision" data-testid="decision">
-          <span className="metric-label">Controller</span>
+          <div className="decision-head">
+            <span className="metric-label">Controller</span>
+            {decision.car_charging && (
+              <span className="badge badge-car" data-testid="car-charging">
+                🚗 Car charging — battery held
+              </span>
+            )}
+          </div>
           <p className="decision-line">
             <span className="decision-outcome">{decision.outcome}</span>
             {" — "}

@@ -184,6 +184,32 @@ test.describe("EMS dashboard", () => {
     await expect(page.getByTestId("settings")).toContainText("Strategy");
   });
 
+  test("shows a 'car charging — battery held' badge when the car is charging", async ({ page }) => {
+    await page.route("**/api/decision", (route) =>
+      route.fulfill({
+        status: 200, contentType: "application/json",
+        body: JSON.stringify({
+          intent: "hold_reserve", desired_mode: "idle", applied: false, outcome: "dry_run",
+          reason: "dry-run: would set idle",
+          plan_reason: "car charging — holding the battery so it won't discharge into the car",
+          override_active: false, car_charging: true,
+        }),
+      }),
+    );
+    await page.goto("/");
+    await expect(page.getByTestId("car-charging")).toContainText("Car charging");
+    await expect(page.getByTestId("decision")).toContainText("won't discharge into the car");
+  });
+
+  test("the hold-battery-when-car-charging setting is in the panel", async ({ page }) => {
+    await page.goto("/");
+    await page.getByTestId("nav-settings").click();
+    await expect(page.getByTestId("field-control.hold_battery_when_car_charging")).toBeVisible();
+    await expect(
+      page.getByTestId("field-control.hold_battery_when_car_charging"),
+    ).toContainText("car");
+  });
+
   test("shows a per-tower breakdown for a multi-battery cluster", async ({ page }) => {
     // Live-only data — route-mock /api/battery to a two-tower cluster.
     await page.route("**/api/battery", (route) =>
