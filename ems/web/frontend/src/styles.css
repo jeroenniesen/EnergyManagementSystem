@@ -177,6 +177,8 @@ body {
 .legend-predicted { border-top-color: var(--amber); border-top-style: dashed; }
 .legend-reserve { border-top-color: var(--muted); border-top-style: dotted; }
 .legend-target { border-top-color: var(--summer); border-top-style: dashed; }
+.legend-deadline { border-top-color: var(--summer); }
+.soc-mini-legend { margin-top: 8px; gap: 14px; }
 
 /* Energy story — one timeline, past or next */
 .story {

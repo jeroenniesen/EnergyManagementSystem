@@ -231,14 +231,24 @@ export function EnergyStory({
               data-testid="story-reserve"
             />
             {story?.target_soc_pct != null && (
-              <line
-                className="soc-target"
-                x1={PAD.l}
-                y1={y(story.target_soc_pct)}
-                x2={W - PAD.r}
-                y2={y(story.target_soc_pct)}
-                data-testid="story-target"
-              />
+              <>
+                <line
+                  className="soc-target"
+                  x1={PAD.l}
+                  y1={y(story.target_soc_pct)}
+                  x2={W - PAD.r}
+                  y2={y(story.target_soc_pct)}
+                  data-testid="story-target"
+                />
+                <text
+                  className="soc-axis soc-target-label"
+                  x={W - PAD.r}
+                  y={y(story.target_soc_pct) - 5}
+                  textAnchor="end"
+                >
+                  {Math.round(story.target_soc_pct)}% night target
+                </text>
+              </>
             )}
             {showDeadline && (
               <line className="soc-deadline" x1={x(dl)} y1={PAD.t} x2={x(dl)} y2={H - PAD.b} />
@@ -254,6 +264,26 @@ export function EnergyStory({
               />
             )}
           </svg>
+
+          <div className="legend soc-mini-legend">
+            <span className="legend-item">
+              <span className={`legend-line ${isPast ? "legend-actual" : "legend-predicted"}`} />
+              {isPast ? "Recorded SoC" : "Projected SoC"}
+            </span>
+            {story?.target_soc_pct != null && (
+              <span className="legend-item">
+                <span className="legend-line legend-target" /> Night target
+              </span>
+            )}
+            <span className="legend-item">
+              <span className="legend-line legend-reserve" /> Reserve floor
+            </span>
+            {showDeadline && (
+              <span className="legend-item">
+                <span className="legend-line legend-deadline" /> Sunset
+              </span>
+            )}
+          </div>
 
           <div className="track-label">Electricity price (cheap = short)</div>
           <div className="track track-price" role="img" aria-label="Electricity price">
