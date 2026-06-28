@@ -1,10 +1,13 @@
 :root {
-  --bg: #0e1116;
-  --panel: #171c24;
+  --bg: #0b0e13;
+  --panel: #161b23;
   --panel-2: #1e242e;
   --line: #2a313c;
   --text: #e6e9ef;
   --muted: #8b95a5;
+  /* Elevation — a soft float so cards read as surfaces, not outlines. */
+  --shadow: 0 1px 2px rgba(0, 0, 0, 0.4), 0 8px 24px rgba(0, 0, 0, 0.28);
+  --radius: 16px;
   --accent: #46c8a8;
   --accent-text: #46c8a8; /* accent used as small text (graphics/buttons keep --accent) */
   --amber: #e0a23a;
@@ -23,12 +26,13 @@
 /* Light theme — applied when the app sets <html data-theme="light"> (auto resolves to this
    when the OS prefers light). Dark is the default palette in :root above. */
 :root[data-theme="light"] {
-  --bg: #f4f6fa;
+  --bg: #eef1f6;
   --panel: #ffffff;
-  --panel-2: #eef1f6;
-  --line: #d9dee7;
+  --panel-2: #f1f4f9;
+  --line: #e2e7ef;
   --text: #1b2330;
   --muted: #5c6675;
+  --shadow: 0 1px 2px rgba(15, 23, 42, 0.05), 0 6px 18px rgba(15, 23, 42, 0.07);
   --accent: #1f9e84;
   --accent-text: #13806a; /* darkened so accent TEXT clears WCAG-AA (4.5:1) on white */
   --amber: #b07410;
@@ -56,6 +60,20 @@ body {
   max-width: 920px;
   margin: 0 auto;
   padding: 32px 20px 48px;
+}
+
+/* Elevation: lift the primary surfaces off the background so the layout reads as stacked cards. */
+.metric,
+.strategy-card,
+.story,
+.prices,
+.plandetail,
+.socchart,
+.override,
+.charge-need,
+.decision,
+.settings-group {
+  box-shadow: var(--shadow);
 }
 
 .topbar {
@@ -117,7 +135,7 @@ body {
   gap: 6px;
   background: var(--panel);
   border: 1px solid var(--line);
-  border-radius: 14px;
+  border-radius: var(--radius);
   padding: 18px;
 }
 .metric-label-row { display: flex; align-items: center; gap: 7px; }
@@ -153,7 +171,7 @@ body {
   background: rgba(0, 0, 0, 0.5);
 }
 .modal {
-  background: var(--panel); border: 1px solid var(--line); border-radius: 14px;
+  background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius);
   padding: 20px; width: 100%; max-width: 440px;
   box-shadow: 0 12px 40px rgba(0, 0, 0, 0.4);
 }
@@ -184,7 +202,7 @@ body {
   margin-top: 24px;
   background: var(--panel);
   border: 1px solid var(--line);
-  border-radius: 14px;
+  border-radius: var(--radius);
   padding: 18px;
 }
 .prices-head { display: flex; align-items: baseline; justify-content: space-between; margin-bottom: 12px; gap: 8px; }
@@ -209,7 +227,7 @@ body {
   margin-top: 24px;
   background: var(--panel);
   border: 1px solid var(--line);
-  border-radius: 14px;
+  border-radius: var(--radius);
   padding: 18px;
 }
 .plan-summary {
@@ -251,7 +269,7 @@ body {
   margin-top: 24px;
   background: var(--panel);
   border: 1px solid var(--line);
-  border-radius: 14px;
+  border-radius: var(--radius);
   padding: 18px;
 }
 .story-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
@@ -305,7 +323,7 @@ body {
   margin-top: 24px;
   background: var(--panel);
   border: 1px solid var(--line);
-  border-radius: 14px;
+  border-radius: var(--radius);
   padding: 18px;
 }
 .strategy-seg {
@@ -414,7 +432,7 @@ body {
   margin-top: 24px;
   background: var(--panel);
   border: 1px solid var(--line);
-  border-radius: 14px;
+  border-radius: var(--radius);
   padding: 18px;
 }
 .tower-chips { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 12px; }
@@ -468,7 +486,7 @@ body {
   margin-top: 24px;
   background: var(--panel);
   border: 1px solid var(--line);
-  border-radius: 14px;
+  border-radius: var(--radius);
   padding: 18px;
 }
 .charge-bar {
@@ -565,7 +583,7 @@ body {
   margin-top: 24px;
   background: var(--panel);
   border: 1px solid var(--line);
-  border-radius: 14px;
+  border-radius: var(--radius);
   padding: 18px 20px;
 }
 .settings-group-title { font-size: 1rem; font-weight: 600; margin: 0; }
