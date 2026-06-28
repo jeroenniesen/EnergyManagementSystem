@@ -103,6 +103,8 @@ Historical HA Recorder data already includes the battery's *prior* behaviour, so
 ### 4.5 EV exclusion (precise rule)
 Subtract the HomeWizard car meter from the learned baseline **only when the car is actually charging** (`ev_power_w` above a small threshold). When the car is not charging, it contributes nothing and is not subtracted. The planner then re-adds expected EV load as a *separately known* quantity when it knows the car will charge.
 
+> **Implemented — don't feed the car from the home battery.** A real-time guardrail (`_car_guard` in `ems/web/api.py`): while the car is charging (`ev_power_w > control.car_charging_threshold_w`) and `control.hold_battery_when_car_charging` is on (default), any discharging intent (`ALLOW_SELF_CONSUMPTION`/`DISCHARGE_FOR_LOAD`, which map to vendor AUTO and would discharge into the car) is forced to `HOLD_RESERVE` → `IDLE`. The battery holds (and may still charge from solar surplus / a planned grid-charge); solar + grid cover the car. It's the final guardrail in `_effective_intent` (over the plan and a manual override) and is re-evaluated **every control cycle**, so it engages the moment the car plugs in and releases when it stops. Both settings are in the Control panel; the dashboard shows a "car charging — battery held" badge.
+
 ### 4.6 Missing / stale meter fallback
 Per-source freshness is tracked (§6, §16). If a meter is missing or stale:
 - **Solar meter stale** → fall back to the solar *forecast* for `solar_power_w` (flag the chart).
