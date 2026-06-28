@@ -81,12 +81,15 @@ export function ChatPanel() {
           </p>
           <div className="chat-log" data-testid="chat-log">
             {msgs.length === 0 && (
-              <div className="chat-suggest">
-                {SUGGESTIONS.map((s) => (
-                  <button key={s} type="button" className="chat-chip" onClick={() => send(s)}>
-                    {s}
-                  </button>
-                ))}
+              <div className="chat-empty">
+                <p className="chat-suggest-lead">Try asking…</p>
+                <div className="chat-suggest">
+                  {SUGGESTIONS.map((s) => (
+                    <button key={s} type="button" className="chat-chip" onClick={() => send(s)}>
+                      {s}
+                    </button>
+                  ))}
+                </div>
               </div>
             )}
             {msgs.map((m, i) => (
@@ -98,7 +101,9 @@ export function ChatPanel() {
             {busy && (
               <div className="chat-msg chat-assistant">
                 <span className="chat-who">Assistant</span>
-                <p className="chat-text chat-typing">…</p>
+                <p className="chat-text chat-typing" aria-label="Assistant is typing">
+                  <span /><span /><span />
+                </p>
               </div>
             )}
             <div ref={endRef} />
