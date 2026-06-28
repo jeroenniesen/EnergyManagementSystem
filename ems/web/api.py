@@ -53,6 +53,7 @@ from ems.planner.projection import BatteryModel, project_energy
 from ems.planner.rule_based import PlannerConfig, plan_rule_based
 from ems.planner.strategy import build_plan, select_strategy
 from ems.planner.summer import SummerConfig, sunset_after
+from ems.planner.validator import PlanValidation, validate_plan
 from ems.retrospect import build_past_story, past_headline
 from ems.savings import estimate_daily_savings_eur
 from ems.sense import Recorder
@@ -328,6 +329,10 @@ def create_app(
     # See _LIVE_SAMPLE_COALESCE_SECONDS: a short in-memory window so one dashboard refresh reads the
     # hardware once. Meter/SoC data is never put in the persistent external cache.
     _sample_cache: dict[str, Any] = {"sample": None, "at": None}
+    # Last good battery CapabilityReport (probed off the hot path — at startup + opportunistically),
+    # so the §8.11 validator can check requested power vs the battery's rating without a networked
+    # probe on every decision. None until first probed (the validator simply skips that warn-check).
+    _capability_box: dict[str, Any] = {"cap": None}
 
     def _current_sample(now: datetime):
         cached_at = _sample_cache["at"]
@@ -424,7 +429,7 @@ def create_app(
                 pass
             try:
                 now = datetime.now(UTC)
-                intent, reason, override_active, tgt, pw = await asyncio.to_thread(
+                intent, reason, override_active, tgt, pw, _val = await asyncio.to_thread(
                     _effective_intent, now
                 )
                 if intent is None:
@@ -494,6 +499,13 @@ def create_app(
             await asyncio.to_thread(cache_store.init)
             # One-off housekeeping at boot so the cache table can't grow without bound.
             await asyncio.to_thread(cache_store.purge_expired)
+        # Probe the battery's capabilities ONCE at startup (off the event loop, fail-safe) so the
+        # §8.11 validator can sanity-check requested power without a networked probe per decision.
+        if controller is not None:
+            try:
+                _capability_box["cap"] = await asyncio.to_thread(controller.driver.probe)
+            except Exception:
+                pass  # unreachable battery → leave None; the validator just skips that warn-check
         # Start the read-only sense loop / recorder (SPEC §5.3). Take one awaited startup
         # sample so /api/series and /api/freshness are populated deterministically, then
         # run the periodic loop in the background.
@@ -561,6 +573,39 @@ def create_app(
             snap, prices_ok=price_source is not None, forecast_ok=solar_forecast is not None
         )
 
+    def _projection_sync(plan, now: datetime):
+        """A synchronous forward SoC projection for `plan`, for the validator gate. Reuses the
+        cached load profile (_load_by) + cached solar forecast and the pure project_energy — no
+        awaits — so the §8.11 projected-SoC checks (e.g. 'drains below reserve') actually run in
+        the live gate. Returns the ProjectedSlot list, or None if there's not enough to project."""
+        if solar_forecast is None or not plan.slots:
+            return None
+        try:
+            soc = _current_soc(now)
+            solar_by = {f.start: f.p50_w for f in solar_forecast.slots()}
+            load_by = _load_by([s.start for s in plan.slots])
+            # Summer's adaptive charger sizes its own slots — don't cap the projection at the night
+            # target (mirrors _forward_projection); winter keeps the cap as a ceiling.
+            cap = (None if _active_strategy(now) == "summer"
+                   else _night_target_soc(soc).target_soc_pct)
+            return project_energy(
+                plan.slots, start_soc_pct=soc, solar_w_by=solar_by, load_w_by=load_by,
+                model=_battery_model(), charge_target_soc_pct=cap,
+            )
+        except Exception:
+            return None  # projection is best-effort; its absence just skips those checks
+
+    def _validate_plan_obj(plan, now: datetime) -> PlanValidation:
+        """Run the §8.11 hard validator over a given plan (pure besides the cached SoC, capability
+        and projection). `unsafe` ⇒ the controller must hold AUTO."""
+        return validate_plan(
+            plan, soc_pct=_current_soc(now), data_quality=_data_quality(now),
+            min_reserve_soc=settings_cache["battery.min_reserve_soc"],
+            max_switches_per_day=int(settings_cache["control.max_switches_per_day"]),
+            min_dwell=timedelta(seconds=settings_cache["control.min_dwell_seconds"]),
+            capability=_capability_box["cap"], projection=_projection_sync(plan, now),
+        )
+
     def _effective_intent(now: datetime):
         """The intent the controller should act on now + its energy sizing, honouring an active
         manual override and the data-quality fail-safe. Returns
@@ -575,6 +620,7 @@ def create_app(
         (the slot target SoC) or, when export-discharge is enabled, a forced DISCHARGE (the reserve
         floor); a DISCHARGE_FOR_LOAD that maps to AUTO needs none."""
         cur = None
+        val: PlanValidation | None = None
         ov = override_box["ov"]
         if ov.active(now):
             assert ov.intent is not None and ov.expires_at is not None
@@ -584,14 +630,26 @@ def create_app(
         else:
             pp = _current_plan()
             if pp is None:
-                return None, None, False, None, None
+                return None, None, False, None, None, None
             cur = pp[2].intent_at(now)
             if cur is None:
-                return None, None, False, None, None
-            safe, fs_reason = failsafe_intent(cur.intent, _data_quality(now))
-            intent, reason = ((safe, fs_reason) if fs_reason is not None
-                              else (cur.intent, cur.reason))
-            override_active = False
+                return None, None, False, None, None, None
+            # §8.11 hard gate: a plan that fails validation (impossible target, projected below
+            # reserve, …) must not be acted on — hold self-consumption, like the data fail-safe.
+            # Validate the plan we ALREADY fetched (no second _current_plan rebuild).
+            val = _validate_plan_obj(pp[2], now)
+            if not val.ok:
+                top = next((f for f in val.findings if f.severity == "unsafe"), None)
+                note = top.message if top is not None else "plan failed validation"
+                cur = None  # not acting on a plan slot — sizing must be None below
+                intent, reason, override_active = (
+                    BatteryIntent.ALLOW_SELF_CONSUMPTION,
+                    f"holding self-consumption — {note}", False)
+            else:
+                safe, fs_reason = failsafe_intent(cur.intent, _data_quality(now))
+                intent, reason = ((safe, fs_reason) if fs_reason is not None
+                                  else (cur.intent, cur.reason))
+                override_active = False
         # Final guardrail (over the plan AND a manual override): never discharge into the car.
         intent, reason = _car_guard(now, intent, reason)
         target_soc = power_w = None
@@ -601,7 +659,7 @@ def create_app(
             elif (intent is BatteryIntent.DISCHARGE_FOR_LOAD and controller is not None
                   and controller.allow_export_discharge):
                 target_soc, power_w = cur.floor_soc, cur.power_w  # forced discharge → reserve floor
-        return intent, reason, override_active, target_soc, power_w
+        return intent, reason, override_active, target_soc, power_w, val
 
     def _chat_context() -> str:
         """A compact, REDACTED snapshot for the chat to ground on — only non-identifying facts (the
@@ -614,7 +672,7 @@ def create_app(
         except Exception:
             pass
         try:
-            intent, reason, override_active, _t, _p = _effective_intent(now)
+            intent, reason, override_active, _t, _p, _v = _effective_intent(now)
             if intent is not None:
                 lines.append(
                     f"Current decision: {intent} — {reason}"
@@ -703,7 +761,7 @@ def create_app(
             lc.mark_plan_loaded()
         lc.tick(now)
         if lc.can_command(now):
-            intent, _reason, _override, tgt, pw = _effective_intent(now)
+            intent, _reason, _override, tgt, pw, _v = _effective_intent(now)
             if intent is not None:
                 controller.decide(intent, now, target_soc=tgt, power_w=pw)
 
@@ -751,7 +809,7 @@ def create_app(
         # The controller's would-do outcome (read-only preview) feeds battery-failure alerts.
         # Honour an active override so the outcome reflects what the controller would really do.
         outcome: str | None = None
-        intent, _reason, override_active, tgt, pw = _effective_intent(now)
+        intent, _reason, override_active, tgt, pw, _v = _effective_intent(now)
         if intent is not None and controller is not None:
             outcome = controller.preview(intent, now, target_soc=tgt, power_w=pw).outcome
         alerts = derive_alerts(snap, dry_run=dry_run, decision_outcome=outcome)
@@ -775,7 +833,7 @@ def create_app(
                     "plan_reason": None, "override_active": False}
         now = datetime.now(UTC)
         car_charging = _car_charging(now)
-        intent, reason, override_active, tgt, pw = _effective_intent(now)
+        intent, reason, override_active, tgt, pw, val = _effective_intent(now)
         if intent is None:
             return {"intent": None, "desired_mode": None, "applied": False,
                     "outcome": "no_plan", "reason": "no plan slot for now",
@@ -798,6 +856,9 @@ def create_app(
             "override_active": override_active,
             # Surfaced so the dashboard can show "car charging — battery held".
             "car_charging": car_charging,
+            # §8.11 plan validation (status + findings) so the UI can show why control is held —
+            # reuse the result _effective_intent already computed (no second plan rebuild).
+            "plan_validation": (val.to_dict() if val is not None else None),
         }
 
     @app.get("/api/diagnostics")
@@ -978,12 +1039,23 @@ def create_app(
                     "current_reason": None, "slots": []}
         now, _prices, plan = pp
         cur = plan.intent_at(now)
+        val = _validate_plan_obj(plan, now)
         return {
             "created_at": plan.created_at.isoformat(),
+            "strategy": plan.strategy,
+            "target_soc": plan.target_soc,
+            "deadline": plan.deadline.isoformat() if plan.deadline else None,
             "current_intent": cur.intent if cur else None,
             "current_reason": cur.reason if cur else None,
+            # The §8.11 verdict so the UI can show "control held — why".
+            "validation": val.to_dict(),
             "slots": [
-                {"start": s.start.isoformat(), "intent": s.intent, "reason": s.reason}
+                # The energy contract travels with the mode (energy review P2.4): the UI shows
+                # "charge to X% (Y kWh) at Z W by <deadline>", not just a mode label.
+                {"start": s.start.isoformat(), "intent": s.intent, "reason": s.reason,
+                 "target_soc": s.target_soc, "target_kwh": s.target_kwh, "power_w": s.power_w,
+                 "floor_soc": s.floor_soc,
+                 "deadline": s.deadline.isoformat() if s.deadline else None}
                 for s in plan.slots
             ],
         }

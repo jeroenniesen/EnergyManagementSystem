@@ -117,6 +117,23 @@ def test_explanation_cache_survives_restart(tmp_path, monkeypatch):
     assert calls["n"] == 1  # NOT re-spent across the restart
 
 
+def test_decision_gates_on_plan_validation_and_holds_self_consumption(tmp_path):
+    """§8.11 integration: with no fresh sensor feed (this harness has no freshness tracker), data
+    quality is unsafe, so the hard validator blocks and the effective decision holds
+    self-consumption — and /api/decision surfaces the verdict."""
+    with TestClient(_app(tmp_path)) as c:
+        c.post("/api/settings", json={"strategy.mode": "winter"})
+        d = c.get("/api/decision").json()
+        assert d["plan_validation"]["status"] == "unsafe"
+        assert d["plan_validation"]["ok"] is False
+        assert d["intent"] == "allow_self_consumption"
+        assert "holding self-consumption" in d["plan_reason"]
+        # /api/plan carries the same verdict + the energy contract fields per slot.
+        plan = c.get("/api/plan").json()
+        assert plan["validation"]["status"] == "unsafe"
+        assert all("target_soc" in s and "power_w" in s for s in plan["slots"])
+
+
 def test_meter_data_never_enters_persistent_cache(tmp_path, monkeypatch):
     """Guardrail (CLAUDE.md: meter data must always be actual): only explanations / prices /
     forecast may be persisted. Polling /api/decision both reads the live meters (for SoC + the car
