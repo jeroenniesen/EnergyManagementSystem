@@ -614,6 +614,32 @@ body {
 }
 .settings-group-title { font-size: 1rem; font-weight: 600; margin: 0; }
 .settings-group-hint { color: var(--muted); font-size: 0.82rem; margin: 4px 0 14px; }
+
+/* Collapsible group sections — keep the page scannable instead of one long dense scroll. */
+.settings-collapsible { margin-top: 12px; padding: 0; }
+.settings-group-head {
+  width: 100%; display: flex; align-items: center; gap: 10px;
+  background: transparent; border: 0; cursor: pointer; font: inherit; text-align: left;
+  color: var(--text); padding: 15px 20px; border-radius: var(--radius);
+}
+.settings-group-head:hover { background: var(--panel-2); }
+.settings-group-head:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+.settings-group-head .settings-group-title { flex: 1; }
+.group-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--amber); flex: none; }
+.settings-group-count {
+  font-size: 0.68rem; color: var(--muted); background: var(--panel-2); border: 1px solid var(--line);
+  border-radius: 999px; padding: 1px 8px; font-variant-numeric: tabular-nums;
+}
+.settings-group-chevron { color: var(--muted); transition: transform 0.18s ease; font-size: 0.8rem; }
+.settings-collapsible.open .settings-group-chevron { transform: rotate(180deg); }
+.settings-group-body { padding: 0 20px 18px; }
+.settings-expand-row { display: flex; justify-content: flex-end; margin-top: 16px; }
+.settings-expand-all {
+  font: inherit; font-size: 0.8rem; color: var(--accent-text); background: transparent; border: 0;
+  cursor: pointer; padding: 4px 0;
+}
+.settings-expand-all:hover { text-decoration: underline; }
+.settings-expand-all:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 .settings-fields {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));

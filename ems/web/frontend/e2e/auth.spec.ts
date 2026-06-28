@@ -50,6 +50,7 @@ test.describe("EMS access token", () => {
     await page.getByTestId("access-token-save").click();
 
     // Now change a setting and save — the write must carry the Bearer token.
+    await page.getByTestId("group-ui").click();
     await page.locator("#set-ui\\.theme").selectOption("dark");
     await page.getByTestId("settings-save").click();
     await expect(page.getByTestId("settings-saved")).toBeVisible();

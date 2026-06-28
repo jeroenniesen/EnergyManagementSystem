@@ -167,6 +167,17 @@ export function Settings({ onSaved }: { onSaved?: (values: Values) => void } = {
   const [tokenInput, setTokenInput] = useState(getToken());
   const [showAdvanced, setShowAdvanced] = useState(false);
   const [impact, setImpact] = useState<Impact | null>(null);
+  // Collapsible groups (tames a long, dense page). Strategy — the headline — is open by default;
+  // the rest start collapsed and expand on demand. A group with a save error auto-expands.
+  const [openGroups, setOpenGroups] = useState<Set<string>>(new Set(["strategy"]));
+  function toggleGroup(g: string) {
+    setOpenGroups((prev) => {
+      const next = new Set(prev);
+      if (next.has(g)) next.delete(g);
+      else next.add(g);
+      return next;
+    });
+  }
 
   async function refreshAuth() {
     try {
@@ -245,6 +256,14 @@ export function Settings({ onSaved }: { onSaved?: (values: Values) => void } = {
       clearTimeout(id);
     };
   }, [plannerKey]);
+
+  // A save error in a collapsed group would be invisible — auto-expand any group that has one.
+  useEffect(() => {
+    const errKeys = Object.keys(errors).filter((k) => k !== "_");
+    if (!errKeys.length || !schema) return;
+    const withErrors = schema.filter((f) => errKeys.includes(f.key)).map((f) => f.group);
+    if (withErrors.length) setOpenGroups((prev) => new Set([...prev, ...withErrors]));
+  }, [errors, schema]);
 
   async function save() {
     setStatus("saving");
@@ -333,27 +352,58 @@ export function Settings({ onSaved }: { onSaved?: (values: Values) => void } = {
         </div>
       )}
 
-      {groups.map((g) => (
-        <div className="settings-group" key={g}>
-          <h2 className="settings-group-title">{GROUP_TITLE[g] ?? g}</h2>
-          {GROUP_HINT[g] && <p className="settings-group-hint">{GROUP_HINT[g]}</p>}
-          <div className="settings-fields">
-            {visible
-              .filter((f) => f.group === g)
-              .map((f) => (
-                <Field
-                  key={f.key}
-                  field={f}
-                  value={edited[f.key]}
-                  error={errors[f.key]}
-                  disabled={status === "saving"}
-                  secretSet={Boolean(values[`${f.key}.__set`])}
-                  onChange={(v) => set(f.key, v)}
-                />
-              ))}
+      <div className="settings-expand-row">
+        <button
+          type="button"
+          className="settings-expand-all"
+          data-testid="settings-expand-all"
+          onClick={() =>
+            setOpenGroups(openGroups.size >= groups.length ? new Set() : new Set(groups))
+          }
+        >
+          {openGroups.size >= groups.length ? "Collapse all" : "Expand all"}
+        </button>
+      </div>
+
+      {groups.map((g) => {
+        const groupFields = visible.filter((f) => f.group === g);
+        const isOpen = openGroups.has(g);
+        const groupDirty = groupFields.some((f) => f.key in changed);
+        return (
+          <div className={`settings-group settings-collapsible${isOpen ? " open" : ""}`} key={g}>
+            <button
+              type="button"
+              className="settings-group-head"
+              aria-expanded={isOpen}
+              onClick={() => toggleGroup(g)}
+              data-testid={`group-${g}`}
+            >
+              <span className="settings-group-title">{GROUP_TITLE[g] ?? g}</span>
+              {groupDirty && <span className="group-dot" title="unsaved changes" />}
+              <span className="settings-group-count">{groupFields.length}</span>
+              <span className="settings-group-chevron" aria-hidden="true">▾</span>
+            </button>
+            {isOpen && (
+              <div className="settings-group-body">
+                {GROUP_HINT[g] && <p className="settings-group-hint">{GROUP_HINT[g]}</p>}
+                <div className="settings-fields">
+                  {groupFields.map((f) => (
+                    <Field
+                      key={f.key}
+                      field={f}
+                      value={edited[f.key]}
+                      error={errors[f.key]}
+                      disabled={status === "saving"}
+                      secretSet={Boolean(values[`${f.key}.__set`])}
+                      onChange={(v) => set(f.key, v)}
+                    />
+                  ))}
+                </div>
+              </div>
+            )}
           </div>
-        </div>
-      ))}
+        );
+      })}
 
       {impact?.current && impact?.proposed && (
         <div className="impact" data-testid="settings-impact">

@@ -36,14 +36,17 @@ test.describe("EMS settings", () => {
     await page.getByTestId("nav-settings").click();
     const s = page.getByTestId("settings");
     await expect(s).toBeVisible();
-    // Basic, device-oriented groups are shown by default.
+    // Group sections are collapsible (headers always visible); expand the ones we check.
     await expect(s).toContainText("Connection");
     await expect(s).toContainText("Energy meters (HomeWizard)");
+    await page.getByTestId("group-meters").click();
+    await page.getByTestId("group-ui").click();
     await expect(page.getByTestId("field-meters.p1_ip")).toBeVisible();
     await expect(page.getByTestId("field-ui.theme")).toBeVisible();
     // Advanced planner economics are hidden until the toggle is enabled.
     await expect(page.getByTestId("field-planner.round_trip_efficiency")).toHaveCount(0);
     await page.getByTestId("advanced-toggle").check();
+    await page.getByTestId("group-planner").click();
     await expect(page.getByTestId("field-planner.round_trip_efficiency")).toBeVisible();
     // The dashboard panels must be hidden while the Settings view is active.
     await expect(page.getByTestId("status-grid")).toHaveCount(0);
@@ -52,7 +55,10 @@ test.describe("EMS settings", () => {
   test("device IPs and the Tibber token are configurable (grouped by type)", async ({ page }) => {
     await page.goto("/");
     await page.getByTestId("nav-settings").click();
-    // Devices are no longer hard-wired — they're editable fields grouped by type.
+    // Devices are no longer hard-wired — they're editable fields grouped by type (expand each).
+    await page.getByTestId("group-meters").click();
+    await page.getByTestId("group-battery").click();
+    await page.getByTestId("group-prices").click();
     await expect(page.getByTestId("field-meters.p1_ip")).toBeVisible();
     await expect(page.getByTestId("field-battery.indevolt_ip")).toBeVisible();
     await expect(page.getByTestId("field-prices.tibber_token")).toBeVisible();
@@ -65,6 +71,7 @@ test.describe("EMS settings", () => {
   }) => {
     await page.goto("/");
     await page.getByTestId("nav-settings").click();
+    await page.getByTestId("group-control").click();
     const op = page.getByTestId("field-control.operational");
     await expect(op).toBeVisible();
     await expect(op).toContainText("control the battery");
@@ -108,6 +115,7 @@ test.describe("EMS settings", () => {
     await page.goto("/");
     await page.getByTestId("nav-settings").click();
     await page.getByTestId("advanced-toggle").check();
+    await page.getByTestId("group-planner").click();
     const input = page.locator("#set-planner\\.charge_slots");
     await input.fill("4");
     await input.blur();
@@ -134,6 +142,7 @@ test.describe("EMS settings", () => {
     });
     await page.goto("/");
     await page.getByTestId("nav-settings").click();
+    await page.getByTestId("group-ui").click();
     const save = page.getByTestId("settings-save");
     await expect(save).toBeDisabled(); // nothing changed yet
     await page.locator("#set-ui\\.theme").selectOption("dark");
@@ -162,6 +171,7 @@ test.describe("EMS settings", () => {
     });
     await page.goto("/");
     await page.getByTestId("nav-settings").click();
+    await page.getByTestId("group-ui").click();
     await page.locator("#set-ui\\.theme").selectOption("dark");
     await page.getByTestId("settings-save").click();
     await expect(page.getByTestId("err-ui.theme")).toBeVisible();

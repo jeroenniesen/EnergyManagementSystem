@@ -204,6 +204,7 @@ test.describe("EMS dashboard", () => {
   test("the hold-battery-when-car-charging setting is in the panel", async ({ page }) => {
     await page.goto("/");
     await page.getByTestId("nav-settings").click();
+    await page.getByTestId("group-control").click();
     await expect(page.getByTestId("field-control.hold_battery_when_car_charging")).toBeVisible();
     await expect(
       page.getByTestId("field-control.hold_battery_when_car_charging"),
