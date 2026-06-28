@@ -33,45 +33,29 @@ Secrets are env-only, never committed: `TIBBER_TOKEN`, `INDEVOLT_KEY`, `EMS_WEB_
 | Solar | HomeWizard kWh | ✅ **live** | production = magnitude of `active_power_w` |
 | EV load | HomeWizard kWh (3-phase) | ✅ **live** | `max(0, active_power_w)` |
 | Prices | Tibber GraphQL | ✅ **live** | verified end-to-end — 96 quarter-hourly slots feed the planner (token note: the value includes a trailing `-1`; it is NOT pure hex). |
-| Battery power + SoC | Indevolt OpenData RPC | ⚠️ adapter ready | `Indevolt.GetData` is reachable but returns `{}`: **enable the OpenData data points in the Indevolt app and supply `INDEVOLT_KEY`** (HTTP Digest, user `opend`). Confirm the SoC/power register addresses against a provisioned device. |
+| Battery power + SoC | Indevolt OpenData RPC | ✅ **live** | keyless `POST /rpc/Indevolt.GetData?config={"t":[keys]}` — keys 6002 SoC, 6000 power, 6001 state, 7101 mode (decoded from the official INDEVOLT/homeassistant-indevolt integration). Verified: SoC 40 %, power signed +discharge/−charge. |
 
-Status (2026-06-28): **2/3 device groups live** — HomeWizard meters + Tibber prices both verified
-end-to-end through the running server (planner now computes on real prices). Indevolt is the only
-remaining gap: **Modbus TCP/502 is refused** on both towers, so the OpenData RPC on :8080 is the
-only interface — and it returns `{}` until the data points are provisioned + the Digest device key
-is supplied (which the consumer app may not expose; could need Indevolt support).
+Status (2026-06-28): **ALL 3 device groups live — data_quality `complete`.** HomeWizard meters,
+Tibber prices, and the Indevolt battery (SoC + power) all verified end-to-end through the running
+server. The Indevolt read needs **no key**: the local API is open and the `GetData` `config` is
+`{"t":[<register keys>]}` (POST), decoded from the official Indevolt HA integration. Modbus/502 is
+closed; the RPC on :8080 is the interface.
 
-When the battery is unreadable, `soc`/`battery` age to MISSING, data-quality goes **unsafe**, and
-the decision falls back to **AUTO** (self-consumption) — fail-safe by design. You can watch this on
-the **System** page (per-signal sensor checks) and the dashboard freshness chips.
+If the battery ever becomes unreadable, `soc`/`battery` age to MISSING, data-quality goes
+**unsafe**, and the decision falls back to **AUTO** (self-consumption) — fail-safe by design.
+Watch it on the **System** page (per-signal sensor checks) and the dashboard freshness chips.
 
-## Unblocking the Indevolt battery read — what to ask Indevolt (or find in the app)
+### How the Indevolt read was solved (no key needed)
 
-The local API on `192.168.50.53:8080` responds to **only** `Indevolt.GetData`, and it returns `{}`
-for every `config` value tried (Modbus/502 is closed). To read SoC/power I need three things:
+The local API is open and needs no device key. `GET /rpc/Sys.GetConfig` returns the device identity
+(`type: CMS-SF2000, sn: 3301958491`); the data read is `POST /rpc/Indevolt.GetData?config={"t":[…]}`
+(JSON, ≤8 keys/call) — the `config` shape and register keys (6002 SoC, 6000 power, 6001 state,
+7101 mode, 142 capacity) were decoded from the official `INDEVOLT/homeassistant-indevolt`
+integration. `ems/sources/indevolt.py` implements exactly this.
 
-Diagnosis (2026-06-28): the local API is **already enabled** — `GET /rpc/Sys.GetConfig` returns
-the device identity unauthenticated (`type: CMS-SF2000, sn: 3301958491, fw V1.4.0C…`). So there is
-no "OpenData" toggle to find in the app; the device is reachable. What's missing is the **API
-documentation**: `Indevolt.GetData` requires a `config` parameter and returns `{}` for every value
-tried (and there's no other data-returning method), so I can't guess the data-profile syntax or the
-SoC/power register ids. That comes from Indevolt's OpenData API spec, not an app setting.
-
-> **Request to Indevolt support / installer (include device sn 3301958491, type CMS-SF2000):**
-> "I've enabled the local OpenData API on my SolidFlex cluster (`Indevolt.GetData` on port 8080
-> responds). I want to **read** battery State of Charge and instantaneous power over the local API
-> (read-only — no control). Please tell me:
-> 1. the **OpenData device key** for HTTP Digest user `opend` (and how to (re)generate it),
-> 2. the **`config` / data-profile value** to pass to `GET /rpc/Indevolt.GetData?config=<…>` so it
->    returns data (it currently returns `{}` for `all`, `battery`, register lists, etc.),
-> 3. the **data-point / register ids for SoC (%) and battery power (W)** in that response."
-
-Once you have the **key** and **config name**, drop them in and verify (read-only):
 ```
-INDEVOLT_KEY='<key>' INDEVOLT_CONFIG='<config-name>' uv run python scripts/verify_live.py
+TIBBER_TOKEN='<token>' uv run python scripts/verify_live.py    # all 3 groups -> PASS
 ```
-If the SoC/power register ids differ from the defaults, set them via the driver `registers=`
-mapping (or tell me the ids and I'll wire them).
 
 ## Hands (battery control)
 

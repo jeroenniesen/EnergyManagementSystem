@@ -1,57 +1,57 @@
 """Indevolt SolidFlex OpenData — READ-ONLY client (SPEC §6.5).
 
-Reads battery power + SoC from the local RPC (`Indevolt.GetData`). By design there is **no**
-`SetData` / `charge` / `discharge` / mode write anywhere in this module — the user's battery must
-never be changed. The cluster is one logical device, so we read the main tower.
+Read protocol (matched to the official INDEVOLT/homeassistant-indevolt integration, which needs
+only the device IP — no key, no provisioning):
 
-Auth is HTTP Digest (user `opend` + device key) per the API reference; the key comes from the
-environment (never committed). If the device returns nothing usable — the OpenData data points
-aren't provisioned in the Indevolt app, or no key is supplied — `read_power_soc()` raises
-`BatteryUnavailable`, so the LiveSource marks battery/soc not-fresh and the EMS falls back to AUTO
-(fail-safe). Network I/O is injectable so tests never touch hardware.
+    POST http://<ip>:8080/rpc/Indevolt.GetData?config={"t":[<keys>]}   (JSON, spaces stripped)
+    -> {"<key>": value, ...}   (request at most 8 keys per call)
 
-NOTE: the exact register addresses for SoC/power and the GetData `config` value are device-specific
-and must be confirmed against a live, provisioned device — they are configurable here for that
-reason. The parsing/auth/fail-safe logic below is final and tested.
+Read-only by design — there is NO SetData/charge/discharge here; the user's battery is never
+changed. Network I/O is injectable so unit tests never touch hardware.
+
+Data-point keys (SF2000 / Gen-2):
+  6002 = Battery SoC (%)        6000 = Battery power (W, magnitude)
+  6001 = Charge/discharge state (1000 static · 1001 charging · 1002 discharging)
+  7101 = Working mode (0 outdoor · 1 self-consumption · 4 real-time · 5 schedule)
+  142  = Rated capacity (kWh)   7120 = Meter connection status (1000 on · 1001 off)
 """
 from __future__ import annotations
 
+import json
 import logging
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 
 _log = logging.getLogger("ems.sources.indevolt")
 
 DEFAULT_PORT = 8080
-DEFAULT_CONFIG = "all"
-# Documented mode/state/power registers live around 47005/47015/47016 (SPEC api-reference §); the
-# SoC + live-power read registers are device-specific. Overridable via the constructor / config.
-DEFAULT_REGISTERS = {"soc": "47017", "power": "47016"}
+K_SOC, K_POWER, K_STATE, K_MODE, K_CAPACITY, K_METER_CONN = 6002, 6000, 6001, 7101, 142, 7120
+_STATE_CHARGING, _STATE_DISCHARGING = 1001, 1002
 
-RpcGet = Callable[[str], dict]  # (url) -> parsed JSON dict
+# (keys) -> {"<key>": value}. Default does the real POST; tests inject a stub.
+GetDataPost = Callable[[Iterable[int]], dict]
 
 
 class BatteryUnavailable(RuntimeError):
-    """The OpenData read returned nothing usable (unprovisioned data points / missing key)."""
+    """The OpenData read returned nothing usable (unreachable / unexpected response)."""
 
 
-def _digest_get(url: str, user: str, key: str | None, timeout: float) -> dict:
+def _post_getdata(url: str, keys: Iterable[int], timeout: float) -> dict:
     import httpx
 
-    auth = httpx.DigestAuth(user, key) if key else None
-    r = httpx.get(url, auth=auth, timeout=timeout)
+    config = json.dumps({"t": list(keys)}).replace(" ", "")
+    r = httpx.post(url, params={"config": config}, timeout=timeout)
     r.raise_for_status()
     return r.json()
 
 
-def _register_value(data: dict, register: str):
-    """Pull a register's numeric value, tolerating either a flat {reg: value} response or a
-    nested {reg: {"value": value}} shape. Returns None if absent."""
-    if register not in data:
-        return None
-    node = data[register]
-    if isinstance(node, dict):
-        return node.get("value")
-    return node
+def signed_battery_power(power_magnitude: float, state: object) -> float:
+    """Domain sign (+discharge / −charge) from the |power| value + the state register."""
+    p = abs(power_magnitude)
+    if state == _STATE_CHARGING:
+        return -p
+    if state == _STATE_DISCHARGING:
+        return p
+    return 0.0  # static / unknown
 
 
 class IndevoltReadClient:
@@ -62,47 +62,31 @@ class IndevoltReadClient:
         self,
         ip: str,
         *,
-        key: str | None = None,
-        user: str = "opend",
         port: int = DEFAULT_PORT,
-        config: str = DEFAULT_CONFIG,
-        registers: dict[str, str] | None = None,
         timeout: float = 4.0,
-        rpc_get: RpcGet | None = None,
+        rpc_post: GetDataPost | None = None,
     ) -> None:
         self.ip = ip
-        self.config = config
-        self.registers = registers or dict(DEFAULT_REGISTERS)
         self._url = f"http://{ip}:{port}/rpc/Indevolt.GetData"
-        _user, _key, _timeout = user, key, timeout
-        self._get = rpc_get or (lambda url: _digest_get(url, _user, _key, _timeout))
+        _timeout = timeout
+        self._post = rpc_post or (lambda keys: _post_getdata(self._url, keys, _timeout))
 
-    def read_raw(self) -> dict:
-        return self._get(f"{self._url}?config={self.config}")
+    def read_keys(self, keys: Iterable[int]) -> dict:
+        return self._post(keys)
 
     def read_power_soc(self) -> tuple[float, float]:
-        """Return (battery_power_w, soc_pct). Raises BatteryUnavailable when the read is empty or
-        the expected registers are absent — the caller treats that as a not-fresh signal."""
+        """Return (battery_power_w, soc_pct). Raises BatteryUnavailable on any failure so the
+        caller treats battery/soc as not-fresh (fail-safe)."""
         try:
-            data = self.read_raw()
-        except Exception as exc:  # network / auth / transport
+            data = self.read_keys([K_SOC, K_POWER, K_STATE])
+        except Exception as exc:
             raise BatteryUnavailable(f"Indevolt read failed: {type(exc).__name__}: {exc}") from exc
         if not data:
-            raise BatteryUnavailable(
-                "Indevolt GetData returned empty — enable the OpenData data points in the "
-                "Indevolt app and supply the device key (INDEVOLT_KEY)"
-            )
-        soc = _register_value(data, self.registers["soc"])
-        power = _register_value(data, self.registers["power"])
-        if soc is None or power is None:
-            missing = [n for n, v in (("soc", soc), ("power", power)) if v is None]
-            raise BatteryUnavailable(
-                f"Indevolt response has no usable {missing} value; keys present: {sorted(data)}"
-            )
+            raise BatteryUnavailable("Indevolt GetData returned empty")
+        soc, mag, state = data.get(str(K_SOC)), data.get(str(K_POWER)), data.get(str(K_STATE))
+        if soc is None or mag is None:
+            raise BatteryUnavailable(f"Indevolt response missing SoC/power; keys: {sorted(data)}")
         try:
-            return float(power), float(soc)
+            return signed_battery_power(float(mag), state), float(soc)
         except (TypeError, ValueError) as exc:
-            # A non-numeric register (e.g. "N/A") is treated as unavailable, not a crash.
-            raise BatteryUnavailable(
-                f"Indevolt register value not numeric (power={power!r}, soc={soc!r}): {exc}"
-            ) from exc
+            raise BatteryUnavailable(f"Indevolt SoC/power not numeric: {exc}") from exc

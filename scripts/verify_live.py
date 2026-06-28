@@ -18,8 +18,6 @@ import httpx
 
 P1, SOLAR, CAR = "192.168.50.92", "192.168.50.37", "192.168.50.98"
 INDEVOLT = "192.168.50.53"
-# Candidate GetData configs to try (the device returned {} for all of these unauthenticated).
-CONFIG_CANDIDATES = ["all", "battery", "status", "data", "47005", "47005,47015,47016,47017"]
 
 
 def _ok(label, detail):
@@ -59,31 +57,15 @@ def check_tibber() -> bool:
 
 
 def check_indevolt() -> bool:
-    key = os.environ.get("INDEVOLT_KEY") or None
-    print(f"Indevolt OpenData (read-only; key={'set' if key else 'NOT set'}):")
-    auth = httpx.DigestAuth("opend", key) if key else None
-    # Let the user pass the exact config/profile name they defined in the Indevolt app.
-    candidates = ([os.environ["INDEVOLT_CONFIG"]] if os.environ.get("INDEVOLT_CONFIG") else []) \
-        + CONFIG_CANDIDATES
-    found = None
-    for cfg in candidates:
-        try:
-            r = httpx.get(
-                f"http://{INDEVOLT}:8080/rpc/Indevolt.GetData",
-                params={"config": cfg}, auth=auth, timeout=5,
-            )
-            body = r.json() if r.headers.get("content-type", "").startswith("application") else {}
-            if body:
-                found = (cfg, body)
-                break
-        except Exception as exc:
-            print(f"  config={cfg!r} -> {type(exc).__name__}: {exc}")
-    if found:
-        return _ok("battery", f"config={found[0]!r} returned keys {sorted(found[1])[:8]}")
-    return _fail(
-        "battery",
-        "GetData empty for every config — enable OpenData data points in the app + supply a key",
-    )
+    # Read-only: keyless POST GetData?config={"t":[keys]}. 6002=SoC, 6000=power, 6001=state.
+    print("Indevolt battery (read-only):")
+    from ems.sources.indevolt import IndevoltReadClient
+
+    try:
+        power, soc = IndevoltReadClient(INDEVOLT).read_power_soc()
+        return _ok("battery", f"SoC {soc:.0f}% · power {power:.0f} W (+discharge/-charge)")
+    except Exception as exc:
+        return _fail("battery", f"{type(exc).__name__}: {exc}")
 
 
 def main() -> None:

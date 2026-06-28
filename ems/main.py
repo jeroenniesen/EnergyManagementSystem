@@ -37,9 +37,9 @@ def _build_sources(cfg, tz):
         from ems.sources.indevolt_driver import IndevoltBatteryDriver
         from ems.sources.live import HomeWizardMeter, LiveSource
 
-        key = os.environ.get("INDEVOLT_KEY") or None
+        # The Indevolt local API reads keyless (no device key needed).
         battery_reader = (
-            IndevoltReadClient(cfg.indevolt_ip, key=key, port=cfg.indevolt_port)
+            IndevoltReadClient(cfg.indevolt_ip, port=cfg.indevolt_port)
             if cfg.indevolt_ip
             else None
         )
@@ -49,10 +49,11 @@ def _build_sources(cfg, tz):
             car=HomeWizardMeter(cfg.car_ip),
             battery=battery_reader,
         )
-        # The real hands — armed=False, no rpc_post (refusing stub) => cannot write; reused as the
-        # /api/battery probe source too. dry_run is forced on so decide() never calls apply().
+        # The real hands — armed=False, no rpc_post (refusing stub) => cannot write. dry_run is
+        # forced on so decide() never calls apply(). battery_endpoint stays None (the battery
+        # sense flows via LiveSource -> /api/status + freshness).
         controller_driver = (
-            IndevoltBatteryDriver(cfg.indevolt_ip, key=key, port=cfg.indevolt_port, armed=False)
+            IndevoltBatteryDriver(cfg.indevolt_ip, port=cfg.indevolt_port, armed=False)
             if cfg.indevolt_ip
             else MockBatteryDriver()
         )
