@@ -117,6 +117,30 @@ def test_explanation_cache_survives_restart(tmp_path, monkeypatch):
     assert calls["n"] == 1  # NOT re-spent across the restart
 
 
+def test_meter_data_never_enters_persistent_cache(tmp_path, monkeypatch):
+    """Guardrail (CLAUDE.md: meter data must always be actual): only explanations / prices /
+    forecast may be persisted. Polling /api/decision both reads the live meters (for SoC + the car
+    guard) AND caches the explanation — afterwards the cache must hold ONLY allowed key prefixes,
+    never any meter/SoC sample."""
+    import sqlite3
+
+    _enable_ai(monkeypatch)
+    with TestClient(_app(tmp_path)) as c:
+        c.post("/api/settings", json={
+            "strategy.mode": "winter", "explainer.mode": "external_llm", "explainer.api_key": "k",
+        })
+        for _ in range(3):
+            c.get("/api/decision")  # reads live meters via _current_sample, caches the explanation
+    con = sqlite3.connect(str(tmp_path / "ems.sqlite"))
+    keys = [r[0] for r in con.execute("SELECT key FROM cache").fetchall()]
+    con.close()
+    assert keys, "the explanation should have been persisted"
+    allowed = ("explain:", "tibber:", "forecast_solar:")
+    assert all(any(k.startswith(p) for p in allowed) for k in keys), keys
+    # belt-and-braces: nothing meter-shaped ever lands in the persistent cache
+    assert not any(t in k.lower() for k in keys for t in ("soc", "meter", "sample", "grid", "p1"))
+
+
 # ---- chat -------------------------------------------------------------------------------------
 
 def _enable_ai(monkeypatch, capture=None, answer="Your home is running on the battery now."):

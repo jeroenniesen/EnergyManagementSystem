@@ -96,6 +96,14 @@ def _explain_cache_key(reason: str, language: str, model: str) -> str:
     raw = f"{model}|{language}|{reason}".encode()
     return "explain:" + hashlib.sha256(raw).hexdigest()
 
+
+# Live meter/SoC reads are deliberately NEVER served from the persistent external cache (Tibber /
+# Forecast.Solar / AI) — they must always reflect the hardware. The only caching applied to a live
+# read is this short *in-memory* coalescing window, so a single dashboard refresh that fans out to
+# several endpoints reads the (slow) battery cluster + meters once instead of many times. It is lost
+# on restart (so the first read after a restart is always fresh) and is intentionally brief.
+_LIVE_SAMPLE_COALESCE_SECONDS = 30.0
+
 # --- Unified energy-story slot/totals (shared by the past + next windows so they never drift) ---
 _INTENT_ACTION = {
     "grid_charge_to_target": "charge",
@@ -304,13 +312,14 @@ def create_app(
         return _planner_cfg_from(settings_cache)
 
     site_tz = tz or ZoneInfo("UTC")
-    # The live read (battery cluster + meters) is slow; cache the whole sample briefly so a single
-    # dashboard poll — fanning out to several endpoints — doesn't read the hardware many times over.
+    # See _LIVE_SAMPLE_COALESCE_SECONDS: a short in-memory window so one dashboard refresh reads the
+    # hardware once. Meter/SoC data is never put in the persistent external cache.
     _sample_cache: dict[str, Any] = {"sample": None, "at": None}
 
     def _current_sample(now: datetime):
         cached_at = _sample_cache["at"]
-        if (cached_at is not None and (now - cached_at).total_seconds() < 30
+        if (cached_at is not None
+                and (now - cached_at).total_seconds() < _LIVE_SAMPLE_COALESCE_SECONDS
                 and _sample_cache["sample"] is not None):
             return _sample_cache["sample"]
         try:
