@@ -62,8 +62,11 @@ def check_indevolt() -> bool:
     key = os.environ.get("INDEVOLT_KEY") or None
     print(f"Indevolt OpenData (read-only; key={'set' if key else 'NOT set'}):")
     auth = httpx.DigestAuth("opend", key) if key else None
+    # Let the user pass the exact config/profile name they defined in the Indevolt app.
+    candidates = ([os.environ["INDEVOLT_CONFIG"]] if os.environ.get("INDEVOLT_CONFIG") else []) \
+        + CONFIG_CANDIDATES
     found = None
-    for cfg in CONFIG_CANDIDATES:
+    for cfg in candidates:
         try:
             r = httpx.get(
                 f"http://{INDEVOLT}:8080/rpc/Indevolt.GetData",
