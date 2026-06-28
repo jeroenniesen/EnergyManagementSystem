@@ -369,6 +369,8 @@ body {
 .soc-deadline { stroke: var(--summer); stroke-width: 1; opacity: 0.45; }
 .soc-deadline-label { fill: var(--summer); font-size: 11px; opacity: 0.9; }
 .soc-now { stroke: var(--muted); stroke-width: 1; opacity: 0.6; }
+.soc-area-past { fill: var(--accent); opacity: 0.13; stroke: none; }
+.soc-area-next { fill: var(--amber); opacity: 0.10; stroke: none; }
 .soc-actual { fill: none; stroke: var(--accent); stroke-width: 2.5; vector-effect: non-scaling-stroke; }
 .soc-predicted {
   fill: none; stroke: var(--amber); stroke-width: 2.5; stroke-dasharray: 6 4;

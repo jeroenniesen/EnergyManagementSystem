@@ -92,6 +92,12 @@ export function EnergyStory({
   const x = (ms: number) => PAD.l + ((ms - t0) / span) * (W - PAD.l - PAD.r);
   const y = (soc: number) => PAD.t + (1 - soc / 100) * (H - PAD.t - PAD.b);
   const socLine = pts.map((p) => `${x(p.t).toFixed(1)},${y(p.soc).toFixed(1)}`).join(" ");
+  // Filled area under the SoC line — reads as the "energy in the battery", not just a line.
+  const baseY = (H - PAD.b).toFixed(1);
+  const socArea =
+    pts.length >= 2
+      ? `${socLine} ${x(pts[pts.length - 1].t).toFixed(1)},${baseY} ${x(pts[0].t).toFixed(1)},${baseY}`
+      : "";
 
   const maxPrice = Math.max(0.01, ...slots.map((s) => s.eur_per_kwh ?? 0));
   const maxSolar = Math.max(1, ...slots.map((s) => s.solar_w));
@@ -255,6 +261,9 @@ export function EnergyStory({
             )}
             {Number.isFinite(nowMs) && nowMs >= t0 && nowMs <= t1 && (
               <line className="soc-now" x1={x(nowMs)} y1={PAD.t} x2={x(nowMs)} y2={H - PAD.b} />
+            )}
+            {pts.length >= 2 && (
+              <polygon className={isPast ? "soc-area-past" : "soc-area-next"} points={socArea} />
             )}
             {pts.length >= 2 && (
               <polyline
