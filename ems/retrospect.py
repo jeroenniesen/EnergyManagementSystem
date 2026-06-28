@@ -43,6 +43,27 @@ class PastStory:
     soc_end_pct: float | None
 
 
+def past_headline(story: PastStory) -> str:
+    """A plain-language recap of the last 24h — the evidence that the strategy worked."""
+    if not story.slots:
+        return "No history yet — the story of the last 24h fills in as data is recorded."
+    parts: list[str] = []
+    if story.solar_kwh > 0.05:
+        parts.append(f"{story.solar_kwh:.1f} kWh from the sun")
+    if story.discharge_kwh > 0.05:
+        parts.append(f"{story.discharge_kwh:.1f} kWh out of the battery")
+    parts.append(
+        f"{story.import_kwh:.1f} kWh imported"
+        + (f", {story.export_kwh:.1f} kWh exported" if story.export_kwh > 0.05 else "")
+    )
+    head = "Last 24h — " + ", ".join(parts) + "."
+    if story.self_sufficiency_pct is not None:
+        head += f" {story.self_sufficiency_pct:.0f}% self-sufficient."
+    if story.grid_cost_eur is not None:
+        head += f" Net grid cost €{story.grid_cost_eur:.2f}."
+    return head
+
+
 def _parse(ts: object) -> datetime | None:
     if not isinstance(ts, str):
         return None
@@ -69,7 +90,12 @@ def build_past_story(
     *,
     hours: int = 24,
 ) -> PastStory:
-    """Resample recorded history into 15-min slots over the last `hours` and summarise it."""
+    """Resample recorded history into 15-min slots over the last `hours` and summarise it.
+
+    Energy uses a zero-order hold (each slot's mean power held across the slot), the standard
+    interval-metering approximation; sparse slots (a missed cycle) are weighted like full ones."""
+    if now.tzinfo is None:
+        raise ValueError("build_past_story: 'now' must be timezone-aware")
     now_utc = now.astimezone(UTC)
     cutoff = now_utc - timedelta(hours=hours)
 
@@ -125,9 +151,11 @@ def build_past_story(
         (kwh(max(0.0, s.grid_w)) - kwh(max(0.0, -s.grid_w))) * s.eur_per_kwh
         for s in slots if s.eur_per_kwh is not None
     )
+    # Only report self-sufficiency when the load actually covers the import — if import > load,
+    # the raw/derived rows are out of sync (a missing derived row), so the number isn't trustworthy.
     self_suff = (
-        max(0.0, min(100.0, (load_kwh - import_kwh) / load_kwh * 100.0))
-        if load_kwh > 0 else None
+        min(100.0, (load_kwh - import_kwh) / load_kwh * 100.0)
+        if load_kwh > 0 and load_kwh >= import_kwh else None
     )
     soc_slots = [s.soc_pct for s in slots if s.soc_pct is not None]
 
@@ -139,7 +167,7 @@ def build_past_story(
         charge_kwh=round(charge_kwh, 2),
         discharge_kwh=round(discharge_kwh, 2),
         load_kwh=round(load_kwh, 2),
-        grid_cost_eur=round(cost, 2) if has_price else None,
+        grid_cost_eur=(round(cost, 2) + 0.0) if has_price else None,  # +0.0 avoids -0.0
         self_sufficiency_pct=round(self_suff, 1) if self_suff is not None else None,
         soc_start_pct=round(soc_slots[0], 1) if soc_slots else None,
         soc_end_pct=round(soc_slots[-1], 1) if soc_slots else None,

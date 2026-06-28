@@ -43,6 +43,7 @@ from ems.planner.projection import BatteryModel, project_energy
 from ems.planner.rule_based import PlannerConfig, plan_rule_based
 from ems.planner.strategy import build_plan, select_strategy
 from ems.planner.summer import SummerConfig, sunset_after
+from ems.retrospect import build_past_story, past_headline
 from ems.savings import estimate_daily_savings_eur
 from ems.sense import Recorder
 from ems.settings import (
@@ -73,6 +74,65 @@ def _task_died(name: str):
 
 
 _recorder_died = _task_died("Recorder")
+
+# --- Unified energy-story slot/totals (shared by the past + next windows so they never drift) ---
+_INTENT_ACTION = {
+    "grid_charge_to_target": "charge",
+    "discharge_for_load": "discharge",
+    "hold_reserve": "hold",
+    "allow_self_consumption": "self_consume",
+}
+
+
+def _action_from_intent(intent: object) -> str:
+    return _INTENT_ACTION.get(str(intent), "self_consume")
+
+
+def _action_from_battery(battery_w: float) -> str:
+    # What the battery actually did this slot (+discharge / −charge); a small dead-band = idle.
+    if battery_w < -50.0:
+        return "charge"
+    if battery_w > 50.0:
+        return "discharge"
+    return "idle"
+
+
+def _uslot(start, soc, grid, solar, batt, load, price, action) -> dict:
+    return {
+        "start": start.isoformat(),
+        "soc_pct": round(soc, 1) if soc is not None else None,
+        "grid_w": round(grid, 1), "solar_w": round(solar, 1), "battery_w": round(batt, 1),
+        "load_w": round(load, 1), "eur_per_kwh": price, "action": action,
+    }
+
+
+def _uslot_totals(slots: list[dict]) -> dict:
+    """Integrate the unified slots into kWh totals + cost + self-sufficiency (zero-order hold)."""
+    def kwh(power_w: float) -> float:
+        return power_w * 0.25 / 1000.0
+
+    imp = sum(kwh(max(0.0, s["grid_w"])) for s in slots)
+    exp = sum(kwh(max(0.0, -s["grid_w"])) for s in slots)
+    load = sum(kwh(s["load_w"]) for s in slots)
+    priced = [s for s in slots if s["eur_per_kwh"] is not None]
+    cost = sum(
+        (kwh(max(0.0, s["grid_w"])) - kwh(max(0.0, -s["grid_w"]))) * s["eur_per_kwh"]
+        for s in priced
+    )
+    ss = min(100.0, (load - imp) / load * 100.0) if load > 0 and load >= imp else None
+    cost_eur = round(cost, 2) + 0.0  # +0.0 collapses -0.0 to 0.0 (no "€-0.00")
+    socs = [s["soc_pct"] for s in slots if s["soc_pct"] is not None]
+    return {
+        "import_kwh": round(imp, 2), "export_kwh": round(exp, 2),
+        "solar_kwh": round(sum(kwh(s["solar_w"]) for s in slots), 2),
+        "charge_kwh": round(sum(kwh(max(0.0, -s["battery_w"])) for s in slots), 2),
+        "discharge_kwh": round(sum(kwh(max(0.0, s["battery_w"])) for s in slots), 2),
+        "load_kwh": round(load, 2),
+        "grid_cost_eur": cost_eur if priced else None,
+        "self_sufficiency_pct": round(ss, 1) if ss is not None else None,
+        "soc_start_pct": socs[0] if socs else None,
+        "soc_end_pct": socs[-1] if socs else None,
+    }
 
 
 def create_app(
@@ -622,28 +682,16 @@ def create_app(
             reserve_soc_pct=s["battery.min_reserve_soc"],
         )
 
-    @app.get("/api/energy-forecast")
-    async def energy_forecast() -> dict:
-        # The headline "what will my energy do over the next 24h": recorded SoC (past) + a forward
-        # projection (future) of SoC and grid flow, driven by the plan, the solar forecast and the
-        # learned load profile. Read-only.
-        site_tz = tz or ZoneInfo("UTC")
-        reserve_pct = settings_cache["battery.min_reserve_soc"]
-        history: list[dict] = []
-        if store is not None:
-            rows = await store.recent_raw(288)  # ~24h at the 5-min cycle
-            history = [{"ts": r["ts"], "soc_pct": r["soc_pct"]} for r in reversed(rows)]
-        empty = {"now": datetime.now(UTC).isoformat(), "current_soc_pct": None,
-                 "reserve_soc_pct": reserve_pct, "history": history, "projection": [],
-                 "summary": "No plan yet.", "target_soc_pct": None, "target_kwh": None,
-                 "target_deadline": None}
+    async def _forward_projection():
+        """The forward plan + projection bundle (or None if there's no plan yet). Shared by
+        /api/energy-forecast and /api/energy-story so they never drift."""
         pp = _current_plan()
         if pp is None or solar_forecast is None:
-            return empty
-        now, _prices, plan = pp
+            return None
+        now, prices_, plan = pp
         if not plan.slots:
-            return empty
-        raw = source.read()
+            return None
+        soc = _current_soc(now)
         fc_slots = solar_forecast.slots()
         solar_by = {f.start: f.p50_w for f in fc_slots}
         # Learn the expected load from ~7 days of derived history; fall back to the overnight
@@ -652,24 +700,41 @@ def create_app(
         fallback_w = settings_cache["battery.overnight_load_kwh"] * 1000.0 / 12.0
         profile = build_load_profile(drows, site_tz, fallback_w=fallback_w)
         load_by = {s.start: profile.expected_w(s.start) for s in plan.slots}
-        # Size grid-charging to the night-carry target (overnight load + reserve), not to full —
-        # buy enough to get through the night, no more (SPEC §8 GRID_CHARGE_TO_TARGET).
+        # Size grid-charging to the night-carry target (overnight load + reserve), not to full.
         need = compute_charge_need(
-            soc_pct=raw.soc_pct, usable_kwh=settings_cache["battery.usable_kwh"],
+            soc_pct=soc, usable_kwh=settings_cache["battery.usable_kwh"],
             min_reserve_soc=settings_cache["battery.min_reserve_soc"],
             night_reserve_kwh=settings_cache["battery.night_reserve_kwh"],
             overnight_load_kwh=settings_cache["battery.overnight_load_kwh"],
         )
         projected = project_energy(
-            plan.slots, start_soc_pct=raw.soc_pct, solar_w_by=solar_by,
+            plan.slots, start_soc_pct=soc, solar_w_by=solar_by,
             load_w_by=load_by, model=_battery_model(),
             charge_target_soc_pct=need.target_soc_pct,
         )
-        # The milestone the chart marks: be at the night-carry target by sunset (summer deadline).
-        deadline = sunset_after(fc_slots, now)
+        return {"now": now, "current_soc": soc, "projected": projected, "need": need,
+                "deadline": sunset_after(fc_slots, now),
+                "price_by": {p.start: p.eur_per_kwh for p in prices_}}
+
+    @app.get("/api/energy-forecast")
+    async def energy_forecast() -> dict:
+        # Recorded SoC (past) + a forward projection (future) of SoC and grid flow. Read-only.
+        reserve_pct = settings_cache["battery.min_reserve_soc"]
+        history: list[dict] = []
+        if store is not None:
+            rows = await store.recent_raw(288)
+            history = [{"ts": r["ts"], "soc_pct": r["soc_pct"]} for r in reversed(rows)]
+        empty = {"now": datetime.now(UTC).isoformat(), "current_soc_pct": None,
+                 "reserve_soc_pct": reserve_pct, "history": history, "projection": [],
+                 "summary": "No plan yet.", "target_soc_pct": None, "target_kwh": None,
+                 "target_deadline": None}
+        fp = await _forward_projection()
+        if fp is None:
+            return empty
+        projected, need, deadline = fp["projected"], fp["need"], fp["deadline"]
         return {
-            "now": now.isoformat(),
-            "current_soc_pct": round(raw.soc_pct, 1),
+            "now": fp["now"].isoformat(),
+            "current_soc_pct": round(fp["current_soc"], 1),
             "reserve_soc_pct": reserve_pct,
             "target_soc_pct": round(need.target_soc_pct, 1),
             "target_kwh": round(need.target_kwh, 1),
@@ -684,6 +749,79 @@ def create_app(
             ],
             **summarize_projection(projected),
         }
+
+    def _empty_story(window: str, reserve_pct: float, headline: str) -> dict:
+        return {"window": window, "now": datetime.now(UTC).isoformat(),
+                "current_soc_pct": None, "reserve_soc_pct": reserve_pct,
+                "target_soc_pct": None, "target_kwh": None, "target_deadline": None,
+                "slots": [], "totals": _uslot_totals([]), "headline": headline}
+
+    def _next_headline(totals: dict, need) -> str:
+        charge, imp, ss = totals["charge_kwh"], totals["import_kwh"], totals["self_sufficiency_pct"]
+        if charge > 0.1:
+            head = (f"Next 24h — top up {charge:.1f} kWh to the {need.target_soc_pct:.0f}% night "
+                    f"target, then run the evening on the battery.")
+        else:
+            head = "Next 24h — the sun covers the night; running on the battery, no grid charging."
+        head += f" Projected {imp:.1f} kWh imported"
+        head += f", {ss:.0f}% self-sufficient." if ss is not None else "."
+        return head
+
+    async def _next_story(reserve_pct: float) -> dict:
+        fp = await _forward_projection()
+        if fp is None:
+            return _empty_story("next", reserve_pct, "No plan yet.")
+        price_by, need, deadline = fp["price_by"], fp["need"], fp["deadline"]
+        slots = [
+            _uslot(p.start, p.soc_pct, p.grid_w, p.solar_w, p.battery_w, p.load_w,
+                   price_by.get(p.start), _action_from_intent(p.intent))
+            for p in fp["projected"]
+        ]
+        totals = _uslot_totals(slots)
+        return {
+            "window": "next", "now": fp["now"].isoformat(),
+            "current_soc_pct": round(fp["current_soc"], 1), "reserve_soc_pct": reserve_pct,
+            "target_soc_pct": round(need.target_soc_pct, 1),
+            "target_kwh": round(need.target_kwh, 1),
+            "target_deadline": deadline.isoformat() if deadline is not None else None,
+            "slots": slots, "totals": totals, "headline": _next_headline(totals, need),
+        }
+
+    async def _past_story(reserve_pct: float) -> dict:
+        now = datetime.now(UTC)
+        cutoff = (now - timedelta(hours=24)).isoformat()
+        raw = await store.recent_raw_since(cutoff) if store is not None else []
+        der = await store.recent_derived_since(cutoff) if store is not None else []
+        prices = price_source.slots() if price_source is not None else []
+        story = build_past_story(raw, der, prices, now)
+        slots = [
+            _uslot(ps.start, ps.soc_pct, ps.grid_w, ps.solar_w, ps.battery_w, ps.load_w,
+                   ps.eur_per_kwh, _action_from_battery(ps.battery_w))
+            for ps in story.slots
+        ]
+        if not slots:
+            return _empty_story("past", reserve_pct, past_headline(story))
+        # Show the night target that applied, as a reference line to validate against.
+        need = _night_target_soc(story.soc_end_pct if story.soc_end_pct is not None else 50.0)
+        return {
+            "window": "past", "now": now.isoformat(),
+            "current_soc_pct": story.soc_end_pct, "reserve_soc_pct": reserve_pct,
+            "target_soc_pct": round(need.target_soc_pct, 1),
+            "target_kwh": round(need.target_kwh, 1),
+            "target_deadline": None,
+            "slots": slots, "totals": _uslot_totals(slots), "headline": past_headline(story),
+        }
+
+    @app.get("/api/energy-story")
+    async def energy_story(
+        window: str = Query(default="next", pattern="^(past|next)$"),
+    ) -> dict:
+        # One shape, two directions: "next" = the plan/forecast; "past" = recorded last 24h. The
+        # frontend renders both with the same timeline so the story reads consistently. Read-only.
+        reserve_pct = settings_cache["battery.min_reserve_soc"]
+        if window == "past":
+            return await _past_story(reserve_pct)
+        return await _next_story(reserve_pct)
 
     @app.get("/api/forecast")
     def forecast() -> dict:
