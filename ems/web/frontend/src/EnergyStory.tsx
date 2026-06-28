@@ -23,6 +23,8 @@ export type StoryTotals = {
   self_sufficiency_pct: number | null;
   soc_start_pct: number | null;
   soc_end_pct: number | null;
+  soc_min_pct: number | null;
+  soc_max_pct: number | null;
 };
 export type EnergyStoryData = {
   window: "past" | "next";
@@ -32,6 +34,7 @@ export type EnergyStoryData = {
   target_soc_pct: number | null;
   target_kwh: number | null;
   target_deadline: string | null;
+  current_price_eur_per_kwh: number | null;
   slots: StorySlot[];
   totals: StoryTotals;
   headline: string;
@@ -123,14 +126,45 @@ export function EnergyStory({
             Next 24 hours →
           </button>
         </div>
-        <span className="badge badge-muted" data-testid="story-tag">
-          {isPast ? "what happened" : "the plan"}
-        </span>
+        <div className="story-head-right">
+          {story?.current_price_eur_per_kwh != null && (
+            <span className="story-price" data-testid="story-price">
+              €{story.current_price_eur_per_kwh.toFixed(2)}/kWh {isPast ? "latest" : "now"}
+            </span>
+          )}
+          <span className="badge badge-muted" data-testid="story-tag">
+            {isPast ? "what happened" : "the plan"}
+          </span>
+        </div>
       </div>
 
       <p className="story-headline" data-testid="story-headline">
         {story?.headline ?? "…"}
       </p>
+
+      {isPast && t && t.soc_min_pct != null && story && (
+        <p
+          className={`story-check ${
+            t.soc_min_pct >= story.reserve_soc_pct - 0.5 ? "story-check-ok" : "story-check-warn"
+          }`}
+          data-testid="story-validation"
+        >
+          {t.soc_min_pct >= story.reserve_soc_pct - 0.5
+            ? `✓ The battery stayed above its ${story.reserve_soc_pct.toFixed(0)}% reserve all day` +
+              (story.target_soc_pct != null && (t.soc_max_pct ?? 0) >= story.target_soc_pct - 1
+                ? ` and reached the ${story.target_soc_pct.toFixed(0)}% night target.`
+                : ".")
+            : `⚠ The battery dipped to ${t.soc_min_pct.toFixed(0)}% — below the ` +
+              `${story.reserve_soc_pct.toFixed(0)}% reserve floor.`}
+        </p>
+      )}
+
+      {isPast && slots.length > 0 && (t1 - t0) / 3_600_000 < 6 && (
+        <p className="plan-reason" data-testid="story-thin">
+          Only ~{Math.max(1, Math.round((t1 - t0) / 3_600_000))}h of history so far — the full 24h
+          builds as the system keeps running.
+        </p>
+      )}
 
       {slots.length === 0 ? (
         <p className="plan-reason" data-testid="story-empty">

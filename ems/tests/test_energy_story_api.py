@@ -17,9 +17,10 @@ AMS = ZoneInfo("Europe/Amsterdam")
 _SLOT_KEYS = {"start", "soc_pct", "grid_w", "solar_w", "battery_w", "load_w", "eur_per_kwh",
               "action"}
 _TOTAL_KEYS = {"import_kwh", "export_kwh", "solar_kwh", "charge_kwh", "discharge_kwh", "load_kwh",
-               "grid_cost_eur", "self_sufficiency_pct", "soc_start_pct", "soc_end_pct"}
+               "grid_cost_eur", "self_sufficiency_pct", "soc_start_pct", "soc_end_pct",
+               "soc_min_pct", "soc_max_pct"}
 _TOP_KEYS = {"window", "now", "current_soc_pct", "reserve_soc_pct", "target_soc_pct", "target_kwh",
-             "target_deadline", "slots", "totals", "headline"}
+             "target_deadline", "current_price_eur_per_kwh", "slots", "totals", "headline"}
 
 
 def _app(tmp_path, *, with_recorder=False):

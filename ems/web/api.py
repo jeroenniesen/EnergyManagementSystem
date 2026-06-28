@@ -132,6 +132,8 @@ def _uslot_totals(slots: list[dict]) -> dict:
         "self_sufficiency_pct": round(ss, 1) if ss is not None else None,
         "soc_start_pct": socs[0] if socs else None,
         "soc_end_pct": socs[-1] if socs else None,
+        "soc_min_pct": min(socs) if socs else None,
+        "soc_max_pct": max(socs) if socs else None,
     }
 
 
@@ -754,6 +756,7 @@ def create_app(
         return {"window": window, "now": datetime.now(UTC).isoformat(),
                 "current_soc_pct": None, "reserve_soc_pct": reserve_pct,
                 "target_soc_pct": None, "target_kwh": None, "target_deadline": None,
+                "current_price_eur_per_kwh": None,
                 "slots": [], "totals": _uslot_totals([]), "headline": headline}
 
     def _next_headline(totals: dict, need) -> str:
@@ -784,6 +787,8 @@ def create_app(
             "target_soc_pct": round(need.target_soc_pct, 1),
             "target_kwh": round(need.target_kwh, 1),
             "target_deadline": deadline.isoformat() if deadline is not None else None,
+            # The price right now = the first slot (it covers the current quarter-hour).
+            "current_price_eur_per_kwh": slots[0]["eur_per_kwh"] if slots else None,
             "slots": slots, "totals": totals, "headline": _next_headline(totals, need),
         }
 
@@ -809,6 +814,8 @@ def create_app(
             "target_soc_pct": round(need.target_soc_pct, 1),
             "target_kwh": round(need.target_kwh, 1),
             "target_deadline": None,
+            # The latest recorded price (most recent slot).
+            "current_price_eur_per_kwh": slots[-1]["eur_per_kwh"] if slots else None,
             "slots": slots, "totals": _uslot_totals(slots), "headline": past_headline(story),
         }
 
