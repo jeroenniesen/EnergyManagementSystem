@@ -32,13 +32,14 @@ Secrets are env-only, never committed: `TIBBER_TOKEN`, `INDEVOLT_KEY`, `EMS_WEB_
 | Grid (net) | HomeWizard P1 `/api/v1/data` | ✅ **live** | `active_power_w` = +import/−export, used directly |
 | Solar | HomeWizard kWh | ✅ **live** | production = magnitude of `active_power_w` |
 | EV load | HomeWizard kWh (3-phase) | ✅ **live** | `max(0, active_power_w)` |
-| Prices | Tibber GraphQL | ⚠️ adapter ready | the supplied token is **rejected** (`UNAUTHENTICATED`); set a valid `TIBBER_TOKEN`. Falls back to empty (logged) until then. |
+| Prices | Tibber GraphQL | ✅ **live** | verified end-to-end — 96 quarter-hourly slots feed the planner (token note: the value includes a trailing `-1`; it is NOT pure hex). |
 | Battery power + SoC | Indevolt OpenData RPC | ⚠️ adapter ready | `Indevolt.GetData` is reachable but returns `{}`: **enable the OpenData data points in the Indevolt app and supply `INDEVOLT_KEY`** (HTTP Digest, user `opend`). Confirm the SoC/power register addresses against a provisioned device. |
 
-Read paths exhausted (2026-06-28): Tibber rejects the token even for `{viewer{name}}`
-(`UNAUTHENTICATED` — token invalid/expired, not a query error); Indevolt **Modbus TCP/502 is
-refused** on both towers, so the OpenData RPC on :8080 is the only interface — and it returns `{}`
-until the data points are provisioned + the Digest device key is supplied.
+Status (2026-06-28): **2/3 device groups live** — HomeWizard meters + Tibber prices both verified
+end-to-end through the running server (planner now computes on real prices). Indevolt is the only
+remaining gap: **Modbus TCP/502 is refused** on both towers, so the OpenData RPC on :8080 is the
+only interface — and it returns `{}` until the data points are provisioned + the Digest device key
+is supplied (which the consumer app may not expose; could need Indevolt support).
 
 When the battery is unreadable, `soc`/`battery` age to MISSING, data-quality goes **unsafe**, and
 the decision falls back to **AUTO** (self-consumption) — fail-safe by design. You can watch this on
