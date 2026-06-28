@@ -51,7 +51,7 @@ from ems.planner.explain import (
 from ems.planner.load_profile import build_load_profile
 from ems.planner.projection import BatteryModel, project_energy
 from ems.planner.rule_based import PlannerConfig, plan_rule_based
-from ems.planner.strategy import build_plan, select_strategy
+from ems.planner.strategy import build_plan, select_strategy_with_reason
 from ems.planner.summer import SummerConfig, sunset_after
 from ems.planner.validator import PlanValidation, validate_plan
 from ems.readiness import Readiness, compute_readiness, home_state
@@ -392,8 +392,40 @@ def create_app(
             max_topup_price_eur_per_kwh=s["strategy.summer_max_topup_price"],
         )
 
+    def _strategy_inputs(now: datetime):
+        """(surplus_kwh, price_spread_eur) over the next ~24h, for the energy-condition `auto`
+        strategy choice. Defensive — any failure yields None so it falls back to the season."""
+        surplus = spread = None
+        try:
+            if solar_forecast is not None:
+                fc = solar_forecast.slots()[:96]
+                load = _load_by([f.start for f in fc])
+                surplus = sum(max(0.0, f.p50_w - load.get(f.start, 0.0)) * 0.25 / 1000.0
+                              for f in fc)
+        except Exception:
+            pass
+        try:
+            if price_source is not None:
+                ps = [p.eur_per_kwh for p in price_source.slots()[:96]]
+                if ps:
+                    spread = max(ps) - min(ps)
+        except Exception:
+            pass
+        return surplus, spread
+
+    def _resolve_strategy(now: datetime) -> tuple[str, str]:
+        """(strategy, reason). Forced modes skip the (cheap-but-unneeded) energy-input computation;
+        `auto` decides by forecast surplus + price spread (energy review P1.1)."""
+        mode = settings_cache["strategy.mode"]
+        if mode in ("summer", "winter"):
+            return select_strategy_with_reason(now, mode, site_tz)
+        surplus, spread = _strategy_inputs(now)
+        return select_strategy_with_reason(
+            now, mode, site_tz, surplus_kwh=surplus, price_spread_eur=spread
+        )
+
     def _active_strategy(now: datetime) -> str:
-        return select_strategy(now, settings_cache["strategy.mode"], site_tz)
+        return _resolve_strategy(now)[0]
 
     # Cached expected-load profile (learned async in _forward_projection) so the sync _current_plan
     # can feed the adaptive charger without its own DB read. None until the first projection runs.
@@ -1159,12 +1191,14 @@ def create_app(
         # What strategy is running, why, and its key knobs — drives the dashboard strategy card.
         now = datetime.now(UTC)
         mode = settings_cache["strategy.mode"]
-        active = _active_strategy(now)
+        active, why = _resolve_strategy(now)
         return {
             "mode": mode,  # auto | summer | winter (the user's choice)
             "active": active,  # the resolved strategy actually running
             "auto": mode == "auto",
             "summary": _STRATEGY_DESC.get(active, ""),
+            # Deterministic 'why this strategy' (emotional review) — esp. useful for auto.
+            "reason": why,
             "grid_topup": settings_cache["strategy.summer_grid_topup"],
             "max_topup_price": settings_cache["strategy.summer_max_topup_price"],
         }

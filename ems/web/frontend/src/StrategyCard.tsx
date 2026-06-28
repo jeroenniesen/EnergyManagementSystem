@@ -9,6 +9,7 @@ export type Strategy = {
   active: string; // summer | winter (what's actually running)
   auto: boolean;
   summary: string;
+  reason?: string;
   grid_topup: boolean;
   max_topup_price: number;
 };
@@ -79,6 +80,11 @@ export function StrategyCard({
       <p className="strategy-summary" data-testid="strategy-summary">
         {strategy.summary}
       </p>
+      {strategy.auto && strategy.reason && (
+        <p className="strategy-why" data-testid="strategy-why">
+          {strategy.reason}
+        </p>
+      )}
 
       <div className="strategy-tune">
         {strategy.active === "summer" && (

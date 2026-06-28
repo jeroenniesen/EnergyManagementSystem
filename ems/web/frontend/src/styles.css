@@ -906,6 +906,7 @@ body {
 .home-attention { background: rgba(220, 80, 80, 0.12);
   border-color: rgba(220, 80, 80, 0.4); }
 .decision-target { color: var(--muted); }
+.strategy-why { color: var(--muted); font-size: 0.8rem; margin: 6px 0 0; font-style: italic; }
 
 .error {
   background: rgba(220, 80, 80, 0.12);

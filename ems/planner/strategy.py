@@ -23,6 +23,11 @@ from ems.sources.prices import PriceSlot
 
 # Northern-hemisphere "solar season": April–September. Configurable by the caller.
 DEFAULT_SUMMER_MONTHS: frozenset[int] = frozenset({4, 5, 6, 7, 8, 9})
+# Energy-condition thresholds for `auto` (energy review P1.1 — don't decide by calendar alone):
+# a forecast surplus this large means solar can carry the home (solar-first); otherwise a price
+# spread this wide makes arbitrage (price-smart) worthwhile.
+AUTO_SURPLUS_KWH = 3.0
+AUTO_SPREAD_EUR = 0.10
 
 
 def select_strategy(
@@ -38,6 +43,38 @@ def select_strategy(
     if m in ("summer", "winter"):
         return m
     return "summer" if now.astimezone(tz).month in summer_months else "winter"
+
+
+def select_strategy_with_reason(
+    now: datetime,
+    mode: str | None,
+    tz: ZoneInfo,
+    *,
+    surplus_kwh: float | None = None,
+    price_spread_eur: float | None = None,
+    summer_months: frozenset[int] = DEFAULT_SUMMER_MONTHS,
+) -> tuple[str, str]:
+    """Resolve the strategy AND a deterministic, human-readable reason (emotional review: 'why this
+    strategy'). An explicit mode is honoured verbatim. For `auto`, choose by ENERGY CONDITIONS — a
+    sunny day in March should run solar-first, a dull day in September price-smart — using the
+    forecast surplus (kWh) and the day's price spread (€), falling back to the calendar season only
+    when those inputs are absent."""
+    m = (mode or "auto").lower()
+    if m == "summer":
+        return "summer", "You chose Solar-first — running the night on your own solar."
+    if m == "winter":
+        return "winter", "You chose Price-smart — arbitraging cheap vs. expensive grid windows."
+    # auto: energy-condition driven.
+    if surplus_kwh is not None and surplus_kwh >= AUTO_SURPLUS_KWH:
+        return "summer", (f"Running solar-first — the forecast surplus (~{surplus_kwh:.0f} kWh) "
+                          "should carry the home tonight.")
+    if (surplus_kwh is not None and price_spread_eur is not None
+            and price_spread_eur >= AUTO_SPREAD_EUR):
+        return "winter", (f"Running price-smart — low solar (~{surplus_kwh:.0f} kWh) and a "
+                          f"€{price_spread_eur:.2f} price spread make arbitrage worthwhile.")
+    season = "summer" if now.astimezone(tz).month in summer_months else "winter"
+    label = "solar-first" if season == "summer" else "price-smart"
+    return season, f"Running {label} by season — not enough forecast/price data to decide yet."
 
 
 def build_plan(

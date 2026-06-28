@@ -6,7 +6,7 @@ from zoneinfo import ZoneInfo
 from ems.domain import BatteryIntent
 from ems.planner.rule_based import PlannerConfig
 from ems.planner.schedule import SLOT
-from ems.planner.strategy import build_plan, select_strategy
+from ems.planner.strategy import build_plan, select_strategy, select_strategy_with_reason
 from ems.planner.summer import SummerConfig
 from ems.sources.forecast import ForecastSlot
 from ems.sources.prices import PriceSlot
@@ -24,6 +24,30 @@ def test_auto_picks_by_season():
     assert select_strategy(datetime(2026, 6, 28, tzinfo=UTC), "auto", AMS) == "summer"
     assert select_strategy(datetime(2026, 1, 10, tzinfo=UTC), "auto", AMS) == "winter"
     assert select_strategy(datetime(2026, 10, 5, tzinfo=UTC), "auto", AMS) == "winter"
+
+
+def test_with_reason_honours_forced_mode():
+    s, why = select_strategy_with_reason(datetime(2026, 1, 10, tzinfo=UTC), "summer", AMS)
+    assert s == "summer" and "You chose" in why
+
+
+def test_with_reason_auto_picks_solar_first_on_high_surplus_even_in_winter_month():
+    # A sunny day in January → solar-first, NOT by calendar (energy review P1.1).
+    jan = datetime(2026, 1, 10, tzinfo=UTC)
+    s, why = select_strategy_with_reason(jan, "auto", AMS, surplus_kwh=8.0, price_spread_eur=0.05)
+    assert s == "summer" and "solar-first" in why
+
+
+def test_with_reason_auto_picks_price_smart_on_low_solar_high_spread_in_summer_month():
+    # A dull day in a summer month with a wide spread → price-smart arbitrage.
+    jul = datetime(2026, 7, 1, tzinfo=UTC)
+    s, why = select_strategy_with_reason(jul, "auto", AMS, surplus_kwh=0.5, price_spread_eur=0.30)
+    assert s == "winter" and "price-smart" in why
+
+
+def test_with_reason_auto_falls_back_to_season_without_inputs():
+    s, why = select_strategy_with_reason(datetime(2026, 6, 28, tzinfo=UTC), "auto", AMS)
+    assert s == "summer" and "by season" in why
 
 
 def test_auto_uses_local_month_not_utc():
