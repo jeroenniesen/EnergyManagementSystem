@@ -45,6 +45,27 @@ When the battery is unreadable, `soc`/`battery` age to MISSING, data-quality goe
 the decision falls back to **AUTO** (self-consumption) — fail-safe by design. You can watch this on
 the **System** page (per-signal sensor checks) and the dashboard freshness chips.
 
+## Unblocking the Indevolt battery read — what to ask Indevolt (or find in the app)
+
+The local API on `192.168.50.53:8080` responds to **only** `Indevolt.GetData`, and it returns `{}`
+for every `config` value tried (Modbus/502 is closed). To read SoC/power I need three things:
+
+> **Request to Indevolt support / installer:**
+> "I've enabled the local OpenData API on my SolidFlex cluster (`Indevolt.GetData` on port 8080
+> responds). I want to **read** battery State of Charge and instantaneous power over the local API
+> (read-only — no control). Please tell me:
+> 1. the **OpenData device key** for HTTP Digest user `opend` (and how to (re)generate it),
+> 2. the **`config` / data-profile value** to pass to `GET /rpc/Indevolt.GetData?config=<…>` so it
+>    returns data (it currently returns `{}` for `all`, `battery`, register lists, etc.),
+> 3. the **data-point / register ids for SoC (%) and battery power (W)** in that response."
+
+Once you have the **key** and **config name**, drop them in and verify (read-only):
+```
+INDEVOLT_KEY='<key>' INDEVOLT_CONFIG='<config-name>' uv run python scripts/verify_live.py
+```
+If the SoC/power register ids differ from the defaults, set them via the driver `registers=`
+mapping (or tell me the ids and I'll wire them).
+
 ## Hands (battery control)
 
 The real control driver — `IndevoltBatteryDriver` (`ems/sources/indevolt_driver.py`) — IS
