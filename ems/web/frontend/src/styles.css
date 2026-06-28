@@ -233,6 +233,59 @@ body {
 .season-summer .strategy-badge { color: var(--summer); background: var(--summer-tint); }
 .season-winter .strategy-badge { color: var(--winter); background: var(--winter-tint); }
 
+/* Inline tuning row — one contextual knob + a door to the advanced settings (progressive
+   disclosure: simple by default, deep when you want it). */
+.strategy-tune {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin-top: 14px;
+  padding-top: 12px;
+  border-top: 1px solid var(--line);
+}
+.switch-row { display: inline-flex; align-items: center; gap: 10px; cursor: pointer; }
+.switch {
+  flex: none;
+  width: 38px;
+  height: 22px;
+  border-radius: 999px;
+  border: 0;
+  background: var(--line);
+  position: relative;
+  cursor: pointer;
+  transition: background 0.18s ease;
+  padding: 0;
+}
+.switch-on { background: var(--accent); }
+.switch-knob {
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: #fff;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.3);
+  transition: transform 0.18s ease;
+}
+.switch-on .switch-knob { transform: translateX(16px); }
+.switch:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.switch-label { font-size: 0.85rem; color: var(--muted); }
+.strategy-more {
+  margin-left: auto;
+  border: 0;
+  background: transparent;
+  color: var(--accent);
+  font: inherit;
+  font-size: 0.85rem;
+  font-weight: 600;
+  cursor: pointer;
+  padding: 4px 0;
+}
+.strategy-more:hover { text-decoration: underline; }
+
 /* Battery SoC — history + 24h forecast */
 .socchart {
   margin-top: 24px;

@@ -28,8 +28,10 @@ type PlanMetrics = {
 type Impact = { current: PlanMetrics | null; proposed: PlanMetrics | null };
 
 // Group display order + titles. Connection-type groups first (what most people need), tuning last.
-const GROUP_ORDER = ["connection", "meters", "battery", "prices", "site", "control", "planner", "ui"];
+const GROUP_ORDER =
+  ["strategy", "connection", "meters", "battery", "prices", "site", "control", "planner", "ui"];
 const GROUP_TITLE: Record<string, string> = {
+  strategy: "Strategy",
   connection: "Connection",
   meters: "Energy meters (HomeWizard)",
   battery: "Battery (Indevolt)",
@@ -40,6 +42,7 @@ const GROUP_TITLE: Record<string, string> = {
   ui: "Appearance",
 };
 const GROUP_HINT: Record<string, string> = {
+  strategy: "How the battery is run. The rest is fine on defaults — tune only if you want to.",
   connection: "Read your real devices, or run the built-in simulator.",
   meters: "Local IP addresses of your HomeWizard meters.",
   battery: "Battery address, capacity and reserves.",

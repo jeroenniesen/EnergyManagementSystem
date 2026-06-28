@@ -149,6 +149,41 @@ test.describe("EMS dashboard", () => {
     await expect(page.getByTestId("strategy-winter")).toHaveAttribute("aria-checked", "true");
   });
 
+  test("summer shows an inline grid-top-up switch that toggles", async ({ page }) => {
+    let topup = true;
+    await page.route("**/api/strategy", (route) =>
+      route.fulfill({
+        status: 200, contentType: "application/json",
+        body: JSON.stringify({
+          mode: "summer", active: "summer", auto: false, summary: "Solar-first.",
+          grid_topup: topup, max_topup_price: 0.3,
+        }),
+      }),
+    );
+    await page.route("**/api/settings", async (route) => {
+      if (route.request().method() === "POST") {
+        const body = JSON.parse(route.request().postData() || "{}");
+        if ("strategy.summer_grid_topup" in body) topup = body["strategy.summer_grid_topup"];
+        await route.fulfill({ status: 200, contentType: "application/json", body: "{\"values\":{}}" });
+      } else {
+        await route.continue();
+      }
+    });
+    await page.goto("/");
+    const sw = page.getByTestId("strategy-grid-topup");
+    await expect(sw).toBeVisible();
+    await expect(sw).toHaveAttribute("aria-checked", "true");
+    await sw.click();
+    await expect(sw).toHaveAttribute("aria-checked", "false");
+  });
+
+  test("the strategy card's Advanced link opens Settings", async ({ page }) => {
+    await page.goto("/");
+    await page.getByTestId("strategy-more").click();
+    await expect(page.getByTestId("settings")).toBeVisible();
+    await expect(page.getByTestId("settings")).toContainText("Strategy");
+  });
+
   test("shows the SoC history+forecast chart with a narrative and legend", async ({ page }) => {
     await page.goto("/");
     const soc = page.getByTestId("soc-forecast");

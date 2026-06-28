@@ -20,9 +20,13 @@ const OPTIONS = [
 export function StrategyCard({
   strategy,
   onChange,
+  onSetGridTopup,
+  onTune,
 }: {
   strategy: Strategy | null;
   onChange: (mode: string) => void;
+  onSetGridTopup: (on: boolean) => void;
+  onTune: () => void;
 }) {
   const refs = useRef<(HTMLButtonElement | null)[]>([]);
   if (!strategy) return null;
@@ -75,6 +79,32 @@ export function StrategyCard({
       <p className="strategy-summary" data-testid="strategy-summary">
         {strategy.summary}
       </p>
+
+      <div className="strategy-tune">
+        {strategy.active === "summer" && (
+          <label className="switch-row">
+            <button
+              type="button"
+              role="switch"
+              aria-checked={strategy.grid_topup}
+              className={`switch${strategy.grid_topup ? " switch-on" : ""}`}
+              data-testid="strategy-grid-topup"
+              onClick={() => onSetGridTopup(!strategy.grid_topup)}
+            >
+              <span className="switch-knob" />
+            </button>
+            <span className="switch-label">Top up from the grid if the sun falls short</span>
+          </label>
+        )}
+        <button
+          type="button"
+          className="strategy-more"
+          data-testid="strategy-more"
+          onClick={onTune}
+        >
+          Advanced settings →
+        </button>
+      </div>
     </section>
   );
 }

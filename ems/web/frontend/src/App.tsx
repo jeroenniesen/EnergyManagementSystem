@@ -277,22 +277,18 @@ export function App() {
     };
   }, [view]);
 
-  async function setStrategyMode(mode: string) {
-    // Strategy is a live setting — it takes effect on the next plan poll. Update the card at once,
-    // but revert if the write fails (don't leave the UI showing a mode the server didn't accept).
+  // Save a strategy setting live: apply an optimistic patch (instant, self-consistent card), POST
+  // it, then reconcile from the server — reverting if the write fails. The pending guard stops the
+  // 5 s poll clobbering the change mid-flight.
+  async function patchStrategy(body: Record<string, unknown>, optimistic: Partial<Strategy>) {
     const prev = strategy;
     strategyPending.current = true;
-    // Derive auto/active too, so the card is instantly self-consistent (no "Winter selected but
-    // running summer" flash): a forced mode runs that season; auto keeps the current season until
-    // the refetch confirms.
-    setStrategy((s) =>
-      s ? { ...s, mode, auto: mode === "auto", active: mode === "auto" ? s.active : mode } : s,
-    );
+    setStrategy((s) => (s ? { ...s, ...optimistic } : s));
     try {
       const res = await fetch("/api/settings", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ "strategy.mode": mode }),
+        body: JSON.stringify(body),
       });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const r = await fetch("/api/strategy");
@@ -303,6 +299,17 @@ export function App() {
     } finally {
       strategyPending.current = false;
     }
+  }
+
+  function setStrategyMode(mode: string) {
+    // A forced mode runs that season; auto keeps the current season until the refetch confirms.
+    const optimistic: Partial<Strategy> = { mode, auto: mode === "auto" };
+    if (mode !== "auto") optimistic.active = mode;
+    return patchStrategy({ "strategy.mode": mode }, optimistic);
+  }
+
+  function setGridTopup(on: boolean) {
+    return patchStrategy({ "strategy.summer_grid_topup": on }, { grid_topup: on });
   }
 
   return (
@@ -405,7 +412,12 @@ export function App() {
       )}
 
       {view === "dashboard" && strategy && (
-        <StrategyCard strategy={strategy} onChange={setStrategyMode} />
+        <StrategyCard
+          strategy={strategy}
+          onChange={setStrategyMode}
+          onSetGridTopup={setGridTopup}
+          onTune={() => setView("settings")}
+        />
       )}
 
       {view === "dashboard" && energy && <SocForecast forecast={energy} battery={battery} />}
