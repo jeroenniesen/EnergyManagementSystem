@@ -1120,6 +1120,64 @@ def create_app(
         by_start = {p.start: p.eur_per_kwh for p in prices}
         return {"today_eur": estimate_daily_savings_eur(plan, by_start)}
 
+    # Planning knobs that shape the plan — the ONLY settings included in a replay bundle. Explicit
+    # allow-list, so no meter IP, token, key or location can ever leak into an export (privacy §12).
+    _REPLAY_SETTING_KEYS = (
+        "strategy.mode", "strategy.summer_grid_topup", "strategy.summer_max_topup_price",
+        "battery.usable_kwh", "battery.min_reserve_soc", "battery.night_reserve_kwh",
+        "battery.overnight_load_kwh", "battery.max_charge_w", "battery.max_discharge_w",
+        "planner.round_trip_efficiency", "planner.degradation_eur_per_kwh",
+        "planner.risk_margin_eur_per_kwh", "planner.charge_slots", "planner.discharge_slots",
+        "control.max_switches_per_day", "control.min_dwell_seconds",
+    )
+
+    @app.get("/api/replay")
+    def replay_endpoint() -> dict:
+        """A reproducibility bundle (energy review P2.6): the exact inputs, plan, projection,
+        validation and decision behind the current state, so any surprising decision can be replayed
+        offline. REDACTED — only planning knobs + non-identifying values; never IPs/tokens/location.
+        Download from the System tab."""
+        now = datetime.now(UTC)
+        pp = _current_plan()
+        if pp is None:
+            return {"generated_at": now.isoformat(), "plan": None,
+                    "note": "no plan yet (prices/forecast loading or no price source)"}
+        _now, prices, plan = pp
+        strat, why = _resolve_strategy(now)
+        val = _validate_plan_obj(plan, now)
+        proj = _projection_sync(plan, now) or []
+        intent, dreason, override_active, tgt, _pw, _v = _effective_intent(now)
+        s = settings_cache
+        fc = solar_forecast.slots()[:96] if solar_forecast is not None else []
+        return {
+            "generated_at": now.isoformat(),
+            "strategy": {"mode": s["strategy.mode"], "active": strat, "reason": why},
+            "inputs": {
+                "soc_pct": _current_soc(now),
+                "data_quality": _data_quality(now),
+                "settings": {k: s[k] for k in _REPLAY_SETTING_KEYS if k in s},
+                "prices": [{"start": p.start.isoformat(), "eur_per_kwh": p.eur_per_kwh}
+                           for p in prices[:96]],
+                "forecast_p50_w": [{"start": f.start.isoformat(), "w": f.p50_w} for f in fc],
+            },
+            "plan": {
+                "created_at": plan.created_at.isoformat(), "strategy": plan.strategy,
+                "target_soc": plan.target_soc,
+                "deadline": plan.deadline.isoformat() if plan.deadline else None,
+                "slots": [{"start": sl.start.isoformat(), "intent": sl.intent.value,
+                           "reason": sl.reason, "target_soc": sl.target_soc,
+                           "target_kwh": sl.target_kwh, "power_w": sl.power_w,
+                           "floor_soc": sl.floor_soc,
+                           "deadline": sl.deadline.isoformat() if sl.deadline else None}
+                          for sl in plan.slots],
+            },
+            "projection": [{"start": p.start.isoformat(), "soc_pct": round(p.soc_pct, 2),
+                            "intent": p.intent.value} for p in proj],
+            "validation": val.to_dict(),
+            "decision": {"intent": str(intent) if intent else None, "reason": dreason,
+                         "override_active": override_active, "target_soc": tgt},
+        }
+
     @app.get("/api/plan")
     def plan_endpoint() -> dict:
         pp = _current_plan()

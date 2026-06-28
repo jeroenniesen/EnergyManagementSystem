@@ -127,8 +127,11 @@ export function SystemView() {
       </div>
 
       <div className="export" data-testid="export">
-        <span className="metric-label">Export history</span>
-        <p className="settings-group-hint">Download recent measurements as a spreadsheet.</p>
+        <span className="metric-label">Export &amp; replay</span>
+        <p className="settings-group-hint">
+          Download recent measurements as a spreadsheet, or the full plan replay (inputs, plan,
+          projection and decision) to reproduce a decision.
+        </p>
         <div className="export-links">
           <a className="btn-ghost" href="/api/export?kind=raw&format=csv" data-testid="export-raw">
             Raw meters (CSV)
@@ -139,6 +142,10 @@ export function SystemView() {
             data-testid="export-derived"
           >
             Reconstructed load (CSV)
+          </a>
+          <a className="btn-ghost" href="/api/replay" download="plan-replay.json"
+             data-testid="export-replay">
+            Plan replay (JSON)
           </a>
         </div>
       </div>

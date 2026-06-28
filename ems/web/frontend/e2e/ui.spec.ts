@@ -293,6 +293,7 @@ test.describe("EMS dashboard", () => {
       "/api/export?kind=raw&format=csv",
     );
     await expect(page.getByTestId("export-derived")).toBeVisible();
+    await expect(page.getByTestId("export-replay")).toHaveAttribute("href", "/api/replay");
     // Dashboard panels hidden while on the System view.
     await expect(page.getByTestId("status-grid")).toHaveCount(0);
   });

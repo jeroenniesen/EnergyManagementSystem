@@ -1,5 +1,6 @@
 """The strategy selector wired through the API: /api/strategy + the chosen strategy driving the
 plan. Mock sources only."""
+import json
 from zoneinfo import ZoneInfo
 
 from fastapi.testclient import TestClient
@@ -64,3 +65,22 @@ def test_plan_detail_includes_active_strategy(tmp_path):
         c.post("/api/settings", json={"strategy.mode": "winter"})
         b = c.get("/api/plan-detail").json()
     assert b["strategy"] == "winter"
+
+
+def test_replay_bundle_is_complete_and_secret_free(tmp_path):
+    # The replay bundle reproduces a decision: inputs + plan + projection + validation + decision.
+    # It must NEVER carry secrets/identifiers (privacy §12) — only planning knobs + values.
+    with TestClient(_app(tmp_path)) as c:
+        c.post("/api/settings", json={"strategy.mode": "winter"})
+        b = c.get("/api/replay").json()
+    assert {"generated_at", "strategy", "inputs", "plan", "projection",
+            "validation", "decision"} <= set(b)
+    assert b["plan"] is not None and "slots" in b["plan"]
+    # The settings block is the explicit planning allow-list — no IP/token/key/location identifier.
+    skeys = set(b["inputs"]["settings"])
+    assert "battery.usable_kwh" in skeys
+    assert not any(k for k in skeys if k.endswith("_ip") or "token" in k or "api_key" in k
+                   or k.startswith("site.") or "tibber" in k)
+    blob = json.dumps(b).lower()
+    for forbidden in ("192.168", "token", "api_key", "secret"):
+        assert forbidden not in blob
