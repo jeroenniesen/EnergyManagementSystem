@@ -1,7 +1,9 @@
 """Estimated arbitrage savings for a plan (SPEC §9.1 savings panel). A rough, illustrative
 *net* figure: per discharge slot, the margin over the cost to have stored that energy —
-charge price / efficiency PLUS degradation + risk — using the conservative max charge price,
-so the number stays consistent with the planner's own break-even (no overclaim, GOAL §2/§5).
+charge price / efficiency PLUS degradation + risk. The delivered-energy cost is priced at the
+*worst* (highest) of the plan's charge slots — a deliberately conservative basis so the figure is
+a lower bound and never overclaims (GOAL §2/§5). Note this is more conservative than the planner's
+own break-even, which sizes against the cheapest-quartile charge price.
 Real savings will use measured energy later."""
 from __future__ import annotations
 

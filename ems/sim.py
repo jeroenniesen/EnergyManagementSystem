@@ -153,7 +153,9 @@ def _score(name, imp, exp, solar, load, charge, discharge, cost, socs, soc_min, 
         name=name,
         grid_cost_eur=round(cost, 3),
         import_kwh=round(imp, 2), export_kwh=round(exp, 2), solar_kwh=round(solar, 2),
-        self_sufficiency_pct=round(max(0.0, (load - imp) / load * 100.0), 1) if load > 0 else 0.0,
+        self_sufficiency_pct=(
+            round(min(100.0, max(0.0, (load - imp) / load * 100.0)), 1) if load > 0 else 0.0
+        ),
         soc_min_pct=round(soc_min, 1),
         soc_end_pct=round(socs[-1], 1) if socs else 0.0,
         cycles=round((charge + discharge) / (2 * model.usable_kwh), 2) if model.usable_kwh else 0.0,

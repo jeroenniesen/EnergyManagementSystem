@@ -65,8 +65,12 @@ def plan_adaptive(
 
     # Energy the battery should deliver over the horizon = the forecast deficit, capped at what the
     # pack can actually hold above its reserve. (Demand-aware target, not a fixed constant.)
+    # `total_deficit_kwh` is AC load to serve; the pack stores DC. To deliver D kWh at the AC
+    # terminals the pack must hold D/eta kWh DC, so we convert the AC deficit to its DC requirement
+    # before capping at the (DC) headroom — `coverable_kwh` is then a DC quantity, consistent with
+    # `avail_now_kwh`, `solar_to_batt_kwh` and `per_slot_kwh` below.
     total_deficit_kwh = sum(max(0.0, net_w(p)) * _DH / 1000.0 for p in future)
-    coverable_kwh = min(total_deficit_kwh, usable - reserve_kwh)
+    coverable_kwh = min(total_deficit_kwh / eta, usable - reserve_kwh)
     # Conservative (P10) solar that will flow into the battery from daytime surplus.
     solar_to_batt_kwh = sum(
         max(0.0, p10.get(p.start, 0.0) - load_w_by.get(p.start, 0.0)) * _DH / 1000.0 * eta
