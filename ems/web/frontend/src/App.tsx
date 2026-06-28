@@ -1,9 +1,9 @@
 import { useEffect, useRef, useState } from "react";
 
+import { type Battery, BatteryChips } from "./BatteryChips";
+import { type EnergyStoryData, EnergyStory } from "./EnergyStory";
 import { OverrideCard } from "./Override";
-import { PlanDetail, type PlanDetailData } from "./PlanDetail";
 import { Settings } from "./Settings";
-import { type Battery, type EnergyForecast, SocForecast } from "./SocForecast";
 import { type Strategy, StrategyCard } from "./StrategyCard";
 import { SystemView } from "./System";
 import { applyTheme, readStoredTheme, storeTheme, type Theme } from "./theme";
@@ -21,10 +21,6 @@ type Status = {
 
 type Series = { raw: Record<string, number>[]; derived: Record<string, number>[] };
 type FreshnessMap = Record<string, string>;
-type PriceSlot = { start: string; eur_per_kwh: number };
-type Prices = { currency: string; current_eur_per_kwh: number | null; slots: PriceSlot[] };
-type ForecastSlot = { start: string; p10_w: number; p50_w: number; p90_w: number };
-type Forecast = { today_kwh_p50: number | null; source?: string | null; slots: ForecastSlot[] };
 
 type Decision = {
   intent: string | null;
@@ -96,112 +92,13 @@ function ChargeTarget({ n }: { n: ChargeNeed }) {
   );
 }
 
-// All forward graphs share ONE timespan (the plan's window: now → end of the plan), so the price
-// dips, the planned actions, the solar and the SoC line all sit at the same x-position.
-type Win = { start: number; end: number };
-const SLOT_MS = 15 * 60 * 1000;
-function inWindow<T extends { start: string }>(slots: T[], win: Win | null): T[] {
-  if (!win) return slots.slice(0, 96);
-  return slots.filter((s) => {
-    const t = Date.parse(s.start);
-    return t >= win.start && t < win.end;
-  });
-}
-
-function PriceCurve({ prices, win }: { prices: Prices; win: Win | null }) {
-  const slots = inWindow(prices.slots, win);
-  const max = Math.max(0.01, ...slots.map((s) => s.eur_per_kwh));
-  const min = Math.min(...slots.map((s) => s.eur_per_kwh));
-  const cur = prices.current_eur_per_kwh;
-  return (
-    <section className="prices" data-testid="prices">
-      <div className="prices-head">
-        <span className="metric-label">Electricity price</span>
-        <span className="price-now" data-testid="price-now">
-          {prices.current_eur_per_kwh != null
-            ? `€${prices.current_eur_per_kwh.toFixed(2)} / kWh`
-            : "—"}
-        </span>
-      </div>
-      <div
-        className="bars"
-        role="img"
-        aria-label={`Electricity price curve; current ${
-          cur != null ? `€${cur.toFixed(2)}` : "—"
-        }/kWh, range €${min.toFixed(2)}–€${max.toFixed(2)}`}
-      >
-        {slots.map((s, i) => (
-          <span
-            key={i}
-            className="bar"
-            style={{ height: `${(s.eur_per_kwh / max) * 100}%` }}
-            title={`${s.start.substring(11, 16)} — €${s.eur_per_kwh.toFixed(2)}`}
-          />
-        ))}
-      </div>
-      <div className="chart-legend">
-        <span>Each bar = a 15-min slot over the next 24h (same window as the plan)</span>
-        <span>Taller = more expensive · range €{min.toFixed(2)}–€{max.toFixed(2)}/kWh</span>
-      </div>
-    </section>
-  );
-}
-
-function ForecastCurve({ forecast, win }: { forecast: Forecast; win: Win | null }) {
-  const slots = inWindow(forecast.slots, win);
-  const max = Math.max(1, ...slots.map((s) => s.p90_w));
-  return (
-    <section className="prices" data-testid="forecast">
-      <div className="prices-head">
-        <span className="metric-label">
-          Solar forecast (P50)
-          <span
-            className={`src-tag ${forecast.source === "forecast.solar" ? "src-live" : "src-sim"}`}
-            data-testid="forecast-source"
-          >
-            {forecast.source === "forecast.solar"
-              ? "live · forecast.solar"
-              : forecast.source && forecast.source.startsWith("model")
-                ? "estimated (model)"
-                : "estimated"}
-          </span>
-        </span>
-        <span className="price-now" data-testid="forecast-today">
-          {forecast.today_kwh_p50 != null ? `${forecast.today_kwh_p50.toFixed(1)} kWh today` : "—"}
-        </span>
-      </div>
-      <div
-        className="bars"
-        role="img"
-        aria-label={`Solar forecast (P50); ${
-          forecast.today_kwh_p50 != null ? forecast.today_kwh_p50.toFixed(1) : "—"
-        } kWh expected today, peak ~${Math.round(max)} W`}
-      >
-        {slots.map((s, i) => (
-          <span
-            key={i}
-            className="bar bar-solar"
-            style={{ height: `${(s.p50_w / max) * 100}%` }}
-            title={`${s.start.substring(11, 16)} — ${Math.round(s.p50_w)} W (P50)`}
-          />
-        ))}
-      </div>
-      <div className="chart-legend">
-        <span>Each bar = expected PV power (P50) per 15-min slot — next 24h (same window)</span>
-        <span>Peak ~{Math.round(max)} W</span>
-      </div>
-    </section>
-  );
-}
 
 export function App() {
   const [status, setStatus] = useState<Status | null>(null);
   const [series, setSeries] = useState<Series | null>(null);
   const [freshness, setFreshness] = useState<FreshnessMap | null>(null);
-  const [prices, setPrices] = useState<Prices | null>(null);
-  const [forecast, setForecast] = useState<Forecast | null>(null);
-  const [planDetail, setPlanDetail] = useState<PlanDetailData | null>(null);
-  const [energy, setEnergy] = useState<EnergyForecast | null>(null);
+  const [story, setStory] = useState<EnergyStoryData | null>(null);
+  const [storyWindow, setStoryWindow] = useState<"past" | "next">("next");
   const [strategy, setStrategy] = useState<Strategy | null>(null);
   const [battery, setBattery] = useState<Battery | null>(null);
   const [decision, setDecision] = useState<Decision | null>(null);
@@ -256,10 +153,7 @@ export function App() {
         .catch((e) => { if (alive) setError(String(e)); });
       fill("/api/series?limit=50", setSeries);
       fill("/api/freshness", setFreshness);
-      fill("/api/prices", setPrices);
-      fill("/api/forecast", setForecast);
-      fill("/api/plan-detail", setPlanDetail);
-      fill("/api/energy-forecast", setEnergy);
+      fill(`/api/energy-story?window=${storyWindow}`, setStory);
       fill("/api/strategy", (v: Strategy) => { if (!strategyPending.current) setStrategy(v); });
       fill("/api/battery", setBattery);
       fill("/api/decision", setDecision);
@@ -273,7 +167,7 @@ export function App() {
       alive = false;
       clearInterval(id);
     };
-  }, [view]);
+  }, [view, storyWindow]);
 
   // Save a strategy setting live: apply an optimistic patch (instant, self-consistent card), POST
   // it, then reconcile from the server — reverting if the write fails. The pending guard stops the
@@ -309,16 +203,6 @@ export function App() {
   function setGridTopup(on: boolean) {
     return patchStrategy({ "strategy.summer_grid_topup": on }, { grid_topup: on });
   }
-
-  // The shared timespan for every forward graph = the plan's own window (first slot → last slot).
-  // The price & solar curves are clipped to it so they line up with the plan tile and SoC chart.
-  const planSlots = planDetail?.slots ?? [];
-  const win: Win | null = planSlots.length
-    ? {
-        start: Date.parse(planSlots[0].start),
-        end: Date.parse(planSlots[planSlots.length - 1].start) + SLOT_MS,
-      }
-    : null;
 
   return (
     <div className="app">
@@ -428,7 +312,11 @@ export function App() {
         />
       )}
 
-      {view === "dashboard" && energy && <SocForecast forecast={energy} battery={battery} />}
+      {view === "dashboard" && <BatteryChips battery={battery} />}
+
+      {view === "dashboard" && (
+        <EnergyStory story={story} window={storyWindow} onWindow={setStoryWindow} />
+      )}
 
       {view === "dashboard" && chargeNeed && <ChargeTarget n={chargeNeed} />}
 
@@ -444,18 +332,6 @@ export function App() {
           </p>
           {decision.plan_reason && <p className="plan-reason">plan: {decision.plan_reason}</p>}
         </section>
-      )}
-
-      {view === "dashboard" && planDetail && planDetail.slots.length > 0 && (
-        <PlanDetail detail={planDetail} />
-      )}
-
-      {view === "dashboard" && prices && prices.slots.length > 0 && (
-        <PriceCurve prices={prices} win={win} />
-      )}
-
-      {view === "dashboard" && forecast && forecast.slots.length > 0 && (
-        <ForecastCurve forecast={forecast} win={win} />
       )}
 
       {view === "dashboard" && freshness && Object.keys(freshness).length > 0 && (

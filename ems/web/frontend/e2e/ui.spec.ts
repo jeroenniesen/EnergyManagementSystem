@@ -2,19 +2,16 @@ import { expect, test } from "@playwright/test";
 
 test.describe("EMS dashboard", () => {
   test("the whole dashboard explains itself (all panels render together)", async ({ page }) => {
-    // GOAL §2 litmus: a first-time viewer sees status, price, forecast, plan, controller
-    // decision, freshness and data-quality all on one screen, with no error banner.
+    // A first-time viewer sees status, the strategy, the energy story (timeline), the controller
+    // decision, freshness and data-quality on one screen, with no error banner.
     await page.goto("/");
     for (const id of [
       "run-mode-badge",
       "data-quality",
       "status-grid",
       "strategy-card",
-      "soc-forecast",
+      "energy-story",
       "decision",
-      "plan-detail",
-      "prices",
-      "forecast",
       "freshness",
       "alerts",
     ]) {
@@ -47,14 +44,6 @@ test.describe("EMS dashboard", () => {
     await expect(page.getByTestId("error")).toHaveCount(0);
   });
 
-  test("shows the electricity price curve with a current price", async ({ page }) => {
-    await page.goto("/");
-    const prices = page.getByTestId("prices");
-    await expect(prices).toBeVisible();
-    await expect(prices).toContainText("Electricity price");
-    await expect(page.getByTestId("price-now")).toContainText("/ kWh");
-  });
-
   test("shows a data-quality badge and the dry-run alert", async ({ page }) => {
     await page.goto("/");
     await expect(page.getByTestId("data-quality")).toBeVisible();
@@ -68,16 +57,27 @@ test.describe("EMS dashboard", () => {
     await expect(dec).toContainText("dry-run");
   });
 
-  test("shows the aligned next-24h plan tile with a summary and legend", async ({ page }) => {
+  test("energy story tells the next-24h plan (headline, SoC, tracks, stats)", async ({ page }) => {
     await page.goto("/");
-    const plan = page.getByTestId("plan-detail");
-    await expect(plan).toBeVisible();
-    await expect(plan).toContainText("Next 24 hours");
-    // Plain-English summary of what the algorithm will do.
-    await expect(page.getByTestId("plan-summary")).not.toHaveText("");
-    // The legend explains the action colours.
-    await expect(page.getByTestId("plan-legend")).toContainText("Charge");
-    await expect(page.getByTestId("plan-legend")).toContainText("Discharge");
+    const story = page.getByTestId("energy-story");
+    await expect(story).toBeVisible();
+    await expect(page.getByTestId("story-tag")).toContainText("the plan"); // Next is the default
+    await expect(page.getByTestId("story-headline")).toContainText("Next 24h");
+    await expect(page.getByTestId("story-soc-line")).toBeAttached();
+    await expect(page.getByTestId("story-target")).toBeAttached();
+    await expect(page.getByTestId("story-reserve")).toBeAttached();
+    await expect(page.getByTestId("story-stats")).toBeVisible();
+    await expect(page.getByTestId("story-legend")).toBeVisible();
+  });
+
+  test("toggling to Last 24h switches the story", async ({ page }) => {
+    await page.goto("/");
+    await page.getByTestId("story-past").click();
+    await expect(page.getByTestId("story-tag")).toContainText("what happened");
+    await expect(page.getByTestId("story-headline")).not.toHaveText("");
+    // Back to Next.
+    await page.getByTestId("story-next").click();
+    await expect(page.getByTestId("story-tag")).toContainText("the plan");
   });
 
   test("shows the strategy card with a season picker and explanation", async ({ page }) => {
@@ -184,22 +184,6 @@ test.describe("EMS dashboard", () => {
     await expect(page.getByTestId("settings")).toContainText("Strategy");
   });
 
-  test("shows the SoC history+forecast chart with a narrative and legend", async ({ page }) => {
-    await page.goto("/");
-    const soc = page.getByTestId("soc-forecast");
-    await expect(soc).toBeVisible();
-    await expect(page.getByTestId("soc-svg")).toBeVisible();
-    await expect(page.getByTestId("soc-predicted")).toBeVisible(); // the dashed prediction line
-    // A horizontal <line> has a zero-height box, so assert it rendered rather than "visible".
-    await expect(page.getByTestId("soc-reserve-line")).toBeAttached();
-    // The night-carry target milestone line is drawn + named in the legend.
-    await expect(page.getByTestId("soc-target-line")).toBeAttached();
-    await expect(page.getByTestId("soc-narrative")).not.toHaveText("");
-    await expect(page.getByTestId("soc-legend")).toContainText("Recorded");
-    await expect(page.getByTestId("soc-legend")).toContainText("Predicted");
-    await expect(page.getByTestId("soc-legend")).toContainText("Night target");
-  });
-
   test("shows a per-tower breakdown for a multi-battery cluster", async ({ page }) => {
     // Live-only data — route-mock /api/battery to a two-tower cluster.
     await page.route("**/api/battery", (route) =>
@@ -227,14 +211,6 @@ test.describe("EMS dashboard", () => {
     await expect(page.getByTestId("tower-chip")).toHaveCount(2);
     await expect(page.getByTestId("tower-chips")).toContainText("master");
     await expect(page.getByTestId("tower-chips")).toContainText("slave");
-  });
-
-  test("shows the solar forecast with today's kWh", async ({ page }) => {
-    await page.goto("/");
-    const fc = page.getByTestId("forecast");
-    await expect(fc).toBeVisible();
-    await expect(fc).toContainText("Solar forecast");
-    await expect(page.getByTestId("forecast-today")).toContainText("kWh today");
   });
 
   test("shows tonight's charge target with an explanation", async ({ page }) => {

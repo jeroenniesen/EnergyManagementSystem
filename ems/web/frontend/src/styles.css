@@ -178,6 +178,48 @@ body {
 .legend-reserve { border-top-color: var(--muted); border-top-style: dotted; }
 .legend-target { border-top-color: var(--summer); border-top-style: dashed; }
 
+/* Energy story — one timeline, past or next */
+.story {
+  margin-top: 24px;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  padding: 18px;
+}
+.story-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.story-toggle {
+  display: inline-flex; gap: 4px; background: var(--panel-2);
+  border: 1px solid var(--line); border-radius: 12px; padding: 4px;
+}
+.story-tab {
+  border: 0; background: transparent; color: var(--muted); font: inherit; font-weight: 600;
+  padding: 8px 16px; border-radius: 9px; cursor: pointer; transition: background 0.15s, color 0.15s;
+}
+.story-tab:hover { color: var(--text); }
+.story-tab:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.story-tab-on { background: var(--panel); color: var(--text); box-shadow: 0 1px 3px rgba(0,0,0,0.18); }
+.story-headline {
+  margin: 14px 0 4px; font-size: 1.02rem; line-height: 1.45; color: var(--text);
+  border-left: 3px solid var(--accent); background: var(--panel-2);
+  border-radius: 6px; padding: 10px 14px;
+}
+.story-stats {
+  display: flex; flex-wrap: wrap; gap: 10px; margin: 14px 0 6px;
+}
+.story-stat {
+  display: flex; flex-direction: column; gap: 2px; flex: 1 1 120px; min-width: 110px;
+  background: var(--panel-2); border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px;
+}
+.story-stat-value { font-size: 1.25rem; font-weight: 600; font-variant-numeric: tabular-nums; }
+.story-stat-label { font-size: 0.7rem; color: var(--muted); text-transform: uppercase; letter-spacing: 0.03em; }
+
+/* battery action colours (shared by the band + legend swatches) */
+.seg-charge { background: var(--accent); }
+.seg-discharge { background: var(--amber); }
+.seg-self_consume { background: #2a313c; }
+.seg-hold { background: #5b6473; }
+.seg-idle { background: var(--line); }
+
 /* Strategy card — the headline control */
 .strategy-card {
   margin-top: 24px;
