@@ -238,7 +238,7 @@ export function EnergyStory({
                 <Stat
                   label="powered by you"
                   value={`${t.self_sufficiency_pct.toFixed(0)}%`}
-                  accent="var(--accent)"
+                  accent="var(--accent-text)"
                   title="Share of your electricity that came from your own solar and battery instead of the grid."
                 />
               )}
@@ -254,7 +254,7 @@ export function EnergyStory({
                   title="Surplus solar sent back to the grid."
                 />
               )}
-              <Stat label="solar" value={`${t.solar_kwh.toFixed(1)} kWh`} accent="var(--summer)" />
+              <Stat label="solar" value={`${t.solar_kwh.toFixed(1)} kWh`} accent="var(--summer-text)" />
               <Stat
                 label={isPast ? "battery used" : "battery in / out"}
                 value={
