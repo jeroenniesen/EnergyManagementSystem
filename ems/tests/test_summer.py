@@ -1,0 +1,127 @@
+"""Summer 'solar-first' strategy: fill from the panels, run the night on the battery, grid-charge
+only the shortfall in the cheapest pre-sunset slots. Pure — canned prices + forecast, no hardware.
+"""
+from datetime import UTC, datetime
+
+from ems.domain import BatteryIntent
+from ems.planner.schedule import SLOT
+from ems.planner.summer import SummerConfig, plan_summer
+from ems.sources.forecast import ForecastSlot
+from ems.sources.prices import PriceSlot
+
+# A daytime "now": noon UTC. Build a horizon of quarter-hour price slots.
+T0 = datetime(2026, 6, 28, 12, 0, tzinfo=UTC)
+
+
+def _prices(n: int, eur: float = 0.10) -> list[PriceSlot]:
+    return [PriceSlot(T0 + i * SLOT, eur) for i in range(n)]
+
+
+def _forecast(watts: list[float]) -> list[ForecastSlot]:
+    # p10 = p50 here (so commitment sizing == expected) unless a test needs otherwise.
+    return [ForecastSlot(T0 + i * SLOT, w, w, w) for i, w in enumerate(watts)]
+
+
+def _cfg(**kw) -> SummerConfig:
+    base = dict(usable_kwh=10.0, target_soc_pct=80.0, round_trip_efficiency=1.0,
+                max_charge_w=4000.0, expected_load_w=0.0, allow_grid_topup=True,
+                max_topup_price_eur_per_kwh=0.30)
+    base.update(kw)
+    return SummerConfig(**base)
+
+
+def test_solar_covers_the_night_so_no_grid_topup():
+    # 16 slots, all bright sun (3 kW) -> plenty to fill 50% -> 80% (3 kWh) from solar alone.
+    prices = _prices(16)
+    fc = _forecast([3000.0] * 16)
+    plan = plan_summer(prices, fc, T0, soc_pct=50.0, cfg=_cfg())
+    intents = {s.intent for s in plan.slots}
+    assert BatteryIntent.GRID_CHARGE_TO_TARGET not in intents  # solar-first, no grid needed
+    assert all(s.intent is BatteryIntent.ALLOW_SELF_CONSUMPTION for s in plan.slots)
+
+
+def test_grid_tops_up_only_the_shortfall_in_the_cheapest_preset_slots():
+    # No sun at all -> the whole night target must come from the grid. 50%->80% of 10 kWh = 3 kWh;
+    # at 4 kW a slot stores 1 kWh, so 3 slots are needed.
+    prices = [PriceSlot(T0 + i * SLOT, 0.10 + 0.01 * i) for i in range(16)]  # rising price
+    fc = _forecast([0.0] * 16)  # no solar
+    plan = plan_summer(prices, fc, T0, soc_pct=50.0, cfg=_cfg(max_charge_w=4000.0))
+    charge = [s for s in plan.slots if s.intent is BatteryIntent.GRID_CHARGE_TO_TARGET]
+    assert len(charge) == 3  # exactly the shortfall, not the whole horizon
+    # The three cheapest slots are the first three (rising price) -> earliest starts.
+    assert [s.start for s in charge] == [T0, T0 + SLOT, T0 + 2 * SLOT]
+
+
+def test_grid_topup_can_be_disabled():
+    prices = _prices(16)
+    fc = _forecast([0.0] * 16)
+    plan = plan_summer(prices, fc, T0, soc_pct=50.0, cfg=_cfg(allow_grid_topup=False))
+    assert all(s.intent is BatteryIntent.ALLOW_SELF_CONSUMPTION for s in plan.slots)
+
+
+def test_price_cap_blocks_expensive_topup():
+    # Shortfall exists but every slot is above the top-up price cap -> no grid charging.
+    prices = _prices(16, eur=0.40)
+    fc = _forecast([0.0] * 16)
+    plan = plan_summer(prices, fc, T0, soc_pct=50.0,
+                       cfg=_cfg(max_topup_price_eur_per_kwh=0.30))
+    assert not [s for s in plan.slots if s.intent is BatteryIntent.GRID_CHARGE_TO_TARGET]
+
+
+def test_overnight_slots_run_the_house_on_the_battery():
+    # First 4 slots sunny, rest dark -> the dark slots are "overnight" self-consumption.
+    prices = _prices(12)
+    fc = _forecast([2500.0] * 4 + [0.0] * 8)
+    plan = plan_summer(prices, fc, T0, soc_pct=80.0, cfg=_cfg())
+    night = plan.slots[4:]
+    assert all(s.intent is BatteryIntent.ALLOW_SELF_CONSUMPTION for s in night)
+    assert any("overnight" in s.reason for s in night)
+
+
+def test_already_full_needs_no_grid():
+    prices = _prices(16)
+    fc = _forecast([0.0] * 16)
+    plan = plan_summer(prices, fc, T0, soc_pct=85.0, cfg=_cfg(target_soc_pct=80.0))
+    assert not [s for s in plan.slots if s.intent is BatteryIntent.GRID_CHARGE_TO_TARGET]
+
+
+def test_grid_topup_never_scheduled_after_todays_sunset():
+    # Today's sun (slots 0-3) is too weak to fill the battery, and the OVERNIGHT slots (8+) are the
+    # cheapest. A naive planner would grid-charge overnight; we must only charge before sunset
+    # (today), leaving the night for discharging the house.
+    prices = [PriceSlot(T0 + i * SLOT, 0.20 if i < 8 else 0.05) for i in range(48)]
+    fc = _forecast([500.0] * 4 + [0.0] * 44)  # a little sun this afternoon, then dark
+    plan = plan_summer(prices, fc, T0, soc_pct=50.0, cfg=_cfg())
+    sunset = (T0 + 3 * SLOT)  # last daytime slot start
+    charge = [s for s in plan.slots if s.intent is BatteryIntent.GRID_CHARGE_TO_TARGET]
+    assert charge, "a shortfall should force some grid top-up"
+    assert all(s.start <= sunset for s in charge)  # never overnight, despite cheaper night prices
+
+
+def test_night_now_does_not_credit_tomorrows_solar():
+    # It's night: the only sun in the horizon is tomorrow (slots 24+). That solar must NOT be
+    # credited against carrying tonight, so a real shortfall still triggers grid top-up tonight.
+    prices = [PriceSlot(T0 + i * SLOT, 0.10) for i in range(48)]
+    fc = _forecast([0.0] * 24 + [3000.0] * 24)  # dark now, sunny tomorrow
+    plan = plan_summer(prices, fc, T0, soc_pct=50.0, cfg=_cfg())
+    charge = [s for s in plan.slots if s.intent is BatteryIntent.GRID_CHARGE_TO_TARGET]
+    assert charge, "tomorrow's sun must not be credited against tonight's target"
+    sunrise = T0 + 24 * SLOT
+    assert all(s.start < sunrise for s in charge)  # topped up tonight, before the sun returns
+
+
+def test_topup_slot_count_respects_efficiency():
+    # rte 0.81 -> eta 0.9: a 4 kW slot stores 0.9 kWh. 50%->80% of 10 kWh = 3 kWh -> ceil(3/0.9)=4.
+    prices = _prices(16, eur=0.10)
+    fc = _forecast([0.0] * 16)
+    plan = plan_summer(prices, fc, T0, soc_pct=50.0,
+                       cfg=_cfg(round_trip_efficiency=0.81, max_charge_w=4000.0))
+    charge = [s for s in plan.slots if s.intent is BatteryIntent.GRID_CHARGE_TO_TARGET]
+    assert len(charge) == 4
+
+
+def test_empty_prices_yields_empty_plan():
+    assert plan_summer([], [], T0, soc_pct=50.0, cfg=_cfg()).slots == ()
+    # past-only prices are filtered out too
+    past = [PriceSlot(T0 - 4 * SLOT, 0.1)]
+    assert plan_summer(past, [], T0, soc_pct=50.0, cfg=_cfg()).slots == ()
