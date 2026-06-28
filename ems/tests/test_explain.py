@@ -6,6 +6,7 @@ from ems.planner.explain import (
     TemplateExplainer,
     _has_ungrounded_number,
     _llm_error_message,
+    _strip_reasoning,
     build_plan_detail,
     plan_metrics,
     summarize_projection,
@@ -28,6 +29,24 @@ def _fake_post(content):
     def post(messages, params):
         return {"choices": [{"message": {"content": content}}]}
     return post
+
+
+def test_strip_reasoning_removes_think_block_keeps_answer():
+    # MiniMax-M2.7 inlines a <think>…</think> block before the answer (OpenAI content).
+    assert _strip_reasoning("<think>weighing options</think>We run on battery now.") == \
+        "We run on battery now."
+    assert _strip_reasoning("plain answer, no thinking") == "plain answer, no thinking"
+    # An unclosed <think> = reply truncated mid-thought → no answer arrived → "" (→ fallback).
+    assert _strip_reasoning("<think>still reasoning and ran out of tok") == ""
+
+
+def test_external_explainer_strips_reasoning_then_grounds():
+    # Reasoning mentions a figure not in the inputs, but it's in <think> → must NOT trip the guard,
+    # and the clean answer (grounded) is what's returned.
+    out = "<think>price could be €0.95 but inputs say €0.30</think>Charging at €0,30/kWh to 72%."
+    e = ExternalLlmExplainer(_fake_post(out), model="m", language="Dutch").explain(REASON, FACTS)
+    assert e.source == "external_llm"
+    assert "<think>" not in e.text and e.text == "Charging at €0,30/kWh to 72%."
 
 
 def test_template_explainer_returns_reason_verbatim():

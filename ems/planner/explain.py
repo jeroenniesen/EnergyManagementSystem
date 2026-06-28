@@ -220,6 +220,23 @@ def _has_ungrounded_number(text: str, allowed_source: str) -> bool:
     return False
 
 
+_THINK_RE = re.compile(r"<think>.*?</think>", re.DOTALL | re.IGNORECASE)
+
+
+def _strip_reasoning(text: str) -> str:
+    """Drop a reasoning model's chain-of-thought so only the final answer is shown. MiniMax
+    M2/M2.7 (and similar reasoning models) emit a ``<think>…</think>`` block inline in the OpenAI
+    ``content`` ahead of the answer. Closed blocks are removed; a *dangling* ``<think>`` with no
+    close means the reply was truncated mid-thought (e.g. max_tokens too low) and never reached an
+    answer, so we drop everything from it — yielding ``""``, which triggers the empty-reply
+    fallback."""
+    text = _THINK_RE.sub("", text)
+    lower = text.lower()
+    if "<think>" in lower:  # unclosed → the answer never arrived
+        text = text[: lower.index("<think>")]
+    return text.strip()
+
+
 class ExternalLlmExplainer:
     """Rephrase the deterministic reason via an OpenAI-compatible chat API (e.g. MiniMax). The
     bounded, opt-in, off-device exception (SPEC §12): minimal redacted payload, grounded,
@@ -231,7 +248,7 @@ class ExternalLlmExplainer:
         *,
         model: str,
         language: str = "English",
-        max_tokens: int = 200,
+        max_tokens: int = 1024,
         temperature: float = 0.2,
     ) -> None:
         self._chat_post = chat_post
@@ -261,7 +278,7 @@ class ExternalLlmExplainer:
                 {"model": self._model, "max_tokens": self._max_tokens,
                  "temperature": self._temperature},
             )
-            text = (resp["choices"][0]["message"]["content"] or "").strip()
+            text = _strip_reasoning(resp["choices"][0]["message"]["content"] or "")
         except Exception as e:
             # network error / timeout / bad shape → template. Log the cause (no key in the error).
             _llm_log("explain", e)
@@ -289,7 +306,7 @@ class ExternalLlmExplainer:
                 {"model": self._model, "max_tokens": self._max_tokens,
                  "temperature": self._temperature},
             )
-            text = (resp["choices"][0]["message"]["content"] or "").strip()
+            text = _strip_reasoning(resp["choices"][0]["message"]["content"] or "")
         except Exception as e:
             _llm_log("chat", e)
             return Explanation(_llm_error_message(e), "error", question)
@@ -320,7 +337,7 @@ class ExternalLlmExplainer:
                 {"model": self._model, "max_tokens": self._max_tokens,
                  "temperature": self._temperature},
             )
-            text = (resp["choices"][0]["message"]["content"] or "").strip()
+            text = _strip_reasoning(resp["choices"][0]["message"]["content"] or "")
         except Exception as e:
             _llm_log("validate", e)
             return Explanation("Validation unavailable.", "error", context)

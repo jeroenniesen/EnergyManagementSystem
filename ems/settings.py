@@ -251,13 +251,16 @@ SETTINGS_SCHEMA: tuple[SettingsField, ...] = (
         "zero-retention gateway) — the app isn't locked to one vendor.", advanced=True,
     ),
     SettingsField(
-        "explainer.max_tokens", "AI reply length", "int", 200, "ai",
-        help="Maximum length of an AI reply, in tokens.", min=20, max=2000, advanced=True,
+        "explainer.max_tokens", "AI reply length", "int", 1024, "ai",
+        help="Token budget per AI reply. Reasoning models (e.g. MiniMax-M2.7) spend tokens "
+        "thinking before they answer, so keep this generous or replies get cut off mid-thought.",
+        min=20, max=4000, advanced=True,
     ),
     SettingsField(
-        "explainer.timeout_seconds", "AI timeout", "number", 8.0, "ai",
-        help="Give up on the AI after this many seconds and use the built-in text instead.",
-        min=1.0, max=30.0, step=1.0, unit="s", advanced=True,
+        "explainer.timeout_seconds", "AI timeout", "number", 30.0, "ai",
+        help="Give up on the AI after this many seconds and use the built-in text instead. "
+        "Reasoning models think before answering, so an open-ended chat can take 10-20s.",
+        min=1.0, max=60.0, step=1.0, unit="s", advanced=True,
     ),
     SettingsField(
         "explainer.validate_hours", "AI second-opinion interval", "number", 24.0, "ai",
