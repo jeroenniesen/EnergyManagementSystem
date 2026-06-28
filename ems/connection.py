@@ -121,8 +121,11 @@ def build_wiring(eff: dict, tz: ZoneInfo):
         # Read the whole cluster (master + any extra towers) as one logical battery; the
         # dashboard SoC is the capacity-weighted average. Writes still target the master (`ip`).
         tower_ips = _battery_ips(ip, eff.get("battery.indevolt_ips_extra"))
+        # A snappy timeout so one flaky tower fails fast instead of stalling the dashboard; the
+        # cluster reader just aggregates over whatever responds.
         battery_reader = (
-            IndevoltClusterReader([IndevoltReadClient(a, port=port) for a in tower_ips])
+            IndevoltClusterReader([IndevoltReadClient(a, port=port, timeout=2.5)
+                                   for a in tower_ips])
             if tower_ips
             else None
         )

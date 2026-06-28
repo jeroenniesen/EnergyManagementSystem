@@ -233,41 +233,27 @@ export function App() {
       if (!r.ok) throw new Error(`HTTP ${r.status}`);
       return r.json();
     }
-    async function poll() {
-      try {
-        const [s, ser, fr, pr, fc, pl, ef, st, bat, dec, al, sv, cn] = await Promise.all([
-          getJson("/api/status"),
-          getJson("/api/series?limit=50"),
-          getJson("/api/freshness"),
-          getJson("/api/prices"),
-          getJson("/api/forecast"),
-          getJson("/api/plan-detail"),
-          getJson("/api/energy-forecast"),
-          getJson("/api/strategy"),
-          getJson("/api/battery"),
-          getJson("/api/decision"),
-          getJson("/api/alerts"),
-          getJson("/api/savings"),
-          getJson("/api/charge-need"),
-        ]);
-        if (!alive) return;
-        setStatus(s);
-        setSeries(ser);
-        setFreshness(fr);
-        setPrices(pr);
-        setForecast(fc);
-        setPlanDetail(pl);
-        setEnergy(ef);
-        if (!strategyPending.current) setStrategy(st); // don't clobber an in-flight change
-        setBattery(bat);
-        setDecision(dec);
-        setAlertsData(al);
-        setSavings(sv?.today_eur ?? null);
-        setChargeNeed(cn ?? null);
-        setError(null);
-      } catch (e) {
-        if (alive) setError(String(e));
-      }
+    // Each card updates as its own endpoint resolves — a slow/flaky one (e.g. the battery) never
+    // blocks or blanks the rest. Liveness hinges on /api/status: only its failure shows the banner.
+    function fill<T>(url: string, apply: (v: T) => void) {
+      getJson(url).then((v) => { if (alive) apply(v); }).catch(() => {});
+    }
+    function poll() {
+      getJson("/api/status")
+        .then((v) => { if (alive) { setStatus(v); setError(null); } })
+        .catch((e) => { if (alive) setError(String(e)); });
+      fill("/api/series?limit=50", setSeries);
+      fill("/api/freshness", setFreshness);
+      fill("/api/prices", setPrices);
+      fill("/api/forecast", setForecast);
+      fill("/api/plan-detail", setPlanDetail);
+      fill("/api/energy-forecast", setEnergy);
+      fill("/api/strategy", (v: Strategy) => { if (!strategyPending.current) setStrategy(v); });
+      fill("/api/battery", setBattery);
+      fill("/api/decision", setDecision);
+      fill("/api/alerts", setAlertsData);
+      fill("/api/savings", (v: { today_eur?: number }) => setSavings(v?.today_eur ?? null));
+      fill("/api/charge-need", (v: ChargeNeed) => setChargeNeed(v ?? null));
     }
     poll();
     const id = setInterval(poll, POLL_MS);

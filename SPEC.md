@@ -367,6 +367,21 @@ Selection is **configurable** (calendar month, rolling solar-forecast threshold,
 - `summer_solar_threshold_kwh` is **roof-specific**, **calibrated from PVGIS / actual yield** (§6.3), not a guessed 12 kWh.
 - **Transition hysteresis** (`strategy_switch_hysteresis_days`, `strategy_switch_band_kwh`): require the rolling solar forecast to stay above/below the threshold **by a band, for N consecutive days**, before switching strategy — so it doesn't flip daily near the boundary. Calendar months remain a coarse override.
 
+> **Implemented (Loops 1–6).** Both strategies emit the same `Plan` (§8.6) and feed the same
+> projection (§8.5):
+> - `ems/planner/summer.py` — solar-first: fills the battery from PV, runs the night on it, and
+>   grid-charges **only the shortfall** to the night-carry target in the cheapest slots before the
+>   next sunset, within a price cap. Solar counted on for the guarantee is the **P10** (§6.3). The
+>   daylight window / sunset is derived from the solar forecast (the `astral` deadline + rolling
+>   PVGIS-calibrated threshold + multi-day hysteresis remain later refinements).
+> - `ems/planner/rule_based.py` — winter price-arbitrage.
+> - `ems/planner/strategy.py` — `select_strategy` (runtime mode `auto`|`summer`|`winter`; `auto` =
+>   by local month) + `build_plan` dispatcher.
+> - Runtime + UI: `strategy.mode` / `strategy.summer_grid_topup` / `strategy.summer_max_topup_price`
+>   are editable; `GET /api/strategy` and the dashboard **strategy card** (segmented picker +
+>   plain-language explainer + inline grid-top-up toggle) expose and tune it. Sizing reuses the
+>   battery's overnight-load / reserve settings (§8.2 step 1).
+
 ### 8.5 SoC projection lives in the planner (not just the UI)
 The planner computes a **projected-SoC curve** across the horizon as it builds the schedule, applying **charge/discharge efficiency** to each slot. The plan is **rejected/adjusted** if the projection would (a) drop below `min_reserve_soc`, (b) exceed usable capacity, or (c) fail to reserve enough for the evening peak (§8.3, step 5). The same curve feeds the UI's expected-vs-actual chart (§9.1).
 
