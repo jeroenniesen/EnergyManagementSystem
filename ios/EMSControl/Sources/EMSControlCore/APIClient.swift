@@ -51,4 +51,40 @@ public struct APIClient: Sendable {
         }
         return snapshot
     }
+
+    public func fetchExplainer() async throws -> ExplainerStatus {
+        try await get("api/explainer", as: ExplainerStatus.self)
+    }
+
+    public func fetchFAQ() async throws -> FAQResponse {
+        try await get("api/faq", as: FAQResponse.self)
+    }
+
+    public func sendChat(question: String) async throws -> ChatResponse {
+        var request = URLRequest(url: baseURL.appending(path: "api/chat"))
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        if let token, !token.isEmpty {
+            request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        }
+        request.httpBody = try JSONEncoder.ems.encode(ChatRequest(question: question))
+        let (data, response) = try await transport.data(for: request)
+        guard (200 ..< 300).contains(response.statusCode) else {
+            throw APIClientError.httpStatus(response.statusCode)
+        }
+        return try JSONDecoder.ems.decode(ChatResponse.self, from: data)
+    }
+
+    private func get<T: Decodable>(_ path: String, as type: T.Type) async throws -> T {
+        var request = URLRequest(url: baseURL.appending(path: path))
+        request.httpMethod = "GET"
+        if let token, !token.isEmpty {
+            request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        }
+        let (data, response) = try await transport.data(for: request)
+        guard (200 ..< 300).contains(response.statusCode) else {
+            throw APIClientError.httpStatus(response.statusCode)
+        }
+        return try JSONDecoder.ems.decode(type, from: data)
+    }
 }

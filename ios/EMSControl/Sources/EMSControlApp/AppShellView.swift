@@ -17,8 +17,7 @@ struct AppShellView: View {
             TabView {
                 DashboardView()
                     .tabItem { Label("Dashboard", systemImage: "bolt.horizontal.circle") }
-                Text("Chat")
-                    .foregroundStyle(themeColor(theme.text))
+                ChatView()
                     .tabItem { Label("Chat", systemImage: "message") }
             }
         }
