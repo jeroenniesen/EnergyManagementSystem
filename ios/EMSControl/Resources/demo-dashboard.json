@@ -1,0 +1,19 @@
+{
+  "api_version": 1,
+  "generated_at": "2026-06-29T12:00:00+00:00",
+  "server_time": "2026-06-29T12:00:00+00:00",
+  "server_name": "Demo Home EMS",
+  "cache_ttl_seconds": 10,
+  "degraded_sections": [],
+  "readiness": {"dashboard_ready": true, "control_ready": false},
+  "status": {"soc_pct": 64.0, "dry_run": true, "solar_power_w": 1450.0, "grid_power_w": -320.0},
+  "freshness": {"battery": "fresh", "prices": "fresh", "forecast": "fresh"},
+  "strategy": {"mode": "summer", "reason": "Demo plan: hold enough energy for tonight."},
+  "decision": {"intent": "allow_self_consumption", "plan_reason": "Demo data: solar is covering the house now."},
+  "alerts": {"alerts": []},
+  "battery": {"aggregate": {"online_towers": 2}, "state": "ok"},
+  "charge_need": {"target_soc_pct": 72.0, "target_kwh": 7.9},
+  "savings": {"today_eur": 1.82},
+  "energy_story": {"headline": "Demo: enough battery for the evening plan."},
+  "ai_validation": {"latest": null, "active": false}
+}
