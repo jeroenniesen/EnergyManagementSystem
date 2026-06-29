@@ -35,9 +35,9 @@ def test_meter_read_uses_injected_getter():
         seen["url"] = url
         return P1
 
-    m = HomeWizardMeter("192.168.50.92", http_get=fake_get)
+    m = HomeWizardMeter("192.0.2.92", http_get=fake_get)
     assert m.read()["active_power_w"] == 3
-    assert seen["url"] == "http://192.168.50.92/api/v1/data"
+    assert seen["url"] == "http://192.0.2.92/api/v1/data"
 
 
 def _meter(payload):

@@ -234,9 +234,9 @@ test.describe("EMS dashboard", () => {
             online_towers: 2, total_towers: 2,
           },
           towers: [
-            { ip: "192.168.50.53", role: "master", soc_pct: 50, power_w: -250,
+            { ip: "192.0.2.53", role: "master", soc_pct: 50, power_w: -250,
               capacity_kwh: 5.38, online: true },
-            { ip: "192.168.50.22", role: "slave", soc_pct: 49, power_w: -240,
+            { ip: "192.0.2.22", role: "slave", soc_pct: 49, power_w: -240,
               capacity_kwh: 5.6, online: true },
           ],
         }),

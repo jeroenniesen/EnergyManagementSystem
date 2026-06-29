@@ -36,7 +36,7 @@ class FakeIndevolt:
 
 
 def _driver(fake, armed=True):
-    return IndevoltBatteryDriver("192.168.50.53", armed=armed, reader=fake, rpc_post=fake.post)
+    return IndevoltBatteryDriver("192.0.2.53", armed=armed, reader=fake, rpc_post=fake.post)
 
 
 def test_setdata_write_mapping():

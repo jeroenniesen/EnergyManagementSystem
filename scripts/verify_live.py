@@ -1,9 +1,10 @@
 #!/usr/bin/env python
 """One-shot READ-ONLY live verification of the real devices. Never writes to anything.
 
-Usage:
+Usage (point it at YOUR devices via env — no addresses are committed):
+    export P1_IP=... SOLAR_IP=... CAR_IP=... INDEVOLT_IP=...   # your HomeWizard / Indevolt LAN IPs
     export TIBBER_TOKEN='...'        # optional: verify prices
-    export INDEVOLT_KEY='...'        # optional: verify battery SoC/power (HTTP Digest, user opend)
+    export INDEVOLT_KEY='...'        # optional: verify battery SoC/power (HTTP Digest)
     uv run python scripts/verify_live.py
 
 Checks the HomeWizard meters (no creds needed), Tibber prices (if TIBBER_TOKEN), and the Indevolt
@@ -16,8 +17,12 @@ import os
 
 import httpx
 
-P1, SOLAR, CAR = "192.168.50.92", "192.168.50.37", "192.168.50.98"
-INDEVOLT = "192.168.50.53"
+# Device addresses come from the environment — none are hard-coded/committed. The 192.0.2.x defaults
+# are RFC 5737 TEST-NET placeholders (not a real network) so an unconfigured run fails cleanly.
+P1 = os.environ.get("P1_IP", "192.0.2.10")
+SOLAR = os.environ.get("SOLAR_IP", "192.0.2.11")
+CAR = os.environ.get("CAR_IP", "192.0.2.12")
+INDEVOLT = os.environ.get("INDEVOLT_IP", "192.0.2.20")
 
 
 def _ok(label, detail):

@@ -15,8 +15,8 @@ AMS = ZoneInfo("Europe/Amsterdam")
 
 
 def test_text_and_secret_validation():
-    clean, errors = validate_settings({"meters.p1_ip": "192.168.50.92"})
-    assert clean["meters.p1_ip"] == "192.168.50.92" and errors == {}
+    clean, errors = validate_settings({"meters.p1_ip": "192.0.2.10"})
+    assert clean["meters.p1_ip"] == "192.0.2.10" and errors == {}
     _c, e = validate_settings({"meters.p1_ip": 123})  # not a string
     assert "meters.p1_ip" in e
 
@@ -59,10 +59,10 @@ def test_build_wiring_defaults_to_mock():
 def test_build_wiring_live_devices_when_configured():
     eff = effective_settings({
         "connection.use_live_devices": True,
-        "meters.p1_ip": "192.168.50.92",
-        "meters.solar_ip": "192.168.50.37",
-        "meters.car_ip": "192.168.50.98",
-        "battery.indevolt_ip": "192.168.50.53",
+        "meters.p1_ip": "192.0.2.10",
+        "meters.solar_ip": "192.0.2.11",
+        "meters.car_ip": "192.0.2.12",
+        "battery.indevolt_ip": "192.0.2.20",
     })
     src, _price, _fc, batt_ep, driver, dev_mode, dry_run = build_wiring(eff, AMS)
     # LiveSource composes the three meters; never touches hardware at construction.
@@ -77,13 +77,13 @@ def test_build_wiring_omits_missing_solar_car_meters_no_p1_impersonation():
     # Only P1 configured → solar/car meters must be ABSENT (None), never the P1 meter reused.
     eff = effective_settings({
         "connection.use_live_devices": True,
-        "meters.p1_ip": "192.168.50.92",
+        "meters.p1_ip": "192.0.2.10",
         "meters.solar_ip": "",
         "meters.car_ip": "",
     })
     src, *_ = build_wiring(eff, AMS)
     assert src.solar is None and src.car is None  # degraded, not impersonated
-    assert src.p1 is not None and src.p1.ip == "192.168.50.92"
+    assert src.p1 is not None and src.p1.ip == "192.0.2.10"
 
 
 def test_build_wiring_live_prices_when_token_present():
@@ -102,8 +102,8 @@ def test_build_wiring_live_prices_ignored_without_token():
 
 def test_operational_arms_driver_and_lifts_dry_run():
     eff = effective_settings({
-        "connection.use_live_devices": True, "meters.p1_ip": "192.168.50.92",
-        "battery.indevolt_ip": "192.168.50.53", "control.operational": True,
+        "connection.use_live_devices": True, "meters.p1_ip": "192.0.2.10",
+        "battery.indevolt_ip": "192.0.2.20", "control.operational": True,
     })
     *_, driver, dev_mode, dry_run = build_wiring(eff, AMS)
     assert dev_mode == "live"
@@ -114,7 +114,7 @@ def test_operational_arms_driver_and_lifts_dry_run():
 def test_operational_without_a_battery_stays_dry_run():
     # Operational only means something with a real battery to command — else stay safe.
     eff = effective_settings({
-        "connection.use_live_devices": True, "meters.p1_ip": "192.168.50.92",
+        "connection.use_live_devices": True, "meters.p1_ip": "192.0.2.10",
         "control.operational": True,  # but no battery.indevolt_ip
     })
     *_, _driver, _dev_mode, dry_run = build_wiring(eff, AMS)
@@ -128,8 +128,8 @@ def test_operational_ignored_without_live_devices():
 
 
 def test_battery_ips_orders_master_first_and_dedupes():
-    assert _battery_ips("192.168.50.53", "192.168.50.22, 192.168.50.99") == [
-        "192.168.50.53", "192.168.50.22", "192.168.50.99",
+    assert _battery_ips("192.0.2.20", "192.0.2.21, 192.0.2.99") == [
+        "192.0.2.20", "192.0.2.21", "192.0.2.99",
     ]
     # blanks dropped, master never duplicated, whitespace trimmed
     assert _battery_ips("10.0.0.1", " 10.0.0.1 , , 10.0.0.2 ") == ["10.0.0.1", "10.0.0.2"]
@@ -138,10 +138,10 @@ def test_battery_ips_orders_master_first_and_dedupes():
 
 def test_live_devices_build_a_multi_tower_cluster_reader():
     eff = effective_settings({
-        "connection.use_live_devices": True, "meters.p1_ip": "192.168.50.92",
-        "battery.indevolt_ip": "192.168.50.53",
-        "battery.indevolt_ips_extra": "192.168.50.22",
+        "connection.use_live_devices": True, "meters.p1_ip": "192.0.2.10",
+        "battery.indevolt_ip": "192.0.2.20",
+        "battery.indevolt_ips_extra": "192.0.2.21",
     })
     src, *_ = build_wiring(eff, AMS)
     # LiveSource holds a cluster reader spanning both towers (never touches hardware at build).
-    assert [c.ip for c in src.battery._clients] == ["192.168.50.53", "192.168.50.22"]
+    assert [c.ip for c in src.battery._clients] == ["192.0.2.20", "192.0.2.21"]

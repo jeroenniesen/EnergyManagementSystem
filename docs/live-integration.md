@@ -17,10 +17,10 @@ EMS_SOURCES=live uv run uvicorn ems.main:app --host 0.0.0.0 --port 8080
 sources: { mode: mock }        # or: live  (env EMS_SOURCES=live overrides)
 prices:  { provider: mock }    # or: tibber (env EMS_PRICES=tibber)
 devices:
-  p1_ip: 192.168.50.92         # HomeWizard P1 (net grid)
-  solar_ip: 192.168.50.37      # HomeWizard kWh (solar)
-  car_ip: 192.168.50.98        # HomeWizard kWh (EV)
-  indevolt_ip: 192.168.50.53   # Indevolt main tower (cluster = one logical device)
+  p1_ip: 192.168.1.10         # HomeWizard P1 (net grid)
+  solar_ip: 192.168.1.11      # HomeWizard kWh (solar)
+  car_ip: 192.168.1.12        # HomeWizard kWh (EV)
+  indevolt_ip: 192.168.1.20   # Indevolt main tower (cluster = one logical device)
 ```
 
 Secrets are env-only, never committed: `TIBBER_TOKEN`, `INDEVOLT_KEY`, `EMS_WEB_TOKEN`.

@@ -5,7 +5,7 @@ from ems.sources.indevolt import BatteryUnavailable, IndevoltReadClient, signed_
 
 def _client(response):
     # rpc_post ignores the requested keys and returns a canned GetData response.
-    return IndevoltReadClient("192.168.50.53", rpc_post=lambda keys: response)
+    return IndevoltReadClient("192.0.2.53", rpc_post=lambda keys: response)
 
 
 def test_signed_battery_power_helper():
