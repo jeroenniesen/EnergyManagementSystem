@@ -119,6 +119,10 @@ def _bounded_put(cache: dict, key, value, maxn: int) -> None:
 # on restart (so the first read after a restart is always fresh) and is intentionally brief.
 _LIVE_SAMPLE_COALESCE_SECONDS = 30.0
 
+# How much recorded history to show as "actuals" leading into the next-24h plan, so the operator can
+# see whether reality is following the plan ("am I on track?"). 3 hours = 12 quarter-hour slots.
+RECENT_HOURS = 3
+
 # --- Unified energy-story slot/totals (shared by the past + next windows so they never drift) ---
 _INTENT_ACTION = {
     "grid_charge_to_target": "charge",
@@ -1384,6 +1388,44 @@ def create_app(
             markers.append("Battery covers the evening peak")
         return markers
 
+    async def _recent_actuals(now: datetime) -> list[dict]:
+        """The last RECENT_HOURS of RECORDED actuals on the 15-min grid (oldest→now), so the planner
+        timeline can show what really happened just before now: actual SoC, actual solar, and the
+        action the battery actually executed. Built like the 'past' story but scoped to the window;
+        [] when there's no history yet (graceful)."""
+        if store is None:
+            return []
+        cutoff = (now - timedelta(hours=RECENT_HOURS)).isoformat()
+        raw = await store.recent_raw_since(cutoff)
+        if not raw:
+            return []
+        der = await store.recent_derived_since(cutoff)
+        prices = price_source.slots() if price_source is not None else []
+        story = build_past_story(raw, der, prices, now)
+        return [
+            _uslot(ps.start, ps.soc_pct, ps.grid_w, ps.solar_w, ps.battery_w, ps.load_w,
+                   ps.eur_per_kwh, _action_from_battery(ps.battery_w))
+            for ps in story.slots
+        ]
+
+    def _on_track(current_soc: float, need) -> dict:
+        """Deterministic 'are we on track for tonight's target' read, from the night-target need.
+        ahead (already there) / on_track (projected to make it) / behind (short by deficit kWh)."""
+        target = need.target_soc_pct
+        if current_soc >= target - 0.5:
+            status = "ahead"
+            msg = f"Comfortably placed — already at the {target:.0f}% target for tonight."
+        elif need.on_track:
+            status = "on_track"
+            msg = f"On track — projected to reach {target:.0f}% by sunset."
+        else:
+            status = "behind"
+            msg = (f"Behind — about {need.deficit_kwh:.1f} kWh short of the {target:.0f}% target; "
+                   "EMS will top up in the cheapest window before sunset.")
+        return {"status": status, "actual_soc_pct": round(current_soc, 1),
+                "target_soc_pct": round(target, 1), "deficit_kwh": round(need.deficit_kwh, 1),
+                "message": msg}
+
     async def _next_story(reserve_pct: float) -> dict:
         fp = await _forward_projection()
         if fp is None:
@@ -1395,6 +1437,7 @@ def create_app(
             for p in fp["projected"]
         ]
         totals = _uslot_totals(slots)
+        recent = await _recent_actuals(fp["now"])
         return {
             "window": "next", "now": fp["now"].isoformat(),
             "current_soc_pct": round(fp["current_soc"], 1), "reserve_soc_pct": reserve_pct,
@@ -1408,6 +1451,10 @@ def create_app(
             # the home — never celebratory, only shown when genuinely true.
             "trust_markers": _trust_markers(fp["projected"], totals, reserve_pct,
                                             need.target_soc_pct),
+            # "Am I on track?" — the last few hours of actuals on the same timeline + a verdict.
+            "recent_hours": RECENT_HOURS,
+            "recent": recent,
+            "on_track": _on_track(fp["current_soc"], need),
         }
 
     async def _past_story(reserve_pct: float) -> dict:

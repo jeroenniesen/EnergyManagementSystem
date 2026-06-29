@@ -56,6 +56,28 @@ def test_next_defaults_when_window_omitted(tmp_path):
         assert c.get("/api/energy-story").json()["window"] == "next"
 
 
+def test_next_story_carries_recent_actuals_and_on_track(tmp_path):
+    # "Am I on track?" — the next story now also reports the recent-actuals window + a verdict.
+    with TestClient(_app(tmp_path)) as c:
+        b = c.get("/api/energy-story?window=next").json()
+    assert b["recent_hours"] == 3
+    assert isinstance(b["recent"], list)  # no history yet → empty, graceful
+    ot = b["on_track"]
+    assert ot["status"] in {"ahead", "on_track", "behind", "unknown"}
+    assert ot["target_soc_pct"] is not None and "actual_soc_pct" in ot
+    assert isinstance(ot["message"], str) and ot["message"]
+
+
+def test_recent_actuals_appear_once_history_exists(tmp_path):
+    # With a recorded sample, the recent segment carries actuals in the same slot shape as the plan.
+    with TestClient(_app(tmp_path, with_recorder=True)) as c:
+        b = c.get("/api/energy-story?window=next").json()
+    assert isinstance(b["recent"], list)
+    if b["recent"]:
+        assert _SLOT_KEYS <= set(b["recent"][0])
+        assert b["recent"][0]["action"] in {"charge", "discharge", "idle"}
+
+
 def test_past_story_same_shape_built_from_history(tmp_path):
     # The lifespan recorder writes one sample -> the past window has at least one slot.
     with TestClient(_app(tmp_path, with_recorder=True)) as c:
