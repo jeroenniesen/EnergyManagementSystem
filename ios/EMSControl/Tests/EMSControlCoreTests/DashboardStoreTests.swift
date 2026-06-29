@@ -23,6 +23,31 @@ final class DashboardStoreTests: XCTestCase {
         store.forgetServer()
         XCTAssertNil(store.snapshot)
     }
+
+    func testUseDemoClearsLiveClient() throws {
+        let store = DashboardStore(
+            client: APIClient(baseURL: URL(string: "http://ems.local:8080")!),
+            demoData: DemoDataStore(bundle: .module)
+        )
+
+        try store.useDemo()
+
+        XCTAssertNil(store.client)
+        XCTAssertTrue(store.snapshot?.isDemo == true)
+    }
+
+    func testLoadDemoRecordsErrorWhenDemoDataIsMissing() {
+        let store = DashboardStore(
+            client: APIClient(baseURL: URL(string: "http://ems.local:8080")!),
+            demoData: DemoDataStore(bundle: Bundle(for: MissingBundleMarker.self))
+        )
+
+        store.loadDemo()
+
+        XCTAssertNil(store.snapshot)
+        XCTAssertNotNil(store.lastError)
+        XCTAssertNil(store.client)
+    }
 }
 
 private struct FailingTransport: HTTPTransport {
@@ -30,3 +55,5 @@ private struct FailingTransport: HTTPTransport {
         throw URLError(.notConnectedToInternet)
     }
 }
+
+private final class MissingBundleMarker {}

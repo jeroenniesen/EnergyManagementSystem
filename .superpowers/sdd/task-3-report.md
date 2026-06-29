@@ -1,0 +1,136 @@
+# Task 3 Report: iOS API Client, Dashboard Store, and Live Dashboard View
+
+## What I implemented
+
+- Added `APIClient` with:
+  - `fetchDashboard() async throws -> DashboardSnapshot`
+  - bearer token authorization support
+  - HTTP status validation
+  - API version compatibility check for `/api/dashboard`
+- Added `HTTPTransport` and `URLSessionTransport` so the client can be tested without live network calls.
+- Added `DashboardStore` with:
+  - `refresh() async`
+  - `useDemo()`
+  - `forgetServer()`
+  - observable state for `snapshot`, `isLoading`, `isStale`, and `lastError`
+- Added package-level SwiftUI shell sources:
+  - `EMSControlApp.swift`
+  - `AppShellView.swift`
+  - `ConnectionView.swift`
+  - `DashboardView.swift`
+- Added iteration validation notes at `docs/ios-validation/iteration-3-dashboard-notes.md`.
+
+## TDD evidence
+
+### RED
+
+I wrote the new tests first:
+
+- `ios/EMSControl/Tests/EMSControlCoreTests/APIClientTests.swift`
+- `ios/EMSControl/Tests/EMSControlCoreTests/DashboardStoreTests.swift`
+
+Then I ran:
+
+```bash
+cd ios/EMSControl
+DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer swift test
+```
+
+Observed failure evidence before implementation:
+
+- `cannot find type 'HTTPTransport' in scope`
+- `cannot find 'DashboardStore' in scope`
+- `cannot find 'APIClient' in scope`
+- `cannot find 'APIClientError' in scope`
+
+This was the expected RED state from the brief.
+
+### GREEN
+
+After implementing the client and store, the first green attempt exposed a Swift 6 concurrency issue:
+
+- `sending 'client' risks causing data races`
+
+I fixed that by making the transport/client path `Sendable`, then re-ran the same command successfully.
+
+Final GREEN verification:
+
+```bash
+cd ios/EMSControl
+DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer swift test
+```
+
+Result:
+
+- 9 tests executed
+- 0 failures
+- 0 unexpected failures
+
+## Tests and results
+
+- `cd ios/EMSControl && DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer swift test`
+  - Passed
+- `git diff --check -- ios/EMSControl docs/ios-validation/iteration-3-dashboard-notes.md`
+  - Passed with no output
+
+## Files changed
+
+- `ios/EMSControl/Sources/EMSControlCore/APIClient.swift`
+- `ios/EMSControl/Sources/EMSControlCore/DashboardStore.swift`
+- `ios/EMSControl/Sources/EMSControlApp/EMSControlApp.swift`
+- `ios/EMSControl/Sources/EMSControlApp/AppShellView.swift`
+- `ios/EMSControl/Sources/EMSControlApp/ConnectionView.swift`
+- `ios/EMSControl/Sources/EMSControlApp/DashboardView.swift`
+- `ios/EMSControl/Tests/EMSControlCoreTests/APIClientTests.swift`
+- `ios/EMSControl/Tests/EMSControlCoreTests/DashboardStoreTests.swift`
+- `docs/ios-validation/iteration-3-dashboard-notes.md`
+
+## Commit created
+
+- `db881e1` `feat: add iOS dashboard client foundation`
+
+## Self-review
+
+- Confirmed the implementation stayed within Task 3 ownership for code changes and the required validation note.
+- Confirmed TDD order: tests were added before production code and the missing-type RED failure was captured first.
+- Confirmed the API client handles authorization and incompatible future API versions exactly as requested.
+- Confirmed the store preserves a stale snapshot on refresh failure and clears state on `forgetServer()`.
+- Confirmed the required verification commands were run successfully after implementation.
+
+## Concerns
+
+- The SwiftUI app shell sources were added as requested, but they are not part of a package target yet, so `swift test` validates the core package and tests only. The validation note already reflects that simulator-level validation is deferred until the future app target work.
+
+---
+
+## Task 3 review fix pass
+
+### What changed
+
+- Reworked the Task 3 SwiftUI shell source to use `EMSTheme.dark` tokens instead of default SwiftUI surfaces for the app background, connection flow, and core dashboard telemetry cards.
+- Removed `.regularMaterial` from telemetry cards and replaced it with opaque EMS panel styling, while keeping the lighter material treatment only on the non-critical demo badge.
+- Updated `DashboardStore.useDemo()` to clear the live `client` so demo mode is isolated from prior live connection state.
+- Added `DashboardStore.loadDemo()` so demo loading failures are captured in `lastError` instead of being dropped by `try?`, and switched `ConnectionView` to that path.
+- Updated the iteration note to record the exact Xcode toolchain command and current validation scope.
+
+### Tests run and exact result
+
+- `cd ios/EMSControl && DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer swift test`
+  - Passed: 11 tests, 0 failures, 0 unexpected failures.
+- `git diff --check -- ios/EMSControl docs/ios-validation/iteration-3-dashboard-notes.md`
+  - Passed: no output.
+
+### Files changed
+
+- `ios/EMSControl/Sources/EMSControlCore/DashboardStore.swift`
+- `ios/EMSControl/Sources/EMSControlApp/AppShellView.swift`
+- `ios/EMSControl/Sources/EMSControlApp/ConnectionView.swift`
+- `ios/EMSControl/Sources/EMSControlApp/DashboardView.swift`
+- `ios/EMSControl/Tests/EMSControlCoreTests/DashboardStoreTests.swift`
+- `docs/ios-validation/iteration-3-dashboard-notes.md`
+
+### Self-review
+
+- The live/demo state boundary is now explicit in the store, and the new tests cover both client clearing and captured demo-load failure.
+- The UI changes stay within Task 3 source files and apply the EMS palette consistently to critical surfaces without introducing new product scope.
+- The remaining limitation is unchanged: the app shell source is still not attached to a build target, so visual validation remains source-level until Task 5.

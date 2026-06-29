@@ -4,26 +4,114 @@ import EMSControlCore
 struct ConnectionView: View {
     @Environment(DashboardStore.self) private var dashboardStore
     @State private var baseURL = "http://"
+    private let theme = EMSTheme.dark
 
     var body: some View {
         NavigationStack {
-            Form {
-                Section("Connect") {
-                    TextField("Server URL", text: $baseURL)
-                        .textInputAutocapitalization(.never)
-                        .keyboardType(.URL)
-                    Button("Connect") {
-                        if let url = URL(string: baseURL) {
-                            dashboardStore.client = APIClient(baseURL: url)
-                            Task { await dashboardStore.refresh() }
+            ZStack {
+                themeColor(theme.background)
+                    .ignoresSafeArea()
+
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 20) {
+                        VStack(alignment: .leading, spacing: 8) {
+                            Text("EMS Server")
+                                .font(.title2.weight(.semibold))
+                                .foregroundStyle(themeColor(theme.text))
+                            Text("Connect to a live server or open the packaged demo.")
+                                .foregroundStyle(themeColor(theme.muted))
+                        }
+
+                        VStack(alignment: .leading, spacing: 12) {
+                            Text("Server URL")
+                                .font(.caption.weight(.semibold))
+                                .foregroundStyle(themeColor(theme.muted))
+                            TextField("http://ems.local:8080", text: $baseURL)
+                                .textInputAutocapitalization(.never)
+                                .keyboardType(.URL)
+                                .autocorrectionDisabled()
+                                .padding(14)
+                                .background(themeColor(theme.secondaryPanel))
+                                .foregroundStyle(themeColor(theme.text))
+                                .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+                                .overlay {
+                                    RoundedRectangle(cornerRadius: 12, style: .continuous)
+                                        .stroke(themeColor(theme.line), lineWidth: 1)
+                                }
+                        }
+                        .padding(20)
+                        .background(themeColor(theme.panel))
+                        .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+                        .overlay {
+                            RoundedRectangle(cornerRadius: 16, style: .continuous)
+                                .stroke(themeColor(theme.line), lineWidth: 1)
+                        }
+
+                        VStack(spacing: 12) {
+                            Button("Connect") {
+                                if let url = URL(string: baseURL) {
+                                    dashboardStore.client = APIClient(baseURL: url)
+                                    Task { await dashboardStore.refresh() }
+                                }
+                            }
+                            .buttonStyle(PrimaryEMSButtonStyle(theme: theme))
+
+                            Button("View Demo") {
+                                dashboardStore.loadDemo()
+                            }
+                            .buttonStyle(SecondaryEMSButtonStyle(theme: theme))
+                        }
+
+                        if let error = dashboardStore.lastError {
+                            Text(error)
+                                .font(.footnote)
+                                .foregroundStyle(themeColor(theme.error))
+                                .padding(16)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .background(themeColor(theme.panel))
+                                .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+                                .overlay {
+                                    RoundedRectangle(cornerRadius: 14, style: .continuous)
+                                        .stroke(themeColor(theme.error).opacity(0.35), lineWidth: 1)
+                                }
                         }
                     }
-                    Button("View Demo") {
-                        try? dashboardStore.useDemo()
-                    }
+                    .padding(20)
                 }
             }
             .navigationTitle("EMS Server")
         }
+    }
+}
+
+private struct PrimaryEMSButtonStyle: ButtonStyle {
+    let theme: EMSTheme
+
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .font(.headline)
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, 14)
+            .background(themeColor(theme.accent).opacity(configuration.isPressed ? 0.85 : 1))
+            .foregroundStyle(themeColor(theme.background))
+            .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+    }
+}
+
+private struct SecondaryEMSButtonStyle: ButtonStyle {
+    let theme: EMSTheme
+
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .font(.headline)
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, 14)
+            .background(themeColor(theme.panel).opacity(configuration.isPressed ? 0.88 : 1))
+            .foregroundStyle(themeColor(theme.text))
+            .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+            .overlay {
+                RoundedRectangle(cornerRadius: 12, style: .continuous)
+                    .stroke(themeColor(theme.line), lineWidth: 1)
+            }
     }
 }

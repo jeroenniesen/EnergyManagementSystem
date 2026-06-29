@@ -34,9 +34,21 @@ public final class DashboardStore {
     }
 
     public func useDemo() throws {
+        client = nil
         snapshot = try demoData.dashboardSnapshot()
         isStale = false
         lastError = nil
+    }
+
+    public func loadDemo() {
+        do {
+            try useDemo()
+        } catch {
+            client = nil
+            snapshot = nil
+            isStale = false
+            lastError = String(describing: error)
+        }
     }
 
     public func forgetServer() {
