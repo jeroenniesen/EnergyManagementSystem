@@ -3,8 +3,17 @@ import EMSControlCore
 
 struct ConnectionView: View {
     @Environment(DashboardStore.self) private var dashboardStore
+    @Environment(\.colorScheme) private var colorScheme
     @State private var baseURL = "http://"
-    private let theme = EMSTheme.dark
+    @State private var validationError: String?
+
+    private var theme: EMSTheme {
+        colorScheme == .dark ? .dark : .light
+    }
+
+    private var errorMessage: String? {
+        validationError ?? dashboardStore.lastError
+    }
 
     var body: some View {
         NavigationStack {
@@ -36,7 +45,10 @@ struct ConnectionView: View {
                                 .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
                                 .overlay {
                                     RoundedRectangle(cornerRadius: 12, style: .continuous)
-                                        .stroke(themeColor(theme.line), lineWidth: 1)
+                                        .stroke(themeColor(validationError == nil ? theme.line : theme.error), lineWidth: 1)
+                                }
+                                .onChange(of: baseURL) { _, _ in
+                                    validationError = nil
                                 }
                         }
                         .padding(20)
@@ -49,9 +61,13 @@ struct ConnectionView: View {
 
                         VStack(spacing: 12) {
                             Button("Connect") {
-                                if let url = URL(string: baseURL) {
+                                do {
+                                    let url = try ServerAddressValidator.validatedBaseURL(baseURL)
+                                    validationError = nil
                                     dashboardStore.client = APIClient(baseURL: url)
                                     Task { await dashboardStore.refresh() }
+                                } catch {
+                                    validationError = (error as? LocalizedError)?.errorDescription ?? String(describing: error)
                                 }
                             }
                             .buttonStyle(PrimaryEMSButtonStyle(theme: theme))
@@ -62,7 +78,7 @@ struct ConnectionView: View {
                             .buttonStyle(SecondaryEMSButtonStyle(theme: theme))
                         }
 
-                        if let error = dashboardStore.lastError {
+                        if let error = errorMessage {
                             Text(error)
                                 .font(.footnote)
                                 .foregroundStyle(themeColor(theme.error))

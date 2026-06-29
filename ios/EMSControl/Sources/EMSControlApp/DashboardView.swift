@@ -3,7 +3,11 @@ import EMSControlCore
 
 struct DashboardView: View {
     @Environment(DashboardStore.self) private var dashboardStore
-    private let theme = EMSTheme.dark
+    @Environment(\.colorScheme) private var colorScheme
+
+    private var theme: EMSTheme {
+        colorScheme == .dark ? .dark : .light
+    }
 
     var body: some View {
         NavigationStack {

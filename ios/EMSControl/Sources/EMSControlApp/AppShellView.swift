@@ -3,7 +3,11 @@ import EMSControlCore
 
 struct AppShellView: View {
     @Environment(DashboardStore.self) private var dashboardStore
-    private let theme = EMSTheme.dark
+    @Environment(\.colorScheme) private var colorScheme
+
+    private var theme: EMSTheme {
+        colorScheme == .dark ? .dark : .light
+    }
 
     var body: some View {
         ZStack {
@@ -19,7 +23,6 @@ struct AppShellView: View {
             }
         }
         .tint(themeColor(theme.accent))
-        .preferredColorScheme(.dark)
         .toolbarBackground(themeColor(theme.panel), for: .tabBar)
         .toolbarBackground(.visible, for: .tabBar)
         .sheet(isPresented: .constant(dashboardStore.snapshot == nil)) {

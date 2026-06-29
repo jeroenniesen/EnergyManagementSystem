@@ -134,3 +134,37 @@ Result:
 - The live/demo state boundary is now explicit in the store, and the new tests cover both client clearing and captured demo-load failure.
 - The UI changes stay within Task 3 source files and apply the EMS palette consistently to critical surfaces without introducing new product scope.
 - The remaining limitation is unchanged: the app shell source is still not attached to a build target, so visual validation remains source-level until Task 5.
+
+---
+
+## Task 3 review fix pass 2
+
+### What changed
+
+- Added `ServerAddressValidator` in `EMSControlCore` so manual connection URLs are constrained to first-iteration local/private scope before a client is created.
+- Covered the validator with new package tests for accepted local/private hosts and rejected obvious public internet hosts.
+- Updated `ConnectionView` to use the validator, surface validation errors inline, and mark the URL field with the EMS error color when validation fails.
+- Removed the forced dark-mode override from `AppShellView` and switched `AppShellView`, `ConnectionView`, and `DashboardView` to select `EMSTheme.dark` or `EMSTheme.light` from `colorScheme`.
+- Expanded `docs/ios-validation/iteration-3-dashboard-notes.md` with the exact Connection and Dashboard source inspection performed for this pass.
+
+### Tests run and exact result
+
+- `cd ios/EMSControl && DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer swift test`
+  - Passed: 13 tests, 0 failures, 0 unexpected failures.
+- `git diff --check -- ios/EMSControl docs/ios-validation/iteration-3-dashboard-notes.md`
+  - Passed: no output.
+
+### Files changed
+
+- `ios/EMSControl/Sources/EMSControlCore/ServerAddressValidator.swift`
+- `ios/EMSControl/Sources/EMSControlApp/AppShellView.swift`
+- `ios/EMSControl/Sources/EMSControlApp/ConnectionView.swift`
+- `ios/EMSControl/Sources/EMSControlApp/DashboardView.swift`
+- `ios/EMSControl/Tests/EMSControlCoreTests/ServerAddressValidatorTests.swift`
+- `docs/ios-validation/iteration-3-dashboard-notes.md`
+
+### Self-review
+
+- The local/VPN-only rule is enforced in reusable core code, not duplicated in the view, and the tests cover both allowed and disallowed host classes called out by review.
+- The visible error state lives in `ConnectionView` so rejected public hosts fail before any live request is attempted.
+- Theme selection is now source-correct for light and dark appearance without changing the current package-target limitation; Task 5 still needs the real app target for compiled UI validation and screenshots.
