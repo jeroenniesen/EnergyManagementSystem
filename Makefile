@@ -1,9 +1,12 @@
 # Smart Energy Manager — convenience targets. The one-command install is `make install`
 # (or run ./scripts/install.sh directly). Everything is configured afterwards in the web UI.
-.PHONY: install uninstall restart dev build test e2e lint
+.PHONY: install upgrade uninstall restart dev build test e2e lint
 
 install:        ## One-command install + auto-start (macOS / Apple Silicon)
 	./scripts/install.sh
+
+upgrade:        ## Pull the latest version, rebuild, and restart (keeps your data)
+	./scripts/upgrade.sh
 
 restart:        ## Restart the running app (needed after device/connection setting changes)
 	./scripts/restart.sh

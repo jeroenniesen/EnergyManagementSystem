@@ -33,6 +33,17 @@ cd EnergyManagementSystem
 ```
 </details>
 
+### Upgrading
+
+To update a running install to the latest version (rebuilds + restarts; **your data and settings are
+kept**), run this one command on the Mac:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/jeroenniesen/EnergyManagementSystem/main/scripts/upgrade.sh | bash
+```
+
+(From a checkout you can also just `make upgrade`.)
+
 ### Managing it
 
 ```bash
