@@ -111,8 +111,9 @@ This build compiled the SwiftUI app sources and produced:
 
 ## Screenshot evidence
 
-- Not captured.
-- Exact blocker: CoreSimulator services were unavailable on this machine, so no simulator could be booted for screenshots.
+- Captured after simulator access was available with escalation:
+  `docs/ios-validation/iteration-5-iphone-first-launch.png`.
+  The screenshot shows the app-rendered connection sheet with visible **View Demo** and no demo fixture-loading error.
 
 ## Verification commands run
 
@@ -155,3 +156,9 @@ This build compiled the SwiftUI app sources and produced:
   - `DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer xcodebuild -project ios/EMSControl/EMSControl.xcodeproj -scheme EMSControl -destination 'platform=iOS Simulator,name=iPhone 17,OS=26.5' -derivedDataPath /private/tmp/emscontrol-sim-derived CODE_SIGNING_ALLOWED=NO build` passed.
   - `xcrun simctl install` and `xcrun simctl launch ... com.jeroenniesen.emscontrol` passed on iPhone 17 / iOS 26.5.
   - Captured `docs/ios-validation/iteration-5-iphone-first-launch.png`; the app renders first launch with visible **View Demo** and no missing fixture error.
+
+## Controller follow-up after Task 5 review
+
+- Fixed QR pairing validation so payloads with unknown fields are rejected as invalid payloads; added `testQRPayloadRejectsUnexpectedFields`.
+- Removed stale screenshot-not-captured wording from this report.
+- Verification: focused `swift test --filter ServerDiscoveryTests` passed 5 tests; full `swift test` passed 27 tests, 0 failures; simulator `xcodebuild ... -destination platform=iOS Simulator,name=iPhone 17,OS=26.5 ... build` passed; `git diff --check -- ios/EMSControl docs/ios-validation/iteration-5-app-store-polish.md docs/ios-validation/iteration-5-iphone-first-launch.png` passed.

@@ -36,4 +36,14 @@ final class ServerDiscoveryTests: XCTestCase {
             XCTAssertEqual(error as? ServerDiscoveryError, .tokenNotAllowed)
         }
     }
+
+    func testQRPayloadRejectsUnexpectedFields() {
+        XCTAssertThrowsError(
+            try ServerDiscovery().parsePairingPayload(
+                #"{"base_url":"http://ems.local:8080","server_label":"Home EMS","foo":"bar"}"#
+            )
+        ) { error in
+            XCTAssertEqual(error as? ServerDiscoveryError, .invalidPayload)
+        }
+    }
 }

@@ -66,6 +66,8 @@ public struct ServerDiscovery {
     }
 
     public func parsePairingPayload(_ raw: String) throws -> PairingPayload {
+        let allowedKeys: Set<String> = ["base_url", "server_label", "token", "access_token", "api_key"]
+
         struct RawPayload: Decodable {
             let baseURL: String
             let serverLabel: String?
@@ -83,6 +85,13 @@ public struct ServerDiscovery {
         }
 
         let data = Data(raw.utf8)
+        guard let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            throw ServerDiscoveryError.invalidPayload
+        }
+        guard Set(object.keys).isSubset(of: allowedKeys) else {
+            throw ServerDiscoveryError.invalidPayload
+        }
+
         let payload: RawPayload
         do {
             payload = try JSONDecoder().decode(RawPayload.self, from: data)
