@@ -61,7 +61,10 @@ type ChargeNeed = {
 type AlertItem = { key: string; severity: string; message: string };
 type AlertsResp = { data_quality: string; alerts: AlertItem[] };
 
-const POLL_MS = 5000;
+// Dashboard refresh cadence. Device reads (battery cluster, meters) are coalesced server-side to
+// at most once per ~30 s regardless of this, so a snappy poll no longer floods the hardware; 10 s
+// keeps the UI lively while halving HTTP chatter vs. the old 5 s.
+const POLL_MS = 10000;
 // Alert hierarchy: control-blocking (critical) above degraded (warning) above info (energy review).
 const SEVERITY_RANK: Record<string, number> = { critical: 3, warning: 2, info: 1 };
 

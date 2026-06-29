@@ -98,6 +98,39 @@ def test_preview_never_writes_even_when_controlling():
     assert ctl.switches_today == 0  # NOT mutated
 
 
+def test_failed_write_starts_dwell_and_counts_so_it_cannot_retry_every_cycle():
+    # A write that never confirms (e.g. a half-offline tower) must NOT be re-attempted every
+    # control cycle — that is write-amplification into struggling hardware. A failed attempt starts
+    # the dwell timer and counts toward the daily cap, exactly like a confirmed switch.
+    d = FailingMockBatteryDriver(fail_times=99)  # every apply() fails to confirm
+    ctl = ModeController(d, _controlling_lifecycle(), dry_run=False, min_dwell_seconds=600)
+    t1 = T0 + timedelta(seconds=200)
+    dec = ctl.decide(BatteryIntent.GRID_CHARGE_TO_TARGET, t1)
+    assert dec.outcome in ("failed_recovered", "failed_unrecovered")
+    assert ctl.switches_today == 1          # the failed attempt counted toward the cap
+    assert ctl.last_switch_at == t1         # ...and started the dwell timer
+    # The next control cycle (5 min later, inside the 10 min dwell) is BLOCKED, not retried.
+    nxt = ctl.decide(BatteryIntent.GRID_CHARGE_TO_TARGET, t1 + timedelta(seconds=300))
+    assert nxt.outcome == "dwell"
+    assert nxt.applied is False
+
+
+def test_repeated_failed_writes_are_bounded_by_the_daily_cap():
+    # Even spaced past the dwell, a never-confirming write can't run forever — the cap stops it.
+    d = FailingMockBatteryDriver(fail_times=99)
+    ctl = ModeController(d, _controlling_lifecycle(), dry_run=False,
+                         min_dwell_seconds=600, max_switches_per_day=3)
+    t = T0 + timedelta(seconds=200)
+    for _ in range(3):
+        dec = ctl.decide(BatteryIntent.GRID_CHARGE_TO_TARGET, t)
+        assert dec.outcome in ("failed_recovered", "failed_unrecovered")
+        t += timedelta(seconds=700)  # clear the 600 s dwell each iteration
+    assert ctl.switches_today == 3
+    capped = ctl.decide(BatteryIntent.GRID_CHARGE_TO_TARGET, t)
+    assert capped.outcome == "cap_reached"
+    assert capped.applied is False
+
+
 def test_switch_cap_resets_on_a_new_local_day():
     d = MockBatteryDriver()
     ctl = ModeController(d, _controlling_lifecycle(), dry_run=False, max_switches_per_day=1)

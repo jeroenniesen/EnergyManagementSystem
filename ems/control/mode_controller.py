@@ -184,6 +184,13 @@ class ModeController:
                 else f"{desired} unconfirmed AND AUTO recovery unconfirmed — ALERT"
             )
             self.last_confirmed_action = PhysicalMode.AUTO if recovered else None
+            # A failed/unconfirmed write still hit the device with SetData POSTs, so it MUST count
+            # like a switch: start the dwell timer and the daily cap. Without this, a write that
+            # never confirms (e.g. a flaky/half-offline tower) was retried every single control
+            # cycle forever — write-amplification into already-struggling hardware. Now the dwell
+            # gate spaces retries out and the daily cap stops them entirely after the budget.
+            self.switches_today += 1
+            self.last_switch_at = now
             self._persist()
             return ActionDecision(intent, PhysicalMode.AUTO, recovered, outcome, reason)
         self.switches_today += 1

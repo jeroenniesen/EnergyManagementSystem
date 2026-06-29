@@ -343,6 +343,11 @@ def create_app(
     # See _LIVE_SAMPLE_COALESCE_SECONDS: a short in-memory window so one dashboard refresh reads the
     # hardware once. Meter/SoC data is never put in the persistent external cache.
     _sample_cache: dict[str, Any] = {"sample": None, "at": None}
+    # Same idea for the PER-TOWER battery read (/api/battery): coalesce read_towers() across all
+    # dashboard endpoints and browser tabs so the Indevolt cluster is polled at most once per
+    # window, no matter how many clients are open. This is what stops the read flood that can knock
+    # a tower off the network — every battery touch here is read-only, but the VOLUME was the issue.
+    _tower_cache: dict[str, Any] = {"towers": None, "at": None}
     # Last good battery CapabilityReport (probed off the hot path — at startup + opportunistically),
     # so the §8.11 validator can check requested power vs the battery's rating without a networked
     # probe on every decision. None until first probed (the validator simply skips that warn-check).
@@ -363,6 +368,24 @@ def create_app(
     def _current_soc(now: datetime) -> float:
         s = _current_sample(now)
         return float(s.soc_pct) if s is not None else 0.0
+
+    def _current_towers(now: datetime):
+        """Coalesced per-tower battery read (same window as _current_sample). Returns the cached
+        list of TowerReading, or None when there's no cluster reader (mock). On a read failure the
+        last good snapshot is kept (fail-safe) so a transient blip doesn't blank the card."""
+        reader = getattr(source, "battery", None)
+        if reader is None or not hasattr(reader, "read_towers"):
+            return None
+        cached_at = _tower_cache["at"]
+        if (cached_at is not None
+                and (now - cached_at).total_seconds() < _LIVE_SAMPLE_COALESCE_SECONDS
+                and _tower_cache["towers"] is not None):
+            return _tower_cache["towers"]
+        try:
+            _tower_cache["towers"], _tower_cache["at"] = reader.read_towers(), now
+        except Exception:
+            pass  # keep last good snapshot (fail-safe)
+        return _tower_cache["towers"]
 
     def _car_charging(now: datetime) -> bool:
         s = _current_sample(now)
@@ -1016,9 +1039,10 @@ def create_app(
     @app.get("/api/charge-need")
     def charge_need_endpoint() -> dict:
         # Advisory: how much the battery should hold by tonight, from current SoC + battery config.
+        # Coalesced SoC (shared window) — don't read the battery on every poll of this card.
         s = settings_cache
         return compute_charge_need(
-            soc_pct=source.read().soc_pct,
+            soc_pct=_current_soc(datetime.now(UTC)),
             usable_kwh=s["battery.usable_kwh"],
             min_reserve_soc=s["battery.min_reserve_soc"],
             night_reserve_kwh=s["battery.night_reserve_kwh"],
@@ -1074,16 +1098,13 @@ def create_app(
             )
         return JSONResponse(get_override())
 
-    def _battery_cluster() -> tuple[list[dict], dict | None]:
-        """Per-tower readings + the cluster aggregate, read once from the live cluster reader.
-        Empty/None for the mock source (which has no per-tower battery reader)."""
-        reader = getattr(source, "battery", None)
-        if reader is None or not hasattr(reader, "read_towers"):
+    def _battery_cluster(now: datetime) -> tuple[list[dict], dict | None]:
+        """Per-tower readings + the cluster aggregate, via the COALESCED tower read (so polling
+        /api/battery doesn't hit every Indevolt tower on every dashboard refresh). Empty/None for
+        the mock source (no per-tower reader) or before the first successful read."""
+        towers = _current_towers(now)
+        if not towers:
             return [], None
-        try:
-            towers = reader.read_towers()
-        except Exception:
-            return [], None  # never let a battery read break the endpoint
         rows = [
             {"ip": t.ip, "role": t.role, "soc_pct": t.soc_pct, "power_w": t.power_w,
              "capacity_kwh": t.capacity_kwh, "online": t.online}
@@ -1105,7 +1126,7 @@ def create_app(
 
     @app.get("/api/battery")
     def battery_endpoint() -> dict:
-        towers, aggregate = _battery_cluster()
+        towers, aggregate = _battery_cluster(datetime.now(UTC))
         out: dict[str, Any] = {
             "current_mode": None, "capabilities": None,
             "towers": towers, "aggregate": aggregate,
@@ -1674,7 +1695,10 @@ def create_app(
 
     @app.get("/api/status")
     def status() -> dict:
-        raw = source.read()
+        # Coalesced read (shared 30 s window) so the 5–10 s dashboard poll doesn't read the battery
+        # cluster on every refresh. Fall back to a direct read only if nothing's cached yet (cold
+        # start) — preserving the original "unreadable source surfaces an error" behaviour.
+        raw = _current_sample(datetime.now(UTC)) or source.read()
         derived = reconstruct(raw)
         return {
             "dry_run": dry_run,
