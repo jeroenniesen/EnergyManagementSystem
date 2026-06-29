@@ -57,13 +57,20 @@ public enum ServerAddressValidator {
             return true
         }
         if !normalizedHost.contains(".") {
-            return true
+            return singleLabelAllowedHosts.contains(normalizedHost)
         }
 
         let labels = normalizedHost.split(separator: ".").map(String.init)
         guard let suffix = labels.last else { return false }
         return privateHostSuffixes.contains(suffix)
     }
+
+    private static let singleLabelAllowedHosts: Set<String> = [
+        "ems",
+        "ems-vpn",
+        "home-ems",
+        "localhost"
+    ]
 
     private static let privateHostSuffixes: Set<String> = [
         "corp",

@@ -168,3 +168,25 @@ Result:
 - The local/VPN-only rule is enforced in reusable core code, not duplicated in the view, and the tests cover both allowed and disallowed host classes called out by review.
 - The visible error state lives in `ConnectionView` so rejected public hosts fail before any live request is attempted.
 - Theme selection is now source-correct for light and dark appearance without changing the current package-target limitation; Task 5 still needs the real app target for compiled UI validation and screenshots.
+
+---
+
+## Task 3 review fix pass 3
+
+### What changed
+
+- Restricted single-label server hosts to an explicit allowlist in `ServerAddressValidator`.
+- Kept `localhost` plus the EMS-style local names `ems`, `ems-vpn`, and `home-ems` allowed.
+- Added test coverage for the newly accepted friendly names and for rejected arbitrary single-label hosts such as `example` and `google`.
+
+### Tests and results
+
+- `cd ios/EMSControl && DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer swift test`
+  - Passed: 13 tests, 0 failures, 0 unexpected failures.
+- `git diff --check -- ios/EMSControl docs/ios-validation/iteration-3-dashboard-notes.md`
+  - Passed: no output.
+
+### Files changed
+
+- `ios/EMSControl/Sources/EMSControlCore/ServerAddressValidator.swift`
+- `ios/EMSControl/Tests/EMSControlCoreTests/ServerAddressValidatorTests.swift`

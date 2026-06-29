@@ -6,6 +6,9 @@ final class ServerAddressValidatorTests: XCTestCase {
     func testAcceptsLocalAndPrivateHosts() {
         let allowedHosts = [
             "http://localhost:8080",
+            "http://ems",
+            "http://ems-vpn",
+            "http://home-ems",
             "http://127.0.0.1:8080",
             "http://192.168.1.10",
             "https://10.0.0.5",
@@ -22,6 +25,8 @@ final class ServerAddressValidatorTests: XCTestCase {
 
     func testRejectsPublicInternetHosts() {
         let blockedHosts = [
+            "http://example",
+            "https://google",
             "https://example.com",
             "https://openai.com",
             "https://1.1.1.1",
