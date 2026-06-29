@@ -35,3 +35,6 @@ playwright-report/
 
 # e2e throwaway DB (hermetic test isolation)
 ems/web/frontend/.e2e-data/
+
+# Installer's repo-local toolchain (Node fetched by scripts/install.sh)
+.tools/
