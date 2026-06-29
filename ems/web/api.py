@@ -9,6 +9,7 @@ import json
 import logging
 import secrets
 import threading
+from collections.abc import Callable
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
 from datetime import date as date_cls
@@ -78,6 +79,12 @@ from ems.storage.audit import AuditStore
 from ems.storage.cache import CacheStore
 from ems.storage.history import DERIVED_COLUMNS, RAW_COLUMNS, HistoryStore
 from ems.storage.settings import SettingsStore
+from ems.web.dashboard import (
+    DASHBOARD_CACHE_TTL_SECONDS,
+    DashboardSnapshotCache,
+    dashboard_shell,
+    degraded_section,
+)
 
 _log = logging.getLogger("ems.recorder")
 
@@ -113,6 +120,10 @@ def _bounded_put(cache: dict, key, value, maxn: int) -> None:
     cache[key] = value
     while len(cache) > maxn:
         cache.pop(next(iter(cache)))
+
+
+def battery_payload(build: Callable[[], dict[str, Any]]) -> dict[str, Any]:
+    return build()
 
 
 # Live meter/SoC reads are deliberately NEVER served from the persistent external cache (Tibber /
@@ -377,6 +388,7 @@ def create_app(
     # window, no matter how many clients are open. This is what stops the read flood that can knock
     # a tower off the network — every battery touch here is read-only, but the VOLUME was the issue.
     _tower_cache: dict[str, Any] = {"towers": None, "at": None}
+    _dashboard_cache = DashboardSnapshotCache(DASHBOARD_CACHE_TTL_SECONDS)
     # Single-flight locks: sync endpoints run in FastAPI's threadpool, so a cold start / cache
     # expiry with several tabs polling can have multiple threads miss the cache at once. The lock +
     # double-check means exactly ONE thread reads the hardware per window; the rest reuse its
@@ -1037,6 +1049,50 @@ def create_app(
         # Lets the UI show a token field only when writes are protected, and reflect auth state.
         return {"required": _effective_web_token() is not None,
                 "authenticated": _authorized(request)}
+
+    def _dashboard_snapshot_sync(now: datetime) -> dict[str, Any]:
+        out = dashboard_shell(now, server_name="Home EMS")
+        degraded: list[str] = []
+
+        def section(name: str, build: Callable[[], Any]) -> Any:
+            try:
+                return build()
+            except Exception:
+                degraded.append(name)
+                return degraded_section(
+                    f"{name.replace('_', ' ').title()} is temporarily unavailable.", now
+                )
+
+        out.update({
+            "readiness": section("readiness", lambda: _readiness(now).to_dict()),
+            "status": section("status", status),
+            "freshness": section(
+                "freshness",
+                lambda: freshness.snapshot(now) if freshness is not None else {},
+            ),
+            "strategy": section("strategy", strategy_endpoint),
+            "decision": section(
+                "decision",
+                lambda: {"state": "ok", "message": "Open /api/decision for explained details."},
+            ),
+            "alerts": section("alerts", alerts_endpoint),
+            "battery": section("battery", lambda: battery_payload(battery_endpoint)),
+            "charge_need": section("charge_need", charge_need_endpoint),
+            "savings": section("savings", savings_endpoint),
+            "energy_story": section(
+                "energy_story",
+                lambda: {"state": "ok", "message": "Open /api/energy-story for timeline details."},
+            ),
+            "ai_validation": section("ai_validation", ai_validation_latest),
+        })
+        out["degraded_sections"] = degraded
+        return out
+
+    @app.get("/api/dashboard")
+    def dashboard_endpoint() -> dict[str, Any]:
+        return _dashboard_cache.get_or_build(
+            lambda: _dashboard_snapshot_sync(datetime.now(UTC))
+        )
 
     @app.get("/api/freshness")
     def freshness_snapshot() -> dict:

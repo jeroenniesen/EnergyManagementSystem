@@ -89,3 +89,11 @@ Quick, concrete cheat-sheet for every integration. Details and rationale are in 
 - WebSocket `ws://<host>:8123/api/websocket` (auth → `subscribe_entities` / `call_service`) — preferred for live state, for calling the `indevolt.charge`/`discharge` **services**, and for setting the Indevolt **entities** (energy-mode select, standby button, discharge-limit number, grid-charge switch). REST as fallback.
 - **Entity mapping:** pin role→entity ids in config `entity_map` (don't rely only on discovery names); validate they exist with sane `state_class`/units at startup (`../SPEC.md` §5.2, §11.5).
 - EMS → HA entities via **MQTT discovery** (`homeassistant/<component>/<object_id>/config`, with `unique_id` + `device`). **Retain** discovery **config** topics (survive restarts); retain slow state (mode/strategy/reason), don't retain fast telemetry. Do **not** use `POST /api/states` for durable entities (transient, lost on restart).
+
+## Dashboard snapshot API
+
+- `GET /api/dashboard` returns one versioned cached snapshot for the native app contract.
+- Top-level keys: `api_version`, `generated_at`, `server_time`, `server_name`, `cache_ttl_seconds`, `degraded_sections`, `readiness`, `status`, `freshness`, `strategy`, `decision`, `alerts`, `battery`, `charge_need`, `savings`, `energy_story`, `ai_validation`.
+- `api_version` is `1`, `server_name` is `Home EMS`, and `cache_ttl_seconds` is `10`.
+- The snapshot is reused inside the TTL and built single-flight under concurrent requests.
+- A failing section degrades only that section: its key is added to `degraded_sections` and the section body becomes `{state: "degraded", message, updated_at}` instead of failing the whole response.
