@@ -233,7 +233,7 @@ struct ChatView: View {
     private var disabledReason: String {
         switch sessionContext {
         case .disconnected:
-            "Connect to a server or open Demo mode to ask free-form questions."
+            return "Connect to a server or open Demo mode to ask free-form questions."
         case .demo:
             return ""
         case .live:

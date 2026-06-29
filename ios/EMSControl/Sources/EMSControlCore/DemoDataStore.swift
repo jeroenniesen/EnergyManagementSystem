@@ -4,7 +4,7 @@ public struct DemoDataStore {
     private let bundle: Bundle
 
     public init(bundle: Bundle? = nil) {
-        self.bundle = bundle ?? .module
+        self.bundle = bundle ?? Self.defaultBundle
     }
 
     public func dashboardSnapshot() throws -> DashboardSnapshot {
@@ -30,3 +30,15 @@ public struct DemoDataStore {
         return try JSONDecoder.ems.decode(type, from: Data(contentsOf: url))
     }
 }
+
+private extension DemoDataStore {
+    static var defaultBundle: Bundle {
+#if SWIFT_PACKAGE
+        .module
+#else
+        Bundle(for: BundleToken.self)
+#endif
+    }
+}
+
+private final class BundleToken {}
