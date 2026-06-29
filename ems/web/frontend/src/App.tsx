@@ -223,7 +223,9 @@ export function App() {
   const [storyWindow, setStoryWindow] = useState<"past" | "next">("next");
   const [strategy, setStrategy] = useState<Strategy | null>(null);
   const [battery, setBattery] = useState<Battery | null>(null);
-  const [showBattery, setShowBattery] = useState(false);
+  // Which per-tower breakdown is open (if any): "soc" from the Battery level tile, "power" from the
+  // Battery (power) tile. Both open the same modal, emphasising the metric you clicked.
+  const [batteryDetail, setBatteryDetail] = useState<"soc" | "power" | null>(null);
   const [decision, setDecision] = useState<Decision | null>(null);
   const [alertsData, setAlertsData] = useState<AlertsResp | null>(null);
   const [chargeNeed, setChargeNeed] = useState<ChargeNeed | null>(null);
@@ -477,7 +479,7 @@ export function App() {
                 : "How much charge is in the home battery right now."
             }
             icon="battery-level"
-            onClick={batteryHasDetail ? () => setShowBattery(true) : undefined}
+            onClick={batteryHasDetail ? () => setBatteryDetail("soc") : undefined}
             testId="battery-tile"
           />
           <Metric
@@ -503,9 +505,21 @@ export function App() {
           <Metric
             label="Battery"
             value={fmtW(status.battery_power_w)}
-            hint={status.battery_power_w >= 0 ? "powering the house" : "charging up"}
-            title="Power leaving the battery to run the house, or going in to charge it."
+            hint={
+              batteryHasDetail
+                ? "see each battery →"
+                : status.battery_power_w >= 0
+                  ? "powering the house"
+                  : "charging up"
+            }
+            title={
+              batteryHasDetail
+                ? "Power leaving the battery to run the house, or going in to charge it — click to see each battery."
+                : "Power leaving the battery to run the house, or going in to charge it."
+            }
             icon="bolt"
+            onClick={batteryHasDetail ? () => setBatteryDetail("power") : undefined}
+            testId="battery-power-tile"
           />
           <Metric
             label="Home use"
@@ -604,9 +618,13 @@ export function App() {
         </section>
       )}
 
-      {view === "dashboard" && showBattery && batteryHasDetail && (
-        <Modal title="Battery — per tower" onClose={() => setShowBattery(false)} testId="battery-modal">
-          <BatteryChips battery={battery} />
+      {view === "dashboard" && batteryDetail && batteryHasDetail && (
+        <Modal
+          title={batteryDetail === "power" ? "Battery power — per tower" : "Battery — per tower"}
+          onClose={() => setBatteryDetail(null)}
+          testId="battery-modal"
+        >
+          <BatteryChips battery={battery} metric={batteryDetail} />
         </Modal>
       )}
     </div>

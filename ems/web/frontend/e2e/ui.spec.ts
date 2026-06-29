@@ -315,6 +315,43 @@ test.describe("EMS dashboard", () => {
     await expect(page.getByTestId("battery-modal")).toHaveCount(0);
   });
 
+  test("the Battery (power) tile opens a per-tower power breakdown", async ({ page }) => {
+    // Same cluster data, but clicked from the POWER tile — the breakdown emphasises each tower's
+    // power (with direction) instead of its SoC.
+    await page.route("**/api/battery", (route) =>
+      route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          current_mode: null,
+          capabilities: null,
+          aggregate: {
+            soc_pct: 49.5, power_w: -490, capacity_kwh: 10.98,
+            online_towers: 2, total_towers: 2,
+          },
+          towers: [
+            { ip: "192.0.2.53", role: "master", soc_pct: 50, power_w: -250,
+              capacity_kwh: 5.38, online: true },
+            { ip: "192.0.2.22", role: "slave", soc_pct: 49, power_w: 600,
+              capacity_kwh: 5.6, online: true },
+          ],
+        }),
+      }),
+    );
+    await page.goto("/");
+    const tile = page.getByTestId("battery-power-tile");
+    await expect(tile).toContainText("see each battery");
+    await tile.click();
+    const modal = page.getByTestId("battery-modal");
+    await expect(modal).toBeVisible();
+    await expect(modal).toContainText("Battery power — per tower");
+    // Per-tower power with direction: one charging ("in"), one discharging ("out").
+    await expect(page.getByTestId("tower-chips")).toContainText("250 W in");
+    await expect(page.getByTestId("tower-chips")).toContainText("600 W out");
+    await page.keyboard.press("Escape");
+    await expect(modal).toHaveCount(0);
+  });
+
   test("shows tonight's charge target with an explanation", async ({ page }) => {
     await page.goto("/");
     const cn = page.getByTestId("charge-need");
