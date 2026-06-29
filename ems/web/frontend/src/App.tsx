@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 
 import { type Battery, BatteryChips } from "./BatteryChips";
+import { EnergyDistribution } from "./EnergyDistribution";
 import { type EnergyStoryData, EnergyStory } from "./EnergyStory";
 import { Icon, type IconName } from "./icons";
 import {
@@ -554,6 +555,8 @@ export function App() {
       {view === "dashboard" && (
         <EnergyStory story={story} window={storyWindow} onWindow={setStoryWindow} />
       )}
+
+      {view === "dashboard" && <EnergyDistribution />}
 
       {view === "dashboard" && chargeNeed && <ChargeTarget n={chargeNeed} />}
 

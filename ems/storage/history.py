@@ -76,6 +76,12 @@ class HistoryStore:
     async def recent_derived_since(self, cutoff_iso: str, limit: int = 6000) -> list[dict]:
         return await self._since("derived_samples", _DERIVED_COLS, cutoff_iso, limit)
 
+    async def raw_between(self, start_iso: str, end_iso: str, limit: int = 6000) -> list[dict]:
+        return await self._between("raw_samples", _RAW_COLS, start_iso, end_iso, limit)
+
+    async def derived_between(self, start_iso: str, end_iso: str, limit: int = 6000) -> list[dict]:
+        return await self._between("derived_samples", _DERIVED_COLS, start_iso, end_iso, limit)
+
     async def _recent(self, table: str, cols: tuple[str, ...], limit: int) -> list[dict]:
         # table/cols are module constants (never user input) — no injection surface.
         query = f"SELECT {', '.join(cols)} FROM {table} ORDER BY rowid DESC LIMIT ?"
@@ -95,6 +101,20 @@ class HistoryStore:
         async with self._conn() as db:
             db.row_factory = aiosqlite.Row
             cur = await db.execute(query, (cutoff_iso, limit))
+            return [dict(r) for r in await cur.fetchall()]
+
+    async def _between(
+        self, table: str, cols: tuple[str, ...], start_iso: str, end_iso: str, limit: int
+    ) -> list[dict]:
+        # Rows in [start, end) — a bounded calendar-day window (oldest-first, capped). `ts` is
+        # UTC-ISO so a lexicographic comparison is a correct time comparison. table/cols are
+        # module constants — no injection. Bounded so an old day fetches only that day, not all
+        # history since (keeps load minimal).
+        query = (f"SELECT {', '.join(cols)} FROM {table} WHERE ts >= ? AND ts < ? "
+                 f"ORDER BY rowid ASC LIMIT ?")
+        async with self._conn() as db:
+            db.row_factory = aiosqlite.Row
+            cur = await db.execute(query, (start_iso, end_iso, limit))
             return [dict(r) for r in await cur.fetchall()]
 
     async def table_names(self) -> set[str]:

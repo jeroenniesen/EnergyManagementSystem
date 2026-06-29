@@ -10,6 +10,7 @@ import logging
 import secrets
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
+from datetime import date as date_cls
 from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo
@@ -35,6 +36,7 @@ from ems.control.override import (
 )
 from ems.diagnostics import build_diagnostics, overall_status
 from ems.domain import BatteryIntent
+from ems.energy_flow import build_daily_flows
 from ems.freshness import FreshnessTracker
 from ems.lifecycle import OwnershipState
 from ems.load_model import reconstruct
@@ -1627,6 +1629,35 @@ def create_app(
                 for s in slots
             ],
         }
+
+    @app.get("/api/energy-distribution")
+    async def energy_distribution(date: str | None = None) -> dict:
+        """A single LOCAL day's energy distribution (the Sankey view): where the day's energy came
+        from and went, in kWh. Rolled up on demand from recorded history — NOT on the dashboard
+        poll, and bounded to one day's rows, so it adds no device load (energy review: minimum
+        load). `date` is YYYY-MM-DD in the site timezone; omitted = today."""
+        now_local = datetime.now(UTC).astimezone(site_tz)
+        if date:
+            try:
+                d = date_cls.fromisoformat(date)
+            except ValueError:
+                return JSONResponse(
+                    {"detail": "date must be YYYY-MM-DD"}, status_code=422
+                )  # type: ignore[return-value]
+        else:
+            d = now_local.date()
+        day_start = datetime(d.year, d.month, d.day, tzinfo=site_tz)
+        day_end = day_start + timedelta(days=1)
+        partial = d == now_local.date()
+        # No store, or a future day → an honest empty distribution (has_data False), never an error.
+        if store is None or d > now_local.date():
+            return build_daily_flows([], [], day_start, day_end,
+                                     label=d.isoformat(), partial=partial).to_dict()
+        s_iso, e_iso = day_start.astimezone(UTC).isoformat(), day_end.astimezone(UTC).isoformat()
+        raw = await store.raw_between(s_iso, e_iso)
+        der = await store.derived_between(s_iso, e_iso)
+        return build_daily_flows(raw, der, day_start, day_end,
+                                 label=d.isoformat(), partial=partial).to_dict()
 
     @app.get("/api/export")
     async def export(

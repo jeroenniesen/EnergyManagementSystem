@@ -352,6 +352,52 @@ test.describe("EMS dashboard", () => {
     await expect(modal).toHaveCount(0);
   });
 
+  test("the daily energy-distribution Sankey renders and the day can be changed", async ({
+    page,
+  }) => {
+    const FLOWS = {
+      date: "2026-06-28", has_data: true, partial: false,
+      solar_to_home: 4.0, solar_to_battery: 3.0, solar_to_grid: 2.0,
+      grid_to_home: 1.0, grid_to_battery: 0.5, battery_to_home: 2.5,
+      solar_kwh: 9.0, grid_import_kwh: 1.5, grid_export_kwh: 2.0,
+      battery_charge_kwh: 3.5, battery_discharge_kwh: 2.5, home_kwh: 7.5,
+      self_sufficiency_pct: 86.7,
+    };
+    await page.route("**/api/energy-distribution**", (route) =>
+      route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(FLOWS) }),
+    );
+    await page.goto("/");
+    const card = page.getByTestId("energy-distribution");
+    await expect(card).toBeVisible();
+    await expect(page.getByTestId("sankey")).toBeVisible();
+    await expect(page.getByTestId("band-s-h")).toBeVisible(); // a solar→home band
+    await expect(page.getByTestId("dist-selfsuff")).toContainText("87%");
+    // Day navigation: starts at Today (next disabled); stepping back enables it.
+    await expect(page.getByTestId("dist-day")).toHaveText("Today");
+    await expect(page.getByTestId("dist-next")).toBeDisabled();
+    await page.getByTestId("dist-prev").click();
+    await expect(page.getByTestId("dist-day")).toHaveText("Yesterday");
+    await expect(page.getByTestId("dist-next")).toBeEnabled();
+  });
+
+  test("the energy-distribution card shows an empty state for a day with no data", async ({
+    page,
+  }) => {
+    await page.route("**/api/energy-distribution**", (route) =>
+      route.fulfill({
+        status: 200, contentType: "application/json",
+        body: JSON.stringify({ date: "2026-06-28", has_data: false, partial: false,
+          solar_to_home: 0, solar_to_battery: 0, solar_to_grid: 0, grid_to_home: 0,
+          grid_to_battery: 0, battery_to_home: 0, solar_kwh: 0, grid_import_kwh: 0,
+          grid_export_kwh: 0, battery_charge_kwh: 0, battery_discharge_kwh: 0, home_kwh: 0,
+          self_sufficiency_pct: null }),
+      }),
+    );
+    await page.goto("/");
+    await expect(page.getByTestId("dist-empty")).toBeVisible();
+    await expect(page.getByTestId("sankey")).toHaveCount(0);
+  });
+
   test("shows tonight's charge target with an explanation", async ({ page }) => {
     await page.goto("/");
     const cn = page.getByTestId("charge-need");

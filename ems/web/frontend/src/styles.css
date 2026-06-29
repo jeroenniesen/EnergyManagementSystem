@@ -267,6 +267,41 @@ body {
 .legend { display: flex; flex-wrap: wrap; gap: 12px; margin-top: 14px; }
 .legend-item { display: inline-flex; align-items: center; gap: 6px; font-size: 0.75rem; color: var(--muted); }
 .legend-swatch { width: 12px; height: 12px; border-radius: 3px; display: inline-block; }
+
+/* --- Daily energy-distribution (Sankey) card --- */
+.energy-dist { margin-top: 24px; background: var(--panel); border: 1px solid var(--line);
+  border-radius: var(--radius); padding: 18px; }
+.energy-dist-head { display: flex; align-items: flex-start; justify-content: space-between;
+  gap: 12px; flex-wrap: wrap; }
+.energy-dist .card-title { font-size: 1rem; font-weight: 600; margin: 0; }
+.energy-dist .card-sub { color: var(--muted); font-size: 0.82rem; margin: 4px 0 0; }
+.day-picker { display: inline-flex; align-items: center; gap: 6px; }
+.day-nav { width: 30px; height: 30px; border-radius: 8px; border: 1px solid var(--line);
+  background: var(--panel-2); color: var(--text); font-size: 1.1rem; line-height: 1; cursor: pointer; }
+.day-nav:hover:not(:disabled) { background: var(--line); }
+.day-nav:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.day-nav:disabled { opacity: 0.4; cursor: default; }
+.day-label { min-width: 84px; text-align: center; font-size: 0.85rem; font-weight: 600;
+  color: var(--text); }
+.dist-msg { color: var(--muted); font-size: 0.9rem; padding: 28px 0; text-align: center; }
+/* Scroll the wide diagram on narrow screens instead of shrinking the labels to nothing. */
+.sankey-scroll { overflow-x: auto; margin-top: 12px; }
+.sankey-scroll.is-loading { opacity: 0.55; transition: opacity 0.15s ease; }
+.sankey { width: 100%; min-width: 460px; height: auto; display: block; overflow: visible; }
+.sankey-band { opacity: 0.5; transition: opacity 0.12s ease; cursor: pointer; }
+.sankey-band:hover, .sankey-band:focus-visible { opacity: 0.85; outline: none; }
+.sankey-band.is-dim { opacity: 0.18; }
+.sankey-label { font-size: 12px; fill: var(--muted); }
+.sankey-name { fill: var(--text); font-weight: 600; }
+.sankey-kwh { font-size: 11px; fill: var(--muted); }
+.sankey-col { font-size: 10px; fill: var(--muted); letter-spacing: 0.08em; font-weight: 600; }
+@media (prefers-reduced-motion: reduce) {
+  .sankey-band, .sankey-scroll.is-loading { transition: none; }
+}
+.dist-summary { margin-top: 14px; font-size: 0.9rem; color: var(--muted); }
+.dist-headline { color: var(--text); }
+.dist-headline strong { color: var(--accent); }
+.dist-legend { margin-top: 10px; }
 .legend-line { width: 18px; height: 0; border-top-width: 2px; border-top-style: solid; display: inline-block; }
 .legend-actual { border-top-color: var(--accent); }
 .legend-predicted { border-top-color: var(--amber); border-top-style: dashed; }
