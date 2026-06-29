@@ -94,6 +94,7 @@ Quick, concrete cheat-sheet for every integration. Details and rationale are in 
 
 - `GET /api/dashboard` returns one versioned cached snapshot for the native app contract.
 - Top-level keys: `api_version`, `generated_at`, `server_time`, `server_name`, `cache_ttl_seconds`, `degraded_sections`, `readiness`, `status`, `freshness`, `strategy`, `decision`, `alerts`, `battery`, `charge_need`, `savings`, `energy_story`, `ai_validation`.
-- `api_version` is `1`, `server_name` is `Home EMS`, and `cache_ttl_seconds` is `10`.
+- `api_version` is `1`, `server_name` is `Home EMS`, and `cache_ttl_seconds` reflects the configured snapshot TTL (currently `10`).
+- `decision` embeds the backend decision payload (`intent`, `outcome`, `plan_reason`, validation, target, home state); `energy_story` embeds a real next-story summary (`headline`, `current_soc_pct`, `target_soc_pct`, `slots`, totals).
 - The snapshot is reused inside the TTL and built single-flight under concurrent requests.
 - A failing section degrades only that section: its key is added to `degraded_sections` and the section body becomes `{state: "degraded", message, updated_at}` instead of failing the whole response.

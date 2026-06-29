@@ -1051,8 +1051,11 @@ def create_app(
                 "authenticated": _authorized(request)}
 
     def _dashboard_snapshot_sync(now: datetime) -> dict[str, Any]:
-        out = dashboard_shell(now, server_name="Home EMS")
+        out = dashboard_shell(
+            now, server_name="Home EMS", cache_ttl_seconds=_dashboard_cache.ttl_seconds
+        )
         degraded: list[str] = []
+        reserve_pct = settings_cache["battery.min_reserve_soc"]
 
         def section(name: str, build: Callable[[], Any]) -> Any:
             try:
@@ -1071,18 +1074,12 @@ def create_app(
                 lambda: freshness.snapshot(now) if freshness is not None else {},
             ),
             "strategy": section("strategy", strategy_endpoint),
-            "decision": section(
-                "decision",
-                lambda: {"state": "ok", "message": "Open /api/decision for explained details."},
-            ),
+            "decision": section("decision", lambda: _decision_payload_sync(now)),
             "alerts": section("alerts", alerts_endpoint),
             "battery": section("battery", lambda: battery_payload(battery_endpoint)),
             "charge_need": section("charge_need", charge_need_endpoint),
             "savings": section("savings", savings_endpoint),
-            "energy_story": section(
-                "energy_story",
-                lambda: {"state": "ok", "message": "Open /api/energy-story for timeline details."},
-            ),
+            "energy_story": section("energy_story", lambda: _next_story_sync(reserve_pct)),
             "ai_validation": section("ai_validation", ai_validation_latest),
         })
         out["degraded_sections"] = degraded
@@ -1144,42 +1141,25 @@ def create_app(
             out.append({"key": "manual_override_active", "severity": "warning", "message": msg})
         return {"data_quality": dq, "alerts": out}
 
-    @app.get("/api/decision")
-    async def decision_endpoint() -> dict:
+    def _decision_payload_sync(now: datetime) -> dict:
         # What the controller would do right now, and why. An active override wins over the plan.
         if controller is None:
             return {"intent": None, "desired_mode": None, "applied": False,
                     "outcome": "unconfigured", "reason": "no controller",
                     "plan_reason": None, "override_active": False}
-        now = datetime.now(UTC)
-
-        # All the blocking/sync work (cached source/price/forecast reads + a read-only preview that
-        # may read battery mode) runs off the event loop, so a slow device can't freeze the loop.
-        def _snapshot():
-            car_charging = _car_charging(now)
-            intent, reason, override_active, tgt, pw, val = _effective_intent(now)
-            if intent is None:
-                return None, {"intent": None, "desired_mode": None, "applied": False,
-                              "outcome": "no_plan", "reason": "no plan slot for now",
-                              "plan_reason": None, "override_active": False,
-                              "car_charging": car_charging}
-            # preview() is read-only — a GET must never write to the battery or mutate counters.
-            # Pass the coalesced observed mode so this poll doesn't read battery mode every cycle.
-            d = controller.preview(intent, now, target_soc=tgt, power_w=pw,
-                                   observed_mode=_current_mode(now))
-            home = home_state(
-                _readiness(now), intent=str(d.intent), override_active=override_active,
-                simulated=dev_mode != "live",
-            )
-            return (intent, reason, override_active, tgt, pw, val, d, car_charging, home), None
-
-        computed, early = await asyncio.to_thread(_snapshot)
-        if early is not None:
-            return early
-        intent, reason, override_active, tgt, pw, val, d, car_charging, home = computed
-        # Phrase the deterministic plan reason via the explainer (verbatim unless AI is on; cached).
-        explained = await _explain(
-            reason, {"intent": str(intent), "desired_mode": str(d.desired_mode)}
+        car_charging = _car_charging(now)
+        intent, reason, override_active, tgt, pw, val = _effective_intent(now)
+        if intent is None:
+            return {"intent": None, "desired_mode": None, "applied": False,
+                    "outcome": "no_plan", "reason": "no plan slot for now",
+                    "plan_reason": None, "override_active": False,
+                    "car_charging": car_charging}
+        # preview() is read-only — a GET must never write to the battery or mutate counters.
+        # Pass the coalesced observed mode so this poll doesn't read battery mode every cycle.
+        d = controller.preview(intent, now, target_soc=tgt, power_w=pw, observed_mode=_current_mode(now))
+        home = home_state(
+            _readiness(now), intent=str(d.intent), override_active=override_active,
+            simulated=dev_mode != "live",
         )
         return {
             "intent": d.intent,
@@ -1188,8 +1168,6 @@ def create_app(
             "outcome": d.outcome,
             "reason": d.reason,
             "plan_reason": reason,
-            "plan_reason_explained": explained["text"],
-            "explanation_source": explained["source"],
             "override_active": override_active,
             # Surfaced so the dashboard can show "car charging — battery held".
             "car_charging": car_charging,
@@ -1201,6 +1179,25 @@ def create_app(
             "target_soc": tgt,
             # The single top-of-dashboard headline + tone the homeowner reads first (emotional #1).
             "home_state": home,
+        }
+
+    @app.get("/api/decision")
+    async def decision_endpoint() -> dict:
+        now = datetime.now(UTC)
+        # All the blocking/sync work (cached source/price/forecast reads + a read-only preview that
+        # may read battery mode) runs off the event loop, so a slow device can't freeze the loop.
+        payload = await asyncio.to_thread(_decision_payload_sync, now)
+        if payload.get("plan_reason") is None:
+            return payload
+        # Phrase the deterministic plan reason via the explainer (verbatim unless AI is on; cached).
+        explained = await _explain(
+            payload["plan_reason"],
+            {"intent": str(payload["intent"]), "desired_mode": str(payload["desired_mode"])},
+        )
+        return {
+            **payload,
+            "plan_reason_explained": explained["text"],
+            "explanation_source": explained["source"],
         }
 
     @app.get("/api/diagnostics")
@@ -1578,6 +1575,35 @@ def create_app(
 
         return await asyncio.to_thread(_compute)
 
+    def _forward_projection_sync():
+        """Sync projection for snapshot consumers. Uses the shared cached/fallback load profile so
+        the dashboard can embed a real plan summary without awaiting the richer async story path."""
+        pp = _current_plan()
+        if pp is None or solar_forecast is None:
+            return None
+        now, prices_, plan = pp
+        if not plan.slots:
+            return None
+        soc = _current_soc(now)
+        fc_slots = solar_forecast.slots()
+        solar_by = {f.start: f.p50_w for f in fc_slots}
+        load_by = _load_by([s.start for s in plan.slots])
+        need = compute_charge_need(
+            soc_pct=soc, usable_kwh=settings_cache["battery.usable_kwh"],
+            min_reserve_soc=settings_cache["battery.min_reserve_soc"],
+            night_reserve_kwh=settings_cache["battery.night_reserve_kwh"],
+            overnight_load_kwh=settings_cache["battery.overnight_load_kwh"],
+            round_trip_efficiency=settings_cache["planner.round_trip_efficiency"],
+        )
+        projected = project_energy(
+            plan.slots, start_soc_pct=soc, solar_w_by=solar_by,
+            load_w_by=load_by, model=_battery_model(),
+            charge_target_soc_pct=None,
+        )
+        return {"now": now, "current_soc": soc, "projected": projected, "need": need,
+                "deadline": sunset_after(fc_slots, now),
+                "price_by": {p.start: p.eur_per_kwh for p in prices_}}
+
     @app.get("/api/energy-forecast")
     async def energy_forecast() -> dict:
         # Recorded SoC (past) + a forward projection (future) of SoC and grid flow. Read-only.
@@ -1751,8 +1777,7 @@ def create_app(
             "message": "; ".join(parts) + ".",
         }
 
-    async def _next_story(reserve_pct: float) -> dict:
-        fp = await _forward_projection()
+    def _next_story_payload(fp: dict | None, reserve_pct: float, recent: list[dict]) -> dict:
         if fp is None:
             return _empty_story("next", reserve_pct, "No plan yet.")
         price_by, need, deadline = fp["price_by"], fp["need"], fp["deadline"]
@@ -1765,7 +1790,6 @@ def create_app(
         # GRID top-up only — solar charging the battery (self-consume slots) must NOT count as a
         # top-up. The totals already split charge by source from the slot action.
         grid_charge_kwh = totals["grid_charge_kwh"]
-        recent = await _recent_actuals(fp["now"])
         return {
             "window": "next", "now": fp["now"].isoformat(),
             "current_soc_pct": round(fp["current_soc"], 1), "reserve_soc_pct": reserve_pct,
@@ -1789,6 +1813,16 @@ def create_app(
                 recent, solar_forecast.slots() if solar_forecast is not None else []
             ),
         }
+
+    def _next_story_sync(reserve_pct: float) -> dict:
+        return _next_story_payload(_forward_projection_sync(), reserve_pct, [])
+
+    async def _next_story(reserve_pct: float) -> dict:
+        fp = await _forward_projection()
+        if fp is None:
+            return _empty_story("next", reserve_pct, "No plan yet.")
+        recent = await _recent_actuals(fp["now"])
+        return _next_story_payload(fp, reserve_pct, recent)
 
     async def _past_story(reserve_pct: float) -> dict:
         now = datetime.now(UTC)

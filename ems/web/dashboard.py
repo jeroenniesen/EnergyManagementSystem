@@ -50,13 +50,17 @@ class DashboardSnapshotCache:
         )
 
 
-def dashboard_shell(now: datetime, server_name: str = "Home EMS") -> dict[str, Any]:
+def dashboard_shell(
+    now: datetime,
+    server_name: str = "Home EMS",
+    cache_ttl_seconds: int = DASHBOARD_CACHE_TTL_SECONDS,
+) -> dict[str, Any]:
     stamp = now.isoformat()
     return {
         "api_version": DASHBOARD_API_VERSION,
         "generated_at": stamp,
         "server_time": stamp,
         "server_name": server_name or "Home EMS",
-        "cache_ttl_seconds": DASHBOARD_CACHE_TTL_SECONDS,
+        "cache_ttl_seconds": cache_ttl_seconds,
         "degraded_sections": [],
     }

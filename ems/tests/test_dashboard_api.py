@@ -3,7 +3,10 @@ from zoneinfo import ZoneInfo
 
 from fastapi.testclient import TestClient
 
+from ems.control.mode_controller import ModeController
 from ems.domain import RawSample
+from ems.lifecycle import Lifecycle
+from ems.sources.battery import MockBatteryDriver
 from ems.sources.forecast import MockSolarForecastSource
 from ems.sources.prices import MockPriceSource
 from ems.storage.history import HistoryStore
@@ -28,8 +31,11 @@ class CountingSource:
         )
 
 
-def app_for(tmp_path, source):
+def app_for(tmp_path, source, *, with_controller=False):
     db = str(tmp_path / "ems.sqlite")
+    controller = None
+    if with_controller:
+        controller = ModeController(MockBatteryDriver(), Lifecycle(dry_run=True), dry_run=True)
     return create_app(
         source,
         dry_run=True,
@@ -39,14 +45,15 @@ def app_for(tmp_path, source):
         price_source=MockPriceSource(AMS),
         solar_forecast=MockSolarForecastSource(AMS),
         settings_store=SettingsStore(db),
+        controller=controller,
     )
 
 
 def test_dashboard_returns_versioned_top_level_contract(tmp_path):
     src = CountingSource()
-    client = TestClient(app_for(tmp_path, src))
-
-    body = client.get("/api/dashboard").json()
+    with TestClient(app_for(tmp_path, src, with_controller=True)) as client:
+        client.post("/api/settings", json={"strategy.mode": "winter"})
+        body = client.get("/api/dashboard").json()
 
     assert body["api_version"] == 1
     assert body["cache_ttl_seconds"] == 10
@@ -68,6 +75,12 @@ def test_dashboard_returns_versioned_top_level_contract(tmp_path):
         "ai_validation",
     ):
         assert key in body
+    assert {"intent", "outcome", "plan_reason"} <= set(body["decision"])
+    assert body["decision"]["plan_reason"]
+    assert body["decision"]["intent"] is not None
+    assert body["energy_story"]["headline"]
+    assert body["energy_story"]["current_soc_pct"] is not None
+    assert isinstance(body["energy_story"]["slots"], list)
 
 
 def test_dashboard_snapshot_is_reused_inside_ttl(tmp_path):
