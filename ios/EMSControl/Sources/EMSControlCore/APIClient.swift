@@ -52,6 +52,18 @@ public struct APIClient: Sendable {
         return snapshot
     }
 
+    public func fetchLiveHealth() async throws -> HealthStatus {
+        try await get("health/live", as: HealthStatus.self)
+    }
+
+    public func fetchReadyHealth() async throws -> HealthStatus {
+        try await get("health/ready", as: HealthStatus.self)
+    }
+
+    public func fetchAuthStatus() async throws -> AuthStatus {
+        try await get("api/auth", as: AuthStatus.self)
+    }
+
     public func fetchExplainer() async throws -> ExplainerStatus {
         try await get("api/explainer", as: ExplainerStatus.self)
     }

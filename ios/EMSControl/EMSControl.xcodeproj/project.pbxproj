@@ -23,6 +23,7 @@
 		A93F94C222669DFBD1867493 /* demo-explainer.json in Resources */ = {isa = PBXBuildFile; fileRef = A447D414CC4B7CC4F68D91D0 /* demo-explainer.json */; };
 		B1C9A8640321DD1AA1C7D313 /* ServerAddressValidator.swift in Sources */ = {isa = PBXBuildFile; fileRef = C10928FD46649449E9D7A9F3 /* ServerAddressValidator.swift */; };
 		B73C5305189929545FF315BF /* ChatStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = BC6937650BBFD71CE57B8BF5 /* ChatStore.swift */; };
+		C32DD176D4AC4B7979994319 /* KeychainCredentialStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = F931E1AEC5676B6174B3A76F /* KeychainCredentialStore.swift */; };
 		C9F13CEE37D770D72BFECADC /* demo-faq.json in Resources */ = {isa = PBXBuildFile; fileRef = E720AFC468AEF7CC68D269FB /* demo-faq.json */; };
 		CE05537D943C4DEF4E95F80E /* demo-chat.json in Resources */ = {isa = PBXBuildFile; fileRef = 994E14FBDEF1C0F89AC9E28C /* demo-chat.json */; };
 		EEC0E74D439A37CB1C2D9F6C /* APIClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = 720F711D71B00AC0F6976700 /* APIClient.swift */; };
@@ -75,6 +76,7 @@
 		C4315BE65439DFDF4D4C0BA1 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		DFE9CA097DB9BAA988D849E2 /* EMSControlApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EMSControlApp.swift; sourceTree = "<group>"; };
 		E720AFC468AEF7CC68D269FB /* demo-faq.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = "demo-faq.json"; sourceTree = "<group>"; };
+		F931E1AEC5676B6174B3A76F /* KeychainCredentialStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeychainCredentialStore.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -116,6 +118,7 @@
 				BC6937650BBFD71CE57B8BF5 /* ChatStore.swift */,
 				851FDA73182D3541A3039A9A /* DashboardStore.swift */,
 				3699F1E6706AE136B68AB1C8 /* DemoDataStore.swift */,
+				F931E1AEC5676B6174B3A76F /* KeychainCredentialStore.swift */,
 				13253B7C77956C58739FA336 /* Models.swift */,
 				C10928FD46649449E9D7A9F3 /* ServerAddressValidator.swift */,
 				033DDC49ECE87F18564D3288 /* ServerDiscovery.swift */,
@@ -255,6 +258,7 @@
 				B73C5305189929545FF315BF /* ChatStore.swift in Sources */,
 				51B466CD33164832C83EA6F1 /* DashboardStore.swift in Sources */,
 				15F7E1D2E299E702BCF34E68 /* DemoDataStore.swift in Sources */,
+				C32DD176D4AC4B7979994319 /* KeychainCredentialStore.swift in Sources */,
 				869F6EB25417A0F2A4D2613A /* Models.swift in Sources */,
 				B1C9A8640321DD1AA1C7D313 /* ServerAddressValidator.swift in Sources */,
 				7E7073E900977C467AD6C209 /* ServerDiscovery.swift in Sources */,

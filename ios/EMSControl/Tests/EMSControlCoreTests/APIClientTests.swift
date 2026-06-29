@@ -37,6 +37,37 @@ final class APIClientTests: XCTestCase {
         XCTAssertEqual(transport.lastRequest?.value(forHTTPHeaderField: "Authorization"), "Bearer abc123")
     }
 
+    func testFetchAuthStatusUsesExpectedPathAndAuthorizationHeader() async throws {
+        let transport = RecordingTransport(data: authJSON(required: true, authenticated: true))
+        let client = APIClient(baseURL: URL(string: "http://ems.local:8080")!, token: "abc123", transport: transport)
+
+        let response = try await client.fetchAuthStatus()
+
+        XCTAssertEqual(response, AuthStatus(required: true, authenticated: true))
+        XCTAssertEqual(transport.lastRequest?.url?.path, "/api/auth")
+        XCTAssertEqual(transport.lastRequest?.httpMethod, "GET")
+        XCTAssertEqual(transport.lastRequest?.value(forHTTPHeaderField: "Authorization"), "Bearer abc123")
+    }
+
+    func testFetchHealthUsesExpectedPaths() async throws {
+        let liveTransport = RecordingTransport(data: healthJSON(status: "alive"))
+        let readyTransport = RecordingTransport(data: healthJSON(status: "ready"))
+
+        let live = try await APIClient(
+            baseURL: URL(string: "http://ems.local:8080")!,
+            transport: liveTransport
+        ).fetchLiveHealth()
+        let ready = try await APIClient(
+            baseURL: URL(string: "http://ems.local:8080")!,
+            transport: readyTransport
+        ).fetchReadyHealth()
+
+        XCTAssertEqual(live, HealthStatus(status: "alive"))
+        XCTAssertEqual(ready, HealthStatus(status: "ready"))
+        XCTAssertEqual(liveTransport.lastRequest?.url?.path, "/health/live")
+        XCTAssertEqual(readyTransport.lastRequest?.url?.path, "/health/ready")
+    }
+
     func testFetchExplainerUsesExpectedPathAndAuthorizationHeader() async throws {
         let transport = RecordingTransport(data: explainerJSON())
         let client = APIClient(baseURL: URL(string: "http://ems.local:8080")!, token: "abc123", transport: transport)
@@ -129,6 +160,23 @@ private func chatJSON() -> Data {
     {
       "answer": "Because prices are low.",
       "source": "faq"
+    }
+    """.data(using: .utf8)!
+}
+
+private func authJSON(required: Bool, authenticated: Bool) -> Data {
+    """
+    {
+      "required": \(required),
+      "authenticated": \(authenticated)
+    }
+    """.data(using: .utf8)!
+}
+
+private func healthJSON(status: String) -> Data {
+    """
+    {
+      "status": "\(status)"
     }
     """.data(using: .utf8)!
 }

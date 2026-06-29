@@ -5,7 +5,13 @@ struct ConnectionView: View {
     @Environment(DashboardStore.self) private var dashboardStore
     @Environment(\.colorScheme) private var colorScheme
     @State private var baseURL = "http://"
+    @State private var accessToken = ""
+    @State private var tokenRequired = false
+    @State private var isConnecting = false
     @State private var validationError: String?
+
+    private let discovery = ServerDiscovery()
+    private let credentialStore = KeychainCredentialStore()
 
     private var theme: EMSTheme {
         colorScheme == .dark ? .dark : .light
@@ -49,7 +55,28 @@ struct ConnectionView: View {
                                 }
                                 .onChange(of: baseURL) { _, _ in
                                     validationError = nil
+                                    tokenRequired = false
                                 }
+
+                            if tokenRequired {
+                                SecureField("Access token", text: $accessToken)
+                                    .textInputAutocapitalization(.never)
+                                    .autocorrectionDisabled()
+                                    .padding(14)
+                                    .background(themeColor(theme.secondaryPanel))
+                                    .foregroundStyle(themeColor(theme.text))
+                                    .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+                                    .overlay {
+                                        RoundedRectangle(cornerRadius: 12, style: .continuous)
+                                            .stroke(themeColor(theme.line), lineWidth: 1)
+                                    }
+                            }
+
+                            if showsHTTPTokenWarning {
+                                Text("Local HTTP can expose this token to devices on the same trusted LAN or VPN.")
+                                    .font(.footnote)
+                                    .foregroundStyle(themeColor(theme.amber))
+                            }
                         }
                         .padding(20)
                         .background(themeColor(theme.panel))
@@ -60,17 +87,11 @@ struct ConnectionView: View {
                         }
 
                         VStack(spacing: 12) {
-                            Button("Connect") {
-                                do {
-                                    let url = try ServerAddressValidator.validatedBaseURL(baseURL)
-                                    validationError = nil
-                                    dashboardStore.client = APIClient(baseURL: url)
-                                    Task { await dashboardStore.refresh() }
-                                } catch {
-                                    validationError = (error as? LocalizedError)?.errorDescription ?? String(describing: error)
-                                }
+                            Button(isConnecting ? "Connecting..." : "Connect") {
+                                Task { await connect() }
                             }
                             .buttonStyle(PrimaryEMSButtonStyle(theme: theme))
+                            .disabled(isConnecting)
 
                             Button("View Demo") {
                                 dashboardStore.loadDemo()
@@ -97,6 +118,56 @@ struct ConnectionView: View {
             }
             .navigationTitle("EMS Server")
         }
+    }
+
+    private var trimmedToken: String {
+        accessToken.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private var showsHTTPTokenWarning: Bool {
+        baseURL.lowercased().trimmingCharacters(in: .whitespacesAndNewlines).hasPrefix("http://") &&
+        !trimmedToken.isEmpty
+    }
+
+    private func connect() async {
+        isConnecting = true
+        defer { isConnecting = false }
+
+        do {
+            let url = try discovery.normalizedManualURL(baseURL)
+            let token = try trimmedToken.nilIfEmpty ?? credentialStore.token(for: url) ?? ""
+            let client = APIClient(baseURL: url, token: token.nilIfEmpty)
+
+            _ = try await client.fetchLiveHealth()
+            _ = try await client.fetchReadyHealth()
+            let auth = try await client.fetchAuthStatus()
+
+            if auth.required && token.isEmpty {
+                tokenRequired = true
+                validationError = "This EMS requires an access token."
+                return
+            }
+            if auth.required && !auth.authenticated {
+                tokenRequired = true
+                validationError = "Access token rejected."
+                return
+            }
+            if !token.isEmpty {
+                try credentialStore.saveToken(token, for: url)
+            }
+
+            validationError = nil
+            dashboardStore.client = client
+            await dashboardStore.refresh()
+        } catch {
+            validationError = (error as? LocalizedError)?.errorDescription ?? String(describing: error)
+        }
+    }
+}
+
+private extension String {
+    var nilIfEmpty: String? {
+        isEmpty ? nil : self
     }
 }
 

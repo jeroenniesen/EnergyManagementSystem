@@ -192,6 +192,24 @@ public struct ExplainerStatus: Codable, Equatable {
     }
 }
 
+public struct AuthStatus: Codable, Equatable {
+    public let required: Bool
+    public let authenticated: Bool
+
+    public init(required: Bool, authenticated: Bool) {
+        self.required = required
+        self.authenticated = authenticated
+    }
+}
+
+public struct HealthStatus: Codable, Equatable {
+    public let status: String
+
+    public init(status: String) {
+        self.status = status
+    }
+}
+
 public enum JSONValue: Codable, Equatable {
     case string(String)
     case number(Double)
