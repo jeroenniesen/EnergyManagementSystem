@@ -323,7 +323,8 @@ body {
 .story-stat-label { font-size: 0.7rem; color: var(--muted); text-transform: uppercase; letter-spacing: 0.03em; }
 
 /* battery action colours (shared by the band + legend swatches) */
-.seg-charge { background: var(--accent); }
+.seg-solar_charge { background: var(--accent); } /* green = filled by the roof (free) */
+.seg-grid_charge { background: var(--winter); } /* blue = topped up from the grid (bought) */
 .seg-discharge { background: var(--amber); }
 .seg-self_consume { background: #2a313c; }
 .seg-hold { background: #5b6473; }

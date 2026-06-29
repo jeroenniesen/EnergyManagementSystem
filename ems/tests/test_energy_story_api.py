@@ -10,15 +10,15 @@ from ems.sources.mock import MockSource
 from ems.sources.prices import MockPriceSource
 from ems.storage.history import HistoryStore
 from ems.storage.settings import SettingsStore
-from ems.web.api import create_app
+from ems.web.api import _action_from_battery, _action_from_intent, create_app
 
 AMS = ZoneInfo("Europe/Amsterdam")
 
 _SLOT_KEYS = {"start", "soc_pct", "grid_w", "solar_w", "battery_w", "load_w", "eur_per_kwh",
               "action"}
-_TOTAL_KEYS = {"import_kwh", "export_kwh", "solar_kwh", "charge_kwh", "discharge_kwh", "load_kwh",
-               "grid_cost_eur", "self_sufficiency_pct", "soc_start_pct", "soc_end_pct",
-               "soc_min_pct", "soc_max_pct"}
+_TOTAL_KEYS = {"import_kwh", "export_kwh", "solar_kwh", "charge_kwh", "grid_charge_kwh",
+               "solar_charge_kwh", "discharge_kwh", "load_kwh", "grid_cost_eur",
+               "self_sufficiency_pct", "soc_start_pct", "soc_end_pct", "soc_min_pct", "soc_max_pct"}
 _TOP_KEYS = {"window", "now", "current_soc_pct", "reserve_soc_pct", "target_soc_pct", "target_kwh",
              "target_deadline", "current_price_eur_per_kwh", "slots", "totals", "headline"}
 
@@ -38,6 +38,32 @@ def _app(tmp_path, *, with_recorder=False):
     )
 
 
+def test_charge_actions_split_solar_from_grid():
+    # The whole point of the four-block timeline: a charging battery reads as SOLAR when no grid
+    # import feeds it, and GRID when the grid is importing to do it.
+    # Actuals (derived from measured battery + grid power):
+    assert _action_from_battery(-1000.0, grid_w=-200.0) == "solar_charge"  # charging, exporting
+    assert _action_from_battery(-1000.0, grid_w=20.0) == "solar_charge"    # charging, ~no import
+    assert _action_from_battery(-1000.0, grid_w=900.0) == "grid_charge"    # charging while buying
+    assert _action_from_battery(1000.0, grid_w=0.0) == "discharge"
+    assert _action_from_battery(0.0, grid_w=0.0) == "idle"
+    # Plan (derived from intent + projected battery power):
+    assert _action_from_intent("grid_charge_to_target", battery_w=-1000.0) == "grid_charge"
+    assert _action_from_intent("allow_self_consumption", battery_w=-1000.0) == "solar_charge"
+    assert _action_from_intent("allow_self_consumption", battery_w=300.0) == "self_consume"
+    assert _action_from_intent("discharge_for_load", battery_w=1000.0) == "discharge"
+
+
+def test_totals_split_charge_into_grid_and_solar(tmp_path):
+    # The kWh totals carry the same split, and grid+solar charge sum to the overall charge total.
+    with TestClient(_app(tmp_path)) as c:
+        t = c.get("/api/energy-story?window=next").json()["totals"]
+    assert {"grid_charge_kwh", "solar_charge_kwh"} <= set(t)
+    # The two sources sum to (at most) the overall charge total.
+    split = round(t["grid_charge_kwh"] + t["solar_charge_kwh"], 2)
+    assert split <= round(t["charge_kwh"], 2) + 0.01
+
+
 def test_next_story_has_the_unified_shape_and_a_headline(tmp_path):
     with TestClient(_app(tmp_path)) as c:
         b = c.get("/api/energy-story?window=next").json()
@@ -45,7 +71,8 @@ def test_next_story_has_the_unified_shape_and_a_headline(tmp_path):
     assert set(b) >= _TOP_KEYS
     assert len(b["slots"]) > 0
     assert _SLOT_KEYS <= set(b["slots"][0])
-    assert b["slots"][0]["action"] in {"charge", "discharge", "hold", "self_consume", "idle"}
+    assert b["slots"][0]["action"] in {
+        "grid_charge", "solar_charge", "discharge", "hold", "self_consume", "idle"}
     assert _TOTAL_KEYS <= set(b["totals"])
     assert isinstance(b["headline"], str) and "Next 24h" in b["headline"]
     assert b["target_soc_pct"] is not None
@@ -73,10 +100,10 @@ def test_verdict_and_headline_never_claim_a_phantom_grid_top_up(tmp_path):
     # The bug we fixed: the verdict said "EMS tops up … from the grid" and the headline promised a
     # top-up, but the plan contained NO grid-charge slot (solar charging was being miscounted as a
     # grid top-up). Invariant: "top up"/"tops up" language may appear ONLY when the plan actually
-    # has a grid-charge slot (action == "charge"). Otherwise it's a lie about the plan.
+    # has a grid-charge slot (action == "grid_charge"). Otherwise it's a lie about the plan.
     with TestClient(_app(tmp_path)) as c:
         b = c.get("/api/energy-story?window=next").json()
-    has_grid_charge = any(s["action"] == "charge" for s in b["slots"])
+    has_grid_charge = any(s["action"] == "grid_charge" for s in b["slots"])
     claims_top_up = "top up" in b["on_track"]["message"].lower() \
         or "tops up" in b["on_track"]["message"].lower() \
         or "top up" in b["headline"].lower()
@@ -111,7 +138,7 @@ def test_past_story_same_shape_built_from_history(tmp_path):
     assert "Last 24h" in b["headline"] or "No history" in b["headline"]
     if b["slots"]:
         assert _SLOT_KEYS <= set(b["slots"][0])
-        assert b["slots"][0]["action"] in {"charge", "discharge", "idle"}
+        assert b["slots"][0]["action"] in {"grid_charge", "solar_charge", "discharge", "idle"}
 
 
 def test_past_story_empty_without_history(tmp_path):

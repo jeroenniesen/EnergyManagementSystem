@@ -67,7 +67,8 @@ const ON_TRACK_TONE: Record<string, string> = {
 };
 
 const ACTION_LEGEND = [
-  { key: "charge", label: "Charge" },
+  { key: "solar_charge", label: "Charge from solar" },
+  { key: "grid_charge", label: "Charge from grid" },
   { key: "discharge", label: "Power the house" },
   { key: "self_consume", label: "Use solar first" },
   { key: "hold", label: "Hold" },

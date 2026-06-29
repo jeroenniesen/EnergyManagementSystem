@@ -125,21 +125,35 @@ RECENT_HOURS = 3
 
 # --- Unified energy-story slot/totals (shared by the past + next windows so they never drift) ---
 _INTENT_ACTION = {
-    "grid_charge_to_target": "charge",
+    "grid_charge_to_target": "grid_charge",
     "discharge_for_load": "discharge",
     "hold_reserve": "hold",
     "allow_self_consumption": "self_consume",
 }
 
 
-def _action_from_intent(intent: object) -> str:
-    return _INTENT_ACTION.get(str(intent), "self_consume")
+def _charge_kind(grid_w: float) -> str:
+    """A charging battery is GRID-fed when the grid is importing to do it, and SOLAR-fed otherwise
+    (filled by surplus from the roof). Lets the timeline separate "topped up by buying power" from
+    "filled by the sun" — the insight the operator asked for."""
+    return "grid_charge" if grid_w > 50.0 else "solar_charge"
 
 
-def _action_from_battery(battery_w: float) -> str:
+def _action_from_intent(intent: object, battery_w: float) -> str:
+    action = _INTENT_ACTION.get(str(intent), "self_consume")
+    # In self-consumption the battery only ever charges from solar surplus (the vendor never
+    # grid-charges in this mode — that needs GRID_CHARGE_TO_TARGET), so a charging slot here is a
+    # SOLAR charge. Surface it as its own block instead of the generic "use solar first".
+    if action == "self_consume" and battery_w < -50.0:
+        return "solar_charge"
+    return action
+
+
+def _action_from_battery(battery_w: float, grid_w: float) -> str:
     # What the battery actually did this slot (+discharge / −charge); a small dead-band = idle.
+    # A charge is split by where the energy came from (grid import vs solar surplus).
     if battery_w < -50.0:
-        return "charge"
+        return _charge_kind(grid_w)
     if battery_w > 50.0:
         return "discharge"
     return "idle"
@@ -174,6 +188,11 @@ def _uslot_totals(slots: list[dict]) -> dict:
         "import_kwh": round(imp, 2), "export_kwh": round(exp, 2),
         "solar_kwh": round(sum(kwh(s["solar_w"]) for s in slots), 2),
         "charge_kwh": round(sum(kwh(max(0.0, -s["battery_w"])) for s in slots), 2),
+        # The charge total, split by source (grid top-up vs solar surplus) using the slot action.
+        "grid_charge_kwh": round(
+            sum(kwh(max(0.0, -s["battery_w"])) for s in slots if s["action"] == "grid_charge"), 2),
+        "solar_charge_kwh": round(
+            sum(kwh(max(0.0, -s["battery_w"])) for s in slots if s["action"] == "solar_charge"), 2),
         "discharge_kwh": round(sum(kwh(max(0.0, s["battery_w"])) for s in slots), 2),
         "load_kwh": round(load, 2),
         "grid_cost_eur": cost_eur if priced else None,
@@ -1435,7 +1454,7 @@ def create_app(
         story = build_past_story(raw, der, prices, now)
         return [
             _uslot(ps.start, ps.soc_pct, ps.grid_w, ps.solar_w, ps.battery_w, ps.load_w,
-                   ps.eur_per_kwh, _action_from_battery(ps.battery_w))
+                   ps.eur_per_kwh, _action_from_battery(ps.battery_w, ps.grid_w))
             for ps in story.slots
         ]
 
@@ -1521,15 +1540,13 @@ def create_app(
         price_by, need, deadline = fp["price_by"], fp["need"], fp["deadline"]
         slots = [
             _uslot(p.start, p.soc_pct, p.grid_w, p.solar_w, p.battery_w, p.load_w,
-                   price_by.get(p.start), _action_from_intent(p.intent))
+                   price_by.get(p.start), _action_from_intent(p.intent, p.battery_w))
             for p in fp["projected"]
         ]
         totals = _uslot_totals(slots)
-        # GRID top-up only (a "charge" action = GRID_CHARGE_TO_TARGET); solar charging the battery
-        # happens in self-consume slots and must NOT count as a top-up.
-        grid_charge_kwh = (
-            sum(max(0.0, -s["battery_w"]) for s in slots if s["action"] == "charge") * 0.25 / 1000.0
-        )
+        # GRID top-up only — solar charging the battery (self-consume slots) must NOT count as a
+        # top-up. The totals already split charge by source from the slot action.
+        grid_charge_kwh = totals["grid_charge_kwh"]
         recent = await _recent_actuals(fp["now"])
         return {
             "window": "next", "now": fp["now"].isoformat(),
@@ -1564,7 +1581,7 @@ def create_app(
         story = build_past_story(raw, der, prices, now)
         slots = [
             _uslot(ps.start, ps.soc_pct, ps.grid_w, ps.solar_w, ps.battery_w, ps.load_w,
-                   ps.eur_per_kwh, _action_from_battery(ps.battery_w))
+                   ps.eur_per_kwh, _action_from_battery(ps.battery_w, ps.grid_w))
             for ps in story.slots
         ]
         if not slots:

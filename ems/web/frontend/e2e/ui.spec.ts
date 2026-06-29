@@ -109,7 +109,7 @@ test.describe("EMS dashboard", () => {
         soc_pct: soc0 + i, grid_w: 100, solar_w: 800 + i * 50, battery_w: -200,
         load_w: 400, eur_per_kwh: 0.2, action,
       }));
-    const recent = mk(12, base - 12 * SLOT, 40, "charge"); // last 3h, actual
+    const recent = mk(12, base - 12 * SLOT, 40, "grid_charge"); // last 3h, actual (grid-fed charge)
     const slots = mk(20, base, 52, "self_consume"); // the plan
     const totals = {
       import_kwh: 1, export_kwh: 0, solar_kwh: 5, charge_kwh: 2, discharge_kwh: 1, load_kwh: 4,
