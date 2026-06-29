@@ -4,9 +4,10 @@ from ems.config import Config, load_config
 
 
 def _no_source_env(monkeypatch):
-    # Isolate from a leaked EMS_SOURCES/EMS_PRICES in the dev/CI shell (load_config reads them).
+    # Isolate from a leaked EMS_SOURCES/EMS_PRICES/EMS_CYCLE_SECONDS in the dev/CI shell.
     monkeypatch.delenv("EMS_SOURCES", raising=False)
     monkeypatch.delenv("EMS_PRICES", raising=False)
+    monkeypatch.delenv("EMS_CYCLE_SECONDS", raising=False)
 
 
 def test_load_defaults_when_minimal(tmp_path: Path, monkeypatch):
@@ -21,7 +22,20 @@ def test_load_defaults_when_minimal(tmp_path: Path, monkeypatch):
         web_port=8080,
         db_path="ems/data/ems.sqlite",
         cycle_seconds=300.0,
+        retention_days=90,
     )
+
+
+def test_cycle_seconds_env_override_and_retention(tmp_path: Path, monkeypatch):
+    # Production cadence is 300 s by default; EMS_CYCLE_SECONDS lets a dev sample faster without
+    # editing the file. retention_days comes from the history section (default 90).
+    _no_source_env(monkeypatch)
+    p = tmp_path / "config.yaml"
+    p.write_text("history:\n  retention_days: 30\n")
+    assert load_config(p).cycle_seconds == 300.0
+    assert load_config(p).retention_days == 30
+    monkeypatch.setenv("EMS_CYCLE_SECONDS", "5")
+    assert load_config(p).cycle_seconds == 5.0  # env override wins (dev fast-sampling)
 
 
 def test_dev_mock_forces_dry_run(tmp_path: Path):

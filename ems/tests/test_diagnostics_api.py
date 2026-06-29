@@ -59,3 +59,25 @@ def test_diagnostics_fully_wired_app_is_healthy(tmp_path):
     assert b["overall"] == "ok"
     store = next(x for x in b["checks"] if x["key"] == "history_store")
     assert store["status"] == "ok"
+
+
+def test_diagnostics_exposes_long_run_storage_and_recorder_health(tmp_path):
+    # Long-running review: the operator must be able to SEE DB/WAL size, row counts, and recorder
+    # health (so a stuck recorder / growing DB is visible, not inferred from stale data).
+    from ems.sense import Recorder
+
+    fr = FreshnessTracker()
+    fr.register(*SIGNALS)
+    store = HistoryStore(str(tmp_path / "ems.sqlite"))
+    app = create_app(
+        MockSource(), dry_run=True, dev_mode="mock", store=store,
+        settings_store=SettingsStore(str(tmp_path / "ems.sqlite")),
+        recorder=Recorder(MockSource(), store, fr, cycle_seconds=999),
+    )
+    with TestClient(app) as c:  # lifespan takes one startup sample → recorder reports success
+        b = c.get("/api/diagnostics").json()
+    assert b["storage"] is not None
+    assert {"db_bytes", "wal_bytes", "raw_rows", "derived_rows"} <= set(b["storage"])
+    assert b["recorder"] is not None
+    assert {"last_success_at", "consecutive_failures", "last_error"} <= set(b["recorder"])
+    assert b["recorder"]["consecutive_failures"] == 0  # startup sample succeeded

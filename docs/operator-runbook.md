@@ -41,9 +41,10 @@
 
 - **Liveness/readiness:** `GET /health/live` (process up), `GET /health/ready` (config loaded, HA reachable or explicitly degraded, DB writable). The Docker `healthcheck` polls `/health/ready`.
 - **NTP:** the Pi's clock **must** be synced (price/charge windows are time-critical). `health.ntp_check` alerts on drift; fix with the OS time-sync service.
-- **DB growth:** `retention_days` purges old samples; `vacuum_on_start` reclaims space. If the disk fills, free space then restart.
-- **Logs:** rotating file logs (size/age capped). Tokens are redacted from logs and debug dumps.
-- **Graceful shutdown:** on `docker compose stop`, the EMS issues **one final safe-restore command** — the battery's captured original vendor mode, or `AUTO` if unknown — so it never stops mid-forced-charge/discharge; it then finishes the current DB write and stops, sending no further control commands (`stop_grace_period: 30s`).
+- **DB growth:** a daily maintenance task purges samples older than `history.retention_days` (default 90; 0 = keep forever) from both sample tables atomically, then truncates the WAL and runs an incremental vacuum to reclaim space. Timestamp indexes keep the story/forecast windows fast as the DB ages. DB/WAL size + sample row counts are on `GET /api/diagnostics` (`storage`). If the disk fills, free space then restart.
+- **Logs:** when `EMS_LOG_FILE` is set (the Mac LaunchAgent install sets it to `ems/data/server.log`), app logs go to a **size-rotated** file (`EMS_LOG_MAX_MB`×`EMS_LOG_BACKUPS`, default 5 MB × 5); per-request access logging is off. `server-crash.log` holds only launchd start/crash output. Tokens are redacted from logs and debug dumps.
+- **Graceful shutdown:** on a clean stop (`docker compose stop`, a launchd stop/restart, or SIGTERM) **in operational mode**, the EMS issues **one final safe-restore command** — the battery's captured original vendor mode, or `AUTO` if unknown, and never a forced charge/discharge — so it never stops mid-forced-charge/discharge. It's bounded (won't hang shutdown on a slow/offline device) and audited (`shutdown_restore`). In dry-run nothing is written.
+- **Recorder health:** if sampling stops (full disk, DB lock, dead device), `GET /api/diagnostics` (`recorder`) shows `consecutive_failures`, `last_success_at`, and `last_error` — so the cause is visible, not just inferred from stale data.
 
 ## When something looks wrong
 

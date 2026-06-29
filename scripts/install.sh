@@ -95,13 +95,19 @@ cat > "$PLIST" <<PLIST
     <string>ems.main:app</string>
     <string>--host</string><string>0.0.0.0</string>
     <string>--port</string><string>$PORT</string>
+    <string>--no-access-log</string>
   </array>
   <key>EnvironmentVariables</key>
-  <dict><key>PATH</key><string>${NODE_PATH_ENTRY}$HOME/.local/bin:$HOME/.cargo/bin:/usr/bin:/bin:/usr/sbin:/sbin</string></dict>
+  <dict>
+    <key>PATH</key><string>${NODE_PATH_ENTRY}$HOME/.local/bin:$HOME/.cargo/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+    <key>EMS_LOG_FILE</key><string>$REPO/ems/data/server.log</string>
+  </dict>
   <key>RunAtLoad</key><true/>
   <key>KeepAlive</key><true/>
-  <key>StandardOutPath</key><string>$REPO/ems/data/server.log</string>
-  <key>StandardErrorPath</key><string>$REPO/ems/data/server.log</string>
+  <!-- App logs go to the size-rotated server.log (EMS_LOG_FILE). launchd captures only pre-logging
+       startup/crash output here, which stays tiny (per-request access logging is off). -->
+  <key>StandardOutPath</key><string>$REPO/ems/data/server-crash.log</string>
+  <key>StandardErrorPath</key><string>$REPO/ems/data/server-crash.log</string>
 </dict></plist>
 PLIST
 launchctl unload "$PLIST" 2>/dev/null || true

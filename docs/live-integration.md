@@ -1,8 +1,10 @@
-# Live device integration (read-only senses)
+# Live device integration
 
-How to run the EMS against the real devices. **Everything here is read-only — the EMS never
-commands the battery.** Two independent safeguards: there is no live battery *writer* in the
-codebase (the controller always uses the mock driver), and live mode forces `dry_run=true`.
+How to run the EMS against the real devices. **Sensing is read-only and is the default.** Battery
+*control* is a separate, deliberately-armed step: it stays OFF (`dry_run`, no writes) until you turn
+on **`control.operational`** in the UI/settings **and** a live Indevolt IP is configured — only then
+is the write driver armed. See [Hands (battery control)](#hands-battery-control) below and
+`docs/control-model.md` for the ownership state machine and guardrails.
 
 ## Enable live mode
 
@@ -65,19 +67,22 @@ SetData registers (mode 47005 · state 47015 · power 47016 · target-SoC 47017)
 write by re-reading. The full chain (plan intent → `ModeController.decide()` → `driver.apply()` →
 correct `SetData`, confirmed) is unit-tested end-to-end against a mock device.
 
-It is **triple-gated so it cannot change your battery** in the shipped wiring:
-1. `armed=False` — `apply()` refuses and returns "unconfirmed" without writing.
-2. No write transport — `rpc_post` defaults to a stub that raises; a live write requires the
-   operator to inject a real POST transport (main.py injects none).
-3. `dry_run` is forced on for live, so `decide()` never reaches `apply()`.
+Control is **off by default and gated** — the battery is never written until you deliberately arm
+it. In the shipped config the driver is built unarmed and `dry_run` stays on. `build_wiring`
+(`ems/connection.py`) arms the real driver (a real `SetData` transport, `armed=True`) and lifts
+`dry_run` **only when both** hold:
+1. **`control.operational` is enabled** (Settings → Control & safety; off by default), and
+2. a live **Indevolt IP** is configured with live devices on.
 
-To actually control the battery you would: provision Indevolt OpenData + supply `INDEVOLT_KEY`,
-inject a real SetData transport, construct the driver with `armed=True` (the flag is read-only
-after construction), and lift `dry_run` — a deliberate, vetted, operator-armed step. **I did not
-do this** (you asked me not to change the battery).
+When neither is true (the default), `apply()` refuses to write and `decide()` is never even reached
+in dry-run. Going live is therefore two explicit, separate UI steps — turn on live devices
+(read-only sensing), then much later turn on operational control.
 
-Arming follow-up: `apply(mode)` currently targets 100% SoC on CHARGE/DISCHARGE; before arming,
-wire the plan's target SoC / power through to `setdata_registers` (it already accepts them).
+Once armed, extra guardrails still apply: idempotency (no write unless the mode actually changes),
+minimum dwell, a daily switch cap (failed writes count too), fail-safe to `AUTO` on unsafe data, and
+a **graceful-shutdown safe-restore** that hands the battery back to its safe vendor mode on stop
+(see the operator runbook). The plan's target SoC / power are wired through to `setdata_registers`,
+so `apply()` charges to the planned target, never silently to 100%.
 
 ## What's intentionally NOT done
 

@@ -119,9 +119,13 @@ class ModeController:
         return self.switches_today
 
     def _gate(
-        self, intent: BatteryIntent, now: datetime, desired: PhysicalMode
+        self, intent: BatteryIntent, now: datetime, desired: PhysicalMode,
+        *, observed_mode: PhysicalMode | None = None,
     ) -> ActionDecision | None:
-        """Return a blocking ActionDecision, or None if a write should proceed. No side effects."""
+        """Return a blocking ActionDecision, or None if a write should proceed. No side effects.
+        `observed_mode`, when supplied (by the read-only UI preview), is used for the idempotency
+        check INSTEAD of reading the device — so a dashboard poll doesn't add a battery mode-read
+        every cycle. The write path (decide) passes None and always reads fresh hardware."""
         if self.dry_run:
             return ActionDecision(
                 intent, desired, False, "dry_run", f"dry-run: would set {desired}"
@@ -131,7 +135,8 @@ class ModeController:
                 intent, desired, False, "not_controlling",
                 f"not commanding (state={self.lifecycle.state})",
             )
-        if desired == self.driver.current_mode():
+        current = observed_mode if observed_mode is not None else self.driver.current_mode()
+        if desired == current:
             return ActionDecision(intent, desired, False, "idempotent", f"already in {desired}")
         if self.last_switch_at is not None and now - self.last_switch_at < self.min_dwell:
             return ActionDecision(intent, desired, False, "dwell", "min dwell not elapsed; holding")
@@ -144,10 +149,12 @@ class ModeController:
     def preview(
         self, intent: BatteryIntent, now: datetime, *,
         target_soc: float | None = None, power_w: float | None = None,
+        observed_mode: PhysicalMode | None = None,
     ) -> ActionDecision:
-        """Read-only: what decide() WOULD do right now. Never writes or mutates state."""
+        """Read-only: what decide() WOULD do right now. Never writes or mutates state. Pass
+        `observed_mode` (a recently-observed mode) to avoid a hardware mode-read per call."""
         desired = self._desired(intent)
-        blocked = self._gate(intent, now, desired)
+        blocked = self._gate(intent, now, desired, observed_mode=observed_mode)
         if blocked is not None:
             return blocked
         suffix = (f" to {target_soc:.0f}%"

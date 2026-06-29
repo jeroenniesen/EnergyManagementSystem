@@ -16,6 +16,7 @@ class Config:
     web_port: int
     db_path: str
     cycle_seconds: float
+    retention_days: int  # history older than this is purged daily (0 = keep forever)
     # Live device integration (read-only sensing). Defaults keep the credential-free mock path.
     sources_mode: str = "mock"  # mock | live  (live reads the HomeWizard/Indevolt device IPs)
     prices_provider: str = "mock"  # mock | tibber  (tibber needs TIBBER_TOKEN env)
@@ -51,13 +52,20 @@ def load_config(path: str | Path) -> Config:
     # devices (energy review §VerificationRun / #8). Empty/unset keeps the configured db_path.
     db_path = os.environ.get("EMS_DB_PATH") or str(history.get("db_path", "ems/data/ems.sqlite"))
 
+    # Sampling cadence: production default is 300 s (one history row / 5 min, low device + write
+    # load). EMS_CYCLE_SECONDS lets a developer sample faster locally (e.g. =5) without editing the
+    # shipped config. The live dashboard tiles update independently via the 30 s coalesced read, so
+    # a slow recorder cadence does NOT make the UI feel stale.
+    cycle_seconds = float(os.environ.get("EMS_CYCLE_SECONDS") or control.get("cycle_seconds", 300))
+
     return Config(
         timezone=site.get("timezone", "Europe/Amsterdam"),
         dev_mode=dev_mode,
         dry_run=dry_run,
         web_port=int(web.get("port", 8080)),
         db_path=db_path,
-        cycle_seconds=float(control.get("cycle_seconds", 300)),
+        cycle_seconds=cycle_seconds,
+        retention_days=int(history.get("retention_days", 90)),
         sources_mode=sources_mode,
         prices_provider=prices_provider,
         p1_ip=str(devices.get("p1_ip", "")),

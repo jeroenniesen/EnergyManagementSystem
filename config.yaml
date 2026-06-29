@@ -5,9 +5,13 @@ dev:
   mode: mock          # mock | replay | live  (mock/replay need no HA/battery and force dry_run)
 control:
   dry_run: true
-  cycle_seconds: 5     # dev: collect a sample every 5s so the dashboard updates live (prod default 300)
+  # Production sampling cadence: one history row every 5 min — low write + device-read load for a
+  # 24/7 install. The live dashboard tiles refresh independently (30 s coalesced read), so this does
+  # NOT make the UI stale. For fast local dev, set EMS_CYCLE_SECONDS=5 (no need to edit this file).
+  cycle_seconds: 300
 history:
   db_path: ems/data/ems.sqlite
+  retention_days: 90   # history older than this is purged daily (0 = keep forever)
 web:
   port: 8080
 

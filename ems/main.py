@@ -12,6 +12,7 @@ from ems.connection import build_wiring, effective_connection
 from ems.control.mode_controller import ModeController
 from ems.freshness import FreshnessTracker
 from ems.lifecycle import Lifecycle
+from ems.logging_setup import configure_logging
 from ems.sense import SIGNALS, Recorder
 from ems.storage.audit import AuditStore
 from ems.storage.cache import CacheStore
@@ -23,6 +24,10 @@ from ems.web.api import create_app
 _REPO_ROOT = Path(__file__).parent.parent
 # Built SPA (ems/web/static/dist) — present after `npm run build`; absent in pure-API dev.
 _STATIC_DIR = Path(__file__).parent / "web" / "static" / "dist"
+
+# Route logs to a size-rotated file (24/7 install) at import, so it applies whether the process is
+# launched via main() or `uvicorn ems.main:app`. No-op unless EMS_LOG_FILE is set.
+configure_logging()
 
 
 def build_app():
@@ -74,6 +79,7 @@ def build_app():
         audit_store=audit_store,
         cache_store=cache_store,
         control_cycle_seconds=cfg.cycle_seconds,
+        history_retention_days=cfg.retention_days,
         web_auth_token=os.environ.get("EMS_WEB_TOKEN") or None,
         static_dir=_STATIC_DIR,
     )

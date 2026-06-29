@@ -3,8 +3,11 @@ on EVERY request (/api/status, /api/charge-need, /api/battery), so an open dashb
 reads to the Indevolt towers — enough to knock a tower off the network. These tests pin the fix:
 all three share a single coalesced read window, so the hardware is polled at most a fixed, small
 number of times per window no matter how many requests (or browser tabs) arrive."""
+import asyncio
+import time
 from zoneinfo import ZoneInfo
 
+import httpx
 from fastapi.testclient import TestClient
 
 from ems.domain import RawSample
@@ -88,3 +91,32 @@ def test_status_and_battery_still_return_live_values_through_the_cache(tmp_path)
     battery = client.get("/api/battery").json()
     assert len(battery["towers"]) == 2
     assert battery["aggregate"]["online_towers"] == 2
+
+
+class _SlowCountingSource(_CountingSource):
+    # A read slow enough that concurrent cold requests genuinely overlap on the cache miss — the
+    # exact moment single-flight must serialise them.
+    def read(self) -> RawSample:
+        time.sleep(0.05)
+        return super().read()
+
+
+def test_concurrent_cold_reads_are_single_flight(tmp_path):
+    # The highest-risk moment (cold start / cache expiry with several tabs): many requests hit the
+    # empty cache at once. Single-flight must collapse them to ONE hardware read, not one per
+    # request — this is what stops a read flood knocking an Indevolt tower offline.
+    src = _SlowCountingSource()
+    app = _app(tmp_path, src)
+
+    async def go():
+        # ASGITransport drives the app in-process; sync endpoints run in the threadpool, so 20
+        # gathered requests truly race on the cold cache (and the single-flight lock).
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://t") as c:
+            src.reads = 0
+            src.battery.tower_reads = 0
+            return await asyncio.gather(*[c.get("/api/status") for _ in range(20)])
+
+    results = asyncio.run(go())
+    assert all(r.status_code == 200 for r in results)
+    assert src.reads == 1, f"single-flight failed: {src.reads} concurrent hardware reads"

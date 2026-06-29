@@ -36,6 +36,10 @@ class HistoryStore:
         # (single commit) so they appear atomically — a crash can't leave one without the other.
         async with self._conn() as db:
             await db.execute("PRAGMA journal_mode=WAL")
+            # INCREMENTAL auto-vacuum lets maintenance reclaim space freed by retention purges
+            # without a full table-locking VACUUM. Only takes effect on a fresh DB (set before the
+            # first table); harmless no-op on an existing one (retention still bounds row growth).
+            await db.execute("PRAGMA auto_vacuum=INCREMENTAL")
             await db.execute(
                 "CREATE TABLE IF NOT EXISTS raw_samples "
                 "(ts TEXT NOT NULL, grid_power_w REAL NOT NULL, solar_power_w REAL NOT NULL, "
@@ -45,7 +49,55 @@ class HistoryStore:
                 "CREATE TABLE IF NOT EXISTS derived_samples "
                 "(ts TEXT NOT NULL, house_load_w REAL NOT NULL, non_ev_load_w REAL NOT NULL)"
             )
+            # Timestamp indexes: the story/forecast/distribution paths query by `ts` window, and
+            # retention purges by `ts`. Without these, those scans get slower as the DB ages.
+            await db.execute("CREATE INDEX IF NOT EXISTS idx_raw_ts ON raw_samples(ts)")
+            await db.execute("CREATE INDEX IF NOT EXISTS idx_derived_ts ON derived_samples(ts)")
             await db.commit()
+
+    async def purge_older_than(self, cutoff_iso: str) -> int:
+        """Delete rows older than `cutoff_iso` (UTC-ISO) from BOTH sample tables atomically (one
+        commit), so retention can never leave raw/derived out of sync. Returns total rows deleted.
+        `ts` is UTC-ISO, so the lexicographic `<` is a correct time comparison."""
+        async with self._conn() as db:
+            cur = await db.execute("DELETE FROM raw_samples WHERE ts < ?", (cutoff_iso,))
+            deleted = cur.rowcount or 0
+            cur = await db.execute("DELETE FROM derived_samples WHERE ts < ?", (cutoff_iso,))
+            deleted += cur.rowcount or 0
+            await db.commit()
+            return deleted
+
+    async def maintain(self) -> None:
+        """Periodic housekeeping for a 24/7 install: truncate the WAL so it can't grow unbounded,
+        and reclaim space freed by purges (incremental_vacuum is a no-op unless auto_vacuum is on).
+        Best-effort and non-fatal — a busy DB just retries next cycle."""
+        async with self._conn() as db:
+            await db.execute("PRAGMA incremental_vacuum")
+            await db.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+            await db.commit()
+
+    async def db_stats(self) -> dict:
+        """Cheap size/row diagnostics for the System page (page_count×page_size = DB bytes; the
+        two sample row counts; WAL bytes from the -wal sidecar file if present)."""
+        import os
+
+        async with self._conn() as db:
+            db.row_factory = aiosqlite.Row
+            cur = await db.execute("PRAGMA page_count")
+            pages = (await cur.fetchone())[0]
+            cur = await db.execute("PRAGMA page_size")
+            page_size = (await cur.fetchone())[0]
+            cur = await db.execute("SELECT COUNT(*) FROM raw_samples")
+            raw_rows = (await cur.fetchone())[0]
+            cur = await db.execute("SELECT COUNT(*) FROM derived_samples")
+            derived_rows = (await cur.fetchone())[0]
+        wal_bytes = 0
+        try:
+            wal_bytes = os.path.getsize(f"{self.db_path}-wal")
+        except OSError:
+            pass
+        return {"db_bytes": pages * page_size, "wal_bytes": wal_bytes,
+                "raw_rows": raw_rows, "derived_rows": derived_rows}
 
     async def record(self, ts: str, raw: RawSample, derived: DerivedSample) -> None:
         async with self._conn() as db:

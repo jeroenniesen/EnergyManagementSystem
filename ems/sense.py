@@ -4,6 +4,7 @@ freshness (§4.7). Read-only and fail-safe: a bad read never kills the loop."""
 from __future__ import annotations
 
 import asyncio
+import logging
 from collections.abc import Callable
 from datetime import UTC, datetime
 
@@ -11,6 +12,8 @@ from ems.freshness import FreshnessTracker
 from ems.load_model import reconstruct
 from ems.sources.base import Source
 from ems.storage.history import HistoryStore
+
+_log = logging.getLogger("ems.recorder")
 
 # Per-signal names tracked for freshness (SPEC §4.7).
 SIGNALS = ("grid", "solar", "ev", "battery", "soc")
@@ -34,6 +37,18 @@ class Recorder:
         self.freshness = freshness
         self.cycle_seconds = cycle_seconds
         self._clock = clock
+        # Health, surfaced on /api/diagnostics so a 24/7 operator can SEE a stuck recorder (full
+        # disk, DB lock, permanently failing device) instead of only inferring it from stale data.
+        self.last_success_at: datetime | None = None
+        self.last_error: str | None = None
+        self.consecutive_failures = 0
+
+    def health(self) -> dict:
+        return {
+            "last_success_at": self.last_success_at.isoformat() if self.last_success_at else None,
+            "consecutive_failures": self.consecutive_failures,
+            "last_error": self.last_error,
+        }
 
     async def sense_once(self, now: datetime) -> None:
         # Offload the source read to a thread: live sources (HomeWizard/Tibber/Indevolt) do
@@ -53,6 +68,9 @@ class Recorder:
 
     async def record_now(self) -> None:
         await self.sense_once(self._clock())
+        self.last_success_at = self._clock()
+        self.consecutive_failures = 0
+        self.last_error = None
 
     async def run(self, stop: asyncio.Event) -> None:
         """Periodic loop: wait `cycle_seconds` (or until `stop`), then record. The startup
@@ -65,7 +83,13 @@ class Recorder:
                 pass  # cycle elapsed
             try:
                 await self.record_now()
-            except Exception:
-                # Fail-safe: a transient source/store error must not kill the recorder.
-                # The affected signal simply ages into STALE (SPEC §4.6/§4.7); we retry next cycle.
-                pass
+            except Exception as exc:
+                # Fail-safe: a transient source/store error must not kill the recorder. The
+                # affected signal ages into STALE (SPEC §4.6/§4.7) and we retry next cycle — but
+                # TRACK the failure so a persistent problem (full disk, DB lock) is visible on
+                # /api/diagnostics, and log it (throttled: first failure + every 12th ~hourly).
+                self.consecutive_failures += 1
+                self.last_error = f"{type(exc).__name__}: {exc}"
+                if self.consecutive_failures == 1 or self.consecutive_failures % 12 == 0:
+                    _log.warning("recorder cycle failed (%d in a row): %s",
+                                 self.consecutive_failures, self.last_error)

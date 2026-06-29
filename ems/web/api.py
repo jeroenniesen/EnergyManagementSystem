@@ -8,6 +8,7 @@ import io
 import json
 import logging
 import secrets
+import threading
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
 from datetime import date as date_cls
@@ -35,7 +36,7 @@ from ems.control.override import (
     from_stored as override_from_stored,
 )
 from ems.diagnostics import build_diagnostics, overall_status
-from ems.domain import BatteryIntent
+from ems.domain import BatteryIntent, PhysicalMode
 from ems.energy_flow import build_daily_flows
 from ems.freshness import FreshnessTracker
 from ems.lifecycle import OwnershipState
@@ -230,6 +231,7 @@ def create_app(
     audit_store: AuditStore | None = None,
     cache_store: CacheStore | None = None,
     control_cycle_seconds: float = 300.0,
+    history_retention_days: int = 90,
     web_auth_token: str | None = None,
     static_dir: str | Path | None = None,
 ) -> FastAPI:
@@ -375,44 +377,89 @@ def create_app(
     # window, no matter how many clients are open. This is what stops the read flood that can knock
     # a tower off the network — every battery touch here is read-only, but the VOLUME was the issue.
     _tower_cache: dict[str, Any] = {"towers": None, "at": None}
+    # Single-flight locks: sync endpoints run in FastAPI's threadpool, so a cold start / cache
+    # expiry with several tabs polling can have multiple threads miss the cache at once. The lock +
+    # double-check means exactly ONE thread reads the hardware per window; the rest reuse its
+    # result. This is the device-flood protection at its highest-risk moment (cache expiry).
+    _sample_lock = threading.Lock()
+    _tower_lock = threading.Lock()
     # Last good battery CapabilityReport (probed off the hot path — at startup + opportunistically),
     # so the §8.11 validator can check requested power vs the battery's rating without a networked
     # probe on every decision. None until first probed (the validator simply skips that warn-check).
     _capability_box: dict[str, Any] = {"cap": None}
 
+    def _sample_fresh(now: datetime) -> bool:
+        at = _sample_cache["at"]
+        return (at is not None and _sample_cache["sample"] is not None
+                and (now - at).total_seconds() < _LIVE_SAMPLE_COALESCE_SECONDS)
+
     def _current_sample(now: datetime):
-        cached_at = _sample_cache["at"]
-        if (cached_at is not None
-                and (now - cached_at).total_seconds() < _LIVE_SAMPLE_COALESCE_SECONDS
-                and _sample_cache["sample"] is not None):
+        if _sample_fresh(now):  # fast path: no lock when the cache is warm
             return _sample_cache["sample"]
-        try:
-            _sample_cache["sample"], _sample_cache["at"] = source.read(), now
-        except Exception:
-            pass  # keep the last good sample (fail-safe)
-        return _sample_cache["sample"]
+        with _sample_lock:  # single-flight: one thread reads hardware per window, others reuse it
+            if _sample_fresh(now):
+                return _sample_cache["sample"]
+            try:
+                _sample_cache["sample"], _sample_cache["at"] = source.read(), now
+            except Exception:
+                pass  # keep the last good sample (fail-safe)
+            return _sample_cache["sample"]
 
     def _current_soc(now: datetime) -> float:
         s = _current_sample(now)
         return float(s.soc_pct) if s is not None else 0.0
 
+    def _towers_fresh(now: datetime) -> bool:
+        at = _tower_cache["at"]
+        return (at is not None and _tower_cache["towers"] is not None
+                and (now - at).total_seconds() < _LIVE_SAMPLE_COALESCE_SECONDS)
+
     def _current_towers(now: datetime):
-        """Coalesced per-tower battery read (same window as _current_sample). Returns the cached
-        list of TowerReading, or None when there's no cluster reader (mock). On a read failure the
-        last good snapshot is kept (fail-safe) so a transient blip doesn't blank the card."""
+        """Coalesced + single-flight per-tower battery read (same window as _current_sample).
+        Returns the cached list of TowerReading, or None when there's no cluster reader (mock). On
+        a read failure the last good snapshot is kept (fail-safe) so a transient blip doesn't blank
+        the card. The lock means several tabs hitting /api/battery at cache expiry poll the cluster
+        ONCE, not once each."""
         reader = getattr(source, "battery", None)
         if reader is None or not hasattr(reader, "read_towers"):
             return None
-        cached_at = _tower_cache["at"]
-        if (cached_at is not None
-                and (now - cached_at).total_seconds() < _LIVE_SAMPLE_COALESCE_SECONDS
-                and _tower_cache["towers"] is not None):
+        if _towers_fresh(now):  # fast path
             return _tower_cache["towers"]
-        try:
-            _tower_cache["towers"], _tower_cache["at"] = reader.read_towers(), now
-        except Exception:
-            pass  # keep last good snapshot (fail-safe)
-        return _tower_cache["towers"]
+        with _tower_lock:
+            if _towers_fresh(now):
+                return _tower_cache["towers"]
+            try:
+                _tower_cache["towers"], _tower_cache["at"] = reader.read_towers(), now
+            except Exception:
+                pass  # keep last good snapshot (fail-safe)
+            return _tower_cache["towers"]
+
+    _mode_cache: dict[str, Any] = {"mode": None, "at": None}
+    _mode_lock = threading.Lock()
+
+    def _current_mode(now: datetime):
+        """Coalesced + single-flight read of the battery's current physical mode, for the read-only
+        UI preview ONLY (operational mode). Without this, every dashboard poll added a battery
+        mode-read via controller.preview(); now it's at most one per window. None in dry-run / no
+        controller / on read failure — preview then falls back to a fresh read (still bounded)."""
+        if controller is None or dry_run:
+            return None
+
+        def fresh() -> bool:
+            at = _mode_cache["at"]
+            return (at is not None and _mode_cache["mode"] is not None
+                    and (now - at).total_seconds() < _LIVE_SAMPLE_COALESCE_SECONDS)
+
+        if fresh():
+            return _mode_cache["mode"]
+        with _mode_lock:
+            if fresh():
+                return _mode_cache["mode"]
+            try:
+                _mode_cache["mode"], _mode_cache["at"] = controller.driver.current_mode(), now
+            except Exception:
+                pass  # keep last good (fail-safe); preview falls back to a fresh read
+            return _mode_cache["mode"]
 
     def _car_charging(now: datetime) -> bool:
         s = _current_sample(now)
@@ -570,6 +617,66 @@ def create_app(
             if float(settings_cache.get("explainer.validate_hours", 0) or 0) > 0:
                 await _run_validation()  # already guarded + never raises
 
+    async def _maintenance_loop(stop: asyncio.Event) -> None:
+        """Daily history maintenance for a 24/7 install: purge rows past the retention window and
+        truncate the WAL / reclaim freed space. Runs once at boot, then every 24 h. Best-effort —
+        a busy DB just retries tomorrow. retention_days <= 0 keeps everything (purge skipped)."""
+        first = True
+        while True:
+            if not first:
+                try:
+                    await asyncio.wait_for(stop.wait(), timeout=24 * 3600)
+                    return
+                except TimeoutError:
+                    pass
+            first = False
+            try:
+                if history_retention_days > 0:
+                    cutoff = (datetime.now(UTC)
+                              - timedelta(days=history_retention_days)).isoformat()
+                    deleted = await store.purge_older_than(cutoff)
+                    if deleted:
+                        _log.info("history retention: purged %d rows older than %d days",
+                                  deleted, history_retention_days)
+                await store.maintain()
+            except Exception as exc:
+                _log.warning("history maintenance failed (%s: %s); retrying next cycle",
+                             type(exc).__name__, exc)
+
+    async def _shutdown_restore() -> None:
+        """Graceful-shutdown safety (SPEC §6.5 / runbook): in operational mode, hand the battery
+        back to its safe vendor mode before exiting, so an upgrade/reboot/launchd restart can't
+        leave it in a forced charge/hold/discharge. Bounded + best-effort — a slow or offline
+        device can never hang shutdown — and the outcome is audited."""
+        if dry_run or controller is None or not getattr(controller.driver, "armed", False):
+            return
+        # Nothing to undo unless EMS actually commanded a non-AUTO mode this run.
+        last = controller.last_confirmed_action
+        if last is None or last is PhysicalMode.AUTO:
+            return
+        # Prefer the mode the battery had before EMS took control, but NEVER restore into a forced
+        # energy flow — fall back to AUTO (vendor self-consumption / P1-zeroing), the safe default.
+        target = controller.original_vendor_mode or PhysicalMode.AUTO
+        if target in (PhysicalMode.CHARGE, PhysicalMode.DISCHARGE):
+            target = PhysicalMode.AUTO
+        ok = False
+        try:
+            ok = await asyncio.wait_for(
+                asyncio.to_thread(controller.driver.apply, target), timeout=8.0
+            )
+        except Exception as exc:
+            _log.warning("shutdown restore failed (%s: %s)", type(exc).__name__, exc)
+        if audit_store is not None:
+            try:
+                await audit_store.append(
+                    datetime.now(UTC).isoformat(), "shutdown_restore",
+                    f"Graceful shutdown — restored battery to {target.value} "
+                    f"({'confirmed' if ok else 'UNCONFIRMED — verify the device'})",
+                    {"target": target.value, "confirmed": ok},
+                )
+            except Exception:
+                pass
+
     @asynccontextmanager
     async def lifespan(_app: FastAPI):
         # Guarantee the schema exists before anything touches the DB (no caller footgun).
@@ -632,11 +739,20 @@ def create_app(
         # Scheduled AI second-opinion (advisory, off control path; no-op until AI is on).
         validate_task = asyncio.create_task(_ai_validation_loop(stop))
         validate_task.add_done_callback(_task_died("AI validation"))
+        # Daily history retention + DB maintenance (bounded storage for a 24/7 install).
+        maintenance_task = None
+        if store is not None:
+            maintenance_task = asyncio.create_task(_maintenance_loop(stop))
+            maintenance_task.add_done_callback(_task_died("History maintenance"))
         try:
             yield
         finally:
             stop.set()
-            for t in (task, control_task, audit_task, validate_task):
+            # In operational mode, hand the battery back to its safe vendor mode before we go — a
+            # graceful stop (upgrade, reboot, launchd restart) must not leave it in a forced
+            # charge/hold/discharge. Bounded + best-effort: never block shutdown on the device.
+            await _shutdown_restore()
+            for t in (task, control_task, audit_task, validate_task, maintenance_task):
                 if t is not None:
                     await t
 
@@ -955,7 +1071,8 @@ def create_app(
         outcome: str | None = None
         intent, _reason, override_active, tgt, pw, _v = _effective_intent(now)
         if intent is not None and controller is not None:
-            outcome = controller.preview(intent, now, target_soc=tgt, power_w=pw).outcome
+            outcome = controller.preview(intent, now, target_soc=tgt, power_w=pw,
+                                         observed_mode=_current_mode(now)).outcome
         alerts = derive_alerts(snap, dry_run=dry_run, decision_outcome=outcome)
         out = [{"key": a.key, "severity": a.severity, "message": a.message} for a in alerts]
         if override_active:
@@ -979,14 +1096,31 @@ def create_app(
                     "outcome": "unconfigured", "reason": "no controller",
                     "plan_reason": None, "override_active": False}
         now = datetime.now(UTC)
-        car_charging = _car_charging(now)
-        intent, reason, override_active, tgt, pw, val = _effective_intent(now)
-        if intent is None:
-            return {"intent": None, "desired_mode": None, "applied": False,
-                    "outcome": "no_plan", "reason": "no plan slot for now",
-                    "plan_reason": None, "override_active": False, "car_charging": car_charging}
-        # preview() is read-only — a GET must never write to the battery or mutate counters.
-        d = controller.preview(intent, now, target_soc=tgt, power_w=pw)
+
+        # All the blocking/sync work (cached source/price/forecast reads + a read-only preview that
+        # may read battery mode) runs off the event loop, so a slow device can't freeze the loop.
+        def _snapshot():
+            car_charging = _car_charging(now)
+            intent, reason, override_active, tgt, pw, val = _effective_intent(now)
+            if intent is None:
+                return None, {"intent": None, "desired_mode": None, "applied": False,
+                              "outcome": "no_plan", "reason": "no plan slot for now",
+                              "plan_reason": None, "override_active": False,
+                              "car_charging": car_charging}
+            # preview() is read-only — a GET must never write to the battery or mutate counters.
+            # Pass the coalesced observed mode so this poll doesn't read battery mode every cycle.
+            d = controller.preview(intent, now, target_soc=tgt, power_w=pw,
+                                   observed_mode=_current_mode(now))
+            home = home_state(
+                _readiness(now), intent=str(d.intent), override_active=override_active,
+                simulated=dev_mode != "live",
+            )
+            return (intent, reason, override_active, tgt, pw, val, d, car_charging, home), None
+
+        computed, early = await asyncio.to_thread(_snapshot)
+        if early is not None:
+            return early
+        intent, reason, override_active, tgt, pw, val, d, car_charging, home = computed
         # Phrase the deterministic plan reason via the explainer (verbatim unless AI is on; cached).
         explained = await _explain(
             reason, {"intent": str(intent), "desired_mode": str(d.desired_mode)}
@@ -1010,10 +1144,7 @@ def create_app(
             # controller would aim for now (None for self-consumption/hold) → UI "aiming for X%".
             "target_soc": tgt,
             # The single top-of-dashboard headline + tone the homeowner reads first (emotional #1).
-            "home_state": home_state(
-                _readiness(now), intent=str(d.intent), override_active=override_active,
-                simulated=dev_mode != "live",
-            ),
+            "home_state": home,
         }
 
     @app.get("/api/diagnostics")
@@ -1045,12 +1176,18 @@ def create_app(
                 p1_paired = (await asyncio.to_thread(battery.probe)).p1_paired
             except Exception:
                 battery_ok = False
+        # data-quality / plan / readiness all run sync helpers that touch cached source/price/
+        # forecast reads — compute them off the event loop so a slow device can't stall /api/health.
+        def _core():
+            return (_data_quality(now), _current_plan() is not None, _readiness(now).to_dict())
+
+        dq, plan_ok, readiness = await asyncio.to_thread(_core)
         checks = build_diagnostics(
             dev_mode=dev_mode, dry_run=dry_run,
-            data_quality=_data_quality(now),
+            data_quality=dq,
             prices_ok=prices_ok, forecast_ok=forecast_ok,
             battery_ok=battery_ok, p1_paired=p1_paired,
-            plan_ok=_current_plan() is not None,
+            plan_ok=plan_ok,
             store_ok=store_ok, settings_store_ok=settings_ok,
             auth_required=_effective_web_token() is not None,
             freshness=freshness.snapshot(now) if freshness is not None else None,
@@ -1062,8 +1199,17 @@ def create_app(
                 cache_stats = await asyncio.to_thread(cache_store.breakdown)
             except Exception:
                 cache_stats = None
+        # Long-run diagnostics (review): DB/WAL size + sample row counts, and recorder health so a
+        # stuck recorder (full disk, DB lock, dead device) is VISIBLE, not just inferred from stale.
+        storage = None
+        if store is not None:
+            try:
+                storage = await store.db_stats()
+            except Exception:
+                storage = None
         return {"overall": overall_status(checks), "checks": [c.to_dict() for c in checks],
-                "cache": cache_stats, "readiness": _readiness(now).to_dict()}
+                "cache": cache_stats, "readiness": readiness, "storage": storage,
+                "recorder": recorder.health() if recorder is not None else None}
 
     @app.get("/api/charge-need")
     def charge_need_endpoint() -> dict:
@@ -1335,40 +1481,46 @@ def create_app(
 
     async def _forward_projection():
         """The forward plan + projection bundle (or None if there's no plan yet). Shared by
-        /api/energy-forecast and /api/energy-story so they never drift."""
-        pp = _current_plan()
-        if pp is None or solar_forecast is None:
-            return None
-        now, prices_, plan = pp
-        if not plan.slots:
-            return None
-        soc = _current_soc(now)
-        fc_slots = solar_forecast.slots()
-        solar_by = {f.start: f.p50_w for f in fc_slots}
-        # Learn the expected load from ~7 days of derived history; fall back to the overnight
-        # estimate spread across a ~12h night when there's little history.
+        /api/energy-forecast and /api/energy-story so they never drift. The async history read
+        happens here; the blocking source/price/forecast reads + CPU projection run in a worker
+        thread so this never stalls the event loop (a slow meter/Tibber/Forecast.Solar must not
+        freeze unrelated requests)."""
+        # Learn the expected load from ~7 days of derived history (async DB read off the loop).
         drows = await store.recent_derived(2016) if store is not None else []
-        fallback_w = settings_cache["battery.overnight_load_kwh"] * 1000.0 / 12.0
-        profile = build_load_profile(drows, site_tz, fallback_w=fallback_w)
-        _load_profile_box["profile"] = profile  # share with the sync _current_plan (adaptive)
-        load_by = {s.start: profile.expected_w(s.start) for s in plan.slots}
-        need = compute_charge_need(
-            soc_pct=soc, usable_kwh=settings_cache["battery.usable_kwh"],
-            min_reserve_soc=settings_cache["battery.min_reserve_soc"],
-            night_reserve_kwh=settings_cache["battery.night_reserve_kwh"],
-            overnight_load_kwh=settings_cache["battery.overnight_load_kwh"],
-            round_trip_efficiency=settings_cache["planner.round_trip_efficiency"],
-        )
-        # Both seasons use the adaptive charger, which sizes its own charge slots — the projection
-        # must NOT cap them at the night target (that would undo demand-aware peak-shaving).
-        projected = project_energy(
-            plan.slots, start_soc_pct=soc, solar_w_by=solar_by,
-            load_w_by=load_by, model=_battery_model(),
-            charge_target_soc_pct=None,
-        )
-        return {"now": now, "current_soc": soc, "projected": projected, "need": need,
-                "deadline": sunset_after(fc_slots, now),
-                "price_by": {p.start: p.eur_per_kwh for p in prices_}}
+
+        def _compute():
+            pp = _current_plan()  # touches price_source/solar_forecast/source.read (all cached)
+            if pp is None or solar_forecast is None:
+                return None
+            now, prices_, plan = pp
+            if not plan.slots:
+                return None
+            soc = _current_soc(now)
+            fc_slots = solar_forecast.slots()
+            solar_by = {f.start: f.p50_w for f in fc_slots}
+            fallback_w = settings_cache["battery.overnight_load_kwh"] * 1000.0 / 12.0
+            profile = build_load_profile(drows, site_tz, fallback_w=fallback_w)
+            _load_profile_box["profile"] = profile  # share with the sync _current_plan (adaptive)
+            load_by = {s.start: profile.expected_w(s.start) for s in plan.slots}
+            need = compute_charge_need(
+                soc_pct=soc, usable_kwh=settings_cache["battery.usable_kwh"],
+                min_reserve_soc=settings_cache["battery.min_reserve_soc"],
+                night_reserve_kwh=settings_cache["battery.night_reserve_kwh"],
+                overnight_load_kwh=settings_cache["battery.overnight_load_kwh"],
+                round_trip_efficiency=settings_cache["planner.round_trip_efficiency"],
+            )
+            # Both seasons use the adaptive charger, which sizes its own charge slots — the
+            # projection must NOT cap them at the night target (undoing demand-aware peak-shaving).
+            projected = project_energy(
+                plan.slots, start_soc_pct=soc, solar_w_by=solar_by,
+                load_w_by=load_by, model=_battery_model(),
+                charge_target_soc_pct=None,
+            )
+            return {"now": now, "current_soc": soc, "projected": projected, "need": need,
+                    "deadline": sunset_after(fc_slots, now),
+                    "price_by": {p.start: p.eur_per_kwh for p in prices_}}
+
+        return await asyncio.to_thread(_compute)
 
     @app.get("/api/energy-forecast")
     async def energy_forecast() -> dict:
