@@ -489,6 +489,7 @@ body {
   border-color: color-mix(in srgb, var(--amber) 40%, transparent);
 }
 .on-track-muted { color: var(--muted); }
+.story-review { color: var(--muted); font-size: 0.8rem; margin: -4px 0 10px; }
 /* Recent ACTUALS on the next-24h bar tracks read as "already happened" — faded vs. the plan. */
 .track .is-actual { opacity: 0.5; }
 .tbar.is-actual { border-top: 2px solid color-mix(in srgb, var(--muted) 70%, transparent); }

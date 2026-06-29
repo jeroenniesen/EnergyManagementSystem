@@ -51,6 +51,12 @@ export type EnergyStoryData = {
     deficit_kwh: number;
     message: string;
   };
+  recent_review?: {
+    message: string;
+    solar_actual_kwh: number;
+    solar_forecast_kwh: number | null;
+    solar_pct_of_forecast: number | null;
+  };
 };
 
 const ON_TRACK_TONE: Record<string, string> = {
@@ -239,6 +245,12 @@ export function EnergyStory({
           data-status={onTrack.status}
         >
           <Icon name={onTrack.status === "behind" ? "alert" : "check"} /> {onTrack.message}
+        </p>
+      )}
+
+      {!isPast && story?.recent_review?.message && (
+        <p className="story-review" data-testid="recent-review">
+          {story.recent_review.message}
         </p>
       )}
 

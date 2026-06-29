@@ -1426,6 +1426,42 @@ def create_app(
                 "target_soc_pct": round(target, 1), "deficit_kwh": round(need.deficit_kwh, 1),
                 "message": msg}
 
+    def _recent_review(recent: list[dict], fc_slots) -> dict | None:
+        """'Did the last few hours go as expected?' — actual solar produced vs the FORECAST for the
+        same slots (was the sun as predicted?) and what the battery actually did (in/out). Honest,
+        no hype. None when there's no recent history yet."""
+        if not recent:
+            return None
+        dh = 0.25 / 1000.0  # 15-min slot, W → kWh
+        solar_actual = sum(s["solar_w"] for s in recent) * dh
+        # Match the forecast to the actuals on the 15-min epoch bucket, NOT the ISO string — the two
+        # sources can carry different tz reps/precision for the same instant. timestamp() is
+        # tz-agnostic, so flooring to 900 s lines them up regardless.
+        def _bucket(dt: datetime) -> int:
+            return int(dt.timestamp()) // 900
+        fc_by = {_bucket(f.start): f.p50_w for f in fc_slots}
+        fc_vals = [fc_by[k] for s in recent
+                   if (k := _bucket(datetime.fromisoformat(s["start"]))) in fc_by]
+        solar_fc = sum(fc_vals) * dh if fc_vals else None
+        charged = sum(max(0.0, -s["battery_w"]) for s in recent) * dh
+        discharged = sum(max(0.0, s["battery_w"]) for s in recent) * dh
+        pct = round(solar_actual / solar_fc * 100) if solar_fc and solar_fc > 0.05 else None
+        head = f"Last {RECENT_HOURS}h: {solar_actual:.1f} kWh solar"
+        if pct is not None:
+            head += f" ({pct}% of the {solar_fc:.1f} kWh forecast)"
+        parts = [head]
+        if charged > 0.05 or discharged > 0.05:
+            parts.append(f"battery +{charged:.1f}/−{discharged:.1f} kWh")
+        return {
+            "hours": RECENT_HOURS,
+            "solar_actual_kwh": round(solar_actual, 1),
+            "solar_forecast_kwh": round(solar_fc, 1) if solar_fc is not None else None,
+            "solar_pct_of_forecast": pct,
+            "battery_charged_kwh": round(charged, 1),
+            "battery_discharged_kwh": round(discharged, 1),
+            "message": "; ".join(parts) + ".",
+        }
+
     async def _next_story(reserve_pct: float) -> dict:
         fp = await _forward_projection()
         if fp is None:
@@ -1451,10 +1487,14 @@ def create_app(
             # the home — never celebratory, only shown when genuinely true.
             "trust_markers": _trust_markers(fp["projected"], totals, reserve_pct,
                                             need.target_soc_pct),
-            # "Am I on track?" — the last few hours of actuals on the same timeline + a verdict.
+            # "Am I on track?" — the last few hours of actuals on the same timeline + a verdict +
+            # a "did we do right" review (actual solar vs forecast, what the battery actually did).
             "recent_hours": RECENT_HOURS,
             "recent": recent,
             "on_track": _on_track(fp["current_soc"], need),
+            "recent_review": _recent_review(
+                recent, solar_forecast.slots() if solar_forecast is not None else []
+            ),
         }
 
     async def _past_story(reserve_pct: float) -> dict:

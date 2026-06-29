@@ -66,16 +66,21 @@ def test_next_story_carries_recent_actuals_and_on_track(tmp_path):
     assert ot["status"] in {"ahead", "on_track", "behind", "unknown"}
     assert ot["target_soc_pct"] is not None and "actual_soc_pct" in ot
     assert isinstance(ot["message"], str) and ot["message"]
+    assert b["recent_review"] is None  # no history yet → no review (graceful)
 
 
 def test_recent_actuals_appear_once_history_exists(tmp_path):
-    # With a recorded sample, the recent segment carries actuals in the same slot shape as the plan.
+    # With a recorded sample, the recent segment carries actuals in the same slot shape as the plan,
+    # and the "did we do right" review (solar vs forecast + battery in/out) is populated.
     with TestClient(_app(tmp_path, with_recorder=True)) as c:
         b = c.get("/api/energy-story?window=next").json()
     assert isinstance(b["recent"], list)
     if b["recent"]:
         assert _SLOT_KEYS <= set(b["recent"][0])
         assert b["recent"][0]["action"] in {"charge", "discharge", "idle"}
+        rv = b["recent_review"]
+        assert rv is not None and isinstance(rv["message"], str) and rv["message"]
+        assert "solar_actual_kwh" in rv and "battery_charged_kwh" in rv
 
 
 def test_past_story_same_shape_built_from_history(tmp_path):

@@ -127,6 +127,9 @@ test.describe("EMS dashboard", () => {
             recent_hours: 3, recent,
             on_track: { status: "behind", actual_soc_pct: 52, target_soc_pct: 88,
               deficit_kwh: 7.7, message: "Behind — about 7.7 kWh short of the 88% target." },
+            recent_review: { message: "Last 3h: 3.2 kWh solar (80% of the 4.0 kWh forecast); "
+              + "battery +1.2/−0.3 kWh.", solar_actual_kwh: 3.2, solar_forecast_kwh: 4.0,
+              solar_pct_of_forecast: 80 },
           }),
         });
       }
@@ -139,6 +142,8 @@ test.describe("EMS dashboard", () => {
     // Both the measured (solid) and forecast (dashed) SoC lines render on the same chart.
     await expect(page.getByTestId("story-soc-actual")).toBeAttached();
     await expect(page.getByTestId("story-soc-line")).toBeAttached();
+    // The "did we do right" review (solar vs forecast) is shown.
+    await expect(page.getByTestId("recent-review")).toContainText("of the 4.0 kWh forecast");
   });
 
   test("shows the strategy card with a season picker and explanation", async ({ page }) => {
