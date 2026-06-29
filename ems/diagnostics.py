@@ -81,7 +81,7 @@ def build_diagnostics(
               "producing a plan" if plan_ok else "no plan (missing prices?)"),
         Check("auth", "Write protection", "ok",
               "protected by a token" if auth_required
-              else "open — set EMS_WEB_TOKEN to require a token for writes"),
+              else "open — set a Web access token in Settings to require one for writes"),
     ]
     # Per-signal live sensor visibility: shows exactly which devices are reporting (the "senses").
     for sig, state in (freshness or {}).items():

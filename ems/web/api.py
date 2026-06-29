@@ -202,14 +202,23 @@ def create_app(
     web_auth_token: str | None = None,
     static_dir: str | Path | None = None,
 ) -> FastAPI:
+    def _effective_web_token() -> str | None:
+        """The access token that must be presented for writes, or None if writes are open. The
+        UI-set token (settings store, web.auth_token) takes precedence over the EMS_WEB_TOKEN env
+        seed — so access can be configured entirely from the UI. Read at request time so a
+        just-saved token takes effect without a restart."""
+        ui_tok = (settings_cache.get("web.auth_token") or "").strip()
+        return ui_tok or web_auth_token
+
     def _authorized(request: Request) -> bool:
         """True if the request may mutate. When no token is configured, writes are open (dev/LAN
         default); otherwise an `Authorization: Bearer <token>` must match (constant-time)."""
-        if web_auth_token is None:
+        required = _effective_web_token()
+        if required is None:
             return True
         scheme, _, token = request.headers.get("authorization", "").partition(" ")
         try:
-            return scheme == "Bearer" and secrets.compare_digest(token, web_auth_token)
+            return scheme == "Bearer" and secrets.compare_digest(token, required)
         except TypeError:
             # compare_digest raises on non-ASCII str; treat as a clean 401, never a 500.
             return False
@@ -854,7 +863,8 @@ def create_app(
     @app.get("/api/auth")
     def auth_status(request: Request) -> dict:
         # Lets the UI show a token field only when writes are protected, and reflect auth state.
-        return {"required": web_auth_token is not None, "authenticated": _authorized(request)}
+        return {"required": _effective_web_token() is not None,
+                "authenticated": _authorized(request)}
 
     @app.get("/api/freshness")
     def freshness_snapshot() -> dict:
@@ -986,7 +996,7 @@ def create_app(
             battery_ok=battery_ok, p1_paired=p1_paired,
             plan_ok=_current_plan() is not None,
             store_ok=store_ok, settings_store_ok=settings_ok,
-            auth_required=web_auth_token is not None,
+            auth_required=_effective_web_token() is not None,
             freshness=freshness.snapshot(now) if freshness is not None else None,
         )
         # Observability: how much is currently cached (reused instead of refetched / re-spent).

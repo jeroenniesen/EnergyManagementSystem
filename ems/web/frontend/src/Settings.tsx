@@ -29,7 +29,7 @@ type Impact = { current: PlanMetrics | null; proposed: PlanMetrics | null };
 
 // Group display order + titles. Connection-type groups first (what most people need), tuning last.
 const GROUP_ORDER = ["strategy", "connection", "meters", "battery", "prices", "site", "control",
-  "planner", "ai", "ui"];
+  "planner", "ai", "access", "ui"];
 const GROUP_TITLE: Record<string, string> = {
   strategy: "Strategy",
   connection: "Connection",
@@ -40,6 +40,7 @@ const GROUP_TITLE: Record<string, string> = {
   control: "Control & safety",
   planner: "Planner economics",
   ai: "AI explanations & chat",
+  access: "Access & security",
   ui: "Appearance",
 };
 const GROUP_HINT: Record<string, string> = {
@@ -53,6 +54,8 @@ const GROUP_HINT: Record<string, string> = {
   planner: "The arbitrage maths — the plan recomputes from these immediately.",
   ai: "Optional. Off by default. Turn on to get natural-language explanations and the chat — a tiny, "
     + "redacted summary is sent to MiniMax; never your address, history or tokens.",
+  access: "Optional. Set a token to require it for saving/control. Then enter the same token in the "
+    + "Access box at the top of this page to authorise this browser. Blank = open on your LAN.",
   ui: "How the dashboard looks.",
 };
 
@@ -327,9 +330,9 @@ export function Settings({ onSaved }: { onSaved?: (values: Values) => void } = {
 
       {auth?.required && (
         <div className="settings-group" data-testid="settings-access">
-          <h2 className="settings-group-title">Access</h2>
+          <h2 className="settings-group-title">Authorise this browser</h2>
           <p className="settings-group-hint">
-            Saving is protected. Enter the access token to authorise writes.{" "}
+            Saving is protected. Enter the access token to authorise writes from this browser.{" "}
             {auth.authenticated ? (
               <span className="settings-msg-ok">authorised</span>
             ) : (

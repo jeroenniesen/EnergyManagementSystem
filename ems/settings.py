@@ -274,6 +274,13 @@ SETTINGS_SCHEMA: tuple[SettingsField, ...] = (
         "restarts), so the same decision isn't re-sent to the AI and tokens aren't re-spent. "
         "0 disables the persistent cache.", min=0.0, max=720.0, step=1.0, unit="h", advanced=True,
     ),
+    # --- Access & security ---
+    SettingsField(
+        "web.auth_token", "Web access token", "secret", "", "access",
+        help="Optional. Set a token to require it (as a Bearer token) for any change — saving "
+        "settings, manual override, control. Leave blank for open access on your home LAN. "
+        "Once set, enter the same token in the Access box at the top to authorise this browser.",
+    ),
     # --- Appearance ---
     SettingsField(
         "ui.theme", "Theme", "enum", "auto", "ui",

@@ -61,6 +61,33 @@ def test_non_ascii_configured_token_is_clean_401_not_500(tmp_path):
         assert r.status_code == 401
 
 
+def test_web_token_can_be_set_from_the_ui_and_then_gates_writes(tmp_path):
+    # Every credential is UI-settable: with NO env token, the operator sets web.auth_token via
+    # /api/settings (allowed because access is still open), and from then on writes need it.
+    with TestClient(_app(tmp_path, token=None)) as c:
+        assert c.get("/api/auth").json()["required"] is False
+        # Set the token through the normal settings write (open at this point).
+        assert c.post("/api/settings", json={"web.auth_token": "lan-secret"}).status_code == 200
+        # Now access is required, sourced from the UI setting (no restart, no env).
+        assert c.get("/api/auth").json()["required"] is True
+        assert c.post("/api/settings", json={"ui.theme": "dark"}).status_code == 401
+        ok = c.post("/api/settings", json={"ui.theme": "dark"},
+                    headers={"Authorization": "Bearer lan-secret"})
+        assert ok.status_code == 200
+
+
+def test_ui_token_overrides_env_token(tmp_path):
+    # The UI-set token takes precedence over the EMS_WEB_TOKEN env seed.
+    with TestClient(_app(tmp_path, token="env-token")) as c:
+        c.post("/api/settings", json={"web.auth_token": "ui-token"},
+               headers={"Authorization": "Bearer env-token"})
+        # The env token no longer works; the UI one does.
+        assert c.post("/api/settings", json={"ui.theme": "dark"},
+                      headers={"Authorization": "Bearer env-token"}).status_code == 401
+        assert c.post("/api/settings", json={"ui.theme": "dark"},
+                      headers={"Authorization": "Bearer ui-token"}).status_code == 200
+
+
 def test_reads_are_open_even_with_token(tmp_path):
     # The dashboard (reads) must work for a guest with no token (SPEC: degrade to read-only).
     with TestClient(_app(tmp_path, token="s3cret")) as c:
