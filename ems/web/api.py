@@ -1361,13 +1361,21 @@ def create_app(
                 "current_price_eur_per_kwh": None,
                 "slots": [], "totals": _uslot_totals([]), "headline": headline}
 
-    def _next_headline(totals: dict, need) -> str:
-        charge, imp, ss = totals["charge_kwh"], totals["import_kwh"], totals["self_sufficiency_pct"]
-        if charge > 0.1:
-            head = (f"Next 24h — top up {charge:.1f} kWh to the {need.target_soc_pct:.0f}% night "
-                    f"target, then run the evening on the battery.")
+    def _next_headline(totals: dict, need, grid_charge_kwh: float) -> str:
+        # IMPORTANT: only a GRID charge is a "top up". totals["charge_kwh"] also counts SOLAR
+        # charging the battery, which is not a grid top-up — using it would over-claim (the bug
+        # where the headline promised a top-up the plan didn't contain).
+        imp = totals["import_kwh"]
+        ss = totals["self_sufficiency_pct"]
+        peak = totals["soc_max_pct"]
+        if grid_charge_kwh > 0.1:
+            head = (f"Next 24h — top up {grid_charge_kwh:.1f} kWh from the grid toward the "
+                    f"{need.target_soc_pct:.0f}% night target, then run the evening on battery.")
+        elif peak is not None:
+            head = (f"Next 24h — your solar fills the battery (peaking near {peak:.0f}%), then "
+                    "runs the evening on it — no grid charging.")
         else:
-            head = "Next 24h — the sun covers the night; running on the battery, no grid charging."
+            head = "Next 24h — running on solar + battery; no grid charging."
         head += f" Projected {imp:.1f} kWh imported"
         head += f", {ss:.0f}% self-sufficient." if ss is not None else "."
         return head
@@ -1382,7 +1390,9 @@ def create_app(
             markers.append("Reserve respected")
         if socs and target_pct > 0 and socs[-1] >= target_pct - 1.0:
             markers.append("On track for tonight's target")
-        if totals.get("charge_kwh", 0.0) < 0.1:
+        # "No grid top-up needed" iff there's no GRID charge slot — NOT total charge (which counts
+        # solar filling the battery too).
+        if not any(p.intent is BatteryIntent.GRID_CHARGE_TO_TARGET for p in projected):
             markers.append("No grid top-up needed")
         if any(p.intent is BatteryIntent.DISCHARGE_FOR_LOAD for p in projected):
             markers.append("Battery covers the evening peak")
@@ -1408,20 +1418,41 @@ def create_app(
             for ps in story.slots
         ]
 
-    def _on_track(current_soc: float, need) -> dict:
-        """Deterministic 'are we on track for tonight's target' read, from the night-target need.
-        ahead (already there) / on_track (projected to make it) / behind (short by deficit kWh)."""
+    def _on_track(current_soc: float, need, totals: dict, grid_charge_kwh: float,
+                  reserve_pct: float) -> dict:
+        """Verdict derived from the ACTUAL plan (not a separate heuristic), so it can never claim a
+        top-up the plan doesn't contain. The conservative night target is a ceiling, not the goal —
+        what matters is staying self-sufficient and above reserve:
+          ahead       — the plan reaches the night target;
+          on_track    — projected self-sufficient (≈no import) AND above reserve (even if below the
+                        target — that's fine, no grid power needed);
+          behind      — short AND either a grid top-up IS planned (say so, truthfully) or the
+                        home will import / dip toward reserve (don't promise a phantom top-up)."""
         target = need.target_soc_pct
-        if current_soc >= target - 0.5:
+        proj_min, proj_max = totals.get("soc_min_pct"), totals.get("soc_max_pct")
+        imp = totals.get("import_kwh")
+        above_reserve = proj_min is None or proj_min >= reserve_pct - 0.5
+        self_sufficient = imp is not None and imp < 0.1
+        if proj_max is not None and proj_max >= target - 0.5:
             status = "ahead"
-            msg = f"Comfortably placed — already at the {target:.0f}% target for tonight."
-        elif need.on_track:
+            msg = f"On track — projected to reach the {target:.0f}% night target."
+        elif self_sufficient and above_reserve:
             status = "on_track"
-            msg = f"On track — projected to reach {target:.0f}% by sunset."
+            msg = (f"On track — solar covers the home: projected self-sufficient and above the "
+                   f"{reserve_pct:.0f}% reserve. Below the {target:.0f}% night target, but no grid "
+                   "power is needed.")
+        elif grid_charge_kwh > 0.05:
+            status = "behind"
+            msg = (f"Behind the {target:.0f}% target — EMS tops up {grid_charge_kwh:.1f} kWh from "
+                   "the grid in the cheapest window before sunset.")
+        elif imp and imp > 0.05:
+            status = "behind"
+            msg = (f"Short of the {target:.0f}% target with no grid top-up planned — about "
+                   f"{imp:.1f} kWh will come from the grid.")
         else:
             status = "behind"
-            msg = (f"Behind — about {need.deficit_kwh:.1f} kWh short of the {target:.0f}% target; "
-                   "EMS will top up in the cheapest window before sunset.")
+            msg = (f"Short of the {target:.0f}% target — the battery may dip toward its "
+                   f"{reserve_pct:.0f}% reserve before morning.")
         return {"status": status, "actual_soc_pct": round(current_soc, 1),
                 "target_soc_pct": round(target, 1), "deficit_kwh": round(need.deficit_kwh, 1),
                 "message": msg}
@@ -1473,6 +1504,11 @@ def create_app(
             for p in fp["projected"]
         ]
         totals = _uslot_totals(slots)
+        # GRID top-up only (a "charge" action = GRID_CHARGE_TO_TARGET); solar charging the battery
+        # happens in self-consume slots and must NOT count as a top-up.
+        grid_charge_kwh = (
+            sum(max(0.0, -s["battery_w"]) for s in slots if s["action"] == "charge") * 0.25 / 1000.0
+        )
         recent = await _recent_actuals(fp["now"])
         return {
             "window": "next", "now": fp["now"].isoformat(),
@@ -1482,16 +1518,17 @@ def create_app(
             "target_deadline": deadline.isoformat() if deadline is not None else None,
             # The price right now = the first slot (it covers the current quarter-hour).
             "current_price_eur_per_kwh": slots[0]["eur_per_kwh"] if slots else None,
-            "slots": slots, "totals": totals, "headline": _next_headline(totals, need),
+            "slots": slots, "totals": totals,
+            "headline": _next_headline(totals, need, grid_charge_kwh),
             # Quiet, true-only trust markers (emotional review): proof the plan is doing right by
             # the home — never celebratory, only shown when genuinely true.
             "trust_markers": _trust_markers(fp["projected"], totals, reserve_pct,
                                             need.target_soc_pct),
-            # "Am I on track?" — the last few hours of actuals on the same timeline + a verdict +
-            # a "did we do right" review (actual solar vs forecast, what the battery actually did).
+            # "Am I on track?" — the last few hours of actuals on the same timeline + a verdict
+            # DERIVED FROM THE PLAN (consistent with the chart) + a "did we do right" review.
             "recent_hours": RECENT_HOURS,
             "recent": recent,
-            "on_track": _on_track(fp["current_soc"], need),
+            "on_track": _on_track(fp["current_soc"], need, totals, grid_charge_kwh, reserve_pct),
             "recent_review": _recent_review(
                 recent, solar_forecast.slots() if solar_forecast is not None else []
             ),

@@ -69,6 +69,24 @@ def test_next_story_carries_recent_actuals_and_on_track(tmp_path):
     assert b["recent_review"] is None  # no history yet → no review (graceful)
 
 
+def test_verdict_and_headline_never_claim_a_phantom_grid_top_up(tmp_path):
+    # The bug we fixed: the verdict said "EMS tops up … from the grid" and the headline promised a
+    # top-up, but the plan contained NO grid-charge slot (solar charging was being miscounted as a
+    # grid top-up). Invariant: "top up"/"tops up" language may appear ONLY when the plan actually
+    # has a grid-charge slot (action == "charge"). Otherwise it's a lie about the plan.
+    with TestClient(_app(tmp_path)) as c:
+        b = c.get("/api/energy-story?window=next").json()
+    has_grid_charge = any(s["action"] == "charge" for s in b["slots"])
+    claims_top_up = "top up" in b["on_track"]["message"].lower() \
+        or "tops up" in b["on_track"]["message"].lower() \
+        or "top up" in b["headline"].lower()
+    if not has_grid_charge:
+        assert not claims_top_up, (
+            "verdict/headline claims a grid top-up the plan does not contain: "
+            f"{b['on_track']['message']!r} / {b['headline']!r}"
+        )
+
+
 def test_recent_actuals_appear_once_history_exists(tmp_path):
     # With a recorded sample, the recent segment carries actuals in the same slot shape as the plan,
     # and the "did we do right" review (solar vs forecast + battery in/out) is populated.
