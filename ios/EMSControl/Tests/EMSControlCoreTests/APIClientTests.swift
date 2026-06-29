@@ -24,6 +24,47 @@ final class APIClientTests: XCTestCase {
             XCTFail("unexpected error: \(error)")
         }
     }
+
+    func testFetchFAQUsesExpectedPathAndAuthorizationHeader() async throws {
+        let transport = RecordingTransport(data: faqJSON())
+        let client = APIClient(baseURL: URL(string: "http://ems.local:8080")!, token: "abc123", transport: transport)
+
+        let response = try await client.fetchFAQ()
+
+        XCTAssertEqual(response.items.count, 1)
+        XCTAssertEqual(transport.lastRequest?.url?.path, "/api/faq")
+        XCTAssertEqual(transport.lastRequest?.httpMethod, "GET")
+        XCTAssertEqual(transport.lastRequest?.value(forHTTPHeaderField: "Authorization"), "Bearer abc123")
+    }
+
+    func testFetchExplainerUsesExpectedPathAndAuthorizationHeader() async throws {
+        let transport = RecordingTransport(data: explainerJSON())
+        let client = APIClient(baseURL: URL(string: "http://ems.local:8080")!, token: "abc123", transport: transport)
+
+        let response = try await client.fetchExplainer()
+
+        XCTAssertEqual(response, ExplainerStatus(mode: "external_llm", active: true, language: "nl"))
+        XCTAssertEqual(transport.lastRequest?.url?.path, "/api/explainer")
+        XCTAssertEqual(transport.lastRequest?.httpMethod, "GET")
+        XCTAssertEqual(transport.lastRequest?.value(forHTTPHeaderField: "Authorization"), "Bearer abc123")
+    }
+
+    func testSendChatUsesJSONBodyAndAuthorizationHeader() async throws {
+        let transport = RecordingTransport(data: chatJSON())
+        let client = APIClient(baseURL: URL(string: "http://ems.local:8080")!, token: "abc123", transport: transport)
+
+        let response = try await client.sendChat(question: "Why is the battery charging?")
+
+        XCTAssertEqual(response.answer, "Because prices are low.")
+        XCTAssertEqual(transport.lastRequest?.url?.path, "/api/chat")
+        XCTAssertEqual(transport.lastRequest?.httpMethod, "POST")
+        XCTAssertEqual(transport.lastRequest?.value(forHTTPHeaderField: "Authorization"), "Bearer abc123")
+        XCTAssertEqual(transport.lastRequest?.value(forHTTPHeaderField: "Content-Type"), "application/json")
+        XCTAssertEqual(
+            transport.lastRequest?.httpBody,
+            try JSONEncoder.ems.encode(ChatRequest(question: "Why is the battery charging?"))
+        )
+    }
 }
 
 private final class RecordingTransport: HTTPTransport, @unchecked Sendable {
@@ -58,6 +99,36 @@ private func dashboardJSON(apiVersion: Int) -> Data {
       "savings": {},
       "energy_story": {},
       "ai_validation": {}
+    }
+    """.data(using: .utf8)!
+}
+
+private func faqJSON() -> Data {
+    """
+    {
+      "ai_on": true,
+      "items": [
+        { "key": "plan", "question": "What is the plan?", "answer": "Charge before sunset." }
+      ]
+    }
+    """.data(using: .utf8)!
+}
+
+private func explainerJSON() -> Data {
+    """
+    {
+      "mode": "external_llm",
+      "active": true,
+      "language": "nl"
+    }
+    """.data(using: .utf8)!
+}
+
+private func chatJSON() -> Data {
+    """
+    {
+      "answer": "Because prices are low.",
+      "source": "faq"
     }
     """.data(using: .utf8)!
 }

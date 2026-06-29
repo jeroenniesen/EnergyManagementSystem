@@ -4,6 +4,7 @@ import EMSControlCore
 struct AppShellView: View {
     @Environment(DashboardStore.self) private var dashboardStore
     @Environment(\.colorScheme) private var colorScheme
+    @State private var chatStore = ChatStore(client: nil)
 
     private var theme: EMSTheme {
         colorScheme == .dark ? .dark : .light
@@ -17,7 +18,7 @@ struct AppShellView: View {
             TabView {
                 DashboardView()
                     .tabItem { Label("Dashboard", systemImage: "bolt.horizontal.circle") }
-                ChatView()
+                ChatView(store: chatStore)
                     .tabItem { Label("Chat", systemImage: "message") }
             }
         }

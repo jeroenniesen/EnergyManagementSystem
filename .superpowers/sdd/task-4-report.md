@@ -84,3 +84,81 @@ Executed 16 tests, with 0 failures (0 unexpected)
 
 - `fetchExplainer()` is added per brief but is not yet consumed by `ChatStore` or `ChatView` in Task 4.
 - `ChatView.swift` and `AppShellView.swift` are edited as requested, but those app shell sources are still not attached to an app target until Task 5, so runtime UI validation is deferred to that task.
+
+---
+
+## 2026-06-29 Task 4 Review-Fix Report
+
+### Scope handled
+
+- Task 4 only in the isolated worktree.
+- Kept changes inside `ios/EMSControl` chat client/store/views/tests plus `docs/ios-validation/iteration-4-chat-notes.md`.
+- Did not expand into Task 5 shell/build/screenshot work beyond wiring the Chat tab to the existing shared dashboard session.
+
+### Review findings fixed
+
+1. Wired the Chat tab to the shared live EMS session:
+   - `AppShellView` now owns one `ChatStore`.
+   - `ChatView` reads the shared `DashboardStore` environment and synchronizes `ChatStore` from the same `APIClient` / demo snapshot path the dashboard uses.
+   - Live sessions call `/api/explainer`, `/api/faq`, and `/api/chat`; demo sessions use bundled fixtures only.
+2. Connected explainer state:
+   - `ChatStore` now stores `ExplainerStatus`.
+   - Free-form send is gated by `ExplainerStatus.active`.
+   - `ChatView` surfaces AI active/FAQ-only/demo status, explainer mode, and language.
+3. Added explicit Demo labeling on the Chat screen.
+4. Replaced the default `List` / `.secondary` / `.roundedBorder` presentation with the EMS palette and panel styling.
+5. Added session reset behavior:
+   - chat messages, FAQ items, and explainer state clear on live-server switch, demo/live switch, and disconnect.
+6. Added transport-level tests:
+   - `/api/chat` JSON body encoding and auth header.
+   - `/api/faq` and `/api/explainer` request paths and auth headers.
+
+### TDD evidence
+
+#### RED
+
+After extending the chat/API tests for shared-session and explainer behavior, I ran:
+
+```bash
+cd ios/EMSControl
+DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer swift test
+```
+
+The run failed as expected before production changes. Key failures were missing `ChatStore` session APIs and explainer state members:
+
+```text
+error: value of type 'ChatStore' has no member 'updateSession'
+error: value of type 'ChatStore' has no member 'explainerStatus'
+error: value of type 'ChatStore' has no member 'isDemoMode'
+```
+
+#### GREEN
+
+After implementing the store/view/demo-data changes and transport assertions, the same command passed:
+
+```text
+Test Suite 'All tests' passed
+Executed 22 tests, with 0 failures (0 unexpected)
+```
+
+### Verification commands run
+
+- `cd ios/EMSControl && DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer swift test`
+- `git diff --check -- ios/EMSControl docs/ios-validation/iteration-4-chat-notes.md`
+
+Both passed.
+
+### Files changed
+
+- Modified: `ios/EMSControl/Sources/EMSControlApp/AppShellView.swift`
+- Modified: `ios/EMSControl/Sources/EMSControlApp/ChatView.swift`
+- Modified: `ios/EMSControl/Sources/EMSControlCore/ChatStore.swift`
+- Modified: `ios/EMSControl/Sources/EMSControlCore/DemoDataStore.swift`
+- Added: `ios/EMSControl/Resources/demo-explainer.json`
+- Modified: `ios/EMSControl/Tests/EMSControlCoreTests/APIClientTests.swift`
+- Modified: `ios/EMSControl/Tests/EMSControlCoreTests/ChatStoreTests.swift`
+- Modified: `docs/ios-validation/iteration-4-chat-notes.md`
+
+### Remaining concern
+
+- `swift test` covers the core package only. The SwiftUI app shell sources changed as required for Task 4, but full app-target build/integration verification remains part of Task 5.

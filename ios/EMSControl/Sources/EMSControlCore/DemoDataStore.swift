@@ -15,6 +15,10 @@ public struct DemoDataStore {
         try decode(FAQResponse.self, resource: "demo-faq")
     }
 
+    public func explainerStatus() throws -> ExplainerStatus {
+        try decode(ExplainerStatus.self, resource: "demo-explainer")
+    }
+
     public func chatResponse() throws -> ChatResponse {
         try decode(ChatResponse.self, resource: "demo-chat")
     }
