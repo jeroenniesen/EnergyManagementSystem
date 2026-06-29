@@ -5,9 +5,11 @@ surplus during the day; grid-charge only the **shortfall** needed to reach the n
 (`target_soc_pct`), and only in the cheapest pre-sunset slots within a price cap. Everything else is
 self-consumption — daytime soaks surplus, night discharges to serve the house.
 
-Risk-aware sizing (SPEC §6.3): the solar we *count on* to fill the battery uses the **P10** forecast
-(conservative), so a cloudy afternoon doesn't leave us short overnight. Pure + unit-tested — the
-caller supplies prices, the solar forecast and the current SoC; no hardware, no I/O.
+Risk-aware sizing (SPEC §6.3): the solar we *count on* to fill the battery is a configurable
+fraction of the expected (P50) forecast — `solar_confidence` (0..1). Lower = more cautious (counts
+on less sun, so a cloudy afternoon doesn't leave us short overnight, at the cost of buying more grid
+power); higher = trusts the forecast and buys less. Pure + unit-tested — the caller supplies prices,
+the solar forecast and the current SoC; no hardware, no I/O.
 """
 from __future__ import annotations
 
@@ -46,6 +48,9 @@ class SummerConfig:
     round_trip_efficiency: float = 0.90
     max_charge_w: float = 4000.0
     expected_load_w: float = 600.0  # average house load while the sun is up (solar serves it first)
+    # Fraction of the EXPECTED (P50) forecast we count on filling the battery (0..1). 1.0 = trust
+    # the forecast; lower = more cautious. Replaces the old hard-coded P10 (=0.6×P50) haircut.
+    solar_confidence: float = 0.8
     allow_grid_topup: bool = True  # may we buy the shortfall from the grid, or solar-only?
     max_topup_price_eur_per_kwh: float = 0.30  # never top up above this price
     horizon_slots: int = 96
@@ -64,7 +69,7 @@ def plan_summer(
         return Plan(created_at=now, slots=())
 
     p50_by = {f.start: f.p50_w for f in forecast}
-    p10_by = {f.start: f.p10_w for f in forecast}
+    confidence = max(0.0, min(1.0, cfg.solar_confidence))
     eta = math.sqrt(max(1e-6, min(1.0, cfg.round_trip_efficiency)))
     dh = SLOT.total_seconds() / 3600.0
 
@@ -97,10 +102,11 @@ def plan_summer(
         solar_window = []
         charge_deadline = (sunrise - SLOT) if sunrise is not None else None
 
-    # Conservative (P10) solar energy that can flow INTO the battery before sunset: the surplus
-    # after the house takes its share, times the one-way charge efficiency.
+    # Solar energy we count on flowing INTO the battery before sunset: the surplus (the
+    # confidence-scaled expected forecast, after the house takes its share) times the one-way
+    # charge efficiency. `solar_confidence` is the single conservatism knob (was a hard P10).
     solar_charge_kwh = sum(
-        max(0.0, p10_by.get(p.start, 0.0) - cfg.expected_load_w) * dh / 1000.0 * eta
+        max(0.0, confidence * p50_by.get(p.start, 0.0) - cfg.expected_load_w) * dh / 1000.0 * eta
         for p in solar_window
     )
     shortfall_kwh = max(0.0, target_kwh - current_kwh - solar_charge_kwh)

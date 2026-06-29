@@ -16,6 +16,7 @@ export type SettingField = {
   unit: string;
   advanced: boolean;
   applies: "live" | "restart";
+  slider?: boolean;
 };
 type SettingsResp = { schema: SettingField[]; values: Record<string, number | boolean | string> };
 type Values = Record<string, number | boolean | string>;
@@ -75,6 +76,29 @@ function NumberInput({
   useEffect(() => {
     setRaw(String(value));
   }, [value]);
+  // A drag slider (opt-in via field.slider, needs a min+max) — easier to dial than typing, with a
+  // live numeric read-out beside it since a range input shows no value of its own.
+  if (field.slider && field.min != null && field.max != null) {
+    return (
+      <div className="slider-row">
+        <input
+          id={`set-${field.key}`}
+          type="range"
+          className="slider"
+          value={value}
+          disabled={disabled}
+          min={field.min}
+          max={field.max}
+          step={field.step ?? 1}
+          onChange={(e) => onChange(Number(e.target.value))}
+        />
+        <output className="slider-value" htmlFor={`set-${field.key}`}>
+          {value}
+          {field.unit ? ` ${field.unit}` : ""}
+        </output>
+      </div>
+    );
+  }
   return (
     <input
       id={`set-${field.key}`}

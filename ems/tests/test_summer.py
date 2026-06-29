@@ -71,6 +71,21 @@ def test_grid_tops_up_only_the_shortfall_in_the_cheapest_preset_slots():
     assert [s.start for s in charge] == [T0, T0 + SLOT, T0 + 2 * SLOT]
 
 
+def test_solar_confidence_knob_changes_grid_topup():
+    # Modest daytime sun that EXACTLY covers the night target at full confidence but falls short
+    # when discounted. The knob must flip the grid top-up: trusting the forecast buys nothing;
+    # being cautious buys the assumed shortfall. (This is the fix for "buys grid power it didn't
+    # need" — the old hard P10=0.6× behaves like solar_confidence≈0.6.)
+    prices = _prices(16, eur=0.10)
+    fc = _forecast([1000.0] * 16)  # 50%->80% of 10 kWh = 3 kWh; full sun gives 4 kWh, half gives 2
+    trusting = plan_summer(prices, fc, T0, soc_pct=50.0, cfg=_cfg(solar_confidence=1.0))
+    cautious = plan_summer(prices, fc, T0, soc_pct=50.0, cfg=_cfg(solar_confidence=0.5))
+    n_trust = sum(s.intent is BatteryIntent.GRID_CHARGE_TO_TARGET for s in trusting.slots)
+    n_cautious = sum(s.intent is BatteryIntent.GRID_CHARGE_TO_TARGET for s in cautious.slots)
+    assert n_trust == 0, "trusting the forecast: solar covers the target, no grid buy"
+    assert n_cautious > 0, "cautious: assumes less sun, buys the shortfall"
+
+
 def test_grid_topup_can_be_disabled():
     prices = _prices(16)
     fc = _forecast([0.0] * 16)

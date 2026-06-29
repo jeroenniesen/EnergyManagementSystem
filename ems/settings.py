@@ -32,6 +32,7 @@ class SettingsField:
     unit: str = ""
     advanced: bool = False  # hidden behind the "Advanced" toggle in the UI
     applies: str = "live"  # "live" = on save · "restart" = connection, read at startup
+    slider: bool = False  # render as a drag slider (needs min+max) instead of a number box
 
 
 # The editable surface. Keep keys stable — they are persisted and consumed by the UI.
@@ -192,6 +193,14 @@ SETTINGS_SCHEMA: tuple[SettingsField, ...] = (
     ),
     # --- Planner economics (advanced — change these and /api/plan recomputes, SPEC §8.3) ---
     SettingsField(
+        "planner.solar_confidence", "Solar forecast confidence", "number", 80.0, "planner",
+        help="How much of the expected solar forecast to count on when deciding the grid top-up. "
+        "Higher = trust the forecast and buy less grid power; lower = more cautious (buys more to "
+        "guarantee the overnight charge). 100% counts on the full forecast; 60% ≈ the old cautious "
+        "default. Raise it if you see grid charging on days the sun clearly covers the battery.",
+        min=30.0, max=100.0, step=5.0, unit="%", slider=True,
+    ),
+    SettingsField(
         "planner.round_trip_efficiency", "Round-trip efficiency", "number", 0.90, "planner",
         help="How much energy survives a charge-then-discharge cycle (0.90 = 90%). Lower means the "
         "system only acts when the savings clearly beat the losses.",
@@ -304,7 +313,7 @@ def schema_json() -> list[dict]:
             "key": f.key, "label": f.label, "type": f.type, "default": f.default,
             "group": f.group, "help": f.help, "min": f.min, "max": f.max,
             "options": list(f.options) if f.options else None, "step": f.step, "unit": f.unit,
-            "advanced": f.advanced, "applies": f.applies,
+            "advanced": f.advanced, "applies": f.applies, "slider": f.slider,
         }
         for f in SETTINGS_SCHEMA
     ]

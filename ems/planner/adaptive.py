@@ -31,6 +31,8 @@ class AdaptiveConfig:
     max_charge_w: float = 4000.0
     degradation_eur_per_kwh: float = 0.05
     risk_margin_eur_per_kwh: float = 0.02
+    # Fraction of the EXPECTED (P50) forecast we count on filling the battery (0..1); see summer.py.
+    solar_confidence: float = 0.8
     horizon_slots: int = 96
 
 
@@ -48,7 +50,7 @@ def plan_adaptive(
         return Plan(created_at=now, slots=())
 
     p50 = {f.start: f.p50_w for f in forecast}
-    p10 = {f.start: f.p10_w for f in forecast}
+    confidence = max(0.0, min(1.0, cfg.solar_confidence))
     eta = math.sqrt(max(1e-6, min(1.0, cfg.round_trip_efficiency)))
     usable = cfg.usable_kwh
     reserve_kwh = cfg.reserve_soc_pct / 100.0 * usable
@@ -71,9 +73,11 @@ def plan_adaptive(
     # `avail_now_kwh`, `solar_to_batt_kwh` and `per_slot_kwh` below.
     total_deficit_kwh = sum(max(0.0, net_w(p)) * _DH / 1000.0 for p in future)
     coverable_kwh = min(total_deficit_kwh / eta, usable - reserve_kwh)
-    # Conservative (P10) solar that will flow into the battery from daytime surplus.
+    # Solar we count on flowing into the battery from daytime surplus: the confidence-scaled
+    # expected (P50) forecast after the house takes its share (was a hard P10 = 0.6×P50 haircut).
     solar_to_batt_kwh = sum(
-        max(0.0, p10.get(p.start, 0.0) - load_w_by.get(p.start, 0.0)) * _DH / 1000.0 * eta
+        max(0.0, confidence * p50.get(p.start, 0.0) - load_w_by.get(p.start, 0.0)) * _DH / 1000.0
+        * eta
         for p in future
     )
     shortfall_kwh = max(0.0, coverable_kwh - avail_now_kwh - solar_to_batt_kwh)

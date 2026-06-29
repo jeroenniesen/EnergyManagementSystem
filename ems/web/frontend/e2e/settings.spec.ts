@@ -29,6 +29,16 @@ test.describe("EMS settings", () => {
     expect(Object.keys(b.values)).toContain("planner.charge_slots");
   });
 
+  test("the solar-confidence planner setting renders as a drag slider", async ({ page }) => {
+    await page.goto("/");
+    await page.getByTestId("nav-settings").click();
+    await page.getByTestId("group-planner").click();
+    const field = page.getByTestId("field-planner.solar_confidence");
+    await expect(field).toBeVisible();
+    // It's a drag slider (range input) with a live read-out, not a plain number box.
+    await expect(field.locator("input[type=range]")).toBeVisible();
+  });
+
   test("Settings tab renders grouped basic settings; advanced is hidden by default", async ({
     page,
   }) => {

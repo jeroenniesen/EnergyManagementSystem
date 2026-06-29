@@ -443,6 +443,7 @@ def create_app(
             round_trip_efficiency=s["planner.round_trip_efficiency"],
             max_charge_w=s["battery.max_charge_w"],
             expected_load_w=s["battery.overnight_load_kwh"] * 1000.0 / 12.0,
+            solar_confidence=s["planner.solar_confidence"] / 100.0,
             allow_grid_topup=s["strategy.summer_grid_topup"],
             max_topup_price_eur_per_kwh=s["strategy.summer_max_topup_price"],
         )
@@ -502,6 +503,7 @@ def create_app(
             max_charge_w=s["battery.max_charge_w"],
             degradation_eur_per_kwh=s["planner.degradation_eur_per_kwh"],
             risk_margin_eur_per_kwh=s["planner.risk_margin_eur_per_kwh"],
+            solar_confidence=s["planner.solar_confidence"] / 100.0,
         )
 
     async def _audit_decision_loop(stop: asyncio.Event) -> None:
