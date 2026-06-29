@@ -13,18 +13,25 @@ solar forecast and dynamic (Tibber) electricity prices.
 
 ## Install on a Mac (one command)
 
-On a Mac (Apple Silicon — e.g. a Mac Mini M5):
+On a Mac (Apple Silicon — e.g. a Mac Mini M5), run this single command:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/jeroenniesen/EnergyManagementSystem/main/scripts/bootstrap.sh | bash
+```
+
+That's it. It downloads the app to `~/EnergyManagementSystem` and bootstraps everything (no sudo, no
+Homebrew required): installs `uv` if you don't have it, fetches a local Node only if needed, builds
+the dashboard, sets up the Python environment, installs a small auto-start service (it comes back
+after a reboot), starts the app, and prints the URL. Then open **http://localhost:8080**.
+
+<details><summary>Prefer to clone first?</summary>
 
 ```bash
 git clone https://github.com/jeroenniesen/EnergyManagementSystem.git
 cd EnergyManagementSystem
 ./scripts/install.sh        # or: make install
 ```
-
-That single command bootstraps everything (no sudo, no Homebrew required): it installs `uv` if you
-don't have it, fetches a local Node only if needed, builds the dashboard, sets up the Python
-environment, installs a small auto-start service (it comes back after a reboot), starts the app, and
-prints the URL. Then open **http://localhost:8080**.
+</details>
 
 - Run it in this terminal instead of as a service: `make dev` (`./scripts/install.sh --foreground`)
 - Stop + remove the auto-start service (keeps your data): `./scripts/uninstall.sh` (`make uninstall`)
