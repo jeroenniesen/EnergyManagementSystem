@@ -152,12 +152,9 @@ struct ConnectionView: View {
                 validationError = "Access token rejected."
                 return
             }
-            if !token.isEmpty {
-                try credentialStore.saveToken(token, for: url)
-            }
-
             validationError = nil
             dashboardStore.client = client
+            try dashboardStore.saveConnectedServer(client)
             await dashboardStore.refresh()
         } catch {
             validationError = (error as? LocalizedError)?.errorDescription ?? String(describing: error)

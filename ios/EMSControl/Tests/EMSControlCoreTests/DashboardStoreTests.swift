@@ -54,8 +54,44 @@ final class DashboardStoreTests: XCTestCase {
         store.forgetServer()
 
         XCTAssertEqual(credentials.deletedURLs, [url])
+        XCTAssertTrue(credentials.deletedLastBaseURL)
         XCTAssertNil(store.client)
         XCTAssertNil(store.snapshot)
+    }
+
+    func testSaveAndRestoreConnectedServerUsesCredentialStore() throws {
+        let credentials = RecordingCredentialStore()
+        let url = URL(string: "http://ems.local:8080")!
+        let client = APIClient(baseURL: url, token: "secret")
+        let store = DashboardStore(client: client, credentialStore: credentials)
+
+        try store.saveConnectedServer(client)
+        store.forgetServer()
+        credentials.deletedURLs.removeAll()
+        credentials.deletedLastBaseURL = false
+        store.restoreSavedServer()
+
+        XCTAssertEqual(credentials.savedBaseURL, url)
+        XCTAssertEqual(credentials.savedTokens[url], "secret")
+        XCTAssertEqual(store.client?.baseURL, url)
+        XCTAssertEqual(store.client?.token, "secret")
+    }
+
+    func testRefreshWhenDueSkipsBeforeDeadlineAndRefreshesAfter() async throws {
+        let transport = CountingDashboardTransport(data: dashboardJSON(cacheTTLSeconds: 10))
+        let store = DashboardStore(
+            client: APIClient(
+                baseURL: URL(string: "http://ems.local:8080")!,
+                transport: transport
+            )
+        )
+
+        await store.refresh()
+        await store.refreshWhenDue(now: ISO8601DateFormatter().date(from: "2026-06-29T12:00:09+00:00")!)
+        XCTAssertEqual(transport.count, 1)
+
+        await store.refreshWhenDue(now: ISO8601DateFormatter().date(from: "2026-06-29T12:00:10+00:00")!)
+        XCTAssertEqual(transport.count, 2)
     }
 
     func testUseDemoClearsLiveClient() throws {
@@ -102,13 +138,48 @@ private final class RecordingDashboardTransport: HTTPTransport, @unchecked Senda
     }
 }
 
+private final class CountingDashboardTransport: HTTPTransport, @unchecked Sendable {
+    let data: Data
+    var count = 0
+
+    init(data: Data) {
+        self.data = data
+    }
+
+    func data(for request: URLRequest) async throws -> (Data, HTTPURLResponse) {
+        count += 1
+        return (data, HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!)
+    }
+}
+
 private final class RecordingCredentialStore: CredentialStore {
     var deletedURLs: [URL] = []
+    var deletedLastBaseURL = false
+    var savedBaseURL: URL?
+    var savedTokens: [URL: String] = [:]
 
-    func saveToken(_ token: String, for baseURL: URL) throws {}
-    func token(for baseURL: URL) throws -> String? { nil }
+    func saveToken(_ token: String, for baseURL: URL) throws {
+        savedTokens[baseURL] = token
+    }
+
+    func token(for baseURL: URL) throws -> String? {
+        savedTokens[baseURL]
+    }
+
     func deleteToken(for baseURL: URL) throws {
         deletedURLs.append(baseURL)
+    }
+
+    func saveLastBaseURL(_ baseURL: URL) throws {
+        savedBaseURL = baseURL
+    }
+
+    func lastBaseURL() throws -> URL? {
+        savedBaseURL
+    }
+
+    func deleteLastBaseURL() throws {
+        deletedLastBaseURL = true
     }
 }
 

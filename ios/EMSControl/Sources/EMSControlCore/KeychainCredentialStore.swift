@@ -9,6 +9,9 @@ public protocol CredentialStore {
     func saveToken(_ token: String, for baseURL: URL) throws
     func token(for baseURL: URL) throws -> String?
     func deleteToken(for baseURL: URL) throws
+    func saveLastBaseURL(_ baseURL: URL) throws
+    func lastBaseURL() throws -> URL?
+    func deleteLastBaseURL() throws
 }
 
 public struct KeychainCredentialStore: CredentialStore {
@@ -53,6 +56,54 @@ public struct KeychainCredentialStore: CredentialStore {
 
     public func deleteToken(for baseURL: URL) throws {
         let status = SecItemDelete(baseQuery(for: baseURL) as CFDictionary)
+        guard status == errSecSuccess || status == errSecItemNotFound else {
+            throw KeychainCredentialError.unexpectedStatus(status)
+        }
+    }
+
+    public func saveLastBaseURL(_ baseURL: URL) throws {
+        let account = "last-base-url"
+        try deleteLastBaseURL()
+        let query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: service,
+            kSecAttrAccount as String: account,
+            kSecAttrAccessible as String: kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly,
+            kSecValueData as String: Data(baseURL.absoluteString.utf8)
+        ]
+        let status = SecItemAdd(query as CFDictionary, nil)
+        guard status == errSecSuccess else {
+            throw KeychainCredentialError.unexpectedStatus(status)
+        }
+    }
+
+    public func lastBaseURL() throws -> URL? {
+        let query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: service,
+            kSecAttrAccount as String: "last-base-url",
+            kSecReturnData as String: true,
+            kSecMatchLimit as String: kSecMatchLimitOne
+        ]
+        var result: CFTypeRef?
+        let status = SecItemCopyMatching(query as CFDictionary, &result)
+        if status == errSecItemNotFound { return nil }
+        guard status == errSecSuccess else {
+            throw KeychainCredentialError.unexpectedStatus(status)
+        }
+        guard let data = result as? Data,
+              let raw = String(data: data, encoding: .utf8)
+        else { return nil }
+        return URL(string: raw)
+    }
+
+    public func deleteLastBaseURL() throws {
+        let query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: service,
+            kSecAttrAccount as String: "last-base-url"
+        ]
+        let status = SecItemDelete(query as CFDictionary)
         guard status == errSecSuccess || status == errSecItemNotFound else {
             throw KeychainCredentialError.unexpectedStatus(status)
         }

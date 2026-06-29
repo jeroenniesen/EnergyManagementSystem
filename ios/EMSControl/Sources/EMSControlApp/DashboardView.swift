@@ -119,7 +119,9 @@ struct DashboardView: View {
     }
 
     private func price(_ snapshot: DashboardSnapshot) -> String {
-        if let value = snapshot.status.values["price_eur_per_kwh"] ?? snapshot.strategy.values["price_eur_per_kwh"] {
+        if let value = snapshot.status.values["price_eur_per_kwh"] ??
+            snapshot.strategy.values["price_eur_per_kwh"] ??
+            snapshot.energyStory.values["current_price_eur_per_kwh"] {
             return euro(value) + "/kWh"
         }
         return snapshot.status.values["price_level"]?.displayValue ?? "--"

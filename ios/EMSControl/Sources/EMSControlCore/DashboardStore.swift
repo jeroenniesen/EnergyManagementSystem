@@ -47,6 +47,26 @@ public final class DashboardStore {
         return now >= nextRefreshAt
     }
 
+    public func refreshWhenDue(now: Date = Date()) async {
+        guard shouldRefresh(now: now) else { return }
+        await refresh()
+    }
+
+    public func saveConnectedServer(_ client: APIClient) throws {
+        try credentialStore.saveLastBaseURL(client.baseURL)
+        if let token = client.token, !token.isEmpty {
+            try credentialStore.saveToken(token, for: client.baseURL)
+        }
+    }
+
+    public func restoreSavedServer() {
+        guard client == nil,
+              let baseURL = try? credentialStore.lastBaseURL()
+        else { return }
+        let token = try? credentialStore.token(for: baseURL)
+        client = APIClient(baseURL: baseURL, token: token ?? nil)
+    }
+
     public func useDemo() throws {
         client = nil
         snapshot = try demoData.dashboardSnapshot()
@@ -73,6 +93,7 @@ public final class DashboardStore {
         if let client {
             try? credentialStore.deleteToken(for: client.baseURL)
         }
+        try? credentialStore.deleteLastBaseURL()
         client = nil
         snapshot = nil
         nextRefreshAt = nil

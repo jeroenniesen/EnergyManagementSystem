@@ -4,6 +4,7 @@ import EMSControlCore
 struct AppShellView: View {
     @Environment(DashboardStore.self) private var dashboardStore
     @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.scenePhase) private var scenePhase
     @State private var chatStore = ChatStore(client: nil)
 
     private var theme: EMSTheme {
@@ -28,6 +29,27 @@ struct AppShellView: View {
         .sheet(isPresented: .constant(dashboardStore.snapshot == nil)) {
             ConnectionView()
                 .presentationBackground(themeColor(theme.background))
+        }
+        .task {
+            dashboardStore.restoreSavedServer()
+            await dashboardStore.refresh()
+        }
+        .task(id: refreshLoopKey) {
+            await runRefreshLoop()
+        }
+    }
+
+    private var refreshLoopKey: String {
+        "\(scenePhase)-\(dashboardStore.client?.baseURL.absoluteString ?? "none")"
+    }
+
+    private func runRefreshLoop() async {
+        guard scenePhase == .active else { return }
+        while !Task.isCancelled {
+            await dashboardStore.refreshWhenDue()
+            let seconds = dashboardStore.nextRefreshAt.map { max(1, $0.timeIntervalSinceNow) } ?? 5
+            let cappedSeconds = min(max(seconds, 1), 60)
+            try? await Task.sleep(for: .seconds(cappedSeconds))
         }
     }
 }
