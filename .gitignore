@@ -38,3 +38,6 @@ ems/web/frontend/.e2e-data/
 
 # Installer's repo-local toolchain (Node fetched by scripts/install.sh)
 .tools/
+
+# Local git worktrees for isolated feature work
+.worktrees/
