@@ -474,6 +474,24 @@ body {
 .soc-deadline { stroke: var(--summer); stroke-width: 1; opacity: 0.45; }
 .soc-deadline-label { fill: var(--summer); font-size: 11px; opacity: 0.9; }
 .soc-now { stroke: var(--muted); stroke-width: 1; opacity: 0.6; }
+/* "Am I on track?" verdict under the headline. */
+.on-track {
+  display: inline-flex; align-items: center; gap: 6px; font-size: 0.85rem; font-weight: 550;
+  margin: 6px 0 10px; padding: 5px 11px; border-radius: 999px; border: 1px solid var(--border);
+}
+.on-track svg { width: 14px; height: 14px; flex: none; }
+.on-track-good {
+  color: var(--green-text); background: color-mix(in srgb, var(--accent) 10%, transparent);
+  border-color: color-mix(in srgb, var(--accent) 35%, transparent);
+}
+.on-track-warn {
+  color: var(--amber-text); background: color-mix(in srgb, var(--amber) 12%, transparent);
+  border-color: color-mix(in srgb, var(--amber) 40%, transparent);
+}
+.on-track-muted { color: var(--muted); }
+/* Recent ACTUALS on the next-24h bar tracks read as "already happened" — faded vs. the plan. */
+.track .is-actual { opacity: 0.5; }
+.tbar.is-actual { border-top: 2px solid color-mix(in srgb, var(--muted) 70%, transparent); }
 .soc-actual { fill: none; stroke: var(--accent); stroke-width: 2.5; vector-effect: non-scaling-stroke; }
 .soc-predicted {
   fill: none; stroke: var(--amber); stroke-width: 2.5; stroke-dasharray: 6 4;

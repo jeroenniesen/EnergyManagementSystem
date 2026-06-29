@@ -89,6 +89,58 @@ test.describe("EMS dashboard", () => {
     await expect(page.getByTestId("story-tag")).toContainText("the plan");
   });
 
+  test("the next story shows an on-track verdict", async ({ page }) => {
+    // The real (mock) backend always returns an on_track verdict for the next window.
+    await page.goto("/");
+    const verdict = page.getByTestId("on-track");
+    await expect(verdict).toBeVisible();
+    await expect(verdict).toHaveAttribute("data-status", /ahead|on_track|behind|unknown/);
+  });
+
+  test("the next story draws recent actuals before now + a behind verdict (mocked)", async ({
+    page,
+  }) => {
+    // Build a next story with 3h of recorded actuals (rising SoC) then a plan, + a 'behind' verdict.
+    const base = Date.parse("2026-06-29T09:00:00Z");
+    const SLOT = 15 * 60 * 1000;
+    const mk = (n: number, from: number, soc0: number, action: string) =>
+      Array.from({ length: n }, (_, i) => ({
+        start: new Date(from + i * SLOT).toISOString(),
+        soc_pct: soc0 + i, grid_w: 100, solar_w: 800 + i * 50, battery_w: -200,
+        load_w: 400, eur_per_kwh: 0.2, action,
+      }));
+    const recent = mk(12, base - 12 * SLOT, 40, "charge"); // last 3h, actual
+    const slots = mk(20, base, 52, "self_consume"); // the plan
+    const totals = {
+      import_kwh: 1, export_kwh: 0, solar_kwh: 5, charge_kwh: 2, discharge_kwh: 1, load_kwh: 4,
+      grid_cost_eur: 0.2, self_sufficiency_pct: 80, soc_start_pct: 40, soc_end_pct: 70,
+      soc_min_pct: 40, soc_max_pct: 70,
+    };
+    await page.route("**/api/energy-story**", (route) => {
+      if (!route.request().url().includes("window=past")) {
+        return route.fulfill({
+          status: 200, contentType: "application/json",
+          body: JSON.stringify({
+            window: "next", now: new Date(base).toISOString(), current_soc_pct: 52,
+            reserve_soc_pct: 10, target_soc_pct: 88, target_kwh: 9, target_deadline: null,
+            current_price_eur_per_kwh: 0.2, slots, totals, headline: "Next 24h — plan.",
+            recent_hours: 3, recent,
+            on_track: { status: "behind", actual_soc_pct: 52, target_soc_pct: 88,
+              deficit_kwh: 7.7, message: "Behind — about 7.7 kWh short of the 88% target." },
+          }),
+        });
+      }
+      return route.continue();
+    });
+    await page.goto("/");
+    const verdict = page.getByTestId("on-track");
+    await expect(verdict).toHaveAttribute("data-status", "behind");
+    await expect(verdict).toContainText("Behind");
+    // Both the measured (solid) and forecast (dashed) SoC lines render on the same chart.
+    await expect(page.getByTestId("story-soc-actual")).toBeAttached();
+    await expect(page.getByTestId("story-soc-line")).toBeAttached();
+  });
+
   test("shows the strategy card with a season picker and explanation", async ({ page }) => {
     await page.goto("/");
     const card = page.getByTestId("strategy-card");

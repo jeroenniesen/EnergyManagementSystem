@@ -41,6 +41,23 @@ export type EnergyStoryData = {
   totals: StoryTotals;
   headline: string;
   trust_markers?: string[];
+  // "Am I on track?" — recent recorded actuals (next window only) + a verdict.
+  recent?: StorySlot[];
+  recent_hours?: number;
+  on_track?: {
+    status: "ahead" | "on_track" | "behind" | "unknown";
+    actual_soc_pct: number;
+    target_soc_pct: number;
+    deficit_kwh: number;
+    message: string;
+  };
+};
+
+const ON_TRACK_TONE: Record<string, string> = {
+  ahead: "on-track-good",
+  on_track: "on-track-good",
+  behind: "on-track-warn",
+  unknown: "on-track-muted",
 };
 
 const ACTION_LEGEND = [
@@ -99,32 +116,50 @@ export function EnergyStory({
   // than the cold-start empty message. (Also makes out-of-order responses self-correct.)
   const switching = rawStory != null && rawStory.window !== window;
   const story = switching ? null : rawStory;
+  const isPast = window === "past";
   const slots = story?.slots ?? [];
+  // "Am I on track?" (next only): the recorded actuals from the last few hours, drawn on the same
+  // timeline immediately before "now" — so the chart reads actual → now → planned.
+  const recent = !isPast ? story?.recent ?? [] : [];
+  const onTrack = !isPast ? story?.on_track : undefined;
+  // The full timeline the bar tracks + axis span: recent actuals followed by the slots (the plan for
+  // "next", the measured day for "past"). `recent` is always empty for past, so past is unchanged.
+  const chartSlots = recent.length ? [...recent, ...slots] : slots;
+  const recentCount = recent.length;
   const t = story?.totals;
 
-  // SoC line points (skip slots with no SoC). Plotted at slot start — a single forward series,
-  // so no bridging is needed.
-  const pts = slots
-    .filter((s) => s.soc_pct != null)
-    .map((s) => ({ t: Date.parse(s.start), soc: s.soc_pct as number }))
-    .filter((p) => Number.isFinite(p.t));
-  const t0 = slots.length ? Date.parse(slots[0].start) : 0;
-  const t1 = slots.length ? Date.parse(slots[slots.length - 1].start) + SLOT_MS : 1;
+  // Two SoC series: the MEASURED line (solid) and, for "next", the FORECAST line (dashed) bridged
+  // from the last measured point so they join cleanly at "now". For "past" the slots ARE measured.
+  const toPt = (s: StorySlot) => ({ t: Date.parse(s.start), soc: s.soc_pct as number });
+  const finite = (p: { t: number }) => Number.isFinite(p.t);
+  const actualPts = (isPast ? slots : recent).filter((s) => s.soc_pct != null).map(toPt).filter(finite);
+  const planPtsRaw = (isPast ? [] : slots).filter((s) => s.soc_pct != null).map(toPt).filter(finite);
+  const planPts =
+    !isPast && actualPts.length && planPtsRaw.length
+      ? [actualPts[actualPts.length - 1], ...planPtsRaw] // bridge measured → forecast
+      : planPtsRaw;
+  const allPts = [...actualPts, ...planPtsRaw];
+
+  const t0 = chartSlots.length ? Date.parse(chartSlots[0].start) : 0;
+  const t1 = chartSlots.length ? Date.parse(chartSlots[chartSlots.length - 1].start) + SLOT_MS : 1;
   const span = Math.max(1, t1 - t0);
   const x = (ms: number) => PAD.l + ((ms - t0) / span) * (W - PAD.l - PAD.r);
   const y = (soc: number) => PAD.t + (1 - soc / 100) * (H - PAD.t - PAD.b);
-  const socLine = pts.map((p) => `${x(p.t).toFixed(1)},${y(p.soc).toFixed(1)}`).join(" ");
-  // Filled area under the SoC line — reads as the "energy in the battery", not just a line.
+  const toLine = (ps: { t: number; soc: number }[]) =>
+    ps.map((p) => `${x(p.t).toFixed(1)},${y(p.soc).toFixed(1)}`).join(" ");
+  const actualLine = toLine(actualPts);
+  const planLine = toLine(planPts);
+  // Filled area under the whole SoC curve (measured + forecast) — reads as "energy in the battery".
   const baseY = (H - PAD.b).toFixed(1);
   const socArea =
-    pts.length >= 2
-      ? `${socLine} ${x(pts[pts.length - 1].t).toFixed(1)},${baseY} ${x(pts[0].t).toFixed(1)},${baseY}`
+    allPts.length >= 2
+      ? `${toLine(allPts)} ${x(allPts[allPts.length - 1].t).toFixed(1)},${baseY} ` +
+        `${x(allPts[0].t).toFixed(1)},${baseY}`
       : "";
 
-  const maxPrice = Math.max(0.01, ...slots.map((s) => s.eur_per_kwh ?? 0));
-  const maxSolar = Math.max(1, ...slots.map((s) => s.solar_w));
-  const everyN = Math.max(1, Math.round(slots.length / 6));
-  const isPast = window === "past";
+  const maxPrice = Math.max(0.01, ...chartSlots.map((s) => s.eur_per_kwh ?? 0));
+  const maxSolar = Math.max(1, ...chartSlots.map((s) => s.solar_w));
+  const everyN = Math.max(1, Math.round(chartSlots.length / 6));
   // Domain insight a dynamic-tariff user cares about most: did the battery cover the day's most
   // expensive hour instead of buying it? Show it only when it's a win (don't nag otherwise).
   const priced = slots.filter((s) => s.eur_per_kwh != null);
@@ -144,7 +179,7 @@ export function EnergyStory({
   // A spoken-word description of the chart for screen readers — the SVG line alone is invisible
   // to them, so spell out the start, low point, target and reserve floor.
   const socChartLabel = (() => {
-    if (!story || !t || pts.length === 0) return "Battery level over time";
+    if (!story || !t || allPts.length === 0) return "Battery level over time";
     const span24 = isPast ? "the last 24 hours" : "the next 24 hours";
     const parts = [`Battery level over ${span24}.`];
     if (t.soc_start_pct != null) parts.push(`Starts at ${Math.round(t.soc_start_pct)}%.`);
@@ -196,6 +231,16 @@ export function EnergyStory({
       <p className="story-headline" data-testid="story-headline">
         {story?.headline ?? "…"}
       </p>
+
+      {onTrack && (
+        <p
+          className={`on-track ${ON_TRACK_TONE[onTrack.status] ?? "on-track-muted"}`}
+          data-testid="on-track"
+          data-status={onTrack.status}
+        >
+          <Icon name={onTrack.status === "behind" ? "alert" : "check"} /> {onTrack.message}
+        </p>
+      )}
 
       {story?.trust_markers && story.trust_markers.length > 0 && (
         <div className="trust-markers" data-testid="trust-markers">
@@ -371,15 +416,20 @@ export function EnergyStory({
             {Number.isFinite(nowMs) && nowMs >= t0 && nowMs <= t1 && (
               <line className="soc-now" x1={x(nowMs)} y1={PAD.t} x2={x(nowMs)} y2={H - PAD.b} />
             )}
-            {pts.length >= 2 && (
+            {allPts.length >= 2 && (
               <polygon fill={isPast ? "url(#socGradPast)" : "url(#socGradNext)"} points={socArea} />
             )}
-            {pts.length >= 2 && (
+            {/* Measured line (solid). For "past" this is the day; for "next" it's the last 3h. */}
+            {actualPts.length >= 2 && (
               <polyline
-                className={isPast ? "soc-actual" : "soc-predicted"}
-                points={socLine}
-                data-testid="story-soc-line"
+                className="soc-actual"
+                points={actualLine}
+                data-testid={isPast ? "story-soc-line" : "story-soc-actual"}
               />
+            )}
+            {/* Forecast line (dashed), only for "next" — the planned SoC after now. */}
+            {!isPast && planPts.length >= 2 && (
+              <polyline className="soc-predicted" points={planLine} data-testid="story-soc-line" />
             )}
           </svg>
 
@@ -405,41 +455,49 @@ export function EnergyStory({
 
           <div className="track-label">Electricity price (cheap = short)</div>
           <div className="track track-price" role="img" aria-label="Electricity price">
-            {slots.map((s, i) => (
+            {chartSlots.map((s, i) => (
               <span
                 key={i}
-                className="tbar tbar-price"
+                className={`tbar tbar-price${i < recentCount ? " is-actual" : ""}`}
                 style={{ height: `${((s.eur_per_kwh ?? 0) / maxPrice) * 100}%` }}
                 title={`${clock(Date.parse(s.start))} · €${(s.eur_per_kwh ?? 0).toFixed(2)}/kWh`}
               />
             ))}
           </div>
 
-          <div className="track-label">Battery {isPast ? "(what it did)" : "(planned)"}</div>
+          <div className="track-label">
+            Battery {isPast ? "(what it did)" : recentCount ? "(did → plans)" : "(planned)"}
+          </div>
           <div className="track track-plan" role="img" aria-label="Battery action">
-            {slots.map((s, i) => (
+            {chartSlots.map((s, i) => (
               <span
                 key={i}
-                className={`pseg seg-${s.action}`}
-                title={`${clock(Date.parse(s.start))} — ${ACTION_LABEL[s.action] ?? s.action}`}
+                className={`pseg seg-${s.action}${i < recentCount ? " is-actual" : ""}`}
+                title={`${clock(Date.parse(s.start))} — ${i < recentCount ? "did: " : ""}${
+                  ACTION_LABEL[s.action] ?? s.action
+                }`}
               />
             ))}
           </div>
 
-          <div className="track-label">Solar {isPast ? "(produced)" : "(forecast)"}</div>
+          <div className="track-label">
+            Solar {isPast ? "(produced)" : recentCount ? "(produced → forecast)" : "(forecast)"}
+          </div>
           <div className="track track-solar" role="img" aria-label="Solar">
-            {slots.map((s, i) => (
+            {chartSlots.map((s, i) => (
               <span
                 key={i}
-                className="tbar tbar-solar"
+                className={`tbar tbar-solar${i < recentCount ? " is-actual" : ""}`}
                 style={{ height: `${(s.solar_w / maxSolar) * 100}%` }}
-                title={`${clock(Date.parse(s.start))} · ${Math.round(s.solar_w)} W`}
+                title={`${clock(Date.parse(s.start))} · ${Math.round(s.solar_w)} W${
+                  i < recentCount ? " (measured)" : ""
+                }`}
               />
             ))}
           </div>
 
           <div className="time-axis" aria-hidden="true">
-            {slots.map((s, i) => (
+            {chartSlots.map((s, i) => (
               <span key={i} className="tick">
                 {i % everyN === 0 ? clock(Date.parse(s.start)) : ""}
               </span>
@@ -447,7 +505,7 @@ export function EnergyStory({
           </div>
 
           <div className="legend" data-testid="story-legend">
-            {ACTION_LEGEND.filter((a) => slots.some((s) => s.action === a.key)).map((a) => (
+            {ACTION_LEGEND.filter((a) => chartSlots.some((s) => s.action === a.key)).map((a) => (
               <span key={a.key} className="legend-item">
                 <span className={`legend-swatch seg-${a.key}`} />
                 {a.label}
