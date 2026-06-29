@@ -140,8 +140,18 @@ This build compiled the SwiftUI app sources and produced:
 
 ## Concerns
 
-- Simulator validation and screenshots remain blocked by `CoreSimulatorService` failures external to the repo.
-- The successful fallback build is for `generic/platform=iOS` with `CODE_SIGNING_ALLOWED=NO`, which proves the app and framework targets compile but does not replace simulator runtime validation.
-- `xcodebuild` reports two non-fatal warnings on the app target:
-  - all interface orientations must be supported unless the app requires full screen
-  - a launch configuration or launch storyboard/xib must be provided unless the app requires full screen
+- Superseded by the controller follow-up below: simulator access became available with escalation, the simulator build/install/launch path was verified, and the first-launch screenshot was captured.
+- A dashboard/chat walkthrough screenshot was not captured because this pass only used command-line simulator install/launch/screenshot, not UI automation for tapping **View Demo**.
+
+## Controller follow-up
+
+- Root cause: the app target compiled but was not installable because `Info.plist` omitted `CFBundleIdentifier`; after that fix, the installed app exposed missing demo fixtures because the Xcode app target did not copy `Resources/*.json`.
+- Fixes:
+  - Added standard bundle identity/version keys, `UILaunchScreen`, and supported orientation keys to `Sources/EMSControlApp/Info.plist`.
+  - Added `Resources` to the app target in `project.yml` and regenerated `EMSControl.xcodeproj`.
+  - Updated `DemoDataStore` to fall back from the framework bundle to `Bundle.main` outside Swift Package builds.
+- Verification:
+  - `DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer swift test` passed 26 tests, 0 failures.
+  - `DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer xcodebuild -project ios/EMSControl/EMSControl.xcodeproj -scheme EMSControl -destination 'platform=iOS Simulator,name=iPhone 17,OS=26.5' -derivedDataPath /private/tmp/emscontrol-sim-derived CODE_SIGNING_ALLOWED=NO build` passed.
+  - `xcrun simctl install` and `xcrun simctl launch ... com.jeroenniesen.emscontrol` passed on iPhone 17 / iOS 26.5.
+  - Captured `docs/ios-validation/iteration-5-iphone-first-launch.png`; the app renders first launch with visible **View Demo** and no missing fixture error.

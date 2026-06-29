@@ -36,7 +36,11 @@ private extension DemoDataStore {
 #if SWIFT_PACKAGE
         .module
 #else
-        Bundle(for: BundleToken.self)
+        let frameworkBundle = Bundle(for: BundleToken.self)
+        if frameworkBundle.url(forResource: "demo-dashboard", withExtension: "json") != nil {
+            return frameworkBundle
+        }
+        return .main
 #endif
     }
 }

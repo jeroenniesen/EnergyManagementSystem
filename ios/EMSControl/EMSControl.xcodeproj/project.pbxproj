@@ -10,6 +10,7 @@
 		00308D987E6218B59EE31A64 /* EMSControlCore.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 62C0D3FEB8DD96AF4F3CAD8C /* EMSControlCore.framework */; };
 		0D0F6681CE829F1EC4356E68 /* EMSControlCore.framework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = 62C0D3FEB8DD96AF4F3CAD8C /* EMSControlCore.framework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 		15F7E1D2E299E702BCF34E68 /* DemoDataStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3699F1E6706AE136B68AB1C8 /* DemoDataStore.swift */; };
+		211D0CD0F3242A3EF71BD8AE /* demo-dashboard.json in Resources */ = {isa = PBXBuildFile; fileRef = 0888EA444AB57461568AD1F4 /* demo-dashboard.json */; };
 		51B466CD33164832C83EA6F1 /* DashboardStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 851FDA73182D3541A3039A9A /* DashboardStore.swift */; };
 		54D20C7D5F03A7096EA28D35 /* ConnectionView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 378862CC33548C4C96596B8A /* ConnectionView.swift */; };
 		58F3D814DBFE8DE2988FC32A /* ChatView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 922974D3E5EFAB723E1B86D9 /* ChatView.swift */; };
@@ -19,8 +20,11 @@
 		869F6EB25417A0F2A4D2613A /* Models.swift in Sources */ = {isa = PBXBuildFile; fileRef = 13253B7C77956C58739FA336 /* Models.swift */; };
 		9AA655D073E01E5E13F7FFA5 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = C4315BE65439DFDF4D4C0BA1 /* Assets.xcassets */; };
 		A4C345A7479078FBB7CD3D55 /* DashboardView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 78E410739D2A3710496D0625 /* DashboardView.swift */; };
+		A93F94C222669DFBD1867493 /* demo-explainer.json in Resources */ = {isa = PBXBuildFile; fileRef = A447D414CC4B7CC4F68D91D0 /* demo-explainer.json */; };
 		B1C9A8640321DD1AA1C7D313 /* ServerAddressValidator.swift in Sources */ = {isa = PBXBuildFile; fileRef = C10928FD46649449E9D7A9F3 /* ServerAddressValidator.swift */; };
 		B73C5305189929545FF315BF /* ChatStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = BC6937650BBFD71CE57B8BF5 /* ChatStore.swift */; };
+		C9F13CEE37D770D72BFECADC /* demo-faq.json in Resources */ = {isa = PBXBuildFile; fileRef = E720AFC468AEF7CC68D269FB /* demo-faq.json */; };
+		CE05537D943C4DEF4E95F80E /* demo-chat.json in Resources */ = {isa = PBXBuildFile; fileRef = 994E14FBDEF1C0F89AC9E28C /* demo-chat.json */; };
 		EEC0E74D439A37CB1C2D9F6C /* APIClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = 720F711D71B00AC0F6976700 /* APIClient.swift */; };
 		EF963FF881BB7743E2130B73 /* AppShellView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 24CB1980979D24B5EA49FBE4 /* AppShellView.swift */; };
 /* End PBXBuildFile section */
@@ -52,6 +56,7 @@
 /* Begin PBXFileReference section */
 		001C06DC7E770182FD4B1DBB /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
 		033DDC49ECE87F18564D3288 /* ServerDiscovery.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ServerDiscovery.swift; sourceTree = "<group>"; };
+		0888EA444AB57461568AD1F4 /* demo-dashboard.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = "demo-dashboard.json"; sourceTree = "<group>"; };
 		13253B7C77956C58739FA336 /* Models.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Models.swift; sourceTree = "<group>"; };
 		24CB1980979D24B5EA49FBE4 /* AppShellView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppShellView.swift; sourceTree = "<group>"; };
 		34964B0AB73A0E2AEB2C4350 /* EMSControl.app */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.application; path = EMSControl.app; sourceTree = BUILT_PRODUCTS_DIR; };
@@ -63,10 +68,13 @@
 		78E410739D2A3710496D0625 /* DashboardView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DashboardView.swift; sourceTree = "<group>"; };
 		851FDA73182D3541A3039A9A /* DashboardStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DashboardStore.swift; sourceTree = "<group>"; };
 		922974D3E5EFAB723E1B86D9 /* ChatView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatView.swift; sourceTree = "<group>"; };
+		994E14FBDEF1C0F89AC9E28C /* demo-chat.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = "demo-chat.json"; sourceTree = "<group>"; };
+		A447D414CC4B7CC4F68D91D0 /* demo-explainer.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = "demo-explainer.json"; sourceTree = "<group>"; };
 		BC6937650BBFD71CE57B8BF5 /* ChatStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatStore.swift; sourceTree = "<group>"; };
 		C10928FD46649449E9D7A9F3 /* ServerAddressValidator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ServerAddressValidator.swift; sourceTree = "<group>"; };
 		C4315BE65439DFDF4D4C0BA1 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		DFE9CA097DB9BAA988D849E2 /* EMSControlApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EMSControlApp.swift; sourceTree = "<group>"; };
+		E720AFC468AEF7CC68D269FB /* demo-faq.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = "demo-faq.json"; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -81,9 +89,21 @@
 /* End PBXFrameworksBuildPhase section */
 
 /* Begin PBXGroup section */
+		11C4C229488C3DFDC0FAC6EF /* Resources */ = {
+			isa = PBXGroup;
+			children = (
+				994E14FBDEF1C0F89AC9E28C /* demo-chat.json */,
+				0888EA444AB57461568AD1F4 /* demo-dashboard.json */,
+				A447D414CC4B7CC4F68D91D0 /* demo-explainer.json */,
+				E720AFC468AEF7CC68D269FB /* demo-faq.json */,
+			);
+			path = Resources;
+			sourceTree = "<group>";
+		};
 		20FA0B9670A929F1CAA46D80 = {
 			isa = PBXGroup;
 			children = (
+				11C4C229488C3DFDC0FAC6EF /* Resources */,
 				CE893D1AEC75C12BD3BC34F8 /* Sources */,
 				CD134DA6A092DCF6C535ECDF /* Products */,
 			);
@@ -217,6 +237,10 @@
 			buildActionMask = 2147483647;
 			files = (
 				9AA655D073E01E5E13F7FFA5 /* Assets.xcassets in Resources */,
+				CE05537D943C4DEF4E95F80E /* demo-chat.json in Resources */,
+				211D0CD0F3242A3EF71BD8AE /* demo-dashboard.json in Resources */,
+				A93F94C222669DFBD1867493 /* demo-explainer.json in Resources */,
+				C9F13CEE37D770D72BFECADC /* demo-faq.json in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

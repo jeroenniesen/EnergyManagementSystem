@@ -28,6 +28,8 @@ targets:
     deploymentTarget: "17.0"
     sources:
       - path: Sources/EMSControlApp
+      - path: Resources
+        buildPhase: resources
     resources:
       - path: Sources/EMSControlApp/Assets.xcassets
     dependencies:
