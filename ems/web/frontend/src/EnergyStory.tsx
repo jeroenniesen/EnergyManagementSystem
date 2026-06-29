@@ -188,6 +188,11 @@ export function EnergyStory({
     if (!story || !t || allPts.length === 0) return "Battery level over time";
     const span24 = isPast ? "the last 24 hours" : "the next 24 hours";
     const parts = [`Battery level over ${span24}.`];
+    // For the "next" view, lead with the actual-so-far + on-track verdict (the new value).
+    if (!isPast && recentCount > 0) {
+      parts.unshift(`Last ${story.recent_hours ?? 3} hours measured, then the plan.`);
+    }
+    if (onTrack) parts.push(onTrack.message);
     if (t.soc_start_pct != null) parts.push(`Starts at ${Math.round(t.soc_start_pct)}%.`);
     if (t.soc_min_pct != null) parts.push(`Lowest ${Math.round(t.soc_min_pct)}%.`);
     if (story.target_soc_pct != null) {
@@ -426,7 +431,15 @@ export function EnergyStory({
               <line className="soc-deadline" x1={x(dl)} y1={PAD.t} x2={x(dl)} y2={H - PAD.b} />
             )}
             {Number.isFinite(nowMs) && nowMs >= t0 && nowMs <= t1 && (
-              <line className="soc-now" x1={x(nowMs)} y1={PAD.t} x2={x(nowMs)} y2={H - PAD.b} />
+              <>
+                <line className="soc-now" x1={x(nowMs)} y1={PAD.t} x2={x(nowMs)} y2={H - PAD.b} />
+                {/* Label the divider when actuals sit before it, so the actual|plan split is clear. */}
+                {!isPast && recentCount > 0 && (
+                  <text className="soc-now-label" x={x(nowMs)} y={PAD.t + 9} textAnchor="middle">
+                    now
+                  </text>
+                )}
+              </>
             )}
             {allPts.length >= 2 && (
               <polygon fill={isPast ? "url(#socGradPast)" : "url(#socGradNext)"} points={socArea} />
@@ -510,8 +523,12 @@ export function EnergyStory({
 
           <div className="time-axis" aria-hidden="true">
             {chartSlots.map((s, i) => (
-              <span key={i} className="tick">
-                {i % everyN === 0 ? clock(Date.parse(s.start)) : ""}
+              <span key={i} className={`tick${i === recentCount && recentCount > 0 ? " tick-now" : ""}`}>
+                {i === recentCount && recentCount > 0
+                  ? "now"
+                  : i % everyN === 0
+                  ? clock(Date.parse(s.start))
+                  : ""}
               </span>
             ))}
           </div>
