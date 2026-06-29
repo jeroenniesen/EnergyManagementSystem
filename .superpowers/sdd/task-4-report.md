@@ -162,3 +162,8 @@ Both passed.
 ### Remaining concern
 
 - `swift test` covers the core package only. The SwiftUI app shell sources changed as required for Task 4, but full app-target build/integration verification remains part of Task 5.
+
+Controller fix after review:
+- Root cause: loadLiveSession used async let for explainer and FAQ while the test transport returned queued responses, so request ordering could swap and decode the wrong payload.
+- Fix: load explainer then FAQ sequentially during chat session bootstrap.
+- Verification: DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer swift test in ios/EMSControl passed 22 tests, 0 failures; git diff --check -- ios/EMSControl docs/ios-validation/iteration-4-chat-notes.md passed with no output.

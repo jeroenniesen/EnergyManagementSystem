@@ -148,10 +148,8 @@ public final class ChatStore {
         guard let client else { return }
 
         do {
-            async let explainer = client.fetchExplainer()
-            async let faq = client.fetchFAQ()
-            explainerStatus = try await explainer
-            faqItems = try await faq.items
+            explainerStatus = try await client.fetchExplainer()
+            faqItems = try await client.fetchFAQ().items
             lastError = nil
         } catch {
             lastError = String(describing: error)
