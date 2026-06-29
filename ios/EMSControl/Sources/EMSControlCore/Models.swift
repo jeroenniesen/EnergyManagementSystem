@@ -144,26 +144,52 @@ public struct FAQItem: Codable, Equatable, Identifiable {
     public let question: String
     public let answer: String
     public var id: String { key }
+
+    public init(key: String, question: String, answer: String) {
+        self.key = key
+        self.question = question
+        self.answer = answer
+    }
 }
 
 public struct FAQResponse: Codable, Equatable {
     public let aiOn: Bool
     public let items: [FAQItem]
+
+    public init(aiOn: Bool, items: [FAQItem]) {
+        self.aiOn = aiOn
+        self.items = items
+    }
 }
 
 public struct ChatRequest: Codable, Equatable {
     public let question: String
+
+    public init(question: String) {
+        self.question = question
+    }
 }
 
 public struct ChatResponse: Codable, Equatable {
     public let answer: String
     public let source: String
+
+    public init(answer: String, source: String) {
+        self.answer = answer
+        self.source = source
+    }
 }
 
 public struct ExplainerStatus: Codable, Equatable {
     public let mode: String
     public let active: Bool
     public let language: String
+
+    public init(mode: String, active: Bool, language: String) {
+        self.mode = mode
+        self.active = active
+        self.language = language
+    }
 }
 
 public enum JSONValue: Codable, Equatable {

@@ -1,7 +1,21 @@
 import XCTest
-@testable import EMSControlCore
+import EMSControlCore
 
 final class ModelsTests: XCTestCase {
+    func testPublicModelsCanBeConstructedByExternalConsumers() {
+        let faqItem = FAQItem(key: "battery-health", question: "What affects battery health?", answer: "Heat and deep discharge.")
+        let faqResponse = FAQResponse(aiOn: true, items: [faqItem])
+        let chatRequest = ChatRequest(question: "How can I reduce import costs tonight?")
+        let chatResponse = ChatResponse(answer: "Charge after midnight.", source: "tariff-engine")
+        let explainerStatus = ExplainerStatus(mode: "automatic", active: true, language: "en")
+
+        XCTAssertEqual(faqItem.id, "battery-health")
+        XCTAssertEqual(faqResponse.items, [faqItem])
+        XCTAssertEqual(chatRequest.question, "How can I reduce import costs tonight?")
+        XCTAssertEqual(chatResponse.source, "tariff-engine")
+        XCTAssertEqual(explainerStatus.mode, "automatic")
+    }
+
     func testDashboardSnapshotDecodesVersionedContract() throws {
         let json = """
         {
