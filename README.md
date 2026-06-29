@@ -33,8 +33,18 @@ cd EnergyManagementSystem
 ```
 </details>
 
-- Run it in this terminal instead of as a service: `make dev` (`./scripts/install.sh --foreground`)
-- Stop + remove the auto-start service (keeps your data): `./scripts/uninstall.sh` (`make uninstall`)
+### Managing it
+
+```bash
+make restart      # restart after changing device/connection settings (or: ./scripts/restart.sh)
+make uninstall    # stop + remove the auto-start service (keeps your data)
+make dev          # run in this terminal instead of as a service (./scripts/install.sh --foreground)
+```
+
+Most settings (strategy, planner, AI, theme) apply instantly. **Device/connection changes** — meter
+IPs, the Tibber token, the live-devices toggle — take effect on the next restart; the UI flags those
+fields. Restart from anywhere on the Mac with: `launchctl kickstart -k gui/$(id -u)/com.jeroenniesen.ems`.
+Logs are at `ems/data/server.log`.
 
 ## Everything is configured in the web UI
 
