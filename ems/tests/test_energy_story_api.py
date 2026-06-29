@@ -39,14 +39,18 @@ def _app(tmp_path, *, with_recorder=False):
 
 
 def test_charge_actions_split_solar_from_grid():
-    # The whole point of the four-block timeline: a charging battery reads as SOLAR when no grid
-    # import feeds it, and GRID when the grid is importing to do it.
-    # Actuals (derived from measured battery + grid power):
-    assert _action_from_battery(-1000.0, grid_w=-200.0) == "solar_charge"  # charging, exporting
-    assert _action_from_battery(-1000.0, grid_w=20.0) == "solar_charge"    # charging, ~no import
-    assert _action_from_battery(-1000.0, grid_w=900.0) == "grid_charge"    # charging while buying
-    assert _action_from_battery(1000.0, grid_w=0.0) == "discharge"
-    assert _action_from_battery(0.0, grid_w=0.0) == "idle"
+    # A charging slot is labelled by its DOMINANT source (matching the Sankey's kWh split): solar
+    # when the roof supplied most of the charge, grid when the grid did. Crucially, a sunny slot
+    # where the battery fills from solar while the house draws a little grid for its OWN load must
+    # read SOLAR, not grid (the mislabel that made the actuals track look like it bought power).
+    # Actuals — (battery_w, solar_w, load_w):
+    assert _action_from_battery(-1000.0, 0.0, 0.0) == "grid_charge"       # night top-up, no sun
+    assert _action_from_battery(-1000.0, 1500.0, 200.0) == "solar_charge"  # solar fills it; house
+    #                                                                        draws grid for itself
+    assert _action_from_battery(-1000.0, 300.0, 200.0) == "grid_charge"   # only 100 W solar surplus
+    assert _action_from_battery(-1000.0, 3000.0, 200.0) == "solar_charge"  # plenty of solar
+    assert _action_from_battery(1000.0, 0.0, 800.0) == "discharge"
+    assert _action_from_battery(0.0, 0.0, 0.0) == "idle"
     # Plan (derived from intent + projected battery power):
     assert _action_from_intent("grid_charge_to_target", battery_w=-1000.0) == "grid_charge"
     assert _action_from_intent("allow_self_consumption", battery_w=-1000.0) == "solar_charge"

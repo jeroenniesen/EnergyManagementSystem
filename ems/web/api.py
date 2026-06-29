@@ -134,11 +134,16 @@ _INTENT_ACTION = {
 }
 
 
-def _charge_kind(grid_w: float) -> str:
-    """A charging battery is GRID-fed when the grid is importing to do it, and SOLAR-fed otherwise
-    (filled by surplus from the roof). Lets the timeline separate "topped up by buying power" from
-    "filled by the sun" — the insight the operator asked for."""
-    return "grid_charge" if grid_w > 50.0 else "solar_charge"
+def _charge_kind(battery_w: float, solar_w: float, load_w: float) -> str:
+    """Label a CHARGING slot by its DOMINANT source — the same solar-first split the Sankey uses
+    (energy_flow._allocate_slot). The grid only counts as charging the battery to the extent the
+    grid covered the charge AFTER solar served the house; if more of the charge came from the roof
+    than the grid, it's a SOLAR charge. This is what stops a sunny slot — battery filling from solar
+    while the house draws a little grid for its own load — from being mislabelled "grid charge"."""
+    charge = -battery_w
+    solar_to_batt = min(charge, max(0.0, solar_w - load_w))  # solar left after the house
+    grid_to_batt = charge - solar_to_batt
+    return "grid_charge" if grid_to_batt > solar_to_batt else "solar_charge"
 
 
 def _action_from_intent(intent: object, battery_w: float) -> str:
@@ -151,11 +156,12 @@ def _action_from_intent(intent: object, battery_w: float) -> str:
     return action
 
 
-def _action_from_battery(battery_w: float, grid_w: float) -> str:
+def _action_from_battery(battery_w: float, solar_w: float, load_w: float) -> str:
     # What the battery actually did this slot (+discharge / −charge); a small dead-band = idle.
-    # A charge is split by where the energy came from (grid import vs solar surplus).
+    # A charge is split by its dominant source (grid import vs solar surplus), NOT by whether the
+    # grid happened to be importing for the house at the time.
     if battery_w < -50.0:
-        return _charge_kind(grid_w)
+        return _charge_kind(battery_w, solar_w, load_w)
     if battery_w > 50.0:
         return "discharge"
     return "idle"
@@ -1458,7 +1464,7 @@ def create_app(
         story = build_past_story(raw, der, prices, now)
         return [
             _uslot(ps.start, ps.soc_pct, ps.grid_w, ps.solar_w, ps.battery_w, ps.load_w,
-                   ps.eur_per_kwh, _action_from_battery(ps.battery_w, ps.grid_w))
+                   ps.eur_per_kwh, _action_from_battery(ps.battery_w, ps.solar_w, ps.load_w))
             for ps in story.slots
         ]
 
@@ -1585,7 +1591,7 @@ def create_app(
         story = build_past_story(raw, der, prices, now)
         slots = [
             _uslot(ps.start, ps.soc_pct, ps.grid_w, ps.solar_w, ps.battery_w, ps.load_w,
-                   ps.eur_per_kwh, _action_from_battery(ps.battery_w, ps.grid_w))
+                   ps.eur_per_kwh, _action_from_battery(ps.battery_w, ps.solar_w, ps.load_w))
             for ps in story.slots
         ]
         if not slots:
