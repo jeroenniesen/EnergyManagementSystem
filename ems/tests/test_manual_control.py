@@ -68,6 +68,30 @@ def test_manual_charge_override_drives_the_battery_and_audits_the_confirmed_chan
     assert "→ charge" in top["summary"] and "command sent" in top["summary"]
 
 
+def test_manual_override_drives_battery_even_when_daily_cap_exhausted(tmp_path):
+    # The live "manual charge does nothing" bug: a day of testing exhausted the daily switch cap, so
+    # every "charge now" was silently blocked (cap_reached → no write, no audit). A manual override
+    # is an explicit operator command and MUST bypass the cap and still drive the battery.
+    db = str(tmp_path / "ems.sqlite")
+    driver = MockBatteryDriver()  # starts AUTO
+    ctl = ModeController(driver, Lifecycle(dry_run=False, startup_grace_seconds=0), dry_run=False)
+    ctl.switches_today = 999  # cap thoroughly exhausted (any configured cap is exceeded)
+    app = create_app(
+        MockSource(), dry_run=False, dev_mode="live", tz=AMS,
+        price_source=MockPriceSource(AMS), solar_forecast=MockSolarForecastSource(AMS),
+        controller=ctl, freshness=_fresh(),
+        override_store=SettingsStore(db, table="runtime_state"), audit_store=AuditStore(db),
+        control_cycle_seconds=0.02,
+    )
+    with TestClient(app) as c:
+        assert c.post("/api/override",
+                      json={"intent": "grid_charge_to_target", "minutes": 30}).status_code == 200
+        deadline = time.time() + 3.0
+        while time.time() < deadline and driver.current_mode() is not PhysicalMode.CHARGE:
+            time.sleep(0.05)
+        assert driver.current_mode() is PhysicalMode.CHARGE  # bypassed the exhausted daily cap
+
+
 def test_rejected_write_is_audited_as_failed(tmp_path):
     # A genuinely rejected/failed write must be audited as FAILED (not a silent "sent") — so the
     # operator can see the battery wasn't commanded.

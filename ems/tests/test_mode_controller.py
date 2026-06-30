@@ -162,6 +162,62 @@ def test_repeated_failed_writes_are_bounded_by_the_daily_cap():
     assert capped.applied is False
 
 
+def test_manual_override_bypasses_daily_cap():
+    # An explicit operator override must NOT be silently vetoed by the daily switch cap (which
+    # limits AUTOMATIC churn). This was the live "manual charge does nothing" bug: a day of testing
+    # exhausted the cap, then every "charge now" was blocked with no audit and no write.
+    d = MockBatteryDriver()  # starts AUTO
+    ctl = ModeController(d, _controlling_lifecycle(), dry_run=False, max_switches_per_day=0)
+    dec = ctl.decide(BatteryIntent.GRID_CHARGE_TO_TARGET, T0 + timedelta(seconds=200),
+                     target_soc=100, manual=True)
+    assert dec.outcome == "applied"
+    assert d.current_mode() is PhysicalMode.CHARGE
+
+
+def test_manual_override_bypasses_min_dwell():
+    d = MockBatteryDriver()
+    ctl = ModeController(d, _controlling_lifecycle(), dry_run=False, min_dwell_seconds=600)
+    t1 = T0 + timedelta(seconds=200)
+    ctl.decide(BatteryIntent.ALLOW_SELF_CONSUMPTION, t1)  # establishes last_switch (no-op AUTO ok)
+    ctl.last_switch_at = t1  # force a recent switch
+    dec = ctl.decide(BatteryIntent.GRID_CHARGE_TO_TARGET, t1 + timedelta(seconds=60),
+                     target_soc=100, manual=True)  # well within dwell
+    assert dec.outcome == "applied"
+    assert d.current_mode() is PhysicalMode.CHARGE
+
+
+def test_return_to_auto_always_allowed_even_when_capped():
+    # The fail-safe (return to vendor self-consumption) must never be blocked by the cap — else an
+    # expiring override could leave the battery stuck charging.
+    d = MockBatteryDriver()
+    ctl = ModeController(d, _controlling_lifecycle(), dry_run=False, max_switches_per_day=1)
+    t = T0 + timedelta(seconds=200)
+    ctl.decide(BatteryIntent.GRID_CHARGE_TO_TARGET, t, target_soc=100, manual=True)  # now CHARGE
+    assert d.current_mode() is PhysicalMode.CHARGE
+    back = ctl.decide(BatteryIntent.ALLOW_SELF_CONSUMPTION, t + timedelta(seconds=60))  # automatic
+    assert back.outcome == "applied"  # AUTO bypasses the cap/dwell
+    assert d.current_mode() is PhysicalMode.AUTO
+
+
+def test_manual_override_still_idempotent_no_double_write():
+    # Bypassing the cap/dwell must NOT defeat idempotency — a manual charge while already charging
+    # is still a no-op (the control loop won't hammer the device every cycle).
+    d = MockBatteryDriver()
+    ctl = ModeController(d, _controlling_lifecycle(), dry_run=False)
+    dec = ctl.decide(BatteryIntent.ALLOW_SELF_CONSUMPTION, T0 + timedelta(seconds=200),
+                     observed_mode=PhysicalMode.AUTO, manual=True)
+    assert dec.outcome == "idempotent"
+
+
+def test_automatic_switch_is_still_capped():
+    # Regression guard: WITHOUT manual, the daily cap still limits the automatic planner.
+    d = MockBatteryDriver()
+    ctl = ModeController(d, _controlling_lifecycle(), dry_run=False, max_switches_per_day=0)
+    dec = ctl.decide(BatteryIntent.HOLD_RESERVE, T0 + timedelta(seconds=200))
+    assert dec.outcome == "cap_reached"
+    assert dec.applied is False
+
+
 def test_switch_cap_resets_on_a_new_local_day():
     d = MockBatteryDriver()
     ctl = ModeController(d, _controlling_lifecycle(), dry_run=False, max_switches_per_day=1)

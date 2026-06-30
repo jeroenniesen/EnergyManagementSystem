@@ -298,6 +298,9 @@ def create_app(
     # Cluster-drift dedup: the signature of towers currently NOT in the commanded mode family, so we
     # audit a mismatch (or its resolution) ONCE per episode, not every cycle.
     _drift_box: dict[str, Any] = {"sig": None}
+    # Held-decision dedup: the (outcome, desired_mode) we last audited as a HELD/blocked decision
+    # (dwell/cap/not_controlling), so a recurring hold is explained ONCE, not logged every cycle.
+    _held_box: dict[str, Any] = {"sig": None}
 
     def _apply_control_settings() -> None:
         """Push the control.* settings onto the live controller (preserves its switch counters)."""
@@ -1067,18 +1070,22 @@ def create_app(
         lc.tick(now)
         if not lc.can_command(now):
             return []
-        intent, _reason, _override, tgt, pw, _v = _effective_intent(now)
+        intent, _reason, override_active, tgt, pw, _v = _effective_intent(now)
         if intent is None:
             return []
         # decide() uses `observed` for the idempotency gate; its post-write CONFIRM re-reads the
-        # device fresh, so a stale observation only risks a redundant idempotent write.
-        dec = controller.decide(intent, now, target_soc=tgt, power_w=pw, observed_mode=observed)
+        # device fresh, so a stale observation only risks a redundant idempotent write. `manual` (an
+        # active operator override) lets decide() bypass the automatic dwell/cap gates — the
+        # operator asked for it explicitly (a return to AUTO is always allowed too; see _gate).
+        dec = controller.decide(intent, now, target_soc=tgt, power_w=pw,
+                                observed_mode=observed, manual=override_active)
         records: list[dict] = []
         if dec.outcome in ("applied", "failed_recovered", "failed_unrecovered"):
             # An ACTUAL device write — audit it. `accepted` = the device acknowledged the command
             # (result:true); the mode switches with latency, so whether it actually TOOK is verified
             # on a later cycle by the cluster-consistency check below (which flags a tower that
             # never follows). So this logs "command sent" / "FAILED", not a premature "confirmed".
+            _held_box["sig"] = None  # an action happened — re-explain any future hold afresh
             before = observed.value if observed is not None else "unknown"
             accepted = dec.applied
             records.append({
@@ -1091,9 +1098,23 @@ def create_app(
             # Steady state: EMS believes it's already in `desired`. VERIFY the whole cluster —
             # a tower that didn't follow (still self-consuming while we commanded real-time) is the
             # silent slave-not-following bug. Towers are fresh here (no write this cycle).
+            _held_box["sig"] = None
             drift = _cluster_drift_record(dec.desired_mode, towers)
             if drift is not None:
                 records.append(drift)
+        elif dec.outcome in ("dwell", "cap_reached", "not_controlling"):
+            # A HELD decision: the EMS WANTED to switch but a guardrail blocked it. Never silent
+            # (CLAUDE.md "explainability first — including why it is NOT acting"). Deduped so a
+            # recurring hold is explained once per (outcome, desired_mode), not every cycle. With
+            # the manual/return-to-AUTO bypass this only fires for the AUTOMATIC planner now.
+            sig = (dec.outcome, dec.desired_mode.value)
+            if _held_box["sig"] != sig:
+                _held_box["sig"] = sig
+                records.append({
+                    "summary": f"Battery NOT switched to {dec.desired_mode.value} — {dec.reason}",
+                    "detail": {"desired_mode": dec.desired_mode.value, "intent": str(dec.intent),
+                               "outcome": dec.outcome, "reason": dec.reason,
+                               "override_active": override_active}})
         return records
 
     async def _run_control_cycle() -> None:
@@ -1208,7 +1229,8 @@ def create_app(
         intent, _reason, override_active, tgt, pw, _v = _effective_intent(now)
         if intent is not None and controller is not None:
             outcome = controller.preview(intent, now, target_soc=tgt, power_w=pw,
-                                         observed_mode=_current_mode(now)).outcome
+                                         observed_mode=_current_mode(now),
+                                         manual=override_active).outcome
         alerts = derive_alerts(snap, dry_run=dry_run, decision_outcome=outcome)
         out = [{"key": a.key, "severity": a.severity, "message": a.message} for a in alerts]
         if override_active:
@@ -1255,7 +1277,7 @@ def create_app(
             # preview() is read-only — a GET must never write to the battery or mutate counters.
             # Pass the coalesced observed mode so this poll doesn't read battery mode every cycle.
             d = controller.preview(intent, now, target_soc=tgt, power_w=pw,
-                                   observed_mode=_current_mode(now))
+                                   observed_mode=_current_mode(now), manual=override_active)
             home = home_state(
                 _readiness(now), intent=str(d.intent), override_active=override_active,
                 simulated=dev_mode != "live",

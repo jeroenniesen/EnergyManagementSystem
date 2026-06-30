@@ -120,12 +120,20 @@ class ModeController:
 
     def _gate(
         self, intent: BatteryIntent, now: datetime, desired: PhysicalMode,
-        *, observed_mode: PhysicalMode | None = None,
+        *, observed_mode: PhysicalMode | None = None, manual: bool = False,
     ) -> ActionDecision | None:
         """Return a blocking ActionDecision, or None if a write should proceed. No side effects.
         `observed_mode`, when supplied (by the read-only UI preview), is used for the idempotency
         check INSTEAD of reading the device — so a dashboard poll doesn't add a battery mode-read
-        every cycle. The write path (decide) passes None and always reads fresh hardware."""
+        every cycle. The write path (decide) passes None and always reads fresh hardware.
+
+        `manual=True` marks an explicit operator override. The dwell + daily-cap gates exist to
+        limit the AUTOMATIC planner's churn (the "<10 writes/day, mode-switching not continuous"
+        rule) — they must NOT silently veto a deliberate operator command. Likewise, returning to
+        AUTO (the safe vendor self-consumption) is ALWAYS allowed: the fail-safe can never be
+        blocked by a cap (energy review #5), or an expiring override could leave the battery stuck.
+        dry_run / not_controlling / idempotency still apply to everyone; idempotency means even a
+        bypassed write happens at most once per actual mode change (no device hammering)."""
         if self.dry_run:
             return ActionDecision(
                 intent, desired, False, "dry_run", f"dry-run: would set {desired}"
@@ -138,6 +146,8 @@ class ModeController:
         current = observed_mode if observed_mode is not None else self.driver.current_mode()
         if desired == current:
             return ActionDecision(intent, desired, False, "idempotent", f"already in {desired}")
+        if manual or desired is PhysicalMode.AUTO:
+            return None  # explicit operator command / return-to-safe: never gated by dwell or cap
         if self.last_switch_at is not None and now - self.last_switch_at < self.min_dwell:
             return ActionDecision(intent, desired, False, "dwell", "min dwell not elapsed; holding")
         if self._effective_switches(now) >= self.max_switches_per_day:
@@ -149,12 +159,13 @@ class ModeController:
     def preview(
         self, intent: BatteryIntent, now: datetime, *,
         target_soc: float | None = None, power_w: float | None = None,
-        observed_mode: PhysicalMode | None = None,
+        observed_mode: PhysicalMode | None = None, manual: bool = False,
     ) -> ActionDecision:
         """Read-only: what decide() WOULD do right now. Never writes or mutates state. Pass
-        `observed_mode` (a recently-observed mode) to avoid a hardware mode-read per call."""
+        `observed_mode` (a recently-observed mode) to avoid a hardware mode-read per call, and
+        `manual=True` for an active operator override so the preview matches what decide() does."""
         desired = self._desired(intent)
-        blocked = self._gate(intent, now, desired, observed_mode=observed_mode)
+        blocked = self._gate(intent, now, desired, observed_mode=observed_mode, manual=manual)
         if blocked is not None:
             return blocked
         suffix = (f" to {target_soc:.0f}%"
@@ -165,16 +176,17 @@ class ModeController:
     def decide(
         self, intent: BatteryIntent, now: datetime, *,
         target_soc: float | None = None, power_w: float | None = None,
-        observed_mode: PhysicalMode | None = None,
+        observed_mode: PhysicalMode | None = None, manual: bool = False,
     ) -> ActionDecision:
         """Write path: applies at most one mode change. The ONLY caller of driver.apply. The plan's
         target SoC + power are passed through to the driver (which refuses a target-less charge).
         `observed_mode` (a recently-observed mode, e.g. from the shared coalesced cluster read) is
         used for the idempotency gate so the control loop needn't read the device every cycle; the
         post-write CONFIRM still re-reads fresh, so a stale observation can at worst cause one
-        redundant (idempotent) write, never an unconfirmed change."""
+        redundant (idempotent) write, never an unconfirmed change. `manual=True` (an active operator
+        override) bypasses the dwell + daily-cap gates — see _gate."""
         desired = self._desired(intent)
-        blocked = self._gate(intent, now, desired, observed_mode=observed_mode)
+        blocked = self._gate(intent, now, desired, observed_mode=observed_mode, manual=manual)
         if blocked is not None:
             return blocked
 
