@@ -154,10 +154,24 @@ class IndevoltClusterReader:
     # SoC/power/mode are dynamic (read every cycle); capacity/role are static (read once, cached).
     _KEYS = (K_SOC, K_POWER, K_STATE, K_MODE, K_ROLE, K_CAPACITY)
 
-    def __init__(self, clients: list[IndevoltReadClient]) -> None:
+    def __init__(
+        self, clients: list[IndevoltReadClient], *, cache_seconds: float = 10.0,
+        clock: Callable[[], float] | None = None,
+    ) -> None:
         self._clients = list(clients)
         self._cap_cache: dict[str, float] = {}
         self._role_cache: dict[str, str] = {}
+        # Coalesce the actual device read across the several callers that want tower data in quick
+        # succession (the live sample's read_power_soc AND /api/battery's read_towers, the control
+        # loop, multiple endpoints). The Indevolt's little embedded server is SHARED with Home
+        # Assistant and the Indevolt app, so this keeps a burst of internal callers down to ONE
+        # round-trip per `cache_seconds`. The recorder runs far slower than this, so its history
+        # samples are always fresh.
+        import time as _time
+
+        self._cache_seconds = cache_seconds
+        self._clock = clock or _time.monotonic
+        self._cache: tuple[float, list[TowerReading]] | None = None
 
     def _read_one(self, client: IndevoltReadClient) -> TowerReading:
         try:
@@ -190,7 +204,13 @@ class IndevoltClusterReader:
                             self._role_cache.get(client.ip), online=True, mode=mode)
 
     def read_towers(self) -> list[TowerReading]:
-        return [self._read_one(c) for c in self._clients]
+        # Serve a recent snapshot if one is within the coalescing window (eases load on the shared
+        # device); otherwise read every tower once and cache it.
+        if self._cache is not None and self._clock() - self._cache[0] < self._cache_seconds:
+            return self._cache[1]
+        towers = [self._read_one(c) for c in self._clients]
+        self._cache = (self._clock(), towers)
+        return towers
 
     def read_power_soc(self) -> tuple[float, float]:
         online = [t for t in self.read_towers() if t.online and t.soc_pct is not None]

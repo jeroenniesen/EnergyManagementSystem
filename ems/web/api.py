@@ -126,6 +126,17 @@ _LIVE_SAMPLE_COALESCE_SECONDS = 30.0
 # see whether reality is following the plan ("am I on track?"). 3 hours = 12 quarter-hour slots.
 RECENT_HOURS = 3
 
+# Cluster per-tower mode LABEL (from tower_mode_label) → PhysicalMode, so the coalesced cluster
+# read can serve the control loop's idempotency/reachability without a separate master mode-read.
+_LABEL_TO_MODE = {
+    "self-consumption": PhysicalMode.AUTO,
+    "standby": PhysicalMode.IDLE,
+    "charging": PhysicalMode.CHARGE,
+    "discharging": PhysicalMode.DISCHARGE,
+    "outdoor": PhysicalMode.AUTO,
+    "schedule": PhysicalMode.AUTO,
+}
+
 # --- Unified energy-story slot/totals (shared by the past + next windows so they never drift) ---
 _INTENT_ACTION = {
     "grid_charge_to_target": "grid_charge",
@@ -388,10 +399,20 @@ def create_app(
     # probe on every decision. None until first probed (the validator simply skips that warn-check).
     _capability_box: dict[str, Any] = {"cap": None}
 
+    def _coalesce_s() -> float:
+        """How long a live read is reused before re-reading the hardware. UI-tunable
+        (control.live_read_seconds) so the operator can ease load on a battery shared with Home
+        Assistant + the Indevolt app; falls back to the module default."""
+        try:
+            return float(settings_cache.get("control.live_read_seconds")
+                         or _LIVE_SAMPLE_COALESCE_SECONDS)
+        except (TypeError, ValueError):
+            return _LIVE_SAMPLE_COALESCE_SECONDS
+
     def _sample_fresh(now: datetime) -> bool:
         at = _sample_cache["at"]
         return (at is not None and _sample_cache["sample"] is not None
-                and (now - at).total_seconds() < _LIVE_SAMPLE_COALESCE_SECONDS)
+                and (now - at).total_seconds() < _coalesce_s())
 
     def _current_sample(now: datetime):
         if _sample_fresh(now):  # fast path: no lock when the cache is warm
@@ -412,7 +433,7 @@ def create_app(
     def _towers_fresh(now: datetime) -> bool:
         at = _tower_cache["at"]
         return (at is not None and _tower_cache["towers"] is not None
-                and (now - at).total_seconds() < _LIVE_SAMPLE_COALESCE_SECONDS)
+                and (now - at).total_seconds() < _coalesce_s())
 
     def _current_towers(now: datetime):
         """Coalesced + single-flight per-tower battery read (same window as _current_sample).
@@ -434,32 +455,24 @@ def create_app(
                 pass  # keep last good snapshot (fail-safe)
             return _tower_cache["towers"]
 
-    _mode_cache: dict[str, Any] = {"mode": None, "at": None}
-    _mode_lock = threading.Lock()
-
     def _current_mode(now: datetime):
-        """Coalesced + single-flight read of the battery's current physical mode, for the read-only
-        UI preview ONLY (operational mode). Without this, every dashboard poll added a battery
-        mode-read via controller.preview(); now it's at most one per window. None in dry-run / no
-        controller / on read failure — preview then falls back to a fresh read (still bounded)."""
+        """The battery's current physical mode, DERIVED from the shared coalesced cluster read
+        (`_current_towers`) — so the dashboard previews AND the control loop reuse that one read
+        instead of each hitting the master with its own `driver.current_mode()`. This is the big
+        master-load saver, given the device is shared with Home Assistant + the Indevolt app. None
+        in dry-run / no controller. Falls back to a direct driver read only when there's no cluster
+        reader at all (mock / single non-cluster driver)."""
         if controller is None or dry_run:
             return None
-
-        def fresh() -> bool:
-            at = _mode_cache["at"]
-            return (at is not None and _mode_cache["mode"] is not None
-                    and (now - at).total_seconds() < _LIVE_SAMPLE_COALESCE_SECONDS)
-
-        if fresh():
-            return _mode_cache["mode"]
-        with _mode_lock:
-            if fresh():
-                return _mode_cache["mode"]
-            try:
-                _mode_cache["mode"], _mode_cache["at"] = controller.driver.current_mode(), now
-            except Exception:
-                pass  # keep last good (fail-safe); preview falls back to a fresh read
-            return _mode_cache["mode"]
+        towers = _current_towers(now)
+        if towers is not None:  # cluster reader present → reuse its coalesced read, not the master
+            cand = next((t for t in towers if t.role == "master" and t.online and t.mode), None) \
+                or next((t for t in towers if t.online and t.mode), None)
+            return _LABEL_TO_MODE.get(cand.mode) if cand is not None else None
+        try:
+            return controller.driver.current_mode()
+        except Exception:
+            return None
 
     def _car_charging(now: datetime) -> bool:
         s = _current_sample(now)
@@ -987,18 +1000,21 @@ def create_app(
         # Readiness sequence (SPEC §13.3): validated sensors, a reachable battery, a loaded plan.
         if _data_quality(now) != "unsafe":
             lc.mark_sensors_validated()
-        try:
-            controller.driver.current_mode()  # read-only reachability check
-            lc.mark_probe_ok()
-        except Exception:
-            pass  # battery unreadable -> not probe-ok -> stays observing, never commands
+        # Reachability + idempotency reuse the SHARED coalesced cluster read (observed) instead of a
+        # separate per-cycle master mode-read — far gentler on a device shared with HA + the app.
+        observed = _current_mode(now)
+        if observed is not None:
+            lc.mark_probe_ok()  # battery readable this cycle
         if _current_plan() is not None:
             lc.mark_plan_loaded()
         lc.tick(now)
         if lc.can_command(now):
             intent, _reason, _override, tgt, pw, _v = _effective_intent(now)
             if intent is not None:
-                controller.decide(intent, now, target_soc=tgt, power_w=pw)
+                # decide() uses `observed` for the idempotency gate; its post-write CONFIRM still
+                # re-reads fresh, so a stale observation only risks a redundant idempotent write.
+                controller.decide(intent, now, target_soc=tgt, power_w=pw,
+                                  observed_mode=observed)
 
     @app.get("/health/live")
     def live() -> dict:

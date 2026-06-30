@@ -44,6 +44,28 @@ def test_per_tower_mode_is_read_and_exposed():
     assert towers[1].mode == "self-consumption"  # slave did NOT — still discharging into the car
 
 
+def test_read_towers_coalesces_within_window():
+    # The device is shared with HA + the Indevolt app, so a burst of internal callers (the live
+    # sample's read_power_soc AND read_towers, the control loop) must collapse to ONE round-trip
+    # per window. A controllable monotonic clock proves it.
+    calls = {"n": 0}
+
+    def _post(_keys):
+        calls["n"] += 1
+        return {"6002": 50, "6000": 0, "6001": 1000, "7101": 1, "606": 1000, "142": 5}
+
+    client = IndevoltReadClient("a", rpc_post=_post)
+    t = [0.0]
+    reader = IndevoltClusterReader([client], cache_seconds=10.0, clock=lambda: t[0])
+    reader.read_towers()
+    reader.read_power_soc()  # within the window → served from cache, no new device read
+    reader.read_towers()
+    assert calls["n"] == 1
+    t[0] = 11.0  # past the window
+    reader.read_towers()
+    assert calls["n"] == 2
+
+
 def test_power_is_signed_sum():
     a = _client("a", {"6002": 50, "6000": 1000, "6001": 1001, "142": 5})  # charging -> -1000
     b = _client("b", {"6002": 50, "6000": 400, "6001": 1002, "142": 5})  # discharging -> +400

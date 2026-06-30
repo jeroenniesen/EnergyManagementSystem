@@ -98,6 +98,37 @@ def test_preview_never_writes_even_when_controlling():
     assert ctl.switches_today == 0  # NOT mutated
 
 
+class _CountingDriver(MockBatteryDriver):
+    """Counts how many times the device is asked for its current mode."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.mode_reads = 0
+
+    def current_mode(self) -> PhysicalMode:
+        self.mode_reads += 1
+        return super().current_mode()
+
+
+def test_decide_uses_observed_mode_without_reading_the_device():
+    # The control loop passes a recently-observed mode (from the shared coalesced cluster read) so
+    # the idempotency check doesn't add a master mode-read every cycle. Already-in-mode → idempotent
+    # with ZERO device reads.
+    d = _CountingDriver()  # starts AUTO
+    ctl = ModeController(d, _controlling_lifecycle(), dry_run=False)
+    dec = ctl.decide(BatteryIntent.ALLOW_SELF_CONSUMPTION, T0 + timedelta(seconds=200),
+                     observed_mode=PhysicalMode.AUTO)
+    assert dec.outcome == "idempotent"
+    assert d.mode_reads == 0  # the device was NOT polled for the idempotency check
+
+
+def test_decide_reads_the_device_when_no_observed_mode_given():
+    d = _CountingDriver()
+    ctl = ModeController(d, _controlling_lifecycle(), dry_run=False)
+    ctl.decide(BatteryIntent.ALLOW_SELF_CONSUMPTION, T0 + timedelta(seconds=200))
+    assert d.mode_reads >= 1  # falls back to a fresh device read (prior behaviour)
+
+
 def test_failed_write_starts_dwell_and_counts_so_it_cannot_retry_every_cycle():
     # A write that never confirms (e.g. a half-offline tower) must NOT be re-attempted every
     # control cycle — that is write-amplification into struggling hardware. A failed attempt starts

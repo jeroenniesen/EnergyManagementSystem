@@ -192,6 +192,14 @@ SETTINGS_SCHEMA: tuple[SettingsField, ...] = (
         help="EV power above this counts as 'charging' for the hold-battery rule.",
         min=100.0, max=11000.0, step=100.0, unit="W", advanced=True,
     ),
+    SettingsField(
+        "control.live_read_seconds", "Battery/meter read interval", "number", 60.0, "control",
+        help="How often the app actually reads the battery + meters (live values are reused in "
+        "between). RAISE this if the battery/Indevolt app feels slow or the master drops offline — "
+        "the battery's little server is shared with Home Assistant + the Indevolt app, so reading "
+        "less often eases the load. Lower = more up-to-the-second dashboard.",
+        min=15.0, max=300.0, step=15.0, unit="s", slider=True,
+    ),
     # --- Planner economics (advanced — change these and /api/plan recomputes, SPEC §8.3) ---
     SettingsField(
         "planner.solar_confidence", "Solar forecast confidence", "number", 80.0, "planner",

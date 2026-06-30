@@ -165,11 +165,16 @@ class ModeController:
     def decide(
         self, intent: BatteryIntent, now: datetime, *,
         target_soc: float | None = None, power_w: float | None = None,
+        observed_mode: PhysicalMode | None = None,
     ) -> ActionDecision:
         """Write path: applies at most one mode change. The ONLY caller of driver.apply. The plan's
-        target SoC + power are passed through to the driver (which refuses a target-less charge)."""
+        target SoC + power are passed through to the driver (which refuses a target-less charge).
+        `observed_mode` (a recently-observed mode, e.g. from the shared coalesced cluster read) is
+        used for the idempotency gate so the control loop needn't read the device every cycle; the
+        post-write CONFIRM still re-reads fresh, so a stale observation can at worst cause one
+        redundant (idempotent) write, never an unconfirmed change."""
         desired = self._desired(intent)
-        blocked = self._gate(intent, now, desired)
+        blocked = self._gate(intent, now, desired, observed_mode=observed_mode)
         if blocked is not None:
             return blocked
 
