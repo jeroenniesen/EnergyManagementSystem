@@ -17,6 +17,20 @@ final class DashboardStoreTests: XCTestCase {
         XCTAssertTrue(store.isStale)
     }
 
+    func testRefreshFailureSetsRetryDeadline() async throws {
+        let store = DashboardStore(
+            client: APIClient(
+                baseURL: URL(string: "http://ems.local:8080")!,
+                transport: FailingTransport()
+            )
+        )
+
+        await store.refresh()
+
+        XCTAssertFalse(store.shouldRefresh())
+        XCTAssertNotNil(store.nextRefreshAt)
+    }
+
     func testForgetServerClearsSnapshot() throws {
         let store = DashboardStore(client: nil, demoData: DemoDataStore(bundle: .module))
         try store.useDemo()

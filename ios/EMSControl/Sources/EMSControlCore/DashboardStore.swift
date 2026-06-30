@@ -13,6 +13,7 @@ public final class DashboardStore {
 
     private let demoData: DemoDataStore
     private let credentialStore: CredentialStore
+    private let refreshFailureRetryDelay: TimeInterval = 15
 
     public init(
         client: APIClient?,
@@ -39,6 +40,7 @@ public final class DashboardStore {
         } catch {
             isStale = snapshot != nil
             lastError = String(describing: error)
+            nextRefreshAt = Date().addingTimeInterval(refreshFailureRetryDelay)
         }
     }
 
