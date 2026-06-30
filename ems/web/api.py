@@ -1075,15 +1075,18 @@ def create_app(
         dec = controller.decide(intent, now, target_soc=tgt, power_w=pw, observed_mode=observed)
         records: list[dict] = []
         if dec.outcome in ("applied", "failed_recovered", "failed_unrecovered"):
-            # An ACTUAL device write — audit the confirmed mode change (from → to).
+            # An ACTUAL device write — audit it. `accepted` = the device acknowledged the command
+            # (result:true); the mode switches with latency, so whether it actually TOOK is verified
+            # on a later cycle by the cluster-consistency check below (which flags a tower that
+            # never follows). So this logs "command sent" / "FAILED", not a premature "confirmed".
             before = observed.value if observed is not None else "unknown"
-            confirmed = dec.applied  # True only when the post-write re-read matched (master)
+            accepted = dec.applied
             records.append({
                 "summary": (f"Battery mode {before} → {dec.desired_mode.value} — "
-                            + ("confirmed" if confirmed else f"UNCONFIRMED ({dec.reason})")),
+                            + ("command sent" if accepted else f"command FAILED ({dec.reason})")),
                 "detail": {"from_mode": before, "desired_mode": dec.desired_mode.value,
                            "intent": str(dec.intent), "outcome": dec.outcome,
-                           "confirmed": confirmed, "reason": dec.reason}})
+                           "accepted": accepted, "reason": dec.reason}})
         elif dec.outcome == "idempotent":
             # Steady state: EMS believes it's already in `desired`. VERIFY the whole cluster —
             # a tower that didn't follow (still self-consuming while we commanded real-time) is the

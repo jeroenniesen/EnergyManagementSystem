@@ -35,10 +35,11 @@ _log = logging.getLogger("ems.sources.indevolt_driver")
 _MODE_SELF, _MODE_REALTIME = 1, 4  # read-side working-mode (7101) values
 _STATE_CHARGING, _STATE_DISCHARGING = 1001, 1002  # read-side state (6001) values
 # SetData points (write side) + their state values (NOT comparable to _STATE_* read values).
-# Per docs.indevolt.com OpenData: a charge/discharge command is ONE multi-register write starting at
-# 47015 — v=[state, power, soc] (function 16 writes 47015/47016/47017 together). 47005 selects the
-# working mode. Writing state/power/soc as SEPARATE calls does NOT reliably start charging.
-P_MODE, P_STATE = 47005, 47015
+# Verified against the official Home Assistant integration (INDEVOLT/homeassistant-indevolt) AND a
+# live device: each is a SEPARATE single-value write — 47005=[mode], 47015=[state], 47016=[power],
+# 47017=[soc] (the docs' v=[state,power,soc] combined form does NOT work). 47005 selects working
+# mode; 47015 the real-time state (it triggers the action, so write it LAST after power/soc).
+P_MODE, P_STATE, P_POWER, P_SOC = 47005, 47015, 47016, 47017
 _W_IDLE, _W_CHARGE, _W_DISCHARGE = 0, 1, 2
 # Device limits (SolidFlex/PowerFlex per OpenData docs): power 50–2400 W, target SoC 5–100 %. Out-of
 # -range values are rejected by the device — clamp so a plan asking for 4 kW doesn't silently fail.
@@ -92,9 +93,9 @@ def setdata_writes(
         state = _W_CHARGE if mode is PhysicalMode.CHARGE else _W_DISCHARGE
         power = max(_MIN_POWER_W, min(_MAX_POWER_W, int(power_w)))
         soc = max(_MIN_SOC, min(100, int(target_soc)))
-        # state + power + SoC written TOGETHER at 47015 (v=[state, power, soc]) — the documented
-        # single-call form; the device acts on this and reads power/SoC from the same write.
-        return [(P_MODE, [_MODE_REALTIME]), (P_STATE, [state, power, soc])]
+        # Separate single-value writes (the working HA form): real-time mode, then power + SoC, then
+        # the state LAST (it triggers the action with power/SoC already in place).
+        return [(P_MODE, [_MODE_REALTIME]), (P_POWER, [power]), (P_SOC, [soc]), (P_STATE, [state])]
     raise ValueError(f"unmapped mode {mode}")  # pragma: no cover
 
 
@@ -158,8 +159,15 @@ class IndevoltBatteryDriver:
     ) -> bool:
         """Command the battery into `mode`, charging/discharging toward `target_soc` at `power_w`.
         Refuses (returns False, no write) unless armed, AND refuses a CHARGE/DISCHARGE with no
-        target_soc — it will NEVER default to charging to full (energy review #3/#4). Returns True
-        only if a post-write re-read confirms the mode (SPEC §6.5)."""
+        target_soc — it will NEVER default to charging to full (energy review #3/#4).
+
+        Returns True when the device ACCEPTED every write (each SetData returned result:true);
+        False only if a write was REJECTED or the transport failed. CRITICAL: the device applies a
+        mode change with noticeable LATENCY (often many seconds), so we deliberately do NOT
+        re-read-and-fail here — doing so made the controller declare the write "unconfirmed" and
+        revert to AUTO before the switch landed, so the battery never actually charged. The control
+        loop verifies the real mode on its next cluster read and flags a tower that never follows
+        (SPEC §6.5)."""
         if not self._armed:
             _log.warning("apply(%s) refused — driver not armed (read-only safety)", mode)
             return False
@@ -170,11 +178,11 @@ class IndevoltBatteryDriver:
         soc = int(target_soc) if target_soc is not None else None
         try:
             for point, values in setdata_writes(mode, power_w=power, target_soc=soc):
-                self._post(point, values)
+                resp = self._post(point, values)
+                if not (isinstance(resp, dict) and resp.get("result")):
+                    _log.error("Indevolt SetData %s=%s rejected: %s", point, values, resp)
+                    return False
         except Exception as exc:
             _log.error("Indevolt SetData failed: %s", exc)
             return False
-        try:
-            return self.current_mode() is mode
-        except Exception:
-            return False
+        return True  # accepted by the device; the control loop confirms the mode took (latency)

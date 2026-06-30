@@ -63,15 +63,15 @@ def test_manual_charge_override_drives_the_battery_and_audits_the_confirmed_chan
     assert decisions, "the mode change must be audited"
     top = decisions[0]
     assert top["detail"]["desired_mode"] == "charge"
-    assert top["detail"]["confirmed"] is True
+    assert top["detail"]["accepted"] is True
     assert top["detail"]["outcome"] == "applied"
-    assert "→ charge" in top["summary"] and "confirmed" in top["summary"]
+    assert "→ charge" in top["summary"] and "command sent" in top["summary"]
 
 
-def test_unconfirmed_write_is_audited_as_unconfirmed(tmp_path):
-    # If the device never confirms the write, the audit must say UNCONFIRMED (not a silent
-    # "applied") — so the operator can see the battery may not have actually changed.
-    driver = FailingMockBatteryDriver(fail_times=99)  # every apply() fails to confirm
+def test_rejected_write_is_audited_as_failed(tmp_path):
+    # A genuinely rejected/failed write must be audited as FAILED (not a silent "sent") — so the
+    # operator can see the battery wasn't commanded.
+    driver = FailingMockBatteryDriver(fail_times=99)  # every apply() fails
     with TestClient(_operational_app(tmp_path, driver)) as c:
         c.post("/api/override", json={"intent": "grid_charge_to_target", "minutes": 30})
         deadline = time.time() + 3.0
@@ -80,6 +80,6 @@ def test_unconfirmed_write_is_audited_as_unconfirmed(tmp_path):
         decisions = _battery_decision_entries(c)
     assert decisions, "a failed write must still be audited"
     top = decisions[0]
-    assert top["detail"]["confirmed"] is False
+    assert top["detail"]["accepted"] is False
     assert top["detail"]["outcome"] in ("failed_recovered", "failed_unrecovered")
-    assert "UNCONFIRMED" in top["summary"]
+    assert "FAILED" in top["summary"]

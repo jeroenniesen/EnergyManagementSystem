@@ -42,17 +42,17 @@ def _driver(fake, armed=True):
 def test_setdata_write_mapping():
     assert setdata_writes(PhysicalMode.AUTO) == [(47005, [1])]
     assert setdata_writes(PhysicalMode.IDLE) == [(47005, [4]), (47015, [0])]
-    # Charge = real-time mode + ONE multi-register write 47015=[state, power, soc] (the documented
-    # OpenData form), NOT separate 47015/47016/47017 calls.
+    # Charge = SEPARATE single-value writes (the working HA form): real-time mode, power, soc, then
+    # state LAST. NOT a combined 47015=[state,power,soc] (the docs' form, which the device ignores).
     assert setdata_writes(PhysicalMode.CHARGE, power_w=1500, target_soc=90) == [
-        (47005, [4]), (47015, [1, 1500, 90])
+        (47005, [4]), (47016, [1500]), (47017, [90]), (47015, [1])
     ]
-    assert setdata_writes(PhysicalMode.DISCHARGE, power_w=800, target_soc=10)[1] == (
-        47015, [2, 800, 10])
+    assert setdata_writes(PhysicalMode.DISCHARGE, power_w=800, target_soc=10)[-1] == (47015, [2])
     # Out-of-range power/SoC are clamped to the device limits (50–2400 W, 5–100 %).
-    assert setdata_writes(PhysicalMode.CHARGE, power_w=4000, target_soc=100)[1] == (
-        47015, [1, 2400, 100])
-    assert setdata_writes(PhysicalMode.CHARGE, power_w=10, target_soc=2)[1] == (47015, [1, 50, 5])
+    assert setdata_writes(PhysicalMode.CHARGE, power_w=4000, target_soc=100)[1:3] == [
+        (47016, [2400]), (47017, [100])]
+    assert setdata_writes(PhysicalMode.CHARGE, power_w=10, target_soc=2)[1:3] == [
+        (47016, [50]), (47017, [5])]
     # No default-to-full: a CHARGE/DISCHARGE write without an explicit target is a hard error.
     with pytest.raises(ValueError):
         setdata_writes(PhysicalMode.CHARGE)
@@ -91,19 +91,32 @@ def test_default_driver_has_no_write_transport():
     assert drv.apply(PhysicalMode.CHARGE, target_soc=90) is False
 
 
-def test_armed_apply_issues_correct_writes_and_confirms():
+def test_armed_apply_issues_correct_writes_and_is_accepted():
     fake = FakeIndevolt(mode=1, state=1000)  # starts in self-consumption
     assert _driver(fake).apply(PhysicalMode.CHARGE, target_soc=85, power_w=1800) is True
-    assert fake.writes == [(47005, [4]), (47015, [1, 1800, 85])]
+    assert fake.writes == [(47005, [4]), (47016, [1800]), (47017, [85]), (47015, [1])]
 
 
-def test_apply_false_when_confirm_mismatches():
+def test_apply_true_on_acceptance_even_if_mode_not_yet_reflected():
+    # The device applies the switch with latency. apply() must NOT fail/revert just because the
+    # immediate state still reads self-consumption — it returns True once the writes are ACCEPTED
+    # (result:true); the control loop verifies the real mode on its next read.
     class StuckSelf(FakeIndevolt):
-        def post(self, point, values):  # accept writes but never change the reported mode
+        def post(self, point, values):  # accept writes but report no immediate mode change
             self.writes.append((point, values))
             return {"result": True}
 
-    assert _driver(StuckSelf()).apply(PhysicalMode.CHARGE, target_soc=90) is False
+    assert _driver(StuckSelf()).apply(PhysicalMode.CHARGE, target_soc=90) is True
+
+
+def test_apply_false_when_a_write_is_rejected():
+    # A genuinely REJECTED write (result:false) must fail so the controller falls back to AUTO.
+    class Rejects(FakeIndevolt):
+        def post(self, point, values):
+            self.writes.append((point, values))
+            return {"result": False}
+
+    assert _driver(Rejects()).apply(PhysicalMode.CHARGE, target_soc=90) is False
 
 
 def test_probe_reports_capabilities_else_unavailable():
@@ -128,5 +141,6 @@ def test_full_control_chain_commands_driver_when_controlling():
         BatteryIntent.GRID_CHARGE_TO_TARGET, NOW, target_soc=80, power_w=2000
     )
     assert decision.applied is True and decision.outcome == "applied"
-    # ONE multi-register write: charge state + power + the plan's target SoC (not a default 100).
-    assert (47015, [1, 2000, 80]) in fake.writes
+    # Separate writes: charge state, power, and the plan's target SoC (not a default 100).
+    assert (47015, [1]) in fake.writes and (47017, [80]) in fake.writes and (47016, [2000]) in (
+        fake.writes)
