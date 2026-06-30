@@ -42,10 +42,17 @@ def _driver(fake, armed=True):
 def test_setdata_write_mapping():
     assert setdata_writes(PhysicalMode.AUTO) == [(47005, [1])]
     assert setdata_writes(PhysicalMode.IDLE) == [(47005, [4]), (47015, [0])]
+    # Charge = real-time mode + ONE multi-register write 47015=[state, power, soc] (the documented
+    # OpenData form), NOT separate 47015/47016/47017 calls.
     assert setdata_writes(PhysicalMode.CHARGE, power_w=1500, target_soc=90) == [
-        (47005, [4]), (47015, [1]), (47016, [1500]), (47017, [90])
+        (47005, [4]), (47015, [1, 1500, 90])
     ]
-    assert setdata_writes(PhysicalMode.DISCHARGE, target_soc=10)[1] == (47015, [2])
+    assert setdata_writes(PhysicalMode.DISCHARGE, power_w=800, target_soc=10)[1] == (
+        47015, [2, 800, 10])
+    # Out-of-range power/SoC are clamped to the device limits (50–2400 W, 5–100 %).
+    assert setdata_writes(PhysicalMode.CHARGE, power_w=4000, target_soc=100)[1] == (
+        47015, [1, 2400, 100])
+    assert setdata_writes(PhysicalMode.CHARGE, power_w=10, target_soc=2)[1] == (47015, [1, 50, 5])
     # No default-to-full: a CHARGE/DISCHARGE write without an explicit target is a hard error.
     with pytest.raises(ValueError):
         setdata_writes(PhysicalMode.CHARGE)
@@ -87,7 +94,7 @@ def test_default_driver_has_no_write_transport():
 def test_armed_apply_issues_correct_writes_and_confirms():
     fake = FakeIndevolt(mode=1, state=1000)  # starts in self-consumption
     assert _driver(fake).apply(PhysicalMode.CHARGE, target_soc=85, power_w=1800) is True
-    assert fake.writes == [(47005, [4]), (47015, [1]), (47016, [1800]), (47017, [85])]
+    assert fake.writes == [(47005, [4]), (47015, [1, 1800, 85])]
 
 
 def test_apply_false_when_confirm_mismatches():
@@ -121,5 +128,5 @@ def test_full_control_chain_commands_driver_when_controlling():
         BatteryIntent.GRID_CHARGE_TO_TARGET, NOW, target_soc=80, power_w=2000
     )
     assert decision.applied is True and decision.outcome == "applied"
-    assert (47015, [1]) in fake.writes  # commanded charge state
-    assert (47017, [80]) in fake.writes  # ...to the plan's target SoC, not a default 100
+    # ONE multi-register write: charge state + power + the plan's target SoC (not a default 100).
+    assert (47015, [1, 2000, 80]) in fake.writes

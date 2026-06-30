@@ -35,8 +35,14 @@ _log = logging.getLogger("ems.sources.indevolt_driver")
 _MODE_SELF, _MODE_REALTIME = 1, 4  # read-side working-mode (7101) values
 _STATE_CHARGING, _STATE_DISCHARGING = 1001, 1002  # read-side state (6001) values
 # SetData points (write side) + their state values (NOT comparable to _STATE_* read values).
-P_MODE, P_STATE, P_POWER, P_SOC = 47005, 47015, 47016, 47017
+# Per docs.indevolt.com OpenData: a charge/discharge command is ONE multi-register write starting at
+# 47015 — v=[state, power, soc] (function 16 writes 47015/47016/47017 together). 47005 selects the
+# working mode. Writing state/power/soc as SEPARATE calls does NOT reliably start charging.
+P_MODE, P_STATE = 47005, 47015
 _W_IDLE, _W_CHARGE, _W_DISCHARGE = 0, 1, 2
+# Device limits (SolidFlex/PowerFlex per OpenData docs): power 50–2400 W, target SoC 5–100 %. Out-of
+# -range values are rejected by the device — clamp so a plan asking for 4 kW doesn't silently fail.
+_MIN_POWER_W, _MAX_POWER_W, _MIN_SOC = 50, 2400, 5
 
 # (point, [values]) -> response. Default refuses: no accidental path to a live write exists.
 SetDataPost = Callable[[int, list[int]], object]
@@ -79,13 +85,16 @@ def setdata_writes(
     if mode is PhysicalMode.AUTO:
         return [(P_MODE, [_MODE_SELF])]  # vendor self-consumption (P1-zeroing)
     if mode is PhysicalMode.IDLE:
-        return [(P_MODE, [_MODE_REALTIME]), (P_STATE, [_W_IDLE])]
+        return [(P_MODE, [_MODE_REALTIME]), (P_STATE, [_W_IDLE])]  # 47015 v=0 → standby
     if mode in (PhysicalMode.CHARGE, PhysicalMode.DISCHARGE):
         if target_soc is None:
             raise ValueError(f"{mode} requires an explicit target_soc (no default-to-full)")
         state = _W_CHARGE if mode is PhysicalMode.CHARGE else _W_DISCHARGE
-        return [(P_MODE, [_MODE_REALTIME]), (P_STATE, [state]),
-                (P_POWER, [int(power_w)]), (P_SOC, [int(target_soc)])]
+        power = max(_MIN_POWER_W, min(_MAX_POWER_W, int(power_w)))
+        soc = max(_MIN_SOC, min(100, int(target_soc)))
+        # state + power + SoC written TOGETHER at 47015 (v=[state, power, soc]) — the documented
+        # single-call form; the device acts on this and reads power/SoC from the same write.
+        return [(P_MODE, [_MODE_REALTIME]), (P_STATE, [state, power, soc])]
     raise ValueError(f"unmapped mode {mode}")  # pragma: no cover
 
 
