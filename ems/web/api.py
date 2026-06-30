@@ -586,12 +586,16 @@ def create_app(
                 if mode == last_mode:
                     continue
                 last_mode = mode
-                verb = "Would set" if dry_run else "Set"
+                # HONESTY: this logs the EMS's DECISION (a read-only preview), not a confirmed
+                # device write — "Commanding", never "Set". Whether the battery actually obeyed is
+                # shown live per-tower on the dashboard battery card (and a non-following tower is
+                # the bug to look for on a cluster).
+                verb = "Would set" if dry_run else "Commanding"
                 await audit_store.append(
                     now.isoformat(), "battery_decision",
-                    f"{verb} battery to {mode} — {reason}",
+                    f"{verb} battery → {mode} — {reason}",
                     {"intent": str(intent), "desired_mode": mode, "reason": reason,
-                     "override": override_active, "applied": d.applied, "dry_run": dry_run},
+                     "override": override_active, "decided_only": True, "dry_run": dry_run},
                 )
             except Exception:
                 _log.exception("decision audit failed; will retry next cycle (fail-safe)")
@@ -1289,7 +1293,7 @@ def create_app(
             return [], None
         rows = [
             {"ip": t.ip, "role": t.role, "soc_pct": t.soc_pct, "power_w": t.power_w,
-             "capacity_kwh": t.capacity_kwh, "online": t.online}
+             "capacity_kwh": t.capacity_kwh, "online": t.online, "mode": t.mode}
             for t in towers
         ]
         online = [t for t in towers if t.online and t.soc_pct is not None]

@@ -29,6 +29,28 @@ K_SOC, K_POWER, K_STATE, K_MODE, K_CAPACITY, K_METER_CONN = 6002, 6000, 6001, 71
 K_ROLE = 606  # Master/Slave identification (1000 master · 1001 slave · 1002 none)
 _STATE_CHARGING, _STATE_DISCHARGING = 1001, 1002
 _ROLE_LABEL = {1000: "master", 1001: "slave", 1002: "none"}
+# Working-mode register (7101) values; the car-guard-critical distinction is "self-consumption"
+# (the battery WILL discharge to cover the car) vs "standby" (it won't).
+_MODE_OUTDOOR, _MODE_SELF, _MODE_REALTIME, _MODE_SCHEDULE = 0, 1, 4, 5
+
+
+def tower_mode_label(mode_reg: object, state_reg: object) -> str | None:
+    """Human label for a tower's actual working mode (7101) + state (6001). This is what reveals
+    whether a tower really went to standby on an idle command, or is still self-consuming (and so
+    discharging into the car). None when the register is missing/unrecognised."""
+    try:
+        m = int(mode_reg)
+    except (TypeError, ValueError):
+        return None
+    if m == _MODE_SELF:
+        return "self-consumption"
+    if m == _MODE_REALTIME:
+        if state_reg == _STATE_CHARGING:
+            return "charging"
+        if state_reg == _STATE_DISCHARGING:
+            return "discharging"
+        return "standby"
+    return {_MODE_OUTDOOR: "outdoor", _MODE_SCHEDULE: "schedule"}.get(m)
 
 # (keys) -> {"<key>": value}. Default does the real POST; tests inject a stub.
 GetDataPost = Callable[[Iterable[int]], dict]
@@ -106,6 +128,7 @@ class TowerReading:
     capacity_kwh: float | None
     role: str | None
     online: bool
+    mode: str | None = None  # actual working mode (self-consumption / standby / charging / …)
 
 
 def aggregate_soc(readings: list[TowerReading]) -> float:
@@ -128,8 +151,8 @@ class IndevoltClusterReader:
     wired identically. Read-only: never writes. Tolerant of a tower dropping out — it aggregates
     over whatever is reachable and only fails when NONE responds (fail-safe)."""
 
-    # SoC/power are dynamic (read every cycle); capacity/role are static (read once, then cached).
-    _KEYS = (K_SOC, K_POWER, K_STATE, K_ROLE, K_CAPACITY)
+    # SoC/power/mode are dynamic (read every cycle); capacity/role are static (read once, cached).
+    _KEYS = (K_SOC, K_POWER, K_STATE, K_MODE, K_ROLE, K_CAPACITY)
 
     def __init__(self, clients: list[IndevoltReadClient]) -> None:
         self._clients = list(clients)
@@ -162,8 +185,9 @@ class IndevoltClusterReader:
                 role = None
         if role is not None:
             self._role_cache[client.ip] = role
+        mode = tower_mode_label(data.get(str(K_MODE)), data.get(str(K_STATE)))
         return TowerReading(client.ip, soc, power, self._cap_cache.get(client.ip),
-                            self._role_cache.get(client.ip), online=True)
+                            self._role_cache.get(client.ip), online=True, mode=mode)
 
     def read_towers(self) -> list[TowerReading]:
         return [self._read_one(c) for c in self._clients]

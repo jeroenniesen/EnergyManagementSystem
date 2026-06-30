@@ -498,6 +498,11 @@ body {
 .tower-chip-off { opacity: 0.55; }
 .tower-chip-soc { font-size: 1.15rem; font-weight: 600; font-variant-numeric: tabular-nums; }
 .tower-chip-meta { font-size: 0.68rem; color: var(--muted); }
+/* The tower's ACTUAL working mode — the truth for "did the idle command take?". */
+.tower-chip-mode {
+  margin-top: 3px; font-size: 0.68rem; font-weight: 600; color: var(--text);
+  padding: 1px 6px; border-radius: 6px; background: var(--panel-2); align-self: flex-start;
+}
 /* viewBox 1000x240; height:auto keeps the aspect ratio (xMidYMid meet) so axis text never
    stretches horizontally on narrow screens (WCAG readability). */
 .soc-svg { width: 100%; height: auto; display: block; }

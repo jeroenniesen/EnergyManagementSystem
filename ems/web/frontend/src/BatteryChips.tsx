@@ -6,6 +6,7 @@ export type Tower = {
   power_w: number;
   capacity_kwh: number | null;
   online: boolean;
+  mode?: string | null; // actual working mode: self-consumption / standby / charging / …
 };
 export type BatteryAggregate = {
   soc_pct: number;
@@ -96,6 +97,11 @@ export function BatteryChips({
             {t.capacity_kwh != null ? ` · ${t.capacity_kwh.toFixed(2)} kWh` : ""}
             {t.online ? "" : " · offline"}
           </span>
+          {t.online && t.mode && (
+            <span className="tower-chip-mode" data-testid="tower-chip-mode">
+              {t.mode}
+            </span>
+          )}
         </span>
       ))}
     </div>

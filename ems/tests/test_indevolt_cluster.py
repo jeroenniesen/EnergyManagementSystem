@@ -5,6 +5,7 @@ from ems.sources.indevolt import (
     IndevoltClusterReader,
     IndevoltReadClient,
     aggregate_soc,
+    tower_mode_label,
 )
 
 
@@ -20,6 +21,27 @@ def test_capacity_weighted_soc_across_towers():
     power, soc = IndevoltClusterReader([master, slave]).read_power_soc()
     assert soc == 42.5
     assert power == 0.0
+
+
+def test_tower_mode_label_distinguishes_self_consumption_from_standby():
+    # The car-guard verification: a tower in self-consumption (7101=1) WILL feed the car; a tower in
+    # real-time standby (7101=4, state static) won't. These must read differently.
+    assert tower_mode_label(1, 1000) == "self-consumption"
+    assert tower_mode_label(4, 1000) == "standby"
+    assert tower_mode_label(4, 1002) == "discharging"
+    assert tower_mode_label(4, 1001) == "charging"
+    assert tower_mode_label(0, 1000) == "outdoor"
+    assert tower_mode_label(None, None) is None
+
+
+def test_per_tower_mode_is_read_and_exposed():
+    # A cluster where the master went to standby but the slave is still self-consuming — exactly the
+    # bug to surface. The per-tower mode must reflect each tower's ACTUAL working mode.
+    master = _client("a", {"6002": 50, "6000": 0, "6001": 1000, "7101": 4, "606": 1000, "142": 5})
+    slave = _client("b", {"6002": 50, "6000": 900, "6001": 1002, "7101": 1, "606": 1001, "142": 5})
+    towers = IndevoltClusterReader([master, slave]).read_towers()
+    assert towers[0].mode == "standby"  # master obeyed the idle command
+    assert towers[1].mode == "self-consumption"  # slave did NOT — still discharging into the car
 
 
 def test_power_is_signed_sum():
