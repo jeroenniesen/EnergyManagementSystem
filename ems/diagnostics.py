@@ -58,6 +58,7 @@ def build_diagnostics(
     settings_store_ok: bool,
     auth_required: bool,
     freshness: dict[str, str] | None = None,
+    ev_guard_blind: bool = False,
 ) -> list[Check]:
     dq_status = {"complete": "ok", "degraded": "warn", "price_fallback": "warn"}.get(
         data_quality, "fail"
@@ -83,6 +84,13 @@ def build_diagnostics(
               "protected by a token" if auth_required
               else "open — set a Web access token in Settings to require one for writes"),
     ]
+    # The car-charging guard (hold the battery to standby so it won't feed the car) can only fire if
+    # it can SEE the car — i.e. the EV meter is configured. On + blind = a silent misconfiguration.
+    if ev_guard_blind:
+        checks.append(Check(
+            "car_guard", "Car-charging guard", "warn",
+            "on, but no EV meter is configured — it can't detect the car. Set the EV meter IP in "
+            "Settings → Meters, or the battery may discharge into the car."))
     # Per-signal live sensor visibility: shows exactly which devices are reporting (the "senses").
     for sig, state in (freshness or {}).items():
         if state == "fresh":

@@ -78,7 +78,7 @@ def build_app():
         override_store=override_store,
         audit_store=audit_store,
         cache_store=cache_store,
-        control_cycle_seconds=cfg.cycle_seconds,
+        control_cycle_seconds=cfg.control_cycle_seconds,
         history_retention_days=cfg.retention_days,
         web_auth_token=os.environ.get("EMS_WEB_TOKEN") or None,
         static_dir=_STATIC_DIR,

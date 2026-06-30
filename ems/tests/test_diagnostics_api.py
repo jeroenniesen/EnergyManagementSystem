@@ -61,6 +61,32 @@ def test_diagnostics_fully_wired_app_is_healthy(tmp_path):
     assert store["status"] == "ok"
 
 
+def test_diagnostics_warns_when_car_guard_is_blind(tmp_path):
+    # The car-charging guard can't fire without an EV meter. On + live + no EV meter must surface a
+    # warn check (the silent-misconfiguration that lets the battery discharge into the car).
+    db = str(tmp_path / "ems.sqlite")
+    app = create_app(
+        MockSource(), dry_run=True, dev_mode="live", store=HistoryStore(db),
+        settings_store=SettingsStore(db),
+    )
+    with TestClient(app) as c:
+        # hold_battery_when_car_charging defaults on; meters.car_ip is blank → blind.
+        checks = c.get("/api/diagnostics").json()["checks"]
+    guard = next((x for x in checks if x["key"] == "car_guard"), None)
+    assert guard is not None and guard["status"] == "warn"
+    assert "EV meter" in guard["detail"]
+
+
+def test_diagnostics_no_car_guard_warning_in_mock_mode(tmp_path):
+    # In mock/dev mode the guard-blind warning is irrelevant (no real devices) — don't nag.
+    db = str(tmp_path / "ems.sqlite")
+    app = create_app(MockSource(), dry_run=True, dev_mode="mock", store=HistoryStore(db),
+                     settings_store=SettingsStore(db))
+    with TestClient(app) as c:
+        checks = c.get("/api/diagnostics").json()["checks"]
+    assert not any(x["key"] == "car_guard" for x in checks)
+
+
 def test_diagnostics_exposes_long_run_storage_and_recorder_health(tmp_path):
     # Long-running review: the operator must be able to SEE DB/WAL size, row counts, and recorder
     # health (so a stuck recorder / growing DB is visible, not inferred from stale data).

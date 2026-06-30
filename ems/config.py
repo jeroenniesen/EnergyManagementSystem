@@ -26,6 +26,10 @@ class Config:
     indevolt_ip: str = ""
     indevolt_ips_extra: str = ""  # additional tower IPs, comma-separated (multi-battery cluster)
     indevolt_port: int = 8080
+    # The operational control loop re-evaluates every this-many seconds — DECOUPLED from the
+    # (slower) recorder cadence so safety reactions like the car-charging guard engage promptly,
+    # without forcing a high history-write rate. Only matters in operational mode.
+    control_cycle_seconds: float = 60.0
 
 
 def load_config(path: str | Path) -> Config:
@@ -66,6 +70,7 @@ def load_config(path: str | Path) -> Config:
         db_path=db_path,
         cycle_seconds=cycle_seconds,
         retention_days=int(history.get("retention_days", 90)),
+        control_cycle_seconds=float(control.get("control_cycle_seconds", 60)),
         sources_mode=sources_mode,
         prices_provider=prices_provider,
         p1_ip=str(devices.get("p1_ip", "")),

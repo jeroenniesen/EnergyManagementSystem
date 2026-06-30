@@ -1182,6 +1182,12 @@ def create_app(
             return (_data_quality(now), _current_plan() is not None, _readiness(now).to_dict())
 
         dq, plan_ok, readiness = await asyncio.to_thread(_core)
+        # The car-charging guard needs the EV meter to see the car; on + live + no EV meter = blind.
+        ev_guard_blind = (
+            bool(settings_cache.get("control.hold_battery_when_car_charging"))
+            and dev_mode == "live"
+            and not (settings_cache.get("meters.car_ip") or "").strip()
+        )
         checks = build_diagnostics(
             dev_mode=dev_mode, dry_run=dry_run,
             data_quality=dq,
@@ -1191,6 +1197,7 @@ def create_app(
             store_ok=store_ok, settings_store_ok=settings_ok,
             auth_required=_effective_web_token() is not None,
             freshness=freshness.snapshot(now) if freshness is not None else None,
+            ev_guard_blind=ev_guard_blind,
         )
         # Observability: how much is currently cached (reused instead of refetched / re-spent).
         cache_stats = None

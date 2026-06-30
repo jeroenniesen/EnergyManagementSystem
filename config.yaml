@@ -9,6 +9,9 @@ control:
   # 24/7 install. The live dashboard tiles refresh independently (30 s coalesced read), so this does
   # NOT make the UI stale. For fast local dev, set EMS_CYCLE_SECONDS=5 (no need to edit this file).
   cycle_seconds: 300
+  # The operational control loop re-checks this often (decoupled from the recorder above) so safety
+  # reactions — e.g. setting the battery to standby when the car starts charging — engage promptly.
+  control_cycle_seconds: 60
 history:
   db_path: ems/data/ems.sqlite
   retention_days: 90   # history older than this is purged daily (0 = keep forever)

@@ -183,8 +183,9 @@ SETTINGS_SCHEMA: tuple[SettingsField, ...] = (
     SettingsField(
         "control.hold_battery_when_car_charging", "Hold battery while the car charges", "bool",
         True, "control",
-        help="When the car is charging, never discharge the home battery into it — the car is "
-        "served by solar + grid instead (the battery may still charge). Re-checked every cycle.",
+        help="When the car is charging, put the battery in standby (real-time idle) so it neither "
+        "discharges into the car nor charges — the car is served by solar + grid. Needs the EV "
+        "meter configured to detect charging. Re-checked every control cycle.",
     ),
     SettingsField(
         "control.car_charging_threshold_w", "Car-charging threshold", "number", 500.0, "control",

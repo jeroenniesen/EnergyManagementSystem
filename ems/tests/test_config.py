@@ -34,6 +34,8 @@ def test_cycle_seconds_env_override_and_retention(tmp_path: Path, monkeypatch):
     p.write_text("history:\n  retention_days: 30\n")
     assert load_config(p).cycle_seconds == 300.0
     assert load_config(p).retention_days == 30
+    # The control loop is decoupled from the recorder and reacts faster by default (car guard etc.).
+    assert load_config(p).control_cycle_seconds == 60.0
     monkeypatch.setenv("EMS_CYCLE_SECONDS", "5")
     assert load_config(p).cycle_seconds == 5.0  # env override wins (dev fast-sampling)
 
