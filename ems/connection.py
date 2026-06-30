@@ -144,8 +144,12 @@ def build_wiring(eff: dict, tz: ZoneInfo, cache_store: object | None = None):
             battery=battery_reader,
         )
         if operational:
+            # Arm the writer against EVERY tower (master + slaves) — the cluster does not relay
+            # real-time-control to slaves, so each tower is commanded directly (one transport each).
             controller_driver = IndevoltBatteryDriver(
-                ip, port=port, armed=True, rpc_post=make_setdata_post(ip, port)
+                ip, port=port, armed=True,
+                extra_ips=tower_ips[1:],
+                post_factory=lambda a, _p=port: make_setdata_post(a, _p),
             )
         elif ip:
             controller_driver = IndevoltBatteryDriver(ip, port=port, armed=False)

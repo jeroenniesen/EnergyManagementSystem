@@ -119,6 +119,47 @@ def test_apply_false_when_a_write_is_rejected():
     assert _driver(Rejects()).apply(PhysicalMode.CHARGE, target_soc=90) is False
 
 
+def test_apply_commands_every_tower_with_power_split():
+    # Cluster of 2: the command must reach BOTH towers (a slave does NOT follow the master), and the
+    # cluster power is split across them (each then clamped to device limits in setdata_writes).
+    writes: dict[str, list] = {}
+
+    def factory(ip):
+        def post(point, values):
+            writes.setdefault(ip, []).append((point, values))
+            return {"result": True}
+        return post
+
+    drv = IndevoltBatteryDriver("10.0.0.1", armed=True, extra_ips=["10.0.0.2"],
+                                post_factory=factory, reader=FakeIndevolt())
+    assert drv.apply(PhysicalMode.CHARGE, target_soc=90, power_w=2000) is True
+    assert set(writes) == {"10.0.0.1", "10.0.0.2"}  # both towers commanded
+    # 2000 W cluster split → 1000 W/tower; each gets the full real-time sequence ending in state.
+    for ip in ("10.0.0.1", "10.0.0.2"):
+        assert (47016, [1000]) in writes[ip]
+        assert writes[ip][0] == (47005, [4]) and writes[ip][-1] == (47015, [1])
+
+
+def test_apply_false_if_any_tower_rejects():
+    # If ANY tower rejects, apply() fails so the controller falls back to AUTO — never leaves a
+    # half-commanded cluster (master charging, slave self-consuming).
+    def factory(ip):
+        def post(point, values):
+            return {"result": ip == "10.0.0.1"}  # the slave (.2) rejects every write
+        return post
+
+    drv = IndevoltBatteryDriver("10.0.0.1", armed=True, extra_ips=["10.0.0.2"],
+                                post_factory=factory, reader=FakeIndevolt())
+    assert drv.apply(PhysicalMode.CHARGE, target_soc=90, power_w=2000) is False
+
+
+def test_duplicate_tower_ip_is_commanded_once():
+    # The master IP appearing again in extra_ips must not double-command it.
+    drv = IndevoltBatteryDriver("10.0.0.1", armed=True, extra_ips=["10.0.0.1", " "],
+                                reader=FakeIndevolt())
+    assert drv.ips == ["10.0.0.1"]
+
+
 def test_probe_reports_capabilities_else_unavailable():
     cap = _driver(FakeIndevolt()).probe()
     assert "charge" in cap.services and cap.p1_paired is True

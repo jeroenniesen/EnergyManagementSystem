@@ -14,7 +14,7 @@ the live device. The read side reuses the read-only IndevoltReadClient.
 from __future__ import annotations
 
 import logging
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 
 from ems.domain import CapabilityReport, PhysicalMode
 from ems.sources.indevolt import (
@@ -110,7 +110,14 @@ def mode_from_data(data: dict) -> PhysicalMode:
 
 class IndevoltBatteryDriver:
     """BatteryDriver for the real Indevolt. Reads via IndevoltReadClient; writes via SetData ONLY
-    when explicitly armed AND a real transport is injected (neither true in the default wiring)."""
+    when explicitly armed AND a real transport is injected (neither true in the default wiring).
+
+    CLUSTER WRITES: the command is written to EVERY tower (master + slaves), not just the master.
+    An Indevolt cluster does NOT relay real-time-control from the master to its slaves — verified
+    live: commanding only the master leaves the slave self-consuming, which the cluster-mismatch
+    audit flagged ("1 tower NOT following the commanded charge"). Each tower is an independent
+    OpenData endpoint, so we command each one. The cluster's requested power is split evenly across
+    towers so the total matches what the planner sized."""
 
     def __init__(
         self,
@@ -121,14 +128,28 @@ class IndevoltBatteryDriver:
         charge_power_w: int = 2000,
         reader: IndevoltReadClient | None = None,
         rpc_post: SetDataPost | None = None,
+        post_factory: Callable[[str], SetDataPost] | None = None,
+        extra_ips: Sequence[str] = (),
         timeout: float = 4.0,
     ) -> None:
         self.ip = ip
+        # Master first, then any slave towers; de-duped, blanks dropped. Reads still come from the
+        # master via `reader`; WRITES fan out to every IP in this list.
+        ips: list[str] = []
+        for candidate in (ip, *extra_ips):
+            a = (candidate or "").strip()
+            if a and a not in ips:
+                ips.append(a)
+        self.ips = ips
         self._armed = armed  # read-only: no setter, so it can't be flipped after construction
         self.charge_power_w = charge_power_w
         self.reader = reader or IndevoltReadClient(ip, port=port, timeout=timeout)
-        self._setdata_url = f"http://{ip}:{port}/rpc/Indevolt.SetData"
-        self._post = rpc_post or _refusing_post
+        # One SetData transport per tower. post_factory(ip) builds a real per-tower transport in
+        # production; rpc_post (if given) is reused for ALL towers (test injection); else refusing.
+        if post_factory is not None:
+            self._posts = {a: post_factory(a) for a in self.ips}
+        else:
+            self._posts = {a: (rpc_post or _refusing_post) for a in self.ips}
 
     @property
     def armed(self) -> bool:
@@ -161,28 +182,39 @@ class IndevoltBatteryDriver:
         Refuses (returns False, no write) unless armed, AND refuses a CHARGE/DISCHARGE with no
         target_soc — it will NEVER default to charging to full (energy review #3/#4).
 
-        Returns True when the device ACCEPTED every write (each SetData returned result:true);
-        False only if a write was REJECTED or the transport failed. CRITICAL: the device applies a
-        mode change with noticeable LATENCY (often many seconds), so we deliberately do NOT
-        re-read-and-fail here — doing so made the controller declare the write "unconfirmed" and
-        revert to AUTO before the switch landed, so the battery never actually charged. The control
-        loop verifies the real mode on its next cluster read and flags a tower that never follows
-        (SPEC §6.5)."""
+        The command is written to EVERY tower (master + slaves) because the cluster does not relay
+        real-time-control to slaves; `power_w` is the CLUSTER figure and is split evenly across the
+        towers (each clamped to the device limits in setdata_writes).
+
+        Returns True when EVERY tower ACCEPTED every write (each SetData returned result:true);
+        False if any write was REJECTED or the transport failed — so a partial cluster (e.g. master
+        charging, slave not) fails cleanly and the controller falls back to AUTO. CRITICAL: the
+        device applies a mode change with noticeable LATENCY (often many seconds), so we
+        deliberately do NOT re-read-and-fail here — that made the controller declare the write
+        "unconfirmed" and revert to AUTO before the switch landed, so the battery never charged. The
+        control loop verifies the real mode on its next cluster read and flags a tower that never
+        follows (SPEC §6.5)."""
         if not self._armed:
             _log.warning("apply(%s) refused — driver not armed (read-only safety)", mode)
             return False
         if mode in (PhysicalMode.CHARGE, PhysicalMode.DISCHARGE) and target_soc is None:
             _log.warning("apply(%s) refused — no target SoC supplied (won't default to full)", mode)
             return False
-        power = int(power_w) if power_w is not None else self.charge_power_w
+        total_power = int(power_w) if power_w is not None else self.charge_power_w
+        # Split the cluster's requested power evenly across towers so the total matches the plan;
+        # setdata_writes clamps each tower to the device limits (50–2400 W).
+        per_tower_power = max(1, total_power // max(1, len(self.ips)))
         soc = int(target_soc) if target_soc is not None else None
         try:
-            for point, values in setdata_writes(mode, power_w=power, target_soc=soc):
-                resp = self._post(point, values)
-                if not (isinstance(resp, dict) and resp.get("result")):
-                    _log.error("Indevolt SetData %s=%s rejected: %s", point, values, resp)
-                    return False
+            for tower_ip in self.ips:
+                post = self._posts.get(tower_ip, _refusing_post)
+                for point, values in setdata_writes(mode, power_w=per_tower_power, target_soc=soc):
+                    resp = post(point, values)
+                    if not (isinstance(resp, dict) and resp.get("result")):
+                        _log.error("Indevolt SetData %s %s=%s rejected: %s",
+                                   tower_ip, point, values, resp)
+                        return False
         except Exception as exc:
             _log.error("Indevolt SetData failed: %s", exc)
             return False
-        return True  # accepted by the device; the control loop confirms the mode took (latency)
+        return True  # accepted by all towers; the control loop confirms the mode took (latency)
