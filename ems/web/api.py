@@ -1002,8 +1002,13 @@ def create_app(
             lc.mark_sensors_validated()
         # Reachability + idempotency reuse the SHARED coalesced cluster read (observed) instead of a
         # separate per-cycle master mode-read — far gentler on a device shared with HA + the app.
+        # IMPORTANT: "reachable" = the battery RESPONDED this cycle (a tower online), NOT that its
+        # mode decoded to a known label — else an unexpected mode value would stall ALL control
+        # (incl. manual overrides). `observed` may be None; decide() then reads fresh.
         observed = _current_mode(now)
-        if observed is not None:
+        towers = _current_towers(now)
+        reachable = any(t.online for t in towers) if towers else observed is not None
+        if reachable:
             lc.mark_probe_ok()  # battery readable this cycle
         if _current_plan() is not None:
             lc.mark_plan_loaded()

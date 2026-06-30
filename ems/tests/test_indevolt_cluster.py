@@ -66,6 +66,16 @@ def test_read_towers_coalesces_within_window():
     assert calls["n"] == 2
 
 
+def test_unknown_mode_register_keeps_tower_online():
+    # Reachability must NOT depend on decoding the mode: a tower that responds but reports an
+    # unexpected working-mode value is still ONLINE (mode just unknown). The control loop keys
+    # reachability off `online`, so an odd mode value can't stall all control / manual overrides.
+    odd = _client("a", {"6002": 50, "6000": 0, "6001": 1000, "7101": 99, "606": 1000, "142": 5})
+    [t] = IndevoltClusterReader([odd]).read_towers()
+    assert t.online is True
+    assert t.mode is None  # mode unrecognised, but the tower clearly responded
+
+
 def test_power_is_signed_sum():
     a = _client("a", {"6002": 50, "6000": 1000, "6001": 1001, "142": 5})  # charging -> -1000
     b = _client("b", {"6002": 50, "6000": 400, "6001": 1002, "142": 5})  # discharging -> +400
