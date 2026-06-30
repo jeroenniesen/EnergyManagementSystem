@@ -28,9 +28,13 @@ from ems.sources.indevolt import (
 
 _log = logging.getLogger("ems.sources.indevolt_driver")
 
-_MODE_SELF, _MODE_REALTIME = 1, 4
-_STATE_CHARGING, _STATE_DISCHARGING = 1001, 1002
-# SetData points (write side).
+# NOTE: the device uses DIFFERENT encodings for reads vs writes — never mix them.
+#   READ side  (GetData): mode 7101 ∈ {1 self, 4 real-time}; state 6001 ∈ {1000 static, 1001
+#                         charging, 1002 discharging}  →  _MODE_*/_STATE_* below + mode_from_data().
+#   WRITE side (SetData): state value v ∈ {0 idle, 1 charge, 2 discharge}  →  _W_* below.
+_MODE_SELF, _MODE_REALTIME = 1, 4  # read-side working-mode (7101) values
+_STATE_CHARGING, _STATE_DISCHARGING = 1001, 1002  # read-side state (6001) values
+# SetData points (write side) + their state values (NOT comparable to _STATE_* read values).
 P_MODE, P_STATE, P_POWER, P_SOC = 47005, 47015, 47016, 47017
 _W_IDLE, _W_CHARGE, _W_DISCHARGE = 0, 1, 2
 

@@ -22,7 +22,6 @@ from fastapi.staticfiles import StaticFiles
 
 from ems.alerts import data_quality, derive_alerts
 from ems.control.failsafe import failsafe_intent
-from ems.control.loop import ControlLoop
 from ems.control.mode_controller import ModeController
 from ems.control.override import (
     MAX_MINUTES,
@@ -136,6 +135,23 @@ _LABEL_TO_MODE = {
     "outdoor": PhysicalMode.AUTO,
     "schedule": PhysicalMode.AUTO,
 }
+# Mode FAMILY for cluster-consistency checks: the STABLE distinction is vendor self-consumption
+# (mode 1) vs EMS real-time control (mode 4). charging/discharging/standby are transient real-time
+# states (a battery that finished charging shows "standby", not "charging") — so we compare at the
+# family level to avoid false "didn't follow" flags. outdoor/schedule/unknown → None (don't judge).
+_REALTIME_LABELS = {"standby", "charging", "discharging"}
+
+
+def _tower_family(label: str | None) -> str | None:
+    if label == "self-consumption":
+        return "self-consumption"
+    if label in _REALTIME_LABELS:
+        return "real-time"
+    return None
+
+
+def _commanded_family(mode: PhysicalMode) -> str:
+    return "self-consumption" if mode is PhysicalMode.AUTO else "real-time"
 
 # --- Unified energy-story slot/totals (shared by the past + next windows so they never drift) ---
 _INTENT_ACTION = {
@@ -276,6 +292,12 @@ def create_app(
     # place via the "ov" key so the closure stays valid; loaded in lifespan, set by POST /override.
     override_box: dict[str, Override] = {"ov": OVERRIDE_NONE}
     _OV_INTENT, _OV_EXP = "override.intent", "override.expires_at"
+    # Serialise control cycles: the periodic loop and an immediate override-triggered cycle must not
+    # run decide()/apply() concurrently (two writes racing the battery).
+    _control_lock = asyncio.Lock()
+    # Cluster-drift dedup: the signature of towers currently NOT in the commanded mode family, so we
+    # audit a mismatch (or its resolution) ONCE per episode, not every cycle.
+    _drift_box: dict[str, Any] = {"sig": None}
 
     def _apply_control_settings() -> None:
         """Push the control.* settings onto the live controller (preserves its switch counters)."""
@@ -744,13 +766,14 @@ def create_app(
         # it is never started, so the dashboard previews but the battery is never touched.
         control_task = None
         if not dry_run and controller is not None:
-            control_task = asyncio.create_task(
-                ControlLoop(_control_tick, control_cycle_seconds).run(stop)
-            )
+            # Operational: applies AND audits the CONFIRMED mode change each cycle.
+            control_task = asyncio.create_task(_control_loop(stop))
             control_task.add_done_callback(_task_died("Control loop"))
-        # Decision/plan audit loop — advisory, runs in ANY mode (dry-run too), off the control path.
+        # Advisory decision audit — DRY-RUN ONLY (logs "would set" intent changes). In operational
+        # mode the control loop above audits the real confirmed outcome instead, so this would only
+        # duplicate/contradict it.
         audit_task = None
-        if audit_store is not None and controller is not None:
+        if audit_store is not None and controller is not None and dry_run:
             audit_task = asyncio.create_task(_audit_decision_loop(stop))
             audit_task.add_done_callback(_task_died("Decision audit"))
         # Scheduled AI second-opinion (advisory, off control path; no-op until AI is on).
@@ -987,13 +1010,42 @@ def create_app(
             )
         return validation_box["latest"]
 
-    def _control_tick(now: datetime) -> None:
-        """Operational mode ONLY (never called in dry-run): advance the ownership lifecycle and,
-        once CONTROLLING, apply the current intent — the single battery write per cycle. Every
-        safety gate (dwell, daily cap, fail-safe AUTO on unsafe data, override) is enforced by
-        ModeController.decide / _effective_intent."""
+    def _cluster_drift_record(desired: PhysicalMode, towers) -> dict | None:
+        """Deduped audit record when the cluster doesn't match the commanded mode FAMILY — i.e. a
+        tower (typically a slave) that didn't follow the master, which would otherwise silently keep
+        discharging into the house/car. Returns a record once when drift starts and once when it
+        clears; None while unchanged. towers = the coalesced per-tower read (steady-state)."""
+        if not towers:
+            return None
+        want = _commanded_family(desired)
+        laggards = [t for t in towers
+                    if t.online and t.mode and _tower_family(t.mode) not in (want, None)]
+        sig = tuple(sorted((t.ip, t.mode) for t in laggards))
+        if sig == _drift_box["sig"]:
+            return None  # already reported this exact state
+        prev = _drift_box["sig"]
+        _drift_box["sig"] = sig
+        if not laggards:
+            return ({"summary": "Battery cluster back in sync — all towers match the commanded "
+                                "mode",
+                     "detail": {"event": "drift_resolved", "commanded": desired.value}}
+                    if prev else None)
+        modes = {t.ip: t.mode for t in laggards}
+        return {
+            "summary": (f"Battery cluster MISMATCH — {len(laggards)} tower(s) NOT following the "
+                        f"commanded {desired.value}: {', '.join(sorted(set(modes.values())))}"),
+            "detail": {"event": "cluster_drift", "commanded": desired.value, "laggards": modes},
+        }
+
+    def _control_tick(now: datetime) -> list[dict]:
+        """Operational mode ONLY: advance the ownership lifecycle and, once CONTROLLING, apply the
+        current intent — the single battery write per cycle. Every safety gate (dwell, daily cap,
+        fail-safe AUTO on unsafe data, override) is enforced by ModeController.decide /
+        _effective_intent. Returns audit records for the async caller to log: a CONFIRMED
+        mode-change record when a write was attempted (applied/failed), and/or a cluster-mismatch
+        record when a tower isn't following the commanded mode (steady state). [] = nothing."""
         if controller is None:
-            return
+            return []
         lc = controller.lifecycle
         if lc.state is OwnershipState.INACTIVE:
             lc.start(now)
@@ -1013,13 +1065,69 @@ def create_app(
         if _current_plan() is not None:
             lc.mark_plan_loaded()
         lc.tick(now)
-        if lc.can_command(now):
-            intent, _reason, _override, tgt, pw, _v = _effective_intent(now)
-            if intent is not None:
-                # decide() uses `observed` for the idempotency gate; its post-write CONFIRM still
-                # re-reads fresh, so a stale observation only risks a redundant idempotent write.
-                controller.decide(intent, now, target_soc=tgt, power_w=pw,
-                                  observed_mode=observed)
+        if not lc.can_command(now):
+            return []
+        intent, _reason, _override, tgt, pw, _v = _effective_intent(now)
+        if intent is None:
+            return []
+        # decide() uses `observed` for the idempotency gate; its post-write CONFIRM re-reads the
+        # device fresh, so a stale observation only risks a redundant idempotent write.
+        dec = controller.decide(intent, now, target_soc=tgt, power_w=pw, observed_mode=observed)
+        records: list[dict] = []
+        if dec.outcome in ("applied", "failed_recovered", "failed_unrecovered"):
+            # An ACTUAL device write — audit the confirmed mode change (from → to).
+            before = observed.value if observed is not None else "unknown"
+            confirmed = dec.applied  # True only when the post-write re-read matched (master)
+            records.append({
+                "summary": (f"Battery mode {before} → {dec.desired_mode.value} — "
+                            + ("confirmed" if confirmed else f"UNCONFIRMED ({dec.reason})")),
+                "detail": {"from_mode": before, "desired_mode": dec.desired_mode.value,
+                           "intent": str(dec.intent), "outcome": dec.outcome,
+                           "confirmed": confirmed, "reason": dec.reason}})
+        elif dec.outcome == "idempotent":
+            # Steady state: EMS believes it's already in `desired`. VERIFY the whole cluster —
+            # a tower that didn't follow (still self-consuming while we commanded real-time) is the
+            # silent slave-not-following bug. Towers are fresh here (no write this cycle).
+            drift = _cluster_drift_record(dec.desired_mode, towers)
+            if drift is not None:
+                records.append(drift)
+        return records
+
+    async def _run_control_cycle() -> None:
+        """One operational control cycle: run the (blocking) tick off the event loop, then AUDIT the
+        CONFIRMED mode change it reports. Serialised by `_control_lock` so the periodic loop and an
+        immediate override-triggered run can't overlap (two concurrent writes to the battery)."""
+        if controller is None or dry_run:
+            return
+        async with _control_lock:
+            now = datetime.now(UTC)
+            try:
+                records = await asyncio.to_thread(_control_tick, now)
+            except Exception:
+                _log.exception("control tick failed; retry next cycle (fail-safe)")
+                return
+            for rec in records:
+                if audit_store is not None:
+                    try:
+                        await audit_store.append(now.isoformat(), "battery_decision",
+                                                 rec["summary"], rec["detail"])
+                    except Exception:
+                        _log.warning("failed to write battery-decision audit", exc_info=True)
+
+    async def _control_loop(stop: asyncio.Event) -> None:
+        """Operational control loop (SPEC §5.3 act): each cycle apply the intent + audit the
+        confirmed result. Dry-run uses the advisory _audit_decision_loop instead. Fail-safe — a tick
+        error is logged, never kills the loop."""
+        while True:
+            try:
+                await asyncio.wait_for(stop.wait(), timeout=control_cycle_seconds)
+                return
+            except TimeoutError:
+                pass
+            try:
+                await _run_control_cycle()
+            except Exception:
+                _log.exception("control loop tick failed; retry next cycle (fail-safe)")
 
     @app.get("/health/live")
     def live() -> dict:
@@ -1111,6 +1219,15 @@ def create_app(
                    if held else
                    f"Manual override: forcing {intent.value if intent else '?'} until {until}")
             out.append({"key": "manual_override_active", "severity": "warning", "message": msg})
+        # Cluster mismatch (a tower not following the commanded mode) — surfaced prominently, not
+        # just in the audit log, because it means part of the battery isn't doing what was asked.
+        laggard_sig = _drift_box.get("sig")
+        if laggard_sig:
+            ips = ", ".join(ip for ip, _mode in laggard_sig)
+            out.append({"key": "battery_cluster_mismatch", "severity": "warning",
+                        "message": f"Battery cluster mismatch — tower(s) {ips} are not following "
+                                   "the commanded mode. The EMS commands the master; a tower that "
+                                   "doesn't follow keeps running its own mode."})
         return {"data_quality": dq, "alerts": out}
 
     @app.get("/api/decision")
@@ -1280,6 +1397,8 @@ def create_app(
                     now.isoformat(), "manual_override",
                     "Manual override cleared — back to the automatic plan", {"action": "clear"},
                 )
+            if not dry_run:
+                asyncio.create_task(_run_control_cycle())  # apply now, don't wait a full cycle
             return JSONResponse(get_override())
         errors: dict[str, str] = {}
         try:
@@ -1303,6 +1422,10 @@ def create_app(
                 {"action": "set", "intent": intent.value, "minutes": int(minutes),
                  "expires_at": expires.isoformat()},
             )
+        # Apply the override on the battery NOW (and audit the confirmed result) instead of waiting
+        # up to a full control cycle — what the operator expects when they press "charge".
+        if not dry_run:
+            asyncio.create_task(_run_control_cycle())
         return JSONResponse(get_override())
 
     def _battery_cluster(now: datetime) -> tuple[list[dict], dict | None]:

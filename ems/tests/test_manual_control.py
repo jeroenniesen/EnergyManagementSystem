@@ -1,6 +1,6 @@
-"""Manual override in OPERATIONAL mode actually drives the battery: setting a grid-charge override
-must take the (mock) battery to CHARGE via the live control loop. Guards the regression where the
-control loop's reachability check stalled all control. Timing-tolerant (polls the driver)."""
+"""Manual override in OPERATIONAL mode actually drives the battery AND the confirmed mode change is
+recorded in the audit log. Guards: (1) the regression where the control loop's reachability check
+stalled all control; (2) the user's ask — validate the mode changed and log it. Timing-tolerant."""
 import time
 from datetime import UTC, datetime
 from zoneinfo import ZoneInfo
@@ -12,10 +12,11 @@ from ems.domain import PhysicalMode
 from ems.freshness import FreshnessTracker
 from ems.lifecycle import Lifecycle
 from ems.sense import SIGNALS
-from ems.sources.battery import MockBatteryDriver
+from ems.sources.battery import FailingMockBatteryDriver, MockBatteryDriver
 from ems.sources.forecast import MockSolarForecastSource
 from ems.sources.mock import MockSource
 from ems.sources.prices import MockPriceSource
+from ems.storage.audit import AuditStore
 from ems.storage.settings import SettingsStore
 from ems.web.api import create_app
 
@@ -31,22 +32,54 @@ def _fresh():
     return fr
 
 
-def test_manual_charge_override_drives_the_battery_in_operational_mode(tmp_path):
-    driver = MockBatteryDriver()  # starts AUTO
-    # Operational (dry_run False), no startup grace so the loop reaches CONTROLLING promptly.
-    ctl = ModeController(driver, Lifecycle(dry_run=False, startup_grace_seconds=0), dry_run=False)
+def _operational_app(tmp_path, driver):
     db = str(tmp_path / "ems.sqlite")
-    app = create_app(
+    ctl = ModeController(driver, Lifecycle(dry_run=False, startup_grace_seconds=0), dry_run=False)
+    return create_app(
         MockSource(), dry_run=False, dev_mode="live", tz=AMS,
         price_source=MockPriceSource(AMS), solar_forecast=MockSolarForecastSource(AMS),
         controller=ctl, freshness=_fresh(),
-        override_store=SettingsStore(db, table="runtime_state"),
+        override_store=SettingsStore(db, table="runtime_state"), audit_store=AuditStore(db),
         control_cycle_seconds=0.02,
     )
-    with TestClient(app) as c:
-        r = c.post("/api/override", json={"intent": "grid_charge_to_target", "minutes": 30})
-        assert r.status_code == 200
+
+
+def _battery_decision_entries(client):
+    return [e for e in client.get("/api/audit").json()["entries"]
+            if e["category"] == "battery_decision"]
+
+
+def test_manual_charge_override_drives_the_battery_and_audits_the_confirmed_change(tmp_path):
+    driver = MockBatteryDriver()  # starts AUTO
+    with TestClient(_operational_app(tmp_path, driver)) as c:
+        assert c.post("/api/override",
+                      json={"intent": "grid_charge_to_target", "minutes": 30}).status_code == 200
         deadline = time.time() + 3.0
         while time.time() < deadline and driver.current_mode() is not PhysicalMode.CHARGE:
             time.sleep(0.05)
-    assert driver.current_mode() is PhysicalMode.CHARGE  # the override actually took effect
+        assert driver.current_mode() is PhysicalMode.CHARGE  # the override actually took effect
+        # ...AND the confirmed transition is in the audit log (the user's ask).
+        decisions = _battery_decision_entries(c)
+    assert decisions, "the mode change must be audited"
+    top = decisions[0]
+    assert top["detail"]["desired_mode"] == "charge"
+    assert top["detail"]["confirmed"] is True
+    assert top["detail"]["outcome"] == "applied"
+    assert "→ charge" in top["summary"] and "confirmed" in top["summary"]
+
+
+def test_unconfirmed_write_is_audited_as_unconfirmed(tmp_path):
+    # If the device never confirms the write, the audit must say UNCONFIRMED (not a silent
+    # "applied") — so the operator can see the battery may not have actually changed.
+    driver = FailingMockBatteryDriver(fail_times=99)  # every apply() fails to confirm
+    with TestClient(_operational_app(tmp_path, driver)) as c:
+        c.post("/api/override", json={"intent": "grid_charge_to_target", "minutes": 30})
+        deadline = time.time() + 3.0
+        while time.time() < deadline and not _battery_decision_entries(c):
+            time.sleep(0.05)
+        decisions = _battery_decision_entries(c)
+    assert decisions, "a failed write must still be audited"
+    top = decisions[0]
+    assert top["detail"]["confirmed"] is False
+    assert top["detail"]["outcome"] in ("failed_recovered", "failed_unrecovered")
+    assert "UNCONFIRMED" in top["summary"]
