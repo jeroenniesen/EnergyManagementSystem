@@ -66,6 +66,11 @@ test.describe("Insights", () => {
     await expect(summary).toContainText("solid energy day");
     await expect(page.getByTestId("ring-self_consumption")).toContainText("Mostly your own sun");
     await expect(page.getByTestId("ring-co2")).toContainText("Cleaner than the grid");
+    // The caption is also spoken (folded into the accessible name, which would otherwise hide it).
+    await expect(page.getByTestId("ring-self_consumption")).toHaveAttribute(
+      "aria-label",
+      /80 out of 100\. Mostly your own sun/,
+    );
     // Tapping a ring opens the Insights tab.
     await page.getByTestId("ring-self_consumption").click();
     await expect(page.getByTestId("insights")).toBeVisible();

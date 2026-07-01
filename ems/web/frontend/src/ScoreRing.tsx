@@ -37,14 +37,19 @@ export function ScoreRing({
   const offset = c * (1 - pct / 100);
   const band = scoreBand(value);
   const half = size / 2;
-  const label2 = ariaText ?? `${label} score: ${value == null ? "not available" : `${Math.round(value)} out of 100`}`;
+  // Fold the visible caption into the spoken name — the button's aria-label would otherwise hide it
+  // from screen readers, so they'd lose the motivating line sighted users get.
+  const spoken =
+    ariaText ??
+    `${label} score: ${value == null ? "not available" : `${Math.round(value)} out of 100`}` +
+      (caption ? `. ${caption}` : "");
 
   return (
     <button
       type="button"
       className={`ring ring-${band}`}
       onClick={onClick}
-      aria-label={onClick ? `${label2} — open Insights` : label2}
+      aria-label={onClick ? `${spoken} — open Insights` : spoken}
       title={hint ?? caption}
       data-testid={testId ?? `ring-${label.toLowerCase().replace(/[^a-z]+/g, "-")}`}
     >

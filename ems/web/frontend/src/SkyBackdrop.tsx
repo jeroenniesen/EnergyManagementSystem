@@ -90,7 +90,9 @@ export function SkyBackdrop() {
   const { phase, progress } = phaseAt(now, sunrise, sunset);
   const daytime = phase !== "night";
   const sunLeft = 12 + progress * 76; // sweeps left→right across the day
-  const sunTop = 214 - 168 * Math.sin(Math.PI * progress); // low at dawn/dusk, high at noon
+  // Arc kept below the header scrim (peaks ~118px at noon) so the sun stays visible in the open sky
+  // band rather than hiding behind the title/nav; low near the horizon at dawn/dusk.
+  const sunTop = 216 - 98 * Math.sin(Math.PI * progress);
 
   const cloud = sky?.cloud_cover ?? null;
   const showClouds = daytime && cloud != null && cloud >= 35;
