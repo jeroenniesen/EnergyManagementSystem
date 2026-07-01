@@ -4,6 +4,9 @@
 // from recorded history server-side). Every score explains itself (the "why").
 import { useEffect, useState } from "react";
 
+import { scoreBand, ScoreRing } from "./ScoreRing";
+import { scoreCaption } from "./scoreCopy";
+
 type Score = {
   key: string;
   label: string;
@@ -56,13 +59,6 @@ function shiftAnchor(anchor: string, period: Period, dir: number): string {
 }
 
 const kwh = (n: number) => `${n.toFixed(1)} kWh`;
-
-function scoreBand(v: number | null): string {
-  if (v == null) return "na";
-  if (v >= 80) return "good";
-  if (v >= 50) return "ok";
-  return "low";
-}
 
 function rawText(s: Score): string {
   if (s.raw == null) return "";
@@ -198,23 +194,24 @@ export function Insights() {
             {report.scores.map((s) => (
               <div
                 key={s.key}
-                className={`score-tile score-${scoreBand(s.value)}`}
+                className={`score-card score-${scoreBand(s.value)}`}
                 data-testid={`score-${s.key}`}
                 role="group"
                 aria-label={`${s.label} score: ${
                   s.value == null ? "not available" : `${Math.round(s.value)} out of 100`
                 }`}
               >
-                <div className="score-label">{s.label}</div>
-                <div className="score-value" data-testid={`score-${s.key}-value`} aria-hidden="true">
-                  {s.value == null ? "—" : Math.round(s.value)}
-                  {s.value != null && <span className="score-unit">/100</span>}
+                <ScoreRing
+                  value={s.value}
+                  label={s.label}
+                  caption={scoreCaption(s.key, s.value)}
+                  size={116}
+                  testId={`score-${s.key}-value`}
+                />
+                <div className="score-detail">
+                  {s.raw != null && s.unit !== "%" && <div className="score-raw">{rawText(s)}</div>}
+                  <p className="score-explain">{s.explanation}</p>
                 </div>
-                <div className="score-bar" aria-hidden="true">
-                  <span className="score-fill" style={{ width: `${s.value ?? 0}%` }} />
-                </div>
-                {s.raw != null && s.unit !== "%" && <div className="score-raw">{rawText(s)}</div>}
-                <p className="score-explain">{s.explanation}</p>
               </div>
             ))}
           </div>
