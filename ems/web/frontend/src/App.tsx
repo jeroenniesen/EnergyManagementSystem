@@ -456,6 +456,10 @@ export function App() {
           )}
           {alertsData && CONFIDENCE[alertsData.data_quality] && (
             <span className="home-confidence" data-testid="home-confidence">
+              <Icon
+                name={alertsData.data_quality === "unsafe" ? "alert" : "check"}
+                className={`home-conf-icon conf-${alertsData.data_quality}`}
+              />
               {CONFIDENCE[alertsData.data_quality]}
             </span>
           )}

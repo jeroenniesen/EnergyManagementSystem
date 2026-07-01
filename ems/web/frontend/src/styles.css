@@ -1078,7 +1078,11 @@ body {
   box-shadow: 0 10px 34px rgba(15, 25, 55, 0.16);
 }
 .home-headline { font-size: 1.2rem; font-weight: 700; color: var(--text); letter-spacing: -0.01em; }
-.home-confidence { color: var(--muted); font-size: 0.8rem; }
+.home-confidence { color: var(--muted); font-size: 0.8rem; display: inline-flex; align-items: center; gap: 6px; }
+.home-conf-icon { flex: none; }
+.conf-complete { color: var(--green-text); }
+.conf-degraded, .conf-price_fallback { color: var(--amber-text); }
+.conf-unsafe { color: var(--error); }
 .home-good { border-color: color-mix(in srgb, var(--accent) 55%, transparent); }
 .home-watching { border-color: color-mix(in srgb, var(--winter) 55%, transparent); }
 .home-controlling { border-color: color-mix(in srgb, #e0a23a 60%, transparent); }
