@@ -73,7 +73,8 @@ def test_import_price_slots_aligns_hourly_prices_and_ignores_export():
     end = start + timedelta(hours=2)
     raw = [
         {"ts": start.isoformat(), "grid_power_w": 2000},  # import 0.5 kWh in the 00:00 slot
-        {"ts": (start + timedelta(hours=1)).isoformat(), "grid_power_w": -1000},  # export → 0 import
+        # the 01:00 slot exports (negative grid) → counts as 0 import:
+        {"ts": (start + timedelta(hours=1)).isoformat(), "grid_power_w": -1000},
     ]
     prices = [_P(start, 0.10), _P(start + timedelta(hours=1), 0.30)]  # hourly, coarser than 15-min
     slots = _import_price_slots(raw, prices, start, end)
