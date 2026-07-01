@@ -42,9 +42,16 @@ Prepare the planner for net-metering (saldering) ending 1 Jan 2027: self-consump
 The insights design spec promised trend spark-lines in v1 — verify they actually ship, and add period-over-period comparison ("3 points better than last week") to the score tiles and Insights headline. This is the heart of quiet motivation: progress you can watch.
 **Done when:** each score tile shows a trend spark + a truthful comparison line; empty-history states degrade gracefully.
 
+### B-30 · Valley-aware charge scheduling in the winter planner — Bug · S · **P1** · €/Trust
+Found live 2026-07-02: `plan_rule_based` only shops for charge slots **before the first profitable peak** in the horizon (`rule_based.py:84-107`). Replanned mid-peak (evening/post-midnight), that window is empty → zero charge slots, even with a computed ~2 kWh shortfall and a profitable €0.135 valley before the *next* evening peak (margin ~€0.07–0.09/kWh after losses+wear+risk). `plan_adaptive` already shops before the *last* needed discharge slot — align `rule_based` with it. Related, mitigated by 5-min replans but document: sizing counts current SoC as available for tomorrow's peak, ignoring interim self-consumption drain; the "under-charge" log warning fires spuriously when the window is empty mid-peak.
+**Done when:** a plan generated during an active peak schedules top-up in a later valley when profitable; regression test with a two-peak/valley price day; dry-run comparison before enabling live.
+
 ---
 
 ## NEXT — deepen motivation and CO₂ honesty
+
+### B-31 · Don't render "no top-up" as both comfort and warning — UX · S · Trust
+The story can show the trust marker "✓ No grid top-up needed" directly beside the verdict "⚠ Short of the 88% target with no grid top-up planned" — the same fact as reassurance and as a problem. Suppress the marker when the on-track verdict is `behind` (`api.py` `_trust_markers`/`_on_track`).
 
 ### B-07 · Weekly recap — Feature + UX · M · Motivation
 "Your week in energy": best day, the three scores with deltas, € saved, one concrete improvement suggestion. In-app (web + iOS), quiet tone. This defines which moments would ever deserve a push notification (B-20).
