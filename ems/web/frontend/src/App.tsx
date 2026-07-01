@@ -22,6 +22,7 @@ import { AiValidationCard } from "./AiValidationCard";
 import { AuditView } from "./AuditView";
 import { ChatPanel } from "./ChatPanel";
 import { SystemView } from "./System";
+import { Insights } from "./Insights";
 import { applyTheme, readStoredTheme, storeTheme, type Theme } from "./theme";
 
 type Status = {
@@ -233,7 +234,7 @@ export function App() {
   const [savings, setSavings] = useState<number | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [view, setView] =
-    useState<"dashboard" | "chat" | "audit" | "settings" | "system">("dashboard");
+    useState<"dashboard" | "insights" | "chat" | "audit" | "settings" | "system">("dashboard");
   // Seed from the localStorage cache so the first paint matches the saved theme (no flash);
   // the fetch below reconciles with the server's canonical value.
   const [theme, setTheme] = useState<Theme>(readStoredTheme);
@@ -377,6 +378,14 @@ export function App() {
             Dashboard
           </button>
           <button
+            className={`nav-btn${view === "insights" ? " nav-active" : ""}`}
+            onClick={() => setView("insights")}
+            data-testid="nav-insights"
+            aria-current={view === "insights" ? "page" : undefined}
+          >
+            Insights
+          </button>
+          <button
             className={`nav-btn${view === "chat" ? " nav-active" : ""}`}
             onClick={() => setView("chat")}
             data-testid="nav-chat"
@@ -451,6 +460,8 @@ export function App() {
       {view === "settings" && (
         <Settings onSaved={(v) => setTheme((v["ui.theme"] as Theme) ?? "auto")} />
       )}
+
+      {view === "insights" && <Insights />}
 
       {view === "chat" && <ChatPanel />}
 
