@@ -5,6 +5,7 @@
 import { useEffect, useState } from "react";
 
 import { ScoreRing } from "./ScoreRing";
+import { homeSummary, scoreCaption } from "./scoreCopy";
 
 type Score = { key: string; label: string; value: number | null; explanation: string };
 type Report = { partial: boolean; flows: { has_data: boolean }; scores: Score[] };
@@ -29,12 +30,28 @@ export function HomeScores({ onOpenDetail }: { onOpenDetail: () => void }) {
 
   if (!report || !report.flows?.has_data) return null;
 
+  const summary = homeSummary(report.scores);
+
   return (
     <section className="home-scores" data-testid="home-scores" aria-label="Today's energy scores">
       <div className="home-scores-head">
-        <span className="home-scores-title">
-          Today{report.partial ? " so far" : ""}
-        </span>
+        <div className="home-scores-heading">
+          <span className="home-scores-title">Today{report.partial ? " so far" : ""}</span>
+          {summary && (
+            <span
+              className={`home-scores-summary tone-${summary.tone}`}
+              data-testid="home-scores-summary"
+              data-tone={summary.tone}
+            >
+              {summary.tone === "great" && (
+                <span className="home-scores-spark" aria-hidden="true">
+                  ☀️
+                </span>
+              )}
+              {summary.text}
+            </span>
+          )}
+        </div>
         <button
           type="button"
           className="home-scores-more"
@@ -50,6 +67,7 @@ export function HomeScores({ onOpenDetail }: { onOpenDetail: () => void }) {
             key={s.key}
             value={s.value}
             label={s.label}
+            caption={scoreCaption(s.key, s.value)}
             hint={s.explanation}
             onClick={onOpenDetail}
             testId={`ring-${s.key}`}

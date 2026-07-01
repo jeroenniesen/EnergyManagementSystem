@@ -1172,11 +1172,22 @@ body {
   padding: 18px 18px 22px; box-shadow: var(--shadow); margin-bottom: 20px;
 }
 .home-scores-head {
-  display: flex; align-items: baseline; justify-content: space-between; margin-bottom: 10px;
+  display: flex; align-items: flex-start; justify-content: space-between; gap: 12px;
+  margin-bottom: 12px;
 }
+.home-scores-heading { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
 .home-scores-title {
-  font-size: 0.9rem; font-weight: 600; color: var(--muted); letter-spacing: 0.01em;
+  font-size: 0.82rem; font-weight: 600; color: var(--muted); letter-spacing: 0.02em;
+  text-transform: uppercase;
 }
+.home-scores-summary {
+  display: inline-flex; align-items: center; gap: 6px;
+  font-size: 1.02rem; font-weight: 650; line-height: 1.25; letter-spacing: -0.01em;
+}
+.home-scores-summary.tone-great { color: var(--green-text); }
+.home-scores-summary.tone-good { color: var(--text); }
+.home-scores-summary.tone-grow { color: var(--amber-text); }
+.home-scores-spark { font-size: 0.95em; }
 .home-scores-more {
   border: none; background: transparent; color: var(--accent-text);
   font-size: 0.82rem; font-weight: 600; cursor: pointer; padding: 2px 4px;
@@ -1207,13 +1218,19 @@ body {
   font-size: 0.72rem; color: var(--muted); font-weight: 500;
   max-width: 94px; text-align: center; line-height: 1.15;
 }
-.ring-caption { font-size: 0.72rem; color: var(--muted); max-width: 132px; text-align: center; }
+.ring-caption {
+  font-size: 0.74rem; font-weight: 500; color: var(--muted);
+  max-width: 124px; text-align: center; line-height: 1.2;
+}
 .ring-good .ring-arc { stroke: var(--green); }
 .ring-good .ring-value { color: var(--green-text); }
+.ring-good .ring-caption { color: var(--green-text); }
 .ring-ok .ring-arc { stroke: var(--amber); }
 .ring-ok .ring-value { color: var(--amber-text); }
+.ring-ok .ring-caption { color: var(--amber-text); }
 .ring-low .ring-arc { stroke: var(--error); }
 .ring-low .ring-value { color: var(--error); }
+.ring-low .ring-caption { color: var(--error); }
 .ring-na .ring-arc { stroke: var(--muted); }
 .ring-na .ring-value { color: var(--muted); }
 @media (prefers-reduced-motion: reduce) {

@@ -60,9 +60,34 @@ test.describe("Insights", () => {
     await expect(page.getByTestId("ring-co2")).toBeVisible();
     await expect(page.getByTestId("ring-best_price")).toBeVisible();
     await expect(page.getByTestId("ring-co2")).toContainText("60"); // the score value in the ring
+    // The reflective layer: a warm day summary + a band-aware caption under each ring.
+    const summary = page.getByTestId("home-scores-summary");
+    await expect(summary).toHaveAttribute("data-tone", "good"); // 80/60/75 → solid, not brilliant
+    await expect(summary).toContainText("solid energy day");
+    await expect(page.getByTestId("ring-self_consumption")).toContainText("Mostly your own sun");
+    await expect(page.getByTestId("ring-co2")).toContainText("Cleaner than the grid");
     // Tapping a ring opens the Insights tab.
     await page.getByTestId("ring-self_consumption").click();
     await expect(page.getByTestId("insights")).toBeVisible();
+  });
+
+  test("a clean day is celebrated (all scores high → a brilliant-day summary)", async ({ page }) => {
+    await page.route("**/api/report**", (route) =>
+      route.fulfill({
+        status: 200, contentType: "application/json",
+        body: JSON.stringify({
+          ...REPORT,
+          scores: REPORT.scores.map((s) => ({ ...s, value: 90 })),
+        }),
+      }),
+    );
+    await page.goto("/");
+    const summary = page.getByTestId("home-scores-summary");
+    await expect(summary).toHaveAttribute("data-tone", "great");
+    await expect(summary).toContainText("brilliant day");
+    // Every ring reads as a win.
+    await expect(page.getByTestId("ring-self_consumption")).toContainText("Mostly your own sun");
+    await expect(page.getByTestId("ring-best_price")).toContainText("Bought at the right times");
   });
 
   test("the period picker switches windows", async ({ page }) => {
