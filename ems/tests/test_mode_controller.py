@@ -241,6 +241,26 @@ def test_manual_override_still_idempotent_no_double_write():
     assert dec.outcome == "idempotent"
 
 
+def test_priority_safety_hold_bypasses_daily_cap():
+    # A safety hold (car-guard, priority=True) must apply even with the daily cap exhausted — the
+    # live bug: a capped IDLE left the battery self-consuming into a 10 kW car. HOLD_RESERVE → IDLE.
+    d = MockBatteryDriver()  # starts AUTO
+    ctl = ModeController(d, _controlling_lifecycle(), dry_run=False, max_switches_per_day=0)
+    dec = ctl.decide(BatteryIntent.HOLD_RESERVE, T0 + timedelta(seconds=200), priority=True)
+    assert dec.outcome == "applied"
+    assert d.current_mode() is PhysicalMode.IDLE
+
+
+def test_priority_safety_hold_bypasses_min_dwell():
+    d = MockBatteryDriver()
+    ctl = ModeController(d, _controlling_lifecycle(), dry_run=False, min_dwell_seconds=600)
+    t1 = T0 + timedelta(seconds=200)
+    ctl.last_switch_at = t1  # a recent switch
+    dec = ctl.decide(BatteryIntent.HOLD_RESERVE, t1 + timedelta(seconds=60), priority=True)
+    assert dec.outcome == "applied"  # within dwell, but a safety hold isn't gated
+    assert d.current_mode() is PhysicalMode.IDLE
+
+
 def test_automatic_switch_is_still_capped():
     # Regression guard: WITHOUT manual, the daily cap still limits the automatic planner.
     d = MockBatteryDriver()

@@ -1091,10 +1091,13 @@ def create_app(
             return []
         # decide() uses `observed` for the idempotency gate; its post-write CONFIRM re-reads the
         # device fresh, so a stale observation only risks a redundant idempotent write. `manual` (an
-        # active operator override) lets decide() bypass the automatic dwell/cap gates — the
-        # operator asked for it explicitly (a return to AUTO is always allowed too; see _gate).
+        # active operator override) and `priority` (a SAFETY action — the car-guard hold while the
+        # car charges) bypass the automatic dwell/cap gates: never leave the battery draining into
+        # the car just because today's switch budget is spent (a return to AUTO is always allowed
+        # too; see _gate).
+        priority = _car_charging(now)
         dec = controller.decide(intent, now, target_soc=tgt, power_w=pw,
-                                observed_mode=observed, manual=override_active)
+                                observed_mode=observed, manual=override_active, priority=priority)
         records: list[dict] = []
         if dec.outcome in ("applied", "failed_recovered", "failed_unrecovered"):
             # An ACTUAL device write — audit it. `accepted` = the device acknowledged the command
@@ -1259,7 +1262,8 @@ def create_app(
         if intent is not None and controller is not None:
             outcome = controller.preview(intent, now, target_soc=tgt, power_w=pw,
                                          observed_mode=_current_mode(now),
-                                         manual=override_active).outcome
+                                         manual=override_active,
+                                         priority=_car_charging(now)).outcome
         alerts = derive_alerts(snap, dry_run=dry_run, decision_outcome=outcome)
         out = [{"key": a.key, "severity": a.severity, "message": a.message} for a in alerts]
         if override_active:
@@ -1306,7 +1310,8 @@ def create_app(
             # preview() is read-only — a GET must never write to the battery or mutate counters.
             # Pass the coalesced observed mode so this poll doesn't read battery mode every cycle.
             d = controller.preview(intent, now, target_soc=tgt, power_w=pw,
-                                   observed_mode=_current_mode(now), manual=override_active)
+                                   observed_mode=_current_mode(now), manual=override_active,
+                                   priority=car_charging)
             home = home_state(
                 _readiness(now), intent=str(d.intent), override_active=override_active,
                 simulated=dev_mode != "live",
