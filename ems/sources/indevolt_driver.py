@@ -79,12 +79,16 @@ def make_setdata_post(ip: str, port: int = 8080, timeout: float = 8.0) -> SetDat
 
 
 def setdata_writes(
-    mode: PhysicalMode, *, power_w: int = 2000, target_soc: int | None = None
+    mode: PhysicalMode, *, power_w: int = 2000, target_soc: int | None = None,
+    max_power_w: int = _MAX_POWER_W,
 ) -> list[tuple[int, list[int]]]:
     """Ordered (point, [values]) SetData writes to command `mode` (SPEC api-reference §).
 
     `target_soc` is REQUIRED for CHARGE/DISCHARGE and has no default — a missing target is a
-    programming error, never silently "charge to 100%" (energy review #3). AUTO/IDLE ignore it."""
+    programming error, never silently "charge to 100%" (energy review #3). AUTO/IDLE ignore it.
+    `max_power_w` caps the power setpoint: per-device (2400 W) for a single unit, but the CLUSTER
+    total (n × 2400) when commanding the master, which coordinates the whole cluster (verified
+    live: the master accepts 4000 W and drives ~3.7 kW across two towers)."""
     if mode is PhysicalMode.AUTO:
         return [(P_MODE, [_MODE_SELF])]  # vendor self-consumption (P1-zeroing)
     if mode is PhysicalMode.IDLE:
@@ -93,7 +97,7 @@ def setdata_writes(
         if target_soc is None:
             raise ValueError(f"{mode} requires an explicit target_soc (no default-to-full)")
         state = _W_CHARGE if mode is PhysicalMode.CHARGE else _W_DISCHARGE
-        power = max(_MIN_POWER_W, min(_MAX_POWER_W, int(power_w)))
+        power = max(_MIN_POWER_W, min(int(max_power_w), int(power_w)))
         soc = max(_MIN_SOC, min(100, int(target_soc)))
         # Separate single-value writes (the working HA form): real-time mode, then power + SoC, then
         # the state LAST (it triggers the action with power/SoC already in place).
@@ -213,11 +217,16 @@ class IndevoltBatteryDriver:
         Refuses (returns False, no write) unless armed, AND refuses a CHARGE/DISCHARGE with no
         target_soc — it will NEVER default to charging to full (energy review #3/#4).
 
-        The command is written to EVERY tower (master + slaves) because the cluster does not relay
-        real-time-control to slaves; `power_w` is the CLUSTER figure and is split evenly across the
-        towers (each clamped to the device limits in setdata_writes).
+        CLUSTER MODEL (verified live): an Indevolt cluster is driven by the MASTER — it coordinates
+        the slaves in lockstep. A real-time command (CHARGE/DISCHARGE/IDLE) is written to the MASTER
+        ONLY, with the FULL cluster power (`power_w` is the cluster total, NOT split): the master
+        distributes it and the slaves follow (a slave keeps REPORTING self-consumption, 7101=1,
+        while it charges — that is normal, not a fault). Writing a real-time state to a slave
+        directly BREAKS the master's coordination (the towers fight — one charges, one discharges).
+        AUTO (return to safe self-consumption) IS written to every tower, to guarantee the whole
+        cluster drops back to the vendor mode.
 
-        Returns True when EVERY tower ACCEPTED every write (each SetData returned result:true).
+        Returns True when EVERY commanded tower ACCEPTED every write (each SetData returned true).
         Returns False ONLY on a genuine device REJECTION (a write returned result:false) or a
         missing transport — the controller then falls back to AUTO. RAISES BatteryWriteUnconfirmed
         when a write times out / the transport fails after retries: that is NOT a rejection (the
@@ -237,18 +246,22 @@ class IndevoltBatteryDriver:
             _log.warning("apply(%s) refused — no write transport configured", mode)
             return False
         total_power = int(power_w) if power_w is not None else self.charge_power_w
-        # Split the cluster's requested power evenly across towers so the total matches the plan;
-        # setdata_writes clamps each tower to the device limits (50–2400 W).
-        per_tower_power = max(1, total_power // max(1, len(self.ips)))
+        # The cluster total can be up to n_towers × the per-device max; the master accepts it and
+        # distributes. Don't split — the master's setpoint IS the cluster figure.
+        cluster_max = len(self.ips) * _MAX_POWER_W
+        total_power = max(_MIN_POWER_W, min(cluster_max, total_power))
         soc = int(target_soc) if target_soc is not None else None
-        # A transport failure on the FIRST write aborts (raises) before the rest — bounding the
-        # worst case to ~one write's retries, not all 8 writes × the timeout.
-        for tower_ip in self.ips:
+        # Real-time modes → MASTER only (it drives the cluster). AUTO → every tower (guarantee the
+        # whole cluster returns to safe self-consumption). A transport failure on the first write
+        # aborts (raises) before the rest — bounding the worst case to ~one write's retries.
+        targets = self.ips if mode is PhysicalMode.AUTO else self.ips[:1]
+        for tower_ip in targets:
             post = self._posts.get(tower_ip, _refusing_post)
-            for point, values in setdata_writes(mode, power_w=per_tower_power, target_soc=soc):
+            for point, values in setdata_writes(mode, power_w=total_power, target_soc=soc,
+                                                max_power_w=cluster_max):
                 resp = self._post_with_retry(post, point, values, tower_ip)
                 if not (isinstance(resp, dict) and resp.get("result")):
                     _log.error("Indevolt SetData %s %s=%s rejected: %s",
                                tower_ip, point, values, resp)
                     return False  # genuine device rejection → caller reverts to AUTO
-        return True  # accepted by all towers; the control loop confirms the mode took (latency)
+        return True  # accepted; the control loop confirms the mode took (latency)

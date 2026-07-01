@@ -54,7 +54,10 @@ def build_app():
         build_wiring(eff, tz, cache_store=cache_store)
     )
     recorder = Recorder(source, store, freshness, cycle_seconds=cfg.cycle_seconds)
-    lifecycle = Lifecycle(dry_run=dry_run)
+    # Startup grace (observe-before-act) is 120s by default; EMS_STARTUP_GRACE_SECONDS lets a
+    # debug/test run reach CONTROLLING quickly without waiting two minutes.
+    _grace = float(os.environ.get("EMS_STARTUP_GRACE_SECONDS") or 120)
+    lifecycle = Lifecycle(dry_run=dry_run, startup_grace_seconds=_grace)
     # Persist the controller's safety counters/dwell/last-action across restarts (SPEC §13.3) so a
     # reboot doesn't reset the daily switch cap or min-dwell, then reload them.
     control_state_store = ControlStateStore(str(db_path))

@@ -120,38 +120,50 @@ def test_apply_false_when_a_write_is_rejected():
     assert _driver(Rejects()).apply(PhysicalMode.CHARGE, target_soc=90) is False
 
 
-def test_apply_commands_every_tower_with_power_split():
-    # Cluster of 2: the command must reach BOTH towers (a slave does NOT follow the master), and the
-    # cluster power is split across them (each then clamped to device limits in setdata_writes).
-    writes: dict[str, list] = {}
-
+def _recording_factory(writes: dict[str, list]):
     def factory(ip):
         def post(point, values):
             writes.setdefault(ip, []).append((point, values))
             return {"result": True}
         return post
+    return factory
 
+
+def test_charge_commands_master_only_with_full_cluster_power():
+    # Verified-live cluster model: a real-time charge goes to the MASTER ONLY (it drives the slaves
+    # in lockstep), and the power is the FULL cluster figure — NOT split. Commanding a slave's
+    # real-time state directly breaks the master's coordination (the towers fight).
+    writes: dict[str, list] = {}
     drv = IndevoltBatteryDriver("10.0.0.1", armed=True, extra_ips=["10.0.0.2"],
-                                post_factory=factory, reader=FakeIndevolt())
-    assert drv.apply(PhysicalMode.CHARGE, target_soc=90, power_w=2000) is True
-    assert set(writes) == {"10.0.0.1", "10.0.0.2"}  # both towers commanded
-    # 2000 W cluster split → 1000 W/tower; each gets the full real-time sequence ending in state.
-    for ip in ("10.0.0.1", "10.0.0.2"):
-        assert (47016, [1000]) in writes[ip]
-        assert writes[ip][0] == (47005, [4]) and writes[ip][-1] == (47015, [1])
+                                post_factory=_recording_factory(writes), reader=FakeIndevolt())
+    assert drv.apply(PhysicalMode.CHARGE, target_soc=90, power_w=4000) is True
+    assert set(writes) == {"10.0.0.1"}  # MASTER only — the slave is NOT commanded
+    assert (47016, [4000]) in writes["10.0.0.1"]  # full cluster power (cluster max = 2×2400)
+    assert writes["10.0.0.1"][0] == (47005, [4]) and writes["10.0.0.1"][-1] == (47015, [1])
 
 
-def test_apply_false_if_any_tower_rejects():
-    # If ANY tower rejects, apply() fails so the controller falls back to AUTO — never leaves a
-    # half-commanded cluster (master charging, slave self-consuming).
+def test_auto_commands_every_tower():
+    # AUTO (return to safe self-consumption) IS written to every tower, to guarantee the whole
+    # cluster drops back to the vendor mode (belt-and-suspenders fail-safe).
+    writes: dict[str, list] = {}
+    drv = IndevoltBatteryDriver("10.0.0.1", armed=True, extra_ips=["10.0.0.2"],
+                                post_factory=_recording_factory(writes), reader=FakeIndevolt())
+    assert drv.apply(PhysicalMode.AUTO) is True
+    assert set(writes) == {"10.0.0.1", "10.0.0.2"}  # every tower
+    for ip in writes:
+        assert writes[ip] == [(47005, [1])]
+
+
+def test_apply_false_if_master_rejects_charge():
+    # A genuine rejection by the master fails the write so the controller falls back to AUTO.
     def factory(ip):
         def post(point, values):
-            return {"result": ip == "10.0.0.1"}  # the slave (.2) rejects every write
+            return {"result": ip != "10.0.0.1"}  # the MASTER (.1) rejects
         return post
 
     drv = IndevoltBatteryDriver("10.0.0.1", armed=True, extra_ips=["10.0.0.2"],
                                 post_factory=factory, reader=FakeIndevolt())
-    assert drv.apply(PhysicalMode.CHARGE, target_soc=90, power_w=2000) is False
+    assert drv.apply(PhysicalMode.CHARGE, target_soc=90, power_w=4000) is False
 
 
 def test_duplicate_tower_ip_is_commanded_once():

@@ -924,9 +924,13 @@ def create_app(
             # self-consumption fall through with no target, which is correct.)
             if intent is BatteryIntent.GRID_CHARGE_TO_TARGET:
                 target_soc = 100.0
+                # "charge now" = charge at the configured cluster max (default 4 kW), which the
+                # driver then splits across towers — not the driver's conservative 2 kW default.
+                power_w = settings_cache["battery.max_charge_w"]
             elif (intent is BatteryIntent.DISCHARGE_FOR_LOAD and controller is not None
                   and controller.allow_export_discharge):
                 target_soc = settings_cache["battery.min_reserve_soc"]
+                power_w = settings_cache["battery.max_discharge_w"]
         elif cur is not None and intent is cur.intent:
             if intent is BatteryIntent.GRID_CHARGE_TO_TARGET:
                 target_soc, power_w = cur.target_soc, cur.power_w
@@ -1014,15 +1018,27 @@ def create_app(
         return validation_box["latest"]
 
     def _cluster_drift_record(desired: PhysicalMode, towers) -> dict | None:
-        """Deduped audit record when the cluster doesn't match the commanded mode FAMILY — i.e. a
-        tower (typically a slave) that didn't follow the master, which would otherwise silently keep
-        discharging into the house/car. Returns a record once when drift starts and once when it
-        clears; None while unchanged. towers = the coalesced per-tower read (steady-state)."""
+        """Deduped audit record when the cluster doesn't match the commanded mode FAMILY. Returns a
+        record once when drift starts and once when it clears; None while unchanged. towers = the
+        coalesced per-tower read (steady-state).
+
+        CLUSTER MODEL (asymmetric, verified live): the EMS commands the MASTER for real-time, which
+        drives the slaves in lockstep — a following slave keeps REPORTING self-consumption (7101=1)
+        even while it charges. So:
+        - Commanded REAL-TIME (charge/discharge/idle): judge the MASTER only (it reflects the mode);
+          a slave in self-consumption is FOLLOWING, not a fault — judging it falsely flagged it.
+        - Commanded SELF-CONSUMPTION (AUTO): every tower is commanded and must return to it, so flag
+          ANY tower still stuck in real-time (the genuine "didn't revert" fault)."""
         if not towers:
             return None
         want = _commanded_family(desired)
-        laggards = [t for t in towers
-                    if t.online and t.mode and _tower_family(t.mode) not in (want, None)]
+        if want == "self-consumption":
+            judged = [t for t in towers if t.online]  # all must have returned to self-consumption
+        else:
+            masters = [t for t in towers if t.online and t.role == "master"]
+            judged = masters or [t for t in towers if t.online]  # master drives real-time
+        laggards = [t for t in judged
+                    if t.mode and _tower_family(t.mode) not in (want, None)]
         sig = tuple(sorted((t.ip, t.mode) for t in laggards))
         if sig == _drift_box["sig"]:
             return None  # already reported this exact state
