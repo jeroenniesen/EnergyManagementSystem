@@ -34,7 +34,7 @@ function phaseAt(now: Date, sunrise: Date | null, sunset: Date | null): Phase {
   return "day";
 }
 
-export function SkyBackdrop() {
+export function SkyBackdrop({ compact = false }: { compact?: boolean }) {
   const [sky, setSky] = useState<Sky | null>(null);
   const [, setTick] = useState(0);
 
@@ -64,7 +64,7 @@ export function SkyBackdrop() {
 
   return (
     <div
-      className={`sky sky-${phase}`}
+      className={`sky sky-${phase}${compact ? " sky-compact" : ""}`}
       data-testid="sky"
       data-phase={phase}
       aria-hidden="true"

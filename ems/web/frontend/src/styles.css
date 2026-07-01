@@ -81,6 +81,9 @@ body {
   background-position: center 44%;
   background-repeat: no-repeat;
 }
+/* Non-dashboard views get a shorter header strip so their content sits legibly on the page, not
+   over the illustration (the full landscape hero is a dashboard feature, per the design). */
+.sky-compact { height: clamp(118px, 14vw, 172px); background-position: center 38%; }
 /* Melt the illustration's lower edge into the page beneath it (no hard seam under the hero cards). */
 .sky::after {
   content: "";
@@ -1054,21 +1057,23 @@ body {
 .footer { border-top: 1px solid var(--line); padding-top: 16px; }
 
 /* Home-state banner: the first thing read — safe / watching / controlling / needs-attention. */
+/* Frosted-glass banner so the dark headline stays legible over ANY landscape (bright day or dark
+   night), in both themes. The tint adapts via --panel; a tone-coloured border carries the state. */
 .home-banner {
   display: flex; flex-wrap: wrap; align-items: baseline; gap: 10px 14px;
-  padding: 14px 18px; border-radius: 14px; margin: 4px 0 14px;
-  border: 1px solid var(--border);
+  padding: 15px 20px; border-radius: 16px; margin: 4px 0 16px;
+  background: color-mix(in srgb, var(--panel) 78%, transparent);
+  -webkit-backdrop-filter: blur(16px) saturate(1.1);
+  backdrop-filter: blur(16px) saturate(1.1);
+  border: 1px solid color-mix(in srgb, var(--panel) 60%, transparent);
+  box-shadow: 0 10px 34px rgba(15, 25, 55, 0.16);
 }
-.home-headline { font-size: 1.15rem; font-weight: 650; }
+.home-headline { font-size: 1.2rem; font-weight: 700; color: var(--text); letter-spacing: -0.01em; }
 .home-confidence { color: var(--muted); font-size: 0.8rem; }
-.home-good { background: color-mix(in srgb, var(--accent) 12%, transparent);
-  border-color: color-mix(in srgb, var(--accent) 40%, transparent); }
-.home-watching { background: color-mix(in srgb, var(--winter) 12%, transparent);
-  border-color: color-mix(in srgb, var(--winter) 40%, transparent); }
-.home-controlling { background: color-mix(in srgb, #e0a23a 14%, transparent);
-  border-color: color-mix(in srgb, #e0a23a 45%, transparent); }
-.home-attention { background: rgba(220, 80, 80, 0.12);
-  border-color: rgba(220, 80, 80, 0.4); }
+.home-good { border-color: color-mix(in srgb, var(--accent) 55%, transparent); }
+.home-watching { border-color: color-mix(in srgb, var(--winter) 55%, transparent); }
+.home-controlling { border-color: color-mix(in srgb, #e0a23a 60%, transparent); }
+.home-attention { border-color: rgba(220, 80, 80, 0.55); }
 .decision-target { color: var(--muted); }
 .strategy-why { color: var(--muted); font-size: 0.8rem; margin: 6px 0 0; font-style: italic; }
 /* Quiet success markers in the Energy Story — calm confirmation, deliberately understated. */

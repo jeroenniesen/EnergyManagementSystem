@@ -339,7 +339,7 @@ export function App() {
 
   return (
     <>
-      <SkyBackdrop />
+      <SkyBackdrop compact={view !== "dashboard"} />
       <div className="app">
       <header className="topbar">
         <h1>Smart Energy Manager</h1>
