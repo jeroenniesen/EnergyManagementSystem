@@ -13,6 +13,15 @@ from typing import Protocol
 
 from ems.domain import BatteryIntent, CapabilityReport, PhysicalMode
 
+
+class BatteryWriteUnconfirmed(Exception):
+    """A write could NOT be confirmed because the device was slow/unreachable (transport timeout),
+    as opposed to genuinely REJECTING the command (result:false). The two must be handled
+    differently: a rejection means fall back to AUTO; a transport timeout means the write was very
+    likely received (the device switches with latency) — so DON'T revert (the revert write would
+    also time out and leave the cluster in a half-known state, alerting), just hold and re-verify
+    next cycle. Raised by a real driver's apply(); never for a clean accept or a clean rejection."""
+
 _INTENT_TO_MODE: dict[BatteryIntent, PhysicalMode] = {
     BatteryIntent.ALLOW_SELF_CONSUMPTION: PhysicalMode.AUTO,
     BatteryIntent.GRID_CHARGE_TO_TARGET: PhysicalMode.CHARGE,

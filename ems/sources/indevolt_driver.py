@@ -14,9 +14,11 @@ the live device. The read side reuses the read-only IndevoltReadClient.
 from __future__ import annotations
 
 import logging
+import time
 from collections.abc import Callable, Sequence
 
 from ems.domain import CapabilityReport, PhysicalMode
+from ems.sources.battery import BatteryWriteUnconfirmed
 from ems.sources.indevolt import (
     K_CAPACITY,
     K_METER_CONN,
@@ -55,7 +57,7 @@ def _refusing_post(point: int, values: list[int]) -> object:
     )
 
 
-def make_setdata_post(ip: str, port: int = 8080, timeout: float = 4.0) -> SetDataPost:
+def make_setdata_post(ip: str, port: int = 8080, timeout: float = 8.0) -> SetDataPost:
     """Build a REAL SetData write transport (point, [values]) -> response, matching the official
     integration: POST /rpc/Indevolt.SetData?config={"f":16,"t":<point>,"v":[<values>]}.
 
@@ -131,6 +133,8 @@ class IndevoltBatteryDriver:
         post_factory: Callable[[str], SetDataPost] | None = None,
         extra_ips: Sequence[str] = (),
         timeout: float = 4.0,
+        write_attempts: int = 2,
+        write_retry_backoff: float = 0.5,
     ) -> None:
         self.ip = ip
         # Master first, then any slave towers; de-duped, blanks dropped. Reads still come from the
@@ -144,8 +148,13 @@ class IndevoltBatteryDriver:
         self._armed = armed  # read-only: no setter, so it can't be flipped after construction
         self.charge_power_w = charge_power_w
         self.reader = reader or IndevoltReadClient(ip, port=port, timeout=timeout)
+        # The device is slow under shared load (HA + app + cluster) and intermittently times out;
+        # retry a write a couple times so a transient slow response doesn't false-fail it.
+        self._write_attempts = max(1, int(write_attempts))
+        self._write_retry_backoff = max(0.0, float(write_retry_backoff))
         # One SetData transport per tower. post_factory(ip) builds a real per-tower transport in
         # production; rpc_post (if given) is reused for ALL towers (test injection); else refusing.
+        self._has_transport = post_factory is not None or rpc_post is not None
         if post_factory is not None:
             self._posts = {a: post_factory(a) for a in self.ips}
         else:
@@ -174,6 +183,28 @@ class IndevoltBatteryDriver:
     def current_mode(self) -> PhysicalMode:
         return mode_from_data(self.reader.read_keys([K_MODE, K_STATE]))
 
+    def _post_with_retry(self, post: SetDataPost, point: int, values: list[int],
+                         tower_ip: str) -> object:
+        """POST one SetData write, retrying on a transport error (timeout/connection) — the device
+        is slow under shared load. Returns the device's response on success (a dict — caller checks
+        result:true). After exhausting attempts on a transport error, raises BatteryWriteUnconfirmed
+        so the caller can HOLD rather than revert (the write was likely received; the device is just
+        slow)."""
+        last_exc: Exception | None = None
+        for attempt in range(self._write_attempts):
+            try:
+                return post(point, values)
+            except Exception as exc:  # transport (httpx timeout/connect) — not a device rejection
+                last_exc = exc
+                _log.warning("Indevolt SetData %s %s=%s attempt %d/%d failed: %s",
+                             tower_ip, point, values, attempt + 1, self._write_attempts, exc)
+                if attempt + 1 < self._write_attempts and self._write_retry_backoff:
+                    time.sleep(self._write_retry_backoff * (attempt + 1))
+        raise BatteryWriteUnconfirmed(
+            f"SetData to {tower_ip} {point}={values} unconfirmed after "
+            f"{self._write_attempts} attempts: {last_exc}"
+        ) from last_exc
+
     def apply(
         self, mode: PhysicalMode, *, target_soc: float | None = None,
         power_w: float | None = None,
@@ -186,35 +217,38 @@ class IndevoltBatteryDriver:
         real-time-control to slaves; `power_w` is the CLUSTER figure and is split evenly across the
         towers (each clamped to the device limits in setdata_writes).
 
-        Returns True when EVERY tower ACCEPTED every write (each SetData returned result:true);
-        False if any write was REJECTED or the transport failed — so a partial cluster (e.g. master
-        charging, slave not) fails cleanly and the controller falls back to AUTO. CRITICAL: the
-        device applies a mode change with noticeable LATENCY (often many seconds), so we
-        deliberately do NOT re-read-and-fail here — that made the controller declare the write
-        "unconfirmed" and revert to AUTO before the switch landed, so the battery never charged. The
-        control loop verifies the real mode on its next cluster read and flags a tower that never
-        follows (SPEC §6.5)."""
+        Returns True when EVERY tower ACCEPTED every write (each SetData returned result:true).
+        Returns False ONLY on a genuine device REJECTION (a write returned result:false) or a
+        missing transport — the controller then falls back to AUTO. RAISES BatteryWriteUnconfirmed
+        when a write times out / the transport fails after retries: that is NOT a rejection (the
+        device is slow under shared load and very likely received the command), so the controller
+        must HOLD and re-verify next cycle rather than revert — reverting fires another write that
+        also times out, leaving a half-known cluster and an ALERT spiral (the live failure mode).
+        CRITICAL: the device applies a mode change with noticeable LATENCY, so we also do NOT
+        re-read-and-fail here; the control loop verifies the real mode on its next cluster read and
+        flags a tower that never follows (SPEC §6.5)."""
         if not self._armed:
             _log.warning("apply(%s) refused — driver not armed (read-only safety)", mode)
             return False
         if mode in (PhysicalMode.CHARGE, PhysicalMode.DISCHARGE) and target_soc is None:
             _log.warning("apply(%s) refused — no target SoC supplied (won't default to full)", mode)
             return False
+        if not self._has_transport:
+            _log.warning("apply(%s) refused — no write transport configured", mode)
+            return False
         total_power = int(power_w) if power_w is not None else self.charge_power_w
         # Split the cluster's requested power evenly across towers so the total matches the plan;
         # setdata_writes clamps each tower to the device limits (50–2400 W).
         per_tower_power = max(1, total_power // max(1, len(self.ips)))
         soc = int(target_soc) if target_soc is not None else None
-        try:
-            for tower_ip in self.ips:
-                post = self._posts.get(tower_ip, _refusing_post)
-                for point, values in setdata_writes(mode, power_w=per_tower_power, target_soc=soc):
-                    resp = post(point, values)
-                    if not (isinstance(resp, dict) and resp.get("result")):
-                        _log.error("Indevolt SetData %s %s=%s rejected: %s",
-                                   tower_ip, point, values, resp)
-                        return False
-        except Exception as exc:
-            _log.error("Indevolt SetData failed: %s", exc)
-            return False
+        # A transport failure on the FIRST write aborts (raises) before the rest — bounding the
+        # worst case to ~one write's retries, not all 8 writes × the timeout.
+        for tower_ip in self.ips:
+            post = self._posts.get(tower_ip, _refusing_post)
+            for point, values in setdata_writes(mode, power_w=per_tower_power, target_soc=soc):
+                resp = self._post_with_retry(post, point, values, tower_ip)
+                if not (isinstance(resp, dict) and resp.get("result")):
+                    _log.error("Indevolt SetData %s %s=%s rejected: %s",
+                               tower_ip, point, values, resp)
+                    return False  # genuine device rejection → caller reverts to AUTO
         return True  # accepted by all towers; the control loop confirms the mode took (latency)

@@ -3,7 +3,11 @@ from datetime import UTC, datetime, timedelta
 from ems.control.mode_controller import ModeController
 from ems.domain import BatteryIntent, PhysicalMode
 from ems.lifecycle import Lifecycle
-from ems.sources.battery import FailingMockBatteryDriver, MockBatteryDriver
+from ems.sources.battery import (
+    BatteryWriteUnconfirmed,
+    FailingMockBatteryDriver,
+    MockBatteryDriver,
+)
 
 T0 = datetime(2026, 6, 27, 10, 0, tzinfo=UTC)
 
@@ -86,6 +90,34 @@ def test_failed_apply_and_failed_recovery_is_flagged():
     dec = ctl.decide(BatteryIntent.GRID_CHARGE_TO_TARGET, T0 + timedelta(seconds=200))
     assert dec.outcome == "failed_unrecovered"
     assert dec.applied is False
+
+
+def test_transport_timeout_holds_and_does_not_revert_to_auto():
+    # A write that times out (BatteryWriteUnconfirmed) must NOT trigger the AUTO revert: the device
+    # is slow and very likely received the command. Reverting fires another write that also times
+    # out (the live ALERT spiral) and loses the charge. So: hold the intent, count it, retry later.
+    class TimingOutDriver(MockBatteryDriver):
+        def apply(self, mode, *, target_soc=None, power_w=None):
+            raise BatteryWriteUnconfirmed("timed out")
+
+    d = TimingOutDriver()
+    ctl = ModeController(d, _controlling_lifecycle(), dry_run=False)
+    dec = ctl.decide(BatteryIntent.GRID_CHARGE_TO_TARGET, T0 + timedelta(seconds=200),
+                     target_soc=100, manual=True)
+    assert dec.outcome == "unconfirmed"
+    assert dec.desired_mode is PhysicalMode.CHARGE   # NOT reverted to AUTO
+    assert ctl.switches_today == 1                    # counted so automatic retries are spaced
+    assert ctl.last_switch_at == T0 + timedelta(seconds=200)
+
+
+def test_genuine_rejection_still_reverts_to_auto():
+    # Regression guard: a genuine REJECTION (apply returns False, not a timeout) still reverts.
+    d = FailingMockBatteryDriver(fail_times=1)  # apply() returns False (rejection), never raises
+    ctl = ModeController(d, _controlling_lifecycle(), dry_run=False)
+    dec = ctl.decide(BatteryIntent.GRID_CHARGE_TO_TARGET, T0 + timedelta(seconds=200),
+                     target_soc=100, manual=True)
+    assert dec.outcome == "failed_recovered"
+    assert dec.desired_mode is PhysicalMode.AUTO
 
 
 def test_preview_never_writes_even_when_controlling():

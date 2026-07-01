@@ -1102,6 +1102,19 @@ def create_app(
             drift = _cluster_drift_record(dec.desired_mode, towers)
             if drift is not None:
                 records.append(drift)
+        elif dec.outcome == "unconfirmed":
+            # The write TIMED OUT (device slow/unreachable) — we did NOT revert (the device likely
+            # got it; reverting would also time out). Surface it (deduped) so a recurring "charge
+            # isn't sticking because the battery is slow to answer" is visible, not silent.
+            sig = (dec.outcome, dec.desired_mode.value)
+            if _held_box["sig"] != sig:
+                _held_box["sig"] = sig
+                records.append({
+                    "summary": (f"Battery {dec.desired_mode.value} unconfirmed — device slow to "
+                                "respond; holding and retrying (not reverting)"),
+                    "detail": {"desired_mode": dec.desired_mode.value, "intent": str(dec.intent),
+                               "outcome": dec.outcome, "reason": dec.reason,
+                               "override_active": override_active}})
         elif dec.outcome in ("dwell", "cap_reached", "not_controlling"):
             # A HELD decision: the EMS WANTED to switch but a guardrail blocked it. Never silent
             # (CLAUDE.md "explainability first — including why it is NOT acting"). Deduped so a

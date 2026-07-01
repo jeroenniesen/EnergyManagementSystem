@@ -149,7 +149,10 @@ def build_wiring(eff: dict, tz: ZoneInfo, cache_store: object | None = None):
             controller_driver = IndevoltBatteryDriver(
                 ip, port=port, armed=True,
                 extra_ips=tower_ips[1:],
-                post_factory=lambda a, _p=port: make_setdata_post(a, _p),
+                # Generous write timeout + retry: the device is slow under shared load (HA + app +
+                # cluster) and a too-tight timeout false-failed the charge, triggering the AUTO-
+                # revert spiral. A timeout now raises BatteryWriteUnconfirmed (hold, don't revert).
+                post_factory=lambda a, _p=port: make_setdata_post(a, _p, timeout=8.0),
             )
         elif ip:
             controller_driver = IndevoltBatteryDriver(ip, port=port, armed=False)

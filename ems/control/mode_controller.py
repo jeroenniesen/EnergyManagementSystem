@@ -16,7 +16,7 @@ from zoneinfo import ZoneInfo
 
 from ems.domain import BatteryIntent, PhysicalMode
 from ems.lifecycle import Lifecycle
-from ems.sources.battery import BatteryDriver, intent_to_mode
+from ems.sources.battery import BatteryDriver, BatteryWriteUnconfirmed, intent_to_mode
 
 
 def _mode_or_none(value: object) -> PhysicalMode | None:
@@ -35,7 +35,7 @@ class ActionDecision:
     desired_mode: PhysicalMode
     applied: bool
     # dry_run | not_controlling | idempotent | dwell | cap_reached | would_apply |
-    # applied | failed_recovered | failed_unrecovered
+    # applied | failed_recovered | failed_unrecovered | unconfirmed
     outcome: str
     reason: str
 
@@ -198,9 +198,27 @@ class ModeController:
             except Exception:
                 pass
         self.last_requested_action = desired
-        if not self.driver.apply(desired, target_soc=target_soc, power_w=power_w):
-            # Unconfirmed -> revert to the safe vendor mode (SPEC §6.5). Check recovery too.
-            recovered = self.driver.apply(PhysicalMode.AUTO)
+        try:
+            accepted = self.driver.apply(desired, target_soc=target_soc, power_w=power_w)
+        except BatteryWriteUnconfirmed as exc:
+            # The write TIMED OUT (device slow/unreachable) — NOT a rejection. Do NOT revert: the
+            # AUTO revert would also time out, leaving a half-known cluster and an ALERT spiral (the
+            # live failure mode). The device very likely received the command (it switches with
+            # latency); hold the intent and let the NEXT cycle read the real mode and re-command.
+            # Count it + start the dwell timer so automatic retries are spaced (a manual override
+            # bypasses dwell and may retry sooner — what the operator wants).
+            self.switches_today += 1
+            self.last_switch_at = now
+            self._persist()
+            return ActionDecision(intent, desired, False, "unconfirmed",
+                                  f"{desired} unconfirmed — device slow/unreachable ({exc}); "
+                                  "holding (not reverting), will re-verify next cycle")
+        if not accepted:
+            # Genuine device REJECTION (result:false) -> revert to the safe vendor mode (SPEC §6.5).
+            try:
+                recovered = self.driver.apply(PhysicalMode.AUTO)
+            except BatteryWriteUnconfirmed:
+                recovered = False  # revert write also timed out
             outcome = "failed_recovered" if recovered else "failed_unrecovered"
             reason = (
                 f"{desired} unconfirmed -> reverted to AUTO"

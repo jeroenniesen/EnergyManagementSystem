@@ -5,6 +5,7 @@ import pytest
 from ems.control.mode_controller import ModeController
 from ems.domain import BatteryIntent, PhysicalMode
 from ems.lifecycle import Lifecycle
+from ems.sources.battery import BatteryWriteUnconfirmed
 from ems.sources.indevolt import BatteryUnavailable
 from ems.sources.indevolt_driver import (
     IndevoltBatteryDriver,
@@ -158,6 +159,39 @@ def test_duplicate_tower_ip_is_commanded_once():
     drv = IndevoltBatteryDriver("10.0.0.1", armed=True, extra_ips=["10.0.0.1", " "],
                                 reader=FakeIndevolt())
     assert drv.ips == ["10.0.0.1"]
+
+
+def test_apply_raises_unconfirmed_on_transport_timeout():
+    # A write that keeps timing out must RAISE BatteryWriteUnconfirmed (NOT return False) so the
+    # controller HOLDS instead of reverting — the device is slow and likely got the command. This
+    # was the live failure: a 4s timeout false-failed the charge and the AUTO-revert spiral lost it.
+    def factory(ip):
+        def post(point, values):
+            raise TimeoutError("timed out")
+        return post
+
+    drv = IndevoltBatteryDriver("10.0.0.1", armed=True, post_factory=factory,
+                                reader=FakeIndevolt(), write_retry_backoff=0)
+    with pytest.raises(BatteryWriteUnconfirmed):
+        drv.apply(PhysicalMode.CHARGE, target_soc=90)
+
+
+def test_apply_retries_a_transient_timeout_then_succeeds():
+    # A transient slow response is retried; if the retry lands, the write succeeds (True) — no
+    # spurious failure just because the device was briefly busy.
+    calls = {"n": 0}
+
+    def factory(ip):
+        def post(point, values):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                raise TimeoutError("briefly slow")  # first write times out once
+            return {"result": True}
+        return post
+
+    drv = IndevoltBatteryDriver("10.0.0.1", armed=True, post_factory=factory,
+                                reader=FakeIndevolt(), write_attempts=3, write_retry_backoff=0)
+    assert drv.apply(PhysicalMode.CHARGE, target_soc=90) is True
 
 
 def test_probe_reports_capabilities_else_unavailable():
