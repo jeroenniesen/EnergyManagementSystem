@@ -1152,6 +1152,20 @@ body {
 .flow-kwh { font-variant-numeric: tabular-nums; font-weight: 600; }
 .flow-warn { margin: 14px 0 0; font-size: 0.82rem; color: var(--amber-text); }
 
+/* --- Advanced (collapsible detail) --- */
+.advanced { margin: 2px 0 20px; }
+.advanced-toggle {
+  display: flex; align-items: center; gap: 9px; width: 100%;
+  border: 1px dashed var(--line); background: transparent; color: var(--muted);
+  border-radius: var(--radius); padding: 12px 16px; cursor: pointer;
+  font-size: 0.85rem; font-weight: 600;
+}
+.advanced-toggle:hover { color: var(--text); border-color: var(--muted); }
+.advanced-chevron { display: inline-block; font-size: 1.1rem; transition: transform 0.2s ease; }
+.advanced-toggle.open .advanced-chevron { transform: rotate(90deg); }
+.advanced-body { margin-top: 14px; display: flex; flex-direction: column; gap: 14px; }
+@media (prefers-reduced-motion: reduce) { .advanced-chevron { transition: none; } }
+
 /* --- Home score rings (Oura-style hero) --- */
 .home-scores {
   background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius);
