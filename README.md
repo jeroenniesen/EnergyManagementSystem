@@ -122,3 +122,12 @@ Project conventions are in [`CLAUDE.md`](./CLAUDE.md); the north-star vision in 
 | UI | **React + Vite** SPA served by the EMS, no runtime CDN |
 | Optional AI | `template` (default) / `external_llm` (MiniMax) explainer + chat — minimal redacted payload |
 | Hardware | **Mac (Apple Silicon)** · **Raspberry Pi 5** · containerised |
+
+## What you'll see
+
+- **Dashboard** — live status, the current strategy, the next-24h plan, and today's energy Sankey.
+- **Insights** — three 0–100 scores that trend over **day / week / month / year**: *self-consumption*
+  (solar kept on-site), *CO₂* (% avoided vs. a no-solar/battery/EMS home), and *best-price* (how well
+  grid imports were timed) — each explaining itself — plus a *where-your-energy-went* panel (kWh from
+  solar/grid/battery → house/car). Read-only, rolled up from local history.
+- **Chat · Settings · Audit · System** — assistant, configuration, the decision log, and health checks.
