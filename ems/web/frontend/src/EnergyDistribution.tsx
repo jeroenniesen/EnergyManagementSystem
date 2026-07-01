@@ -9,17 +9,21 @@ type Flows = {
   has_data: boolean;
   partial: boolean;
   solar_to_home: number;
+  solar_to_car: number;
   solar_to_battery: number;
   solar_to_grid: number;
   grid_to_home: number;
+  grid_to_car: number;
   grid_to_battery: number;
   battery_to_home: number;
+  battery_to_car: number;
   solar_kwh: number;
   grid_import_kwh: number;
   grid_export_kwh: number;
   battery_charge_kwh: number;
   battery_discharge_kwh: number;
   home_kwh: number;
+  car_kwh: number;
   self_sufficiency_pct: number | null;
 };
 
@@ -141,16 +145,22 @@ export function EnergyDistribution() {
     ? [
         { id: "s-h", from: "solar", to: "home", kwh: flows.solar_to_home, color: SOLAR,
           label: "Solar → Home" },
+        { id: "s-c", from: "solar", to: "car", kwh: flows.solar_to_car, color: SOLAR,
+          label: "Solar → Car" },
         { id: "s-b", from: "solar", to: "batt-in", kwh: flows.solar_to_battery, color: SOLAR,
           label: "Solar → Battery" },
         { id: "s-g", from: "solar", to: "export", kwh: flows.solar_to_grid, color: SOLAR,
           label: "Solar → Grid (export)" },
         { id: "g-h", from: "grid", to: "home", kwh: flows.grid_to_home, color: GRID,
           label: "Grid → Home" },
+        { id: "g-c", from: "grid", to: "car", kwh: flows.grid_to_car, color: GRID,
+          label: "Grid → Car" },
         { id: "g-b", from: "grid", to: "batt-in", kwh: flows.grid_to_battery, color: GRID,
           label: "Grid → Battery" },
         { id: "b-h", from: "batt-out", to: "home", kwh: flows.battery_to_home, color: BATTERY,
           label: "Battery → Home" },
+        { id: "b-c", from: "batt-out", to: "car", kwh: flows.battery_to_car, color: BATTERY,
+          label: "Battery → Car (car-guard leak)" },
       ]
     : []
   )
@@ -174,6 +184,7 @@ export function EnergyDistribution() {
   const right: NodeDef[] = flows
     ? [
         { id: "home", label: "Home", value: flows.home_kwh, color: "var(--text)" },
+        { id: "car", label: "Car", value: flows.car_kwh, color: "var(--text)" },
         { id: "batt-in", label: "Battery", value: flows.battery_charge_kwh, color: BATTERY },
         { id: "export", label: "Export", value: flows.grid_export_kwh, color: GRID },
       ]

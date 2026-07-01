@@ -57,6 +57,7 @@ from ems.planner.strategy import build_plan, select_strategy_with_reason
 from ems.planner.summer import SummerConfig, sunset_after
 from ems.planner.validator import PlanValidation, validate_plan
 from ems.readiness import Readiness, compute_readiness, home_state
+from ems.reporting import build_report, resolve_window
 from ems.retrospect import build_past_story, past_headline
 from ems.savings import estimate_daily_savings_eur
 from ems.sense import Recorder
@@ -68,6 +69,7 @@ from ems.settings import (
     schema_json,
     validate_settings,
 )
+from ems.sky import sun_times
 from ems.sources.base import Source
 from ems.sources.battery import BatteryDriver
 from ems.sources.forecast import SolarForecastSource, day_kwh_p50
@@ -77,6 +79,7 @@ from ems.storage.audit import AuditStore
 from ems.storage.cache import CacheStore
 from ems.storage.history import DERIVED_COLUMNS, RAW_COLUMNS, HistoryStore
 from ems.storage.settings import SettingsStore
+from ems.weather import cloud_cover_pct
 
 _log = logging.getLogger("ems.recorder")
 
@@ -301,6 +304,8 @@ def create_app(
     # Held-decision dedup: the (outcome, desired_mode) we last audited as a HELD/blocked decision
     # (dwell/cap/not_controlling), so a recurring hold is explained ONCE, not logged every cycle.
     _held_box: dict[str, Any] = {"sig": None}
+    # Sky cloud-cover cache: Open-Meteo is polled at most every 15 min (best-effort) for the sky.
+    _sky_box: dict[str, Any] = {"cc": None, "at": None}
 
     def _apply_control_settings() -> None:
         """Push the control.* settings onto the live controller (preserves its switch counters)."""
@@ -2030,6 +2035,69 @@ def create_app(
         der = await store.derived_between(s_iso, e_iso)
         return build_daily_flows(raw, der, day_start, day_end,
                                  label=d.isoformat(), partial=partial).to_dict()
+
+    @app.get("/api/sky")
+    async def sky() -> dict:
+        """Today's sunrise/sunset (site tz) + current cloud cover for the time-of-day sky backdrop.
+        Sun times are pure math (nulls if location unset / polar → UI falls back to clock phases).
+        Cloud cover is best-effort from Open-Meteo, cached ≤15 min and fetched off the event loop;
+        None when unavailable (offline/sim) → the sky just shows clear. Read-only."""
+        now = datetime.now(UTC)
+        lat, lon = settings_cache.get("site.lat"), settings_cache.get("site.lon")
+        sunrise = sunset = None
+        cloud_cover = _sky_box["cc"]
+        try:
+            if lat is not None and lon is not None:
+                lat_f, lon_f = float(lat), float(lon)
+                sr, ss = sun_times(lat_f, lon_f, now.astimezone(site_tz).date(), site_tz)
+                sunrise = sr.isoformat() if sr else None
+                sunset = ss.isoformat() if ss else None
+                last = _sky_box["at"]
+                if last is None or (now - last).total_seconds() > 900:
+                    cloud_cover = await asyncio.to_thread(cloud_cover_pct, lat_f, lon_f)
+                    _sky_box["cc"], _sky_box["at"] = cloud_cover, now
+        except (TypeError, ValueError):
+            pass
+        return {"now": now.isoformat(), "sunrise": sunrise, "sunset": sunset,
+                "cloud_cover": cloud_cover}
+
+    @app.get("/api/report")
+    async def report(
+        period: str = Query(default="day", pattern="^(day|week|month|year)$"),
+        date: str | None = None,
+    ) -> dict:
+        """Insights: the energy-flow distribution + the three scores (self-consumption, CO₂,
+        best-price) over a day/week/month/year window. Rolled up on demand from recorded history —
+        off the dashboard poll, bounded to the window's rows, read-only. `date` (YYYY-MM-DD, site
+        tz) is any day inside the window; omitted = the current period."""
+        now_local = datetime.now(UTC).astimezone(site_tz)
+        if date:
+            try:
+                anchor = date_cls.fromisoformat(date)
+            except ValueError:
+                return JSONResponse(  # type: ignore[return-value]
+                    {"detail": "date must be YYYY-MM-DD"}, status_code=422)
+        else:
+            anchor = now_local.date()
+        start, end, label, partial = resolve_window(period, anchor, site_tz, now_local)
+        grid_factor = float(settings_cache.get("reporting.grid_co2_factor", 0.27))
+        gas_factor = float(settings_cache.get("reporting.gas_co2_factor", 1.78))
+        prices = price_source.slots() if price_source is not None else []
+        # Future / no store → an honest empty report (has_data False), never an error.
+        if store is None or start > now_local:
+            return build_report([], [], prices, period=period, start=start, end=end, label=label,
+                                partial=partial, grid_factor=grid_factor,
+                                gas_factor=gas_factor).to_dict()
+        q_end = min(end, now_local + timedelta(minutes=1))  # never query the future
+        # Size the row cap to the window (one row/min ceiling) so week/month/year aren't truncated.
+        limit = min(200_000, int((end - start).total_seconds() / 60) + 1000)
+        raw = await store.raw_between(start.astimezone(UTC).isoformat(),
+                                      q_end.astimezone(UTC).isoformat(), limit=limit)
+        der = await store.derived_between(start.astimezone(UTC).isoformat(),
+                                          q_end.astimezone(UTC).isoformat(), limit=limit)
+        return build_report(raw, der, prices, period=period, start=start, end=end, label=label,
+                            partial=partial, grid_factor=grid_factor,
+                            gas_factor=gas_factor).to_dict()
 
     @app.get("/api/export")
     async def export(

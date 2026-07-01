@@ -1,9 +1,17 @@
-import { expect, test } from "@playwright/test";
+import { expect, type Page, test } from "@playwright/test";
+
+// The detailed panels (power tiles, Sankey, charge target, controller decision, AI note, data
+// status) now live in a collapsed "Advanced" section — open it before asserting on them.
+async function openAdvanced(page: Page) {
+  await page.getByTestId("advanced-toggle").click();
+  await expect(page.getByTestId("advanced-body")).toBeVisible();
+}
 
 test.describe("EMS dashboard", () => {
-  test("the whole dashboard explains itself (all panels render together)", async ({ page }) => {
-    // A first-time viewer sees status, the strategy, the energy story (timeline), the controller
-    // decision, freshness and data-quality on one screen, with no error banner.
+  test("the calm home surfaces the essentials, with detail behind Advanced", async ({ page }) => {
+    // A first-time viewer sees the state banner, the strategy, the energy story (the plan) and a
+    // trimmed status grid up front — the technical detail (decision, freshness, Sankey) is tucked
+    // behind the Advanced toggle so the home stays calm. No error banner.
     await page.goto("/");
     for (const id of [
       "run-mode-badge",
@@ -12,13 +20,45 @@ test.describe("EMS dashboard", () => {
       "status-grid",
       "strategy-card",
       "energy-story",
-      "decision",
-      "freshness",
+      "advanced",
       "alerts",
     ]) {
       await expect(page.getByTestId(id), `panel ${id} should render`).toBeVisible();
     }
+    // The detail is present but not shouted — it appears only once Advanced is opened.
+    await expect(page.getByTestId("decision")).toHaveCount(0);
+    await expect(page.getByTestId("freshness")).toHaveCount(0);
+    await openAdvanced(page);
+    await expect(page.getByTestId("decision")).toBeVisible();
+    await expect(page.getByTestId("freshness")).toBeVisible();
     await expect(page.getByTestId("error")).toHaveCount(0);
+  });
+
+  test("a time-of-day sky backdrop renders behind the app", async ({ page }) => {
+    await page.goto("/");
+    const sky = page.getByTestId("sky");
+    await expect(sky).toBeAttached();
+    await expect(sky).toHaveAttribute("data-phase", /night|dawn|day|dusk/);
+  });
+
+  test("the sky shows the daytime landscape scene during the day", async ({ page }) => {
+    // Mock a daytime window (sunrise 4h ago, sunset in 4h) → the day phase + its illustrated scene.
+    await page.route("**/api/sky", (route) => {
+      const now = Date.now();
+      route.fulfill({
+        status: 200, contentType: "application/json",
+        body: JSON.stringify({
+          now: new Date(now).toISOString(),
+          sunrise: new Date(now - 4 * 3600e3).toISOString(),
+          sunset: new Date(now + 4 * 3600e3).toISOString(),
+        }),
+      });
+    });
+    await page.goto("/");
+    const sky = page.getByTestId("sky");
+    await expect(sky).toHaveAttribute("data-phase", "day");
+    // The landscape is an illustrated image (a background-image), not a flat gradient.
+    await expect(sky).toHaveCSS("background-image", /url\(.*day.*\.webp.*\)/);
   });
 
   test("the home-state banner leads with a calm headline + confidence", async ({ page }) => {
@@ -36,15 +76,18 @@ test.describe("EMS dashboard", () => {
     // Run-mode badge in plain language (dry-run => "Watching only"; M0a is read-only).
     await expect(page.getByTestId("run-mode-badge")).toHaveText("Watching only");
 
-    // The status grid renders, including the reconstructed house-load value (1.00 kW).
+    // The trimmed status grid leads with the essentials: savings, battery level and mode.
     const grid = page.getByTestId("status-grid");
     await expect(grid).toBeVisible();
-    await expect(grid).toContainText("House load");
-    await expect(grid).toContainText("1.00 kW");
     await expect(grid).toContainText("55 %");
     await expect(grid).toContainText("Battery mode");
     await expect(grid).toContainText("auto");
     await expect(grid).toContainText("Saved today");
+    // The reconstructed house-load value (1.00 kW) lives with the detail metrics behind Advanced.
+    await openAdvanced(page);
+    const detail = page.getByTestId("detail-grid");
+    await expect(detail).toContainText("House load");
+    await expect(detail).toContainText("1.00 kW");
   });
 
   test("no API error banner when backend is up", async ({ page }) => {
@@ -61,6 +104,7 @@ test.describe("EMS dashboard", () => {
 
   test("shows the controller decision (dry-run) panel", async ({ page }) => {
     await page.goto("/");
+    await openAdvanced(page);
     const dec = page.getByTestId("decision");
     await expect(dec).toBeVisible();
     await expect(dec).toContainText("dry-run");
@@ -263,6 +307,7 @@ test.describe("EMS dashboard", () => {
       }),
     );
     await page.goto("/");
+    await openAdvanced(page);
     await expect(page.getByTestId("car-charging")).toContainText("Car charging");
     await expect(page.getByTestId("decision")).toContainText("won't discharge into the car");
   });
@@ -339,6 +384,8 @@ test.describe("EMS dashboard", () => {
       }),
     );
     await page.goto("/");
+    // The power tile lives with the detail metrics behind Advanced.
+    await openAdvanced(page);
     const tile = page.getByTestId("battery-power-tile");
     await expect(tile).toContainText("see each battery");
     await tile.click();
@@ -357,20 +404,23 @@ test.describe("EMS dashboard", () => {
   }) => {
     const FLOWS = {
       date: "2026-06-28", has_data: true, partial: false,
-      solar_to_home: 4.0, solar_to_battery: 3.0, solar_to_grid: 2.0,
-      grid_to_home: 1.0, grid_to_battery: 0.5, battery_to_home: 2.5,
-      solar_kwh: 9.0, grid_import_kwh: 1.5, grid_export_kwh: 2.0,
-      battery_charge_kwh: 3.5, battery_discharge_kwh: 2.5, home_kwh: 7.5,
+      solar_to_home: 4.0, solar_to_car: 1.0, solar_to_battery: 3.0, solar_to_grid: 2.0,
+      grid_to_home: 1.0, grid_to_car: 0.5, grid_to_battery: 0.5,
+      battery_to_home: 2.5, battery_to_car: 0.0,
+      solar_kwh: 10.0, grid_import_kwh: 2.0, grid_export_kwh: 2.0,
+      battery_charge_kwh: 3.5, battery_discharge_kwh: 2.5, home_kwh: 7.5, car_kwh: 1.5,
       self_sufficiency_pct: 86.7,
     };
     await page.route("**/api/energy-distribution**", (route) =>
       route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(FLOWS) }),
     );
     await page.goto("/");
+    await openAdvanced(page);
     const card = page.getByTestId("energy-distribution");
     await expect(card).toBeVisible();
     await expect(page.getByTestId("sankey")).toBeVisible();
     await expect(page.getByTestId("band-s-h")).toBeVisible(); // a solar→home band
+    await expect(page.getByTestId("band-s-c")).toBeVisible(); // solar→car band (the new sink)
     await expect(page.getByTestId("dist-selfsuff")).toContainText("87%");
     // Day navigation: starts at Today (next disabled); stepping back enables it.
     await expect(page.getByTestId("dist-day")).toHaveText("Today");
@@ -394,12 +444,14 @@ test.describe("EMS dashboard", () => {
       }),
     );
     await page.goto("/");
+    await openAdvanced(page);
     await expect(page.getByTestId("dist-empty")).toBeVisible();
     await expect(page.getByTestId("sankey")).toHaveCount(0);
   });
 
   test("shows tonight's charge target with an explanation", async ({ page }) => {
     await page.goto("/");
+    await openAdvanced(page);
     const cn = page.getByTestId("charge-need");
     await expect(cn).toBeVisible();
     await expect(cn).toContainText("Tonight's charge target");
@@ -410,6 +462,7 @@ test.describe("EMS dashboard", () => {
 
   test("shows per-signal freshness chips", async ({ page }) => {
     await page.goto("/");
+    await openAdvanced(page);
     const fr = page.getByTestId("freshness");
     await expect(fr).toBeVisible();
     await expect(fr).toContainText("Grid meter: up to date");
@@ -514,6 +567,8 @@ test.describe("EMS dashboard", () => {
   test("the AI second-opinion card is hidden when AI is off", async ({ page }) => {
     await page.goto("/");
     await expect(page.getByTestId("status-grid")).toBeVisible();
+    // Even inside Advanced, the card renders nothing while AI is off.
+    await openAdvanced(page);
     await expect(page.getByTestId("ai-validation")).toHaveCount(0);
   });
 
@@ -529,6 +584,7 @@ test.describe("EMS dashboard", () => {
       }),
     );
     await page.goto("/");
+    await openAdvanced(page);
     await expect(page.getByTestId("ai-validation-text")).toContainText("plan looks sound");
     await expect(page.getByTestId("ai-check")).toBeVisible();
   });

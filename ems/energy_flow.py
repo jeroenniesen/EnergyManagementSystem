@@ -1,23 +1,26 @@
-"""Daily energy-distribution flows for the Sankey view (SPEC §9.1 companion to retrospect.py).
+"""Energy-distribution flows for the Sankey + Insights report (SPEC §9.1; design in
+docs/superpowers/specs/2026-07-01-insights-reporting-design.md).
 
-The meters record only NET flows per slot (grid +import/−export, solar, battery +discharge/−charge,
-reconstructed house load). To draw "where the day's energy came from and went" we attribute each
-15-min slot's energy with a **solar-first priority** model — the same intuition the Home Assistant
-Energy dashboard uses:
+The meters record only NET flows per slot (grid ±import/−export, solar, battery +discharge/−charge)
+plus the reconstructed home load (non-EV) and total load. We attribute each 15-min slot's energy
+with a **solar-first, home-before-car** priority model — the intuition the Home Assistant Energy
+dashboard uses, extended with the car as its own sink:
 
-    solar  → home first, then into the battery, then exported to the grid
-    battery (discharge) → home
-    grid (import) → whatever home + battery charge solar didn't cover
+    solar   → home → car → battery → export
+    battery (discharge) → home → car        (battery→car is the car-guard LEAK — should be ~0)
+    grid    → whatever solar/battery didn't cover (home, car, battery-charge)
 
-Summed over a calendar day this yields the six Sankey bands. It's an attribution *estimate* (the
-hardware can't tell you which electron went where), but it's physically consistent per slot and
-honest over a day. Pure + unit-tested — the API passes in stored rows; no I/O here.
+Summed over any window this yields the Sankey bands + node totals. It is an attribution *estimate*
+(hardware can't say which electron went where) but energy-conserving per slot — sources
+(solar + battery_discharge + grid_import) equal sinks (home + car + battery_charge + export) — and
+honest over a window. Pure + unit-tested — the API passes in stored rows; no I/O here.
 """
 from __future__ import annotations
 
 from collections import defaultdict
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
+from typing import NamedTuple
 
 from ems.retrospect import _floor, _mean, _parse
 
@@ -26,20 +29,38 @@ _DH = _SLOT_MIN / 60.0  # hours per slot, for energy = power × time
 _EPS = 1e-9
 
 
+class SlotBands(NamedTuple):
+    """One slot's energy attribution (kWh), source→sink. `batt_car` is the car-guard leak."""
+    solar_home: float
+    solar_car: float
+    solar_batt: float
+    solar_grid: float
+    grid_home: float
+    grid_car: float
+    grid_batt: float
+    batt_home: float
+    batt_car: float
+    batt_grid: float
+
+
 @dataclass(frozen=True)
 class EnergyFlows:
-    """A day's energy distribution in kWh. The six *_to_* fields are the Sankey bands; the rest are
-    node totals + a self-sufficiency headline. `has_data` is False when the day has no samples."""
-    date: str  # YYYY-MM-DD (local calendar day this covers)
+    """A window's energy distribution in kWh. The *_to_* fields are the Sankey bands; the rest are
+    node totals + headline metrics. `has_data` is False when the window has no samples."""
+    date: str  # YYYY-MM-DD (or window label) this covers
     has_data: bool
-    partial: bool  # True if the day is today (still in progress)
+    partial: bool  # True if the window is still in progress (e.g. today)
     # Sankey bands (source → sink), kWh.
     solar_to_home: float
+    solar_to_car: float
     solar_to_battery: float
     solar_to_grid: float
     grid_to_home: float
+    grid_to_car: float
     grid_to_battery: float
     battery_to_home: float
+    battery_to_car: float
+    battery_to_grid: float
     # Node totals, kWh.
     solar_kwh: float
     grid_import_kwh: float
@@ -47,53 +68,70 @@ class EnergyFlows:
     battery_charge_kwh: float
     battery_discharge_kwh: float
     home_kwh: float
-    # Headline: share of the home served WITHOUT buying from the grid (solar + battery).
-    self_sufficiency_pct: float | None
+    car_kwh: float
+    # Headline metrics.
+    self_sufficiency_pct: float | None        # share of total load NOT bought from the grid
+    solar_self_consumption_pct: float | None  # share of solar produced used on-site (not exported)
+    car_guard_leak_kwh: float                 # battery energy that fed the car (should be ~0)
 
     def to_dict(self) -> dict:
         return asdict(self)
 
 
 def _allocate_slot(
-    solar_w: float, grid_w: float, battery_w: float, load_w: float
-) -> tuple[float, float, float, float, float, float]:
-    """Attribute ONE slot's energy (kWh) solar-first. Returns
-    (solar_home, solar_batt, solar_grid, grid_home, grid_batt, batt_home)."""
+    solar_w: float, grid_w: float, battery_w: float, home_w: float, car_w: float = 0.0
+) -> SlotBands:
+    """Attribute ONE slot's energy (kWh) solar-first, home-before-car. `home_w` is the non-EV house
+    load; `car_w` is the EV load. `grid_w` (± net) is not read directly — the grid is whatever solar
+    and the battery did not cover, which is energy-equivalent."""
     solar = max(0.0, solar_w) * _DH / 1000.0
     charge = max(0.0, -battery_w) * _DH / 1000.0  # energy INTO the battery
     discharge = max(0.0, battery_w) * _DH / 1000.0  # energy OUT of the battery
-    load = max(0.0, load_w) * _DH / 1000.0
+    home = max(0.0, home_w) * _DH / 1000.0
+    car = max(0.0, car_w) * _DH / 1000.0
 
-    # Solar serves the home first, then tops up the battery, then exports the remainder.
-    solar_home = min(solar, load)
+    # Solar: home → car → battery → export.
+    solar_home = min(solar, home)
     rem_solar = solar - solar_home
-    rem_home = load - solar_home
+    rem_home = home - solar_home
+    solar_car = min(rem_solar, car)
+    rem_solar -= solar_car
+    rem_car = car - solar_car
     solar_batt = min(rem_solar, charge)
     rem_solar -= solar_batt
-    solar_grid = rem_solar  # whatever solar is left is exported
-    rem_charge = charge - solar_batt  # battery charge solar didn't cover → came from the grid
+    solar_grid = rem_solar  # solar left over is exported
+    rem_charge = charge - solar_batt  # battery charge solar didn't cover → from the grid
 
-    # The battery's own output covers the rest of the home; the grid covers what's still left
-    # plus any grid-fed charging.
+    # Battery discharge: home first, then car (the leak), then grid (leftover export, rare).
     batt_home = min(discharge, rem_home)
-    grid_home = rem_home - batt_home
+    rem_disch = discharge - batt_home
+    rem_home -= batt_home
+    batt_car = min(rem_disch, rem_car)  # >0 ⇒ battery fed the car ⇒ car-guard leak
+    rem_disch -= batt_car
+    rem_car -= batt_car
+    batt_grid = rem_disch
+
+    # The grid covers whatever is still left.
+    grid_home = rem_home
+    grid_car = rem_car
     grid_batt = rem_charge
-    return solar_home, solar_batt, solar_grid, grid_home, grid_batt, batt_home
+    return SlotBands(solar_home, solar_car, solar_batt, solar_grid,
+                     grid_home, grid_car, grid_batt, batt_home, batt_car, batt_grid)
 
 
-def build_daily_flows(
+def build_flows(
     raw_rows: list[dict],
     derived_rows: list[dict],
-    day_start: datetime,
-    day_end: datetime,
+    start: datetime,
+    end: datetime,
     *,
     label: str,
     partial: bool,
 ) -> EnergyFlows:
-    """Resample recorded rows into 15-min slots within [day_start, day_end) and sum the solar-first
-    allocation into a day's flows. `day_start`/`day_end` bound the local day; `label` is the local
-    YYYY-MM-DD it represents. Zero-order hold per slot (mean power × slot length)."""
-    start_utc, end_utc = day_start.astimezone(UTC), day_end.astimezone(UTC)
+    """Resample recorded rows into 15-min slots within [start, end) and sum the solar-first
+    allocation into a window's flows. Home load = derived `non_ev_load_w`; car load =
+    `house_load_w − non_ev_load_w` (0 with no EV / old rows). Zero-order hold per slot."""
+    start_utc, end_utc = start.astimezone(UTC), end.astimezone(UTC)
 
     raw_by: dict[datetime, dict[str, list[float]]] = defaultdict(
         lambda: {"grid": [], "solar": [], "batt": []}
@@ -107,27 +145,41 @@ def build_daily_flows(
         raw_by[slot]["solar"].append(float(r.get("solar_power_w", 0.0)))
         raw_by[slot]["batt"].append(float(r.get("battery_power_w", 0.0)))
 
-    load_by: dict[datetime, list[float]] = defaultdict(list)
+    home_by: dict[datetime, list[float]] = defaultdict(list)
+    car_by: dict[datetime, list[float]] = defaultdict(list)
     for r in derived_rows:
         dt = _parse(r.get("ts"))
         if dt is None or dt < start_utc or dt >= end_utc:
             continue
-        if r.get("house_load_w") is not None:
-            load_by[_floor(dt)].append(float(r["house_load_w"]))
+        total = r.get("house_load_w")
+        if total is None:
+            continue
+        total = float(total)
+        non_ev = r.get("non_ev_load_w")
+        home = float(non_ev) if non_ev is not None else total
+        slot = _floor(dt)
+        home_by[slot].append(home)
+        car_by[slot].append(max(0.0, total - home))
 
-    tot = [0.0] * 6  # solar_home, solar_batt, solar_grid, grid_home, grid_batt, batt_home
+    tot = [0.0] * 10  # the ten SlotBands, accumulated
     for slot in sorted(raw_by):
         b = raw_by[slot]
         bands = _allocate_slot(
             _mean(b["solar"]), _mean(b["grid"]), _mean(b["batt"]),
-            _mean(load_by[slot]) if load_by.get(slot) else 0.0,
+            _mean(home_by[slot]) if home_by.get(slot) else 0.0,
+            _mean(car_by[slot]) if car_by.get(slot) else 0.0,
         )
         tot = [acc + band for acc, band in zip(tot, bands, strict=True)]
-    s_home, s_batt, s_grid, g_home, g_batt, b_home = tot
+    (s_home, s_car, s_batt, s_grid, g_home, g_car, g_batt, b_home, b_car, b_grid) = tot
 
     home = s_home + b_home + g_home
-    served_self = s_home + b_home  # home energy NOT bought from the grid
-    ss = round(min(100.0, served_self / home * 100.0), 1) if home > _EPS else None
+    car = s_car + b_car + g_car
+    load = home + car
+    served_self = s_home + s_car + b_home + b_car  # load met from own solar + battery
+    ss = round(min(100.0, served_self / load * 100.0), 1) if load > _EPS else None
+    solar_kwh = s_home + s_car + s_batt + s_grid
+    solar_used = s_home + s_car + s_batt  # solar used on-site (not exported)
+    ssc = round(min(100.0, solar_used / solar_kwh * 100.0), 1) if solar_kwh > _EPS else None
 
     def r2(x: float) -> float:
         return round(x, 2) + 0.0  # +0.0 collapses -0.0
@@ -136,13 +188,29 @@ def build_daily_flows(
         date=label,
         has_data=bool(raw_by),
         partial=partial,
-        solar_to_home=r2(s_home), solar_to_battery=r2(s_batt), solar_to_grid=r2(s_grid),
-        grid_to_home=r2(g_home), grid_to_battery=r2(g_batt), battery_to_home=r2(b_home),
-        solar_kwh=r2(s_home + s_batt + s_grid),
-        grid_import_kwh=r2(g_home + g_batt),
-        grid_export_kwh=r2(s_grid),
+        solar_to_home=r2(s_home), solar_to_car=r2(s_car), solar_to_battery=r2(s_batt),
+        solar_to_grid=r2(s_grid),
+        grid_to_home=r2(g_home), grid_to_car=r2(g_car), grid_to_battery=r2(g_batt),
+        battery_to_home=r2(b_home), battery_to_car=r2(b_car), battery_to_grid=r2(b_grid),
+        solar_kwh=r2(solar_kwh),
+        grid_import_kwh=r2(g_home + g_car + g_batt),
+        grid_export_kwh=r2(s_grid + b_grid),
         battery_charge_kwh=r2(s_batt + g_batt),
-        battery_discharge_kwh=r2(b_home),
-        home_kwh=r2(home),
-        self_sufficiency_pct=ss,
+        battery_discharge_kwh=r2(b_home + b_car + b_grid),
+        home_kwh=r2(home), car_kwh=r2(car),
+        self_sufficiency_pct=ss, solar_self_consumption_pct=ssc,
+        car_guard_leak_kwh=r2(b_car),
     )
+
+
+def build_daily_flows(
+    raw_rows: list[dict],
+    derived_rows: list[dict],
+    day_start: datetime,
+    day_end: datetime,
+    *,
+    label: str,
+    partial: bool,
+) -> EnergyFlows:
+    """Backward-compatible single-day wrapper around build_flows (for /api/energy-distribution)."""
+    return build_flows(raw_rows, derived_rows, day_start, day_end, label=label, partial=partial)

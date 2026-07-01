@@ -299,6 +299,19 @@ SETTINGS_SCHEMA: tuple[SettingsField, ...] = (
         "settings, manual override, control. Leave blank for open access on your home LAN. "
         "Once set, enter the same token in the Access box at the top to authorise this browser.",
     ),
+    # --- Insights & reporting (CO₂ accounting factors) ---
+    SettingsField(
+        "reporting.grid_co2_factor", "Grid CO₂ factor", "number", 0.27, "reporting",
+        help="kg CO₂ per kWh of imported electricity, used by the CO₂ score. NL grid-mix ≈ 0.27 "
+        "(2025, trending down). Lower it as the grid greens.",
+        min=0.0, max=1.0, step=0.01, unit="kg/kWh", advanced=True,
+    ),
+    SettingsField(
+        "reporting.gas_co2_factor", "Gas CO₂ factor", "number", 1.78, "reporting",
+        help="kg CO₂ per m³ of natural gas burned (combustion ≈ 1.78). Used once gas metering is "
+        "added to the CO₂ score.",
+        min=0.0, max=5.0, step=0.01, unit="kg/m³", advanced=True,
+    ),
     # --- Appearance ---
     SettingsField(
         "ui.theme", "Theme", "enum", "auto", "ui",

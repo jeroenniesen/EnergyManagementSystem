@@ -22,6 +22,10 @@ import { AiValidationCard } from "./AiValidationCard";
 import { AuditView } from "./AuditView";
 import { ChatPanel } from "./ChatPanel";
 import { SystemView } from "./System";
+import { Insights } from "./Insights";
+import { HomeScores } from "./HomeScores";
+import { SkyBackdrop } from "./SkyBackdrop";
+import { Advanced } from "./Advanced";
 import { applyTheme, readStoredTheme, storeTheme, type Theme } from "./theme";
 
 type Status = {
@@ -233,7 +237,7 @@ export function App() {
   const [savings, setSavings] = useState<number | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [view, setView] =
-    useState<"dashboard" | "chat" | "audit" | "settings" | "system">("dashboard");
+    useState<"dashboard" | "insights" | "chat" | "audit" | "settings" | "system">("dashboard");
   // Seed from the localStorage cache so the first paint matches the saved theme (no flash);
   // the fetch below reconciles with the server's canonical value.
   const [theme, setTheme] = useState<Theme>(readStoredTheme);
@@ -334,7 +338,9 @@ export function App() {
   const batteryHasDetail = !!(battery && (battery.aggregate || battery.towers.length > 0));
 
   return (
-    <div className="app">
+    <>
+      <SkyBackdrop compact={view !== "dashboard"} />
+      <div className="app">
       <header className="topbar">
         <h1>Smart Energy Manager</h1>
         {status && (
@@ -375,6 +381,14 @@ export function App() {
             aria-current={view === "dashboard" ? "page" : undefined}
           >
             Dashboard
+          </button>
+          <button
+            className={`nav-btn${view === "insights" ? " nav-active" : ""}`}
+            onClick={() => setView("insights")}
+            data-testid="nav-insights"
+            aria-current={view === "insights" ? "page" : undefined}
+          >
+            Insights
           </button>
           <button
             className={`nav-btn${view === "chat" ? " nav-active" : ""}`}
@@ -442,6 +456,10 @@ export function App() {
           )}
           {alertsData && CONFIDENCE[alertsData.data_quality] && (
             <span className="home-confidence" data-testid="home-confidence">
+              <Icon
+                name={alertsData.data_quality === "unsafe" ? "alert" : "check"}
+                className={`home-conf-icon conf-${alertsData.data_quality}`}
+              />
               {CONFIDENCE[alertsData.data_quality]}
             </span>
           )}
@@ -452,14 +470,23 @@ export function App() {
         <Settings onSaved={(v) => setTheme((v["ui.theme"] as Theme) ?? "auto")} />
       )}
 
+      {view === "insights" && <Insights />}
+
       {view === "chat" && <ChatPanel />}
 
       {view === "audit" && <AuditView />}
 
       {view === "system" && <SystemView />}
 
+      {view === "dashboard" && <HomeScores onOpenDetail={() => setView("insights")} />}
+
+      {/* The plan + how we're doing — always front and centre. */}
+      {view === "dashboard" && (
+        <EnergyStory story={story} window={storyWindow} onWindow={setStoryWindow} />
+      )}
+
       {view === "dashboard" && status && (
-        <section className="grid" data-testid="status-grid">
+        <section className="grid status-grid" data-testid="status-grid">
           {savings != null && (
             <Metric
               label="Saved today"
@@ -482,52 +509,6 @@ export function App() {
             icon="battery-level"
             onClick={batteryHasDetail ? () => setBatteryDetail("soc") : undefined}
             testId="battery-tile"
-          />
-          <Metric
-            label="House load"
-            value={fmtW(status.house_load_w)}
-            hint="what your home is using now"
-            title="Everything your home is drawing right now, from solar, battery and the grid combined."
-            icon="home"
-          />
-          <Metric
-            label="Grid"
-            value={fmtW(status.grid_power_w)}
-            hint={status.grid_power_w >= 0 ? "from the grid" : "to the grid"}
-            title="Power flowing in from the grid (buying) or back out to it (selling)."
-            icon="grid"
-          />
-          <Metric
-            label="Solar"
-            value={fmtW(status.solar_power_w)}
-            hint="from your panels"
-            icon="solar"
-          />
-          <Metric
-            label="Battery"
-            value={fmtW(status.battery_power_w)}
-            hint={
-              batteryHasDetail
-                ? "see each battery →"
-                : status.battery_power_w >= 0
-                  ? "powering the house"
-                  : "charging up"
-            }
-            title={
-              batteryHasDetail
-                ? "Power leaving the battery to run the house, or going in to charge it — click to see each battery."
-                : "Power leaving the battery to run the house, or going in to charge it."
-            }
-            icon="bolt"
-            onClick={batteryHasDetail ? () => setBatteryDetail("power") : undefined}
-            testId="battery-power-tile"
-          />
-          <Metric
-            label="Home use"
-            value={fmtW(status.non_ev_load_w)}
-            hint="excluding the car"
-            title="What the home uses, not counting car charging."
-            icon="bulb"
           />
           {battery?.current_mode && (
             <Metric
@@ -552,73 +533,119 @@ export function App() {
         />
       )}
 
-      {view === "dashboard" && (
-        <EnergyStory story={story} window={storyWindow} onWindow={setStoryWindow} />
-      )}
-
-      {view === "dashboard" && <EnergyDistribution />}
-
-      {view === "dashboard" && chargeNeed && <ChargeTarget n={chargeNeed} />}
-
+      {/* A manual override sits with the strategy control, above the detail. */}
       {view === "dashboard" && status && (
         <OverrideCard dataQuality={alertsData?.data_quality} />
       )}
 
-      {view === "dashboard" && decision && decision.outcome !== "unconfigured" && (
-        <section className="decision" data-testid="decision">
-          <div className="decision-head">
-            <span className="metric-label">Controller</span>
-            {decision.car_charging && (
-              <span className="badge badge-car" data-testid="car-charging">
-                <Icon name="car" /> Car charging — battery held
-              </span>
-            )}
-          </div>
-          <p className="decision-line">
-            <span className="decision-outcome">
-              {OUTCOME_LABEL[decision.outcome] ?? humanize(decision.outcome)}
-            </span>
-            {" — "}
-            {decision.reason}
-            {decision.target_soc != null && (
-              <span className="decision-target" data-testid="decision-target">
-                {" "}· aiming for {Math.round(decision.target_soc)}%
-              </span>
-            )}
-          </p>
-          {decision.plan_reason && (
-            <p className="plan-reason">
-              plan: {decision.explanation_source === "external_llm" && decision.plan_reason_explained
-                ? decision.plan_reason_explained
-                : decision.plan_reason}
-              {decision.explanation_source === "external_llm" && (
-                <span className="ai-tag" title="Phrased by AI from the system's own decision — the numbers are the real ones.">
-                  AI
+      {/* Advanced — the full detail, tucked away by default (opens on demand). */}
+      {view === "dashboard" && status && (
+        <Advanced>
+          <section className="grid" data-testid="detail-grid">
+            <Metric
+              label="House load"
+              value={fmtW(status.house_load_w)}
+              hint="what your home is using now"
+              title="Everything your home is drawing right now, from solar, battery and the grid combined."
+              icon="home"
+            />
+            <Metric
+              label="Grid"
+              value={fmtW(status.grid_power_w)}
+              hint={status.grid_power_w >= 0 ? "from the grid" : "to the grid"}
+              title="Power flowing in from the grid (buying) or back out to it (selling)."
+              icon="grid"
+            />
+            <Metric label="Solar" value={fmtW(status.solar_power_w)} hint="from your panels" icon="solar" />
+            <Metric
+              label="Battery"
+              value={fmtW(status.battery_power_w)}
+              hint={
+                batteryHasDetail
+                  ? "see each battery →"
+                  : status.battery_power_w >= 0
+                    ? "powering the house"
+                    : "charging up"
+              }
+              title={
+                batteryHasDetail
+                  ? "Power leaving the battery to run the house, or going in to charge it — click to see each battery."
+                  : "Power leaving the battery to run the house, or going in to charge it."
+              }
+              icon="bolt"
+              onClick={batteryHasDetail ? () => setBatteryDetail("power") : undefined}
+              testId="battery-power-tile"
+            />
+            <Metric
+              label="Home use"
+              value={fmtW(status.non_ev_load_w)}
+              hint="excluding the car"
+              title="What the home uses, not counting car charging."
+              icon="bulb"
+            />
+          </section>
+
+          <EnergyDistribution />
+
+          {chargeNeed && <ChargeTarget n={chargeNeed} />}
+
+          {decision && decision.outcome !== "unconfigured" && (
+            <section className="decision" data-testid="decision">
+              <div className="decision-head">
+                <span className="metric-label">Controller</span>
+                {decision.car_charging && (
+                  <span className="badge badge-car" data-testid="car-charging">
+                    <Icon name="car" /> Car charging — battery held
+                  </span>
+                )}
+              </div>
+              <p className="decision-line">
+                <span className="decision-outcome">
+                  {OUTCOME_LABEL[decision.outcome] ?? humanize(decision.outcome)}
                 </span>
+                {" — "}
+                {decision.reason}
+                {decision.target_soc != null && (
+                  <span className="decision-target" data-testid="decision-target">
+                    {" "}· aiming for {Math.round(decision.target_soc)}%
+                  </span>
+                )}
+              </p>
+              {decision.plan_reason && (
+                <p className="plan-reason">
+                  plan: {decision.explanation_source === "external_llm" && decision.plan_reason_explained
+                    ? decision.plan_reason_explained
+                    : decision.plan_reason}
+                  {decision.explanation_source === "external_llm" && (
+                    <span className="ai-tag" title="Phrased by AI from the system's own decision — the numbers are the real ones.">
+                      AI
+                    </span>
+                  )}
+                </p>
               )}
-            </p>
+            </section>
           )}
-        </section>
-      )}
 
-      {view === "dashboard" && <AiValidationCard />}
+          <AiValidationCard />
 
-      {view === "dashboard" && freshness && Object.keys(freshness).length > 0 && (
-        <section className="freshness" data-testid="freshness">
-          <span className="freshness-title" title="Whether each piece of live data is current.">
-            Data status
-          </span>
-          {Object.entries(freshness).map(([sig, st]) => (
-            <span
-              key={sig}
-              className={`chip chip-${st}`}
-              data-signal={sig}
-              title={`${SIGNAL_NAME[sig] ?? humanize(sig)} — ${FRESHNESS_STATE[st] ?? st}`}
-            >
-              {SIGNAL_NAME[sig] ?? humanize(sig)}: {FRESHNESS_STATE[st] ?? st}
-            </span>
-          ))}
-        </section>
+          {freshness && Object.keys(freshness).length > 0 && (
+            <section className="freshness" data-testid="freshness">
+              <span className="freshness-title" title="Whether each piece of live data is current.">
+                Data status
+              </span>
+              {Object.entries(freshness).map(([sig, st]) => (
+                <span
+                  key={sig}
+                  className={`chip chip-${st}`}
+                  data-signal={sig}
+                  title={`${SIGNAL_NAME[sig] ?? humanize(sig)} — ${FRESHNESS_STATE[st] ?? st}`}
+                >
+                  {SIGNAL_NAME[sig] ?? humanize(sig)}: {FRESHNESS_STATE[st] ?? st}
+                </span>
+              ))}
+            </section>
+          )}
+        </Advanced>
       )}
 
       {view === "dashboard" && batteryDetail && batteryHasDetail && (
@@ -630,6 +657,7 @@ export function App() {
           <BatteryChips battery={battery} metric={batteryDetail} />
         </Modal>
       )}
-    </div>
+      </div>
+    </>
   );
 }

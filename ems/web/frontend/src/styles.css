@@ -56,12 +56,52 @@ body {
   background: var(--bg);
   color: var(--text);
   -webkit-font-smoothing: antialiased;
+  overflow-x: hidden; /* the full-bleed header scrim uses 100vw; never let it add a h-scrollbar */
 }
 
 .app {
   max-width: 920px;
   margin: 0 auto;
   padding: 32px 20px 48px;
+  position: relative; /* sits above the fixed SkyBackdrop */
+  z-index: 1;
+}
+
+/* --- Time-of-day landscape backdrop (illustrated, behind the top of the app) --- */
+.sky {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: clamp(260px, 30vw, 440px);
+  z-index: 0;
+  pointer-events: none;
+  overflow: hidden;
+  background-size: cover;
+  background-position: center 44%;
+  background-repeat: no-repeat;
+  animation: sky-in 1s ease both; /* gentle entrance so the scene settles in, not snaps */
+}
+@keyframes sky-in {
+  from { opacity: 0; transform: scale(1.03); }
+  to { opacity: 1; transform: scale(1); }
+}
+/* Non-dashboard views get a shorter header strip so their content sits legibly on the page, not
+   over the illustration (the full landscape hero is a dashboard feature, per the design). */
+.sky-compact { height: clamp(118px, 14vw, 172px); background-position: center 38%; }
+@media (prefers-reduced-motion: reduce) {
+  .sky { animation: none; }
+  .score-card-home:hover { transform: none; }
+}
+/* Melt the illustration's lower edge into the page beneath it (no hard seam under the hero cards). */
+.sky::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 38%;
+  background: linear-gradient(180deg, transparent 0%, var(--bg) 96%);
 }
 
 /* Elevation: lift the primary surfaces off the background so the layout reads as stacked cards. */
@@ -79,13 +119,35 @@ body {
 }
 
 .topbar {
+  position: relative;
+  isolation: isolate; /* contain the scrim's z-index so it can sit behind the header, over the sky */
   display: flex;
   align-items: center;
   flex-wrap: wrap;
   gap: 8px 12px;
   padding-bottom: 20px;
-  border-bottom: 1px solid var(--line);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.14);
   margin-bottom: 28px;
+}
+
+/* A soft, full-width top scrim so the header stays legible over any sky phase (the daytime blue is
+   too light for small text on its own). Fades out downward, reading as the sky's darker crown. */
+.topbar::before {
+  content: "";
+  position: absolute;
+  z-index: -1;
+  top: -32px; /* cover the .app top padding above the header */
+  left: 50%;
+  width: 100vw;
+  margin-left: -50vw;
+  height: calc(100% + 44px);
+  background: linear-gradient(
+    180deg,
+    rgba(6, 11, 30, 0.82) 0%,
+    rgba(6, 11, 30, 0.58) 52%,
+    rgba(6, 11, 30, 0) 100%
+  );
+  pointer-events: none;
 }
 
 .topbar h1 {
@@ -95,6 +157,42 @@ body {
   margin: 0;
   margin-right: auto;
   white-space: nowrap;
+  color: #f4f7ff; /* light on the scrim, independent of light/dark theme */
+  text-shadow: 0 1px 3px rgba(0, 0, 0, 0.4);
+}
+
+/* Header contents sit on the dark scrim in both themes — style them light + keep the badge
+   semantics readable with brighter fills/text than the in-body variants. */
+.topbar .nav-btn {
+  color: rgba(240, 245, 255, 0.78);
+}
+.topbar .nav-btn:hover {
+  color: #fff;
+  background: rgba(255, 255, 255, 0.14);
+}
+.topbar .nav-active {
+  color: #fff;
+  background: rgba(255, 255, 255, 0.18);
+  border-color: rgba(255, 255, 255, 0.22);
+}
+.topbar .badge-muted {
+  background: rgba(255, 255, 255, 0.15);
+  color: rgba(244, 247, 255, 0.92);
+}
+.topbar .badge-dryrun,
+.topbar .dq-degraded,
+.topbar .dq-price_fallback {
+  background: rgba(224, 162, 58, 0.26);
+  color: #ffd08a;
+}
+.topbar .badge-live,
+.topbar .dq-complete {
+  background: rgba(70, 200, 168, 0.26);
+  color: #79e7c9;
+}
+.topbar .dq-unsafe {
+  background: rgba(220, 80, 80, 0.32);
+  color: #ff9d9d;
 }
 
 /* On narrow screens, the title takes the full first row; badges flow onto the next. */
@@ -137,6 +235,9 @@ body {
   grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
   gap: 14px;
 }
+/* The dashboard status tiles need the same vertical rhythm (24px) as the cards around them —
+   without this they sit flush against the energy story above. */
+.status-grid { margin-top: 24px; }
 
 .metric {
   display: flex;
@@ -667,7 +768,7 @@ body {
 .chip-missing { color: var(--error); border-color: rgba(220, 80, 80, 0.4); }
 
 /* Top-bar view switch */
-.nav { display: flex; gap: 4px; }
+.nav { display: flex; gap: 4px; flex-wrap: wrap; }
 .nav-btn {
   font: inherit;
   font-size: 0.82rem;
@@ -968,21 +1069,27 @@ body {
 .footer { border-top: 1px solid var(--line); padding-top: 16px; }
 
 /* Home-state banner: the first thing read — safe / watching / controlling / needs-attention. */
+/* Frosted-glass banner so the dark headline stays legible over ANY landscape (bright day or dark
+   night), in both themes. The tint adapts via --panel; a tone-coloured border carries the state. */
 .home-banner {
   display: flex; flex-wrap: wrap; align-items: baseline; gap: 10px 14px;
-  padding: 14px 18px; border-radius: 14px; margin: 4px 0 14px;
-  border: 1px solid var(--border);
+  padding: 15px 20px; border-radius: 16px; margin: 4px 0 16px;
+  background: color-mix(in srgb, var(--panel) 78%, transparent);
+  -webkit-backdrop-filter: blur(16px) saturate(1.1);
+  backdrop-filter: blur(16px) saturate(1.1);
+  border: 1px solid color-mix(in srgb, var(--panel) 60%, transparent);
+  box-shadow: 0 10px 34px rgba(15, 25, 55, 0.16);
 }
-.home-headline { font-size: 1.15rem; font-weight: 650; }
-.home-confidence { color: var(--muted); font-size: 0.8rem; }
-.home-good { background: color-mix(in srgb, var(--accent) 12%, transparent);
-  border-color: color-mix(in srgb, var(--accent) 40%, transparent); }
-.home-watching { background: color-mix(in srgb, var(--winter) 12%, transparent);
-  border-color: color-mix(in srgb, var(--winter) 40%, transparent); }
-.home-controlling { background: color-mix(in srgb, #e0a23a 14%, transparent);
-  border-color: color-mix(in srgb, #e0a23a 45%, transparent); }
-.home-attention { background: rgba(220, 80, 80, 0.12);
-  border-color: rgba(220, 80, 80, 0.4); }
+.home-headline { font-size: 1.2rem; font-weight: 700; color: var(--text); letter-spacing: -0.01em; }
+.home-confidence { color: var(--muted); font-size: 0.8rem; display: inline-flex; align-items: center; gap: 6px; }
+.home-conf-icon { flex: none; }
+.conf-complete { color: var(--green-text); }
+.conf-degraded, .conf-price_fallback { color: var(--amber-text); }
+.conf-unsafe { color: var(--error); }
+.home-good { border-color: color-mix(in srgb, var(--accent) 55%, transparent); }
+.home-watching { border-color: color-mix(in srgb, var(--winter) 55%, transparent); }
+.home-controlling { border-color: color-mix(in srgb, #e0a23a 60%, transparent); }
+.home-attention { border-color: rgba(220, 80, 80, 0.55); }
 .decision-target { color: var(--muted); }
 .strategy-why { color: var(--muted); font-size: 0.8rem; margin: 6px 0 0; font-style: italic; }
 /* Quiet success markers in the Energy Story — calm confirmation, deliberately understated. */
@@ -1002,4 +1109,207 @@ body {
   border-radius: 12px;
   margin-bottom: 20px;
   font-size: 0.88rem;
+}
+
+/* --- Insights / reporting --- */
+.insights-head {
+  display: flex; align-items: flex-start; justify-content: space-between;
+  gap: 12px; flex-wrap: wrap; margin-bottom: 4px;
+}
+.period-picker {
+  display: inline-flex; gap: 3px; background: var(--panel-2);
+  border-radius: 999px; padding: 3px;
+}
+.period-btn {
+  border: none; background: transparent; color: var(--muted);
+  font-size: 0.82rem; font-weight: 600; padding: 6px 13px; border-radius: 999px; cursor: pointer;
+}
+.period-btn:hover { color: var(--text); }
+.period-active { background: var(--panel); color: var(--text); box-shadow: var(--shadow); }
+.period-nav { display: flex; align-items: center; gap: 10px; margin: 8px 0 16px; }
+.insights-headline {
+  font-size: 1.05rem; line-height: 1.5; margin: 0 0 16px; color: var(--text);
+  max-width: 60ch;
+}
+
+.score-grid {
+  display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  gap: 14px; margin-bottom: 16px; transition: opacity 0.2s ease;
+}
+.score-grid.is-loading { opacity: 0.55; }
+/* Insights score card: the same ring as the home hero, with the "why" beside it (the detail view). */
+.score-card {
+  display: flex; align-items: center; gap: 16px;
+  background: var(--panel); border: 1px solid var(--line);
+  border-radius: var(--radius); padding: 16px 18px; box-shadow: var(--shadow);
+}
+.score-detail { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+.score-raw { font-size: 0.85rem; color: var(--muted); font-variant-numeric: tabular-nums; }
+.score-explain { font-size: 0.82rem; color: var(--text); margin: 0; line-height: 1.4; }
+
+/* A non-interactive ring (Insights) doesn't lift or show a pointer. */
+.ring-static { flex: none; cursor: default; }
+.ring-static:hover { transform: none; background: transparent; }
+
+.flow-report {
+  background: var(--panel); border: 1px solid var(--line);
+  border-radius: var(--radius); padding: 18px; box-shadow: var(--shadow);
+}
+.flow-title { margin: 0 0 14px; }
+.flow-cols { display: grid; grid-template-columns: 1fr 1fr; gap: 24px; }
+@media (max-width: 480px) { .flow-cols { grid-template-columns: 1fr; gap: 16px; } }
+.flow-col-head {
+  font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.06em;
+  color: var(--muted); margin-bottom: 6px;
+}
+.flow-row {
+  display: flex; align-items: center; gap: 9px;
+  padding: 6px 0; border-bottom: 1px solid var(--line);
+}
+.flow-row:last-child { border-bottom: none; }
+.flow-dot { width: 10px; height: 10px; border-radius: 3px; flex: none; }
+.flow-name { flex: 1; font-size: 0.9rem; }
+.flow-kwh { font-variant-numeric: tabular-nums; font-weight: 600; }
+.flow-warn { margin: 14px 0 0; font-size: 0.82rem; color: var(--amber-text); }
+
+/* --- Advanced (collapsible detail) --- */
+.advanced { margin: 2px 0 20px; }
+.advanced-toggle {
+  display: flex; align-items: center; gap: 9px; width: 100%;
+  border: 1px dashed var(--line); background: transparent; color: var(--muted);
+  border-radius: var(--radius); padding: 12px 16px; cursor: pointer;
+  font-size: 0.85rem; font-weight: 600;
+}
+.advanced-toggle:hover { color: var(--text); border-color: var(--muted); }
+.advanced-chevron { display: inline-block; font-size: 1.1rem; transition: transform 0.2s ease; }
+.advanced-toggle.open .advanced-chevron { transform: rotate(90deg); }
+.advanced-body { margin-top: 14px; display: flex; flex-direction: column; gap: 14px; }
+@media (prefers-reduced-motion: reduce) { .advanced-chevron { transition: none; } }
+
+/* --- Home score rings (Oura-style hero) --- */
+.home-scores {
+  background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius);
+  padding: 18px 18px 22px; box-shadow: var(--shadow); margin-bottom: 20px;
+}
+.home-scores-head {
+  display: flex; align-items: flex-start; justify-content: space-between; gap: 12px;
+  margin-bottom: 12px;
+}
+.home-scores-heading { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+.home-scores-title {
+  font-size: 0.82rem; font-weight: 600; color: var(--muted); letter-spacing: 0.02em;
+  text-transform: uppercase;
+}
+.home-scores-summary {
+  display: inline-flex; align-items: center; gap: 6px;
+  font-size: 1.02rem; font-weight: 650; line-height: 1.25; letter-spacing: -0.01em;
+}
+.home-scores-summary.tone-great { color: var(--green-text); }
+.home-scores-summary.tone-good { color: var(--text); }
+.home-scores-summary.tone-grow { color: var(--amber-text); }
+.home-scores-spark { font-size: 0.95em; }
+.home-scores-more {
+  border: none; background: transparent; color: var(--accent-text);
+  font-size: 0.82rem; font-weight: 600; cursor: pointer; padding: 2px 4px;
+}
+.home-scores-more:hover { text-decoration: underline; }
+.home-scores-rings { display: flex; justify-content: space-around; gap: 10px; flex-wrap: wrap; }
+
+/* --- Home score cards (ring + copy + hills + emblem, per the mockup) --- */
+.home-scores-cards {
+  display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px;
+}
+.score-card-home {
+  position: relative; overflow: hidden; isolation: isolate;
+  display: flex; align-items: flex-start; gap: 12px; text-align: left;
+  padding: 20px 20px 32px; min-height: 190px;
+  border: 1px solid var(--line); border-radius: 18px; cursor: pointer;
+  background: color-mix(in srgb, var(--green) 8%, var(--panel));
+  transition: transform 0.18s ease, box-shadow 0.18s ease, border-color 0.18s ease;
+}
+.score-card-home:hover { transform: translateY(-3px); box-shadow: var(--shadow); border-color: color-mix(in srgb, var(--green) 30%, var(--line)); }
+.score-card-home:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+/* Band-aware tint — mint on a good day, a gentle amber/rose when there's headroom. */
+.score-card-home.score-ok { background: color-mix(in srgb, var(--amber) 8%, var(--panel)); }
+.score-card-home.score-low { background: color-mix(in srgb, var(--error) 8%, var(--panel)); }
+.score-card-home .ring { padding: 0; }
+
+.sc-copy {
+  display: flex; flex-direction: column; gap: 7px; min-width: 0; flex: 1;
+  padding-top: 4px; padding-right: 6px;
+}
+.sc-headline {
+  font-size: 0.9rem; font-weight: 600; line-height: 1.3; color: var(--text); letter-spacing: -0.01em;
+}
+/* Keep the caption clear of the corner emblem (which sits bottom-right). */
+.sc-caption { font-size: 0.82rem; font-weight: 600; line-height: 1.25; padding-right: 46px; }
+.score-good .sc-caption { color: var(--green-text); }
+.score-ok .sc-caption { color: var(--amber-text); }
+.score-low .sc-caption { color: var(--error); }
+.score-na .sc-caption { color: var(--muted); }
+
+/* Layered hills hugging the bottom edge. */
+.sc-hills { position: absolute; left: 0; right: 0; bottom: 0; width: 100%; height: 56px; z-index: -1; }
+.sc-hill { fill: var(--green); }
+.sc-hill-1 { opacity: 0.24; }
+.sc-hill-2 { opacity: 0.15; }
+.sc-hill-3 { opacity: 0.09; }
+.score-ok .sc-hill { fill: var(--amber); }
+.score-low .sc-hill { fill: var(--error); }
+
+/* Corner emblem — white glyph on a soft-green rounded badge. */
+.sc-badge {
+  position: absolute; right: 16px; bottom: 16px;
+  display: grid; place-items: center; width: 42px; height: 42px; border-radius: 13px;
+  background: var(--green); color: #fff; box-shadow: 0 4px 12px rgba(20, 120, 90, 0.28);
+}
+.score-ok .sc-badge { background: var(--amber); box-shadow: 0 4px 12px rgba(180, 130, 30, 0.28); }
+.score-low .sc-badge { background: var(--error); box-shadow: none; }
+
+@media (max-width: 720px) {
+  .home-scores-cards { grid-template-columns: 1fr; }
+}
+
+.ring {
+  border: none; background: transparent; cursor: pointer; padding: 6px;
+  display: flex; flex-direction: column; align-items: center; gap: 8px;
+  border-radius: 14px; transition: transform 0.18s ease, background 0.18s ease;
+}
+.ring:hover { transform: translateY(-2px); background: var(--panel-2); }
+.ring:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.ring-graphic { position: relative; display: inline-block; }
+.ring-svg { display: block; width: 100%; height: 100%; }
+.ring-track { stroke: var(--panel-2); }
+.ring-arc { transition: stroke-dashoffset 0.9s cubic-bezier(0.22, 1, 0.36, 1); }
+.ring-center {
+  position: absolute; inset: 0; display: flex; flex-direction: column;
+  align-items: center; justify-content: center; gap: 2px; pointer-events: none;
+}
+.ring-value {
+  font-size: 2.1rem; font-weight: 700; letter-spacing: -0.03em; line-height: 1;
+  font-variant-numeric: tabular-nums;
+}
+.ring-name {
+  font-size: 0.68rem; color: var(--muted); font-weight: 500;
+  max-width: 80px; text-align: center; line-height: 1.12;
+  overflow-wrap: anywhere; hyphens: auto;
+}
+.ring-caption {
+  font-size: 0.74rem; font-weight: 500; color: var(--muted);
+  max-width: 124px; text-align: center; line-height: 1.2;
+}
+.ring-good .ring-arc { stroke: var(--green); }
+.ring-good .ring-value { color: var(--green-text); }
+.ring-good .ring-caption { color: var(--green-text); }
+.ring-ok .ring-arc { stroke: var(--amber); }
+.ring-ok .ring-value { color: var(--amber-text); }
+.ring-ok .ring-caption { color: var(--amber-text); }
+.ring-low .ring-arc { stroke: var(--error); }
+.ring-low .ring-value { color: var(--error); }
+.ring-low .ring-caption { color: var(--error); }
+.ring-na .ring-arc { stroke: var(--muted); }
+.ring-na .ring-value { color: var(--muted); }
+@media (prefers-reduced-motion: reduce) {
+  .ring-arc { transition: none; }
+  .ring:hover { transform: none; }
 }
