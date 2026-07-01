@@ -164,7 +164,7 @@ export function Insights() {
         >
           ‹
         </button>
-        <span className="day-label" data-testid="insights-label">
+        <span className="day-label" data-testid="insights-label" aria-live="polite">
           {report?.label ?? "…"}
         </span>
         <button
@@ -200,9 +200,13 @@ export function Insights() {
                 key={s.key}
                 className={`score-tile score-${scoreBand(s.value)}`}
                 data-testid={`score-${s.key}`}
+                role="group"
+                aria-label={`${s.label} score: ${
+                  s.value == null ? "not available" : `${Math.round(s.value)} out of 100`
+                }`}
               >
                 <div className="score-label">{s.label}</div>
-                <div className="score-value" data-testid={`score-${s.key}-value`}>
+                <div className="score-value" data-testid={`score-${s.key}-value`} aria-hidden="true">
                   {s.value == null ? "—" : Math.round(s.value)}
                   {s.value != null && <span className="score-unit">/100</span>}
                 </div>

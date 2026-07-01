@@ -40,6 +40,8 @@ test.describe("Insights", () => {
     await expect(page.getByTestId("score-co2-value")).toContainText("60");
     await expect(page.getByTestId("score-best_price-value")).toContainText("75");
     await expect(page.getByTestId("score-co2")).toContainText("Avoided 60%");
+    // Screen-reader label states the score in words (not just the visual "60/100").
+    await expect(page.getByTestId("score-co2")).toHaveAttribute("aria-label", /60 out of 100/);
     // The flow amounts the user asked for (from solar/grid/battery → house/car).
     const flow = page.getByTestId("flow-report");
     await expect(flow).toContainText("Solar");
