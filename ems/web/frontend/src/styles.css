@@ -1076,3 +1076,58 @@ body {
 .flow-name { flex: 1; font-size: 0.9rem; }
 .flow-kwh { font-variant-numeric: tabular-nums; font-weight: 600; }
 .flow-warn { margin: 14px 0 0; font-size: 0.82rem; color: var(--amber-text); }
+
+/* --- Home score rings (Oura-style hero) --- */
+.home-scores {
+  background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius);
+  padding: 18px 18px 22px; box-shadow: var(--shadow); margin-bottom: 20px;
+}
+.home-scores-head {
+  display: flex; align-items: baseline; justify-content: space-between; margin-bottom: 10px;
+}
+.home-scores-title {
+  font-size: 0.9rem; font-weight: 600; color: var(--muted); letter-spacing: 0.01em;
+}
+.home-scores-more {
+  border: none; background: transparent; color: var(--accent-text);
+  font-size: 0.82rem; font-weight: 600; cursor: pointer; padding: 2px 4px;
+}
+.home-scores-more:hover { text-decoration: underline; }
+.home-scores-rings { display: flex; justify-content: space-around; gap: 10px; flex-wrap: wrap; }
+
+.ring {
+  border: none; background: transparent; cursor: pointer; padding: 6px;
+  display: flex; flex-direction: column; align-items: center; gap: 8px;
+  border-radius: 14px; transition: transform 0.18s ease, background 0.18s ease;
+}
+.ring:hover { transform: translateY(-2px); background: var(--panel-2); }
+.ring:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.ring-graphic { position: relative; display: inline-block; }
+.ring-svg { display: block; width: 100%; height: 100%; }
+.ring-track { stroke: var(--panel-2); }
+.ring-arc { transition: stroke-dashoffset 0.9s cubic-bezier(0.22, 1, 0.36, 1); }
+.ring-center {
+  position: absolute; inset: 0; display: flex; flex-direction: column;
+  align-items: center; justify-content: center; gap: 2px; pointer-events: none;
+}
+.ring-value {
+  font-size: 2.1rem; font-weight: 700; letter-spacing: -0.03em; line-height: 1;
+  font-variant-numeric: tabular-nums;
+}
+.ring-name {
+  font-size: 0.72rem; color: var(--muted); font-weight: 500;
+  max-width: 94px; text-align: center; line-height: 1.15;
+}
+.ring-caption { font-size: 0.72rem; color: var(--muted); max-width: 132px; text-align: center; }
+.ring-good .ring-arc { stroke: var(--green); }
+.ring-good .ring-value { color: var(--green-text); }
+.ring-ok .ring-arc { stroke: var(--amber); }
+.ring-ok .ring-value { color: var(--amber-text); }
+.ring-low .ring-arc { stroke: var(--error); }
+.ring-low .ring-value { color: var(--error); }
+.ring-na .ring-arc { stroke: var(--muted); }
+.ring-na .ring-value { color: var(--muted); }
+@media (prefers-reduced-motion: reduce) {
+  .ring-arc { transition: none; }
+  .ring:hover { transform: none; }
+}

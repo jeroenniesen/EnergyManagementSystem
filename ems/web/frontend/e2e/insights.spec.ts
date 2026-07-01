@@ -50,6 +50,21 @@ test.describe("Insights", () => {
     await expect(page.getByTestId("error")).toHaveCount(0);
   });
 
+  test("the home screen shows today's score rings that open Insights", async ({ page }) => {
+    await page.route("**/api/report**", (route) =>
+      route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(REPORT) }),
+    );
+    await page.goto("/");
+    await expect(page.getByTestId("home-scores")).toBeVisible();
+    await expect(page.getByTestId("ring-self_consumption")).toBeVisible();
+    await expect(page.getByTestId("ring-co2")).toBeVisible();
+    await expect(page.getByTestId("ring-best_price")).toBeVisible();
+    await expect(page.getByTestId("ring-co2")).toContainText("60"); // the score value in the ring
+    // Tapping a ring opens the Insights tab.
+    await page.getByTestId("ring-self_consumption").click();
+    await expect(page.getByTestId("insights")).toBeVisible();
+  });
+
   test("the period picker switches windows", async ({ page }) => {
     await page.route("**/api/report**", (route) => {
       const period = new URL(route.request().url()).searchParams.get("period") ?? "day";

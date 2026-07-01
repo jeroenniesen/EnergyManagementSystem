@@ -23,6 +23,7 @@ import { AuditView } from "./AuditView";
 import { ChatPanel } from "./ChatPanel";
 import { SystemView } from "./System";
 import { Insights } from "./Insights";
+import { HomeScores } from "./HomeScores";
 import { applyTheme, readStoredTheme, storeTheme, type Theme } from "./theme";
 
 type Status = {
@@ -468,6 +469,8 @@ export function App() {
       {view === "audit" && <AuditView />}
 
       {view === "system" && <SystemView />}
+
+      {view === "dashboard" && <HomeScores onOpenDetail={() => setView("insights")} />}
 
       {view === "dashboard" && status && (
         <section className="grid" data-testid="status-grid">
