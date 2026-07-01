@@ -357,10 +357,11 @@ test.describe("EMS dashboard", () => {
   }) => {
     const FLOWS = {
       date: "2026-06-28", has_data: true, partial: false,
-      solar_to_home: 4.0, solar_to_battery: 3.0, solar_to_grid: 2.0,
-      grid_to_home: 1.0, grid_to_battery: 0.5, battery_to_home: 2.5,
-      solar_kwh: 9.0, grid_import_kwh: 1.5, grid_export_kwh: 2.0,
-      battery_charge_kwh: 3.5, battery_discharge_kwh: 2.5, home_kwh: 7.5,
+      solar_to_home: 4.0, solar_to_car: 1.0, solar_to_battery: 3.0, solar_to_grid: 2.0,
+      grid_to_home: 1.0, grid_to_car: 0.5, grid_to_battery: 0.5,
+      battery_to_home: 2.5, battery_to_car: 0.0,
+      solar_kwh: 10.0, grid_import_kwh: 2.0, grid_export_kwh: 2.0,
+      battery_charge_kwh: 3.5, battery_discharge_kwh: 2.5, home_kwh: 7.5, car_kwh: 1.5,
       self_sufficiency_pct: 86.7,
     };
     await page.route("**/api/energy-distribution**", (route) =>
@@ -371,6 +372,7 @@ test.describe("EMS dashboard", () => {
     await expect(card).toBeVisible();
     await expect(page.getByTestId("sankey")).toBeVisible();
     await expect(page.getByTestId("band-s-h")).toBeVisible(); // a solar→home band
+    await expect(page.getByTestId("band-s-c")).toBeVisible(); // solar→car band (the new sink)
     await expect(page.getByTestId("dist-selfsuff")).toContainText("87%");
     // Day navigation: starts at Today (next disabled); stepping back enables it.
     await expect(page.getByTestId("dist-day")).toHaveText("Today");
