@@ -22,9 +22,10 @@ def _raw(hh, *, grid, solar, batt):
             "solar_power_w": solar, "battery_power_w": batt, "ev_power_w": 0.0, "soc_pct": 50.0}
 
 
-def _der(hh, load):
+def _der(hh, load, non_ev=None):
+    # house_load_w = total demand (incl. car); non_ev_load_w = house-only. car = total − non_ev.
     return {"ts": (DAY + timedelta(hours=hh)).isoformat(), "house_load_w": load,
-            "non_ev_load_w": load}
+            "non_ev_load_w": load if non_ev is None else non_ev}
 
 
 def _flows(raw, der, *, partial=False):
@@ -32,25 +33,44 @@ def _flows(raw, der, *, partial=False):
 
 
 def test_allocate_slot_solar_first_surplus():
-    # 3 kW solar, 1 kW house, 1 kW into battery, 1 kW exported (15 min slot).
-    sh, sb, sg, gh, gb, bh = _allocate_slot(
-        solar_w=3000, grid_w=-1000, battery_w=-1000, load_w=1000)
-    assert (sh, sb, sg) == (0.25, 0.25, 0.25)  # home, battery, export
-    assert (gh, gb, bh) == (0.0, 0.0, 0.0)  # nothing from the grid, battery not discharging
+    # 3 kW solar, 1 kW house, 1 kW into battery, 1 kW exported (15 min slot). No car.
+    r = _allocate_slot(solar_w=3000, grid_w=-1000, battery_w=-1000, home_w=1000)
+    assert (r.solar_home, r.solar_batt, r.solar_grid) == (0.25, 0.25, 0.25)
+    assert (r.grid_home, r.grid_batt, r.batt_home) == (0.0, 0.0, 0.0)
+    assert (r.solar_car, r.grid_car, r.batt_car) == (0.0, 0.0, 0.0)  # no car this slot
 
 
 def test_allocate_slot_grid_charges_battery():
     # Night top-up: no sun, 4 kW into the battery from the grid while the house draws 0.4 kW.
-    sh, sb, sg, gh, gb, bh = _allocate_slot(solar_w=0, grid_w=4400, battery_w=-4000, load_w=400)
-    assert (sh, sb, sg) == (0.0, 0.0, 0.0)
-    assert gb == 1.0  # 4 kW × 0.25 h = 1 kWh of grid-fed charging (the "buying to charge" band)
-    assert gh == 0.1 and bh == 0.0
+    r = _allocate_slot(solar_w=0, grid_w=4400, battery_w=-4000, home_w=400)
+    assert (r.solar_home, r.solar_batt, r.solar_grid) == (0.0, 0.0, 0.0)
+    assert r.grid_batt == 1.0  # 4 kW × 0.25 h = 1 kWh grid-fed charging ("buying to charge")
+    assert r.grid_home == 0.1 and r.batt_home == 0.0
 
 
 def test_allocate_slot_battery_powers_the_home():
     # Night: battery discharges to fully cover the house, nothing from the grid.
-    sh, sb, sg, gh, gb, bh = _allocate_slot(solar_w=0, grid_w=0, battery_w=800, load_w=800)
-    assert bh == 0.2 and gh == 0.0 and (sh, sb, sg, gb) == (0.0, 0.0, 0.0, 0.0)
+    r = _allocate_slot(solar_w=0, grid_w=0, battery_w=800, home_w=800)
+    assert r.batt_home == 0.2 and r.grid_home == 0.0
+    assert (r.solar_home, r.solar_batt, r.solar_grid, r.grid_batt) == (0.0, 0.0, 0.0, 0.0)
+
+
+def test_allocate_slot_solar_and_grid_feed_the_car():
+    # Midday: 3 kW solar, 0.5 kW house, 4 kW car, battery idle. Solar serves home first, then the
+    # car; the grid covers the rest of the car. Battery never feeds the car here.
+    r = _allocate_slot(solar_w=3000, grid_w=1500, battery_w=0, home_w=500, car_w=4000)
+    assert r.solar_home == 0.125 and r.solar_car == 0.625  # 0.75 kWh solar: 0.125 home, 0.625 car
+    assert r.grid_car == 0.375 and r.batt_car == 0.0        # grid tops the car up; no battery leak
+    assert r.solar_grid == 0.0
+
+
+def test_allocate_slot_battery_leak_into_car_is_flagged():
+    # Car-guard FAILURE: battery discharges 2 kW while the car pulls 3 kW and the house needs only
+    # 0.4 kW → 0.1 kWh to home, then 0.4 kWh LEAKS into the car (batt_car), grid covers the rest.
+    r = _allocate_slot(solar_w=0, grid_w=1400, battery_w=2000, home_w=400, car_w=3000)
+    assert r.batt_home == 0.1
+    assert r.batt_car == 0.4   # the leak — this is the car-guard diagnostic
+    assert r.grid_car == 0.35
 
 
 def test_daily_flows_sum_and_self_sufficiency():
@@ -70,8 +90,11 @@ def test_daily_flows_sum_and_self_sufficiency():
     assert f.solar_kwh == 0.75 and f.grid_export_kwh == 0.25
     assert f.grid_import_kwh == 1.1 and f.battery_charge_kwh == 1.25
     # Home = 0.25 (solar) + 0.2 (battery) + 0.1 (grid) = 0.55; self-served = 0.45 → 81.8%.
-    assert f.home_kwh == 0.55
+    assert f.home_kwh == 0.55 and f.car_kwh == 0.0
     assert f.self_sufficiency_pct == 81.8
+    # Solar used on-site = 0.25 home + 0.25 battery = 0.5 of 0.75 produced → 66.7%.
+    assert f.solar_self_consumption_pct == 66.7
+    assert f.car_guard_leak_kwh == 0.0
 
 
 def test_flows_conserve_energy():
@@ -86,8 +109,20 @@ def test_flows_conserve_energy():
     der = [_der(8, 900), _der(13, 1500), _der(19, 1500), _der(2, 400)]
     f = _flows(raw, der)
     left = f.solar_kwh + f.grid_import_kwh + f.battery_discharge_kwh
-    right = f.home_kwh + f.battery_charge_kwh + f.grid_export_kwh
+    right = f.home_kwh + f.car_kwh + f.battery_charge_kwh + f.grid_export_kwh
     assert abs(left - right) < 0.01, f"Sankey not balanced: {left} vs {right}"
+
+
+def test_daily_flows_with_a_charging_car():
+    # Midday solar while the car charges: solar covers home (1 kW) then the car (8 kW), grid tops
+    # the car up. 15 min → home 0.25 kWh, car 2.0 kWh, solar 1.0 kWh (0.25 home + 0.75 car).
+    raw = [_raw(12, grid=5000, solar=4000, batt=0)]
+    der = [_der(12, 9000, non_ev=1000)]  # 9 kW total = 1 kW house + 8 kW car
+    f = _flows(raw, der)
+    assert f.home_kwh == 0.25 and f.car_kwh == 2.0
+    assert f.solar_to_home == 0.25 and f.solar_to_car == 0.75
+    assert f.grid_to_car == 1.25 and f.car_guard_leak_kwh == 0.0
+    assert f.solar_self_consumption_pct == 100.0  # all 1.0 kWh solar used on-site
 
 
 def test_empty_day_is_graceful():
@@ -124,7 +159,9 @@ def test_endpoint_returns_a_days_distribution(tmp_path):
         b = c.get("/api/energy-distribution?date=2026-06-28").json()
     assert b["date"] == "2026-06-28" and b["has_data"] is True
     assert b["solar_to_home"] == 0.25 and b["battery_to_home"] == 0.2
-    assert {"solar_to_battery", "grid_to_home", "grid_to_battery", "self_sufficiency_pct"} <= set(b)
+    assert {"solar_to_battery", "grid_to_home", "grid_to_battery", "self_sufficiency_pct",
+            "solar_to_car", "grid_to_car", "battery_to_car", "car_kwh",
+            "solar_self_consumption_pct", "car_guard_leak_kwh"} <= set(b)
 
 
 def test_endpoint_future_and_bad_date(tmp_path):
