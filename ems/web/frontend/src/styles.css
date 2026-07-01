@@ -235,6 +235,9 @@ body {
   grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
   gap: 14px;
 }
+/* The dashboard status tiles need the same vertical rhythm (24px) as the cards around them —
+   without this they sit flush against the energy story above. */
+.status-grid { margin-top: 24px; }
 
 .metric {
   display: flex;

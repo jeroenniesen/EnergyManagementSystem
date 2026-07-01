@@ -486,7 +486,7 @@ export function App() {
       )}
 
       {view === "dashboard" && status && (
-        <section className="grid" data-testid="status-grid">
+        <section className="grid status-grid" data-testid="status-grid">
           {savings != null && (
             <Metric
               label="Saved today"
