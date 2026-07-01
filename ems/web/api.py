@@ -69,6 +69,7 @@ from ems.settings import (
     schema_json,
     validate_settings,
 )
+from ems.sky import sun_times
 from ems.sources.base import Source
 from ems.sources.battery import BatteryDriver
 from ems.sources.forecast import SolarForecastSource, day_kwh_p50
@@ -2031,6 +2032,23 @@ def create_app(
         der = await store.derived_between(s_iso, e_iso)
         return build_daily_flows(raw, der, day_start, day_end,
                                  label=d.isoformat(), partial=partial).to_dict()
+
+    @app.get("/api/sky")
+    def sky() -> dict:
+        """Today's sunrise/sunset (site tz) for the time-of-day sky backdrop. Nulls if the location
+        isn't set or it's polar day/night — the UI then falls back to clock-based phases. Read-only,
+        cheap (pure math), safe to poll infrequently."""
+        now = datetime.now(UTC)
+        lat, lon = settings_cache.get("site.lat"), settings_cache.get("site.lon")
+        sunrise = sunset = None
+        try:
+            if lat is not None and lon is not None:
+                sr, ss = sun_times(float(lat), float(lon), now.astimezone(site_tz).date(), site_tz)
+                sunrise = sr.isoformat() if sr else None
+                sunset = ss.isoformat() if ss else None
+        except (TypeError, ValueError):
+            pass
+        return {"now": now.isoformat(), "sunrise": sunrise, "sunset": sunset}
 
     @app.get("/api/report")
     async def report(

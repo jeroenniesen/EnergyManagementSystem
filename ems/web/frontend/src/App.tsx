@@ -24,6 +24,7 @@ import { ChatPanel } from "./ChatPanel";
 import { SystemView } from "./System";
 import { Insights } from "./Insights";
 import { HomeScores } from "./HomeScores";
+import { SkyBackdrop } from "./SkyBackdrop";
 import { applyTheme, readStoredTheme, storeTheme, type Theme } from "./theme";
 
 type Status = {
@@ -336,7 +337,9 @@ export function App() {
   const batteryHasDetail = !!(battery && (battery.aggregate || battery.towers.length > 0));
 
   return (
-    <div className="app">
+    <>
+      <SkyBackdrop />
+      <div className="app">
       <header className="topbar">
         <h1>Smart Energy Manager</h1>
         {status && (
@@ -644,6 +647,7 @@ export function App() {
           <BatteryChips battery={battery} metric={batteryDetail} />
         </Modal>
       )}
-    </div>
+      </div>
+    </>
   );
 }

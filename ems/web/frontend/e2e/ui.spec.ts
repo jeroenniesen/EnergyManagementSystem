@@ -21,6 +21,13 @@ test.describe("EMS dashboard", () => {
     await expect(page.getByTestId("error")).toHaveCount(0);
   });
 
+  test("a time-of-day sky backdrop renders behind the app", async ({ page }) => {
+    await page.goto("/");
+    const sky = page.getByTestId("sky");
+    await expect(sky).toBeAttached();
+    await expect(sky).toHaveAttribute("data-phase", /night|dawn|day|dusk/);
+  });
+
   test("the home-state banner leads with a calm headline + confidence", async ({ page }) => {
     await page.goto("/");
     const banner = page.getByTestId("home-state");
