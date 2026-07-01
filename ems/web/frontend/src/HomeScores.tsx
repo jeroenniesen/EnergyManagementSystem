@@ -4,8 +4,8 @@
 // data to celebrate, so the home never shows empty rings.
 import { useEffect, useState } from "react";
 
-import { ScoreRing } from "./ScoreRing";
-import { homeSummary, scoreCaption } from "./scoreCopy";
+import { ScoreCard } from "./ScoreCard";
+import { homeSummary } from "./scoreCopy";
 
 type Score = { key: string; label: string; value: number | null; explanation: string };
 type Report = { partial: boolean; flows: { has_data: boolean }; scores: Score[] };
@@ -61,17 +61,9 @@ export function HomeScores({ onOpenDetail }: { onOpenDetail: () => void }) {
           Insights →
         </button>
       </div>
-      <div className="home-scores-rings">
+      <div className="home-scores-cards">
         {report.scores.map((s) => (
-          <ScoreRing
-            key={s.key}
-            value={s.value}
-            label={s.label}
-            caption={scoreCaption(s.key, s.value)}
-            hint={s.explanation}
-            onClick={onOpenDetail}
-            testId={`ring-${s.key}`}
-          />
+          <ScoreCard key={s.key} score={s} onOpen={onOpenDetail} />
         ))}
       </div>
     </section>

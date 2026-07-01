@@ -50,29 +50,31 @@ test.describe("Insights", () => {
     await expect(page.getByTestId("error")).toHaveCount(0);
   });
 
-  test("the home screen shows today's score rings that open Insights", async ({ page }) => {
+  test("the home screen shows today's score cards that open Insights", async ({ page }) => {
     await page.route("**/api/report**", (route) =>
       route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(REPORT) }),
     );
     await page.goto("/");
     await expect(page.getByTestId("home-scores")).toBeVisible();
-    await expect(page.getByTestId("ring-self_consumption")).toBeVisible();
-    await expect(page.getByTestId("ring-co2")).toBeVisible();
-    await expect(page.getByTestId("ring-best_price")).toBeVisible();
+    const selfCard = page.getByTestId("score-card-self_consumption");
+    await expect(selfCard).toBeVisible();
+    await expect(page.getByTestId("score-card-co2")).toBeVisible();
+    await expect(page.getByTestId("score-card-best_price")).toBeVisible();
     await expect(page.getByTestId("ring-co2")).toContainText("60"); // the score value in the ring
-    // The reflective layer: a warm day summary + a band-aware caption under each ring.
+    // The reflective layer: a warm day summary + a band-aware headline + caption on each card.
     const summary = page.getByTestId("home-scores-summary");
     await expect(summary).toHaveAttribute("data-tone", "good"); // 80/60/75 → solid, not brilliant
     await expect(summary).toContainText("solid energy day");
-    await expect(page.getByTestId("ring-self_consumption")).toContainText("Mostly your own sun");
-    await expect(page.getByTestId("ring-co2")).toContainText("Cleaner than the grid");
-    // The caption is also spoken (folded into the accessible name, which would otherwise hide it).
-    await expect(page.getByTestId("ring-self_consumption")).toHaveAttribute(
+    await expect(selfCard).toContainText("You're using the energy you generate.");
+    await expect(selfCard).toContainText("Mostly your own sun");
+    await expect(page.getByTestId("score-card-co2")).toContainText("Cleaner than the grid");
+    // The whole card is a button whose accessible name carries the score + copy.
+    await expect(selfCard).toHaveAttribute(
       "aria-label",
-      /80 out of 100\. Mostly your own sun/,
+      /80 out of 100\. You're using the energy you generate\. Mostly your own sun/,
     );
-    // Tapping a ring opens the Insights tab.
-    await page.getByTestId("ring-self_consumption").click();
+    // Tapping a card opens the Insights tab.
+    await selfCard.click();
     await expect(page.getByTestId("insights")).toBeVisible();
   });
 
@@ -90,9 +92,9 @@ test.describe("Insights", () => {
     const summary = page.getByTestId("home-scores-summary");
     await expect(summary).toHaveAttribute("data-tone", "great");
     await expect(summary).toContainText("brilliant day");
-    // Every ring reads as a win.
-    await expect(page.getByTestId("ring-self_consumption")).toContainText("Mostly your own sun");
-    await expect(page.getByTestId("ring-best_price")).toContainText("Bought at the right times");
+    // Every card reads as a win.
+    await expect(page.getByTestId("score-card-self_consumption")).toContainText("Mostly your own sun");
+    await expect(page.getByTestId("score-card-best_price")).toContainText("Bought at the right times");
   });
 
   test("the period picker switches windows", async ({ page }) => {

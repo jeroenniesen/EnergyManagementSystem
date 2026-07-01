@@ -30,6 +30,33 @@ export function scoreCaption(key: string, value: number | null): string | undefi
   return CAPTIONS[key]?.[scoreBand(value)];
 }
 
+// A fuller sentence for the home score cards (the line above the caption) — plain-language,
+// band-aware, and warm on a good day.
+const HEADLINES: Record<string, Record<Band, string>> = {
+  self_consumption: {
+    good: "You're using the energy you generate.",
+    ok: "A good share is your own energy.",
+    low: "Most power came from the grid today.",
+    na: "No energy recorded yet.",
+  },
+  co2: {
+    good: "Low emissions today.",
+    ok: "Cleaner than the average grid.",
+    low: "Leaning on grid power today.",
+    na: "Nothing recorded yet.",
+  },
+  best_price: {
+    good: "Great timing! You bought at the best price.",
+    ok: "Reasonable buying today.",
+    low: "You bought during pricier hours.",
+    na: "No price data yet.",
+  },
+};
+
+export function scoreHeadline(key: string, value: number | null): string | undefined {
+  return HEADLINES[key]?.[scoreBand(value)];
+}
+
 export type SummaryTone = "great" | "good" | "grow";
 
 type ScoreLike = { value: number | null };
