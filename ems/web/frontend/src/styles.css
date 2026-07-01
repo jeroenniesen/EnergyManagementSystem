@@ -56,6 +56,7 @@ body {
   background: var(--bg);
   color: var(--text);
   -webkit-font-smoothing: antialiased;
+  overflow-x: hidden; /* the full-bleed header scrim uses 100vw; never let it add a h-scrollbar */
 }
 
 .app {
@@ -154,13 +155,35 @@ body {
 }
 
 .topbar {
+  position: relative;
+  isolation: isolate; /* contain the scrim's z-index so it can sit behind the header, over the sky */
   display: flex;
   align-items: center;
   flex-wrap: wrap;
   gap: 8px 12px;
   padding-bottom: 20px;
-  border-bottom: 1px solid var(--line);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.14);
   margin-bottom: 28px;
+}
+
+/* A soft, full-width top scrim so the header stays legible over any sky phase (the daytime blue is
+   too light for small text on its own). Fades out downward, reading as the sky's darker crown. */
+.topbar::before {
+  content: "";
+  position: absolute;
+  z-index: -1;
+  top: -32px; /* cover the .app top padding above the header */
+  left: 50%;
+  width: 100vw;
+  margin-left: -50vw;
+  height: calc(100% + 44px);
+  background: linear-gradient(
+    180deg,
+    rgba(6, 11, 30, 0.82) 0%,
+    rgba(6, 11, 30, 0.58) 52%,
+    rgba(6, 11, 30, 0) 100%
+  );
+  pointer-events: none;
 }
 
 .topbar h1 {
@@ -170,6 +193,42 @@ body {
   margin: 0;
   margin-right: auto;
   white-space: nowrap;
+  color: #f4f7ff; /* light on the scrim, independent of light/dark theme */
+  text-shadow: 0 1px 3px rgba(0, 0, 0, 0.4);
+}
+
+/* Header contents sit on the dark scrim in both themes — style them light + keep the badge
+   semantics readable with brighter fills/text than the in-body variants. */
+.topbar .nav-btn {
+  color: rgba(240, 245, 255, 0.78);
+}
+.topbar .nav-btn:hover {
+  color: #fff;
+  background: rgba(255, 255, 255, 0.14);
+}
+.topbar .nav-active {
+  color: #fff;
+  background: rgba(255, 255, 255, 0.18);
+  border-color: rgba(255, 255, 255, 0.22);
+}
+.topbar .badge-muted {
+  background: rgba(255, 255, 255, 0.15);
+  color: rgba(244, 247, 255, 0.92);
+}
+.topbar .badge-dryrun,
+.topbar .dq-degraded,
+.topbar .dq-price_fallback {
+  background: rgba(224, 162, 58, 0.26);
+  color: #ffd08a;
+}
+.topbar .badge-live,
+.topbar .dq-complete {
+  background: rgba(70, 200, 168, 0.26);
+  color: #79e7c9;
+}
+.topbar .dq-unsafe {
+  background: rgba(220, 80, 80, 0.32);
+  color: #ff9d9d;
 }
 
 /* On narrow screens, the title takes the full first row; badges flow onto the next. */
@@ -742,7 +801,7 @@ body {
 .chip-missing { color: var(--error); border-color: rgba(220, 80, 80, 0.4); }
 
 /* Top-bar view switch */
-.nav { display: flex; gap: 4px; }
+.nav { display: flex; gap: 4px; flex-wrap: wrap; }
 .nav-btn {
   font: inherit;
   font-size: 0.82rem;
