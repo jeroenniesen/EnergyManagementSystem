@@ -55,6 +55,21 @@ def test_co2_none_without_load():
     assert co2_score(_flows()).value is None
 
 
+def test_co2_clamps_to_zero_when_worse_than_reference():
+    # Heavy grid-charging (arbitrage) can import MORE than the load — % avoided goes negative and
+    # must clamp to 0 (never negative), not distort the tile.
+    s = co2_score(_flows(home_kwh=5.0, car_kwh=0.0, grid_import_kwh=10.0), grid_factor=0.27)
+    assert s.value == 0.0
+
+
+# --- best price ---
+
+def test_best_price_ignores_unpriced_slots():
+    # Slots with no price are skipped; the score uses only the priced imports.
+    s = best_price_score([(2.0, 0.10), (1.0, None), (1.0, 0.30)])
+    assert s.value == 66.7 and s.raw == round((2 * 0.10 + 1 * 0.30) / 3, 4)
+
+
 # --- best price ---
 
 def test_best_price_maps_vwap_onto_the_price_range():

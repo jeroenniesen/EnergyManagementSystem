@@ -8,7 +8,7 @@ from fastapi.testclient import TestClient
 
 from ems.domain import RawSample
 from ems.load_model import DerivedSample
-from ems.reporting import build_report, resolve_window
+from ems.reporting import _import_price_slots, build_report, resolve_window
 from ems.sources.mock import MockSource
 from ems.sources.prices import MockPriceSource
 from ems.storage.history import HistoryStore
@@ -66,6 +66,32 @@ def test_build_report_has_flows_and_three_scores():
     assert {s["key"] for s in r.scores} == {"self_consumption", "co2", "best_price"}
     # Every score has value/raw/unit/explanation fields.
     assert all({"value", "raw", "unit", "explanation"} <= set(s) for s in r.scores)
+
+
+def test_import_price_slots_aligns_hourly_prices_and_ignores_export():
+    start = datetime(2026, 6, 28, tzinfo=UTC)
+    end = start + timedelta(hours=2)
+    raw = [
+        {"ts": start.isoformat(), "grid_power_w": 2000},  # import 0.5 kWh in the 00:00 slot
+        {"ts": (start + timedelta(hours=1)).isoformat(), "grid_power_w": -1000},  # export → 0 import
+    ]
+    prices = [_P(start, 0.10), _P(start + timedelta(hours=1), 0.30)]  # hourly, coarser than 15-min
+    slots = _import_price_slots(raw, prices, start, end)
+    assert (round(slots[0][0], 3), slots[0][1]) == (0.5, 0.10)  # 00:00 slot: 0.5 kWh at €0.10
+    assert slots[1][0] == 0.0 and slots[1][1] == 0.30           # 01:00 slot: export, priced €0.30
+
+
+def test_build_report_threads_gas_into_co2_score():
+    start = datetime(2026, 6, 28, tzinfo=UTC)
+    end = start + timedelta(days=1)
+    raw = [{"ts": (start + timedelta(hours=12)).isoformat(), "grid_power_w": 1000,
+            "solar_power_w": 0, "battery_power_w": 0, "ev_power_w": 0.0, "soc_pct": 50.0}]
+    der = [{"ts": (start + timedelta(hours=12)).isoformat(), "house_load_w": 1000,
+            "non_ev_load_w": 1000}]
+    r = build_report(raw, der, [], period="day", start=start, end=end, label="x", partial=False,
+                     grid_factor=0.27, gas_factor=1.78, gas_m3=50.0)
+    co2 = next(s for s in r.scores if s["key"] == "co2")
+    assert "Gas heating" in co2["explanation"]  # gas folded into the footprint
 
 
 def _seed(db: str) -> None:

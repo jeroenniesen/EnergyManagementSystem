@@ -125,6 +125,14 @@ def test_daily_flows_with_a_charging_car():
     assert f.solar_self_consumption_pct == 100.0  # all 1.0 kWh solar used on-site
 
 
+def test_flows_backward_compat_without_non_ev_column():
+    # Old derived rows (before non_ev_load_w existed) → all load is treated as home, car = 0.
+    raw = [_raw(12, grid=-1000, solar=3000, batt=0)]
+    der = [{"ts": (DAY + timedelta(hours=12)).isoformat(), "house_load_w": 1000}]  # no non_ev
+    f = _flows(raw, der)
+    assert f.car_kwh == 0.0 and f.home_kwh == 0.25
+
+
 def test_empty_day_is_graceful():
     f = _flows([], [])
     assert f.has_data is False
