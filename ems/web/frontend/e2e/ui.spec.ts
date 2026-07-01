@@ -41,8 +41,8 @@ test.describe("EMS dashboard", () => {
     await expect(sky).toHaveAttribute("data-phase", /night|dawn|day|dusk/);
   });
 
-  test("the sky shows clouds on an overcast daytime", async ({ page }) => {
-    // Mock a daytime window (sunrise 4h ago, sunset in 4h) with heavy cloud cover.
+  test("the sky shows the daytime landscape scene during the day", async ({ page }) => {
+    // Mock a daytime window (sunrise 4h ago, sunset in 4h) → the day phase + its illustrated scene.
     await page.route("**/api/sky", (route) => {
       const now = Date.now();
       route.fulfill({
@@ -51,13 +51,14 @@ test.describe("EMS dashboard", () => {
           now: new Date(now).toISOString(),
           sunrise: new Date(now - 4 * 3600e3).toISOString(),
           sunset: new Date(now + 4 * 3600e3).toISOString(),
-          cloud_cover: 90,
         }),
       });
     });
     await page.goto("/");
-    await expect(page.getByTestId("sky")).toHaveAttribute("data-phase", "day");
-    await expect(page.getByTestId("cloud").first()).toBeAttached();
+    const sky = page.getByTestId("sky");
+    await expect(sky).toHaveAttribute("data-phase", "day");
+    // The landscape is an illustrated image (a background-image), not a flat gradient.
+    await expect(sky).toHaveCSS("background-image", /url\(.*day.*\.webp.*\)/);
   });
 
   test("the home-state banner leads with a calm headline + confidence", async ({ page }) => {

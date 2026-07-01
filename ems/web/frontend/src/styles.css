@@ -67,77 +67,29 @@ body {
   z-index: 1;
 }
 
-/* --- Time-of-day sky backdrop (decorative, behind the app) --- */
+/* --- Time-of-day landscape backdrop (illustrated, behind the top of the app) --- */
 .sky {
-  position: fixed;
+  position: absolute;
   top: 0;
   left: 0;
   right: 0;
-  height: 280px;
+  height: clamp(260px, 30vw, 440px);
   z-index: 0;
   pointer-events: none;
   overflow: hidden;
+  background-size: cover;
+  background-position: center 44%;
+  background-repeat: no-repeat;
 }
-.sky-grad { position: absolute; inset: 0; transition: opacity 1.2s ease; }
-.sky-night .sky-grad {
-  background: linear-gradient(180deg, #0a1030 0%, #131a3c 24%, transparent 100%);
-}
-.sky-dawn .sky-grad {
-  background: linear-gradient(180deg, #26325f 0%, #9a5f77 38%, #f0a860 58%, transparent 100%);
-}
-.sky-day .sky-grad {
-  background: linear-gradient(180deg, #4f97d8 0%, #a9d6f7 44%, transparent 100%);
-}
-.sky-dusk .sky-grad {
-  background: linear-gradient(180deg, #241f4d 0%, #6f456e 36%, #e5834a 58%, transparent 100%);
-}
-.sun {
+/* Melt the illustration's lower edge into the page beneath it (no hard seam under the hero cards). */
+.sky::after {
+  content: "";
   position: absolute;
-  width: 52px;
-  height: 52px;
-  border-radius: 50%;
-  background: radial-gradient(circle at 50% 45%, #fff6cf, #ffd66b 55%, #f6b026 100%);
-  box-shadow: 0 0 44px 14px rgba(255, 205, 90, 0.45);
-  transform: translate(-50%, -50%);
-  transition: left 60s linear, top 60s linear;
-}
-.moon {
-  position: absolute;
-  top: 46px;
-  right: 17%;
-  width: 38px;
-  height: 38px;
-  border-radius: 50%;
-  background: radial-gradient(circle at 38% 36%, #f5f7ff, #cdd6f0 68%, #a7b4d6 100%);
-  box-shadow: 0 0 26px 6px rgba(180, 200, 255, 0.32);
-}
-.cloud {
-  position: absolute;
-  height: auto;
-  color: rgba(255, 255, 255, 0.92);
-  transform: translateY(-50%);
-  filter: drop-shadow(0 5px 10px rgba(60, 80, 110, 0.18));
-  transition: opacity 1s ease;
-}
-.sky-dawn .cloud, .sky-dusk .cloud { color: rgba(255, 246, 238, 0.82); }
-.sun-dim { opacity: 0.5; filter: blur(1px); }
-.stars { position: absolute; inset: 0; }
-.star {
-  position: absolute;
-  width: 2px;
-  height: 2px;
-  border-radius: 50%;
-  background: #fff;
-  opacity: 0.75;
-  animation: twinkle 3.2s ease-in-out infinite;
-}
-@keyframes twinkle {
-  0%, 100% { opacity: 0.22; }
-  50% { opacity: 0.9; }
-}
-@media (prefers-reduced-motion: reduce) {
-  .star { animation: none; opacity: 0.7; }
-  .sun { transition: none; }
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 38%;
+  background: linear-gradient(180deg, transparent 0%, var(--bg) 96%);
 }
 
 /* Elevation: lift the primary surfaces off the background so the layout reads as stacked cards. */
