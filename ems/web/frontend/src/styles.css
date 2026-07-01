@@ -110,6 +110,16 @@ body {
   background: radial-gradient(circle at 38% 36%, #f5f7ff, #cdd6f0 68%, #a7b4d6 100%);
   box-shadow: 0 0 26px 6px rgba(180, 200, 255, 0.32);
 }
+.cloud {
+  position: absolute;
+  height: auto;
+  color: rgba(255, 255, 255, 0.92);
+  transform: translateY(-50%);
+  filter: drop-shadow(0 5px 10px rgba(60, 80, 110, 0.18));
+  transition: opacity 1s ease;
+}
+.sky-dawn .cloud, .sky-dusk .cloud { color: rgba(255, 246, 238, 0.82); }
+.sun-dim { opacity: 0.5; filter: blur(1px); }
 .stars { position: absolute; inset: 0; }
 .star {
   position: absolute;

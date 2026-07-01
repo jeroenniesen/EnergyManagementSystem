@@ -28,6 +28,25 @@ test.describe("EMS dashboard", () => {
     await expect(sky).toHaveAttribute("data-phase", /night|dawn|day|dusk/);
   });
 
+  test("the sky shows clouds on an overcast daytime", async ({ page }) => {
+    // Mock a daytime window (sunrise 4h ago, sunset in 4h) with heavy cloud cover.
+    await page.route("**/api/sky", (route) => {
+      const now = Date.now();
+      route.fulfill({
+        status: 200, contentType: "application/json",
+        body: JSON.stringify({
+          now: new Date(now).toISOString(),
+          sunrise: new Date(now - 4 * 3600e3).toISOString(),
+          sunset: new Date(now + 4 * 3600e3).toISOString(),
+          cloud_cover: 90,
+        }),
+      });
+    });
+    await page.goto("/");
+    await expect(page.getByTestId("sky")).toHaveAttribute("data-phase", "day");
+    await expect(page.getByTestId("cloud").first()).toBeAttached();
+  });
+
   test("the home-state banner leads with a calm headline + confidence", async ({ page }) => {
     await page.goto("/");
     const banner = page.getByTestId("home-state");

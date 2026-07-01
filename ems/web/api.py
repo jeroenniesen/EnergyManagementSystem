@@ -79,6 +79,7 @@ from ems.storage.audit import AuditStore
 from ems.storage.cache import CacheStore
 from ems.storage.history import DERIVED_COLUMNS, RAW_COLUMNS, HistoryStore
 from ems.storage.settings import SettingsStore
+from ems.weather import cloud_cover_pct
 
 _log = logging.getLogger("ems.recorder")
 
@@ -303,6 +304,8 @@ def create_app(
     # Held-decision dedup: the (outcome, desired_mode) we last audited as a HELD/blocked decision
     # (dwell/cap/not_controlling), so a recurring hold is explained ONCE, not logged every cycle.
     _held_box: dict[str, Any] = {"sig": None}
+    # Sky cloud-cover cache: Open-Meteo is polled at most every 15 min (best-effort) for the sky.
+    _sky_box: dict[str, Any] = {"cc": None, "at": None}
 
     def _apply_control_settings() -> None:
         """Push the control.* settings onto the live controller (preserves its switch counters)."""
@@ -2034,21 +2037,29 @@ def create_app(
                                  label=d.isoformat(), partial=partial).to_dict()
 
     @app.get("/api/sky")
-    def sky() -> dict:
-        """Today's sunrise/sunset (site tz) for the time-of-day sky backdrop. Nulls if the location
-        isn't set or it's polar day/night — the UI then falls back to clock-based phases. Read-only,
-        cheap (pure math), safe to poll infrequently."""
+    async def sky() -> dict:
+        """Today's sunrise/sunset (site tz) + current cloud cover for the time-of-day sky backdrop.
+        Sun times are pure math (nulls if location unset / polar → UI falls back to clock phases).
+        Cloud cover is best-effort from Open-Meteo, cached ≤15 min and fetched off the event loop;
+        None when unavailable (offline/sim) → the sky just shows clear. Read-only."""
         now = datetime.now(UTC)
         lat, lon = settings_cache.get("site.lat"), settings_cache.get("site.lon")
         sunrise = sunset = None
+        cloud_cover = _sky_box["cc"]
         try:
             if lat is not None and lon is not None:
-                sr, ss = sun_times(float(lat), float(lon), now.astimezone(site_tz).date(), site_tz)
+                lat_f, lon_f = float(lat), float(lon)
+                sr, ss = sun_times(lat_f, lon_f, now.astimezone(site_tz).date(), site_tz)
                 sunrise = sr.isoformat() if sr else None
                 sunset = ss.isoformat() if ss else None
+                last = _sky_box["at"]
+                if last is None or (now - last).total_seconds() > 900:
+                    cloud_cover = await asyncio.to_thread(cloud_cover_pct, lat_f, lon_f)
+                    _sky_box["cc"], _sky_box["at"] = cloud_cover, now
         except (TypeError, ValueError):
             pass
-        return {"now": now.isoformat(), "sunrise": sunrise, "sunset": sunset}
+        return {"now": now.isoformat(), "sunrise": sunrise, "sunset": sunset,
+                "cloud_cover": cloud_cover}
 
     @app.get("/api/report")
     async def report(

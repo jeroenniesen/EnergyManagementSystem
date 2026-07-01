@@ -3,10 +3,34 @@
 // stars at night. Driven by /api/sky (real sunrise/sunset for the home's location); falls back to
 // clock-based phases if that's unavailable. Purely decorative (aria-hidden). Weather clouds arrive in
 // a later loop. Re-evaluates the phase each minute so it transitions through dawn/day/dusk/night.
-import { useEffect, useState } from "react";
+import { type CSSProperties, useEffect, useState } from "react";
 
-type Sky = { now: string; sunrise: string | null; sunset: string | null };
+type Sky = {
+  now: string;
+  sunrise: string | null;
+  sunset: string | null;
+  cloud_cover: number | null;
+};
 type Phase = "night" | "dawn" | "day" | "dusk";
+
+const CLOUDS = [
+  { x: 16, y: 66, w: 130 },
+  { x: 54, y: 44, w: 168 },
+  { x: 78, y: 94, w: 104 },
+];
+
+function Cloud({ style }: { style: CSSProperties }) {
+  return (
+    <svg className="cloud" viewBox="0 0 100 58" style={style} data-testid="cloud" aria-hidden="true">
+      <g fill="currentColor">
+        <ellipse cx="50" cy="42" rx="44" ry="15" />
+        <circle cx="34" cy="34" r="17" />
+        <circle cx="55" cy="27" r="22" />
+        <circle cx="72" cy="37" r="15" />
+      </g>
+    </svg>
+  );
+}
 
 const TWILIGHT_MS = 45 * 60 * 1000;
 
@@ -68,11 +92,25 @@ export function SkyBackdrop() {
   const sunLeft = 12 + progress * 76; // sweeps left→right across the day
   const sunTop = 214 - 168 * Math.sin(Math.PI * progress); // low at dawn/dusk, high at noon
 
+  const cloud = sky?.cloud_cover ?? null;
+  const showClouds = daytime && cloud != null && cloud >= 35;
+  const cloudCount = cloud == null ? 0 : cloud > 75 ? 3 : cloud > 55 ? 2 : 1;
+  const cloudOpacity = cloud == null ? 0.6 : Math.min(0.96, 0.55 + cloud / 220);
+  const sunDim = cloud != null && cloud > 70; // the sun peeks through / hides on an overcast day
+
   return (
-    <div className={`sky sky-${phase}`} data-testid="sky" data-phase={phase} aria-hidden="true">
+    <div
+      className={`sky sky-${phase}${showClouds ? " sky-cloudy" : ""}`}
+      data-testid="sky"
+      data-phase={phase}
+      aria-hidden="true"
+    >
       <div className="sky-grad" />
       {daytime ? (
-        <span className="sun" style={{ left: `${sunLeft}%`, top: `${sunTop}px` }} />
+        <span
+          className={`sun${sunDim ? " sun-dim" : ""}`}
+          style={{ left: `${sunLeft}%`, top: `${sunTop}px` }}
+        />
       ) : (
         <>
           <span className="moon" />
@@ -87,6 +125,10 @@ export function SkyBackdrop() {
           </span>
         </>
       )}
+      {showClouds &&
+        CLOUDS.slice(0, cloudCount).map((c, i) => (
+          <Cloud key={i} style={{ left: `${c.x}%`, top: `${c.y}px`, width: c.w, opacity: cloudOpacity }} />
+        ))}
     </div>
   );
 }
