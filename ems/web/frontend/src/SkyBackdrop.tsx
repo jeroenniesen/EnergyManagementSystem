@@ -13,10 +13,12 @@ type Sky = {
 };
 type Phase = "night" | "dawn" | "day" | "dusk";
 
+// Centres kept below the header scrim (~110px) so a cloud never drifts across the title/nav —
+// they sit in the open sky band, like the sun's arc.
 const CLOUDS = [
-  { x: 16, y: 66, w: 130 },
-  { x: 54, y: 44, w: 168 },
-  { x: 78, y: 94, w: 104 },
+  { x: 14, y: 152, w: 118 },
+  { x: 50, y: 150, w: 150 },
+  { x: 80, y: 170, w: 96 },
 ];
 
 function Cloud({ style }: { style: CSSProperties }) {
