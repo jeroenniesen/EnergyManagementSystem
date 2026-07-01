@@ -99,16 +99,23 @@ def plan_rule_based(
         shortfall_dc = max(0.0, peak_load_kwh / eta - avail_now_kwh)
         slot_kwh = max_charge_w * _DH / 1000.0 * eta
         n_charge = math.ceil(shortfall_dc / slot_kwh) if slot_kwh > 0 and shortfall_dc > 1e-9 else 0
-        # Pool = ALL pre-peak horizon slots (cheapest first) — NOT the globally-cheapest N, which in
-        # winter are often the post-peak overnight hours and would starve the pre-peak window.
-        # n_charge already caps the result (mirrors plan_adaptive).
-        pre_peak = sorted((p for p in horizon if p.start < first_peak),
-                          key=lambda p: (p.eur_per_kwh, p.start))
-        charge_set = {p.start for p in pre_peak[:n_charge]}
-        if len(pre_peak) < n_charge:  # not enough cheap room before the peak → will under-charge
-            _log.warning("winter planner under-charge: need %d pre-peak slots, only %d available "
-                         "(shortfall %.2f kWh) — battery may enter the peak short",
-                         n_charge, len(pre_peak), shortfall_dc)
+        # Pool = every slot before the LAST profitable peak that is strictly worth buying — i.e.
+        # charge + round-trip losses + wear + risk still undercut the cheapest peak it would
+        # displace. NOT just the window before the FIRST peak: replanned while a peak is already
+        # in progress that window is empty, and a profitable valley BETWEEN peaks (buy €0.14
+        # midday, cover the €0.30 evening) would be skipped entirely (B-30, seen live 2026-07-02).
+        # n_charge caps the result; cheapest-first keeps the buys in the valley floor.
+        last_need = max(discharge_set)
+        peak_min = min(p.eur_per_kwh for p in horizon if p.start in discharge_set)
+        max_buy = (peak_min - cfg.degradation_eur_per_kwh
+                   - cfg.risk_margin_eur_per_kwh) * cfg.round_trip_efficiency
+        pool = sorted((p for p in horizon if p.start < last_need and p.eur_per_kwh <= max_buy),
+                      key=lambda p: (p.eur_per_kwh, p.start))
+        charge_set = {p.start for p in pool[:n_charge]}
+        if len(pool) < n_charge:  # not enough cheap room before the last peak → will under-charge
+            _log.warning("winter planner under-charge: need %d cheap pre-peak slots, only %d "
+                         "available (shortfall %.2f kWh) — battery may enter the peak short",
+                         n_charge, len(pool), shortfall_dc)
         target_soc = min(100.0, (reserve_kwh + avail_now_kwh + shortfall_dc) / usable_kwh * 100.0)
     else:
         charge_set = {p.start for p in charge_candidates}
@@ -117,12 +124,15 @@ def plan_rule_based(
     for p in horizon:
         has_later_discharge = any(d > p.start for d in discharge_set)
         if p.start in charge_set and has_later_discharge:
+            # Deadline = the peak this charge actually feeds (the next discharge after it) — the
+            # first peak may already be in the past when replanning mid-peak.
+            next_peak = min(d for d in discharge_set if d > p.start)
             out.append(PlanSlot(
                 p.start, BatteryIntent.GRID_CHARGE_TO_TARGET,
                 f"charge: cheap window €{p.eur_per_kwh:.2f}/kWh", target_soc=target_soc,
                 target_kwh=per_slot_kwh,
                 power_w=(max_charge_w if load_w_by is not None else None),
-                floor_soc=floor, deadline=first_peak,
+                floor_soc=floor, deadline=next_peak,
             ))
             continue
         if p.start in charge_set:

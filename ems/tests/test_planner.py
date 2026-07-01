@@ -54,6 +54,39 @@ def test_empty_prices_gives_empty_plan():
     assert plan.slots == ()
 
 
+def test_replanned_mid_peak_buys_the_valley_before_the_next_peak():
+    # Live bug (B-30, 2026-07-02): replanned while the evening peak was already in progress, the
+    # planner only shopped for charge slots BEFORE the first profitable peak — an empty window —
+    # and skipped a deeply profitable €0.14 valley ahead of the NEXT evening's peak.
+    start = datetime(2026, 7, 1, 21, 0, tzinfo=AMS)  # first peak starts 21:00
+    now = start + timedelta(minutes=20)  # replan at 21:20, mid-peak
+
+    def block(offset_h, n, price):
+        return [PriceSlot(start + timedelta(hours=offset_h, minutes=15 * i), price)
+                for i in range(n)]
+
+    prices = (
+        block(0, 12, 0.30)  # 21:00-23:45 — first peak, in progress
+        + block(3, 40, 0.25)  # 00:00-09:45 — shoulder (unprofitable to arbitrage)
+        + block(13, 32, 0.14)  # 10:00-17:45 — the valley
+        + block(21, 12, 0.30)  # 18:00-20:45 — the next evening peak
+    )
+    load = {p.start: 1000.0 for p in prices}  # ~1 kW house load, incl. through both peaks
+    plan = plan_rule_based(
+        prices, now, PlannerConfig(), soc_pct=50.0, load_w_by=load,
+        usable_kwh=10.8, reserve_soc_pct=10.0, max_charge_w=4000.0,
+    )
+    charge = [s for s in plan.slots if s.intent is BatteryIntent.GRID_CHARGE_TO_TARGET]
+    assert charge, "mid-peak replan must still buy the upcoming valley for the next peak"
+    valley_lo, valley_hi = start + timedelta(hours=13), start + timedelta(hours=21)
+    assert all(valley_lo <= s.start < valley_hi for s in charge), (
+        "top-up must land in the cheap valley, not the shoulder or a peak")
+    last_peak_start = prices[-12].start
+    assert all(s.deadline is not None and s.deadline >= s.start for s in charge), (
+        "a charge slot's deadline (the peak it feeds) must not lie in the past")
+    assert all(s.deadline <= last_peak_start for s in charge)
+
+
 def test_no_charge_after_last_discharge():
     # A cheap slot that occurs AFTER all profitable peaks must not be scheduled to charge
     # (nothing to discharge into -> no wasted cycle).
