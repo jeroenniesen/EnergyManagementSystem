@@ -1,10 +1,10 @@
 """The three Insights scores — pure functions, 0..100 where 100 = best, each self-explaining.
 
 Design: docs/superpowers/specs/2026-07-01-insights-reporting-design.md (Part 1 — the three scores).
-No I/O: the reporting layer hands in an EnergyFlows window, the per-slot (import_kWh, price) pairs, and
-the carbon/gas factors; these functions return Score values the API serialises directly. Every score
-carries a human-readable `explanation` (the "why", including what the system did) — explainability is
-a core product principle, not decoration.
+No I/O: the reporting layer hands in an EnergyFlows window, the per-slot (import_kWh, price) pairs,
+and the carbon/gas factors; these functions return Score values the API serialises directly. Every
+score carries a human-readable `explanation` (the "why", including what the system did) —
+explainability is a core product principle, not decoration.
 """
 from __future__ import annotations
 
