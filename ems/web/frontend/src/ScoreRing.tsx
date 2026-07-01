@@ -2,6 +2,7 @@
 // hero and the Insights tab, so a score looks the same wherever it appears. Colour comes from the
 // band via CSS so light/dark + the sky backdrop stay in tune. Renders as a button when it links
 // somewhere (tap → detail), or a decorative element when it's just showing a value in place.
+import { useEffect, useState } from "react";
 
 export type Band = "good" | "ok" | "low" | "na";
 
@@ -35,7 +36,18 @@ export function ScoreRing({
   const r = (size - stroke) / 2;
   const c = 2 * Math.PI * r;
   const pct = value == null ? 0 : Math.max(0, Math.min(100, value));
-  const offset = c * (1 - pct / 100);
+  // Sweep the arc up from empty on mount (the satisfying "fill" — CSS transitions the offset).
+  // Start at the target when the user prefers reduced motion, so it never animates.
+  const [shown, setShown] = useState(() =>
+    typeof window !== "undefined" && window.matchMedia?.("(prefers-reduced-motion: reduce)").matches
+      ? pct
+      : 0,
+  );
+  useEffect(() => {
+    const id = requestAnimationFrame(() => setShown(pct));
+    return () => cancelAnimationFrame(id);
+  }, [pct]);
+  const offset = c * (1 - shown / 100);
   const band = scoreBand(value);
   const half = size / 2;
   // Fold the visible caption into the spoken name — the button's aria-label would otherwise hide it
