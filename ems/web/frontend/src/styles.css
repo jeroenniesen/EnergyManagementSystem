@@ -80,10 +80,19 @@ body {
   background-size: cover;
   background-position: center 44%;
   background-repeat: no-repeat;
+  animation: sky-in 1s ease both; /* gentle entrance so the scene settles in, not snaps */
+}
+@keyframes sky-in {
+  from { opacity: 0; transform: scale(1.03); }
+  to { opacity: 1; transform: scale(1); }
 }
 /* Non-dashboard views get a shorter header strip so their content sits legibly on the page, not
    over the illustration (the full landscape hero is a dashboard feature, per the design). */
 .sky-compact { height: clamp(118px, 14vw, 172px); background-position: center 38%; }
+@media (prefers-reduced-motion: reduce) {
+  .sky { animation: none; }
+  .score-card-home:hover { transform: none; }
+}
 /* Melt the illustration's lower edge into the page beneath it (no hard seam under the hero cards). */
 .sky::after {
   content: "";
