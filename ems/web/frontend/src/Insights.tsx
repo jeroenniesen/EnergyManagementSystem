@@ -71,6 +71,17 @@ function rawText(s: Score): string {
   return `${s.raw} ${s.unit}`;
 }
 
+// A warm one-line summary of the window, synthesised from the flows + scores (goal A: motivation).
+function headline(report: Report, f: Flows): string {
+  const ss = f.self_sufficiency_pct;
+  if (ss == null) return "";
+  const co2 = report.scores.find((s) => s.key === "co2")?.value;
+  const soFar = report.partial ? " so far" : "";
+  let line = `You ran ${Math.round(ss)}% on your own solar + battery`;
+  line += co2 != null ? ` and cut ${Math.round(co2)}% of a no-solar home's CO₂${soFar}.` : `${soFar}.`;
+  return line;
+}
+
 function FlowRow({ color, label, val }: { color: string; label: string; val: number }) {
   return (
     <div className="flow-row">
@@ -178,6 +189,11 @@ export function Insights() {
 
       {report && hasData && f && (
         <>
+          {headline(report, f) && (
+            <p className="insights-headline" data-testid="insights-headline">
+              {headline(report, f)}
+            </p>
+          )}
           <div className={`score-grid${loading ? " is-loading" : ""}`} data-testid="score-grid">
             {report.scores.map((s) => (
               <div

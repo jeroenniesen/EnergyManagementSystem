@@ -33,6 +33,7 @@ test.describe("Insights", () => {
     await page.goto("/");
     await page.getByTestId("nav-insights").click();
     await expect(page.getByTestId("insights")).toBeVisible();
+    await expect(page.getByTestId("insights-headline")).toContainText("80% on your own");
     await expect(page.getByTestId("score-grid")).toBeVisible();
     // Three self-explaining 0-100 tiles.
     await expect(page.getByTestId("score-self_consumption-value")).toContainText("80");
