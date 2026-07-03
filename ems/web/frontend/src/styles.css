@@ -1366,3 +1366,9 @@ body {
 @media (max-width: 560px) {
   .fin-tiles { flex-direction: column; }
 }
+
+/* Behavior chart: two aligned panels (consumption / solar & grid) */
+.behavior-panel-title {
+  margin: 10px 0 2px; font-size: 12px; font-weight: 600; color: var(--muted);
+  text-transform: uppercase; letter-spacing: 0.04em;
+}
