@@ -31,12 +31,14 @@ class Recorder:
         freshness: FreshnessTracker,
         cycle_seconds: float = 300.0,
         clock: Callable[[], datetime] = _utcnow,
+        price_source=None,  # optional .slots() provider; persisted for finance (spec 2026-07-03)
     ) -> None:
         self.source = source
         self.store = store
         self.freshness = freshness
         self.cycle_seconds = cycle_seconds
         self._clock = clock
+        self.price_source = price_source
         # Health, surfaced on /api/diagnostics so a 24/7 operator can SEE a stuck recorder (full
         # disk, DB lock, permanently failing device) instead of only inferring it from stale data.
         self.last_success_at: datetime | None = None
@@ -65,6 +67,21 @@ class Recorder:
         await self.store.record(now.isoformat(), raw, derived)
         for sig in fresh:
             self.freshness.mark(sig, now)
+        await self._persist_prices()
+
+    async def _persist_prices(self) -> None:
+        """Upsert the current price curve so PAST slots keep the price that was active then —
+        the live feed only carries today/tomorrow (finance + best-price history, spec 2026-07-03).
+        Best-effort: prices come from the source's cache, but a failure (feed down, DB busy) must
+        never kill the sense cycle; the gap just lowers that day's price_coverage."""
+        if self.price_source is None:
+            return
+        try:
+            slots = await asyncio.to_thread(self.price_source.slots)
+            await self.store.upsert_price_slots(
+                [(p.start.astimezone(UTC).isoformat(), float(p.eur_per_kwh)) for p in slots])
+        except Exception as exc:
+            _log.warning("price persist failed (non-fatal): %s: %s", type(exc).__name__, exc)
 
     async def record_now(self) -> None:
         await self.sense_once(self._clock())

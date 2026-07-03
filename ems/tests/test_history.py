@@ -97,3 +97,58 @@ def test_maintain_and_db_stats(tmp_path):
     stats = asyncio.run(run())
     assert stats["raw_rows"] == 1 and stats["derived_rows"] == 1
     assert stats["db_bytes"] > 0 and stats["wal_bytes"] >= 0
+
+
+def test_price_slots_upsert_and_query(tmp_path):
+    # Spec 2026-07-03: prices persist so finance/best-price survive beyond the live price window.
+    store = HistoryStore(str(tmp_path / "ems.sqlite"))
+
+    async def run():
+        await store.init()
+        await store.upsert_price_slots([("2026-06-28T10:00:00+00:00", 0.20),
+                                        ("2026-06-28T10:15:00+00:00", 0.25)])
+        # Same slot again with a corrected price → overwrites, no duplicate row.
+        await store.upsert_price_slots([("2026-06-28T10:15:00+00:00", 0.30)])
+        return await store.prices_between("2026-06-28T00:00:00+00:00",
+                                          "2026-06-29T00:00:00+00:00")
+
+    rows = asyncio.run(run())
+    assert [(r["start_ts"], r["eur_per_kwh"]) for r in rows] == [
+        ("2026-06-28T10:00:00+00:00", 0.20), ("2026-06-28T10:15:00+00:00", 0.30)]
+
+
+def test_daily_finance_roundtrip_and_upsert(tmp_path):
+    store = HistoryStore(str(tmp_path / "ems.sqlite"))
+
+    async def run():
+        await store.init()
+        await store.upsert_daily_finance("2026-06-28", {"saved_eur": 1.0, "has_data": True})
+        await store.upsert_daily_finance("2026-06-28", {"saved_eur": 1.25, "has_data": True})
+        await store.upsert_daily_finance("2026-06-29", {"saved_eur": 0.4, "has_data": True})
+        return await store.daily_finance_between("2026-06-28", "2026-06-30")
+
+    rows = asyncio.run(run())
+    assert [r["day"] for r in rows] == ["2026-06-28", "2026-06-29"]
+    assert rows[0]["data"]["saved_eur"] == 1.25  # upsert overwrote
+
+
+def test_purge_trims_prices_but_keeps_daily_finance(tmp_path):
+    # daily_finance is the long-horizon record (B-13) — retention must never eat it.
+    store = HistoryStore(str(tmp_path / "ems.sqlite"))
+
+    async def run():
+        await store.init()
+        raw = _raw(100.0)
+        await store.record("2026-01-01T10:00:00+00:00", raw, reconstruct(raw))
+        await store.upsert_price_slots([("2026-01-01T10:00:00+00:00", 0.20),
+                                        ("2026-06-28T10:00:00+00:00", 0.25)])
+        await store.upsert_daily_finance("2026-01-01", {"saved_eur": 0.9, "has_data": True})
+        await store.purge_older_than("2026-06-01T00:00:00+00:00")
+        prices = await store.prices_between("2020-01-01T00:00:00+00:00",
+                                            "2030-01-01T00:00:00+00:00")
+        fin = await store.daily_finance_between("2020-01-01", "2030-01-01")
+        return prices, fin
+
+    prices, fin = asyncio.run(run())
+    assert [p["start_ts"] for p in prices] == ["2026-06-28T10:00:00+00:00"]
+    assert [f["day"] for f in fin] == ["2026-01-01"]

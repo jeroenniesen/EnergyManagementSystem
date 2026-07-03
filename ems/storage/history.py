@@ -2,6 +2,7 @@
 so derived values can always be recomputed after a sign/calibration fix."""
 from __future__ import annotations
 
+import json
 from contextlib import asynccontextmanager
 
 import aiosqlite
@@ -53,6 +54,20 @@ class HistoryStore:
             # retention purges by `ts`. Without these, those scans get slower as the DB ages.
             await db.execute("CREATE INDEX IF NOT EXISTS idx_raw_ts ON raw_samples(ts)")
             await db.execute("CREATE INDEX IF NOT EXISTS idx_derived_ts ON derived_samples(ts)")
+            # Stored price slots (spec 2026-07-03): finance/best-price need the price that was
+            # active in a PAST slot, which the live price feed no longer carries. Upserted by the
+            # recorder; purged with the samples.
+            await db.execute(
+                "CREATE TABLE IF NOT EXISTS price_slots "
+                "(start_ts TEXT PRIMARY KEY, eur_per_kwh REAL NOT NULL)"
+            )
+            # Per-day finance rollups (JSON payload so fields can evolve without migrations).
+            # Deliberately NOT covered by retention purges — this is the long-horizon financial
+            # record (backlog B-13): a year of rows is only ~365 entries.
+            await db.execute(
+                "CREATE TABLE IF NOT EXISTS daily_finance "
+                "(day TEXT PRIMARY KEY, data TEXT NOT NULL)"
+            )
             await db.commit()
 
     async def purge_older_than(self, cutoff_iso: str) -> int:
@@ -64,6 +79,9 @@ class HistoryStore:
             deleted = cur.rowcount or 0
             cur = await db.execute("DELETE FROM derived_samples WHERE ts < ?", (cutoff_iso,))
             deleted += cur.rowcount or 0
+            cur = await db.execute("DELETE FROM price_slots WHERE start_ts < ?", (cutoff_iso,))
+            deleted += cur.rowcount or 0
+            # daily_finance is intentionally NOT purged (long-horizon record, B-13).
             await db.commit()
             return deleted
 
@@ -168,6 +186,42 @@ class HistoryStore:
             db.row_factory = aiosqlite.Row
             cur = await db.execute(query, (start_iso, end_iso, limit))
             return [dict(r) for r in await cur.fetchall()]
+
+    async def upsert_price_slots(self, slots: list[tuple[str, float]]) -> None:
+        """Idempotently store (start_ts UTC-ISO, €/kWh) slots — re-fetches simply overwrite."""
+        if not slots:
+            return
+        async with self._conn() as db:
+            await db.executemany(
+                "INSERT OR REPLACE INTO price_slots (start_ts, eur_per_kwh) VALUES (?, ?)", slots)
+            await db.commit()
+
+    async def prices_between(self, start_iso: str, end_iso: str) -> list[dict]:
+        """Stored price slots in [start, end), oldest-first (UTC-ISO ⇒ lexicographic = time)."""
+        async with self._conn() as db:
+            db.row_factory = aiosqlite.Row
+            cur = await db.execute(
+                "SELECT start_ts, eur_per_kwh FROM price_slots "
+                "WHERE start_ts >= ? AND start_ts < ? ORDER BY start_ts ASC",
+                (start_iso, end_iso))
+            return [dict(r) for r in await cur.fetchall()]
+
+    async def upsert_daily_finance(self, day: str, data: dict) -> None:
+        """Store/replace one local day's finance rollup (day = YYYY-MM-DD, data = JSON-able)."""
+        async with self._conn() as db:
+            await db.execute(
+                "INSERT OR REPLACE INTO daily_finance (day, data) VALUES (?, ?)",
+                (day, json.dumps(data)))
+            await db.commit()
+
+    async def daily_finance_between(self, start_day: str, end_day: str) -> list[dict]:
+        """Finance rollups for days in [start, end) as {day, data}, oldest-first."""
+        async with self._conn() as db:
+            db.row_factory = aiosqlite.Row
+            cur = await db.execute(
+                "SELECT day, data FROM daily_finance WHERE day >= ? AND day < ? "
+                "ORDER BY day ASC", (start_day, end_day))
+            return [{"day": r["day"], "data": json.loads(r["data"])} for r in await cur.fetchall()]
 
     async def table_names(self) -> set[str]:
         async with self._conn() as db:

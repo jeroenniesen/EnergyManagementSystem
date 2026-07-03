@@ -53,7 +53,8 @@ def build_app():
     source, price_source, solar_forecast, battery_endpoint, controller_driver, dev_mode, dry_run = (
         build_wiring(eff, tz, cache_store=cache_store)
     )
-    recorder = Recorder(source, store, freshness, cycle_seconds=cfg.cycle_seconds)
+    recorder = Recorder(source, store, freshness, cycle_seconds=cfg.cycle_seconds,
+                        price_source=price_source)
     # Startup grace (observe-before-act) is 120s by default; EMS_STARTUP_GRACE_SECONDS lets a
     # debug/test run reach CONTROLLING quickly without waiting two minutes.
     _grace = float(os.environ.get("EMS_STARTUP_GRACE_SECONDS") or 120)

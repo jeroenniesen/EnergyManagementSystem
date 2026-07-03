@@ -37,6 +37,7 @@ from ems.control.override import (
 from ems.diagnostics import build_diagnostics, overall_status
 from ems.domain import BatteryIntent, PhysicalMode
 from ems.energy_flow import build_daily_flows
+from ems.finance import day_finance
 from ems.freshness import FreshnessTracker
 from ems.lifecycle import OwnershipState
 from ems.load_model import reconstruct
@@ -57,7 +58,7 @@ from ems.planner.strategy import build_plan, select_strategy_with_reason
 from ems.planner.summer import SummerConfig, sunset_after
 from ems.planner.validator import PlanValidation, validate_plan
 from ems.readiness import Readiness, compute_readiness, home_state
-from ems.reporting import build_report, resolve_window
+from ems.reporting import build_report, build_series, resolve_window
 from ems.retrospect import build_past_story, past_headline
 from ems.savings import estimate_daily_savings_eur
 from ems.sense import Recorder
@@ -2085,9 +2086,11 @@ def create_app(
         prices = price_source.slots() if price_source is not None else []
         # Future / no store → an honest empty report (has_data False), never an error.
         if store is None or start > now_local:
-            return build_report([], [], prices, period=period, start=start, end=end, label=label,
+            resp = build_report([], [], prices, period=period, start=start, end=end, label=label,
                                 partial=partial, grid_factor=grid_factor,
                                 gas_factor=gas_factor).to_dict()
+            resp["series"] = build_series([], [], period=period, start=start, end=end, tz=site_tz)
+            return resp
         q_end = min(end, now_local + timedelta(minutes=1))  # never query the future
         # Size the row cap to the window (one row/min ceiling) so week/month/year aren't truncated.
         limit = min(200_000, int((end - start).total_seconds() / 60) + 1000)
@@ -2095,9 +2098,75 @@ def create_app(
                                       q_end.astimezone(UTC).isoformat(), limit=limit)
         der = await store.derived_between(start.astimezone(UTC).isoformat(),
                                           q_end.astimezone(UTC).isoformat(), limit=limit)
-        return build_report(raw, der, prices, period=period, start=start, end=end, label=label,
+        resp = build_report(raw, der, prices, period=period, start=start, end=end, label=label,
                             partial=partial, grid_factor=grid_factor,
                             gas_factor=gas_factor).to_dict()
+        # The behavior series (P1/house/car/solar per bucket) rides on the same rows/window.
+        resp["series"] = build_series(raw, der, period=period, start=start, end=end, tz=site_tz)
+        return resp
+
+    @app.get("/api/finance")
+    async def finance(
+        period: str = Query(default="day", pattern="^(day|week|month|year)$"),
+        date: str | None = None,
+    ) -> dict:
+        """Financial history (spec 2026-07-03 B): per LOCAL day — what the grid cost, what the
+        battery cost in wear, and what the EMS saved vs the no-battery baseline — measured from
+        recorded samples + stored prices, never from the plan. Completed days are computed once
+        and persisted (`daily_finance`, retention-proof); the running day is always fresh."""
+        now_local = datetime.now(UTC).astimezone(site_tz)
+        if date:
+            try:
+                anchor = date_cls.fromisoformat(date)
+            except ValueError:
+                return JSONResponse(  # type: ignore[return-value]
+                    {"detail": "date must be YYYY-MM-DD"}, status_code=422)
+        else:
+            anchor = now_local.date()
+        start, end, label, partial = resolve_window(period, anchor, site_tz, now_local)
+        degradation = float(settings_cache.get("planner.degradation_eur_per_kwh", 0.05))
+        days: list[dict] = []
+        cur = start
+        while cur < end and cur <= now_local and store is not None:
+            day_label = cur.date().isoformat()
+            nxt = cur + timedelta(days=1)
+            completed = nxt <= now_local
+            if completed:
+                cached = await store.daily_finance_between(
+                    day_label, (cur.date() + timedelta(days=1)).isoformat())
+                if cached:
+                    days.append(cached[0]["data"])
+                    cur = nxt
+                    continue
+            q_end = min(nxt, now_local + timedelta(minutes=1))
+            raw = await store.raw_between(cur.astimezone(UTC).isoformat(),
+                                          q_end.astimezone(UTC).isoformat(), limit=3000)
+            price_rows = await store.prices_between(cur.astimezone(UTC).isoformat(),
+                                                    nxt.astimezone(UTC).isoformat())
+            f = day_finance(raw, price_rows, day=day_label,
+                            degradation_eur_per_kwh=degradation).to_dict()
+            if completed:
+                await store.upsert_daily_finance(day_label, f)
+            days.append(f)
+            cur = nxt
+
+        def _sum(key: str) -> float | None:
+            vals = [d[key] for d in days if d.get(key) is not None]
+            return round(sum(vals), 2) if vals else None
+
+        totals = {
+            "grid_cost_eur": _sum("grid_cost_eur"),
+            "battery_cost_eur": _sum("battery_cost_eur"),
+            "saved_eur": _sum("saved_eur"),
+            "grid_import_kwh": _sum("grid_import_kwh") or 0.0,
+            "grid_export_kwh": _sum("grid_export_kwh") or 0.0,
+            "days_with_prices": sum(1 for d in days if d.get("price_coverage", 0) > 0),
+            "days_with_data": sum(1 for d in days if d.get("has_data")),
+        }
+        return {"period": period, "label": label,
+                "window_start": start.astimezone(UTC).isoformat(),
+                "window_end": end.astimezone(UTC).isoformat(),
+                "partial": partial, "days": days, "totals": totals}
 
     @app.get("/api/export")
     async def export(

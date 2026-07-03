@@ -99,6 +99,85 @@ def _import_price_slots(
     return out
 
 
+def build_series(
+    raw_rows: list[dict],
+    derived_rows: list[dict],
+    *,
+    period: str,
+    start: datetime,
+    end: datetime,
+    tz: ZoneInfo,
+) -> list[dict]:
+    """How P1 (grid ±), house, car and solar behaved over the window (spec 2026-07-03 A), as a
+    STABLE axis of buckets — every bucket in the window is present (sampled or not) so charts
+    don't shift as data arrives. `day` → 96×15-min slots; `week`/`month` → local days; `year` →
+    local months. Same math as the flow report: 15-min slot means → kWh, summed into buckets."""
+    start_utc, end_utc = start.astimezone(UTC), end.astimezone(UTC)
+    grid_by: dict[datetime, list[float]] = defaultdict(list)
+    ev_by: dict[datetime, list[float]] = defaultdict(list)
+    solar_by: dict[datetime, list[float]] = defaultdict(list)
+    house_by: dict[datetime, list[float]] = defaultdict(list)
+    for r in raw_rows:
+        dt = _parse(r.get("ts"))
+        if dt is None or dt < start_utc or dt >= end_utc:
+            continue
+        slot = _floor(dt)
+        grid_by[slot].append(float(r.get("grid_power_w", 0.0)))
+        ev_by[slot].append(float(r.get("ev_power_w", 0.0)))
+        solar_by[slot].append(float(r.get("solar_power_w", 0.0)))
+    for d in derived_rows:
+        dt = _parse(d.get("ts"))
+        if dt is None or dt < start_utc or dt >= end_utc:
+            continue
+        house_by[_floor(dt)].append(float(d.get("non_ev_load_w", 0.0)))
+
+    def _bucket_starts() -> list[datetime]:
+        if period == "day":
+            n = int((end_utc - start_utc).total_seconds() // 900)
+            return [start_utc + timedelta(minutes=15 * i) for i in range(n)]
+        if period == "year":
+            return [datetime(start.year, m, 1, tzinfo=tz) for m in range(1, 13)]
+        days, cur = [], start
+        while cur < end:
+            days.append(cur)
+            cur += timedelta(days=1)
+        return days
+
+    def _key(slot: datetime) -> object:
+        if period == "day":
+            return slot
+        local = slot.astimezone(tz)
+        return (local.year, local.month) if period == "year" else local.date()
+
+    axis = _bucket_starts()
+    buckets = {(_key(b) if period == "day" else
+                ((b.year, b.month) if period == "year" else b.date())):
+               {"start": b.astimezone(UTC).isoformat() if period == "day" else b.isoformat(),
+                "grid_import_kwh": 0.0, "grid_export_kwh": 0.0, "house_kwh": 0.0,
+                "car_kwh": 0.0, "solar_kwh": 0.0, "samples": 0}
+               for b in axis}
+    for slot in set(grid_by) | set(house_by):
+        b = buckets.get(_key(slot))
+        if b is None:
+            continue
+        grid_w = _mean(grid_by[slot]) if slot in grid_by else 0.0
+        b["grid_import_kwh"] += max(0.0, grid_w) * _DH / 1000.0
+        b["grid_export_kwh"] += max(0.0, -grid_w) * _DH / 1000.0
+        b["house_kwh"] += (_mean(house_by[slot]) if slot in house_by else 0.0) * _DH / 1000.0
+        b["car_kwh"] += (_mean(ev_by[slot]) if slot in ev_by else 0.0) * _DH / 1000.0
+        b["solar_kwh"] += (_mean(solar_by[slot]) if slot in solar_by else 0.0) * _DH / 1000.0
+        b["samples"] += len(grid_by.get(slot, ()))
+    out = []
+    for bstart in axis:
+        key = _key(bstart) if period == "day" else (
+            (bstart.year, bstart.month) if period == "year" else bstart.date())
+        row = buckets[key]
+        for k in ("grid_import_kwh", "grid_export_kwh", "house_kwh", "car_kwh", "solar_kwh"):
+            row[k] = round(row[k], 3)
+        out.append(row)
+    return out
+
+
 def build_report(
     raw_rows: list[dict],
     derived_rows: list[dict],
