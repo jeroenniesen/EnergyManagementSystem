@@ -1,0 +1,119 @@
+- generic [ref=e3]:
+  - banner [ref=e4]:
+    - heading "Smart Energy Manager" [level=1] [ref=e5]
+    - generic "The system shows what it would do, but never changes the battery." [ref=e6]: Watching only
+    - generic "Readings come from the built-in simulator, not your home." [ref=e7]: Demo data
+    - generic "All sensors and forecasts are fresh." [ref=e74]: All data current
+    - navigation "Views" [ref=e8]:
+      - button "Dashboard" [ref=e9] [cursor=pointer]
+      - button "Insights" [active] [ref=e10] [cursor=pointer]
+      - button "Chat" [ref=e11] [cursor=pointer]
+      - button "Settings" [ref=e12] [cursor=pointer]
+      - button "Audit" [ref=e13] [cursor=pointer]
+      - button "System" [ref=e14] [cursor=pointer]
+  - generic [ref=e76]: Watch-only mode — EMS observes and advises but won't change the battery.
+  - region "Insights and reporting" [ref=e77]:
+    - generic [ref=e78]:
+      - generic [ref=e79]:
+        - heading "Insights" [level=2] [ref=e80]
+        - paragraph [ref=e81]: Your energy scores and where every kWh went.
+      - group "Reporting period" [ref=e82]:
+        - button "Day" [pressed] [ref=e83] [cursor=pointer]
+        - button "Week" [ref=e84] [cursor=pointer]
+        - button "Month" [ref=e85] [cursor=pointer]
+        - button "Year" [ref=e86] [cursor=pointer]
+    - group "Choose a period" [ref=e87]:
+      - button "Previous period" [ref=e88] [cursor=pointer]: ‹
+      - generic [ref=e89]: 2026-07-03
+      - button "Next period" [disabled] [ref=e90]: ›
+    - paragraph [ref=e91]: You ran 80% on your own solar + battery and cut 80% of a no-solar home's CO₂ so far.
+    - generic [ref=e92]:
+      - 'group "Self-consumption score: 80 out of 100" [ref=e93]':
+        - generic [ref=e94] [cursor=pointer]:
+          - generic [ref=e95]:
+            - img [ref=e96]
+            - generic:
+              - generic: "80"
+              - generic: Self-consumption
+          - generic [ref=e99]: Mostly your own sun
+        - paragraph [ref=e101]: No solar this period — you ran 80% on your own battery/solar.
+      - 'group "CO₂ score: 80 out of 100" [ref=e102]':
+        - generic [ref=e103] [cursor=pointer]:
+          - generic [ref=e104]:
+            - img [ref=e105]
+            - generic:
+              - generic: "80"
+              - generic: CO₂
+          - generic [ref=e108]: Barely any fossil power
+        - generic [ref=e109]:
+          - generic [ref=e110]: 0.0 kg CO₂
+          - paragraph [ref=e111]: Avoided 80% of a no-solar home's CO₂ (0 kg vs 0 kg).
+      - 'group "Best price score: 100 out of 100" [ref=e112]':
+        - generic [ref=e113] [cursor=pointer]:
+          - generic [ref=e114]:
+            - img [ref=e115]
+            - generic:
+              - generic: "100"
+              - generic: Best price
+          - generic [ref=e118]: Bought at the right times
+        - generic [ref=e119]:
+          - generic [ref=e120]: €0.18 / kWh avg import
+          - paragraph [ref=e121]: Prices were flat at €0.18/kWh — nothing to time.
+    - generic [ref=e122]:
+      - heading "How your energy behaved (so far)" [level=3] [ref=e123]
+      - paragraph [ref=e124]: "Energy behavior: house used 0.3 kWh, car 0.0 kWh, imported 0.1 kWh, exported 0.0 kWh, solar 0.0 kWh so far."
+      - 'img "Energy behavior: house used 0.3 kWh, car 0.0 kWh, imported 0.1 kWh, exported 0.0 kWh, solar 0.0 kWh so far." [ref=e126]':
+        - generic [ref=e128]: 1.0 kW
+        - generic [ref=e130]: 500 W
+        - generic [ref=e132]: 0 W
+        - generic [ref=e133]: 00:00
+        - generic [ref=e134]: 06:00
+        - generic [ref=e135]: 12:00
+        - generic [ref=e136]: 18:00
+      - generic [ref=e137]:
+        - generic [ref=e138]: House
+        - generic [ref=e140]: Car
+        - generic [ref=e142]: Grid
+        - generic [ref=e144]: Solar
+      - group [ref=e146]:
+        - generic "Figures" [ref=e147] [cursor=pointer]
+    - generic [ref=e148]:
+      - heading "Where your energy went (so far)" [level=3] [ref=e149]
+      - generic [ref=e150]:
+        - generic [ref=e151]:
+          - generic [ref=e152]: Came from
+          - generic [ref=e153]:
+            - generic [ref=e155]: Solar
+            - generic [ref=e156]: 0.0 kWh
+          - generic [ref=e157]:
+            - generic [ref=e159]: Grid
+            - generic [ref=e160]: 0.1 kWh
+          - generic [ref=e161]:
+            - generic [ref=e163]: Battery
+            - generic [ref=e164]: 0.2 kWh
+        - generic [ref=e165]:
+          - generic [ref=e166]: Went to
+          - generic [ref=e167]:
+            - generic [ref=e169]: House
+            - generic [ref=e170]: 0.3 kWh
+          - generic [ref=e171]:
+            - generic [ref=e173]: Car
+            - generic [ref=e174]: 0.0 kWh
+          - generic [ref=e175]:
+            - generic [ref=e177]: Exported
+            - generic [ref=e178]: 0.0 kWh
+          - generic [ref=e179]:
+            - generic [ref=e181]: Battery charged
+            - generic [ref=e182]: 0.0 kWh
+    - generic [ref=e183]:
+      - heading "What it cost & saved (so far)" [level=3] [ref=e184]
+      - generic [ref=e185]:
+        - generic [ref=e186]:
+          - generic [ref=e187]: €0.03
+          - generic [ref=e188]: saved by the battery — measured, after wear
+        - generic [ref=e189]:
+          - generic [ref=e190]: €0.01
+          - generic [ref=e191]: grid energy cost
+        - generic [ref=e192]:
+          - generic [ref=e193]: €0.01
+          - generic [ref=e194]: battery wear

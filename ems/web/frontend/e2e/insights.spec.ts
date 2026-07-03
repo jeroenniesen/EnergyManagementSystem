@@ -140,3 +140,94 @@ test.describe("Insights", () => {
     await expect(page.getByTestId("leak-warn")).toContainText("into the car");
   });
 });
+
+const SERIES = Array.from({ length: 96 }, (_, i) => {
+  const h = String(Math.floor(i / 4)).padStart(2, "0");
+  const m = String((i % 4) * 15).padStart(2, "0");
+  const sampled = i >= 20 && i < 80;
+  return {
+    start: `2026-06-28T${h}:${m}:00+00:00`,
+    grid_import_kwh: sampled ? 0.2 : 0, grid_export_kwh: sampled && i > 40 ? 0.3 : 0,
+    house_kwh: sampled ? 0.35 : 0, car_kwh: sampled && i > 60 ? 0.9 : 0,
+    solar_kwh: sampled ? 0.4 : 0, samples: sampled ? 3 : 0,
+  };
+});
+
+const FINANCE = {
+  period: "day", label: "2026-06-28", partial: false,
+  days: [{
+    day: "2026-06-28", has_data: true, price_coverage: 1.0,
+    grid_cost_eur: 1.42, battery_cost_eur: 0.11, baseline_cost_eur: 2.31, saved_eur: 0.78,
+    grid_import_kwh: 7.4, grid_export_kwh: 2.0,
+  }],
+  totals: {
+    grid_cost_eur: 1.42, battery_cost_eur: 0.11, saved_eur: 0.78,
+    grid_import_kwh: 7.4, grid_export_kwh: 2.0, days_with_prices: 1, days_with_data: 1,
+  },
+};
+
+test.describe("Insights: behavior chart + money", () => {
+  test("renders the energy-behavior chart with legend and figures table", async ({ page }) => {
+    await page.route("**/api/report**", (route) =>
+      route.fulfill({ status: 200, contentType: "application/json",
+        body: JSON.stringify({ ...REPORT, series: SERIES }) }),
+    );
+    await page.route("**/api/finance**", (route) =>
+      route.fulfill({ status: 200, contentType: "application/json",
+        body: JSON.stringify(FINANCE) }),
+    );
+    await page.goto("/");
+    await page.getByTestId("nav-insights").click();
+    const chart = page.getByTestId("energy-behavior");
+    await expect(chart).toBeVisible();
+    await expect(chart).toContainText("How your energy behaved");
+    // Identity is never color-alone: legend names every series.
+    for (const name of ["House", "Car", "Grid", "Solar"]) {
+      await expect(chart.locator(".chart-legend")).toContainText(name);
+    }
+    // A table view of the figures exists (accessibility relief for the chart).
+    await chart.locator(".chart-table summary").click();
+    await expect(chart.locator(".chart-table table")).toBeVisible();
+    await expect(chart.locator(".chart-table tbody tr").first()).toContainText("0.35");
+  });
+
+  test("shows measured money totals and per-day context", async ({ page }) => {
+    await page.route("**/api/report**", (route) =>
+      route.fulfill({ status: 200, contentType: "application/json",
+        body: JSON.stringify({ ...REPORT, series: SERIES }) }),
+    );
+    await page.route("**/api/finance**", (route) =>
+      route.fulfill({ status: 200, contentType: "application/json",
+        body: JSON.stringify(FINANCE) }),
+    );
+    await page.goto("/");
+    await page.getByTestId("nav-insights").click();
+    const fin = page.getByTestId("finance-section");
+    await expect(fin).toBeVisible();
+    await expect(page.getByTestId("fin-saved")).toContainText("€0.78");
+    await expect(page.getByTestId("fin-grid")).toContainText("€1.42");
+    await expect(page.getByTestId("fin-wear")).toContainText("€0.11");
+    await expect(fin).toContainText("measured, after wear");
+  });
+
+  test("is honest when no price history exists yet", async ({ page }) => {
+    await page.route("**/api/report**", (route) =>
+      route.fulfill({ status: 200, contentType: "application/json",
+        body: JSON.stringify({ ...REPORT, series: SERIES }) }),
+    );
+    await page.route("**/api/finance**", (route) =>
+      route.fulfill({ status: 200, contentType: "application/json",
+        body: JSON.stringify({
+          ...FINANCE,
+          days: [{ ...FINANCE.days[0], price_coverage: 0, grid_cost_eur: null,
+                   battery_cost_eur: null, baseline_cost_eur: null, saved_eur: null }],
+          totals: { ...FINANCE.totals, grid_cost_eur: null, battery_cost_eur: null,
+                    saved_eur: null, days_with_prices: 0 },
+        }) }),
+    );
+    await page.goto("/");
+    await page.getByTestId("nav-insights").click();
+    await expect(page.getByTestId("fin-caveat")).toContainText("No price history recorded yet");
+    await expect(page.getByTestId("fin-saved")).toHaveCount(0); // never invent a € figure
+  });
+});

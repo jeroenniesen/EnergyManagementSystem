@@ -132,3 +132,118 @@ def test_report_endpoint_validation_and_future(tmp_path):
         assert c.get("/api/report?period=decade").status_code == 422  # bad period → pattern reject
         fut = c.get("/api/report?period=day&date=2099-01-01").json()
         assert fut["flows"]["has_data"] is False  # future window → honest empty, not an error
+
+
+def test_build_series_day_15min_buckets():
+    # Spec 2026-07-03 (A): the day view buckets P1/house/car/solar per 15-min slot.
+    from ems.reporting import build_series
+
+    day = datetime(2026, 6, 28, 0, 0, tzinfo=AMS)
+    ts0 = day + timedelta(hours=12)
+    raw, der = [], []
+    for i in range(4):  # one hour of samples: import 1 kW, car 500 W, solar 800 W
+        ts = (ts0 + timedelta(minutes=15 * i)).astimezone(UTC).isoformat()
+        raw.append({"ts": ts, "grid_power_w": 1000.0, "solar_power_w": 800.0,
+                    "battery_power_w": 0.0, "ev_power_w": 500.0, "soc_pct": 50.0})
+        der.append({"ts": ts, "house_load_w": 2300.0, "non_ev_load_w": 1800.0})
+    buckets = build_series(raw, der, period="day", start=day, end=day + timedelta(days=1), tz=AMS)
+    assert len(buckets) == 96  # a stable axis: every slot present, sampled or not
+    noon = next(b for b in buckets if b["start"] == ts0.astimezone(UTC).isoformat())
+    assert abs(noon["grid_import_kwh"] - 0.25) < 1e-9
+    assert noon["grid_export_kwh"] == 0.0
+    assert abs(noon["house_kwh"] - 0.45) < 1e-9  # non-EV house: 1800 W × 15 min
+    assert abs(noon["car_kwh"] - 0.125) < 1e-9
+    assert abs(noon["solar_kwh"] - 0.2) < 1e-9
+    assert noon["samples"] == 1
+    empty = buckets[0]
+    assert empty["samples"] == 0 and empty["grid_import_kwh"] == 0.0
+
+
+def test_build_series_week_buckets_respect_local_days():
+    from ems.reporting import build_series
+
+    monday = datetime(2026, 6, 22, 0, 0, tzinfo=AMS)
+    # 23:30 LOCAL on Tuesday = 21:30 UTC — must land in Tuesday's bucket, not Wednesday's.
+    late = (monday + timedelta(days=1, hours=23, minutes=30)).astimezone(UTC)
+    raw = [{"ts": late.isoformat(), "grid_power_w": -2000.0, "solar_power_w": 0.0,
+            "battery_power_w": 0.0, "ev_power_w": 0.0, "soc_pct": 50.0}]
+    der = [{"ts": late.isoformat(), "house_load_w": 0.0, "non_ev_load_w": 0.0}]
+    buckets = build_series(raw, der, period="week", start=monday,
+                           end=monday + timedelta(days=7), tz=AMS)
+    assert len(buckets) == 7
+    assert buckets[1]["start"].startswith("2026-06-23")
+    assert abs(buckets[1]["grid_export_kwh"] - 0.5) < 1e-9  # 2 kW export × 15 min
+    assert buckets[2]["grid_export_kwh"] == 0.0
+
+
+def test_build_series_year_month_buckets():
+    from ems.reporting import build_series
+
+    jan1 = datetime(2026, 1, 1, 0, 0, tzinfo=AMS)
+    ts = datetime(2026, 3, 10, 12, 0, tzinfo=AMS).astimezone(UTC)
+    raw = [{"ts": ts.isoformat(), "grid_power_w": 4000.0, "solar_power_w": 0.0,
+            "battery_power_w": 0.0, "ev_power_w": 4000.0, "soc_pct": 50.0}]
+    der = [{"ts": ts.isoformat(), "house_load_w": 4000.0, "non_ev_load_w": 0.0}]
+    buckets = build_series(raw, der, period="year", start=jan1,
+                           end=datetime(2027, 1, 1, tzinfo=AMS), tz=AMS)
+    assert len(buckets) == 12
+    assert abs(buckets[2]["car_kwh"] - 1.0) < 1e-9  # March
+    assert buckets[0]["samples"] == 0
+
+
+def _seed_prices(db: str) -> None:
+    async def go():
+        store = HistoryStore(db)
+        await store.init()
+        await store.upsert_price_slots([
+            (PAST.astimezone(UTC).isoformat(), 0.20),
+            ((PAST + timedelta(hours=6)).astimezone(UTC).isoformat(), 0.40),
+        ])
+    asyncio.run(go())
+
+
+def test_report_endpoint_includes_series(tmp_path):
+    db = str(tmp_path / "ems.sqlite")
+    _seed(db)
+    with TestClient(_app(db)) as c:
+        b = c.get("/api/report?period=day&date=2026-06-28").json()
+    assert len(b["series"]) == 96
+    noon = next(s for s in b["series"] if s["start"] == PAST.astimezone(UTC).isoformat())
+    assert abs(noon["grid_export_kwh"] - 0.25) < 1e-9  # −1000 W for one 15-min slot
+    assert abs(noon["house_kwh"] - 0.25) < 1e-9
+
+
+def test_finance_endpoint_computes_and_persists_rollup(tmp_path):
+    db = str(tmp_path / "ems.sqlite")
+    _seed(db)
+    _seed_prices(db)
+    with TestClient(_app(db)) as c:
+        b = c.get("/api/finance?period=day&date=2026-06-28").json()
+    assert len(b["days"]) == 1
+    d = b["days"][0]
+    assert d["day"] == "2026-06-28" and d["has_data"] is True
+    assert d["price_coverage"] == 1.0
+    # export 0.25 kWh @ .20 → −0.05; import 0.2 kWh @ .40 → +0.08; battery charged (no wear).
+    assert abs(d["grid_cost_eur"] - 0.03) < 1e-9
+    assert d["battery_cost_eur"] == 0.0
+    assert abs(d["saved_eur"] - (-0.05)) < 1e-9  # honest negative: stored solar it could export
+    assert abs(b["totals"]["saved_eur"] - (-0.05)) < 1e-9
+
+    async def rollup():
+        store = HistoryStore(db)
+        return await store.daily_finance_between("2026-06-28", "2026-06-29")
+    rows = asyncio.run(rollup())
+    assert len(rows) == 1 and rows[0]["data"]["saved_eur"] == -0.05  # completed day persisted
+
+
+def test_finance_endpoint_week_totals_and_empty_days(tmp_path):
+    db = str(tmp_path / "ems.sqlite")
+    _seed(db)
+    _seed_prices(db)
+    with TestClient(_app(db)) as c:
+        b = c.get("/api/finance?period=week&date=2026-06-28").json()
+    assert len(b["days"]) == 7  # Mon..Sun of that week (all in the past)
+    with_data = [d for d in b["days"] if d["has_data"]]
+    assert [d["day"] for d in with_data] == ["2026-06-28"]
+    assert abs(b["totals"]["saved_eur"] - (-0.05)) < 1e-9
+    assert b["totals"]["days_with_prices"] == 1

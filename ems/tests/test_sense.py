@@ -104,3 +104,55 @@ def test_run_survives_store_error():
         await task  # must not raise
 
     asyncio.run(run())  # completes cleanly == loop survived store errors
+
+
+class _StubPrices:
+    """Minimal price source: .slots() → objects with .start / .eur_per_kwh."""
+
+    def __init__(self, slots):
+        self._slots = slots
+
+    def slots(self):
+        return self._slots
+
+
+class _BoomPrices:
+    def slots(self):
+        raise RuntimeError("tibber down")
+
+
+def test_sense_once_persists_price_slots(tmp_path):
+    # Spec 2026-07-03: each cycle upserts the current price curve so past slots keep their price.
+    from ems.sources.prices import PriceSlot
+
+    store = HistoryStore(str(tmp_path / "ems.sqlite"))
+    fresh = FreshnessTracker()
+    fresh.register(*SIGNALS)
+    slots = [PriceSlot(NOW, 0.20), PriceSlot(NOW.replace(minute=15), 0.25)]
+    rec = Recorder(MockSource(), store, fresh, price_source=_StubPrices(slots))
+
+    async def run():
+        await store.init()
+        await rec.sense_once(NOW)
+        await rec.sense_once(NOW)  # idempotent — same slots again
+        return await store.prices_between("2020-01-01T00:00:00+00:00",
+                                          "2030-01-01T00:00:00+00:00")
+
+    rows = asyncio.run(run())
+    assert [(r["start_ts"], r["eur_per_kwh"]) for r in rows] == [
+        (NOW.isoformat(), 0.20), (NOW.replace(minute=15).isoformat(), 0.25)]
+
+
+def test_price_persist_failure_never_kills_the_cycle(tmp_path):
+    store = HistoryStore(str(tmp_path / "ems.sqlite"))
+    fresh = FreshnessTracker()
+    fresh.register(*SIGNALS)
+    rec = Recorder(MockSource(), store, fresh, price_source=_BoomPrices())
+
+    async def run():
+        await store.init()
+        await rec.sense_once(NOW)  # must not raise
+        return await store.recent_raw(10)
+
+    rows = asyncio.run(run())
+    assert len(rows) == 1  # the sample was still recorded

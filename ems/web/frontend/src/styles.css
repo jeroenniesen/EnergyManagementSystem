@@ -21,6 +21,10 @@
   --winter-text: #5aa2e0; /* winter used as small text */
   --summer-tint: rgba(240, 168, 48, 0.12);
   --winter-tint: rgba(90, 162, 224, 0.12);
+  /* Behavior-chart entities (2026-07-03): house + car join grid(--winter)/solar(--summer).
+     CVD-validated as a set (worst adjacent ΔE 20.7 protan, ≥3:1 on --panel). */
+  --house: #a583e0;
+  --car: #d878a8;
   font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
 }
 
@@ -47,6 +51,8 @@
   --winter-text: #1f5e96; /* darker blue for text — AA on white / tints */
   --summer-tint: rgba(217, 138, 31, 0.12);
   --winter-tint: rgba(47, 127, 196, 0.12);
+  --house: #7c5cc4;
+  --car: #b0568c;
 }
 
 * { box-sizing: border-box; }
@@ -1312,4 +1318,51 @@ body {
 @media (prefers-reduced-motion: reduce) {
   .ring-arc { transition: none; }
   .ring:hover { transform: none; }
+}
+
+/* ---- Insights: energy-behavior chart + money section (spec 2026-07-03) ---- */
+.sr-only {
+  position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
+  overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0;
+}
+.behavior, .fin { margin-top: 20px; }
+.behavior-wrap { position: relative; }
+.behavior-svg { width: 100%; height: auto; display: block; }
+.behavior-tick { fill: var(--muted); font-size: 10px; }
+.chart-legend {
+  display: flex; flex-wrap: wrap; gap: 6px 16px; margin-top: 6px;
+  color: var(--muted); font-size: 12px;
+}
+.legend-item { display: inline-flex; align-items: center; gap: 6px; }
+.legend-dot { width: 9px; height: 9px; border-radius: 50%; display: inline-block; flex: none; }
+.legend-dot-export { background: var(--winter); opacity: 0.55; }
+.chart-tip {
+  position: absolute; top: 8px; transform: translateX(-50%);
+  background: var(--panel-2); border: 1px solid var(--line); border-radius: 10px;
+  padding: 8px 10px; font-size: 12px; pointer-events: none; box-shadow: var(--shadow);
+  min-width: 130px; z-index: 3;
+}
+.chart-tip-title { color: var(--muted); margin-bottom: 4px; }
+.chart-tip-row { display: flex; align-items: center; gap: 6px; line-height: 1.5; }
+.chart-tip-val { margin-left: auto; font-variant-numeric: tabular-nums; padding-left: 10px; }
+.chart-table { margin-top: 8px; font-size: 12px; color: var(--muted); }
+.chart-table summary { cursor: pointer; }
+.chart-table summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.chart-table-scroll { max-height: 220px; overflow: auto; margin-top: 6px; }
+.chart-table table { border-collapse: collapse; width: 100%; font-variant-numeric: tabular-nums; }
+.chart-table th, .chart-table td {
+  text-align: right; padding: 3px 8px; border-bottom: 1px solid var(--line);
+}
+.chart-table th:first-child, .chart-table td:first-child { text-align: left; }
+.fin-tiles { display: flex; flex-wrap: wrap; gap: 12px; margin-bottom: 10px; }
+.fin-tile {
+  flex: 1 1 140px; background: var(--panel-2); border: 1px solid var(--line);
+  border-radius: 12px; padding: 10px 14px;
+}
+.fin-val { font-size: 20px; font-weight: 600; font-variant-numeric: tabular-nums; }
+.fin-good { color: var(--green-text); }
+.fin-name { color: var(--muted); font-size: 12px; margin-top: 2px; }
+.fin-caveat { color: var(--muted); font-size: 12px; margin: 6px 0; }
+@media (max-width: 560px) {
+  .fin-tiles { flex-direction: column; }
 }
