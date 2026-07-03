@@ -60,6 +60,16 @@ active work only (~5–10 issues), not the whole 30-item backlog.
 - An item deleted locally while its issue is open → the sync **reports** it and asks; it never
   closes or deletes on GitHub silently. Milestones/issues are never deleted, only closed.
 
+**Edge rules (resolved during baseline testing, 2026-07-03):**
+- An item already ✅ done but never synced gets **no** born-closed issue — keep its PR ref locally
+  and list it as a checked plain bullet in its epic's body.
+- Pool-only children appear in epic bodies as plain bullets, never empty `- [ ]` checkboxes —
+  they have no issues and dangling boxes would misstate epic progress.
+- Epic issue numbers are written back onto the epic's goal line, so future syncs match by ref,
+  not by title.
+- Later steps always use the actual issue numbers returned by `gh issue create`, never predicted
+  ones (issues and PRs share the numbering sequence).
+
 ## The `/backlog-sync` skill
 
 Project skill at `.claude/skills/backlog-sync/SKILL.md` (checked in). When invoked it:
