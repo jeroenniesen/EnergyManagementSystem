@@ -1,0 +1,18 @@
+- generic [ref=f1e3]:
+  - banner [ref=f1e4]:
+    - heading "Smart Energy Manager" [level=1] [ref=f1e5]
+    - navigation "Views" [ref=f1e6]:
+      - button "Dashboard" [ref=f1e7] [cursor=pointer]
+      - button "Insights" [ref=f1e8] [cursor=pointer]
+      - button "Chat" [ref=f1e9] [cursor=pointer]
+      - button "Settings" [ref=f1e10] [cursor=pointer]
+      - button "Audit" [ref=f1e11] [cursor=pointer]
+      - button "System" [ref=f1e12] [cursor=pointer]
+  - generic [ref=f1e13]:
+    - generic [ref=f1e14]:
+      - radiogroup "Story timeframe" [ref=f1e15]:
+        - radio "← Last 24 hours" [ref=f1e16] [cursor=pointer]
+        - radio "Next 24 hours →" [checked] [ref=f1e17] [cursor=pointer]
+      - generic [ref=f1e19]: the plan
+    - paragraph [ref=f1e20]: …
+    - paragraph [ref=f1e21]: No plan yet — prices/forecast are still loading.

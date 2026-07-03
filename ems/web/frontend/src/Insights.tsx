@@ -4,6 +4,8 @@
 // from recorded history server-side). Every score explains itself (the "why").
 import { useEffect, useState } from "react";
 
+import { EnergyBehavior, type SeriesBucket } from "./EnergyBehavior";
+import { FinanceSection } from "./FinanceSection";
 import { scoreBand, ScoreRing } from "./ScoreRing";
 import { scoreCaption } from "./scoreCopy";
 
@@ -37,6 +39,7 @@ type Report = {
   partial: boolean;
   flows: Flows;
   scores: Score[];
+  series?: SeriesBucket[];
 };
 
 type Period = "day" | "week" | "month" | "year";
@@ -216,6 +219,10 @@ export function Insights() {
             ))}
           </div>
 
+          {report.series && (
+            <EnergyBehavior buckets={report.series} period={period} partial={report.partial} />
+          )}
+
           <div className="flow-report" data-testid="flow-report">
             <h3 className="card-title flow-title">
               Where your energy went{report.partial ? " (so far)" : ""}
@@ -242,6 +249,8 @@ export function Insights() {
               </p>
             )}
           </div>
+
+          <FinanceSection period={period} anchor={anchor} />
         </>
       )}
     </section>
