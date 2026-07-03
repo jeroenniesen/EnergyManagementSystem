@@ -1,8 +1,11 @@
-// How the energy behaved over the window (spec 2026-07-03 A): grid (P1, import above / export
-// below zero), house (without the car), car, and solar. Day = stepped power curves per 15-min
-// slot; week/month/year = per-bucket kWh bars. Hand-rolled SVG like the rest of the app; colors
-// follow the app's entity tokens (grid=--winter, solar=--summer, new --house/--car; CVD-checked).
-// Identity is never color-alone: legend + tooltip + a figures table accompany the marks.
+// How the energy behaved over the window (spec 2026-07-03 A), in TWO aligned panels:
+//   "Used by the home"  — house + car STACKED, so "which device used the most" reads directly;
+//   "Solar & grid"      — solar production, grid import above zero, export below.
+// One mixed graph was a design flaw: the grid trace equals the sum of the consumers (grid =
+// house + car + battery − solar), so a charging car and the grid drew exactly on top of each
+// other. Separate directions, separate panels, shared x-axis + crosshair; one y-scale per panel
+// (never a dual axis). Colors follow the app's entity tokens; legend + tooltip + figures table
+// keep identity off color alone.
 import { useMemo, useRef, useState } from "react";
 
 export type SeriesBucket = {
@@ -18,17 +21,8 @@ export type SeriesBucket = {
 type Period = "day" | "week" | "month" | "year";
 
 const W = 720;
-const H = 230;
-const PAD = { l: 46, r: 10, t: 10, b: 22 };
+const PAD = { l: 46, r: 10, t: 8, b: 20 };
 const PLOT_W = W - PAD.l - PAD.r;
-const PLOT_H = H - PAD.t - PAD.b;
-
-const SERIES = [
-  { key: "house", label: "House", color: "var(--house)" },
-  { key: "car", label: "Car", color: "var(--car)" },
-  { key: "grid", label: "Grid", color: "var(--winter)" },
-  { key: "solar", label: "Solar", color: "var(--summer)" },
-] as const;
 
 function niceMax(v: number): number {
   if (v <= 0) return 1;
@@ -42,11 +36,13 @@ const fmtKwh = (k: number) => `${k.toFixed(k >= 10 ? 0 : 1)} kWh`;
 
 function bucketLabel(iso: string, period: Period): string {
   const d = new Date(iso);
-  if (period === "day") {
-    return d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
-  }
+  if (period === "day") return d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
   if (period === "year") return d.toLocaleDateString([], { month: "short" });
-  return d.toLocaleDateString([], { weekday: period === "week" ? "short" : undefined, day: "numeric", month: period === "week" ? undefined : "short" });
+  return d.toLocaleDateString([], {
+    weekday: period === "week" ? "short" : undefined,
+    day: "numeric",
+    month: period === "week" ? undefined : "short",
+  });
 }
 
 export function EnergyBehavior({ buckets, period, partial }: {
@@ -55,7 +51,7 @@ export function EnergyBehavior({ buckets, period, partial }: {
   partial: boolean;
 }) {
   const [hover, setHover] = useState<number | null>(null);
-  const svgRef = useRef<SVGSVGElement | null>(null);
+  const wrapRef = useRef<HTMLDivElement | null>(null);
   const sampled = buckets.filter((b) => b.samples > 0);
 
   const totals = useMemo(() => ({
@@ -74,158 +70,237 @@ export function EnergyBehavior({ buckets, period, partial }: {
     `${partial ? " so far" : ""}.`;
 
   const isDay = period === "day";
-  // Per-bucket values: day = watts (signed grid); longer = kWh (export negative).
-  const val = (b: SeriesBucket, key: string): number => {
-    const scale = isDay ? 4000 : 1; // kWh per 15 min → W
-    if (key === "house") return b.house_kwh * scale;
-    if (key === "car") return b.car_kwh * scale;
-    if (key === "solar") return b.solar_kwh * scale;
-    return (b.grid_import_kwh - b.grid_export_kwh) * scale; // grid, signed
-  };
-  const maxPos = niceMax(Math.max(...buckets.map((b) =>
-    Math.max(val(b, "house"), val(b, "car"), val(b, "solar"), val(b, "grid")))));
-  const maxNeg = niceMax(Math.max(0, ...buckets.map((b) => -val(b, "grid"))));
-  const hasNeg = maxNeg > (isDay ? 20 : 0.01);
-  const ySpan = maxPos + (hasNeg ? maxNeg : 0);
-  const y = (v: number) => PAD.t + ((maxPos - v) / ySpan) * PLOT_H;
-  const x = (i: number) => PAD.l + (i / buckets.length) * PLOT_W;
-  const bw = PLOT_W / buckets.length;
-  const y0 = y(0);
+  const scale = isDay ? 4000 : 1; // day panels plot watts (kWh per 15 min → W); longer plot kWh
   const fmtV = isDay ? fmtW : fmtKwh;
+  const n = buckets.length;
+  const x = (i: number) => PAD.l + (i / n) * PLOT_W;
+  const bw = PLOT_W / n;
+  const cx = (i: number) => x(i) + bw / 2;
+  const isolated = (i: number) =>
+    buckets[i].samples > 0 &&
+    (i === 0 || buckets[i - 1].samples === 0) &&
+    (i === n - 1 || buckets[i + 1].samples === 0);
 
   const onMove = (e: React.MouseEvent<SVGSVGElement>) => {
-    const rect = svgRef.current?.getBoundingClientRect();
-    if (!rect) return;
+    const rect = (e.currentTarget as SVGSVGElement).getBoundingClientRect();
     const px = ((e.clientX - rect.left) / rect.width) * W;
-    const i = Math.floor(((px - PAD.l) / PLOT_W) * buckets.length);
-    setHover(i >= 0 && i < buckets.length && buckets[i].samples > 0 ? i : null);
+    const i = Math.floor(((px - PAD.l) / PLOT_W) * n);
+    setHover(i >= 0 && i < n && buckets[i].samples > 0 ? i : null);
   };
 
-  const ticks = [maxPos, maxPos / 2, 0, ...(hasNeg ? [-maxNeg] : [])];
+  // A path along `top(i)` for consecutive sampled buckets; gaps break the path.
+  const linePath = (top: (b: SeriesBucket) => number, y: (v: number) => number) => {
+    let d = "";
+    buckets.forEach((b, i) => {
+      if (b.samples === 0) return;
+      const cmd = d === "" || buckets[i - 1]?.samples === 0 ? "M" : "L";
+      d += `${cmd}${cx(i).toFixed(1)},${y(top(b)).toFixed(1)}`;
+    });
+    return d;
+  };
+  // A filled band between lo(i) and hi(i) per contiguous sampled run.
+  const bandPath = (lo: (b: SeriesBucket) => number, hi: (b: SeriesBucket) => number,
+                    y: (v: number) => number) => {
+    const runs: number[][] = [];
+    buckets.forEach((b, i) => {
+      if (b.samples === 0) return;
+      const run = runs.length && buckets[i - 1]?.samples > 0 ? runs[runs.length - 1] : null;
+      if (run) run.push(i);
+      else runs.push([i]);
+    });
+    return runs.filter((r) => r.length > 1).map((r) => {
+      const fwd = r.map((i) => `${cx(i).toFixed(1)},${y(hi(buckets[i])).toFixed(1)}`).join("L");
+      const back = [...r].reverse()
+        .map((i) => `${cx(i).toFixed(1)},${y(lo(buckets[i])).toFixed(1)}`).join("L");
+      return `M${fwd}L${back}Z`;
+    }).join("");
+  };
+
+  // ---- Panel A: consumption (house + car stacked) ----
+  const H_A = 168;
+  const plotA = H_A - PAD.t - PAD.b;
+  const maxA = niceMax(Math.max(...buckets.map((b) => (b.house_kwh + b.car_kwh) * scale)));
+  const yA = (v: number) => PAD.t + ((maxA - v) / maxA) * plotA;
+  const houseTop = (b: SeriesBucket) => b.house_kwh * scale;
+  const stackTop = (b: SeriesBucket) => (b.house_kwh + b.car_kwh) * scale;
+
+  // ---- Panel B: solar & grid (import up, export down) ----
+  const H_B = 168;
+  const maxUp = niceMax(Math.max(...buckets.map((b) =>
+    Math.max(b.solar_kwh, b.grid_import_kwh) * scale)));
+  const maxDown = niceMax(Math.max(0.0001, ...buckets.map((b) => b.grid_export_kwh * scale)));
+  const hasExp = totals.exp > 0.01;
+  const plotB = H_B - PAD.t - PAD.b;
+  const spanB = maxUp + (hasExp ? maxDown : 0);
+  const yB = (v: number) => PAD.t + ((maxUp - v) / spanB) * plotB;
+  const y0B = yB(0);
+
+  const xLabels = (h: number) => buckets.map((b, i) =>
+    (isDay ? i % 24 === 0 : n <= 12 || i % 7 === 0) && (
+      <text key={`x${b.start}`} x={cx(i)} y={h - 6} textAnchor="middle" className="behavior-tick">
+        {bucketLabel(b.start, period)}
+      </text>
+    ));
+  const crosshair = (h: number) => hover != null && (
+    <line x1={cx(hover)} x2={cx(hover)} y1={PAD.t} y2={h - PAD.b}
+      stroke="var(--muted)" strokeWidth={1} strokeDasharray="2 3" />
+  );
+
+  const tipRows = hover != null && buckets[hover] ? [
+    { label: "House", color: "var(--house)", v: buckets[hover].house_kwh },
+    { label: "Car", color: "var(--car)", v: buckets[hover].car_kwh },
+    { label: "Solar", color: "var(--summer)", v: buckets[hover].solar_kwh },
+    { label: "Grid in", color: "var(--winter)", v: buckets[hover].grid_import_kwh },
+    ...(buckets[hover].grid_export_kwh > 0.001
+      ? [{ label: "Grid out", color: "var(--winter)", v: buckets[hover].grid_export_kwh }] : []),
+  ] : [];
 
   return (
     <div className="behavior" data-testid="energy-behavior">
       <h3 className="card-title flow-title">How your energy behaved{partial ? " (so far)" : ""}</h3>
       <p className="sr-only">{summary}</p>
-      <div className="behavior-wrap">
-        <svg
-          ref={svgRef}
-          viewBox={`0 0 ${W} ${H}`}
-          className="behavior-svg"
-          role="img"
-          aria-label={summary}
-          onMouseMove={onMove}
-          onMouseLeave={() => setHover(null)}
-        >
-          {ticks.map((t) => (
-            <g key={t}>
-              <line x1={PAD.l} x2={W - PAD.r} y1={y(t)} y2={y(t)}
-                stroke="var(--line)" strokeWidth={t === 0 ? 1.4 : 1} strokeDasharray={t === 0 ? undefined : "3 4"} />
-              <text x={PAD.l - 6} y={y(t) + 3} textAnchor="end" className="behavior-tick">
-                {fmtV(t)}
-              </text>
-            </g>
-          ))}
-          {isDay
-            ? SERIES.map((s) => {
-                let d = "";
-                const dots: Array<{ cx: number; cy: number }> = [];
-                buckets.forEach((b, i) => {
-                  if (b.samples === 0) return;
-                  const cmd = d === "" || buckets[i - 1]?.samples === 0 ? "M" : "L";
-                  d += `${cmd}${(x(i) + bw / 2).toFixed(1)},${y(val(b, s.key)).toFixed(1)}`;
-                  // An isolated slot (no sampled neighbour) has no line segment — a path with a
-                  // lone M draws nothing, which made a freshly-started day look empty. Dot it.
-                  if (buckets[i - 1]?.samples === 0 || i === 0) {
-                    if (!buckets[i + 1] || buckets[i + 1].samples === 0) {
-                      dots.push({ cx: x(i) + bw / 2, cy: y(val(b, s.key)) });
-                    }
-                  }
-                });
+      <div className="behavior-wrap" ref={wrapRef}>
+        <div data-testid="behavior-consumption">
+          <h4 className="behavior-panel-title">Used by the home</h4>
+          <svg viewBox={`0 0 ${W} ${H_A}`} className="behavior-svg" role="img"
+            aria-label={`Used by the home: house ${fmtKwh(totals.house)}, car ${fmtKwh(totals.car)}.`}
+            onMouseMove={onMove} onMouseLeave={() => setHover(null)}>
+            {[maxA, maxA / 2, 0].map((t) => (
+              <g key={t}>
+                <line x1={PAD.l} x2={W - PAD.r} y1={yA(t)} y2={yA(t)} stroke="var(--line)"
+                  strokeWidth={t === 0 ? 1.4 : 1} strokeDasharray={t === 0 ? undefined : "3 4"} />
+                <text x={PAD.l - 6} y={yA(t) + 3} textAnchor="end" className="behavior-tick">
+                  {fmtV(t)}
+                </text>
+              </g>
+            ))}
+            {isDay ? (
+              <>
+                <path d={bandPath(() => 0, houseTop, yA)} fill="var(--house)" opacity={0.3} />
+                <path d={bandPath(houseTop, stackTop, yA)} fill="var(--car)" opacity={0.35} />
+                <path d={linePath(houseTop, yA)} fill="none" stroke="var(--house)" strokeWidth={2}
+                  strokeLinejoin="round" strokeLinecap="round" />
+                <path d={linePath(stackTop, yA)} fill="none" stroke="var(--car)" strokeWidth={2}
+                  strokeLinejoin="round" strokeLinecap="round" />
+                {buckets.map((b, i) => isolated(i) && (
+                  <g key={`dot${b.start}`}>
+                    <circle cx={cx(i)} cy={yA(houseTop(b))} r={3} fill="var(--house)" />
+                    {b.car_kwh > 0.001 &&
+                      <circle cx={cx(i)} cy={yA(stackTop(b))} r={3} fill="var(--car)" />}
+                  </g>
+                ))}
+              </>
+            ) : (
+              buckets.map((b, i) => {
+                if (b.samples === 0) return null;
+                const colW = Math.min(20, bw - 4);
+                const bx = cx(i) - colW / 2;
+                const hHouse = (houseTop(b) / maxA) * plotA;
+                const hCar = ((b.car_kwh * scale) / maxA) * plotA;
                 return (
-                  <g key={s.key}>
-                    <path d={d} fill="none" stroke={s.color} strokeWidth={2}
-                      strokeLinejoin="round" strokeLinecap="round" />
-                    {dots.map((p) => (
-                      <circle key={p.cx} cx={p.cx} cy={p.cy} r={3} fill={s.color} />
-                    ))}
+                  <g key={b.start}>
+                    {hHouse > 0.5 && <rect x={bx} y={yA(0) - hHouse} width={colW} height={hHouse}
+                      rx={2} fill="var(--house)" />}
+                    {hCar > 0.5 && <rect x={bx} y={yA(0) - hHouse - 2 - hCar} width={colW}
+                      height={hCar} rx={2} fill="var(--car)" />}
                   </g>
                 );
               })
-            : buckets.map((b, i) => {
+            )}
+            {crosshair(H_A)}
+            {xLabels(H_A)}
+          </svg>
+          <div className="chart-legend" aria-hidden="true">
+            <span className="legend-item"><span className="legend-dot"
+              style={{ background: "var(--house)" }} />House</span>
+            <span className="legend-item"><span className="legend-dot"
+              style={{ background: "var(--car)" }} />Car (stacked on top)</span>
+          </div>
+        </div>
+
+        <div data-testid="behavior-grid">
+          <h4 className="behavior-panel-title">Solar &amp; grid</h4>
+          <svg viewBox={`0 0 ${W} ${H_B}`} className="behavior-svg" role="img"
+            aria-label={`Solar and grid: solar ${fmtKwh(totals.solar)}, imported ${fmtKwh(totals.imp)}, exported ${fmtKwh(totals.exp)}.`}
+            onMouseMove={onMove} onMouseLeave={() => setHover(null)}>
+            {[maxUp, 0, ...(hasExp ? [-maxDown] : [])].map((t) => (
+              <g key={t}>
+                <line x1={PAD.l} x2={W - PAD.r} y1={yB(t)} y2={yB(t)} stroke="var(--line)"
+                  strokeWidth={t === 0 ? 1.4 : 1} strokeDasharray={t === 0 ? undefined : "3 4"} />
+                <text x={PAD.l - 6} y={yB(t) + 3} textAnchor="end" className="behavior-tick">
+                  {fmtV(t)}
+                </text>
+              </g>
+            ))}
+            {isDay ? (
+              <>
+                <path d={bandPath(() => 0, (b) => b.grid_import_kwh * scale, yB)}
+                  fill="var(--winter)" opacity={0.3} />
+                <path d={linePath((b) => b.grid_import_kwh * scale, yB)} fill="none"
+                  stroke="var(--winter)" strokeWidth={2} strokeLinejoin="round" strokeLinecap="round" />
+                {hasExp && (
+                  <path d={bandPath((b) => -b.grid_export_kwh * scale, () => 0, yB)}
+                    fill="var(--winter)" opacity={0.18} />
+                )}
+                {hasExp && (
+                  <path d={linePath((b) => -b.grid_export_kwh * scale, yB)} fill="none"
+                    stroke="var(--winter)" strokeWidth={1.5} strokeDasharray="4 3" />
+                )}
+                <path d={linePath((b) => b.solar_kwh * scale, yB)} fill="none"
+                  stroke="var(--summer)" strokeWidth={2} strokeLinejoin="round" strokeLinecap="round" />
+                {buckets.map((b, i) => isolated(i) && (
+                  <g key={`dot${b.start}`}>
+                    <circle cx={cx(i)} cy={yB(b.grid_import_kwh * scale)} r={3} fill="var(--winter)" />
+                    <circle cx={cx(i)} cy={yB(b.solar_kwh * scale)} r={3} fill="var(--summer)" />
+                  </g>
+                ))}
+              </>
+            ) : (
+              buckets.map((b, i) => {
                 if (b.samples === 0) return null;
-                const cols = ["house", "car", "grid"] as const;
-                const colW = Math.min(16, (bw - 6) / 3);
+                const colW = Math.min(16, (bw - 6) / 2);
+                const sx = cx(i) - colW - 1;
+                const gx = cx(i) + 1;
+                const hSolar = ((b.solar_kwh * scale) / spanB) * plotB;
+                const hImp = ((b.grid_import_kwh * scale) / spanB) * plotB;
+                const hExp = ((b.grid_export_kwh * scale) / spanB) * plotB;
                 return (
                   <g key={b.start}>
-                    {cols.map((k, ci) => {
-                      const cx = x(i) + bw / 2 + (ci - 1) * (colW + 2) - colW / 2;
-                      if (k === "grid") {
-                        const impH = (b.grid_import_kwh / ySpan) * PLOT_H;
-                        const expH = (b.grid_export_kwh / ySpan) * PLOT_H;
-                        return (
-                          <g key={k}>
-                            {impH > 0.5 && <rect x={cx} y={y0 - impH} width={colW} height={impH}
-                              rx={2} fill="var(--winter)" />}
-                            {expH > 0.5 && <rect x={cx} y={y0 + 2} width={colW} height={Math.max(1, expH - 2)}
-                              rx={2} fill="var(--winter)" opacity={0.55} />}
-                          </g>
-                        );
-                      }
-                      const h = (val(b, k) / ySpan) * PLOT_H;
-                      const color = k === "house" ? "var(--house)" : "var(--car)";
-                      return h > 0.5
-                        ? <rect key={k} x={cx} y={y0 - h} width={colW} height={h} rx={2} fill={color} />
-                        : null;
-                    })}
+                    {hSolar > 0.5 && <rect x={sx} y={y0B - hSolar} width={colW} height={hSolar}
+                      rx={2} fill="var(--summer)" />}
+                    {hImp > 0.5 && <rect x={gx} y={y0B - hImp} width={colW} height={hImp}
+                      rx={2} fill="var(--winter)" />}
+                    {hExp > 0.5 && <rect x={gx} y={y0B + 2} width={colW}
+                      height={Math.max(1, hExp - 2)} rx={2} fill="var(--winter)" opacity={0.5} />}
                   </g>
                 );
-              })}
-          {buckets.map((b, i) =>
-            (isDay ? i % 24 === 0 : buckets.length <= 12 || i % 7 === 0) && (
-              <text key={`x${b.start}`} x={x(i) + bw / 2} y={H - 6} textAnchor="middle"
-                className="behavior-tick">
-                {bucketLabel(b.start, period)}
-              </text>
-            ))}
-          {hover != null && (
-            <line x1={x(hover) + bw / 2} x2={x(hover) + bw / 2} y1={PAD.t} y2={H - PAD.b}
-              stroke="var(--muted)" strokeWidth={1} strokeDasharray="2 3" />
-          )}
-        </svg>
+              })
+            )}
+            {crosshair(H_B)}
+            {xLabels(H_B)}
+          </svg>
+          <div className="chart-legend" aria-hidden="true">
+            <span className="legend-item"><span className="legend-dot"
+              style={{ background: "var(--summer)" }} />Solar</span>
+            <span className="legend-item"><span className="legend-dot"
+              style={{ background: "var(--winter)" }} />Grid in</span>
+            <span className="legend-item"><span className="legend-dot legend-dot-export" />
+              Grid out (below zero)</span>
+          </div>
+        </div>
+
         {hover != null && buckets[hover] && (
-          <div
-            className="chart-tip"
-            style={{ left: `${((x(hover) + bw / 2) / W) * 100}%` }}
-            data-testid="behavior-tip"
-          >
+          <div className="chart-tip" style={{ left: `${(cx(hover) / W) * 100}%` }}
+            data-testid="behavior-tip">
             <div className="chart-tip-title">{bucketLabel(buckets[hover].start, period)}</div>
-            {SERIES.map((s) => (
-              <div key={s.key} className="chart-tip-row">
-                <span className="legend-dot" style={{ background: s.color }} />
-                {s.label}
-                <span className="chart-tip-val">
-                  {s.key === "grid" && buckets[hover].grid_export_kwh > buckets[hover].grid_import_kwh
-                    ? `−${fmtV(isDay ? buckets[hover].grid_export_kwh * 4000 : buckets[hover].grid_export_kwh)} out`
-                    : fmtV(val(buckets[hover], s.key))}
-                </span>
+            {tipRows.map((r) => (
+              <div key={r.label} className="chart-tip-row">
+                <span className="legend-dot" style={{ background: r.color }} />
+                {r.label}
+                <span className="chart-tip-val">{fmtV(r.v * scale)}</span>
               </div>
             ))}
           </div>
-        )}
-      </div>
-      <div className="chart-legend" aria-hidden="true">
-        {SERIES.map((s) => (
-          <span key={s.key} className="legend-item">
-            <span className="legend-dot" style={{ background: s.color }} />
-            {s.label}
-          </span>
-        ))}
-        {hasNeg && (
-          <span className="legend-item">
-            <span className="legend-dot legend-dot-export" />
-            Export (below zero)
-          </span>
         )}
       </div>
       <details className="chart-table">

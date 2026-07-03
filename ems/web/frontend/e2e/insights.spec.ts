@@ -181,9 +181,20 @@ test.describe("Insights: behavior chart + money", () => {
     const chart = page.getByTestId("energy-behavior");
     await expect(chart).toBeVisible();
     await expect(chart).toContainText("How your energy behaved");
-    // Identity is never color-alone: legend names every series.
-    for (const name of ["House", "Car", "Grid", "Solar"]) {
-      await expect(chart.locator(".chart-legend")).toContainText(name);
+    // Ingress and egress live in SEPARATE panels: in one mixed graph the grid trace is the sum
+    // of the consumers, so a charging car and the grid drew exactly on top of each other.
+    const consumption = page.getByTestId("behavior-consumption");
+    const grid = page.getByTestId("behavior-grid");
+    await expect(consumption).toBeVisible();
+    await expect(grid).toBeVisible();
+    await expect(chart).toContainText("Used by the home");
+    await expect(chart).toContainText("Solar & grid");
+    // Identity is never color-alone: each panel's legend names its own series.
+    for (const name of ["House", "Car"]) {
+      await expect(consumption.locator(".chart-legend")).toContainText(name);
+    }
+    for (const name of ["Solar", "Grid in", "Grid out"]) {
+      await expect(grid.locator(".chart-legend")).toContainText(name);
     }
     // A table view of the figures exists (accessibility relief for the chart).
     await chart.locator(".chart-table summary").click();
