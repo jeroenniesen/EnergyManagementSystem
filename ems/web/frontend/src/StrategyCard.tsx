@@ -93,6 +93,7 @@ export function StrategyCard({
               type="button"
               role="switch"
               aria-checked={strategy.grid_topup}
+              aria-label="Top up from the grid if the sun falls short"
               className={`switch${strategy.grid_topup ? " switch-on" : ""}`}
               data-testid="strategy-grid-topup"
               onClick={() => onSetGridTopup(!strategy.grid_topup)}

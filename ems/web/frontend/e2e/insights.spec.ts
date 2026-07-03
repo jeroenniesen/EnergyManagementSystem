@@ -112,6 +112,19 @@ test.describe("Insights", () => {
     await expect(page.getByTestId("insights-label")).toHaveText("2026-06");
   });
 
+  test("Insights is addressable and restorable from the URL hash", async ({ page }) => {
+    await page.route("**/api/report**", (route) =>
+      route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(REPORT) }),
+    );
+    await page.goto("/#insights");
+    await expect(page.getByTestId("insights")).toBeVisible();
+    await expect(page.getByTestId("nav-insights")).toHaveAttribute("aria-current", "page");
+    await page.getByTestId("nav-dashboard").click();
+    await expect(page).toHaveURL(/#dashboard$/);
+    await page.getByTestId("nav-insights").click();
+    await expect(page).toHaveURL(/#insights$/);
+  });
+
   test("shows an empty state when no energy is recorded", async ({ page }) => {
     await page.route("**/api/report**", (route) =>
       route.fulfill({
@@ -240,5 +253,19 @@ test.describe("Insights: behavior chart + money", () => {
     await page.getByTestId("nav-insights").click();
     await expect(page.getByTestId("fin-caveat")).toContainText("No price history recorded yet");
     await expect(page.getByTestId("fin-saved")).toHaveCount(0); // never invent a € figure
+  });
+
+  test("keeps Insights useful when money history cannot load", async ({ page }) => {
+    await page.route("**/api/report**", (route) =>
+      route.fulfill({ status: 200, contentType: "application/json",
+        body: JSON.stringify({ ...REPORT, series: SERIES }) }),
+    );
+    await page.route("**/api/finance**", (route) =>
+      route.fulfill({ status: 503, contentType: "application/json", body: "{\"detail\":\"down\"}" }),
+    );
+    await page.goto("/#insights");
+    await expect(page.getByTestId("score-grid")).toBeVisible();
+    await expect(page.getByTestId("energy-behavior")).toBeVisible();
+    await expect(page.getByTestId("fin-error")).toContainText("Money history could not be loaded");
   });
 });

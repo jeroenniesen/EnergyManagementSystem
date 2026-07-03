@@ -127,7 +127,17 @@ export function FinanceSection({ period, anchor }: { period: string; anchor: str
     };
   }, [period, anchor]);
 
-  if (error || !fin) return null;
+  if (error) {
+    return (
+      <div className="fin" data-testid="finance-section">
+        <h3 className="card-title flow-title">What it cost &amp; saved</h3>
+        <p className="fin-caveat" data-testid="fin-error">
+          Money history could not be loaded. The energy scores above are still available.
+        </p>
+      </div>
+    );
+  }
+  if (!fin) return null;
   const t = fin.totals;
   if (t.days_with_data === 0) return null;
   const soFar = fin.partial ? " (so far)" : "";
