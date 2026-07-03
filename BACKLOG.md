@@ -7,7 +7,7 @@
 
 **How this document relates to the rest:** [`GOAL.md`](./GOAL.md) is the why, [`SPEC.md`](./SPEC.md) is the how (source of truth — update it deliberately when an item changes behaviour), [`docs/2026-07-01-product-roadmap.md`](./docs/2026-07-01-product-roadmap.md) (features F1–F7) and [`docs/2026-06-28-emotional-design-review.md`](./docs/2026-06-28-emotional-design-review.md) are the research this backlog consolidates. Items reference their source.
 
-**Legend:** Type = Feature / UX (emotional design) / Refactor · Effort: S ≈ days, M ≈ weeks, L ≈ 1–2 months.
+**Legend:** Type = Feature / UX (emotional design) / Refactor · Effort: S ≈ days, M ≈ weeks, L ≈ 1–2 months. Items carry a **GitHub** line when a PR exists for them (✅ merged · 🔄 open).
 
 **Decisions baked into this backlog (2026-07-02):**
 - Motivation style = **quiet personal motivation** — trends, honest wins, calm tone. No badges, confetti, or leaderboards (conflicts with the "quiet competence" tone; see the emotional-design review's risks).
@@ -18,8 +18,9 @@
 
 ## NOW — make the goals measurable and visible
 
-### B-01 · Ship the Insights branch — ✅ Shipped 2026-07-02 (PR #1)
+### B-01 · Ship the Insights branch — ✅ Shipped 2026-07-02
 `feat/insights-reporting` merged to main: scores, `/api/report`, Insights view, energy-story polish, sky backdrop. Remaining tail: confirm it's deployed to the Mac Mini.
+**GitHub:** ✅ [PR #1](https://github.com/jeroenniesen/EnergyManagementSystem/pull/1) (merged)
 
 ### B-02 · Gas + CO₂ visibility — Feature · S · CO₂/Motivation
 Ingest P1 `total_gas_m3` (the HomeWizard P1 already sends it; today it is thrown away), store it with history retention, and fold it into the CO₂ score — which already accepts `gas_m3` and is specified to "step down" honestly when gas first appears (see the insights design spec §②). Show gas use, € and kg CO₂ on the dashboard/Insights.
@@ -29,6 +30,7 @@ Ingest P1 `total_gas_m3` (the HomeWizard P1 already sends it; today it is thrown
 ### B-03 · Measured savings — Feature + UX · M · Trust/€/Motivation
 Replace the plan-based "Saved today" estimate (`ems/savings.py` self-describes as "rough, illustrative") with savings computed from **recorded** energy versus a no-EMS counterfactual (reuse the "no-shifting replay" already specified for the best-price €). Until measured savings land: label the tile "estimated" and stop letting "€0.00" dominate the dashboard (emotional-design review: never overpromise savings).
 **Done when:** savings derive from stored history; the UI distinguishes measured vs estimated; week/month savings appear in Insights.
+**GitHub:** 🔄 [PR #3](https://github.com/jeroenniesen/EnergyManagementSystem/pull/3) delivers the measured per-day history (`ems/finance.py`, `/api/finance`, Insights money section). Remaining: swap the dashboard "Saved today" tile to the measured number.
 
 ### B-04 · iOS app catch-up + emotional-design parity — Feature + UX · M · Motivation
 The `ios-dashboard-chat` branch is several commits/PRs behind. Rebase it onto main (after B-01) and bring over the web UI's emotional design: home-state headline, the three score cards (ring + motivating copy), energy-story visual language, calm tone throughout. Keep it read-only + chat; no control from the phone yet.
@@ -45,6 +47,7 @@ The insights design spec promised trend spark-lines in v1 — verify they actual
 ### B-30 · Valley-aware charge scheduling in the winter planner — Bug · S · **P1** · €/Trust
 Found live 2026-07-02: `plan_rule_based` only shops for charge slots **before the first profitable peak** in the horizon (`rule_based.py:84-107`). Replanned mid-peak (evening/post-midnight), that window is empty → zero charge slots, even with a computed ~2 kWh shortfall and a profitable €0.135 valley before the *next* evening peak (margin ~€0.07–0.09/kWh after losses+wear+risk). `plan_adaptive` already shops before the *last* needed discharge slot — align `rule_based` with it. Related, mitigated by 5-min replans but document: sizing counts current SoC as available for tomorrow's peak, ignoring interim self-consumption drain; the "under-charge" log warning fires spuriously when the window is empty mid-peak.
 **Done when:** a plan generated during an active peak schedules top-up in a later valley when profitable; regression test with a two-peak/valley price day; dry-run comparison before enabling live.
+**GitHub:** 🔄 [PR #2](https://github.com/jeroenniesen/EnergyManagementSystem/pull/2) (fix + regression test, replay-verified against the live inputs)
 
 ---
 
@@ -73,6 +76,7 @@ A guided commissioning flow (connect devices → validate meters → solar array
 
 ### B-13 · Long-horizon history rollups — Feature enabler · S–M · Motivation
 Monthly/weekly aggregate tables so year-over-year trends survive the 365-day raw-sample purge. Without this, next summer's "vs last year" comparison silently breaks.
+**GitHub:** 🔄 [PR #3](https://github.com/jeroenniesen/EnergyManagementSystem/pull/3) delivers the finance half (`daily_finance` rollups, never purged). Remaining: energy (kWh) rollups so year-view charts/scores survive the purge too.
 
 ### B-14 · Solcast forecast provider — Feature · S · €/Trust
 Real P10/P50/P90 percentiles (SPEC's primary provider, unbuilt) instead of the derived 0.6×/1.15× bands in `forecast_solar.py`. Improves risk-aware grid-charge sizing — the derived P10 haircut has already caused over-buying once.
