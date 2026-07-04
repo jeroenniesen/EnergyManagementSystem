@@ -1159,11 +1159,12 @@ private struct MetricPill: View {
                 .font(.caption2.weight(.semibold))
                 .foregroundStyle(themeColor(theme.muted))
                 .lineLimit(1)
+                .minimumScaleFactor(0.7)
             Text(value)
                 .font(.subheadline.weight(.semibold))
                 .foregroundStyle(themeColor(theme.text))
                 .lineLimit(1)
-                .minimumScaleFactor(0.7)
+                .minimumScaleFactor(0.6)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(.horizontal, 10)
