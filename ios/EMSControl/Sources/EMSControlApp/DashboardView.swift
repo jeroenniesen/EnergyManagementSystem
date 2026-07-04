@@ -115,7 +115,7 @@ private struct HomeStatePanel: View {
 
             HStack(spacing: 10) {
                 MetricPill(title: "Battery %", value: percent(snapshot.status.socPct), theme: theme)
-                MetricPill(title: "Mode", value: snapshot.battery.currentMode ?? snapshot.decision.desiredMode ?? "--", theme: theme)
+                MetricPill(title: "Mode", value: humanizeMode(snapshot.battery.currentMode ?? snapshot.decision.desiredMode), theme: theme)
                 MetricPill(title: "Price", value: price(snapshot.energyStory.currentPriceEurPerKwh), theme: theme)
             }
         }
@@ -223,7 +223,23 @@ private struct ActivityPanel: View {
     }
 
     private var reasonText: String {
-        snapshot.decision.reason ?? snapshot.decision.planReasonExplained ?? snapshot.decision.planReason ?? "No decision details available yet."
+        snapshot.decision.reason ?? snapshot.decision.planReasonExplained ?? snapshot.decision.planReason ?? synthesizedReason
+    }
+
+    // Live servers don't always send a written reason. Rather than "No details", say what the
+    // battery is actually doing — from the intent, or failing that its measured power.
+    private var synthesizedReason: String {
+        switch snapshot.decision.intent {
+        case "allow_self_consumption": return "Running the house on your solar and battery."
+        case "grid_charge_to_target": return "Charging from the grid in a cheap window, ready for tonight."
+        case "discharge_for_load": return "Discharging the battery to power the house."
+        case "hold_reserve": return "Holding the battery's charge for the evening peak."
+        default: break
+        }
+        let w = snapshot.status.batteryPowerW ?? 0
+        if w > 50 { return "Discharging the battery to power the house." }
+        if w < -50 { return "Charging the battery." }
+        return "Watching the home — the battery is idle right now."
     }
 
     private var intentOutcomeLine: String? {
@@ -1136,6 +1152,19 @@ private struct FlowLayout: View {
                 .background(themeColor(theme.accent).opacity(0.12))
                 .clipShape(Capsule())
         }
+    }
+}
+
+// Turn a raw battery-mode/intent code into a short homeowner word; empty/unknown → "Auto".
+private func humanizeMode(_ raw: String?) -> String {
+    guard let raw, !raw.isEmpty, raw != "--" else { return "Auto" }
+    switch raw {
+    case "self_consumption", "auto", "allow_self_consumption": return "Self-use"
+    case "grid_charge", "grid_charge_to_target", "charge": return "Grid charge"
+    case "discharge", "discharge_for_load": return "Discharging"
+    case "hold", "hold_reserve": return "Holding"
+    case "idle": return "Idle"
+    default: return raw.replacingOccurrences(of: "_", with: " ").capitalized
     }
 }
 
