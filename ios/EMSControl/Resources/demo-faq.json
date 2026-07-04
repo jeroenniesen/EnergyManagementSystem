@@ -1,0 +1,10 @@
+{
+  "ai_on": false,
+  "items": [
+    {
+      "key": "battery_safe",
+      "question": "Is my battery safe?",
+      "answer": "Demo data: the EMS is observing only and would leave the battery in self-consumption."
+    }
+  ]
+}
