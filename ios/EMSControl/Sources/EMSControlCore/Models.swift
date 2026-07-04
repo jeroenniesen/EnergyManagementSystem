@@ -209,6 +209,27 @@ public struct MobileDashboardSnapshot: Codable, Equatable, Sendable {
             finance: .empty
         )
     }
+
+    // `.convertFromSnakeCase` lower-cases every word after the first and capitalizes only its first
+    // letter (e.g. "cache_ttl_seconds" -> "cacheTtlSeconds"), so it never lands on the fully
+    // capitalized acronym spelling `cacheTTLSeconds` used below. Every other property in this file
+    // follows the per-word-capitalize convention, so only this one case needs a manual mapping —
+    // without it, decoding this struct directly (as the demo fixture does) throws `keyNotFound`.
+    enum CodingKeys: String, CodingKey {
+        case generatedAt
+        case serverName
+        case cacheTTLSeconds = "cacheTtlSeconds"
+        case status
+        case freshness
+        case decision
+        case alerts
+        case battery
+        case chargeNeed
+        case savings
+        case energyStory
+        case report
+        case finance
+    }
 }
 
 public struct StatusSnapshot: Codable, Equatable, Sendable {
@@ -273,6 +294,18 @@ public struct FreshnessSnapshot: Codable, Equatable, Sendable {
     }
 }
 
+public struct ValidationFinding: Codable, Equatable, Sendable {
+    public let severity: String
+    public let code: String
+    public let message: String
+}
+
+public struct PlanValidation: Codable, Equatable, Sendable {
+    public let status: String
+    public let ok: Bool
+    public let findings: [ValidationFinding]
+}
+
 public struct DecisionSnapshot: Codable, Equatable, Sendable {
     public let intent: String?
     public let desiredMode: String?
@@ -285,6 +318,8 @@ public struct DecisionSnapshot: Codable, Equatable, Sendable {
     public let carCharging: Bool?
     public let targetSoc: Double?
     public let homeState: HomeState?
+    public let planValidation: PlanValidation?
+    public let explanationSource: String?
 
     public static let empty = DecisionSnapshot(
         intent: nil,
@@ -297,7 +332,9 @@ public struct DecisionSnapshot: Codable, Equatable, Sendable {
         overrideActive: false,
         carCharging: nil,
         targetSoc: nil,
-        homeState: nil
+        homeState: nil,
+        planValidation: nil,
+        explanationSource: nil
     )
 
     public init(
@@ -311,7 +348,9 @@ public struct DecisionSnapshot: Codable, Equatable, Sendable {
         overrideActive: Bool,
         carCharging: Bool?,
         targetSoc: Double?,
-        homeState: HomeState?
+        homeState: HomeState?,
+        planValidation: PlanValidation? = nil,
+        explanationSource: String? = nil
     ) {
         self.intent = intent
         self.desiredMode = desiredMode
@@ -324,6 +363,8 @@ public struct DecisionSnapshot: Codable, Equatable, Sendable {
         self.carCharging = carCharging
         self.targetSoc = targetSoc
         self.homeState = homeState
+        self.planValidation = planValidation
+        self.explanationSource = explanationSource
     }
 
     init(section: FlexibleSection) {
@@ -338,7 +379,9 @@ public struct DecisionSnapshot: Codable, Equatable, Sendable {
             overrideActive: section.values["override_active"]?.bool ?? false,
             carCharging: section.values["car_charging"]?.bool,
             targetSoc: section.values["target_soc"]?.number,
-            homeState: nil
+            homeState: nil,
+            planValidation: nil,
+            explanationSource: nil
         )
     }
 }
@@ -646,10 +689,46 @@ public struct ReportSnapshot: Codable, Equatable, Sendable {
     public let period: String?
     public let label: String?
     public let partial: Bool?
-    public let flows: [String: JSONValue]
+    public let flows: ReportFlows
     public let scores: [ReportScore]
+    public let series: [ReportSeriesBucket]
 
-    public static let empty = ReportSnapshot(period: nil, label: nil, partial: nil, flows: [:], scores: [])
+    public static let empty = ReportSnapshot(period: nil, label: nil, partial: nil, flows: .empty, scores: [], series: [])
+
+    public init(
+        period: String?,
+        label: String?,
+        partial: Bool?,
+        flows: ReportFlows,
+        scores: [ReportScore],
+        series: [ReportSeriesBucket]
+    ) {
+        self.period = period
+        self.label = label
+        self.partial = partial
+        self.flows = flows
+        self.scores = scores
+        self.series = series
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case period
+        case label
+        case partial
+        case flows
+        case scores
+        case series
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        period = try container.decodeIfPresent(String.self, forKey: .period)
+        label = try container.decodeIfPresent(String.self, forKey: .label)
+        partial = try container.decodeIfPresent(Bool.self, forKey: .partial)
+        flows = try container.decodeIfPresent(ReportFlows.self, forKey: .flows) ?? .empty
+        scores = try container.decodeIfPresent([ReportScore].self, forKey: .scores) ?? []
+        series = try container.decodeIfPresent([ReportSeriesBucket].self, forKey: .series) ?? []
+    }
 }
 
 public struct ReportScore: Codable, Equatable, Identifiable, Sendable {
@@ -660,6 +739,153 @@ public struct ReportScore: Codable, Equatable, Identifiable, Sendable {
     public let unit: String?
     public let explanation: String?
     public var id: String { key }
+}
+
+public struct ReportFlows: Codable, Equatable, Sendable {
+    public let hasData: Bool
+    public let partial: Bool?
+    public let solarKwh: Double
+    public let gridImportKwh: Double
+    public let gridExportKwh: Double
+    public let batteryChargeKwh: Double
+    public let batteryDischargeKwh: Double
+    public let homeKwh: Double
+    public let carKwh: Double
+    public let carGuardLeakKwh: Double
+    public let selfSufficiencyPct: Double?
+    public let solarSelfConsumptionPct: Double?
+
+    public static let empty = ReportFlows(
+        hasData: false,
+        partial: nil,
+        solarKwh: 0,
+        gridImportKwh: 0,
+        gridExportKwh: 0,
+        batteryChargeKwh: 0,
+        batteryDischargeKwh: 0,
+        homeKwh: 0,
+        carKwh: 0,
+        carGuardLeakKwh: 0,
+        selfSufficiencyPct: nil,
+        solarSelfConsumptionPct: nil
+    )
+
+    public init(
+        hasData: Bool,
+        partial: Bool?,
+        solarKwh: Double,
+        gridImportKwh: Double,
+        gridExportKwh: Double,
+        batteryChargeKwh: Double,
+        batteryDischargeKwh: Double,
+        homeKwh: Double,
+        carKwh: Double,
+        carGuardLeakKwh: Double,
+        selfSufficiencyPct: Double?,
+        solarSelfConsumptionPct: Double?
+    ) {
+        self.hasData = hasData
+        self.partial = partial
+        self.solarKwh = solarKwh
+        self.gridImportKwh = gridImportKwh
+        self.gridExportKwh = gridExportKwh
+        self.batteryChargeKwh = batteryChargeKwh
+        self.batteryDischargeKwh = batteryDischargeKwh
+        self.homeKwh = homeKwh
+        self.carKwh = carKwh
+        self.carGuardLeakKwh = carGuardLeakKwh
+        self.selfSufficiencyPct = selfSufficiencyPct
+        self.solarSelfConsumptionPct = solarSelfConsumptionPct
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case hasData
+        case partial
+        case solarKwh
+        case gridImportKwh
+        case gridExportKwh
+        case batteryChargeKwh
+        case batteryDischargeKwh
+        case homeKwh
+        case carKwh
+        case carGuardLeakKwh
+        case selfSufficiencyPct
+        case solarSelfConsumptionPct
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        hasData = try container.decodeIfPresent(Bool.self, forKey: .hasData) ?? false
+        partial = try container.decodeIfPresent(Bool.self, forKey: .partial)
+        solarKwh = try container.decodeIfPresent(Double.self, forKey: .solarKwh) ?? 0
+        gridImportKwh = try container.decodeIfPresent(Double.self, forKey: .gridImportKwh) ?? 0
+        gridExportKwh = try container.decodeIfPresent(Double.self, forKey: .gridExportKwh) ?? 0
+        batteryChargeKwh = try container.decodeIfPresent(Double.self, forKey: .batteryChargeKwh) ?? 0
+        batteryDischargeKwh = try container.decodeIfPresent(Double.self, forKey: .batteryDischargeKwh) ?? 0
+        homeKwh = try container.decodeIfPresent(Double.self, forKey: .homeKwh) ?? 0
+        carKwh = try container.decodeIfPresent(Double.self, forKey: .carKwh) ?? 0
+        carGuardLeakKwh = try container.decodeIfPresent(Double.self, forKey: .carGuardLeakKwh) ?? 0
+        selfSufficiencyPct = try container.decodeIfPresent(Double.self, forKey: .selfSufficiencyPct)
+        solarSelfConsumptionPct = try container.decodeIfPresent(Double.self, forKey: .solarSelfConsumptionPct)
+    }
+}
+
+public struct ReportSeriesBucket: Codable, Equatable, Identifiable, Sendable {
+    public let start: String
+    public let gridImportKwh: Double
+    public let gridExportKwh: Double
+    public let houseKwh: Double
+    public let carKwh: Double
+    public let solarKwh: Double
+    public let samples: Int
+
+    public var id: String { start }
+}
+
+public enum InsightsPeriod: String, CaseIterable, Codable, Equatable, Sendable {
+    case day
+    case week
+    case month
+    case year
+
+    public var title: String {
+        rawValue.prefix(1).uppercased() + rawValue.dropFirst()
+    }
+
+    public func shiftedAnchor(_ anchor: String, direction: Int, calendar: Calendar = .current) -> String {
+        guard let date = Self.anchorFormatter.date(from: anchor) else { return anchor }
+        let component: Calendar.Component
+        let amount: Int
+        switch self {
+        case .day:
+            component = .day
+            amount = direction
+        case .week:
+            component = .day
+            amount = direction * 7
+        case .month:
+            component = .month
+            amount = direction
+        case .year:
+            component = .year
+            amount = direction
+        }
+        return calendar.date(byAdding: component, value: amount, to: date)
+            .map(Self.anchorFormatter.string(from:)) ?? anchor
+    }
+
+    public static func today(calendar: Calendar = .current) -> String {
+        anchorFormatter.string(from: calendar.startOfDay(for: Date()))
+    }
+
+    private static let anchorFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.calendar = Calendar(identifier: .gregorian)
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.timeZone = .current
+        formatter.dateFormat = "yyyy-MM-dd"
+        return formatter
+    }()
 }
 
 public struct FinanceSnapshot: Codable, Equatable, Sendable {
