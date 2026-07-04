@@ -20,6 +20,8 @@ struct DashboardView: View {
                         if let snapshot = dashboardStore.snapshot {
                             HomeStatePanel(snapshot: snapshot, isStale: dashboardStore.isStale, nextRefreshAt: dashboardStore.nextRefreshAt, theme: theme)
 
+                            ScoreStrip(scores: snapshot.report.scores, theme: theme)
+
                             ActivityPanel(snapshot: snapshot, theme: theme)
 
                             if !snapshot.alerts.alerts.isEmpty {
@@ -33,8 +35,6 @@ struct DashboardView: View {
                             if !snapshot.freshness.values.isEmpty {
                                 FreshnessPanel(freshness: snapshot.freshness, theme: theme)
                             }
-
-                            ScoreStrip(scores: snapshot.report.scores, theme: theme)
 
                             BatteryPanel(snapshot: snapshot, theme: theme)
 
@@ -405,8 +405,13 @@ private struct ScoreStrip: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             Text("Today so far")
-                .font(.headline)
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(themeColor(theme.muted))
+
+            Text(verdict)
+                .font(.title3.weight(.semibold))
                 .foregroundStyle(themeColor(theme.text))
+                .fixedSize(horizontal: false, vertical: true)
 
             LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible()), GridItem(.flexible())], spacing: 10) {
                 ForEach(scores.prefix(3)) { score in
@@ -420,6 +425,26 @@ private struct ScoreStrip: View {
         .overlay {
             RoundedRectangle(cornerRadius: 12, style: .continuous)
                 .stroke(themeColor(theme.line), lineWidth: 1)
+        }
+    }
+
+    private func value(_ key: String) -> Double? {
+        scores.first { $0.key == key }?.value
+    }
+
+    // One plain-language read on the day, tied to the two goals: use your own sun, and buy grid
+    // power cheap. Self-consumption ≈ sun captured; best-price ≈ bought at the right times.
+    private var verdict: String {
+        guard let sun = value("self_consumption"), let price = value("best_price") else {
+            return "Tracking how well today's energy is used."
+        }
+        switch min(sun, price) {
+        case 80...:
+            return "Using your energy well — mostly your own sun, and grid power bought at the cheapest times."
+        case 50..<80:
+            return "A solid energy day — some room to use more sun or buy cheaper."
+        default:
+            return "Room to do better — more power came from the grid at pricier times today."
         }
     }
 }

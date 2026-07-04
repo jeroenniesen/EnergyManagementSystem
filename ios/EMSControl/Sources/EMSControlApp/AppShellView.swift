@@ -42,6 +42,12 @@ struct AppShellView: View {
         .toolbarBackground(themeColor(theme.panel), for: .tabBar)
         .toolbarBackground(.visible, for: .tabBar)
         .task {
+            // UI-screenshot / preview hook: land straight on the demo dashboard when launched
+            // with EMS_UI_DEMO=1 in the environment. Never fires on a normal launch.
+            if ProcessInfo.processInfo.environment["EMS_UI_DEMO"] == "1" {
+                dashboardStore.loadDemo()
+                return
+            }
             dashboardStore.restoreSavedServer()
             await dashboardStore.refresh()
         }
