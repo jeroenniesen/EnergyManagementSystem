@@ -18,29 +18,30 @@ struct DashboardView: View {
                 ScrollView {
                     VStack(alignment: .leading, spacing: 16) {
                         if let snapshot = dashboardStore.snapshot {
+                            // 1. Status card
                             HomeStatePanel(snapshot: snapshot, isStale: dashboardStore.isStale, nextRefreshAt: dashboardStore.nextRefreshAt, theme: theme)
 
-                            ScoreStrip(scores: snapshot.report.scores, theme: theme)
-
-                            ActivityPanel(snapshot: snapshot, theme: theme)
-
+                            // Safety alerts stay at the top (conditional).
                             if !snapshot.alerts.alerts.isEmpty {
                                 AlertsPanel(alerts: snapshot.alerts.alerts, theme: theme)
                             }
 
+                            // 2. Today so far (scores)
+                            ScoreStrip(scores: snapshot.report.scores, theme: theme)
+
+                            // 3. Plan tracks
+                            EnergyGraphsPanel(story: snapshot.energyStory, theme: theme)
+
+                            // 4. Battery
+                            BatteryPanel(snapshot: snapshot, theme: theme)
+
+                            // 5. Strategy
                             if let strategy = snapshot.strategy {
                                 StrategyCard(strategy: strategy, theme: theme)
                             }
 
-                            if !snapshot.freshness.values.isEmpty {
-                                FreshnessPanel(freshness: snapshot.freshness, theme: theme)
-                            }
-
-                            BatteryPanel(snapshot: snapshot, theme: theme)
-
+                            // Kept below the requested five (not named for removal).
                             EnergyStoryPanel(snapshot: snapshot, theme: theme)
-
-                            EnergyGraphsPanel(story: snapshot.energyStory, theme: theme)
 
                             FinancePanel(finance: snapshot.finance, savings: snapshot.savings, theme: theme)
 
@@ -213,116 +214,6 @@ private struct PriceContextBar: View {
     }
 }
 
-private struct ActivityPanel: View {
-    let snapshot: MobileDashboardSnapshot
-    let theme: EMSTheme
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            Text("What the EMS is doing")
-                .font(.caption.weight(.semibold))
-                .foregroundStyle(themeColor(theme.muted))
-
-            Text(reasonText)
-                .font(.subheadline)
-                .foregroundStyle(themeColor(theme.text))
-                .fixedSize(horizontal: false, vertical: true)
-
-            if let intentOutcomeLine = intentOutcomeLine {
-                Text(intentOutcomeLine)
-                    .font(.footnote)
-                    .foregroundStyle(themeColor(theme.muted))
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-
-            if let planValidation = snapshot.decision.planValidation, planValidation.ok == false {
-                VStack(alignment: .leading, spacing: 6) {
-                    Label("Holding — plan not applied", systemImage: "pause.circle")
-                        .font(.footnote.weight(.semibold))
-                        .foregroundStyle(themeColor(validationAccent))
-
-                    ForEach(Array(planValidation.findings.enumerated()), id: \.offset) { _, finding in
-                        Text(finding.message)
-                            .font(.footnote)
-                            .foregroundStyle(themeColor(theme.muted))
-                            .fixedSize(horizontal: false, vertical: true)
-                    }
-                }
-                .padding(10)
-                .background(themeColor(theme.secondaryPanel))
-                .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
-                .overlay {
-                    RoundedRectangle(cornerRadius: 8, style: .continuous)
-                        .stroke(themeColor(validationAccent).opacity(0.55), lineWidth: 1)
-                }
-            }
-
-            if snapshot.decision.carCharging == true {
-                Label("Car charging — the battery is held for the house", systemImage: "car.fill")
-                    .font(.footnote)
-                    .foregroundStyle(themeColor(theme.winter))
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-
-            if snapshot.decision.overrideActive == true {
-                Label("Manual override active — following your command, not the plan", systemImage: "hand.raised.fill")
-                    .font(.footnote)
-                    .foregroundStyle(themeColor(theme.amber))
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-
-            if showsAiNote {
-                Text("Explained by AI")
-                    .font(.caption2)
-                    .foregroundStyle(themeColor(theme.muted))
-            }
-        }
-        .padding(16)
-        .background(themeColor(theme.panel))
-        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
-        .overlay {
-            RoundedRectangle(cornerRadius: 12, style: .continuous)
-                .stroke(themeColor(theme.line), lineWidth: 1)
-        }
-    }
-
-    private var reasonText: String {
-        snapshot.decision.reason ?? snapshot.decision.planReasonExplained ?? snapshot.decision.planReason ?? synthesizedReason
-    }
-
-    // Live servers don't always send a written reason. Rather than "No details", say what the
-    // battery is actually doing — from the intent, or failing that its measured power.
-    private var synthesizedReason: String {
-        switch snapshot.decision.intent {
-        case "allow_self_consumption": return "Running the house on your solar and battery."
-        case "grid_charge_to_target": return "Charging from the grid in a cheap window, ready for tonight."
-        case "discharge_for_load": return "Discharging the battery to power the house."
-        case "hold_reserve": return "Holding the battery's charge for the evening peak."
-        default: break
-        }
-        let w = snapshot.status.batteryPowerW ?? 0
-        if w > 50 { return "Discharging the battery to power the house." }
-        if w < -50 { return "Charging the battery." }
-        return "Watching the home — the battery is idle right now."
-    }
-
-    private var intentOutcomeLine: String? {
-        let intent = snapshot.decision.intent.map { humanizeMode($0) }
-        let parts = [intent, snapshot.decision.outcome].compactMap(\.self)
-        return parts.isEmpty ? nil : parts.joined(separator: " — ")
-    }
-
-    private var validationAccent: HexColor {
-        let findings = snapshot.decision.planValidation?.findings ?? []
-        let hasCritical = !findings.filter { $0.severity == "critical" }.isEmpty
-        return hasCritical ? theme.error : theme.amber
-    }
-
-    private var showsAiNote: Bool {
-        snapshot.decision.explanationSource == "external_llm" || snapshot.decision.explanationSource == "local_llm"
-    }
-}
-
 private struct StrategyCard: View {
     let strategy: StrategySnapshot
     let theme: EMSTheme
@@ -373,107 +264,6 @@ private struct StrategyCard: View {
             "Price-smart"
         default:
             strategy.active.capitalized
-        }
-    }
-}
-
-private struct FreshnessPanel: View {
-    let freshness: FreshnessSnapshot
-    let theme: EMSTheme
-
-    private struct Chip {
-        let key: String
-        let label: String
-        let state: String
-    }
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            Text("Data freshness")
-                .font(.caption.weight(.semibold))
-                .foregroundStyle(themeColor(theme.muted))
-
-            ViewThatFits(in: .horizontal) {
-                HStack(spacing: 8) { chips }
-                VStack(alignment: .leading, spacing: 8) { chips }
-            }
-        }
-        .padding(16)
-        .background(themeColor(theme.panel))
-        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
-        .overlay {
-            RoundedRectangle(cornerRadius: 12, style: .continuous)
-                .stroke(themeColor(theme.line), lineWidth: 1)
-        }
-    }
-
-    private var chips: some View {
-        ForEach(orderedChips, id: \.key) { chip in
-            Text(chip.label)
-                .font(.caption2.weight(.semibold))
-                .foregroundStyle(themeColor(color(for: chip.state)))
-                .padding(.horizontal, 8)
-                .padding(.vertical, 5)
-                .background(themeColor(color(for: chip.state)).opacity(0.12))
-                .clipShape(Capsule())
-        }
-    }
-
-    private var orderedChips: [Chip] {
-        freshness.values
-            .map { Chip(key: $0.key, label: humanizedLabel(for: $0.key), state: $0.value) }
-            .sorted { lhs, rhs in
-                let lhsRank = rank(for: lhs.state)
-                let rhsRank = rank(for: rhs.state)
-                if lhsRank != rhsRank { return lhsRank < rhsRank }
-                return lhs.label < rhs.label
-            }
-    }
-
-    private func rank(for state: String) -> Int {
-        switch state {
-        case "missing":
-            0
-        case "stale":
-            1
-        case "fresh":
-            2
-        default:
-            3
-        }
-    }
-
-    private func color(for state: String) -> HexColor {
-        switch state {
-        case "fresh":
-            theme.accent
-        case "stale":
-            theme.amber
-        case "missing":
-            theme.error
-        default:
-            theme.muted
-        }
-    }
-
-    private func humanizedLabel(for key: String) -> String {
-        switch key {
-        case "grid":
-            "Grid"
-        case "solar":
-            "Solar"
-        case "ev":
-            "Car"
-        case "battery":
-            "Battery"
-        case "soc":
-            "Battery %"
-        case "prices":
-            "Prices"
-        case "forecast":
-            "Forecast"
-        default:
-            key.replacingOccurrences(of: "_", with: " ").capitalized
         }
     }
 }
