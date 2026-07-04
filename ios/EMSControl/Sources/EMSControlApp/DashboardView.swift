@@ -306,7 +306,7 @@ private struct ActivityPanel: View {
     }
 
     private var intentOutcomeLine: String? {
-        let intent = snapshot.decision.intent?.replacingOccurrences(of: "_", with: " ")
+        let intent = snapshot.decision.intent.map { humanizeMode($0) }
         let parts = [intent, snapshot.decision.outcome].compactMap(\.self)
         return parts.isEmpty ? nil : parts.joined(separator: " — ")
     }
@@ -572,7 +572,7 @@ private struct ScoreRing: View {
         switch score.key {
         case "self_consumption": "of your sun kept"
         case "co2": "less than no-solar"
-        case "best_price": "bought in cheap hours"
+        case "best_price": "in cheap hours"
         default: score.unit ?? ""
         }
     }
