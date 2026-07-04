@@ -107,7 +107,18 @@ private struct ActivityRow: View {
     }
 
     private var categoryLabel: String {
-        entry.category.replacingOccurrences(of: "_", with: " ").capitalized
+        switch entry.category {
+        case "battery_decision":
+            "Battery decision"
+        case "manual_override":
+            "Manual override"
+        case "config_change":
+            "Config change"
+        case "ai_validation":
+            "AI validation"
+        default:
+            entry.category.replacingOccurrences(of: "_", with: " ").capitalized
+        }
     }
 
     private var timestampLabel: String {

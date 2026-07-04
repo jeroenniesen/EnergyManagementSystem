@@ -22,16 +22,16 @@ struct DashboardView: View {
 
                             ActivityPanel(snapshot: snapshot, theme: theme)
 
+                            if !snapshot.alerts.alerts.isEmpty {
+                                AlertsPanel(alerts: snapshot.alerts.alerts, theme: theme)
+                            }
+
                             if let strategy = snapshot.strategy {
                                 StrategyCard(strategy: strategy, theme: theme)
                             }
 
                             if !snapshot.freshness.values.isEmpty {
                                 FreshnessPanel(freshness: snapshot.freshness, theme: theme)
-                            }
-
-                            if !snapshot.alerts.alerts.isEmpty {
-                                AlertsPanel(alerts: snapshot.alerts.alerts, theme: theme)
                             }
 
                             ScoreStrip(scores: snapshot.report.scores, theme: theme)
@@ -100,7 +100,7 @@ private struct HomeStatePanel: View {
         VStack(alignment: .leading, spacing: 14) {
             HStack(alignment: .top, spacing: 12) {
                 VStack(alignment: .leading, spacing: 8) {
-                    Text(snapshot.decision.homeState?.headline ?? snapshot.decision.planReasonExplained ?? "EMS is watching the home")
+                    Text(snapshot.decision.homeState?.headline ?? "EMS is watching the home")
                         .font(.title3.weight(.semibold))
                         .foregroundStyle(themeColor(theme.text))
                         .fixedSize(horizontal: false, vertical: true)
@@ -114,7 +114,7 @@ private struct HomeStatePanel: View {
             }
 
             HStack(spacing: 10) {
-                MetricPill(title: "SoC", value: percent(snapshot.status.socPct), theme: theme)
+                MetricPill(title: "Battery %", value: percent(snapshot.status.socPct), theme: theme)
                 MetricPill(title: "Mode", value: snapshot.battery.currentMode ?? snapshot.decision.desiredMode ?? "--", theme: theme)
                 MetricPill(title: "Price", value: price(snapshot.energyStory.currentPriceEurPerKwh), theme: theme)
             }
@@ -131,19 +131,21 @@ private struct HomeStatePanel: View {
     private var badgeText: String {
         if snapshot.isDemo { return "Demo" }
         if isStale { return "Stale" }
+        if snapshot.decision.planValidation?.ok == false { return "Holding" }
         if snapshot.status.dryRun { return "Watch-only" }
         return "Live"
     }
 
     private var badgeColor: HexColor {
         if isStale { return theme.amber }
+        if snapshot.decision.planValidation?.ok == false { return theme.amber }
         if snapshot.status.dryRun { return theme.winter }
         return theme.accent
     }
 
     private var statusLine: String {
         let refresh = nextRefreshAt.map { "next refresh \($0.formatted(date: .omitted, time: .shortened))" }
-        return [snapshot.serverName, snapshot.status.devMode, refresh].compactMap(\.self).joined(separator: " - ")
+        return [snapshot.serverName, snapshot.status.devMode, refresh].compactMap(\.self).joined(separator: " — ")
     }
 }
 
@@ -157,12 +159,10 @@ private struct ActivityPanel: View {
                 .font(.caption.weight(.semibold))
                 .foregroundStyle(themeColor(theme.muted))
 
-            if let reasonText = reasonText {
-                Text(reasonText)
-                    .font(.subheadline)
-                    .foregroundStyle(themeColor(theme.text))
-                    .fixedSize(horizontal: false, vertical: true)
-            }
+            Text(reasonText)
+                .font(.subheadline)
+                .foregroundStyle(themeColor(theme.text))
+                .fixedSize(horizontal: false, vertical: true)
 
             if let intentOutcomeLine = intentOutcomeLine {
                 Text(intentOutcomeLine)
@@ -173,7 +173,7 @@ private struct ActivityPanel: View {
 
             if let planValidation = snapshot.decision.planValidation, planValidation.ok == false {
                 VStack(alignment: .leading, spacing: 6) {
-                    Label("Holding - plan not applied", systemImage: "pause.circle")
+                    Label("Holding — plan not applied", systemImage: "pause.circle")
                         .font(.footnote.weight(.semibold))
                         .foregroundStyle(themeColor(validationAccent))
 
@@ -194,21 +194,21 @@ private struct ActivityPanel: View {
             }
 
             if snapshot.decision.carCharging == true {
-                Label("Car charging - the battery is held for the house", systemImage: "car.fill")
+                Label("Car charging — the battery is held for the house", systemImage: "car.fill")
                     .font(.footnote)
                     .foregroundStyle(themeColor(theme.winter))
                     .fixedSize(horizontal: false, vertical: true)
             }
 
             if snapshot.decision.overrideActive == true {
-                Label("Manual override active - following your command, not the plan", systemImage: "hand.raised.fill")
+                Label("Manual override active — following your command, not the plan", systemImage: "hand.raised.fill")
                     .font(.footnote)
                     .foregroundStyle(themeColor(theme.amber))
                     .fixedSize(horizontal: false, vertical: true)
             }
 
             if showsAiNote {
-                Text("explained by AI")
+                Text("Explained by AI")
                     .font(.caption2)
                     .foregroundStyle(themeColor(theme.muted))
             }
@@ -222,14 +222,14 @@ private struct ActivityPanel: View {
         }
     }
 
-    private var reasonText: String? {
-        snapshot.decision.reason ?? snapshot.decision.planReasonExplained ?? snapshot.decision.planReason
+    private var reasonText: String {
+        snapshot.decision.reason ?? snapshot.decision.planReasonExplained ?? snapshot.decision.planReason ?? "No decision details available yet."
     }
 
     private var intentOutcomeLine: String? {
         let intent = snapshot.decision.intent?.replacingOccurrences(of: "_", with: " ")
         let parts = [intent, snapshot.decision.outcome].compactMap(\.self)
-        return parts.isEmpty ? nil : parts.joined(separator: " - ")
+        return parts.isEmpty ? nil : parts.joined(separator: " — ")
     }
 
     private var validationAccent: HexColor {
@@ -603,7 +603,7 @@ private struct EnergyGraphsPanel: View {
                 TrackLabel("Battery actions")
                 ActionTrack(slots: timeline, recentCount: story.recent.count, theme: theme)
 
-                TrackLabel(story.recent.isEmpty ? "Solar forecast" : "Solar produced -> forecast")
+                TrackLabel(story.recent.isEmpty ? "Solar forecast" : "Solar produced → forecast")
                 BarTrack(
                     values: timeline.map { max($0.solarW, 0) },
                     recentCount: story.recent.count,
@@ -814,17 +814,17 @@ private struct ActionTrack: View {
     private func humanizedAction(_ action: String) -> String {
         switch action {
         case "solar_charge":
-            "solar charge"
+            "Charge from solar"
         case "grid_charge":
-            "grid charge"
+            "Charge from grid"
         case "discharge":
-            "discharge"
+            "Power the house"
         case "self_consume":
-            "self consume"
+            "Use solar first"
         case "hold":
-            "hold"
+            "Hold"
         case "idle":
-            "idle"
+            "Idle"
         default:
             action.replacingOccurrences(of: "_", with: " ")
         }
@@ -999,7 +999,7 @@ private struct DetailGrid: View {
     var body: some View {
         LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 10) {
             DetailCell(title: "House", value: watts(snapshot.status.houseLoadW), theme: theme)
-            DetailCell(title: "Target SoC", value: percent(snapshot.chargeNeed.targetSocPct ?? snapshot.energyStory.targetSocPct), theme: theme)
+            DetailCell(title: "Target %", value: percent(snapshot.chargeNeed.targetSocPct ?? snapshot.energyStory.targetSocPct), theme: theme)
             DetailCell(title: "Reserve", value: kwh(snapshot.chargeNeed.reserveKwh), theme: theme)
             DetailCell(title: "Data", value: snapshot.alerts.dataQuality ?? "unknown", theme: theme)
             DetailCell(title: "Towers", value: towers(snapshot.battery.aggregate), theme: theme)
