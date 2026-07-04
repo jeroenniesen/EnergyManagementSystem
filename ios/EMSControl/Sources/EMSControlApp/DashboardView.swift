@@ -613,6 +613,7 @@ private struct EnergyStoryPanel: View {
 private struct EnergyGraphsPanel: View {
     let story: EnergyStorySnapshot
     let theme: EMSTheme
+    @State private var expanded = false
 
     private var timeline: [StorySlot] {
         story.recent + story.slots
@@ -631,20 +632,9 @@ private struct EnergyGraphsPanel: View {
 
     var body: some View {
         if !timeline.isEmpty {
-            VStack(alignment: .leading, spacing: 14) {
-                HStack {
-                    Label("Plan tracks", systemImage: "chart.xyaxis.line")
-                        .font(.headline)
-                        .foregroundStyle(themeColor(theme.text))
-                    Spacer()
-                    if let price = story.currentPriceEurPerKwh {
-                        Text("\(price.formatted(.currency(code: "EUR")))/kWh")
-                            .font(.caption.weight(.semibold))
-                            .foregroundStyle(themeColor(theme.muted))
-                    }
-                }
-
-                BatteryForecastChart(story: story, slots: timeline, recentCount: story.recent.count, theme: theme)
+            DisclosureGroup(isExpanded: $expanded) {
+                VStack(alignment: .leading, spacing: 14) {
+                    BatteryForecastChart(story: story, slots: timeline, recentCount: story.recent.count, theme: theme)
                 TrackLabel("Electricity price")
                 BarTrack(
                     values: timeline.map { max($0.eurPerKwh ?? 0, 0) },
@@ -672,8 +662,15 @@ private struct EnergyGraphsPanel: View {
                 .accessibilityLabel(story.recent.isEmpty ? "Solar forecast over time" : "Solar produced and forecast over time")
                 .accessibilityValue(solarAccessibilityValue)
 
-                ActionLegend(actions: uniqueActions(in: timeline), theme: theme)
+                    ActionLegend(actions: uniqueActions(in: timeline), theme: theme)
+                }
+                .padding(.top, 12)
+            } label: {
+                Label("Plan tracks — the 24-hour plan", systemImage: "chart.xyaxis.line")
+                    .font(.headline)
+                    .foregroundStyle(themeColor(theme.text))
             }
+            .tint(themeColor(theme.muted))
             .padding(16)
             .background(themeColor(theme.panel))
             .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
