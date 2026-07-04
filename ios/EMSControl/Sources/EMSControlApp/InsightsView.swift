@@ -192,6 +192,9 @@ private struct InsightsScoreRing: View {
                 .foregroundStyle(themeColor(theme.text))
         }
         .frame(width: 66, height: 66)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(score.label)
+        .accessibilityValue(scoreAccessibilityValue)
     }
 
     private var color: HexColor {
@@ -199,6 +202,11 @@ private struct InsightsScoreRing: View {
         if value >= 75 { return theme.accent }
         if value >= 45 { return theme.amber }
         return theme.winter
+    }
+
+    private var scoreAccessibilityValue: String {
+        guard let value = score.value else { return "not available" }
+        return "\(Int(value)) out of 100"
     }
 }
 
@@ -279,6 +287,19 @@ private struct BehaviorChart: View {
         .padding(12)
         .background(themeColor(theme.secondaryPanel))
         .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(title)
+        .accessibilityValue(seriesAccessibilityValue)
+    }
+
+    private var seriesAccessibilityValue: String {
+        guard !series.isEmpty else { return "no data available" }
+        return series
+            .map { item in
+                let total = item.values.reduce(0, +)
+                return "\(item.label) \(total.formatted(.number.precision(.fractionLength(1)))) kWh"
+            }
+            .joined(separator: ", ")
     }
 
     private var domain: ClosedRange<Double> {
@@ -437,11 +458,21 @@ private struct SavedBars: View {
         }
         .frame(height: 86)
         .padding(.top, 4)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("Daily savings over the period")
+        .accessibilityValue(savedBarsAccessibilityValue)
     }
 
     private func normalized(_ value: Double) -> Double {
         let maxValue = max(days.compactMap(\.savedEur).map(abs).max() ?? 0, 0.01)
         return min(max(value / maxValue, 0), 1)
+    }
+
+    private var savedBarsAccessibilityValue: String {
+        let values = days.compactMap(\.savedEur)
+        guard !values.isEmpty else { return "no data available" }
+        let total = values.reduce(0, +)
+        return "total \(total.formatted(.currency(code: "EUR"))) across \(values.count) days"
     }
 }
 

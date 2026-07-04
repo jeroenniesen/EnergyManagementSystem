@@ -22,6 +22,24 @@ public enum APIClientError: Error, Equatable {
     case incompatibleServer(Int)
 }
 
+extension APIClientError: LocalizedError {
+    public var errorDescription: String? {
+        switch self {
+        case .invalidResponse:
+            "The server sent a response the app couldn't read."
+        case let .httpStatus(code):
+            switch code {
+            case 401, 403:
+                "Access denied (HTTP \(code)) — check your access token."
+            default:
+                "The server returned an error (HTTP \(code))."
+            }
+        case let .incompatibleServer(version):
+            "This app isn't compatible with the EMS server (API v\(version)). Update the app or the server."
+        }
+    }
+}
+
 public struct APIClient: Sendable {
     public let baseURL: URL
     public let token: String?

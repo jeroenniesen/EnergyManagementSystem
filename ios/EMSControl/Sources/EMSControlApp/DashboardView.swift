@@ -26,6 +26,10 @@ struct DashboardView: View {
                                 StrategyCard(strategy: strategy, theme: theme)
                             }
 
+                            if !snapshot.freshness.values.isEmpty {
+                                FreshnessPanel(freshness: snapshot.freshness, theme: theme)
+                            }
+
                             if !snapshot.alerts.alerts.isEmpty {
                                 AlertsPanel(alerts: snapshot.alerts.alerts, theme: theme)
                             }
@@ -293,6 +297,107 @@ private struct StrategyCard: View {
     }
 }
 
+private struct FreshnessPanel: View {
+    let freshness: FreshnessSnapshot
+    let theme: EMSTheme
+
+    private struct Chip {
+        let key: String
+        let label: String
+        let state: String
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text("Data freshness")
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(themeColor(theme.muted))
+
+            ViewThatFits(in: .horizontal) {
+                HStack(spacing: 8) { chips }
+                VStack(alignment: .leading, spacing: 8) { chips }
+            }
+        }
+        .padding(16)
+        .background(themeColor(theme.panel))
+        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .stroke(themeColor(theme.line), lineWidth: 1)
+        }
+    }
+
+    private var chips: some View {
+        ForEach(orderedChips, id: \.key) { chip in
+            Text(chip.label)
+                .font(.caption2.weight(.semibold))
+                .foregroundStyle(themeColor(color(for: chip.state)))
+                .padding(.horizontal, 8)
+                .padding(.vertical, 5)
+                .background(themeColor(color(for: chip.state)).opacity(0.12))
+                .clipShape(Capsule())
+        }
+    }
+
+    private var orderedChips: [Chip] {
+        freshness.values
+            .map { Chip(key: $0.key, label: humanizedLabel(for: $0.key), state: $0.value) }
+            .sorted { lhs, rhs in
+                let lhsRank = rank(for: lhs.state)
+                let rhsRank = rank(for: rhs.state)
+                if lhsRank != rhsRank { return lhsRank < rhsRank }
+                return lhs.label < rhs.label
+            }
+    }
+
+    private func rank(for state: String) -> Int {
+        switch state {
+        case "missing":
+            0
+        case "stale":
+            1
+        case "fresh":
+            2
+        default:
+            3
+        }
+    }
+
+    private func color(for state: String) -> HexColor {
+        switch state {
+        case "fresh":
+            theme.accent
+        case "stale":
+            theme.amber
+        case "missing":
+            theme.error
+        default:
+            theme.muted
+        }
+    }
+
+    private func humanizedLabel(for key: String) -> String {
+        switch key {
+        case "grid":
+            "Grid"
+        case "solar":
+            "Solar"
+        case "ev":
+            "Car"
+        case "battery":
+            "Battery"
+        case "soc":
+            "Battery %"
+        case "prices":
+            "Prices"
+        case "forecast":
+            "Forecast"
+        default:
+            key.replacingOccurrences(of: "_", with: " ").capitalized
+        }
+    }
+}
+
 private struct ScoreStrip: View {
     let scores: [ReportScore]
     let theme: EMSTheme
@@ -347,6 +452,9 @@ private struct ScoreRing: View {
                 .frame(minHeight: 28)
         }
         .frame(maxWidth: .infinity)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(score.label)
+        .accessibilityValue(scoreAccessibilityValue)
     }
 
     private var progress: Double {
@@ -356,6 +464,11 @@ private struct ScoreRing: View {
     private var scoreText: String {
         guard let value = score.value else { return "--" }
         return "\(value.formatted(.number.precision(.fractionLength(0))))%"
+    }
+
+    private var scoreAccessibilityValue: String {
+        guard let value = score.value else { return "not available" }
+        return "\(Int(value)) out of 100"
     }
 }
 
@@ -448,6 +561,17 @@ private struct EnergyGraphsPanel: View {
         story.recent + story.slots
     }
 
+    private var priceAccessibilityValue: String {
+        guard let price = story.currentPriceEurPerKwh else { return "not available" }
+        return "currently \(price.formatted(.currency(code: "EUR"))) per kilowatt hour"
+    }
+
+    private var solarAccessibilityValue: String {
+        let peak = timeline.map(\.solarW).max() ?? 0
+        guard peak > 0 else { return "no solar production expected" }
+        return "peak \(Int(peak)) watts"
+    }
+
     var body: some View {
         if !timeline.isEmpty {
             VStack(alignment: .leading, spacing: 14) {
@@ -472,6 +596,9 @@ private struct EnergyGraphsPanel: View {
                     actualFill: theme.winter,
                     theme: theme
                 )
+                .accessibilityElement(children: .ignore)
+                .accessibilityLabel("Electricity price over time")
+                .accessibilityValue(priceAccessibilityValue)
 
                 TrackLabel("Battery actions")
                 ActionTrack(slots: timeline, recentCount: story.recent.count, theme: theme)
@@ -484,6 +611,9 @@ private struct EnergyGraphsPanel: View {
                     actualFill: theme.accent,
                     theme: theme
                 )
+                .accessibilityElement(children: .ignore)
+                .accessibilityLabel(story.recent.isEmpty ? "Solar forecast over time" : "Solar produced and forecast over time")
+                .accessibilityValue(solarAccessibilityValue)
 
                 ActionLegend(actions: uniqueActions(in: timeline), theme: theme)
             }
@@ -535,6 +665,14 @@ private struct BatteryForecastChart: View {
                 LegendLine(label: "Reserve", color: theme.muted, dashed: true, theme: theme)
             }
         }
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("Battery level forecast")
+        .accessibilityValue(batteryForecastAccessibilityValue)
+    }
+
+    private var batteryForecastAccessibilityValue: String {
+        guard let current = story.currentSocPct else { return "not available" }
+        return "now \(Int(current))%"
     }
 
     private func chartGrid(size: CGSize) -> some View {
@@ -658,6 +796,37 @@ private struct ActionTrack: View {
                     .fill(themeColor(color(for: slot.action)).opacity(index < recentCount ? 1 : 0.82))
                     .frame(height: 24)
             }
+        }
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("Battery actions over the last day")
+        .accessibilityValue(actionsAccessibilityValue)
+    }
+
+    private var actionsAccessibilityValue: String {
+        guard !slots.isEmpty else { return "no data available" }
+        let counts = Dictionary(grouping: slots, by: \.action).mapValues(\.count)
+        return counts
+            .sorted { $0.value > $1.value }
+            .map { "\(humanizedAction($0.key)) \($0.value)" }
+            .joined(separator: ", ")
+    }
+
+    private func humanizedAction(_ action: String) -> String {
+        switch action {
+        case "solar_charge":
+            "solar charge"
+        case "grid_charge":
+            "grid charge"
+        case "discharge":
+            "discharge"
+        case "self_consume":
+            "self consume"
+        case "hold":
+            "hold"
+        case "idle":
+            "idle"
+        default:
+            action.replacingOccurrences(of: "_", with: " ")
         }
     }
 
