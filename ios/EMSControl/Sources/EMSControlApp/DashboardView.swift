@@ -146,8 +146,9 @@ private struct HomeStatePanel: View {
     }
 
     private var statusLine: String {
+        // The badge already says demo / live / watch-only, so leave devMode off this line.
         let refresh = nextRefreshAt.map { "next refresh \($0.formatted(date: .omitted, time: .shortened))" }
-        return [snapshot.serverName, snapshot.status.devMode, refresh].compactMap(\.self).joined(separator: " — ")
+        return [snapshot.serverName, refresh].compactMap(\.self).joined(separator: " — ")
     }
 }
 
