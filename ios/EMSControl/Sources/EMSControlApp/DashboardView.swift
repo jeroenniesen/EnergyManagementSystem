@@ -469,17 +469,33 @@ private struct ScoreRing: View {
             }
             .frame(width: 58, height: 58)
 
-            Text(score.label)
-                .font(.caption2.weight(.semibold))
-                .foregroundStyle(themeColor(theme.muted))
-                .multilineTextAlignment(.center)
-                .lineLimit(2)
-                .frame(minHeight: 28)
+            VStack(spacing: 2) {
+                Text(score.label)
+                    .font(.caption2.weight(.semibold))
+                    .foregroundStyle(themeColor(theme.text))
+                Text(caption)
+                    .font(.caption2)
+                    .foregroundStyle(themeColor(theme.muted))
+                    .minimumScaleFactor(0.85)
+            }
+            .multilineTextAlignment(.center)
+            .lineLimit(2)
+            .frame(minHeight: 30)
         }
         .frame(maxWidth: .infinity)
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(score.label)
-        .accessibilityValue(scoreAccessibilityValue)
+        .accessibilityValue("\(scoreAccessibilityValue). \(caption).")
+    }
+
+    // A short, always-fitting plain meaning under each ring (the full sentence lives in Insights).
+    private var caption: String {
+        switch score.key {
+        case "self_consumption": "of your sun kept"
+        case "co2": "less than no-solar"
+        case "best_price": "bought in cheap hours"
+        default: score.unit ?? ""
+        }
     }
 
     private var progress: Double {
