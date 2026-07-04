@@ -118,6 +118,8 @@ private struct HomeStatePanel: View {
                 MetricPill(title: "Mode", value: humanizeMode(snapshot.battery.currentMode ?? snapshot.decision.desiredMode), theme: theme)
                 MetricPill(title: "Price", value: price(snapshot.energyStory.currentPriceEurPerKwh), theme: theme)
             }
+
+            PriceContextBar(story: snapshot.energyStory, theme: theme)
         }
         .padding(18)
         .background(themeColor(theme.panel).opacity(0.94))
@@ -146,6 +148,67 @@ private struct HomeStatePanel: View {
     private var statusLine: String {
         let refresh = nextRefreshAt.map { "next refresh \($0.formatted(date: .omitted, time: .shortened))" }
         return [snapshot.serverName, snapshot.status.devMode, refresh].compactMap(\.self).joined(separator: " — ")
+    }
+}
+
+// The "buy grid cheap" proof, at a glance: where the current price sits in today's range.
+private struct PriceContextBar: View {
+    let story: EnergyStorySnapshot
+    let theme: EMSTheme
+
+    private var prices: [Double] {
+        (story.recent + story.slots).compactMap(\.eurPerKwh).filter { $0 > 0 }
+    }
+
+    var body: some View {
+        if let now = story.currentPriceEurPerKwh, let lo = prices.min(), let hi = prices.max(), hi > lo {
+            let pos = min(max((now - lo) / (hi - lo), 0), 1)
+            VStack(alignment: .leading, spacing: 6) {
+                HStack {
+                    Text("Grid price now")
+                        .font(.caption2.weight(.semibold))
+                        .foregroundStyle(themeColor(theme.muted))
+                    Spacer()
+                    Text(band(pos))
+                        .font(.caption2.weight(.semibold))
+                        .foregroundStyle(themeColor(bandColor(pos)))
+                }
+                GeometryReader { geo in
+                    ZStack(alignment: .leading) {
+                        Capsule()
+                            .fill(themeColor(theme.line))
+                            .frame(height: 5)
+                        Circle()
+                            .fill(themeColor(bandColor(pos)))
+                            .frame(width: 10, height: 10)
+                            .offset(x: pos * (geo.size.width - 10))
+                    }
+                    .frame(maxHeight: .infinity, alignment: .center)
+                }
+                .frame(height: 12)
+                HStack {
+                    Text(euro(lo)).font(.caption2).foregroundStyle(themeColor(theme.muted))
+                    Spacer()
+                    Text(euro(hi)).font(.caption2).foregroundStyle(themeColor(theme.muted))
+                }
+            }
+            .padding(.top, 4)
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel("Grid price now")
+            .accessibilityValue("\(band(pos)). \(price(now)), in today's range \(euro(lo)) to \(euro(hi)).")
+        }
+    }
+
+    private func band(_ pos: Double) -> String {
+        if pos < 0.34 { return "Cheap" }
+        if pos < 0.67 { return "Typical" }
+        return "Pricey"
+    }
+
+    private func bandColor(_ pos: Double) -> HexColor {
+        if pos < 0.34 { return theme.accent }
+        if pos < 0.67 { return theme.muted }
+        return theme.amber
     }
 }
 
