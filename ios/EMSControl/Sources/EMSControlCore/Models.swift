@@ -139,6 +139,44 @@ public struct DashboardSnapshot: Codable, Equatable, Sendable {
     }
 }
 
+public struct StrategySnapshot: Codable, Equatable, Sendable {
+    public let mode: String
+    public let active: String
+    public let summary: String
+    public let reason: String
+    public let auto: Bool
+    public let gridTopup: Bool
+    public let maxTopupPrice: Double?
+
+    public static let empty = StrategySnapshot(
+        mode: "",
+        active: "",
+        summary: "",
+        reason: "",
+        auto: false,
+        gridTopup: false,
+        maxTopupPrice: nil
+    )
+
+    public init(
+        mode: String,
+        active: String,
+        summary: String,
+        reason: String,
+        auto: Bool,
+        gridTopup: Bool,
+        maxTopupPrice: Double?
+    ) {
+        self.mode = mode
+        self.active = active
+        self.summary = summary
+        self.reason = reason
+        self.auto = auto
+        self.gridTopup = gridTopup
+        self.maxTopupPrice = maxTopupPrice
+    }
+}
+
 public struct MobileDashboardSnapshot: Codable, Equatable, Sendable {
     public let generatedAt: Date
     public let serverName: String
@@ -153,6 +191,7 @@ public struct MobileDashboardSnapshot: Codable, Equatable, Sendable {
     public let energyStory: EnergyStorySnapshot
     public let report: ReportSnapshot
     public let finance: FinanceSnapshot
+    public let strategy: StrategySnapshot?
 
     public var isDemo: Bool { serverName.lowercased().contains("demo") }
     public var degradedSections: [String] {
@@ -175,7 +214,8 @@ public struct MobileDashboardSnapshot: Codable, Equatable, Sendable {
         savings: SavingsSnapshot,
         energyStory: EnergyStorySnapshot,
         report: ReportSnapshot,
-        finance: FinanceSnapshot
+        finance: FinanceSnapshot,
+        strategy: StrategySnapshot? = nil
     ) {
         self.generatedAt = generatedAt
         self.serverName = serverName
@@ -190,6 +230,7 @@ public struct MobileDashboardSnapshot: Codable, Equatable, Sendable {
         self.energyStory = energyStory
         self.report = report
         self.finance = finance
+        self.strategy = strategy
     }
 
     public init(legacy snapshot: DashboardSnapshot) {
@@ -206,7 +247,8 @@ public struct MobileDashboardSnapshot: Codable, Equatable, Sendable {
             savings: SavingsSnapshot(todayEur: snapshot.savings.values["today_eur"]?.number),
             energyStory: EnergyStorySnapshot(section: snapshot.energyStory),
             report: .empty,
-            finance: .empty
+            finance: .empty,
+            strategy: nil
         )
     }
 
@@ -229,6 +271,7 @@ public struct MobileDashboardSnapshot: Codable, Equatable, Sendable {
         case energyStory
         case report
         case finance
+        case strategy
     }
 }
 
@@ -1005,6 +1048,28 @@ public struct HealthStatus: Codable, Equatable, Sendable {
 
     public init(status: String) {
         self.status = status
+    }
+}
+
+public struct AuditEntry: Codable, Equatable, Sendable, Identifiable {
+    public let id: Int
+    public let ts: String
+    public let category: String
+    public let summary: String
+
+    public init(id: Int, ts: String, category: String, summary: String) {
+        self.id = id
+        self.ts = ts
+        self.category = category
+        self.summary = summary
+    }
+}
+
+public struct AuditResponse: Codable, Equatable, Sendable {
+    public let entries: [AuditEntry]
+
+    public init(entries: [AuditEntry]) {
+        self.entries = entries
     }
 }
 

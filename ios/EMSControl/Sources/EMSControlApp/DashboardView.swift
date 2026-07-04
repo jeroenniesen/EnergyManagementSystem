@@ -22,6 +22,10 @@ struct DashboardView: View {
 
                             ActivityPanel(snapshot: snapshot, theme: theme)
 
+                            if let strategy = snapshot.strategy {
+                                StrategyCard(strategy: strategy, theme: theme)
+                            }
+
                             if !snapshot.alerts.alerts.isEmpty {
                                 AlertsPanel(alerts: snapshot.alerts.alerts, theme: theme)
                             }
@@ -232,6 +236,60 @@ private struct ActivityPanel: View {
 
     private var showsAiNote: Bool {
         snapshot.decision.explanationSource == "external_llm" || snapshot.decision.explanationSource == "local_llm"
+    }
+}
+
+private struct StrategyCard: View {
+    let strategy: StrategySnapshot
+    let theme: EMSTheme
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(alignment: .top, spacing: 12) {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("Strategy")
+                        .font(.headline)
+                        .foregroundStyle(themeColor(theme.text))
+                    Text(humanizedMode)
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(themeColor(theme.accent))
+                }
+                Spacer(minLength: 8)
+                if strategy.auto {
+                    StatusBadge(text: "Auto", color: theme.accent, theme: theme)
+                }
+            }
+
+            Text(strategy.reason)
+                .font(.subheadline)
+                .foregroundStyle(themeColor(theme.text))
+                .fixedSize(horizontal: false, vertical: true)
+
+            if !strategy.summary.isEmpty {
+                Text(strategy.summary)
+                    .font(.footnote)
+                    .foregroundStyle(themeColor(theme.muted))
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+        .padding(16)
+        .background(themeColor(theme.panel))
+        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .stroke(themeColor(theme.line), lineWidth: 1)
+        }
+    }
+
+    private var humanizedMode: String {
+        switch strategy.active {
+        case "summer":
+            "Solar-first"
+        case "winter":
+            "Price-smart"
+        default:
+            strategy.active.capitalized
+        }
     }
 }
 

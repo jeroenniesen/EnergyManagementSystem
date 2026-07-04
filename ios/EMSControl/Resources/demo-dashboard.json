@@ -97,6 +97,15 @@
   "savings": {
     "today_eur": 1.82
   },
+  "strategy": {
+    "mode": "auto",
+    "active": "summer",
+    "auto": true,
+    "summary": "Solar-first: the battery banks daytime surplus and runs the house overnight.",
+    "reason": "Running solar-first — the forecast surplus should carry the home tonight.",
+    "grid_topup": true,
+    "max_topup_price": 0.30
+  },
   "energy_story": {
     "window": "next",
     "now": "2026-06-29T12:00:00+00:00",

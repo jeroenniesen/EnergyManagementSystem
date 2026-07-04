@@ -44,6 +44,7 @@ public struct APIClient: Sendable {
         async let storyResult = capture { try await fetchEnergyStory() }
         async let reportResult = capture { try await fetchReport() }
         async let financeResult = capture { try await fetchFinance() }
+        async let strategyResult = capture { try await fetchStrategy() }
 
         return try await MobileDashboardSnapshot(
             generatedAt: Date(),
@@ -58,7 +59,8 @@ public struct APIClient: Sendable {
             savings: savingsResult.optional ?? .empty,
             energyStory: storyResult.optional ?? .empty,
             report: reportResult.optional ?? .empty,
-            finance: financeResult.optional ?? .empty
+            finance: financeResult.optional ?? .empty,
+            strategy: strategyResult.optional
         )
     }
 
@@ -88,6 +90,10 @@ public struct APIClient: Sendable {
 
     public func fetchSavings() async throws -> SavingsSnapshot {
         try await get("api/savings", as: SavingsSnapshot.self)
+    }
+
+    public func fetchStrategy() async throws -> StrategySnapshot {
+        try await get("api/strategy", as: StrategySnapshot.self)
     }
 
     public func fetchEnergyStory(window: String = "next") async throws -> EnergyStorySnapshot {
@@ -120,6 +126,10 @@ public struct APIClient: Sendable {
 
     public func fetchFAQ() async throws -> FAQResponse {
         try await get("api/faq", as: FAQResponse.self)
+    }
+
+    public func fetchAudit(limit: Int = 100) async throws -> [AuditEntry] {
+        try await get("api/audit?limit=\(limit)", as: AuditResponse.self).entries
     }
 
     public func sendChat(question: String) async throws -> ChatResponse {

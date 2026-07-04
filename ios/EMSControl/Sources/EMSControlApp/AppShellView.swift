@@ -7,6 +7,7 @@ struct AppShellView: View {
     @Environment(\.scenePhase) private var scenePhase
     @State private var chatStore = ChatStore(client: nil)
     @State private var insightsStore = InsightsStore(client: nil)
+    @State private var activityStore = ActivityStore(client: nil)
     @State private var selectedTab: AppTab = .dashboard
 
     private var theme: EMSTheme {
@@ -28,6 +29,9 @@ struct AppShellView: View {
                     InsightsView(store: insightsStore)
                         .tabItem { Label("Insights", systemImage: "chart.xyaxis.line") }
                         .tag(AppTab.insights)
+                    ActivityView(store: activityStore)
+                        .tabItem { Label("Activity", systemImage: "clock.arrow.circlepath") }
+                        .tag(AppTab.activity)
                     ChatView(store: chatStore)
                         .tabItem { Label("Chat", systemImage: "message") }
                         .tag(AppTab.chat)
@@ -50,9 +54,15 @@ struct AppShellView: View {
         .task(id: insightsSessionKey) {
             await syncInsightsSession()
         }
+        .task(id: activitySessionKey) {
+            await syncActivitySession()
+        }
         .task(id: selectedTab) {
             if selectedTab == .insights, insightsStore.client != nil, insightsStore.report == nil {
                 await insightsStore.refresh()
+            }
+            if selectedTab == .activity, activityStore.client != nil, activityStore.entries.isEmpty {
+                await activityStore.refresh()
             }
         }
     }
@@ -67,6 +77,11 @@ struct AppShellView: View {
     }
 
     private var insightsSessionKey: String {
+        let mode = dashboardStore.snapshot?.isDemo == true ? "demo" : (dashboardStore.client == nil ? "disconnected" : "live")
+        return "\(mode)-\(dashboardStore.client?.baseURL.absoluteString ?? "none")-\(dashboardStore.snapshot?.generatedAt.timeIntervalSince1970 ?? 0)"
+    }
+
+    private var activitySessionKey: String {
         let mode = dashboardStore.snapshot?.isDemo == true ? "demo" : (dashboardStore.client == nil ? "disconnected" : "live")
         return "\(mode)-\(dashboardStore.client?.baseURL.absoluteString ?? "none")-\(dashboardStore.snapshot?.generatedAt.timeIntervalSince1970 ?? 0)"
     }
@@ -91,6 +106,17 @@ struct AppShellView: View {
         }
     }
 
+    private func syncActivitySession() async {
+        if dashboardStore.snapshot?.isDemo == true {
+            // Activity has no demo fixture data — show the empty state in demo mode.
+            activityStore.setClient(nil)
+        } else if let client = dashboardStore.client {
+            activityStore.setClient(client)
+        } else {
+            activityStore.setClient(nil)
+        }
+    }
+
     private func runRefreshLoop() async {
         guard scenePhase == .active else { return }
         while !Task.isCancelled {
@@ -105,6 +131,7 @@ struct AppShellView: View {
 private enum AppTab {
     case dashboard
     case insights
+    case activity
     case chat
 }
 
