@@ -20,6 +20,8 @@ struct DashboardView: View {
                         if let snapshot = dashboardStore.snapshot {
                             HomeStatePanel(snapshot: snapshot, isStale: dashboardStore.isStale, nextRefreshAt: dashboardStore.nextRefreshAt, theme: theme)
 
+                            ActivityPanel(snapshot: snapshot, theme: theme)
+
                             if !snapshot.alerts.alerts.isEmpty {
                                 AlertsPanel(alerts: snapshot.alerts.alerts, theme: theme)
                             }
@@ -134,6 +136,102 @@ private struct HomeStatePanel: View {
     private var statusLine: String {
         let refresh = nextRefreshAt.map { "next refresh \($0.formatted(date: .omitted, time: .shortened))" }
         return [snapshot.serverName, snapshot.status.devMode, refresh].compactMap(\.self).joined(separator: " - ")
+    }
+}
+
+private struct ActivityPanel: View {
+    let snapshot: MobileDashboardSnapshot
+    let theme: EMSTheme
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("What the EMS is doing")
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(themeColor(theme.muted))
+
+            if let reasonText = reasonText {
+                Text(reasonText)
+                    .font(.subheadline)
+                    .foregroundStyle(themeColor(theme.text))
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            if let intentOutcomeLine = intentOutcomeLine {
+                Text(intentOutcomeLine)
+                    .font(.footnote)
+                    .foregroundStyle(themeColor(theme.muted))
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            if let planValidation = snapshot.decision.planValidation, planValidation.ok == false {
+                VStack(alignment: .leading, spacing: 6) {
+                    Label("Holding - plan not applied", systemImage: "pause.circle")
+                        .font(.footnote.weight(.semibold))
+                        .foregroundStyle(themeColor(validationAccent))
+
+                    ForEach(Array(planValidation.findings.enumerated()), id: \.offset) { _, finding in
+                        Text(finding.message)
+                            .font(.footnote)
+                            .foregroundStyle(themeColor(theme.muted))
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                }
+                .padding(10)
+                .background(themeColor(theme.secondaryPanel))
+                .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+                .overlay {
+                    RoundedRectangle(cornerRadius: 8, style: .continuous)
+                        .stroke(themeColor(validationAccent).opacity(0.55), lineWidth: 1)
+                }
+            }
+
+            if snapshot.decision.carCharging == true {
+                Label("Car charging - the battery is held for the house", systemImage: "car.fill")
+                    .font(.footnote)
+                    .foregroundStyle(themeColor(theme.winter))
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            if snapshot.decision.overrideActive == true {
+                Label("Manual override active - following your command, not the plan", systemImage: "hand.raised.fill")
+                    .font(.footnote)
+                    .foregroundStyle(themeColor(theme.amber))
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            if showsAiNote {
+                Text("explained by AI")
+                    .font(.caption2)
+                    .foregroundStyle(themeColor(theme.muted))
+            }
+        }
+        .padding(16)
+        .background(themeColor(theme.panel))
+        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .stroke(themeColor(theme.line), lineWidth: 1)
+        }
+    }
+
+    private var reasonText: String? {
+        snapshot.decision.reason ?? snapshot.decision.planReasonExplained ?? snapshot.decision.planReason
+    }
+
+    private var intentOutcomeLine: String? {
+        let intent = snapshot.decision.intent?.replacingOccurrences(of: "_", with: " ")
+        let parts = [intent, snapshot.decision.outcome].compactMap(\.self)
+        return parts.isEmpty ? nil : parts.joined(separator: " - ")
+    }
+
+    private var validationAccent: HexColor {
+        let findings = snapshot.decision.planValidation?.findings ?? []
+        let hasCritical = !findings.filter { $0.severity == "critical" }.isEmpty
+        return hasCritical ? theme.error : theme.amber
+    }
+
+    private var showsAiNote: Bool {
+        snapshot.decision.explanationSource == "external_llm" || snapshot.decision.explanationSource == "local_llm"
     }
 }
 
@@ -607,10 +705,10 @@ private struct AlertsPanel: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            ForEach(alerts) { alert in
-                Label(alert.message, systemImage: alert.severity == "info" ? "info.circle" : "exclamationmark.triangle")
+            ForEach(orderedAlerts) { alert in
+                Label(alert.message, systemImage: icon(for: alert.severity))
                     .font(.footnote)
-                    .foregroundStyle(themeColor(alert.severity == "info" ? theme.muted : theme.amber))
+                    .foregroundStyle(themeColor(color(for: alert.severity)))
                     .fixedSize(horizontal: false, vertical: true)
             }
         }
@@ -619,7 +717,50 @@ private struct AlertsPanel: View {
         .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
         .overlay {
             RoundedRectangle(cornerRadius: 12, style: .continuous)
-                .stroke(themeColor(theme.amber).opacity(0.55), lineWidth: 1)
+                .stroke(themeColor(strokeColor).opacity(0.55), lineWidth: 1)
+        }
+    }
+
+    private var orderedAlerts: [DashboardAlert] {
+        alerts.sorted { rank(for: $0.severity) < rank(for: $1.severity) }
+    }
+
+    private var strokeColor: HexColor {
+        if !alerts.filter({ $0.severity == "critical" }).isEmpty { return theme.error }
+        if !alerts.filter({ $0.severity == "warning" }).isEmpty { return theme.amber }
+        return theme.line
+    }
+
+    private func rank(for severity: String) -> Int {
+        switch severity {
+        case "critical":
+            0
+        case "warning":
+            1
+        default:
+            2
+        }
+    }
+
+    private func color(for severity: String) -> HexColor {
+        switch severity {
+        case "critical":
+            theme.error
+        case "warning":
+            theme.amber
+        default:
+            theme.muted
+        }
+    }
+
+    private func icon(for severity: String) -> String {
+        switch severity {
+        case "critical":
+            "exclamationmark.octagon.fill"
+        case "warning":
+            "exclamationmark.triangle"
+        default:
+            "info.circle"
         }
     }
 }
