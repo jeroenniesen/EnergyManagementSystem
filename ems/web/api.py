@@ -1836,7 +1836,10 @@ def create_app(
         story = build_past_story(raw, der, prices, now)
         return [
             _uslot(ps.start, ps.soc_pct, ps.grid_w, ps.solar_w, ps.battery_w, ps.load_w,
-                   ps.eur_per_kwh, _action_from_battery(ps.battery_w, ps.solar_w, ps.load_w))
+                   ps.eur_per_kwh,
+                   # Split the charge by source using NON-EV (house-only) load: a concurrent car
+                   # session must not crowd out the solar-vs-grid attribution (§4.5, retrospect).
+                   _action_from_battery(ps.battery_w, ps.solar_w, ps.non_ev_load_w))
             for ps in story.slots
         ]
 
@@ -1963,7 +1966,10 @@ def create_app(
         story = build_past_story(raw, der, prices, now)
         slots = [
             _uslot(ps.start, ps.soc_pct, ps.grid_w, ps.solar_w, ps.battery_w, ps.load_w,
-                   ps.eur_per_kwh, _action_from_battery(ps.battery_w, ps.solar_w, ps.load_w))
+                   ps.eur_per_kwh,
+                   # Split the charge by source using NON-EV (house-only) load: a concurrent car
+                   # session must not crowd out the solar-vs-grid attribution (§4.5, retrospect).
+                   _action_from_battery(ps.battery_w, ps.solar_w, ps.non_ev_load_w))
             for ps in story.slots
         ]
         if not slots:

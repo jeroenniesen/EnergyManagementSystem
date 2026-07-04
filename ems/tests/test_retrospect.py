@@ -17,6 +17,20 @@ def _der(ts: datetime, load=0.0) -> dict:
     return {"ts": ts.isoformat(), "house_load_w": load, "non_ev_load_w": load}
 
 
+def test_non_ev_load_carried_separately_for_the_charge_split():
+    # Bug: when the CAR is charging, house_load includes the EV, so "solar left after the house"
+    # went to zero and a solar-fed battery charge read as a grid charge. The past slot must carry
+    # non_ev (house-only) load ALONGSIDE total load, so the charge-kind split can use it.
+    # Balanced slot: grid 1600 + solar 3500 = house 300 + car 4000 + battery charge 800.
+    t = NOW - timedelta(minutes=30)
+    raw = [_raw(t, grid=1600.0, solar=3500.0, batt=-800.0)]
+    der = [{"ts": t.isoformat(), "house_load_w": 4300.0, "non_ev_load_w": 300.0}]
+    s = build_past_story(raw, der, [], NOW)
+    assert len(s.slots) == 1
+    assert s.slots[0].load_w == 4300.0        # total house load (incl. car) — still plotted
+    assert s.slots[0].non_ev_load_w == 300.0  # house-only — the correct charge-split input
+
+
 def test_empty_history_is_an_empty_story():
     s = build_past_story([], [], [], NOW)
     assert s.slots == []
