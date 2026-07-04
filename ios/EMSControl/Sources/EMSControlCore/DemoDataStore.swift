@@ -7,8 +7,12 @@ public struct DemoDataStore {
         self.bundle = bundle ?? Self.defaultBundle
     }
 
-    public func dashboardSnapshot() throws -> DashboardSnapshot {
-        try decode(DashboardSnapshot.self, resource: "demo-dashboard")
+    public func dashboardSnapshot() throws -> MobileDashboardSnapshot {
+        do {
+            return try decode(MobileDashboardSnapshot.self, resource: "demo-dashboard")
+        } catch {
+            return try MobileDashboardSnapshot(legacy: decode(DashboardSnapshot.self, resource: "demo-dashboard"))
+        }
     }
 
     public func faq() throws -> FAQResponse {

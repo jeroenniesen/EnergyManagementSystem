@@ -16,20 +16,20 @@ struct AppShellView: View {
             themeColor(theme.background)
                 .ignoresSafeArea()
 
-            TabView {
-                DashboardView()
-                    .tabItem { Label("Dashboard", systemImage: "bolt.horizontal.circle") }
-                ChatView(store: chatStore)
-                    .tabItem { Label("Chat", systemImage: "message") }
+            if dashboardStore.snapshot == nil {
+                ConnectionView()
+            } else {
+                TabView {
+                    DashboardView()
+                        .tabItem { Label("Dashboard", systemImage: "bolt.horizontal.circle") }
+                    ChatView(store: chatStore)
+                        .tabItem { Label("Chat", systemImage: "message") }
+                }
             }
         }
         .tint(themeColor(theme.accent))
         .toolbarBackground(themeColor(theme.panel), for: .tabBar)
         .toolbarBackground(.visible, for: .tabBar)
-        .sheet(isPresented: .constant(dashboardStore.snapshot == nil)) {
-            ConnectionView()
-                .presentationBackground(themeColor(theme.background))
-        }
         .task {
             dashboardStore.restoreSavedServer()
             await dashboardStore.refresh()
@@ -37,10 +37,28 @@ struct AppShellView: View {
         .task(id: refreshLoopKey) {
             await runRefreshLoop()
         }
+        .task(id: chatSessionKey) {
+            await syncChatSession()
+        }
     }
 
     private var refreshLoopKey: String {
         "\(scenePhase)-\(dashboardStore.client?.baseURL.absoluteString ?? "none")"
+    }
+
+    private var chatSessionKey: String {
+        let mode = dashboardStore.snapshot?.isDemo == true ? "demo" : (dashboardStore.client == nil ? "disconnected" : "live")
+        return "\(mode)-\(dashboardStore.client?.baseURL.absoluteString ?? "none")"
+    }
+
+    private func syncChatSession() async {
+        if dashboardStore.snapshot?.isDemo == true {
+            await chatStore.updateSession(client: nil, mode: .demo)
+        } else if let client = dashboardStore.client {
+            await chatStore.updateSession(client: client, mode: .live)
+        } else {
+            await chatStore.updateSession(client: nil, mode: .disconnected)
+        }
     }
 
     private func runRefreshLoop() async {

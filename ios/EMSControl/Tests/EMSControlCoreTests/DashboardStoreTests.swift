@@ -40,21 +40,21 @@ final class DashboardStoreTests: XCTestCase {
     }
 
     func testRefreshRecordsNextRefreshFromServerTTL() async throws {
+        let before = Date()
         let store = DashboardStore(
             client: APIClient(
                 baseURL: URL(string: "http://ems.local:8080")!,
-                transport: RecordingDashboardTransport(data: dashboardJSON(cacheTTLSeconds: 10))
+                transport: RoutingDashboardTransport()
             )
         )
 
         await store.refresh()
 
-        XCTAssertEqual(
-            store.nextRefreshAt,
-            ISO8601DateFormatter().date(from: "2026-06-29T12:00:10+00:00")
-        )
-        XCTAssertFalse(store.shouldRefresh(now: ISO8601DateFormatter().date(from: "2026-06-29T12:00:09+00:00")!))
-        XCTAssertTrue(store.shouldRefresh(now: ISO8601DateFormatter().date(from: "2026-06-29T12:00:10+00:00")!))
+        XCTAssertEqual(store.snapshot?.decision.homeState?.headline, "Watching - the battery is running the house")
+        XCTAssertEqual(store.snapshot?.status.socPct, 55.0)
+        XCTAssertEqual(store.snapshot?.report.scores.count, 3)
+        XCTAssertEqual(store.snapshot?.finance.totals.savedEur, 0.01)
+        XCTAssertGreaterThanOrEqual(store.nextRefreshAt ?? .distantPast, before.addingTimeInterval(10))
     }
 
     func testForgetServerDeletesStoredTokenForLiveClient() throws {
@@ -92,7 +92,7 @@ final class DashboardStoreTests: XCTestCase {
     }
 
     func testRefreshWhenDueSkipsBeforeDeadlineAndRefreshesAfter() async throws {
-        let transport = CountingDashboardTransport(data: dashboardJSON(cacheTTLSeconds: 10))
+        let transport = RoutingDashboardTransport()
         let store = DashboardStore(
             client: APIClient(
                 baseURL: URL(string: "http://ems.local:8080")!,
@@ -101,11 +101,11 @@ final class DashboardStoreTests: XCTestCase {
         )
 
         await store.refresh()
-        await store.refreshWhenDue(now: ISO8601DateFormatter().date(from: "2026-06-29T12:00:09+00:00")!)
-        XCTAssertEqual(transport.count, 1)
+        await store.refreshWhenDue(now: Date())
+        XCTAssertEqual(transport.dashboardRefreshCount, 1)
 
-        await store.refreshWhenDue(now: ISO8601DateFormatter().date(from: "2026-06-29T12:00:10+00:00")!)
-        XCTAssertEqual(transport.count, 2)
+        await store.refreshWhenDue(now: Date().addingTimeInterval(11))
+        XCTAssertEqual(transport.dashboardRefreshCount, 2)
     }
 
     func testUseDemoClearsLiveClient() throws {
@@ -140,28 +140,46 @@ private struct FailingTransport: HTTPTransport {
     }
 }
 
-private final class RecordingDashboardTransport: HTTPTransport, @unchecked Sendable {
-    let data: Data
-
-    init(data: Data) {
-        self.data = data
+private final class RoutingDashboardTransport: HTTPTransport, @unchecked Sendable {
+    private let lock = NSLock()
+    private var requestedPaths: [String] = []
+    var dashboardRefreshCount: Int {
+        lock.withLock {
+            requestedPaths.filter { $0 == "/api/status" }.count
+        }
     }
 
     func data(for request: URLRequest) async throws -> (Data, HTTPURLResponse) {
-        (data, HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!)
-    }
-}
-
-private final class CountingDashboardTransport: HTTPTransport, @unchecked Sendable {
-    let data: Data
-    var count = 0
-
-    init(data: Data) {
-        self.data = data
-    }
-
-    func data(for request: URLRequest) async throws -> (Data, HTTPURLResponse) {
-        count += 1
+        let path = request.url?.path ?? ""
+        lock.withLock {
+            requestedPaths.append(path)
+        }
+        let data: Data
+        switch path {
+        case "/api/status":
+            data = statusJSON()
+        case "/api/freshness":
+            data = #"{"battery":"fresh","ev":"fresh","grid":"fresh","soc":"fresh","solar":"fresh"}"#.data(using: .utf8)!
+        case "/api/decision":
+            data = decisionJSON()
+        case "/api/alerts":
+            data = #"{"data_quality":"complete","alerts":[]}"#.data(using: .utf8)!
+        case "/api/battery":
+            data = #"{"current_mode":"auto","capabilities":null,"towers":[],"aggregate":null}"#.data(using: .utf8)!
+        case "/api/charge-need":
+            data = #"{"usable_kwh":10.8,"current_soc_pct":55.0,"current_kwh":5.94,"reserve_kwh":1.08,"target_kwh":9.51,"target_soc_pct":88.1,"deficit_kwh":3.57,"on_track":false,"reason":"Need more charge."}"#.data(using: .utf8)!
+        case "/api/savings":
+            data = #"{"today_eur":0.0}"#.data(using: .utf8)!
+        case "/api/energy-story":
+            data = energyStoryJSON()
+        case "/api/report":
+            data = reportJSON()
+        case "/api/finance":
+            data = financeJSON()
+        default:
+            data = #"{"detail":"unexpected path"}"#.data(using: .utf8)!
+            return (data, HTTPURLResponse(url: request.url!, statusCode: 404, httpVersion: nil, headerFields: nil)!)
+        }
         return (data, HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!)
     }
 }
@@ -197,26 +215,96 @@ private final class RecordingCredentialStore: CredentialStore {
     }
 }
 
-private func dashboardJSON(cacheTTLSeconds: Int) -> Data {
+private func statusJSON() -> Data {
     """
     {
-      "api_version": 1,
-      "generated_at": "2026-06-29T12:00:00+00:00",
-      "server_time": "2026-06-29T12:00:00+00:00",
-      "server_name": "Home EMS",
-      "cache_ttl_seconds": \(cacheTTLSeconds),
-      "degraded_sections": [],
-      "readiness": {},
-      "status": {},
-      "freshness": {},
-      "strategy": {},
-      "decision": {},
-      "alerts": {},
-      "battery": {},
-      "charge_need": {},
-      "savings": {},
-      "energy_story": {},
-      "ai_validation": {}
+      "dry_run": true,
+      "dev_mode": "mock",
+      "soc_pct": 55.0,
+      "grid_power_w": 200.0,
+      "solar_power_w": 0.0,
+      "battery_power_w": 800.0,
+      "house_load_w": 1000.0,
+      "non_ev_load_w": 1000.0
+    }
+    """.data(using: .utf8)!
+}
+
+private func decisionJSON() -> Data {
+    """
+    {
+      "intent": "allow_self_consumption",
+      "desired_mode": "auto",
+      "applied": false,
+      "outcome": "dry_run",
+      "reason": "dry-run: would set auto",
+      "plan_reason": "running the house on the battery",
+      "plan_reason_explained": "running the house on the battery",
+      "override_active": false,
+      "car_charging": false,
+      "target_soc": null,
+      "home_state": {
+        "headline": "Watching - the battery is running the house",
+        "tone": "watching",
+        "simulated": true
+      }
+    }
+    """.data(using: .utf8)!
+}
+
+private func energyStoryJSON() -> Data {
+    """
+    {
+      "window": "next",
+      "current_soc_pct": 55.0,
+      "reserve_soc_pct": 10.0,
+      "target_soc_pct": 88.1,
+      "target_kwh": 9.5,
+      "target_deadline": "2026-07-04T20:45:00+02:00",
+      "current_price_eur_per_kwh": 0.12,
+      "slots": [],
+      "totals": {"import_kwh":0.0,"export_kwh":3.26,"solar_kwh":17.97,"charge_kwh":8.72,"grid_charge_kwh":0.0,"solar_charge_kwh":8.71,"discharge_kwh":5.16,"load_kwh":11.15,"grid_cost_eur":-0.62,"self_sufficiency_pct":100.0,"soc_start_pct":52.8,"soc_end_pct":81.2,"soc_min_pct":23.4,"soc_max_pct":100.0},
+      "headline": "Next 24h - your solar fills the battery.",
+      "trust_markers": ["Reserve respected"],
+      "on_track": {"status":"ahead","actual_soc_pct":55.0,"target_soc_pct":88.1,"deficit_kwh":3.6,"message":"On track."},
+      "recent_review": {"hours":3,"solar_actual_kwh":0.0,"solar_forecast_kwh":0.0,"solar_pct_of_forecast":null,"battery_charged_kwh":0.0,"battery_discharged_kwh":0.2,"message":"Last 3h: battery -0.2 kWh."}
+    }
+    """.data(using: .utf8)!
+}
+
+private func reportJSON() -> Data {
+    """
+    {
+      "period": "day",
+      "label": "2026-07-03",
+      "partial": true,
+      "flows": {"has_data": true, "self_sufficiency_pct": 80.0},
+      "scores": [
+        {"key": "self_consumption", "label": "Self-consumption", "value": 80.0, "raw": 80.0, "unit": "%", "explanation": "No solar this period."},
+        {"key": "co2", "label": "CO2", "value": 80.0, "raw": 0.0, "unit": "kg", "explanation": "Avoided CO2."},
+        {"key": "best_price", "label": "Best price", "value": 100.0, "raw": 0.12, "unit": "EUR/kWh", "explanation": "Prices were flat."}
+      ],
+      "series": []
+    }
+    """.data(using: .utf8)!
+}
+
+private func financeJSON() -> Data {
+    """
+    {
+      "period": "day",
+      "label": "2026-07-03",
+      "partial": true,
+      "days": [],
+      "totals": {
+        "grid_cost_eur": 0.01,
+        "battery_cost_eur": 0.01,
+        "saved_eur": 0.01,
+        "grid_import_kwh": 0.05,
+        "grid_export_kwh": 0.0,
+        "days_with_prices": 1,
+        "days_with_data": 1
+      }
     }
     """.data(using: .utf8)!
 }

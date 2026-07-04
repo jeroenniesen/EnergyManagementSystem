@@ -5,7 +5,7 @@ import Observation
 @Observable
 public final class DashboardStore {
     public var client: APIClient?
-    public private(set) var snapshot: DashboardSnapshot?
+    public private(set) var snapshot: MobileDashboardSnapshot?
     public private(set) var isLoading = false
     public private(set) var isStale = false
     public private(set) var lastError: String?

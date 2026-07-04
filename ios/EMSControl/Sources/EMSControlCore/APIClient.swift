@@ -33,23 +33,73 @@ public struct APIClient: Sendable {
         self.transport = transport
     }
 
-    public func fetchDashboard() async throws -> DashboardSnapshot {
-        var request = URLRequest(url: baseURL.appending(path: "api/dashboard"))
-        request.httpMethod = "GET"
-        if let token, !token.isEmpty {
-            request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
-        }
+    public func fetchDashboard() async throws -> MobileDashboardSnapshot {
+        async let statusResult = capture { try await fetchStatus() }
+        async let freshnessResult = capture { try await fetchFreshness() }
+        async let decisionResult = capture { try await fetchDecision() }
+        async let alertsResult = capture { try await fetchAlerts() }
+        async let batteryResult = capture { try await fetchBattery() }
+        async let chargeNeedResult = capture { try await fetchChargeNeed() }
+        async let savingsResult = capture { try await fetchSavings() }
+        async let storyResult = capture { try await fetchEnergyStory() }
+        async let reportResult = capture { try await fetchReport() }
+        async let financeResult = capture { try await fetchFinance() }
 
-        let (data, response) = try await transport.data(for: request)
-        guard (200 ..< 300).contains(response.statusCode) else {
-            throw APIClientError.httpStatus(response.statusCode)
-        }
+        return try await MobileDashboardSnapshot(
+            generatedAt: Date(),
+            serverName: baseURL.host(percentEncoded: false) ?? baseURL.host() ?? "EMS",
+            cacheTTLSeconds: 10,
+            status: statusResult.get(),
+            freshness: freshnessResult.optional ?? .empty,
+            decision: decisionResult.optional ?? .empty,
+            alerts: alertsResult.optional ?? .empty,
+            battery: batteryResult.optional ?? .empty,
+            chargeNeed: chargeNeedResult.optional ?? .empty,
+            savings: savingsResult.optional ?? .empty,
+            energyStory: storyResult.optional ?? .empty,
+            report: reportResult.optional ?? .empty,
+            finance: financeResult.optional ?? .empty
+        )
+    }
 
-        let snapshot = try JSONDecoder.ems.decode(DashboardSnapshot.self, from: data)
-        guard snapshot.apiVersion <= 1 else {
-            throw APIClientError.incompatibleServer(snapshot.apiVersion)
-        }
-        return snapshot
+    public func fetchStatus() async throws -> StatusSnapshot {
+        try await get("api/status", as: StatusSnapshot.self)
+    }
+
+    public func fetchFreshness() async throws -> FreshnessSnapshot {
+        try await get("api/freshness", as: FreshnessSnapshot.self)
+    }
+
+    public func fetchDecision() async throws -> DecisionSnapshot {
+        try await get("api/decision", as: DecisionSnapshot.self)
+    }
+
+    public func fetchAlerts() async throws -> AlertsSnapshot {
+        try await get("api/alerts", as: AlertsSnapshot.self)
+    }
+
+    public func fetchBattery() async throws -> BatterySnapshot {
+        try await get("api/battery", as: BatterySnapshot.self)
+    }
+
+    public func fetchChargeNeed() async throws -> ChargeNeedSnapshot {
+        try await get("api/charge-need", as: ChargeNeedSnapshot.self)
+    }
+
+    public func fetchSavings() async throws -> SavingsSnapshot {
+        try await get("api/savings", as: SavingsSnapshot.self)
+    }
+
+    public func fetchEnergyStory(window: String = "next") async throws -> EnergyStorySnapshot {
+        try await get("api/energy-story?window=\(window)", as: EnergyStorySnapshot.self)
+    }
+
+    public func fetchReport(period: String = "day") async throws -> ReportSnapshot {
+        try await get("api/report?period=\(period)", as: ReportSnapshot.self)
+    }
+
+    public func fetchFinance(period: String = "day") async throws -> FinanceSnapshot {
+        try await get("api/finance?period=\(period)", as: FinanceSnapshot.self)
     }
 
     public func fetchLiveHealth() async throws -> HealthStatus {
@@ -88,7 +138,7 @@ public struct APIClient: Sendable {
     }
 
     private func get<T: Decodable>(_ path: String, as type: T.Type) async throws -> T {
-        var request = URLRequest(url: baseURL.appending(path: path))
+        var request = URLRequest(url: url(path))
         request.httpMethod = "GET"
         if let token, !token.isEmpty {
             request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
@@ -98,5 +148,30 @@ public struct APIClient: Sendable {
             throw APIClientError.httpStatus(response.statusCode)
         }
         return try JSONDecoder.ems.decode(type, from: data)
+    }
+
+    private func url(_ path: String) -> URL {
+        guard let question = path.firstIndex(of: "?") else {
+            return baseURL.appending(path: path)
+        }
+        let endpoint = String(path[..<question])
+        var components = URLComponents(url: baseURL.appending(path: endpoint), resolvingAgainstBaseURL: false)!
+        components.percentEncodedQuery = String(path[path.index(after: question)...])
+        return components.url!
+    }
+
+    private func capture<T: Sendable>(_ operation: @Sendable () async throws -> T) async -> Result<T, Error> {
+        do {
+            return .success(try await operation())
+        } catch {
+            return .failure(error)
+        }
+    }
+}
+
+private extension Result {
+    var optional: Success? {
+        if case let .success(value) = self { return value }
+        return nil
     }
 }

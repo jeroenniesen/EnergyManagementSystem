@@ -135,7 +135,8 @@ struct ConnectionView: View {
 
         do {
             let url = try discovery.normalizedManualURL(baseURL)
-            let token = try trimmedToken.nilIfEmpty ?? credentialStore.token(for: url) ?? ""
+            let savedToken = (try? credentialStore.token(for: url)) ?? ""
+            let token = trimmedToken.nilIfEmpty ?? savedToken
             let client = APIClient(baseURL: url, token: token.nilIfEmpty)
 
             _ = try await client.fetchLiveHealth()
@@ -154,7 +155,7 @@ struct ConnectionView: View {
             }
             validationError = nil
             dashboardStore.client = client
-            try dashboardStore.saveConnectedServer(client)
+            try? dashboardStore.saveConnectedServer(client)
             await dashboardStore.refresh()
         } catch {
             validationError = (error as? LocalizedError)?.errorDescription ?? String(describing: error)
