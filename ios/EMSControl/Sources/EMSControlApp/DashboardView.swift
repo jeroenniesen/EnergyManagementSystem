@@ -760,8 +760,35 @@ private struct ActionLegend: View {
     let actions: [String]
     let theme: EMSTheme
 
+    // A true legend: each row is the SAME colour swatch the Battery-actions bars use, next to its
+    // meaning — so the stripes are readable. Two columns to stay compact; a thin outline keeps the
+    // faint hold/idle swatches locatable on the dark panel.
     var body: some View {
-        FlowLayout(items: actions.map(label(for:)), theme: theme)
+        LazyVGrid(
+            columns: [GridItem(.flexible(), alignment: .leading), GridItem(.flexible(), alignment: .leading)],
+            alignment: .leading,
+            spacing: 8
+        ) {
+            ForEach(actions, id: \.self) { action in
+                HStack(spacing: 7) {
+                    RoundedRectangle(cornerRadius: 3, style: .continuous)
+                        .fill(themeColor(color(for: action)))
+                        .frame(width: 14, height: 14)
+                        .overlay {
+                            RoundedRectangle(cornerRadius: 3, style: .continuous)
+                                .stroke(themeColor(theme.muted).opacity(0.4), lineWidth: 1)
+                        }
+                    Text(label(for: action))
+                        .font(.caption2)
+                        .foregroundStyle(themeColor(theme.muted))
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.8)
+                    Spacer(minLength: 0)
+                }
+                .accessibilityElement(children: .ignore)
+                .accessibilityLabel(label(for: action))
+            }
+        }
     }
 
     private func label(for action: String) -> String {
@@ -773,6 +800,18 @@ private struct ActionLegend: View {
         case "hold": "Hold"
         case "idle": "Idle"
         default: action.replacingOccurrences(of: "_", with: " ")
+        }
+    }
+
+    // Must match ActionTrack.color(for:) exactly, or the legend lies about the bars.
+    private func color(for action: String) -> HexColor {
+        switch action {
+        case "solar_charge": theme.accent
+        case "grid_charge": theme.winter
+        case "discharge": theme.amber
+        case "self_consume": theme.muted
+        case "hold": theme.line
+        default: theme.secondaryPanel
         }
     }
 }
