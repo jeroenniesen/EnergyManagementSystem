@@ -6,6 +6,8 @@ struct AppShellView: View {
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.scenePhase) private var scenePhase
     @State private var chatStore = ChatStore(client: nil)
+    @State private var insightsStore = InsightsStore(client: nil)
+    @State private var selectedTab: AppTab = .dashboard
 
     private var theme: EMSTheme {
         colorScheme == .dark ? .dark : .light
@@ -19,11 +21,16 @@ struct AppShellView: View {
             if dashboardStore.snapshot == nil {
                 ConnectionView()
             } else {
-                TabView {
+                TabView(selection: $selectedTab) {
                     DashboardView()
                         .tabItem { Label("Dashboard", systemImage: "bolt.horizontal.circle") }
+                        .tag(AppTab.dashboard)
+                    InsightsView(store: insightsStore)
+                        .tabItem { Label("Insights", systemImage: "chart.xyaxis.line") }
+                        .tag(AppTab.insights)
                     ChatView(store: chatStore)
                         .tabItem { Label("Chat", systemImage: "message") }
+                        .tag(AppTab.chat)
                 }
             }
         }
@@ -40,6 +47,14 @@ struct AppShellView: View {
         .task(id: chatSessionKey) {
             await syncChatSession()
         }
+        .task(id: insightsSessionKey) {
+            await syncInsightsSession()
+        }
+        .task(id: selectedTab) {
+            if selectedTab == .insights, insightsStore.client != nil, insightsStore.report == nil {
+                await insightsStore.refresh()
+            }
+        }
     }
 
     private var refreshLoopKey: String {
@@ -49,6 +64,11 @@ struct AppShellView: View {
     private var chatSessionKey: String {
         let mode = dashboardStore.snapshot?.isDemo == true ? "demo" : (dashboardStore.client == nil ? "disconnected" : "live")
         return "\(mode)-\(dashboardStore.client?.baseURL.absoluteString ?? "none")"
+    }
+
+    private var insightsSessionKey: String {
+        let mode = dashboardStore.snapshot?.isDemo == true ? "demo" : (dashboardStore.client == nil ? "disconnected" : "live")
+        return "\(mode)-\(dashboardStore.client?.baseURL.absoluteString ?? "none")-\(dashboardStore.snapshot?.generatedAt.timeIntervalSince1970 ?? 0)"
     }
 
     private func syncChatSession() async {
@@ -61,6 +81,16 @@ struct AppShellView: View {
         }
     }
 
+    private func syncInsightsSession() async {
+        if let snapshot = dashboardStore.snapshot, snapshot.isDemo {
+            insightsStore.setDemo(report: snapshot.report, finance: snapshot.finance)
+        } else if let client = dashboardStore.client {
+            insightsStore.setClient(client)
+        } else {
+            insightsStore.setClient(nil)
+        }
+    }
+
     private func runRefreshLoop() async {
         guard scenePhase == .active else { return }
         while !Task.isCancelled {
@@ -70,6 +100,12 @@ struct AppShellView: View {
             try? await Task.sleep(for: .seconds(cappedSeconds))
         }
     }
+}
+
+private enum AppTab {
+    case dashboard
+    case insights
+    case chat
 }
 
 func themeColor(_ color: HexColor) -> Color {

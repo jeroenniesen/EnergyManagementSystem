@@ -94,12 +94,12 @@ public struct APIClient: Sendable {
         try await get("api/energy-story?window=\(window)", as: EnergyStorySnapshot.self)
     }
 
-    public func fetchReport(period: String = "day") async throws -> ReportSnapshot {
-        try await get("api/report?period=\(period)", as: ReportSnapshot.self)
+    public func fetchReport(period: InsightsPeriod = .day, anchor: String? = nil) async throws -> ReportSnapshot {
+        try await get(insightsPath("api/report", period: period, anchor: anchor), as: ReportSnapshot.self)
     }
 
-    public func fetchFinance(period: String = "day") async throws -> FinanceSnapshot {
-        try await get("api/finance?period=\(period)", as: FinanceSnapshot.self)
+    public func fetchFinance(period: InsightsPeriod = .day, anchor: String? = nil) async throws -> FinanceSnapshot {
+        try await get(insightsPath("api/finance", period: period, anchor: anchor), as: FinanceSnapshot.self)
     }
 
     public func fetchLiveHealth() async throws -> HealthStatus {
@@ -158,6 +158,14 @@ public struct APIClient: Sendable {
         var components = URLComponents(url: baseURL.appending(path: endpoint), resolvingAgainstBaseURL: false)!
         components.percentEncodedQuery = String(path[path.index(after: question)...])
         return components.url!
+    }
+
+    private func insightsPath(_ endpoint: String, period: InsightsPeriod, anchor: String?) -> String {
+        var query = "period=\(period.rawValue)"
+        if let anchor, !anchor.isEmpty {
+            query += "&date=\(anchor)"
+        }
+        return "\(endpoint)?\(query)"
     }
 
     private func capture<T: Sendable>(_ operation: @Sendable () async throws -> T) async -> Result<T, Error> {
