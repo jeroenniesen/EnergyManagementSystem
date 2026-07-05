@@ -217,9 +217,10 @@ SETTINGS_SCHEMA: tuple[SettingsField, ...] = (
     ),
     SettingsField(
         "planner.degradation_eur_per_kwh", "Battery wear cost", "number", 0.05, "planner",
-        help="A small cost counted for every kWh stored, so the system won't cycle the battery for "
-        "tiny gains.",
-        min=0.0, max=0.5, step=0.01, unit="€/kWh", advanced=True,
+        help="Wear cost per kWh the battery DISCHARGES (delivers) — this prices a full "
+        "charge→discharge cycle once, so the system won't cycle the battery for tiny gains. "
+        "Used both in the planner's break-even and in the measured savings.",
+        min=0.0, max=0.5, step=0.01, unit="€/kWh discharged", advanced=True,
     ),
     SettingsField(
         "planner.risk_margin_eur_per_kwh", "Safety margin", "number", 0.02, "planner",

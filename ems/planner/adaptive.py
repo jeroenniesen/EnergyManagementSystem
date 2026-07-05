@@ -5,7 +5,9 @@ the coming evening + night — computed from the FORECAST load minus the forecas
 a fixed night-carry constant (which the backtest showed under-sizes on dull days and leaves the
 battery draining mid-peak at peak price). It then grid-charges only the shortfall solar won't cover,
 in the cheapest slots *before* the expensive window, so the battery is full going into the peak and
-shaves it. Risk-aware: the solar it counts on is the conservative P10.
+shaves it. Risk-aware: the solar it counts on to fill the battery is the EXPECTED (P50) forecast
+scaled by `solar_confidence` (0..1) — a single tunable conservatism dial. (This replaced an earlier
+fixed P10 = 0.6×P50 haircut, which over-bought; see `docs/charging-algorithm-research.md`.)
 
 Pure + unit-tested. The caller supplies the expected load per slot (the learned profile).
 """

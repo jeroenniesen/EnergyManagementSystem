@@ -35,10 +35,13 @@ re-plans at 01:00.
 One season-agnostic charger:
 - Sizes the battery to the **forecast** evening+overnight deficit (`load − P50 solar`, capped at
   usable − reserve) — demand-aware, not a fixed constant.
-- Nets out the **P10** (conservative) solar that will charge it, and grid-charges only the
-  **shortfall**, in the cheapest slots **before** the expensive window, so the pack is full going
-  into the peak and **shaves** it. Because it nets upcoming solar, it does **not** grid-charge
-  overnight when tomorrow is sunny.
+- Nets out the solar it counts on to charge the battery — the **expected (P50) forecast scaled by
+  `solar_confidence`** (0..1), a single conservatism dial (lower = counts on less sun) — and
+  grid-charges only the **shortfall**, in the cheapest slots **before** the expensive window, so the
+  pack is full going into the peak and **shaves** it. Because it nets upcoming solar, it does **not**
+  grid-charge overnight when tomorrow is sunny.
+  *(Implementation note: an earlier design used a fixed P10 = 0.6×P50 haircut here; it over-bought,
+  and was replaced by the tunable `solar_confidence`·P50 — `ems/planner/adaptive.py`.)*
 
 ## 4. The evidence (backtest, rolling, 4 NL days)
 
