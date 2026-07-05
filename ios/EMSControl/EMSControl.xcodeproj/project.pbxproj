@@ -12,6 +12,7 @@
 		042F4F18CFE0650AA449CAAC /* InsightsStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = AE96D50A9EC3DC4FEC64185B /* InsightsStore.swift */; };
 		0D0F6681CE829F1EC4356E68 /* EMSControlCore.framework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = 62C0D3FEB8DD96AF4F3CAD8C /* EMSControlCore.framework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 		15F7E1D2E299E702BCF34E68 /* DemoDataStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3699F1E6706AE136B68AB1C8 /* DemoDataStore.swift */; };
+		1A13A3975BE7484B3E9D2185 /* ISOTimestamp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2DC5EEC3A04E938FD71E41C8 /* ISOTimestamp.swift */; };
 		211D0CD0F3242A3EF71BD8AE /* demo-dashboard.json in Resources */ = {isa = PBXBuildFile; fileRef = 0888EA444AB57461568AD1F4 /* demo-dashboard.json */; };
 		4E695D73A60245B409F24E62 /* ActivityStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 00F8B1F9E78007B8E6F45047 /* ActivityStore.swift */; };
 		51B466CD33164832C83EA6F1 /* DashboardStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 851FDA73182D3541A3039A9A /* DashboardStore.swift */; };
@@ -67,6 +68,7 @@
 		13253B7C77956C58739FA336 /* Models.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Models.swift; sourceTree = "<group>"; };
 		24CB1980979D24B5EA49FBE4 /* AppShellView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppShellView.swift; sourceTree = "<group>"; };
 		257B061EB9A96671DDB32DC5 /* InsightsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = InsightsView.swift; sourceTree = "<group>"; };
+		2DC5EEC3A04E938FD71E41C8 /* ISOTimestamp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ISOTimestamp.swift; sourceTree = "<group>"; };
 		34964B0AB73A0E2AEB2C4350 /* EMSControl.app */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.application; path = EMSControl.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		3699F1E6706AE136B68AB1C8 /* DemoDataStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DemoDataStore.swift; sourceTree = "<group>"; };
 		378862CC33548C4C96596B8A /* ConnectionView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConnectionView.swift; sourceTree = "<group>"; };
@@ -130,6 +132,7 @@
 				851FDA73182D3541A3039A9A /* DashboardStore.swift */,
 				3699F1E6706AE136B68AB1C8 /* DemoDataStore.swift */,
 				AE96D50A9EC3DC4FEC64185B /* InsightsStore.swift */,
+				2DC5EEC3A04E938FD71E41C8 /* ISOTimestamp.swift */,
 				F931E1AEC5676B6174B3A76F /* KeychainCredentialStore.swift */,
 				13253B7C77956C58739FA336 /* Models.swift */,
 				6489F114C4BCA73DEAF39933 /* SeriesGeometry.swift */,
@@ -275,6 +278,7 @@
 				B73C5305189929545FF315BF /* ChatStore.swift in Sources */,
 				51B466CD33164832C83EA6F1 /* DashboardStore.swift in Sources */,
 				15F7E1D2E299E702BCF34E68 /* DemoDataStore.swift in Sources */,
+				1A13A3975BE7484B3E9D2185 /* ISOTimestamp.swift in Sources */,
 				042F4F18CFE0650AA449CAAC /* InsightsStore.swift in Sources */,
 				C32DD176D4AC4B7979994319 /* KeychainCredentialStore.swift in Sources */,
 				869F6EB25417A0F2A4D2613A /* Models.swift in Sources */,

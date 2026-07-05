@@ -52,6 +52,20 @@ final class APIClientTests: XCTestCase {
         XCTAssertEqual(transport.lastRequest?.url?.query, "window=next")
     }
 
+    func testFetchBatteryPlanUsesSharedContract() async throws {
+        let transport = RecordingTransport(data: batteryPlanJSON())
+        let client = APIClient(baseURL: URL(string: "http://ems.local:8080")!, transport: transport)
+
+        let response = try await client.fetchBatteryPlan()
+
+        XCTAssertEqual(response.status, "on_track")
+        XCTAssertEqual(response.currentAction, "self_consume")
+        XCTAssertEqual(response.graph.forecastSoc.count, 2)
+        XCTAssertEqual(response.graph.plannedActions[0].action, "solar_charge")
+        XCTAssertEqual(response.deviation.status, "ok")
+        XCTAssertEqual(transport.lastRequest?.url?.path, "/api/battery-plan")
+    }
+
     func testFetchReportAndFinanceUseDayPeriod() async throws {
         let reportTransport = RecordingTransport(data: reportJSON())
         let financeTransport = RecordingTransport(data: financeJSON())
@@ -92,6 +106,8 @@ final class APIClientTests: XCTestCase {
 
         XCTAssertEqual(snapshot.status.socPct, 55.0)
         XCTAssertEqual(snapshot.decision.homeState?.tone, "watching")
+        XCTAssertEqual(snapshot.batteryPlan.status, "on_track")
+        XCTAssertEqual(snapshot.batteryPlan.graph.priceWindows.count, 1)
         XCTAssertNil(snapshot.finance.totals.savedEur)
     }
 
@@ -214,6 +230,8 @@ private final class PartiallyFailingDashboardTransport: HTTPTransport, @unchecke
             data = #"{"today_eur":0.0}"#.data(using: .utf8)!
         case "/api/energy-story":
             data = energyStoryJSON()
+        case "/api/battery-plan":
+            data = batteryPlanJSON()
         case "/api/report":
             data = reportJSON()
         case "/api/finance":
@@ -224,6 +242,51 @@ private final class PartiallyFailingDashboardTransport: HTTPTransport, @unchecke
         }
         return (data, HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!)
     }
+}
+
+private func batteryPlanJSON() -> Data {
+    """
+    {
+      "status": "on_track",
+      "summary": "Tonight is covered.",
+      "current_action": "self_consume",
+      "current_reason": "Battery is following the current plan.",
+      "window_start": "2026-07-03T21:15:00+02:00",
+      "window_end": "2026-07-03T21:45:00+02:00",
+      "current_soc_pct": 55.0,
+      "reserve_soc_pct": 10.0,
+      "target_soc_pct": 88.1,
+      "target_deadline": "2026-07-04T20:45:00+02:00",
+      "deviation": {"status": "ok", "message": "Actual battery level is close to plan."},
+      "warnings": [],
+      "graph": {
+        "forecast_soc": [
+          {"ts": "2026-07-03T21:15:00+02:00", "soc_pct": 58.0},
+          {"ts": "2026-07-03T21:30:00+02:00", "soc_pct": 61.0}
+        ],
+        "actual_soc": [
+          {"ts": "2026-07-03T21:00:00+02:00", "soc_pct": 55.0}
+        ],
+        "reserve_line": [
+          {"ts": "2026-07-03T21:15:00+02:00", "soc_pct": 10.0},
+          {"ts": "2026-07-03T21:45:00+02:00", "soc_pct": 10.0}
+        ],
+        "target_line": [
+          {"ts": "2026-07-03T21:15:00+02:00", "soc_pct": 88.1},
+          {"ts": "2026-07-03T21:45:00+02:00", "soc_pct": 88.1}
+        ],
+        "planned_actions": [
+          {"start": "2026-07-03T21:15:00+02:00", "end": "2026-07-03T21:30:00+02:00", "action": "solar_charge"}
+        ],
+        "price_windows": [
+          {"start": "2026-07-03T21:30:00+02:00", "end": "2026-07-03T21:45:00+02:00", "min_eur_per_kwh": 0.45, "max_eur_per_kwh": 0.45}
+        ],
+        "solar": [
+          {"ts": "2026-07-03T21:15:00+02:00", "forecast_w": 1500.0, "actual_w": null}
+        ]
+      }
+    }
+    """.data(using: .utf8)!
 }
 
 private func statusJSON() -> Data {

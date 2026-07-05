@@ -189,6 +189,7 @@ public struct MobileDashboardSnapshot: Codable, Equatable, Sendable {
     public let chargeNeed: ChargeNeedSnapshot
     public let savings: SavingsSnapshot
     public let energyStory: EnergyStorySnapshot
+    public var batteryPlan: BatteryPlanSnapshot = .empty
     public let report: ReportSnapshot
     public let finance: FinanceSnapshot
     public let strategy: StrategySnapshot?
@@ -213,6 +214,7 @@ public struct MobileDashboardSnapshot: Codable, Equatable, Sendable {
         chargeNeed: ChargeNeedSnapshot,
         savings: SavingsSnapshot,
         energyStory: EnergyStorySnapshot,
+        batteryPlan: BatteryPlanSnapshot = .empty,
         report: ReportSnapshot,
         finance: FinanceSnapshot,
         strategy: StrategySnapshot? = nil
@@ -228,6 +230,7 @@ public struct MobileDashboardSnapshot: Codable, Equatable, Sendable {
         self.chargeNeed = chargeNeed
         self.savings = savings
         self.energyStory = energyStory
+        self.batteryPlan = batteryPlan
         self.report = report
         self.finance = finance
         self.strategy = strategy
@@ -269,9 +272,50 @@ public struct MobileDashboardSnapshot: Codable, Equatable, Sendable {
         case chargeNeed
         case savings
         case energyStory
+        case batteryPlan
         case report
         case finance
         case strategy
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        self.init(
+            generatedAt: try container.decode(Date.self, forKey: .generatedAt),
+            serverName: try container.decode(String.self, forKey: .serverName),
+            cacheTTLSeconds: try container.decode(Int.self, forKey: .cacheTTLSeconds),
+            status: try container.decode(StatusSnapshot.self, forKey: .status),
+            freshness: try container.decodeIfPresent(FreshnessSnapshot.self, forKey: .freshness) ?? .empty,
+            decision: try container.decodeIfPresent(DecisionSnapshot.self, forKey: .decision) ?? .empty,
+            alerts: try container.decodeIfPresent(AlertsSnapshot.self, forKey: .alerts) ?? .empty,
+            battery: try container.decodeIfPresent(BatterySnapshot.self, forKey: .battery) ?? .empty,
+            chargeNeed: try container.decodeIfPresent(ChargeNeedSnapshot.self, forKey: .chargeNeed) ?? .empty,
+            savings: try container.decodeIfPresent(SavingsSnapshot.self, forKey: .savings) ?? .empty,
+            energyStory: try container.decodeIfPresent(EnergyStorySnapshot.self, forKey: .energyStory) ?? .empty,
+            batteryPlan: try container.decodeIfPresent(BatteryPlanSnapshot.self, forKey: .batteryPlan) ?? .empty,
+            report: try container.decodeIfPresent(ReportSnapshot.self, forKey: .report) ?? .empty,
+            finance: try container.decodeIfPresent(FinanceSnapshot.self, forKey: .finance) ?? .empty,
+            strategy: try container.decodeIfPresent(StrategySnapshot.self, forKey: .strategy)
+        )
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(generatedAt, forKey: .generatedAt)
+        try container.encode(serverName, forKey: .serverName)
+        try container.encode(cacheTTLSeconds, forKey: .cacheTTLSeconds)
+        try container.encode(status, forKey: .status)
+        try container.encode(freshness, forKey: .freshness)
+        try container.encode(decision, forKey: .decision)
+        try container.encode(alerts, forKey: .alerts)
+        try container.encode(battery, forKey: .battery)
+        try container.encode(chargeNeed, forKey: .chargeNeed)
+        try container.encode(savings, forKey: .savings)
+        try container.encode(energyStory, forKey: .energyStory)
+        try container.encode(batteryPlan, forKey: .batteryPlan)
+        try container.encode(report, forKey: .report)
+        try container.encode(finance, forKey: .finance)
+        try container.encodeIfPresent(strategy, forKey: .strategy)
     }
 }
 
@@ -726,6 +770,322 @@ public struct StoryRecentReview: Codable, Equatable, Sendable {
     public let batteryChargedKwh: Double?
     public let batteryDischargedKwh: Double?
     public let message: String?
+}
+
+public struct BatteryPlanSnapshot: Codable, Equatable, Sendable {
+    public let status: String
+    public let summary: String
+    public let currentAction: String
+    public let currentReason: String
+    public let windowStart: String
+    public let windowEnd: String
+    public let currentSocPct: Double?
+    public let reserveSocPct: Double
+    public let targetSocPct: Double?
+    public let targetDeadline: String?
+    public let deviation: BatteryPlanDeviation
+    public let warnings: [String]
+    public let graph: BatteryPlanGraph
+
+    public init(
+        status: String,
+        summary: String,
+        currentAction: String,
+        currentReason: String,
+        windowStart: String,
+        windowEnd: String,
+        currentSocPct: Double?,
+        reserveSocPct: Double,
+        targetSocPct: Double?,
+        targetDeadline: String?,
+        deviation: BatteryPlanDeviation,
+        warnings: [String],
+        graph: BatteryPlanGraph
+    ) {
+        self.status = status
+        self.summary = summary
+        self.currentAction = currentAction
+        self.currentReason = currentReason
+        self.windowStart = windowStart
+        self.windowEnd = windowEnd
+        self.currentSocPct = currentSocPct
+        self.reserveSocPct = reserveSocPct
+        self.targetSocPct = targetSocPct
+        self.targetDeadline = targetDeadline
+        self.deviation = deviation
+        self.warnings = warnings
+        self.graph = graph
+    }
+
+    public static let empty = BatteryPlanSnapshot(
+        status: "paused_safely",
+        summary: "No battery plan yet.",
+        currentAction: "paused",
+        currentReason: "Connect to an EMS server to see the live plan.",
+        windowStart: "",
+        windowEnd: "",
+        currentSocPct: nil,
+        reserveSocPct: 10,
+        targetSocPct: nil,
+        targetDeadline: nil,
+        deviation: BatteryPlanDeviation(status: "missing", message: "No data yet."),
+        warnings: [],
+        graph: BatteryPlanGraph.empty
+    )
+
+    public static let demoScenarios: [BatteryPlanSnapshot] = [
+        BatteryPlanSnapshot(
+            status: "on_track",
+            summary: "Battery is on plan for the evening peak.",
+            currentAction: "self_consume",
+            currentReason: "Solar covers the house now; EMS saves the battery for the pricey evening hours.",
+            windowStart: "2026-07-05T12:00:00+02:00",
+            windowEnd: "2026-07-06T12:00:00+02:00",
+            currentSocPct: 63,
+            reserveSocPct: 10,
+            targetSocPct: 88,
+            targetDeadline: "2026-07-05T22:00:00+02:00",
+            deviation: BatteryPlanDeviation(
+                status: "ok",
+                message: "On track — projected to reach the 88% night target.",
+                actualSocPct: 63,
+                targetSocPct: 88
+            ),
+            warnings: [],
+            graph: .demoOnTrack
+        ),
+        BatteryPlanSnapshot(
+            status: "behind_target",
+            summary: "Battery is behind the night target.",
+            currentAction: "grid_charge",
+            currentReason: "EMS should use the cheapest grid window before sunset to recover the shortfall.",
+            windowStart: "2026-07-05T12:00:00+02:00",
+            windowEnd: "2026-07-06T12:00:00+02:00",
+            currentSocPct: 51,
+            reserveSocPct: 10,
+            targetSocPct: 88,
+            targetDeadline: "2026-07-05T22:00:00+02:00",
+            deviation: BatteryPlanDeviation(
+                status: "behind_forecast",
+                message: "Behind the 88% target — a grid top-up is planned before sunset.",
+                actualSocPct: 51,
+                targetSocPct: 88
+            ),
+            warnings: ["Behind the 88% target; expect a grid top-up in the cheapest window."],
+            graph: .demoBehindTarget
+        ),
+        BatteryPlanSnapshot(
+            status: "paused_safely",
+            summary: "Battery automation is paused safely.",
+            currentAction: "paused",
+            currentReason: "EMS is missing fresh inputs, so it keeps the battery above reserve instead of changing modes.",
+            windowStart: "2026-07-05T12:00:00+02:00",
+            windowEnd: "2026-07-06T12:00:00+02:00",
+            currentSocPct: 58,
+            reserveSocPct: 10,
+            targetSocPct: nil,
+            targetDeadline: nil,
+            deviation: BatteryPlanDeviation(
+                status: "missing",
+                message: "Plan confidence is unavailable until fresh data returns.",
+                actualSocPct: 58
+            ),
+            warnings: ["Live price or battery data is stale; EMS is holding safe mode."],
+            graph: .demoPausedSafely
+        )
+    ]
+}
+
+public struct BatteryPlanDeviation: Codable, Equatable, Sendable {
+    public let status: String          // "ok" | "behind_forecast" | "missing"
+    public let message: String
+    public let actualSocPct: Double?
+    public let targetSocPct: Double?
+
+    public init(
+        status: String,
+        message: String,
+        actualSocPct: Double? = nil,
+        targetSocPct: Double? = nil
+    ) {
+        self.status = status
+        self.message = message
+        self.actualSocPct = actualSocPct
+        self.targetSocPct = targetSocPct
+    }
+}
+
+public struct BatteryPlanGraph: Codable, Equatable, Sendable {
+    public let forecastSoc: [BatteryPlanPoint]
+    public let actualSoc: [BatteryPlanPoint]
+    public let reserveLine: [BatteryPlanPoint]
+    public let targetLine: [BatteryPlanPoint]
+    public let plannedActions: [BatteryPlanActionBlock]
+    public let priceWindows: [BatteryPlanPriceWindow]
+    public let solar: [BatteryPlanSolarPoint]
+
+    public init(
+        forecastSoc: [BatteryPlanPoint],
+        actualSoc: [BatteryPlanPoint],
+        reserveLine: [BatteryPlanPoint],
+        targetLine: [BatteryPlanPoint],
+        plannedActions: [BatteryPlanActionBlock],
+        priceWindows: [BatteryPlanPriceWindow],
+        solar: [BatteryPlanSolarPoint]
+    ) {
+        self.forecastSoc = forecastSoc
+        self.actualSoc = actualSoc
+        self.reserveLine = reserveLine
+        self.targetLine = targetLine
+        self.plannedActions = plannedActions
+        self.priceWindows = priceWindows
+        self.solar = solar
+    }
+
+    // Tolerant decode: a partial graph (any sub-array missing from an older/degraded backend) must
+    // degrade to empty arrays, NOT throw — otherwise it fails the whole MobileDashboardSnapshot
+    // decode and blanks the dashboard instead of just the plan panel (finding #10).
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        forecastSoc = try c.decodeIfPresent([BatteryPlanPoint].self, forKey: .forecastSoc) ?? []
+        actualSoc = try c.decodeIfPresent([BatteryPlanPoint].self, forKey: .actualSoc) ?? []
+        reserveLine = try c.decodeIfPresent([BatteryPlanPoint].self, forKey: .reserveLine) ?? []
+        targetLine = try c.decodeIfPresent([BatteryPlanPoint].self, forKey: .targetLine) ?? []
+        plannedActions = try c.decodeIfPresent([BatteryPlanActionBlock].self,
+                                               forKey: .plannedActions) ?? []
+        priceWindows = try c.decodeIfPresent([BatteryPlanPriceWindow].self,
+                                             forKey: .priceWindows) ?? []
+        solar = try c.decodeIfPresent([BatteryPlanSolarPoint].self, forKey: .solar) ?? []
+    }
+
+    public static let empty = BatteryPlanGraph(
+        forecastSoc: [],
+        actualSoc: [],
+        reserveLine: [],
+        targetLine: [],
+        plannedActions: [],
+        priceWindows: [],
+        solar: []
+    )
+
+    public static let demoOnTrack = BatteryPlanGraph.demo(
+        forecastSoc: [58, 63, 72, 88, 76, 44, 18, 14],
+        actualSoc: [57, 61, 63],
+        actions: ["self_consume", "solar_charge", "grid_charge", "hold", "discharge", "discharge", "idle", "solar_charge"],
+        solar: [900, 1800, 2400, 1200, 100, 0, 0, 1400]
+    )
+
+    public static let demoBehindTarget = BatteryPlanGraph.demo(
+        forecastSoc: [58, 63, 72, 88, 76, 44, 18, 14],
+        actualSoc: [56, 53, 51],
+        actions: ["self_consume", "hold", "grid_charge", "grid_charge", "discharge", "discharge", "idle", "solar_charge"],
+        solar: [700, 1300, 1800, 900, 0, 0, 0, 1200]
+    )
+
+    public static let demoPausedSafely = BatteryPlanGraph.demo(
+        forecastSoc: [],
+        actualSoc: [58, 58, 57],
+        actions: ["hold", "hold", "hold", "idle"],
+        solar: [800, 1200, 400, 0]
+    )
+
+    private static func demo(
+        forecastSoc: [Double],
+        actualSoc: [Double],
+        actions: [String],
+        solar: [Double]
+    ) -> BatteryPlanGraph {
+        let stamps = [
+            "2026-07-05T12:00:00+02:00",
+            "2026-07-05T15:00:00+02:00",
+            "2026-07-05T18:00:00+02:00",
+            "2026-07-05T21:00:00+02:00",
+            "2026-07-06T00:00:00+02:00",
+            "2026-07-06T03:00:00+02:00",
+            "2026-07-06T06:00:00+02:00",
+            "2026-07-06T09:00:00+02:00"
+        ]
+        let usedStamps = Array(stamps.prefix(max(forecastSoc.count, actualSoc.count, solar.count, actions.count + 1)))
+        let reserve = usedStamps.map { BatteryPlanPoint(ts: $0, socPct: 10) }
+        let target = usedStamps.map { BatteryPlanPoint(ts: $0, socPct: 88) }
+        let blocks = actions.enumerated().compactMap { index, action -> BatteryPlanActionBlock? in
+            guard index + 1 < usedStamps.count else { return nil }
+            return BatteryPlanActionBlock(start: usedStamps[index], end: usedStamps[index + 1], action: action)
+        }
+
+        return BatteryPlanGraph(
+            forecastSoc: zip(usedStamps, forecastSoc).map { BatteryPlanPoint(ts: $0.0, socPct: $0.1) },
+            actualSoc: zip(usedStamps, actualSoc).map { BatteryPlanPoint(ts: $0.0, socPct: $0.1) },
+            reserveLine: reserve,
+            targetLine: target,
+            plannedActions: blocks,
+            priceWindows: [
+                BatteryPlanPriceWindow(
+                    start: "2026-07-05T18:00:00+02:00",
+                    end: "2026-07-05T21:00:00+02:00",
+                    minEurPerKwh: 0.11,
+                    maxEurPerKwh: 0.17
+                )
+            ],
+            solar: zip(usedStamps, solar).map { BatteryPlanSolarPoint(ts: $0.0, forecastW: $0.1, actualW: nil) }
+        )
+    }
+}
+
+public struct BatteryPlanPoint: Codable, Equatable, Sendable, Identifiable {
+    public let ts: String
+    public let socPct: Double?
+
+    public var id: String { ts }
+
+    public init(ts: String, socPct: Double?) {
+        self.ts = ts
+        self.socPct = socPct
+    }
+}
+
+public struct BatteryPlanActionBlock: Codable, Equatable, Sendable, Identifiable {
+    public let start: String
+    public let end: String
+    public let action: String
+
+    public var id: String { "\(start)-\(end)-\(action)" }
+
+    public init(start: String, end: String, action: String) {
+        self.start = start
+        self.end = end
+        self.action = action
+    }
+}
+
+public struct BatteryPlanPriceWindow: Codable, Equatable, Sendable, Identifiable {
+    public let start: String
+    public let end: String
+    public let minEurPerKwh: Double
+    public let maxEurPerKwh: Double
+
+    public var id: String { "\(start)-\(end)-\(maxEurPerKwh)" }
+
+    public init(start: String, end: String, minEurPerKwh: Double, maxEurPerKwh: Double) {
+        self.start = start
+        self.end = end
+        self.minEurPerKwh = minEurPerKwh
+        self.maxEurPerKwh = maxEurPerKwh
+    }
+}
+
+public struct BatteryPlanSolarPoint: Codable, Equatable, Sendable, Identifiable {
+    public let ts: String
+    public let forecastW: Double
+    public let actualW: Double?
+
+    public var id: String { ts }
+
+    public init(ts: String, forecastW: Double, actualW: Double?) {
+        self.ts = ts
+        self.forecastW = forecastW
+        self.actualW = actualW
+    }
 }
 
 public struct ReportSnapshot: Codable, Equatable, Sendable {

@@ -8,11 +8,16 @@ public struct DemoDataStore {
     }
 
     public func dashboardSnapshot() throws -> MobileDashboardSnapshot {
+        var snapshot: MobileDashboardSnapshot
         do {
-            return try decode(MobileDashboardSnapshot.self, resource: "demo-dashboard")
+            snapshot = try decode(MobileDashboardSnapshot.self, resource: "demo-dashboard")
         } catch {
-            return try MobileDashboardSnapshot(legacy: decode(DashboardSnapshot.self, resource: "demo-dashboard"))
+            snapshot = try MobileDashboardSnapshot(legacy: decode(DashboardSnapshot.self, resource: "demo-dashboard"))
         }
+        if snapshot.batteryPlan.graph.forecastSoc.isEmpty {
+            snapshot.batteryPlan = BatteryPlanSnapshot.demoScenarios[0]
+        }
+        return snapshot
     }
 
     public func faq() throws -> FAQResponse {
