@@ -118,9 +118,12 @@ def validate_plan(
         findings.append(Finding(_WARN, "dwell_churn",
                                 "The plan changes mode faster than the minimum dwell time."))
 
-    # 5. Projected SoC must stay within [reserve, 100] when a projection is supplied.
+    # 5. Projected SoC must stay within [reserve, 100] when a projection is supplied. If the
+    # battery is already below reserve, don't turn that starting condition into a false unsafe
+    # finding; only block plans that make it worse.
     if projection:
-        if any(p.soc_pct < min_reserve_soc - 1e-6 for p in projection):
+        floor = min(min_reserve_soc, soc_pct)
+        if any(p.soc_pct < floor - 1e-6 for p in projection):
             findings.append(Finding(_UNSAFE, "projection_below_reserve",
                                     "The plan is projected to discharge below the reserve floor."))
         if any(p.soc_pct > 100.0 + 1e-6 for p in projection):

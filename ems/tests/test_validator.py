@@ -70,6 +70,16 @@ def test_projection_below_reserve_is_unsafe():
     assert v.status == "unsafe" and any(f.code == "projection_below_reserve" for f in v.findings)
 
 
+def test_projection_already_below_reserve_without_further_drop_is_not_unsafe():
+    proj = [
+        ProjectedSlot(T0, BatteryIntent.HOLD_RESERVE, 8.0, 0, 0, 0, 800),
+        ProjectedSlot(T0 + SLOT, BatteryIntent.HOLD_RESERVE, 8.0, 0, 0, 0, 800),
+    ]
+    v = validate_plan(_plan(_self(0), _self(1)), projection=proj, **_ctx(soc_pct=8.0))
+    assert not any(f.code == "projection_below_reserve" for f in v.findings)
+    assert v.ok is True
+
+
 def test_excessive_switches_warns():
     # Alternate every slot → many transitions, above a tiny budget.
     slots = [(_charge(i) if i % 2 else _self(i)) for i in range(12)]
