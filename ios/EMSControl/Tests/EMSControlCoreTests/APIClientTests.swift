@@ -59,7 +59,8 @@ final class APIClientTests: XCTestCase {
         let response = try await client.fetchBatteryPlan()
 
         XCTAssertEqual(response.status, "on_track")
-        XCTAssertEqual(response.currentAction, "self_consume")
+        XCTAssertEqual(response.currentAction, "self_consumption")
+        XCTAssertEqual(response.plannedGridTopupKwh, 0.0)
         XCTAssertEqual(response.graph.forecastSoc.count, 2)
         XCTAssertEqual(response.graph.plannedActions[0].action, "solar_charge")
         XCTAssertEqual(response.deviation.status, "ok")
@@ -249,7 +250,7 @@ private func batteryPlanJSON() -> Data {
     {
       "status": "on_track",
       "summary": "Tonight is covered.",
-      "current_action": "self_consume",
+      "current_action": "self_consumption",
       "current_reason": "Battery is following the current plan.",
       "window_start": "2026-07-03T21:15:00+02:00",
       "window_end": "2026-07-03T21:45:00+02:00",
@@ -257,6 +258,7 @@ private func batteryPlanJSON() -> Data {
       "reserve_soc_pct": 10.0,
       "target_soc_pct": 88.1,
       "target_deadline": "2026-07-04T20:45:00+02:00",
+      "planned_grid_topup_kwh": 0.0,
       "deviation": {"status": "ok", "message": "Actual battery level is close to plan."},
       "warnings": [],
       "graph": {

@@ -73,6 +73,7 @@ def test_battery_plan_contract_answers_the_homeowner_questions(tmp_path):
     assert body["window_start"] < body["window_end"]
     assert body["reserve_soc_pct"] == 10.0
     assert body["target_soc_pct"] is not None
+    assert body["planned_grid_topup_kwh"] >= 0.0
     assert body["deviation"]["status"] in {"ok", "behind_forecast", "missing"}
 
     graph = body["graph"]

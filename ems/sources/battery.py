@@ -80,6 +80,17 @@ class MockBatteryDriver:
     def probe(self) -> CapabilityReport:
         return self._capabilities
 
+    def configure_power_limits(self, *, max_charge_w: float, max_discharge_w: float) -> None:
+        self._capabilities = CapabilityReport(
+            services=self._capabilities.services,
+            energy_mode_options=self._capabilities.energy_mode_options,
+            has_standby=self._capabilities.has_standby,
+            has_grid_charge_switch=self._capabilities.has_grid_charge_switch,
+            p1_paired=self._capabilities.p1_paired,
+            max_charge_w=float(max_charge_w),
+            max_discharge_w=float(max_discharge_w),
+        )
+
     def current_mode(self) -> PhysicalMode:
         return self._mode
 

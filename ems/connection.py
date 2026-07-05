@@ -144,10 +144,12 @@ def build_wiring(eff: dict, tz: ZoneInfo, cache_store: object | None = None):
             battery=battery_reader,
         )
         if operational:
-            # Arm the writer against EVERY tower (master + slaves) — the cluster does not relay
-            # real-time-control to slaves, so each tower is commanded directly (one transport each).
+            # Arm the writer with cluster topology. The driver commands realtime modes through the
+            # master and uses every tower only when returning to vendor self-consumption.
             controller_driver = IndevoltBatteryDriver(
                 ip, port=port, armed=True,
+                charge_power_w=int(eff.get("battery.max_charge_w") or 2000),
+                discharge_power_w=int(eff.get("battery.max_discharge_w") or 2000),
                 extra_ips=tower_ips[1:],
                 # Generous write timeout + retry: the device is slow under shared load (HA + app +
                 # cluster) and a too-tight timeout false-failed the charge, triggering the AUTO-
@@ -155,7 +157,11 @@ def build_wiring(eff: dict, tz: ZoneInfo, cache_store: object | None = None):
                 post_factory=lambda a, _p=port: make_setdata_post(a, _p, timeout=8.0),
             )
         elif ip:
-            controller_driver = IndevoltBatteryDriver(ip, port=port, armed=False)
+            controller_driver = IndevoltBatteryDriver(
+                ip, port=port, armed=False,
+                charge_power_w=int(eff.get("battery.max_charge_w") or 2000),
+                discharge_power_w=int(eff.get("battery.max_discharge_w") or 2000),
+            )
         else:
             controller_driver = MockBatteryDriver()
         dev_mode, battery_endpoint = "live", None

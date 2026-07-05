@@ -111,6 +111,20 @@ def test_operational_arms_driver_and_lifts_dry_run():
     assert dry_run is False
 
 
+def test_live_indevolt_driver_uses_configured_cluster_power_limits():
+    eff = effective_settings({
+        "connection.use_live_devices": True,
+        "meters.p1_ip": "192.0.2.10",
+        "battery.indevolt_ip": "192.0.2.20",
+        "battery.max_charge_w": 4800.0,
+        "battery.max_discharge_w": 3600.0,
+        "control.operational": True,
+    })
+    *_, driver, _dev_mode, _dry_run = build_wiring(eff, AMS)
+    assert driver.charge_power_w == 4800
+    assert driver.discharge_power_w == 3600
+
+
 def test_operational_without_a_battery_stays_dry_run():
     # Operational only means something with a real battery to command — else stay safe.
     eff = effective_settings({

@@ -783,6 +783,7 @@ public struct BatteryPlanSnapshot: Codable, Equatable, Sendable {
     public let reserveSocPct: Double
     public let targetSocPct: Double?
     public let targetDeadline: String?
+    public let plannedGridTopupKwh: Double?
     public let deviation: BatteryPlanDeviation
     public let warnings: [String]
     public let graph: BatteryPlanGraph
@@ -798,6 +799,7 @@ public struct BatteryPlanSnapshot: Codable, Equatable, Sendable {
         reserveSocPct: Double,
         targetSocPct: Double?,
         targetDeadline: String?,
+        plannedGridTopupKwh: Double? = nil,
         deviation: BatteryPlanDeviation,
         warnings: [String],
         graph: BatteryPlanGraph
@@ -812,6 +814,7 @@ public struct BatteryPlanSnapshot: Codable, Equatable, Sendable {
         self.reserveSocPct = reserveSocPct
         self.targetSocPct = targetSocPct
         self.targetDeadline = targetDeadline
+        self.plannedGridTopupKwh = plannedGridTopupKwh
         self.deviation = deviation
         self.warnings = warnings
         self.graph = graph
@@ -828,6 +831,7 @@ public struct BatteryPlanSnapshot: Codable, Equatable, Sendable {
         reserveSocPct: 10,
         targetSocPct: nil,
         targetDeadline: nil,
+        plannedGridTopupKwh: nil,
         deviation: BatteryPlanDeviation(status: "missing", message: "No data yet."),
         warnings: [],
         graph: BatteryPlanGraph.empty
@@ -837,7 +841,7 @@ public struct BatteryPlanSnapshot: Codable, Equatable, Sendable {
         BatteryPlanSnapshot(
             status: "on_track",
             summary: "Battery is on plan for the evening peak.",
-            currentAction: "self_consume",
+            currentAction: "self_consumption",
             currentReason: "Solar covers the house now; EMS saves the battery for the pricey evening hours.",
             windowStart: "2026-07-05T12:00:00+02:00",
             windowEnd: "2026-07-06T12:00:00+02:00",
@@ -845,6 +849,7 @@ public struct BatteryPlanSnapshot: Codable, Equatable, Sendable {
             reserveSocPct: 10,
             targetSocPct: 88,
             targetDeadline: "2026-07-05T22:00:00+02:00",
+            plannedGridTopupKwh: 0,
             deviation: BatteryPlanDeviation(
                 status: "ok",
                 message: "On track — projected to reach the 88% night target.",
@@ -865,6 +870,7 @@ public struct BatteryPlanSnapshot: Codable, Equatable, Sendable {
             reserveSocPct: 10,
             targetSocPct: 88,
             targetDeadline: "2026-07-05T22:00:00+02:00",
+            plannedGridTopupKwh: 5.0,
             deviation: BatteryPlanDeviation(
                 status: "behind_forecast",
                 message: "Behind the 88% target — a grid top-up is planned before sunset.",
@@ -885,6 +891,7 @@ public struct BatteryPlanSnapshot: Codable, Equatable, Sendable {
             reserveSocPct: 10,
             targetSocPct: nil,
             targetDeadline: nil,
+            plannedGridTopupKwh: nil,
             deviation: BatteryPlanDeviation(
                 status: "missing",
                 message: "Plan confidence is unavailable until fresh data returns.",
