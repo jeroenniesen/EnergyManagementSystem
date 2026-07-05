@@ -110,8 +110,11 @@ def plan_adaptive(
     floor_soc = max(0.0, min(100.0, cfg.reserve_soc_pct))
 
     out: list[PlanSlot] = []
+    planned_kwh = max(0.0, min(100.0, soc_pct)) / 100.0 * usable
     for p in future:
         solar = p50.get(p.start, 0.0)
+        load = load_w_by.get(p.start, 0.0)
+        below_reserve = planned_kwh < reserve_kwh - 1e-9
         if p.start in charge_set:
             intent = BatteryIntent.GRID_CHARGE_TO_TARGET
             reason = f"charge: cheap €{p.eur_per_kwh:.2f}/kWh to cover the coming peak + night"
@@ -120,19 +123,30 @@ def plan_adaptive(
                 target_kwh=round(per_slot_kwh, 3), power_w=cfg.max_charge_w,
                 floor_soc=floor_soc, deadline=last_need,
             ))
+            target_kwh = target_soc_pct / 100.0 * usable
+            planned_kwh = min(usable, target_kwh, planned_kwh + per_slot_kwh)
+            continue
+        if below_reserve and net_w(p) > 0:
+            intent = BatteryIntent.HOLD_RESERVE
+            reason = "hold reserve: battery is already below the reserve floor"
+            out.append(PlanSlot(p.start, intent, reason, target_soc=target_soc_pct,
+                                floor_soc=floor_soc, deadline=last_need))
             continue
         if p.start in discharge_set:
             intent = BatteryIntent.DISCHARGE_FOR_LOAD
             reason = f"shave the €{p.eur_per_kwh:.2f}/kWh peak from the battery"
             out.append(PlanSlot(p.start, intent, reason, power_w=round(max(0.0, net_w(p)), 1),
                                 floor_soc=floor_soc, deadline=last_need))
+            planned_kwh = max(reserve_kwh, planned_kwh - max(0.0, net_w(p)) * _DH / 1000.0 / eta)
             continue
-        if solar > load_w_by.get(p.start, 0.0):
+        if solar > load:
             intent = BatteryIntent.ALLOW_SELF_CONSUMPTION
             reason = f"solar-first: charging from your panels ({solar:.0f} W)"
+            planned_kwh = min(usable, planned_kwh + (solar - load) * _DH / 1000.0 * eta)
         else:
             intent = BatteryIntent.ALLOW_SELF_CONSUMPTION
             reason = "running the house on the battery"
+            planned_kwh = max(reserve_kwh, planned_kwh - (load - solar) * _DH / 1000.0 / eta)
         out.append(PlanSlot(p.start, intent, reason, target_soc=target_soc_pct, floor_soc=floor_soc,
                             deadline=last_need))
     # No season label here: this planner serves both seasons. build_plan stamps the resolved

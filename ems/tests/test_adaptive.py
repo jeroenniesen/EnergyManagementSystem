@@ -89,5 +89,15 @@ def test_charge_and_discharge_slots_carry_the_energy_contract():
             assert s.floor_soc == 10.0 and s.power_w is not None
 
 
+def test_below_reserve_holds_deficit_slots_until_recovered():
+    prices = _prices([0.30, 0.30, 0.10, 0.10, 0.40, 0.40])
+    fc = _fc([0.0] * 6)
+    load = _load([800.0, 800.0, 800.0, 800.0, 3000.0, 3000.0])
+    plan = plan_adaptive(prices, fc, T0, soc_pct=8.0, load_w_by=load, cfg=_cfg())
+    assert plan.slots[0].intent is BatteryIntent.HOLD_RESERVE
+    assert plan.slots[1].intent is BatteryIntent.HOLD_RESERVE
+    assert any(s.intent is BatteryIntent.GRID_CHARGE_TO_TARGET for s in plan.slots)
+
+
 def test_empty_prices_yields_empty_plan():
     assert plan_adaptive([], [], T0, soc_pct=50.0, load_w_by={}, cfg=_cfg()).slots == ()
