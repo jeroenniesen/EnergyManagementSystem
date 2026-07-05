@@ -42,6 +42,7 @@ final class ModelsTests: XCTestCase {
             reserveSocPct: 10,
             targetSocPct: 88,
             targetDeadline: "2026-07-05T22:00:00+02:00",
+            plannedGridTopupKwh: 0,
             deviation: BatteryPlanDeviation(status: "ok", message: "Actual battery level is close to plan."),
             warnings: [],
             graph: planGraph
@@ -114,6 +115,7 @@ final class ModelsTests: XCTestCase {
             "reserve_soc_pct": 10.0,
             "target_soc_pct": 88.0,
             "target_deadline": "2026-07-05T22:00:00+02:00",
+            "planned_grid_topup_kwh": 2.5,
             "deviation": {"status": "ok", "message": "Actual battery level is close to plan."},
             "warnings": [],
             "graph": {
@@ -133,6 +135,7 @@ final class ModelsTests: XCTestCase {
 
         XCTAssertEqual(snapshot.batteryPlan.status, "on_track")
         XCTAssertEqual(snapshot.batteryPlan.currentSocPct, 64.0)
+        XCTAssertEqual(snapshot.batteryPlan.plannedGridTopupKwh, 2.5)
         XCTAssertEqual(snapshot.batteryPlan.graph.forecastSoc.count, 1)
     }
 

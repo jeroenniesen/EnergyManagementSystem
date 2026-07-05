@@ -93,6 +93,21 @@ def test_control_settings_applied_to_controller_live(tmp_path):
         assert controller.allow_export_discharge is True
 
 
+def test_battery_power_settings_applied_to_controller_driver_live(tmp_path):
+    driver = MockBatteryDriver()
+    controller = ModeController(driver, Lifecycle(dry_run=True), dry_run=True)
+    app = _app(tmp_path, controller=controller)
+    with TestClient(app) as c:
+        r = c.post("/api/settings", json={
+            "battery.max_charge_w": 4800.0,
+            "battery.max_discharge_w": 3600.0,
+        })
+        assert r.status_code == 200
+    cap = driver.probe()
+    assert cap.max_charge_w == 4800.0
+    assert cap.max_discharge_w == 3600.0
+
+
 def test_safety_limits_reject_unsafe_values_and_leave_controller_safe(tmp_path):
     # The dwell floor (60s), the switch-cap ceiling (20) and the bool-only export flag must all
     # reject bad values via POST and leave the live controller at its safe defaults.

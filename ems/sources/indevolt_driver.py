@@ -132,6 +132,7 @@ class IndevoltBatteryDriver:
         port: int = 8080,
         armed: bool = False,
         charge_power_w: int = 2000,
+        discharge_power_w: int | None = None,
         reader: IndevoltReadClient | None = None,
         rpc_post: SetDataPost | None = None,
         post_factory: Callable[[str], SetDataPost] | None = None,
@@ -150,7 +151,9 @@ class IndevoltBatteryDriver:
                 ips.append(a)
         self.ips = ips
         self._armed = armed  # read-only: no setter, so it can't be flipped after construction
-        self.charge_power_w = charge_power_w
+        self.charge_power_w = int(charge_power_w)
+        self.discharge_power_w = int(discharge_power_w if discharge_power_w is not None
+                                     else charge_power_w)
         self.reader = reader or IndevoltReadClient(ip, port=port, timeout=timeout)
         # The device is slow under shared load (HA + app + cluster) and intermittently times out;
         # retry a write a couple times so a transient slow response doesn't false-fail it.
@@ -168,20 +171,23 @@ class IndevoltBatteryDriver:
     def armed(self) -> bool:
         return self._armed
 
+    def configure_power_limits(self, *, max_charge_w: float, max_discharge_w: float) -> None:
+        self.charge_power_w = int(max_charge_w)
+        self.discharge_power_w = int(max_discharge_w)
+
     def probe(self) -> CapabilityReport:
         """Read-only capability probe (SPEC §6.5/M1a). Raises BatteryUnavailable if unreachable."""
         data = self.reader.read_keys([K_CAPACITY, K_MODE, K_METER_CONN])
         if not data:
             raise BatteryUnavailable("Indevolt probe: GetData empty")
-        max_w = float(self.charge_power_w)
         return CapabilityReport(
             services=("charge", "discharge"),
             energy_mode_options=("self_consumption", "real_time_control"),
             has_standby=True,
             has_grid_charge_switch=True,
             p1_paired=data.get(str(K_METER_CONN)) == 1000,
-            max_charge_w=max_w,
-            max_discharge_w=max_w,
+            max_charge_w=float(self.charge_power_w),
+            max_discharge_w=float(self.discharge_power_w),
         )
 
     def current_mode(self) -> PhysicalMode:
@@ -245,7 +251,10 @@ class IndevoltBatteryDriver:
         if not self._has_transport:
             _log.warning("apply(%s) refused — no write transport configured", mode)
             return False
-        total_power = int(power_w) if power_w is not None else self.charge_power_w
+        default_power = (
+            self.discharge_power_w if mode is PhysicalMode.DISCHARGE else self.charge_power_w
+        )
+        total_power = int(power_w) if power_w is not None else default_power
         # The cluster total can be up to n_towers × the per-device max; the master accepts it and
         # distributes. Don't split — the master's setpoint IS the cluster figure.
         cluster_max = len(self.ips) * _MAX_POWER_W

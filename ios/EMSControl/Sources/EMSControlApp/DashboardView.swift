@@ -26,7 +26,7 @@ struct DashboardView: View {
                                 AlertsPanel(alerts: snapshot.alerts.alerts, theme: theme)
                             }
 
-                            BatteryPlanPanel(plan: snapshot.batteryPlan, theme: theme)
+                            BatteryPlanPanel(plan: snapshot.batteryPlan, story: snapshot.energyStory, theme: theme)
 
                             // 2. Today so far (scores)
                             ScoreStrip(scores: snapshot.report.scores, theme: theme)
@@ -218,17 +218,18 @@ private struct PriceContextBar: View {
 
 private struct BatteryPlanPanel: View {
     let plan: BatteryPlanSnapshot
+    let story: EnergyStorySnapshot
     let theme: EMSTheme
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 14) {
+        VStack(alignment: .leading, spacing: 12) {
             HStack(alignment: .top, spacing: 10) {
                 VStack(alignment: .leading, spacing: 6) {
                     Text("Battery plan")
                         .font(.caption.weight(.semibold))
                         .foregroundStyle(themeColor(theme.muted))
-                    Text(plan.summary)
-                        .font(.title3.weight(.semibold))
+                    Text(compactHeadline)
+                        .font(.headline.weight(.semibold))
                         .foregroundStyle(themeColor(theme.text))
                         .fixedSize(horizontal: false, vertical: true)
                 }
@@ -236,37 +237,107 @@ private struct BatteryPlanPanel: View {
                 StatusBadge(text: statusLabel, color: statusColor, theme: theme)
             }
 
-            HStack(spacing: 10) {
-                MetricPill(title: "Now", value: actionLabel, theme: theme)
-                MetricPill(title: "Battery", value: percent(plan.currentSocPct), theme: theme)
-                MetricPill(title: "Target", value: percent(plan.targetSocPct), theme: theme)
-            }
-
-            Text(plan.currentReason)
+            Text(compactContext)
                 .font(.footnote)
                 .foregroundStyle(themeColor(theme.muted))
                 .fixedSize(horizontal: false, vertical: true)
 
+            ViewThatFits(in: .horizontal) {
+                HStack(spacing: 8) { compactFacts }
+                VStack(alignment: .leading, spacing: 8) { compactFacts }
+            }
+
             if let warning = plan.warnings.first {
                 Label(warning, systemImage: "exclamationmark.triangle")
-                    .font(.footnote.weight(.semibold))
+                    .font(.caption.weight(.semibold))
                     .foregroundStyle(themeColor(theme.amber))
                     .fixedSize(horizontal: false, vertical: true)
-                    .padding(10)
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 8)
                     .background(themeColor(theme.amber).opacity(0.13))
                     .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
             }
 
-            BatteryPlanMiniChart(plan: plan, theme: theme)
+            NavigationLink {
+                BatteryPlanDetailView(plan: plan, story: story, theme: theme)
+            } label: {
+                HStack(spacing: 8) {
+                    Label("Plan details", systemImage: "chart.xyaxis.line")
+                    Spacer(minLength: 8)
+                    Image(systemName: "chevron.right")
+                        .font(.caption.weight(.semibold))
+                }
+                .font(.footnote.weight(.semibold))
+                .foregroundStyle(themeColor(theme.text))
+                .padding(.horizontal, 12)
+                .padding(.vertical, 10)
+                .background(themeColor(theme.secondaryPanel))
+                .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+            }
+            .buttonStyle(.plain)
         }
         .padding(16)
         .background(themeColor(theme.panel))
         .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
         .overlay {
             RoundedRectangle(cornerRadius: 12, style: .continuous)
-                .stroke(themeColor(statusColor).opacity(statusStrokeOpacity), lineWidth: 1)
+                .stroke(themeColor(theme.line), lineWidth: 1)
         }
         .accessibilityElement(children: .contain)
+    }
+
+    @ViewBuilder
+    private var compactFacts: some View {
+        BatteryPlanFact(title: "Now", value: actionLabel, color: statusColor, theme: theme)
+        BatteryPlanFact(title: "Battery", value: batteryTargetLabel, color: theme.accent, theme: theme)
+        BatteryPlanFact(title: "Top-up", value: topupLabel, color: theme.amber, theme: theme)
+    }
+
+    private var compactHeadline: String {
+        switch plan.status {
+        case "needs_topup":
+            if let topup = plan.plannedGridTopupKwh, topup > 0.05 {
+                return "EMS plans a \(kwh(topup)) grid top-up before sunset."
+            }
+            return "EMS plans a small grid top-up before sunset."
+        case "behind_target":
+            return "Battery is behind target; EMS is correcting it."
+        case "data_stale":
+            return "EMS is paused until fresh data returns."
+        case "paused_safely":
+            return "Battery automation is paused safely."
+        default:
+            return "Battery is following the plan."
+        }
+    }
+
+    private var compactContext: String {
+        let level = batteryTargetLabel
+        let reason = plan.currentReason.trimmingCharacters(in: .whitespacesAndNewlines)
+        if reason.isEmpty {
+            return "\(level). Currently \(actionLabel.lowercased())."
+        }
+        return "\(level). Currently \(actionLabel.lowercased()): \(reason)"
+    }
+
+    private var batteryTargetLabel: String {
+        if let current = plan.currentSocPct, let target = plan.targetSocPct {
+            return "\(percent(current)) to \(percent(target))"
+        }
+        if let current = plan.currentSocPct {
+            return percent(current)
+        }
+        return "--"
+    }
+
+    private var topupLabel: String {
+        guard let topup = plan.plannedGridTopupKwh else {
+            return "--"
+        }
+        if topup <= 0.05 {
+            return "None"
+        }
+        return kwh(topup)
     }
 
     private var statusLabel: String {
@@ -289,23 +360,389 @@ private struct BatteryPlanPanel: View {
         }
     }
 
-    private var statusStrokeOpacity: Double {
+    private var actionLabel: String {
+        switch plan.currentAction {
+        case "charge", "grid_charge": "Charge"
+        case "solar_charge": "Solar charge"
+        case "hold": "Hold"
+        case "discharge": "Discharge"
+        case "self_consumption", "self_consume": "Self-use"
+        case "paused": "Paused"
+        default: plan.currentAction.replacingOccurrences(of: "_", with: " ").capitalized
+        }
+    }
+}
+
+private struct BatteryPlanFact: View {
+    let title: String
+    let value: String
+    let color: HexColor
+    let theme: EMSTheme
+
+    var body: some View {
+        HStack(spacing: 6) {
+            Circle()
+                .fill(themeColor(color))
+                .frame(width: 6, height: 6)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(title)
+                    .font(.caption2.weight(.semibold))
+                    .foregroundStyle(themeColor(theme.muted))
+                Text(value)
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(themeColor(theme.text))
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.75)
+            }
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 8)
+        .background(themeColor(theme.secondaryPanel))
+        .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+    }
+}
+
+private struct BatteryPlanDetailView: View {
+    let plan: BatteryPlanSnapshot
+    let story: EnergyStorySnapshot
+    let theme: EMSTheme
+
+    var body: some View {
+        ZStack {
+            themeColor(theme.background).ignoresSafeArea()
+            ScrollView {
+                VStack(alignment: .leading, spacing: 16) {
+                    VStack(alignment: .leading, spacing: 12) {
+                        HStack(alignment: .top, spacing: 10) {
+                            VStack(alignment: .leading, spacing: 6) {
+                                Text("Battery plan")
+                                    .font(.caption.weight(.semibold))
+                                    .foregroundStyle(themeColor(theme.muted))
+                                Text(headline)
+                                    .font(.title3.weight(.semibold))
+                                    .foregroundStyle(themeColor(theme.text))
+                                    .fixedSize(horizontal: false, vertical: true)
+                            }
+                            Spacer(minLength: 8)
+                            StatusBadge(text: statusLabel, color: statusColor, theme: theme)
+                        }
+
+                        Text(context)
+                            .font(.footnote)
+                            .foregroundStyle(themeColor(theme.muted))
+                            .fixedSize(horizontal: false, vertical: true)
+
+                        if !plan.summary.isEmpty, plan.summary != headline {
+                            Text(plan.summary)
+                                .font(.footnote.weight(.semibold))
+                                .foregroundStyle(themeColor(theme.text))
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+                    }
+                    .padding(16)
+                    .background(themeColor(theme.panel))
+                    .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+                    .overlay {
+                        RoundedRectangle(cornerRadius: 12, style: .continuous)
+                            .stroke(themeColor(theme.line), lineWidth: 1)
+                    }
+
+                    if hasEnergyTotals {
+                        LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 10) {
+                            DetailCell(title: "Grid cost", value: euro(story.totals?.gridCostEur), theme: theme)
+                            DetailCell(title: "Powered by you", value: percent(story.totals?.selfSufficiencyPct), theme: theme)
+                            DetailCell(title: "From grid", value: kwh(story.totals?.importKwh), theme: theme)
+                            DetailCell(title: "Solar", value: kwh(story.totals?.solarKwh), theme: theme)
+                            DetailCell(title: "Battery in/out", value: batteryInOut, theme: theme)
+                            DetailCell(title: "Top-up", value: topupLabel, theme: theme)
+                        }
+                    } else {
+                        BatteryPlanEmptyNote(
+                            icon: "clock.badge.exclamationmark",
+                            title: "Energy totals unavailable",
+                            message: "EMS still shows the current battery decision; cost and flow totals appear after the next complete strategy snapshot.",
+                            theme: theme
+                        )
+                    }
+
+                    VStack(alignment: .leading, spacing: 12) {
+                        Text("Strategy graph")
+                            .font(.headline)
+                            .foregroundStyle(themeColor(theme.text))
+                        BatteryPlanMiniChart(plan: plan, theme: theme, height: 240)
+                    }
+                    .padding(16)
+                    .background(themeColor(theme.panel))
+                    .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+                    .overlay {
+                        RoundedRectangle(cornerRadius: 12, style: .continuous)
+                            .stroke(themeColor(theme.line), lineWidth: 1)
+                    }
+
+                    VStack(alignment: .leading, spacing: 12) {
+                        Text("What should happen")
+                            .font(.headline)
+                            .foregroundStyle(themeColor(theme.text))
+
+                        ForEach(decisionRows) { row in
+                            BatteryPlanDecisionRow(row: row, theme: theme)
+                        }
+
+                        ForEach(Array(plan.warnings.enumerated()), id: \.offset) { _, warning in
+                            Label(warning, systemImage: "exclamationmark.triangle")
+                                .font(.footnote.weight(.semibold))
+                                .foregroundStyle(themeColor(theme.amber))
+                                .fixedSize(horizontal: false, vertical: true)
+                                .padding(.horizontal, 10)
+                                .padding(.vertical, 8)
+                                .background(themeColor(theme.amber).opacity(0.13))
+                                .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+                        }
+
+                        if plan.warnings.isEmpty {
+                            BatteryPlanDecisionRow(
+                                row: BatteryPlanDecision(
+                                    title: "Warnings",
+                                    value: "None",
+                                    detail: "No active battery-plan warnings in the latest snapshot.",
+                                    color: theme.accent,
+                                    icon: "checkmark.circle.fill"
+                                ),
+                                theme: theme
+                            )
+                        }
+                    }
+                    .padding(16)
+                    .background(themeColor(theme.panel))
+                    .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+                    .overlay {
+                        RoundedRectangle(cornerRadius: 12, style: .continuous)
+                            .stroke(themeColor(theme.line), lineWidth: 1)
+                    }
+                }
+                .padding()
+            }
+        }
+        .navigationTitle("Battery plan")
+        .navigationBarTitleDisplayMode(.inline)
+    }
+
+    private var headline: String {
         switch plan.status {
-        case "on_track": 0.55
-        case "needs_topup", "behind_target", "data_stale": 0.75
-        default: 0.35
+        case "needs_topup":
+            if let topup = plan.plannedGridTopupKwh, topup > 0.05 {
+                return "EMS plans a \(kwh(topup)) grid top-up before sunset."
+            }
+            return "EMS plans a grid top-up before sunset."
+        case "behind_target":
+            return "Battery is behind target; EMS is correcting it."
+        case "data_stale":
+            return "EMS is paused until fresh data returns."
+        case "paused_safely":
+            return "Battery automation is paused safely."
+        default:
+            return "Battery is following the plan."
+        }
+    }
+
+    private var context: String {
+        let level = batteryTargetLabel
+        let reason = plan.currentReason.trimmingCharacters(in: .whitespacesAndNewlines)
+        return reason.isEmpty ? level : "\(level). \(reason)"
+    }
+
+    private var batteryTargetLabel: String {
+        if let current = plan.currentSocPct, let target = plan.targetSocPct {
+            return "\(percent(current)) to \(percent(target))"
+        }
+        if let current = plan.currentSocPct {
+            return percent(current)
+        }
+        return "Battery level unavailable"
+    }
+
+    private var batteryInOut: String {
+        let charge = story.totals?.chargeKwh
+        let discharge = story.totals?.dischargeKwh
+        guard charge != nil || discharge != nil else { return "--" }
+        return "\(kwh(charge))/\(kwh(discharge))"
+    }
+
+    private var topupLabel: String {
+        guard let topup = plan.plannedGridTopupKwh else { return "--" }
+        return topup <= 0.05 ? "None" : kwh(topup)
+    }
+
+    private var hasEnergyTotals: Bool {
+        guard let totals = story.totals else { return false }
+        return [
+            totals.importKwh,
+            totals.solarKwh,
+            totals.chargeKwh,
+            totals.dischargeKwh,
+            totals.gridCostEur,
+            totals.selfSufficiencyPct
+        ].contains { $0 != nil }
+    }
+
+    private var hasGraphData: Bool {
+        plan.graph.forecastSoc.count >= 2 || plan.graph.actualSoc.count >= 2
+    }
+
+    private var decisionRows: [BatteryPlanDecision] {
+        var rows: [BatteryPlanDecision] = [
+            BatteryPlanDecision(
+                title: "Now",
+                value: actionLabel,
+                detail: plan.currentReason.isEmpty ? "EMS is keeping the battery within its safe operating band." : plan.currentReason,
+                color: statusColor,
+                icon: "bolt.fill"
+            ),
+            BatteryPlanDecision(
+                title: "Reserve",
+                value: percent(plan.reserveSocPct),
+                detail: hasGraphData
+                    ? "The forecast should stay above this floor, even while covering the evening peak."
+                    : "EMS has a reserve floor, but the forecast curve needs fresh samples.",
+                color: theme.muted,
+                icon: "shield.checkered"
+            )
+        ]
+
+        if let target = plan.targetSocPct {
+            let deadline = formattedTime(plan.targetDeadline)
+            rows.append(BatteryPlanDecision(
+                title: "Night target",
+                value: percent(target),
+                detail: deadline.map { "EMS should reach this before \($0)." } ?? "EMS should reach this before the night window.",
+                color: theme.amber,
+                icon: "moon.stars.fill"
+            ))
+        }
+
+        if let topup = plan.plannedGridTopupKwh, topup > 0.05 {
+            rows.append(BatteryPlanDecision(
+                title: "Grid top-up",
+                value: kwh(topup),
+                detail: "Charging should be concentrated in the cheapest useful price window.",
+                color: theme.winter,
+                icon: "arrow.down.to.line.compact"
+            ))
+        }
+
+        return rows
+    }
+
+    private var statusLabel: String {
+        switch plan.status {
+        case "on_track": "On track"
+        case "needs_topup": "Top-up planned"
+        case "behind_target": "Behind"
+        case "paused_safely": "Paused"
+        case "data_stale": "Data stale"
+        default: plan.status.replacingOccurrences(of: "_", with: " ").capitalized
+        }
+    }
+
+    private var statusColor: HexColor {
+        switch plan.status {
+        case "on_track": theme.accent
+        case "needs_topup", "behind_target": theme.amber
+        case "data_stale": theme.error
+        default: theme.muted
         }
     }
 
     private var actionLabel: String {
         switch plan.currentAction {
-        case "grid_charge": "Grid charge"
+        case "charge", "grid_charge": "Charge"
         case "solar_charge": "Solar charge"
         case "hold": "Hold"
         case "discharge": "Discharge"
-        case "self_consume": "Self-use"
+        case "self_consumption", "self_consume": "Self-use"
         case "paused": "Paused"
         default: plan.currentAction.replacingOccurrences(of: "_", with: " ").capitalized
+        }
+    }
+
+    private func formattedTime(_ timestamp: String?) -> String? {
+        guard let timestamp, let date = ISOTimestamp.parse(timestamp) else { return nil }
+        return date.formatted(.dateTime.hour().minute())
+    }
+}
+
+private struct BatteryPlanDecision: Identifiable {
+    var id: String { title }
+    let title: String
+    let value: String
+    let detail: String
+    let color: HexColor
+    let icon: String
+}
+
+private struct BatteryPlanDecisionRow: View {
+    let row: BatteryPlanDecision
+    let theme: EMSTheme
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 10) {
+            Image(systemName: row.icon)
+                .font(.footnote.weight(.semibold))
+                .foregroundStyle(themeColor(row.color))
+                .frame(width: 20)
+            VStack(alignment: .leading, spacing: 3) {
+                HStack(alignment: .firstTextBaseline, spacing: 8) {
+                    Text(row.title)
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(themeColor(theme.muted))
+                    Spacer(minLength: 8)
+                    Text(row.value)
+                        .font(.footnote.weight(.semibold))
+                        .foregroundStyle(themeColor(theme.text))
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.75)
+                }
+                Text(row.detail)
+                    .font(.footnote)
+                    .foregroundStyle(themeColor(theme.muted))
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+        .padding(10)
+        .background(themeColor(theme.secondaryPanel))
+        .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+    }
+}
+
+private struct BatteryPlanEmptyNote: View {
+    let icon: String
+    let title: String
+    let message: String
+    let theme: EMSTheme
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 10) {
+            Image(systemName: icon)
+                .font(.footnote.weight(.semibold))
+                .foregroundStyle(themeColor(theme.muted))
+                .frame(width: 20)
+            VStack(alignment: .leading, spacing: 4) {
+                Text(title)
+                    .font(.footnote.weight(.semibold))
+                    .foregroundStyle(themeColor(theme.text))
+                Text(message)
+                    .font(.footnote)
+                    .foregroundStyle(themeColor(theme.muted))
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+        .padding(12)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(themeColor(theme.panel))
+        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .stroke(themeColor(theme.line), lineWidth: 1)
         }
     }
 }
@@ -313,6 +750,7 @@ private struct BatteryPlanPanel: View {
 private struct BatteryPlanMiniChart: View {
     let plan: BatteryPlanSnapshot
     let theme: EMSTheme
+    var height: CGFloat = 150
 
     private var series: [BatteryPlanPoint] {
         plan.graph.forecastSoc.isEmpty ? plan.graph.actualSoc : plan.graph.forecastSoc
@@ -320,16 +758,14 @@ private struct BatteryPlanMiniChart: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            HStack {
+            VStack(alignment: .leading, spacing: 3) {
                 Text("Battery confidence")
                     .font(.caption.weight(.semibold))
                     .foregroundStyle(themeColor(theme.muted))
-                Spacer()
                 Text(plan.deviation.message)
                     .font(.caption2)
                     .foregroundStyle(themeColor(deviationColor))
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.65)
+                    .fixedSize(horizontal: false, vertical: true)
             }
 
             if series.count >= 2 || plan.graph.actualSoc.count >= 2 {
@@ -347,16 +783,18 @@ private struct BatteryPlanMiniChart: View {
                         socLine(points: plan.graph.actualSoc, size: proxy.size, color: theme.accent, dashed: false)
                     }
                 }
-                .frame(height: 150)
+                .frame(height: height)
                 .accessibilityElement(children: .ignore)
                 .accessibilityLabel("Battery plan graph")
                 .accessibilityValue(accessibilityValue)
 
-                HStack(spacing: 12) {
-                    LegendLine(label: "Actual", color: theme.accent, dashed: false, theme: theme)
-                    LegendLine(label: "Forecast", color: theme.amber, dashed: true, theme: theme)
-                    BatteryPlanLegendBlock(label: "Cheap", color: theme.accent, theme: theme)
-                    LegendLine(label: "Reserve", color: theme.muted, dashed: true, theme: theme)
+                ViewThatFits(in: .horizontal) {
+                    HStack(spacing: 12) {
+                        chartLegend
+                    }
+                    VStack(alignment: .leading, spacing: 7) {
+                        chartLegend
+                    }
                 }
             } else {
                 Text("Plan graph appears once the EMS has enough fresh data.")
@@ -365,6 +803,14 @@ private struct BatteryPlanMiniChart: View {
                     .fixedSize(horizontal: false, vertical: true)
             }
         }
+    }
+
+    @ViewBuilder
+    private var chartLegend: some View {
+        LegendLine(label: "Actual", color: theme.accent, dashed: false, theme: theme)
+        LegendLine(label: "Forecast", color: theme.amber, dashed: true, theme: theme)
+        BatteryPlanLegendBlock(label: "Cheap", color: theme.accent, theme: theme)
+        LegendLine(label: "Reserve", color: theme.muted, dashed: true, theme: theme)
     }
 
     private var deviationColor: HexColor {

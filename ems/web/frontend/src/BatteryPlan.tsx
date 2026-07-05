@@ -21,6 +21,7 @@ export type BatteryPlanData = {
   reserve_soc_pct: number;
   target_soc_pct: number | null;
   target_deadline: string | null;
+  planned_grid_topup_kwh?: number;
   deviation: { status: "ok" | "behind_forecast" | "missing"; message: string };
   warnings: string[];
   graph: {

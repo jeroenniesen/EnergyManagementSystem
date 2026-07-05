@@ -214,6 +214,15 @@ def test_probe_reports_capabilities_else_unavailable():
         empty.probe()
 
 
+def test_probe_reports_configured_cluster_power_limits():
+    drv = IndevoltBatteryDriver(
+        "x", reader=FakeIndevolt(), charge_power_w=4800, discharge_power_w=3600
+    )
+    cap = drv.probe()
+    assert cap.max_charge_w == 4800.0
+    assert cap.max_discharge_w == 3600.0
+
+
 def test_full_control_chain_commands_driver_when_controlling():
     # Hands end-to-end against a MOCK device: CHARGE intent -> decide -> apply -> correct writes.
     fake = FakeIndevolt(mode=1, state=1000)

@@ -453,6 +453,21 @@ def create_app(
     # probe on every decision. None until first probed (the validator simply skips that warn-check).
     _capability_box: dict[str, Any] = {"cap": None}
 
+    async def _apply_battery_power_settings() -> None:
+        """Keep the live driver's advertised capability aligned with battery.* power settings."""
+        if controller is None:
+            return
+        configure = getattr(controller.driver, "configure_power_limits", None)
+        if configure is not None:
+            configure(
+                max_charge_w=settings_cache["battery.max_charge_w"],
+                max_discharge_w=settings_cache["battery.max_discharge_w"],
+            )
+        try:
+            _capability_box["cap"] = await asyncio.to_thread(controller.driver.probe)
+        except Exception:
+            _capability_box["cap"] = None
+
     def _coalesce_s() -> float:
         """How long a live read is reused before re-reading the hardware. UI-tunable
         (control.live_read_seconds) so the operator can ease load on a battery shared with Home
@@ -763,6 +778,7 @@ def create_app(
             _apply_control_settings()
             _apply_site_settings()
             _apply_explainer_settings()
+            await _apply_battery_power_settings()
         if override_store is not None:
             await override_store.init()
             stored = await override_store.all()
@@ -775,9 +791,10 @@ def create_app(
             await asyncio.to_thread(cache_store.init)
             # One-off housekeeping at boot so the cache table can't grow without bound.
             await asyncio.to_thread(cache_store.purge_expired)
-        # Probe the battery's capabilities ONCE at startup (off the event loop, fail-safe) so the
-        # §8.11 validator can sanity-check requested power without a networked probe per decision.
-        if controller is not None:
+        # If no settings store exists, still probe once so the §8.11 validator can sanity-check
+        # requested power without a networked probe per decision. Normal startup already probes via
+        # _apply_battery_power_settings(), after applying battery.* power settings to the driver.
+        if controller is not None and _capability_box["cap"] is None:
             try:
                 _capability_box["cap"] = await asyncio.to_thread(controller.driver.probe)
             except Exception:
@@ -2193,6 +2210,7 @@ def create_app(
             "reserve_soc_pct": reserve,
             "target_soc_pct": target,
             "target_deadline": deadline.isoformat() if deadline is not None else None,
+            "planned_grid_topup_kwh": round(grid_charge_kwh, 1),
             "deviation": deviation,
             "warnings": warnings,
             "graph": {
@@ -2500,6 +2518,7 @@ def create_app(
         _apply_control_settings()
         _apply_site_settings()
         _apply_explainer_settings()
+        await _apply_battery_power_settings()
         if audit_store is not None and clean:
             # Record WHICH settings changed — keys only, never values (so a token/secret is never
             # written to the audit log). Secret keys are flagged so the entry reads sensibly.
