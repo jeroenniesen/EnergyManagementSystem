@@ -157,3 +157,34 @@ def test_past_story_empty_without_history(tmp_path):
 def test_invalid_window_is_rejected(tmp_path):
     with TestClient(_app(tmp_path)) as c:
         assert c.get("/api/energy-story?window=sideways").status_code == 422
+
+
+def test_past_story_prices_come_from_stored_history(tmp_path):
+    # Prices are persisted each cycle; the past story must read them so yesterday's price bars
+    # aren't blank once the LIVE feed has dropped that (old) slot. Stored 0.11 is a value the mock
+    # feed won't produce, so seeing it proves the stored history is used.
+    import asyncio
+    from datetime import UTC, datetime, timedelta
+
+    from ems.domain import RawSample
+    from ems.load_model import reconstruct
+
+    db = str(tmp_path / "ems.sqlite")
+    old = (datetime.now(UTC) - timedelta(hours=20)).replace(minute=0, second=0, microsecond=0)
+
+    async def seed():
+        st = HistoryStore(db)
+        await st.init()
+        raw = RawSample(grid_power_w=2000.0, solar_power_w=0.0, battery_power_w=0.0,
+                        ev_power_w=0.0, soc_pct=50.0)
+        await st.record(old.isoformat(), raw, reconstruct(raw))
+        await st.upsert_price_slots([(old.isoformat(), 0.11)])
+
+    asyncio.run(seed())
+    app = create_app(MockSource(), dry_run=True, dev_mode="mock", tz=AMS,
+                     store=HistoryStore(db), price_source=MockPriceSource(AMS),
+                     solar_forecast=MockSolarForecastSource(AMS), settings_store=SettingsStore(db))
+    with TestClient(app) as c:
+        b = c.get("/api/energy-story?window=past").json()
+    assert any(s["eur_per_kwh"] is not None and abs(s["eur_per_kwh"] - 0.11) < 1e-9
+               for s in b["slots"]), "stored historical price did not reach the past story"
