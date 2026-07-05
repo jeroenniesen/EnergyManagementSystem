@@ -26,6 +26,8 @@ struct DashboardView: View {
                                 AlertsPanel(alerts: snapshot.alerts.alerts, theme: theme)
                             }
 
+                            BatteryPlanPanel(plan: snapshot.batteryPlan, theme: theme)
+
                             // 2. Today so far (scores)
                             ScoreStrip(scores: snapshot.report.scores, theme: theme)
 
@@ -211,6 +213,346 @@ private struct PriceContextBar: View {
         if pos < 0.34 { return theme.accent }
         if pos < 0.67 { return theme.muted }
         return theme.amber
+    }
+}
+
+private struct BatteryPlanPanel: View {
+    let plan: BatteryPlanSnapshot
+    let theme: EMSTheme
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            HStack(alignment: .top, spacing: 10) {
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("Battery plan")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(themeColor(theme.muted))
+                    Text(plan.summary)
+                        .font(.title3.weight(.semibold))
+                        .foregroundStyle(themeColor(theme.text))
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                Spacer(minLength: 8)
+                StatusBadge(text: statusLabel, color: statusColor, theme: theme)
+            }
+
+            HStack(spacing: 10) {
+                MetricPill(title: "Now", value: actionLabel, theme: theme)
+                MetricPill(title: "Battery", value: percent(plan.currentSocPct), theme: theme)
+                MetricPill(title: "Target", value: percent(plan.targetSocPct), theme: theme)
+            }
+
+            Text(plan.currentReason)
+                .font(.footnote)
+                .foregroundStyle(themeColor(theme.muted))
+                .fixedSize(horizontal: false, vertical: true)
+
+            if let warning = plan.warnings.first {
+                Label(warning, systemImage: "exclamationmark.triangle")
+                    .font(.footnote.weight(.semibold))
+                    .foregroundStyle(themeColor(theme.amber))
+                    .fixedSize(horizontal: false, vertical: true)
+                    .padding(10)
+                    .background(themeColor(theme.amber).opacity(0.13))
+                    .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+            }
+
+            BatteryPlanMiniChart(plan: plan, theme: theme)
+        }
+        .padding(16)
+        .background(themeColor(theme.panel))
+        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .stroke(themeColor(statusColor).opacity(statusStrokeOpacity), lineWidth: 1)
+        }
+        .accessibilityElement(children: .contain)
+    }
+
+    private var statusLabel: String {
+        switch plan.status {
+        case "on_track": "On track"
+        case "needs_topup": "Top-up planned"
+        case "behind_target": "Behind"
+        case "paused_safely": "Paused"
+        case "data_stale": "Data stale"
+        default: plan.status.replacingOccurrences(of: "_", with: " ").capitalized
+        }
+    }
+
+    private var statusColor: HexColor {
+        switch plan.status {
+        case "on_track": theme.accent
+        case "needs_topup", "behind_target": theme.amber
+        case "data_stale": theme.error
+        default: theme.muted
+        }
+    }
+
+    private var statusStrokeOpacity: Double {
+        switch plan.status {
+        case "on_track": 0.55
+        case "needs_topup", "behind_target", "data_stale": 0.75
+        default: 0.35
+        }
+    }
+
+    private var actionLabel: String {
+        switch plan.currentAction {
+        case "grid_charge": "Grid charge"
+        case "solar_charge": "Solar charge"
+        case "hold": "Hold"
+        case "discharge": "Discharge"
+        case "self_consume": "Self-use"
+        case "paused": "Paused"
+        default: plan.currentAction.replacingOccurrences(of: "_", with: " ").capitalized
+        }
+    }
+}
+
+private struct BatteryPlanMiniChart: View {
+    let plan: BatteryPlanSnapshot
+    let theme: EMSTheme
+
+    private var series: [BatteryPlanPoint] {
+        plan.graph.forecastSoc.isEmpty ? plan.graph.actualSoc : plan.graph.forecastSoc
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                Text("Battery confidence")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(themeColor(theme.muted))
+                Spacer()
+                Text(plan.deviation.message)
+                    .font(.caption2)
+                    .foregroundStyle(themeColor(deviationColor))
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.65)
+            }
+
+            if series.count >= 2 || plan.graph.actualSoc.count >= 2 {
+                GeometryReader { proxy in
+                    ZStack(alignment: .bottomLeading) {
+                        grid(size: proxy.size)
+                        priceWindowBands(size: proxy.size)
+                        actionStrip(size: proxy.size)
+                        solarBars(size: proxy.size)
+                        horizontalLine(value: plan.reserveSocPct, size: proxy.size, color: theme.muted, dashed: true)
+                        if let target = plan.targetSocPct {
+                            horizontalLine(value: target, size: proxy.size, color: theme.amber, dashed: true)
+                        }
+                        socLine(points: plan.graph.forecastSoc, size: proxy.size, color: theme.amber, dashed: true)
+                        socLine(points: plan.graph.actualSoc, size: proxy.size, color: theme.accent, dashed: false)
+                    }
+                }
+                .frame(height: 150)
+                .accessibilityElement(children: .ignore)
+                .accessibilityLabel("Battery plan graph")
+                .accessibilityValue(accessibilityValue)
+
+                HStack(spacing: 12) {
+                    LegendLine(label: "Actual", color: theme.accent, dashed: false, theme: theme)
+                    LegendLine(label: "Forecast", color: theme.amber, dashed: true, theme: theme)
+                    BatteryPlanLegendBlock(label: "Cheap", color: theme.accent, theme: theme)
+                    LegendLine(label: "Reserve", color: theme.muted, dashed: true, theme: theme)
+                }
+            } else {
+                Text("Plan graph appears once the EMS has enough fresh data.")
+                    .font(.footnote)
+                    .foregroundStyle(themeColor(theme.muted))
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+    }
+
+    private var deviationColor: HexColor {
+        switch plan.deviation.status {
+        case "behind_forecast": theme.amber
+        case "missing": theme.muted
+        default: theme.accent
+        }
+    }
+
+    private var accessibilityValue: String {
+        [
+            plan.currentSocPct.map { "now \(Int($0)) percent" },
+            plan.targetSocPct.map { "target \(Int($0)) percent" },
+            "status \(plan.status.replacingOccurrences(of: "_", with: " "))"
+        ]
+        .compactMap(\.self)
+        .joined(separator: ", ")
+    }
+
+    private func grid(size: CGSize) -> some View {
+        ZStack {
+            ForEach([0.0, 50.0, 100.0], id: \.self) { value in
+                Path { path in
+                    let y = y(value, size: size)
+                    path.move(to: CGPoint(x: 0, y: y))
+                    path.addLine(to: CGPoint(x: size.width, y: y))
+                }
+                .stroke(themeColor(theme.line), lineWidth: 1)
+            }
+        }
+    }
+
+    private func actionStrip(size: CGSize) -> some View {
+        // Position each block by its real time span on the shared timestamp axis, so the coloured
+        // strip lines up with the SoC curve and the price bands above it (not equal-width).
+        ZStack(alignment: .topLeading) {
+            ForEach(plan.graph.plannedActions) { block in
+                if let x0 = x(block.start, size: size), let x1 = x(block.end, size: size) {
+                    RoundedRectangle(cornerRadius: 2, style: .continuous)
+                        .fill(themeColor(color(for: block.action)).opacity(0.82))
+                        .frame(width: max(2, x1 - x0), height: 16)
+                        .offset(x: x0, y: size.height - 16)
+                }
+            }
+        }
+        .frame(width: size.width, height: size.height, alignment: .topLeading)
+    }
+
+    private func priceWindowBands(size: CGSize) -> some View {
+        let bands = plan.graph.priceWindows.compactMap { window -> (start: Double, width: Double)? in
+            guard let start = x(window.start, size: size), let end = x(window.end, size: size) else {
+                return nil
+            }
+            return (start, max(2, end - start))
+        }
+
+        return ZStack(alignment: .leading) {
+            ForEach(Array(bands.enumerated()), id: \.offset) { _, band in
+                RoundedRectangle(cornerRadius: 3, style: .continuous)
+                    .fill(themeColor(theme.accent).opacity(0.12))
+                    .frame(width: band.width, height: max(size.height - 22, 1))
+                    .offset(x: band.start)
+            }
+        }
+        .frame(width: size.width, height: size.height, alignment: .topLeading)
+    }
+
+    private func solarBars(size: CGSize) -> some View {
+        // Place each solar bar at its timestamp (not evenly spaced) so the solar hump sits under the
+        // clock time it belongs to and aligns with the cheap-price bands.
+        let peak = max(plan.graph.solar.map(\.forecastW).max() ?? 0, 1)
+        let plotH = max(size.height - 22, 1)
+        let barW = solarBarWidth(size: size)
+        return ZStack(alignment: .topLeading) {
+            ForEach(plan.graph.solar) { point in
+                if let x0 = x(point.ts, size: size) {
+                    let h = max(2, plotH * 0.26 * min(max(point.forecastW / peak, 0), 1))
+                    RoundedRectangle(cornerRadius: 2, style: .continuous)
+                        .fill(themeColor(theme.amber).opacity(0.22))
+                        .frame(width: barW, height: h)
+                        .offset(x: x0, y: plotH - h)
+                }
+            }
+        }
+        .frame(width: size.width, height: size.height, alignment: .topLeading)
+    }
+
+    private func solarBarWidth(size: CGSize) -> Double {
+        let xs = plan.graph.solar.compactMap { x($0.ts, size: size) }.sorted()
+        guard xs.count > 1 else { return 4 }
+        let minGap = zip(xs, xs.dropFirst()).map { $1 - $0 }.filter { $0 > 0 }.min() ?? 6
+        return max(2, minGap * 0.7)
+    }
+
+    private func socLine(points: [BatteryPlanPoint], size: CGSize, color: HexColor, dashed: Bool) -> some View {
+        // Break the line at gaps (missing SoC) and place every point on the shared TIMESTAMP axis,
+        // so actual and forecast align in time with each other and with the price bands — instead
+        // of each series being stretched across the full width by index (finding #2/#3).
+        let runs = socRuns(points, size: size)
+        return ZStack {
+            ForEach(Array(runs.enumerated()), id: \.offset) { _, run in
+                if run.count >= 2 {
+                    Path { path in
+                        path.move(to: run[0])
+                        run.dropFirst().forEach { path.addLine(to: $0) }
+                    }
+                    .stroke(
+                        themeColor(color),
+                        style: StrokeStyle(lineWidth: 3, lineCap: .round, lineJoin: .round,
+                                           dash: dashed ? [6, 5] : [])
+                    )
+                } else if let point = run.first {
+                    // A lone point between gaps still shows, as a dot rather than a vanished segment.
+                    Circle().fill(themeColor(color)).frame(width: 5, height: 5).position(point)
+                }
+            }
+        }
+    }
+
+    private func socRuns(_ points: [BatteryPlanPoint], size: CGSize) -> [[CGPoint]] {
+        var runs: [[CGPoint]] = []
+        var cur: [CGPoint] = []
+        for point in points {
+            if let soc = point.socPct, let px = x(point.ts, size: size) {
+                cur.append(CGPoint(x: px, y: y(soc, size: size)))
+            } else if !cur.isEmpty {
+                runs.append(cur)
+                cur = []
+            }
+        }
+        if !cur.isEmpty { runs.append(cur) }
+        return runs
+    }
+
+    private func horizontalLine(value: Double, size: CGSize, color: HexColor, dashed: Bool) -> some View {
+        Path { path in
+            let y = y(value, size: size)
+            path.move(to: CGPoint(x: 0, y: y))
+            path.addLine(to: CGPoint(x: size.width, y: y))
+        }
+        .stroke(themeColor(color), style: StrokeStyle(lineWidth: 1.5, dash: dashed ? [5, 5] : []))
+    }
+
+    private func color(for action: String) -> HexColor {
+        switch action {
+        case "solar_charge": theme.accent
+        case "grid_charge": theme.winter
+        case "discharge": theme.amber
+        case "self_consume", "self_consumption": theme.muted
+        case "hold": theme.line
+        default: theme.secondaryPanel
+        }
+    }
+
+    private func x(_ timestamp: String, size: CGSize) -> Double? {
+        guard let start = ISOTimestamp.parse(plan.windowStart),
+              let end = ISOTimestamp.parse(plan.windowEnd),
+              let current = ISOTimestamp.parse(timestamp),
+              end > start else {
+            return nil
+        }
+        let ratio = current.timeIntervalSince(start) / end.timeIntervalSince(start)
+        return min(max(ratio, 0), 1) * size.width
+    }
+
+    private func y(_ value: Double, size: CGSize) -> Double {
+        let plotHeight = max(size.height - 22, 1)
+        return (1 - min(max(value, 0), 100) / 100) * plotHeight
+    }
+
+}
+
+private struct BatteryPlanLegendBlock: View {
+    let label: String
+    let color: HexColor
+    let theme: EMSTheme
+
+    var body: some View {
+        HStack(spacing: 5) {
+            RoundedRectangle(cornerRadius: 2, style: .continuous)
+                .fill(themeColor(color).opacity(0.32))
+                .frame(width: 18, height: 9)
+
+            Text(label)
+                .font(.caption2)
+                .foregroundStyle(themeColor(theme.muted))
+        }
     }
 }
 

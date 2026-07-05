@@ -12,11 +12,9 @@ charge→discharge cycle once on the energy delivered — the same basis the pla
 arbitrage break-even.
 
 Every € figure is computed over the SAME priced slots (cost, baseline, and the wear inside
-`saved`), so a partial-price day can't mix partial revenue with a full day of wear. Below
-`COVERAGE_MIN` of the day's sampled slots being priced, the € figures are reported as None (only
-the energy totals + `price_coverage` are given) — no distorted numbers. With prices persisted
-every cycle, a completed day is normally fully priced, so this floor only trips on outages or
-history from before price-storage was running.
+`saved`), so a partial-price day yields a correct partial-window saving — it can't mix partial
+revenue with a full day of wear. A day with no priced slots at all reports energy only (€ = None);
+otherwise `price_coverage` (0..1) signals how much of the day the money figures cover.
 """
 from __future__ import annotations
 
@@ -27,7 +25,6 @@ from datetime import datetime
 from ems.retrospect import _floor, _mean, _parse
 
 _DH = 15 / 60.0  # hours per 15-min slot
-COVERAGE_MIN = 0.9  # need most of the day priced before the € figures are trustworthy
 
 
 @dataclass(frozen=True)
@@ -109,12 +106,14 @@ def day_finance(
 
     n_slots = len(grid_by)
     coverage = priced / n_slots if n_slots else 0.0
-    # Only give € figures when most of the day is priced — cost, baseline and the wear inside
-    # `saved` then all cover the SAME priced window, so partial revenue can't be mixed with a full
-    # day of wear (the reviewed distortion). Otherwise report energy only.
-    if coverage >= COVERAGE_MIN:
+    # Give € figures whenever ANY slot is priced. Charging wear only over PRICED-slot discharge
+    # (`dis_priced`) keeps cost, baseline and wear on the SAME window, so a partial-price day yields
+    # a correct partial-window saving (never full-day wear against priced-only revenue). Confidence
+    # is signalled by `price_coverage`, not by blanking the numbers.
+    if priced:
         battery_cost = dis_priced * degradation_eur_per_kwh
         saved = base_cost - cost - battery_cost
         return DayFinance(day, True, coverage, cost, battery_cost, base_cost, saved,
                           imp, exp, chg, dis)
+    # No priced slots at all → can't compute money figures; report energy only.
     return DayFinance(day, n_slots > 0, coverage, None, None, None, None, imp, exp, chg, dis)

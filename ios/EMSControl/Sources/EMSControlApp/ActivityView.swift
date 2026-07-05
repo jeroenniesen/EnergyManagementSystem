@@ -126,7 +126,7 @@ private struct ActivityRow: View {
     }
 
     private var timestampLabel: String {
-        guard let date = ISO8601DateFormatter().date(from: entry.ts) else { return entry.ts }
+        guard let date = ISOTimestamp.parse(entry.ts) else { return entry.ts }
         return date.formatted(date: .abbreviated, time: .shortened)
     }
 

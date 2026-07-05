@@ -262,6 +262,11 @@ def history_row_cap(
     return max(floor, min(ceiling, int(rows * margin)))
 
 
+# Bump when the finance math changes so completed-day rows cached under the OLD formula are
+# recomputed instead of served stale (finding 4). v2 = same-window wear (dis_priced) + price-gate.
+_FINANCE_CALC_VERSION = 2
+
+
 def create_app(
     source: Source,
     *,
@@ -1892,6 +1897,45 @@ def create_app(
             markers.append("Battery covers the evening peak")
         return markers
 
+    def _slot_end_iso(slot: dict) -> str:
+        if end := slot.get("end"):
+            return end
+        try:
+            return (datetime.fromisoformat(slot["start"]) + timedelta(minutes=15)).isoformat()
+        except Exception:
+            return slot["start"]
+
+    def _action_blocks(slots: list[dict]) -> list[dict]:
+        blocks: list[dict] = []
+        for s in slots:
+            action = s["action"]
+            if blocks and blocks[-1]["action"] == action:
+                blocks[-1]["end"] = _slot_end_iso(s)
+                continue
+            blocks.append({"start": s["start"], "end": _slot_end_iso(s), "action": action})
+        return blocks
+
+    def _planned_charge_windows(slots: list[dict]) -> list[dict]:
+        """The windows the PLANNER actually grid-charges in (not a naive cheapest-percentile), so
+        the highlighted band on the chart always matches where the EMS really buys. Contiguous
+        `grid_charge` slots are merged; the band carries the min/max price it buys at. Windows with
+        no stored price are dropped (the chart needs numeric bounds)."""
+        windows: list[dict] = []
+        for s in slots:
+            if s.get("action") != "grid_charge":
+                continue
+            price = s.get("eur_per_kwh")
+            if windows and windows[-1]["end"] == s["start"]:
+                windows[-1]["end"] = _slot_end_iso(s)
+                if price is not None:
+                    lo, hi = windows[-1]["min_eur_per_kwh"], windows[-1]["max_eur_per_kwh"]
+                    windows[-1]["min_eur_per_kwh"] = price if lo is None else min(lo, price)
+                    windows[-1]["max_eur_per_kwh"] = price if hi is None else max(hi, price)
+                continue
+            windows.append({"start": s["start"], "end": _slot_end_iso(s),
+                            "min_eur_per_kwh": price, "max_eur_per_kwh": price})
+        return [w for w in windows if w["min_eur_per_kwh"] is not None]
+
     async def _window_price_slots(start_iso: str, end_iso: str) -> list:
         """Prices for a PAST window. Uses the persisted `price_slots` (the recorder saves the curve
         each cycle) so historical slots keep the price that was active then — the live feed only
@@ -2040,6 +2084,129 @@ def create_app(
             "recent_review": _recent_review(
                 recent, solar_forecast.slots() if solar_forecast is not None else []
             ),
+        }
+
+    @app.get("/api/battery-plan")
+    async def battery_plan() -> dict:
+        """Homeowner-facing battery confidence contract: the answer first, then graph proof.
+
+        This deliberately reuses the same projection/story helpers as /api/energy-forecast and
+        /api/energy-story so the plan sentence, graph and diagnostics cannot drift apart.
+        """
+        now = datetime.now(UTC)
+        reserve_pct = settings_cache["battery.min_reserve_soc"]
+        quality = _data_quality(now)
+        fp = await _forward_projection()
+        if fp is None:
+            return {
+                "status": "paused_safely",
+                "summary": "Plan paused safely — no battery plan is available yet.",
+                "current_action": "paused",
+                "current_reason": "No current plan or forecast is available.",
+                "window_start": now.isoformat(),
+                "window_end": (now + timedelta(hours=24)).isoformat(),
+                "current_soc_pct": None,
+                "reserve_soc_pct": reserve_pct,
+                "target_soc_pct": None,
+                "target_deadline": None,
+                "deviation": {"status": "missing", "message": "No forecast to compare yet."},
+                "warnings": ["No plan is available yet."],
+                "graph": {"forecast_soc": [], "actual_soc": [], "reserve_line": [],
+                          "target_line": [], "planned_actions": [],
+                          "price_windows": [], "solar": []},
+            }
+
+        projected, price_by, need, deadline = (
+            fp["projected"], fp["price_by"], fp["need"], fp["deadline"]
+        )
+        slots = [
+            _uslot(p.start, p.soc_pct, p.grid_w, p.solar_w, p.battery_w, p.load_w,
+                   price_by.get(p.start), _action_from_intent(p.intent, p.battery_w))
+            for p in projected
+        ]
+        totals = _uslot_totals(slots)
+        recent = await _recent_actuals(fp["now"])
+        grid_charge_kwh = totals["grid_charge_kwh"]
+        _intent, reason, _override, _target, _power, validation = _effective_intent(fp["now"])
+
+        # "Are we on track?" is derived from the ACTUAL plan (same engine as the story line), NOT a
+        # compare of two actual SoC samples — so it measures the plan against target/reserve and
+        # cannot false-alarm or sit dead. current_action mirrors the first planned slot so the chip
+        # and the graph's action strip speak one vocabulary.
+        verdict = _on_track(fp["current_soc"], need, totals, grid_charge_kwh, reserve_pct)
+        deviation = {
+            "status": "ok" if verdict["status"] in ("ahead", "on_track") else "behind_forecast",
+            "message": verdict["message"],
+            "actual_soc_pct": verdict["actual_soc_pct"],
+            "target_soc_pct": verdict["target_soc_pct"],
+        }
+        current_action = slots[0]["action"] if slots else "paused"
+
+        warnings: list[str] = []
+        if quality == "unsafe":
+            status = "data_stale"
+            summary = "Data stale — EMS is paused safely until critical inputs are fresh again."
+            current_action = "paused"
+            current_reason = reason or "Critical sensor, price or forecast data is stale."
+            warnings.append(current_reason)
+            deviation = {"status": "missing",
+                         "message": "Plan confidence is unavailable until fresh data returns."}
+        elif validation is not None and not validation.ok:
+            status = "paused_safely"
+            finding = (validation.findings[0].message if validation.findings
+                       else "Plan validation failed.")
+            summary = f"Paused safely — {finding}"
+            current_action = "paused"
+            current_reason = finding
+            warnings.append(finding)
+            deviation = {"status": "missing", "message": finding}
+        elif verdict["status"] == "behind" and grid_charge_kwh > 0.05:
+            status = "needs_topup"
+            summary = f"Needs top-up — {verdict['message']}"
+            current_reason = reason or "Grid top-up is planned to reach the battery target."
+        elif verdict["status"] == "behind":
+            status = "behind_target"
+            summary = f"Behind target — {verdict['message']}"
+            current_reason = reason or "The battery is short of the night target."
+            warnings.append(verdict["message"])
+        else:
+            status = "on_track"
+            summary = _next_headline(totals, need, grid_charge_kwh)
+            current_reason = reason or "Battery is following the current plan."
+
+        # window_start must cover the recent ACTUAL history too, not just the forecast — otherwise
+        # the actual-SoC line falls entirely left of the plotted domain (finding #2). recent is
+        # oldest→now, slots is now→+24h, so the earliest sample is recent[0] when present.
+        start = (recent[0]["start"] if recent else
+                 (slots[0]["start"] if slots else fp["now"].isoformat()))
+        end = _slot_end_iso(slots[-1]) if slots else (fp["now"] + timedelta(hours=24)).isoformat()
+        target = round(need.target_soc_pct, 1)
+        reserve = round(reserve_pct, 1)
+        return {
+            "status": status,
+            "summary": summary,
+            "current_action": current_action,
+            "current_reason": current_reason,
+            "window_start": start,
+            "window_end": end,
+            "current_soc_pct": round(fp["current_soc"], 1),
+            "reserve_soc_pct": reserve,
+            "target_soc_pct": target,
+            "target_deadline": deadline.isoformat() if deadline is not None else None,
+            "deviation": deviation,
+            "warnings": warnings,
+            "graph": {
+                "forecast_soc": [{"ts": s["start"], "soc_pct": s["soc_pct"]} for s in slots],
+                "actual_soc": [{"ts": s["start"], "soc_pct": s.get("soc_pct")} for s in recent
+                               if s.get("soc_pct") is not None],
+                "reserve_line": [{"ts": start, "soc_pct": reserve},
+                                 {"ts": end, "soc_pct": reserve}],
+                "target_line": [{"ts": start, "soc_pct": target}, {"ts": end, "soc_pct": target}],
+                "planned_actions": _action_blocks(slots),
+                "price_windows": _planned_charge_windows(slots),
+                "solar": [{"ts": s["start"], "forecast_w": s["solar_w"],
+                           "actual_w": None} for s in slots],
+            },
         }
 
     async def _past_story(reserve_pct: float) -> dict:
@@ -2229,7 +2396,9 @@ def create_app(
             if completed:
                 cached = await store.daily_finance_between(
                     day_label, (cur.date() + timedelta(days=1)).isoformat())
-                if cached:
+                # Only trust a cache entry written by the CURRENT finance formula; a day cached
+                # under an older version is recomputed (re-upserted) so a math fix reaches history.
+                if cached and cached[0]["data"].get("calc_v") == _FINANCE_CALC_VERSION:
                     days.append(cached[0]["data"])
                     cur = nxt
                     continue
@@ -2243,6 +2412,7 @@ def create_app(
                                                     nxt.astimezone(UTC).isoformat())
             f = day_finance(raw, price_rows, day=day_label,
                             degradation_eur_per_kwh=degradation).to_dict()
+            f["calc_v"] = _FINANCE_CALC_VERSION
             if completed:
                 await store.upsert_daily_finance(day_label, f)
             days.append(f)

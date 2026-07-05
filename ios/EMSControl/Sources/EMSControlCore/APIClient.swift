@@ -60,6 +60,7 @@ public struct APIClient: Sendable {
         async let chargeNeedResult = capture { try await fetchChargeNeed() }
         async let savingsResult = capture { try await fetchSavings() }
         async let storyResult = capture { try await fetchEnergyStory() }
+        async let batteryPlanResult = capture { try await fetchBatteryPlan() }
         async let reportResult = capture { try await fetchReport() }
         async let financeResult = capture { try await fetchFinance() }
         async let strategyResult = capture { try await fetchStrategy() }
@@ -76,6 +77,7 @@ public struct APIClient: Sendable {
             chargeNeed: chargeNeedResult.optional ?? .empty,
             savings: savingsResult.optional ?? .empty,
             energyStory: storyResult.optional ?? .empty,
+            batteryPlan: batteryPlanResult.optional ?? .empty,
             report: reportResult.optional ?? .empty,
             finance: financeResult.optional ?? .empty,
             strategy: strategyResult.optional
@@ -116,6 +118,10 @@ public struct APIClient: Sendable {
 
     public func fetchEnergyStory(window: String = "next") async throws -> EnergyStorySnapshot {
         try await get("api/energy-story?window=\(window)", as: EnergyStorySnapshot.self)
+    }
+
+    public func fetchBatteryPlan() async throws -> BatteryPlanSnapshot {
+        try await get("api/battery-plan", as: BatteryPlanSnapshot.self)
     }
 
     public func fetchReport(period: InsightsPeriod = .day, anchor: String? = nil) async throws -> ReportSnapshot {

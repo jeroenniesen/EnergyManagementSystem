@@ -113,6 +113,7 @@ body {
 /* Elevation: lift the primary surfaces off the background so the layout reads as stacked cards. */
 .metric,
 .strategy-card,
+.battery-plan,
 .story,
 .prices,
 .plandetail,
@@ -1371,4 +1372,124 @@ body {
 .behavior-panel-title {
   margin: 10px 0 2px; font-size: 12px; font-weight: 600; color: var(--muted);
   text-transform: uppercase; letter-spacing: 0.04em;
+}
+
+/* ---- Battery Plan confidence view ---- */
+.battery-plan {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  padding: 16px;
+  margin: 0 0 18px;
+}
+.battery-plan-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 8px;
+}
+.battery-plan-status,
+.battery-plan-action {
+  display: inline-flex;
+  align-items: center;
+  border-radius: 999px;
+  padding: 4px 10px;
+  font-size: 12px;
+  font-weight: 700;
+}
+.battery-plan-status-good { background: rgba(70, 200, 168, 0.16); color: var(--green-text); }
+.battery-plan-status-warn { background: rgba(224, 162, 58, 0.16); color: var(--amber-text); }
+.battery-plan-status-bad { background: rgba(244, 176, 176, 0.15); color: var(--error); }
+.battery-plan-status-muted { background: var(--panel-2); color: var(--muted); }
+.battery-plan-action {
+  background: var(--panel-2);
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+.battery-plan-summary {
+  margin: 0;
+  font-size: clamp(1rem, 2.8vw, 1.45rem);
+  font-weight: 700;
+  line-height: 1.25;
+}
+.battery-plan-reason {
+  margin: 8px 0 0;
+  color: var(--muted);
+  line-height: 1.45;
+}
+.battery-plan-warning {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 12px;
+  color: var(--amber-text);
+  background: rgba(224, 162, 58, 0.12);
+  border: 1px solid rgba(224, 162, 58, 0.28);
+  border-radius: 10px;
+  padding: 10px 12px;
+  font-size: 14px;
+}
+.battery-plan-chart {
+  display: block;
+  width: 100%;
+  height: auto;
+  margin-top: 14px;
+}
+.bp-bg { fill: var(--panel-2); }
+.bp-price-window { fill: var(--accent); opacity: 0.13; }
+.bp-solar { fill: var(--summer); opacity: 0.38; }
+.bp-reserve {
+  stroke: var(--muted);
+  stroke-width: 1.5;
+  stroke-dasharray: 4 5;
+}
+.bp-target {
+  stroke: var(--amber);
+  stroke-width: 1.7;
+  stroke-dasharray: 7 5;
+}
+.bp-forecast {
+  fill: none;
+  stroke: var(--amber);
+  stroke-width: 3;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+.bp-actual {
+  fill: none;
+  stroke: var(--accent);
+  stroke-width: 3.2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+/* Lone plotted points between gaps (a single sampled bucket) — drawn as dots, not a line. */
+.bp-forecast-dot { fill: var(--amber); }
+.bp-actual-dot { fill: var(--accent); }
+.bp-action { opacity: 0.9; }
+.bp-action-grid_charge { fill: var(--winter); }
+.bp-action-solar_charge { fill: var(--green); }
+.bp-action-discharge { fill: var(--amber); }
+.bp-action-hold { fill: var(--muted); }
+.bp-action-self_consume,
+.bp-action-idle { fill: var(--line); }
+.battery-plan-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 14px;
+  margin-top: 8px;
+  color: var(--muted);
+  font-size: 12px;
+}
+.battery-plan-legend span { display: inline-flex; align-items: center; gap: 6px; }
+.leg { width: 18px; height: 3px; border-radius: 999px; display: inline-block; }
+.leg.actual { background: var(--accent); }
+.leg.forecast { background: var(--amber); }
+.leg.cheap { height: 9px; background: color-mix(in srgb, var(--accent) 35%, transparent); }
+.leg.target {
+  background: repeating-linear-gradient(90deg, var(--amber) 0 6px, transparent 6px 10px);
+}
+.leg.reserve {
+  background: repeating-linear-gradient(90deg, var(--muted) 0 4px, transparent 4px 8px);
 }

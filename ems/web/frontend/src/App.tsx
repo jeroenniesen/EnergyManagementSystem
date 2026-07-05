@@ -3,6 +3,7 @@ import { useEffect, useRef, useState } from "react";
 import { type Battery, BatteryChips } from "./BatteryChips";
 import { EnergyDistribution } from "./EnergyDistribution";
 import { type EnergyStoryData, EnergyStory } from "./EnergyStory";
+import { BatteryPlan, type BatteryPlanData } from "./BatteryPlan";
 import { Icon, type IconName } from "./icons";
 import {
   CONFIDENCE,
@@ -232,6 +233,7 @@ export function App() {
   const [status, setStatus] = useState<Status | null>(null);
   const [freshness, setFreshness] = useState<FreshnessMap | null>(null);
   const [story, setStory] = useState<EnergyStoryData | null>(null);
+  const [batteryPlan, setBatteryPlan] = useState<BatteryPlanData | null>(null);
   const [storyWindow, setStoryWindow] = useState<"past" | "next">("next");
   const [strategy, setStrategy] = useState<Strategy | null>(null);
   const [battery, setBattery] = useState<Battery | null>(null);
@@ -302,6 +304,7 @@ export function App() {
         .catch((e) => { if (alive) setError(String(e)); });
       fill("/api/freshness", setFreshness);
       fill(`/api/energy-story?window=${storyWindow}`, setStory);
+      fill("/api/battery-plan", setBatteryPlan);
       fill("/api/strategy", (v: Strategy) => { if (!strategyPending.current) setStrategy(v); });
       fill("/api/battery", setBattery);
       fill("/api/decision", setDecision);
@@ -497,6 +500,8 @@ export function App() {
       {view === "system" && <SystemView />}
 
       {view === "dashboard" && <HomeScores onOpenDetail={() => setView("insights")} />}
+
+      {view === "dashboard" && <BatteryPlan plan={batteryPlan} />}
 
       {/* The plan + how we're doing — always front and centre. */}
       {view === "dashboard" && (
