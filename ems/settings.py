@@ -299,6 +299,13 @@ SETTINGS_SCHEMA: tuple[SettingsField, ...] = (
         "settings, manual override, control. Leave blank for open access on your home LAN. "
         "Once set, enter the same token in the Access box at the top to authorise this browser.",
     ),
+    SettingsField(
+        "web.require_auth", "Require the token to view too", "bool", False, "access",
+        help="Off (default): the read-only dashboard is open on your LAN; only changes need the "
+        "token. On: EVERY page and API read also requires the token. Turn this ON before reaching "
+        "the app over a VPN or from outside your home — otherwise anyone who reaches the port can "
+        "read your energy data. Requires a token to be set.",
+    ),
     # --- Insights & reporting (CO₂ accounting factors) ---
     SettingsField(
         "reporting.grid_co2_factor", "Grid CO₂ factor", "number", 0.27, "reporting",
