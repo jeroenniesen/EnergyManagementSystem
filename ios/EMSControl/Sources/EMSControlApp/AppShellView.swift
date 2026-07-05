@@ -6,6 +6,9 @@ struct AppShellView: View {
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.scenePhase) private var scenePhase
     @State private var chatStore = ChatStore(client: nil)
+    @State private var insightsStore = InsightsStore(client: nil)
+    @State private var activityStore = ActivityStore(client: nil)
+    @State private var selectedTab: AppTab = .dashboard
 
     private var theme: EMSTheme {
         colorScheme == .dark ? .dark : .light
@@ -19,11 +22,19 @@ struct AppShellView: View {
             if dashboardStore.snapshot == nil {
                 ConnectionView()
             } else {
-                TabView {
+                TabView(selection: $selectedTab) {
                     DashboardView()
                         .tabItem { Label("Dashboard", systemImage: "bolt.horizontal.circle") }
+                        .tag(AppTab.dashboard)
+                    InsightsView(store: insightsStore)
+                        .tabItem { Label("Insights", systemImage: "chart.xyaxis.line") }
+                        .tag(AppTab.insights)
+                    ActivityView(store: activityStore)
+                        .tabItem { Label("Activity", systemImage: "clock.arrow.circlepath") }
+                        .tag(AppTab.activity)
                     ChatView(store: chatStore)
                         .tabItem { Label("Chat", systemImage: "message") }
+                        .tag(AppTab.chat)
                 }
             }
         }
@@ -31,6 +42,12 @@ struct AppShellView: View {
         .toolbarBackground(themeColor(theme.panel), for: .tabBar)
         .toolbarBackground(.visible, for: .tabBar)
         .task {
+            // UI-screenshot / preview hook: land straight on the demo dashboard when launched
+            // with EMS_UI_DEMO=1 in the environment. Never fires on a normal launch.
+            if ProcessInfo.processInfo.environment["EMS_UI_DEMO"] == "1" {
+                dashboardStore.loadDemo()
+                return
+            }
             dashboardStore.restoreSavedServer()
             await dashboardStore.refresh()
         }
@@ -39,6 +56,20 @@ struct AppShellView: View {
         }
         .task(id: chatSessionKey) {
             await syncChatSession()
+        }
+        .task(id: insightsSessionKey) {
+            await syncInsightsSession()
+        }
+        .task(id: activitySessionKey) {
+            await syncActivitySession()
+        }
+        .task(id: selectedTab) {
+            if selectedTab == .insights, insightsStore.client != nil, insightsStore.report == nil {
+                await insightsStore.refresh()
+            }
+            if selectedTab == .activity, activityStore.client != nil, activityStore.entries.isEmpty {
+                await activityStore.refresh()
+            }
         }
     }
 
@@ -51,6 +82,16 @@ struct AppShellView: View {
         return "\(mode)-\(dashboardStore.client?.baseURL.absoluteString ?? "none")"
     }
 
+    private var insightsSessionKey: String {
+        let mode = dashboardStore.snapshot?.isDemo == true ? "demo" : (dashboardStore.client == nil ? "disconnected" : "live")
+        return "\(mode)-\(dashboardStore.client?.baseURL.absoluteString ?? "none")-\(dashboardStore.snapshot?.generatedAt.timeIntervalSince1970 ?? 0)"
+    }
+
+    private var activitySessionKey: String {
+        let mode = dashboardStore.snapshot?.isDemo == true ? "demo" : (dashboardStore.client == nil ? "disconnected" : "live")
+        return "\(mode)-\(dashboardStore.client?.baseURL.absoluteString ?? "none")-\(dashboardStore.snapshot?.generatedAt.timeIntervalSince1970 ?? 0)"
+    }
+
     private func syncChatSession() async {
         if dashboardStore.snapshot?.isDemo == true {
             await chatStore.updateSession(client: nil, mode: .demo)
@@ -58,6 +99,27 @@ struct AppShellView: View {
             await chatStore.updateSession(client: client, mode: .live)
         } else {
             await chatStore.updateSession(client: nil, mode: .disconnected)
+        }
+    }
+
+    private func syncInsightsSession() async {
+        if let snapshot = dashboardStore.snapshot, snapshot.isDemo {
+            insightsStore.setDemo(report: snapshot.report, finance: snapshot.finance)
+        } else if let client = dashboardStore.client {
+            insightsStore.setClient(client)
+        } else {
+            insightsStore.setClient(nil)
+        }
+    }
+
+    private func syncActivitySession() async {
+        if dashboardStore.snapshot?.isDemo == true {
+            // Activity has no demo fixture data — show the empty state in demo mode.
+            activityStore.setClient(nil)
+        } else if let client = dashboardStore.client {
+            activityStore.setClient(client)
+        } else {
+            activityStore.setClient(nil)
         }
     }
 
@@ -70,6 +132,13 @@ struct AppShellView: View {
             try? await Task.sleep(for: .seconds(cappedSeconds))
         }
     }
+}
+
+private enum AppTab {
+    case dashboard
+    case insights
+    case activity
+    case chat
 }
 
 func themeColor(_ color: HexColor) -> Color {

@@ -68,6 +68,22 @@ final class APIClientTests: XCTestCase {
         XCTAssertEqual(financeTransport.lastRequest?.url?.query, "period=day")
     }
 
+    func testFetchReportAndFinanceUseSelectedPeriodAndDate() async throws {
+        let reportTransport = RecordingTransport(data: reportJSON())
+        let financeTransport = RecordingTransport(data: financeJSON())
+        let baseURL = URL(string: "http://ems.local:8080")!
+
+        _ = try await APIClient(baseURL: baseURL, transport: reportTransport)
+            .fetchReport(period: .month, anchor: "2026-06-15")
+        _ = try await APIClient(baseURL: baseURL, transport: financeTransport)
+            .fetchFinance(period: .month, anchor: "2026-06-15")
+
+        XCTAssertEqual(reportTransport.lastRequest?.url?.path, "/api/report")
+        XCTAssertEqual(reportTransport.lastRequest?.url?.query, "period=month&date=2026-06-15")
+        XCTAssertEqual(financeTransport.lastRequest?.url?.path, "/api/finance")
+        XCTAssertEqual(financeTransport.lastRequest?.url?.query, "period=month&date=2026-06-15")
+    }
+
     func testDashboardCompositionKeepsCoreStatusWhenOptionalEndpointFails() async throws {
         let transport = PartiallyFailingDashboardTransport(failingPath: "/api/finance")
         let client = APIClient(baseURL: URL(string: "http://ems.local:8080")!, transport: transport)

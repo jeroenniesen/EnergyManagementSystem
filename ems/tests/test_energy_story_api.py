@@ -154,6 +154,40 @@ def test_past_story_empty_without_history(tmp_path):
     assert "No history" in b["headline"]
 
 
+def test_past_actuals_dont_mislabel_solar_charge_as_grid_during_car_charging(tmp_path):
+    # Regression (owner report): the past track showed "charged by the grid" while the CAR was
+    # charging. The car's grid import inflated house_load, so the battery's own solar-fed charge
+    # was mislabelled a grid charge. Balanced slot: grid 1600 + solar 3500 = house 300 + car 4000
+    # + battery charge 800 → the 800 W charge came entirely from the 3200 W of solar after the
+    # house, so it MUST read solar_charge.
+    import asyncio
+    from datetime import UTC, datetime, timedelta
+
+    from ems.domain import RawSample
+    from ems.load_model import reconstruct
+
+    db = str(tmp_path / "ems.sqlite")
+
+    async def seed():
+        st = HistoryStore(db)
+        await st.init()
+        t = datetime.now(UTC) - timedelta(minutes=30)  # within the last-24h window
+        raw = RawSample(grid_power_w=1600.0, solar_power_w=3500.0, battery_power_w=-800.0,
+                        ev_power_w=4000.0, soc_pct=55.0)
+        await st.record(t.isoformat(), raw, reconstruct(raw))
+
+    asyncio.run(seed())
+    app = create_app(MockSource(), dry_run=True, dev_mode="mock", tz=AMS,
+                     store=HistoryStore(db), price_source=MockPriceSource(AMS),
+                     solar_forecast=MockSolarForecastSource(AMS), settings_store=SettingsStore(db))
+    with TestClient(app) as c:
+        b = c.get("/api/energy-story?window=past").json()
+    charging = [s for s in b["slots"] if s["battery_w"] < -50]
+    assert charging, "expected a charging slot in the seeded history"
+    assert all(s["action"] == "solar_charge" for s in charging), \
+        f"car-charging slot mislabelled: {[s['action'] for s in charging]}"
+
+
 def test_invalid_window_is_rejected(tmp_path):
     with TestClient(_app(tmp_path)) as c:
         assert c.get("/api/energy-story?window=sideways").status_code == 422

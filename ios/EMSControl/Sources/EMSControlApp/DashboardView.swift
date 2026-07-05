@@ -18,19 +18,30 @@ struct DashboardView: View {
                 ScrollView {
                     VStack(alignment: .leading, spacing: 16) {
                         if let snapshot = dashboardStore.snapshot {
+                            // 1. Status card
                             HomeStatePanel(snapshot: snapshot, isStale: dashboardStore.isStale, nextRefreshAt: dashboardStore.nextRefreshAt, theme: theme)
 
+                            // Safety alerts stay at the top (conditional).
                             if !snapshot.alerts.alerts.isEmpty {
                                 AlertsPanel(alerts: snapshot.alerts.alerts, theme: theme)
                             }
 
+                            // 2. Today so far (scores)
                             ScoreStrip(scores: snapshot.report.scores, theme: theme)
 
+                            // 3. Plan tracks
+                            EnergyGraphsPanel(story: snapshot.energyStory, theme: theme)
+
+                            // 4. Battery
                             BatteryPanel(snapshot: snapshot, theme: theme)
 
-                            EnergyStoryPanel(snapshot: snapshot, theme: theme)
+                            // 5. Strategy
+                            if let strategy = snapshot.strategy {
+                                StrategyCard(strategy: strategy, theme: theme)
+                            }
 
-                            EnergyGraphsPanel(story: snapshot.energyStory, theme: theme)
+                            // Kept below the requested five (not named for removal).
+                            EnergyStoryPanel(snapshot: snapshot, theme: theme)
 
                             FinancePanel(finance: snapshot.finance, savings: snapshot.savings, theme: theme)
 
@@ -90,7 +101,7 @@ private struct HomeStatePanel: View {
         VStack(alignment: .leading, spacing: 14) {
             HStack(alignment: .top, spacing: 12) {
                 VStack(alignment: .leading, spacing: 8) {
-                    Text(snapshot.decision.homeState?.headline ?? snapshot.decision.planReasonExplained ?? "EMS is watching the home")
+                    Text(snapshot.decision.homeState?.headline ?? "EMS is watching the home")
                         .font(.title3.weight(.semibold))
                         .foregroundStyle(themeColor(theme.text))
                         .fixedSize(horizontal: false, vertical: true)
@@ -104,10 +115,12 @@ private struct HomeStatePanel: View {
             }
 
             HStack(spacing: 10) {
-                MetricPill(title: "SoC", value: percent(snapshot.status.socPct), theme: theme)
-                MetricPill(title: "Mode", value: snapshot.battery.currentMode ?? snapshot.decision.desiredMode ?? "--", theme: theme)
+                MetricPill(title: "Battery %", value: percent(snapshot.status.socPct), theme: theme)
+                MetricPill(title: "Mode", value: humanizeMode(snapshot.battery.currentMode ?? snapshot.decision.desiredMode), theme: theme)
                 MetricPill(title: "Price", value: price(snapshot.energyStory.currentPriceEurPerKwh), theme: theme)
             }
+
+            PriceContextBar(story: snapshot.energyStory, theme: theme)
         }
         .padding(18)
         .background(themeColor(theme.panel).opacity(0.94))
@@ -121,19 +134,137 @@ private struct HomeStatePanel: View {
     private var badgeText: String {
         if snapshot.isDemo { return "Demo" }
         if isStale { return "Stale" }
+        if snapshot.decision.planValidation?.ok == false { return "Holding" }
         if snapshot.status.dryRun { return "Watch-only" }
         return "Live"
     }
 
     private var badgeColor: HexColor {
         if isStale { return theme.amber }
+        if snapshot.decision.planValidation?.ok == false { return theme.amber }
         if snapshot.status.dryRun { return theme.winter }
         return theme.accent
     }
 
     private var statusLine: String {
+        // The badge already says demo / live / watch-only, so leave devMode off this line.
         let refresh = nextRefreshAt.map { "next refresh \($0.formatted(date: .omitted, time: .shortened))" }
-        return [snapshot.serverName, snapshot.status.devMode, refresh].compactMap(\.self).joined(separator: " - ")
+        return [snapshot.serverName, refresh].compactMap(\.self).joined(separator: " — ")
+    }
+}
+
+// The "buy grid cheap" proof, at a glance: where the current price sits in today's range.
+private struct PriceContextBar: View {
+    let story: EnergyStorySnapshot
+    let theme: EMSTheme
+
+    private var prices: [Double] {
+        (story.recent + story.slots).compactMap(\.eurPerKwh).filter { $0 > 0 }
+    }
+
+    var body: some View {
+        if let now = story.currentPriceEurPerKwh, let lo = prices.min(), let hi = prices.max(), hi > lo {
+            let pos = min(max((now - lo) / (hi - lo), 0), 1)
+            VStack(alignment: .leading, spacing: 6) {
+                HStack {
+                    Text("Grid price now")
+                        .font(.caption2.weight(.semibold))
+                        .foregroundStyle(themeColor(theme.muted))
+                    Spacer()
+                    Text(band(pos))
+                        .font(.caption2.weight(.semibold))
+                        .foregroundStyle(themeColor(bandColor(pos)))
+                }
+                GeometryReader { geo in
+                    ZStack(alignment: .leading) {
+                        Capsule()
+                            .fill(themeColor(theme.line))
+                            .frame(height: 5)
+                        Circle()
+                            .fill(themeColor(bandColor(pos)))
+                            .frame(width: 10, height: 10)
+                            .offset(x: pos * (geo.size.width - 10))
+                    }
+                    .frame(maxHeight: .infinity, alignment: .center)
+                }
+                .frame(height: 12)
+                HStack {
+                    Text(euro(lo)).font(.caption2).foregroundStyle(themeColor(theme.muted))
+                    Spacer()
+                    Text(euro(hi)).font(.caption2).foregroundStyle(themeColor(theme.muted))
+                }
+            }
+            .padding(.top, 4)
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel("Grid price now")
+            .accessibilityValue("\(band(pos)). \(price(now)), in today's range \(euro(lo)) to \(euro(hi)).")
+        }
+    }
+
+    private func band(_ pos: Double) -> String {
+        if pos < 0.34 { return "Cheap" }
+        if pos < 0.67 { return "Typical" }
+        return "Pricey"
+    }
+
+    private func bandColor(_ pos: Double) -> HexColor {
+        if pos < 0.34 { return theme.accent }
+        if pos < 0.67 { return theme.muted }
+        return theme.amber
+    }
+}
+
+private struct StrategyCard: View {
+    let strategy: StrategySnapshot
+    let theme: EMSTheme
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(alignment: .top, spacing: 12) {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("Strategy")
+                        .font(.headline)
+                        .foregroundStyle(themeColor(theme.text))
+                    Text(humanizedMode)
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(themeColor(theme.accent))
+                }
+                Spacer(minLength: 8)
+                if strategy.auto {
+                    StatusBadge(text: "Auto", color: theme.accent, theme: theme)
+                }
+            }
+
+            Text(strategy.reason)
+                .font(.subheadline)
+                .foregroundStyle(themeColor(theme.text))
+                .fixedSize(horizontal: false, vertical: true)
+
+            if !strategy.summary.isEmpty {
+                Text(strategy.summary)
+                    .font(.footnote)
+                    .foregroundStyle(themeColor(theme.muted))
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+        .padding(16)
+        .background(themeColor(theme.panel))
+        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .stroke(themeColor(theme.line), lineWidth: 1)
+        }
+    }
+
+    private var humanizedMode: String {
+        switch strategy.active {
+        case "summer":
+            "Solar-first"
+        case "winter":
+            "Price-smart"
+        default:
+            strategy.active.capitalized
+        }
     }
 }
 
@@ -144,8 +275,13 @@ private struct ScoreStrip: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             Text("Today so far")
-                .font(.headline)
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(themeColor(theme.muted))
+
+            Text(verdict)
+                .font(.title3.weight(.semibold))
                 .foregroundStyle(themeColor(theme.text))
+                .fixedSize(horizontal: false, vertical: true)
 
             LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible()), GridItem(.flexible())], spacing: 10) {
                 ForEach(scores.prefix(3)) { score in
@@ -159,6 +295,26 @@ private struct ScoreStrip: View {
         .overlay {
             RoundedRectangle(cornerRadius: 12, style: .continuous)
                 .stroke(themeColor(theme.line), lineWidth: 1)
+        }
+    }
+
+    private func value(_ key: String) -> Double? {
+        scores.first { $0.key == key }?.value
+    }
+
+    // One plain-language read on the day, tied to the two goals: use your own sun, and buy grid
+    // power cheap. Self-consumption ≈ sun captured; best-price ≈ bought at the right times.
+    private var verdict: String {
+        guard let sun = value("self_consumption"), let price = value("best_price") else {
+            return "Tracking how well today's energy is used."
+        }
+        switch min(sun, price) {
+        case 80...:
+            return "Using your energy well — mostly your own sun, and grid power bought at the cheapest times."
+        case 50..<80:
+            return "A solid energy day — some room to use more sun or buy cheaper."
+        default:
+            return "Room to do better — more power came from the grid at pricier times today."
         }
     }
 }
@@ -183,14 +339,33 @@ private struct ScoreRing: View {
             }
             .frame(width: 58, height: 58)
 
-            Text(score.label)
-                .font(.caption2.weight(.semibold))
-                .foregroundStyle(themeColor(theme.muted))
-                .multilineTextAlignment(.center)
-                .lineLimit(2)
-                .frame(minHeight: 28)
+            VStack(spacing: 2) {
+                Text(score.label)
+                    .font(.caption2.weight(.semibold))
+                    .foregroundStyle(themeColor(theme.text))
+                Text(caption)
+                    .font(.caption2)
+                    .foregroundStyle(themeColor(theme.muted))
+                    .minimumScaleFactor(0.85)
+            }
+            .multilineTextAlignment(.center)
+            .lineLimit(2)
+            .frame(minHeight: 30)
         }
         .frame(maxWidth: .infinity)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(score.label)
+        .accessibilityValue("\(scoreAccessibilityValue). \(caption).")
+    }
+
+    // A short, always-fitting plain meaning under each ring (the full sentence lives in Insights).
+    private var caption: String {
+        switch score.key {
+        case "self_consumption": "of your sun kept"
+        case "co2": "less than no-solar"
+        case "best_price": "in cheap hours"
+        default: score.unit ?? ""
+        }
     }
 
     private var progress: Double {
@@ -200,6 +375,11 @@ private struct ScoreRing: View {
     private var scoreText: String {
         guard let value = score.value else { return "--" }
         return "\(value.formatted(.number.precision(.fractionLength(0))))%"
+    }
+
+    private var scoreAccessibilityValue: String {
+        guard let value = score.value else { return "not available" }
+        return "\(Int(value)) out of 100"
     }
 }
 
@@ -287,27 +467,28 @@ private struct EnergyStoryPanel: View {
 private struct EnergyGraphsPanel: View {
     let story: EnergyStorySnapshot
     let theme: EMSTheme
+    @State private var expanded = false
 
     private var timeline: [StorySlot] {
         story.recent + story.slots
     }
 
+    private var priceAccessibilityValue: String {
+        guard let price = story.currentPriceEurPerKwh else { return "not available" }
+        return "currently \(price.formatted(.currency(code: "EUR"))) per kilowatt hour"
+    }
+
+    private var solarAccessibilityValue: String {
+        let peak = timeline.map(\.solarW).max() ?? 0
+        guard peak > 0 else { return "no solar production expected" }
+        return "peak \(Int(peak)) watts"
+    }
+
     var body: some View {
         if !timeline.isEmpty {
-            VStack(alignment: .leading, spacing: 14) {
-                HStack {
-                    Label("Plan tracks", systemImage: "chart.xyaxis.line")
-                        .font(.headline)
-                        .foregroundStyle(themeColor(theme.text))
-                    Spacer()
-                    if let price = story.currentPriceEurPerKwh {
-                        Text("\(price.formatted(.currency(code: "EUR")))/kWh")
-                            .font(.caption.weight(.semibold))
-                            .foregroundStyle(themeColor(theme.muted))
-                    }
-                }
-
-                BatteryForecastChart(story: story, slots: timeline, recentCount: story.recent.count, theme: theme)
+            DisclosureGroup(isExpanded: $expanded) {
+                VStack(alignment: .leading, spacing: 14) {
+                    BatteryForecastChart(story: story, slots: timeline, recentCount: story.recent.count, theme: theme)
                 TrackLabel("Electricity price")
                 BarTrack(
                     values: timeline.map { max($0.eurPerKwh ?? 0, 0) },
@@ -316,11 +497,14 @@ private struct EnergyGraphsPanel: View {
                     actualFill: theme.winter,
                     theme: theme
                 )
+                .accessibilityElement(children: .ignore)
+                .accessibilityLabel("Electricity price over time")
+                .accessibilityValue(priceAccessibilityValue)
 
                 TrackLabel("Battery actions")
                 ActionTrack(slots: timeline, recentCount: story.recent.count, theme: theme)
 
-                TrackLabel(story.recent.isEmpty ? "Solar forecast" : "Solar produced -> forecast")
+                TrackLabel(story.recent.isEmpty ? "Solar forecast" : "Solar produced → forecast")
                 BarTrack(
                     values: timeline.map { max($0.solarW, 0) },
                     recentCount: story.recent.count,
@@ -328,9 +512,19 @@ private struct EnergyGraphsPanel: View {
                     actualFill: theme.accent,
                     theme: theme
                 )
+                .accessibilityElement(children: .ignore)
+                .accessibilityLabel(story.recent.isEmpty ? "Solar forecast over time" : "Solar produced and forecast over time")
+                .accessibilityValue(solarAccessibilityValue)
 
-                ActionLegend(actions: uniqueActions(in: timeline), theme: theme)
+                    ActionLegend(actions: uniqueActions(in: timeline), theme: theme)
+                }
+                .padding(.top, 12)
+            } label: {
+                Label("Plan tracks — the 24-hour plan", systemImage: "chart.xyaxis.line")
+                    .font(.headline)
+                    .foregroundStyle(themeColor(theme.text))
             }
+            .tint(themeColor(theme.muted))
             .padding(16)
             .background(themeColor(theme.panel))
             .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
@@ -379,6 +573,14 @@ private struct BatteryForecastChart: View {
                 LegendLine(label: "Reserve", color: theme.muted, dashed: true, theme: theme)
             }
         }
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("Battery level forecast")
+        .accessibilityValue(batteryForecastAccessibilityValue)
+    }
+
+    private var batteryForecastAccessibilityValue: String {
+        guard let current = story.currentSocPct else { return "not available" }
+        return "now \(Int(current))%"
     }
 
     private func chartGrid(size: CGSize) -> some View {
@@ -503,6 +705,37 @@ private struct ActionTrack: View {
                     .frame(height: 24)
             }
         }
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("Battery actions over the last day")
+        .accessibilityValue(actionsAccessibilityValue)
+    }
+
+    private var actionsAccessibilityValue: String {
+        guard !slots.isEmpty else { return "no data available" }
+        let counts = Dictionary(grouping: slots, by: \.action).mapValues(\.count)
+        return counts
+            .sorted { $0.value > $1.value }
+            .map { "\(humanizedAction($0.key)) \($0.value)" }
+            .joined(separator: ", ")
+    }
+
+    private func humanizedAction(_ action: String) -> String {
+        switch action {
+        case "solar_charge":
+            "Charge from solar"
+        case "grid_charge":
+            "Charge from grid"
+        case "discharge":
+            "Power the house"
+        case "self_consume":
+            "Use solar first"
+        case "hold":
+            "Hold"
+        case "idle":
+            "Idle"
+        default:
+            action.replacingOccurrences(of: "_", with: " ")
+        }
     }
 
     private func color(for action: String) -> HexColor {
@@ -527,8 +760,35 @@ private struct ActionLegend: View {
     let actions: [String]
     let theme: EMSTheme
 
+    // A true legend: each row is the SAME colour swatch the Battery-actions bars use, next to its
+    // meaning — so the stripes are readable. Two columns to stay compact; a thin outline keeps the
+    // faint hold/idle swatches locatable on the dark panel.
     var body: some View {
-        FlowLayout(items: actions.map(label(for:)), theme: theme)
+        LazyVGrid(
+            columns: [GridItem(.flexible(), alignment: .leading), GridItem(.flexible(), alignment: .leading)],
+            alignment: .leading,
+            spacing: 8
+        ) {
+            ForEach(actions, id: \.self) { action in
+                HStack(spacing: 7) {
+                    RoundedRectangle(cornerRadius: 3, style: .continuous)
+                        .fill(themeColor(color(for: action)))
+                        .frame(width: 14, height: 14)
+                        .overlay {
+                            RoundedRectangle(cornerRadius: 3, style: .continuous)
+                                .stroke(themeColor(theme.muted).opacity(0.4), lineWidth: 1)
+                        }
+                    Text(label(for: action))
+                        .font(.caption2)
+                        .foregroundStyle(themeColor(theme.muted))
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.8)
+                    Spacer(minLength: 0)
+                }
+                .accessibilityElement(children: .ignore)
+                .accessibilityLabel(label(for: action))
+            }
+        }
     }
 
     private func label(for action: String) -> String {
@@ -540,6 +800,18 @@ private struct ActionLegend: View {
         case "hold": "Hold"
         case "idle": "Idle"
         default: action.replacingOccurrences(of: "_", with: " ")
+        }
+    }
+
+    // Must match ActionTrack.color(for:) exactly, or the legend lies about the bars.
+    private func color(for action: String) -> HexColor {
+        switch action {
+        case "solar_charge": theme.accent
+        case "grid_charge": theme.winter
+        case "discharge": theme.amber
+        case "self_consume": theme.muted
+        case "hold": theme.line
+        default: theme.secondaryPanel
         }
     }
 }
@@ -607,10 +879,10 @@ private struct AlertsPanel: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            ForEach(alerts) { alert in
-                Label(alert.message, systemImage: alert.severity == "info" ? "info.circle" : "exclamationmark.triangle")
+            ForEach(orderedAlerts) { alert in
+                Label(alert.message, systemImage: icon(for: alert.severity))
                     .font(.footnote)
-                    .foregroundStyle(themeColor(alert.severity == "info" ? theme.muted : theme.amber))
+                    .foregroundStyle(themeColor(color(for: alert.severity)))
                     .fixedSize(horizontal: false, vertical: true)
             }
         }
@@ -619,7 +891,50 @@ private struct AlertsPanel: View {
         .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
         .overlay {
             RoundedRectangle(cornerRadius: 12, style: .continuous)
-                .stroke(themeColor(theme.amber).opacity(0.55), lineWidth: 1)
+                .stroke(themeColor(strokeColor).opacity(0.55), lineWidth: 1)
+        }
+    }
+
+    private var orderedAlerts: [DashboardAlert] {
+        alerts.sorted { rank(for: $0.severity) < rank(for: $1.severity) }
+    }
+
+    private var strokeColor: HexColor {
+        if !alerts.filter({ $0.severity == "critical" }).isEmpty { return theme.error }
+        if !alerts.filter({ $0.severity == "warning" }).isEmpty { return theme.amber }
+        return theme.line
+    }
+
+    private func rank(for severity: String) -> Int {
+        switch severity {
+        case "critical":
+            0
+        case "warning":
+            1
+        default:
+            2
+        }
+    }
+
+    private func color(for severity: String) -> HexColor {
+        switch severity {
+        case "critical":
+            theme.error
+        case "warning":
+            theme.amber
+        default:
+            theme.muted
+        }
+    }
+
+    private func icon(for severity: String) -> String {
+        switch severity {
+        case "critical":
+            "exclamationmark.octagon.fill"
+        case "warning":
+            "exclamationmark.triangle"
+        default:
+            "info.circle"
         }
     }
 }
@@ -631,7 +946,7 @@ private struct DetailGrid: View {
     var body: some View {
         LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 10) {
             DetailCell(title: "House", value: watts(snapshot.status.houseLoadW), theme: theme)
-            DetailCell(title: "Target SoC", value: percent(snapshot.chargeNeed.targetSocPct ?? snapshot.energyStory.targetSocPct), theme: theme)
+            DetailCell(title: "Target %", value: percent(snapshot.chargeNeed.targetSocPct ?? snapshot.energyStory.targetSocPct), theme: theme)
             DetailCell(title: "Reserve", value: kwh(snapshot.chargeNeed.reserveKwh), theme: theme)
             DetailCell(title: "Data", value: snapshot.alerts.dataQuality ?? "unknown", theme: theme)
             DetailCell(title: "Towers", value: towers(snapshot.battery.aggregate), theme: theme)
@@ -673,11 +988,12 @@ private struct MetricPill: View {
                 .font(.caption2.weight(.semibold))
                 .foregroundStyle(themeColor(theme.muted))
                 .lineLimit(1)
+                .minimumScaleFactor(0.7)
             Text(value)
                 .font(.subheadline.weight(.semibold))
                 .foregroundStyle(themeColor(theme.text))
                 .lineLimit(1)
-                .minimumScaleFactor(0.7)
+                .minimumScaleFactor(0.6)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(.horizontal, 10)
@@ -727,6 +1043,19 @@ private struct FlowLayout: View {
                 .background(themeColor(theme.accent).opacity(0.12))
                 .clipShape(Capsule())
         }
+    }
+}
+
+// Turn a raw battery-mode/intent code into a short homeowner word; empty/unknown → "Auto".
+private func humanizeMode(_ raw: String?) -> String {
+    guard let raw, !raw.isEmpty, raw != "--" else { return "Auto" }
+    switch raw {
+    case "self_consumption", "auto", "allow_self_consumption": return "Self-use"
+    case "grid_charge", "grid_charge_to_target", "charge": return "Grid charge"
+    case "discharge", "discharge_for_load": return "Discharging"
+    case "hold", "hold_reserve": return "Holding"
+    case "idle": return "Idle"
+    default: return raw.replacingOccurrences(of: "_", with: " ").capitalized
     }
 }
 

@@ -24,7 +24,8 @@ class PastSlot:
     grid_w: float  # + import / − export (mean over the slot)
     solar_w: float
     battery_w: float  # + discharge / − charge
-    load_w: float
+    load_w: float  # total house load (incl. EV) — the plotted demand
+    non_ev_load_w: float  # house load excluding EV charging — the charge-kind split input (§4.5)
     eur_per_kwh: float | None
 
 
@@ -114,12 +115,21 @@ def build_past_story(
             raw_by[slot]["soc"].append(float(r["soc_pct"]))
 
     load_by: dict[datetime, list[float]] = defaultdict(list)
+    non_ev_by: dict[datetime, list[float]] = defaultdict(list)
     for r in derived_rows:
         dt = _parse(r.get("ts"))
         if dt is None or dt < cutoff or dt > now_utc:
             continue
         if r.get("house_load_w") is not None:
             load_by[_floor(dt)].append(float(r["house_load_w"]))
+        # Non-EV (house-only) load: the correct input to the solar-vs-grid charge split, so a
+        # solar-fed battery charge during a car session isn't mislabelled a grid charge (§4.5).
+        # Fall back to total load when the column is absent (older rows) — no worse than before.
+        nev = r.get("non_ev_load_w")
+        if nev is None:
+            nev = r.get("house_load_w")
+        if nev is not None:
+            non_ev_by[_floor(dt)].append(float(nev))
 
     price_by = {p.start.astimezone(UTC): p.eur_per_kwh for p in prices}
 
@@ -133,6 +143,7 @@ def build_past_story(
             solar_w=_mean(b["solar"]),
             battery_w=_mean(b["batt"]),
             load_w=_mean(load_by[slot]) if load_by.get(slot) else 0.0,
+            non_ev_load_w=_mean(non_ev_by[slot]) if non_ev_by.get(slot) else 0.0,
             eur_per_kwh=price_by.get(slot),
         ))
 

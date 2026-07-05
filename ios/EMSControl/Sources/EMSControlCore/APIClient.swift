@@ -22,6 +22,24 @@ public enum APIClientError: Error, Equatable {
     case incompatibleServer(Int)
 }
 
+extension APIClientError: LocalizedError {
+    public var errorDescription: String? {
+        switch self {
+        case .invalidResponse:
+            "The server sent a response the app couldn't read."
+        case let .httpStatus(code):
+            switch code {
+            case 401, 403:
+                "Access denied (HTTP \(code)) — check your access token."
+            default:
+                "The server returned an error (HTTP \(code))."
+            }
+        case let .incompatibleServer(version):
+            "This app isn't compatible with the EMS server (API v\(version)). Update the app or the server."
+        }
+    }
+}
+
 public struct APIClient: Sendable {
     public let baseURL: URL
     public let token: String?
@@ -44,6 +62,7 @@ public struct APIClient: Sendable {
         async let storyResult = capture { try await fetchEnergyStory() }
         async let reportResult = capture { try await fetchReport() }
         async let financeResult = capture { try await fetchFinance() }
+        async let strategyResult = capture { try await fetchStrategy() }
 
         return try await MobileDashboardSnapshot(
             generatedAt: Date(),
@@ -58,7 +77,8 @@ public struct APIClient: Sendable {
             savings: savingsResult.optional ?? .empty,
             energyStory: storyResult.optional ?? .empty,
             report: reportResult.optional ?? .empty,
-            finance: financeResult.optional ?? .empty
+            finance: financeResult.optional ?? .empty,
+            strategy: strategyResult.optional
         )
     }
 
@@ -90,16 +110,20 @@ public struct APIClient: Sendable {
         try await get("api/savings", as: SavingsSnapshot.self)
     }
 
+    public func fetchStrategy() async throws -> StrategySnapshot {
+        try await get("api/strategy", as: StrategySnapshot.self)
+    }
+
     public func fetchEnergyStory(window: String = "next") async throws -> EnergyStorySnapshot {
         try await get("api/energy-story?window=\(window)", as: EnergyStorySnapshot.self)
     }
 
-    public func fetchReport(period: String = "day") async throws -> ReportSnapshot {
-        try await get("api/report?period=\(period)", as: ReportSnapshot.self)
+    public func fetchReport(period: InsightsPeriod = .day, anchor: String? = nil) async throws -> ReportSnapshot {
+        try await get(insightsPath("api/report", period: period, anchor: anchor), as: ReportSnapshot.self)
     }
 
-    public func fetchFinance(period: String = "day") async throws -> FinanceSnapshot {
-        try await get("api/finance?period=\(period)", as: FinanceSnapshot.self)
+    public func fetchFinance(period: InsightsPeriod = .day, anchor: String? = nil) async throws -> FinanceSnapshot {
+        try await get(insightsPath("api/finance", period: period, anchor: anchor), as: FinanceSnapshot.self)
     }
 
     public func fetchLiveHealth() async throws -> HealthStatus {
@@ -120,6 +144,10 @@ public struct APIClient: Sendable {
 
     public func fetchFAQ() async throws -> FAQResponse {
         try await get("api/faq", as: FAQResponse.self)
+    }
+
+    public func fetchAudit(limit: Int = 100) async throws -> [AuditEntry] {
+        try await get("api/audit?limit=\(limit)", as: AuditResponse.self).entries
     }
 
     public func sendChat(question: String) async throws -> ChatResponse {
@@ -158,6 +186,14 @@ public struct APIClient: Sendable {
         var components = URLComponents(url: baseURL.appending(path: endpoint), resolvingAgainstBaseURL: false)!
         components.percentEncodedQuery = String(path[path.index(after: question)...])
         return components.url!
+    }
+
+    private func insightsPath(_ endpoint: String, period: InsightsPeriod, anchor: String?) -> String {
+        var query = "period=\(period.rawValue)"
+        if let anchor, !anchor.isEmpty {
+            query += "&date=\(anchor)"
+        }
+        return "\(endpoint)?\(query)"
     }
 
     private func capture<T: Sendable>(_ operation: @Sendable () async throws -> T) async -> Result<T, Error> {
