@@ -19,6 +19,7 @@
 		58F3D814DBFE8DE2988FC32A /* ChatView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 922974D3E5EFAB723E1B86D9 /* ChatView.swift */; };
 		5D3E676405A9AC5E9B819120 /* Theme.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4D90E4C3625F5CBBBB665180 /* Theme.swift */; };
 		729A10730EAAE407CCC4638B /* EMSControlApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = DFE9CA097DB9BAA988D849E2 /* EMSControlApp.swift */; };
+		76ABF2D1AF12E76FCA0F984E /* SeriesGeometry.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6489F114C4BCA73DEAF39933 /* SeriesGeometry.swift */; };
 		787676AAC65CC3EFD9FF0E54 /* ActivityView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3CB11B9536D721D347D9429D /* ActivityView.swift */; };
 		7E7073E900977C467AD6C209 /* ServerDiscovery.swift in Sources */ = {isa = PBXBuildFile; fileRef = 033DDC49ECE87F18564D3288 /* ServerDiscovery.swift */; };
 		869F6EB25417A0F2A4D2613A /* Models.swift in Sources */ = {isa = PBXBuildFile; fileRef = 13253B7C77956C58739FA336 /* Models.swift */; };
@@ -72,6 +73,7 @@
 		3CB11B9536D721D347D9429D /* ActivityView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ActivityView.swift; sourceTree = "<group>"; };
 		4D90E4C3625F5CBBBB665180 /* Theme.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Theme.swift; sourceTree = "<group>"; };
 		62C0D3FEB8DD96AF4F3CAD8C /* EMSControlCore.framework */ = {isa = PBXFileReference; explicitFileType = wrapper.framework; includeInIndex = 0; path = EMSControlCore.framework; sourceTree = BUILT_PRODUCTS_DIR; };
+		6489F114C4BCA73DEAF39933 /* SeriesGeometry.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SeriesGeometry.swift; sourceTree = "<group>"; };
 		720F711D71B00AC0F6976700 /* APIClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = APIClient.swift; sourceTree = "<group>"; };
 		78E410739D2A3710496D0625 /* DashboardView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DashboardView.swift; sourceTree = "<group>"; };
 		851FDA73182D3541A3039A9A /* DashboardStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DashboardStore.swift; sourceTree = "<group>"; };
@@ -130,6 +132,7 @@
 				AE96D50A9EC3DC4FEC64185B /* InsightsStore.swift */,
 				F931E1AEC5676B6174B3A76F /* KeychainCredentialStore.swift */,
 				13253B7C77956C58739FA336 /* Models.swift */,
+				6489F114C4BCA73DEAF39933 /* SeriesGeometry.swift */,
 				C10928FD46649449E9D7A9F3 /* ServerAddressValidator.swift */,
 				033DDC49ECE87F18564D3288 /* ServerDiscovery.swift */,
 				4D90E4C3625F5CBBBB665180 /* Theme.swift */,
@@ -275,6 +278,7 @@
 				042F4F18CFE0650AA449CAAC /* InsightsStore.swift in Sources */,
 				C32DD176D4AC4B7979994319 /* KeychainCredentialStore.swift in Sources */,
 				869F6EB25417A0F2A4D2613A /* Models.swift in Sources */,
+				76ABF2D1AF12E76FCA0F984E /* SeriesGeometry.swift in Sources */,
 				B1C9A8640321DD1AA1C7D313 /* ServerAddressValidator.swift in Sources */,
 				7E7073E900977C467AD6C209 /* ServerDiscovery.swift in Sources */,
 				5D3E676405A9AC5E9B819120 /* Theme.swift in Sources */,

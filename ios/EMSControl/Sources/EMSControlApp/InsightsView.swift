@@ -18,6 +18,10 @@ struct InsightsView: View {
                     VStack(alignment: .leading, spacing: 16) {
                         header
 
+                        if store.isStale {
+                            StaleBanner(lastUpdatedAt: store.lastUpdatedAt, theme: theme)
+                        }
+
                         if let error = store.errorMessage, store.report == nil {
                             MessagePanel(text: "Could not load this report. \(error)", systemImage: "wifi.exclamationmark", theme: theme)
                         } else if store.isLoading && store.report == nil {
@@ -265,6 +269,10 @@ private struct BehaviorChart: View {
     let series: [ChartSeries]
     let theme: EMSTheme
 
+    // Per-bucket sample counts: a bucket with 0 samples is a gap (missing/future) and must NOT be
+    // drawn as a zero. Mirrors the web `EnergyBehavior.tsx`.
+    private var samples: [Int] { buckets.map(\.samples) }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             Text(title)
@@ -275,8 +283,13 @@ private struct BehaviorChart: View {
                 ZStack {
                     grid(size: proxy.size)
                     ForEach(series) { item in
-                        path(for: item.values, size: proxy.size)
-                            .stroke(themeColor(item.color), style: StrokeStyle(lineWidth: 2.4, lineCap: .round, lineJoin: .round))
+                        BehaviorSeriesLayer(
+                            values: item.values,
+                            samples: samples,
+                            color: item.color,
+                            domain: domain,
+                            size: proxy.size
+                        )
                     }
                 }
             }
@@ -296,18 +309,30 @@ private struct BehaviorChart: View {
         guard !series.isEmpty else { return "no data available" }
         return series
             .map { item in
-                let total = item.values.reduce(0, +)
+                // Sum sampled buckets only, so future/missing buckets don't read as data.
+                let total = SeriesGeometry.segments(values: item.values, samples: samples)
+                    .flatMap { $0 }
+                    .reduce(0) { $0 + $1.value }
                 return "\(item.label) \(total.formatted(.number.precision(.fractionLength(1)))) kWh"
             }
             .joined(separator: ", ")
     }
 
     private var domain: ClosedRange<Double> {
-        let values = series.flatMap(\.values)
-        let minValue = min(values.min() ?? 0, 0)
-        let maxValue = max(values.max() ?? 1, 0.1)
-        if minValue == maxValue { return 0 ... 1 }
-        return minValue ... maxValue
+        var lo = 0.0
+        var hi = 0.1
+        var any = false
+        for item in series {
+            if let ext = SeriesGeometry.sampledExtent(values: item.values, samples: samples) {
+                lo = min(lo, ext.min)
+                hi = max(hi, ext.max)
+                any = true
+            }
+        }
+        guard any else { return 0 ... 1 }
+        let low = min(lo, 0)
+        let high = max(hi, 0.1)
+        return low == high ? 0 ... 1 : low ... high
     }
 
     private func grid(size: CGSize) -> some View {
@@ -322,26 +347,76 @@ private struct BehaviorChart: View {
             }
         }
     }
+}
 
-    private func path(for values: [Double], size: CGSize) -> Path {
+/// One series drawn with gaps: connected runs of sampled buckets become polylines; a lone sampled
+/// bucket between gaps becomes a dot. Unsampled/future buckets leave a hole (never a zero point).
+private struct BehaviorSeriesLayer: View {
+    let values: [Double]
+    let samples: [Int]
+    let color: HexColor
+    let domain: ClosedRange<Double>
+    let size: CGSize
+
+    var body: some View {
+        ZStack {
+            linePath(SeriesGeometry.connectedRuns(values: values, samples: samples))
+                .stroke(themeColor(color), style: StrokeStyle(lineWidth: 2.4, lineCap: .round, lineJoin: .round))
+            ForEach(SeriesGeometry.isolatedPoints(values: values, samples: samples), id: \.index) { point in
+                Circle()
+                    .fill(themeColor(color))
+                    .frame(width: 5, height: 5)
+                    .position(position(index: point.index, value: point.value))
+            }
+        }
+    }
+
+    private func linePath(_ runs: [[SeriesPoint]]) -> Path {
         Path { path in
-            guard values.count > 1 else { return }
-            for (index, value) in values.enumerated() {
-                let point = point(index: index, value: value, count: values.count, size: size)
-                if index == 0 {
-                    path.move(to: point)
-                } else {
-                    path.addLine(to: point)
+            for run in runs {
+                for (offset, point) in run.enumerated() {
+                    let cg = position(index: point.index, value: point.value)
+                    if offset == 0 { path.move(to: cg) } else { path.addLine(to: cg) }
                 }
             }
         }
     }
 
-    private func point(index: Int, value: Double, count: Int, size: CGSize) -> CGPoint {
-        let x = Double(index) / Double(max(count - 1, 1)) * size.width
+    private func position(index: Int, value: Double) -> CGPoint {
+        let x = Double(index) / Double(max(values.count - 1, 1)) * size.width
         let span = domain.upperBound - domain.lowerBound
         let y = (1 - ((value - domain.lowerBound) / span)) * size.height
         return CGPoint(x: x, y: y)
+    }
+}
+
+/// Shared amber "couldn't refresh — showing older data" banner (Insights + Activity, finding 4).
+struct StaleBanner: View {
+    let lastUpdatedAt: Date?
+    let theme: EMSTheme
+
+    var body: some View {
+        Label(text, systemImage: "wifi.exclamationmark")
+            .font(.caption.weight(.semibold))
+            .foregroundStyle(themeColor(theme.amber))
+            .fixedSize(horizontal: false, vertical: true)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(12)
+            .background(themeColor(theme.secondaryPanel))
+            .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+            .overlay {
+                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                    .stroke(themeColor(theme.amber).opacity(0.4), lineWidth: 1)
+            }
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel(text)
+    }
+
+    private var text: String {
+        if let lastUpdatedAt {
+            return "Couldn't refresh — showing data from \(lastUpdatedAt.formatted(date: .omitted, time: .shortened))."
+        }
+        return "Couldn't refresh — showing the last data received."
     }
 }
 
@@ -425,6 +500,13 @@ private struct FinanceInsightsPanel: View {
                     FlowMetric(title: "Price days", value: "\(finance.totals.daysWithPrices ?? 0)/\(finance.totals.daysWithData ?? 0)", color: theme.muted, theme: theme)
                 }
 
+                if let caveat = priceCoverageCaveat {
+                    Label(caveat, systemImage: "info.circle")
+                        .font(.caption)
+                        .foregroundStyle(themeColor(theme.muted))
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+
                 if finance.days.filter(\.hasData).count > 1 {
                     SavedBars(days: finance.days, theme: theme)
                 }
@@ -438,6 +520,20 @@ private struct FinanceInsightsPanel: View {
             }
         }
     }
+
+    /// Honest coverage caveat, mirroring the web FinanceSection: never imply €0 saved when prices
+    /// simply weren't recorded.
+    private var priceCoverageCaveat: String? {
+        let withData = finance.totals.daysWithData ?? 0
+        let withPrices = finance.totals.daysWithPrices ?? 0
+        if finance.totals.savedEur == nil {
+            return "No price history recorded yet — savings can't be computed."
+        }
+        if withPrices < withData {
+            return "Prices are known for \(withPrices) of \(withData) recorded days; savings shown for those only."
+        }
+        return nil
+    }
 }
 
 private struct SavedBars: View {
@@ -448,11 +544,15 @@ private struct SavedBars: View {
         GeometryReader { proxy in
             HStack(alignment: .center, spacing: 3) {
                 ForEach(days) { day in
-                    let value = day.savedEur ?? 0
-                    RoundedRectangle(cornerRadius: 3, style: .continuous)
-                        .fill(themeColor(value >= 0 ? theme.accent : theme.amber))
-                        .frame(height: max(4, proxy.size.height * normalized(abs(value))))
-                        .frame(maxHeight: .infinity, alignment: value >= 0 ? .bottom : .top)
+                    if day.hasData, let value = day.savedEur {
+                        RoundedRectangle(cornerRadius: 3, style: .continuous)
+                            .fill(themeColor(value >= 0 ? theme.accent : theme.amber))
+                            .frame(height: max(4, proxy.size.height * normalized(abs(value))))
+                            .frame(maxHeight: .infinity, alignment: value >= 0 ? .bottom : .top)
+                    } else {
+                        // No price data for this day: reserve the column, draw no bar (not a €0 bar).
+                        Color.clear.frame(maxHeight: .infinity)
+                    }
                 }
             }
         }

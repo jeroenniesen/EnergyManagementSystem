@@ -18,6 +18,10 @@ struct ActivityView: View {
                     VStack(alignment: .leading, spacing: 16) {
                         header
 
+                        if store.isStale {
+                            StaleBanner(lastUpdatedAt: store.lastUpdatedAt, theme: theme)
+                        }
+
                         if let error = store.errorMessage, store.entries.isEmpty {
                             MessagePanel(text: "Could not load activity. \(error)", systemImage: "wifi.exclamationmark", theme: theme)
                         } else if store.isLoading && store.entries.isEmpty {
