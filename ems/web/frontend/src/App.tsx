@@ -65,6 +65,7 @@ type ChargeNeed = {
 
 type AlertItem = { key: string; severity: string; message: string };
 type AlertsResp = { data_quality: string; alerts: AlertItem[] };
+type ViewName = "dashboard" | "insights" | "chat" | "audit" | "settings" | "system";
 
 // Dashboard refresh cadence. Device reads (battery cluster, meters) are coalesced server-side to
 // at most once per ~30 s regardless of this, so a snappy poll no longer floods the hardware; 10 s
@@ -72,6 +73,12 @@ type AlertsResp = { data_quality: string; alerts: AlertItem[] };
 const POLL_MS = 10000;
 // Alert hierarchy: control-blocking (critical) above degraded (warning) above info (energy review).
 const SEVERITY_RANK: Record<string, number> = { critical: 3, warning: 2, info: 1 };
+const VIEWS: ViewName[] = ["dashboard", "insights", "chat", "audit", "settings", "system"];
+
+function viewFromHash(hash: string): ViewName {
+  const raw = hash.replace(/^#\/?/, "");
+  return VIEWS.includes(raw as ViewName) ? (raw as ViewName) : "dashboard";
+}
 
 function fmtW(w: number): string {
   return Math.abs(w) >= 1000 ? `${(w / 1000).toFixed(2)} kW` : `${Math.round(w)} W`;
@@ -236,8 +243,7 @@ export function App() {
   const [chargeNeed, setChargeNeed] = useState<ChargeNeed | null>(null);
   const [savings, setSavings] = useState<number | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [view, setView] =
-    useState<"dashboard" | "insights" | "chat" | "audit" | "settings" | "system">("dashboard");
+  const [view, setViewState] = useState<ViewName>(() => viewFromHash(window.location.hash));
   // Seed from the localStorage cache so the first paint matches the saved theme (no flash);
   // the fetch below reconciles with the server's canonical value.
   const [theme, setTheme] = useState<Theme>(readStoredTheme);
@@ -257,11 +263,23 @@ export function App() {
       alive = false;
     };
   }, []);
+  useEffect(() => {
+    const onHash = () => setViewState(viewFromHash(window.location.hash));
+    window.addEventListener("hashchange", onHash);
+    return () => window.removeEventListener("hashchange", onHash);
+  }, []);
   // Keep <html data-theme> in sync and cache the choice for the next load's first paint.
   useEffect(() => {
     storeTheme(theme);
     return applyTheme(theme);
   }, [theme]);
+
+  function setView(next: ViewName) {
+    if (window.location.hash !== `#${next}`) {
+      window.location.hash = next;
+    }
+    setViewState(next);
+  }
 
   useEffect(() => {
     // Only poll the dashboard endpoints while the dashboard is visible — Settings has no need

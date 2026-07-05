@@ -282,6 +282,7 @@ test.describe("EMS dashboard", () => {
     await page.goto("/");
     const sw = page.getByTestId("strategy-grid-topup");
     await expect(sw).toBeVisible();
+    await expect(sw).toHaveAttribute("aria-label", "Top up from the grid if the sun falls short");
     await expect(sw).toHaveAttribute("aria-checked", "true");
     await sw.click();
     await expect(sw).toHaveAttribute("aria-checked", "false");
