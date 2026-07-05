@@ -61,12 +61,36 @@ def test_no_price_history_is_honest():
     assert abs(f.grid_import_kwh - 1.0) < 1e-9  # energy is still reported
 
 
-def test_partial_price_coverage_counts_only_priced_slots():
-    rows = _rows([(1, 1, 2000.0, 0.0), (2, 1, 2000.0, 0.0)])  # two hours importing 2 kW
+def test_low_price_coverage_returns_no_money_figures():
+    # Below the coverage floor the € numbers aren't trustworthy (partial revenue mixed with a
+    # full day of battery wear), so we report "—" not a distorted figure. Energy still shown.
+    rows = _rows([(1, 1, 2000.0, 0.0), (2, 1, 2000.0, 0.0)])  # 2 h import, only 1 h priced → 0.5
     f = day_finance(rows, _prices({1: 0.25}), day="2026-06-28")
     assert abs(f.price_coverage - 0.5) < 1e-9
-    assert abs(f.grid_cost_eur - 0.50) < 1e-9  # only the priced hour is costed
-    assert abs(f.grid_import_kwh - 4.0) < 1e-9  # energy covers both hours
+    assert f.grid_cost_eur is None and f.baseline_cost_eur is None and f.saved_eur is None
+    assert f.battery_cost_eur is None
+    assert abs(f.grid_import_kwh - 4.0) < 1e-9  # energy is always reported
+
+
+def test_partial_coverage_does_not_distort_savings():
+    # The reviewed bug: battery wear was charged over the WHOLE day while cost/benefit only used
+    # priced slots. Here the battery discharges 2 kW for 2 h in the UNPRICED evening; only a small
+    # midday import is priced. Old code subtracted full-day wear against a window that saw no
+    # discharge → a distorted (negative) "saving". Now: coverage below the floor → money is None.
+    rows = _rows([(12, 1, 500.0, 0.0), (19, 2, 0.0, 2000.0)])  # priced midday, unpriced discharge
+    f = day_finance(rows, _prices({12: 0.20}), day="2026-06-28", degradation_eur_per_kwh=0.05)
+    assert f.price_coverage < 0.9
+    assert f.saved_eur is None and f.grid_cost_eur is None and f.battery_cost_eur is None
+    assert abs(f.battery_discharge_kwh - 4.0) < 1e-9  # 4 kWh discharged, still reported
+
+
+def test_wear_in_savings_matches_the_priced_window():
+    # When coverage is complete, wear is charged on the (fully-priced) discharge — 4 kWh × €0.05.
+    rows = _rows([(1, 1, 4000.0, -4000.0), (19, 2, 0.0, 2000.0)])
+    prices = _prices({h: 0.20 for h in range(24)})  # whole day priced → coverage 1.0
+    f = day_finance(rows, prices, day="2026-06-28", degradation_eur_per_kwh=0.05)
+    assert f.price_coverage == 1.0
+    assert abs(f.battery_cost_eur - 0.20) < 1e-9  # 4 kWh discharged × €0.05
 
 
 def test_empty_day():

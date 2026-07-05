@@ -244,6 +244,24 @@ def _uslot_totals(slots: list[dict]) -> dict:
     }
 
 
+def history_row_cap(
+    span_seconds: float,
+    cycle_seconds: float,
+    *,
+    margin: float = 2.0,
+    floor: int = 1000,
+    ceiling: int = 200_000,
+) -> int:
+    """Row limit for a history query spanning `span_seconds`, sized to the recorder cadence rather
+    than hardcoded (finding 10). The recorder writes ~one row every `cycle_seconds`, so a report
+    stays correct if the sampling frequency changes (e.g. faster in dev) instead of silently
+    truncating at a fixed 3000/day or a 1-row-per-minute ceiling. `margin` gives headroom for
+    write jitter; the result is clamped to `[floor, ceiling]`."""
+    cadence = max(float(cycle_seconds), 1.0)
+    rows = int(max(span_seconds, 0.0) / cadence) + 1
+    return max(floor, min(ceiling, int(rows * margin)))
+
+
 def create_app(
     source: Source,
     *,
@@ -806,6 +824,61 @@ def create_app(
                     await t
 
     app = FastAPI(title="Smart Energy Manager", version="0.0.1", lifespan=lifespan)
+
+    # --- Access control (SPEC §12) --------------------------------------------------------------
+    # One choke point for the whole JSON API (finding 1) instead of a guard sprinkled on each write.
+    # Writes are ALWAYS gated when a token is configured. Reads are open on the LAN by default so
+    # the dashboard degrades to read-only during an HA outage; set `web.require_auth` to gate reads
+    # too — do that before reaching the app over a VPN / from outside the home network.
+    _WRITE_API_PATHS = frozenset({
+        "/api/override", "/api/settings", "/api/ai/validate", "/api/chat",
+    })
+    # Always reachable without a token: auth discovery, so a client can learn a token is required
+    # and prompt for it. (Health probes live under /health and are never gated here.)
+    _AUTH_EXEMPT_API_PATHS = frozenset({"/api/auth"})
+
+    def _read_auth_required() -> bool:
+        """Whether reads (not just writes) require the token. UI-editable; read live."""
+        return bool(settings_cache.get("web.require_auth", False))
+
+    def _sample_cadence_seconds() -> float:
+        """The recorder's write cadence — one history row per this many seconds. Used to size
+        report/finance row caps to the ACTUAL sampling frequency (finding 10)."""
+        return float(recorder.cycle_seconds) if recorder is not None else 300.0
+
+    _WRITE_METHODS = frozenset({"POST", "PUT", "PATCH", "DELETE"})
+
+    class _AccessMiddleware:
+        """One choke point for the whole JSON API (finding 1) — reuses the same `_authorized`
+        check the writes always used. Deliberately a PURE-ASGI middleware, not
+        `@app.middleware("http")`/`BaseHTTPMiddleware`: the latter wraps each request in an anyio
+        task group, which starves the override endpoint's `asyncio.create_task` control cycle.
+        The SPA shell + static assets stay open (so the browser can load its Access box); every
+        datum it renders comes from a gated /api/* read. No proxy/forwarded headers are trusted —
+        auth is the bearer token only (remote access is the LAN over a VPN); see
+        docs/remote-access.md."""
+
+        def __init__(self, app):
+            self.app = app
+
+        async def __call__(self, scope, receive, send):
+            if scope["type"] == "http":
+                path = scope.get("path", "")
+                if (
+                    path.startswith("/api/")
+                    and path not in _AUTH_EXEMPT_API_PATHS
+                    and _effective_web_token() is not None
+                ):
+                    is_write = (
+                        scope.get("method", "GET").upper() in _WRITE_METHODS
+                        and path in _WRITE_API_PATHS
+                    )
+                    if (is_write or _read_auth_required()) and not _authorized(Request(scope)):
+                        await _auth_error()(scope, receive, send)
+                        return
+            await self.app(scope, receive, send)
+
+    app.add_middleware(_AccessMiddleware)
 
     def _current_plan():
         """Single source of the current plan (DRY) so /api/plan, /api/savings, /api/decision and
@@ -1446,8 +1519,7 @@ def create_app(
 
     @app.post("/api/override")
     async def set_override(request: Request, body: dict | None = None) -> JSONResponse:
-        if not _authorized(request):
-            return _auth_error()
+        # Auth is enforced centrally by the _enforce_access middleware (writes always gated).
         if override_store is None:
             return JSONResponse({"detail": "override store not configured"}, status_code=503)
         body = body or {}
@@ -2114,8 +2186,9 @@ def create_app(
             resp["series"] = build_series([], [], period=period, start=start, end=end, tz=site_tz)
             return resp
         q_end = min(end, now_local + timedelta(minutes=1))  # never query the future
-        # Size the row cap to the window (one row/min ceiling) so week/month/year aren't truncated.
-        limit = min(200_000, int((end - start).total_seconds() / 60) + 1000)
+        # Size the row cap to the window AND the recorder cadence (finding 10) so week/month/year
+        # aren't truncated and it stays correct if the sampling frequency changes.
+        limit = history_row_cap((end - start).total_seconds(), _sample_cadence_seconds())
         raw = await store.raw_between(start.astimezone(UTC).isoformat(),
                                       q_end.astimezone(UTC).isoformat(), limit=limit)
         der = await store.derived_between(start.astimezone(UTC).isoformat(),
@@ -2161,8 +2234,11 @@ def create_app(
                     cur = nxt
                     continue
             q_end = min(nxt, now_local + timedelta(minutes=1))
+            # Cadence-aware per-day cap (finding 10): sized to the recorder frequency, not a fixed
+            # 3000 that would truncate a finer sampling rate.
+            day_limit = history_row_cap((nxt - cur).total_seconds(), _sample_cadence_seconds())
             raw = await store.raw_between(cur.astimezone(UTC).isoformat(),
-                                          q_end.astimezone(UTC).isoformat(), limit=3000)
+                                          q_end.astimezone(UTC).isoformat(), limit=day_limit)
             price_rows = await store.prices_between(cur.astimezone(UTC).isoformat(),
                                                     nxt.astimezone(UTC).isoformat())
             f = day_finance(raw, price_rows, day=day_label,
@@ -2234,8 +2310,7 @@ def create_app(
 
     @app.post("/api/settings")
     async def post_settings(request: Request, body: dict | None = None) -> JSONResponse:
-        if not _authorized(request):
-            return _auth_error()
+        # Auth is enforced centrally by the _enforce_access middleware (writes always gated).
         if settings_store is None:
             return JSONResponse(
                 {"detail": "settings store not configured"}, status_code=503
@@ -2310,9 +2385,7 @@ def create_app(
     @app.post("/api/ai/validate")
     async def ai_validate_now(request: Request) -> JSONResponse:
         """Run an AI second-opinion on demand (the dashboard's "check now"). Advisory; off → 200
-        with latest=null. Auth-gated like other writes; never 500s."""
-        if not _authorized(request):
-            return _auth_error()
+        with latest=null. Auth-gated like other writes (via _enforce_access); never 500s."""
         try:
             result = await _run_validation()
         except Exception:
@@ -2363,8 +2436,7 @@ def create_app(
         """Ask the assistant about the current decisions/dashboard. Grounded ONLY on a redacted
         snapshot (_chat_context); advisory, never touches control. Off → a friendly nudge to enable
         it. Any failure degrades to a safe message, never a 500."""
-        if not _authorized(request):
-            return _auth_error()
+        # Auth is enforced centrally by the _enforce_access middleware (writes always gated).
         try:
             data = await request.json()
         except Exception:

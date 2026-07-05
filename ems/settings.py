@@ -217,9 +217,10 @@ SETTINGS_SCHEMA: tuple[SettingsField, ...] = (
     ),
     SettingsField(
         "planner.degradation_eur_per_kwh", "Battery wear cost", "number", 0.05, "planner",
-        help="A small cost counted for every kWh stored, so the system won't cycle the battery for "
-        "tiny gains.",
-        min=0.0, max=0.5, step=0.01, unit="€/kWh", advanced=True,
+        help="Wear cost per kWh the battery DISCHARGES (delivers) — this prices a full "
+        "charge→discharge cycle once, so the system won't cycle the battery for tiny gains. "
+        "Used both in the planner's break-even and in the measured savings.",
+        min=0.0, max=0.5, step=0.01, unit="€/kWh discharged", advanced=True,
     ),
     SettingsField(
         "planner.risk_margin_eur_per_kwh", "Safety margin", "number", 0.02, "planner",
@@ -298,6 +299,13 @@ SETTINGS_SCHEMA: tuple[SettingsField, ...] = (
         help="Optional. Set a token to require it (as a Bearer token) for any change — saving "
         "settings, manual override, control. Leave blank for open access on your home LAN. "
         "Once set, enter the same token in the Access box at the top to authorise this browser.",
+    ),
+    SettingsField(
+        "web.require_auth", "Require the token to view too", "bool", False, "access",
+        help="Off (default): the read-only dashboard is open on your LAN; only changes need the "
+        "token. On: EVERY page and API read also requires the token. Turn this ON before reaching "
+        "the app over a VPN or from outside your home — otherwise anyone who reaches the port can "
+        "read your energy data. Requires a token to be set.",
     ),
     # --- Insights & reporting (CO₂ accounting factors) ---
     SettingsField(

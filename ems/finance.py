@@ -5,8 +5,18 @@ Pure — the caller supplies one local day's raw rows and stored price slots. Th
 "no battery, same solar + loads" counterfactual: removing the battery from the meter balance gives
 `grid'_w = grid_w + battery_w` per slot (battery + grid + solar = load). Export is credited at the
 spot price (saldering nets volumes until 2027 — revisit with B-05); fixed fees and taxes are the
-same in both worlds and cancel out of `saved_eur`. Slots without a stored price are excluded from
-every € figure and reported via `price_coverage` — no invented numbers.
+same in both worlds and cancel out of `saved_eur`.
+
+Battery wear is charged per **kWh discharged** (`degradation_eur_per_kwh`), which prices a
+charge→discharge cycle once on the energy delivered — the same basis the planner spends in its
+arbitrage break-even.
+
+Every € figure is computed over the SAME priced slots (cost, baseline, and the wear inside
+`saved`), so a partial-price day can't mix partial revenue with a full day of wear. Below
+`COVERAGE_MIN` of the day's sampled slots being priced, the € figures are reported as None (only
+the energy totals + `price_coverage` are given) — no distorted numbers. With prices persisted
+every cycle, a completed day is normally fully priced, so this floor only trips on outages or
+history from before price-storage was running.
 """
 from __future__ import annotations
 
@@ -17,6 +27,7 @@ from datetime import datetime
 from ems.retrospect import _floor, _mean, _parse
 
 _DH = 15 / 60.0  # hours per 15-min slot
+COVERAGE_MIN = 0.9  # need most of the day priced before the € figures are trustworthy
 
 
 @dataclass(frozen=True)
@@ -76,7 +87,8 @@ def day_finance(
         if dt is not None:
             price_by[_floor(dt)] = float(p.get("eur_per_kwh", 0.0))
 
-    imp = exp = chg = dis = 0.0
+    imp = exp = chg = dis = 0.0  # full-day physical energy (always reported)
+    dis_priced = 0.0             # discharge over PRICED slots only → wear inside `saved`
     cost = base_cost = 0.0
     priced = 0
     for slot in sorted(grid_by):
@@ -93,11 +105,15 @@ def day_finance(
         cost += (max(0.0, grid_w) - max(0.0, -grid_w)) * _DH / 1000.0 * price
         baseline_w = grid_w + batt_w  # the meter with the battery removed
         base_cost += (max(0.0, baseline_w) - max(0.0, -baseline_w)) * _DH / 1000.0 * price
+        dis_priced += max(0.0, batt_w) * _DH / 1000.0
 
     n_slots = len(grid_by)
     coverage = priced / n_slots if n_slots else 0.0
-    if priced:
-        battery_cost = dis * degradation_eur_per_kwh
+    # Only give € figures when most of the day is priced — cost, baseline and the wear inside
+    # `saved` then all cover the SAME priced window, so partial revenue can't be mixed with a full
+    # day of wear (the reviewed distortion). Otherwise report energy only.
+    if coverage >= COVERAGE_MIN:
+        battery_cost = dis_priced * degradation_eur_per_kwh
         saved = base_cost - cost - battery_cost
         return DayFinance(day, True, coverage, cost, battery_cost, base_cost, saved,
                           imp, exp, chg, dis)

@@ -15,7 +15,9 @@ final class InsightsStoreTests: XCTestCase {
         XCTAssertEqual(store.finance?.totals.savedEur, 0.46)
         XCTAssertFalse(store.isLoading)
         XCTAssertNil(store.errorMessage)
-        XCTAssertEqual(transport.requestedQueries, [
+        // Report and finance are fetched concurrently (async let), so the transport may see them
+        // in either order. Assert the SET of requests, not a fixed sequence, or CI flakes.
+        XCTAssertEqual(Set(transport.requestedQueries), [
             "/api/report?period=week&date=2026-07-01",
             "/api/finance?period=week&date=2026-07-01",
         ])
@@ -47,7 +49,9 @@ final class InsightsStoreTests: XCTestCase {
         await store.movePeriod(direction: -1)
 
         XCTAssertEqual(store.anchor, "2026-06-27")
-        XCTAssertEqual(transport.requestedQueries.first, "/api/report?period=week&date=2026-06-27")
+        // Concurrent fetch: assert the request was issued for the new anchor, not that it was first.
+        XCTAssertTrue(transport.requestedQueries.contains("/api/report?period=week&date=2026-06-27"))
+        XCTAssertTrue(transport.requestedQueries.contains("/api/finance?period=week&date=2026-06-27"))
     }
 
     func testRefreshFailureKeepsPreviousReportAndSetsError() async {
@@ -63,6 +67,67 @@ final class InsightsStoreTests: XCTestCase {
         XCTAssertEqual(store.report, previous)
         XCTAssertNotNil(store.errorMessage)
         XCTAssertFalse(store.isLoading)
+    }
+
+    func testSuccessSetsLastUpdatedAndClearsStale() async {
+        let transport = InsightsRoutingTransport()
+        let client = APIClient(baseURL: URL(string: "http://ems.local:8080")!, transport: transport)
+        let fixed = Date(timeIntervalSince1970: 1_780_000_000)
+        let store = InsightsStore(client: client, period: .day, anchor: "2026-07-04", now: { fixed })
+
+        await store.refresh()
+
+        XCTAssertEqual(store.lastUpdatedAt, fixed)
+        XCTAssertFalse(store.isStale)
+        XCTAssertNil(store.errorMessage)
+    }
+
+    func testFailureAfterDataSetsStaleAndKeepsLastUpdated() async {
+        let transport = InsightsRoutingTransport()
+        let client = APIClient(baseURL: URL(string: "http://ems.local:8080")!, transport: transport)
+        let fixed = Date(timeIntervalSince1970: 1_780_000_000)
+        let store = InsightsStore(client: client, period: .day, anchor: "2026-07-04", now: { fixed })
+        await store.refresh()
+
+        transport.shouldFail = true
+        await store.refresh()
+
+        XCTAssertTrue(store.isStale)
+        XCTAssertNotNil(store.report)                 // old data still visible
+        XCTAssertEqual(store.lastUpdatedAt, fixed)     // last good time preserved
+        XCTAssertNotNil(store.errorMessage)
+    }
+
+    func testSwitchingServersClearsCachedDataImmediately() async {
+        let transport = InsightsRoutingTransport()
+        let clientA = APIClient(baseURL: URL(string: "http://ems-a.local:8080")!, transport: transport)
+        let store = InsightsStore(client: clientA, period: .day, anchor: "2026-07-04")
+        await store.refresh()
+        XCTAssertNotNil(store.report)
+
+        // Reconnect to a DIFFERENT backend — previous server's data must be gone at once, before
+        // any refresh, so server A's private numbers never render under server B.
+        let clientB = APIClient(baseURL: URL(string: "http://ems-b.local:8080")!, transport: transport)
+        store.setClient(clientB)
+
+        XCTAssertNil(store.report)
+        XCTAssertNil(store.finance)
+        XCTAssertNil(store.errorMessage)
+        XCTAssertNil(store.lastUpdatedAt)
+        XCTAssertFalse(store.isStale)
+    }
+
+    func testReassigningSameServerKeepsCachedData() async {
+        let transport = InsightsRoutingTransport()
+        let url = URL(string: "http://ems.local:8080")!
+        let store = InsightsStore(client: APIClient(baseURL: url, transport: transport), period: .day, anchor: "2026-07-04")
+        await store.refresh()
+        let previous = store.report
+
+        // Re-wiring the same server (e.g. on every dashboard tick) must not wipe/flash the data.
+        store.setClient(APIClient(baseURL: url, transport: transport))
+
+        XCTAssertEqual(store.report, previous)
     }
 }
 

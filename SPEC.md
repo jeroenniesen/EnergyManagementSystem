@@ -750,7 +750,7 @@ You can run the whole app on a laptop (e.g. a **Mac**) with **no Home Assistant,
 
 ## 12. Security
 
-- **Auth:** replace any bare token with **bearer or basic auth over LAN**; document a **reverse proxy + TLS** if ever exposed. **Do not expose the EMS port to the internet.**
+- **Auth:** a **bearer token over LAN**. Writes (override / settings / control) **always** require the token when one is set; reads are open on the LAN by default (guest read-only) but can be locked with **`web.require_auth`**, which requires the token for **every `/api/*` read too** — turn it on before reaching the app over a VPN or from outside the home. Auth is one pure-ASGI choke point in front of the whole JSON API (no per-endpoint guards; no forwarded/proxy headers trusted). **Do not expose the EMS port to the internet.** **Remote access = the LAN over a VPN** (never a public proxy) — see [`docs/remote-access.md`](docs/remote-access.md) for the supported model, trust boundaries, token rotation, logging and control permissions.
 - **Secrets** (Tibber/Solcast/HA/web tokens, **external-LLM API key**) via **env / secret files only** — **never** in the SQLite settings store, never in logs.
 - **Redaction:** tokens/keys are **redacted from any debug dump, export, or log line**.
 - **CSRF / same-origin:** settings `POST`s require a same-origin check or CSRF token (the UI is browser-accessible).
