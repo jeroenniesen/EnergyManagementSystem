@@ -75,7 +75,7 @@ from ems.sources.base import Source
 from ems.sources.battery import BatteryDriver
 from ems.sources.forecast import SolarForecastSource, day_kwh_p50
 from ems.sources.indevolt import aggregate_soc
-from ems.sources.prices import PriceSource, current_price
+from ems.sources.prices import PriceSlot, PriceSource, current_price
 from ems.storage.audit import AuditStore
 from ems.storage.cache import CacheStore
 from ems.storage.history import DERIVED_COLUMNS, RAW_COLUMNS, HistoryStore
@@ -1820,6 +1820,19 @@ def create_app(
             markers.append("Battery covers the evening peak")
         return markers
 
+    async def _window_price_slots(start_iso: str, end_iso: str) -> list:
+        """Prices for a PAST window. Uses the persisted `price_slots` (the recorder saves the curve
+        each cycle) so historical slots keep the price that was active then — the live feed only
+        carries the current day/tomorrow, which left yesterday's price bars blank. The live feed is
+        still included for any recent slot not yet persisted; build_past_story keys by slot start,
+        so overlaps are harmless (the stored value wins)."""
+        live = list(price_source.slots()) if price_source is not None else []
+        if store is None:
+            return live
+        rows = await store.prices_between(start_iso, end_iso)
+        stored = [PriceSlot(datetime.fromisoformat(r["start_ts"]), r["eur_per_kwh"]) for r in rows]
+        return live + stored
+
     async def _recent_actuals(now: datetime) -> list[dict]:
         """The last RECENT_HOURS of RECORDED actuals on the 15-min grid (oldest→now), so the planner
         timeline can show what really happened just before now: actual SoC, actual solar, and the
@@ -1832,7 +1845,7 @@ def create_app(
         if not raw:
             return []
         der = await store.recent_derived_since(cutoff)
-        prices = price_source.slots() if price_source is not None else []
+        prices = await _window_price_slots(cutoff, now.isoformat())
         story = build_past_story(raw, der, prices, now)
         return [
             _uslot(ps.start, ps.soc_pct, ps.grid_w, ps.solar_w, ps.battery_w, ps.load_w,
@@ -1962,7 +1975,7 @@ def create_app(
         cutoff = (now - timedelta(hours=24)).isoformat()
         raw = await store.recent_raw_since(cutoff) if store is not None else []
         der = await store.recent_derived_since(cutoff) if store is not None else []
-        prices = price_source.slots() if price_source is not None else []
+        prices = await _window_price_slots(cutoff, now.isoformat()) if store is not None else []
         story = build_past_story(raw, der, prices, now)
         slots = [
             _uslot(ps.start, ps.soc_pct, ps.grid_w, ps.solar_w, ps.battery_w, ps.load_w,
@@ -2089,7 +2102,10 @@ def create_app(
         start, end, label, partial = resolve_window(period, anchor, site_tz, now_local)
         grid_factor = float(settings_cache.get("reporting.grid_co2_factor", 0.27))
         gas_factor = float(settings_cache.get("reporting.gas_co2_factor", 1.78))
-        prices = price_source.slots() if price_source is not None else []
+        # Stored prices so the best-price score is right for HISTORICAL windows too, not just
+        # whatever the live feed still carries.
+        prices = await _window_price_slots(start.astimezone(UTC).isoformat(),
+                                           end.astimezone(UTC).isoformat())
         # Future / no store → an honest empty report (has_data False), never an error.
         if store is None or start > now_local:
             resp = build_report([], [], prices, period=period, start=start, end=end, label=label,
