@@ -85,6 +85,26 @@ SETTINGS_SCHEMA: tuple[SettingsField, ...] = (
         help="Personal token from developer.tibber.com. Stored locally; leave blank to keep the "
         "current value.", applies="restart",
     ),
+    SettingsField(
+        "prices.export_price_model", "Export (feed-in) value", "enum", "net_metering", "prices",
+        help="How much each kWh you export (feed back to the grid) is worth. Until 2027, Dutch "
+        "net-metering (saldering) nets your export against your import at the FULL price — that's "
+        "net-metering, today's behaviour. Switch to spot-minus-tax when saldering ends (2027), or "
+        "if your dynamic contract already pays the spot price minus energy tax for export; pick "
+        "fixed if your contract pays a flat feed-in tariff regardless of the spot price.",
+        options=("net_metering", "spot_minus_tax", "fixed"),
+    ),
+    SettingsField(
+        "prices.energy_tax_eur_per_kwh", "Export energy tax", "number", 0.13, "prices",
+        help="Energy tax subtracted from the spot price when export is valued at spot-minus-tax "
+        "(post-2027 dynamic contracts).",
+        min=0.0, max=0.5, step=0.005, unit="€/kWh", advanced=True,
+    ),
+    SettingsField(
+        "prices.fixed_feed_in_eur_per_kwh", "Fixed feed-in tariff", "number", 0.01, "prices",
+        help="Flat price paid per exported kWh when the export value is set to fixed.",
+        min=0.0, max=0.5, step=0.005, unit="€/kWh", advanced=True,
+    ),
     # --- Battery (Indevolt) — connection + capacity/reserve ---
     SettingsField(
         "battery.indevolt_ip", "Indevolt main tower IP", "text", "", "battery",

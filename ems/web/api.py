@@ -265,8 +265,9 @@ def history_row_cap(
 
 
 # Bump when the finance math changes so completed-day rows cached under the OLD formula are
-# recomputed instead of served stale (finding 4). v2 = same-window wear (dis_priced) + price-gate.
-_FINANCE_CALC_VERSION = 2
+# recomputed instead of served stale (finding 4). v2 = same-window wear (dis_priced) + price-gate;
+# v3 = export credited via the configurable feed-in model (B-05), not always the full spot price.
+_FINANCE_CALC_VERSION = 3
 
 
 def create_app(
@@ -2432,6 +2433,9 @@ def create_app(
             if cached and cached[0]["data"].get("calc_v") == _FINANCE_CALC_VERSION:
                 return cached[0]["data"]
         degradation = float(settings_cache.get("planner.degradation_eur_per_kwh", 0.05))
+        export_model = str(settings_cache.get("prices.export_price_model", "net_metering"))
+        energy_tax = float(settings_cache.get("prices.energy_tax_eur_per_kwh", 0.13))
+        fixed_feed_in = float(settings_cache.get("prices.fixed_feed_in_eur_per_kwh", 0.01))
         q_end = min(nxt, now_local + timedelta(minutes=1))
         # Cadence-aware per-day cap (finding 10): sized to the recorder frequency, not a fixed
         # 3000 that would truncate a finer sampling rate.
@@ -2441,7 +2445,10 @@ def create_app(
         price_rows = await store.prices_between(cur.astimezone(UTC).isoformat(),
                                                 nxt.astimezone(UTC).isoformat())
         f = day_finance(raw, price_rows, day=day_label,
-                        degradation_eur_per_kwh=degradation).to_dict()
+                        degradation_eur_per_kwh=degradation,
+                        export_price_model=export_model,
+                        energy_tax_eur_per_kwh=energy_tax,
+                        fixed_feed_in_eur_per_kwh=fixed_feed_in).to_dict()
         f["calc_v"] = _FINANCE_CALC_VERSION
         if completed:
             await store.upsert_daily_finance(day_label, f)

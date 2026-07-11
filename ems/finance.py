@@ -3,9 +3,12 @@ measured from recorded history, not from the plan (backlog B-03; spec 2026-07-03
 
 Pure — the caller supplies one local day's raw rows and stored price slots. The baseline is the
 "no battery, same solar + loads" counterfactual: removing the battery from the meter balance gives
-`grid'_w = grid_w + battery_w` per slot (battery + grid + solar = load). Export is credited at the
-spot price (saldering nets volumes until 2027 — revisit with B-05); fixed fees and taxes are the
-same in both worlds and cancel out of `saved_eur`.
+`grid'_w = grid_w + battery_w` per slot (battery + grid + solar = load). Export is credited via
+`economics.export_value` under the configured feed-in model — default `net_metering` (full price,
+today's saldering); `spot_minus_tax` / `fixed` model the post-2027 world (B-05) — applied to BOTH
+the actual and the baseline cost so the comparison stays honest (under a low feed-in the baseline
+household, which exports more, is penalised more, so the battery's measured benefit honestly grows).
+Fixed fees and taxes are the same in both worlds and cancel out of `saved_eur`.
 
 Battery wear is charged per **kWh discharged** (`degradation_eur_per_kwh`), which prices a
 charge→discharge cycle once on the energy delivered — the same basis the planner spends in its
@@ -22,6 +25,7 @@ from collections import defaultdict
 from dataclasses import dataclass
 from datetime import datetime
 
+from ems.planner.economics import export_value
 from ems.retrospect import _floor, _mean, _parse
 
 _DH = 15 / 60.0  # hours per 15-min slot
@@ -65,9 +69,16 @@ def day_finance(
     *,
     day: str,
     degradation_eur_per_kwh: float = 0.05,
+    export_price_model: str = "net_metering",
+    energy_tax_eur_per_kwh: float = 0.13,
+    fixed_feed_in_eur_per_kwh: float = 0.01,
 ) -> DayFinance:
     """One day's finance from raw samples (`ts`, `grid_power_w`, `battery_power_w`; the caller
-    windows the rows to the local day) and stored price slots (`start_ts`, `eur_per_kwh`)."""
+    windows the rows to the local day) and stored price slots (`start_ts`, `eur_per_kwh`).
+
+    `export_price_model` (+ `energy_tax_eur_per_kwh` / `fixed_feed_in_eur_per_kwh`) picks how
+    exported energy is valued (see module docstring / `economics.export_value`); the default
+    `net_metering` credits export at the full spot price — today's saldering behaviour."""
     grid_by: dict[datetime, list[float]] = defaultdict(list)
     batt_by: dict[datetime, list[float]] = defaultdict(list)
     for r in raw_rows:
@@ -99,9 +110,15 @@ def day_finance(
         if price is None:
             continue
         priced += 1
-        cost += (max(0.0, grid_w) - max(0.0, -grid_w)) * _DH / 1000.0 * price
+        # Import costs the full price; export earns the feed-in VALUE (full price under saldering,
+        # less post-2027 — may even be negative). Same credit in both worlds so `saved` stays fair.
+        credit = export_value(price, model=export_price_model,
+                              energy_tax_eur_per_kwh=energy_tax_eur_per_kwh,
+                              fixed_feed_in_eur_per_kwh=fixed_feed_in_eur_per_kwh)
+        cost += (max(0.0, grid_w) * price - max(0.0, -grid_w) * credit) * _DH / 1000.0
         baseline_w = grid_w + batt_w  # the meter with the battery removed
-        base_cost += (max(0.0, baseline_w) - max(0.0, -baseline_w)) * _DH / 1000.0 * price
+        base_cost += (max(0.0, baseline_w) * price
+                      - max(0.0, -baseline_w) * credit) * _DH / 1000.0
         dis_priced += max(0.0, batt_w) * _DH / 1000.0
 
     n_slots = len(grid_by)

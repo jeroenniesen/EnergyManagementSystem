@@ -292,11 +292,10 @@ def test_export_package_backfill_is_best_effort_per_day(tmp_path, monkeypatch):
     import ems.web.api as api_mod
     real_day_finance = api_mod.day_finance
 
-    def flaky_day_finance(raw, price_rows, *, day, degradation_eur_per_kwh):
+    def flaky_day_finance(raw, price_rows, *, day, **kwargs):
         if day == flaky_day:
             raise RuntimeError("boom — simulated compute failure")
-        return real_day_finance(raw, price_rows, day=day,
-                                degradation_eur_per_kwh=degradation_eur_per_kwh)
+        return real_day_finance(raw, price_rows, day=day, **kwargs)
 
     monkeypatch.setattr(api_mod, "day_finance", flaky_day_finance)
 

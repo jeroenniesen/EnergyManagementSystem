@@ -18,6 +18,7 @@ from dataclasses import dataclass
 from datetime import datetime
 
 from ems.domain import BatteryIntent
+from ems.planner import economics
 from ems.planner.schedule import SLOT, Plan, PlanSlot
 from ems.sources.forecast import ForecastSlot
 from ems.sources.prices import PriceSlot
@@ -61,8 +62,12 @@ def plan_adaptive(
     # The price at which charging starts to pay (cheapest-quartile price + round-trip losses).
     ranked = sorted(p.eur_per_kwh for p in future)
     charge_price = ranked[len(ranked) // 4]
-    breakeven = (charge_price / cfg.round_trip_efficiency
-                 + cfg.degradation_eur_per_kwh + cfg.risk_margin_eur_per_kwh)
+    breakeven = economics.breakeven(
+        charge_price,
+        round_trip_efficiency=cfg.round_trip_efficiency,
+        degradation_eur_per_kwh=cfg.degradation_eur_per_kwh,
+        risk_margin_eur_per_kwh=cfg.risk_margin_eur_per_kwh,
+    )
 
     def net_w(p: PriceSlot) -> float:  # + deficit (load over solar) / − surplus
         return load_w_by.get(p.start, 0.0) - p50.get(p.start, 0.0)
