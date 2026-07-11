@@ -1,6 +1,7 @@
 import asyncio
 from datetime import UTC, datetime
 
+from ems.domain import RawSample
 from ems.freshness import Freshness, FreshnessTracker
 from ems.sense import SIGNALS, Recorder
 from ems.sources.mock import MockSource
@@ -12,6 +13,19 @@ NOW = datetime(2026, 6, 27, 10, 0, tzinfo=UTC)
 class _BoomSource:
     def read(self):
         raise RuntimeError("boom")
+
+
+class _ImplausibleBatterySource:
+    """Stub reporting a gross out-of-range battery reading (sensor/comms glitch)."""
+
+    def read(self):
+        return RawSample(
+            grid_power_w=200.0,
+            solar_power_w=0.0,
+            battery_power_w=50000.0,
+            ev_power_w=0.0,
+            soc_pct=55.0,
+        )
 
 
 class _BoomStore:
@@ -35,6 +49,39 @@ def test_sense_once_records_and_marks_fresh(tmp_path):
     assert rows[0]["grid_power_w"] == 200
     for sig in SIGNALS:
         assert fresh.state(sig, NOW) is Freshness.FRESH
+
+
+def test_sense_once_clamps_implausible_battery_reading(tmp_path):
+    # Defense-in-depth: a gross out-of-range battery reading (sensor/comms glitch) must be
+    # clamped before it's stored or reconstructed, and counted for visibility.
+    store = HistoryStore(str(tmp_path / "ems.sqlite"))
+    fresh = FreshnessTracker(stale_after_s=600)
+    fresh.register(*SIGNALS)
+    rec = Recorder(_ImplausibleBatterySource(), store, fresh)
+
+    async def run():
+        await store.init()
+        await rec.sense_once(NOW)
+        return await store.recent_raw(10)
+
+    rows = asyncio.run(run())
+    assert len(rows) == 1
+    assert rows[0]["battery_power_w"] == 20000.0
+    assert rec.health()["clamped_samples"] == 1
+
+
+def test_sense_once_normal_reading_does_not_clamp(tmp_path):
+    store = HistoryStore(str(tmp_path / "ems.sqlite"))
+    fresh = FreshnessTracker(stale_after_s=600)
+    fresh.register(*SIGNALS)
+    rec = Recorder(MockSource(), store, fresh)
+
+    async def run():
+        await store.init()
+        await rec.sense_once(NOW)
+
+    asyncio.run(run())
+    assert rec.health()["clamped_samples"] == 0
 
 
 def test_record_now_writes_a_sample(tmp_path):
