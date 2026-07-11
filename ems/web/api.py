@@ -2485,8 +2485,9 @@ def create_app(
     @app.get("/api/export/package")
     async def export_package_endpoint(days: int = Query(default=90, ge=1, le=400)) -> Response:
         """One ZIP: the recorded history as analytics-ready CSVs (energy, prices, daily finance,
-        audit trail) plus a manifest for validating production operation. Read-only. Secrets are
-        never included (config in the manifest comes from `public_values`, which masks tokens)."""
+        audit trail) plus a manifest for validating production operation. Read-only and privacy-safe
+        to share: the manifest carries only the replay-safe settings subset — no tokens, IPs or
+        location."""
         now = datetime.now(UTC)
         start = now - timedelta(days=days)
         start_iso, end_iso = start.isoformat(), now.isoformat()
@@ -2505,6 +2506,19 @@ def create_app(
             finance = [r["data"] for r in fin_rows]
         if audit_store is not None:
             audit = list(reversed(await audit_store.recent(limit=5000)))  # oldest→newest
+        # Production-validation payload — privacy-safe (only the replay-safe settings, no IPs /
+        # tokens / location). Lets a reviewer see run mode, the planner knobs in effect, and live
+        # health (data quality, whether the battery capability probed, recorder liveness).
+        validation = {
+            "operational": {"dry_run": dry_run, "dev_mode": dev_mode, "timezone": str(tz)},
+            "config": {k: settings_cache.get(k)
+                       for k in _REPLAY_SETTING_KEYS if k in settings_cache},
+            "health": {
+                "data_quality": _data_quality(now),
+                "capability_present": _capability_box["cap"] is not None,
+                "recorder": recorder.health() if recorder is not None else None,
+            },
+        }
         members = {
             "raw_samples.csv": expkg.rows_to_csv(raw, expkg.RAW_COLUMNS),
             "derived_samples.csv": expkg.rows_to_csv(derived, expkg.DERIVED_COLUMNS),
@@ -2517,6 +2531,7 @@ def create_app(
                 counts={"raw_samples": len(raw), "derived_samples": len(derived),
                         "prices": len(prices), "daily_finance": len(finance),
                         "audit_log": len(audit)},
+                extra=validation,
             ),
         }
         data = expkg.build_zip(members)

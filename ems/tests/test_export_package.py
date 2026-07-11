@@ -121,3 +121,21 @@ def test_export_package_endpoint_returns_zip_with_all_members(tmp_path):
     assert manifest["kind"] == "ems-export-package"
     assert manifest["counts"]["raw_samples"] == 1
     assert manifest["counts"]["prices"] == 1
+
+
+def test_manifest_carries_validation_payload_and_no_secrets(tmp_path):
+    db = str(tmp_path / "ems.sqlite")
+    _seed(db)
+    with TestClient(_app(db)) as c:
+        data = c.get("/api/export/package").content
+    manifest = json.loads(read_member(data, "manifest.json"))
+    # Production-validation payload present.
+    assert manifest["operational"]["dry_run"] is True
+    assert "timezone" in manifest["operational"]
+    assert "strategy.mode" in manifest["config"]              # replay-safe planner knobs
+    assert "data_quality" in manifest["health"]
+    assert "capability_present" in manifest["health"]
+    # Privacy: no secrets / IPs / location keys anywhere in the manifest text.
+    blob = json.dumps(manifest).lower()
+    for leak in ("token", "secret", "_ip", "\"ip\"", "lat", "lon", "password"):
+        assert leak not in blob, f"manifest leaked a sensitive key: {leak}"
