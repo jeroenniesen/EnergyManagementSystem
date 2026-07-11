@@ -154,3 +154,29 @@ def test_package_includes_readme_and_validation_summary(tmp_path):
     assert "Run mode:" in summary and "DRY-RUN" in summary              # run mode legible
     assert "Measured savings over the window: €0.42" in summary         # savings total from finance
     assert "Data quality:" in summary
+
+
+def test_package_never_leaks_a_stored_secret_value(tmp_path):
+    # Definitive redaction check: seed a recognisable secret value + a config-change audit that
+    # names the secret KEY, then assert the secret VALUE appears in NO member of the ZIP.
+    db = str(tmp_path / "ems.sqlite")
+    secret = "S3CRET-TOKEN-DO-NOT-LEAK"
+
+    async def seed_secret():
+        settings = SettingsStore(db)
+        await settings.init()
+        await settings.set_many({"access.web_token": secret, "tibber.token": secret})
+        audit = AuditStore(db)
+        await audit.init()
+        await audit.append("2026-06-28T11:00:00+00:00", "config_change",
+                           "Changed 1 setting(s): access.web_token",
+                           {"keys": ["access.web_token"], "secrets": ["access.web_token"]})
+
+    _seed(db)
+    asyncio.run(seed_secret())
+    with TestClient(_app(db)) as c:
+        data = c.get("/api/export/package").content
+    for name in zip_names(data):
+        assert secret not in read_member(data, name), f"secret leaked into {name}"
+    # The audit entry is present (by key name), proving we didn't just drop the data.
+    assert "access.web_token" in read_member(data, "audit_log.csv")
