@@ -138,6 +138,7 @@ def test_validation_summary_includes_incidents_section():
 
 # ---- endpoint: GET /api/export/package returns a ZIP of the CSVs + manifest ----
 import asyncio  # noqa: E402
+from datetime import UTC, datetime, timedelta  # noqa: E402
 from zoneinfo import ZoneInfo  # noqa: E402
 
 from fastapi.testclient import TestClient  # noqa: E402
@@ -149,7 +150,7 @@ from ems.sources.prices import MockPriceSource  # noqa: E402
 from ems.storage.audit import AuditStore  # noqa: E402
 from ems.storage.history import HistoryStore  # noqa: E402
 from ems.storage.settings import SettingsStore  # noqa: E402
-from ems.web.api import create_app  # noqa: E402
+from ems.web.api import _FINANCE_CALC_VERSION, create_app  # noqa: E402
 
 AMS = ZoneInfo("Europe/Amsterdam")
 
@@ -164,8 +165,12 @@ def _seed(db: str) -> None:
         await store.upsert_price_slots([("2026-06-28T10:00:00+00:00", 0.18)])
         await store.upsert_forecast_snapshot(
             "2026-06-28", [("2026-06-28T10:00:00+00:00", 1000.0, 2000.0, 3000.0)])
+        # calc_v stamped so the export's backfill (which now runs _ensure_day_finance over every
+        # completed day in its window) trusts this as an up-to-date cache hit instead of treating
+        # it as stale and recomputing it from the raw sample above (which would overwrite 0.42).
         await store.upsert_daily_finance("2026-06-28", {"day": "2026-06-28", "has_data": True,
-                                                         "saved_eur": 0.42, "price_coverage": 1.0})
+                                                         "saved_eur": 0.42, "price_coverage": 1.0,
+                                                         "calc_v": _FINANCE_CALC_VERSION})
         await store.record_plan("2026-06-28T10:00:00+00:00", {
             "strategy": "winter", "target_soc": 80.0,
             "deadline": "2026-06-28T18:00:00+00:00", "soc_pct": 55.0,
@@ -211,6 +216,92 @@ def test_export_package_endpoint_returns_zip_with_all_members(tmp_path):
     assert manifest["counts"]["prices"] == 1
     assert manifest["counts"]["forecasts"] == 1
     assert manifest["counts"]["plan_history"] == 1
+
+
+def test_export_package_backfills_daily_finance_for_unviewed_days(tmp_path):
+    # /api/finance only computes+stores a completed day's rollup when that day's window is
+    # actually VIEWED, so a day nobody looked at is missing from `daily_finance` — the 07-04/07-05
+    # -style export gap. Seed 3 consecutive completed days of raw+price history but pre-populate
+    # `daily_finance` for only ONE of them (simulating "the user only ever opened one day's
+    # finance view"); the export must self-complete the other two before reading the table back.
+    # Days are relative to "today" (real wall clock) so the test is stable regardless of when it
+    # runs, and a tight window (days=6) keeps the backfill sweep small and its count predictable.
+    db = str(tmp_path / "ems.sqlite")
+    today = datetime.now(UTC).date()
+    day_list = [(today - timedelta(days=n)).isoformat() for n in (4, 3, 2)]  # 3 consecutive days
+
+    async def seed():
+        store = HistoryStore(db)
+        await store.init()
+        for d in day_list:
+            ts = f"{d}T12:00:00+00:00"
+            raw = RawSample(grid_power_w=500.0, solar_power_w=0.0, battery_power_w=0.0,
+                            ev_power_w=0.0, soc_pct=50.0)
+            await store.record(ts, raw, reconstruct(raw))
+            await store.upsert_price_slots([(ts, 0.20)])
+        # Only the FIRST day was ever "viewed" — pre-cached with the CURRENT calc_v, so the
+        # backfill must trust it as-is (return the sentinel, not a freshly computed value).
+        await store.upsert_daily_finance(day_list[0], {
+            "day": day_list[0], "has_data": True, "saved_eur": -0.99, "price_coverage": 1.0,
+            "calc_v": _FINANCE_CALC_VERSION,
+        })
+    asyncio.run(seed())
+
+    with TestClient(_app(db)) as c:
+        r = c.get("/api/export/package?days=6")
+    assert r.status_code == 200
+    data = r.content
+    csv_text = read_member(data, "daily_finance.csv")
+    for d in day_list:
+        assert d in csv_text  # all three days present — the export backfilled the missing two
+    assert "-0.99" in csv_text  # the pre-cached day's stored value was trusted, not recomputed
+
+    manifest = json.loads(read_member(data, "manifest.json"))
+    assert manifest["counts"]["daily_finance"] >= 3  # at least the 3 target days made it in
+
+    async def rollup():
+        s = HistoryStore(db)
+        return await s.daily_finance_between(day_list[0], today.isoformat())
+    rows = asyncio.run(rollup())
+    assert {row["day"] for row in rows} >= set(day_list)  # backfill PERSISTED, not just returned
+
+
+def test_export_package_backfill_is_best_effort_per_day(tmp_path, monkeypatch):
+    # A single day's compute blowing up must not take down the whole export — it's logged and
+    # skipped, and the rest of the window still exports (200, with the other days present).
+    db = str(tmp_path / "ems.sqlite")
+    today = datetime.now(UTC).date()
+    day_list = [(today - timedelta(days=n)).isoformat() for n in (4, 3, 2)]
+    flaky_day = day_list[1]
+
+    async def seed():
+        store = HistoryStore(db)
+        await store.init()
+        for d in day_list:
+            ts = f"{d}T12:00:00+00:00"
+            raw = RawSample(grid_power_w=500.0, solar_power_w=0.0, battery_power_w=0.0,
+                            ev_power_w=0.0, soc_pct=50.0)
+            await store.record(ts, raw, reconstruct(raw))
+            await store.upsert_price_slots([(ts, 0.20)])
+    asyncio.run(seed())
+
+    import ems.web.api as api_mod
+    real_day_finance = api_mod.day_finance
+
+    def flaky_day_finance(raw, price_rows, *, day, degradation_eur_per_kwh):
+        if day == flaky_day:
+            raise RuntimeError("boom — simulated compute failure")
+        return real_day_finance(raw, price_rows, day=day,
+                                degradation_eur_per_kwh=degradation_eur_per_kwh)
+
+    monkeypatch.setattr(api_mod, "day_finance", flaky_day_finance)
+
+    with TestClient(_app(db)) as c:
+        r = c.get("/api/export/package?days=6")
+    assert r.status_code == 200  # one bad day doesn't fail the export
+    csv_text = read_member(r.content, "daily_finance.csv")
+    assert day_list[0] in csv_text and day_list[2] in csv_text
+    assert flaky_day not in csv_text  # the failing day is skipped, not fatal
 
 
 def test_manifest_carries_validation_payload_and_no_secrets(tmp_path):

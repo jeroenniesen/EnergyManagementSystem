@@ -2410,6 +2410,39 @@ def create_app(
         resp["series"] = build_series(raw, der, period=period, start=start, end=end, tz=site_tz)
         return resp
 
+    async def _ensure_day_finance(day_local: date_cls) -> dict:
+        """Compute (or return the current-version cached) finance rollup for one LOCAL day,
+        persisting it once the day is completed. Shared by `/api/finance` (called per day of the
+        viewed window) and the export package (which backfills every completed day in ITS window,
+        so `daily_finance.csv` covers days no one ever viewed — not just previously-cached ones).
+        `store` must not be None (both call sites already guard that)."""
+        now_local = datetime.now(UTC).astimezone(site_tz)
+        day_label = day_local.isoformat()
+        cur = datetime(day_local.year, day_local.month, day_local.day, tzinfo=site_tz)
+        nxt = cur + timedelta(days=1)
+        completed = nxt <= now_local
+        if completed:
+            cached = await store.daily_finance_between(day_label, nxt.date().isoformat())
+            # Only trust a cache entry written by the CURRENT finance formula; a day cached
+            # under an older version is recomputed (re-upserted) so a math fix reaches history.
+            if cached and cached[0]["data"].get("calc_v") == _FINANCE_CALC_VERSION:
+                return cached[0]["data"]
+        degradation = float(settings_cache.get("planner.degradation_eur_per_kwh", 0.05))
+        q_end = min(nxt, now_local + timedelta(minutes=1))
+        # Cadence-aware per-day cap (finding 10): sized to the recorder frequency, not a fixed
+        # 3000 that would truncate a finer sampling rate.
+        day_limit = history_row_cap((nxt - cur).total_seconds(), _sample_cadence_seconds())
+        raw = await store.raw_between(cur.astimezone(UTC).isoformat(),
+                                      q_end.astimezone(UTC).isoformat(), limit=day_limit)
+        price_rows = await store.prices_between(cur.astimezone(UTC).isoformat(),
+                                                nxt.astimezone(UTC).isoformat())
+        f = day_finance(raw, price_rows, day=day_label,
+                        degradation_eur_per_kwh=degradation).to_dict()
+        f["calc_v"] = _FINANCE_CALC_VERSION
+        if completed:
+            await store.upsert_daily_finance(day_label, f)
+        return f
+
     @app.get("/api/finance")
     async def finance(
         period: str = Query(default="day", pattern="^(day|week|month|year)$"),
@@ -2429,37 +2462,11 @@ def create_app(
         else:
             anchor = now_local.date()
         start, end, label, partial = resolve_window(period, anchor, site_tz, now_local)
-        degradation = float(settings_cache.get("planner.degradation_eur_per_kwh", 0.05))
         days: list[dict] = []
         cur = start
         while cur < end and cur <= now_local and store is not None:
-            day_label = cur.date().isoformat()
-            nxt = cur + timedelta(days=1)
-            completed = nxt <= now_local
-            if completed:
-                cached = await store.daily_finance_between(
-                    day_label, (cur.date() + timedelta(days=1)).isoformat())
-                # Only trust a cache entry written by the CURRENT finance formula; a day cached
-                # under an older version is recomputed (re-upserted) so a math fix reaches history.
-                if cached and cached[0]["data"].get("calc_v") == _FINANCE_CALC_VERSION:
-                    days.append(cached[0]["data"])
-                    cur = nxt
-                    continue
-            q_end = min(nxt, now_local + timedelta(minutes=1))
-            # Cadence-aware per-day cap (finding 10): sized to the recorder frequency, not a fixed
-            # 3000 that would truncate a finer sampling rate.
-            day_limit = history_row_cap((nxt - cur).total_seconds(), _sample_cadence_seconds())
-            raw = await store.raw_between(cur.astimezone(UTC).isoformat(),
-                                          q_end.astimezone(UTC).isoformat(), limit=day_limit)
-            price_rows = await store.prices_between(cur.astimezone(UTC).isoformat(),
-                                                    nxt.astimezone(UTC).isoformat())
-            f = day_finance(raw, price_rows, day=day_label,
-                            degradation_eur_per_kwh=degradation).to_dict()
-            f["calc_v"] = _FINANCE_CALC_VERSION
-            if completed:
-                await store.upsert_daily_finance(day_label, f)
-            days.append(f)
-            cur = nxt
+            days.append(await _ensure_day_finance(cur.date()))
+            cur = cur + timedelta(days=1)
 
         def _sum(key: str) -> float | None:
             vals = [d[key] for d in days if d.get(key) is not None]
@@ -2529,6 +2536,21 @@ def create_app(
             prices = await store.prices_between(start_iso, end_iso)
             forecasts = await store.forecasts_between(start_iso, end_iso)
             plan = await store.plan_history_between(start_iso, end_iso)
+            # Self-complete the window before reading it back: `daily_finance` rows are otherwise
+            # only ever written when a finance view for that day was requested (/api/finance), so
+            # a day nobody looked at is silently absent from the export. Backfill every COMPLETED
+            # local day the export window touches (already bounded by `days` <= 400) so
+            # daily_finance.csv covers the whole window, not just previously-viewed days. One bad
+            # day must not fail the whole export — best-effort per day.
+            today_local = now.astimezone(site_tz).date()
+            backfill_day = start.astimezone(site_tz).date()
+            while backfill_day < today_local:
+                try:
+                    await _ensure_day_finance(backfill_day)
+                except Exception:
+                    _log.exception(
+                        "export/package: failed to backfill daily_finance for %s", backfill_day)
+                backfill_day += timedelta(days=1)
             fin_rows = await store.daily_finance_between(
                 start.date().isoformat(), (now.date() + timedelta(days=1)).isoformat())
             finance = [r["data"] for r in fin_rows]
