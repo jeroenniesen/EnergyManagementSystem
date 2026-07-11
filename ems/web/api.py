@@ -20,6 +20,7 @@ from fastapi import FastAPI, Query, Request
 from fastapi.responses import JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 
+from ems import export_package as expkg
 from ems.alerts import data_quality, derive_alerts
 from ems.control.failsafe import failsafe_intent
 from ems.control.mode_controller import ModeController
@@ -2480,6 +2481,48 @@ def create_app(
             media_type="text/csv",
             headers={"Content-Disposition": f'attachment; filename="ems-{safe_kind}.csv"'},
         )
+
+    @app.get("/api/export/package")
+    async def export_package_endpoint(days: int = Query(default=90, ge=1, le=400)) -> Response:
+        """One ZIP: the recorded history as analytics-ready CSVs (energy, prices, daily finance,
+        audit trail) plus a manifest for validating production operation. Read-only. Secrets are
+        never included (config in the manifest comes from `public_values`, which masks tokens)."""
+        now = datetime.now(UTC)
+        start = now - timedelta(days=days)
+        start_iso, end_iso = start.isoformat(), now.isoformat()
+        raw: list[dict] = []
+        derived: list[dict] = []
+        prices: list[dict] = []
+        finance: list[dict] = []
+        audit: list[dict] = []
+        if store is not None:
+            row_cap = min(600_000, days * 24 * 60 + 1000)  # ~one row/min ceiling over the window
+            raw = await store.raw_between(start_iso, end_iso, limit=row_cap)
+            derived = await store.derived_between(start_iso, end_iso, limit=row_cap)
+            prices = await store.prices_between(start_iso, end_iso)
+            fin_rows = await store.daily_finance_between(
+                start.date().isoformat(), (now.date() + timedelta(days=1)).isoformat())
+            finance = [r["data"] for r in fin_rows]
+        if audit_store is not None:
+            audit = list(reversed(await audit_store.recent(limit=5000)))  # oldest→newest
+        members = {
+            "raw_samples.csv": expkg.rows_to_csv(raw, expkg.RAW_COLUMNS),
+            "derived_samples.csv": expkg.rows_to_csv(derived, expkg.DERIVED_COLUMNS),
+            "prices.csv": expkg.rows_to_csv(prices, expkg.PRICE_COLUMNS),
+            "daily_finance.csv": expkg.rows_to_csv(finance, expkg.FINANCE_COLUMNS),
+            "audit_log.csv": expkg.rows_to_csv(audit, expkg.AUDIT_COLUMNS),
+            "manifest.json": expkg.build_manifest(
+                generated_at=now.isoformat(), app_version=expkg.app_version(),
+                window_start=start_iso, window_end=end_iso,
+                counts={"raw_samples": len(raw), "derived_samples": len(derived),
+                        "prices": len(prices), "daily_finance": len(finance),
+                        "audit_log": len(audit)},
+            ),
+        }
+        data = expkg.build_zip(members)
+        fname = f"ems-export-{now.strftime('%Y%m%d')}.zip"
+        return Response(content=data, media_type="application/zip",
+                        headers={"Content-Disposition": f'attachment; filename="{fname}"'})
 
     @app.get("/api/series")
     async def series(limit: int = Query(default=100, ge=1, le=2000)) -> dict:
