@@ -60,7 +60,7 @@ from ems.planner.strategy import build_plan, select_strategy_with_reason
 from ems.planner.summer import SummerConfig, sunset_after
 from ems.planner.validator import PlanValidation, validate_plan
 from ems.readiness import Readiness, compute_readiness, home_state
-from ems.reporting import build_report, build_series, gas_m3_consumed, resolve_window
+from ems.reporting import build_report, build_series, gas_m3_consumed, gas_summary, resolve_window
 from ems.retrospect import build_past_story, past_headline
 from ems.savings import estimate_daily_savings_eur
 from ems.sense import Recorder
@@ -2389,6 +2389,7 @@ def create_app(
         start, end, label, partial = resolve_window(period, anchor, site_tz, now_local)
         grid_factor = float(settings_cache.get("reporting.grid_co2_factor", 0.27))
         gas_factor = float(settings_cache.get("reporting.gas_co2_factor", 1.78))
+        gas_price = float(settings_cache.get("reporting.gas_price_eur_per_m3", 1.40))
         # Stored prices so the best-price score is right for HISTORICAL windows too, not just
         # whatever the live feed still carries.
         prices = await _window_price_slots(start.astimezone(UTC).isoformat(),
@@ -2399,6 +2400,7 @@ def create_app(
                                 partial=partial, grid_factor=grid_factor,
                                 gas_factor=gas_factor).to_dict()
             resp["series"] = build_series([], [], period=period, start=start, end=end, tz=site_tz)
+            resp["gas"] = None
             return resp
         q_end = min(end, now_local + timedelta(minutes=1))  # never query the future
         # Size the row cap to the window AND the recorder cadence (finding 10) so week/month/year
@@ -2416,6 +2418,9 @@ def create_app(
                             gas_factor=gas_factor, gas_m3=gas).to_dict()
         # The behavior series (P1/house/car/solar per bucket) rides on the same rows/window.
         resp["series"] = build_series(raw, der, period=period, start=start, end=end, tz=site_tz)
+        # Makes gas VISIBLE (beyond folding into the CO₂ score): m³/kWh-eq/€/CO₂ for the Insights
+        # gas panel. None-safe — the panel hides itself when there's fewer than 2 gas readings.
+        resp["gas"] = gas_summary(gas_rows, price_eur_per_m3=gas_price, co2_factor=gas_factor)
         return resp
 
     async def _ensure_day_finance(day_local: date_cls) -> dict:

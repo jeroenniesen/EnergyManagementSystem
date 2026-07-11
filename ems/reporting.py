@@ -110,6 +110,28 @@ def gas_m3_consumed(gas_rows: list[dict]) -> float:
     return max(0.0, last - first)
 
 
+# Dutch 'bovenwaarde' (higher/gross calorific value) for natural gas — the standard NL conversion
+# used on energy bills to translate metered m³ into kWh-equivalent.
+GAS_KWH_PER_M3 = 9.77
+
+
+def gas_summary(
+    gas_rows: list[dict], *, price_eur_per_m3: float, co2_factor: float
+) -> dict | None:
+    """Make gas VISIBLE for the Insights gas panel: m³ consumed this window → kWh-equivalent → €
+    → kg CO₂. None with fewer than two readings (no delta to show) — the panel hides rather than
+    show a false zero."""
+    if len(gas_rows) < 2:
+        return None
+    m3 = gas_m3_consumed(gas_rows)
+    return {
+        "m3": round(m3, 2),
+        "kwh_eq": round(m3 * GAS_KWH_PER_M3, 2),
+        "eur": round(m3 * price_eur_per_m3, 2),
+        "co2_kg": round(m3 * co2_factor, 2),
+    }
+
+
 def build_series(
     raw_rows: list[dict],
     derived_rows: list[dict],

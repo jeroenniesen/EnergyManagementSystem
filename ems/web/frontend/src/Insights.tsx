@@ -33,6 +33,13 @@ type Flows = {
   solar_self_consumption_pct: number | null;
 };
 
+type GasSummary = {
+  m3: number;
+  kwh_eq: number;
+  eur: number;
+  co2_kg: number;
+};
+
 type Report = {
   period: string;
   label: string;
@@ -40,6 +47,7 @@ type Report = {
   flows: Flows;
   scores: Score[];
   series?: SeriesBucket[];
+  gas?: GasSummary | null;
 };
 
 type Period = "day" | "week" | "month" | "year";
@@ -87,6 +95,36 @@ function FlowRow({ color, label, val }: { color: string; label: string; val: num
       <span className="flow-dot" style={{ background: color }} />
       <span className="flow-name">{label}</span>
       <span className="flow-kwh">{kwh(val)}</span>
+    </div>
+  );
+}
+
+function GasPanel({ gas, partial }: { gas: GasSummary; partial: boolean }) {
+  return (
+    <div className="gas-panel" data-testid="gas-panel">
+      <h3 className="card-title flow-title">Gas{partial ? " (so far)" : ""}</h3>
+      <div className="gas-head">
+        <span className="gas-dot" style={{ background: "var(--gas)" }} />
+        <span className="gas-m3" data-testid="gas-m3">{gas.m3.toFixed(1)} m³</span>
+        <span className="gas-window">used this window</span>
+      </div>
+      <div className="gas-tiles">
+        <div className="gas-tile" data-testid="gas-kwh">
+          <div className="gas-tile-val">{gas.kwh_eq.toFixed(0)} kWh</div>
+          <div className="gas-tile-name">energy-equivalent</div>
+        </div>
+        <div className="gas-tile" data-testid="gas-eur">
+          <div className="gas-tile-val">€{gas.eur.toFixed(2)}</div>
+          <div className="gas-tile-name">cost</div>
+        </div>
+        <div className="gas-tile" data-testid="gas-co2">
+          <div className="gas-tile-val">{gas.co2_kg.toFixed(1)} kg</div>
+          <div className="gas-tile-name">CO₂</div>
+        </div>
+      </div>
+      <p className="gas-hint">
+        Heating is typically the biggest energy cost left — see the CO₂ score.
+      </p>
     </div>
   );
 }
@@ -249,6 +287,8 @@ export function Insights() {
               </p>
             )}
           </div>
+
+          {report.gas && <GasPanel gas={report.gas} partial={report.partial} />}
 
           <FinanceSection period={period} anchor={anchor} />
         </>

@@ -152,6 +152,42 @@ test.describe("Insights", () => {
     await page.getByTestId("nav-insights").click();
     await expect(page.getByTestId("leak-warn")).toContainText("into the car");
   });
+
+  test("hides the gas panel when there's no gas data (report.gas is null)", async ({ page }) => {
+    await page.route("**/api/report**", (route) =>
+      route.fulfill({
+        status: 200, contentType: "application/json",
+        body: JSON.stringify({ ...REPORT, gas: null }),
+      }),
+    );
+    await page.goto("/");
+    await page.getByTestId("nav-insights").click();
+    await expect(page.getByTestId("flow-report")).toBeVisible();
+    await expect(page.getByTestId("gas-panel")).toHaveCount(0);
+  });
+
+  test("shows the gas panel with m³, kWh-equivalent, € and CO₂ when gas data exists", async ({
+    page,
+  }) => {
+    await page.route("**/api/report**", (route) =>
+      route.fulfill({
+        status: 200, contentType: "application/json",
+        body: JSON.stringify({
+          ...REPORT,
+          gas: { m3: 10, kwh_eq: 97.7, eur: 14, co2_kg: 17.8 },
+        }),
+      }),
+    );
+    await page.goto("/");
+    await page.getByTestId("nav-insights").click();
+    const gas = page.getByTestId("gas-panel");
+    await expect(gas).toBeVisible();
+    await expect(page.getByTestId("gas-m3")).toContainText("10.0 m³");
+    await expect(page.getByTestId("gas-kwh")).toContainText("98 kWh");
+    await expect(page.getByTestId("gas-eur")).toContainText("€14.00");
+    await expect(page.getByTestId("gas-co2")).toContainText("17.8 kg");
+    await expect(gas).toContainText("Heating is typically the biggest energy cost left");
+  });
 });
 
 const SERIES = Array.from({ length: 96 }, (_, i) => {

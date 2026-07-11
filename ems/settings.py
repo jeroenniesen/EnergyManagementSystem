@@ -347,6 +347,12 @@ SETTINGS_SCHEMA: tuple[SettingsField, ...] = (
         "added to the CO₂ score.",
         min=0.0, max=5.0, step=0.01, unit="kg/m³", advanced=True,
     ),
+    SettingsField(
+        "reporting.gas_price_eur_per_m3", "Gas price", "number", 1.40, "reporting",
+        help="Your gas contract's variable price per m³ (incl. tax) — used for the Insights gas "
+        "panel.",
+        min=0.0, max=5.0, step=0.05, unit="€/m³",
+    ),
     # --- Appearance ---
     SettingsField(
         "ui.theme", "Theme", "enum", "auto", "ui",

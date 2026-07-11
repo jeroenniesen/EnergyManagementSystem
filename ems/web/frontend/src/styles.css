@@ -25,6 +25,9 @@
      CVD-validated as a set (worst adjacent ΔE 20.7 protan, ≥3:1 on --panel). */
   --house: #a583e0;
   --car: #d878a8;
+  /* Gas (Insights gas panel): amber/orange, distinct from --car (pink) and --house (violet). */
+  --gas: #e08a3a;
+  --gas-text: #e08a3a;
   font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
 }
 
@@ -53,6 +56,8 @@
   --winter-tint: rgba(47, 127, 196, 0.12);
   --house: #7c5cc4;
   --car: #b0568c;
+  --gas: #b0660c;
+  --gas-text: #8a5109; /* darker gas/amber for text — AA on white */
 }
 
 * { box-sizing: border-box; }
@@ -1385,6 +1390,30 @@ body {
 .fin-caveat { color: var(--muted); font-size: 12px; margin: 6px 0; }
 @media (max-width: 560px) {
   .fin-tiles { flex-direction: column; }
+}
+
+/* ---- Insights: gas panel (m³ → kWh-equivalent → € → CO₂) ---- */
+.gas-panel {
+  background: var(--panel); border: 1px solid var(--line);
+  border-radius: var(--radius); padding: 18px; box-shadow: var(--shadow);
+  margin-top: 20px;
+}
+.gas-head { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; }
+.gas-dot { width: 10px; height: 10px; border-radius: 3px; background: var(--gas); flex: none; }
+.gas-m3 { font-size: 22px; font-weight: 600; font-variant-numeric: tabular-nums; }
+.gas-window { color: var(--muted); font-size: 0.9rem; }
+.gas-tiles { display: flex; flex-wrap: wrap; gap: 12px; margin-top: 12px; }
+.gas-tile {
+  flex: 1 1 120px; background: var(--panel-2); border: 1px solid var(--line);
+  border-radius: 12px; padding: 10px 14px;
+}
+.gas-tile-val {
+  font-size: 18px; font-weight: 600; font-variant-numeric: tabular-nums; color: var(--gas-text);
+}
+.gas-tile-name { color: var(--muted); font-size: 12px; margin-top: 2px; }
+.gas-hint { margin: 12px 0 0; font-size: 0.82rem; color: var(--muted); }
+@media (max-width: 560px) {
+  .gas-tiles { flex-direction: column; }
 }
 
 /* Behavior chart: two aligned panels (consumption / solar & grid) */
