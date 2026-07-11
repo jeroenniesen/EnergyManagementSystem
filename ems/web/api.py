@@ -2519,6 +2519,11 @@ def create_app(
                 "recorder": recorder.health() if recorder is not None else None,
             },
         }
+        counts = {"raw_samples": len(raw), "derived_samples": len(derived),
+                  "prices": len(prices), "daily_finance": len(finance), "audit_log": len(audit)}
+        saved_vals = [d["saved_eur"] for d in finance if d.get("saved_eur") is not None]
+        saved_total = round(sum(saved_vals), 2) if saved_vals else None
+        window = {"start": start_iso, "end": end_iso}
         members = {
             "raw_samples.csv": expkg.rows_to_csv(raw, expkg.RAW_COLUMNS),
             "derived_samples.csv": expkg.rows_to_csv(derived, expkg.DERIVED_COLUMNS),
@@ -2527,11 +2532,12 @@ def create_app(
             "audit_log.csv": expkg.rows_to_csv(audit, expkg.AUDIT_COLUMNS),
             "manifest.json": expkg.build_manifest(
                 generated_at=now.isoformat(), app_version=expkg.app_version(),
-                window_start=start_iso, window_end=end_iso,
-                counts={"raw_samples": len(raw), "derived_samples": len(derived),
-                        "prices": len(prices), "daily_finance": len(finance),
-                        "audit_log": len(audit)},
-                extra=validation,
+                window_start=start_iso, window_end=end_iso, counts=counts, extra=validation,
+            ),
+            "README.md": expkg.readme_text(),
+            "validation_summary.txt": expkg.validation_summary(
+                generated_at=now.isoformat(), app_version=expkg.app_version(), window=window,
+                counts=counts, validation=validation, saved_total_eur=saved_total,
             ),
         }
         data = expkg.build_zip(members)

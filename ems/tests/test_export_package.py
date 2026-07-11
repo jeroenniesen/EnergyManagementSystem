@@ -139,3 +139,18 @@ def test_manifest_carries_validation_payload_and_no_secrets(tmp_path):
     blob = json.dumps(manifest).lower()
     for leak in ("token", "secret", "_ip", "\"ip\"", "lat", "lon", "password"):
         assert leak not in blob, f"manifest leaked a sensitive key: {leak}"
+
+
+def test_package_includes_readme_and_validation_summary(tmp_path):
+    db = str(tmp_path / "ems.sqlite")
+    _seed(db)
+    with TestClient(_app(db)) as c:
+        data = c.get("/api/export/package").content
+    assert {"README.md", "validation_summary.txt"} <= set(zip_names(data))
+    readme = read_member(data, "README.md")
+    assert "+ = importing" in readme and "+ = discharging" in readme   # sign conventions documented
+    assert "raw_samples.csv" in readme
+    summary = read_member(data, "validation_summary.txt")
+    assert "Run mode:" in summary and "DRY-RUN" in summary              # run mode legible
+    assert "Measured savings over the window: €0.42" in summary         # savings total from finance
+    assert "Data quality:" in summary
