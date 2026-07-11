@@ -28,6 +28,7 @@ FINANCE_COLUMNS = (
     "battery_charge_kwh", "battery_discharge_kwh",
 )
 AUDIT_COLUMNS = ("id", "ts", "category", "summary", "detail")
+PLAN_COLUMNS = ("ts", "strategy", "target_soc", "deadline", "soc_pct", "intent")
 
 
 def rows_to_csv(rows: list[dict], columns: tuple[str, ...]) -> str:
@@ -100,6 +101,12 @@ health check of production operation. All timestamps are **UTC, ISO-8601**. All 
   `price_coverage` (0..1) is how much of the day had a known price.
 - **audit_log.csv** — every decision, config change, override and AI check the system made:
   `id, ts, category, summary, detail` (detail is a JSON object).
+- **plan_history.csv** — what the planner intended each cycle:
+  `ts, strategy, target_soc, deadline, soc_pct, intent`. `target_soc` is the SoC the planner
+  aimed for at that moment, `strategy` is the resolved summer/winter strategy, `intent` is the
+  battery mode it was pursuing, and `soc_pct` is the SoC observed at that same moment. Compare
+  `target_soc` against the achieved `soc_pct` in raw_samples (by `ts`) to see how well the plan
+  tracked reality over time.
 - **manifest.json** — what/when/window, row counts, and a privacy-safe validation block
   (run mode, planner settings, data quality, recorder health). No tokens, IPs or location.
 - **validation_summary.txt** — the same health read in plain language.

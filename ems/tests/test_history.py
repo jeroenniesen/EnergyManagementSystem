@@ -206,6 +206,70 @@ def test_purge_trims_forecasts_by_start_but_keeps_recent(tmp_path):
     assert [r["start"] for r in rows] == ["2026-06-28T10:00:00+00:00"]
 
 
+def test_record_plan_roundtrip_via_plan_history_between(tmp_path):
+    # observability-data: what the planner intended each cycle (target SoC/strategy/intent),
+    # to later compare `target_soc` against the achieved `soc_pct` in raw_samples.
+    store = HistoryStore(str(tmp_path / "ems.sqlite"))
+
+    async def run():
+        await store.init()
+        await store.record_plan("2026-06-28T10:00:00+00:00", {
+            "strategy": "winter", "target_soc": 80.0,
+            "deadline": "2026-06-28T18:00:00+00:00", "soc_pct": 55.0,
+            "intent": "grid_charge_to_target",
+        })
+        await store.record_plan("2026-06-28T10:15:00+00:00", {
+            "strategy": "winter", "target_soc": 80.0,
+            "deadline": "2026-06-28T18:00:00+00:00", "soc_pct": 58.0,
+            "intent": "grid_charge_to_target",
+        })
+        return await store.plan_history_between(
+            "2026-06-28T00:00:00+00:00", "2026-06-29T00:00:00+00:00")
+
+    rows = asyncio.run(run())
+    assert [r["ts"] for r in rows] == [
+        "2026-06-28T10:00:00+00:00", "2026-06-28T10:15:00+00:00"]  # oldest-first
+    assert rows[0]["strategy"] == "winter"
+    assert rows[0]["target_soc"] == 80.0
+    assert rows[0]["deadline"] == "2026-06-28T18:00:00+00:00"
+    assert rows[0]["soc_pct"] == 55.0
+    assert rows[0]["intent"] == "grid_charge_to_target"
+    assert rows[1]["soc_pct"] == 58.0
+
+
+def test_record_plan_missing_keys_default_to_none(tmp_path):
+    store = HistoryStore(str(tmp_path / "ems.sqlite"))
+
+    async def run():
+        await store.init()
+        await store.record_plan("2026-06-28T10:00:00+00:00", {})
+        return await store.plan_history_between(
+            "2026-06-28T00:00:00+00:00", "2026-06-29T00:00:00+00:00")
+
+    rows = asyncio.run(run())
+    assert len(rows) == 1
+    row = rows[0]
+    assert row["strategy"] is None and row["target_soc"] is None
+    assert row["deadline"] is None and row["soc_pct"] is None and row["intent"] is None
+
+
+def test_purge_trims_plan_history_by_ts_but_keeps_recent(tmp_path):
+    store = HistoryStore(str(tmp_path / "ems.sqlite"))
+
+    async def run():
+        await store.init()
+        await store.record_plan("2026-01-01T10:00:00+00:00", {"strategy": "winter"})  # purged
+        await store.record_plan("2026-06-28T10:00:00+00:00", {"strategy": "summer"})  # kept
+        deleted = await store.purge_older_than("2026-06-01T00:00:00+00:00")
+        rows = await store.plan_history_between(
+            "2020-01-01T00:00:00+00:00", "2030-01-01T00:00:00+00:00")
+        return deleted, rows
+
+    deleted, rows = asyncio.run(run())
+    assert deleted >= 1
+    assert [r["ts"] for r in rows] == ["2026-06-28T10:00:00+00:00"]
+
+
 def test_purge_trims_prices_but_keeps_daily_finance(tmp_path):
     # daily_finance is the long-horizon record (B-13) — retention must never eat it.
     store = HistoryStore(str(tmp_path / "ems.sqlite"))

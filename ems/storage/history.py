@@ -78,6 +78,16 @@ class HistoryStore:
                 "(issued_date TEXT NOT NULL, start TEXT NOT NULL, p10_w REAL NOT NULL, "
                 "p50_w REAL NOT NULL, p90_w REAL NOT NULL, PRIMARY KEY (issued_date, start))"
             )
+            # Plan/target history (observability-data): what the planner intended each cycle —
+            # strategy, the target SoC it's aiming for + deadline, the resolved intent, and the
+            # SoC observed at that moment — so a reviewer can later compare `target_soc` against
+            # the achieved `soc_pct` in raw_samples. Recorded by the recorder, purged with samples.
+            await db.execute(
+                "CREATE TABLE IF NOT EXISTS plan_history "
+                "(ts TEXT NOT NULL, strategy TEXT, target_soc REAL, deadline TEXT, "
+                "soc_pct REAL, intent TEXT)"
+            )
+            await db.execute("CREATE INDEX IF NOT EXISTS idx_plan_ts ON plan_history(ts)")
             await db.commit()
 
     async def purge_older_than(self, cutoff_iso: str) -> int:
@@ -92,6 +102,8 @@ class HistoryStore:
             cur = await db.execute("DELETE FROM price_slots WHERE start_ts < ?", (cutoff_iso,))
             deleted += cur.rowcount or 0
             cur = await db.execute("DELETE FROM forecast_snapshots WHERE start < ?", (cutoff_iso,))
+            deleted += cur.rowcount or 0
+            cur = await db.execute("DELETE FROM plan_history WHERE ts < ?", (cutoff_iso,))
             deleted += cur.rowcount or 0
             # daily_finance is intentionally NOT purged (long-horizon record, B-13).
             await db.commit()
@@ -242,6 +254,31 @@ class HistoryStore:
             cur = await db.execute(
                 "SELECT issued_date, start, p10_w, p50_w, p90_w FROM forecast_snapshots "
                 "WHERE start >= ? AND start < ? ORDER BY issued_date ASC, start ASC",
+                (start_iso, end_iso))
+            return [dict(r) for r in await cur.fetchall()]
+
+    async def record_plan(self, ts: str, snapshot: dict) -> None:
+        """Append one plan/target history row (observability-data): what the planner intended
+        THIS cycle. `snapshot` is the {"strategy","target_soc","deadline","soc_pct","intent"} dict
+        assembled by the API's `_plan_snapshot` — missing keys default to None (a partial snapshot
+        still records something rather than nothing)."""
+        async with self._conn() as db:
+            await db.execute(
+                "INSERT INTO plan_history (ts, strategy, target_soc, deadline, soc_pct, intent) "
+                "VALUES (?, ?, ?, ?, ?, ?)",
+                (ts, snapshot.get("strategy"), snapshot.get("target_soc"),
+                 snapshot.get("deadline"), snapshot.get("soc_pct"), snapshot.get("intent")),
+            )
+            await db.commit()
+
+    async def plan_history_between(self, start_iso: str, end_iso: str) -> list[dict]:
+        """Plan/target history rows with `ts` in [start, end), oldest-first (UTC-ISO ⇒
+        lexicographic = time) — compare `target_soc` against raw_samples.soc_pct over time."""
+        async with self._conn() as db:
+            db.row_factory = aiosqlite.Row
+            cur = await db.execute(
+                "SELECT ts, strategy, target_soc, deadline, soc_pct, intent FROM plan_history "
+                "WHERE ts >= ? AND ts < ? ORDER BY ts ASC",
                 (start_iso, end_iso))
             return [dict(r) for r in await cur.fetchall()]
 

@@ -41,6 +41,10 @@ class Recorder:
         self._clock = clock
         self.price_source = price_source
         self.solar_forecast = solar_forecast
+        # Settable by create_app (not a constructor param — the plan snapshot closure needs the
+        # web layer's live settings/strategy/plan machinery, which doesn't exist until the app is
+        # built). None means plan/target history logging is off. See `_persist_plan`.
+        self.plan_provider: Callable[[datetime], dict | None] | None = None
         # Health, surfaced on /api/diagnostics so a 24/7 operator can SEE a stuck recorder (full
         # disk, DB lock, permanently failing device) instead of only inferring it from stale data.
         self.last_success_at: datetime | None = None
@@ -71,6 +75,7 @@ class Recorder:
             self.freshness.mark(sig, now)
         await self._persist_prices()
         await self._persist_forecast(now)
+        await self._persist_plan(now)
 
     async def _persist_prices(self) -> None:
         """Upsert the current price curve so PAST slots keep the price that was active then —
@@ -103,6 +108,21 @@ class Recorder:
             )
         except Exception as exc:
             _log.warning("forecast persist failed (non-fatal): %s: %s", type(exc).__name__, exc)
+
+    async def _persist_plan(self, now: datetime) -> None:
+        """Snapshot the planner's current target/strategy/intent (observability-data) so a
+        reviewer can later compare `target_soc` against the achieved `soc_pct` in raw_samples.
+        `plan_provider` (wired by create_app) does synchronous, non-trivial work (rebuilds the
+        plan) — offload to a thread like the other source reads. Best-effort: a provider failure
+        (or one returning None, e.g. no plan yet) must never kill the sense cycle."""
+        if self.plan_provider is None:
+            return
+        try:
+            snap = await asyncio.to_thread(self.plan_provider, now)
+            if snap:
+                await self.store.record_plan(now.astimezone(UTC).isoformat(), snap)
+        except Exception as exc:
+            _log.warning("plan persist failed (non-fatal): %s: %s", type(exc).__name__, exc)
 
     async def record_now(self) -> None:
         await self.sense_once(self._clock())

@@ -87,6 +87,11 @@ def _seed(db: str) -> None:
             "2026-06-28", [("2026-06-28T10:00:00+00:00", 1000.0, 2000.0, 3000.0)])
         await store.upsert_daily_finance("2026-06-28", {"day": "2026-06-28", "has_data": True,
                                                          "saved_eur": 0.42, "price_coverage": 1.0})
+        await store.record_plan("2026-06-28T10:00:00+00:00", {
+            "strategy": "winter", "target_soc": 80.0,
+            "deadline": "2026-06-28T18:00:00+00:00", "soc_pct": 55.0,
+            "intent": "grid_charge_to_target",
+        })
         audit = AuditStore(db)
         await audit.init()
         await audit.append("2026-06-28T10:00:00+00:00", "battery_decision", "set auto",
@@ -113,18 +118,20 @@ def test_export_package_endpoint_returns_zip_with_all_members(tmp_path):
     data = r.content
     names = set(zip_names(data))
     assert {"raw_samples.csv", "derived_samples.csv", "prices.csv", "forecasts.csv",
-            "daily_finance.csv", "audit_log.csv", "manifest.json"} <= names
+            "daily_finance.csv", "audit_log.csv", "plan_history.csv", "manifest.json"} <= names
     # Real data made it in.
     assert "1600.0" in read_member(data, "raw_samples.csv")
     assert "0.18" in read_member(data, "prices.csv")
     assert "2000.0" in read_member(data, "forecasts.csv")
     assert "0.42" in read_member(data, "daily_finance.csv")
     assert "allow_self_consumption" in read_member(data, "audit_log.csv")
+    assert "grid_charge_to_target" in read_member(data, "plan_history.csv")
     manifest = json.loads(read_member(data, "manifest.json"))
     assert manifest["kind"] == "ems-export-package"
     assert manifest["counts"]["raw_samples"] == 1
     assert manifest["counts"]["prices"] == 1
     assert manifest["counts"]["forecasts"] == 1
+    assert manifest["counts"]["plan_history"] == 1
 
 
 def test_manifest_carries_validation_payload_and_no_secrets(tmp_path):
@@ -155,6 +162,7 @@ def test_package_includes_readme_and_validation_summary(tmp_path):
     assert "+ = importing" in readme and "+ = discharging" in readme   # sign conventions documented
     assert "raw_samples.csv" in readme
     assert "forecasts.csv" in readme
+    assert "plan_history.csv" in readme
     summary = read_member(data, "validation_summary.txt")
     assert "Run mode:" in summary and "DRY-RUN" in summary              # run mode legible
     assert "Measured savings over the window: €0.42" in summary         # savings total from finance
@@ -185,3 +193,48 @@ def test_package_never_leaks_a_stored_secret_value(tmp_path):
         assert secret not in read_member(data, name), f"secret leaked into {name}"
     # The audit entry is present (by key name), proving we didn't just drop the data.
     assert "access.web_token" in read_member(data, "audit_log.csv")
+
+
+def test_recorder_wiring_persists_a_plan_history_row_on_startup(tmp_path):
+    # End-to-end: create_app wires the `_plan_snapshot` closure onto the recorder
+    # (observability-data), so the very first startup tick (recorder.record_now(), called from
+    # the app lifespan) should already record one plan_history row.
+    from ems.freshness import FreshnessTracker
+    from ems.sense import Recorder
+
+    db = str(tmp_path / "ems.sqlite")
+    store = HistoryStore(db)
+    freshness = FreshnessTracker()
+    freshness.register("grid", "solar", "ev", "battery", "soc")
+    recorder = Recorder(MockSource(), store, freshness, price_source=MockPriceSource(AMS))
+    app = create_app(
+        MockSource(), dry_run=True, dev_mode="mock", tz=AMS, store=store,
+        settings_store=SettingsStore(db), audit_store=AuditStore(db),
+        price_source=MockPriceSource(AMS), recorder=recorder,
+    )
+    assert recorder.plan_provider is not None  # wired synchronously inside create_app
+
+    with TestClient(app):
+        pass  # triggers lifespan startup, which calls recorder.record_now() once
+
+    rows = asyncio.run(store.plan_history_between(
+        "2020-01-01T00:00:00+00:00", "2030-01-01T00:00:00+00:00"))
+    assert len(rows) == 1
+    assert rows[0]["strategy"] in ("summer", "winter")
+    assert rows[0]["soc_pct"] == 55.0  # MockSource's steady-state SoC
+
+
+def test_create_app_sets_plan_provider_when_recorder_passed(tmp_path):
+    # Minimal wiring check (in case a full recorder tick is ever awkward to exercise): passing a
+    # recorder must leave it with a callable plan_provider, and omitting one must not error.
+    from ems.freshness import FreshnessTracker
+    from ems.sense import Recorder
+
+    db = str(tmp_path / "ems.sqlite")
+    recorder = Recorder(MockSource(), HistoryStore(db), FreshnessTracker())
+    assert recorder.plan_provider is None
+    create_app(MockSource(), dry_run=True, dev_mode="mock", tz=AMS, recorder=recorder)
+    assert recorder.plan_provider is not None
+    assert callable(recorder.plan_provider)
+    # No recorder passed at all → create_app must not require one.
+    create_app(MockSource(), dry_run=True, dev_mode="mock", tz=AMS)

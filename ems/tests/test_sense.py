@@ -236,3 +236,77 @@ def test_forecast_persist_failure_never_kills_the_cycle(tmp_path):
 
     rows = asyncio.run(run())
     assert len(rows) == 1  # the sample was still recorded
+
+
+def test_plan_provider_defaults_to_none():
+    fresh = FreshnessTracker()
+    fresh.register(*SIGNALS)
+    rec = Recorder(MockSource(), HistoryStore(":memory:"), fresh)
+    assert rec.plan_provider is None
+
+
+def test_sense_once_persists_plan_snapshot(tmp_path):
+    # observability-data: each cycle snapshots the planner's target/strategy/intent so it can
+    # later be compared against the achieved soc_pct in raw_samples.
+    store = HistoryStore(str(tmp_path / "ems.sqlite"))
+    fresh = FreshnessTracker()
+    fresh.register(*SIGNALS)
+    rec = Recorder(MockSource(), store, fresh)
+    rec.plan_provider = lambda now: {
+        "strategy": "winter", "target_soc": 80.0,
+        "deadline": now.isoformat(), "soc_pct": 55.0, "intent": "grid_charge_to_target",
+    }
+
+    async def run():
+        await store.init()
+        await rec.sense_once(NOW)
+        return await store.plan_history_between(
+            "2020-01-01T00:00:00+00:00", "2030-01-01T00:00:00+00:00")
+
+    rows = asyncio.run(run())
+    assert len(rows) == 1
+    assert rows[0]["ts"] == NOW.isoformat()
+    assert rows[0]["strategy"] == "winter"
+    assert rows[0]["target_soc"] == 80.0
+    assert rows[0]["intent"] == "grid_charge_to_target"
+    assert rows[0]["soc_pct"] == 55.0
+
+
+def test_plan_provider_returning_none_writes_nothing(tmp_path):
+    store = HistoryStore(str(tmp_path / "ems.sqlite"))
+    fresh = FreshnessTracker()
+    fresh.register(*SIGNALS)
+    rec = Recorder(MockSource(), store, fresh)
+    rec.plan_provider = lambda now: None  # e.g. no plan yet (no price source)
+
+    async def run():
+        await store.init()
+        await rec.sense_once(NOW)
+        return await store.plan_history_between(
+            "2020-01-01T00:00:00+00:00", "2030-01-01T00:00:00+00:00")
+
+    assert asyncio.run(run()) == []
+
+
+def test_plan_provider_failure_never_kills_the_cycle(tmp_path):
+    store = HistoryStore(str(tmp_path / "ems.sqlite"))
+    fresh = FreshnessTracker()
+    fresh.register(*SIGNALS)
+    rec = Recorder(MockSource(), store, fresh)
+
+    def _boom(now):
+        raise RuntimeError("planner blew up")
+
+    rec.plan_provider = _boom
+
+    async def run():
+        await store.init()
+        await rec.sense_once(NOW)  # must not raise
+        raw = await store.recent_raw(10)
+        plan = await store.plan_history_between(
+            "2020-01-01T00:00:00+00:00", "2030-01-01T00:00:00+00:00")
+        return raw, plan
+
+    raw, plan = asyncio.run(run())
+    assert len(raw) == 1  # the sample was still recorded
+    assert plan == []

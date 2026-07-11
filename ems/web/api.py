@@ -1041,6 +1041,30 @@ def create_app(
                 target_soc, power_w = cur.floor_soc, cur.power_w  # forced discharge → reserve floor
         return intent, reason, override_active, target_soc, power_w, val
 
+    def _plan_snapshot(now: datetime) -> dict | None:
+        """Plan/target history snapshot (observability-data): what the planner intended THIS
+        cycle — the same strategy/plan/intent/SoC computation /api/replay exposes, condensed to
+        what a reviewer needs to later compare `target_soc` against the achieved `soc_pct` in
+        raw_samples. Read-only and cheap (reuses the cached plan/soc machinery). Returns None
+        when there's no plan yet (mirrors replay's `pp is None` guard) — the recorder then writes
+        nothing for this cycle."""
+        pp = _current_plan()
+        if pp is None:
+            return None
+        _now, _prices, plan = pp
+        strat, _why = _resolve_strategy(now)
+        intent, *_rest = _effective_intent(now)
+        return {
+            "strategy": strat,
+            "target_soc": plan.target_soc,
+            "deadline": plan.deadline.isoformat() if plan.deadline else None,
+            "soc_pct": _current_soc(now),
+            "intent": str(intent) if intent is not None else None,
+        }
+
+    if recorder is not None:
+        recorder.plan_provider = _plan_snapshot
+
     def _chat_context() -> str:
         """A compact, REDACTED snapshot for the chat to ground on — only non-identifying facts (the
         plan, prices, power/percentage figures), NEVER location, IPs, raw history, or tokens. Every
@@ -2497,12 +2521,14 @@ def create_app(
         forecasts: list[dict] = []
         finance: list[dict] = []
         audit: list[dict] = []
+        plan: list[dict] = []
         if store is not None:
             row_cap = min(600_000, days * 24 * 60 + 1000)  # ~one row/min ceiling over the window
             raw = await store.raw_between(start_iso, end_iso, limit=row_cap)
             derived = await store.derived_between(start_iso, end_iso, limit=row_cap)
             prices = await store.prices_between(start_iso, end_iso)
             forecasts = await store.forecasts_between(start_iso, end_iso)
+            plan = await store.plan_history_between(start_iso, end_iso)
             fin_rows = await store.daily_finance_between(
                 start.date().isoformat(), (now.date() + timedelta(days=1)).isoformat())
             finance = [r["data"] for r in fin_rows]
@@ -2523,7 +2549,8 @@ def create_app(
         }
         counts = {"raw_samples": len(raw), "derived_samples": len(derived),
                   "prices": len(prices), "forecasts": len(forecasts),
-                  "daily_finance": len(finance), "audit_log": len(audit)}
+                  "daily_finance": len(finance), "audit_log": len(audit),
+                  "plan_history": len(plan)}
         saved_vals = [d["saved_eur"] for d in finance if d.get("saved_eur") is not None]
         saved_total = round(sum(saved_vals), 2) if saved_vals else None
         window = {"start": start_iso, "end": end_iso}
@@ -2534,6 +2561,7 @@ def create_app(
             "forecasts.csv": expkg.rows_to_csv(forecasts, expkg.FORECAST_COLUMNS),
             "daily_finance.csv": expkg.rows_to_csv(finance, expkg.FINANCE_COLUMNS),
             "audit_log.csv": expkg.rows_to_csv(audit, expkg.AUDIT_COLUMNS),
+            "plan_history.csv": expkg.rows_to_csv(plan, expkg.PLAN_COLUMNS),
             "manifest.json": expkg.build_manifest(
                 generated_at=now.isoformat(), app_version=expkg.app_version(),
                 window_start=start_iso, window_end=end_iso, counts=counts, extra=validation,
