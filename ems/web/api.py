@@ -431,6 +431,7 @@ def create_app(
             risk_margin_eur_per_kwh=s["planner.risk_margin_eur_per_kwh"],
             charge_slots=s["planner.charge_slots"],
             discharge_slots=s["planner.discharge_slots"],
+            negative_price_soak=s["planner.negative_price_soak"],
         )
 
     def _planner_cfg() -> PlannerConfig:
@@ -586,6 +587,7 @@ def create_app(
             solar_confidence=s["planner.solar_confidence"] / 100.0,
             allow_grid_topup=s["strategy.summer_grid_topup"],
             max_topup_price_eur_per_kwh=s["strategy.summer_max_topup_price"],
+            negative_price_soak=s["planner.negative_price_soak"],
         )
 
     def _strategy_inputs(now: datetime):
@@ -644,6 +646,7 @@ def create_app(
             degradation_eur_per_kwh=s["planner.degradation_eur_per_kwh"],
             risk_margin_eur_per_kwh=s["planner.risk_margin_eur_per_kwh"],
             solar_confidence=s["planner.solar_confidence"] / 100.0,
+            negative_price_soak=s["planner.negative_price_soak"],
         )
 
     async def _audit_decision_loop(stop: asyncio.Event) -> None:

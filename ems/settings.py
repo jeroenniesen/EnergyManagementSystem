@@ -260,6 +260,13 @@ SETTINGS_SCHEMA: tuple[SettingsField, ...] = (
         "24 ≈ 6 hours.",
         min=1, max=96, unit="× 15 min", advanced=True,
     ),
+    SettingsField(
+        "planner.negative_price_soak", "Charge on negative prices", "bool", False, "planner",
+        help="When the electricity price goes below zero you are PAID to consume. With this on, "
+        "the planner adds negative-price slots as battery-charge slots (up to battery headroom), "
+        "even outside normal charge windows and even when summer grid top-up is off. Off = today's "
+        "behaviour.",
+    ),
     # --- AI explanations (optional, OFF by default; the one off-device feature — SPEC §12) ---
     SettingsField(
         "explainer.mode", "AI explanations", "enum", "template", "ai",

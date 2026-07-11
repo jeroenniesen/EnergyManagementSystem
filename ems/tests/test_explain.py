@@ -12,6 +12,7 @@ from ems.planner.explain import (
     summarize_projection,
 )
 from ems.planner.projection import ProjectedSlot
+from ems.planner.rule_based import PlannerConfig, plan_rule_based
 from ems.planner.schedule import SLOT, Plan, PlanSlot
 from ems.sources.forecast import ForecastSlot
 from ems.sources.prices import PriceSlot
@@ -220,6 +221,22 @@ def test_horizon_caps_slots():
     plan = _plan([BatteryIntent.ALLOW_SELF_CONSUMPTION] * 200)
     d = build_plan_detail(NOW, [], plan, None, horizon=96)
     assert len(d["slots"]) == 96
+
+
+def test_negative_price_soak_reason_and_summary_flow_through_detail():
+    # End-to-end: the winter planner's negative-price soak produces a per-slot "paid to charge"
+    # reason, and the plan-level summary calls out "+N negative-price slots" when it fired.
+    prices = [PriceSlot(NOW + i * SLOT, e)
+              for i, e in enumerate([-0.05, -0.02, 0.05, 0.60, 0.60, 0.05])]
+    plan = plan_rule_based(
+        prices, NOW,
+        PlannerConfig(charge_slots=2, discharge_slots=2, negative_price_soak=True),
+    )
+    d = build_plan_detail(NOW, prices, plan, None)
+    soak = [s for s in d["slots"] if "paid to charge" in s["reason"]]
+    assert len(soak) == 2  # the two sub-zero slots
+    assert all(s["label"] == "charge" for s in soak)
+    assert "negative-price" in d["summary"] and "+2" in d["summary"]
 
 
 def test_alignment_shared_timestamps_match_input():

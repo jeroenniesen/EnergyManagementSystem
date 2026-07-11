@@ -54,6 +54,7 @@ class SummerConfig:
     allow_grid_topup: bool = True  # may we buy the shortfall from the grid, or solar-only?
     max_topup_price_eur_per_kwh: float = 0.30  # never top up above this price
     horizon_slots: int = 96
+    negative_price_soak: bool = False  # opt-in: sub-zero slots become top-up candidates
 
 
 def plan_summer(
@@ -111,16 +112,24 @@ def plan_summer(
     )
     shortfall_kwh = max(0.0, target_kwh - current_kwh - solar_charge_kwh)
 
-    # Buy only the shortfall, in the cheapest affordable slots before the charge deadline.
+    # Buy only the shortfall, in the cheapest affordable slots before the charge deadline. With
+    # `negative_price_soak` on, a sub-zero slot (you are PAID to consume) is ALSO an eligible top-up
+    # candidate — even when `allow_grid_topup` is off and regardless of the price cap (price < 0 is
+    # below any cap anyway). Same shortfall-bounded, cheapest-first selection — no new sizing math.
+    soak = cfg.negative_price_soak
     per_slot_kwh = cfg.max_charge_w * dh / 1000.0 * eta
     grid_set: set[datetime] = set()
-    if cfg.allow_grid_topup and shortfall_kwh > 1e-9:
+
+    def _eligible(p: PriceSlot) -> bool:
+        if charge_deadline is not None and p.start > charge_deadline:
+            return False
+        if cfg.allow_grid_topup and p.eur_per_kwh <= cfg.max_topup_price_eur_per_kwh:
+            return True
+        return soak and p.eur_per_kwh < 0.0
+
+    if (cfg.allow_grid_topup or soak) and shortfall_kwh > 1e-9:
         needed = math.ceil(shortfall_kwh / per_slot_kwh) if per_slot_kwh > 0 else 0
-        affordable = [
-            p for p in future
-            if (charge_deadline is None or p.start <= charge_deadline)
-            and p.eur_per_kwh <= cfg.max_topup_price_eur_per_kwh
-        ]
+        affordable = [p for p in future if _eligible(p)]
         affordable.sort(key=lambda p: (p.eur_per_kwh, p.start))
         grid_set = {p.start for p in affordable[:needed]}
 
@@ -131,8 +140,12 @@ def plan_summer(
         solar_w = p50_by.get(p.start, 0.0)
         if p.start in grid_set:
             intent = BatteryIntent.GRID_CHARGE_TO_TARGET
-            reason = (f"grid top-up: cheap €{p.eur_per_kwh:.2f}/kWh to reach the night target "
-                      f"the sun won't cover")
+            if soak and p.eur_per_kwh < 0.0:
+                reason = (f"grid top-up: price €{p.eur_per_kwh:.2f}/kWh below €0 — "
+                          f"you are paid to charge")
+            else:
+                reason = (f"grid top-up: cheap €{p.eur_per_kwh:.2f}/kWh to reach the night target "
+                          f"the sun won't cover")
             # Charge to the night-carry target (NOT to full): the calculated shortfall, by sunset.
             out.append(PlanSlot(
                 p.start, intent, reason, target_soc=target_soc_clamped,
