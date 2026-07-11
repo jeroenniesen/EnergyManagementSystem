@@ -888,6 +888,16 @@ body {
 .field-error input, .field-error select { border-color: rgba(220, 80, 80, 0.6); }
 .field-err { color: var(--error); font-size: 0.74rem; margin: 0; }
 
+/* A field plus its optional evidence-based advisory hint (e.g. planner.solar_confidence) — same
+   grid cell, stacked below the field so the recommendation sits right where the decision is made. */
+.field-with-hint { display: flex; flex-direction: column; gap: 8px; }
+.advisor-hint {
+  margin: 0; font-size: 0.78rem; line-height: 1.5; color: var(--muted);
+  background: var(--panel-2); border-left: 3px solid var(--accent);
+  border-radius: 6px; padding: 8px 10px;
+}
+.advisor-hint strong { color: var(--text); font-variant-numeric: tabular-nums; }
+
 .impact {
   margin-top: 20px; background: var(--panel-2); border: 1px solid var(--line);
   border-radius: 12px; padding: 14px 16px;

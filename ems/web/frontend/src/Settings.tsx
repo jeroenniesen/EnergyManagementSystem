@@ -27,6 +27,16 @@ type PlanMetrics = {
   discharge_slots: number;
 };
 type Impact = { current: PlanMetrics | null; proposed: PlanMetrics | null };
+// Evidence-based advisory for `planner.solar_confidence` (GET /api/advisor/solar-confidence) —
+// never applied automatically; rendered as a hint under that field, the user decides.
+type SolarConfidenceAdvice = {
+  recommended_pct: number;
+  n_slots: number;
+  median_ratio_pct: number;
+  p25_ratio_pct: number;
+  current_pct: number | null;
+  delta_pct: number | null;
+};
 
 // Group display order + titles. Connection-type groups first (what most people need), tuning last.
 const GROUP_ORDER = ["strategy", "connection", "meters", "battery", "prices", "site", "control",
@@ -185,6 +195,19 @@ function Field({
   );
 }
 
+// Rendered under `planner.solar_confidence` only, when 14 days of forecast-vs-actual evidence
+// support a recommendation. Purely informational — it never touches the field's value.
+function SolarConfidenceHint({ advice }: { advice: SolarConfidenceAdvice }) {
+  return (
+    <p className="advisor-hint" data-testid="advisor-solar-confidence">
+      Based on {advice.n_slots} matched daytime slots over the last 14 days, forecasts delivered{" "}
+      <strong>{advice.median_ratio_pct}%</strong> (typical) / <strong>{advice.p25_ratio_pct}%</strong>{" "}
+      (disappointing quarter). Suggestion: <strong>{advice.recommended_pct}%</strong>. You decide —
+      this is never applied automatically.
+    </p>
+  );
+}
+
 export function Settings({ onSaved }: { onSaved?: (values: Values) => void } = {}) {
   const [schema, setSchema] = useState<SettingField[] | null>(null);
   const [values, setValues] = useState<Values>({});
@@ -196,6 +219,7 @@ export function Settings({ onSaved }: { onSaved?: (values: Values) => void } = {
   const [tokenInput, setTokenInput] = useState(getToken());
   const [showAdvanced, setShowAdvanced] = useState(false);
   const [impact, setImpact] = useState<Impact | null>(null);
+  const [solarAdvice, setSolarAdvice] = useState<SolarConfidenceAdvice | null>(null);
   // Collapsible groups (tames a long, dense page). Strategy — the headline — is open by default;
   // the rest start collapsed and expand on demand. A group with a save error auto-expands.
   const [openGroups, setOpenGroups] = useState<Set<string>>(new Set(["strategy"]));
@@ -233,6 +257,25 @@ export function Settings({ onSaved }: { onSaved?: (values: Values) => void } = {
       }
     })();
     refreshAuth();
+    return () => {
+      alive = false;
+    };
+  }, []);
+
+  // Best-effort advisory fetch — hide the hint entirely on error or when there's not yet enough
+  // evidence (null), never surface it as a load error.
+  useEffect(() => {
+    let alive = true;
+    (async () => {
+      try {
+        const r = await fetch("/api/advisor/solar-confidence");
+        if (!r.ok) return;
+        const b: { advice: SolarConfidenceAdvice | null } = await r.json();
+        if (alive) setSolarAdvice(b.advice ?? null);
+      } catch {
+        /* best-effort — leave the hint hidden */
+      }
+    })();
     return () => {
       alive = false;
     };
@@ -417,15 +460,19 @@ export function Settings({ onSaved }: { onSaved?: (values: Values) => void } = {
                 {GROUP_HINT[g] && <p className="settings-group-hint">{GROUP_HINT[g]}</p>}
                 <div className="settings-fields">
                   {groupFields.map((f) => (
-                    <Field
-                      key={f.key}
-                      field={f}
-                      value={edited[f.key]}
-                      error={errors[f.key]}
-                      disabled={status === "saving"}
-                      secretSet={Boolean(values[`${f.key}.__set`])}
-                      onChange={(v) => set(f.key, v)}
-                    />
+                    <div className="field-with-hint" key={f.key}>
+                      <Field
+                        field={f}
+                        value={edited[f.key]}
+                        error={errors[f.key]}
+                        disabled={status === "saving"}
+                        secretSet={Boolean(values[`${f.key}.__set`])}
+                        onChange={(v) => set(f.key, v)}
+                      />
+                      {f.key === "planner.solar_confidence" && solarAdvice && (
+                        <SolarConfidenceHint advice={solarAdvice} />
+                      )}
+                    </div>
                   ))}
                 </div>
               </div>

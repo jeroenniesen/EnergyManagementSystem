@@ -22,7 +22,7 @@ from fastapi.staticfiles import StaticFiles
 
 from ems import export_package as expkg
 from ems.alerts import data_quality, derive_alerts
-from ems.analysis import forecast_error
+from ems.analysis import forecast_error, recommend_solar_confidence
 from ems.control.failsafe import failsafe_intent
 from ems.control.mode_controller import ModeController
 from ems.control.override import (
@@ -2423,6 +2423,26 @@ def create_app(
         resp["gas"] = gas_summary(gas_rows, price_eur_per_m3=gas_price, co2_factor=gas_factor)
         return resp
 
+    @app.get("/api/advisor/solar-confidence")
+    async def advisor_solar_confidence() -> dict:
+        """Advisory-only recommendation for `planner.solar_confidence`, derived from how the
+        stored day-ahead forecast has actually performed over the last 14 days (SPEC: solar
+        confidence should come from evidence, not a hand-tuned guess). NEVER applied automatically
+        — the Settings UI renders this as a hint next to the field; the user decides. Read-only,
+        gated like any other /api/* read (only if `web.require_auth` is on) — see /api/report."""
+        advice = None
+        if store is not None:
+            now = datetime.now(UTC)
+            start = now - timedelta(days=14)
+            start_iso, end_iso = start.isoformat(), now.isoformat()
+            limit = history_row_cap((now - start).total_seconds(), _sample_cadence_seconds())
+            raw = await store.raw_between(start_iso, end_iso, limit=limit)
+            forecasts = await store.forecasts_between(start_iso, end_iso)
+            current = settings_cache.get("planner.solar_confidence")
+            advice = recommend_solar_confidence(
+                forecasts, raw, current_pct=float(current) if current is not None else None)
+        return {"advice": advice}
+
     async def _ensure_day_finance(day_local: date_cls) -> dict:
         """Compute (or return the current-version cached) finance rollup for one LOCAL day,
         persisting it once the day is completed. Shared by `/api/finance` (called per day of the
@@ -2599,6 +2619,9 @@ def create_app(
         saved_total = round(sum(saved_vals), 2) if saved_vals else None
         window = {"start": start_iso, "end": end_iso}
         fc_skill = forecast_error(forecasts, raw)
+        solar_advice = recommend_solar_confidence(
+            forecasts, raw,
+            current_pct=float(settings_cache.get("planner.solar_confidence", 80.0)))
         members = {
             "raw_samples.csv": expkg.rows_to_csv(raw, expkg.RAW_COLUMNS),
             "derived_samples.csv": expkg.rows_to_csv(derived, expkg.DERIVED_COLUMNS),
@@ -2616,7 +2639,7 @@ def create_app(
             "validation_summary.txt": expkg.validation_summary(
                 generated_at=now.isoformat(), app_version=expkg.app_version(), window=window,
                 counts=counts, validation=validation, saved_total_eur=saved_total,
-                forecast_skill=fc_skill,
+                forecast_skill=fc_skill, solar_confidence_advice=solar_advice,
             ),
         }
         data = expkg.build_zip(members)

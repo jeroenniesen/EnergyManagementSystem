@@ -194,9 +194,15 @@ def _run_mode(dry_run: bool) -> str:
     return "LIVE (battery writes armed)"
 
 
-def _forecast_skill_lines(forecast_skill: dict[str, Any] | None) -> list[str]:
+def _forecast_skill_lines(
+    forecast_skill: dict[str, Any] | None,
+    solar_confidence_advice: dict[str, Any] | None = None,
+) -> list[str]:
     """The 'Solar forecast skill' section — omitted entirely when no forecast-error dict is
-    given (older callers), and reduced to a one-liner when there's no matched-slot overlap yet."""
+    given (older callers), and reduced to a one-liner when there's no matched-slot overlap yet.
+    `solar_confidence_advice` is the optional `ems.analysis.recommend_solar_confidence(...)`
+    result — when given (non-None), one extra suggestion line is appended. Purely informational:
+    the export never changes the setting, it only reports the evidence-based suggestion."""
     if forecast_skill is None:
         return []
     n = forecast_skill.get("n_slots", 0)
@@ -215,7 +221,7 @@ def _forecast_skill_lines(forecast_skill: dict[str, Any] | None) -> list[str]:
         read = f"forecast under-predicted solar by {bias:.0f} W on average"
     else:
         read = "forecast tracked actual solar almost exactly, on average"
-    return [
+    lines = [
         "",
         "Solar forecast skill",
         f"  Matched slots:   {n}",
@@ -227,6 +233,12 @@ def _forecast_skill_lines(forecast_skill: dict[str, Any] | None) -> list[str]:
         if actual_kwh is not None else "  Actual vs P50:   —",
         f"  Read: {read}.",
     ]
+    if solar_confidence_advice is not None:
+        rec = solar_confidence_advice.get("recommended_pct")
+        cur = solar_confidence_advice.get("current_pct")
+        cur_text = f"{cur:g}%" if cur is not None else "—"
+        lines.append(f"  Suggested solar_confidence: {rec:g}% (currently {cur_text})")
+    return lines
 
 
 def validation_summary(
@@ -238,11 +250,15 @@ def validation_summary(
     validation: dict[str, Any],
     saved_total_eur: float | None,
     forecast_skill: dict[str, Any] | None = None,
+    solar_confidence_advice: dict[str, Any] | None = None,
 ) -> str:
     """A one-screen, plain-language health read derived from the manifest data, so a reviewer (or
     the operator) can see at a glance whether the system is collecting data and operating sanely.
     `forecast_skill` is the optional `ems.analysis.forecast_error(...)` result — when given, a
-    'Solar forecast skill' section is appended (omitted for older callers that don't pass one)."""
+    'Solar forecast skill' section is appended (omitted for older callers that don't pass one).
+    `solar_confidence_advice` is the optional `ems.analysis.recommend_solar_confidence(...)`
+    result — when given, one extra suggestion line is appended to that section. Advisory only:
+    this never changes `planner.solar_confidence`, it only reports the evidence-based suggestion."""
     op = validation.get("operational", {})
     health = validation.get("health", {})
     rec = health.get("recorder") or {}
@@ -275,7 +291,7 @@ def validation_summary(
         f"(last 7 days: {incidents.get('last_7_days', 0)})",
         f"  Most recent:    {incidents.get('most_recent') or '—'}",
         f"  By type:        {by_type_text}",
-        *_forecast_skill_lines(forecast_skill),
+        *_forecast_skill_lines(forecast_skill, solar_confidence_advice),
         "",
         "Result",
         f"  Measured savings over the window: {saved}",
