@@ -68,6 +68,12 @@ def ev_w(meter: dict) -> float:
     return max(0.0, float(meter["active_power_w"]))
 
 
+def gas_m3(p1: dict) -> float | None:
+    """Cumulative gas meter reading (m³) from the P1 dict, when a gas meter is paired to it;
+    None when absent (no gas meter, or the field is missing/null)."""
+    return float(p1["total_gas_m3"]) if p1.get("total_gas_m3") is not None else None
+
+
 class BatteryReader(Protocol):
     """Read-only battery sense: instantaneous power (+discharge/−charge) and SoC %."""
 
@@ -100,6 +106,7 @@ class LiveSource:
 
     def read_sample(self) -> tuple[RawSample, set[str]]:
         fresh: set[str] = set()
+        p1_payload: dict | None = None
 
         def attempt(signal: str, read: Callable[[], float]) -> None:
             try:
@@ -111,7 +118,12 @@ class LiveSource:
                 _log.warning("live signal %r read failed (%s: %s); keeping last value",
                              signal, type(exc).__name__, exc)
 
-        attempt("grid", lambda: grid_w(self.p1.read()))
+        def read_p1() -> dict:
+            nonlocal p1_payload
+            p1_payload = self.p1.read()
+            return p1_payload
+
+        attempt("grid", lambda: grid_w(read_p1()))
         if self.solar is not None:
             attempt("solar", lambda: solar_w(self.solar.read()))
         if self.car is not None:
@@ -125,12 +137,23 @@ class LiveSource:
             except Exception as exc:
                 _log.warning("battery read failed (%s: %s); battery/soc not fresh",
                              type(exc).__name__, exc)
+        # Gas is best-effort and NOT a tracked freshness signal (SPEC/CO2 backlog B-02): a paired
+        # gas meter surfaces its cumulative m3 reading on the P1 payload, but its absence/failure
+        # must never age grid/solar/ev/battery/soc or block the sample.
+        gas_value: float | None = None
+        try:
+            payload = p1_payload if p1_payload is not None else self.p1.read()
+            gas_value = gas_m3(payload)
+        except Exception as exc:
+            _log.warning("gas signal read failed (%s: %s); reporting no gas reading",
+                         type(exc).__name__, exc)
         sample = RawSample(
             grid_power_w=self._last["grid"],
             solar_power_w=self._last["solar"],
             battery_power_w=self._last["battery"],
             ev_power_w=self._last["ev"],
             soc_pct=self._last["soc"],
+            total_gas_m3=gas_value,
         )
         return sample, fresh
 

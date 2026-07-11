@@ -2,10 +2,13 @@ import pytest
 
 from ems.domain import RawSample
 from ems.load_model import (
+    MAX_BATTERY_W,
+    MAX_SOLAR_W,
     DerivedSample,
     is_soc_jump_implausible,
     normalise_solar,
     reconstruct,
+    sanitize_sample,
 )
 
 
@@ -50,3 +53,38 @@ def test_soc_jump_plausibility():
     assert is_soc_jump_implausible(50.0, 69.0, 5.0) is False  # 19% in 5 min, ok
     assert is_soc_jump_implausible(50.0, 75.0, 5.0) is True  # 25% in 5 min, implausible
     assert is_soc_jump_implausible(None, 80.0, 5.0) is False  # no prior reading
+
+
+def test_sanitize_sample_clamps_battery_overrange():
+    raw = _raw(200, 0, 50000.0)  # gross garbage, way past the ~4-5 kW inverter
+    corrected, clamped = sanitize_sample(raw)
+    assert corrected.battery_power_w == MAX_BATTERY_W
+    assert clamped == ("battery",)
+
+
+def test_sanitize_sample_clamps_battery_underrange():
+    raw = _raw(200, 0, -50000.0)
+    corrected, clamped = sanitize_sample(raw)
+    assert corrected.battery_power_w == -MAX_BATTERY_W
+    assert clamped == ("battery",)
+
+
+def test_sanitize_sample_clamps_solar_overrange():
+    raw = _raw(200, 40000.0, 800)
+    corrected, clamped = sanitize_sample(raw)
+    assert corrected.solar_power_w == MAX_SOLAR_W
+    assert clamped == ("solar",)
+
+
+def test_sanitize_sample_clamps_negative_solar():
+    raw = _raw(200, -100.0, 800)
+    corrected, clamped = sanitize_sample(raw)
+    assert corrected.solar_power_w == 0.0
+    assert clamped == ("solar",)
+
+
+def test_sanitize_sample_leaves_normal_sample_unchanged():
+    raw = _raw(200, 2600.0, 4200.0)
+    corrected, clamped = sanitize_sample(raw)
+    assert corrected is raw  # same object, byte-for-byte unchanged
+    assert clamped == ()

@@ -470,6 +470,18 @@ test.describe("EMS dashboard", () => {
   });
 
   test("System tab shows the readiness checks", async ({ page }) => {
+    await page.route("**/api/incidents", (route) =>
+      route.fulfill({
+        status: 200, contentType: "application/json",
+        body: JSON.stringify({
+          incidents: {
+            total: 2, by_type: { cluster_mismatch: 1, command_failed: 1 },
+            by_day: { "2026-06-28": 2 }, most_recent: "2026-06-28T18:00:00+00:00",
+            last_7_days: 2,
+          },
+        }),
+      }),
+    );
     await page.goto("/");
     await page.getByTestId("nav-system").click();
     await expect(page.getByTestId("system")).toBeVisible();
@@ -481,6 +493,11 @@ test.describe("EMS dashboard", () => {
     // Per-signal live sensor checks (the "senses"): mock backend reports all signals fresh.
     await expect(page.getByTestId("check-sensor.grid")).toContainText("fresh");
     await expect(page.getByTestId("system-overall")).toBeVisible();
+    // Control-incident rollup (mocked): 2 incidents in the last 7 days, broken down by type.
+    await expect(page.getByTestId("incidents")).toBeVisible();
+    await expect(page.getByTestId("incidents")).toContainText("2 incidents in the last 7 days");
+    await expect(page.getByTestId("incident-types")).toContainText("Cluster mismatch");
+    await expect(page.getByTestId("incident-types")).toContainText("Command failed");
     // Export links present with the right download hrefs.
     await expect(page.getByTestId("export-package")).toHaveAttribute(
       "href",

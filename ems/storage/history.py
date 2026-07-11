@@ -68,6 +68,34 @@ class HistoryStore:
                 "CREATE TABLE IF NOT EXISTS daily_finance "
                 "(day TEXT PRIMARY KEY, data TEXT NOT NULL)"
             )
+            # Solar forecast snapshots (observability-data): the day-ahead P10/P50/P90 forecast
+            # for each 15-min slot, keyed by the date it was ISSUED — so a later same-day cycle
+            # can't overwrite it with a nowcast. Needed to measure forecast-vs-actual error
+            # (join `start` to raw_samples.solar_power_w). Upserted by the recorder, purged with
+            # the samples (bounded by slot `start`, like price_slots).
+            await db.execute(
+                "CREATE TABLE IF NOT EXISTS forecast_snapshots "
+                "(issued_date TEXT NOT NULL, start TEXT NOT NULL, p10_w REAL NOT NULL, "
+                "p50_w REAL NOT NULL, p90_w REAL NOT NULL, PRIMARY KEY (issued_date, start))"
+            )
+            # Plan/target history (observability-data): what the planner intended each cycle —
+            # strategy, the target SoC it's aiming for + deadline, the resolved intent, and the
+            # SoC observed at that moment — so a reviewer can later compare `target_soc` against
+            # the achieved `soc_pct` in raw_samples. Recorded by the recorder, purged with samples.
+            await db.execute(
+                "CREATE TABLE IF NOT EXISTS plan_history "
+                "(ts TEXT NOT NULL, strategy TEXT, target_soc REAL, deadline TEXT, "
+                "soc_pct REAL, intent TEXT)"
+            )
+            await db.execute("CREATE INDEX IF NOT EXISTS idx_plan_ts ON plan_history(ts)")
+            # Cumulative gas meter readings (B-02: gas folds into the CO2 footprint). The recorder
+            # inserts one row/cycle when a gas meter is paired to the P1; window consumption is a
+            # last-minus-first delta over the readings (see reporting.gas_m3_consumed), so we only
+            # need the raw cumulative reading, not a derived per-slot volume. Purged with samples.
+            await db.execute(
+                "CREATE TABLE IF NOT EXISTS gas_readings "
+                "(ts TEXT PRIMARY KEY, total_gas_m3 REAL NOT NULL)"
+            )
             await db.commit()
 
     async def purge_older_than(self, cutoff_iso: str) -> int:
@@ -80,6 +108,12 @@ class HistoryStore:
             cur = await db.execute("DELETE FROM derived_samples WHERE ts < ?", (cutoff_iso,))
             deleted += cur.rowcount or 0
             cur = await db.execute("DELETE FROM price_slots WHERE start_ts < ?", (cutoff_iso,))
+            deleted += cur.rowcount or 0
+            cur = await db.execute("DELETE FROM forecast_snapshots WHERE start < ?", (cutoff_iso,))
+            deleted += cur.rowcount or 0
+            cur = await db.execute("DELETE FROM plan_history WHERE ts < ?", (cutoff_iso,))
+            deleted += cur.rowcount or 0
+            cur = await db.execute("DELETE FROM gas_readings WHERE ts < ?", (cutoff_iso,))
             deleted += cur.rowcount or 0
             # daily_finance is intentionally NOT purged (long-horizon record, B-13).
             await db.commit()
@@ -203,6 +237,79 @@ class HistoryStore:
             cur = await db.execute(
                 "SELECT start_ts, eur_per_kwh FROM price_slots "
                 "WHERE start_ts >= ? AND start_ts < ? ORDER BY start_ts ASC",
+                (start_iso, end_iso))
+            return [dict(r) for r in await cur.fetchall()]
+
+    async def upsert_forecast_snapshot(
+        self, issued_date: str, slots: list[tuple[str, float, float, float]]
+    ) -> None:
+        """Record the day-ahead solar forecast for each slot, keyed by (issued_date, start).
+        INSERT OR IGNORE: the FIRST snapshot recorded for a given (issued_date, slot) sticks — we
+        want the day-ahead forecast, not a later-cycle nowcast overwriting it for error analysis."""
+        if not slots:
+            return
+        async with self._conn() as db:
+            await db.executemany(
+                "INSERT OR IGNORE INTO forecast_snapshots "
+                "(issued_date, start, p10_w, p50_w, p90_w) VALUES (?, ?, ?, ?, ?)",
+                [(issued_date, start, p10, p50, p90) for start, p10, p50, p90 in slots],
+            )
+            await db.commit()
+
+    async def forecasts_between(self, start_iso: str, end_iso: str) -> list[dict]:
+        """Stored forecast snapshots with slot `start` in [start, end), ordered by
+        (issued_date, start) (UTC-ISO ⇒ lexicographic = time)."""
+        async with self._conn() as db:
+            db.row_factory = aiosqlite.Row
+            cur = await db.execute(
+                "SELECT issued_date, start, p10_w, p50_w, p90_w FROM forecast_snapshots "
+                "WHERE start >= ? AND start < ? ORDER BY issued_date ASC, start ASC",
+                (start_iso, end_iso))
+            return [dict(r) for r in await cur.fetchall()]
+
+    async def record_plan(self, ts: str, snapshot: dict) -> None:
+        """Append one plan/target history row (observability-data): what the planner intended
+        THIS cycle. `snapshot` is the {"strategy","target_soc","deadline","soc_pct","intent"} dict
+        assembled by the API's `_plan_snapshot` — missing keys default to None (a partial snapshot
+        still records something rather than nothing)."""
+        async with self._conn() as db:
+            await db.execute(
+                "INSERT INTO plan_history (ts, strategy, target_soc, deadline, soc_pct, intent) "
+                "VALUES (?, ?, ?, ?, ?, ?)",
+                (ts, snapshot.get("strategy"), snapshot.get("target_soc"),
+                 snapshot.get("deadline"), snapshot.get("soc_pct"), snapshot.get("intent")),
+            )
+            await db.commit()
+
+    async def plan_history_between(self, start_iso: str, end_iso: str) -> list[dict]:
+        """Plan/target history rows with `ts` in [start, end), oldest-first (UTC-ISO ⇒
+        lexicographic = time) — compare `target_soc` against raw_samples.soc_pct over time."""
+        async with self._conn() as db:
+            db.row_factory = aiosqlite.Row
+            cur = await db.execute(
+                "SELECT ts, strategy, target_soc, deadline, soc_pct, intent FROM plan_history "
+                "WHERE ts >= ? AND ts < ? ORDER BY ts ASC",
+                (start_iso, end_iso))
+            return [dict(r) for r in await cur.fetchall()]
+
+    async def record_gas(self, ts: str, total_gas_m3: float) -> None:
+        """Upsert one cumulative gas meter reading (B-02). INSERT OR REPLACE: `ts` is the
+        recorder's sense timestamp (one row/cycle in practice), so a re-record at the same `ts`
+        (e.g. a retried cycle) simply overwrites rather than duplicating."""
+        async with self._conn() as db:
+            await db.execute(
+                "INSERT OR REPLACE INTO gas_readings (ts, total_gas_m3) VALUES (?, ?)",
+                (ts, total_gas_m3))
+            await db.commit()
+
+    async def gas_between(self, start_iso: str, end_iso: str) -> list[dict]:
+        """Gas meter readings with `ts` in [start, end), oldest-first (UTC-ISO ⇒
+        lexicographic = time) — window consumption is the last reading minus the first."""
+        async with self._conn() as db:
+            db.row_factory = aiosqlite.Row
+            cur = await db.execute(
+                "SELECT ts, total_gas_m3 FROM gas_readings WHERE ts >= ? AND ts < ? "
+                "ORDER BY ts ASC",
                 (start_iso, end_iso))
             return [dict(r) for r in await cur.fetchall()]
 

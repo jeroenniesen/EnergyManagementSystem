@@ -131,3 +131,7 @@ Project conventions are in [`CLAUDE.md`](./CLAUDE.md); the north-star vision in 
   grid imports were timed) — each explaining itself — plus a *where-your-energy-went* panel (kWh from
   solar/grid/battery → house/car). Read-only, rolled up from local history.
 - **Chat · Settings · Audit · System** — assistant, configuration, the decision log, and health checks.
+  The System page also offers a one-click **export package**: your whole history as CSVs (energy,
+  prices, solar forecast vs. actual, plan history, daily savings, gas & CO₂, decision log) plus a
+  plain-language health summary — redacted (no tokens, IPs or location), for your own analysis or to
+  share for a check-up.

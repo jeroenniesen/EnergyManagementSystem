@@ -22,6 +22,7 @@ from fastapi.staticfiles import StaticFiles
 
 from ems import export_package as expkg
 from ems.alerts import data_quality, derive_alerts
+from ems.analysis import forecast_error
 from ems.control.failsafe import failsafe_intent
 from ems.control.mode_controller import ModeController
 from ems.control.override import (
@@ -59,7 +60,7 @@ from ems.planner.strategy import build_plan, select_strategy_with_reason
 from ems.planner.summer import SummerConfig, sunset_after
 from ems.planner.validator import PlanValidation, validate_plan
 from ems.readiness import Readiness, compute_readiness, home_state
-from ems.reporting import build_report, build_series, resolve_window
+from ems.reporting import build_report, build_series, gas_m3_consumed, resolve_window
 from ems.retrospect import build_past_story, past_headline
 from ems.savings import estimate_daily_savings_eur
 from ems.sense import Recorder
@@ -1040,6 +1041,30 @@ def create_app(
                   and controller.allow_export_discharge):
                 target_soc, power_w = cur.floor_soc, cur.power_w  # forced discharge → reserve floor
         return intent, reason, override_active, target_soc, power_w, val
+
+    def _plan_snapshot(now: datetime) -> dict | None:
+        """Plan/target history snapshot (observability-data): what the planner intended THIS
+        cycle — the same strategy/plan/intent/SoC computation /api/replay exposes, condensed to
+        what a reviewer needs to later compare `target_soc` against the achieved `soc_pct` in
+        raw_samples. Read-only and cheap (reuses the cached plan/soc machinery). Returns None
+        when there's no plan yet (mirrors replay's `pp is None` guard) — the recorder then writes
+        nothing for this cycle."""
+        pp = _current_plan()
+        if pp is None:
+            return None
+        _now, _prices, plan = pp
+        strat, _why = _resolve_strategy(now)
+        intent, *_rest = _effective_intent(now)
+        return {
+            "strategy": strat,
+            "target_soc": plan.target_soc,
+            "deadline": plan.deadline.isoformat() if plan.deadline else None,
+            "soc_pct": _current_soc(now),
+            "intent": str(intent) if intent is not None else None,
+        }
+
+    if recorder is not None:
+        recorder.plan_provider = _plan_snapshot
 
     def _chat_context() -> str:
         """A compact, REDACTED snapshot for the chat to ground on — only non-identifying facts (the
@@ -2379,12 +2404,48 @@ def create_app(
                                       q_end.astimezone(UTC).isoformat(), limit=limit)
         der = await store.derived_between(start.astimezone(UTC).isoformat(),
                                           q_end.astimezone(UTC).isoformat(), limit=limit)
+        gas_rows = await store.gas_between(start.astimezone(UTC).isoformat(),
+                                           q_end.astimezone(UTC).isoformat())
+        gas = gas_m3_consumed(gas_rows)
         resp = build_report(raw, der, prices, period=period, start=start, end=end, label=label,
                             partial=partial, grid_factor=grid_factor,
-                            gas_factor=gas_factor).to_dict()
+                            gas_factor=gas_factor, gas_m3=gas).to_dict()
         # The behavior series (P1/house/car/solar per bucket) rides on the same rows/window.
         resp["series"] = build_series(raw, der, period=period, start=start, end=end, tz=site_tz)
         return resp
+
+    async def _ensure_day_finance(day_local: date_cls) -> dict:
+        """Compute (or return the current-version cached) finance rollup for one LOCAL day,
+        persisting it once the day is completed. Shared by `/api/finance` (called per day of the
+        viewed window) and the export package (which backfills every completed day in ITS window,
+        so `daily_finance.csv` covers days no one ever viewed — not just previously-cached ones).
+        `store` must not be None (both call sites already guard that)."""
+        now_local = datetime.now(UTC).astimezone(site_tz)
+        day_label = day_local.isoformat()
+        cur = datetime(day_local.year, day_local.month, day_local.day, tzinfo=site_tz)
+        nxt = cur + timedelta(days=1)
+        completed = nxt <= now_local
+        if completed:
+            cached = await store.daily_finance_between(day_label, nxt.date().isoformat())
+            # Only trust a cache entry written by the CURRENT finance formula; a day cached
+            # under an older version is recomputed (re-upserted) so a math fix reaches history.
+            if cached and cached[0]["data"].get("calc_v") == _FINANCE_CALC_VERSION:
+                return cached[0]["data"]
+        degradation = float(settings_cache.get("planner.degradation_eur_per_kwh", 0.05))
+        q_end = min(nxt, now_local + timedelta(minutes=1))
+        # Cadence-aware per-day cap (finding 10): sized to the recorder frequency, not a fixed
+        # 3000 that would truncate a finer sampling rate.
+        day_limit = history_row_cap((nxt - cur).total_seconds(), _sample_cadence_seconds())
+        raw = await store.raw_between(cur.astimezone(UTC).isoformat(),
+                                      q_end.astimezone(UTC).isoformat(), limit=day_limit)
+        price_rows = await store.prices_between(cur.astimezone(UTC).isoformat(),
+                                                nxt.astimezone(UTC).isoformat())
+        f = day_finance(raw, price_rows, day=day_label,
+                        degradation_eur_per_kwh=degradation).to_dict()
+        f["calc_v"] = _FINANCE_CALC_VERSION
+        if completed:
+            await store.upsert_daily_finance(day_label, f)
+        return f
 
     @app.get("/api/finance")
     async def finance(
@@ -2405,37 +2466,11 @@ def create_app(
         else:
             anchor = now_local.date()
         start, end, label, partial = resolve_window(period, anchor, site_tz, now_local)
-        degradation = float(settings_cache.get("planner.degradation_eur_per_kwh", 0.05))
         days: list[dict] = []
         cur = start
         while cur < end and cur <= now_local and store is not None:
-            day_label = cur.date().isoformat()
-            nxt = cur + timedelta(days=1)
-            completed = nxt <= now_local
-            if completed:
-                cached = await store.daily_finance_between(
-                    day_label, (cur.date() + timedelta(days=1)).isoformat())
-                # Only trust a cache entry written by the CURRENT finance formula; a day cached
-                # under an older version is recomputed (re-upserted) so a math fix reaches history.
-                if cached and cached[0]["data"].get("calc_v") == _FINANCE_CALC_VERSION:
-                    days.append(cached[0]["data"])
-                    cur = nxt
-                    continue
-            q_end = min(nxt, now_local + timedelta(minutes=1))
-            # Cadence-aware per-day cap (finding 10): sized to the recorder frequency, not a fixed
-            # 3000 that would truncate a finer sampling rate.
-            day_limit = history_row_cap((nxt - cur).total_seconds(), _sample_cadence_seconds())
-            raw = await store.raw_between(cur.astimezone(UTC).isoformat(),
-                                          q_end.astimezone(UTC).isoformat(), limit=day_limit)
-            price_rows = await store.prices_between(cur.astimezone(UTC).isoformat(),
-                                                    nxt.astimezone(UTC).isoformat())
-            f = day_finance(raw, price_rows, day=day_label,
-                            degradation_eur_per_kwh=degradation).to_dict()
-            f["calc_v"] = _FINANCE_CALC_VERSION
-            if completed:
-                await store.upsert_daily_finance(day_label, f)
-            days.append(f)
-            cur = nxt
+            days.append(await _ensure_day_finance(cur.date()))
+            cur = cur + timedelta(days=1)
 
         def _sum(key: str) -> float | None:
             vals = [d[key] for d in days if d.get(key) is not None]
@@ -2494,13 +2529,34 @@ def create_app(
         raw: list[dict] = []
         derived: list[dict] = []
         prices: list[dict] = []
+        forecasts: list[dict] = []
         finance: list[dict] = []
         audit: list[dict] = []
+        plan: list[dict] = []
+        gas: list[dict] = []
         if store is not None:
             row_cap = min(600_000, days * 24 * 60 + 1000)  # ~one row/min ceiling over the window
             raw = await store.raw_between(start_iso, end_iso, limit=row_cap)
             derived = await store.derived_between(start_iso, end_iso, limit=row_cap)
             prices = await store.prices_between(start_iso, end_iso)
+            forecasts = await store.forecasts_between(start_iso, end_iso)
+            plan = await store.plan_history_between(start_iso, end_iso)
+            gas = await store.gas_between(start_iso, end_iso)
+            # Self-complete the window before reading it back: `daily_finance` rows are otherwise
+            # only ever written when a finance view for that day was requested (/api/finance), so
+            # a day nobody looked at is silently absent from the export. Backfill every COMPLETED
+            # local day the export window touches (already bounded by `days` <= 400) so
+            # daily_finance.csv covers the whole window, not just previously-viewed days. One bad
+            # day must not fail the whole export — best-effort per day.
+            today_local = now.astimezone(site_tz).date()
+            backfill_day = start.astimezone(site_tz).date()
+            while backfill_day < today_local:
+                try:
+                    await _ensure_day_finance(backfill_day)
+                except Exception:
+                    _log.exception(
+                        "export/package: failed to backfill daily_finance for %s", backfill_day)
+                backfill_day += timedelta(days=1)
             fin_rows = await store.daily_finance_between(
                 start.date().isoformat(), (now.date() + timedelta(days=1)).isoformat())
             finance = [r["data"] for r in fin_rows]
@@ -2518,18 +2574,25 @@ def create_app(
                 "capability_present": _capability_box["cap"] is not None,
                 "recorder": recorder.health() if recorder is not None else None,
             },
+            "incidents": expkg.incident_rollup(audit),
         }
         counts = {"raw_samples": len(raw), "derived_samples": len(derived),
-                  "prices": len(prices), "daily_finance": len(finance), "audit_log": len(audit)}
+                  "prices": len(prices), "forecasts": len(forecasts),
+                  "daily_finance": len(finance), "audit_log": len(audit),
+                  "plan_history": len(plan), "gas": len(gas)}
         saved_vals = [d["saved_eur"] for d in finance if d.get("saved_eur") is not None]
         saved_total = round(sum(saved_vals), 2) if saved_vals else None
         window = {"start": start_iso, "end": end_iso}
+        fc_skill = forecast_error(forecasts, raw)
         members = {
             "raw_samples.csv": expkg.rows_to_csv(raw, expkg.RAW_COLUMNS),
             "derived_samples.csv": expkg.rows_to_csv(derived, expkg.DERIVED_COLUMNS),
             "prices.csv": expkg.rows_to_csv(prices, expkg.PRICE_COLUMNS),
+            "forecasts.csv": expkg.rows_to_csv(forecasts, expkg.FORECAST_COLUMNS),
             "daily_finance.csv": expkg.rows_to_csv(finance, expkg.FINANCE_COLUMNS),
             "audit_log.csv": expkg.rows_to_csv(audit, expkg.AUDIT_COLUMNS),
+            "plan_history.csv": expkg.rows_to_csv(plan, expkg.PLAN_COLUMNS),
+            "gas.csv": expkg.rows_to_csv(gas, expkg.GAS_COLUMNS),
             "manifest.json": expkg.build_manifest(
                 generated_at=now.isoformat(), app_version=expkg.app_version(),
                 window_start=start_iso, window_end=end_iso, counts=counts, extra=validation,
@@ -2538,6 +2601,7 @@ def create_app(
             "validation_summary.txt": expkg.validation_summary(
                 generated_at=now.isoformat(), app_version=expkg.app_version(), window=window,
                 counts=counts, validation=validation, saved_total_eur=saved_total,
+                forecast_skill=fc_skill,
             ),
         }
         data = expkg.build_zip(members)
@@ -2629,6 +2693,15 @@ def create_app(
         if audit_store is None:
             return {"entries": []}
         return {"entries": await audit_store.recent(limit, category)}
+
+    @app.get("/api/incidents")
+    async def incidents_endpoint() -> dict:
+        """Control-health incidents (command failures, cluster mismatches, fallbacks, reverts)
+        rolled up from the audit log — the same read `/api/export/package` embeds in the manifest,
+        so the System page can show it without downloading the export. Read-only."""
+        if audit_store is None:
+            return {"incidents": expkg.incident_rollup([])}
+        return {"incidents": expkg.incident_rollup(await audit_store.recent(limit=5000))}
 
     @app.get("/api/ai/validation")
     def ai_validation_latest() -> dict:

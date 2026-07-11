@@ -132,6 +132,191 @@ def test_daily_finance_roundtrip_and_upsert(tmp_path):
     assert rows[0]["data"]["saved_eur"] == 1.25  # upsert overwrote
 
 
+def test_forecast_snapshot_upsert_is_insert_or_ignore(tmp_path):
+    # observability-data: the FIRST snapshot recorded for a (issued_date, slot) sticks — later
+    # cycles the same day must NOT overwrite it (we want the day-ahead forecast, not a nowcast).
+    store = HistoryStore(str(tmp_path / "ems.sqlite"))
+
+    async def run():
+        await store.init()
+        await store.upsert_forecast_snapshot(
+            "2026-06-28", [("2026-06-28T10:00:00+00:00", 100.0, 200.0, 300.0)])
+        # Same (issued_date, start) again with different values → ignored, first value sticks.
+        await store.upsert_forecast_snapshot(
+            "2026-06-28", [("2026-06-28T10:00:00+00:00", 999.0, 999.0, 999.0)])
+        return await store.forecasts_between("2026-06-28T00:00:00+00:00",
+                                             "2026-06-29T00:00:00+00:00")
+
+    rows = asyncio.run(run())
+    assert len(rows) == 1
+    assert (rows[0]["p10_w"], rows[0]["p50_w"], rows[0]["p90_w"]) == (100.0, 200.0, 300.0)
+
+
+def test_forecast_snapshot_empty_list_is_noop(tmp_path):
+    store = HistoryStore(str(tmp_path / "ems.sqlite"))
+
+    async def run():
+        await store.init()
+        await store.upsert_forecast_snapshot("2026-06-28", [])
+        return await store.forecasts_between("2020-01-01T00:00:00+00:00",
+                                             "2030-01-01T00:00:00+00:00")
+
+    assert asyncio.run(run()) == []
+
+
+def test_forecasts_between_returns_window_ordered(tmp_path):
+    store = HistoryStore(str(tmp_path / "ems.sqlite"))
+
+    async def run():
+        await store.init()
+        await store.upsert_forecast_snapshot("2026-06-28", [
+            ("2026-06-28T10:00:00+00:00", 1.0, 2.0, 3.0),
+            ("2026-06-28T10:15:00+00:00", 1.1, 2.1, 3.1),
+        ])
+        await store.upsert_forecast_snapshot("2026-06-29", [
+            ("2026-06-29T10:00:00+00:00", 4.0, 5.0, 6.0),
+        ])
+        return await store.forecasts_between("2026-06-28T00:00:00+00:00",
+                                             "2026-06-29T00:00:00+00:00")
+
+    rows = asyncio.run(run())
+    assert [r["start"] for r in rows] == [
+        "2026-06-28T10:00:00+00:00", "2026-06-28T10:15:00+00:00"]
+    assert rows[0]["issued_date"] == "2026-06-28"
+
+
+def test_purge_trims_forecasts_by_start_but_keeps_recent(tmp_path):
+    store = HistoryStore(str(tmp_path / "ems.sqlite"))
+
+    async def run():
+        await store.init()
+        await store.upsert_forecast_snapshot("2026-01-01", [
+            ("2026-01-01T10:00:00+00:00", 1.0, 2.0, 3.0),   # old (purged)
+        ])
+        await store.upsert_forecast_snapshot("2026-06-28", [
+            ("2026-06-28T10:00:00+00:00", 4.0, 5.0, 6.0),   # kept
+        ])
+        deleted = await store.purge_older_than("2026-06-01T00:00:00+00:00")
+        rows = await store.forecasts_between("2020-01-01T00:00:00+00:00",
+                                             "2030-01-01T00:00:00+00:00")
+        return deleted, rows
+
+    deleted, rows = asyncio.run(run())
+    assert deleted >= 1
+    assert [r["start"] for r in rows] == ["2026-06-28T10:00:00+00:00"]
+
+
+def test_record_plan_roundtrip_via_plan_history_between(tmp_path):
+    # observability-data: what the planner intended each cycle (target SoC/strategy/intent),
+    # to later compare `target_soc` against the achieved `soc_pct` in raw_samples.
+    store = HistoryStore(str(tmp_path / "ems.sqlite"))
+
+    async def run():
+        await store.init()
+        await store.record_plan("2026-06-28T10:00:00+00:00", {
+            "strategy": "winter", "target_soc": 80.0,
+            "deadline": "2026-06-28T18:00:00+00:00", "soc_pct": 55.0,
+            "intent": "grid_charge_to_target",
+        })
+        await store.record_plan("2026-06-28T10:15:00+00:00", {
+            "strategy": "winter", "target_soc": 80.0,
+            "deadline": "2026-06-28T18:00:00+00:00", "soc_pct": 58.0,
+            "intent": "grid_charge_to_target",
+        })
+        return await store.plan_history_between(
+            "2026-06-28T00:00:00+00:00", "2026-06-29T00:00:00+00:00")
+
+    rows = asyncio.run(run())
+    assert [r["ts"] for r in rows] == [
+        "2026-06-28T10:00:00+00:00", "2026-06-28T10:15:00+00:00"]  # oldest-first
+    assert rows[0]["strategy"] == "winter"
+    assert rows[0]["target_soc"] == 80.0
+    assert rows[0]["deadline"] == "2026-06-28T18:00:00+00:00"
+    assert rows[0]["soc_pct"] == 55.0
+    assert rows[0]["intent"] == "grid_charge_to_target"
+    assert rows[1]["soc_pct"] == 58.0
+
+
+def test_record_plan_missing_keys_default_to_none(tmp_path):
+    store = HistoryStore(str(tmp_path / "ems.sqlite"))
+
+    async def run():
+        await store.init()
+        await store.record_plan("2026-06-28T10:00:00+00:00", {})
+        return await store.plan_history_between(
+            "2026-06-28T00:00:00+00:00", "2026-06-29T00:00:00+00:00")
+
+    rows = asyncio.run(run())
+    assert len(rows) == 1
+    row = rows[0]
+    assert row["strategy"] is None and row["target_soc"] is None
+    assert row["deadline"] is None and row["soc_pct"] is None and row["intent"] is None
+
+
+def test_purge_trims_plan_history_by_ts_but_keeps_recent(tmp_path):
+    store = HistoryStore(str(tmp_path / "ems.sqlite"))
+
+    async def run():
+        await store.init()
+        await store.record_plan("2026-01-01T10:00:00+00:00", {"strategy": "winter"})  # purged
+        await store.record_plan("2026-06-28T10:00:00+00:00", {"strategy": "summer"})  # kept
+        deleted = await store.purge_older_than("2026-06-01T00:00:00+00:00")
+        rows = await store.plan_history_between(
+            "2020-01-01T00:00:00+00:00", "2030-01-01T00:00:00+00:00")
+        return deleted, rows
+
+    deleted, rows = asyncio.run(run())
+    assert deleted >= 1
+    assert [r["ts"] for r in rows] == ["2026-06-28T10:00:00+00:00"]
+
+
+def test_gas_record_and_between_roundtrip(tmp_path):
+    # B-02: cumulative gas meter readings, one row/cycle when a gas meter is paired.
+    store = HistoryStore(str(tmp_path / "ems.sqlite"))
+
+    async def run():
+        await store.init()
+        await store.record_gas("2026-06-28T10:00:00+00:00", 1000.0)
+        await store.record_gas("2026-06-28T10:15:00+00:00", 1000.5)
+        # Re-recording the same ts overwrites rather than duplicating.
+        await store.record_gas("2026-06-28T10:15:00+00:00", 1000.6)
+        return await store.gas_between("2026-06-28T00:00:00+00:00", "2026-06-29T00:00:00+00:00")
+
+    rows = asyncio.run(run())
+    assert [(r["ts"], r["total_gas_m3"]) for r in rows] == [
+        ("2026-06-28T10:00:00+00:00", 1000.0), ("2026-06-28T10:15:00+00:00", 1000.6)]
+
+
+def test_gas_between_is_windowed_and_oldest_first(tmp_path):
+    store = HistoryStore(str(tmp_path / "ems.sqlite"))
+
+    async def run():
+        await store.init()
+        await store.record_gas("2026-06-01T00:00:00+00:00", 500.0)  # outside window
+        await store.record_gas("2026-06-28T10:15:00+00:00", 1001.0)
+        await store.record_gas("2026-06-28T10:00:00+00:00", 1000.0)
+        return await store.gas_between("2026-06-28T00:00:00+00:00", "2026-06-29T00:00:00+00:00")
+
+    rows = asyncio.run(run())
+    assert [r["ts"] for r in rows] == ["2026-06-28T10:00:00+00:00", "2026-06-28T10:15:00+00:00"]
+
+
+def test_purge_trims_gas_readings_by_ts_but_keeps_recent(tmp_path):
+    store = HistoryStore(str(tmp_path / "ems.sqlite"))
+
+    async def run():
+        await store.init()
+        await store.record_gas("2026-01-01T00:00:00+00:00", 500.0)   # old (purged)
+        await store.record_gas("2026-06-28T00:00:00+00:00", 1000.0)  # kept
+        deleted = await store.purge_older_than("2026-06-01T00:00:00+00:00")
+        rows = await store.gas_between("2020-01-01T00:00:00+00:00", "2030-01-01T00:00:00+00:00")
+        return deleted, rows
+
+    deleted, rows = asyncio.run(run())
+    assert deleted >= 1
+    assert [r["ts"] for r in rows] == ["2026-06-28T00:00:00+00:00"]
+
+
 def test_purge_trims_prices_but_keeps_daily_finance(tmp_path):
     # daily_finance is the long-horizon record (B-13) — retention must never eat it.
     store = HistoryStore(str(tmp_path / "ems.sqlite"))

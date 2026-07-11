@@ -54,7 +54,7 @@ def build_app():
         build_wiring(eff, tz, cache_store=cache_store)
     )
     recorder = Recorder(source, store, freshness, cycle_seconds=cfg.cycle_seconds,
-                        price_source=price_source)
+                        price_source=price_source, solar_forecast=solar_forecast)
     # Startup grace (observe-before-act) is 120s by default; EMS_STARTUP_GRACE_SECONDS lets a
     # debug/test run reach CONTROLLING quickly without waiting two minutes.
     _grace = float(os.environ.get("EMS_STARTUP_GRACE_SECONDS") or 120)

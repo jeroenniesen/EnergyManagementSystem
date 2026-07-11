@@ -21,12 +21,15 @@ from typing import Any
 RAW_COLUMNS = ("ts", "grid_power_w", "solar_power_w", "battery_power_w", "ev_power_w", "soc_pct")
 DERIVED_COLUMNS = ("ts", "house_load_w", "non_ev_load_w")
 PRICE_COLUMNS = ("start_ts", "eur_per_kwh")
+FORECAST_COLUMNS = ("issued_date", "start", "p10_w", "p50_w", "p90_w")
 FINANCE_COLUMNS = (
     "day", "has_data", "price_coverage", "grid_cost_eur", "battery_cost_eur",
     "baseline_cost_eur", "saved_eur", "grid_import_kwh", "grid_export_kwh",
     "battery_charge_kwh", "battery_discharge_kwh",
 )
 AUDIT_COLUMNS = ("id", "ts", "category", "summary", "detail")
+PLAN_COLUMNS = ("ts", "strategy", "target_soc", "deadline", "soc_pct", "intent")
+GAS_COLUMNS = ("ts", "total_gas_m3")
 
 
 def rows_to_csv(rows: list[dict], columns: tuple[str, ...]) -> str:
@@ -66,6 +69,65 @@ def read_member(data: bytes, name: str) -> str:
         return zf.read(name).decode("utf-8")
 
 
+# Incident classification: (type, keywords) in priority order — a row is classified by the FIRST
+# type whose keyword(s) appear in its summary+detail text; a row matching none is not an incident.
+_INCIDENT_TYPES: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ("cluster_mismatch", ("mismatch",)),
+    ("command_failed", ("unconfirmed",)),
+    ("fallback", ("fallback", "failsafe")),
+    ("revert", ("revert",)),
+)
+
+
+def incident_rollup(audit_rows: list[dict]) -> dict:
+    """Roll hundreds of audit rows up into a control-health incident summary: command failures,
+    cluster mismatches, fallbacks and reverts — the operational problems worth seeing at a glance,
+    as opposed to the routine decisions/config changes that make up most of the audit log.
+
+    Each row is classified by scanning its `summary` + `detail` text (case-insensitive) against
+    `_INCIDENT_TYPES`, in order; a row counts once, under the first type that matches. Rows
+    matching none are not incidents and are ignored. Pure — no clock, no I/O; `last_7_days` is
+    computed relative to the newest incident found in the data, not wall-clock time.
+    """
+    by_type: dict[str, int] = {}
+    by_day: dict[str, int] = {}
+    incident_ts: list[str] = []
+    for row in audit_rows:
+        summary = row.get("summary") or ""
+        detail = row.get("detail") or ""
+        if isinstance(detail, dict | list):
+            detail_text = json.dumps(detail, ensure_ascii=False)
+        else:
+            detail_text = str(detail)
+        # Hyphen-insensitive so the runtime text "fail-safe" matches the "failsafe" keyword.
+        text = f"{summary} {detail_text}".lower().replace("-", "")
+        for itype, keywords in _INCIDENT_TYPES:
+            if any(kw in text for kw in keywords):
+                by_type[itype] = by_type.get(itype, 0) + 1
+                ts = row.get("ts")
+                if ts:
+                    by_day[ts[:10]] = by_day.get(ts[:10], 0) + 1
+                    incident_ts.append(ts)
+                break
+    if not incident_ts:
+        return {"total": 0, "by_type": {}, "by_day": {}, "most_recent": None, "last_7_days": 0}
+    most_recent = max(incident_ts)
+    newest_day = most_recent[:10]
+    last_7_days = sum(1 for ts in incident_ts if _days_between(ts[:10], newest_day) <= 7)
+    return {
+        "total": len(incident_ts),
+        "by_type": by_type,
+        "by_day": by_day,
+        "most_recent": most_recent,
+        "last_7_days": last_7_days,
+    }
+
+
+def _days_between(day: str, newest_day: str) -> int:
+    from datetime import date
+    return (date.fromisoformat(newest_day) - date.fromisoformat(day)).days
+
+
 def readme_text() -> str:
     """A self-contained guide to the package: what each CSV holds, units, sign conventions, and
     how to load it. Static — the per-package window/counts live in manifest.json."""
@@ -87,6 +149,11 @@ health check of production operation. All timestamps are **UTC, ISO-8601**. All 
   `ts, house_load_w` (total incl. car), `non_ev_load_w` (house only).
 - **prices.csv** — the electricity price that was active in each 15-min slot:
   `start_ts, eur_per_kwh`.
+- **forecasts.csv** — the solar forecast recorded for each 15-min slot:
+  `issued_date, start, p10_w, p50_w, p90_w`. Join `start` to raw_samples' `solar_power_w` to
+  measure forecast error; `p50_w` is the expected case, `p10_w`/`p90_w` the confidence band;
+  `issued_date` is the day the forecast was made (the first snapshot per slot is kept, so this is
+  the day-ahead forecast, not a later same-day nowcast).
 - **daily_finance.csv** — measured money per local day:
   `day, has_data, price_coverage, grid_cost_eur, battery_cost_eur, baseline_cost_eur,
   saved_eur, grid_import_kwh, grid_export_kwh, battery_charge_kwh, battery_discharge_kwh`.
@@ -94,9 +161,23 @@ health check of production operation. All timestamps are **UTC, ISO-8601**. All 
   `price_coverage` (0..1) is how much of the day had a known price.
 - **audit_log.csv** — every decision, config change, override and AI check the system made:
   `id, ts, category, summary, detail` (detail is a JSON object).
+- **plan_history.csv** — what the planner intended each cycle:
+  `ts, strategy, target_soc, deadline, soc_pct, intent`. `target_soc` is the SoC the planner
+  aimed for at that moment, `strategy` is the resolved summer/winter strategy, `intent` is the
+  battery mode it was pursuing, and `soc_pct` is the SoC observed at that same moment. Compare
+  `target_soc` against the achieved `soc_pct` in raw_samples (by `ts`) to see how well the plan
+  tracked reality over time.
+- **gas.csv** — cumulative gas meter (m³), one row per recorder cycle a gas meter is paired:
+  `ts, total_gas_m3`. It's a running total, not a per-cycle volume — a day's use is that day's
+  last reading minus its first. Folds into the CO₂ footprint (Insights' CO₂ score) alongside
+  electricity.
 - **manifest.json** — what/when/window, row counts, and a privacy-safe validation block
   (run mode, planner settings, data quality, recorder health). No tokens, IPs or location.
-- **validation_summary.txt** — the same health read in plain language.
+  `manifest.incidents` summarises control-health events from the audit log (command failures,
+  cluster mismatches, fallbacks, reverts) — a rollup, not a replacement for `audit_log.csv`.
+- **validation_summary.txt** — the same health read in plain language, plus a "Solar forecast
+  skill" section (bias, MAE, band coverage, actual vs forecast kWh) measuring how well the
+  day-ahead forecast tracked reality — see forecasts.csv for the raw data behind it.
 
 ## Loading (Python / pandas)
 ```python
@@ -113,6 +194,41 @@ def _run_mode(dry_run: bool) -> str:
     return "LIVE (battery writes armed)"
 
 
+def _forecast_skill_lines(forecast_skill: dict[str, Any] | None) -> list[str]:
+    """The 'Solar forecast skill' section — omitted entirely when no forecast-error dict is
+    given (older callers), and reduced to a one-liner when there's no matched-slot overlap yet."""
+    if forecast_skill is None:
+        return []
+    n = forecast_skill.get("n_slots", 0)
+    if not n:
+        return ["", "Solar forecast skill", "  No matched forecast/actual slots yet."]
+    bias = forecast_skill.get("bias_w")
+    mae = forecast_skill.get("mae_w")
+    coverage = forecast_skill.get("band_coverage_pct")
+    actual_kwh = forecast_skill.get("actual_solar_kwh")
+    forecast_kwh = forecast_skill.get("forecast_p50_kwh")
+    if bias is None:
+        read = "not enough data yet"
+    elif bias < 0:
+        read = f"forecast over-predicted solar by {abs(bias):.0f} W on average"
+    elif bias > 0:
+        read = f"forecast under-predicted solar by {bias:.0f} W on average"
+    else:
+        read = "forecast tracked actual solar almost exactly, on average"
+    return [
+        "",
+        "Solar forecast skill",
+        f"  Matched slots:   {n}",
+        f"  Bias (mean):     {bias} W" if bias is not None else "  Bias (mean):     —",
+        f"  MAE:             {mae} W" if mae is not None else "  MAE:             —",
+        f"  Band coverage:   {coverage}% within [p10, p90]" if coverage is not None
+        else "  Band coverage:   —",
+        f"  Actual vs P50:   {actual_kwh} kWh vs {forecast_kwh} kWh"
+        if actual_kwh is not None else "  Actual vs P50:   —",
+        f"  Read: {read}.",
+    ]
+
+
 def validation_summary(
     *,
     generated_at: str,
@@ -121,12 +237,18 @@ def validation_summary(
     counts: dict[str, int],
     validation: dict[str, Any],
     saved_total_eur: float | None,
+    forecast_skill: dict[str, Any] | None = None,
 ) -> str:
     """A one-screen, plain-language health read derived from the manifest data, so a reviewer (or
-    the operator) can see at a glance whether the system is collecting data and operating sanely."""
+    the operator) can see at a glance whether the system is collecting data and operating sanely.
+    `forecast_skill` is the optional `ems.analysis.forecast_error(...)` result — when given, a
+    'Solar forecast skill' section is appended (omitted for older callers that don't pass one)."""
     op = validation.get("operational", {})
     health = validation.get("health", {})
     rec = health.get("recorder") or {}
+    incidents = validation.get("incidents") or {}
+    by_type = incidents.get("by_type") or {}
+    by_type_text = ", ".join(f"{k}={v}" for k, v in by_type.items()) if by_type else "none"
     saved = "—" if saved_total_eur is None else f"€{saved_total_eur:.2f}"
     lines = [
         "EMS export — validation summary",
@@ -147,6 +269,13 @@ def validation_summary(
         f"  Battery probed: {'yes' if health.get('capability_present') else 'no'}",
         f"  Recorder:       last success {rec.get('last_success_at', '—')}, "
         f"{rec.get('consecutive_failures', '?')} consecutive failures",
+        "",
+        "Incidents",
+        f"  Total:          {incidents.get('total', 0)} "
+        f"(last 7 days: {incidents.get('last_7_days', 0)})",
+        f"  Most recent:    {incidents.get('most_recent') or '—'}",
+        f"  By type:        {by_type_text}",
+        *_forecast_skill_lines(forecast_skill),
         "",
         "Result",
         f"  Measured savings over the window: {saved}",

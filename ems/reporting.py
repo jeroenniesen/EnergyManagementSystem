@@ -99,6 +99,17 @@ def _import_price_slots(
     return out
 
 
+def gas_m3_consumed(gas_rows: list[dict]) -> float:
+    """Window gas consumption (m3) from cumulative meter readings: last reading minus first,
+    floored at 0 (a meter reset/rollover must never report negative use). 0.0 with fewer than two
+    readings — a single point (or none) carries no delta."""
+    if len(gas_rows) < 2:
+        return 0.0
+    first = float(gas_rows[0]["total_gas_m3"])
+    last = float(gas_rows[-1]["total_gas_m3"])
+    return max(0.0, last - first)
+
+
 def build_series(
     raw_rows: list[dict],
     derived_rows: list[dict],

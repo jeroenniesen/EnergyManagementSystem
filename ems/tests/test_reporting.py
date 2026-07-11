@@ -8,7 +8,7 @@ from fastapi.testclient import TestClient
 
 from ems.domain import RawSample
 from ems.load_model import DerivedSample
-from ems.reporting import _import_price_slots, build_report, resolve_window
+from ems.reporting import _import_price_slots, build_report, gas_m3_consumed, resolve_window
 from ems.sources.mock import MockSource
 from ems.sources.prices import MockPriceSource
 from ems.storage.history import HistoryStore
@@ -95,6 +95,31 @@ def test_build_report_threads_gas_into_co2_score():
     assert "Gas heating" in co2["explanation"]  # gas folded into the footprint
 
 
+def test_gas_m3_consumed_is_last_minus_first():
+    rows = [{"ts": "2026-06-28T00:00:00+00:00", "total_gas_m3": 1000.0},
+            {"ts": "2026-06-28T12:00:00+00:00", "total_gas_m3": 1002.5},
+            {"ts": "2026-06-28T23:00:00+00:00", "total_gas_m3": 1005.0}]
+    assert gas_m3_consumed(rows) == 5.0
+
+
+def test_gas_m3_consumed_fewer_than_two_rows_is_zero():
+    assert gas_m3_consumed([]) == 0.0
+    assert gas_m3_consumed([{"ts": "2026-06-28T00:00:00+00:00", "total_gas_m3": 1000.0}]) == 0.0
+
+
+def test_gas_m3_consumed_never_negative():
+    # A meter reset/rollover must never report negative use — floored at 0.
+    rows = [{"ts": "2026-06-28T00:00:00+00:00", "total_gas_m3": 1000.0},
+            {"ts": "2026-06-28T12:00:00+00:00", "total_gas_m3": 5.0}]
+    assert gas_m3_consumed(rows) == 0.0
+
+
+def test_gas_m3_consumed_is_monotonic_over_more_readings():
+    rows = [{"ts": f"2026-06-28T{h:02d}:00:00+00:00", "total_gas_m3": 1000.0 + h * 0.1}
+            for h in range(24)]
+    assert abs(gas_m3_consumed(rows) - 2.3) < 1e-9
+
+
 def _seed(db: str) -> None:
     async def go():
         store = HistoryStore(db)
@@ -122,6 +147,34 @@ def test_report_endpoint_returns_day_report(tmp_path):
     assert b["period"] == "day" and b["flows"]["has_data"] is True
     assert {s["key"] for s in b["scores"]} == {"self_consumption", "co2", "best_price"}
     assert b["label"] == "2026-06-28"
+
+
+def test_report_endpoint_reflects_gas_in_co2_score(tmp_path):
+    # B-02: /api/report reads the window's gas readings, computes the delta, and threads it into
+    # the CO2 score — the step-down explanation text is the observable proof it's wired end to end.
+    db = str(tmp_path / "ems.sqlite")
+    _seed(db)
+
+    async def seed_gas():
+        store = HistoryStore(db)
+        await store.init()
+        await store.record_gas(PAST.astimezone(UTC).isoformat(), 1000.0)
+        await store.record_gas((PAST + timedelta(hours=6)).astimezone(UTC).isoformat(), 1050.0)
+    asyncio.run(seed_gas())
+
+    with TestClient(_app(db)) as c:
+        b = c.get("/api/report?period=day&date=2026-06-28").json()
+    co2 = next(s for s in b["scores"] if s["key"] == "co2")
+    assert "Gas heating" in co2["explanation"]  # co2_score's step-down text when gas > 0
+
+
+def test_report_endpoint_no_gas_readings_omits_gas_from_co2_explanation(tmp_path):
+    db = str(tmp_path / "ems.sqlite")
+    _seed(db)
+    with TestClient(_app(db)) as c:
+        b = c.get("/api/report?period=day&date=2026-06-28").json()
+    co2 = next(s for s in b["scores"] if s["key"] == "co2")
+    assert "Gas heating" not in co2["explanation"]  # no gas meter/readings → untouched footprint
 
 
 def test_report_endpoint_validation_and_future(tmp_path):

@@ -8,8 +8,9 @@ import logging
 from collections.abc import Callable
 from datetime import UTC, datetime
 
+from ems.domain import RawSample
 from ems.freshness import FreshnessTracker
-from ems.load_model import reconstruct
+from ems.load_model import reconstruct, sanitize_sample
 from ems.sources.base import Source
 from ems.storage.history import HistoryStore
 
@@ -32,6 +33,7 @@ class Recorder:
         cycle_seconds: float = 300.0,
         clock: Callable[[], datetime] = _utcnow,
         price_source=None,  # optional .slots() provider; persisted for finance (spec 2026-07-03)
+        solar_forecast=None,  # optional .slots() provider; persisted for forecast-error analysis
     ) -> None:
         self.source = source
         self.store = store
@@ -39,17 +41,26 @@ class Recorder:
         self.cycle_seconds = cycle_seconds
         self._clock = clock
         self.price_source = price_source
+        self.solar_forecast = solar_forecast
+        # Settable by create_app (not a constructor param — the plan snapshot closure needs the
+        # web layer's live settings/strategy/plan machinery, which doesn't exist until the app is
+        # built). None means plan/target history logging is off. See `_persist_plan`.
+        self.plan_provider: Callable[[datetime], dict | None] | None = None
         # Health, surfaced on /api/diagnostics so a 24/7 operator can SEE a stuck recorder (full
         # disk, DB lock, permanently failing device) instead of only inferring it from stale data.
         self.last_success_at: datetime | None = None
         self.last_error: str | None = None
         self.consecutive_failures = 0
+        # Counts readings clamped by the plausibility guard (defense-in-depth against a future
+        # sensor/comms glitch) — surfaced on /api/diagnostics so an operator can SEE it happening.
+        self.clamped_samples = 0
 
     def health(self) -> dict:
         return {
             "last_success_at": self.last_success_at.isoformat() if self.last_success_at else None,
             "consecutive_failures": self.consecutive_failures,
             "last_error": self.last_error,
+            "clamped_samples": self.clamped_samples,
         }
 
     async def sense_once(self, now: datetime) -> None:
@@ -63,11 +74,20 @@ class Recorder:
         else:
             raw = await asyncio.to_thread(self.source.read)
             fresh = set(SIGNALS)
+        raw, clamped = sanitize_sample(raw)
+        if clamped:
+            self.clamped_samples += 1
+            if self.clamped_samples == 1 or self.clamped_samples % 12 == 0:
+                _log.warning("implausible reading clamped (%d so far): %s",
+                             self.clamped_samples, ", ".join(clamped))
         derived = reconstruct(raw)
         await self.store.record(now.isoformat(), raw, derived)
         for sig in fresh:
             self.freshness.mark(sig, now)
         await self._persist_prices()
+        await self._persist_forecast(now)
+        await self._persist_plan(now)
+        await self._persist_gas(now, raw)
 
     async def _persist_prices(self) -> None:
         """Upsert the current price curve so PAST slots keep the price that was active then —
@@ -82,6 +102,50 @@ class Recorder:
                 [(p.start.astimezone(UTC).isoformat(), float(p.eur_per_kwh)) for p in slots])
         except Exception as exc:
             _log.warning("price persist failed (non-fatal): %s: %s", type(exc).__name__, exc)
+
+    async def _persist_forecast(self, now: datetime) -> None:
+        """Snapshot today's day-ahead solar forecast so it can later be compared against actual
+        production (forecast-vs-actual error, observability-data). The store's INSERT OR IGNORE
+        keeps the FIRST forecast recorded per (issued_date, slot) — later cycles the same day are
+        no-ops. Best-effort: a forecast-source failure must never kill the sense cycle."""
+        if self.solar_forecast is None:
+            return
+        try:
+            issued = now.astimezone(UTC).date().isoformat()
+            slots = await asyncio.to_thread(self.solar_forecast.slots)
+            await self.store.upsert_forecast_snapshot(
+                issued,
+                [(s.start.astimezone(UTC).isoformat(), float(s.p10_w), float(s.p50_w),
+                  float(s.p90_w)) for s in slots],
+            )
+        except Exception as exc:
+            _log.warning("forecast persist failed (non-fatal): %s: %s", type(exc).__name__, exc)
+
+    async def _persist_gas(self, now: datetime, raw: RawSample) -> None:
+        """Record this cycle's cumulative gas meter reading (B-02: gas folds into the CO2
+        footprint), when the sample carries one — a household with no paired gas meter reports
+        None and nothing is written. Best-effort: a store failure must never kill the cycle."""
+        if raw.total_gas_m3 is None:
+            return
+        try:
+            await self.store.record_gas(now.astimezone(UTC).isoformat(), float(raw.total_gas_m3))
+        except Exception as exc:
+            _log.warning("gas persist failed (non-fatal): %s: %s", type(exc).__name__, exc)
+
+    async def _persist_plan(self, now: datetime) -> None:
+        """Snapshot the planner's current target/strategy/intent (observability-data) so a
+        reviewer can later compare `target_soc` against the achieved `soc_pct` in raw_samples.
+        `plan_provider` (wired by create_app) does synchronous, non-trivial work (rebuilds the
+        plan) — offload to a thread like the other source reads. Best-effort: a provider failure
+        (or one returning None, e.g. no plan yet) must never kill the sense cycle."""
+        if self.plan_provider is None:
+            return
+        try:
+            snap = await asyncio.to_thread(self.plan_provider, now)
+            if snap:
+                await self.store.record_plan(now.astimezone(UTC).isoformat(), snap)
+        except Exception as exc:
+            _log.warning("plan persist failed (non-fatal): %s: %s", type(exc).__name__, exc)
 
     async def record_now(self) -> None:
         await self.sense_once(self._clock())
