@@ -103,3 +103,11 @@ export const PHYSICAL_MODE: Record<string, string> = {
   discharge: "Powering the house",
   idle: "Holding",
 };
+
+/** Control-incident types (from /api/incidents), in plain words — see export_package.incident_rollup. */
+export const INCIDENT_TYPE_LABEL: Record<string, string> = {
+  cluster_mismatch: "Cluster mismatch",
+  command_failed: "Command failed",
+  fallback: "Fell back to a safe default",
+  revert: "Reverted to safe mode",
+};

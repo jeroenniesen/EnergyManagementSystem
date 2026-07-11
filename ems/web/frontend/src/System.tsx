@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 
-import { SYSTEM_OVERALL } from "./labels";
+import { INCIDENT_TYPE_LABEL, SYSTEM_OVERALL } from "./labels";
 
 type Check = { key: string; label: string; status: "ok" | "warn" | "fail"; detail: string };
 type Readiness = {
@@ -9,6 +9,18 @@ type Readiness = {
   summary: string;
 };
 type Diag = { overall: "ok" | "warn" | "fail"; checks: Check[]; readiness?: Readiness };
+type IncidentRollup = {
+  total: number;
+  by_type: Record<string, number>;
+  by_day: Record<string, number>;
+  most_recent: string | null;
+  last_7_days: number;
+};
+
+function when(ts: string): string {
+  const d = new Date(ts);
+  return Number.isNaN(d.getTime()) ? ts : d.toLocaleString([], { dateStyle: "medium" });
+}
 
 const STATUS_LABEL: Record<string, string> = { ok: "OK", warn: "Check", fail: "Problem" };
 const OVERALL_DQ: Record<string, string> = { ok: "complete", warn: "degraded", fail: "unsafe" };
@@ -41,6 +53,7 @@ const RECOVERY: Record<string, string> = {
 export function SystemView() {
   const [diag, setDiag] = useState<Diag | null>(null);
   const [err, setErr] = useState<string | null>(null);
+  const [incidents, setIncidents] = useState<IncidentRollup | null>(null);
 
   useEffect(() => {
     let alive = true;
@@ -59,6 +72,28 @@ export function SystemView() {
     }
     load();
     const id = setInterval(load, 10000);
+    return () => {
+      alive = false;
+      clearInterval(id);
+    };
+  }, []);
+
+  // Control-incident rollup (command failures, cluster mismatches, fallbacks, reverts) — a
+  // separate, best-effort fetch so a hiccup here never blocks the readiness checks above.
+  useEffect(() => {
+    let alive = true;
+    async function load() {
+      try {
+        const r = await fetch("/api/incidents");
+        if (!r.ok) return;
+        const b = await r.json();
+        if (alive) setIncidents(b.incidents ?? null);
+      } catch {
+        // best-effort — the panel simply stays hidden
+      }
+    }
+    load();
+    const id = setInterval(load, 30000);
     return () => {
       alive = false;
       clearInterval(id);
@@ -125,6 +160,38 @@ export function SystemView() {
         </div>
       ))}
       </div>
+
+      {incidents && (
+        <div
+          className={`incidents ${incidents.total === 0 ? "incidents-calm" : "incidents-warn"}`}
+          data-testid="incidents"
+        >
+          <span className="metric-label">Control health</span>
+          {incidents.total === 0 ? (
+            <p className="incidents-summary incidents-calm-text">
+              No control incidents recorded
+            </p>
+          ) : (
+            <>
+              <p className="incidents-summary incidents-warn-text">
+                {incidents.last_7_days} incident{incidents.last_7_days === 1 ? "" : "s"} in the
+                last 7 days — most recent{" "}
+                {incidents.most_recent ? when(incidents.most_recent) : "unknown"}
+              </p>
+              <ul className="incident-types" data-testid="incident-types">
+                {Object.entries(incidents.by_type).map(([type, count]) => (
+                  <li key={type} className="incident-type-row">
+                    <span className="incident-type-label">
+                      {INCIDENT_TYPE_LABEL[type] ?? type}
+                    </span>
+                    <span className="incident-type-count">{count}</span>
+                  </li>
+                ))}
+              </ul>
+            </>
+          )}
+        </div>
+      )}
 
       <div className="export" data-testid="export">
         <span className="metric-label">Export &amp; replay</span>

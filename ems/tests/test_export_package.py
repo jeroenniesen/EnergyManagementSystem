@@ -6,8 +6,10 @@ from ems.export_package import (
     RAW_COLUMNS,
     build_manifest,
     build_zip,
+    incident_rollup,
     read_member,
     rows_to_csv,
+    validation_summary,
     zip_names,
 )
 
@@ -55,6 +57,83 @@ def test_build_manifest_carries_window_counts_and_extra():
     assert m["counts"]["raw_samples"] == 100
     assert m["window"]["start"].startswith("2026-05-28")
     assert m["diagnostics"] == {"ready": True}  # extra merged in
+
+
+# ---- incident_rollup: control-health incidents rolled up from the audit log ----
+
+def test_incident_rollup_classifies_counts_and_dates():
+    rows = [
+        {"id": 1, "ts": "2026-06-20T10:00:00+00:00", "category": "battery_decision",
+         "summary": "Battery cluster MISMATCH — 1 tower(s) NOT following the commanded mode",
+         "detail": {}},
+        {"id": 2, "ts": "2026-06-25T09:00:00+00:00", "category": "battery_decision",
+         "summary": "Battery charge unconfirmed — device slow to respond; holding and retrying "
+                    "(not reverting)",
+         "detail": {}},
+        {"id": 3, "ts": "2026-06-26T09:00:00+00:00", "category": "battery_decision",
+         "summary": "Battery discharge unconfirmed — device slow to respond; holding and "
+                    "retrying (not reverting)",
+         "detail": {}},
+        {"id": 4, "ts": "2026-06-26T12:00:00+00:00", "category": "battery_decision",
+         "summary": "Would set battery to charge — cheap window", "detail": {}},  # benign, ignored
+    ]
+    out = incident_rollup(rows)
+    assert out["total"] == 3
+    assert out["by_type"] == {"cluster_mismatch": 1, "command_failed": 2}
+    assert out["by_day"] == {"2026-06-20": 1, "2026-06-25": 1, "2026-06-26": 1}
+    assert out["most_recent"] == "2026-06-26T09:00:00+00:00"
+    assert out["last_7_days"] == 3  # newest day minus 6/20 = 6 days -> all three within 7
+
+
+def test_incident_rollup_empty_input_is_zeros():
+    out = incident_rollup([])
+    assert out == {"total": 0, "by_type": {}, "by_day": {}, "most_recent": None, "last_7_days": 0}
+
+
+def test_incident_rollup_priority_order_first_match_wins():
+    # Contains both "unconfirmed" and "reverted" -> command_failed wins (checked before revert).
+    rows = [{"ts": "2026-06-28T10:00:00+00:00", "summary":
+             "Battery charge unconfirmed -> reverted to AUTO", "detail": {}}]
+    out = incident_rollup(rows)
+    assert out["by_type"] == {"command_failed": 1}
+
+
+def test_incident_rollup_fallback_and_revert_and_detail_text():
+    rows = [
+        {"ts": "2026-06-01T00:00:00+00:00", "summary": "Held plan",
+         "detail": {"reason": "prices unavailable — using failsafe curve"}},
+        {"ts": "2026-06-02T00:00:00+00:00", "summary": "Reverted battery mode to AUTO",
+         "detail": {}},
+    ]
+    out = incident_rollup(rows)
+    assert out["by_type"] == {"fallback": 1, "revert": 1}
+    assert out["total"] == 2
+
+
+def test_incident_rollup_last_7_days_excludes_older_incidents():
+    rows = [
+        {"ts": "2026-06-01T00:00:00+00:00", "summary": "Battery cluster mismatch", "detail": {}},
+        {"ts": "2026-06-20T00:00:00+00:00", "summary": "Battery cluster mismatch", "detail": {}},
+    ]
+    out = incident_rollup(rows)
+    assert out["total"] == 2
+    assert out["last_7_days"] == 1  # only the 6/20 incident is within 7 days of itself
+
+
+def test_validation_summary_includes_incidents_section():
+    text = validation_summary(
+        generated_at="2026-06-28T12:00:00+00:00", app_version="0.0.1",
+        window={"start": "2026-05-28T00:00:00+00:00", "end": "2026-06-28T12:00:00+00:00"},
+        counts={"raw_samples": 1}, saved_total_eur=None,
+        validation={"incidents": {"total": 2, "last_7_days": 1,
+                                   "most_recent": "2026-06-26T09:00:00+00:00",
+                                   "by_type": {"cluster_mismatch": 1, "command_failed": 1},
+                                   "by_day": {}}},
+    )
+    assert "Incidents" in text
+    assert "Total:          2 (last 7 days: 1)" in text
+    assert "cluster_mismatch=1" in text and "command_failed=1" in text
+    assert "2026-06-26T09:00:00+00:00" in text
 
 
 # ---- endpoint: GET /api/export/package returns a ZIP of the CSVs + manifest ----
@@ -146,6 +225,9 @@ def test_manifest_carries_validation_payload_and_no_secrets(tmp_path):
     assert "strategy.mode" in manifest["config"]              # replay-safe planner knobs
     assert "data_quality" in manifest["health"]
     assert "capability_present" in manifest["health"]
+    assert manifest["incidents"] == {  # the seeded audit entry is benign -> zero incidents
+        "total": 0, "by_type": {}, "by_day": {}, "most_recent": None, "last_7_days": 0,
+    }
     # Privacy: no secrets / IPs / location keys anywhere in the manifest text.
     blob = json.dumps(manifest).lower()
     for leak in ("token", "secret", "_ip", "\"ip\"", "lat", "lon", "password"):
@@ -167,6 +249,8 @@ def test_package_includes_readme_and_validation_summary(tmp_path):
     assert "Run mode:" in summary and "DRY-RUN" in summary              # run mode legible
     assert "Measured savings over the window: €0.42" in summary         # savings total from finance
     assert "Data quality:" in summary
+    assert "Incidents" in summary                                       # control-health section
+    assert "manifest.incidents" in readme                               # documented in the README
 
 
 def test_package_never_leaks_a_stored_secret_value(tmp_path):
@@ -238,3 +322,45 @@ def test_create_app_sets_plan_provider_when_recorder_passed(tmp_path):
     assert callable(recorder.plan_provider)
     # No recorder passed at all → create_app must not require one.
     create_app(MockSource(), dry_run=True, dev_mode="mock", tz=AMS)
+
+
+# ---- endpoint: GET /api/incidents — the same rollup, without downloading the export ----
+
+def test_incidents_endpoint_rolls_up_the_audit_log(tmp_path):
+    db = str(tmp_path / "ems.sqlite")
+
+    async def seed():
+        audit = AuditStore(db)
+        await audit.init()
+        await audit.append("2026-06-28T09:00:00+00:00", "battery_decision",
+                            "Battery cluster MISMATCH — 1 tower(s) NOT following the commanded "
+                            "mode", {})
+        await audit.append("2026-06-28T10:00:00+00:00", "battery_decision",
+                            "Would set battery to charge — cheap window", {})
+    asyncio.run(seed())
+
+    with TestClient(_app(db)) as c:
+        body = c.get("/api/incidents").json()
+    assert body["incidents"]["total"] == 1
+    assert body["incidents"]["by_type"] == {"cluster_mismatch": 1}
+
+
+def test_incidents_endpoint_empty_without_audit_store():
+    app = create_app(MockSource(), dry_run=True, dev_mode="mock", tz=AMS)
+    with TestClient(app) as c:
+        body = c.get("/api/incidents").json()
+    assert body["incidents"] == {
+        "total": 0, "by_type": {}, "by_day": {}, "most_recent": None, "last_7_days": 0,
+    }
+
+
+def test_incident_rollup_matches_hyphenated_failsafe():
+    # Runtime text is "fail-safe" (hyphenated); the classifier must still catch it as a fallback.
+    from ems.export_package import incident_rollup
+    rows = [
+        {"ts": "2026-07-06T20:00:00+00:00",
+         "summary": "Fell back to AUTO (fail-safe)", "detail": {}},
+        {"ts": "2026-07-06T21:00:00+00:00", "summary": "set auto", "detail": {}},  # benign
+    ]
+    r = incident_rollup(rows)
+    assert r["total"] == 1 and r["by_type"].get("fallback") == 1

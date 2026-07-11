@@ -2546,6 +2546,7 @@ def create_app(
                 "capability_present": _capability_box["cap"] is not None,
                 "recorder": recorder.health() if recorder is not None else None,
             },
+            "incidents": expkg.incident_rollup(audit),
         }
         counts = {"raw_samples": len(raw), "derived_samples": len(derived),
                   "prices": len(prices), "forecasts": len(forecasts),
@@ -2661,6 +2662,15 @@ def create_app(
         if audit_store is None:
             return {"entries": []}
         return {"entries": await audit_store.recent(limit, category)}
+
+    @app.get("/api/incidents")
+    async def incidents_endpoint() -> dict:
+        """Control-health incidents (command failures, cluster mismatches, fallbacks, reverts)
+        rolled up from the audit log — the same read `/api/export/package` embeds in the manifest,
+        so the System page can show it without downloading the export. Read-only."""
+        if audit_store is None:
+            return {"incidents": expkg.incident_rollup([])}
+        return {"incidents": expkg.incident_rollup(await audit_store.recent(limit=5000))}
 
     @app.get("/api/ai/validation")
     def ai_validation_latest() -> dict:

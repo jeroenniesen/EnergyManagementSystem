@@ -68,6 +68,65 @@ def read_member(data: bytes, name: str) -> str:
         return zf.read(name).decode("utf-8")
 
 
+# Incident classification: (type, keywords) in priority order — a row is classified by the FIRST
+# type whose keyword(s) appear in its summary+detail text; a row matching none is not an incident.
+_INCIDENT_TYPES: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ("cluster_mismatch", ("mismatch",)),
+    ("command_failed", ("unconfirmed",)),
+    ("fallback", ("fallback", "failsafe")),
+    ("revert", ("revert",)),
+)
+
+
+def incident_rollup(audit_rows: list[dict]) -> dict:
+    """Roll hundreds of audit rows up into a control-health incident summary: command failures,
+    cluster mismatches, fallbacks and reverts — the operational problems worth seeing at a glance,
+    as opposed to the routine decisions/config changes that make up most of the audit log.
+
+    Each row is classified by scanning its `summary` + `detail` text (case-insensitive) against
+    `_INCIDENT_TYPES`, in order; a row counts once, under the first type that matches. Rows
+    matching none are not incidents and are ignored. Pure — no clock, no I/O; `last_7_days` is
+    computed relative to the newest incident found in the data, not wall-clock time.
+    """
+    by_type: dict[str, int] = {}
+    by_day: dict[str, int] = {}
+    incident_ts: list[str] = []
+    for row in audit_rows:
+        summary = row.get("summary") or ""
+        detail = row.get("detail") or ""
+        if isinstance(detail, dict | list):
+            detail_text = json.dumps(detail, ensure_ascii=False)
+        else:
+            detail_text = str(detail)
+        # Hyphen-insensitive so the runtime text "fail-safe" matches the "failsafe" keyword.
+        text = f"{summary} {detail_text}".lower().replace("-", "")
+        for itype, keywords in _INCIDENT_TYPES:
+            if any(kw in text for kw in keywords):
+                by_type[itype] = by_type.get(itype, 0) + 1
+                ts = row.get("ts")
+                if ts:
+                    by_day[ts[:10]] = by_day.get(ts[:10], 0) + 1
+                    incident_ts.append(ts)
+                break
+    if not incident_ts:
+        return {"total": 0, "by_type": {}, "by_day": {}, "most_recent": None, "last_7_days": 0}
+    most_recent = max(incident_ts)
+    newest_day = most_recent[:10]
+    last_7_days = sum(1 for ts in incident_ts if _days_between(ts[:10], newest_day) <= 7)
+    return {
+        "total": len(incident_ts),
+        "by_type": by_type,
+        "by_day": by_day,
+        "most_recent": most_recent,
+        "last_7_days": last_7_days,
+    }
+
+
+def _days_between(day: str, newest_day: str) -> int:
+    from datetime import date
+    return (date.fromisoformat(newest_day) - date.fromisoformat(day)).days
+
+
 def readme_text() -> str:
     """A self-contained guide to the package: what each CSV holds, units, sign conventions, and
     how to load it. Static — the per-package window/counts live in manifest.json."""
@@ -109,6 +168,8 @@ health check of production operation. All timestamps are **UTC, ISO-8601**. All 
   tracked reality over time.
 - **manifest.json** — what/when/window, row counts, and a privacy-safe validation block
   (run mode, planner settings, data quality, recorder health). No tokens, IPs or location.
+  `manifest.incidents` summarises control-health events from the audit log (command failures,
+  cluster mismatches, fallbacks, reverts) — a rollup, not a replacement for `audit_log.csv`.
 - **validation_summary.txt** — the same health read in plain language.
 
 ## Loading (Python / pandas)
@@ -140,6 +201,9 @@ def validation_summary(
     op = validation.get("operational", {})
     health = validation.get("health", {})
     rec = health.get("recorder") or {}
+    incidents = validation.get("incidents") or {}
+    by_type = incidents.get("by_type") or {}
+    by_type_text = ", ".join(f"{k}={v}" for k, v in by_type.items()) if by_type else "none"
     saved = "—" if saved_total_eur is None else f"€{saved_total_eur:.2f}"
     lines = [
         "EMS export — validation summary",
@@ -160,6 +224,12 @@ def validation_summary(
         f"  Battery probed: {'yes' if health.get('capability_present') else 'no'}",
         f"  Recorder:       last success {rec.get('last_success_at', '—')}, "
         f"{rec.get('consecutive_failures', '?')} consecutive failures",
+        "",
+        "Incidents",
+        f"  Total:          {incidents.get('total', 0)} "
+        f"(last 7 days: {incidents.get('last_7_days', 0)})",
+        f"  Most recent:    {incidents.get('most_recent') or '—'}",
+        f"  By type:        {by_type_text}",
         "",
         "Result",
         f"  Measured savings over the window: {saved}",

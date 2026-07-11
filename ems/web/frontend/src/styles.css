@@ -974,6 +974,25 @@ body {
 .check-status[data-status="warn"] { color: var(--amber-text); }
 .check-status[data-status="fail"] { color: var(--error); }
 
+/* Control-incident rollup (System page) */
+.incidents {
+  margin-top: 24px; background: var(--panel); border: 1px solid var(--line);
+  border-left: 3px solid var(--accent); border-radius: var(--radius); padding: 14px 18px;
+  box-shadow: var(--shadow);
+}
+.incidents-warn { border-left-color: var(--amber); }
+.incidents-summary { margin: 8px 0 0; font-size: 0.9rem; line-height: 1.5; }
+.incidents-calm-text { color: var(--accent-text); }
+.incidents-warn-text { color: var(--amber-text); font-weight: 600; }
+.incident-types {
+  list-style: none; margin: 10px 0 0; padding: 0; display: flex; flex-direction: column; gap: 4px;
+}
+.incident-type-row {
+  display: flex; justify-content: space-between; gap: 12px; font-size: 0.82rem;
+  color: var(--muted);
+}
+.incident-type-count { font-weight: 700; color: var(--text); }
+
 /* AI second-opinion card */
 .ai-validation {
   margin-top: 24px; background: var(--panel); border: 1px solid var(--line);
