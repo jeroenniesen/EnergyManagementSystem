@@ -482,6 +482,10 @@ test.describe("EMS dashboard", () => {
     await expect(page.getByTestId("check-sensor.grid")).toContainText("fresh");
     await expect(page.getByTestId("system-overall")).toBeVisible();
     // Export links present with the right download hrefs.
+    await expect(page.getByTestId("export-package")).toHaveAttribute(
+      "href",
+      "/api/export/package",
+    );
     await expect(page.getByTestId("export-raw")).toHaveAttribute(
       "href",
       "/api/export?kind=raw&format=csv",
