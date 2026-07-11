@@ -129,10 +129,14 @@ export function SystemView() {
       <div className="export" data-testid="export">
         <span className="metric-label">Export &amp; replay</span>
         <p className="settings-group-hint">
-          Download recent measurements as a spreadsheet, or the full plan replay (inputs, plan,
-          projection and decision) to reproduce a decision.
+          The full <strong>export package</strong> is one ZIP of your history as spreadsheets
+          (energy, prices, daily savings, decision log) plus a manifest — for your own analytics,
+          or to share for a health check. Or grab a single CSV / the plan replay below.
         </p>
         <div className="export-links">
+          <a className="btn-primary" href="/api/export/package" data-testid="export-package">
+            Download export package (ZIP)
+          </a>
           <a className="btn-ghost" href="/api/export?kind=raw&format=csv" data-testid="export-raw">
             Raw meters (CSV)
           </a>
