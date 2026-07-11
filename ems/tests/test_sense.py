@@ -354,6 +354,70 @@ def test_gas_persist_failure_never_kills_the_cycle(tmp_path):
     assert len(rows) == 1  # the sample was still recorded despite the gas write failure
 
 
+class _StubCarbon:
+    """Minimal CarbonSource: .current_intensity() -> a fixed kg/kWh value (or None)."""
+
+    def __init__(self, value):
+        self._value = value
+
+    async def current_intensity(self):
+        return self._value
+
+
+class _BoomCarbon:
+    async def current_intensity(self):
+        raise RuntimeError("carbon feed down")
+
+
+def test_sense_once_persists_carbon_intensity(tmp_path):
+    # Roadmap F3: each cycle upserts the current grid CO2 intensity into the CURRENT 15-min slot.
+    store = HistoryStore(str(tmp_path / "ems.sqlite"))
+    fresh = FreshnessTracker()
+    fresh.register(*SIGNALS)
+    rec = Recorder(MockSource(), store, fresh, carbon_source=_StubCarbon(0.21))
+
+    async def run():
+        await store.init()
+        await rec.sense_once(NOW)
+        return await store.carbon_between("2020-01-01T00:00:00+00:00",
+                                          "2030-01-01T00:00:00+00:00")
+
+    rows = asyncio.run(run())
+    assert [(r["start_ts"], r["kg_per_kwh"]) for r in rows] == [(NOW.isoformat(), 0.21)]
+
+
+def test_sense_once_skips_carbon_when_source_returns_none(tmp_path):
+    # A live source that has never succeeded (or failed the sanity band) reports None — nothing
+    # written; the flat factor stays the fallback for reporting.
+    store = HistoryStore(str(tmp_path / "ems.sqlite"))
+    fresh = FreshnessTracker()
+    fresh.register(*SIGNALS)
+    rec = Recorder(MockSource(), store, fresh, carbon_source=_StubCarbon(None))
+
+    async def run():
+        await store.init()
+        await rec.sense_once(NOW)
+        return await store.carbon_between("2020-01-01T00:00:00+00:00",
+                                          "2030-01-01T00:00:00+00:00")
+
+    assert asyncio.run(run()) == []
+
+
+def test_carbon_persist_failure_never_kills_the_cycle(tmp_path):
+    store = HistoryStore(str(tmp_path / "ems.sqlite"))
+    fresh = FreshnessTracker()
+    fresh.register(*SIGNALS)
+    rec = Recorder(MockSource(), store, fresh, carbon_source=_BoomCarbon())
+
+    async def run():
+        await store.init()
+        await rec.sense_once(NOW)  # must not raise
+        return await store.recent_raw(10)
+
+    rows = asyncio.run(run())
+    assert len(rows) == 1  # the sample was still recorded despite the carbon fetch failure
+
+
 def test_plan_provider_defaults_to_none():
     fresh = FreshnessTracker()
     fresh.register(*SIGNALS)

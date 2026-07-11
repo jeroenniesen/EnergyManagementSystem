@@ -8,7 +8,7 @@ from zoneinfo import ZoneInfo
 import uvicorn
 
 from ems.config import load_config
-from ems.connection import build_wiring, effective_connection
+from ems.connection import build_carbon_source, build_wiring, effective_connection
 from ems.control.mode_controller import ModeController
 from ems.freshness import FreshnessTracker
 from ems.lifecycle import Lifecycle
@@ -53,8 +53,12 @@ def build_app():
     source, price_source, solar_forecast, battery_endpoint, controller_driver, dev_mode, dry_run = (
         build_wiring(eff, tz, cache_store=cache_store)
     )
+    # Roadmap F3 (Insights reporting only — never touches control): static flat factor by default,
+    # or the live ElectricityMaps signal when configured with a key. See build_carbon_source.
+    carbon_source = build_carbon_source(eff)
     recorder = Recorder(source, store, freshness, cycle_seconds=cfg.cycle_seconds,
-                        price_source=price_source, solar_forecast=solar_forecast)
+                        price_source=price_source, solar_forecast=solar_forecast,
+                        carbon_source=carbon_source)
     # Startup grace (observe-before-act) is 120s by default; EMS_STARTUP_GRACE_SECONDS lets a
     # debug/test run reach CONTROLLING quickly without waiting two minutes.
     _grace = float(os.environ.get("EMS_STARTUP_GRACE_SECONDS") or 120)

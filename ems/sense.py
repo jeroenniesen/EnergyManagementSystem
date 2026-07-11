@@ -11,6 +11,7 @@ from datetime import UTC, datetime
 from ems.domain import RawSample
 from ems.freshness import FreshnessTracker
 from ems.load_model import reconstruct, sanitize_sample
+from ems.retrospect import _floor
 from ems.sources.base import Source
 from ems.storage.history import HistoryStore
 
@@ -34,6 +35,8 @@ class Recorder:
         clock: Callable[[], datetime] = _utcnow,
         price_source=None,  # optional .slots() provider; persisted for finance (spec 2026-07-03)
         solar_forecast=None,  # optional .slots() provider; persisted for forecast-error analysis
+        carbon_source=None,  # optional CarbonSource (F3); persisted for Insights CO2 reporting —
+        # read-only, never feeds the planner (CLAUDE.md: reporting, not carbon-aware control).
     ) -> None:
         self.source = source
         self.store = store
@@ -42,6 +45,7 @@ class Recorder:
         self._clock = clock
         self.price_source = price_source
         self.solar_forecast = solar_forecast
+        self.carbon_source = carbon_source
         # Settable by create_app (not a constructor param — the plan snapshot closure needs the
         # web layer's live settings/strategy/plan machinery, which doesn't exist until the app is
         # built). None means plan/target history logging is off. See `_persist_plan`.
@@ -88,6 +92,7 @@ class Recorder:
         await self._persist_forecast(now)
         await self._persist_plan(now)
         await self._persist_gas(now, raw)
+        await self._persist_carbon(now)
 
     async def _persist_prices(self) -> None:
         """Upsert the current price curve so PAST slots keep the price that was active then —
@@ -131,6 +136,21 @@ class Recorder:
             await self.store.record_gas(now.astimezone(UTC).isoformat(), float(raw.total_gas_m3))
         except Exception as exc:
             _log.warning("gas persist failed (non-fatal): %s: %s", type(exc).__name__, exc)
+
+    async def _persist_carbon(self, now: datetime) -> None:
+        """Roadmap F3: upsert the current grid CO2 intensity into the CURRENT 15-min slot (floor
+        of `now`), mirroring `_persist_prices`. Read-only reporting signal — never feeds the
+        planner. Best-effort: a missing source, a None reading (fetch failed with no last-good
+        yet), or a store failure must never kill the sense cycle."""
+        if self.carbon_source is None:
+            return
+        try:
+            value = await self.carbon_source.current_intensity()
+            if value is not None:
+                slot = _floor(now.astimezone(UTC))
+                await self.store.upsert_carbon([(slot.isoformat(), float(value))])
+        except Exception as exc:
+            _log.warning("carbon persist failed (non-fatal): %s: %s", type(exc).__name__, exc)
 
     async def _persist_plan(self, now: datetime) -> None:
         """Snapshot the planner's current target/strategy/intent (observability-data) so a

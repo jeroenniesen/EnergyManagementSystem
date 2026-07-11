@@ -18,6 +18,7 @@ from ems.retrospect import _floor, _mean, _parse
 from ems.scores import (
     DEFAULT_GAS_CO2,
     DEFAULT_GRID_CO2,
+    Score,
     best_price_score,
     co2_score,
     self_consumption_score,
@@ -224,12 +225,23 @@ def build_report(
     grid_factor: float = DEFAULT_GRID_CO2,
     gas_factor: float = DEFAULT_GAS_CO2,
     gas_m3: float = 0.0,
+    grid_factor_note: str | None = None,
 ) -> Report:
-    """Assemble the report for a resolved window from stored rows + price slots + CO₂ factors."""
+    """Assemble the report for a resolved window from stored rows + price slots + CO₂ factors.
+
+    `grid_factor_note` (roadmap F3): when the caller resolved `grid_factor` from a time-varying
+    live signal for this window (rather than the flat setting), it passes a short human-readable
+    note (e.g. " (live grid signal, avg 0.19 kg/kWh)") that's appended verbatim to the CO₂ score's
+    explanation — cosmetic only, `co2_score`'s signature/math are untouched; `grid_factor` itself
+    already carries the number that matters."""
     flows = build_flows(raw_rows, derived_rows, start, end, label=label, partial=partial)
+    co2 = co2_score(flows, grid_factor=grid_factor, gas_factor=gas_factor, gas_m3=gas_m3)
+    if grid_factor_note:
+        co2 = Score(co2.key, co2.label, co2.value, co2.raw, co2.unit,
+                    co2.explanation + grid_factor_note)
     scores = [
         self_consumption_score(flows),
-        co2_score(flows, grid_factor=grid_factor, gas_factor=gas_factor, gas_m3=gas_m3),
+        co2,
         best_price_score(_import_price_slots(raw_rows, prices, start, end)),
     ]
     return Report(

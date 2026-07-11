@@ -193,3 +193,25 @@ def build_wiring(eff: dict, tz: ZoneInfo, cache_store: object | None = None):
     dry_run = not operational  # operational (armed + live battery) is the ONLY way dry_run lifts
     return (source, price_source, solar_forecast, battery_endpoint, controller_driver, dev_mode,
             dry_run)
+
+
+def build_carbon_source(eff: dict):
+    """Build the CarbonSource (roadmap F3, Insights reporting only — never touches control) per
+    `reporting.carbon_signal`: `static` (default) is the flat `reporting.grid_co2_factor`, always
+    available; `electricitymaps` is the optional live signal, only when a personal API key is set —
+    a configured-but-keyless live signal falls back to static with a one-line warning rather than
+    silently doing nothing. Kept OUT of `build_wiring`'s return tuple deliberately: several callers
+    unpack that tuple by fixed position/arity, and this is wired into the Recorder only, not the
+    battery/price/forecast read paths."""
+    from ems.sources.carbon import ElectricityMapsCarbonSource, StaticCarbonSource
+
+    factor = float(eff.get("reporting.grid_co2_factor") or 0.27)
+    if eff.get("reporting.carbon_signal") == "electricitymaps":
+        api_key = eff.get("reporting.electricitymaps_api_key") or ""
+        if api_key:
+            return ElectricityMapsCarbonSource(api_key)
+        _log.warning(
+            "reporting.carbon_signal=electricitymaps but no API key is set; "
+            "using the flat grid CO2 factor instead"
+        )
+    return StaticCarbonSource(factor)

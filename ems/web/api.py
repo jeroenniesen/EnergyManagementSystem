@@ -1996,6 +1996,23 @@ def create_app(
         stored = [PriceSlot(datetime.fromisoformat(r["start_ts"]), r["eur_per_kwh"]) for r in rows]
         return live + stored
 
+    async def _window_carbon_factor(
+        start_iso: str, end_iso: str
+    ) -> tuple[float | None, str | None]:
+        """Roadmap F3 (Insights reporting only): the window's average LIVE grid CO2 intensity
+        (kg/kWh) from stored `carbon_intensity` rows (upserted by the recorder each cycle from
+        the configured carbon source), plus a short note for the CO₂ score's explanation. A plain
+        (unweighted) mean over the window's 15-min slots. (None, None) when nothing is stored for
+        this window — the caller then stays on the flat `reporting.grid_co2_factor` setting, no
+        different from before this feature existed."""
+        if store is None:
+            return None, None
+        rows = await store.carbon_between(start_iso, end_iso)
+        if not rows:
+            return None, None
+        avg = sum(r["kg_per_kwh"] for r in rows) / len(rows)
+        return avg, f" (live grid signal, avg {avg:.2f} kg/kWh)"
+
     async def _recent_actuals(now: datetime) -> list[dict]:
         """The last RECENT_HOURS of RECORDED actuals on the 15-min grid (oldest→now), so the planner
         timeline can show what really happened just before now: actual SoC, actual solar, and the
@@ -2390,6 +2407,12 @@ def create_app(
         grid_factor = float(settings_cache.get("reporting.grid_co2_factor", 0.27))
         gas_factor = float(settings_cache.get("reporting.gas_co2_factor", 1.78))
         gas_price = float(settings_cache.get("reporting.gas_price_eur_per_m3", 1.40))
+        # Roadmap F3: use the window's live grid-CO2 average when the recorder has persisted any
+        # (else stay on the flat factor above — unchanged behaviour without the live signal).
+        live_grid_factor, grid_factor_note = await _window_carbon_factor(
+            start.astimezone(UTC).isoformat(), end.astimezone(UTC).isoformat())
+        if live_grid_factor is not None:
+            grid_factor = live_grid_factor
         # Stored prices so the best-price score is right for HISTORICAL windows too, not just
         # whatever the live feed still carries.
         prices = await _window_price_slots(start.astimezone(UTC).isoformat(),
@@ -2398,7 +2421,7 @@ def create_app(
         if store is None or start > now_local:
             resp = build_report([], [], prices, period=period, start=start, end=end, label=label,
                                 partial=partial, grid_factor=grid_factor,
-                                gas_factor=gas_factor).to_dict()
+                                gas_factor=gas_factor, grid_factor_note=grid_factor_note).to_dict()
             resp["series"] = build_series([], [], period=period, start=start, end=end, tz=site_tz)
             resp["gas"] = None
             return resp
@@ -2415,7 +2438,8 @@ def create_app(
         gas = gas_m3_consumed(gas_rows)
         resp = build_report(raw, der, prices, period=period, start=start, end=end, label=label,
                             partial=partial, grid_factor=grid_factor,
-                            gas_factor=gas_factor, gas_m3=gas).to_dict()
+                            gas_factor=gas_factor, gas_m3=gas,
+                            grid_factor_note=grid_factor_note).to_dict()
         # The behavior series (P1/house/car/solar per bucket) rides on the same rows/window.
         resp["series"] = build_series(raw, der, period=period, start=start, end=end, tz=site_tz)
         # Makes gas VISIBLE (beyond folding into the CO₂ score): m³/kWh-eq/€/CO₂ for the Insights

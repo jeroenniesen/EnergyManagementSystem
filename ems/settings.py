@@ -336,6 +336,21 @@ SETTINGS_SCHEMA: tuple[SettingsField, ...] = (
     ),
     # --- Insights & reporting (CO₂ accounting factors) ---
     SettingsField(
+        "reporting.carbon_signal", "Grid CO₂ signal", "enum", "static", "reporting",
+        help="Static (default) uses the flat grid CO₂ factor below — works offline, no key. Live "
+        "(electricityMaps) fetches the grid's actual CO₂ intensity as it varies through the day — "
+        "needs a free personal API key from electricitymaps.com. Falls back to the flat factor if "
+        "the key is missing or the live signal is ever unavailable. Reporting only: this never "
+        "changes when or how the battery is controlled. Takes effect after a restart.",
+        options=("static", "electricitymaps"), applies="restart",
+    ),
+    SettingsField(
+        "reporting.electricitymaps_api_key", "electricityMaps API key", "secret", "", "reporting",
+        help="Personal API key from electricitymaps.com (free tier). Stored locally; leave blank "
+        "to keep the current value. Only used when the grid CO₂ signal above is set to live.",
+        applies="restart",
+    ),
+    SettingsField(
         "reporting.grid_co2_factor", "Grid CO₂ factor", "number", 0.27, "reporting",
         help="kg CO₂ per kWh of imported electricity, used by the CO₂ score. NL grid-mix ≈ 0.27 "
         "(2025, trending down). Lower it as the grid greens.",

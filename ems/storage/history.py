@@ -96,6 +96,13 @@ class HistoryStore:
                 "CREATE TABLE IF NOT EXISTS gas_readings "
                 "(ts TEXT PRIMARY KEY, total_gas_m3 REAL NOT NULL)"
             )
+            # Time-varying grid CO2 intensity (roadmap F3, reporting-only): one row per 15-min
+            # slot, mirroring price_slots. Upserted by the recorder from an optional carbon
+            # source (live ElectricityMaps signal or the flat factor), purged with the samples.
+            await db.execute(
+                "CREATE TABLE IF NOT EXISTS carbon_intensity "
+                "(start_ts TEXT PRIMARY KEY, kg_per_kwh REAL NOT NULL)"
+            )
             await db.commit()
 
     async def purge_older_than(self, cutoff_iso: str) -> int:
@@ -114,6 +121,9 @@ class HistoryStore:
             cur = await db.execute("DELETE FROM plan_history WHERE ts < ?", (cutoff_iso,))
             deleted += cur.rowcount or 0
             cur = await db.execute("DELETE FROM gas_readings WHERE ts < ?", (cutoff_iso,))
+            deleted += cur.rowcount or 0
+            cur = await db.execute(
+                "DELETE FROM carbon_intensity WHERE start_ts < ?", (cutoff_iso,))
             deleted += cur.rowcount or 0
             # daily_finance is intentionally NOT purged (long-horizon record, B-13).
             await db.commit()
@@ -329,6 +339,28 @@ class HistoryStore:
                 "SELECT day, data FROM daily_finance WHERE day >= ? AND day < ? "
                 "ORDER BY day ASC", (start_day, end_day))
             return [{"day": r["day"], "data": json.loads(r["data"])} for r in await cur.fetchall()]
+
+    async def upsert_carbon(self, rows: list[tuple[str, float]]) -> None:
+        """Idempotently store (start_ts UTC-ISO, kg CO2/kWh) slots — re-fetches simply overwrite
+        (roadmap F3, reporting-only)."""
+        if not rows:
+            return
+        async with self._conn() as db:
+            await db.executemany(
+                "INSERT OR REPLACE INTO carbon_intensity (start_ts, kg_per_kwh) VALUES (?, ?)",
+                rows)
+            await db.commit()
+
+    async def carbon_between(self, start_iso: str, end_iso: str) -> list[dict]:
+        """Stored carbon-intensity slots in [start, end), oldest-first (UTC-ISO ⇒
+        lexicographic = time) — the Insights CO2 score averages these for a live window factor."""
+        async with self._conn() as db:
+            db.row_factory = aiosqlite.Row
+            cur = await db.execute(
+                "SELECT start_ts, kg_per_kwh FROM carbon_intensity "
+                "WHERE start_ts >= ? AND start_ts < ? ORDER BY start_ts ASC",
+                (start_iso, end_iso))
+            return [dict(r) for r in await cur.fetchall()]
 
     async def table_names(self) -> set[str]:
         async with self._conn() as db:
