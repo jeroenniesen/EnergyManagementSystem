@@ -88,6 +88,14 @@ class HistoryStore:
                 "soc_pct REAL, intent TEXT)"
             )
             await db.execute("CREATE INDEX IF NOT EXISTS idx_plan_ts ON plan_history(ts)")
+            # Cumulative gas meter readings (B-02: gas folds into the CO2 footprint). The recorder
+            # inserts one row/cycle when a gas meter is paired to the P1; window consumption is a
+            # last-minus-first delta over the readings (see reporting.gas_m3_consumed), so we only
+            # need the raw cumulative reading, not a derived per-slot volume. Purged with samples.
+            await db.execute(
+                "CREATE TABLE IF NOT EXISTS gas_readings "
+                "(ts TEXT PRIMARY KEY, total_gas_m3 REAL NOT NULL)"
+            )
             await db.commit()
 
     async def purge_older_than(self, cutoff_iso: str) -> int:
@@ -104,6 +112,8 @@ class HistoryStore:
             cur = await db.execute("DELETE FROM forecast_snapshots WHERE start < ?", (cutoff_iso,))
             deleted += cur.rowcount or 0
             cur = await db.execute("DELETE FROM plan_history WHERE ts < ?", (cutoff_iso,))
+            deleted += cur.rowcount or 0
+            cur = await db.execute("DELETE FROM gas_readings WHERE ts < ?", (cutoff_iso,))
             deleted += cur.rowcount or 0
             # daily_finance is intentionally NOT purged (long-horizon record, B-13).
             await db.commit()
@@ -279,6 +289,27 @@ class HistoryStore:
             cur = await db.execute(
                 "SELECT ts, strategy, target_soc, deadline, soc_pct, intent FROM plan_history "
                 "WHERE ts >= ? AND ts < ? ORDER BY ts ASC",
+                (start_iso, end_iso))
+            return [dict(r) for r in await cur.fetchall()]
+
+    async def record_gas(self, ts: str, total_gas_m3: float) -> None:
+        """Upsert one cumulative gas meter reading (B-02). INSERT OR REPLACE: `ts` is the
+        recorder's sense timestamp (one row/cycle in practice), so a re-record at the same `ts`
+        (e.g. a retried cycle) simply overwrites rather than duplicating."""
+        async with self._conn() as db:
+            await db.execute(
+                "INSERT OR REPLACE INTO gas_readings (ts, total_gas_m3) VALUES (?, ?)",
+                (ts, total_gas_m3))
+            await db.commit()
+
+    async def gas_between(self, start_iso: str, end_iso: str) -> list[dict]:
+        """Gas meter readings with `ts` in [start, end), oldest-first (UTC-ISO ⇒
+        lexicographic = time) — window consumption is the last reading minus the first."""
+        async with self._conn() as db:
+            db.row_factory = aiosqlite.Row
+            cur = await db.execute(
+                "SELECT ts, total_gas_m3 FROM gas_readings WHERE ts >= ? AND ts < ? "
+                "ORDER BY ts ASC",
                 (start_iso, end_iso))
             return [dict(r) for r in await cur.fetchall()]
 

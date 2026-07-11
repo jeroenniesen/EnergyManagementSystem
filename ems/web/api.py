@@ -59,7 +59,7 @@ from ems.planner.strategy import build_plan, select_strategy_with_reason
 from ems.planner.summer import SummerConfig, sunset_after
 from ems.planner.validator import PlanValidation, validate_plan
 from ems.readiness import Readiness, compute_readiness, home_state
-from ems.reporting import build_report, build_series, resolve_window
+from ems.reporting import build_report, build_series, gas_m3_consumed, resolve_window
 from ems.retrospect import build_past_story, past_headline
 from ems.savings import estimate_daily_savings_eur
 from ems.sense import Recorder
@@ -2403,9 +2403,12 @@ def create_app(
                                       q_end.astimezone(UTC).isoformat(), limit=limit)
         der = await store.derived_between(start.astimezone(UTC).isoformat(),
                                           q_end.astimezone(UTC).isoformat(), limit=limit)
+        gas_rows = await store.gas_between(start.astimezone(UTC).isoformat(),
+                                           q_end.astimezone(UTC).isoformat())
+        gas = gas_m3_consumed(gas_rows)
         resp = build_report(raw, der, prices, period=period, start=start, end=end, label=label,
                             partial=partial, grid_factor=grid_factor,
-                            gas_factor=gas_factor).to_dict()
+                            gas_factor=gas_factor, gas_m3=gas).to_dict()
         # The behavior series (P1/house/car/solar per bucket) rides on the same rows/window.
         resp["series"] = build_series(raw, der, period=period, start=start, end=end, tz=site_tz)
         return resp
@@ -2529,6 +2532,7 @@ def create_app(
         finance: list[dict] = []
         audit: list[dict] = []
         plan: list[dict] = []
+        gas: list[dict] = []
         if store is not None:
             row_cap = min(600_000, days * 24 * 60 + 1000)  # ~one row/min ceiling over the window
             raw = await store.raw_between(start_iso, end_iso, limit=row_cap)
@@ -2536,6 +2540,7 @@ def create_app(
             prices = await store.prices_between(start_iso, end_iso)
             forecasts = await store.forecasts_between(start_iso, end_iso)
             plan = await store.plan_history_between(start_iso, end_iso)
+            gas = await store.gas_between(start_iso, end_iso)
             # Self-complete the window before reading it back: `daily_finance` rows are otherwise
             # only ever written when a finance view for that day was requested (/api/finance), so
             # a day nobody looked at is silently absent from the export. Backfill every COMPLETED
@@ -2573,7 +2578,7 @@ def create_app(
         counts = {"raw_samples": len(raw), "derived_samples": len(derived),
                   "prices": len(prices), "forecasts": len(forecasts),
                   "daily_finance": len(finance), "audit_log": len(audit),
-                  "plan_history": len(plan)}
+                  "plan_history": len(plan), "gas": len(gas)}
         saved_vals = [d["saved_eur"] for d in finance if d.get("saved_eur") is not None]
         saved_total = round(sum(saved_vals), 2) if saved_vals else None
         window = {"start": start_iso, "end": end_iso}
@@ -2585,6 +2590,7 @@ def create_app(
             "daily_finance.csv": expkg.rows_to_csv(finance, expkg.FINANCE_COLUMNS),
             "audit_log.csv": expkg.rows_to_csv(audit, expkg.AUDIT_COLUMNS),
             "plan_history.csv": expkg.rows_to_csv(plan, expkg.PLAN_COLUMNS),
+            "gas.csv": expkg.rows_to_csv(gas, expkg.GAS_COLUMNS),
             "manifest.json": expkg.build_manifest(
                 generated_at=now.isoformat(), app_version=expkg.app_version(),
                 window_start=start_iso, window_end=end_iso, counts=counts, extra=validation,

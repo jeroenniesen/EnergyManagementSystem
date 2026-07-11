@@ -270,6 +270,53 @@ def test_purge_trims_plan_history_by_ts_but_keeps_recent(tmp_path):
     assert [r["ts"] for r in rows] == ["2026-06-28T10:00:00+00:00"]
 
 
+def test_gas_record_and_between_roundtrip(tmp_path):
+    # B-02: cumulative gas meter readings, one row/cycle when a gas meter is paired.
+    store = HistoryStore(str(tmp_path / "ems.sqlite"))
+
+    async def run():
+        await store.init()
+        await store.record_gas("2026-06-28T10:00:00+00:00", 1000.0)
+        await store.record_gas("2026-06-28T10:15:00+00:00", 1000.5)
+        # Re-recording the same ts overwrites rather than duplicating.
+        await store.record_gas("2026-06-28T10:15:00+00:00", 1000.6)
+        return await store.gas_between("2026-06-28T00:00:00+00:00", "2026-06-29T00:00:00+00:00")
+
+    rows = asyncio.run(run())
+    assert [(r["ts"], r["total_gas_m3"]) for r in rows] == [
+        ("2026-06-28T10:00:00+00:00", 1000.0), ("2026-06-28T10:15:00+00:00", 1000.6)]
+
+
+def test_gas_between_is_windowed_and_oldest_first(tmp_path):
+    store = HistoryStore(str(tmp_path / "ems.sqlite"))
+
+    async def run():
+        await store.init()
+        await store.record_gas("2026-06-01T00:00:00+00:00", 500.0)  # outside window
+        await store.record_gas("2026-06-28T10:15:00+00:00", 1001.0)
+        await store.record_gas("2026-06-28T10:00:00+00:00", 1000.0)
+        return await store.gas_between("2026-06-28T00:00:00+00:00", "2026-06-29T00:00:00+00:00")
+
+    rows = asyncio.run(run())
+    assert [r["ts"] for r in rows] == ["2026-06-28T10:00:00+00:00", "2026-06-28T10:15:00+00:00"]
+
+
+def test_purge_trims_gas_readings_by_ts_but_keeps_recent(tmp_path):
+    store = HistoryStore(str(tmp_path / "ems.sqlite"))
+
+    async def run():
+        await store.init()
+        await store.record_gas("2026-01-01T00:00:00+00:00", 500.0)   # old (purged)
+        await store.record_gas("2026-06-28T00:00:00+00:00", 1000.0)  # kept
+        deleted = await store.purge_older_than("2026-06-01T00:00:00+00:00")
+        rows = await store.gas_between("2020-01-01T00:00:00+00:00", "2030-01-01T00:00:00+00:00")
+        return deleted, rows
+
+    deleted, rows = asyncio.run(run())
+    assert deleted >= 1
+    assert [r["ts"] for r in rows] == ["2026-06-28T00:00:00+00:00"]
+
+
 def test_purge_trims_prices_but_keeps_daily_finance(tmp_path):
     # daily_finance is the long-horizon record (B-13) — retention must never eat it.
     store = HistoryStore(str(tmp_path / "ems.sqlite"))

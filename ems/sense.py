@@ -8,6 +8,7 @@ import logging
 from collections.abc import Callable
 from datetime import UTC, datetime
 
+from ems.domain import RawSample
 from ems.freshness import FreshnessTracker
 from ems.load_model import reconstruct, sanitize_sample
 from ems.sources.base import Source
@@ -86,6 +87,7 @@ class Recorder:
         await self._persist_prices()
         await self._persist_forecast(now)
         await self._persist_plan(now)
+        await self._persist_gas(now, raw)
 
     async def _persist_prices(self) -> None:
         """Upsert the current price curve so PAST slots keep the price that was active then —
@@ -118,6 +120,17 @@ class Recorder:
             )
         except Exception as exc:
             _log.warning("forecast persist failed (non-fatal): %s: %s", type(exc).__name__, exc)
+
+    async def _persist_gas(self, now: datetime, raw: RawSample) -> None:
+        """Record this cycle's cumulative gas meter reading (B-02: gas folds into the CO2
+        footprint), when the sample carries one — a household with no paired gas meter reports
+        None and nothing is written. Best-effort: a store failure must never kill the cycle."""
+        if raw.total_gas_m3 is None:
+            return
+        try:
+            await self.store.record_gas(now.astimezone(UTC).isoformat(), float(raw.total_gas_m3))
+        except Exception as exc:
+            _log.warning("gas persist failed (non-fatal): %s: %s", type(exc).__name__, exc)
 
     async def _persist_plan(self, now: datetime) -> None:
         """Snapshot the planner's current target/strategy/intent (observability-data) so a

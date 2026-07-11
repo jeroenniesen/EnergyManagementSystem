@@ -285,6 +285,75 @@ def test_forecast_persist_failure_never_kills_the_cycle(tmp_path):
     assert len(rows) == 1  # the sample was still recorded
 
 
+class _GasSource:
+    """Mock-like source that carries a gas reading."""
+
+    def __init__(self, total_gas_m3):
+        self._gas = total_gas_m3
+
+    def read(self):
+        return RawSample(
+            grid_power_w=200.0, solar_power_w=0.0, battery_power_w=800.0, ev_power_w=0.0,
+            soc_pct=55.0, total_gas_m3=self._gas,
+        )
+
+
+class _BoomGasStore(HistoryStore):
+    """A store whose record() works normally but record_gas() always fails, to prove gas persist
+    failures never kill the sense cycle."""
+
+    async def record_gas(self, *_a, **_k):
+        raise RuntimeError("gas write boom")
+
+
+def test_sense_once_records_gas_when_sample_carries_it(tmp_path):
+    # B-02: a gas reading on the RawSample is persisted to its own store table this cycle.
+    store = HistoryStore(str(tmp_path / "ems.sqlite"))
+    fresh = FreshnessTracker()
+    fresh.register(*SIGNALS)
+    rec = Recorder(_GasSource(1234.5), store, fresh)
+
+    async def run():
+        await store.init()
+        await rec.sense_once(NOW)
+        return await store.gas_between("2020-01-01T00:00:00+00:00", "2030-01-01T00:00:00+00:00")
+
+    rows = asyncio.run(run())
+    assert len(rows) == 1
+    assert rows[0]["ts"] == NOW.isoformat()
+    assert rows[0]["total_gas_m3"] == 1234.5
+
+
+def test_sense_once_skips_gas_when_sample_has_none(tmp_path):
+    # MockSource (and any household without a paired gas meter) reports None — nothing written.
+    store = HistoryStore(str(tmp_path / "ems.sqlite"))
+    fresh = FreshnessTracker()
+    fresh.register(*SIGNALS)
+    rec = Recorder(MockSource(), store, fresh)
+
+    async def run():
+        await store.init()
+        await rec.sense_once(NOW)
+        return await store.gas_between("2020-01-01T00:00:00+00:00", "2030-01-01T00:00:00+00:00")
+
+    assert asyncio.run(run()) == []
+
+
+def test_gas_persist_failure_never_kills_the_cycle(tmp_path):
+    store = _BoomGasStore(str(tmp_path / "ems.sqlite"))
+    fresh = FreshnessTracker()
+    fresh.register(*SIGNALS)
+    rec = Recorder(_GasSource(1234.5), store, fresh)
+
+    async def run():
+        await store.init()
+        await rec.sense_once(NOW)  # must not raise
+        return await store.recent_raw(10)
+
+    rows = asyncio.run(run())
+    assert len(rows) == 1  # the sample was still recorded despite the gas write failure
+
+
 def test_plan_provider_defaults_to_none():
     fresh = FreshnessTracker()
     fresh.register(*SIGNALS)

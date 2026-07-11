@@ -176,6 +176,7 @@ def _seed(db: str) -> None:
             "deadline": "2026-06-28T18:00:00+00:00", "soc_pct": 55.0,
             "intent": "grid_charge_to_target",
         })
+        await store.record_gas("2026-06-28T10:00:00+00:00", 1234.5)
         audit = AuditStore(db)
         await audit.init()
         await audit.append("2026-06-28T10:00:00+00:00", "battery_decision", "set auto",
@@ -202,7 +203,8 @@ def test_export_package_endpoint_returns_zip_with_all_members(tmp_path):
     data = r.content
     names = set(zip_names(data))
     assert {"raw_samples.csv", "derived_samples.csv", "prices.csv", "forecasts.csv",
-            "daily_finance.csv", "audit_log.csv", "plan_history.csv", "manifest.json"} <= names
+            "daily_finance.csv", "audit_log.csv", "plan_history.csv", "gas.csv",
+            "manifest.json"} <= names
     # Real data made it in.
     assert "1600.0" in read_member(data, "raw_samples.csv")
     assert "0.18" in read_member(data, "prices.csv")
@@ -210,12 +212,14 @@ def test_export_package_endpoint_returns_zip_with_all_members(tmp_path):
     assert "0.42" in read_member(data, "daily_finance.csv")
     assert "allow_self_consumption" in read_member(data, "audit_log.csv")
     assert "grid_charge_to_target" in read_member(data, "plan_history.csv")
+    assert "1234.5" in read_member(data, "gas.csv")
     manifest = json.loads(read_member(data, "manifest.json"))
     assert manifest["kind"] == "ems-export-package"
     assert manifest["counts"]["raw_samples"] == 1
     assert manifest["counts"]["prices"] == 1
     assert manifest["counts"]["forecasts"] == 1
     assert manifest["counts"]["plan_history"] == 1
+    assert manifest["counts"]["gas"] == 1
 
 
 def test_export_package_backfills_daily_finance_for_unviewed_days(tmp_path):
@@ -336,6 +340,7 @@ def test_package_includes_readme_and_validation_summary(tmp_path):
     assert "raw_samples.csv" in readme
     assert "forecasts.csv" in readme
     assert "plan_history.csv" in readme
+    assert "gas.csv" in readme
     summary = read_member(data, "validation_summary.txt")
     assert "Run mode:" in summary and "DRY-RUN" in summary              # run mode legible
     assert "Measured savings over the window: €0.42" in summary         # savings total from finance

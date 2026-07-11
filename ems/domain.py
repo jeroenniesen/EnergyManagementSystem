@@ -49,3 +49,5 @@ class RawSample:
     battery_power_w: float  # + discharge / - charge
     ev_power_w: float  # >= 0 charging
     soc_pct: float  # 0..100
+    # Cumulative gas meter reading (m³, monotonic); None when no gas meter is paired.
+    total_gas_m3: float | None = None

@@ -29,6 +29,7 @@ FINANCE_COLUMNS = (
 )
 AUDIT_COLUMNS = ("id", "ts", "category", "summary", "detail")
 PLAN_COLUMNS = ("ts", "strategy", "target_soc", "deadline", "soc_pct", "intent")
+GAS_COLUMNS = ("ts", "total_gas_m3")
 
 
 def rows_to_csv(rows: list[dict], columns: tuple[str, ...]) -> str:
@@ -166,6 +167,10 @@ health check of production operation. All timestamps are **UTC, ISO-8601**. All 
   battery mode it was pursuing, and `soc_pct` is the SoC observed at that same moment. Compare
   `target_soc` against the achieved `soc_pct` in raw_samples (by `ts`) to see how well the plan
   tracked reality over time.
+- **gas.csv** — cumulative gas meter (m³), one row per recorder cycle a gas meter is paired:
+  `ts, total_gas_m3`. It's a running total, not a per-cycle volume — a day's use is that day's
+  last reading minus its first. Folds into the CO₂ footprint (Insights' CO₂ score) alongside
+  electricity.
 - **manifest.json** — what/when/window, row counts, and a privacy-safe validation block
   (run mode, planner settings, data quality, recorder health). No tokens, IPs or location.
   `manifest.incidents` summarises control-health events from the audit log (command failures,
