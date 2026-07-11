@@ -68,6 +68,16 @@ class HistoryStore:
                 "CREATE TABLE IF NOT EXISTS daily_finance "
                 "(day TEXT PRIMARY KEY, data TEXT NOT NULL)"
             )
+            # Solar forecast snapshots (observability-data): the day-ahead P10/P50/P90 forecast
+            # for each 15-min slot, keyed by the date it was ISSUED — so a later same-day cycle
+            # can't overwrite it with a nowcast. Needed to measure forecast-vs-actual error
+            # (join `start` to raw_samples.solar_power_w). Upserted by the recorder, purged with
+            # the samples (bounded by slot `start`, like price_slots).
+            await db.execute(
+                "CREATE TABLE IF NOT EXISTS forecast_snapshots "
+                "(issued_date TEXT NOT NULL, start TEXT NOT NULL, p10_w REAL NOT NULL, "
+                "p50_w REAL NOT NULL, p90_w REAL NOT NULL, PRIMARY KEY (issued_date, start))"
+            )
             await db.commit()
 
     async def purge_older_than(self, cutoff_iso: str) -> int:
@@ -80,6 +90,8 @@ class HistoryStore:
             cur = await db.execute("DELETE FROM derived_samples WHERE ts < ?", (cutoff_iso,))
             deleted += cur.rowcount or 0
             cur = await db.execute("DELETE FROM price_slots WHERE start_ts < ?", (cutoff_iso,))
+            deleted += cur.rowcount or 0
+            cur = await db.execute("DELETE FROM forecast_snapshots WHERE start < ?", (cutoff_iso,))
             deleted += cur.rowcount or 0
             # daily_finance is intentionally NOT purged (long-horizon record, B-13).
             await db.commit()
@@ -203,6 +215,33 @@ class HistoryStore:
             cur = await db.execute(
                 "SELECT start_ts, eur_per_kwh FROM price_slots "
                 "WHERE start_ts >= ? AND start_ts < ? ORDER BY start_ts ASC",
+                (start_iso, end_iso))
+            return [dict(r) for r in await cur.fetchall()]
+
+    async def upsert_forecast_snapshot(
+        self, issued_date: str, slots: list[tuple[str, float, float, float]]
+    ) -> None:
+        """Record the day-ahead solar forecast for each slot, keyed by (issued_date, start).
+        INSERT OR IGNORE: the FIRST snapshot recorded for a given (issued_date, slot) sticks — we
+        want the day-ahead forecast, not a later-cycle nowcast overwriting it for error analysis."""
+        if not slots:
+            return
+        async with self._conn() as db:
+            await db.executemany(
+                "INSERT OR IGNORE INTO forecast_snapshots "
+                "(issued_date, start, p10_w, p50_w, p90_w) VALUES (?, ?, ?, ?, ?)",
+                [(issued_date, start, p10, p50, p90) for start, p10, p50, p90 in slots],
+            )
+            await db.commit()
+
+    async def forecasts_between(self, start_iso: str, end_iso: str) -> list[dict]:
+        """Stored forecast snapshots with slot `start` in [start, end), ordered by
+        (issued_date, start) (UTC-ISO ⇒ lexicographic = time)."""
+        async with self._conn() as db:
+            db.row_factory = aiosqlite.Row
+            cur = await db.execute(
+                "SELECT issued_date, start, p10_w, p50_w, p90_w FROM forecast_snapshots "
+                "WHERE start >= ? AND start < ? ORDER BY issued_date ASC, start ASC",
                 (start_iso, end_iso))
             return [dict(r) for r in await cur.fetchall()]
 

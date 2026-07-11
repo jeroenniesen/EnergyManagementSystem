@@ -2494,6 +2494,7 @@ def create_app(
         raw: list[dict] = []
         derived: list[dict] = []
         prices: list[dict] = []
+        forecasts: list[dict] = []
         finance: list[dict] = []
         audit: list[dict] = []
         if store is not None:
@@ -2501,6 +2502,7 @@ def create_app(
             raw = await store.raw_between(start_iso, end_iso, limit=row_cap)
             derived = await store.derived_between(start_iso, end_iso, limit=row_cap)
             prices = await store.prices_between(start_iso, end_iso)
+            forecasts = await store.forecasts_between(start_iso, end_iso)
             fin_rows = await store.daily_finance_between(
                 start.date().isoformat(), (now.date() + timedelta(days=1)).isoformat())
             finance = [r["data"] for r in fin_rows]
@@ -2520,7 +2522,8 @@ def create_app(
             },
         }
         counts = {"raw_samples": len(raw), "derived_samples": len(derived),
-                  "prices": len(prices), "daily_finance": len(finance), "audit_log": len(audit)}
+                  "prices": len(prices), "forecasts": len(forecasts),
+                  "daily_finance": len(finance), "audit_log": len(audit)}
         saved_vals = [d["saved_eur"] for d in finance if d.get("saved_eur") is not None]
         saved_total = round(sum(saved_vals), 2) if saved_vals else None
         window = {"start": start_iso, "end": end_iso}
@@ -2528,6 +2531,7 @@ def create_app(
             "raw_samples.csv": expkg.rows_to_csv(raw, expkg.RAW_COLUMNS),
             "derived_samples.csv": expkg.rows_to_csv(derived, expkg.DERIVED_COLUMNS),
             "prices.csv": expkg.rows_to_csv(prices, expkg.PRICE_COLUMNS),
+            "forecasts.csv": expkg.rows_to_csv(forecasts, expkg.FORECAST_COLUMNS),
             "daily_finance.csv": expkg.rows_to_csv(finance, expkg.FINANCE_COLUMNS),
             "audit_log.csv": expkg.rows_to_csv(audit, expkg.AUDIT_COLUMNS),
             "manifest.json": expkg.build_manifest(

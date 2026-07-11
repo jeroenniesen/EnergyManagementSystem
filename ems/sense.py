@@ -32,6 +32,7 @@ class Recorder:
         cycle_seconds: float = 300.0,
         clock: Callable[[], datetime] = _utcnow,
         price_source=None,  # optional .slots() provider; persisted for finance (spec 2026-07-03)
+        solar_forecast=None,  # optional .slots() provider; persisted for forecast-error analysis
     ) -> None:
         self.source = source
         self.store = store
@@ -39,6 +40,7 @@ class Recorder:
         self.cycle_seconds = cycle_seconds
         self._clock = clock
         self.price_source = price_source
+        self.solar_forecast = solar_forecast
         # Health, surfaced on /api/diagnostics so a 24/7 operator can SEE a stuck recorder (full
         # disk, DB lock, permanently failing device) instead of only inferring it from stale data.
         self.last_success_at: datetime | None = None
@@ -68,6 +70,7 @@ class Recorder:
         for sig in fresh:
             self.freshness.mark(sig, now)
         await self._persist_prices()
+        await self._persist_forecast(now)
 
     async def _persist_prices(self) -> None:
         """Upsert the current price curve so PAST slots keep the price that was active then —
@@ -82,6 +85,24 @@ class Recorder:
                 [(p.start.astimezone(UTC).isoformat(), float(p.eur_per_kwh)) for p in slots])
         except Exception as exc:
             _log.warning("price persist failed (non-fatal): %s: %s", type(exc).__name__, exc)
+
+    async def _persist_forecast(self, now: datetime) -> None:
+        """Snapshot today's day-ahead solar forecast so it can later be compared against actual
+        production (forecast-vs-actual error, observability-data). The store's INSERT OR IGNORE
+        keeps the FIRST forecast recorded per (issued_date, slot) — later cycles the same day are
+        no-ops. Best-effort: a forecast-source failure must never kill the sense cycle."""
+        if self.solar_forecast is None:
+            return
+        try:
+            issued = now.astimezone(UTC).date().isoformat()
+            slots = await asyncio.to_thread(self.solar_forecast.slots)
+            await self.store.upsert_forecast_snapshot(
+                issued,
+                [(s.start.astimezone(UTC).isoformat(), float(s.p10_w), float(s.p50_w),
+                  float(s.p90_w)) for s in slots],
+            )
+        except Exception as exc:
+            _log.warning("forecast persist failed (non-fatal): %s: %s", type(exc).__name__, exc)
 
     async def record_now(self) -> None:
         await self.sense_once(self._clock())

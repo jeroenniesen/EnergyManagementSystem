@@ -21,6 +21,7 @@ from typing import Any
 RAW_COLUMNS = ("ts", "grid_power_w", "solar_power_w", "battery_power_w", "ev_power_w", "soc_pct")
 DERIVED_COLUMNS = ("ts", "house_load_w", "non_ev_load_w")
 PRICE_COLUMNS = ("start_ts", "eur_per_kwh")
+FORECAST_COLUMNS = ("issued_date", "start", "p10_w", "p50_w", "p90_w")
 FINANCE_COLUMNS = (
     "day", "has_data", "price_coverage", "grid_cost_eur", "battery_cost_eur",
     "baseline_cost_eur", "saved_eur", "grid_import_kwh", "grid_export_kwh",
@@ -87,6 +88,11 @@ health check of production operation. All timestamps are **UTC, ISO-8601**. All 
   `ts, house_load_w` (total incl. car), `non_ev_load_w` (house only).
 - **prices.csv** — the electricity price that was active in each 15-min slot:
   `start_ts, eur_per_kwh`.
+- **forecasts.csv** — the solar forecast recorded for each 15-min slot:
+  `issued_date, start, p10_w, p50_w, p90_w`. Join `start` to raw_samples' `solar_power_w` to
+  measure forecast error; `p50_w` is the expected case, `p10_w`/`p90_w` the confidence band;
+  `issued_date` is the day the forecast was made (the first snapshot per slot is kept, so this is
+  the day-ahead forecast, not a later same-day nowcast).
 - **daily_finance.csv** — measured money per local day:
   `day, has_data, price_coverage, grid_cost_eur, battery_cost_eur, baseline_cost_eur,
   saved_eur, grid_import_kwh, grid_export_kwh, battery_charge_kwh, battery_discharge_kwh`.

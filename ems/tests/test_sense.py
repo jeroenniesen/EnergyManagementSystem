@@ -156,3 +156,83 @@ def test_price_persist_failure_never_kills_the_cycle(tmp_path):
 
     rows = asyncio.run(run())
     assert len(rows) == 1  # the sample was still recorded
+
+
+class _StubForecast:
+    """Minimal solar forecast source: .slots() → objects with .start / .p10_w / .p50_w / .p90_w."""
+
+    def __init__(self, slots):
+        self._slots = slots
+
+    def slots(self):
+        return self._slots
+
+
+class _BoomForecast:
+    def slots(self):
+        raise RuntimeError("solcast down")
+
+
+def test_sense_once_persists_forecast_snapshot(tmp_path):
+    # observability-data: each cycle snapshots today's day-ahead solar forecast.
+    from ems.sources.forecast import ForecastSlot
+
+    store = HistoryStore(str(tmp_path / "ems.sqlite"))
+    fresh = FreshnessTracker()
+    fresh.register(*SIGNALS)
+    slots = [ForecastSlot(NOW, 100.0, 200.0, 300.0),
+             ForecastSlot(NOW.replace(minute=15), 110.0, 210.0, 310.0)]
+    rec = Recorder(MockSource(), store, fresh, solar_forecast=_StubForecast(slots))
+
+    async def run():
+        await store.init()
+        await rec.sense_once(NOW)
+        return await store.forecasts_between("2020-01-01T00:00:00+00:00",
+                                             "2030-01-01T00:00:00+00:00")
+
+    rows = asyncio.run(run())
+    assert [(r["start"], r["p10_w"], r["p50_w"], r["p90_w"]) for r in rows] == [
+        (NOW.isoformat(), 100.0, 200.0, 300.0),
+        (NOW.replace(minute=15).isoformat(), 110.0, 210.0, 310.0),
+    ]
+
+
+def test_sense_once_forecast_snapshot_idempotent_same_day(tmp_path):
+    # A SECOND sense_once the same UTC day must NOT change the recorded snapshot (first sticks —
+    # we want the day-ahead forecast, not a later nowcast).
+    from ems.sources.forecast import ForecastSlot
+
+    store = HistoryStore(str(tmp_path / "ems.sqlite"))
+    fresh = FreshnessTracker()
+    fresh.register(*SIGNALS)
+    first = [ForecastSlot(NOW, 100.0, 200.0, 300.0)]
+    later = [ForecastSlot(NOW, 999.0, 999.0, 999.0)]
+    forecast = _StubForecast(first)
+    rec = Recorder(MockSource(), store, fresh, solar_forecast=forecast)
+
+    async def run():
+        await store.init()
+        await rec.sense_once(NOW)
+        forecast._slots = later  # simulate a later cycle with a changed (nowcast) forecast
+        await rec.sense_once(NOW)
+        return await store.forecasts_between("2020-01-01T00:00:00+00:00",
+                                             "2030-01-01T00:00:00+00:00")
+
+    rows = asyncio.run(run())
+    assert len(rows) == 1
+    assert (rows[0]["p10_w"], rows[0]["p50_w"], rows[0]["p90_w"]) == (100.0, 200.0, 300.0)
+
+
+def test_forecast_persist_failure_never_kills_the_cycle(tmp_path):
+    store = HistoryStore(str(tmp_path / "ems.sqlite"))
+    fresh = FreshnessTracker()
+    fresh.register(*SIGNALS)
+    rec = Recorder(MockSource(), store, fresh, solar_forecast=_BoomForecast())
+
+    async def run():
+        await store.init()
+        await rec.sense_once(NOW)  # must not raise
+        return await store.recent_raw(10)
+
+    rows = asyncio.run(run())
+    assert len(rows) == 1  # the sample was still recorded

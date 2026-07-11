@@ -83,6 +83,8 @@ def _seed(db: str) -> None:
                         ev_power_w=4000.0, soc_pct=55.0)
         await store.record("2026-06-28T10:00:00+00:00", raw, reconstruct(raw))
         await store.upsert_price_slots([("2026-06-28T10:00:00+00:00", 0.18)])
+        await store.upsert_forecast_snapshot(
+            "2026-06-28", [("2026-06-28T10:00:00+00:00", 1000.0, 2000.0, 3000.0)])
         await store.upsert_daily_finance("2026-06-28", {"day": "2026-06-28", "has_data": True,
                                                          "saved_eur": 0.42, "price_coverage": 1.0})
         audit = AuditStore(db)
@@ -110,17 +112,19 @@ def test_export_package_endpoint_returns_zip_with_all_members(tmp_path):
     assert "attachment" in r.headers.get("content-disposition", "")
     data = r.content
     names = set(zip_names(data))
-    assert {"raw_samples.csv", "derived_samples.csv", "prices.csv", "daily_finance.csv",
-            "audit_log.csv", "manifest.json"} <= names
+    assert {"raw_samples.csv", "derived_samples.csv", "prices.csv", "forecasts.csv",
+            "daily_finance.csv", "audit_log.csv", "manifest.json"} <= names
     # Real data made it in.
     assert "1600.0" in read_member(data, "raw_samples.csv")
     assert "0.18" in read_member(data, "prices.csv")
+    assert "2000.0" in read_member(data, "forecasts.csv")
     assert "0.42" in read_member(data, "daily_finance.csv")
     assert "allow_self_consumption" in read_member(data, "audit_log.csv")
     manifest = json.loads(read_member(data, "manifest.json"))
     assert manifest["kind"] == "ems-export-package"
     assert manifest["counts"]["raw_samples"] == 1
     assert manifest["counts"]["prices"] == 1
+    assert manifest["counts"]["forecasts"] == 1
 
 
 def test_manifest_carries_validation_payload_and_no_secrets(tmp_path):
@@ -150,6 +154,7 @@ def test_package_includes_readme_and_validation_summary(tmp_path):
     readme = read_member(data, "README.md")
     assert "+ = importing" in readme and "+ = discharging" in readme   # sign conventions documented
     assert "raw_samples.csv" in readme
+    assert "forecasts.csv" in readme
     summary = read_member(data, "validation_summary.txt")
     assert "Run mode:" in summary and "DRY-RUN" in summary              # run mode legible
     assert "Measured savings over the window: €0.42" in summary         # savings total from finance
