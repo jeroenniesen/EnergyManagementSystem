@@ -39,6 +39,7 @@ from ems.control.override import (
 from ems.diagnostics import build_diagnostics, overall_status
 from ems.domain import BatteryIntent, PhysicalMode
 from ems.energy_flow import build_daily_flows
+from ems.ev_advisor import advise_charge_window
 from ems.finance import day_finance
 from ems.freshness import FreshnessTracker
 from ems.lifecycle import OwnershipState
@@ -2465,6 +2466,39 @@ def create_app(
             current = settings_cache.get("planner.solar_confidence")
             advice = recommend_solar_confidence(
                 forecasts, raw, current_pct=float(current) if current is not None else None)
+        return {"advice": advice}
+
+    @app.get("/api/advisor/ev-charge")
+    def advisor_ev_charge() -> dict:
+        """Advisory-only "best time to charge the car" (docs/v2-ev-control.md: v2 EV control is
+        out of scope — this never commands anything, just recommends a window). Off unless
+        `ev.advice_enabled` is on; needs live prices. Reuses the same price/forecast access as
+        /api/plan (price_source.slots() + solar_forecast.slots())."""
+        if not settings_cache.get("ev.advice_enabled") or price_source is None:
+            return {"advice": None}
+        now = datetime.now(UTC)
+        now_local = now.astimezone(site_tz)
+        try:
+            hh, mm = (int(x) for x in str(settings_cache["ev.departure_time"]).split(":", 1))
+            assert 0 <= hh < 24 and 0 <= mm < 60
+        except (ValueError, AssertionError):
+            hh, mm = 7, 30  # fail-safe: an unparsable time never breaks the card
+        departure_local = now_local.replace(hour=hh, minute=mm, second=0, microsecond=0)
+        if departure_local <= now_local:
+            departure_local += timedelta(days=1)
+        forecast = solar_forecast.slots() if solar_forecast is not None else []
+        advice = advise_charge_window(
+            price_source.slots(),
+            {f.start: f.p50_w for f in forecast},
+            departure=departure_local,  # kept in site_tz so the reason shows local wall-clock time
+            kwh_needed=float(settings_cache["ev.charge_kwh"]),
+            charger_kw=float(settings_cache["ev.charger_kw"]),
+            export_model=str(settings_cache.get("prices.export_price_model", "net_metering")),
+            energy_tax_eur_per_kwh=float(settings_cache.get("prices.energy_tax_eur_per_kwh", 0.13)),
+            fixed_feed_in_eur_per_kwh=float(
+                settings_cache.get("prices.fixed_feed_in_eur_per_kwh", 0.01)),
+            now=now,
+        )
         return {"advice": advice}
 
     async def _ensure_day_finance(day_local: date_cls) -> dict:

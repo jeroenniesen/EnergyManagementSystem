@@ -368,6 +368,27 @@ SETTINGS_SCHEMA: tuple[SettingsField, ...] = (
         "panel.",
         min=0.0, max=5.0, step=0.05, unit="€/m³",
     ),
+    # --- Car (v2 EV control is out of scope — advisory only, docs/v2-ev-control.md) ---
+    SettingsField(
+        "ev.advice_enabled", "Show best-time-to-charge card", "bool", False, "ev",
+        help="Off by default so non-EV homes never see it. On shows a dashboard card suggesting "
+        "the cheapest window to plug in the car before it needs to leave. Advisory only — the "
+        "EMS never controls the car.",
+    ),
+    SettingsField(
+        "ev.departure_time", "Usual departure time", "text", "07:30", "ev",
+        help="When the car usually needs to be ready (24h HH:MM).",
+    ),
+    SettingsField(
+        "ev.charge_kwh", "Typical energy to add", "number", 20.0, "ev",
+        help="Roughly how much energy a typical top-up adds.",
+        min=1.0, max=100.0, step=1.0, unit="kWh",
+    ),
+    SettingsField(
+        "ev.charger_kw", "Charger power", "number", 11.0, "ev",
+        help="The car charger's power — sets how long a charge takes.",
+        min=1.0, max=22.0, step=0.5, unit="kW",
+    ),
     # --- Appearance ---
     SettingsField(
         "ui.theme", "Theme", "enum", "auto", "ui",

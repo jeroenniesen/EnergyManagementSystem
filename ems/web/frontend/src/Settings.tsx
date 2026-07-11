@@ -40,7 +40,7 @@ type SolarConfidenceAdvice = {
 
 // Group display order + titles. Connection-type groups first (what most people need), tuning last.
 const GROUP_ORDER = ["strategy", "connection", "meters", "battery", "prices", "site", "control",
-  "planner", "ai", "access", "ui", "reporting"];
+  "planner", "ai", "access", "ui", "reporting", "ev"];
 const GROUP_TITLE: Record<string, string> = {
   strategy: "Strategy",
   connection: "Connection",
@@ -54,6 +54,7 @@ const GROUP_TITLE: Record<string, string> = {
   access: "Access & security",
   ui: "Appearance",
   reporting: "Insights & reporting",
+  ev: "Car",
 };
 const GROUP_HINT: Record<string, string> = {
   strategy: "How the battery is run. The rest is fine on defaults — tune only if you want to.",
@@ -70,6 +71,8 @@ const GROUP_HINT: Record<string, string> = {
     + "Access box at the top of this page to authorise this browser. Blank = open on your LAN.",
   ui: "How the dashboard looks.",
   reporting: "CO₂ accounting factors and the gas price used by the Insights tab.",
+  ev: "Optional. Off by default. Shows a dashboard card suggesting the cheapest window to plug "
+    + "in the car — advisory only, the EMS never controls the car.",
 };
 
 function NumberInput({

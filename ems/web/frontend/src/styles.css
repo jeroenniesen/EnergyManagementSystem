@@ -758,6 +758,17 @@ body {
 }
 .badge-car svg { flex: none; }
 
+/* Opt-in, advisory-only "best time to charge the car" card (never controls the car). */
+.ev-advice {
+  margin-top: 24px; background: var(--panel); border: 1px solid var(--line);
+  border-left: 3px solid var(--car); border-radius: var(--radius); padding: 14px 18px;
+  box-shadow: var(--shadow);
+}
+.ev-advice-window {
+  margin: 8px 0 0; font-size: 0.95rem; font-weight: 600; font-variant-numeric: tabular-nums;
+}
+.ev-advice-footer { margin: 10px 0 0; font-size: 0.74rem; color: var(--muted); }
+
 .freshness {
   display: flex;
   flex-wrap: wrap;
