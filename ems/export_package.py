@@ -175,7 +175,9 @@ health check of production operation. All timestamps are **UTC, ISO-8601**. All 
   (run mode, planner settings, data quality, recorder health). No tokens, IPs or location.
   `manifest.incidents` summarises control-health events from the audit log (command failures,
   cluster mismatches, fallbacks, reverts) — a rollup, not a replacement for `audit_log.csv`.
-- **validation_summary.txt** — the same health read in plain language.
+- **validation_summary.txt** — the same health read in plain language, plus a "Solar forecast
+  skill" section (bias, MAE, band coverage, actual vs forecast kWh) measuring how well the
+  day-ahead forecast tracked reality — see forecasts.csv for the raw data behind it.
 
 ## Loading (Python / pandas)
 ```python
@@ -192,6 +194,41 @@ def _run_mode(dry_run: bool) -> str:
     return "LIVE (battery writes armed)"
 
 
+def _forecast_skill_lines(forecast_skill: dict[str, Any] | None) -> list[str]:
+    """The 'Solar forecast skill' section — omitted entirely when no forecast-error dict is
+    given (older callers), and reduced to a one-liner when there's no matched-slot overlap yet."""
+    if forecast_skill is None:
+        return []
+    n = forecast_skill.get("n_slots", 0)
+    if not n:
+        return ["", "Solar forecast skill", "  No matched forecast/actual slots yet."]
+    bias = forecast_skill.get("bias_w")
+    mae = forecast_skill.get("mae_w")
+    coverage = forecast_skill.get("band_coverage_pct")
+    actual_kwh = forecast_skill.get("actual_solar_kwh")
+    forecast_kwh = forecast_skill.get("forecast_p50_kwh")
+    if bias is None:
+        read = "not enough data yet"
+    elif bias < 0:
+        read = f"forecast over-predicted solar by {abs(bias):.0f} W on average"
+    elif bias > 0:
+        read = f"forecast under-predicted solar by {bias:.0f} W on average"
+    else:
+        read = "forecast tracked actual solar almost exactly, on average"
+    return [
+        "",
+        "Solar forecast skill",
+        f"  Matched slots:   {n}",
+        f"  Bias (mean):     {bias} W" if bias is not None else "  Bias (mean):     —",
+        f"  MAE:             {mae} W" if mae is not None else "  MAE:             —",
+        f"  Band coverage:   {coverage}% within [p10, p90]" if coverage is not None
+        else "  Band coverage:   —",
+        f"  Actual vs P50:   {actual_kwh} kWh vs {forecast_kwh} kWh"
+        if actual_kwh is not None else "  Actual vs P50:   —",
+        f"  Read: {read}.",
+    ]
+
+
 def validation_summary(
     *,
     generated_at: str,
@@ -200,9 +237,12 @@ def validation_summary(
     counts: dict[str, int],
     validation: dict[str, Any],
     saved_total_eur: float | None,
+    forecast_skill: dict[str, Any] | None = None,
 ) -> str:
     """A one-screen, plain-language health read derived from the manifest data, so a reviewer (or
-    the operator) can see at a glance whether the system is collecting data and operating sanely."""
+    the operator) can see at a glance whether the system is collecting data and operating sanely.
+    `forecast_skill` is the optional `ems.analysis.forecast_error(...)` result — when given, a
+    'Solar forecast skill' section is appended (omitted for older callers that don't pass one)."""
     op = validation.get("operational", {})
     health = validation.get("health", {})
     rec = health.get("recorder") or {}
@@ -235,6 +275,7 @@ def validation_summary(
         f"(last 7 days: {incidents.get('last_7_days', 0)})",
         f"  Most recent:    {incidents.get('most_recent') or '—'}",
         f"  By type:        {by_type_text}",
+        *_forecast_skill_lines(forecast_skill),
         "",
         "Result",
         f"  Measured savings over the window: {saved}",

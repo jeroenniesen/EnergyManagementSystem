@@ -197,8 +197,9 @@ export function SystemView() {
         <span className="metric-label">Export &amp; replay</span>
         <p className="settings-group-hint">
           The full <strong>export package</strong> is one ZIP of your history as spreadsheets
-          (energy, prices, daily savings, decision log) plus a manifest — for your own analytics,
-          or to share for a health check. Or grab a single CSV / the plan replay below.
+          (energy, prices, solar forecast vs. actual, plan history, daily savings, gas &amp; CO₂,
+          decision log) plus a manifest and a plain-language validation summary — for your own
+          analytics, or to share for a health check. Or grab a single CSV / the plan replay below.
         </p>
         <div className="export-links">
           <a className="btn-primary" href="/api/export/package" data-testid="export-package">

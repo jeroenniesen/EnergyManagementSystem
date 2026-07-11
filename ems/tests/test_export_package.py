@@ -349,6 +349,24 @@ def test_package_includes_readme_and_validation_summary(tmp_path):
     assert "manifest.incidents" in readme                               # documented in the README
 
 
+def test_validation_summary_includes_solar_forecast_skill_section(tmp_path):
+    # _seed() records one raw sample (solar_power_w=3500.0) and one forecast snapshot
+    # (p10=1000.0, p50=2000.0, p90=3000.0) both at 2026-06-28T10:00:00+00:00 — the same 15-min
+    # slot — so the export should match them into exactly one slot and score the error.
+    db = str(tmp_path / "ems.sqlite")
+    _seed(db)
+    with TestClient(_app(db)) as c:
+        data = c.get("/api/export/package").content
+    summary = read_member(data, "validation_summary.txt")
+    assert "Solar forecast skill" in summary
+    assert "Matched slots:   1" in summary
+    assert "Bias (mean):     1500.0 W" in summary     # actual 3500 - p50 2000
+    assert "MAE:             1500.0 W" in summary
+    assert "Band coverage:   0.0% within [p10, p90]" in summary  # 3500 is above p90=3000
+    assert "Actual vs P50:   0.88 kWh vs 0.5 kWh" in summary
+    assert "under-predicted solar" in summary
+
+
 def test_package_never_leaks_a_stored_secret_value(tmp_path):
     # Definitive redaction check: seed a recognisable secret value + a config-change audit that
     # names the secret KEY, then assert the secret VALUE appears in NO member of the ZIP.

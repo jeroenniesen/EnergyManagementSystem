@@ -22,6 +22,7 @@ from fastapi.staticfiles import StaticFiles
 
 from ems import export_package as expkg
 from ems.alerts import data_quality, derive_alerts
+from ems.analysis import forecast_error
 from ems.control.failsafe import failsafe_intent
 from ems.control.mode_controller import ModeController
 from ems.control.override import (
@@ -2582,6 +2583,7 @@ def create_app(
         saved_vals = [d["saved_eur"] for d in finance if d.get("saved_eur") is not None]
         saved_total = round(sum(saved_vals), 2) if saved_vals else None
         window = {"start": start_iso, "end": end_iso}
+        fc_skill = forecast_error(forecasts, raw)
         members = {
             "raw_samples.csv": expkg.rows_to_csv(raw, expkg.RAW_COLUMNS),
             "derived_samples.csv": expkg.rows_to_csv(derived, expkg.DERIVED_COLUMNS),
@@ -2599,6 +2601,7 @@ def create_app(
             "validation_summary.txt": expkg.validation_summary(
                 generated_at=now.isoformat(), app_version=expkg.app_version(), window=window,
                 counts=counts, validation=validation, saved_total_eur=saved_total,
+                forecast_skill=fc_skill,
             ),
         }
         data = expkg.build_zip(members)
