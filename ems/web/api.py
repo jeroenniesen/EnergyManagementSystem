@@ -107,6 +107,18 @@ def _task_died(name: str):
 _recorder_died = _task_died("Recorder")
 
 
+def _spawn_tracked(coro, name: str, task_set: set[asyncio.Task]) -> asyncio.Task:
+    """Fire-and-forget a coroutine while keeping a STRONG ref to the task (the event loop keeps
+    only a weak one — without this the task can be GC'd mid-run, so a "charge now" control cycle
+    silently no-ops). Drop the ref on completion and surface a crash loudly (like the lifespan
+    tasks)."""
+    task = asyncio.create_task(coro)
+    task_set.add(task)
+    task.add_done_callback(task_set.discard)
+    task.add_done_callback(_task_died(name))
+    return task
+
+
 def _explain_cache_key(reason: str, language: str, model: str) -> str:
     """Stable persistent-cache key for a phrased explanation. Includes model + language so changing
     either refreshes; the (possibly long) reason is hashed to a fixed-size key. No secrets enter it
@@ -341,6 +353,9 @@ def create_app(
     _held_box: dict[str, Any] = {"sig": None}
     # Sky cloud-cover cache: Open-Meteo is polled at most every 15 min (best-effort) for the sky.
     _sky_box: dict[str, Any] = {"cc": None, "at": None}
+    # Strong refs to fire-and-forget override-triggered control cycles (see _spawn_tracked). Without
+    # this the loop keeps only a weak ref and the task can be GC'd mid-run (the "charge now" no-op).
+    _override_tasks: set[asyncio.Task] = set()
 
     def _apply_control_settings() -> None:
         """Push the control.* settings onto the live controller (preserves its switch counters)."""
@@ -784,11 +799,11 @@ def create_app(
             await store.init()
         if settings_store is not None:
             await settings_store.init()
-            # Build the new dict BEFORE touching the cache, then swap with no await between
-            # clear() and update() — otherwise a concurrent reader could observe an empty cache.
-            loaded = effective_settings(await settings_store.all())
-            settings_cache.clear()
-            settings_cache.update(loaded)
+            # In-place update ONLY (never clear()+update): effective_settings always returns the
+            # FULL keyset (defaults ∪ valid overrides), so no key ever disappears and a threadpool
+            # GET can never observe a missing key. clear()+update() briefly exposed an empty dict
+            # between the two statements → KeyError/500 for a concurrent reader.
+            settings_cache.update(effective_settings(await settings_store.all()))
             _apply_control_settings()
             _apply_site_settings()
             _apply_explainer_settings()
@@ -994,7 +1009,7 @@ def create_app(
         ov = override_box["ov"]
         if ov.active(now):
             assert ov.intent is not None and ov.expires_at is not None
-            until = ov.expires_at.astimezone().strftime("%H:%M")
+            until = ov.expires_at.astimezone(site_tz).strftime("%H:%M")
             intent, override_active = ov.intent, True
             # Gate a RISKY override (anything other than self-consumption) on data quality: EMS
             # won't force charge/discharge/hold when critical data is unsafe — it can't trust SoC or
@@ -1407,7 +1422,7 @@ def create_app(
         out = [{"key": a.key, "severity": a.severity, "message": a.message} for a in alerts]
         if override_active:
             ov = override_box["ov"]
-            until = ov.expires_at.astimezone().strftime("%H:%M") if ov.expires_at else "?"
+            until = ov.expires_at.astimezone(site_tz).strftime("%H:%M") if ov.expires_at else "?"
             # If the override was HELD (gated on unsafe data), say so — never claim it's "forcing"
             # the requested action when the battery is actually held at self-consumption.
             held = ov.intent is not None and intent is not ov.intent
@@ -1595,7 +1610,8 @@ def create_app(
                     "Manual override cleared — back to the automatic plan", {"action": "clear"},
                 )
             if not dry_run:
-                asyncio.create_task(_run_control_cycle())  # apply now, don't wait a full cycle
+                # apply now, don't wait a full cycle (tracked so it can't be GC'd mid-run)
+                _spawn_tracked(_run_control_cycle(), "Override control cycle", _override_tasks)
             return JSONResponse(get_override())
         errors: dict[str, str] = {}
         try:
@@ -1622,7 +1638,7 @@ def create_app(
         # Apply the override on the battery NOW (and audit the confirmed result) instead of waiting
         # up to a full control cycle — what the operator expects when they press "charge".
         if not dry_run:
-            asyncio.create_task(_run_control_cycle())
+            _spawn_tracked(_run_control_cycle(), "Override control cycle", _override_tasks)
         return JSONResponse(get_override())
 
     def _battery_cluster(now: datetime) -> tuple[list[dict], dict | None]:
@@ -2898,9 +2914,9 @@ def create_app(
                 {"detail": "invalid settings", "errors": errors}, status_code=422
             )
         await settings_store.set_many(clean)
-        refreshed = effective_settings(await settings_store.all())
-        settings_cache.clear()
-        settings_cache.update(refreshed)
+        # In-place update ONLY (never clear()+update): the effective set is always the full keyset,
+        # so a concurrent threadpool GET never observes a missing key (the KeyError/500 race).
+        settings_cache.update(effective_settings(await settings_store.all()))
         _apply_control_settings()
         _apply_site_settings()
         _apply_explainer_settings()

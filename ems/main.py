@@ -67,7 +67,8 @@ def build_app():
     # reboot doesn't reset the daily switch cap or min-dwell, then reload them.
     control_state_store = ControlStateStore(str(db_path))
     control_state_store.init()
-    controller = ModeController(controller_driver, lifecycle, dry_run=dry_run,
+    # Wire the site tz so the daily switch-cap day-boundary rolls at LOCAL midnight, not UTC.
+    controller = ModeController(controller_driver, lifecycle, dry_run=dry_run, tz=tz,
                                 on_state_change=control_state_store.save)
     controller.restore_state(control_state_store.load())
     app = create_app(

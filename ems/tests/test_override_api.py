@@ -1,3 +1,5 @@
+import asyncio
+import logging
 from datetime import UTC, datetime
 from zoneinfo import ZoneInfo
 
@@ -11,7 +13,7 @@ from ems.sources.battery import MockBatteryDriver
 from ems.sources.mock import MockSource
 from ems.sources.prices import MockPriceSource
 from ems.storage.settings import SettingsStore
-from ems.web.api import create_app
+from ems.web.api import _spawn_tracked, create_app
 
 
 def _fresh_tracker():
@@ -106,3 +108,40 @@ def test_override_works_without_price_source(tmp_path):
     assert d["intent"] == "hold_reserve"
     assert d["override_active"] is True
     assert any(a["key"] == "manual_override_active" for a in alerts["alerts"])
+
+
+def test_spawn_tracked_holds_ref_logs_crash_and_drops_ref(caplog):
+    # The override endpoint fires the immediate control cycle via _spawn_tracked so the task (a) is
+    # strongly referenced and can't be GC'd mid-run (the "charge now" silent no-op), (b) drops that
+    # ref on completion, and (c) surfaces a crash loudly instead of the exception vanishing.
+    async def _boom():
+        raise RuntimeError("cycle blew up")
+
+    async def _ok():
+        return None
+
+    async def _run_crash(task_set):
+        t = _spawn_tracked(_boom(), "Override control cycle", task_set)
+        assert t in task_set          # strong ref held while the task is in flight
+        try:
+            await t
+        except RuntimeError:
+            pass
+        await asyncio.sleep(0)        # let the done-callbacks (discard + crash-logger) run
+        return t
+
+    async def _run_ok(task_set):
+        t = _spawn_tracked(_ok(), "Override control cycle", task_set)
+        await t
+        await asyncio.sleep(0)
+        return t
+
+    crash_tasks: set = set()
+    with caplog.at_level(logging.ERROR):
+        asyncio.run(_run_crash(crash_tasks))
+    assert crash_tasks == set()                       # ref dropped on completion (set empties)
+    assert "exited unexpectedly" in caplog.text       # the crash is logged loudly
+
+    ok_tasks: set = set()
+    asyncio.run(_run_ok(ok_tasks))
+    assert ok_tasks == set()                           # a normal run also removes its ref
