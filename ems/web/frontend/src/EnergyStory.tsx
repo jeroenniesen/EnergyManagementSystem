@@ -112,10 +112,16 @@ export function EnergyStory({
   story: rawStory,
   window,
   onWindow,
+  hideHeadline = false,
 }: {
   story: EnergyStoryData | null;
   window: "past" | "next";
   onWindow: (w: "past" | "next") => void;
+  // When this card lives inside the "See the full plan" disclosure, the story card above already
+  // owns the one-and-only narrative sentence. Suppress the duplicate headline here so the two
+  // (independently-sourced, slightly-divergent) narratives can never both show. The verdict,
+  // stats and charts still render — only the narrative sentence is dropped.
+  hideHeadline?: boolean;
 }) {
   // The toggle flips `window` instantly, but the matching data arrives one fetch later. Until it
   // does, the previously-loaded story is for the OTHER window — ignore it so we never render "Next"
@@ -240,9 +246,11 @@ export function EnergyStory({
         </div>
       </div>
 
-      <p className="story-headline" data-testid="story-headline">
-        {story?.headline ?? "…"}
-      </p>
+      {!hideHeadline && (
+        <p className="story-headline" data-testid="story-headline">
+          {story?.headline ?? "…"}
+        </p>
+      )}
 
       {onTrack && (
         <p

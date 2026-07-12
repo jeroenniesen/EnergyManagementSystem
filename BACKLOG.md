@@ -41,6 +41,7 @@ observability (B-24); numbered date-less sprints, Issues+Milestones on GitHub.
 | **E-05 · Quiet motivation** | ⬜ B-06 trends | | ⬜ B-08 markers | B-07 |
 | **E-06 · Trust & guidance** | | ⬜ B-31 marker | | B-09 B-12 B-21 |
 | **E-07 · Consumer-ready commercial product** | 🟨 B-55 settings menu | | | B-32 B-33 B-34 B-35 🟨 B-36 B-37 🟨 B-38 B-39 ✅ B-40 B-41 B-56 B-57 B-58 B-59 B-60 B-61 B-62 |
+| **E-08 · Predictive optimization intelligence** | | | | B-63 B-64 B-65 B-66 B-67 B-68 B-69 B-70 B-71 B-72 B-73 B-74 B-75 B-76 B-77 |
 | *Big levers (pool)* | | | | B-17 B-18 B-19 B-20 B-23 |
 | *Refactoring (pool)* | | | | B-24 B-25 B-26 B-27 B-28 B-29 |
 | *Architecture & platform (pool)* | | | | **P1:** B-42 B-43 B-44 B-52 · B-45 B-46 B-47 B-48 B-49 B-50 B-51 B-53 B-54 |
@@ -159,7 +160,7 @@ Safety-critical copy reads more trustworthy in the household's native language; 
 ### B-32 · Consumer dashboard hierarchy — UX · S–M
 Make the main dashboard answer the four consumer questions in order: what is happening now, is it good or bad, what happens next, and do I need to act. Keep the technical proof available, but stop making every graph compete for first attention.
 **Done when:** a first-time user can explain the current battery/solar/grid state after a 10-second glance; detailed graphs are one tap deeper.
-**Track:** Pool · E-07 · ⬜
+**Track:** ✅ done — [PR #20](https://github.com/jeroenniesen/EnergyManagementSystem/pull/20). Hero verdict + synthesis + explicit 'Nothing needed from you.'; duplicate next-24h narrative killed (plan behind a persisted disclosure); score pills; stat-tile footer. 3.1→2.2 screens.
 
 ### B-33 · "Why is EMS doing this?" explanations — UX + Feature · M
 Add plain-language explanations to every important automated decision: grid charge, battery hold, discharge, reserve protection, EV charge planning, and paused states. Use decision facts from the planner/API, not static copy.
@@ -184,7 +185,7 @@ Show weekly/monthly proof of value: measured savings, avoided peak-price grid us
 ### B-37 · Calm actionable warnings — UX · S–M
 Make every warning answer: what happened, is my home/battery safe, what will EMS do now, and what can I do. Remove warnings that describe a condition without a next step.
 **Done when:** alert banners, paused states, connection errors, and stale-data states all include safety + next-action language.
-**Track:** Pool · E-07 · ⬜
+**Track:** ✅ done — [PR #20](https://github.com/jeroenniesen/EnergyManagementSystem/pull/20). Every alert carries safe ('is my home safe?') + action ('what can I do') copy, style-guarded by tests; info-level notices stay one calm line.
 
 ### B-38 · Data freshness and device health — Feature + UX · S–M
 Show live connection status, last update time, forecast age, price-data status, and device health in consumer language. Surface stale inputs before they create confusing plans.
@@ -219,7 +220,7 @@ Discover HomeWizard devices via mDNS and *offer* them during setup (suggest, nev
 ### B-57 · Demo mode as the empty state — UX · S *(roadmap P1)*
 An unconfigured app opens straight into the demo home with one persistent "use my real home" action into onboarding — never an empty chart, never a dead dashboard.
 **Done when:** first launch is indistinguishable from a working product; day-2 return after setup shows a personalised insight, not a blank.
-**Track:** Pool · E-07 · ⬜
+**Track:** ✅ done — [PR #20](https://github.com/jeroenniesen/EnergyManagementSystem/pull/20). Demo state shows a dismissible 'Use my real home →' nudge into Settings→Connection. Full onboarding remains B-34.
 
 ### B-58 · Weekly digest ("the Sunday read") — Feature · M *(roadmap P2; feeds B-36)*
 A scheduled weekly summary in the advisor voice: what you saved, what the system did (incl. why-NOTs), one suggested tweak. In-app first; email/push delivery can ride B-20/B-39.
@@ -234,7 +235,7 @@ Home-screen widget (SoC + today's verdict sentence) and a Live Activity during a
 ### B-60 · One-tap advisor adoption — Feature · S *(roadmap P3)*
 Advisor suggestions (solar confidence today; export model as 2027 nears) gain an "Apply" button: audit-logged, reversible, still never automatic.
 **Done when:** adopting a suggestion is one tap + one confirm, and the audit log shows what changed and why.
-**Track:** Pool · E-07 · ⬜
+**Track:** ✅ done — [PR #20](https://github.com/jeroenniesen/EnergyManagementSystem/pull/20). 'Apply Z%' on the solar-confidence advisor rides the normal dirty→save path (audit-logged, reversible); '✓ matches your setting' when aligned.
 
 ### B-61 · Self-calibration pass — Feature · M *(roadmap P3)*
 Auto-calibrated load baseline from history, auto-season verification, car-session signatures refining the SoC anchor, and anomaly whispers ("solar underperformed similar days — panels dirty?"). All suggest-first per the constitution.
@@ -245,6 +246,86 @@ Auto-calibrated load baseline from history, auto-season verification, car-sessio
 A shareable annual review (savings, sunniest day, best arbitrage catch) plus milestone moments (first €100 saved, first full solar night). Earned delight — never gratuitous.
 **Done when:** at least one screen someone shows to a friend unprompted.
 **Track:** Pool · E-07 · ⬜
+
+---
+
+## EPIC E-08 · Predictive optimization intelligence
+*Goal: EMS becomes a prediction + optimization system that plans under uncertainty, explains confidence, and proves value from historical replay.* (€/Trust/Motivation)
+
+### B-63 · Probabilistic solar/load forecasting — Feature · M
+Replace single-point forecasts with pessimistic/expected/optimistic bands for solar and home load, calibrated from historical forecast error.
+**Done when:** planner inputs include confidence bands and the UI can say how likely the battery is to cover the evening peak.
+**Track:** Pool · E-08 · ⬜
+
+### B-64 · Household load prediction model — Feature · M
+Learn normal household demand by time of day, weekday, season, weather, and recent behavior so the planner has a better baseline for evening, overnight, and morning load.
+**Done when:** load forecast error is tracked and improves over the naive recent-average baseline.
+**Track:** Pool · E-08 · ⬜
+
+### B-65 · Risk-aware battery planning — Feature · L
+Optimize for expected cost while respecting reserve and comfort under uncertainty, for example targeting enough charge to cover the evening in 80-90% of plausible scenarios.
+**Done when:** planner decisions can trade off cost vs confidence explicitly and expose the selected risk level.
+**Track:** Pool · E-08 · ⬜
+
+### B-66 · Battery degradation-aware economics — Feature · M
+Add battery wear cost to charge/discharge decisions so EMS avoids cycling when the price spread is too small to justify degradation.
+**Done when:** every cycle has an estimated wear cost and the planner skips unprofitable cycling after wear is included.
+**Track:** Pool · E-08 · ⬜
+
+### B-67 · Dynamic reserve recommendation — Feature · M
+Recommend reserve levels based on forecast uncertainty, expected overnight demand, tomorrow's solar, current prices, and household comfort preference.
+**Done when:** the app can explain why today's recommended reserve differs from the default.
+**Track:** Pool · E-08 · ⬜
+
+### B-68 · Plan confidence score — UX + Feature · S–M
+Show a confidence score for each plan based on data freshness, forecast uncertainty, device health, and planner validation quality.
+**Done when:** every plan is labeled high/medium/low confidence with a plain-language reason.
+**Track:** Pool · E-08 · ⬜
+
+### B-69 · Counterfactual savings engine — Feature · M–L
+Compare actual EMS behavior against realistic alternatives: no battery, battery without EMS, solar-only self-use, and simple cheap-hour charging.
+**Done when:** savings reports are measured against transparent baselines, not only against planned behavior.
+**Track:** Pool · E-08 · ⬜
+
+### B-70 · Energy anomaly detection — Feature · M
+Detect suspicious behavior such as battery not following commands, solar underperforming forecast, EV charging unexpected power, inconsistent meters, or inverter mode drift.
+**Done when:** anomalies create calm, actionable alerts with supporting evidence.
+**Track:** Pool · E-08 · ⬜
+
+### B-71 · Constrained EV charging optimizer — Feature · L
+Optimize EV charging around required SoC, departure deadline, charger max power, battery reserve, solar forecast, dynamic prices, and household peak protection.
+**Done when:** EMS can produce an EV charge plan that respects charger/home constraints and explains why each charge window was chosen.
+**Track:** Pool · E-08 · ⬜
+
+### B-72 · Forecast accuracy tracking — Feature · S–M
+Track solar, load, price, and plan-execution error over time so EMS knows when a provider/model is biased or stale.
+**Done when:** the system can report recent forecast error and use that error to plan more conservatively.
+**Track:** Pool · E-08 · ⬜
+
+### B-73 · Scenario simulator — Feature + UX · M
+Let the homeowner explore "what if" questions such as changing reserve, charging the car tonight, cloudy weather, or negative prices.
+**Done when:** simulations are read-only, clearly separate from the active plan, and explain cost/reserve impact.
+**Track:** Pool · E-08 · ⬜
+
+### B-74 · Optimization explainability layer — Feature · M
+Make optimization decisions produce structured reasons: selected window, alternative rejected, expected benefit, risk, and safety constraint.
+**Done when:** planner explanations come from decision data and can be rendered consistently in web, iOS, logs, and diagnostics.
+**Track:** Pool · E-08 · ⬜
+
+### B-75 · Forecast-driven notifications — Feature · S–M
+Notify only for predicted meaningful events: low solar tomorrow, EV needs plug-in before a cheap window, battery may miss evening peak, or unusual price opportunity.
+**Done when:** notifications are sparse, actionable, and backed by forecast confidence.
+**Track:** Pool · E-08 · ⬜
+
+### B-76 · Model and optimization health dashboard — Feature · S–M
+Expose internal model health: solar error, load error, plan execution error, battery response error, data freshness, and optimization fallback rate.
+**Done when:** support/debug views show whether EMS is predicting and executing well enough to trust.
+**Track:** Pool · E-08 · ⬜
+
+### B-77 · Historical replay optimization suite — Feature + Test · M
+Replay historical days through the planner to compare rule changes, validate reserve behavior, measure savings, and prevent seasonal regressions.
+**Done when:** CI or a local command can replay representative days and report cost, reserve breaches, confidence, and plan-quality deltas.
+**Track:** Pool · E-08 · ⬜
 
 ---
 

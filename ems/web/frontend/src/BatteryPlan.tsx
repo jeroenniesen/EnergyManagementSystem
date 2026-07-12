@@ -78,11 +78,83 @@ function segments(points: Point[], x: (ts: string) => number, y: (soc: number) =
 
 const poly = (seg: XY[]) => seg.map((p) => `${p.x.toFixed(1)},${p.y.toFixed(1)}`).join(" ");
 
-export function BatteryPlan({ plan }: { plan: BatteryPlanData | null }) {
+// The live snapshot folded into a single-line footer on the story card (B-32): what EMS saved, how
+// full the battery is and which mode it's running — the three numbers the old standalone stat-tile
+// row carried, now travelling with the plan they describe. Each triplet renders only when known, so
+// a lagging endpoint just leaves a gap rather than a "—".
+function PlanFooter({
+  savings,
+  socPct,
+  batteryMode,
+  onBatteryClick,
+}: {
+  savings: number | null;
+  socPct: number | null;
+  batteryMode: string | null;
+  onBatteryClick?: () => void;
+}) {
+  if (savings == null && socPct == null && !batteryMode) return null;
+  return (
+    <div className="battery-plan-footer" data-testid="story-footer">
+      {savings != null && (
+        <span className="bp-foot" title="Rough estimate of what smart charging saved today vs. leaving the battery on its own.">
+          <span className="bp-foot-label">Saved today</span>
+          <span className="bp-foot-value">€{savings.toFixed(2)}</span>
+        </span>
+      )}
+      {socPct != null &&
+        (onBatteryClick ? (
+          // With a cluster to break down, the battery figure is a button into the per-tower view.
+          <button
+            type="button"
+            className="bp-foot bp-foot-btn"
+            data-testid="battery-tile"
+            onClick={onBatteryClick}
+            title="How full the home battery is — click to see each battery."
+          >
+            <span className="bp-foot-label">Battery</span>
+            <span className="bp-foot-value">{socPct.toFixed(0)}%</span>
+            <span className="bp-foot-more">see each battery →</span>
+          </button>
+        ) : (
+          <span className="bp-foot" title="How full the home battery is right now." data-testid="battery-tile">
+            <span className="bp-foot-label">Battery</span>
+            <span className="bp-foot-value">{socPct.toFixed(0)}%</span>
+          </span>
+        ))}
+      {batteryMode && (
+        <span className="bp-foot" title="The mode the battery is currently running in.">
+          <span className="bp-foot-label">Mode</span>
+          <span className="bp-foot-value">{batteryMode}</span>
+        </span>
+      )}
+    </div>
+  );
+}
+
+export function BatteryPlan({
+  plan,
+  savings = null,
+  socPct = null,
+  batteryMode = null,
+  onBatteryClick,
+}: {
+  plan: BatteryPlanData | null;
+  savings?: number | null;
+  socPct?: number | null;
+  batteryMode?: string | null;
+  onBatteryClick?: () => void;
+}) {
   if (!plan) {
     return (
       <section className="battery-plan battery-plan-loading" data-testid="battery-plan">
         <p className="battery-plan-summary">Loading battery plan…</p>
+        <PlanFooter
+          savings={savings}
+          socPct={socPct}
+          batteryMode={batteryMode}
+          onBatteryClick={onBatteryClick}
+        />
       </section>
     );
   }
@@ -192,6 +264,12 @@ export function BatteryPlan({ plan }: { plan: BatteryPlanData | null }) {
         <span><i className="leg target" /> target</span>
         <span><i className="leg reserve" /> reserve</span>
       </div>
+      <PlanFooter
+        savings={savings}
+        socPct={socPct}
+        batteryMode={batteryMode}
+        onBatteryClick={onBatteryClick}
+      />
     </section>
   );
 }

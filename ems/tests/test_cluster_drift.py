@@ -97,6 +97,23 @@ def test_slave_not_following_is_detected_and_audited(tmp_path):
         while time.time() < deadline and not _drift():
             time.sleep(0.05)
         drift = _drift()
+
+        # B-37: the cluster-mismatch banner must also answer "is this safe" / "what can I do",
+        # not just describe the condition. Checked inside the `with` block — the alert lives in
+        # an in-memory box tied to the running app, not the audit log.
+        def _cluster_alert():
+            return [a for a in c.get("/api/alerts").json()["alerts"]
+                    if a["key"] == "battery_cluster_mismatch"]
+
+        deadline = time.time() + 3.0
+        alert = _cluster_alert()
+        while time.time() < deadline and not alert:
+            time.sleep(0.05)
+            alert = _cluster_alert()
     assert drift, "a slave not following the commanded mode must be audited"
     assert "10.0.0.2" in drift[0]["detail"]["laggards"]
     assert "MISMATCH" in drift[0]["summary"]
+    assert alert, "a cluster mismatch must surface on /api/alerts, not just the audit log"
+    assert alert[0]["safe"].strip()
+    assert alert[0]["action"].strip()
+    assert "10.0.0.2" in alert[0]["action"]

@@ -1469,27 +1469,45 @@ def create_app(
                                          manual=override_active,
                                          priority=_car_charging(now)).outcome
         alerts = derive_alerts(snap, dry_run=dry_run, decision_outcome=outcome)
-        out = [{"key": a.key, "severity": a.severity, "message": a.message} for a in alerts]
+        out = [{"key": a.key, "severity": a.severity, "message": a.message,
+                "safe": a.safe, "action": a.action} for a in alerts]
         if override_active:
             ov = override_box["ov"]
             until = ov.expires_at.astimezone(site_tz).strftime("%H:%M") if ov.expires_at else "?"
             # If the override was HELD (gated on unsafe data), say so — never claim it's "forcing"
             # the requested action when the battery is actually held at self-consumption.
             held = ov.intent is not None and intent is not ov.intent
-            msg = (f"Manual override held until {until} — data unsafe, so EMS is holding "
-                   "self-consumption instead of forcing the requested action"
-                   if held else
-                   f"Manual override: forcing {intent.value if intent else '?'} until {until}")
-            out.append({"key": "manual_override_active", "severity": "warning", "message": msg})
+            if held:
+                msg = (f"Manual override held until {until} — data unsafe, so EMS is holding "
+                       "self-consumption instead of forcing the requested action")
+                safe = ("Yes — EMS is protecting the battery by holding self-consumption instead "
+                        "of forcing an action while the data quality issue lasts.")
+                action = ("Nothing needed — EMS applies your override automatically once the "
+                          "data-quality issue clears. See the related alert above for what to "
+                          "check.")
+            else:
+                msg = f"Manual override: forcing {intent.value if intent else '?'} until {until}"
+                safe = ("Yes — you're intentionally directing the battery; EMS still enforces "
+                        "its safety checks underneath.")
+                action = (f"Nothing needed — the override ends automatically at {until}, or "
+                          "cancel it now from Manual control.")
+            out.append({"key": "manual_override_active", "severity": "warning", "message": msg,
+                        "safe": safe, "action": action})
         # Cluster mismatch (a tower not following the commanded mode) — surfaced prominently, not
         # just in the audit log, because it means part of the battery isn't doing what was asked.
         laggard_sig = _drift_box.get("sig")
         if laggard_sig:
             ips = ", ".join(ip for ip, _mode in laggard_sig)
-            out.append({"key": "battery_cluster_mismatch", "severity": "warning",
-                        "message": f"Battery cluster mismatch — tower(s) {ips} are not following "
-                                   "the commanded mode. The EMS commands the master; a tower that "
-                                   "doesn't follow keeps running its own mode."})
+            out.append({
+                "key": "battery_cluster_mismatch", "severity": "warning",
+                "message": f"Battery cluster mismatch — tower(s) {ips} are not following "
+                           "the commanded mode. The EMS commands the master; a tower that "
+                           "doesn't follow keeps running its own mode.",
+                "safe": "Yes — the mismatched tower is just running its own onboard self-use "
+                        "mode; nothing unsafe is happening.",
+                "action": f"Check tower(s) {ips} — power-cycle or reconnect it if it hasn't "
+                          "rejoined the commanded mode after a few cycles.",
+            })
         return {"data_quality": dq, "alerts": out}
 
     @app.get("/api/decision")
