@@ -48,6 +48,13 @@ from ems.control.override import (
 from ems.control.override import (
     from_stored as override_from_stored,
 )
+from ems.detectors import (
+    ev_plug_in_reminder,
+    evening_peak_risk,
+    low_solar_tomorrow,
+    price_opportunity,
+    typical_daily_solar_kwh,
+)
 from ems.diagnostics import build_diagnostics, overall_status
 from ems.domain import BatteryIntent, PhysicalMode
 from ems.energy_flow import build_daily_flows
@@ -160,6 +167,52 @@ async def _run_backup(store: HistoryStore, db_path: str, keep: int,
                 "Check available disk space if this keeps happening.",
                 dedupe_key=f"backup_failed:{now:%Y-%m-%d}",
             )
+
+
+async def _run_detectors(
+    store: HistoryStore | None,
+    notifier: Notifier | None,
+    now: datetime,
+    *,
+    p50_by_slot_tomorrow: dict[datetime, float] | None = None,
+    typical_daily_kwh: float | None = None,
+    car_plan: dict[str, Any] | None = None,
+    car_charging_now: bool = False,
+    projected_soc_at_peak: float | None = None,
+    needed_soc: float | None = None,
+    confidence_level: str | None = None,
+    price_slots_tomorrow: list[Any] | None = None,
+) -> None:
+    """Forecast-driven notifications (BACKLOG B-75): run the four pure detectors in
+    `ems.detectors` against already-gathered PLAIN data and hand any that trigger to
+    `notifier.send()`. Mirrors `_run_backup`'s shape — a plain, directly-testable function, NOT a
+    closure — so all the live gathering (price_source/solar_forecast/store reads, the car-plan
+    internals, the charge-need/projection for peak risk) happens in the caller
+    (`create_app`'s `_run_detector_cycle`) and this stays pure glue, easy to unit-test with canned
+    inputs the same way `test_backup.py` exercises `_run_backup`.
+
+    Each detector call is individually wrapped: one detector raising (bad/unexpected data, a
+    coding slip) must never block the others or escape to the caller — the same fail-safe
+    convention as every other optional step in this codebase (`ems/sources/carbon.py`,
+    `Notifier.send` itself, `_run_backup` above). A no-op when `store`/`notifier` isn't
+    configured — there is nowhere to persist a notification."""
+    if store is None or notifier is None:
+        return
+    checks: list[tuple[str, Any, tuple]] = [
+        ("low_solar_tomorrow", low_solar_tomorrow,
+         (p50_by_slot_tomorrow or {}, typical_daily_kwh)),
+        ("ev_plug_in_reminder", ev_plug_in_reminder, (car_plan, car_charging_now)),
+        ("evening_peak_risk", evening_peak_risk,
+         (projected_soc_at_peak, needed_soc, confidence_level)),
+        ("price_opportunity", price_opportunity, (price_slots_tomorrow or [],)),
+    ]
+    for name, fn, args in checks:
+        try:
+            result = fn(*args, now=now)
+            if result is not None:
+                await notifier.send(**result)
+        except Exception:
+            _log.warning("%s detector failed (non-fatal)", name, exc_info=True)
 
 
 _recorder_died = _task_died("Recorder")
@@ -947,6 +1000,12 @@ def create_app(
         if store is not None:
             maintenance_task = asyncio.create_task(_maintenance_loop(stop))
             maintenance_task.add_done_callback(_task_died("History maintenance"))
+        # Forecast-driven notifications (B-75): its OWN loop, independent of dry_run/controller —
+        # see _run_detector_cycle's docstring for why it doesn't piggyback on the control loop.
+        notify_task = None
+        if store is not None and notifier is not None:
+            notify_task = asyncio.create_task(_notify_loop(stop))
+            notify_task.add_done_callback(_task_died("Forecast notifications"))
         try:
             yield
         finally:
@@ -955,7 +1014,7 @@ def create_app(
             # graceful stop (upgrade, reboot, launchd restart) must not leave it in a forced
             # charge/hold/discharge. Bounded + best-effort: never block shutdown on the device.
             await _shutdown_restore()
-            for t in (task, control_task, audit_task, validate_task, maintenance_task):
+            for t in (task, control_task, audit_task, validate_task, maintenance_task, notify_task):
                 if t is not None:
                     await t
 
@@ -1447,6 +1506,94 @@ def create_app(
                 await _run_control_cycle()
             except Exception:
                 _log.exception("control loop tick failed; retry next cycle (fail-safe)")
+
+    async def _run_detector_cycle(now: datetime) -> None:
+        """Gathers already-available PLAIN data (price slots, solar P50, the car-charging plan,
+        charge-need/projection for tonight's peak, 14 days of solar history) and hands it to the
+        pure detectors via the standalone `_run_detectors` (BACKLOG B-75). Runs from `_notify_loop`
+        on the same 5-minute cadence as the operational control loop, but DELIBERATELY
+        INDEPENDENTLY of dry_run/controller: `_control_loop` only ever runs in live operational
+        mode (see its spawn condition in `lifespan`), yet forecast notifications are just as
+        useful during dry-run acceptance (CLAUDE.md "dry-run before every live strategy") and on
+        an install with no battery configured at all — so this gets its own tiny loop instead of
+        piggybacking on the battery-write path."""
+        if store is None or notifier is None:
+            return
+        now_local = now.astimezone(site_tz)
+        tomorrow = now_local.date() + timedelta(days=1)
+
+        p50_tomorrow: dict[datetime, float] = {}
+        if solar_forecast is not None:
+            p50_tomorrow = {
+                s.start: s.p50_w for s in solar_forecast.slots()
+                if s.start.astimezone(site_tz).date() == tomorrow
+            }
+
+        typical_daily_kwh: float | None = None
+        try:
+            start = now - timedelta(days=14)
+            limit = history_row_cap((now - start).total_seconds(), _sample_cadence_seconds())
+            raw_rows = await store.raw_between(start.isoformat(), now.isoformat(), limit=limit)
+            typical_daily_kwh = typical_daily_solar_kwh(raw_rows, site_tz, now_local.date())
+        except Exception:
+            _log.warning("B-75: typical-solar lookup failed (non-fatal)", exc_info=True)
+
+        car_plan_resp = await _car_plan_dict(now)
+        car_charging_now = _car_charging(now)
+
+        projected_soc_at_peak: float | None = None
+        needed_soc: float | None = None
+        confidence_level: str | None = None
+        try:
+            fp = await _forward_projection()
+            if fp is not None and fp["deadline"] is not None:
+                deadline = fp["deadline"]
+                projected = fp["projected"]
+                at_or_after = next((p for p in projected if p.start >= deadline), None)
+                projected_soc_at_peak = (
+                    at_or_after.soc_pct if at_or_after is not None
+                    else (projected[-1].soc_pct if projected else None)
+                )
+                needed_soc = fp["need"].target_soc_pct
+                confidence_level = plan_confidence(
+                    data_quality=_data_quality(now),
+                    forecast_skill=await _solar_forecast_skill(now),
+                    freshness_ok=_freshness_ok(now),
+                    battery_reachable=_battery_reachable(now),
+                )["level"]
+        except Exception:
+            _log.warning("B-75: peak-risk projection gather failed (non-fatal)", exc_info=True)
+
+        price_slots_tomorrow: list[Any] = []
+        if price_source is not None:
+            price_slots_tomorrow = [
+                p for p in price_source.slots()
+                if p.start.astimezone(site_tz).date() == tomorrow
+            ]
+
+        await _run_detectors(
+            store, notifier, now_local,
+            p50_by_slot_tomorrow=p50_tomorrow, typical_daily_kwh=typical_daily_kwh,
+            car_plan=car_plan_resp.get("plan"), car_charging_now=car_charging_now,
+            projected_soc_at_peak=projected_soc_at_peak, needed_soc=needed_soc,
+            confidence_level=confidence_level, price_slots_tomorrow=price_slots_tomorrow,
+        )
+
+    async def _notify_loop(stop: asyncio.Event) -> None:
+        """Periodic forecast-driven notifications (BACKLOG B-75). Its own tiny loop (not
+        `_control_loop` — see `_run_detector_cycle`'s docstring), started whenever a store +
+        notifier exist regardless of dry_run/controller. Fail-safe: a gathering error is logged
+        and the loop just retries next cycle."""
+        while True:
+            try:
+                await asyncio.wait_for(stop.wait(), timeout=control_cycle_seconds)
+                return
+            except TimeoutError:
+                pass
+            try:
+                await _run_detector_cycle(datetime.now(UTC))
+            except Exception:
+                _log.exception("detector cycle failed; retry next cycle (fail-safe)")
 
     @app.get("/health/live")
     def live() -> dict:
@@ -2725,8 +2872,7 @@ def create_app(
             charge_efficiency=float(settings_cache["ev.charge_efficiency"]),
         )
 
-    @app.get("/api/car/plan")
-    async def car_plan() -> dict:
+    async def _car_plan_dict(now: datetime) -> dict:
         """The EV feature's main read (design 2026-07-12): when to plug in the car to meet the
         weekly minimum-charge schedule as cheaply as possible. Advisory only — never commands
         anything. Wires ems/ev_schedule + ems/ev_session + ems/ev_planner to settings, the manual
@@ -2735,11 +2881,14 @@ def create_app(
         Progressive states so the UI can prompt for what's missing: `enabled:false` (feature off),
         `needs_anchor` (no SoC set — "set your car's charge level"), `needs_schedule` (nothing
         enabled in the weekly schedule), else the full plan. `soc.stale` (>72 h) is carried in the
-        soc block and does NOT stop planning — the plan is still shown with the staleness flag."""
+        soc block and does NOT stop planning — the plan is still shown with the staleness flag.
+
+        Extracted from the GET /api/car/plan handler (`now` is the only thing that varies) so
+        `_run_detector_cycle` (B-75 `ev_plug_in_reminder`) reuses the EXACT same gathering instead
+        of duplicating it."""
         if not settings_cache.get("ev.advice_enabled"):
             return {"enabled": False, "plan": None, "soc": None}
 
-        now = datetime.now(UTC)
         car_meter_configured = bool(str(settings_cache.get("meters.car_ip") or "").strip())
 
         # --- car SoC estimate from the manual anchor (no anchor ⇒ prompt to set one) ---
@@ -2799,6 +2948,10 @@ def create_app(
             "car": car_to_dict(car) if car is not None else None,
             "car_meter_configured": car_meter_configured,
         }
+
+    @app.get("/api/car/plan")
+    async def car_plan() -> dict:
+        return await _car_plan_dict(datetime.now(UTC))
 
     @app.post("/api/car/soc")
     async def set_car_soc(request: Request, body: dict | None = None) -> JSONResponse:
