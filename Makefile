@@ -1,6 +1,6 @@
 # Smart Energy Manager — convenience targets. The one-command install is `make install`
 # (or run ./scripts/install.sh directly). Everything is configured afterwards in the web UI.
-.PHONY: install upgrade uninstall restart dev build test e2e lint
+.PHONY: install upgrade uninstall restart dev build test e2e lint replay
 
 install:        ## One-command install + auto-start (macOS / Apple Silicon)
 	./scripts/install.sh
@@ -25,6 +25,9 @@ test:           ## Run the Python test suite
 
 lint:           ## Lint the Python code
 	uv run ruff check ems
+
+replay:         ## Replay the last 14 recorded days through the planner (read-only cost report)
+	uv run python -m ems.replay --days 14
 
 e2e:            ## Run the Playwright end-to-end tests (hermetic; builds the SPA first)
 	cd ems/web/frontend && npm run build && npx playwright test

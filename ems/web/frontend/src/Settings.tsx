@@ -239,7 +239,7 @@ function CarPicker({
 const NAV_GROUPS: { header: string; sections: string[] }[] = [
   { header: "Your setup", sections: ["connection", "meters", "battery", "prices", "site"] },
   { header: "How it runs", sections: ["strategy", "planner", "control", "ev"] },
-  { header: "App", sections: ["ai", "reporting", "access", "ui"] },
+  { header: "App", sections: ["ai", "reporting", "notify", "access", "ui"] },
 ];
 const GROUP_TITLE: Record<string, string> = {
   strategy: "Strategy",
@@ -254,6 +254,7 @@ const GROUP_TITLE: Record<string, string> = {
   access: "Access & security",
   ui: "Appearance",
   reporting: "Insights & reporting",
+  notify: "Notifications",
   ev: "Car",
 };
 const GROUP_HINT: Record<string, string> = {
@@ -271,6 +272,9 @@ const GROUP_HINT: Record<string, string> = {
     + "Access box at the top of this page to authorise this browser. Blank = open on your LAN.",
   ui: "How the dashboard looks.",
   reporting: "CO₂ accounting factors and the gas price used by the Insights tab.",
+  notify: "Optional. Off by default. Get a real push to your phone via ntfy (ntfy.sh or "
+    + "self-hosted) — no Apple/Google account, no cloud subscription. The bell in the header always "
+    + "shows notifications in-app regardless.",
   ev: "Optional. Off by default. Shows a dashboard card suggesting the cheapest window to plug "
     + "in the car — advisory only, the EMS never controls the car.",
 };

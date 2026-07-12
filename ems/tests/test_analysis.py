@@ -1,7 +1,16 @@
-"""Forecast skill (pure): actual-vs-forecast solar error over matched 15-min slots."""
+"""Forecast/prediction accuracy (pure): solar forecast skill, plan-execution error, and
+household load-baseline error, over matched slots/deadlines/hours."""
 from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
 
-from ems.analysis import forecast_error, recommend_solar_confidence
+from ems.analysis import (
+    forecast_error,
+    load_baseline_error,
+    plan_execution_error,
+    recommend_solar_confidence,
+)
+
+UTC = ZoneInfo("UTC")
 
 
 def _forecast_row(start: str, p10: float, p50: float, p90: float) -> dict:
@@ -170,3 +179,196 @@ def test_recommend_delta_is_none_without_a_current_value():
 
 def test_recommend_empty_input_returns_none():
     assert recommend_solar_confidence([], []) is None
+
+
+# ---- plan_execution_error: deadline-aware target_soc-vs-achieved-SoC scoring ----
+
+def _plan_row(ts: str, *, target: float | None = None, deadline: str | None = None,
+              soc: float | None = None) -> dict:
+    return {"ts": ts, "strategy": "winter", "target_soc": target, "deadline": deadline,
+            "soc_pct": soc, "intent": "grid_charge_to_target"}
+
+
+def test_plan_execution_error_hand_computed_across_three_deadlines():
+    # 3 unique deadlines (one per day). Deadline 1 has its target REVISED mid-flight (70 -> 75) —
+    # dedup must use the latest (75), not the first. Achieved is read from the next plan_history
+    # row after each deadline (soc_pct only, no target/deadline on that row — a normal cycle).
+    rows = [
+        _plan_row("2026-06-01T17:00:00+00:00", target=70.0,
+                  deadline="2026-06-01T18:00:00+00:00", soc=60.0),
+        _plan_row("2026-06-01T17:30:00+00:00", target=75.0,
+                  deadline="2026-06-01T18:00:00+00:00", soc=68.0),
+        _plan_row("2026-06-01T18:05:00+00:00", soc=80.0),  # achieved for deadline 1: 80 - 75 = 5
+        _plan_row("2026-06-02T17:00:00+00:00", target=80.0,
+                  deadline="2026-06-02T18:00:00+00:00", soc=72.0),
+        _plan_row("2026-06-02T18:10:00+00:00", soc=76.0),  # achieved for deadline 2: 76 - 80 = -4
+        _plan_row("2026-06-03T17:00:00+00:00", target=90.0,
+                  deadline="2026-06-03T18:00:00+00:00", soc=82.0),
+        _plan_row("2026-06-03T18:00:00+00:00", soc=88.0),  # achieved exactly AT deadline: -2
+    ]
+    out = plan_execution_error(rows, tz=UTC)
+    assert out is not None
+    assert out["n_deadlines"] == 3
+    # errors = [5, -4, -2] -> mean -1/3, mae 11/3
+    assert out["mean_error_pp"] == -0.3
+    assert out["mae_pp"] == 3.7
+    # hit = achieved >= target - 2pp: 5 hits, -4 misses, -2 hits (boundary, inclusive) -> 2/3
+    assert out["hit_rate_pct"] == 66.7
+
+
+def test_plan_execution_error_dedupes_shared_deadline_using_latest_target():
+    # Deadline 1 is recorded across THREE cycles as the target is progressively revised
+    # (70 -> 72 -> 75). Using the latest (75) against achieved=80 gives error 5; using the first
+    # (70) would wrongly give 10 and change every aggregate below.
+    rows = [
+        _plan_row("2026-06-10T17:00:00+00:00", target=70.0,
+                  deadline="2026-06-10T18:00:00+00:00", soc=60.0),
+        _plan_row("2026-06-10T17:20:00+00:00", target=72.0,
+                  deadline="2026-06-10T18:00:00+00:00", soc=65.0),
+        _plan_row("2026-06-10T17:40:00+00:00", target=75.0,
+                  deadline="2026-06-10T18:00:00+00:00", soc=70.0),
+        _plan_row("2026-06-10T18:05:00+00:00", soc=80.0),  # error = 80 - 75 = 5
+        _plan_row("2026-06-11T17:00:00+00:00", target=50.0,
+                  deadline="2026-06-11T18:00:00+00:00", soc=45.0),
+        _plan_row("2026-06-11T18:00:00+00:00", soc=50.0),  # error = 0
+        _plan_row("2026-06-12T17:00:00+00:00", target=60.0,
+                  deadline="2026-06-12T18:00:00+00:00", soc=55.0),
+        _plan_row("2026-06-12T18:00:00+00:00", soc=60.0),  # error = 0
+    ]
+    out = plan_execution_error(rows, tz=UTC)
+    assert out["n_deadlines"] == 3
+    # errors = [5, 0, 0] -> mean/mae = 5/3 = 1.6667 -> 1.7
+    assert out["mean_error_pp"] == 1.7
+    assert out["mae_pp"] == 1.7
+    assert out["hit_rate_pct"] == 100.0
+
+
+def test_plan_execution_error_achieved_row_exactly_30min_late_counts():
+    # One deadline's achieved row lands exactly at the 30-min grace boundary (inclusive) and one
+    # exactly at the deadline; a third has a genuine -2pp miss right at the hit-rate boundary.
+    rows = [
+        _plan_row("2026-06-20T17:00:00+00:00", target=70.0,
+                  deadline="2026-06-20T18:00:00+00:00", soc=60.0),
+        _plan_row("2026-06-20T18:30:00+00:00", soc=75.0),  # +30 min exactly -> counts, error 5
+        _plan_row("2026-06-21T17:00:00+00:00", target=70.0,
+                  deadline="2026-06-21T18:00:00+00:00", soc=60.0),
+        _plan_row("2026-06-21T18:15:00+00:00", soc=68.0),  # error -2 -> hit-rate boundary (hit)
+        _plan_row("2026-06-22T17:00:00+00:00", target=70.0,
+                  deadline="2026-06-22T18:00:00+00:00", soc=60.0),
+        _plan_row("2026-06-22T18:00:00+00:00", soc=75.0),  # error 5
+    ]
+    out = plan_execution_error(rows, tz=UTC)
+    assert out["n_deadlines"] == 3
+    assert out["mean_error_pp"] == 2.7  # (5 - 2 + 5) / 3
+    assert out["mae_pp"] == 4.0         # (5 + 2 + 5) / 3
+    assert out["hit_rate_pct"] == 100.0  # -2 counts as a hit (achieved >= target - 2pp)
+
+
+def test_plan_execution_error_achieved_row_31min_late_is_not_measurable():
+    # Same shape as the 30-min case, but this deadline's only later row is 31 minutes out — one
+    # minute past the grace window — so it must NOT be counted, dropping this run below the
+    # 3-measurable-deadlines minimum (only 2 of the 3 deadlines below are measurable).
+    rows = [
+        _plan_row("2026-06-20T17:00:00+00:00", target=70.0,
+                  deadline="2026-06-20T18:00:00+00:00", soc=60.0),
+        _plan_row("2026-06-20T18:30:00+00:00", soc=75.0),
+        _plan_row("2026-06-21T17:00:00+00:00", target=70.0,
+                  deadline="2026-06-21T18:00:00+00:00", soc=60.0),
+        _plan_row("2026-06-21T18:31:00+00:00", soc=75.0),  # 31 min late -> not measurable
+        _plan_row("2026-06-22T17:00:00+00:00", target=70.0,
+                  deadline="2026-06-22T18:00:00+00:00", soc=60.0),
+        _plan_row("2026-06-22T18:00:00+00:00", soc=75.0),
+    ]
+    assert plan_execution_error(rows, tz=UTC) is None
+
+
+def test_plan_execution_error_fewer_than_three_measurable_deadlines_is_none():
+    rows = [
+        _plan_row("2026-06-01T17:00:00+00:00", target=70.0,
+                  deadline="2026-06-01T18:00:00+00:00", soc=60.0),
+        _plan_row("2026-06-01T18:05:00+00:00", soc=80.0),
+        _plan_row("2026-06-02T17:00:00+00:00", target=80.0,
+                  deadline="2026-06-02T18:00:00+00:00", soc=72.0),
+        _plan_row("2026-06-02T18:10:00+00:00", soc=76.0),
+    ]
+    assert plan_execution_error(rows, tz=UTC) is None
+
+
+def test_plan_execution_error_empty_input_is_none():
+    assert plan_execution_error([], tz=UTC) is None
+
+
+def test_plan_execution_error_ignores_rows_missing_target_or_deadline():
+    # Rows with only one of target_soc/deadline set (a partial/older snapshot) contribute nothing.
+    rows = [
+        _plan_row("2026-06-01T17:00:00+00:00", target=70.0, soc=60.0),  # no deadline
+        _plan_row("2026-06-01T18:00:00+00:00", deadline="2026-06-01T18:00:00+00:00", soc=60.0),
+    ]
+    assert plan_execution_error(rows, tz=UTC) is None
+
+
+# ---- load_baseline_error: household load vs. a trailing day-of-week/hour baseline ----
+
+def _load_row(ts: str, grid_w: float) -> dict:
+    return {"ts": ts, "grid_power_w": grid_w, "solar_power_w": 0.0, "battery_power_w": 0.0}
+
+
+def _weekly_rows(hours: list[int], n_weeks: int, *, anomaly_w: float | None = None,
+                  base_w: float = 1000.0, anchor: str = "2026-06-01T00:00:00+00:00") -> list[dict]:
+    """`len(hours)` buckets, each sampled once/week for `n_weeks` weeks (same weekday every time,
+    since each step is exactly 7 days). Every occurrence is `base_w` except the LAST occurrence of
+    each bucket, which is `anomaly_w` (if given) — makes the trailing-mean baseline hand-computable
+    (every prior observation is identical, so the baseline is exactly `base_w` until the anomaly).
+    """
+    t0 = datetime.fromisoformat(anchor)
+    rows = []
+    for h in hours:
+        for week in range(n_weeks):
+            ts = t0 + timedelta(days=7 * week, hours=h)
+            w = base_w
+            if anomaly_w is not None and week == n_weeks - 1:
+                w = anomaly_w
+            rows.append(_load_row(ts.isoformat(), w))
+    return rows
+
+
+def test_load_baseline_error_hand_computed_bias_and_mape():
+    # 4 hour-buckets x 10 weekly occurrences; every occurrence is 1000W except the LAST of each
+    # bucket (1200W). Occurrences need >= 3 PRIOR same-bucket weeks, so index 0/1/2 (of 10) are
+    # not evaluable -> 7 evaluable per bucket (indices 3..9), 28 total; 24 of those are the
+    # 1000-vs-1000 baseline (error 0) and 4 are the final 1200-vs-1000 anomaly (error 200).
+    rows = _weekly_rows([6, 10, 14, 18], 10, anomaly_w=1200.0)
+    out = load_baseline_error(rows, tz=UTC)
+    assert out is not None
+    assert out["n_hours"] == 28
+    assert out["bias_w"] == 28.6      # mean of 24 zeros + 4 * 200, over 28 -> 800/28
+    assert out["mape_pct"] == 2.4     # mean of 24 zeros + 4 * (200/1200*100), over 28
+
+
+def test_load_baseline_error_skips_buckets_with_fewer_than_three_prior_days():
+    # Exactly 4 weekly occurrences per bucket: only the 4th (index 3) has the required 3 PRIOR
+    # weeks, so only 1-in-4 is evaluable per bucket. 24 buckets (hours 0..23) x 1 evaluable each =
+    # exactly the 24-hour minimum; every value is identical (500W) so error is exactly zero.
+    rows = _weekly_rows(list(range(24)), 4, base_w=500.0)
+    out = load_baseline_error(rows, tz=UTC)
+    assert out is not None
+    assert out["n_hours"] == 24
+    assert out["bias_w"] == 0.0
+    assert out["mape_pct"] == 0.0
+
+
+def test_load_baseline_error_never_reaching_three_prior_days_is_none():
+    # Only 3 weekly occurrences per bucket: index 2 (the latest) would need 2 priors < 3 -> the
+    # minimum is NEVER reached for any bucket, however many hours/weeks of data exist.
+    rows = _weekly_rows(list(range(24)), 3, base_w=500.0)
+    assert load_baseline_error(rows, tz=UTC) is None
+
+
+def test_load_baseline_error_below_24_evaluable_hours_is_none():
+    # 20 buckets (not 24) with 4 occurrences each -> only 20 evaluable hours, below the minimum.
+    rows = _weekly_rows(list(range(20)), 4, base_w=500.0)
+    assert load_baseline_error(rows, tz=UTC) is None
+
+
+def test_load_baseline_error_empty_input_is_none():
+    assert load_baseline_error([], tz=UTC) is None

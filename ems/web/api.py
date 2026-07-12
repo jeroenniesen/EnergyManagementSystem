@@ -11,6 +11,7 @@ import logging
 import os
 import secrets
 import threading
+from collections.abc import Awaitable, Callable
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
 from datetime import date as date_cls
@@ -24,11 +25,17 @@ from fastapi.staticfiles import StaticFiles
 
 from ems import export_package as expkg
 from ems.alerts import data_quality, derive_alerts
-from ems.analysis import forecast_error, recommend_solar_confidence
+from ems.analysis import (
+    forecast_error,
+    load_baseline_error,
+    plan_execution_error,
+    recommend_solar_confidence,
+)
 from ems.cars import CARS
 from ems.cars import brands as car_brands
 from ems.cars import by_id as car_by_id
 from ems.cars import to_dict as car_to_dict
+from ems.confidence import plan_confidence
 from ems.control.failsafe import failsafe_intent
 from ems.control.mode_controller import ModeController
 from ems.control.override import (
@@ -42,7 +49,15 @@ from ems.control.override import (
 from ems.control.override import (
     from_stored as override_from_stored,
 )
+from ems.detectors import (
+    ev_plug_in_reminder,
+    evening_peak_risk,
+    low_solar_tomorrow,
+    price_opportunity,
+    typical_daily_solar_kwh,
+)
 from ems.diagnostics import build_diagnostics, overall_status
+from ems.digest import build_digest
 from ems.domain import BatteryIntent, PhysicalMode
 from ems.energy_flow import build_daily_flows
 from ems.ev_advisor import advise_charge_window
@@ -53,6 +68,7 @@ from ems.finance import day_finance
 from ems.freshness import FreshnessTracker
 from ems.lifecycle import OwnershipState
 from ems.load_model import reconstruct
+from ems.notify import Notifier
 from ems.planner.adaptive import AdaptiveConfig
 from ems.planner.charge_need import compute_charge_need
 from ems.planner.explain import (
@@ -107,7 +123,7 @@ def _task_died(name: str):
 
 
 async def _run_backup(store: HistoryStore, db_path: str, keep: int,
-                      state: dict[str, Any]) -> None:
+                      state: dict[str, Any], notifier: Notifier | None = None) -> None:
     """Once-per-maintenance-cycle online DB backup + rotation (SPEC §11 durability). Writes
     `<db_dir>/backups/ems-YYYYMMDD.sqlite` (one snapshot per UTC day; skipped if today's already
     exists, so restarts don't re-snapshot), then prunes so only the newest `keep` snapshots remain
@@ -115,7 +131,12 @@ async def _run_backup(store: HistoryStore, db_path: str, keep: int,
 
     Best-effort: on ANY failure it logs loudly, records last_backup_ok=False in `state`, and NEVER
     raises — a durability hiccup must not kill the maintenance loop that also runs retention + WAL
-    truncation. `state` is mutated in place (surfaced via /api/diagnostics)."""
+    truncation. `state` is mutated in place (surfaced via /api/diagnostics).
+
+    B-20 (first notification source, proving the outbox rails end-to-end): a failure pushes a
+    calm `backup_failed` notification, deduped per UTC calendar day — repeated failures the SAME
+    day are silent after the first, but a failure on a NEW day notifies again. A successful backup
+    never sends anything (`notifier` itself is best-effort and never raises)."""
     if keep <= 0:
         return  # backups disabled by config (history.backup_keep = 0)
     now = datetime.now(UTC)
@@ -140,6 +161,150 @@ async def _run_backup(store: HistoryStore, db_path: str, keep: int,
         state["last_backup_ok"] = False
         _log.warning("history backup failed (%s: %s); retrying next cycle",
                      type(exc).__name__, exc)
+        if notifier is not None:
+            await notifier.send(
+                "backup_failed", "Backup failed",
+                "Today's scheduled backup of your energy history didn't complete. Your data is "
+                "safe — nothing has been lost, and EMS will try again automatically tomorrow. "
+                "Check available disk space if this keeps happening.",
+                dedupe_key=f"backup_failed:{now:%Y-%m-%d}",
+            )
+
+
+async def _run_detectors(
+    store: HistoryStore | None,
+    notifier: Notifier | None,
+    now: datetime,
+    *,
+    p50_by_slot_tomorrow: dict[datetime, float] | None = None,
+    typical_daily_kwh: float | None = None,
+    car_plan: dict[str, Any] | None = None,
+    car_charging_now: bool = False,
+    projected_soc_at_peak: float | None = None,
+    needed_soc: float | None = None,
+    confidence_level: str | None = None,
+    price_slots_tomorrow: list[Any] | None = None,
+) -> None:
+    """Forecast-driven notifications (BACKLOG B-75): run the four pure detectors in
+    `ems.detectors` against already-gathered PLAIN data and hand any that trigger to
+    `notifier.send()`. Mirrors `_run_backup`'s shape — a plain, directly-testable function, NOT a
+    closure — so all the live gathering (price_source/solar_forecast/store reads, the car-plan
+    internals, the charge-need/projection for peak risk) happens in the caller
+    (`create_app`'s `_run_detector_cycle`) and this stays pure glue, easy to unit-test with canned
+    inputs the same way `test_backup.py` exercises `_run_backup`.
+
+    Each detector call is individually wrapped: one detector raising (bad/unexpected data, a
+    coding slip) must never block the others or escape to the caller — the same fail-safe
+    convention as every other optional step in this codebase (`ems/sources/carbon.py`,
+    `Notifier.send` itself, `_run_backup` above). A no-op when `store`/`notifier` isn't
+    configured — there is nowhere to persist a notification."""
+    if store is None or notifier is None:
+        return
+    checks: list[tuple[str, Any, tuple]] = [
+        ("low_solar_tomorrow", low_solar_tomorrow,
+         (p50_by_slot_tomorrow or {}, typical_daily_kwh)),
+        ("ev_plug_in_reminder", ev_plug_in_reminder, (car_plan, car_charging_now)),
+        ("evening_peak_risk", evening_peak_risk,
+         (projected_soc_at_peak, needed_soc, confidence_level)),
+        ("price_opportunity", price_opportunity, (price_slots_tomorrow or [],)),
+    ]
+    for name, fn, args in checks:
+        try:
+            result = fn(*args, now=now)
+            if result is not None:
+                await notifier.send(**result)
+        except Exception:
+            _log.warning("%s detector failed (non-fatal)", name, exc_info=True)
+
+
+def _last_completed_week_monday(now_local: datetime) -> date_cls:
+    """The Monday of the most recently FULLY COMPLETED Mon-Sun week as of local `now_local`
+    (BACKLOG B-58): always LAST week's Monday, even a few seconds after midnight on a Monday — the
+    week that just started hasn't run yet, so it's never "the last completed week". Pure, so the
+    Mon-Sun boundary is unit-testable without spinning up the app or faking a clock deep inside a
+    closure."""
+    this_monday = now_local.date() - timedelta(days=now_local.weekday())
+    return this_monday - timedelta(days=7)
+
+
+_DIGEST_CACHE_KEY = "digest:last_week_sent"
+_DIGEST_CACHE_TTL_SECONDS = 32 * 24 * 3600.0  # comfortably longer than the weekly cadence
+
+
+def _digest_title(saved_eur: float | None) -> str:
+    if saved_eur is None:
+        return "Your week"
+    sign = "−" if saved_eur < 0 else ""
+    return f"Your week: saved {sign}€{abs(saved_eur):.2f}"
+
+
+async def _run_weekly_digest(
+    store: HistoryStore | None,
+    cache_store: CacheStore | None,
+    notifier: Notifier | None,
+    now: datetime,
+    tz: ZoneInfo,
+    gather: Callable[[date_cls], Awaitable[dict]],
+) -> dict | None:
+    """Sunday-evening delivery of the weekly digest (BACKLOG B-58 / roadmap P2 "the Sunday
+    read"): once local time crosses Sunday 18:00, build + send the just-completed week's digest
+    exactly once. Mirrors `_run_backup`'s shape — a plain, directly-testable function, NOT a
+    closure — so the gate and the dedupe can be tested without running `_notify_loop`.
+
+    GATE: only fires on a local Sunday at/after 18:00 — a mid-week restart, or a Sunday morning
+    tick, never sends early.
+
+    DEDUPE: the completed week's label is recorded in `cache_store` (`digest:last_week_sent`,
+    PERSISTED so it survives a restart — unlike an in-memory box such as `_backup_state`, which
+    only guards the same process); a week already recorded there is skipped WITHOUT calling
+    `gather` again (no point re-assembling a digest nobody will see). The `Notifier`'s own
+    `dedupe_key=f"digest:{week_label}"` is a second, independent safety net (see `ems/notify.py`'s
+    module docstring) — belt and braces, so even a lost/cleared cache row can't double-send.
+
+    `gather(monday)` does the actual I/O (finance/report/audit/advice for the week starting
+    `monday`, then `build_digest`) — injected so this function stays a thin, testable gate +
+    delivery wrapper, exactly like `_run_backup` delegates the real backup I/O to
+    `store.backup_to`.
+
+    Best-effort: any failure is logged and swallowed — a digest hiccup must never take down the
+    notify loop (the same fail-safe convention as `_run_backup` / `Notifier.send`). Returns the
+    digest dict that was actually sent, or None when it didn't fire (gate closed, dedupe, or no
+    store/notifier configured)."""
+    if store is None or notifier is None:
+        return None
+    now_local = now.astimezone(tz)
+    if now_local.weekday() != 6 or now_local.hour < 18:  # 6 = Sunday
+        return None
+    # THIS week's Monday — the week ending TODAY (Sunday), not `_last_completed_week_monday`
+    # (which is for /api/digest's default and deliberately looks back a full week, so a mid-week
+    # browse never shows a still-changing window). The Sunday push is about the week just wrapping
+    # up, accepting that its last few evening hours aren't in yet.
+    monday = now_local.date() - timedelta(days=now_local.weekday())
+    week_label = f"Week of {monday.isoformat()}"
+    if cache_store is not None:
+        try:
+            already_sent = await asyncio.to_thread(cache_store.get, _DIGEST_CACHE_KEY)
+        except Exception:
+            already_sent = None
+        if already_sent == week_label:
+            return None
+    try:
+        digest = await gather(monday)
+    except Exception:
+        _log.exception("weekly digest gather failed; retry next cycle (fail-safe)")
+        return None
+    body = f"{digest['headline']} {digest['tweak']}".strip()
+    await notifier.send(
+        "weekly_digest", _digest_title(digest.get("saved_eur")), body,
+        dedupe_key=f"digest:{week_label}",
+    )
+    if cache_store is not None:
+        try:
+            await asyncio.to_thread(
+                cache_store.set, _DIGEST_CACHE_KEY, week_label, _DIGEST_CACHE_TTL_SECONDS)
+        except Exception:
+            _log.warning("weekly digest cache write failed (non-fatal)", exc_info=True)
+    return digest
 
 
 _recorder_died = _task_died("Recorder")
@@ -401,6 +566,10 @@ def create_app(
         "last_backup_ts": None, "last_backup_ok": None,
         "last_backup_size": None, "backups_kept": 0,
     }
+    # Notification outbox (B-20): built from the SAME history store + the live settings cache, so
+    # a just-saved ntfy url/topic applies to the very next send without a restart. None when no
+    # store is configured (e.g. some unit tests) — _run_backup treats a None notifier as a no-op.
+    notifier = Notifier(store, settings_cache) if store is not None else None
 
     def _apply_control_settings() -> None:
         """Push the control.* settings onto the live controller (preserves its switch counters)."""
@@ -615,6 +784,17 @@ def create_app(
         except Exception:
             return None
 
+    def _battery_reachable(now: datetime) -> bool:
+        """Whether the battery cluster answered THIS read window — reuses the same coalesced
+        `_current_towers`/`_current_sample` reads as everything else (no new device read for this
+        check). Any tower online counts; with no cluster reader (mock / single non-cluster driver)
+        this falls back to whether the last coalesced sample read succeeded at all. Feeds the plan
+        confidence score (B-68)."""
+        towers = _current_towers(now)
+        if towers is not None:
+            return any(t.online for t in towers)
+        return _current_sample(now) is not None
+
     def _car_charging(now: datetime) -> bool:
         s = _current_sample(now)
         return s is not None and float(s.ev_power_w) > settings_cache[
@@ -806,7 +986,7 @@ def create_app(
             # Backup is its OWN best-effort step (never raises): a failed backup must not skip the
             # retention/WAL work above, nor vice-versa. Runs after maintain() so it snapshots the
             # freshly-checkpointed DB.
-            await _run_backup(store, store.db_path, history_backup_keep, _backup_state)
+            await _run_backup(store, store.db_path, history_backup_keep, _backup_state, notifier)
 
     async def _shutdown_restore() -> None:
         """Graceful-shutdown safety (SPEC §6.5 / runbook): in operational mode, hand the battery
@@ -912,6 +1092,12 @@ def create_app(
         if store is not None:
             maintenance_task = asyncio.create_task(_maintenance_loop(stop))
             maintenance_task.add_done_callback(_task_died("History maintenance"))
+        # Forecast-driven notifications (B-75): its OWN loop, independent of dry_run/controller —
+        # see _run_detector_cycle's docstring for why it doesn't piggyback on the control loop.
+        notify_task = None
+        if store is not None and notifier is not None:
+            notify_task = asyncio.create_task(_notify_loop(stop))
+            notify_task.add_done_callback(_task_died("Forecast notifications"))
         try:
             yield
         finally:
@@ -920,7 +1106,7 @@ def create_app(
             # graceful stop (upgrade, reboot, launchd restart) must not leave it in a forced
             # charge/hold/discharge. Bounded + best-effort: never block shutdown on the device.
             await _shutdown_restore()
-            for t in (task, control_task, audit_task, validate_task, maintenance_task):
+            for t in (task, control_task, audit_task, validate_task, maintenance_task, notify_task):
                 if t is not None:
                     await t
 
@@ -933,6 +1119,7 @@ def create_app(
     # too — do that before reaching the app over a VPN / from outside the home network.
     _WRITE_API_PATHS = frozenset({
         "/api/override", "/api/settings", "/api/ai/validate", "/api/chat", "/api/car/soc",
+        "/api/notifications/read",
     })
     # Always reachable without a token: auth discovery, so a client can learn a token is required
     # and prompt for it. (Health probes live under /health and are never gated here.)
@@ -946,6 +1133,20 @@ def create_app(
         """The recorder's write cadence — one history row per this many seconds. Used to size
         report/finance row caps to the ACTUAL sampling frequency (finding 10)."""
         return float(recorder.cycle_seconds) if recorder is not None else 300.0
+
+    async def _solar_forecast_skill(now: datetime) -> dict | None:
+        """14-day solar forecast skill (B-72 `forecast_error`) — the exact evidence window
+        /api/accuracy's 'solar' track already gathers. Factored out so /api/battery-plan's plan
+        confidence score (B-68) reuses this ONE extra store read instead of recomputing accuracy
+        from scratch. None only when there's no store at all (forecast_error itself always returns
+        a dict, even with zero matched slots)."""
+        if store is None:
+            return None
+        start = now - timedelta(days=14)
+        limit = history_row_cap((now - start).total_seconds(), _sample_cadence_seconds())
+        raw = await store.raw_between(start.isoformat(), now.isoformat(), limit=limit)
+        forecasts = await store.forecasts_between(start.isoformat(), now.isoformat())
+        return forecast_error(forecasts, raw)
 
     _WRITE_METHODS = frozenset({"POST", "PUT", "PATCH", "DELETE"})
 
@@ -1009,6 +1210,15 @@ def create_app(
         return data_quality(
             snap, prices_ok=price_source is not None, forecast_ok=solar_forecast is not None
         )
+
+    def _freshness_ok(now: datetime) -> bool:
+        """Whether EVERY currently-tracked signal is fresh — the same freshness snapshot as
+        `_data_quality` (SPEC §4.7), reused rather than re-read. Deliberately STRICTER than the
+        data-quality badge for the plan confidence score (B-68): `data_quality` also reads
+        'degraded' purely from a missing forecast SOURCE (nothing actually stale), which this
+        keeps True for; any signal that's actually stale/missing makes this False."""
+        snap = freshness.snapshot(now) if freshness is not None else {}
+        return all(state == "fresh" for state in snap.values()) if snap else True
 
     def _projection_sync(plan, now: datetime):
         """A synchronous forward SoC projection for `plan`, for the validator gate. Reuses the
@@ -1388,6 +1598,100 @@ def create_app(
                 await _run_control_cycle()
             except Exception:
                 _log.exception("control loop tick failed; retry next cycle (fail-safe)")
+
+    async def _run_detector_cycle(now: datetime) -> None:
+        """Gathers already-available PLAIN data (price slots, solar P50, the car-charging plan,
+        charge-need/projection for tonight's peak, 14 days of solar history) and hands it to the
+        pure detectors via the standalone `_run_detectors` (BACKLOG B-75). Runs from `_notify_loop`
+        on the same 5-minute cadence as the operational control loop, but DELIBERATELY
+        INDEPENDENTLY of dry_run/controller: `_control_loop` only ever runs in live operational
+        mode (see its spawn condition in `lifespan`), yet forecast notifications are just as
+        useful during dry-run acceptance (CLAUDE.md "dry-run before every live strategy") and on
+        an install with no battery configured at all — so this gets its own tiny loop instead of
+        piggybacking on the battery-write path."""
+        if store is None or notifier is None:
+            return
+        now_local = now.astimezone(site_tz)
+        tomorrow = now_local.date() + timedelta(days=1)
+
+        p50_tomorrow: dict[datetime, float] = {}
+        if solar_forecast is not None:
+            p50_tomorrow = {
+                s.start: s.p50_w for s in solar_forecast.slots()
+                if s.start.astimezone(site_tz).date() == tomorrow
+            }
+
+        typical_daily_kwh: float | None = None
+        try:
+            start = now - timedelta(days=14)
+            limit = history_row_cap((now - start).total_seconds(), _sample_cadence_seconds())
+            raw_rows = await store.raw_between(start.isoformat(), now.isoformat(), limit=limit)
+            typical_daily_kwh = typical_daily_solar_kwh(raw_rows, site_tz, now_local.date())
+        except Exception:
+            _log.warning("B-75: typical-solar lookup failed (non-fatal)", exc_info=True)
+
+        car_plan_resp = await _car_plan_dict(now)
+        car_charging_now = _car_charging(now)
+
+        projected_soc_at_peak: float | None = None
+        needed_soc: float | None = None
+        confidence_level: str | None = None
+        try:
+            fp = await _forward_projection()
+            if fp is not None and fp["deadline"] is not None:
+                deadline = fp["deadline"]
+                projected = fp["projected"]
+                at_or_after = next((p for p in projected if p.start >= deadline), None)
+                projected_soc_at_peak = (
+                    at_or_after.soc_pct if at_or_after is not None
+                    else (projected[-1].soc_pct if projected else None)
+                )
+                needed_soc = fp["need"].target_soc_pct
+                confidence_level = plan_confidence(
+                    data_quality=_data_quality(now),
+                    forecast_skill=await _solar_forecast_skill(now),
+                    freshness_ok=_freshness_ok(now),
+                    battery_reachable=_battery_reachable(now),
+                )["level"]
+        except Exception:
+            _log.warning("B-75: peak-risk projection gather failed (non-fatal)", exc_info=True)
+
+        price_slots_tomorrow: list[Any] = []
+        if price_source is not None:
+            price_slots_tomorrow = [
+                p for p in price_source.slots()
+                if p.start.astimezone(site_tz).date() == tomorrow
+            ]
+
+        await _run_detectors(
+            store, notifier, now_local,
+            p50_by_slot_tomorrow=p50_tomorrow, typical_daily_kwh=typical_daily_kwh,
+            car_plan=car_plan_resp.get("plan"), car_charging_now=car_charging_now,
+            projected_soc_at_peak=projected_soc_at_peak, needed_soc=needed_soc,
+            confidence_level=confidence_level, price_slots_tomorrow=price_slots_tomorrow,
+        )
+
+    async def _notify_loop(stop: asyncio.Event) -> None:
+        """Periodic forecast-driven notifications (BACKLOG B-75) + the Sunday weekly-digest
+        delivery (BACKLOG B-58). Its own tiny loop (not `_control_loop` — see
+        `_run_detector_cycle`'s docstring), started whenever a store + notifier exist regardless
+        of dry_run/controller. Fail-safe: a gathering error is logged and the loop just retries
+        next cycle."""
+        while True:
+            try:
+                await asyncio.wait_for(stop.wait(), timeout=control_cycle_seconds)
+                return
+            except TimeoutError:
+                pass
+            try:
+                await _run_detector_cycle(datetime.now(UTC))
+            except Exception:
+                _log.exception("detector cycle failed; retry next cycle (fail-safe)")
+            try:
+                await _run_weekly_digest(
+                    store, cache_store, notifier, datetime.now(UTC), site_tz, _gather_digest)
+            except Exception:
+                _log.exception("weekly digest cycle failed; retry next cycle (fail-safe)")
 
     @app.get("/health/live")
     def live() -> dict:
@@ -2256,6 +2560,16 @@ def create_app(
         now = datetime.now(UTC)
         reserve_pct = settings_cache["battery.min_reserve_soc"]
         quality = _data_quality(now)
+        # Plan confidence (B-68): pure synthesis over signals already gathered elsewhere — the
+        # data-quality badge above, per-signal freshness, battery reachability (all no-extra-cost
+        # reuses of cached reads), plus the 14-day solar forecast skill (the one extra store read
+        # this endpoint takes on, shared with /api/accuracy via _solar_forecast_skill).
+        confidence = plan_confidence(
+            data_quality=quality,
+            forecast_skill=await _solar_forecast_skill(now),
+            freshness_ok=_freshness_ok(now),
+            battery_reachable=_battery_reachable(now),
+        )
         fp = await _forward_projection()
         if fp is None:
             return {
@@ -2274,6 +2588,7 @@ def create_app(
                 "graph": {"forecast_soc": [], "actual_soc": [], "reserve_line": [],
                           "target_line": [], "planned_actions": [],
                           "price_windows": [], "solar": []},
+                "confidence": confidence,
             }
 
         projected, price_by, need, deadline = (
@@ -2368,6 +2683,7 @@ def create_app(
                 "solar": [{"ts": s["start"], "forecast_w": s["solar_w"],
                            "actual_w": None} for s in slots],
             },
+            "confidence": confidence,
         }
 
     async def _past_story(reserve_pct: float) -> dict:
@@ -2481,25 +2797,16 @@ def create_app(
         return {"now": now.isoformat(), "sunrise": sunrise, "sunset": sunset,
                 "cloud_cover": cloud_cover}
 
-    @app.get("/api/report")
-    async def report(
-        period: str = Query(default="day", pattern="^(day|week|month|year)$"),
-        date: str | None = None,
+    async def _report_for_window(
+        period: str, start: datetime, end: datetime, label: str, partial: bool,
+        now_local: datetime,
     ) -> dict:
-        """Insights: the energy-flow distribution + the three scores (self-consumption, CO₂,
-        best-price) over a day/week/month/year window. Rolled up on demand from recorded history —
-        off the dashboard poll, bounded to the window's rows, read-only. `date` (YYYY-MM-DD, site
-        tz) is any day inside the window; omitted = the current period."""
-        now_local = datetime.now(UTC).astimezone(site_tz)
-        if date:
-            try:
-                anchor = date_cls.fromisoformat(date)
-            except ValueError:
-                return JSONResponse(  # type: ignore[return-value]
-                    {"detail": "date must be YYYY-MM-DD"}, status_code=422)
-        else:
-            anchor = now_local.date()
-        start, end, label, partial = resolve_window(period, anchor, site_tz, now_local)
+        """The energy-flow distribution + the three scores (self-consumption, CO₂, best-price)
+        for an ALREADY-RESOLVED window — the shared body behind `/api/report` and the weekly
+        digest gather (BACKLOG B-58), which needs exactly this rollup for a week window without
+        going through HTTP. `now_local` bounds queries to "not the future" and gates the empty-
+        report fast path; the caller supplies it so a digest job computing several things off one
+        `now` never risks a several-datetimes-now() race."""
         grid_factor = float(settings_cache.get("reporting.grid_co2_factor", 0.27))
         gas_factor = float(settings_cache.get("reporting.gas_co2_factor", 1.78))
         gas_price = float(settings_cache.get("reporting.gas_price_eur_per_m3", 1.40))
@@ -2543,25 +2850,128 @@ def create_app(
         resp["gas"] = gas_summary(gas_rows, price_eur_per_m3=gas_price, co2_factor=gas_factor)
         return resp
 
-    @app.get("/api/advisor/solar-confidence")
-    async def advisor_solar_confidence() -> dict:
+    @app.get("/api/report")
+    async def report(
+        period: str = Query(default="day", pattern="^(day|week|month|year)$"),
+        date: str | None = None,
+    ) -> dict:
+        """Insights: the energy-flow distribution + the three scores (self-consumption, CO₂,
+        best-price) over a day/week/month/year window. Rolled up on demand from recorded history —
+        off the dashboard poll, bounded to the window's rows, read-only. `date` (YYYY-MM-DD, site
+        tz) is any day inside the window; omitted = the current period."""
+        now_local = datetime.now(UTC).astimezone(site_tz)
+        if date:
+            try:
+                anchor = date_cls.fromisoformat(date)
+            except ValueError:
+                return JSONResponse(  # type: ignore[return-value]
+                    {"detail": "date must be YYYY-MM-DD"}, status_code=422)
+        else:
+            anchor = now_local.date()
+        start, end, label, partial = resolve_window(period, anchor, site_tz, now_local)
+        return await _report_for_window(period, start, end, label, partial, now_local)
+
+    async def _solar_confidence_advice(now: datetime) -> dict | None:
         """Advisory-only recommendation for `planner.solar_confidence`, derived from how the
         stored day-ahead forecast has actually performed over the last 14 days (SPEC: solar
-        confidence should come from evidence, not a hand-tuned guess). NEVER applied automatically
-        — the Settings UI renders this as a hint next to the field; the user decides. Read-only,
-        gated like any other /api/* read (only if `web.require_auth` is on) — see /api/report."""
-        advice = None
+        confidence should come from evidence, not a hand-tuned guess). None with no store. Shared
+        by `/api/advisor/solar-confidence` and the weekly digest gather (BACKLOG B-58) — one
+        recommendation, reused, never applied automatically anywhere; the human decides."""
+        if store is None:
+            return None
+        start = now - timedelta(days=14)
+        start_iso, end_iso = start.isoformat(), now.isoformat()
+        limit = history_row_cap((now - start).total_seconds(), _sample_cadence_seconds())
+        raw = await store.raw_between(start_iso, end_iso, limit=limit)
+        forecasts = await store.forecasts_between(start_iso, end_iso)
+        current = settings_cache.get("planner.solar_confidence")
+        return recommend_solar_confidence(
+            forecasts, raw, current_pct=float(current) if current is not None else None)
+
+    @app.get("/api/advisor/solar-confidence")
+    async def advisor_solar_confidence() -> dict:
+        """Advisory-only recommendation for `planner.solar_confidence` — the Settings UI renders
+        this as a hint next to the field; the user decides. Read-only, gated like any other
+        /api/* read (only if `web.require_auth` is on) — see /api/report."""
+        return {"advice": await _solar_confidence_advice(datetime.now(UTC))}
+
+    async def _gather_digest(anchor: date_cls) -> dict:
+        """Gather everything `build_digest` needs for the week containing local date `anchor` and
+        assemble it (BACKLOG B-58 / roadmap P2 "the Sunday read") — shared by `GET /api/digest`
+        and the Sunday delivery job (`_run_weekly_digest`) so the notification and the on-demand
+        read always agree for the same week.
+
+        Finance rows only cover days up to "now" (a future/in-progress day has nothing to measure
+        yet — `_ensure_day_finance` itself would refuse a future day); the week's flows/scores come
+        from the SAME `_report_for_window` the Insights week view uses; the audit rows are the raw
+        week-windowed audit log (`AuditStore.between`) build_digest counts patterns out of."""
+        now_local = datetime.now(UTC).astimezone(site_tz)
+        start, end, label, partial = resolve_window("week", anchor, site_tz, now_local)
+        finance_rows: list[dict] = []
+        if store is not None:
+            cur = start
+            while cur < end and cur <= now_local:
+                finance_rows.append(await _ensure_day_finance(cur.date()))
+                cur += timedelta(days=1)
+        report = await _report_for_window("week", start, end, label, partial, now_local)
+        audit_rows: list[dict] = []
+        if audit_store is not None:
+            audit_rows = await audit_store.between(
+                start.astimezone(UTC).isoformat(), end.astimezone(UTC).isoformat())
+        advice = await _solar_confidence_advice(datetime.now(UTC))
+        export_model = str(settings_cache.get("prices.export_price_model", "net_metering"))
+        return build_digest(
+            finance_rows=finance_rows, flows=report["flows"], scores=report["scores"],
+            audit_rows=audit_rows, advice=advice, week_label=label,
+            export_price_model=export_model,
+        )
+
+    @app.get("/api/digest")
+    async def digest(week: str | None = None) -> dict:
+        """The weekly digest (BACKLOG B-58 / roadmap P2 "Your week"): what you saved, what the
+        system did, one suggested tweak — the same figures the Sunday-evening notification sends
+        (see `_run_weekly_digest`), available on demand. Read-only. `week` (YYYY-MM-DD) is any
+        date inside the desired week; omitted = the last COMPLETED Mon-Sun week (the current,
+        still-running week is deliberately not the default — its numbers would keep changing)."""
+        now_local = datetime.now(UTC).astimezone(site_tz)
+        if week:
+            try:
+                anchor = date_cls.fromisoformat(week)
+            except ValueError:
+                return JSONResponse(  # type: ignore[return-value]
+                    {"detail": "week must be YYYY-MM-DD"}, status_code=422)
+        else:
+            anchor = _last_completed_week_monday(now_local)
+        return await _gather_digest(anchor)
+
+    @app.get("/api/accuracy")
+    async def accuracy() -> dict:
+        """All three forecast/prediction-accuracy tracks (B-72) in one read-only call — solar
+        forecast skill, plan-execution (target_soc-by-deadline vs. achieved SoC), and load-baseline
+        (household load vs. a naive day-of-week/hour trailing mean, the bar B-64 must beat). Each
+        is `None` below its own measurable-evidence minimum (see `ems.analysis`), independently.
+        Gathered the same way as /api/advisor/solar-confidence: solar over the last 14 days (the
+        same evidence window as that advisor); plan-execution and load need more history to reach
+        their evidence minimums (deadlines are ~daily, day-of-week/hour baselines need several
+        weeks), so those two are gathered over the last 60 days instead."""
+        solar = None
+        plan_execution = None
+        load = None
         if store is not None:
             now = datetime.now(UTC)
-            start = now - timedelta(days=14)
-            start_iso, end_iso = start.isoformat(), now.isoformat()
-            limit = history_row_cap((now - start).total_seconds(), _sample_cadence_seconds())
-            raw = await store.raw_between(start_iso, end_iso, limit=limit)
-            forecasts = await store.forecasts_between(start_iso, end_iso)
-            current = settings_cache.get("planner.solar_confidence")
-            advice = recommend_solar_confidence(
-                forecasts, raw, current_pct=float(current) if current is not None else None)
-        return {"advice": advice}
+
+            solar = await _solar_forecast_skill(now)
+
+            long_start = now - timedelta(days=60)
+            plan_rows = await store.plan_history_between(long_start.isoformat(), now.isoformat())
+            plan_execution = plan_execution_error(plan_rows, tz=site_tz)
+
+            long_limit = history_row_cap(
+                (now - long_start).total_seconds(), _sample_cadence_seconds())
+            long_raw = await store.raw_between(
+                long_start.isoformat(), now.isoformat(), limit=long_limit)
+            load = load_baseline_error(long_raw, tz=site_tz)
+        return {"solar": solar, "plan_execution": plan_execution, "load": load}
 
     @app.get("/api/advisor/ev-charge")
     def advisor_ev_charge() -> dict:
@@ -2625,8 +3035,7 @@ def create_app(
             charge_efficiency=float(settings_cache["ev.charge_efficiency"]),
         )
 
-    @app.get("/api/car/plan")
-    async def car_plan() -> dict:
+    async def _car_plan_dict(now: datetime) -> dict:
         """The EV feature's main read (design 2026-07-12): when to plug in the car to meet the
         weekly minimum-charge schedule as cheaply as possible. Advisory only — never commands
         anything. Wires ems/ev_schedule + ems/ev_session + ems/ev_planner to settings, the manual
@@ -2635,11 +3044,14 @@ def create_app(
         Progressive states so the UI can prompt for what's missing: `enabled:false` (feature off),
         `needs_anchor` (no SoC set — "set your car's charge level"), `needs_schedule` (nothing
         enabled in the weekly schedule), else the full plan. `soc.stale` (>72 h) is carried in the
-        soc block and does NOT stop planning — the plan is still shown with the staleness flag."""
+        soc block and does NOT stop planning — the plan is still shown with the staleness flag.
+
+        Extracted from the GET /api/car/plan handler (`now` is the only thing that varies) so
+        `_run_detector_cycle` (B-75 `ev_plug_in_reminder`) reuses the EXACT same gathering instead
+        of duplicating it."""
         if not settings_cache.get("ev.advice_enabled"):
             return {"enabled": False, "plan": None, "soc": None}
 
-        now = datetime.now(UTC)
         car_meter_configured = bool(str(settings_cache.get("meters.car_ip") or "").strip())
 
         # --- car SoC estimate from the manual anchor (no anchor ⇒ prompt to set one) ---
@@ -2699,6 +3111,10 @@ def create_app(
             "car": car_to_dict(car) if car is not None else None,
             "car_meter_configured": car_meter_configured,
         }
+
+    @app.get("/api/car/plan")
+    async def car_plan() -> dict:
+        return await _car_plan_dict(datetime.now(UTC))
 
     @app.post("/api/car/soc")
     async def set_car_soc(request: Request, body: dict | None = None) -> JSONResponse:
@@ -2928,6 +3344,10 @@ def create_app(
             forecasts, raw,
             current_pct=float(settings_cache.get("planner.solar_confidence", 80.0)))
         ev_adherence = expkg.ev_price_adherence(ev_sessions, prices)
+        # Two more forecast-accuracy tracks (B-72), scored off the SAME rows already fetched for
+        # plan_history.csv / raw_samples.csv above — no extra store round-trip.
+        plan_exec_error = plan_execution_error(plan, tz=site_tz)
+        load_baseline = load_baseline_error(raw, tz=site_tz)
         members = {
             "raw_samples.csv": expkg.rows_to_csv(raw, expkg.RAW_COLUMNS),
             "derived_samples.csv": expkg.rows_to_csv(derived, expkg.DERIVED_COLUMNS),
@@ -2948,6 +3368,7 @@ def create_app(
                 counts=counts, validation=validation, saved_total_eur=saved_total,
                 forecast_skill=fc_skill, solar_confidence_advice=solar_advice,
                 ev_price_adherence=ev_adherence,
+                plan_execution_error=plan_exec_error, load_baseline_error=load_baseline,
             ),
         }
         data = expkg.build_zip(members)
@@ -3048,6 +3469,36 @@ def create_app(
         if audit_store is None:
             return {"incidents": expkg.incident_rollup([])}
         return {"incidents": expkg.incident_rollup(await audit_store.recent(limit=5000))}
+
+    @app.get("/api/notifications")
+    async def notifications_endpoint(
+        limit: int = Query(default=50, ge=1, le=200),
+    ) -> dict:
+        """The outbox feed for the header bell (B-20): most recent notifications + the unread
+        count. Read-only, like /api/audit — gated only when `web.require_auth` is on. Empty when
+        no history store is configured. A 30-day window is generous: notifications are sparse by
+        construction (dedupe_key), so this never approaches the 500-row internal cap."""
+        if store is None:
+            return {"items": [], "unread": 0}
+        now = datetime.now(UTC)
+        start = now - timedelta(days=30)
+        rows = await store.notifications_between(start.isoformat(), now.isoformat(), limit=500)
+        items = list(reversed(rows))[:limit]  # newest-first for the dropdown feed
+        return {"items": items, "unread": await store.unread_count()}
+
+    @app.post("/api/notifications/read")
+    async def mark_notifications_read_endpoint(body: dict | None = None) -> JSONResponse:
+        """Mark notifications read: {"all": true} marks every unread row, {"ids": [1, 2, 3]} marks
+        just those (an unknown id is silently ignored). Auth is enforced centrally by the
+        _enforce_access middleware (writes always gated)."""
+        if store is None:
+            return JSONResponse({"detail": "history store not configured"}, status_code=503)
+        body = body or {}
+        mark_all = bool(body.get("all"))
+        raw_ids = body.get("ids") if not mark_all else None
+        ids = [int(i) for i in raw_ids] if isinstance(raw_ids, list) else None
+        await store.mark_notifications_read(ids=ids, mark_all=mark_all)
+        return JSONResponse({"unread": await store.unread_count()})
 
     @app.get("/api/ai/validation")
     def ai_validation_latest() -> dict:

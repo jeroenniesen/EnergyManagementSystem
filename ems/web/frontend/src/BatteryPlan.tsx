@@ -10,6 +10,11 @@ type PriceWindow = {
   max_eur_per_kwh: number;
 };
 
+// B-68: a synthesised, plain-language confidence read on the CURRENT plan — never a new
+// measurement, just a distillation of data quality / forecast skill / freshness / battery
+// reachability the backend already tracks. Reasons is never empty, at most two entries.
+export type PlanConfidence = { level: "high" | "medium" | "low"; reasons: string[] };
+
 export type BatteryPlanData = {
   status: "on_track" | "needs_topup" | "behind_target" | "paused_safely" | "data_stale";
   summary: string;
@@ -33,6 +38,7 @@ export type BatteryPlanData = {
     price_windows: PriceWindow[];
     solar: SolarPoint[];
   };
+  confidence?: PlanConfidence;
 };
 
 const STATUS_LABEL: Record<BatteryPlanData["status"], string> = {

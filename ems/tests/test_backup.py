@@ -1,10 +1,15 @@
 """Scheduled-backup + rotation (SPEC §11 durability, B-52). The maintenance loop's backup step is
 extracted as `_run_backup(store, db_path, keep, state)` so it is testable without running the loop:
 it must write one dated snapshot per day, skip an existing one, rotate to the newest `keep`, treat
-keep<=0 as disabled, and swallow any failure (marking state) so it can never kill the loop."""
-import asyncio
-from datetime import UTC, datetime
+keep<=0 as disabled, and swallow any failure (marking state) so it can never kill the loop.
 
+B-20: a failure also pushes exactly one `backup_failed` notification per UTC calendar day (proving
+the notification outbox end-to-end on its first real source) — see the `*_notifies_*` tests
+below."""
+import asyncio
+from datetime import UTC, datetime, timedelta
+
+from ems.notify import Notifier
 from ems.storage.history import HistoryStore
 from ems.web.api import _run_backup
 
@@ -95,3 +100,74 @@ def test_run_backup_failure_marks_not_ok_and_never_raises(tmp_path):
     assert state["last_backup_ok"] is False
     assert state["last_backup_ts"] is not None
     assert state["last_backup_size"] is None  # never got a size
+
+
+class _FailingBackupStore(HistoryStore):
+    """A real HistoryStore (so notifications actually persist) whose backup_to always fails —
+    proves the B-20 outbox end-to-end on its first real source."""
+
+    async def backup_to(self, dest_path: str) -> int:
+        raise OSError("disk full")
+
+
+def _notifications(store: HistoryStore) -> list[dict]:
+    return asyncio.run(store.notifications_between(
+        "2020-01-01T00:00:00+00:00", "2030-01-01T00:00:00+00:00"))
+
+
+def test_run_backup_failure_sends_one_backup_failed_notification(tmp_path):
+    store = _FailingBackupStore(str(tmp_path / "ems.sqlite"))
+    asyncio.run(store.init())
+    notifier = Notifier(store, {"notify.ntfy_url": "", "notify.ntfy_topic": ""})
+    state = _fresh_state()
+
+    asyncio.run(_run_backup(store, store.db_path, 7, state, notifier))
+
+    rows = _notifications(store)
+    assert len(rows) == 1
+    assert rows[0]["key"] == "backup_failed"
+    assert rows[0]["title"] == "Backup failed"
+    assert state["last_backup_ok"] is False
+
+
+def test_run_backup_repeated_same_day_failure_notifies_exactly_once(tmp_path):
+    store = _FailingBackupStore(str(tmp_path / "ems.sqlite"))
+    asyncio.run(store.init())
+    notifier = Notifier(store, {"notify.ntfy_url": "", "notify.ntfy_topic": ""})
+    state = _fresh_state()
+
+    asyncio.run(_run_backup(store, store.db_path, 7, state, notifier))
+    # Same UTC day, still failing.
+    asyncio.run(_run_backup(store, store.db_path, 7, state, notifier))
+
+    assert len(_notifications(store)) == 1  # deduped — same calendar day
+
+
+def test_run_backup_failure_on_a_new_day_notifies_again(tmp_path):
+    # Seed "yesterday's" already-sent notification directly, then let a real failure through
+    # _run_backup for TODAY — a new day's dedupe_key must always get through.
+    store = _FailingBackupStore(str(tmp_path / "ems.sqlite"))
+    asyncio.run(store.init())
+    yesterday = (datetime.now(UTC) - timedelta(days=1)).strftime("%Y-%m-%d")
+    asyncio.run(store.add_notification(
+        f"{yesterday}T09:00:00+00:00", "backup_failed", "Backup failed", "yesterday's failure",
+        dedupe_key=f"backup_failed:{yesterday}",
+    ))
+    notifier = Notifier(store, {"notify.ntfy_url": "", "notify.ntfy_topic": ""})
+    state = _fresh_state()
+
+    asyncio.run(_run_backup(store, store.db_path, 7, state, notifier))
+
+    assert len(_notifications(store)) == 2  # yesterday's seed + today's fresh notification
+
+
+def test_run_backup_success_sends_no_notification(tmp_path):
+    store = HistoryStore(str(tmp_path / "ems.sqlite"))
+    asyncio.run(store.init())
+    notifier = Notifier(store, {"notify.ntfy_url": "", "notify.ntfy_topic": ""})
+    state = _fresh_state()
+
+    asyncio.run(_run_backup(store, store.db_path, 7, state, notifier))
+
+    assert _notifications(store) == []
+    assert state["last_backup_ok"] is True

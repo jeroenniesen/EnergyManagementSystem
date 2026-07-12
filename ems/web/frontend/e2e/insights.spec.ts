@@ -190,6 +190,101 @@ test.describe("Insights", () => {
   });
 });
 
+test.describe("Insights: heating advice (B-11, advice-only)", () => {
+  test("no heating-advice panel when there's no gas meter (never nags)", async ({ page }) => {
+    await page.route("**/api/report**", (route) =>
+      route.fulfill({
+        status: 200, contentType: "application/json",
+        body: JSON.stringify({ ...REPORT, gas: null }),
+      }),
+    );
+    await page.goto("/");
+    await page.getByTestId("nav-insights").click();
+    await expect(page.getByTestId("gas-panel")).toHaveCount(0);
+    await expect(page.getByTestId("heating-advice")).toHaveCount(0);
+  });
+
+  test("shows the three advice cards, the safety line, and an annualised estimate", async ({
+    page,
+  }) => {
+    await page.route("**/api/report**", (route) =>
+      route.fulfill({
+        status: 200, contentType: "application/json",
+        body: JSON.stringify({
+          ...REPORT,
+          gas: { m3: 8, kwh_eq: 78.2, eur: 12, co2_kg: 14.2 },
+        }),
+      }),
+    );
+    await page.goto("/");
+    await page.getByTestId("nav-insights").click();
+    const advice = page.getByTestId("heating-advice");
+    await expect(advice).toBeVisible();
+    await expect(advice).toContainText("Heating — the biggest lever left");
+    const balancing = page.getByTestId("advice-balancing");
+    const flowTemp = page.getByTestId("advice-flow-temp");
+    const dhw = page.getByTestId("advice-dhw-eco");
+    await expect(balancing).toBeVisible();
+    await expect(flowTemp).toBeVisible();
+    await expect(dhw).toBeVisible();
+    // Each card is framed by the window's real gas evidence and carries the disclaimer.
+    await expect(balancing).toContainText("8.0 m³ ≈ €12.00");
+    await expect(balancing).toContainText("Advice only — nothing changes automatically.");
+    await expect(flowTemp).toContainText("Advice only — nothing changes automatically.");
+    await expect(dhw).toContainText("Advice only — nothing changes automatically.");
+    // Balancing annualises the window's € honestly: €12 * 365/1 * 0.125, rounded to €10 = €550/yr.
+    await expect(balancing).toContainText("€550/yr");
+    await expect(balancing).toContainText("rough estimate from your meter");
+    // The flow-temp card names the Dutch shorthand and gives link-free instructions.
+    await expect(flowTemp).toContainText("zet 'm op 60");
+    await expect(flowTemp).toContainText("60°C");
+    // The DHW card's safety line is explicit: never dips below 60°C, and says why.
+    const safety = page.getByTestId("advice-dhw-eco-safety");
+    await expect(safety).toContainText("Legionella");
+    await expect(safety).toContainText("60°C or higher");
+    await expect(safety).toContainText("never set it below 60°C");
+    // 8 m³ in a single day is real heating, not summer DHW-only use — no seasonal note.
+    await expect(page.getByTestId("heating-advice-seasonal")).toHaveCount(0);
+  });
+
+  test("each card's instructions are collapsed by default and open on demand", async ({ page }) => {
+    await page.route("**/api/report**", (route) =>
+      route.fulfill({
+        status: 200, contentType: "application/json",
+        body: JSON.stringify({
+          ...REPORT,
+          gas: { m3: 8, kwh_eq: 78.2, eur: 12, co2_kg: 14.2 },
+        }),
+      }),
+    );
+    await page.goto("/");
+    await page.getByTestId("nav-insights").click();
+    const details = page.getByTestId("advice-flow-temp").locator("details.advice-details");
+    const instructions = details.locator("p");
+    await expect(instructions).toBeHidden();
+    await details.locator("summary").click();
+    await expect(instructions).toContainText("CV/flow temperature");
+  });
+
+  test("shows a muted seasonal note when the window's gas use is low (summer)", async ({ page }) => {
+    await page.route("**/api/report**", (route) =>
+      route.fulfill({
+        status: 200, contentType: "application/json",
+        body: JSON.stringify({
+          ...REPORT,
+          gas: { m3: 0.4, kwh_eq: 3.9, eur: 0.6, co2_kg: 0.7 },
+        }),
+      }),
+    );
+    await page.goto("/");
+    await page.getByTestId("nav-insights").click();
+    await expect(page.getByTestId("heating-advice")).toBeVisible();
+    const note = page.getByTestId("heating-advice-seasonal");
+    await expect(note).toContainText("barely heating");
+    await expect(note).toContainText("pay off from autumn");
+  });
+});
+
 const SERIES = Array.from({ length: 96 }, (_, i) => {
   const h = String(Math.floor(i / 4)).padStart(2, "0");
   const m = String((i % 4) * 15).padStart(2, "0");
@@ -303,5 +398,117 @@ test.describe("Insights: behavior chart + money", () => {
     await expect(page.getByTestId("score-grid")).toBeVisible();
     await expect(page.getByTestId("energy-behavior")).toBeVisible();
     await expect(page.getByTestId("fin-error")).toContainText("Money history could not be loaded");
+  });
+});
+
+const DIGEST = {
+  week_label: "Week of 2026-06-22",
+  saved_eur: 12.34,
+  best_day: { date: "2026-06-25", saved_eur: 3.2 },
+  self_sufficiency_pct: 78.4,
+  solar_kwh: 24.5,
+  co2_avoided_note: "Avoided 62% of a no-solar home's CO₂ (12 kg vs 32 kg).",
+  actions: { mode_switches: 3, negative_soaks: 1, overrides: 1 },
+  tweak: "No tweak this week — settings look right.",
+  headline:
+    "You saved €12.34 this week, ran 78% self-sufficient and the panels made 24.5 kWh. " +
+    "Steady week — settings look right.",
+  days_measured: 7,
+  days_total: 7,
+};
+
+test.describe("Insights: your week digest (B-58)", () => {
+  test("shows the headline, saved €, facts and tweak at the top of Insights", async ({ page }) => {
+    await page.route("**/api/report**", (route) =>
+      route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(REPORT) }),
+    );
+    await page.route("**/api/digest**", (route) =>
+      route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(DIGEST) }),
+    );
+    await page.goto("/");
+    await page.getByTestId("nav-insights").click();
+    const panel = page.getByTestId("week-digest");
+    await expect(panel).toBeVisible();
+    await expect(page.getByTestId("week-digest-headline")).toContainText("You saved €12.34");
+    await expect(page.getByTestId("week-digest-saved")).toContainText("€12.34");
+    await expect(page.getByTestId("week-digest-fact-self-sufficiency")).toContainText("78%");
+    await expect(page.getByTestId("week-digest-fact-solar")).toContainText("24.5 kWh");
+    await expect(page.getByTestId("week-digest-fact-actions")).toContainText("4"); // 3 switches + 1 override
+    await expect(page.getByTestId("week-digest-tweak")).toContainText("No tweak this week");
+    await expect(page.getByTestId("week-digest-best-day")).toContainText("2026-06-25");
+    await expect(page.getByTestId("week-digest-coverage")).toHaveCount(0); // full week, no caveat
+    await expect(page.getByTestId("week-digest-label")).toHaveText("Week of 2026-06-22");
+  });
+
+  test("shows the partial-week caveat when fewer than 7 days were measured", async ({ page }) => {
+    await page.route("**/api/report**", (route) =>
+      route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(REPORT) }),
+    );
+    await page.route("**/api/digest**", (route) =>
+      route.fulfill({
+        status: 200, contentType: "application/json",
+        body: JSON.stringify({ ...DIGEST, days_measured: 5, days_total: 7 }),
+      }),
+    );
+    await page.goto("/");
+    await page.getByTestId("nav-insights").click();
+    await expect(page.getByTestId("week-digest-coverage")).toContainText("5 of 7 days measured");
+  });
+
+  test("collapses to one line (the headline) and expands again", async ({ page }) => {
+    await page.route("**/api/report**", (route) =>
+      route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(REPORT) }),
+    );
+    await page.route("**/api/digest**", (route) =>
+      route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(DIGEST) }),
+    );
+    await page.goto("/");
+    await page.getByTestId("nav-insights").click();
+    const toggle = page.getByTestId("week-digest-toggle");
+    await expect(page.getByTestId("week-digest-body")).toBeVisible();
+    await expect(toggle).toHaveAttribute("aria-expanded", "true");
+    await toggle.click();
+    await expect(page.getByTestId("week-digest-body")).toHaveCount(0);
+    await expect(toggle).toHaveAttribute("aria-expanded", "false");
+    // The headline (the "one line") stays visible while collapsed.
+    await expect(page.getByTestId("week-digest-headline")).toBeVisible();
+    await toggle.click();
+    await expect(page.getByTestId("week-digest-body")).toBeVisible();
+  });
+
+  test("the ‹ › week stepper navigates to the previous and next week", async ({ page }) => {
+    await page.route("**/api/report**", (route) =>
+      route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(REPORT) }),
+    );
+    await page.route("**/api/digest**", (route) => {
+      const week = new URL(route.request().url()).searchParams.get("week");
+      const label = week === "2026-06-15" ? "Week of 2026-06-15" : "Week of 2026-06-22";
+      route.fulfill({
+        status: 200, contentType: "application/json",
+        body: JSON.stringify({ ...DIGEST, week_label: label }),
+      });
+    });
+    await page.goto("/");
+    await page.getByTestId("nav-insights").click();
+    await expect(page.getByTestId("week-digest-label")).toHaveText("Week of 2026-06-22");
+    await page.getByTestId("week-digest-prev").click();
+    await expect(page.getByTestId("week-digest-label")).toHaveText("Week of 2026-06-15");
+    await page.getByTestId("week-digest-next").click();
+    await expect(page.getByTestId("week-digest-label")).toHaveText("Week of 2026-06-22");
+  });
+
+  test("stays hidden without blocking the rest of Insights when /api/digest fails", async ({
+    page,
+  }) => {
+    await page.route("**/api/report**", (route) =>
+      route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(REPORT) }),
+    );
+    await page.route("**/api/digest**", (route) =>
+      route.fulfill({ status: 503, contentType: "application/json", body: "{\"detail\":\"down\"}" }),
+    );
+    await page.goto("/");
+    await page.getByTestId("nav-insights").click();
+    await expect(page.getByTestId("week-digest")).toHaveCount(0);
+    await expect(page.getByTestId("score-grid")).toBeVisible();
   });
 });

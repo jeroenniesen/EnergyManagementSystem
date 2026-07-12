@@ -113,6 +113,23 @@ class HistoryStore:
                 "CREATE TABLE IF NOT EXISTS car_soc_anchor "
                 "(key TEXT PRIMARY KEY, value TEXT NOT NULL)"
             )
+            # Notification outbox (B-20): one row per notification, in-app-first (the row itself IS
+            # the in-app delivery) with an optional ntfy push recorded in `delivered`. `dedupe_key`
+            # is precomputed by the CALLER with the local day baked in (e.g. "backup_failed:
+            # 2026-07-13") so `add_notification` only needs a plain equality check — a new day is
+            # naturally a new key. Purged with the samples (bounded by `ts`).
+            await db.execute(
+                "CREATE TABLE IF NOT EXISTS notifications "
+                "(id INTEGER PRIMARY KEY AUTOINCREMENT, ts TEXT NOT NULL, key TEXT NOT NULL, "
+                "title TEXT NOT NULL, body TEXT NOT NULL, confidence TEXT, "
+                "read INTEGER NOT NULL DEFAULT 0, delivered TEXT NOT NULL DEFAULT '[]', "
+                "dedupe_key TEXT)"
+            )
+            await db.execute("CREATE INDEX IF NOT EXISTS idx_notifications_ts ON notifications(ts)")
+            await db.execute(
+                "CREATE INDEX IF NOT EXISTS idx_notifications_dedupe "
+                "ON notifications(dedupe_key)"
+            )
             await db.commit()
 
     async def purge_older_than(self, cutoff_iso: str) -> int:
@@ -134,6 +151,8 @@ class HistoryStore:
             deleted += cur.rowcount or 0
             cur = await db.execute(
                 "DELETE FROM carbon_intensity WHERE start_ts < ?", (cutoff_iso,))
+            deleted += cur.rowcount or 0
+            cur = await db.execute("DELETE FROM notifications WHERE ts < ?", (cutoff_iso,))
             deleted += cur.rowcount or 0
             # daily_finance is intentionally NOT purged (long-horizon record, B-13).
             await db.commit()
@@ -416,6 +435,90 @@ class HistoryStore:
             return float(data["pct"]), str(data["ts"])
         except (ValueError, TypeError, KeyError):
             return None
+
+    async def add_notification(
+        self, ts: str, key: str, title: str, body: str, *,
+        confidence: str | None = None, dedupe_key: str | None = None,
+    ) -> int | None:
+        """Append one row to the notification outbox, or return None WITHOUT inserting if
+        `dedupe_key` already matches an existing row (sparse by construction — B-20). The caller
+        precomputes `dedupe_key` with the local calendar day baked in (e.g.
+        "backup_failed:2026-07-13"), so this is a plain equality check: a repeat the SAME day is
+        suppressed, a NEW day is simply a different key and always gets through. `delivered`
+        starts as `["in_app"]` — storing the row IS the in-app delivery; a channel like ntfy is
+        added afterwards via `set_notification_delivered` once (if) it actually succeeds."""
+        async with self._conn() as db:
+            if dedupe_key is not None:
+                cur = await db.execute(
+                    "SELECT 1 FROM notifications WHERE dedupe_key = ? LIMIT 1", (dedupe_key,))
+                if await cur.fetchone() is not None:
+                    return None
+            cur = await db.execute(
+                "INSERT INTO notifications "
+                "(ts, key, title, body, confidence, read, delivered, dedupe_key) "
+                "VALUES (?, ?, ?, ?, ?, 0, ?, ?)",
+                (ts, key, title, body, confidence, json.dumps(["in_app"]), dedupe_key),
+            )
+            await db.commit()
+            return cur.lastrowid
+
+    async def set_notification_delivered(self, notification_id: int, delivered: list[str]) -> None:
+        """Overwrite the delivered-channel list for one notification (Notifier calls this after a
+        successful ntfy push has actually gone out)."""
+        async with self._conn() as db:
+            await db.execute(
+                "UPDATE notifications SET delivered = ? WHERE id = ?",
+                (json.dumps(delivered), notification_id),
+            )
+            await db.commit()
+
+    async def notifications_between(
+        self, start_iso: str, end_iso: str, limit: int = 500
+    ) -> list[dict]:
+        """Outbox rows with `ts` in [start, end), oldest-first (UTC-ISO ⇒ lexicographic = time) —
+        mirrors the other `_between` helpers. Notifications are sparse by construction (dedupe_key
+        collapses repeats), so a generous default limit comfortably covers a recency feed. `read`
+        is decoded to a bool and `delivered` to a list (a corrupt/empty value degrades to [])."""
+        async with self._conn() as db:
+            db.row_factory = aiosqlite.Row
+            cur = await db.execute(
+                "SELECT id, ts, key, title, body, confidence, read, delivered, dedupe_key "
+                "FROM notifications WHERE ts >= ? AND ts < ? ORDER BY ts ASC LIMIT ?",
+                (start_iso, end_iso, limit))
+            out = []
+            for r in await cur.fetchall():
+                row = dict(r)
+                row["read"] = bool(row["read"])
+                try:
+                    row["delivered"] = json.loads(row["delivered"]) if row["delivered"] else []
+                except (ValueError, TypeError):
+                    row["delivered"] = []
+                out.append(row)
+            return out
+
+    async def unread_count(self) -> int:
+        """Count of unread notifications (the bell's dot count)."""
+        async with self._conn() as db:
+            cur = await db.execute("SELECT COUNT(*) FROM notifications WHERE read = 0")
+            return (await cur.fetchone())[0]
+
+    async def mark_notifications_read(
+        self, ids: list[int] | None = None, mark_all: bool = False
+    ) -> int:
+        """Mark notifications read: `mark_all=True` marks every currently-unread row; otherwise
+        marks exactly the given `ids` (an id that doesn't exist is silently ignored). Returns the
+        number of rows actually changed."""
+        async with self._conn() as db:
+            if mark_all:
+                cur = await db.execute("UPDATE notifications SET read = 1 WHERE read = 0")
+            elif ids:
+                placeholders = ", ".join("?" for _ in ids)
+                cur = await db.execute(
+                    f"UPDATE notifications SET read = 1 WHERE id IN ({placeholders})", ids)
+            else:
+                return 0
+            await db.commit()
+            return cur.rowcount or 0
 
     async def table_names(self) -> set[str]:
         async with self._conn() as db:

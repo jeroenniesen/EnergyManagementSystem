@@ -371,6 +371,20 @@ SETTINGS_SCHEMA: tuple[SettingsField, ...] = (
         "panel.",
         min=0.0, max=5.0, step=0.05, unit="€/m³",
     ),
+    # --- Notifications (optional, off by default — B-20 outbox + ntfy push channel) ---
+    SettingsField(
+        "notify.ntfy_url", "ntfy server", "text", "", "notify",
+        help="Base URL of an ntfy server — the free, shared https://ntfy.sh, or your own "
+        "self-hosted instance. Blank (default) = in-app notifications only, no phone push. "
+        "Install the free ntfy app (iOS/Android) and subscribe to the topic below to get real "
+        "push notifications with no Apple/Google account and no cloud subscription.",
+    ),
+    SettingsField(
+        "notify.ntfy_topic", "ntfy topic", "text", "", "notify",
+        help="A private, hard-to-guess topic name — anyone who knows it can read what's "
+        "published there, so avoid anything guessable (a random string is safest). Subscribe to "
+        "the exact same topic in the ntfy app.",
+    ),
     # --- Car (v2 EV control is out of scope — advisory only, docs/v2-ev-control.md) ---
     SettingsField(
         "ev.advice_enabled", "Show best-time-to-charge card", "bool", False, "ev",

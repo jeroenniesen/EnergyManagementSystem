@@ -447,3 +447,155 @@ def test_car_soc_anchor_none_when_unset(tmp_path):
         return await store.get_car_soc_anchor()
 
     assert asyncio.run(run()) is None
+
+
+def test_add_notification_stores_row_with_in_app_delivered_default(tmp_path):
+    # B-20: the row itself IS the in-app delivery — `delivered` defaults to ["in_app"].
+    store = HistoryStore(str(tmp_path / "ems.sqlite"))
+
+    async def run():
+        await store.init()
+        nid = await store.add_notification(
+            "2026-07-13T10:00:00+00:00", "backup_failed", "Backup failed", "It didn't complete.",
+        )
+        rows = await store.notifications_between(
+            "2020-01-01T00:00:00+00:00", "2030-01-01T00:00:00+00:00")
+        return nid, rows
+
+    nid, rows = asyncio.run(run())
+    assert nid is not None
+    assert len(rows) == 1
+    row = rows[0]
+    assert row["id"] == nid
+    assert row["key"] == "backup_failed"
+    assert row["title"] == "Backup failed"
+    assert row["body"] == "It didn't complete."
+    assert row["confidence"] is None
+    assert row["read"] is False
+    assert row["delivered"] == ["in_app"]
+    assert row["dedupe_key"] is None
+
+
+def test_add_notification_dedupes_same_key_but_new_key_gets_through(tmp_path):
+    # A repeat with the SAME dedupe_key is suppressed (returns None, no new row); a DIFFERENT key
+    # (e.g. the caller bakes in a new local day) always gets through.
+    store = HistoryStore(str(tmp_path / "ems.sqlite"))
+
+    async def run():
+        await store.init()
+        first = await store.add_notification(
+            "2026-07-13T09:00:00+00:00", "backup_failed", "Backup failed", "day 1 attempt 1",
+            dedupe_key="backup_failed:2026-07-13",
+        )
+        second = await store.add_notification(
+            "2026-07-13T15:00:00+00:00", "backup_failed", "Backup failed", "day 1 attempt 2",
+            dedupe_key="backup_failed:2026-07-13",
+        )
+        third = await store.add_notification(
+            "2026-07-14T09:00:00+00:00", "backup_failed", "Backup failed", "day 2 attempt 1",
+            dedupe_key="backup_failed:2026-07-14",
+        )
+        rows = await store.notifications_between(
+            "2020-01-01T00:00:00+00:00", "2030-01-01T00:00:00+00:00")
+        return first, second, third, rows
+
+    first, second, third, rows = asyncio.run(run())
+    assert first is not None
+    assert second is None  # deduped — same key, same day
+    assert third is not None  # a new day's key always gets through
+    assert [r["body"] for r in rows] == ["day 1 attempt 1", "day 2 attempt 1"]
+
+
+def test_set_notification_delivered_overwrites_channel_list(tmp_path):
+    store = HistoryStore(str(tmp_path / "ems.sqlite"))
+
+    async def run():
+        await store.init()
+        nid = await store.add_notification(
+            "2026-07-13T10:00:00+00:00", "backup_failed", "Backup failed", "body")
+        await store.set_notification_delivered(nid, ["in_app", "ntfy"])
+        rows = await store.notifications_between(
+            "2020-01-01T00:00:00+00:00", "2030-01-01T00:00:00+00:00")
+        return rows
+
+    rows = asyncio.run(run())
+    assert rows[0]["delivered"] == ["in_app", "ntfy"]
+
+
+def test_notifications_between_is_windowed_and_oldest_first(tmp_path):
+    store = HistoryStore(str(tmp_path / "ems.sqlite"))
+
+    async def run():
+        await store.init()
+        await store.add_notification("2026-07-10T10:00:00+00:00", "k", "t", "before window")
+        await store.add_notification("2026-07-13T10:00:00+00:00", "k", "t", "first in window")
+        await store.add_notification("2026-07-14T10:00:00+00:00", "k", "t", "second in window")
+        return await store.notifications_between(
+            "2026-07-12T00:00:00+00:00", "2026-07-15T00:00:00+00:00")
+
+    rows = asyncio.run(run())
+    assert [r["body"] for r in rows] == ["first in window", "second in window"]
+
+
+def test_unread_count_and_mark_notifications_read_by_ids(tmp_path):
+    store = HistoryStore(str(tmp_path / "ems.sqlite"))
+
+    async def run():
+        await store.init()
+        a = await store.add_notification("2026-07-13T10:00:00+00:00", "k", "t", "a")
+        await store.add_notification("2026-07-13T11:00:00+00:00", "k", "t", "b")
+        before = await store.unread_count()
+        changed = await store.mark_notifications_read(ids=[a])
+        after = await store.unread_count()
+        return before, changed, after
+
+    before, changed, after = asyncio.run(run())
+    assert before == 2
+    assert changed == 1
+    assert after == 1
+
+
+def test_mark_notifications_read_all(tmp_path):
+    store = HistoryStore(str(tmp_path / "ems.sqlite"))
+
+    async def run():
+        await store.init()
+        await store.add_notification("2026-07-13T10:00:00+00:00", "k", "t", "a")
+        await store.add_notification("2026-07-13T11:00:00+00:00", "k", "t", "b")
+        changed = await store.mark_notifications_read(mark_all=True)
+        return changed, await store.unread_count()
+
+    changed, unread = asyncio.run(run())
+    assert changed == 2
+    assert unread == 0
+
+
+def test_mark_notifications_read_noop_without_ids_or_all(tmp_path):
+    store = HistoryStore(str(tmp_path / "ems.sqlite"))
+
+    async def run():
+        await store.init()
+        await store.add_notification("2026-07-13T10:00:00+00:00", "k", "t", "a")
+        changed = await store.mark_notifications_read()
+        return changed, await store.unread_count()
+
+    changed, unread = asyncio.run(run())
+    assert changed == 0
+    assert unread == 1
+
+
+def test_purge_trims_notifications_by_ts_but_keeps_recent(tmp_path):
+    store = HistoryStore(str(tmp_path / "ems.sqlite"))
+
+    async def run():
+        await store.init()
+        await store.add_notification("2026-01-01T10:00:00+00:00", "k", "t", "old")  # purged
+        await store.add_notification("2026-06-28T10:00:00+00:00", "k", "t", "kept")
+        deleted = await store.purge_older_than("2026-06-01T00:00:00+00:00")
+        rows = await store.notifications_between(
+            "2020-01-01T00:00:00+00:00", "2030-01-01T00:00:00+00:00")
+        return deleted, rows
+
+    deleted, rows = asyncio.run(run())
+    assert deleted >= 1
+    assert [r["body"] for r in rows] == ["kept"]

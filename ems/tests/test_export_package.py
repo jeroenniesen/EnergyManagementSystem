@@ -229,6 +229,47 @@ def test_validation_summary_omits_suggestion_line_when_advice_is_none():
     assert "Suggested solar_confidence" not in text
 
 
+# ---- validation_summary + _prediction_accuracy_lines: plan-execution + load-baseline tracks ----
+
+_PLAN_EXECUTION = {"n_deadlines": 5, "mean_error_pp": -0.3, "mae_pp": 3.7, "hit_rate_pct": 66.7}
+_LOAD_BASELINE = {"n_hours": 28, "mape_pct": 2.4, "bias_w": 28.6}
+
+
+def test_validation_summary_includes_prediction_accuracy_section_when_both_given():
+    text = validation_summary(
+        generated_at="2026-06-28T12:00:00+00:00", app_version="0.0.1",
+        window={"start": "2026-05-28T00:00:00+00:00", "end": "2026-06-28T12:00:00+00:00"},
+        counts={"raw_samples": 1}, saved_total_eur=None, validation={},
+        plan_execution_error=_PLAN_EXECUTION, load_baseline_error=_LOAD_BASELINE,
+    )
+    assert "Prediction accuracy" in text
+    assert "Plan execution:  5 deadlines, mean error -0.3pp, MAE 3.7pp, hit rate 66.7%" in text
+    assert "Load baseline:   28 hours, MAPE 2.4%, bias +28.6 W" in text
+
+
+def test_validation_summary_prediction_accuracy_shows_only_the_available_line():
+    # load_baseline_error not enough evidence yet (None) -> only the plan-execution line shows,
+    # but the section itself still appears (plan_execution IS available).
+    text = validation_summary(
+        generated_at="2026-06-28T12:00:00+00:00", app_version="0.0.1",
+        window={"start": "2026-05-28T00:00:00+00:00", "end": "2026-06-28T12:00:00+00:00"},
+        counts={"raw_samples": 1}, saved_total_eur=None, validation={},
+        plan_execution_error=_PLAN_EXECUTION, load_baseline_error=None,
+    )
+    assert "Prediction accuracy" in text
+    assert "Plan execution:" in text
+    assert "Load baseline:" not in text
+
+
+def test_validation_summary_omits_prediction_accuracy_section_when_neither_given():
+    text = validation_summary(
+        generated_at="2026-06-28T12:00:00+00:00", app_version="0.0.1",
+        window={"start": "2026-05-28T00:00:00+00:00", "end": "2026-06-28T12:00:00+00:00"},
+        counts={"raw_samples": 1}, saved_total_eur=None, validation={},
+    )
+    assert "Prediction accuracy" not in text
+
+
 # ---- validation_summary + _ev_charging_lines: the "EV charging" section ----
 
 def test_validation_summary_includes_ev_charging_section_below_average():

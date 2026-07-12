@@ -14,6 +14,32 @@ async function openPlan(page: Page) {
   await expect(page.getByTestId("plan-disclosure-body")).toBeVisible();
 }
 
+// B-68: a minimal-but-complete /api/battery-plan payload, so a test can mock just the
+// `confidence` block without hand-building the rest of the (large) contract every time.
+function batteryPlanFixture(confidence: { level: string; reasons: string[] }) {
+  const now = new Date();
+  return {
+    status: "on_track",
+    summary: "Next 24h — plan is on track.",
+    current_action: "self_consume",
+    current_reason: "Battery is following the current plan.",
+    window_start: now.toISOString(),
+    window_end: new Date(now.getTime() + 24 * 3600e3).toISOString(),
+    current_soc_pct: 60,
+    reserve_soc_pct: 10,
+    target_soc_pct: 88,
+    target_deadline: null,
+    planned_grid_topup_kwh: 0,
+    deviation: { status: "ok", message: "On track." },
+    warnings: [],
+    graph: {
+      forecast_soc: [], actual_soc: [], reserve_line: [], target_line: [],
+      planned_actions: [], price_windows: [], solar: [],
+    },
+    confidence,
+  };
+}
+
 test.describe("EMS dashboard", () => {
   test("the calm home surfaces the essentials, with detail behind disclosures", async ({ page }) => {
     // A first-time viewer sees the hero (one verdict), the score pills, the story card, the
@@ -84,6 +110,68 @@ test.describe("EMS dashboard", () => {
     await expect(synth).toContainText("·"); // the two strings are joined into one line
     // The explicit answer to "do I need to act?" — calm, because nothing needs attention.
     await expect(page.getByTestId("hero-act")).toHaveText("Nothing needed from you.");
+  });
+
+  test("B-68: a high-confidence plan shows a calm chip with no reason sub-line", async ({ page }) => {
+    await page.route("**/api/battery-plan", (route) =>
+      route.fulfill({
+        status: 200, contentType: "application/json",
+        body: JSON.stringify(batteryPlanFixture({
+          level: "high",
+          reasons: ["Fresh data, calibrated forecast, battery responding — nothing is holding this plan back."],
+        })),
+      }),
+    );
+    await page.goto("/");
+    const chip = page.getByTestId("confidence-chip");
+    await expect(chip).toBeVisible();
+    await expect(chip).toHaveAttribute("data-level", "high");
+    await expect(chip).toHaveText("High confidence");
+    // Calm stays calm: high confidence needs no explanation beyond the chip.
+    await expect(page.getByTestId("hero-confidence-reason")).toHaveCount(0);
+  });
+
+  test("B-68: a medium-confidence plan shows an amber chip + the leading reason", async ({ page }) => {
+    await page.route("**/api/battery-plan", (route) =>
+      route.fulfill({
+        status: 200, contentType: "application/json",
+        body: JSON.stringify(batteryPlanFixture({
+          level: "medium",
+          reasons: ["Still learning your roof — under 2.0 days of forecast evidence so far."],
+        })),
+      }),
+    );
+    await page.goto("/");
+    const chip = page.getByTestId("confidence-chip");
+    await expect(chip).toHaveAttribute("data-level", "medium");
+    await expect(chip).toHaveText("Medium confidence");
+    const reason = page.getByTestId("hero-confidence-reason");
+    await expect(reason).toBeVisible();
+    await expect(reason).toContainText("Still learning your roof");
+  });
+
+  test("B-68: a low-confidence plan shows a red chip + the safety-fallback reason", async ({ page }) => {
+    await page.route("**/api/battery-plan", (route) =>
+      route.fulfill({
+        status: 200, contentType: "application/json",
+        body: JSON.stringify(batteryPlanFixture({
+          level: "low",
+          reasons: [
+            "Safety fallback active — EMS is holding, not planning.",
+            "Some live data is stale, so the plan can't be trusted right now.",
+          ],
+        })),
+      }),
+    );
+    await page.goto("/");
+    const chip = page.getByTestId("confidence-chip");
+    await expect(chip).toHaveAttribute("data-level", "low");
+    await expect(chip).toHaveText("Low confidence");
+    // The tooltip carries every reason, joined.
+    await expect(chip).toHaveAttribute("title", /Safety fallback active.*Some live data is stale/);
+    // Only the FIRST reason renders as the visible sub-line.
+    const reason = page.getByTestId("hero-confidence-reason");
+    await expect(reason).toHaveText("Safety fallback active — EMS is holding, not planning.");
   });
 
   test("renders the status dashboard with reconstructed load", async ({ page }) => {
@@ -887,5 +975,88 @@ test.describe("EMS dashboard", () => {
     await expect(page.getByTestId("error")).toBeVisible();
     // The live-status-dependent detail (Advanced + its tiles) stays hidden when status can't load.
     await expect(page.getByTestId("advanced")).toHaveCount(0);
+  });
+
+  // B-20: the header bell — an in-app surface for the notification outbox.
+  test("the header bell shows an unread dot and opens a dropdown with recent notifications", async ({
+    page,
+  }) => {
+    await page.route(/\/api\/notifications(\?.*)?$/, (route) =>
+      route.fulfill({
+        status: 200, contentType: "application/json",
+        body: JSON.stringify({
+          unread: 1,
+          items: [
+            {
+              id: 2, ts: new Date().toISOString(), key: "backup_failed", title: "Backup failed",
+              body: "Today's scheduled backup didn't complete. Your data is safe.",
+              confidence: null, read: false, delivered: ["in_app"], dedupe_key: "backup_failed:x",
+            },
+            {
+              id: 1, ts: new Date(Date.now() - 3600e3).toISOString(), key: "backup_failed",
+              title: "Backup failed", body: "An earlier failure.", confidence: null, read: true,
+              delivered: ["in_app", "ntfy"], dedupe_key: "backup_failed:y",
+            },
+          ],
+        }),
+      }),
+    );
+    await page.goto("/");
+    const bell = page.getByTestId("notif-bell");
+    await expect(bell).toBeVisible();
+    await expect(page.getByTestId("notif-unread-dot")).toBeVisible();
+    await expect(page.getByTestId("notif-panel")).toHaveCount(0);
+
+    await bell.click();
+    const panel = page.getByTestId("notif-panel");
+    await expect(panel).toBeVisible();
+    await expect(bell).toHaveAttribute("aria-expanded", "true");
+    await expect(page.getByTestId("notif-item-2")).toContainText("Backup failed");
+    await expect(page.getByTestId("notif-item-1")).toContainText("An earlier failure.");
+
+    // Esc closes the dropdown.
+    await page.keyboard.press("Escape");
+    await expect(panel).toHaveCount(0);
+    await expect(bell).toHaveAttribute("aria-expanded", "false");
+  });
+
+  test("marking all notifications read POSTs and clears the unread dot", async ({ page }) => {
+    await page.route(/\/api\/notifications(\?.*)?$/, (route) =>
+      route.fulfill({
+        status: 200, contentType: "application/json",
+        body: JSON.stringify({
+          unread: 1,
+          items: [{
+            id: 1, ts: new Date().toISOString(), key: "backup_failed", title: "Backup failed",
+            body: "Today's scheduled backup didn't complete.", confidence: null, read: false,
+            delivered: ["in_app"], dedupe_key: "backup_failed:x",
+          }],
+        }),
+      }),
+    );
+    let readRequestBody: string | null = null;
+    await page.route("**/api/notifications/read", async (route) => {
+      readRequestBody = route.request().postData();
+      await route.fulfill({ status: 200, contentType: "application/json", body: '{"unread":0}' });
+    });
+    await page.goto("/");
+    await page.getByTestId("notif-bell").click();
+    await page.getByTestId("notif-mark-all-read").click();
+    await expect(page.getByTestId("notif-unread-dot")).toHaveCount(0);
+    expect(JSON.parse(readRequestBody ?? "{}")).toEqual({ all: true });
+  });
+
+  test("the bell shows no unread dot when there are no notifications", async ({ page }) => {
+    await page.route(/\/api\/notifications(\?.*)?$/, (route) =>
+      route.fulfill({
+        status: 200, contentType: "application/json",
+        body: JSON.stringify({ unread: 0, items: [] }),
+      }),
+    );
+    await page.goto("/");
+    await expect(page.getByTestId("notif-bell")).toBeVisible();
+    await expect(page.getByTestId("notif-unread-dot")).toHaveCount(0);
+    await page.getByTestId("notif-bell").click();
+    await expect(page.getByTestId("notif-empty")).toContainText("No notifications yet.");
   });
 });

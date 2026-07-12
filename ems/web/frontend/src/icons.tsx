@@ -16,7 +16,8 @@ export type IconName =
   | "winter"
   | "car"
   | "check"
-  | "alert";
+  | "alert"
+  | "bell";
 
 const PATHS: Record<IconName, React.ReactNode> = {
   // Battery outline (how full it is) — body fills the canvas, terminal nub flush to its right.
@@ -114,6 +115,13 @@ const PATHS: Record<IconName, React.ReactNode> = {
       <circle cx="7.5" cy="17" r="1.8" />
       <circle cx="16.5" cy="17" r="1.8" />
       <path d="M9.3 17h5.4" />
+    </>
+  ),
+  // Bell (notifications).
+  bell: (
+    <>
+      <path d="M18 8a6 6 0 0 0-12 0c0 7-3 9-3 9h18s-3-2-3-9" />
+      <path d="M13.73 21a2 2 0 0 1-3.46 0" />
     </>
   ),
   // Snowflake (winter strategy).

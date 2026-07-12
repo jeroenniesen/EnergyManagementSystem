@@ -13,16 +13,19 @@ public final class DashboardStore {
 
     private let demoData: DemoDataStore
     private let credentialStore: CredentialStore
+    private let widgetConfig: AppGroupConfigStore
     private let refreshFailureRetryDelay: TimeInterval = 15
 
     public init(
         client: APIClient?,
         demoData: DemoDataStore = DemoDataStore(),
-        credentialStore: CredentialStore = KeychainCredentialStore()
+        credentialStore: CredentialStore = KeychainCredentialStore(),
+        widgetConfig: AppGroupConfigStore = AppGroupConfigStore()
     ) {
         self.client = client
         self.demoData = demoData
         self.credentialStore = credentialStore
+        self.widgetConfig = widgetConfig
     }
 
     public func refresh() async {
@@ -59,6 +62,9 @@ public final class DashboardStore {
         if let token = client.token, !token.isEmpty {
             try credentialStore.saveToken(token, for: client.baseURL)
         }
+        // Mirror {baseURL, token} into the shared app group so the home-screen widget can reach the
+        // same server without its own onboarding (B-59). Best-effort: never fail a connect over it.
+        widgetConfig.save(WidgetServerConfig(baseURL: client.baseURL, token: client.token))
     }
 
     public func restoreSavedServer() {
@@ -96,6 +102,9 @@ public final class DashboardStore {
             try? credentialStore.deleteToken(for: client.baseURL)
         }
         try? credentialStore.deleteLastBaseURL()
+        // Drop the widget's shared config + cached render too, so it returns to "Open EMS to connect".
+        widgetConfig.clear()
+        WidgetSnapshotCache().clear()
         client = nil
         snapshot = nil
         nextRefreshAt = nil

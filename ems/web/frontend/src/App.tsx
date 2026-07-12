@@ -3,7 +3,7 @@ import { useEffect, useRef, useState } from "react";
 import { type Battery, BatteryChips } from "./BatteryChips";
 import { EnergyDistribution } from "./EnergyDistribution";
 import { type EnergyStoryData, EnergyStory } from "./EnergyStory";
-import { BatteryPlan, type BatteryPlanData } from "./BatteryPlan";
+import { BatteryPlan, type BatteryPlanData, type PlanConfidence } from "./BatteryPlan";
 import { Icon, type IconName } from "./icons";
 import {
   DATA_QUALITY,
@@ -15,6 +15,7 @@ import {
   RUN_MODE,
   SIGNAL_NAME,
 } from "./labels";
+import { NotificationBell } from "./Notifications";
 import { OverrideCard } from "./Override";
 import { CarCard } from "./CarCard";
 import { Settings } from "./Settings";
@@ -80,6 +81,12 @@ const POLL_MS = 10000;
 // Alert hierarchy: control-blocking (critical) above degraded (warning) above info (energy review).
 const SEVERITY_RANK: Record<string, number> = { critical: 3, warning: 2, info: 1 };
 const VIEWS: ViewName[] = ["dashboard", "insights", "chat", "audit", "settings", "system"];
+// B-68: plain-language chip label for the plan-confidence score, keyed by the backend's level.
+const CONFIDENCE_CHIP_LABEL: Record<PlanConfidence["level"], string> = {
+  high: "High confidence",
+  medium: "Medium confidence",
+  low: "Low confidence",
+};
 
 function viewFromHash(hash: string): ViewName {
   const raw = hash.replace(/^#\/?/, "");
@@ -402,6 +409,9 @@ export function App() {
   // --- Hero synthesis (B-32): one verdict, not three fragments. ---------------------------------
   const home = decision?.home_state ?? null;
   const summary = report ? homeSummary(report.scores) : null;
+  // B-68: the plan-confidence score rides on the already-polled /api/battery-plan response — no
+  // extra fetch. Calm stays calm: the reason sub-line only renders when confidence isn't high.
+  const confidence = batteryPlan?.confidence ?? null;
   // The synthesis line stitches the existing on-track verdict and the existing day-score summary
   // into ONE sentence — reusing the exact strings, inventing no number. Trailing punctuation is
   // trimmed so the middot join reads cleanly ("…88% target · A solid energy day — keep it up").
@@ -475,6 +485,7 @@ export function App() {
             {DATA_QUALITY[alertsData.data_quality]?.label ?? humanize(alertsData.data_quality)}
           </span>
         )}
+        <NotificationBell />
         <nav className="nav" aria-label="Views">
           <button
             className={`nav-btn${view === "dashboard" ? " nav-active" : ""}`}
@@ -570,9 +581,26 @@ export function App() {
           data-testid="home-state"
           data-tone={home.tone}
         >
-          <p className="hero-verdict" data-testid="hero-verdict">
-            {home.headline}
-          </p>
+          <div className="hero-verdict-row">
+            <p className="hero-verdict" data-testid="hero-verdict">
+              {home.headline}
+            </p>
+            {confidence && (
+              <span
+                className={`badge confidence-chip confidence-${confidence.level}`}
+                data-testid="confidence-chip"
+                data-level={confidence.level}
+                title={confidence.reasons.join(" ")}
+              >
+                {CONFIDENCE_CHIP_LABEL[confidence.level]}
+              </span>
+            )}
+          </div>
+          {confidence && confidence.level !== "high" && (
+            <p className="hero-confidence-reason" data-testid="hero-confidence-reason">
+              {confidence.reasons[0]}
+            </p>
+          )}
           {synthesis && (
             <p className="hero-synthesis" data-testid="hero-synthesis">
               {synthesis}

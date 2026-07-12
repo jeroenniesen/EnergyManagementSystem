@@ -42,6 +42,21 @@ def test_audit_store_append_recent_filter_and_last_mode(tmp_path):
     assert last == "auto"                                          # dedup seed = latest mode
 
 
+def test_audit_store_between_windows_by_time_oldest_first(tmp_path):
+    store = AuditStore(str(tmp_path / "ems.sqlite"))
+
+    async def run():
+        await store.init()
+        await store.append("2026-06-27T23:00:00+00:00", "battery_decision", "before window", {})
+        await store.append("2026-07-06T10:00:00+00:00", "battery_decision", "in window 1", {})
+        await store.append("2026-07-08T10:00:00+00:00", "manual_override", "in window 2", {})
+        await store.append("2026-07-13T00:00:00+00:00", "battery_decision", "after window", {})
+        return await store.between("2026-07-06T00:00:00+00:00", "2026-07-13T00:00:00+00:00")
+
+    rows = asyncio.run(run())
+    assert [r["summary"] for r in rows] == ["in window 1", "in window 2"]  # oldest-first, bounded
+
+
 class _Source:
     def read(self) -> RawSample:
         return RawSample(grid_power_w=0.0, solar_power_w=0.0, battery_power_w=0.0,

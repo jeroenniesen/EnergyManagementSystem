@@ -34,6 +34,12 @@ targets:
       - path: Sources/EMSControlApp/Assets.xcassets
     dependencies:
       - target: EMSControlCore
+      - target: EMSWidget
+    entitlements:
+      path: Sources/EMSControlApp/EMSControl.entitlements
+      properties:
+        com.apple.security.application-groups:
+          - group.com.jeroenniesen.emscontrol
     settings:
       base:
         PRODUCT_NAME: EMSControl
@@ -47,3 +53,42 @@ targets:
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME: AccentColor
         TARGETED_DEVICE_FAMILY: "1,2"
+  # WidgetKit home-screen widget (BACKLOG B-59). App extension bundled inside the app; it links
+  # EMSControlCore (embed:false — the app embeds the single shared copy, the extension finds it at
+  # runtime via @rpath). App Group is shared with the app so it can read {baseURL, token}.
+  EMSWidget:
+    type: app-extension
+    platform: iOS
+    deploymentTarget: "17.0"
+    sources:
+      - path: Sources/EMSWidget
+    dependencies:
+      - target: EMSControlCore
+        embed: false
+    info:
+      path: Sources/EMSWidget/Info.plist
+      properties:
+        CFBundleDisplayName: EMS Status
+        NSExtension:
+          NSExtensionPointIdentifier: com.apple.widgetkit-extension
+        NSAppTransportSecurity:
+          NSAllowsLocalNetworking: true
+    entitlements:
+      path: Sources/EMSWidget/EMSWidget.entitlements
+      properties:
+        com.apple.security.application-groups:
+          - group.com.jeroenniesen.emscontrol
+    settings:
+      base:
+        PRODUCT_NAME: EMSWidget
+        PRODUCT_BUNDLE_IDENTIFIER: com.jeroenniesen.emscontrol.dev.widget
+        CURRENT_PROJECT_VERSION: 1
+        MARKETING_VERSION: 1.0
+        CODE_SIGN_STYLE: Automatic
+        DEVELOPMENT_TEAM: C32G3GV975
+        TARGETED_DEVICE_FAMILY: "1,2"
+        SKIP_INSTALL: YES
+        LD_RUNPATH_SEARCH_PATHS:
+          - "$(inherited)"
+          - "@executable_path/Frameworks"
+          - "@executable_path/../../Frameworks"
