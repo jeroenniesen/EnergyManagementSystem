@@ -6,7 +6,6 @@ import { type EnergyStoryData, EnergyStory } from "./EnergyStory";
 import { BatteryPlan, type BatteryPlanData } from "./BatteryPlan";
 import { Icon, type IconName } from "./icons";
 import {
-  CONFIDENCE,
   DATA_QUALITY,
   DATA_SOURCE,
   FRESHNESS_STATE,
@@ -25,7 +24,8 @@ import { AuditView } from "./AuditView";
 import { ChatPanel } from "./ChatPanel";
 import { SystemView } from "./System";
 import { Insights } from "./Insights";
-import { HomeScores } from "./HomeScores";
+import { HomeScores, type Report } from "./HomeScores";
+import { homeSummary } from "./scoreCopy";
 import { SkyBackdrop } from "./SkyBackdrop";
 import { Advanced } from "./Advanced";
 import { applyTheme, readStoredTheme, storeTheme, type Theme } from "./theme";
@@ -54,6 +54,7 @@ type Decision = {
   explanation_source?: string;
   car_charging?: boolean;
   target_soc?: number | null;
+  override_active?: boolean;
   home_state?: { headline: string; tone: string; simulated: boolean };
 };
 
@@ -65,7 +66,10 @@ type ChargeNeed = {
   reason: string;
 };
 
-type AlertItem = { key: string; severity: string; message: string };
+// `safe` and `action` are optional, structured sub-lines (B-37): "is my home safe" + "what can I
+// do". The backend adds them incrementally; the UI renders them only when present, else falls back
+// to the bare message — so an alert without the fields still renders exactly as before.
+type AlertItem = { key: string; severity: string; message: string; safe?: string; action?: string };
 type AlertsResp = { data_quality: string; alerts: AlertItem[] };
 type ViewName = "dashboard" | "insights" | "chat" | "audit" | "settings" | "system";
 
@@ -179,22 +183,6 @@ function Modal({
   );
 }
 
-function SkeletonGrid() {
-  // Shown for the brief moment before the first /api/status resolves (a live read can take a
-  // couple of seconds). A shimmer placeholder reads as "loading" far better than a bare word.
-  return (
-    <section className="grid" data-testid="status-skeleton" aria-hidden="true">
-      {Array.from({ length: 6 }).map((_, i) => (
-        <div className="metric skel" key={i}>
-          <span className="skel-line skel-line-sm" />
-          <span className="skel-line skel-line-lg" />
-          <span className="skel-line skel-line-sm" />
-        </div>
-      ))}
-    </section>
-  );
-}
-
 function ChargeTarget({ n }: { n: ChargeNeed }) {
   return (
     <section className="charge-need" data-testid="charge-need">
@@ -245,8 +233,27 @@ export function App() {
   const [alertsData, setAlertsData] = useState<AlertsResp | null>(null);
   const [chargeNeed, setChargeNeed] = useState<ChargeNeed | null>(null);
   const [savings, setSavings] = useState<number | null>(null);
+  const [report, setReport] = useState<Report | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [view, setViewState] = useState<ViewName>(() => viewFromHash(window.location.hash));
+  // "See the full plan" disclosure — collapsed by default, choice remembered across visits so a
+  // homeowner who wants the detail keeps it, and one who doesn't never sees it re-expand.
+  const [planOpen, setPlanOpen] = useState<boolean>(() => {
+    try {
+      return localStorage.getItem("ems.dash.planOpen") === "1";
+    } catch {
+      return false;
+    }
+  });
+  // The demo-home nudge dismisses for the session only (sessionStorage) — gone for this visit, back
+  // next time, so it can't be permanently lost while the app is still running on demo data.
+  const [demoDismissed, setDemoDismissed] = useState<boolean>(() => {
+    try {
+      return sessionStorage.getItem("ems.demoCtaDismissed") === "1";
+    } catch {
+      return false;
+    }
+  });
   // Seed from the localStorage cache so the first paint matches the saved theme (no flash);
   // the fetch below reconciles with the server's canonical value.
   const [theme, setTheme] = useState<Theme>(readStoredTheme);
@@ -276,6 +283,39 @@ export function App() {
     storeTheme(theme);
     return applyTheme(theme);
   }, [theme]);
+
+  // Today's scores — fetched once here (off the fast poll) so BOTH the score pills and the hero's
+  // synthesis line read the SAME summary; no second source, no chance of two different verdicts.
+  useEffect(() => {
+    let alive = true;
+    fetch("/api/report?period=day")
+      .then((r) => (r.ok ? r.json() : null))
+      .then((v: Report | null) => {
+        if (alive && v) setReport(v);
+      })
+      .catch(() => {});
+    return () => {
+      alive = false;
+    };
+  }, []);
+
+  // Persist the disclosure choice for next visit.
+  useEffect(() => {
+    try {
+      localStorage.setItem("ems.dash.planOpen", planOpen ? "1" : "0");
+    } catch {
+      /* private-mode / storage-disabled: the toggle still works in-session */
+    }
+  }, [planOpen]);
+
+  function dismissDemoCta() {
+    setDemoDismissed(true);
+    try {
+      sessionStorage.setItem("ems.demoCtaDismissed", "1");
+    } catch {
+      /* best-effort; the dismiss still holds in memory for this render */
+    }
+  }
 
   function setView(next: ViewName) {
     if (window.location.hash !== `#${next}`) {
@@ -358,6 +398,46 @@ export function App() {
 
   // The battery tile opens a per-tower breakdown only when there's a cluster to break down.
   const batteryHasDetail = !!(battery && (battery.aggregate || battery.towers.length > 0));
+
+  // --- Hero synthesis (B-32): one verdict, not three fragments. ---------------------------------
+  const home = decision?.home_state ?? null;
+  const summary = report ? homeSummary(report.scores) : null;
+  // The synthesis line stitches the existing on-track verdict and the existing day-score summary
+  // into ONE sentence — reusing the exact strings, inventing no number. Trailing punctuation is
+  // trimmed so the middot join reads cleanly ("…88% target · A solid energy day — keep it up").
+  const trimEnd = (s: string) => s.replace(/[.\s]+$/, "");
+  const synthesis = [story?.on_track?.message, summary?.text]
+    .filter((s): s is string => !!s)
+    .map(trimEnd)
+    .join(" · ");
+
+  // "Do I need to act?" — answered explicitly. Nothing to do unless an override is running, the
+  // system has fallen back to safe mode (unsafe data), or a warning/critical alert is live. Info
+  // notes (e.g. watch-only) are calm by design and never raise the act line.
+  const alerts = alertsData?.alerts ?? [];
+  const topActionable = [...alerts]
+    .filter((a) => a.severity === "warning" || a.severity === "critical")
+    .sort((a, b) => (SEVERITY_RANK[b.severity] ?? 0) - (SEVERITY_RANK[a.severity] ?? 0))[0];
+  const actLine: { text: string; calm: boolean } = decision?.override_active
+    ? { text: "You're in manual control — it ends on its own, or clear it below.", calm: false }
+    : alertsData?.data_quality === "unsafe"
+      ? {
+          text:
+            "EMS paused control and fell back to the battery's own safe mode — nothing to do; it " +
+            "resumes on its own once the data is trustworthy again.",
+          calm: false,
+        }
+      : topActionable
+        ? { text: topActionable.action || topActionable.message, calm: false }
+        : { text: "Nothing needed from you.", calm: true };
+
+  const batteryModeLabel = battery?.current_mode
+    ? PHYSICAL_MODE[battery.current_mode] ?? humanize(battery.current_mode)
+    : null;
+
+  // B-57: on demo/mock data, a persistent friendly nudge into real onboarding (Settings opens on
+  // the Connection section by default). Dismissible for the session; back on next visit.
+  const demoActive = !!home?.simulated && !demoDismissed;
 
   return (
     <>
@@ -453,9 +533,25 @@ export function App() {
           {[...alertsData.alerts]
             .sort((a, b) => (SEVERITY_RANK[b.severity] ?? 0) - (SEVERITY_RANK[a.severity] ?? 0))
             .map((a) => (
-              <span key={a.key} className={`chip alert-${a.severity}`} data-severity={a.severity}>
-                {a.message}
-              </span>
+              <div
+                key={a.key}
+                className={`alert-item alert-${a.severity}`}
+                data-severity={a.severity}
+                data-testid={`alert-${a.key}`}
+              >
+                <span className="alert-message">{a.message}</span>
+                {/* B-37 structured sub-lines — rendered only when the alert carries them. */}
+                {a.safe && (
+                  <span className="alert-safe" data-testid="alert-safe">
+                    <Icon name="check" /> {a.safe}
+                  </span>
+                )}
+                {a.action && (
+                  <span className="alert-action" data-testid="alert-action">
+                    → {a.action}
+                  </span>
+                )}
+              </div>
             ))}
         </section>
       )}
@@ -464,26 +560,52 @@ export function App() {
         <div className="error" data-testid="error">Cannot reach EMS API: {error}</div>
       )}
 
-      {view === "dashboard" && decision?.home_state && (
+      {/* The hero: one verdict, one synthesis line, one explicit answer to "do I need to act?".
+          Absorbs the old status banner + the scattered on-track/score copy into a single read. */}
+      {view === "dashboard" && home && (
         <section
-          className={`home-banner home-${decision.home_state.tone}`}
+          className={`hero home-${home.tone}`}
           data-testid="home-state"
-          data-tone={decision.home_state.tone}
+          data-tone={home.tone}
         >
-          <span className="home-headline">{decision.home_state.headline}</span>
-          {decision.home_state.simulated && (
-            <span className="badge badge-amber" data-testid="home-sim">
-              Demo data — not your live battery
-            </span>
+          <p className="hero-verdict" data-testid="hero-verdict">
+            {home.headline}
+          </p>
+          {synthesis && (
+            <p className="hero-synthesis" data-testid="hero-synthesis">
+              {synthesis}
+            </p>
           )}
-          {alertsData && CONFIDENCE[alertsData.data_quality] && (
-            <span className="home-confidence" data-testid="home-confidence">
-              <Icon
-                name={alertsData.data_quality === "unsafe" ? "alert" : "check"}
-                className={`home-conf-icon conf-${alertsData.data_quality}`}
-              />
-              {CONFIDENCE[alertsData.data_quality]}
-            </span>
+          <p
+            className={`hero-act ${actLine.calm ? "hero-act-calm" : "hero-act-attention"}`}
+            data-testid="hero-act"
+          >
+            {!actLine.calm && <Icon name="alert" className="hero-act-icon" />}
+            {actLine.text}
+          </p>
+          {demoActive && (
+            <div className="hero-demo-cta" data-testid="demo-cta">
+              <span>
+                This is a demo home.{" "}
+                <button
+                  type="button"
+                  className="hero-demo-link"
+                  data-testid="demo-cta-link"
+                  onClick={() => setView("settings")}
+                >
+                  Use my real home →
+                </button>
+              </span>
+              <button
+                type="button"
+                className="hero-demo-dismiss"
+                data-testid="demo-cta-dismiss"
+                aria-label="Dismiss for now"
+                onClick={dismissDemoCta}
+              >
+                ×
+              </button>
+            </div>
           )}
         </section>
       )}
@@ -500,53 +622,49 @@ export function App() {
 
       {view === "system" && <SystemView />}
 
-      {view === "dashboard" && <HomeScores onOpenDetail={() => setView("insights")} />}
-
-      {view === "dashboard" && <BatteryPlan plan={batteryPlan} />}
-
-      {/* The plan + how we're doing — always front and centre. */}
       {view === "dashboard" && (
-        <EnergyStory story={story} window={storyWindow} onWindow={setStoryWindow} />
+        <HomeScores report={report} onOpenDetail={() => setView("insights")} />
       )}
 
-      {view === "dashboard" && status && (
-        <section className="grid status-grid" data-testid="status-grid">
-          {savings != null && (
-            <Metric
-              label="Saved today"
-              value={`€${savings.toFixed(2)}`}
-              hint="vs. no smart control"
-              title="Rough estimate of what smart charging saved today compared with leaving the battery on its own."
-              icon="euro"
-              accent
-            />
-          )}
-          <Metric
-            label="Battery level"
-            value={`${status.soc_pct.toFixed(0)} %`}
-            hint={batteryHasDetail ? "see each battery →" : "how full it is"}
-            title={
-              batteryHasDetail
-                ? "How full the home battery is — click to see each battery."
-                : "How much charge is in the home battery right now."
-            }
-            icon="battery-level"
-            onClick={batteryHasDetail ? () => setBatteryDetail("soc") : undefined}
-            testId="battery-tile"
-          />
-          {battery?.current_mode && (
-            <Metric
-              label="Battery mode"
-              value={PHYSICAL_MODE[battery.current_mode] ?? humanize(battery.current_mode)}
-              hint={battery.capabilities?.p1_paired ? "balancing to your meter" : "standalone"}
-              title="The mode the battery is currently running in."
-              icon="sliders"
-            />
+      {/* The ONE today-story: the single narrative + chart. Its footer carries the live snapshot
+          (saved / battery / mode) the old stat-tile row used to. */}
+      {view === "dashboard" && (
+        <BatteryPlan
+          plan={batteryPlan}
+          savings={savings}
+          socPct={status?.soc_pct ?? null}
+          batteryMode={batteryModeLabel}
+          onBatteryClick={batteryHasDetail ? () => setBatteryDetail("soc") : undefined}
+        />
+      )}
+
+      {/* The full plan (the past/next toggle + tiles + charts) lives one tap deeper — collapsed by
+          default so the story card's headline is the only narrative on screen. When opened, the
+          plan renders WITHOUT its own headline sentence (hideHeadline), so the two never duplicate. */}
+      {view === "dashboard" && (
+        <section className="plan-disclosure" data-testid="plan-disclosure">
+          <button
+            type="button"
+            className={`advanced-toggle${planOpen ? " open" : ""}`}
+            data-testid="plan-disclosure-toggle"
+            aria-expanded={planOpen}
+            onClick={() => setPlanOpen((o) => !o)}
+          >
+            <span className="advanced-chevron" aria-hidden="true">›</span>
+            <span>{planOpen ? "Hide the full plan" : "See the full plan"}</span>
+          </button>
+          {planOpen && (
+            <div className="plan-disclosure-body" data-testid="plan-disclosure-body">
+              <EnergyStory
+                story={story}
+                window={storyWindow}
+                onWindow={setStoryWindow}
+                hideHeadline
+              />
+            </div>
           )}
         </section>
       )}
-
-      {view === "dashboard" && !status && !error && <SkeletonGrid />}
 
       {view === "dashboard" && strategy && (
         <StrategyCard

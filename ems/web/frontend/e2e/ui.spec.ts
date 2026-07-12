@@ -7,25 +7,34 @@ async function openAdvanced(page: Page) {
   await expect(page.getByTestId("advanced-body")).toBeVisible();
 }
 
+// The energy story (past/next toggle + tiles + charts) now lives in the "See the full plan"
+// disclosure, collapsed by default — open it before asserting on the story.
+async function openPlan(page: Page) {
+  await page.getByTestId("plan-disclosure-toggle").click();
+  await expect(page.getByTestId("plan-disclosure-body")).toBeVisible();
+}
+
 test.describe("EMS dashboard", () => {
-  test("the calm home surfaces the essentials, with detail behind Advanced", async ({ page }) => {
-    // A first-time viewer sees the state banner, the strategy, the energy story (the plan) and a
-    // trimmed status grid up front — the technical detail (decision, freshness, Sankey) is tucked
-    // behind the Advanced toggle so the home stays calm. No error banner.
+  test("the calm home surfaces the essentials, with detail behind disclosures", async ({ page }) => {
+    // A first-time viewer sees the hero (one verdict), the score pills, the story card, the
+    // strategy — the full plan and the technical detail are each one tap deeper. No error banner.
     await page.goto("/");
     for (const id of [
       "run-mode-badge",
       "data-quality",
       "home-state",
-      "status-grid",
+      "home-scores",
+      "battery-plan",
+      "plan-disclosure",
       "strategy-card",
-      "energy-story",
       "advanced",
       "alerts",
     ]) {
       await expect(page.getByTestId(id), `panel ${id} should render`).toBeVisible();
     }
-    // The detail is present but not shouted — it appears only once Advanced is opened.
+    // The full plan (the story with its tiles + charts) is collapsed by default — not shouting.
+    await expect(page.getByTestId("energy-story")).toHaveCount(0);
+    // The technical detail is present but tucked behind Advanced.
     await expect(page.getByTestId("decision")).toHaveCount(0);
     await expect(page.getByTestId("freshness")).toHaveCount(0);
     await openAdvanced(page);
@@ -61,12 +70,20 @@ test.describe("EMS dashboard", () => {
     await expect(sky).toHaveCSS("background-image", /url\(.*day.*\.webp.*\)/);
   });
 
-  test("the home-state banner leads with a calm headline + confidence", async ({ page }) => {
+  test("the hero synthesises one verdict + a calm 'nothing needed' act line", async ({ page }) => {
     await page.goto("/");
-    const banner = page.getByTestId("home-state");
-    await expect(banner).toBeVisible();
-    await expect(banner).toHaveAttribute("data-tone", /good|watching|controlling|attention/);
-    await expect(page.getByTestId("home-confidence")).toBeVisible();
+    const hero = page.getByTestId("home-state");
+    await expect(hero).toBeVisible();
+    await expect(hero).toHaveAttribute("data-tone", /good|watching|controlling|attention/);
+    // The verdict headline (the old status headline, absorbed into the hero).
+    await expect(page.getByTestId("hero-verdict")).toContainText("Watching");
+    // One synthesis line combining the on-track verdict + the day-score summary (reused strings).
+    const synth = page.getByTestId("hero-synthesis");
+    await expect(synth).toContainText("On track");
+    await expect(synth).toContainText("brilliant day");
+    await expect(synth).toContainText("·"); // the two strings are joined into one line
+    // The explicit answer to "do I need to act?" — calm, because nothing needs attention.
+    await expect(page.getByTestId("hero-act")).toHaveText("Nothing needed from you.");
   });
 
   test("renders the status dashboard with reconstructed load", async ({ page }) => {
@@ -76,13 +93,13 @@ test.describe("EMS dashboard", () => {
     // Run-mode badge in plain language (dry-run => "Watching only"; M0a is read-only).
     await expect(page.getByTestId("run-mode-badge")).toHaveText("Watching only");
 
-    // The trimmed status grid leads with the essentials: savings, battery level and mode.
-    const grid = page.getByTestId("status-grid");
-    await expect(grid).toBeVisible();
-    await expect(grid).toContainText("55 %");
-    await expect(grid).toContainText("Battery mode");
-    await expect(grid).toContainText("auto");
-    await expect(grid).toContainText("Saved today");
+    // The live snapshot now rides the story card's footer: savings, battery level and mode.
+    const footer = page.getByTestId("story-footer");
+    await expect(footer).toBeVisible();
+    await expect(footer).toContainText("55%");
+    await expect(footer).toContainText("Battery");
+    await expect(footer).toContainText("auto");
+    await expect(footer).toContainText("Saved today");
     // The reconstructed house-load value (1.00 kW) lives with the detail metrics behind Advanced.
     await openAdvanced(page);
     const detail = page.getByTestId("detail-grid");
@@ -92,7 +109,7 @@ test.describe("EMS dashboard", () => {
 
   test("no API error banner when backend is up", async ({ page }) => {
     await page.goto("/");
-    await expect(page.getByTestId("status-grid")).toBeVisible();
+    await expect(page.getByTestId("battery-plan")).toBeVisible();
     await expect(page.getByTestId("error")).toHaveCount(0);
   });
 
@@ -110,24 +127,45 @@ test.describe("EMS dashboard", () => {
     await expect(dec).toContainText("dry-run");
   });
 
-  test("energy story tells the next-24h plan (headline, SoC, tracks, stats)", async ({ page }) => {
+  test("the story card is the single narrative; the plan holds the tracks + stats", async ({ page }) => {
     await page.goto("/");
+    // The one narrative sentence lives on the story card (battery-plan) and is visible up front.
+    await expect(page.getByTestId("battery-plan-summary")).toContainText("Next 24h");
+    // The full plan (toggle + tiles + charts) is one tap deeper.
+    await openPlan(page);
     const story = page.getByTestId("energy-story");
     await expect(story).toBeVisible();
     await expect(page.getByTestId("story-tag")).toContainText("the plan"); // Next is the default
-    await expect(page.getByTestId("story-headline")).toContainText("Next 24h");
     await expect(page.getByTestId("story-soc-line")).toBeAttached();
     await expect(page.getByTestId("story-target")).toBeAttached();
     await expect(page.getByTestId("story-reserve")).toBeAttached();
     await expect(page.getByTestId("story-stats")).toBeVisible();
     await expect(page.getByTestId("story-legend")).toBeVisible();
+    // No duplicate narrative: the plan renders WITHOUT its own headline sentence.
+    await expect(page.getByTestId("story-headline")).toHaveCount(0);
+  });
+
+  test("the full-plan disclosure is collapsed by default and opens on demand", async ({ page }) => {
+    await page.goto("/");
+    // Collapsed: the whole energy story (and its headline) is absent; the story card's narrative
+    // is the only narrative sentence on the page.
+    await expect(page.getByTestId("plan-disclosure-toggle")).toContainText("See the full plan");
+    await expect(page.getByTestId("energy-story")).toHaveCount(0);
+    await expect(page.getByTestId("story-headline")).toHaveCount(0);
+    await expect(page.getByTestId("battery-plan-summary")).toBeVisible();
+    // Open → the charts appear, still no duplicate narrative.
+    await openPlan(page);
+    await expect(page.getByTestId("energy-story")).toBeVisible();
+    await expect(page.getByTestId("story-soc-line")).toBeAttached();
+    await expect(page.getByTestId("story-headline")).toHaveCount(0);
+    await expect(page.getByTestId("plan-disclosure-toggle")).toContainText("Hide the full plan");
   });
 
   test("toggling to Last 24h switches the story", async ({ page }) => {
     await page.goto("/");
+    await openPlan(page);
     await page.getByTestId("story-past").click();
     await expect(page.getByTestId("story-tag")).toContainText("what happened");
-    await expect(page.getByTestId("story-headline")).not.toHaveText("");
     // Back to Next.
     await page.getByTestId("story-next").click();
     await expect(page.getByTestId("story-tag")).toContainText("the plan");
@@ -136,6 +174,7 @@ test.describe("EMS dashboard", () => {
   test("the next story shows an on-track verdict", async ({ page }) => {
     // The real (mock) backend always returns an on_track verdict for the next window.
     await page.goto("/");
+    await openPlan(page);
     const verdict = page.getByTestId("on-track");
     await expect(verdict).toBeVisible();
     await expect(verdict).toHaveAttribute("data-status", /ahead|on_track|behind|unknown/);
@@ -180,6 +219,7 @@ test.describe("EMS dashboard", () => {
       return route.continue();
     });
     await page.goto("/");
+    await openPlan(page);
     const verdict = page.getByTestId("on-track");
     await expect(verdict).toHaveAttribute("data-status", "behind");
     await expect(verdict).toContainText("Behind");
@@ -510,7 +550,7 @@ test.describe("EMS dashboard", () => {
     await expect(page.getByTestId("export-derived")).toBeVisible();
     await expect(page.getByTestId("export-replay")).toHaveAttribute("href", "/api/replay");
     // Dashboard panels hidden while on the System view.
-    await expect(page.getByTestId("status-grid")).toHaveCount(0);
+    await expect(page.getByTestId("battery-plan")).toHaveCount(0);
   });
 
   test("the Chat tab shows the assistant, off until AI is enabled", async ({ page }) => {
@@ -588,7 +628,7 @@ test.describe("EMS dashboard", () => {
 
   test("the AI second-opinion card is hidden when AI is off", async ({ page }) => {
     await page.goto("/");
-    await expect(page.getByTestId("status-grid")).toBeVisible();
+    await expect(page.getByTestId("battery-plan")).toBeVisible();
     // Even inside Advanced, the card renders nothing while AI is off.
     await openAdvanced(page);
     await expect(page.getByTestId("ai-validation")).toHaveCount(0);
@@ -619,7 +659,7 @@ test.describe("EMS dashboard", () => {
       }),
     );
     await page.goto("/");
-    await expect(page.getByTestId("status-grid")).toBeVisible();
+    await expect(page.getByTestId("battery-plan")).toBeVisible();
     await expect(page.getByTestId("car-card")).toHaveCount(0);
   });
 
@@ -759,12 +799,90 @@ test.describe("EMS dashboard", () => {
     await expect(page.locator(".car-cell-fill")).toHaveCount(1);
   });
 
+  test("the demo home shows a persistent nudge into real onboarding that dismisses", async ({
+    page,
+  }) => {
+    // The mock backend runs on simulated data (home_state.simulated = true) → the demo CTA shows.
+    await page.goto("/");
+    const cta = page.getByTestId("demo-cta");
+    await expect(cta).toBeVisible();
+    await expect(cta).toContainText("demo home");
+    // The link opens Settings (which lands on the Connection section by default).
+    await page.getByTestId("demo-cta-link").click();
+    await expect(page.getByTestId("nav-settings")).toHaveClass(/nav-active/);
+    await expect(page.getByTestId("settings")).toBeVisible();
+    // Back to the dashboard: still there (dismiss is per-session, not per-navigation).
+    await page.getByTestId("nav-dashboard").click();
+    await expect(page.getByTestId("demo-cta")).toBeVisible();
+    // Dismiss → gone for the session.
+    await page.getByTestId("demo-cta-dismiss").click();
+    await expect(page.getByTestId("demo-cta")).toHaveCount(0);
+    // Still gone after navigating away and back (sessionStorage holds within the session).
+    await page.getByTestId("nav-insights").click();
+    await page.getByTestId("nav-dashboard").click();
+    await expect(page.getByTestId("demo-cta")).toHaveCount(0);
+  });
+
+  test("the score pills link through to Insights", async ({ page }) => {
+    await page.goto("/");
+    const pills = page.getByTestId("home-scores");
+    await expect(pills).toBeVisible();
+    // Each pill is a button carrying its score value + copy, opening Insights on tap.
+    const pill = page.getByTestId("score-card-self_consumption");
+    await expect(pill).toBeVisible();
+    await pill.click();
+    await expect(page.getByTestId("insights")).toBeVisible();
+    await expect(page.getByTestId("nav-insights")).toHaveClass(/nav-active/);
+  });
+
+  test("an alert with safe + action fields renders structured sub-lines", async ({ page }) => {
+    // B-37 contract: alerts may carry optional `safe` (is-my-home-safe) and `action` (what-I-can-do)
+    // fields; when present the UI renders them as sub-lines, defensively skipping either if absent.
+    await page.route("**/api/alerts", (route) =>
+      route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          data_quality: "degraded",
+          alerts: [
+            {
+              key: "solar_stale",
+              severity: "warning",
+              message: "Solar reading delayed — solar accounting is less precise.",
+              safe: "Yes — this only affects solar accounting, not battery safety or control.",
+              action: "Nothing needed — EMS keeps controlling the battery normally.",
+            },
+            {
+              // No safe/action — must still render exactly as before (message only).
+              key: "bare_note",
+              severity: "info",
+              message: "A plain note with no extra fields.",
+            },
+          ],
+        }),
+      }),
+    );
+    await page.goto("/");
+    const alert = page.getByTestId("alert-solar_stale");
+    await expect(alert).toContainText("Solar reading delayed");
+    await expect(alert.getByTestId("alert-safe")).toContainText(
+      "only affects solar accounting",
+    );
+    await expect(alert.getByTestId("alert-action")).toContainText("Nothing needed");
+    // The field-less alert renders its message and NO sub-lines.
+    const bare = page.getByTestId("alert-bare_note");
+    await expect(bare).toContainText("A plain note with no extra fields.");
+    await expect(bare.getByTestId("alert-safe")).toHaveCount(0);
+    await expect(bare.getByTestId("alert-action")).toHaveCount(0);
+  });
+
   test("shows the error banner when the status API returns 500", async ({ page }) => {
     await page.route("**/api/status", (route) =>
       route.fulfill({ status: 500, contentType: "application/json", body: '{"detail":"boom"}' }),
     );
     await page.goto("/");
     await expect(page.getByTestId("error")).toBeVisible();
-    await expect(page.getByTestId("status-grid")).toHaveCount(0);
+    // The live-status-dependent detail (Advanced + its tiles) stays hidden when status can't load.
+    await expect(page.getByTestId("advanced")).toHaveCount(0);
   });
 });

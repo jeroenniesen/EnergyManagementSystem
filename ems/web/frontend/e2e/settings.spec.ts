@@ -529,4 +529,159 @@ test.describe("EMS settings", () => {
     await page.getByTestId("settings-save").click();
     await expect(page.getByTestId("err-ui.theme")).toBeVisible();
   });
+
+  // B-60: advisor suggestions gain a one-tap "Apply" — still one confirm (the existing sticky
+  // save bar), still reversible (Discard), still audit-logged server-side like any settings save.
+  test.describe("advisor 'Apply' (B-60)", () => {
+    const SCHEMA_SOLAR = [
+      {
+        key: "planner.solar_confidence", label: "Solar forecast confidence", type: "number",
+        default: 80, group: "planner", help: "", min: 30, max: 100, options: null, step: 5,
+        unit: "%", advanced: false, applies: "live", slider: true,
+      },
+    ];
+
+    test("a differing suggestion shows an Apply button; applying it dirties the field (same "
+      + "set() as the slider) and Save posts the suggested value", async ({ page }) => {
+      let saved: Record<string, unknown> = {};
+      await page.route("**/api/settings", async (route) => {
+        if (route.request().method() === "POST") {
+          saved = JSON.parse(route.request().postData() || "{}");
+          await route.fulfill({
+            status: 200, contentType: "application/json",
+            body: JSON.stringify({
+              values: { "planner.solar_confidence": saved["planner.solar_confidence"] },
+            }),
+          });
+        } else {
+          await route.fulfill({
+            status: 200, contentType: "application/json",
+            body: JSON.stringify({
+              schema: SCHEMA_SOLAR, values: { "planner.solar_confidence": 80 },
+            }),
+          });
+        }
+      });
+      await page.route("**/api/advisor/solar-confidence", async (route) => {
+        await route.fulfill({
+          status: 200, contentType: "application/json",
+          body: JSON.stringify({
+            advice: {
+              recommended_pct: 65, n_slots: 96, median_ratio_pct: 78.4, p25_ratio_pct: 63.2,
+              current_pct: 80, delta_pct: -15,
+            },
+          }),
+        });
+      });
+      await page.goto("/");
+      await page.getByTestId("nav-settings").click();
+      await page.getByTestId("group-planner").click();
+
+      await expect(page.getByTestId("advisor-solar-confidence")).toBeVisible();
+      const applyBtn = page.getByRole("button", {
+        name: "Apply suggested solar confidence 65 percent",
+      });
+      await expect(applyBtn).toBeVisible();
+      await expect(applyBtn).toHaveText("Apply 65%");
+      await expect(page.getByTestId("settings-savebar")).toHaveCount(0);
+
+      await applyBtn.click();
+
+      // The field's own value updates — it's the SAME set() the slider control uses.
+      const field = page.getByTestId("field-planner.solar_confidence");
+      await expect(field).toContainText("65");
+      // The button becomes a muted "applied — save to confirm" state.
+      await expect(page.getByTestId("advisor-solar-confidence-applied")).toBeVisible();
+      await expect(page.getByTestId("advisor-solar-confidence-apply")).toHaveCount(0);
+      // Nothing bypasses the normal path: the existing sticky save bar is the one confirm.
+      const bar = page.getByTestId("settings-savebar");
+      await expect(bar).toBeVisible();
+      await expect(bar).toContainText("1 unsaved change");
+
+      await page.getByTestId("settings-save").click();
+      await expect(page.getByTestId("settings-saved")).toBeVisible();
+      expect(saved["planner.solar_confidence"]).toBe(65);
+    });
+
+    test("editing the field manually after Apply returns the hint to normal", async ({ page }) => {
+      await page.route("**/api/settings", async (route) => {
+        if (route.request().method() === "GET") {
+          await route.fulfill({
+            status: 200, contentType: "application/json",
+            body: JSON.stringify({
+              schema: SCHEMA_SOLAR, values: { "planner.solar_confidence": 80 },
+            }),
+          });
+        } else {
+          await route.fulfill({ status: 200, contentType: "application/json", body: "{}" });
+        }
+      });
+      await page.route("**/api/advisor/solar-confidence", async (route) => {
+        await route.fulfill({
+          status: 200, contentType: "application/json",
+          body: JSON.stringify({
+            advice: {
+              recommended_pct: 65, n_slots: 96, median_ratio_pct: 78.4, p25_ratio_pct: 63.2,
+              current_pct: 80, delta_pct: -15,
+            },
+          }),
+        });
+      });
+      await page.goto("/");
+      await page.getByTestId("nav-settings").click();
+      await page.getByTestId("group-planner").click();
+
+      await page.getByRole("button", { name: "Apply suggested solar confidence 65 percent" })
+        .click();
+      await expect(page.getByTestId("advisor-solar-confidence-applied")).toBeVisible();
+
+      // A manual edit (arrow-key nudge on the slider) reverts the hint to its normal state.
+      const slider = page.locator("#set-planner\\.solar_confidence");
+      await slider.focus();
+      await slider.press("ArrowLeft");
+      await expect(slider).not.toHaveValue("65");
+
+      await expect(page.getByTestId("advisor-solar-confidence-applied")).toHaveCount(0);
+      await expect(
+        page.getByRole("button", { name: "Apply suggested solar confidence 65 percent" }),
+      ).toBeVisible();
+    });
+
+    test("a suggestion matching the current value shows a check note and no Apply button", async ({
+      page,
+    }) => {
+      await page.route("**/api/settings", async (route) => {
+        if (route.request().method() === "GET") {
+          await route.fulfill({
+            status: 200, contentType: "application/json",
+            body: JSON.stringify({
+              schema: SCHEMA_SOLAR, values: { "planner.solar_confidence": 65 },
+            }),
+          });
+        } else {
+          await route.fulfill({ status: 200, contentType: "application/json", body: "{}" });
+        }
+      });
+      await page.route("**/api/advisor/solar-confidence", async (route) => {
+        await route.fulfill({
+          status: 200, contentType: "application/json",
+          body: JSON.stringify({
+            advice: {
+              recommended_pct: 65, n_slots: 96, median_ratio_pct: 78.4, p25_ratio_pct: 63.2,
+              current_pct: 65, delta_pct: 0,
+            },
+          }),
+        });
+      });
+      await page.goto("/");
+      await page.getByTestId("nav-settings").click();
+      await page.getByTestId("group-planner").click();
+
+      const match = page.getByTestId("advisor-solar-confidence-match");
+      await expect(match).toBeVisible();
+      await expect(match).toContainText("matches your setting");
+      await expect(page.getByTestId("advisor-solar-confidence-apply")).toHaveCount(0);
+      await expect(page.getByTestId("settings-savebar")).toHaveCount(0);
+    });
+  });
 });

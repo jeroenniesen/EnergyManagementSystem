@@ -449,15 +449,56 @@ function Field({
 }
 
 // Rendered under `planner.solar_confidence` only, when 14 days of forecast-vs-actual evidence
-// support a recommendation. Purely informational — it never touches the field's value.
-function SolarConfidenceHint({ advice }: { advice: SolarConfidenceAdvice }) {
+// support a recommendation. The sentence itself never touches the field's value (B-60): adopting
+// the suggestion is an explicit "Apply" tap that calls the SAME set() the field's own control
+// uses — it makes the section dirty and raises the existing sticky save bar, so Save is the one
+// confirm and Discard cancels it, exactly like any other settings edit (audit-logged server-side,
+// reversible, never automatic).
+function SolarConfidenceHint({
+  advice,
+  currentPct,
+  applied,
+  disabled,
+  onApply,
+}: {
+  advice: SolarConfidenceAdvice;
+  currentPct: number;
+  applied: boolean;
+  disabled: boolean;
+  onApply: (pct: number) => void;
+}) {
+  const matches = Math.abs(currentPct - advice.recommended_pct) < 0.01;
   return (
-    <p className="advisor-hint" data-testid="advisor-solar-confidence">
-      Based on {advice.n_slots} matched daytime slots over the last 14 days, forecasts delivered{" "}
-      <strong>{advice.median_ratio_pct}%</strong> (typical) / <strong>{advice.p25_ratio_pct}%</strong>{" "}
-      (disappointing quarter). Suggestion: <strong>{advice.recommended_pct}%</strong>. You decide —
-      this is never applied automatically.
-    </p>
+    <>
+      <p className="advisor-hint" data-testid="advisor-solar-confidence">
+        Based on {advice.n_slots} matched daytime slots over the last 14 days, forecasts delivered{" "}
+        <strong>{advice.median_ratio_pct}%</strong> (typical) / <strong>{advice.p25_ratio_pct}%</strong>{" "}
+        (disappointing quarter). Suggestion: <strong>{advice.recommended_pct}%</strong>. You decide —
+        this is never applied automatically.
+      </p>
+      <div className="advisor-hint-action">
+        {applied ? (
+          <span className="advisor-hint-applied" data-testid="advisor-solar-confidence-applied">
+            applied — save to confirm
+          </span>
+        ) : matches ? (
+          <span className="advisor-hint-match" data-testid="advisor-solar-confidence-match">
+            ✓ matches your setting
+          </span>
+        ) : (
+          <button
+            type="button"
+            className="advisor-hint-apply"
+            data-testid="advisor-solar-confidence-apply"
+            aria-label={`Apply suggested solar confidence ${advice.recommended_pct} percent`}
+            disabled={disabled}
+            onClick={() => onApply(advice.recommended_pct)}
+          >
+            Apply {advice.recommended_pct}%
+          </button>
+        )}
+      </div>
+    </>
   );
 }
 
@@ -472,6 +513,9 @@ export function Settings({ onSaved }: { onSaved?: (values: Values) => void } = {
   const [tokenInput, setTokenInput] = useState(getToken());
   const [impact, setImpact] = useState<Impact | null>(null);
   const [solarAdvice, setSolarAdvice] = useState<SolarConfidenceAdvice | null>(null);
+  // True right after the solar-confidence hint's "Apply" is tapped, until: the field is edited
+  // manually again, the pending edit is discarded, or it's saved (B-60) — see SolarConfidenceHint.
+  const [solarAdviceApplied, setSolarAdviceApplied] = useState(false);
   const [cars, setCars] = useState<CarModel[] | null>(null);
   // --- Two-pane shell navigation state ---
   const [activeSection, setActiveSection] = useState<string | null>(null);
@@ -684,6 +728,7 @@ export function Settings({ onSaved }: { onSaved?: (values: Values) => void } = {
       if (!r.ok) throw new Error(b.detail ?? `HTTP ${r.status}`);
       setValues(b.values);
       setEdited(b.values);
+      setSolarAdviceApplied(false);
       setStatus("saved");
       if (restartGroups.length) {
         setRestartPending((prev) => new Set([...prev, ...restartGroups]));
@@ -702,6 +747,7 @@ export function Settings({ onSaved }: { onSaved?: (values: Values) => void } = {
     setEdited(values);
     setErrors({});
     setStatus("idle");
+    setSolarAdviceApplied(false);
   }
 
   if (loadError) {
@@ -774,11 +820,24 @@ export function Settings({ onSaved }: { onSaved?: (values: Values) => void } = {
             error={errors[f.key]}
             disabled={status === "saving"}
             secretSet={Boolean(values[`${f.key}.__set`])}
-            onChange={(v) => set(f.key, v)}
+            onChange={(v) => {
+              set(f.key, v);
+              // A manual edit (drag/type) after an "Apply" tap returns the hint to normal.
+              if (f.key === "planner.solar_confidence") setSolarAdviceApplied(false);
+            }}
           />
         )}
         {f.key === "planner.solar_confidence" && solarAdvice && (
-          <SolarConfidenceHint advice={solarAdvice} />
+          <SolarConfidenceHint
+            advice={solarAdvice}
+            currentPct={Number(edited[f.key] ?? f.default)}
+            applied={solarAdviceApplied}
+            disabled={status === "saving"}
+            onApply={(pct) => {
+              set(f.key, pct); // same set() the field's own control uses — dirty ⇒ sticky save bar
+              setSolarAdviceApplied(true);
+            }}
+          />
         )}
         {f.key === "ev.charger_kw" && selectedCar && (
           <p className="advisor-hint" data-testid="car-ac-hint">
