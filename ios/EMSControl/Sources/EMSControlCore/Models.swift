@@ -1366,6 +1366,7 @@ public struct CarPlanSnapshot: Codable, Equatable, Sendable {
     public let plan: CarPlanBody?
     public let effectiveKw: Double?
     public let car: CarInfo?
+    public let carMeterConfigured: Bool?
 
     public static let empty = CarPlanSnapshot(
         enabled: false,
@@ -1374,7 +1375,8 @@ public struct CarPlanSnapshot: Codable, Equatable, Sendable {
         soc: nil,
         plan: nil,
         effectiveKw: nil,
-        car: nil
+        car: nil,
+        carMeterConfigured: nil
     )
 
     public init(
@@ -1384,7 +1386,8 @@ public struct CarPlanSnapshot: Codable, Equatable, Sendable {
         soc: CarSoc?,
         plan: CarPlanBody?,
         effectiveKw: Double?,
-        car: CarInfo?
+        car: CarInfo?,
+        carMeterConfigured: Bool?
     ) {
         self.enabled = enabled
         self.needsAnchor = needsAnchor
@@ -1393,6 +1396,7 @@ public struct CarPlanSnapshot: Codable, Equatable, Sendable {
         self.plan = plan
         self.effectiveKw = effectiveKw
         self.car = car
+        self.carMeterConfigured = carMeterConfigured
     }
 }
 
@@ -1411,6 +1415,7 @@ public struct CarPlanBody: Codable, Equatable, Sendable {
     public let deadlines: [CarDeadline]
     public let windows: [CarWindow]
     public let advice: String?
+    public let negativePriceHint: String?
     public let totalEstCostEur: Double?
     public let totalPlannedKwh: Double?
 
@@ -1419,6 +1424,7 @@ public struct CarPlanBody: Codable, Equatable, Sendable {
         case deadlines
         case windows
         case advice
+        case negativePriceHint
         case totalEstCostEur
         case totalPlannedKwh
     }
@@ -1431,6 +1437,7 @@ public struct CarPlanBody: Codable, Equatable, Sendable {
         deadlines = try c.decodeIfPresent([CarDeadline].self, forKey: .deadlines) ?? []
         windows = try c.decodeIfPresent([CarWindow].self, forKey: .windows) ?? []
         advice = try c.decodeIfPresent(String.self, forKey: .advice)
+        negativePriceHint = try c.decodeIfPresent(String.self, forKey: .negativePriceHint)
         totalEstCostEur = try c.decodeIfPresent(Double.self, forKey: .totalEstCostEur)
         totalPlannedKwh = try c.decodeIfPresent(Double.self, forKey: .totalPlannedKwh)
     }

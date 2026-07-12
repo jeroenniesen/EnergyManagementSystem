@@ -653,6 +653,44 @@ test.describe("EMS dashboard", () => {
     expect(JSON.parse(req.postData() || "{}")).toEqual({ pct: 55 });
   });
 
+  test("the car card explains manual-only SoC when no EV meter is configured", async ({ page }) => {
+    await page.route("**/api/car/plan", (route) =>
+      route.fulfill({
+        status: 200, contentType: "application/json",
+        body: JSON.stringify({
+          enabled: true,
+          car_meter_configured: false,
+          plan: null,
+          soc: null,
+          needs_anchor: true,
+        }),
+      }),
+    );
+    await page.goto("/");
+    await expect(page.getByTestId("car-meter-missing")).toContainText("No EV meter");
+    await expect(page.getByTestId("car-meter-missing")).toContainText("after driving or charging");
+  });
+
+  test("the car card explains manual-only SoC in the needs-schedule state too", async ({ page }) => {
+    // Parity: the no-EV-meter warning must also show when a schedule is missing (not only in the
+    // needs-anchor state), matching the iOS card which shows it in every enabled state.
+    await page.route("**/api/car/plan", (route) =>
+      route.fulfill({
+        status: 200, contentType: "application/json",
+        body: JSON.stringify({
+          enabled: true,
+          car_meter_configured: false,
+          plan: null,
+          soc: { pct: 55, source: "manual" },
+          needs_schedule: true,
+        }),
+      }),
+    );
+    await page.goto("/");
+    await expect(page.getByTestId("car-meter-missing")).toContainText("No EV meter");
+    await expect(page.getByTestId("car-schedule-link")).toBeVisible();
+  });
+
   test("the car card shows the full plan (SoC, advice, windows, timeline)", async ({ page }) => {
     // Slot/deadline times are anchored to "now" (floored to the 15-min grid, matching the
     // card's own timeline math) so the mocked plan lands inside the card's 48h window regardless
@@ -668,6 +706,7 @@ test.describe("EMS dashboard", () => {
         status: 200, contentType: "application/json",
         body: JSON.stringify({
           enabled: true,
+          car_meter_configured: true,
           soc: {
             soc_pct: 42.3, anchor_pct: 40, anchor_ts: new Date(now - 80 * 3600000).toISOString(),
             added_kwh: 1.2, sessions_since_anchor: 1, age_hours: 80, stale: true,

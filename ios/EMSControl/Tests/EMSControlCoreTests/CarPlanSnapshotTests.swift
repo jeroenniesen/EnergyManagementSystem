@@ -19,16 +19,20 @@ final class CarPlanSnapshotTests: XCTestCase {
         XCTAssertNil(plan.needsSchedule)
         XCTAssertNil(plan.car)
         XCTAssertNil(plan.effectiveKw)
+        XCTAssertNil(plan.carMeterConfigured)
     }
 
     func testNeedsAnchorState() throws {
-        let plan = try decode(#"{"enabled": true, "plan": null, "soc": null, "needs_anchor": true}"#)
+        let plan = try decode(
+            #"{"enabled": true, "plan": null, "soc": null, "needs_anchor": true, "car_meter_configured": false}"#
+        )
 
         XCTAssertTrue(plan.enabled)
         XCTAssertEqual(plan.needsAnchor, true)
         XCTAssertNil(plan.soc)
         XCTAssertNil(plan.plan)
         XCTAssertNil(plan.needsSchedule)
+        XCTAssertEqual(plan.carMeterConfigured, false)
     }
 
     func testNeedsScheduleStateCarriesSocButNoPlan() throws {
@@ -64,6 +68,7 @@ final class CarPlanSnapshotTests: XCTestCase {
         let json = """
         {
           "enabled": true,
+          "car_meter_configured": true,
           "effective_kw": 11.0,
           "soc": {
             "soc_pct": 20.0,
@@ -112,6 +117,7 @@ final class CarPlanSnapshotTests: XCTestCase {
               }
             ],
             "advice": "Plug in Mon 02:00–05:30 (34.5 kWh, ≈ €4.05) to reach 80% by Mon 07:30.",
+            "negative_price_hint": "Prices go negative Tue 13:00–14:30 — you would be PAID to top up beyond the weekly minimum.",
             "total_est_cost_eur": 4.05,
             "total_planned_kwh": 34.5
           },
@@ -134,6 +140,7 @@ final class CarPlanSnapshotTests: XCTestCase {
         XCTAssertNil(plan.needsAnchor)
         XCTAssertNil(plan.needsSchedule)
         XCTAssertEqual(plan.effectiveKw, 11.0)
+        XCTAssertEqual(plan.carMeterConfigured, true)
         XCTAssertEqual(plan.soc?.socPct, 20.0)
         XCTAssertEqual(plan.soc?.stale, true)
 
@@ -146,6 +153,10 @@ final class CarPlanSnapshotTests: XCTestCase {
         XCTAssertEqual(body.totalPlannedKwh, 34.5)
         XCTAssertEqual(body.totalEstCostEur, 4.05)
         XCTAssertEqual(body.advice, "Plug in Mon 02:00–05:30 (34.5 kWh, ≈ €4.05) to reach 80% by Mon 07:30.")
+        XCTAssertEqual(
+            body.negativePriceHint,
+            "Prices go negative Tue 13:00–14:30 — you would be PAID to top up beyond the weekly minimum."
+        )
 
         let deadline = try XCTUnwrap(body.deadlines.first)
         XCTAssertEqual(deadline.minPct, 80)

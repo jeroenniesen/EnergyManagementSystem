@@ -2552,6 +2552,7 @@ def create_app(
             return {"enabled": False, "plan": None, "soc": None}
 
         now = datetime.now(UTC)
+        car_meter_configured = bool(str(settings_cache.get("meters.car_ip") or "").strip())
 
         # --- car SoC estimate from the manual anchor (no anchor ⇒ prompt to set one) ---
         soc = None
@@ -2560,13 +2561,19 @@ def create_app(
             if anchor is not None:
                 soc = await _car_soc_estimate(now, anchor_pct=anchor[0], anchor_ts=anchor[1])
         if soc is None:
-            return {"enabled": True, "plan": None, "soc": None, "needs_anchor": True}
+            return {
+                "enabled": True, "plan": None, "soc": None, "needs_anchor": True,
+                "car_meter_configured": car_meter_configured,
+            }
 
         # --- weekly schedule → concrete, tz-aware deadlines (empty ⇒ prompt to set a schedule) ---
         schedule = parse_schedule(settings_cache.get("ev.schedule"))
         deadlines = materialize_deadlines(schedule, now, site_tz)
         if not deadlines:
-            return {"enabled": True, "soc": soc, "plan": None, "needs_schedule": True}
+            return {
+                "enabled": True, "soc": soc, "plan": None, "needs_schedule": True,
+                "car_meter_configured": car_meter_configured,
+            }
 
         # --- effective charge power = min(charger, car AC limit) (charger alone if no car) ---
         car = car_by_id(str(settings_cache.get("ev.car_id") or ""))
@@ -2602,6 +2609,7 @@ def create_app(
             "schedule": schedule,
             "effective_kw": effective_kw,
             "car": car_to_dict(car) if car is not None else None,
+            "car_meter_configured": car_meter_configured,
         }
 
     @app.post("/api/car/soc")

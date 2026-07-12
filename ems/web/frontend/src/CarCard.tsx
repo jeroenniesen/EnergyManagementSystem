@@ -74,6 +74,7 @@ type CarPlanResp = {
   plan: Plan | null;
   needs_anchor?: boolean;
   needs_schedule?: boolean;
+  car_meter_configured?: boolean;
 };
 
 // A best-effort background refresh — the plan barely moves within a couple of minutes.
@@ -273,6 +274,11 @@ export function CarCard({ onOpenSettings }: { onOpenSettings: () => void }) {
       <section className="car-card" data-testid="car-card">
         <CardHead />
         <p className="override-hint">What&apos;s the car&apos;s charge now?</p>
+        {data.car_meter_configured === false && (
+          <p className="advisor-hint" data-testid="car-meter-missing">
+            No EV meter is configured, so update this after driving or charging.
+          </p>
+        )}
         <SocSetForm pct={pctInput} onChange={setPctInput} onSubmit={() => setSoc(pctInput)} busy={busy} />
         {err && (
           <p className="field-err" data-testid="car-error">
@@ -287,6 +293,11 @@ export function CarCard({ onOpenSettings }: { onOpenSettings: () => void }) {
     return (
       <section className="car-card" data-testid="car-card">
         <CardHead />
+        {data.car_meter_configured === false && (
+          <p className="advisor-hint" data-testid="car-meter-missing">
+            No EV meter is configured, so update the car level after driving or charging.
+          </p>
+        )}
         <p className="override-hint">No weekly minimum charge level set yet.</p>
         <button
           type="button"
@@ -358,6 +369,12 @@ export function CarCard({ onOpenSettings }: { onOpenSettings: () => void }) {
       {err && (
         <p className="field-err" data-testid="car-error">
           {err}
+        </p>
+      )}
+
+      {data.car_meter_configured === false && (
+        <p className="advisor-hint" data-testid="car-meter-missing">
+          No EV meter is configured, so this estimate only changes when you update it manually.
         </p>
       )}
 
