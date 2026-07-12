@@ -24,7 +24,12 @@ from fastapi.staticfiles import StaticFiles
 
 from ems import export_package as expkg
 from ems.alerts import data_quality, derive_alerts
-from ems.analysis import forecast_error, recommend_solar_confidence
+from ems.analysis import (
+    forecast_error,
+    load_baseline_error,
+    plan_execution_error,
+    recommend_solar_confidence,
+)
 from ems.cars import CARS
 from ems.cars import brands as car_brands
 from ems.cars import by_id as car_by_id
@@ -2563,6 +2568,42 @@ def create_app(
                 forecasts, raw, current_pct=float(current) if current is not None else None)
         return {"advice": advice}
 
+    @app.get("/api/accuracy")
+    async def accuracy() -> dict:
+        """All three forecast/prediction-accuracy tracks (B-72) in one read-only call — solar
+        forecast skill, plan-execution (target_soc-by-deadline vs. achieved SoC), and load-baseline
+        (household load vs. a naive day-of-week/hour trailing mean, the bar B-64 must beat). Each
+        is `None` below its own measurable-evidence minimum (see `ems.analysis`), independently.
+        Gathered the same way as /api/advisor/solar-confidence: solar over the last 14 days (the
+        same evidence window as that advisor); plan-execution and load need more history to reach
+        their evidence minimums (deadlines are ~daily, day-of-week/hour baselines need several
+        weeks), so those two are gathered over the last 60 days instead."""
+        solar = None
+        plan_execution = None
+        load = None
+        if store is not None:
+            now = datetime.now(UTC)
+
+            solar_start = now - timedelta(days=14)
+            solar_limit = history_row_cap(
+                (now - solar_start).total_seconds(), _sample_cadence_seconds())
+            solar_raw = await store.raw_between(
+                solar_start.isoformat(), now.isoformat(), limit=solar_limit)
+            solar_forecasts = await store.forecasts_between(
+                solar_start.isoformat(), now.isoformat())
+            solar = forecast_error(solar_forecasts, solar_raw)
+
+            long_start = now - timedelta(days=60)
+            plan_rows = await store.plan_history_between(long_start.isoformat(), now.isoformat())
+            plan_execution = plan_execution_error(plan_rows, tz=site_tz)
+
+            long_limit = history_row_cap(
+                (now - long_start).total_seconds(), _sample_cadence_seconds())
+            long_raw = await store.raw_between(
+                long_start.isoformat(), now.isoformat(), limit=long_limit)
+            load = load_baseline_error(long_raw, tz=site_tz)
+        return {"solar": solar, "plan_execution": plan_execution, "load": load}
+
     @app.get("/api/advisor/ev-charge")
     def advisor_ev_charge() -> dict:
         """Advisory-only "best time to charge the car" (docs/v2-ev-control.md: v2 EV control is
@@ -2928,6 +2969,10 @@ def create_app(
             forecasts, raw,
             current_pct=float(settings_cache.get("planner.solar_confidence", 80.0)))
         ev_adherence = expkg.ev_price_adherence(ev_sessions, prices)
+        # Two more forecast-accuracy tracks (B-72), scored off the SAME rows already fetched for
+        # plan_history.csv / raw_samples.csv above — no extra store round-trip.
+        plan_exec_error = plan_execution_error(plan, tz=site_tz)
+        load_baseline = load_baseline_error(raw, tz=site_tz)
         members = {
             "raw_samples.csv": expkg.rows_to_csv(raw, expkg.RAW_COLUMNS),
             "derived_samples.csv": expkg.rows_to_csv(derived, expkg.DERIVED_COLUMNS),
@@ -2948,6 +2993,7 @@ def create_app(
                 counts=counts, validation=validation, saved_total_eur=saved_total,
                 forecast_skill=fc_skill, solar_confidence_advice=solar_advice,
                 ev_price_adherence=ev_adherence,
+                plan_execution_error=plan_exec_error, load_baseline_error=load_baseline,
             ),
         }
         data = expkg.build_zip(members)

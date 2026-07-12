@@ -277,9 +277,12 @@ health check of production operation. All timestamps are **UTC, ISO-8601**. All 
   never set) the SoC estimate is built from — see `ems/ev_schedule.py` / `ems/ev_session.py`.
 - **validation_summary.txt** — the same health read in plain language, plus a "Solar forecast
   skill" section (bias, MAE, band coverage, actual vs forecast kWh) measuring how well the
-  day-ahead forecast tracked reality — see forecasts.csv for the raw data behind it — and an
-  "EV charging" section (sessions, kWh, volume-weighted price paid vs. the window's average price)
-  showing whether charging is actually landing in cheap windows, for tuning the schedule/algorithm.
+  day-ahead forecast tracked reality — see forecasts.csv for the raw data behind it — a
+  "Prediction accuracy" section (plan-execution: deadlines hit/missed and by how much; load
+  baseline: how predictable the household's own load is against a naive trailing day-of-week/hour
+  average, the bar a future load model must beat) — and an "EV charging" section (sessions, kWh,
+  volume-weighted price paid vs. the window's average price) showing whether charging is actually
+  landing in cheap windows, for tuning the schedule/algorithm.
 
 ## Loading (Python / pandas)
 ```python
@@ -343,6 +346,41 @@ def _forecast_skill_lines(
     return lines
 
 
+def _prediction_accuracy_lines(
+    plan_execution_error: dict[str, Any] | None,
+    load_baseline_error: dict[str, Any] | None,
+) -> list[str]:
+    """The 'Prediction accuracy' section — solar has its own dedicated section above (it always
+    has SOME evidence to show, even a 'no matched slots yet' one-liner); this one covers the two
+    tracks that can genuinely have NO evidence yet (`ems.analysis.plan_execution_error` /
+    `load_baseline_error`, which return `None` below their measurable-evidence minimum), so each
+    line is independently omitted when its input is `None`. The whole section is omitted only when
+    BOTH are `None` (nothing at all to show — same "omitted for older/data-less callers" pattern as
+    `_ev_charging_lines`)."""
+    if plan_execution_error is None and load_baseline_error is None:
+        return []
+    lines = ["", "Prediction accuracy"]
+    if plan_execution_error is not None:
+        n = plan_execution_error["n_deadlines"]
+        mean_err = plan_execution_error["mean_error_pp"]
+        mae = plan_execution_error["mae_pp"]
+        hit = plan_execution_error["hit_rate_pct"]
+        lines.append(
+            f"  Plan execution:  {n} deadlines, mean error {mean_err:+.1f}pp, "
+            f"MAE {mae:.1f}pp, hit rate {hit:.1f}%"
+        )
+    if load_baseline_error is not None:
+        n_hours = load_baseline_error["n_hours"]
+        mape = load_baseline_error["mape_pct"]
+        bias = load_baseline_error["bias_w"]
+        mape_text = f"{mape:.1f}%" if mape is not None else "—"
+        lines.append(
+            f"  Load baseline:   {n_hours} hours, MAPE {mape_text}, bias {bias:+.1f} W "
+            "(naive day-of-week/hour trailing mean — the bar B-64 must beat)"
+        )
+    return lines
+
+
 def _ev_charging_lines(ev_price_adherence: dict[str, Any] | None) -> list[str]:
     """The 'EV charging' section — omitted entirely when no adherence dict is given (feature off
     / older callers), and reduced to a one-liner when no sessions have been detected yet. Compares
@@ -388,6 +426,8 @@ def validation_summary(
     forecast_skill: dict[str, Any] | None = None,
     solar_confidence_advice: dict[str, Any] | None = None,
     ev_price_adherence: dict[str, Any] | None = None,
+    plan_execution_error: dict[str, Any] | None = None,
+    load_baseline_error: dict[str, Any] | None = None,
 ) -> str:
     """A one-screen, plain-language health read derived from the manifest data, so a reviewer (or
     the operator) can see at a glance whether the system is collecting data and operating sanely.
@@ -398,7 +438,12 @@ def validation_summary(
     this never changes `planner.solar_confidence`, it only reports the evidence-based suggestion.
     `ev_price_adherence` is the optional `ev_price_adherence(...)` result (this module) — when
     given, an 'EV charging' section is appended (omitted for older callers, default None, so this
-    stays backward compatible)."""
+    stays backward compatible).
+    `plan_execution_error` / `load_baseline_error` are the optional
+    `ems.analysis.plan_execution_error(...)` / `ems.analysis.load_baseline_error(...)` results —
+    when EITHER is given (not None), a 'Prediction accuracy' section is appended with whichever
+    line(s) are available (each independently omitted if its own input is None — both functions
+    return None below their measurable-evidence minimum, same as a feature with no evidence yet)."""
     op = validation.get("operational", {})
     health = validation.get("health", {})
     rec = health.get("recorder") or {}
@@ -432,6 +477,7 @@ def validation_summary(
         f"  Most recent:    {incidents.get('most_recent') or '—'}",
         f"  By type:        {by_type_text}",
         *_forecast_skill_lines(forecast_skill, solar_confidence_advice),
+        *_prediction_accuracy_lines(plan_execution_error, load_baseline_error),
         *_ev_charging_lines(ev_price_adherence),
         "",
         "Result",
