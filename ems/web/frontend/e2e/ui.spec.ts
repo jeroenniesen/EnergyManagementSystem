@@ -976,4 +976,87 @@ test.describe("EMS dashboard", () => {
     // The live-status-dependent detail (Advanced + its tiles) stays hidden when status can't load.
     await expect(page.getByTestId("advanced")).toHaveCount(0);
   });
+
+  // B-20: the header bell — an in-app surface for the notification outbox.
+  test("the header bell shows an unread dot and opens a dropdown with recent notifications", async ({
+    page,
+  }) => {
+    await page.route(/\/api\/notifications(\?.*)?$/, (route) =>
+      route.fulfill({
+        status: 200, contentType: "application/json",
+        body: JSON.stringify({
+          unread: 1,
+          items: [
+            {
+              id: 2, ts: new Date().toISOString(), key: "backup_failed", title: "Backup failed",
+              body: "Today's scheduled backup didn't complete. Your data is safe.",
+              confidence: null, read: false, delivered: ["in_app"], dedupe_key: "backup_failed:x",
+            },
+            {
+              id: 1, ts: new Date(Date.now() - 3600e3).toISOString(), key: "backup_failed",
+              title: "Backup failed", body: "An earlier failure.", confidence: null, read: true,
+              delivered: ["in_app", "ntfy"], dedupe_key: "backup_failed:y",
+            },
+          ],
+        }),
+      }),
+    );
+    await page.goto("/");
+    const bell = page.getByTestId("notif-bell");
+    await expect(bell).toBeVisible();
+    await expect(page.getByTestId("notif-unread-dot")).toBeVisible();
+    await expect(page.getByTestId("notif-panel")).toHaveCount(0);
+
+    await bell.click();
+    const panel = page.getByTestId("notif-panel");
+    await expect(panel).toBeVisible();
+    await expect(bell).toHaveAttribute("aria-expanded", "true");
+    await expect(page.getByTestId("notif-item-2")).toContainText("Backup failed");
+    await expect(page.getByTestId("notif-item-1")).toContainText("An earlier failure.");
+
+    // Esc closes the dropdown.
+    await page.keyboard.press("Escape");
+    await expect(panel).toHaveCount(0);
+    await expect(bell).toHaveAttribute("aria-expanded", "false");
+  });
+
+  test("marking all notifications read POSTs and clears the unread dot", async ({ page }) => {
+    await page.route(/\/api\/notifications(\?.*)?$/, (route) =>
+      route.fulfill({
+        status: 200, contentType: "application/json",
+        body: JSON.stringify({
+          unread: 1,
+          items: [{
+            id: 1, ts: new Date().toISOString(), key: "backup_failed", title: "Backup failed",
+            body: "Today's scheduled backup didn't complete.", confidence: null, read: false,
+            delivered: ["in_app"], dedupe_key: "backup_failed:x",
+          }],
+        }),
+      }),
+    );
+    let readRequestBody: string | null = null;
+    await page.route("**/api/notifications/read", async (route) => {
+      readRequestBody = route.request().postData();
+      await route.fulfill({ status: 200, contentType: "application/json", body: '{"unread":0}' });
+    });
+    await page.goto("/");
+    await page.getByTestId("notif-bell").click();
+    await page.getByTestId("notif-mark-all-read").click();
+    await expect(page.getByTestId("notif-unread-dot")).toHaveCount(0);
+    expect(JSON.parse(readRequestBody ?? "{}")).toEqual({ all: true });
+  });
+
+  test("the bell shows no unread dot when there are no notifications", async ({ page }) => {
+    await page.route(/\/api\/notifications(\?.*)?$/, (route) =>
+      route.fulfill({
+        status: 200, contentType: "application/json",
+        body: JSON.stringify({ unread: 0, items: [] }),
+      }),
+    );
+    await page.goto("/");
+    await expect(page.getByTestId("notif-bell")).toBeVisible();
+    await expect(page.getByTestId("notif-unread-dot")).toHaveCount(0);
+    await page.getByTestId("notif-bell").click();
+    await expect(page.getByTestId("notif-empty")).toContainText("No notifications yet.");
+  });
 });

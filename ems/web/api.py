@@ -59,6 +59,7 @@ from ems.finance import day_finance
 from ems.freshness import FreshnessTracker
 from ems.lifecycle import OwnershipState
 from ems.load_model import reconstruct
+from ems.notify import Notifier
 from ems.planner.adaptive import AdaptiveConfig
 from ems.planner.charge_need import compute_charge_need
 from ems.planner.explain import (
@@ -113,7 +114,7 @@ def _task_died(name: str):
 
 
 async def _run_backup(store: HistoryStore, db_path: str, keep: int,
-                      state: dict[str, Any]) -> None:
+                      state: dict[str, Any], notifier: Notifier | None = None) -> None:
     """Once-per-maintenance-cycle online DB backup + rotation (SPEC §11 durability). Writes
     `<db_dir>/backups/ems-YYYYMMDD.sqlite` (one snapshot per UTC day; skipped if today's already
     exists, so restarts don't re-snapshot), then prunes so only the newest `keep` snapshots remain
@@ -121,7 +122,12 @@ async def _run_backup(store: HistoryStore, db_path: str, keep: int,
 
     Best-effort: on ANY failure it logs loudly, records last_backup_ok=False in `state`, and NEVER
     raises — a durability hiccup must not kill the maintenance loop that also runs retention + WAL
-    truncation. `state` is mutated in place (surfaced via /api/diagnostics)."""
+    truncation. `state` is mutated in place (surfaced via /api/diagnostics).
+
+    B-20 (first notification source, proving the outbox rails end-to-end): a failure pushes a
+    calm `backup_failed` notification, deduped per UTC calendar day — repeated failures the SAME
+    day are silent after the first, but a failure on a NEW day notifies again. A successful backup
+    never sends anything (`notifier` itself is best-effort and never raises)."""
     if keep <= 0:
         return  # backups disabled by config (history.backup_keep = 0)
     now = datetime.now(UTC)
@@ -146,6 +152,14 @@ async def _run_backup(store: HistoryStore, db_path: str, keep: int,
         state["last_backup_ok"] = False
         _log.warning("history backup failed (%s: %s); retrying next cycle",
                      type(exc).__name__, exc)
+        if notifier is not None:
+            await notifier.send(
+                "backup_failed", "Backup failed",
+                "Today's scheduled backup of your energy history didn't complete. Your data is "
+                "safe — nothing has been lost, and EMS will try again automatically tomorrow. "
+                "Check available disk space if this keeps happening.",
+                dedupe_key=f"backup_failed:{now:%Y-%m-%d}",
+            )
 
 
 _recorder_died = _task_died("Recorder")
@@ -407,6 +421,10 @@ def create_app(
         "last_backup_ts": None, "last_backup_ok": None,
         "last_backup_size": None, "backups_kept": 0,
     }
+    # Notification outbox (B-20): built from the SAME history store + the live settings cache, so
+    # a just-saved ntfy url/topic applies to the very next send without a restart. None when no
+    # store is configured (e.g. some unit tests) — _run_backup treats a None notifier as a no-op.
+    notifier = Notifier(store, settings_cache) if store is not None else None
 
     def _apply_control_settings() -> None:
         """Push the control.* settings onto the live controller (preserves its switch counters)."""
@@ -823,7 +841,7 @@ def create_app(
             # Backup is its OWN best-effort step (never raises): a failed backup must not skip the
             # retention/WAL work above, nor vice-versa. Runs after maintain() so it snapshots the
             # freshly-checkpointed DB.
-            await _run_backup(store, store.db_path, history_backup_keep, _backup_state)
+            await _run_backup(store, store.db_path, history_backup_keep, _backup_state, notifier)
 
     async def _shutdown_restore() -> None:
         """Graceful-shutdown safety (SPEC §6.5 / runbook): in operational mode, hand the battery
@@ -950,6 +968,7 @@ def create_app(
     # too — do that before reaching the app over a VPN / from outside the home network.
     _WRITE_API_PATHS = frozenset({
         "/api/override", "/api/settings", "/api/ai/validate", "/api/chat", "/api/car/soc",
+        "/api/notifications/read",
     })
     # Always reachable without a token: auth discovery, so a client can learn a token is required
     # and prompt for it. (Health probes live under /health and are never gated here.)
@@ -3134,6 +3153,36 @@ def create_app(
         if audit_store is None:
             return {"incidents": expkg.incident_rollup([])}
         return {"incidents": expkg.incident_rollup(await audit_store.recent(limit=5000))}
+
+    @app.get("/api/notifications")
+    async def notifications_endpoint(
+        limit: int = Query(default=50, ge=1, le=200),
+    ) -> dict:
+        """The outbox feed for the header bell (B-20): most recent notifications + the unread
+        count. Read-only, like /api/audit — gated only when `web.require_auth` is on. Empty when
+        no history store is configured. A 30-day window is generous: notifications are sparse by
+        construction (dedupe_key), so this never approaches the 500-row internal cap."""
+        if store is None:
+            return {"items": [], "unread": 0}
+        now = datetime.now(UTC)
+        start = now - timedelta(days=30)
+        rows = await store.notifications_between(start.isoformat(), now.isoformat(), limit=500)
+        items = list(reversed(rows))[:limit]  # newest-first for the dropdown feed
+        return {"items": items, "unread": await store.unread_count()}
+
+    @app.post("/api/notifications/read")
+    async def mark_notifications_read_endpoint(body: dict | None = None) -> JSONResponse:
+        """Mark notifications read: {"all": true} marks every unread row, {"ids": [1, 2, 3]} marks
+        just those (an unknown id is silently ignored). Auth is enforced centrally by the
+        _enforce_access middleware (writes always gated)."""
+        if store is None:
+            return JSONResponse({"detail": "history store not configured"}, status_code=503)
+        body = body or {}
+        mark_all = bool(body.get("all"))
+        raw_ids = body.get("ids") if not mark_all else None
+        ids = [int(i) for i in raw_ids] if isinstance(raw_ids, list) else None
+        await store.mark_notifications_read(ids=ids, mark_all=mark_all)
+        return JSONResponse({"unread": await store.unread_count()})
 
     @app.get("/api/ai/validation")
     def ai_validation_latest() -> dict:

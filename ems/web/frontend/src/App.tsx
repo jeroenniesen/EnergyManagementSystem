@@ -15,6 +15,7 @@ import {
   RUN_MODE,
   SIGNAL_NAME,
 } from "./labels";
+import { NotificationBell } from "./Notifications";
 import { OverrideCard } from "./Override";
 import { CarCard } from "./CarCard";
 import { Settings } from "./Settings";
@@ -484,6 +485,7 @@ export function App() {
             {DATA_QUALITY[alertsData.data_quality]?.label ?? humanize(alertsData.data_quality)}
           </span>
         )}
+        <NotificationBell />
         <nav className="nav" aria-label="Views">
           <button
             className={`nav-btn${view === "dashboard" ? " nav-active" : ""}`}

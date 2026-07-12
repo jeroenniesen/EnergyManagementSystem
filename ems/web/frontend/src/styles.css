@@ -212,6 +212,83 @@ body {
   .topbar h1 { flex: 1 0 100%; }
 }
 
+/* Header notification bell (B-20) — sits on the same dark scrim as the nav, so it's styled light
+   like .topbar .nav-btn rather than the in-body button variants. */
+.notif-bell-wrap { position: relative; }
+.notif-bell {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  background: transparent;
+  color: rgba(240, 245, 255, 0.78);
+  cursor: pointer;
+  transition: background 0.15s ease, color 0.15s ease;
+}
+.notif-bell:hover { color: #fff; background: rgba(255, 255, 255, 0.14); }
+.notif-bell:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.notif-dot {
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--error);
+  border: 1.5px solid rgba(6, 11, 30, 0.9);
+}
+.notif-panel {
+  position: absolute;
+  right: 0;
+  top: calc(100% + 8px);
+  z-index: 60;
+  width: 320px;
+  max-width: calc(100vw - 32px);
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.35);
+  padding: 12px;
+  color: var(--text);
+}
+.notif-panel-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+.notif-mark-all { font-size: 0.72rem; padding: 4px 9px; }
+.notif-empty { color: var(--muted); font-size: 0.82rem; margin: 6px 0 2px; }
+.notif-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-height: 340px;
+  overflow-y: auto;
+}
+.notif-item {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: var(--panel-2);
+  border-left: 3px solid transparent;
+}
+.notif-unread { border-left-color: var(--accent); }
+.notif-item-title { font-size: 0.82rem; font-weight: 600; }
+.notif-item-body { font-size: 0.78rem; color: var(--muted); line-height: 1.35; }
+.notif-item-time { font-size: 0.68rem; color: var(--muted); }
+
 .badge {
   white-space: nowrap;
   font-size: 0.72rem;
