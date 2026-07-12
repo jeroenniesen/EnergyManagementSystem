@@ -11,8 +11,11 @@ Everything here is pure (no I/O) so it is trivially unit-testable.
 """
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 from typing import Any
+
+from ems.ev_schedule import default_schedule
 
 
 @dataclass(frozen=True)
@@ -388,6 +391,10 @@ SETTINGS_SCHEMA: tuple[SettingsField, ...] = (
         "ev.charger_kw", "Charger power", "number", 11.0, "ev",
         help="The car charger's power — sets how long a charge takes.",
         min=1.0, max=22.0, step=0.5, unit="kW",
+    ),
+    SettingsField(
+        "ev.schedule", "Weekly charge schedule", "text", json.dumps(default_schedule()), "ev",
+        help="Weekly minimum charge schedule — edited with the schedule editor below.",
     ),
     # --- Appearance ---
     SettingsField(

@@ -162,6 +162,101 @@ test.describe("EMS settings", () => {
     expect(saved["ui.theme"]).toBe("dark");
   });
 
+  test("the Car group shows the 7-day weekly charge schedule editor", async ({ page }) => {
+    const defaultSchedule = JSON.stringify({
+      mon: { enabled: false, min_pct: 80, ready_by: "07:30" },
+      tue: { enabled: false, min_pct: 80, ready_by: "07:30" },
+      wed: { enabled: false, min_pct: 80, ready_by: "07:30" },
+      thu: { enabled: false, min_pct: 80, ready_by: "07:30" },
+      fri: { enabled: false, min_pct: 80, ready_by: "07:30" },
+      sat: { enabled: false, min_pct: 80, ready_by: "07:30" },
+      sun: { enabled: false, min_pct: 80, ready_by: "07:30" },
+    });
+    const SCHEMA_EV = [
+      {
+        key: "ev.schedule", label: "Weekly charge schedule", type: "text", default: defaultSchedule,
+        group: "ev", help: "Weekly minimum charge schedule — edited with the schedule editor below.",
+        min: null, max: null, options: null, step: null, unit: "", advanced: false, applies: "live",
+      },
+    ];
+    await page.route("**/api/settings", async (route) => {
+      if (route.request().method() === "GET") {
+        await route.fulfill({
+          status: 200, contentType: "application/json",
+          body: JSON.stringify({ schema: SCHEMA_EV, values: { "ev.schedule": defaultSchedule } }),
+        });
+      } else {
+        await route.fulfill({ status: 200, contentType: "application/json", body: "{}" });
+      }
+    });
+    await page.goto("/");
+    await page.getByTestId("nav-settings").click();
+    await page.getByTestId("group-ev").click();
+    await expect(page.getByTestId("field-ev.schedule")).toBeVisible();
+    // All 7 days render as a row (enable toggle + min% + ready-by), not a raw JSON textbox.
+    for (const day of ["mon", "tue", "wed", "thu", "fri", "sat", "sun"]) {
+      await expect(page.getByTestId(`ev-schedule-${day}-enabled`)).toBeVisible();
+      await expect(page.getByTestId(`ev-schedule-${day}-min-pct`)).toHaveValue("80");
+      await expect(page.getByTestId(`ev-schedule-${day}-ready-by`)).toHaveValue("07:30");
+    }
+  });
+
+  test("toggling a schedule day and saving POSTs a valid ev.schedule JSON string", async ({
+    page,
+  }) => {
+    const defaultSchedule = JSON.stringify({
+      mon: { enabled: false, min_pct: 80, ready_by: "07:30" },
+      tue: { enabled: false, min_pct: 80, ready_by: "07:30" },
+      wed: { enabled: false, min_pct: 80, ready_by: "07:30" },
+      thu: { enabled: false, min_pct: 80, ready_by: "07:30" },
+      fri: { enabled: false, min_pct: 80, ready_by: "07:30" },
+      sat: { enabled: false, min_pct: 80, ready_by: "07:30" },
+      sun: { enabled: false, min_pct: 80, ready_by: "07:30" },
+    });
+    const SCHEMA_EV = [
+      {
+        key: "ev.schedule", label: "Weekly charge schedule", type: "text", default: defaultSchedule,
+        group: "ev", help: "Weekly minimum charge schedule — edited with the schedule editor below.",
+        min: null, max: null, options: null, step: null, unit: "", advanced: false, applies: "live",
+      },
+    ];
+    let saved: Record<string, unknown> = {};
+    await page.route("**/api/settings", async (route) => {
+      if (route.request().method() === "POST") {
+        saved = JSON.parse(route.request().postData() || "{}");
+        await route.fulfill({
+          status: 200, contentType: "application/json",
+          body: JSON.stringify({ values: { "ev.schedule": saved["ev.schedule"] } }),
+        });
+      } else {
+        await route.fulfill({
+          status: 200, contentType: "application/json",
+          body: JSON.stringify({ schema: SCHEMA_EV, values: { "ev.schedule": defaultSchedule } }),
+        });
+      }
+    });
+    await page.goto("/");
+    await page.getByTestId("nav-settings").click();
+    await page.getByTestId("group-ev").click();
+    const save = page.getByTestId("settings-save");
+    await expect(save).toBeDisabled();
+    await page.getByTestId("ev-schedule-mon-enabled").check();
+    await page.getByTestId("ev-schedule-mon-ready-by").fill("06:15");
+    await page.getByTestId("ev-schedule-mon-min-pct").fill("90");
+    await expect(save).toBeEnabled();
+    await save.click();
+    await expect(page.getByTestId("settings-saved")).toBeVisible();
+
+    expect(typeof saved["ev.schedule"]).toBe("string");
+    const posted = JSON.parse(saved["ev.schedule"] as string);
+    expect(posted.mon).toEqual({ enabled: true, min_pct: 90, ready_by: "06:15" });
+    // Untouched days keep their (valid) default shape.
+    expect(posted.tue).toEqual({ enabled: false, min_pct: 80, ready_by: "07:30" });
+    expect(Object.keys(posted).sort()).toEqual(
+      ["fri", "mon", "sat", "sun", "thu", "tue", "wed"],
+    );
+  });
+
   test("an invalid value surfaces a per-field error from the API", async ({ page }) => {
     await page.route("**/api/settings", async (route) => {
       if (route.request().method() === "POST") {

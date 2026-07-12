@@ -1,3 +1,6 @@
+import json
+
+from ems.ev_schedule import default_schedule
 from ems.settings import (
     SETTINGS_BY_KEY,
     defaults,
@@ -79,3 +82,20 @@ def test_validate_range_bounds():
 def test_validate_non_dict_payload():
     clean, errors = validate_settings([1, 2, 3])
     assert clean == {} and "_" in errors
+
+
+def test_ev_schedule_field_defaults_to_default_schedule_json():
+    field = SETTINGS_BY_KEY["ev.schedule"]
+    assert field.type == "text"
+    assert field.group == "ev"
+    assert json.loads(field.default) == default_schedule()
+    assert json.loads(defaults()["ev.schedule"]) == default_schedule()
+
+
+def test_ev_schedule_field_accepts_arbitrary_json_string():
+    # The schema field is a plain string type — validation stays generic; ems.ev_schedule owns
+    # the tolerant parsing/shape rules, applied when the value is actually consumed.
+    payload = json.dumps({"mon": {"enabled": True, "min_pct": 90, "ready_by": "06:00"}})
+    clean, errors = validate_settings({"ev.schedule": payload})
+    assert errors == {}
+    assert clean["ev.schedule"] == payload
