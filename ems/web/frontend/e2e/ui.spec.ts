@@ -611,36 +611,107 @@ test.describe("EMS dashboard", () => {
     await expect(page.getByTestId("ai-check")).toBeVisible();
   });
 
-  test("the EV advice card is absent when there's no advice", async ({ page }) => {
-    await page.route("**/api/advisor/ev-charge", (route) =>
+  test("the car card is absent when the EV feature is off", async ({ page }) => {
+    await page.route("**/api/car/plan", (route) =>
       route.fulfill({
         status: 200, contentType: "application/json",
-        body: JSON.stringify({ advice: null }),
+        body: JSON.stringify({ enabled: false, plan: null, soc: null }),
       }),
     );
     await page.goto("/");
     await expect(page.getByTestId("status-grid")).toBeVisible();
-    await expect(page.getByTestId("ev-advice")).toHaveCount(0);
+    await expect(page.getByTestId("car-card")).toHaveCount(0);
   });
 
-  test("the EV advice card shows the cheapest window when enabled (mocked)", async ({ page }) => {
-    await page.route("**/api/advisor/ev-charge", (route) =>
+  test("the car card asks for the car's charge level when there's no SoC anchor yet", async ({ page }) => {
+    await page.route("**/api/car/plan", (route) =>
+      route.fulfill({
+        status: 200, contentType: "application/json",
+        body: JSON.stringify({ enabled: true, plan: null, soc: null, needs_anchor: true }),
+      }),
+    );
+    await page.route("**/api/car/soc", (route) =>
       route.fulfill({
         status: 200, contentType: "application/json",
         body: JSON.stringify({
-          advice: {
-            start: "2026-06-28T02:00:00+00:00", end: "2026-06-28T04:00:00+00:00",
-            est_cost_eur: 1.23, solar_share_pct: 0, slots: 8,
-            reason: "Cheapest 2h window before your 07:30 departure.",
+          soc: {
+            soc_pct: 55, anchor_pct: 55, anchor_ts: new Date().toISOString(),
+            added_kwh: 0, sessions_since_anchor: 0, age_hours: 0, stale: false,
           },
         }),
       }),
     );
     await page.goto("/");
-    await expect(page.getByTestId("ev-advice")).toBeVisible();
-    await expect(page.getByTestId("ev-advice")).toContainText("Best time to charge the car");
-    await expect(page.getByTestId("ev-advice-window")).toContainText("€1.23");
-    await expect(page.getByTestId("ev-advice")).toContainText("never controls the car");
+    const card = page.getByTestId("car-card");
+    await expect(card).toBeVisible();
+    await expect(card).toContainText("What's the car's charge now?");
+    await page.getByTestId("car-soc-input").fill("55");
+    const [req] = await Promise.all([
+      page.waitForRequest("**/api/car/soc"),
+      page.getByTestId("car-soc-set").click(),
+    ]);
+    expect(JSON.parse(req.postData() || "{}")).toEqual({ pct: 55 });
+  });
+
+  test("the car card shows the full plan (SoC, advice, windows, timeline)", async ({ page }) => {
+    // Slot/deadline times are anchored to "now" (floored to the 15-min grid, matching the
+    // card's own timeline math) so the mocked plan lands inside the card's 48h window regardless
+    // of when the suite happens to run.
+    const floor15 = (ms: number) => Math.floor(ms / (15 * 60000)) * (15 * 60000);
+    const now = Date.now();
+    const s1 = floor15(now + 2 * 3600000);
+    const s2 = s1 + 15 * 60000;
+    const deadlineIso = new Date(floor15(now + 20 * 3600000)).toISOString();
+
+    await page.route("**/api/car/plan", (route) =>
+      route.fulfill({
+        status: 200, contentType: "application/json",
+        body: JSON.stringify({
+          enabled: true,
+          soc: {
+            soc_pct: 42.3, anchor_pct: 40, anchor_ts: new Date(now - 80 * 3600000).toISOString(),
+            added_kwh: 1.2, sessions_since_anchor: 1, age_hours: 80, stale: true,
+          },
+          plan: {
+            soc: 42.3,
+            deadlines: [
+              { ready_by: deadlineIso, min_pct: 80, required_kwh: 3.33, planned_kwh: 3.33,
+                pending_kwh: 0, shortfall_kwh: 0, already_met: false, feasible: true },
+            ],
+            slots: [
+              { start: new Date(s1).toISOString(), kw: 7.4, ac_kwh: 1.85, battery_kwh: 1.67,
+                eur_per_kwh_effective: 0.18, est_cost_eur: 0.33, solar_surplus: false,
+                for_deadline: deadlineIso },
+              { start: new Date(s2).toISOString(), kw: 7.4, ac_kwh: 1.85, battery_kwh: 1.67,
+                eur_per_kwh_effective: 0.05, est_cost_eur: 0.09, solar_surplus: true,
+                for_deadline: deadlineIso },
+            ],
+            windows: [
+              { start: new Date(s1).toISOString(), end: new Date(s2 + 15 * 60000).toISOString(),
+                ac_kwh: 3.7, battery_kwh: 3.33, est_cost_eur: 0.42, solar_share_pct: 50,
+                reason: "Cheapest slots to reach 80%." },
+            ],
+            advice: "Plug in this afternoon to reach 80% by tomorrow.",
+            total_est_cost_eur: 0.42, total_planned_kwh: 3.33,
+          },
+        }),
+      }),
+    );
+    await page.goto("/");
+    const card = page.getByTestId("car-card");
+    await expect(card).toBeVisible();
+    await expect(page.getByTestId("car-soc-value")).toHaveText("42.3%");
+    await expect(page.getByTestId("car-soc-stale")).toBeVisible();
+    await expect(page.getByTestId("car-next-deadline")).toContainText("≥80%");
+    await expect(page.getByTestId("car-advice")).toContainText("Plug in this afternoon");
+    await expect(page.getByTestId("car-window-row").first()).toContainText("3.3 kWh");
+    await expect(page.getByTestId("car-window-row").first()).toContainText("50% sun");
+    // The 48h strip is always the full 192-cell grid; allocated slots are overlaid on it, a solar
+    // slot distinguished from a plain one by class (each also carries a title/tooltip — never
+    // color alone).
+    await expect(page.getByTestId("car-timeline-cell")).toHaveCount(192);
+    await expect(page.locator(".car-cell-solar")).toHaveCount(1);
+    await expect(page.locator(".car-cell-fill")).toHaveCount(1);
   });
 
   test("shows the error banner when the status API returns 500", async ({ page }) => {

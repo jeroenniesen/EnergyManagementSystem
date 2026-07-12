@@ -758,16 +758,79 @@ body {
 }
 .badge-car svg { flex: none; }
 
-/* Opt-in, advisory-only "best time to charge the car" card (never controls the car). */
-.ev-advice {
+/* Opt-in, advisory-only car-charging plan card (design 2026-07-12) — never controls the car,
+   only tells the user when to plug in. */
+.car-card {
   margin-top: 24px; background: var(--panel); border: 1px solid var(--line);
   border-left: 3px solid var(--car); border-radius: var(--radius); padding: 14px 18px;
   box-shadow: var(--shadow);
 }
-.ev-advice-window {
-  margin: 8px 0 0; font-size: 0.95rem; font-weight: 600; font-variant-numeric: tabular-nums;
+.car-dot {
+  display: inline-block; width: 8px; height: 8px; border-radius: 999px;
+  background: var(--car); margin-right: 6px;
 }
-.ev-advice-footer { margin: 10px 0 0; font-size: 0.74rem; color: var(--muted); }
+.car-anchor-form { margin-top: 10px; }
+.car-pct-input {
+  font: inherit; font-variant-numeric: tabular-nums; color: var(--text);
+  background: var(--panel-2); border: 1px solid var(--line); border-radius: 8px;
+  padding: 8px 10px; width: 84px;
+}
+.car-pct-input:focus { outline: none; border-color: var(--accent); }
+.car-pct-input:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+
+.car-soc-row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-top: 8px; }
+.car-soc-value { font-size: 1.6rem; font-weight: 700; font-variant-numeric: tabular-nums; }
+.car-soc-meta { color: var(--muted); font-size: 0.78rem; }
+.car-edit-btn {
+  font: inherit; background: transparent; border: 1px solid var(--line); border-radius: 8px;
+  color: var(--muted); width: 26px; height: 26px; line-height: 1; cursor: pointer;
+}
+.car-edit-btn:hover { color: var(--text); border-color: var(--muted); }
+.car-edit-btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+.car-deadline-chip {
+  display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-top: 12px;
+  background: var(--panel-2); border-radius: 10px; padding: 8px 12px;
+}
+.car-tick-good { color: var(--green-text); }
+.car-tick-warn { color: var(--amber-text); }
+.car-tick-bad { color: var(--error); }
+.car-deadline-text { font-weight: 600; font-variant-numeric: tabular-nums; }
+.badge-danger { background: rgba(220, 80, 80, 0.16); color: var(--error); text-transform: none; letter-spacing: 0; }
+
+.car-advice { margin: 12px 0 0; font-size: 0.95rem; font-weight: 600; }
+
+.car-windows { list-style: none; margin: 12px 0 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+.car-window-row {
+  font-size: 0.82rem; color: var(--muted); font-variant-numeric: tabular-nums;
+  background: var(--panel-2); border-radius: 8px; padding: 6px 10px;
+}
+
+/* The 48h plug-in timeline: one flex row of 15-min cells, none of which shrink — the strip is
+   wider than the card and scrolls horizontally in its own container (mobile-safe). Midnight
+   ticks/day-labels and deadline flags are absolutely positioned within the wrap's padding so
+   they never get clipped despite `overflow-x: auto` forcing `overflow-y` to compute to `auto`. */
+.car-timeline-wrap { margin-top: 14px; overflow-x: auto; padding: 16px 2px 20px; }
+.car-timeline-track { position: relative; display: flex; height: 24px; }
+.car-timeline-cell {
+  flex: 0 0 6px; width: 6px; height: 100%; margin-right: 1px;
+  background: var(--line); opacity: 0.45; border-radius: 1px;
+}
+.car-cell-fill { background: var(--accent); opacity: 1; }
+.car-cell-solar { background: var(--summer); opacity: 1; }
+.car-timeline-midnight {
+  position: absolute; top: -4px; bottom: -4px; width: 0; border-left: 1px dashed var(--line);
+}
+.car-timeline-day-label {
+  position: absolute; top: 100%; left: 4px; margin-top: 2px;
+  font-size: 0.68rem; color: var(--muted); white-space: nowrap;
+}
+.car-timeline-deadline {
+  position: absolute; top: -14px; bottom: 0; width: 0; border-left: 1.5px solid var(--summer);
+}
+.car-timeline-flag {
+  position: absolute; top: -14px; left: -1px; font-size: 0.8rem; line-height: 1; color: var(--summer-text);
+}
 
 .freshness {
   display: flex;
