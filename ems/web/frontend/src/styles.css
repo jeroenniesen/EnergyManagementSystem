@@ -1469,10 +1469,20 @@ body {
   border: 1px solid color-mix(in srgb, var(--panel) 60%, transparent);
   box-shadow: 0 10px 34px rgba(15, 25, 55, 0.16);
 }
+.hero-verdict-row {
+  display: flex; align-items: center; flex-wrap: wrap; gap: 8px 10px;
+}
 .hero-verdict {
   margin: 0; font-weight: 700; color: var(--text); letter-spacing: -0.01em;
   font-size: clamp(1.25rem, 4.2vw, 1.7rem); line-height: 1.2;
 }
+/* B-68 plan-confidence chip — sits next to the verdict; tone-only (green/amber/red-tint), same
+   pill shape as the topbar badges. Reasons live in the title tooltip + the muted sub-line below. */
+.confidence-chip { flex: none; }
+.confidence-high { background: rgba(70, 200, 168, 0.16); color: var(--green-text); }
+.confidence-medium { background: rgba(224, 162, 58, 0.16); color: var(--amber-text); }
+.confidence-low { background: rgba(220, 80, 80, 0.18); color: var(--error); }
+.hero-confidence-reason { margin: 0; color: var(--muted); font-size: 0.82rem; line-height: 1.4; }
 .hero-synthesis { margin: 0; color: var(--muted); font-size: 0.95rem; line-height: 1.45; }
 .hero-act {
   margin: 2px 0 0; display: inline-flex; align-items: flex-start; gap: 7px;

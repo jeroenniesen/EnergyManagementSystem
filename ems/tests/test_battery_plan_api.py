@@ -151,6 +151,10 @@ def test_battery_plan_reports_data_stale_when_inputs_are_unsafe(tmp_path):
     assert "stale" in body["summary"].lower() or "missing" in body["summary"].lower()
     assert body["warnings"]
     assert body["deviation"]["status"] == "missing"
+    # B-68: unsafe data quality must cap the plan-confidence score at low, reason leading.
+    assert body["confidence"]["level"] == "low"
+    assert body["confidence"]["reasons"]
+    assert "safety fallback" in body["confidence"]["reasons"][0].lower()
 
 
 def test_battery_plan_pauses_safely_when_there_is_no_plan(tmp_path):
@@ -164,6 +168,22 @@ def test_battery_plan_pauses_safely_when_there_is_no_plan(tmp_path):
     assert body["deviation"]["status"] == "missing"
     assert body["graph"]["forecast_soc"] == []
     assert body["current_soc_pct"] is None
+    # Even the safe, empty contract carries a confidence block (B-68) — never a missing key.
+    assert body["confidence"]["level"] in {"high", "medium", "low"}
+    assert body["confidence"]["reasons"]
+
+
+def test_battery_plan_carries_a_confidence_block(tmp_path):
+    # Fresh data, no forecast-skill history yet -> capped at medium ("still learning your roof"),
+    # never silently missing and never falsely "high" on zero evidence.
+    with TestClient(_app(tmp_path)) as c:
+        body = c.get("/api/battery-plan").json()
+
+    confidence = body["confidence"]
+    assert confidence["level"] in {"high", "medium", "low"}
+    assert confidence["reasons"]
+    assert all(isinstance(r, str) and r for r in confidence["reasons"])
+    assert len(confidence["reasons"]) <= 2
 
 
 def test_battery_plan_read_is_open_on_lan_but_gated_by_require_auth(tmp_path):

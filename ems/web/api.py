@@ -34,6 +34,7 @@ from ems.cars import CARS
 from ems.cars import brands as car_brands
 from ems.cars import by_id as car_by_id
 from ems.cars import to_dict as car_to_dict
+from ems.confidence import plan_confidence
 from ems.control.failsafe import failsafe_intent
 from ems.control.mode_controller import ModeController
 from ems.control.override import (
@@ -620,6 +621,17 @@ def create_app(
         except Exception:
             return None
 
+    def _battery_reachable(now: datetime) -> bool:
+        """Whether the battery cluster answered THIS read window — reuses the same coalesced
+        `_current_towers`/`_current_sample` reads as everything else (no new device read for this
+        check). Any tower online counts; with no cluster reader (mock / single non-cluster driver)
+        this falls back to whether the last coalesced sample read succeeded at all. Feeds the plan
+        confidence score (B-68)."""
+        towers = _current_towers(now)
+        if towers is not None:
+            return any(t.online for t in towers)
+        return _current_sample(now) is not None
+
     def _car_charging(now: datetime) -> bool:
         s = _current_sample(now)
         return s is not None and float(s.ev_power_w) > settings_cache[
@@ -952,6 +964,20 @@ def create_app(
         report/finance row caps to the ACTUAL sampling frequency (finding 10)."""
         return float(recorder.cycle_seconds) if recorder is not None else 300.0
 
+    async def _solar_forecast_skill(now: datetime) -> dict | None:
+        """14-day solar forecast skill (B-72 `forecast_error`) — the exact evidence window
+        /api/accuracy's 'solar' track already gathers. Factored out so /api/battery-plan's plan
+        confidence score (B-68) reuses this ONE extra store read instead of recomputing accuracy
+        from scratch. None only when there's no store at all (forecast_error itself always returns
+        a dict, even with zero matched slots)."""
+        if store is None:
+            return None
+        start = now - timedelta(days=14)
+        limit = history_row_cap((now - start).total_seconds(), _sample_cadence_seconds())
+        raw = await store.raw_between(start.isoformat(), now.isoformat(), limit=limit)
+        forecasts = await store.forecasts_between(start.isoformat(), now.isoformat())
+        return forecast_error(forecasts, raw)
+
     _WRITE_METHODS = frozenset({"POST", "PUT", "PATCH", "DELETE"})
 
     class _AccessMiddleware:
@@ -1014,6 +1040,15 @@ def create_app(
         return data_quality(
             snap, prices_ok=price_source is not None, forecast_ok=solar_forecast is not None
         )
+
+    def _freshness_ok(now: datetime) -> bool:
+        """Whether EVERY currently-tracked signal is fresh — the same freshness snapshot as
+        `_data_quality` (SPEC §4.7), reused rather than re-read. Deliberately STRICTER than the
+        data-quality badge for the plan confidence score (B-68): `data_quality` also reads
+        'degraded' purely from a missing forecast SOURCE (nothing actually stale), which this
+        keeps True for; any signal that's actually stale/missing makes this False."""
+        snap = freshness.snapshot(now) if freshness is not None else {}
+        return all(state == "fresh" for state in snap.values()) if snap else True
 
     def _projection_sync(plan, now: datetime):
         """A synchronous forward SoC projection for `plan`, for the validator gate. Reuses the
@@ -2261,6 +2296,16 @@ def create_app(
         now = datetime.now(UTC)
         reserve_pct = settings_cache["battery.min_reserve_soc"]
         quality = _data_quality(now)
+        # Plan confidence (B-68): pure synthesis over signals already gathered elsewhere — the
+        # data-quality badge above, per-signal freshness, battery reachability (all no-extra-cost
+        # reuses of cached reads), plus the 14-day solar forecast skill (the one extra store read
+        # this endpoint takes on, shared with /api/accuracy via _solar_forecast_skill).
+        confidence = plan_confidence(
+            data_quality=quality,
+            forecast_skill=await _solar_forecast_skill(now),
+            freshness_ok=_freshness_ok(now),
+            battery_reachable=_battery_reachable(now),
+        )
         fp = await _forward_projection()
         if fp is None:
             return {
@@ -2279,6 +2324,7 @@ def create_app(
                 "graph": {"forecast_soc": [], "actual_soc": [], "reserve_line": [],
                           "target_line": [], "planned_actions": [],
                           "price_windows": [], "solar": []},
+                "confidence": confidence,
             }
 
         projected, price_by, need, deadline = (
@@ -2373,6 +2419,7 @@ def create_app(
                 "solar": [{"ts": s["start"], "forecast_w": s["solar_w"],
                            "actual_w": None} for s in slots],
             },
+            "confidence": confidence,
         }
 
     async def _past_story(reserve_pct: float) -> dict:
@@ -2584,14 +2631,7 @@ def create_app(
         if store is not None:
             now = datetime.now(UTC)
 
-            solar_start = now - timedelta(days=14)
-            solar_limit = history_row_cap(
-                (now - solar_start).total_seconds(), _sample_cadence_seconds())
-            solar_raw = await store.raw_between(
-                solar_start.isoformat(), now.isoformat(), limit=solar_limit)
-            solar_forecasts = await store.forecasts_between(
-                solar_start.isoformat(), now.isoformat())
-            solar = forecast_error(solar_forecasts, solar_raw)
+            solar = await _solar_forecast_skill(now)
 
             long_start = now - timedelta(days=60)
             plan_rows = await store.plan_history_between(long_start.isoformat(), now.isoformat())
