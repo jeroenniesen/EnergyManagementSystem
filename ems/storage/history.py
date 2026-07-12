@@ -16,6 +16,7 @@ _DERIVED_COLS = ("ts", "house_load_w", "non_ev_load_w")
 RAW_COLUMNS = _RAW_COLS
 DERIVED_COLUMNS = _DERIVED_COLS
 _BUSY_TIMEOUT_MS = 3000
+_CAR_SOC_ANCHOR_KEY = "anchor"  # single-row key for the manual car-SoC anchor (see set/get below)
 
 
 class HistoryStore:
@@ -102,6 +103,15 @@ class HistoryStore:
             await db.execute(
                 "CREATE TABLE IF NOT EXISTS carbon_intensity "
                 "(start_ts TEXT PRIMARY KEY, kg_per_kwh REAL NOT NULL)"
+            )
+            # Manual car-SoC anchor (feat/ev-charging): the car has no API, so the user occasionally
+            # sets a (percent, timestamp) anchor and EV SoC is ESTIMATED from measured charging
+            # energy since it (see ems.ev_session.estimate_soc). One small piece of CURRENT state,
+            # so it reuses the settings/control_state key→value + JSON-blob idiom (single row under
+            # a fixed key) rather than a bespoke schema. NOT time-series → deliberately NOT purged.
+            await db.execute(
+                "CREATE TABLE IF NOT EXISTS car_soc_anchor "
+                "(key TEXT PRIMARY KEY, value TEXT NOT NULL)"
             )
             await db.commit()
 
@@ -361,6 +371,32 @@ class HistoryStore:
                 "WHERE start_ts >= ? AND start_ts < ? ORDER BY start_ts ASC",
                 (start_iso, end_iso))
             return [dict(r) for r in await cur.fetchall()]
+
+    async def set_car_soc_anchor(self, pct: float, ts: str) -> None:
+        """Store/replace the manual car-SoC anchor: a percent at an ISO timestamp, from which EV
+        SoC is estimated. Single-row upsert — a new anchor overwrites the previous one (there is
+        only ever one 'last known' anchor)."""
+        async with self._conn() as db:
+            await db.execute(
+                "INSERT OR REPLACE INTO car_soc_anchor (key, value) VALUES (?, ?)",
+                (_CAR_SOC_ANCHOR_KEY, json.dumps({"pct": float(pct), "ts": ts})),
+            )
+            await db.commit()
+
+    async def get_car_soc_anchor(self) -> tuple[float, str] | None:
+        """The stored (pct, ts) anchor, or None if never set / the row is corrupt (never raises)."""
+        async with self._conn() as db:
+            db.row_factory = aiosqlite.Row
+            cur = await db.execute(
+                "SELECT value FROM car_soc_anchor WHERE key = ?", (_CAR_SOC_ANCHOR_KEY,))
+            row = await cur.fetchone()
+        if row is None:
+            return None
+        try:
+            data = json.loads(row["value"])
+            return float(data["pct"]), str(data["ts"])
+        except (ValueError, TypeError, KeyError):
+            return None
 
     async def table_names(self) -> set[str]:
         async with self._conn() as db:
