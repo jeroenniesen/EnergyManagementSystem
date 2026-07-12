@@ -692,6 +692,9 @@ test.describe("EMS dashboard", () => {
                 reason: "Cheapest slots to reach 80%." },
             ],
             advice: "Plug in this afternoon to reach 80% by tomorrow.",
+            negative_price_hint:
+              "Prices go negative Tue 13:00–14:30 — you would be PAID to top up beyond the " +
+              "weekly minimum.",
             total_est_cost_eur: 0.42, total_planned_kwh: 3.33,
           },
         }),
@@ -704,6 +707,9 @@ test.describe("EMS dashboard", () => {
     await expect(page.getByTestId("car-soc-stale")).toBeVisible();
     await expect(page.getByTestId("car-next-deadline")).toContainText("≥80%");
     await expect(page.getByTestId("car-advice")).toContainText("Plug in this afternoon");
+    await expect(page.getByTestId("car-negative-price-hint")).toContainText(
+      "Prices go negative Tue 13:00–14:30",
+    );
     await expect(page.getByTestId("car-window-row").first()).toContainText("3.3 kWh");
     await expect(page.getByTestId("car-window-row").first()).toContainText("50% sun");
     // The 48h strip is always the full 192-cell grid; allocated slots are overlaid on it, a solar

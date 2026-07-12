@@ -63,6 +63,7 @@ type Plan = {
   slots: Slot[];
   windows: PlanWindow[];
   advice: string;
+  negative_price_hint: string | null;
   total_est_cost_eur: number;
   total_planned_kwh: number;
 };
@@ -376,6 +377,12 @@ export function CarCard({ onOpenSettings }: { onOpenSettings: () => void }) {
       <p className="car-advice" data-testid="car-advice">
         {plan.advice}
       </p>
+
+      {plan.negative_price_hint && (
+        <p className="advisor-hint" data-testid="car-negative-price-hint">
+          ⚡ {plan.negative_price_hint}
+        </p>
+      )}
 
       {plan.windows.length > 0 && (
         <ul className="car-windows" data-testid="car-windows">

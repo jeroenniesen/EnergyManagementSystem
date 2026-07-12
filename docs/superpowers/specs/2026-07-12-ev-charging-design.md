@@ -45,6 +45,12 @@ non-decreasing requirements and interval slot-feasibility this greedy is cost-op
 argument); correctness is additionally **empirically pinned by brute-force cross-check tests**
 (exhaustive subset search on small random instances must match the greedy cost exactly).
 
+The objective is strictly minima-at-least-cost: the greedy never allocates beyond the binding
+requirement, even into a slot with negative effective price (free money) — over-charging the car
+is not automated. When such a slot is left unallocated, the output's `negative_price_hint` names
+the time range so the user can choose to plug in manually; the home battery's
+`negative_price_soak` remains the automated response to negative pricing.
+
 ### Honesty at the price horizon
 Slots are only allocated where prices are known. A deadline beyond the horizon reports its
 remainder as `pending_kwh` ("planned once tomorrow's prices arrive") — never silently assumed.

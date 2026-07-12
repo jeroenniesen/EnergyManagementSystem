@@ -405,3 +405,61 @@ def test_accepts_tuple_price_slots():
     )
     assert len(plan["slots"]) == 2
     assert plan["total_planned_kwh"] == 4.95
+
+
+# --- 15. negative_price_hint: surfaces the unallocated free-money opportunity -----------------
+
+def test_negative_price_hint_when_requirement_already_met():
+    base = datetime(2026, 7, 14, 12, 0, tzinfo=AMS)  # Tuesday noon
+    prices = [0.20] * 6
+    prices[4] = prices[5] = -0.04  # Tue 13:00-13:30 goes negative
+    # soc already meets the minimum -> nothing gets allocated, including the negative slots.
+    plan = plan_car_charging(
+        base, [_dl(base + timedelta(hours=6), 50)], _slots(base, prices), {},
+        soc_pct=90.0, battery_net_kwh=9.9, power_kw=POWER,
+    )
+    assert plan["slots"] == []
+    assert plan["negative_price_hint"] == (
+        "Prices go negative Tue 13:00–13:30 — you would be PAID to top up beyond the weekly "
+        "minimum."
+    )
+
+
+def test_negative_price_hint_none_without_negative_slots():
+    base = datetime(2026, 7, 13, 23, 0, tzinfo=AMS)
+    plan = plan_car_charging(
+        base, [_dl(base + timedelta(hours=8), 50)], _slots(base, [0.20] * 8), {},
+        soc_pct=0.0, battery_net_kwh=9.9, power_kw=POWER,
+    )
+    assert plan["negative_price_hint"] is None
+
+
+def test_negative_price_hint_none_when_negative_slots_fully_allocated():
+    base = datetime(2026, 7, 13, 0, 0, tzinfo=AMS)
+    prices = [0.20] * 6
+    prices[3] = prices[4] = -0.04  # exactly the two slots the requirement needs
+    plan = plan_car_charging(
+        base, [_dl(base + timedelta(hours=6), 50)], _slots(base, prices), {},
+        soc_pct=0.0, battery_net_kwh=9.9, power_kw=POWER,  # needs exactly two full slots
+    )
+    assert len(plan["slots"]) == 2  # both negative slots consumed by the requirement
+    assert plan["negative_price_hint"] is None
+
+
+def test_negative_price_hint_picks_cheapest_of_several_unallocated_runs():
+    base = datetime(2026, 7, 13, 0, 0, tzinfo=AMS)
+    prices = [0.20] * 10
+    prices[2] = -0.01  # a mild negative slot, single
+    prices[7] = prices[8] = -0.10  # a cheaper negative run, later in the horizon
+    # requirement already met -> every slot, including both negative spots, stays unallocated.
+    plan = plan_car_charging(
+        base, [_dl(base + timedelta(hours=2.5), 50)], _slots(base, prices), {},
+        soc_pct=90.0, battery_net_kwh=9.9, power_kw=POWER,
+    )
+    assert plan["slots"] == []
+    run_start = base + 7 * SLOT
+    run_end = base + 9 * SLOT
+    assert plan["negative_price_hint"] == (
+        f"Prices go negative {run_start:%a %H:%M}–{run_end:%H:%M} — you would be PAID to "
+        "top up beyond the weekly minimum."
+    )

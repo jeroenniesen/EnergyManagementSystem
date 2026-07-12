@@ -8,6 +8,12 @@ cheapest way to add enough energy to meet every deadline's minimum SoC *by its r
 It is deliberately pure: no clock reads, no I/O, no imports beyond stdlib + `ems.planner.economics`.
 `now` is supplied by the caller.
 
+Objective: meet every deadline's minimum SoC at the lowest cost — it never allocates beyond the
+binding requirement, even into a slot with a negative effective price (free money). Instead of
+soaking that up automatically, the plan surfaces a `negative_price_hint`: the home battery's
+`negative_price_soak` already handles automated grid soak on negative prices; the car is a manual
+plug-in, so over-charging it is left to the user.
+
 Model (design doc "math core"):
   * Battery-side energy need at deadline i:  E_i = max(0, (min_pct_i − soc)/100 × C).
   * SoC is non-decreasing in v1 (no driving model), so the binding cumulative requirement is
@@ -227,6 +233,7 @@ def plan_car_charging(
     windows = _windows(allocated, charge_efficiency, min_pct_by_ready)
     any_required = any(r["required_kwh"] > _TOL for r in records)
     advice = _advice(windows, allocated, deadlines, min_pct_by_ready, any_required)
+    negative_price_hint = _negative_price_hint(states)
 
     return {
         "soc": soc_pct,
@@ -234,6 +241,7 @@ def plan_car_charging(
         "slots": slots_out,
         "windows": windows,
         "advice": advice,
+        "negative_price_hint": negative_price_hint,
         "total_est_cost_eur": round(total_cost, 2),
         "total_planned_kwh": round(total_battery, 2),
     }
@@ -282,6 +290,35 @@ def _windows(
             group = [s]
     flush(group)
     return windows
+
+
+def _negative_price_hint(states: list[dict]) -> str | None:
+    """The greedy deliberately never allocates beyond the binding requirement (see module
+    docstring) — so a USABLE slot (already filtered to `start >= now` in `_allocate`) with a
+    negative effective price can be left on the table even though it is free money. Merge
+    consecutive such unallocated slots into runs and report the cheapest one (ties → earliest)."""
+    unallocated = sorted(
+        (s for s in states if s["eff"] < -_TOL and s["alloc"] <= _TOL),
+        key=lambda s: s["start"],
+    )
+    if not unallocated:
+        return None
+
+    runs: list[list[dict]] = []
+    for s in unallocated:
+        if runs and s["start"] - runs[-1][-1]["start"] == SLOT:
+            runs[-1].append(s)
+        else:
+            runs.append([s])
+    runs.sort(key=lambda run: (min(s["eff"] for s in run), run[0]["start"]))
+
+    run = runs[0]
+    start = run[0]["start"]
+    end = run[-1]["start"] + SLOT
+    return (
+        f"Prices go negative {start:%a %H:%M}–{end:%H:%M} — you would be PAID to top up "
+        "beyond the weekly minimum."
+    )
 
 
 def _advice(
