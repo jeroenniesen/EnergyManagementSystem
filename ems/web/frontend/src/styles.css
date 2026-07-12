@@ -1779,6 +1779,33 @@ body {
   .gas-tiles { flex-direction: column; }
 }
 
+/* ---- Insights: advice-only heating recommendations (BACKLOG B-11) — evidence -> suggestion ->
+   "you decide", framed by the household's own gas figures. Only rendered when gas data exists;
+   never nags. Left-accent + dot mirror the other domain-flavoured cards (car-card, gas-panel). */
+.heating-advice {
+  background: var(--panel); border: 1px solid var(--line); border-left: 3px solid var(--gas);
+  border-radius: var(--radius); padding: 18px; box-shadow: var(--shadow); margin-top: 20px;
+}
+.heating-advice-title { display: flex; align-items: center; gap: 8px; }
+.advice-cards { display: flex; flex-direction: column; gap: 14px; margin-top: 4px; }
+.advice-card {
+  background: var(--panel-2); border: 1px solid var(--line); border-radius: 12px; padding: 14px 16px;
+}
+.advice-card-title { margin: 0; font-size: 0.95rem; font-weight: 600; }
+.advice-evidence { margin: 6px 0 0; font-size: 0.82rem; color: var(--muted); }
+.advice-body { margin: 8px 0 0; font-size: 0.9rem; line-height: 1.5; }
+.advice-saving { margin: 6px 0 0; font-size: 0.82rem; color: var(--gas-text); font-weight: 600; }
+.advice-safety {
+  margin: 8px 0 0; font-size: 0.82rem; line-height: 1.5; color: var(--amber-text);
+  background: color-mix(in srgb, var(--amber) 14%, transparent); border-radius: 8px; padding: 8px 10px;
+}
+.advice-details { margin-top: 10px; font-size: 0.82rem; color: var(--muted); }
+.advice-details summary { cursor: pointer; color: var(--accent-text); }
+.advice-details summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.advice-details p { margin: 6px 0 0; }
+.advice-disclaimer { margin: 10px 0 0; font-size: 0.76rem; color: var(--muted); font-style: italic; }
+.heating-advice-note { margin: 12px 0 0; font-size: 0.82rem; color: var(--muted); font-style: italic; }
+
 /* Behavior chart: two aligned panels (consumption / solar & grid) */
 .behavior-panel-title {
   margin: 10px 0 2px; font-size: 12px; font-weight: 600; color: var(--muted);

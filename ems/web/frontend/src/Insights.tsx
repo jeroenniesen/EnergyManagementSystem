@@ -6,6 +6,7 @@ import { useEffect, useState } from "react";
 
 import { EnergyBehavior, type SeriesBucket } from "./EnergyBehavior";
 import { FinanceSection } from "./FinanceSection";
+import { HeatingAdvice } from "./HeatingAdvice";
 import { scoreBand, ScoreRing } from "./ScoreRing";
 import { scoreCaption } from "./scoreCopy";
 
@@ -44,6 +45,8 @@ type Report = {
   period: string;
   label: string;
   partial: boolean;
+  window_start?: string;
+  window_end?: string;
   flows: Flows;
   scores: Score[];
   series?: SeriesBucket[];
@@ -288,7 +291,18 @@ export function Insights() {
             )}
           </div>
 
-          {report.gas && <GasPanel gas={report.gas} partial={report.partial} />}
+          {report.gas && (
+            <>
+              <GasPanel gas={report.gas} partial={report.partial} />
+              <HeatingAdvice
+                gas={report.gas}
+                partial={report.partial}
+                period={period}
+                windowStart={report.window_start}
+                windowEnd={report.window_end}
+              />
+            </>
+          )}
 
           <FinanceSection period={period} anchor={anchor} />
         </>

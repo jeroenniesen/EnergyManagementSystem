@@ -190,6 +190,101 @@ test.describe("Insights", () => {
   });
 });
 
+test.describe("Insights: heating advice (B-11, advice-only)", () => {
+  test("no heating-advice panel when there's no gas meter (never nags)", async ({ page }) => {
+    await page.route("**/api/report**", (route) =>
+      route.fulfill({
+        status: 200, contentType: "application/json",
+        body: JSON.stringify({ ...REPORT, gas: null }),
+      }),
+    );
+    await page.goto("/");
+    await page.getByTestId("nav-insights").click();
+    await expect(page.getByTestId("gas-panel")).toHaveCount(0);
+    await expect(page.getByTestId("heating-advice")).toHaveCount(0);
+  });
+
+  test("shows the three advice cards, the safety line, and an annualised estimate", async ({
+    page,
+  }) => {
+    await page.route("**/api/report**", (route) =>
+      route.fulfill({
+        status: 200, contentType: "application/json",
+        body: JSON.stringify({
+          ...REPORT,
+          gas: { m3: 8, kwh_eq: 78.2, eur: 12, co2_kg: 14.2 },
+        }),
+      }),
+    );
+    await page.goto("/");
+    await page.getByTestId("nav-insights").click();
+    const advice = page.getByTestId("heating-advice");
+    await expect(advice).toBeVisible();
+    await expect(advice).toContainText("Heating — the biggest lever left");
+    const balancing = page.getByTestId("advice-balancing");
+    const flowTemp = page.getByTestId("advice-flow-temp");
+    const dhw = page.getByTestId("advice-dhw-eco");
+    await expect(balancing).toBeVisible();
+    await expect(flowTemp).toBeVisible();
+    await expect(dhw).toBeVisible();
+    // Each card is framed by the window's real gas evidence and carries the disclaimer.
+    await expect(balancing).toContainText("8.0 m³ ≈ €12.00");
+    await expect(balancing).toContainText("Advice only — nothing changes automatically.");
+    await expect(flowTemp).toContainText("Advice only — nothing changes automatically.");
+    await expect(dhw).toContainText("Advice only — nothing changes automatically.");
+    // Balancing annualises the window's € honestly: €12 * 365/1 * 0.125, rounded to €10 = €550/yr.
+    await expect(balancing).toContainText("€550/yr");
+    await expect(balancing).toContainText("rough estimate from your meter");
+    // The flow-temp card names the Dutch shorthand and gives link-free instructions.
+    await expect(flowTemp).toContainText("zet 'm op 60");
+    await expect(flowTemp).toContainText("60°C");
+    // The DHW card's safety line is explicit: never dips below 60°C, and says why.
+    const safety = page.getByTestId("advice-dhw-eco-safety");
+    await expect(safety).toContainText("Legionella");
+    await expect(safety).toContainText("60°C or higher");
+    await expect(safety).toContainText("never set it below 60°C");
+    // 8 m³ in a single day is real heating, not summer DHW-only use — no seasonal note.
+    await expect(page.getByTestId("heating-advice-seasonal")).toHaveCount(0);
+  });
+
+  test("each card's instructions are collapsed by default and open on demand", async ({ page }) => {
+    await page.route("**/api/report**", (route) =>
+      route.fulfill({
+        status: 200, contentType: "application/json",
+        body: JSON.stringify({
+          ...REPORT,
+          gas: { m3: 8, kwh_eq: 78.2, eur: 12, co2_kg: 14.2 },
+        }),
+      }),
+    );
+    await page.goto("/");
+    await page.getByTestId("nav-insights").click();
+    const details = page.getByTestId("advice-flow-temp").locator("details.advice-details");
+    const instructions = details.locator("p");
+    await expect(instructions).toBeHidden();
+    await details.locator("summary").click();
+    await expect(instructions).toContainText("CV/flow temperature");
+  });
+
+  test("shows a muted seasonal note when the window's gas use is low (summer)", async ({ page }) => {
+    await page.route("**/api/report**", (route) =>
+      route.fulfill({
+        status: 200, contentType: "application/json",
+        body: JSON.stringify({
+          ...REPORT,
+          gas: { m3: 0.4, kwh_eq: 3.9, eur: 0.6, co2_kg: 0.7 },
+        }),
+      }),
+    );
+    await page.goto("/");
+    await page.getByTestId("nav-insights").click();
+    await expect(page.getByTestId("heating-advice")).toBeVisible();
+    const note = page.getByTestId("heating-advice-seasonal");
+    await expect(note).toContainText("barely heating");
+    await expect(note).toContainText("pay off from autumn");
+  });
+});
+
 const SERIES = Array.from({ length: 96 }, (_, i) => {
   const h = String(Math.floor(i / 4)).padStart(2, "0");
   const m = String((i % 4) * 15).padStart(2, "0");
