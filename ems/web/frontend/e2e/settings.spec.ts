@@ -257,6 +257,94 @@ test.describe("EMS settings", () => {
     );
   });
 
+  test("the Car group's brand/model pickers are populated from /api/cars and autofill battery "
+    + "kWh without touching the wallbox charger_kw", async ({ page }) => {
+    const SCHEMA_CAR = [
+      {
+        key: "ev.car_id", label: "Car", type: "text", default: "",
+        group: "ev", help: "Pick your car so capacity and AC limit are right.",
+        min: null, max: null, options: null, step: null, unit: "", advanced: false, applies: "live",
+      },
+      {
+        key: "ev.battery_kwh", label: "Battery capacity", type: "number", default: 57.5,
+        group: "ev",
+        help: "Usable battery capacity — autofilled from the car picker, override if you know "
+          + "better.",
+        min: 10, max: 150, options: null, step: 0.5, unit: "kWh", advanced: false, applies: "live",
+      },
+      {
+        key: "ev.charger_kw", label: "Charger power", type: "number", default: 7.4,
+        group: "ev", help: "The car charger's power — sets how long a charge takes.",
+        min: 1, max: 22, options: null, step: 0.5, unit: "kW", advanced: false, applies: "live",
+      },
+    ];
+    const CARS_RESP = {
+      brands: ["Skoda", "Tesla"],
+      cars: [
+        {
+          id: "skoda-enyaq-80", brand: "Skoda", model: "Enyaq 80",
+          battery_net_kwh: 77, max_ac_kw: 11, years: "2021–present",
+        },
+        {
+          id: "tesla-model-y-long-range", brand: "Tesla", model: "Model Y Long Range",
+          battery_net_kwh: 75, max_ac_kw: 11, years: "2020–present",
+        },
+        {
+          id: "tesla-model-y-rwd", brand: "Tesla", model: "Model Y RWD",
+          battery_net_kwh: 57.5, max_ac_kw: 11, years: "2022–present",
+        },
+      ],
+    };
+    await page.route("**/api/settings", async (route) => {
+      if (route.request().method() === "GET") {
+        await route.fulfill({
+          status: 200, contentType: "application/json",
+          body: JSON.stringify({
+            schema: SCHEMA_CAR,
+            values: { "ev.car_id": "", "ev.battery_kwh": 57.5, "ev.charger_kw": 7.4 },
+          }),
+        });
+      } else {
+        await route.fulfill({ status: 200, contentType: "application/json", body: "{}" });
+      }
+    });
+    await page.route("**/api/cars", async (route) => {
+      await route.fulfill({
+        status: 200, contentType: "application/json", body: JSON.stringify(CARS_RESP),
+      });
+    });
+    await page.goto("/");
+    await page.getByTestId("nav-settings").click();
+    await page.getByTestId("group-ev").click();
+
+    const brandSelect = page.getByTestId("car-brand-select");
+    const modelSelect = page.getByTestId("car-model-select");
+    await expect(brandSelect).toBeVisible();
+    await expect(modelSelect).toBeVisible();
+    // Populated from the (mocked) /api/cars — brands sorted, models filtered by brand.
+    await expect(brandSelect.locator("option")).toContainText(["Custom", "Skoda", "Tesla"]);
+
+    await brandSelect.selectOption("Tesla");
+    await expect(modelSelect.locator("option")).toContainText([
+      "Model Y Long Range", "Model Y RWD",
+    ]);
+    await modelSelect.selectOption("tesla-model-y-long-range");
+
+    // Autofills battery kWh from the picked model...
+    await expect(page.locator("#set-ev\\.battery_kwh")).toHaveValue("75");
+    // ...shows the selected car's specs inline...
+    await expect(page.getByTestId("car-picker-specs")).toContainText("75 kWh usable");
+    await expect(page.getByTestId("car-picker-specs")).toContainText("11 kW AC max");
+    // ...and shows the car's AC max as a hint near charger_kw, WITHOUT overwriting it (still 7.4).
+    await expect(page.locator("#set-ev\\.charger_kw")).toHaveValue("7.4");
+    await expect(page.getByTestId("car-ac-hint")).toContainText("11 kW");
+
+    // Picking "Custom" clears the car (battery kWh stays as the user's overridden value).
+    await brandSelect.selectOption("");
+    await expect(page.getByTestId("car-picker-specs")).toHaveCount(0);
+    await expect(page.locator("#set-ev\\.battery_kwh")).toHaveValue("75");
+  });
+
   test("an invalid value surfaces a per-field error from the API", async ({ page }) => {
     await page.route("**/api/settings", async (route) => {
       if (route.request().method() === "POST") {

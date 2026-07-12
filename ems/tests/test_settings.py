@@ -99,3 +99,59 @@ def test_ev_schedule_field_accepts_arbitrary_json_string():
     clean, errors = validate_settings({"ev.schedule": payload})
     assert errors == {}
     assert clean["ev.schedule"] == payload
+
+
+def test_ev_car_id_field_defaults_to_empty_string():
+    field = SETTINGS_BY_KEY["ev.car_id"]
+    assert field.type == "text"
+    assert field.group == "ev"
+    assert field.default == ""
+    assert defaults()["ev.car_id"] == ""
+
+
+def test_ev_car_id_field_accepts_any_slug_string():
+    # Validation stays generic here too — ems.cars.by_id owns "is this a known car" at read time,
+    # so an id from a future dataset update never gets rejected by a stale settings schema.
+    clean, errors = validate_settings({"ev.car_id": "tesla-model-y-long-range"})
+    assert errors == {}
+    assert clean["ev.car_id"] == "tesla-model-y-long-range"
+
+
+def test_ev_battery_kwh_field_defaults_and_bounds():
+    field = SETTINGS_BY_KEY["ev.battery_kwh"]
+    assert field.type == "number"
+    assert field.group == "ev"
+    assert field.default == 57.5
+    assert field.min == 10.0
+    assert field.max == 150.0
+    assert field.step == 0.5
+    assert field.unit == "kWh"
+    assert defaults()["ev.battery_kwh"] == 57.5
+
+
+def test_ev_battery_kwh_validate_range():
+    _clean, errors = validate_settings({"ev.battery_kwh": 5.0})  # below min
+    assert "ev.battery_kwh" in errors
+    _clean2, errors2 = validate_settings({"ev.battery_kwh": 200.0})  # above max
+    assert "ev.battery_kwh" in errors2
+    clean, errors3 = validate_settings({"ev.battery_kwh": 75.0})
+    assert clean["ev.battery_kwh"] == 75.0 and errors3 == {}
+
+
+def test_ev_charge_efficiency_field_defaults_bounds_and_advanced():
+    field = SETTINGS_BY_KEY["ev.charge_efficiency"]
+    assert field.type == "number"
+    assert field.group == "ev"
+    assert field.default == 0.90
+    assert field.min == 0.7
+    assert field.max == 1.0
+    assert field.step == 0.01
+    assert field.advanced is True
+    assert defaults()["ev.charge_efficiency"] == 0.90
+
+
+def test_ev_charge_efficiency_validate_range():
+    _clean, errors = validate_settings({"ev.charge_efficiency": 0.5})  # below 0.7
+    assert "ev.charge_efficiency" in errors
+    clean, errors2 = validate_settings({"ev.charge_efficiency": 0.95})
+    assert clean["ev.charge_efficiency"] == 0.95 and errors2 == {}

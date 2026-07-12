@@ -38,6 +38,18 @@ type SolarConfidenceAdvice = {
   delta_pct: number | null;
 };
 
+// The `ev.car_id` setting (SettingField.type "text", a stable slug or "" for custom) is rendered
+// as brand/model pickers backed by GET /api/cars — see `CarPicker` below.
+type CarModel = {
+  id: string;
+  brand: string;
+  model: string;
+  battery_net_kwh: number;
+  max_ac_kw: number;
+  years: string;
+};
+type CarsResp = { brands: string[]; cars: CarModel[] };
+
 // The `ev.schedule` setting is a JSON string under the hood (SettingField.type "text"), but is
 // rendered as a dedicated 7-day editor rather than a raw textbox — see `EvScheduleEditor` below.
 type DayKey = "mon" | "tue" | "wed" | "thu" | "fri" | "sat" | "sun";
@@ -146,6 +158,76 @@ function EvScheduleEditor({
           );
         })}
       </div>
+    </div>
+  );
+}
+
+// Brand → Model picker for `ev.car_id`, backed by GET /api/cars (fetched once, lazily, by the
+// parent when the Car group first renders). "Custom" (empty brand) clears `ev.car_id` — the user
+// then enters battery_kwh/charger_kw themselves. Picking a model hands the full CarModel back to
+// the caller, which autofills battery_kwh but deliberately leaves charger_kw alone (the wallbox
+// is a separate physical thing — see the inline AC-limit hint rendered next to that field).
+function CarPicker({
+  carId,
+  cars,
+  disabled,
+  onPick,
+}: {
+  carId: string;
+  cars: CarModel[];
+  disabled: boolean;
+  onPick: (car: CarModel | null) => void;
+}) {
+  const selected = cars.find((c) => c.id === carId) ?? null;
+  const brands = [...new Set(cars.map((c) => c.brand))].sort();
+  // Local brand selection: normally mirrors the selected car's brand, but must survive being set
+  // ahead of a model choice (brand picked, no model yet) — so it isn't derived every render.
+  const [brand, setBrand] = useState<string>(selected?.brand ?? "");
+  useEffect(() => {
+    setBrand(selected?.brand ?? "");
+  }, [carId, selected?.brand]);
+  const models = brand ? cars.filter((c) => c.brand === brand) : [];
+
+  return (
+    <div className="car-picker" data-testid="car-picker">
+      <div className="car-picker-row">
+        <select
+          aria-label="Car brand"
+          data-testid="car-brand-select"
+          disabled={disabled}
+          value={brand}
+          onChange={(e) => {
+            const b = e.target.value;
+            setBrand(b);
+            if (!b) onPick(null); // "Custom" — clear the car, keep any manually-set capacity
+          }}
+        >
+          <option value="">Custom</option>
+          {brands.map((b) => (
+            <option key={b} value={b}>{b}</option>
+          ))}
+        </select>
+        <select
+          aria-label="Car model"
+          data-testid="car-model-select"
+          disabled={disabled || !brand}
+          value={selected?.id ?? ""}
+          onChange={(e) => {
+            const car = cars.find((c) => c.id === e.target.value) ?? null;
+            onPick(car);
+          }}
+        >
+          <option value="">{brand ? "Choose a model…" : "—"}</option>
+          {models.map((c) => (
+            <option key={c.id} value={c.id}>{c.model}</option>
+          ))}
+        </select>
+      </div>
+      {selected && (
+        <p className="car-picker-specs" data-testid="car-picker-specs">
+          {selected.battery_net_kwh} kWh usable · {selected.max_ac_kw} kW AC max
+        </p>
+      )}
     </div>
   );
 }
@@ -335,6 +417,7 @@ export function Settings({ onSaved }: { onSaved?: (values: Values) => void } = {
   const [showAdvanced, setShowAdvanced] = useState(false);
   const [impact, setImpact] = useState<Impact | null>(null);
   const [solarAdvice, setSolarAdvice] = useState<SolarConfidenceAdvice | null>(null);
+  const [cars, setCars] = useState<CarModel[] | null>(null);
   // Collapsible groups (tames a long, dense page). Strategy — the headline — is open by default;
   // the rest start collapsed and expand on demand. A group with a save error auto-expands.
   const [openGroups, setOpenGroups] = useState<Set<string>>(new Set(["strategy"]));
@@ -400,6 +483,27 @@ export function Settings({ onSaved }: { onSaved?: (values: Values) => void } = {
     setEdited((prev) => ({ ...prev, [key]: v }));
     setStatus("idle");
   }
+
+  // The car database is static (ems/cars.py) — fetched once, lazily, the first time the Car
+  // group is expanded (not on every Settings load, since most homes never open it).
+  useEffect(() => {
+    if (!openGroups.has("ev") || cars !== null) return;
+    let alive = true;
+    (async () => {
+      try {
+        const r = await fetch("/api/cars");
+        if (!r.ok) return;
+        const b: CarsResp = await r.json();
+        if (alive) setCars(b.cars);
+      } catch {
+        /* best-effort — the picker degrades to "Custom" only */
+      }
+    })();
+    return () => {
+      alive = false;
+    };
+  }, [openGroups, cars]);
+  const selectedCar = (cars ?? []).find((c) => c.id === String(edited["ev.car_id"] ?? "")) ?? null;
 
   // Only send schema keys whose value actually changed (skip the "<key>.__set" secret flags).
   const schemaKeys = new Set((schema ?? []).map((f) => f.key));
@@ -576,7 +680,9 @@ export function Settings({ onSaved }: { onSaved?: (values: Values) => void } = {
                 <div className="settings-fields">
                   {groupFields.map((f) => (
                     <div
-                      className={`field-with-hint${f.key === "ev.schedule" ? " field-full-width" : ""}`}
+                      className={`field-with-hint${
+                        f.key === "ev.schedule" || f.key === "ev.car_id" ? " field-full-width" : ""
+                      }`}
                       key={f.key}
                     >
                       {f.key === "ev.schedule" ? (
@@ -586,6 +692,24 @@ export function Settings({ onSaved }: { onSaved?: (values: Values) => void } = {
                             value={String(edited[f.key] ?? f.default)}
                             disabled={status === "saving"}
                             onChange={(v) => set(f.key, v)}
+                          />
+                          {f.help && <p className="field-help">{f.help}</p>}
+                        </div>
+                      ) : f.key === "ev.car_id" ? (
+                        <div className="field" data-testid={`field-${f.key}`}>
+                          <label className="field-label">{f.label}</label>
+                          <CarPicker
+                            carId={String(edited[f.key] ?? f.default)}
+                            cars={cars ?? []}
+                            disabled={status === "saving"}
+                            onPick={(car) => {
+                              if (car) {
+                                set("ev.car_id", car.id);
+                                set("ev.battery_kwh", car.battery_net_kwh);
+                              } else {
+                                set("ev.car_id", "");
+                              }
+                            }}
                           />
                           {f.help && <p className="field-help">{f.help}</p>}
                         </div>
@@ -601,6 +725,14 @@ export function Settings({ onSaved }: { onSaved?: (values: Values) => void } = {
                       )}
                       {f.key === "planner.solar_confidence" && solarAdvice && (
                         <SolarConfidenceHint advice={solarAdvice} />
+                      )}
+                      {f.key === "ev.charger_kw" && selectedCar && (
+                        <p className="advisor-hint" data-testid="car-ac-hint">
+                          {selectedCar.model}'s onboard AC charger tops out at{" "}
+                          <strong>{selectedCar.max_ac_kw} kW</strong> — the car, not the wallbox,
+                          caps the charge speed above that. This field is your wallbox and is left
+                          as-is.
+                        </p>
                       )}
                     </div>
                   ))}

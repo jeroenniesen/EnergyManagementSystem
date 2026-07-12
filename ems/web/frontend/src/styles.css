@@ -944,6 +944,24 @@ body {
   .ev-schedule-day { font-size: 0.82rem; }
 }
 
+/* Brand → Model car picker (Settings → Car, `ev.car_id`). Two selects side by side, plus the
+   selected car's specs shown inline right below — no separate lookup needed. */
+.car-picker { display: flex; flex-direction: column; gap: 8px; }
+.car-picker-row { display: flex; gap: 10px; flex-wrap: wrap; }
+.car-picker-row select {
+  flex: 1 1 200px; min-width: 160px; font: inherit; font-size: 0.9rem; color: var(--text);
+  background: var(--panel-2); border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px;
+}
+.car-picker-row select:disabled { opacity: 0.5; }
+.car-picker-row select:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.car-picker-specs {
+  margin: 0; font-size: 0.82rem; color: var(--muted); font-variant-numeric: tabular-nums;
+}
+@media (max-width: 480px) {
+  .car-picker-row { flex-direction: column; }
+  .car-picker-row select { width: 100%; }
+}
+
 .impact {
   margin-top: 20px; background: var(--panel-2); border: 1px solid var(--line);
   border-radius: 12px; padding: 14px 16px;

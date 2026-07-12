@@ -23,6 +23,9 @@ from fastapi.staticfiles import StaticFiles
 from ems import export_package as expkg
 from ems.alerts import data_quality, derive_alerts
 from ems.analysis import forecast_error, recommend_solar_confidence
+from ems.cars import CARS
+from ems.cars import brands as car_brands
+from ems.cars import to_dict as car_to_dict
 from ems.control.failsafe import failsafe_intent
 from ems.control.mode_controller import ModeController
 from ems.control.override import (
@@ -2500,6 +2503,13 @@ def create_app(
             now=now,
         )
         return {"advice": advice}
+
+    @app.get("/api/cars")
+    def cars_endpoint() -> dict:
+        """Static car-picker data (ems/cars.py) for the Settings "Car" group: sorted brand list
+        + every model as a plain dict. Read-only and cacheable — the dataset never changes at
+        runtime, so this never touches settings/store."""
+        return {"brands": car_brands(), "cars": [car_to_dict(c) for c in CARS]}
 
     async def _ensure_day_finance(day_local: date_cls) -> dict:
         """Compute (or return the current-version cached) finance rollup for one LOCAL day,
