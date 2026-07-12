@@ -607,7 +607,7 @@ history:
   sample_seconds: 60
   retention_days: 365
   vacuum_on_start: true
-  backup_dir: /data/backups
+  backup_keep: 7          # daily VACUUM INTO snapshots kept in <db_dir>/backups (0 = disabled)
 
 health:
   ntp_check: true
@@ -705,7 +705,7 @@ First-class alerts (UI badges + optional HA binary_sensors): **prices stale**, *
 - **Health endpoints + Docker healthcheck:** `GET /health/live` (process up) and `/health/ready` (config loaded, HA reachable or explicit-degraded, DB writable). Wire `healthcheck:` in compose.
 - **Graceful shutdown:** on SIGTERM, the **one and only** command issued is a **safe-mode restore** — set the battery to the **captured original vendor mode** (or `AUTO` if unknown) so it never stops mid-forced-charge/discharge (§13.3); best-effort confirm, finish the current DB write, then stop. No *new control* commands beyond that single restore.
 - **NTP/time-sync health check** (`health.ntp_check`) — price/charge windows are time-critical; alert if the clock drifts.
-- **Backups:** scheduled copy of **`/data/ems.sqlite`, `config.yaml`, and a record of token *locations*** (never the tokens themselves) to `history.backup_dir`; document restore in the runbook (§18).
+- **Backups — implemented (B-52):** the daily maintenance loop takes an **online `VACUUM INTO` snapshot** of the live WAL DB to `<db_dir>/backups/ems-YYYYMMDD.sqlite` (skips if today's exists), rotating to the newest **`history.backup_keep`** (default 7; `0` disables). Failures log loudly but never kill the loop; last-backup status (time/size/ok/kept) surfaces at `GET /api/diagnostics` → `storage.backup`. Still back up `config.yaml` + a record of token *locations* (never values) yourself; restore procedure in the runbook. The migration-runner half of B-52 stays deferred until a schema change needs it.
 - **Log rotation + DB maintenance:** rotating file logs (size/age capped); SQLite `retention_days` purge + periodic `VACUUM` (`vacuum_on_start`).
 - **Resource limits:** set `mem_limit`/`cpus` (or `deploy.resources.limits`) on the EMS container so a runaway loop can't starve HA.
 - **Reliability:** `restart: unless-stopped`; tune HA **Recorder** (`commit_interval`, `exclude`, `purge_keep_days`) or move to **MariaDB**; add **NUT** + graceful-shutdown if a UPS exists.
