@@ -225,12 +225,12 @@ An unconfigured app opens straight into the demo home with one persistent "use m
 ### B-58 · Weekly digest ("the Sunday read") — Feature · M *(roadmap P2; feeds B-36)*
 A scheduled weekly summary in the advisor voice: what you saved, what the system did (incl. why-NOTs), one suggested tweak. In-app first; email/push delivery can ride B-20/B-39.
 **Done when:** a household member can answer "did we do well this week?" from the digest alone in 10 seconds.
-**Track:** Pool · E-07 · ⬜
+**Track:** ✅ done — [PR #21](https://github.com/jeroenniesen/EnergyManagementSystem/pull/21). 'Your week' panel + Sunday-18:00 delivery via the outbox; honest partial-week accounting.
 
 ### B-59 · iOS widgets + Live Activity — Feature · M *(roadmap P2)*
 Home-screen widget (SoC + today's verdict sentence) and a Live Activity during a planned car-charge window (window, kWh, ≈€). Push for the rare must-know rides B-20.
 **Done when:** the two most-wanted glances (battery state, car window) never require opening the app.
-**Track:** Pool · E-07 · ⬜
+**Track:** ✅ done — [PR #21](https://github.com/jeroenniesen/EnergyManagementSystem/pull/21). WidgetKit small/medium via App Group; Live Activity deferred (needs APNs, documented).
 
 ### B-60 · One-tap advisor adoption — Feature · S *(roadmap P3)*
 Advisor suggestions (solar confidence today; export model as 2027 nears) gain an "Apply" button: audit-logged, reversible, still never automatic.
@@ -270,7 +270,7 @@ Optimize for expected cost while respecting reserve and comfort under uncertaint
 ### B-66 · Battery degradation-aware economics — Feature · M
 Add battery wear cost to charge/discharge decisions so EMS avoids cycling when the price spread is too small to justify degradation.
 **Done when:** every cycle has an estimated wear cost and the planner skips unprofitable cycling after wear is included.
-**Track:** Pool · E-08 · ⬜
+**Track:** ✅ already shipped by F2/B-05 ([PR #14](https://github.com/jeroenniesen/EnergyManagementSystem/pull/14)): degradation_eur_per_kwh sits in the shared breakeven(); the planner skips unprofitable cycles; wear charged in measured savings. Nothing left to build.
 
 ### B-67 · Dynamic reserve recommendation — Feature · M
 Recommend reserve levels based on forecast uncertainty, expected overnight demand, tomorrow's solar, current prices, and household comfort preference.
@@ -280,7 +280,7 @@ Recommend reserve levels based on forecast uncertainty, expected overnight deman
 ### B-68 · Plan confidence score — UX + Feature · S–M
 Show a confidence score for each plan based on data freshness, forecast uncertainty, device health, and planner validation quality.
 **Done when:** every plan is labeled high/medium/low confidence with a plain-language reason.
-**Track:** Pool · E-08 · ⬜
+**Track:** ✅ done — [PR #21](https://github.com/jeroenniesen/EnergyManagementSystem/pull/21). plan_confidence() worst-component-wins; hero chip with the deciding reason (shown only when not high).
 
 ### B-69 · Counterfactual savings engine — Feature · M–L
 Compare actual EMS behavior against realistic alternatives: no battery, battery without EMS, solar-only self-use, and simple cheap-hour charging.
@@ -290,17 +290,17 @@ Compare actual EMS behavior against realistic alternatives: no battery, battery 
 ### B-70 · Energy anomaly detection — Feature · M
 Detect suspicious behavior such as battery not following commands, solar underperforming forecast, EV charging unexpected power, inconsistent meters, or inverter mode drift.
 **Done when:** anomalies create calm, actionable alerts with supporting evidence.
-**Track:** Pool · E-08 · ⬜
+**Track:** ⬜ Pool · E-08. Note: overlaps E-07's B-61 anomaly whispers — build once. Cluster-mismatch detection, incident rollup and the ingest plausibility clamp already exist as foundations.
 
 ### B-71 · Constrained EV charging optimizer — Feature · L
 Optimize EV charging around required SoC, departure deadline, charger max power, battery reserve, solar forecast, dynamic prices, and household peak protection.
 **Done when:** EMS can produce an EV charge plan that respects charger/home constraints and explains why each charge window was chosen.
-**Track:** Pool · E-08 · ⬜
+**Track:** 🟨 mostly shipped by the EV planner ([PR #16](https://github.com/jeroenniesen/EnergyManagementSystem/pull/16)): SoC target, deadline, charger max, prices, solar, per-window explanations, brute-force-verified. Remaining: household peak protection + battery-reserve interaction — fold into the EV control half (B-17) when the charger arrives.
 
 ### B-72 · Forecast accuracy tracking — Feature · S–M
 Track solar, load, price, and plan-execution error over time so EMS knows when a provider/model is biased or stale.
 **Done when:** the system can report recent forecast error and use that error to plan more conservatively.
-**Track:** Pool · E-08 · ⬜
+**Track:** ✅ done — [PR #21](https://github.com/jeroenniesen/EnergyManagementSystem/pull/21). Solar skill + plan-execution error + load-baseline error in the export + GET /api/accuracy.
 
 ### B-73 · Scenario simulator — Feature + UX · M
 Let the homeowner explore "what if" questions such as changing reserve, charging the car tonight, cloudy weather, or negative prices.
@@ -315,7 +315,7 @@ Make optimization decisions produce structured reasons: selected window, alterna
 ### B-75 · Forecast-driven notifications — Feature · S–M
 Notify only for predicted meaningful events: low solar tomorrow, EV needs plug-in before a cheap window, battery may miss evening peak, or unusual price opportunity.
 **Done when:** notifications are sparse, actionable, and backed by forecast confidence.
-**Track:** Pool · E-08 · ⬜
+**Track:** ✅ done — [PR #21](https://github.com/jeroenniesen/EnergyManagementSystem/pull/21). 4 detectors, evening-windowed, confidence-gated, per-day dedupe, own fail-safe loop.
 
 ### B-76 · Model and optimization health dashboard — Feature · S–M
 Expose internal model health: solar error, load error, plan execution error, battery response error, data freshness, and optimization fallback rate.
@@ -325,7 +325,7 @@ Expose internal model health: solar error, load error, plan execution error, bat
 ### B-77 · Historical replay optimization suite — Feature + Test · M
 Replay historical days through the planner to compare rule changes, validate reserve behavior, measure savings, and prevent seasonal regressions.
 **Done when:** CI or a local command can replay representative days and report cost, reserve breaches, confidence, and plan-quality deltas.
-**Track:** Pool · E-08 · ⬜
+**Track:** ✅ done — [PR #21](https://github.com/jeroenniesen/EnergyManagementSystem/pull/21). make replay: 3-scenario day replay (no-battery/AUTO/plan) + --set A/B; read-only by construction. The engine for B-73/B-69.
 
 ---
 
@@ -345,11 +345,11 @@ OpenTherm-GW/Plugwise: weather-compensated low-temp curve, price/CO₂-aware set
 
 ### B-20 · Push notifications — Feature · S–M
 ntfy/HA-companion pushes for genuine wins and warnings. **Trigger:** B-07 shows which moments deserve interruption.
-**Track:** Pool · ⬜
+**Track:** ✅ done — [PR #21](https://github.com/jeroenniesen/EnergyManagementSystem/pull/21). Outbox + bell + ntfy channel (phone pushes, zero cloud). APNs/native push still open if ever needed.
 
 ### B-11 · Heating recommendations (advice-only) — Feature · S
 "Zet 'm op 60", hydraulic balancing (waterzijdig inregelen, 10–15%), weather-appropriate setback tips. No control, no hardware — the cheapest lever on the biggest CO₂ prize. *(Roadmap F7)*
-**Track:** Pool · ⬜
+**Track:** ✅ done — [PR #21](https://github.com/jeroenniesen/EnergyManagementSystem/pull/21). Three advice cards under the gas panel, annualized from the household's meter; DHW >=60°C safety line.
 
 ### B-14 · Solcast forecast provider — Feature · S
 Real P10/P50/P90 percentiles (SPEC's primary provider, unbuilt) instead of derived 0.6×/1.15× bands. Improves risk-aware grid-charge sizing.
