@@ -853,10 +853,13 @@ test.describe("EMS dashboard", () => {
               action: "Nothing needed — EMS keeps controlling the battery normally.",
             },
             {
-              // No safe/action — must still render exactly as before (message only).
+              // Info-level: stays ONE calm line even when safe/action exist — reassurance
+              // sub-lines are reserved for warning/critical (calm states stay calm).
               key: "bare_note",
               severity: "info",
               message: "A plain note with no extra fields.",
+              safe: "Should never render for info.",
+              action: "Should never render for info.",
             },
           ],
         }),

@@ -540,13 +540,15 @@ export function App() {
                 data-testid={`alert-${a.key}`}
               >
                 <span className="alert-message">{a.message}</span>
-                {/* B-37 structured sub-lines — rendered only when the alert carries them. */}
-                {a.safe && (
+                {/* B-37 structured sub-lines — only for warning/critical. Info-level notices
+                    (watch-only, dry-run) stay one calm line; their reassurance would otherwise
+                    out-shout the hero's "Nothing needed from you." */}
+                {a.severity !== "info" && a.safe && (
                   <span className="alert-safe" data-testid="alert-safe">
                     <Icon name="check" /> {a.safe}
                   </span>
                 )}
-                {a.action && (
+                {a.severity !== "info" && a.action && (
                   <span className="alert-action" data-testid="alert-action">
                     → {a.action}
                   </span>
