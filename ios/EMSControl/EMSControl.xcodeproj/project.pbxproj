@@ -8,9 +8,11 @@
 
 /* Begin PBXBuildFile section */
 		00308D987E6218B59EE31A64 /* EMSControlCore.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 62C0D3FEB8DD96AF4F3CAD8C /* EMSControlCore.framework */; };
+		00AE97E9ADF30CA0D9CCD42D /* EMSControlCore.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 62C0D3FEB8DD96AF4F3CAD8C /* EMSControlCore.framework */; };
 		03BCFFC4E5ACF67ED5DA059F /* InsightsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 257B061EB9A96671DDB32DC5 /* InsightsView.swift */; };
 		042F4F18CFE0650AA449CAAC /* InsightsStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = AE96D50A9EC3DC4FEC64185B /* InsightsStore.swift */; };
 		0D0F6681CE829F1EC4356E68 /* EMSControlCore.framework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = 62C0D3FEB8DD96AF4F3CAD8C /* EMSControlCore.framework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
+		0D87044D1DD83D7B05AC4069 /* EMSTimelineProvider.swift in Sources */ = {isa = PBXBuildFile; fileRef = 00226AD26ECD7A7800E34475 /* EMSTimelineProvider.swift */; };
 		15F7E1D2E299E702BCF34E68 /* DemoDataStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3699F1E6706AE136B68AB1C8 /* DemoDataStore.swift */; };
 		1A13A3975BE7484B3E9D2185 /* ISOTimestamp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2DC5EEC3A04E938FD71E41C8 /* ISOTimestamp.swift */; };
 		211D0CD0F3242A3EF71BD8AE /* demo-dashboard.json in Resources */ = {isa = PBXBuildFile; fileRef = 0888EA444AB57461568AD1F4 /* demo-dashboard.json */; };
@@ -19,11 +21,14 @@
 		54D20C7D5F03A7096EA28D35 /* ConnectionView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 378862CC33548C4C96596B8A /* ConnectionView.swift */; };
 		58F3D814DBFE8DE2988FC32A /* ChatView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 922974D3E5EFAB723E1B86D9 /* ChatView.swift */; };
 		5D3E676405A9AC5E9B819120 /* Theme.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4D90E4C3625F5CBBBB665180 /* Theme.swift */; };
+		71EE4BF19B1AE73BBF143945 /* WidgetSupport.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3115F953EFDB46663E1E7408 /* WidgetSupport.swift */; };
 		729A10730EAAE407CCC4638B /* EMSControlApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = DFE9CA097DB9BAA988D849E2 /* EMSControlApp.swift */; };
 		76ABF2D1AF12E76FCA0F984E /* SeriesGeometry.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6489F114C4BCA73DEAF39933 /* SeriesGeometry.swift */; };
 		787676AAC65CC3EFD9FF0E54 /* ActivityView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3CB11B9536D721D347D9429D /* ActivityView.swift */; };
 		7E7073E900977C467AD6C209 /* ServerDiscovery.swift in Sources */ = {isa = PBXBuildFile; fileRef = 033DDC49ECE87F18564D3288 /* ServerDiscovery.swift */; };
+		7E7EC9CB9EF6D3C23CB1E1FF /* EMSWidgetBundle.swift in Sources */ = {isa = PBXBuildFile; fileRef = 81C65C37F0360A3E36856B3C /* EMSWidgetBundle.swift */; };
 		869F6EB25417A0F2A4D2613A /* Models.swift in Sources */ = {isa = PBXBuildFile; fileRef = 13253B7C77956C58739FA336 /* Models.swift */; };
+		8D0B21A731D261A512DA1AC7 /* EMSWidget.appex in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = 14BCF6378F4A63CC1232715D /* EMSWidget.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
 		9AA655D073E01E5E13F7FFA5 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = C4315BE65439DFDF4D4C0BA1 /* Assets.xcassets */; };
 		A4C345A7479078FBB7CD3D55 /* DashboardView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 78E410739D2A3710496D0625 /* DashboardView.swift */; };
 		A93F94C222669DFBD1867493 /* demo-explainer.json in Resources */ = {isa = PBXBuildFile; fileRef = A447D414CC4B7CC4F68D91D0 /* demo-explainer.json */; };
@@ -34,10 +39,25 @@
 		CE05537D943C4DEF4E95F80E /* demo-chat.json in Resources */ = {isa = PBXBuildFile; fileRef = 994E14FBDEF1C0F89AC9E28C /* demo-chat.json */; };
 		EEC0E74D439A37CB1C2D9F6C /* APIClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = 720F711D71B00AC0F6976700 /* APIClient.swift */; };
 		EF963FF881BB7743E2130B73 /* AppShellView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 24CB1980979D24B5EA49FBE4 /* AppShellView.swift */; };
+		F9D6B9F8ED1B8F823AE35213 /* EMSWidgetViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = FCEB78668E11698B72193C5B /* EMSWidgetViews.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
 		1CB7652C11B6997A43EF5534 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 0E967F17294F64F826481382 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = BB6417FD6F2B09B0BC890CF0;
+			remoteInfo = EMSControlCore;
+		};
+		5BE434F50C0360EB9A4C5D6E /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 0E967F17294F64F826481382 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = 2ABADC3354F0EE1A72EEF101;
+			remoteInfo = EMSWidget;
+		};
+		EEF02E2E095BCAF14240DA02 /* PBXContainerItemProxy */ = {
 			isa = PBXContainerItemProxy;
 			containerPortal = 0E967F17294F64F826481382 /* Project object */;
 			proxyType = 1;
@@ -58,17 +78,31 @@
 			name = "Embed Frameworks";
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		4D78FEE1D55C23BE23CE2BCF /* Embed Foundation Extensions */ = {
+			isa = PBXCopyFilesBuildPhase;
+			buildActionMask = 2147483647;
+			dstPath = "";
+			dstSubfolderSpec = 13;
+			files = (
+				8D0B21A731D261A512DA1AC7 /* EMSWidget.appex in Embed Foundation Extensions */,
+			);
+			name = "Embed Foundation Extensions";
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 /* End PBXCopyFilesBuildPhase section */
 
 /* Begin PBXFileReference section */
 		001C06DC7E770182FD4B1DBB /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
+		00226AD26ECD7A7800E34475 /* EMSTimelineProvider.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EMSTimelineProvider.swift; sourceTree = "<group>"; };
 		00F8B1F9E78007B8E6F45047 /* ActivityStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ActivityStore.swift; sourceTree = "<group>"; };
 		033DDC49ECE87F18564D3288 /* ServerDiscovery.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ServerDiscovery.swift; sourceTree = "<group>"; };
 		0888EA444AB57461568AD1F4 /* demo-dashboard.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = "demo-dashboard.json"; sourceTree = "<group>"; };
 		13253B7C77956C58739FA336 /* Models.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Models.swift; sourceTree = "<group>"; };
+		14BCF6378F4A63CC1232715D /* EMSWidget.appex */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = "wrapper.app-extension"; path = EMSWidget.appex; sourceTree = BUILT_PRODUCTS_DIR; };
 		24CB1980979D24B5EA49FBE4 /* AppShellView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppShellView.swift; sourceTree = "<group>"; };
 		257B061EB9A96671DDB32DC5 /* InsightsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = InsightsView.swift; sourceTree = "<group>"; };
 		2DC5EEC3A04E938FD71E41C8 /* ISOTimestamp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ISOTimestamp.swift; sourceTree = "<group>"; };
+		3115F953EFDB46663E1E7408 /* WidgetSupport.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WidgetSupport.swift; sourceTree = "<group>"; };
 		34964B0AB73A0E2AEB2C4350 /* EMSControl.app */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.application; path = EMSControl.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		3699F1E6706AE136B68AB1C8 /* DemoDataStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DemoDataStore.swift; sourceTree = "<group>"; };
 		378862CC33548C4C96596B8A /* ConnectionView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConnectionView.swift; sourceTree = "<group>"; };
@@ -76,12 +110,16 @@
 		4D90E4C3625F5CBBBB665180 /* Theme.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Theme.swift; sourceTree = "<group>"; };
 		62C0D3FEB8DD96AF4F3CAD8C /* EMSControlCore.framework */ = {isa = PBXFileReference; explicitFileType = wrapper.framework; includeInIndex = 0; path = EMSControlCore.framework; sourceTree = BUILT_PRODUCTS_DIR; };
 		6489F114C4BCA73DEAF39933 /* SeriesGeometry.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SeriesGeometry.swift; sourceTree = "<group>"; };
+		6945AC6CBCB3CA4B93980458 /* EMSWidget.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = EMSWidget.entitlements; sourceTree = "<group>"; };
 		720F711D71B00AC0F6976700 /* APIClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = APIClient.swift; sourceTree = "<group>"; };
 		78E410739D2A3710496D0625 /* DashboardView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DashboardView.swift; sourceTree = "<group>"; };
+		81C65C37F0360A3E36856B3C /* EMSWidgetBundle.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EMSWidgetBundle.swift; sourceTree = "<group>"; };
 		851FDA73182D3541A3039A9A /* DashboardStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DashboardStore.swift; sourceTree = "<group>"; };
 		922974D3E5EFAB723E1B86D9 /* ChatView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatView.swift; sourceTree = "<group>"; };
+		93334206BA35A14EC4153324 /* EMSControl.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = EMSControl.entitlements; sourceTree = "<group>"; };
 		994E14FBDEF1C0F89AC9E28C /* demo-chat.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = "demo-chat.json"; sourceTree = "<group>"; };
 		A447D414CC4B7CC4F68D91D0 /* demo-explainer.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = "demo-explainer.json"; sourceTree = "<group>"; };
+		A516714D923D0B43BA82A7CA /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
 		AE96D50A9EC3DC4FEC64185B /* InsightsStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = InsightsStore.swift; sourceTree = "<group>"; };
 		BC6937650BBFD71CE57B8BF5 /* ChatStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatStore.swift; sourceTree = "<group>"; };
 		C10928FD46649449E9D7A9F3 /* ServerAddressValidator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ServerAddressValidator.swift; sourceTree = "<group>"; };
@@ -89,6 +127,7 @@
 		DFE9CA097DB9BAA988D849E2 /* EMSControlApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EMSControlApp.swift; sourceTree = "<group>"; };
 		E720AFC468AEF7CC68D269FB /* demo-faq.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = "demo-faq.json"; sourceTree = "<group>"; };
 		F931E1AEC5676B6174B3A76F /* KeychainCredentialStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeychainCredentialStore.swift; sourceTree = "<group>"; };
+		FCEB78668E11698B72193C5B /* EMSWidgetViews.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EMSWidgetViews.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -97,6 +136,14 @@
 			buildActionMask = 2147483647;
 			files = (
 				00308D987E6218B59EE31A64 /* EMSControlCore.framework in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		C28A7393C6100C85D8B585EA /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				00AE97E9ADF30CA0D9CCD42D /* EMSControlCore.framework in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -112,6 +159,18 @@
 				E720AFC468AEF7CC68D269FB /* demo-faq.json */,
 			);
 			path = Resources;
+			sourceTree = "<group>";
+		};
+		144482D884C4B75BB45EEB5F /* EMSWidget */ = {
+			isa = PBXGroup;
+			children = (
+				00226AD26ECD7A7800E34475 /* EMSTimelineProvider.swift */,
+				6945AC6CBCB3CA4B93980458 /* EMSWidget.entitlements */,
+				81C65C37F0360A3E36856B3C /* EMSWidgetBundle.swift */,
+				FCEB78668E11698B72193C5B /* EMSWidgetViews.swift */,
+				A516714D923D0B43BA82A7CA /* Info.plist */,
+			);
+			path = EMSWidget;
 			sourceTree = "<group>";
 		};
 		20FA0B9670A929F1CAA46D80 = {
@@ -139,6 +198,7 @@
 				C10928FD46649449E9D7A9F3 /* ServerAddressValidator.swift */,
 				033DDC49ECE87F18564D3288 /* ServerDiscovery.swift */,
 				4D90E4C3625F5CBBBB665180 /* Theme.swift */,
+				3115F953EFDB46663E1E7408 /* WidgetSupport.swift */,
 			);
 			path = EMSControlCore;
 			sourceTree = "<group>";
@@ -152,6 +212,7 @@
 				922974D3E5EFAB723E1B86D9 /* ChatView.swift */,
 				378862CC33548C4C96596B8A /* ConnectionView.swift */,
 				78E410739D2A3710496D0625 /* DashboardView.swift */,
+				93334206BA35A14EC4153324 /* EMSControl.entitlements */,
 				DFE9CA097DB9BAA988D849E2 /* EMSControlApp.swift */,
 				001C06DC7E770182FD4B1DBB /* Info.plist */,
 				257B061EB9A96671DDB32DC5 /* InsightsView.swift */,
@@ -164,6 +225,7 @@
 			children = (
 				34964B0AB73A0E2AEB2C4350 /* EMSControl.app */,
 				62C0D3FEB8DD96AF4F3CAD8C /* EMSControlCore.framework */,
+				14BCF6378F4A63CC1232715D /* EMSWidget.appex */,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -173,6 +235,7 @@
 			children = (
 				7A0F099619ACAF2BCBBB4207 /* EMSControlApp */,
 				3A701C06A9893D6080B34E77 /* EMSControlCore */,
+				144482D884C4B75BB45EEB5F /* EMSWidget */,
 			);
 			path = Sources;
 			sourceTree = "<group>";
@@ -180,6 +243,25 @@
 /* End PBXGroup section */
 
 /* Begin PBXNativeTarget section */
+		2ABADC3354F0EE1A72EEF101 /* EMSWidget */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 2A653E1C3B72FF9EFB1BCCB4 /* Build configuration list for PBXNativeTarget "EMSWidget" */;
+			buildPhases = (
+				7200BF5BF96964FD752A8408 /* Sources */,
+				C28A7393C6100C85D8B585EA /* Frameworks */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				7963E43E8111DC90187286CC /* PBXTargetDependency */,
+			);
+			name = EMSWidget;
+			packageProductDependencies = (
+			);
+			productName = EMSWidget;
+			productReference = 14BCF6378F4A63CC1232715D /* EMSWidget.appex */;
+			productType = "com.apple.product-type.app-extension";
+		};
 		BB6417FD6F2B09B0BC890CF0 /* EMSControlCore */ = {
 			isa = PBXNativeTarget;
 			buildConfigurationList = D9207E08DA00D2FCD3402FFF /* Build configuration list for PBXNativeTarget "EMSControlCore" */;
@@ -204,12 +286,14 @@
 				BA12405E55CC5FF13B746BBB /* Sources */,
 				B7C4B7EE1DC4EFEFFA23A5C3 /* Resources */,
 				1DF8A3BF7328DA16881FF7A6 /* Frameworks */,
+				4D78FEE1D55C23BE23CE2BCF /* Embed Foundation Extensions */,
 				3CE141FFF79C793D50114E91 /* Embed Frameworks */,
 			);
 			buildRules = (
 			);
 			dependencies = (
 				3EF4BCF1AFC484D6CD7993BB /* PBXTargetDependency */,
+				347F4568BC440CF7A06CA5EE /* PBXTargetDependency */,
 			);
 			name = EMSControl;
 			packageProductDependencies = (
@@ -227,6 +311,10 @@
 				BuildIndependentTargetsInParallel = YES;
 				LastUpgradeCheck = 1430;
 				TargetAttributes = {
+					2ABADC3354F0EE1A72EEF101 = {
+						DevelopmentTeam = C32G3GV975;
+						ProvisioningStyle = Automatic;
+					};
 					D99448F1F17CA649D8252AD6 = {
 						DevelopmentTeam = C32G3GV975;
 						ProvisioningStyle = Automatic;
@@ -249,6 +337,7 @@
 			targets = (
 				D99448F1F17CA649D8252AD6 /* EMSControl */,
 				BB6417FD6F2B09B0BC890CF0 /* EMSControlCore */,
+				2ABADC3354F0EE1A72EEF101 /* EMSWidget */,
 			);
 		};
 /* End PBXProject section */
@@ -269,6 +358,16 @@
 /* End PBXResourcesBuildPhase section */
 
 /* Begin PBXSourcesBuildPhase section */
+		7200BF5BF96964FD752A8408 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				0D87044D1DD83D7B05AC4069 /* EMSTimelineProvider.swift in Sources */,
+				7E7EC9CB9EF6D3C23CB1E1FF /* EMSWidgetBundle.swift in Sources */,
+				F9D6B9F8ED1B8F823AE35213 /* EMSWidgetViews.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 		B2059C6CC475C1E7AEB9F72C /* Sources */ = {
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
@@ -286,6 +385,7 @@
 				B1C9A8640321DD1AA1C7D313 /* ServerAddressValidator.swift in Sources */,
 				7E7073E900977C467AD6C209 /* ServerDiscovery.swift in Sources */,
 				5D3E676405A9AC5E9B819120 /* Theme.swift in Sources */,
+				71EE4BF19B1AE73BBF143945 /* WidgetSupport.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -306,10 +406,20 @@
 /* End PBXSourcesBuildPhase section */
 
 /* Begin PBXTargetDependency section */
+		347F4568BC440CF7A06CA5EE /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = 2ABADC3354F0EE1A72EEF101 /* EMSWidget */;
+			targetProxy = 5BE434F50C0360EB9A4C5D6E /* PBXContainerItemProxy */;
+		};
 		3EF4BCF1AFC484D6CD7993BB /* PBXTargetDependency */ = {
 			isa = PBXTargetDependency;
 			target = BB6417FD6F2B09B0BC890CF0 /* EMSControlCore */;
 			targetProxy = 1CB7652C11B6997A43EF5534 /* PBXContainerItemProxy */;
+		};
+		7963E43E8111DC90187286CC /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = BB6417FD6F2B09B0BC890CF0 /* EMSControlCore */;
+			targetProxy = EEF02E2E095BCAF14240DA02 /* PBXContainerItemProxy */;
 		};
 /* End PBXTargetDependency section */
 
@@ -319,6 +429,7 @@
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				CODE_SIGN_ENTITLEMENTS = Sources/EMSControlApp/EMSControl.entitlements;
 				CODE_SIGN_IDENTITY = "iPhone Developer";
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
@@ -398,6 +509,52 @@
 				SWIFT_ACTIVE_COMPILATION_CONDITIONS = DEBUG;
 				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
 				SWIFT_VERSION = 6.0;
+			};
+			name = Debug;
+		};
+		229C11A56BD69AD30E0B5F42 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_ENTITLEMENTS = Sources/EMSWidget/EMSWidget.entitlements;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = C32G3GV975;
+				INFOPLIST_FILE = Sources/EMSWidget/Info.plist;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@executable_path/../../Frameworks",
+				);
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.jeroenniesen.emscontrol.dev.widget;
+				PRODUCT_NAME = EMSWidget;
+				SDKROOT = iphoneos;
+				SKIP_INSTALL = YES;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Release;
+		};
+		46F8131123E63130FA0FCF10 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_ENTITLEMENTS = Sources/EMSWidget/EMSWidget.entitlements;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = C32G3GV975;
+				INFOPLIST_FILE = Sources/EMSWidget/Info.plist;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@executable_path/../../Frameworks",
+				);
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.jeroenniesen.emscontrol.dev.widget;
+				PRODUCT_NAME = EMSWidget;
+				SDKROOT = iphoneos;
+				SKIP_INSTALL = YES;
+				TARGETED_DEVICE_FAMILY = "1,2";
 			};
 			name = Debug;
 		};
@@ -512,6 +669,7 @@
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				CODE_SIGN_ENTITLEMENTS = Sources/EMSControlApp/EMSControl.entitlements;
 				CODE_SIGN_IDENTITY = "iPhone Developer";
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
@@ -534,6 +692,15 @@
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
+		2A653E1C3B72FF9EFB1BCCB4 /* Build configuration list for PBXNativeTarget "EMSWidget" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				46F8131123E63130FA0FCF10 /* Debug */,
+				229C11A56BD69AD30E0B5F42 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
 		3D077A666FF439A6592FE10D /* Build configuration list for PBXNativeTarget "EMSControl" */ = {
 			isa = XCConfigurationList;
 			buildConfigurations = (
