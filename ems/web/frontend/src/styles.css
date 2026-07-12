@@ -1649,6 +1649,10 @@ body {
 .week-digest-toggle span:last-child {
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
+/* Expanded: the headline is the panel's voice — let it wrap in full. */
+.week-digest-toggle.open span:last-child {
+  overflow: visible; text-overflow: clip; white-space: normal;
+}
 .week-digest-chevron {
   flex: none; display: inline-block; font-size: 1.1rem; color: var(--muted);
   transition: transform 0.2s ease;

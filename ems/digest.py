@@ -134,7 +134,7 @@ def _tweak(advice: dict | None, week_label: str, export_price_model: str) -> str
         running = "low" if delta > 0 else "high"
         return (
             f"Apply the advisor suggestion — your solar confidence setting has been running "
-            f"{running} lately; bump planner.solar_confidence to {advice['recommended_pct']:.0f}% "
+            f"{running} lately; set solar confidence to {advice['recommended_pct']:.0f}% "
             f"(from {advice['current_pct']:.0f}%) to match what the forecast actually delivered."
         )
     monday = _week_monday(week_label)
