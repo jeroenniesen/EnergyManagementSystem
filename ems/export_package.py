@@ -15,6 +15,7 @@ import csv
 import io
 import json
 import zipfile
+from datetime import datetime, timedelta
 from typing import Any
 
 # CSV members and their columns (stable headers, ISO-UTC timestamps, SI units in the names).
@@ -30,6 +31,7 @@ FINANCE_COLUMNS = (
 AUDIT_COLUMNS = ("id", "ts", "category", "summary", "detail")
 PLAN_COLUMNS = ("ts", "strategy", "target_soc", "deadline", "soc_pct", "intent")
 GAS_COLUMNS = ("ts", "total_gas_m3")
+EV_SESSION_COLUMNS = ("start", "end", "kwh", "avg_kw", "peak_kw", "samples")
 
 
 def rows_to_csv(rows: list[dict], columns: tuple[str, ...]) -> str:
@@ -128,6 +130,94 @@ def _days_between(day: str, newest_day: str) -> int:
     return (date.fromisoformat(newest_day) - date.fromisoformat(day)).days
 
 
+def _parse_iso(ts: object) -> datetime | None:
+    """ISO-8601 string -> datetime, or None if missing/unparsable. Tolerant on purpose — a
+    malformed session/price timestamp must not blow up the export."""
+    if not isinstance(ts, str):
+        return None
+    try:
+        return datetime.fromisoformat(ts)
+    except ValueError:
+        return None
+
+
+def _quarter_floor(dt: datetime) -> datetime:
+    """The 15-min slot start a timestamp falls in (`price_slots` rows are keyed by slot start)."""
+    return dt.replace(minute=(dt.minute // 15) * 15, second=0, microsecond=0)
+
+
+def _slot_portions(session: dict) -> list[tuple[str, float]]:
+    """Split one session's total `kwh` into `(slot_start_iso, portion_kwh)` pairs across the
+    15-min price slots it overlaps, assuming a constant average power over `[start, end]` — the
+    only shape available once a session has been aggregated down to start/end/kwh for export.
+    Falls back to one portion at the session's own slot when start/end can't be parsed or the
+    session has no duration (avoids a division by zero)."""
+    total_kwh = float(session.get("kwh") or 0.0)
+    if total_kwh <= 0:
+        return []
+    start = _parse_iso(session.get("start"))
+    end = _parse_iso(session.get("end"))
+    if start is None or end is None or end <= start:
+        anchor = start or end
+        return [(_quarter_floor(anchor).isoformat(), total_kwh)] if anchor else []
+    total_seconds = (end - start).total_seconds()
+    out: list[tuple[str, float]] = []
+    cur = _quarter_floor(start)
+    step = timedelta(minutes=15)
+    while cur < end:
+        nxt = cur + step
+        overlap = (min(nxt, end) - max(cur, start)).total_seconds()
+        if overlap > 0:
+            out.append((cur.isoformat(), total_kwh * (overlap / total_seconds)))
+        cur = nxt
+    return out
+
+
+def ev_price_adherence(sessions: list[dict], price_rows: list[dict]) -> dict[str, Any] | None:
+    """Volume-weighted price actually paid for EV charging vs. the window's plain average price —
+    the read that shows whether the schedule advice is actually steering charging into cheap
+    windows. `None` when there are no detected sessions (nothing to weigh yet).
+
+    Each session is split into 15-min portions (`_slot_portions`, constant-power assumption) and
+    joined to `price_rows` (as stored for prices.csv: `{"start_ts", "eur_per_kwh"}`) by slot start;
+    a portion whose slot has no known price is excluded from the weighting and tallied separately
+    as `unpriced_kwh` — it neither helps nor hurts the average. The window average is the plain
+    (unweighted) mean of every priced slot in `price_rows`, i.e. "what electricity cost in general
+    over this window", for comparison against what charging actually paid.
+    """
+    if not sessions:
+        return None
+    price_map = {
+        r["start_ts"]: r["eur_per_kwh"] for r in price_rows
+        if r.get("start_ts") is not None and r.get("eur_per_kwh") is not None
+    }
+    total_kwh = 0.0
+    priced_kwh = 0.0
+    unpriced_kwh = 0.0
+    weighted_cost = 0.0
+    for session in sessions:
+        total_kwh += float(session.get("kwh") or 0.0)
+        for slot_start, portion_kwh in _slot_portions(session):
+            price = price_map.get(slot_start)
+            if price is None:
+                unpriced_kwh += portion_kwh
+            else:
+                priced_kwh += portion_kwh
+                weighted_cost += portion_kwh * price
+    window_prices = [r["eur_per_kwh"] for r in price_rows if r.get("eur_per_kwh") is not None]
+    window_avg = sum(window_prices) / len(window_prices) if window_prices else None
+    weighted_price = weighted_cost / priced_kwh if priced_kwh > 0 else None
+    return {
+        "n_sessions": len(sessions),
+        "total_kwh": round(total_kwh, 2),
+        "priced_kwh": round(priced_kwh, 2),
+        "unpriced_kwh": round(unpriced_kwh, 2),
+        "weighted_price_eur_per_kwh": (
+            round(weighted_price, 4) if weighted_price is not None else None),
+        "window_avg_price_eur_per_kwh": round(window_avg, 4) if window_avg is not None else None,
+    }
+
+
 def readme_text() -> str:
     """A self-contained guide to the package: what each CSV holds, units, sign conventions, and
     how to load it. Static — the per-package window/counts live in manifest.json."""
@@ -171,13 +261,25 @@ health check of production operation. All timestamps are **UTC, ISO-8601**. All 
   `ts, total_gas_m3`. It's a running total, not a per-cycle volume — a day's use is that day's
   last reading minus its first. Folds into the CO₂ footprint (Insights' CO₂ score) alongside
   electricity.
+- **ev_sessions.csv** — EV charging sessions **DETECTED** from the car's HomeWizard meter (the
+  car exposes no API, so a session is **not reported by the car** — it is inferred, threshold-
+  based, from `raw_samples.csv`'s `ev_power_w`: a run of samples at/above ~1.5 kW, brief
+  sub-threshold pauses bridged, short runs dropped; see `ems/ev_session.py`), one row per session:
+  `start, end, kwh (AC-side), avg_kw, peak_kw, samples`. Empty (header only) when no sessions were
+  detected in the window.
 - **manifest.json** — what/when/window, row counts, and a privacy-safe validation block
   (run mode, planner settings, data quality, recorder health). No tokens, IPs or location.
   `manifest.incidents` summarises control-health events from the audit log (command failures,
   cluster mismatches, fallbacks, reverts) — a rollup, not a replacement for `audit_log.csv`.
+  `manifest.ev` carries the config needed to replay the charging algorithm against
+  `ev_sessions.csv`: the weekly `schedule`, `car_id`, `battery_kwh`, `charger_kw`,
+  `charge_efficiency`, `advice_enabled`, and the manual `soc_anchor` (`{"pct", "ts"}` or `null` if
+  never set) the SoC estimate is built from — see `ems/ev_schedule.py` / `ems/ev_session.py`.
 - **validation_summary.txt** — the same health read in plain language, plus a "Solar forecast
   skill" section (bias, MAE, band coverage, actual vs forecast kWh) measuring how well the
-  day-ahead forecast tracked reality — see forecasts.csv for the raw data behind it.
+  day-ahead forecast tracked reality — see forecasts.csv for the raw data behind it — and an
+  "EV charging" section (sessions, kWh, volume-weighted price paid vs. the window's average price)
+  showing whether charging is actually landing in cheap windows, for tuning the schedule/algorithm.
 
 ## Loading (Python / pandas)
 ```python
@@ -241,6 +343,40 @@ def _forecast_skill_lines(
     return lines
 
 
+def _ev_charging_lines(ev_price_adherence: dict[str, Any] | None) -> list[str]:
+    """The 'EV charging' section — omitted entirely when no adherence dict is given (feature off
+    / older callers), and reduced to a one-liner when no sessions have been detected yet. Compares
+    the volume-weighted price actually paid for charging against the window's plain average price
+    — the read that shows whether the schedule advice is steering charging into cheap windows, for
+    tuning `ev.schedule` / the planner."""
+    if ev_price_adherence is None:
+        return []
+    n = ev_price_adherence.get("n_sessions", 0)
+    if not n:
+        return ["", "EV charging", "  No charging sessions detected yet."]
+    total_kwh = ev_price_adherence.get("total_kwh", 0.0)
+    weighted = ev_price_adherence.get("weighted_price_eur_per_kwh")
+    window_avg = ev_price_adherence.get("window_avg_price_eur_per_kwh")
+    lines = [
+        "",
+        "EV charging",
+        f"  {n} sessions · {total_kwh} kWh (AC)",
+    ]
+    if weighted is None or window_avg is None:
+        lines.append("  Not enough priced charging yet to compare against the window average.")
+        return lines
+    delta = weighted - window_avg
+    direction = "below" if delta < 0 else "above" if delta > 0 else "at"
+    followed = "is" if delta <= 0 else "isn't"
+    lines.append(f"  volume-weighted price paid: €{weighted:.2f}/kWh")
+    lines.append(f"  window average price:       €{window_avg:.2f}/kWh")
+    lines.append(
+        f"  Read: charging ran €{abs(delta):.2f}/kWh {direction} the average — "
+        f"the schedule advice {followed} being followed."
+    )
+    return lines
+
+
 def validation_summary(
     *,
     generated_at: str,
@@ -251,6 +387,7 @@ def validation_summary(
     saved_total_eur: float | None,
     forecast_skill: dict[str, Any] | None = None,
     solar_confidence_advice: dict[str, Any] | None = None,
+    ev_price_adherence: dict[str, Any] | None = None,
 ) -> str:
     """A one-screen, plain-language health read derived from the manifest data, so a reviewer (or
     the operator) can see at a glance whether the system is collecting data and operating sanely.
@@ -258,7 +395,10 @@ def validation_summary(
     'Solar forecast skill' section is appended (omitted for older callers that don't pass one).
     `solar_confidence_advice` is the optional `ems.analysis.recommend_solar_confidence(...)`
     result — when given, one extra suggestion line is appended to that section. Advisory only:
-    this never changes `planner.solar_confidence`, it only reports the evidence-based suggestion."""
+    this never changes `planner.solar_confidence`, it only reports the evidence-based suggestion.
+    `ev_price_adherence` is the optional `ev_price_adherence(...)` result (this module) — when
+    given, an 'EV charging' section is appended (omitted for older callers, default None, so this
+    stays backward compatible)."""
     op = validation.get("operational", {})
     health = validation.get("health", {})
     rec = health.get("recorder") or {}
@@ -292,6 +432,7 @@ def validation_summary(
         f"  Most recent:    {incidents.get('most_recent') or '—'}",
         f"  By type:        {by_type_text}",
         *_forecast_skill_lines(forecast_skill, solar_confidence_advice),
+        *_ev_charging_lines(ev_price_adherence),
         "",
         "Result",
         f"  Measured savings over the window: {saved}",

@@ -46,7 +46,7 @@ from ems.energy_flow import build_daily_flows
 from ems.ev_advisor import advise_charge_window
 from ems.ev_planner import plan_car_charging
 from ems.ev_schedule import materialize_deadlines, parse_schedule
-from ems.ev_session import estimate_soc
+from ems.ev_session import detect_sessions, estimate_soc
 from ems.finance import day_finance
 from ems.freshness import FreshnessTracker
 from ems.lifecycle import OwnershipState
@@ -2786,6 +2786,15 @@ def create_app(
             finance = [r["data"] for r in fin_rows]
         if audit_store is not None:
             audit = list(reversed(await audit_store.recent(limit=5000)))  # oldest→newest
+        # EV charging sessions are DETECTED on-demand from the already-fetched raw rows (no
+        # recorder state machine — see ems/ev_session.py) so the algorithm can be validated/tuned
+        # from production data (docs/superpowers/specs/2026-07-12-ev-charging-design.md, "Export").
+        ev_sessions = detect_sessions(raw)
+        ev_soc_anchor: dict[str, Any] | None = None
+        if store is not None:
+            anchor = await store.get_car_soc_anchor()
+            if anchor is not None:
+                ev_soc_anchor = {"pct": anchor[0], "ts": anchor[1]}
         # Production-validation payload — privacy-safe (only the replay-safe settings, no IPs /
         # tokens / location). Lets a reviewer see run mode, the planner knobs in effect, and live
         # health (data quality, whether the battery capability probed, recorder liveness).
@@ -2799,11 +2808,22 @@ def create_app(
                 "recorder": recorder.health() if recorder is not None else None,
             },
             "incidents": expkg.incident_rollup(audit),
+            # Config needed to replay the EV charging algorithm against ev_sessions.csv — no
+            # tokens/IPs/location; a % + timestamp anchor is privacy-safe and useful for replay.
+            "ev": {
+                "schedule": parse_schedule(settings_cache.get("ev.schedule")),
+                "car_id": settings_cache.get("ev.car_id"),
+                "battery_kwh": settings_cache.get("ev.battery_kwh"),
+                "charger_kw": settings_cache.get("ev.charger_kw"),
+                "charge_efficiency": settings_cache.get("ev.charge_efficiency"),
+                "advice_enabled": settings_cache.get("ev.advice_enabled"),
+                "soc_anchor": ev_soc_anchor,
+            },
         }
         counts = {"raw_samples": len(raw), "derived_samples": len(derived),
                   "prices": len(prices), "forecasts": len(forecasts),
                   "daily_finance": len(finance), "audit_log": len(audit),
-                  "plan_history": len(plan), "gas": len(gas)}
+                  "plan_history": len(plan), "gas": len(gas), "ev_sessions": len(ev_sessions)}
         saved_vals = [d["saved_eur"] for d in finance if d.get("saved_eur") is not None]
         saved_total = round(sum(saved_vals), 2) if saved_vals else None
         window = {"start": start_iso, "end": end_iso}
@@ -2811,6 +2831,7 @@ def create_app(
         solar_advice = recommend_solar_confidence(
             forecasts, raw,
             current_pct=float(settings_cache.get("planner.solar_confidence", 80.0)))
+        ev_adherence = expkg.ev_price_adherence(ev_sessions, prices)
         members = {
             "raw_samples.csv": expkg.rows_to_csv(raw, expkg.RAW_COLUMNS),
             "derived_samples.csv": expkg.rows_to_csv(derived, expkg.DERIVED_COLUMNS),
@@ -2820,6 +2841,7 @@ def create_app(
             "audit_log.csv": expkg.rows_to_csv(audit, expkg.AUDIT_COLUMNS),
             "plan_history.csv": expkg.rows_to_csv(plan, expkg.PLAN_COLUMNS),
             "gas.csv": expkg.rows_to_csv(gas, expkg.GAS_COLUMNS),
+            "ev_sessions.csv": expkg.rows_to_csv(ev_sessions, expkg.EV_SESSION_COLUMNS),
             "manifest.json": expkg.build_manifest(
                 generated_at=now.isoformat(), app_version=expkg.app_version(),
                 window_start=start_iso, window_end=end_iso, counts=counts, extra=validation,
@@ -2829,6 +2851,7 @@ def create_app(
                 generated_at=now.isoformat(), app_version=expkg.app_version(), window=window,
                 counts=counts, validation=validation, saved_total_eur=saved_total,
                 forecast_skill=fc_skill, solar_confidence_advice=solar_advice,
+                ev_price_adherence=ev_adherence,
             ),
         }
         data = expkg.build_zip(members)

@@ -3,9 +3,11 @@ import json
 
 from ems.export_package import (
     AUDIT_COLUMNS,
+    EV_SESSION_COLUMNS,
     RAW_COLUMNS,
     build_manifest,
     build_zip,
+    ev_price_adherence,
     incident_rollup,
     read_member,
     rows_to_csv,
@@ -35,6 +37,65 @@ def test_rows_to_csv_json_encodes_dict_cells():
 
 def test_rows_to_csv_empty_still_writes_header():
     assert rows_to_csv([], RAW_COLUMNS).strip() == ",".join(RAW_COLUMNS)
+
+
+def test_ev_session_columns_csv_has_header_and_a_row():
+    sessions = [{"start": "2026-06-28T09:00:00+00:00", "end": "2026-06-28T09:10:00+00:00",
+                 "kwh": 1.75, "avg_kw": 7.0, "peak_kw": 7.0, "samples": 3}]
+    out = rows_to_csv(sessions, EV_SESSION_COLUMNS)
+    lines = out.strip().splitlines()
+    assert lines[0] == ",".join(EV_SESSION_COLUMNS)
+    assert "1.75" in lines[1] and "7.0" in lines[1]
+
+
+def test_ev_session_columns_csv_empty_still_writes_header():
+    assert rows_to_csv([], EV_SESSION_COLUMNS).strip() == ",".join(EV_SESSION_COLUMNS)
+
+
+# ---- ev_price_adherence: volume-weighted price paid for EV charging vs. window average ----
+
+def test_ev_price_adherence_no_sessions_is_none():
+    assert ev_price_adherence([], [{"start_ts": "2026-06-28T10:00:00+00:00",
+                                     "eur_per_kwh": 0.20}]) is None
+
+
+def test_ev_price_adherence_weighted_price_hand_computed():
+    # Two 5 kWh sessions, each entirely inside its own 15-min slot: one at 0.10 EUR/kWh, one at
+    # 0.30 EUR/kWh -> volume-weighted price paid = (5*0.10 + 5*0.30) / 10 = 0.20. The window's four
+    # priced slots (0.10/0.20/0.30/0.40) average to 0.25 -> charging ran BELOW the window average.
+    sessions = [
+        {"start": "2026-06-28T10:00:00+00:00", "end": "2026-06-28T10:14:00+00:00",
+         "kwh": 5.0, "avg_kw": 21.4, "peak_kw": 22.0, "samples": 3},
+        {"start": "2026-06-28T11:00:00+00:00", "end": "2026-06-28T11:14:00+00:00",
+         "kwh": 5.0, "avg_kw": 21.4, "peak_kw": 22.0, "samples": 3},
+    ]
+    prices = [
+        {"start_ts": "2026-06-28T10:00:00+00:00", "eur_per_kwh": 0.10},
+        {"start_ts": "2026-06-28T10:15:00+00:00", "eur_per_kwh": 0.20},
+        {"start_ts": "2026-06-28T11:00:00+00:00", "eur_per_kwh": 0.30},
+        {"start_ts": "2026-06-28T11:15:00+00:00", "eur_per_kwh": 0.40},
+    ]
+    out = ev_price_adherence(sessions, prices)
+    assert out["n_sessions"] == 2
+    assert out["total_kwh"] == 10.0
+    assert out["priced_kwh"] == 10.0
+    assert out["unpriced_kwh"] == 0.0
+    assert out["weighted_price_eur_per_kwh"] == 0.20
+    assert out["window_avg_price_eur_per_kwh"] == 0.25
+
+
+def test_ev_price_adherence_excludes_unpriced_portions_from_weighting():
+    # A session with no matching price_slots row: its kWh is tallied as unpriced and excluded from
+    # both the weighted price and the window average (there are no priced slots at all here).
+    sessions = [{"start": "2026-06-28T10:00:00+00:00", "end": "2026-06-28T10:14:00+00:00",
+                 "kwh": 4.0, "avg_kw": 16.0, "peak_kw": 16.0, "samples": 3}]
+    out = ev_price_adherence(sessions, [])
+    assert out["n_sessions"] == 1
+    assert out["total_kwh"] == 4.0
+    assert out["priced_kwh"] == 0.0
+    assert out["unpriced_kwh"] == 4.0
+    assert out["weighted_price_eur_per_kwh"] is None
+    assert out["window_avg_price_eur_per_kwh"] is None
 
 
 def test_build_zip_roundtrips_members_sorted_and_deterministic():
@@ -168,6 +229,58 @@ def test_validation_summary_omits_suggestion_line_when_advice_is_none():
     assert "Suggested solar_confidence" not in text
 
 
+# ---- validation_summary + _ev_charging_lines: the "EV charging" section ----
+
+def test_validation_summary_includes_ev_charging_section_below_average():
+    adherence = {"n_sessions": 2, "total_kwh": 10.0, "priced_kwh": 10.0, "unpriced_kwh": 0.0,
+                 "weighted_price_eur_per_kwh": 0.20, "window_avg_price_eur_per_kwh": 0.25}
+    text = validation_summary(
+        generated_at="2026-06-28T12:00:00+00:00", app_version="0.0.1",
+        window={"start": "2026-05-28T00:00:00+00:00", "end": "2026-06-28T12:00:00+00:00"},
+        counts={"raw_samples": 1}, saved_total_eur=None, validation={},
+        ev_price_adherence=adherence,
+    )
+    assert "EV charging" in text
+    assert "2 sessions · 10.0 kWh (AC)" in text
+    assert "volume-weighted price paid: €0.20/kWh" in text
+    assert "window average price:       €0.25/kWh" in text
+    assert "charging ran €0.05/kWh below the average" in text
+    assert "the schedule advice is being followed" in text
+
+
+def test_validation_summary_ev_charging_section_above_average_reads_isnt_followed():
+    adherence = {"n_sessions": 1, "total_kwh": 5.0, "priced_kwh": 5.0, "unpriced_kwh": 0.0,
+                 "weighted_price_eur_per_kwh": 0.35, "window_avg_price_eur_per_kwh": 0.25}
+    text = validation_summary(
+        generated_at="2026-06-28T12:00:00+00:00", app_version="0.0.1",
+        window={"start": "2026-05-28T00:00:00+00:00", "end": "2026-06-28T12:00:00+00:00"},
+        counts={"raw_samples": 1}, saved_total_eur=None, validation={},
+        ev_price_adherence=adherence,
+    )
+    assert "charging ran €0.10/kWh above the average" in text
+    assert "the schedule advice isn't being followed" in text
+
+
+def test_validation_summary_ev_charging_section_no_sessions_yet():
+    text = validation_summary(
+        generated_at="2026-06-28T12:00:00+00:00", app_version="0.0.1",
+        window={"start": "2026-05-28T00:00:00+00:00", "end": "2026-06-28T12:00:00+00:00"},
+        counts={"raw_samples": 1}, saved_total_eur=None, validation={},
+        ev_price_adherence={"n_sessions": 0},
+    )
+    assert "EV charging" in text
+    assert "No charging sessions detected yet." in text
+
+
+def test_validation_summary_omits_ev_charging_section_when_not_given():
+    text = validation_summary(
+        generated_at="2026-06-28T12:00:00+00:00", app_version="0.0.1",
+        window={"start": "2026-05-28T00:00:00+00:00", "end": "2026-06-28T12:00:00+00:00"},
+        counts={"raw_samples": 1}, saved_total_eur=None, validation={},
+    )
+    assert "EV charging" not in text
+
+
 # ---- endpoint: GET /api/export/package returns a ZIP of the CSVs + manifest ----
 import asyncio  # noqa: E402
 from datetime import UTC, datetime, timedelta  # noqa: E402
@@ -236,7 +349,7 @@ def test_export_package_endpoint_returns_zip_with_all_members(tmp_path):
     names = set(zip_names(data))
     assert {"raw_samples.csv", "derived_samples.csv", "prices.csv", "forecasts.csv",
             "daily_finance.csv", "audit_log.csv", "plan_history.csv", "gas.csv",
-            "manifest.json"} <= names
+            "ev_sessions.csv", "manifest.json"} <= names
     # Real data made it in.
     assert "1600.0" in read_member(data, "raw_samples.csv")
     assert "0.18" in read_member(data, "prices.csv")
@@ -245,6 +358,9 @@ def test_export_package_endpoint_returns_zip_with_all_members(tmp_path):
     assert "allow_self_consumption" in read_member(data, "audit_log.csv")
     assert "grid_charge_to_target" in read_member(data, "plan_history.csv")
     assert "1234.5" in read_member(data, "gas.csv")
+    # _seed() records a single raw sample -> no session (below min_duration) -> header only.
+    ev_sessions_csv = read_member(data, "ev_sessions.csv")
+    assert ev_sessions_csv.strip() == ",".join(EV_SESSION_COLUMNS)
     manifest = json.loads(read_member(data, "manifest.json"))
     assert manifest["kind"] == "ems-export-package"
     assert manifest["counts"]["raw_samples"] == 1
@@ -252,6 +368,7 @@ def test_export_package_endpoint_returns_zip_with_all_members(tmp_path):
     assert manifest["counts"]["forecasts"] == 1
     assert manifest["counts"]["plan_history"] == 1
     assert manifest["counts"]["gas"] == 1
+    assert manifest["counts"]["ev_sessions"] == 0
 
 
 def test_export_package_backfills_daily_finance_for_unviewed_days(tmp_path):
@@ -360,6 +477,89 @@ def test_manifest_carries_validation_payload_and_no_secrets(tmp_path):
         assert leak not in blob, f"manifest leaked a sensitive key: {leak}"
 
 
+def test_manifest_ev_block_shape_default_settings_and_null_soc_anchor(tmp_path):
+    # No car settings changed, no SoC anchor ever set — the "feature never configured" shape:
+    # every ev.* default, and soc_anchor explicitly null (not omitted) so a replay script can
+    # always find the key.
+    db = str(tmp_path / "ems.sqlite")
+    _seed(db)
+    with TestClient(_app(db)) as c:
+        data = c.get("/api/export/package").content
+    ev = json.loads(read_member(data, "manifest.json"))["ev"]
+    assert ev["soc_anchor"] is None
+    assert ev["advice_enabled"] is False
+    assert ev["car_id"] == ""
+    assert ev["battery_kwh"] == 57.5
+    assert ev["charger_kw"] == 11.0
+    assert ev["charge_efficiency"] == 0.90
+    assert set(ev["schedule"]) == {"mon", "tue", "wed", "thu", "fri", "sat", "sun"}
+    assert ev["schedule"]["mon"] == {"enabled": False, "min_pct": 80, "ready_by": "07:30"}
+    # No location/token/IP in the ev block specifically (the config needed to replay the
+    # algorithm carries none of those).
+    blob = json.dumps(ev).lower()
+    for leak in ("token", "secret", "_ip", "\"ip\"", "lat", "lon", "password"):
+        assert leak not in blob, f"manifest.ev leaked a sensitive key: {leak}"
+
+
+def test_manifest_ev_block_carries_config_and_soc_anchor_when_set(tmp_path):
+    db = str(tmp_path / "ems.sqlite")
+    _seed(db)
+
+    async def seed_ev():
+        settings = SettingsStore(db)
+        await settings.init()
+        await settings.set_many({
+            "ev.advice_enabled": True, "ev.car_id": "my-tesla",
+            "ev.battery_kwh": 75.0, "ev.charger_kw": 7.4, "ev.charge_efficiency": 0.92,
+        })
+        store = HistoryStore(db)
+        await store.init()
+        await store.set_car_soc_anchor(60.0, "2026-06-28T08:00:00+00:00")
+    asyncio.run(seed_ev())
+
+    with TestClient(_app(db)) as c:
+        data = c.get("/api/export/package").content
+    ev = json.loads(read_member(data, "manifest.json"))["ev"]
+    assert ev["advice_enabled"] is True
+    assert ev["car_id"] == "my-tesla"
+    assert ev["battery_kwh"] == 75.0
+    assert ev["charger_kw"] == 7.4
+    assert ev["charge_efficiency"] == 0.92
+    assert ev["soc_anchor"] == {"pct": 60.0, "ts": "2026-06-28T08:00:00+00:00"}
+
+
+def _seed_ev_charging_block(db: str) -> None:
+    # Three samples 5 minutes apart at a steady 7 kW -> one detected session spanning 10 minutes
+    # (>= the 5-min default min_duration) with a hand-computable zero-order-hold energy: 3 holds of
+    # 5 min each at 7 kW = 3 * 7.0 * (5/60) = 1.75 kWh exactly.
+    async def go():
+        store = HistoryStore(db)
+        await store.init()
+        base = datetime(2026, 6, 28, 9, 0, 0, tzinfo=UTC)
+        for i in range(3):
+            ts = (base + timedelta(minutes=5 * i)).isoformat()
+            raw = RawSample(grid_power_w=200.0, solar_power_w=0.0, battery_power_w=0.0,
+                            ev_power_w=7000.0, soc_pct=50.0)
+            await store.record(ts, raw, reconstruct(raw))
+        await store.upsert_price_slots([(base.isoformat(), 0.15)])
+    asyncio.run(go())
+
+
+def test_export_package_ev_sessions_flow_from_seeded_raw_rows(tmp_path):
+    db = str(tmp_path / "ems.sqlite")
+    _seed_ev_charging_block(db)
+    with TestClient(_app(db)) as c:
+        data = c.get("/api/export/package?days=30").content
+    csv_text = read_member(data, "ev_sessions.csv")
+    lines = csv_text.strip().splitlines()
+    assert lines[0] == ",".join(EV_SESSION_COLUMNS)
+    assert len(lines) == 2  # header + exactly one detected session
+    assert "1.75" in csv_text   # kwh
+    assert "7.0" in csv_text    # avg_kw / peak_kw
+    manifest = json.loads(read_member(data, "manifest.json"))
+    assert manifest["counts"]["ev_sessions"] == 1
+
+
 def test_package_includes_readme_and_validation_summary(tmp_path):
     db = str(tmp_path / "ems.sqlite")
     _seed(db)
@@ -372,6 +572,9 @@ def test_package_includes_readme_and_validation_summary(tmp_path):
     assert "forecasts.csv" in readme
     assert "plan_history.csv" in readme
     assert "gas.csv" in readme
+    assert "ev_sessions.csv" in readme
+    assert "DETECTED" in readme and "not reported by the car" in readme  # detected, not telemetry
+    assert "manifest.ev" in readme                                       # ev manifest documented
     summary = read_member(data, "validation_summary.txt")
     assert "Run mode:" in summary and "DRY-RUN" in summary              # run mode legible
     assert "Measured savings over the window: €0.42" in summary         # savings total from finance
@@ -407,12 +610,16 @@ def test_package_never_leaks_a_stored_secret_value(tmp_path):
     async def seed_secret():
         settings = SettingsStore(db)
         await settings.init()
-        await settings.set_many({"access.web_token": secret, "tibber.token": secret})
+        await settings.set_many({"access.web_token": secret, "tibber.token": secret,
+                                  "ev.advice_enabled": True, "ev.car_id": "my-tesla"})
         audit = AuditStore(db)
         await audit.init()
         await audit.append("2026-06-28T11:00:00+00:00", "config_change",
                            "Changed 1 setting(s): access.web_token",
                            {"keys": ["access.web_token"], "secrets": ["access.web_token"]})
+        store = HistoryStore(db)
+        await store.init()
+        await store.set_car_soc_anchor(60.0, "2026-06-28T08:00:00+00:00")
 
     _seed(db)
     asyncio.run(seed_secret())
@@ -422,6 +629,13 @@ def test_package_never_leaks_a_stored_secret_value(tmp_path):
         assert secret not in read_member(data, name), f"secret leaked into {name}"
     # The audit entry is present (by key name), proving we didn't just drop the data.
     assert "access.web_token" in read_member(data, "audit_log.csv")
+    # The new EV members specifically: real (non-secret) config flows through, ev_sessions.csv is
+    # clean, and the secret never rides along in the manifest's new "ev" block.
+    manifest = json.loads(read_member(data, "manifest.json"))
+    assert manifest["ev"]["car_id"] == "my-tesla"
+    assert manifest["ev"]["soc_anchor"] == {"pct": 60.0, "ts": "2026-06-28T08:00:00+00:00"}
+    assert secret not in json.dumps(manifest["ev"])
+    assert secret not in read_member(data, "ev_sessions.csv")
 
 
 def test_recorder_wiring_persists_a_plan_history_row_on_startup(tmp_path):
