@@ -1,0 +1,36 @@
+name: iOS
+
+# Path-filtered so backend/frontend-only changes never spin up a macos
+# runner. Kept in its own workflow file (rather than a job with an `if:`)
+# so the paths filter applies at trigger time, not job-skip time.
+on:
+  pull_request:
+    paths:
+      - "ios/**"
+  push:
+    branches: [main]
+    paths:
+      - "ios/**"
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  ios:
+    name: iOS (swift test)
+    runs-on: macos-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      # SPM `swift test` only — no xcodegen (not guaranteed to be installed
+      # on the runner) and no xcodebuild (app target isn't part of this
+      # gate). The runner's default DEVELOPER_DIR already points at a full
+      # Xcode install, so no override is needed here.
+      - name: swift test
+        working-directory: ios/EMSControl
+        run: swift test
