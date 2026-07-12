@@ -87,16 +87,16 @@ const CELL_COUNT = HORIZON_MS / SLOT_MS; // 192
 function dayTime(iso: string): string {
   const d = new Date(iso);
   const day = d.toLocaleDateString([], { weekday: "short" });
-  const time = d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+  const time = d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", hour12: false });
   return `${day} ${time}`;
 }
 
 function hm(iso: string): string {
-  return new Date(iso).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+  return new Date(iso).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", hour12: false });
 }
 
 function fmtTime(ms: number): string {
-  return new Date(ms).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+  return new Date(ms).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", hour12: false });
 }
 
 type TimelineCell = { startMs: number; slot: Slot | null };

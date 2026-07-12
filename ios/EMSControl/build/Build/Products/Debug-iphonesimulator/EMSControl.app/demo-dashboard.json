@@ -1,0 +1,822 @@
+{
+  "generated_at": "2026-06-29T12:00:00+00:00",
+  "server_name": "Demo Home EMS",
+  "cache_ttl_seconds": 10,
+  "status": {
+    "dry_run": true,
+    "dev_mode": "demo",
+    "soc_pct": 64.0,
+    "grid_power_w": -320.0,
+    "solar_power_w": 1450.0,
+    "battery_power_w": -280.0,
+    "house_load_w": 850.0,
+    "non_ev_load_w": 850.0
+  },
+  "freshness": {
+    "battery": "fresh",
+    "prices": "fresh",
+    "forecast": "fresh"
+  },
+  "decision": {
+    "intent": "allow_self_consumption",
+    "desired_mode": "self_consumption",
+    "applied": true,
+    "outcome": "confirmed",
+    "reason": "Solar is covering the house; battery is topping up for tonight.",
+    "plan_reason": "Solar is covering the house; battery is topping up for tonight.",
+    "plan_reason_explained": "Your solar panels are producing more than the home needs right now, so the battery is simply topping up rather than discharging. It is on track to have enough stored energy for this evening's peak.",
+    "explanation_source": "template",
+    "override_active": false,
+    "car_charging": false,
+    "target_soc": 72.0,
+    "home_state": {
+      "headline": "All good — the battery is running the house",
+      "tone": "good",
+      "simulated": true
+    },
+    "plan_validation": {
+      "status": "valid",
+      "ok": true,
+      "findings": []
+    }
+  },
+  "alerts": {
+    "data_quality": "complete",
+    "alerts": []
+  },
+  "battery": {
+    "current_mode": "self_consumption",
+    "capabilities": {
+      "services": [
+        "indevolt.charge",
+        "indevolt.discharge"
+      ],
+      "energy_mode_options": [
+        "self_consumption",
+        "grid_charge",
+        "hold_reserve"
+      ],
+      "has_standby": true,
+      "has_grid_charge_switch": true,
+      "p1_paired": true,
+      "max_charge_w": 4000.0,
+      "max_discharge_w": 4000.0
+    },
+    "towers": [
+      {
+        "ip": "192.168.1.50",
+        "role": "master",
+        "soc_pct": 64.0,
+        "power_w": -140.0,
+        "capacity_kwh": 5.4,
+        "online": true,
+        "mode": "self_consumption"
+      },
+      {
+        "ip": "192.168.1.51",
+        "role": "slave",
+        "soc_pct": 63.0,
+        "power_w": -140.0,
+        "capacity_kwh": 5.4,
+        "online": true,
+        "mode": "self_consumption"
+      }
+    ],
+    "aggregate": {
+      "soc_pct": 64.0,
+      "power_w": -280.0,
+      "capacity_kwh": 10.8,
+      "online_towers": 2,
+      "total_towers": 2
+    }
+  },
+  "charge_need": {
+    "usable_kwh": 8.6,
+    "current_soc_pct": 64.0,
+    "current_kwh": 6.9,
+    "reserve_kwh": 1.1,
+    "target_kwh": 7.9,
+    "target_soc_pct": 72.0,
+    "deficit_kwh": 0.0,
+    "on_track": true,
+    "reason": "Solar is topping up the battery; on track for tonight's target."
+  },
+  "savings": {
+    "today_eur": 1.82
+  },
+  "strategy": {
+    "mode": "auto",
+    "active": "summer",
+    "auto": true,
+    "summary": "Solar-first: the battery banks daytime surplus and runs the house overnight.",
+    "reason": "Running solar-first — the forecast surplus should carry the home tonight.",
+    "grid_topup": true,
+    "max_topup_price": 0.3
+  },
+  "energy_story": {
+    "window": "next",
+    "now": "2026-06-29T13:00:00+00:00",
+    "current_soc_pct": 100.0,
+    "reserve_soc_pct": 20.0,
+    "target_soc_pct": 72.0,
+    "target_kwh": 7.9,
+    "target_deadline": "2026-06-29T21:15:00+00:00",
+    "current_price_eur_per_kwh": 0.145,
+    "headline": "Enough battery banked for tonight's plan.",
+    "trust_markers": [
+      "Solar forecast: high confidence",
+      "Prices: fresh"
+    ],
+    "totals": {
+      "import_kwh": 2.1,
+      "export_kwh": 0.6,
+      "solar_kwh": 9.4,
+      "charge_kwh": 3.2,
+      "grid_charge_kwh": 0.0,
+      "solar_charge_kwh": 3.2,
+      "discharge_kwh": 1.1,
+      "load_kwh": 8.9,
+      "grid_cost_eur": 0.38,
+      "self_sufficiency_pct": 92.0,
+      "soc_start_pct": 41.0,
+      "soc_end_pct": 64.0,
+      "soc_min_pct": 38.0,
+      "soc_max_pct": 64.0
+    },
+    "slots": [
+      {
+        "start": "2026-06-29T13:00:00+00:00",
+        "soc_pct": 100.0,
+        "grid_w": -2717.1,
+        "solar_w": 2511.4,
+        "battery_w": -905.7,
+        "load_w": 700,
+        "eur_per_kwh": 0.145,
+        "action": "self_consume"
+      },
+      {
+        "start": "2026-06-29T13:30:00+00:00",
+        "soc_pct": 100.0,
+        "grid_w": -2553.1,
+        "solar_w": 2402.1,
+        "battery_w": -851.0,
+        "load_w": 700,
+        "eur_per_kwh": 0.152,
+        "action": "self_consume"
+      },
+      {
+        "start": "2026-06-29T14:00:00+00:00",
+        "soc_pct": 100.0,
+        "grid_w": -2327.5,
+        "solar_w": 2251.7,
+        "battery_w": -775.8,
+        "load_w": 700,
+        "eur_per_kwh": 0.161,
+        "action": "self_consume"
+      },
+      {
+        "start": "2026-06-29T14:30:00+00:00",
+        "soc_pct": 100.0,
+        "grid_w": -2044.1,
+        "solar_w": 2062.7,
+        "battery_w": -681.4,
+        "load_w": 700,
+        "eur_per_kwh": 0.173,
+        "action": "self_consume"
+      },
+      {
+        "start": "2026-06-29T15:00:00+00:00",
+        "soc_pct": 100.0,
+        "grid_w": -1707.7,
+        "solar_w": 1838.5,
+        "battery_w": -569.2,
+        "load_w": 700,
+        "eur_per_kwh": 0.187,
+        "action": "self_consume"
+      },
+      {
+        "start": "2026-06-29T15:30:00+00:00",
+        "soc_pct": 100.0,
+        "grid_w": -1324.2,
+        "solar_w": 1582.8,
+        "battery_w": -441.4,
+        "load_w": 700,
+        "eur_per_kwh": 0.203,
+        "action": "self_consume"
+      },
+      {
+        "start": "2026-06-29T16:00:00+00:00",
+        "soc_pct": 100.0,
+        "grid_w": -600.0,
+        "solar_w": 1300.0,
+        "battery_w": 0.0,
+        "load_w": 700,
+        "eur_per_kwh": 0.22,
+        "action": "idle"
+      },
+      {
+        "start": "2026-06-29T16:30:00+00:00",
+        "soc_pct": 100.0,
+        "grid_w": -295.0,
+        "solar_w": 995.0,
+        "battery_w": 0.0,
+        "load_w": 700,
+        "eur_per_kwh": 0.239,
+        "action": "idle"
+      },
+      {
+        "start": "2026-06-29T17:00:00+00:00",
+        "soc_pct": 95.0,
+        "grid_w": 1607.1,
+        "solar_w": 672.9,
+        "battery_w": 1080.0,
+        "load_w": 1200,
+        "eur_per_kwh": 0.319,
+        "action": "discharge"
+      },
+      {
+        "start": "2026-06-29T17:30:00+00:00",
+        "soc_pct": 90.0,
+        "grid_w": 1940.6,
+        "solar_w": 339.4,
+        "battery_w": 1080.0,
+        "load_w": 1200,
+        "eur_per_kwh": 0.339,
+        "action": "discharge"
+      },
+      {
+        "start": "2026-06-29T18:00:00+00:00",
+        "soc_pct": 85.0,
+        "grid_w": 2280.0,
+        "solar_w": 0.0,
+        "battery_w": 1080.0,
+        "load_w": 1200,
+        "eur_per_kwh": 0.36,
+        "action": "discharge"
+      },
+      {
+        "start": "2026-06-29T18:30:00+00:00",
+        "soc_pct": 80.0,
+        "grid_w": 2280.0,
+        "solar_w": 0.0,
+        "battery_w": 1080.0,
+        "load_w": 1200,
+        "eur_per_kwh": 0.381,
+        "action": "discharge"
+      },
+      {
+        "start": "2026-06-29T19:00:00+00:00",
+        "soc_pct": 75.0,
+        "grid_w": 2280.0,
+        "solar_w": 0.0,
+        "battery_w": 1080.0,
+        "load_w": 1200,
+        "eur_per_kwh": 0.401,
+        "action": "discharge"
+      },
+      {
+        "start": "2026-06-29T19:30:00+00:00",
+        "soc_pct": 70.0,
+        "grid_w": 2280.0,
+        "solar_w": 0.0,
+        "battery_w": 1080.0,
+        "load_w": 1200,
+        "eur_per_kwh": 0.421,
+        "action": "discharge"
+      },
+      {
+        "start": "2026-06-29T20:00:00+00:00",
+        "soc_pct": 65.0,
+        "grid_w": 2280.0,
+        "solar_w": 0.0,
+        "battery_w": 1080.0,
+        "load_w": 1200,
+        "eur_per_kwh": 0.44,
+        "action": "discharge"
+      },
+      {
+        "start": "2026-06-29T20:30:00+00:00",
+        "soc_pct": 60.0,
+        "grid_w": 2280.0,
+        "solar_w": 0.0,
+        "battery_w": 1080.0,
+        "load_w": 1200,
+        "eur_per_kwh": 0.457,
+        "action": "discharge"
+      },
+      {
+        "start": "2026-06-29T21:00:00+00:00",
+        "soc_pct": 60.0,
+        "grid_w": 1200.0,
+        "solar_w": 0.0,
+        "battery_w": 0.0,
+        "load_w": 1200,
+        "eur_per_kwh": 0.473,
+        "action": "hold"
+      },
+      {
+        "start": "2026-06-29T21:30:00+00:00",
+        "soc_pct": 60.0,
+        "grid_w": 1200.0,
+        "solar_w": 0.0,
+        "battery_w": 0.0,
+        "load_w": 1200,
+        "eur_per_kwh": 0.487,
+        "action": "hold"
+      },
+      {
+        "start": "2026-06-29T22:00:00+00:00",
+        "soc_pct": 60.0,
+        "grid_w": 700.0,
+        "solar_w": 0.0,
+        "battery_w": 0.0,
+        "load_w": 700,
+        "eur_per_kwh": 0.499,
+        "action": "hold"
+      },
+      {
+        "start": "2026-06-29T22:30:00+00:00",
+        "soc_pct": 60.0,
+        "grid_w": 700.0,
+        "solar_w": 0.0,
+        "battery_w": 0.0,
+        "load_w": 700,
+        "eur_per_kwh": 0.508,
+        "action": "hold"
+      },
+      {
+        "start": "2026-06-29T23:00:00+00:00",
+        "soc_pct": 60.0,
+        "grid_w": 700.0,
+        "solar_w": 0.0,
+        "battery_w": 0.0,
+        "load_w": 700,
+        "eur_per_kwh": 0.515,
+        "action": "idle"
+      },
+      {
+        "start": "2026-06-29T23:30:00+00:00",
+        "soc_pct": 60.0,
+        "grid_w": 700.0,
+        "solar_w": 0.0,
+        "battery_w": 0.0,
+        "load_w": 700,
+        "eur_per_kwh": 0.519,
+        "action": "idle"
+      }
+    ],
+    "recent": [
+      {
+        "start": "2026-06-29T00:00:00+00:00",
+        "soc_pct": 46.0,
+        "grid_w": 700.0,
+        "solar_w": 0.0,
+        "battery_w": 0.0,
+        "load_w": 700,
+        "eur_per_kwh": 0.46,
+        "action": "hold"
+      },
+      {
+        "start": "2026-06-29T00:30:00+00:00",
+        "soc_pct": 46.0,
+        "grid_w": 700.0,
+        "solar_w": 0.0,
+        "battery_w": 0.0,
+        "load_w": 700,
+        "eur_per_kwh": 0.459,
+        "action": "hold"
+      },
+      {
+        "start": "2026-06-29T01:00:00+00:00",
+        "soc_pct": 46.0,
+        "grid_w": 700.0,
+        "solar_w": 0.0,
+        "battery_w": 0.0,
+        "load_w": 700,
+        "eur_per_kwh": 0.455,
+        "action": "hold"
+      },
+      {
+        "start": "2026-06-29T01:30:00+00:00",
+        "soc_pct": 46.0,
+        "grid_w": 700.0,
+        "solar_w": 0.0,
+        "battery_w": 0.0,
+        "load_w": 700,
+        "eur_per_kwh": 0.448,
+        "action": "hold"
+      },
+      {
+        "start": "2026-06-29T02:00:00+00:00",
+        "soc_pct": 60.8,
+        "grid_w": -2500.0,
+        "solar_w": 0.0,
+        "battery_w": -3200.0,
+        "load_w": 700,
+        "eur_per_kwh": 0.439,
+        "action": "grid_charge"
+      },
+      {
+        "start": "2026-06-29T02:30:00+00:00",
+        "soc_pct": 75.6,
+        "grid_w": -2500.0,
+        "solar_w": 0.0,
+        "battery_w": -3200.0,
+        "load_w": 700,
+        "eur_per_kwh": 0.427,
+        "action": "grid_charge"
+      },
+      {
+        "start": "2026-06-29T03:00:00+00:00",
+        "soc_pct": 90.4,
+        "grid_w": -2500.0,
+        "solar_w": 0.0,
+        "battery_w": -3200.0,
+        "load_w": 700,
+        "eur_per_kwh": 0.413,
+        "action": "grid_charge"
+      },
+      {
+        "start": "2026-06-29T03:30:00+00:00",
+        "soc_pct": 100.0,
+        "grid_w": -2500.0,
+        "solar_w": 0.0,
+        "battery_w": -3200.0,
+        "load_w": 700,
+        "eur_per_kwh": 0.397,
+        "action": "grid_charge"
+      },
+      {
+        "start": "2026-06-29T04:00:00+00:00",
+        "soc_pct": 100.0,
+        "grid_w": 700.0,
+        "solar_w": 0.0,
+        "battery_w": 0.0,
+        "load_w": 700,
+        "eur_per_kwh": 0.38,
+        "action": "hold"
+      },
+      {
+        "start": "2026-06-29T04:30:00+00:00",
+        "soc_pct": 100.0,
+        "grid_w": 700.0,
+        "solar_w": 0.0,
+        "battery_w": 0.0,
+        "load_w": 700,
+        "eur_per_kwh": 0.361,
+        "action": "hold"
+      },
+      {
+        "start": "2026-06-29T05:00:00+00:00",
+        "soc_pct": 100.0,
+        "grid_w": 700.0,
+        "solar_w": 0.0,
+        "battery_w": 0.0,
+        "load_w": 700,
+        "eur_per_kwh": 0.341,
+        "action": "hold"
+      },
+      {
+        "start": "2026-06-29T05:30:00+00:00",
+        "soc_pct": 100.0,
+        "grid_w": 700.0,
+        "solar_w": 0.0,
+        "battery_w": 0.0,
+        "load_w": 700,
+        "eur_per_kwh": 0.321,
+        "action": "hold"
+      },
+      {
+        "start": "2026-06-29T06:00:00+00:00",
+        "soc_pct": 100.0,
+        "grid_w": 400.0,
+        "solar_w": 0.0,
+        "battery_w": -300.0,
+        "load_w": 700,
+        "eur_per_kwh": 0.3,
+        "action": "solar_charge"
+      },
+      {
+        "start": "2026-06-29T06:30:00+00:00",
+        "soc_pct": 100.0,
+        "grid_w": 60.6,
+        "solar_w": 339.4,
+        "battery_w": -300.0,
+        "load_w": 700,
+        "eur_per_kwh": 0.279,
+        "action": "solar_charge"
+      },
+      {
+        "start": "2026-06-29T07:00:00+00:00",
+        "soc_pct": 100.0,
+        "grid_w": 227.1,
+        "solar_w": 672.9,
+        "battery_w": -300.0,
+        "load_w": 1200,
+        "eur_per_kwh": 0.259,
+        "action": "solar_charge"
+      },
+      {
+        "start": "2026-06-29T07:30:00+00:00",
+        "soc_pct": 100.0,
+        "grid_w": -95.0,
+        "solar_w": 995.0,
+        "battery_w": -300.0,
+        "load_w": 1200,
+        "eur_per_kwh": 0.239,
+        "action": "solar_charge"
+      },
+      {
+        "start": "2026-06-29T08:00:00+00:00",
+        "soc_pct": 100.0,
+        "grid_w": -400.0,
+        "solar_w": 1300.0,
+        "battery_w": -300.0,
+        "load_w": 1200,
+        "eur_per_kwh": 0.22,
+        "action": "solar_charge"
+      },
+      {
+        "start": "2026-06-29T08:30:00+00:00",
+        "soc_pct": 100.0,
+        "grid_w": -765.6,
+        "solar_w": 1582.8,
+        "battery_w": -382.8,
+        "load_w": 1200,
+        "eur_per_kwh": 0.203,
+        "action": "solar_charge"
+      },
+      {
+        "start": "2026-06-29T09:00:00+00:00",
+        "soc_pct": 100.0,
+        "grid_w": -2277.0,
+        "solar_w": 1838.5,
+        "battery_w": -1138.5,
+        "load_w": 700,
+        "eur_per_kwh": 0.187,
+        "action": "solar_charge"
+      },
+      {
+        "start": "2026-06-29T09:30:00+00:00",
+        "soc_pct": 100.0,
+        "grid_w": -2725.4,
+        "solar_w": 2062.7,
+        "battery_w": -1362.7,
+        "load_w": 700,
+        "eur_per_kwh": 0.173,
+        "action": "solar_charge"
+      },
+      {
+        "start": "2026-06-29T10:00:00+00:00",
+        "soc_pct": 100.0,
+        "grid_w": -2327.5,
+        "solar_w": 2251.7,
+        "battery_w": -775.8,
+        "load_w": 700,
+        "eur_per_kwh": 0.161,
+        "action": "self_consume"
+      },
+      {
+        "start": "2026-06-29T10:30:00+00:00",
+        "soc_pct": 100.0,
+        "grid_w": -2553.1,
+        "solar_w": 2402.1,
+        "battery_w": -851.0,
+        "load_w": 700,
+        "eur_per_kwh": 0.152,
+        "action": "self_consume"
+      },
+      {
+        "start": "2026-06-29T11:00:00+00:00",
+        "soc_pct": 100.0,
+        "grid_w": -2717.1,
+        "solar_w": 2511.4,
+        "battery_w": -905.7,
+        "load_w": 700,
+        "eur_per_kwh": 0.145,
+        "action": "self_consume"
+      },
+      {
+        "start": "2026-06-29T11:30:00+00:00",
+        "soc_pct": 100.0,
+        "grid_w": -2816.6,
+        "solar_w": 2577.8,
+        "battery_w": -938.9,
+        "load_w": 700,
+        "eur_per_kwh": 0.141,
+        "action": "self_consume"
+      },
+      {
+        "start": "2026-06-29T12:00:00+00:00",
+        "soc_pct": 100.0,
+        "grid_w": -2850.0,
+        "solar_w": 2600.0,
+        "battery_w": -950.0,
+        "load_w": 700,
+        "eur_per_kwh": 0.14,
+        "action": "self_consume"
+      },
+      {
+        "start": "2026-06-29T12:30:00+00:00",
+        "soc_pct": 100.0,
+        "grid_w": -2816.6,
+        "solar_w": 2577.8,
+        "battery_w": -938.9,
+        "load_w": 700,
+        "eur_per_kwh": 0.141,
+        "action": "self_consume"
+      }
+    ],
+    "recent_hours": 13,
+    "on_track": {
+      "status": "on_track",
+      "actual_soc_pct": 64.0,
+      "target_soc_pct": 72.0,
+      "deficit_kwh": 0.0,
+      "message": "On track for tonight's 72% target."
+    },
+    "recent_review": {
+      "hours": 3.0,
+      "solar_actual_kwh": 3.9,
+      "solar_forecast_kwh": 3.6,
+      "solar_pct_of_forecast": 108.0,
+      "battery_charged_kwh": 1.4,
+      "battery_discharged_kwh": 0.0,
+      "message": "Solar is running ahead of forecast this morning."
+    }
+  },
+  "report": {
+    "period": "day",
+    "label": "Today",
+    "partial": false,
+    "flows": {
+      "has_data": true,
+      "partial": false,
+      "solar_kwh": 9.4,
+      "grid_import_kwh": 2.1,
+      "grid_export_kwh": 0.6,
+      "battery_charge_kwh": 3.2,
+      "battery_discharge_kwh": 1.1,
+      "home_kwh": 8.9,
+      "car_kwh": 0.0,
+      "car_guard_leak_kwh": 0.0,
+      "self_sufficiency_pct": 92.0,
+      "solar_self_consumption_pct": 88.0
+    },
+    "scores": [
+      {
+        "key": "self_consumption",
+        "label": "Self-consumption",
+        "value": 88.0,
+        "raw": 88.0,
+        "unit": "%",
+        "explanation": "88% of your solar was used at home instead of exported."
+      },
+      {
+        "key": "co2",
+        "label": "CO₂",
+        "value": 76.0,
+        "raw": 1.8,
+        "unit": "kg",
+        "explanation": "You avoided about 1.8 kg of CO₂ by running on solar and battery instead of grid power."
+      },
+      {
+        "key": "best_price",
+        "label": "Best price",
+        "value": 81.0,
+        "raw": 0.182,
+        "unit": "€/kWh",
+        "explanation": "Your average import price today was close to the cheapest hours available."
+      }
+    ],
+    "series": [
+      {
+        "start": "2026-06-29T00:00:00+00:00",
+        "grid_import_kwh": 0.8,
+        "grid_export_kwh": 0.0,
+        "house_kwh": 1.2,
+        "car_kwh": 0.0,
+        "solar_kwh": 0.0,
+        "samples": 4
+      },
+      {
+        "start": "2026-06-29T06:00:00+00:00",
+        "grid_import_kwh": 0.9,
+        "grid_export_kwh": 0.1,
+        "house_kwh": 2.4,
+        "car_kwh": 0.0,
+        "solar_kwh": 2.1,
+        "samples": 4
+      },
+      {
+        "start": "2026-06-29T12:00:00+00:00",
+        "grid_import_kwh": 0.4,
+        "grid_export_kwh": 0.5,
+        "house_kwh": 5.3,
+        "car_kwh": 0.0,
+        "solar_kwh": 7.3,
+        "samples": 4
+      }
+    ]
+  },
+  "finance": {
+    "period": "day",
+    "label": "Today",
+    "partial": false,
+    "days": [
+      {
+        "day": "2026-06-29",
+        "has_data": true,
+        "price_coverage": 1.0,
+        "grid_cost_eur": 0.38,
+        "battery_cost_eur": 0.05,
+        "baseline_cost_eur": 2.25,
+        "saved_eur": 1.82,
+        "grid_import_kwh": 2.1,
+        "grid_export_kwh": 0.6,
+        "battery_charge_kwh": 3.2,
+        "battery_discharge_kwh": 1.1
+      }
+    ],
+    "totals": {
+      "grid_cost_eur": 0.38,
+      "battery_cost_eur": 0.05,
+      "saved_eur": 1.82,
+      "grid_import_kwh": 2.1,
+      "grid_export_kwh": 0.6,
+      "days_with_prices": 1,
+      "days_with_data": 1
+    }
+  },
+  "car_plan": {
+    "enabled": true,
+    "effective_kw": 11.0,
+    "soc": {
+      "soc_pct": 55.0,
+      "anchor_pct": 55.0,
+      "anchor_ts": "2026-06-29T09:00:00+00:00",
+      "added_kwh": 0.0,
+      "sessions_since_anchor": 0,
+      "age_hours": 4.0,
+      "stale": false
+    },
+    "plan": {
+      "soc": 55.0,
+      "deadlines": [
+        {
+          "ready_by": "2026-06-30T07:30:00+02:00",
+          "min_pct": 80,
+          "required_kwh": 18.75,
+          "planned_kwh": 18.75,
+          "pending_kwh": 18.75,
+          "shortfall_kwh": 0.0,
+          "already_met": false,
+          "feasible": true
+        }
+      ],
+      "slots": [
+        {
+          "start": "2026-06-30T02:00:00+02:00",
+          "kw": 11.0,
+          "ac_kwh": 5.5,
+          "battery_kwh": 4.95,
+          "eur_per_kwh_effective": 0.112,
+          "est_cost_eur": 0.62,
+          "solar_surplus": false,
+          "for_deadline": "2026-06-30T07:30:00+02:00"
+        }
+      ],
+      "windows": [
+        {
+          "start": "2026-06-30T02:00:00+02:00",
+          "end": "2026-06-30T04:15:00+02:00",
+          "ac_kwh": 20.83,
+          "battery_kwh": 18.75,
+          "est_cost_eur": 2.10,
+          "solar_share_pct": 0,
+          "reason": "Cheapest slots to reach 80% by Tue 07:30."
+        }
+      ],
+      "advice": "Plug in Tue 02:00–04:15 (18.8 kWh, ≈ €2.10) to reach 80% by Tue 07:30.",
+      "total_est_cost_eur": 2.10,
+      "total_planned_kwh": 18.75
+    },
+    "schedule": {
+      "mon": { "enabled": true, "min_pct": 80, "ready_by": "07:30" },
+      "tue": { "enabled": true, "min_pct": 80, "ready_by": "07:30" },
+      "wed": { "enabled": true, "min_pct": 80, "ready_by": "07:30" },
+      "thu": { "enabled": true, "min_pct": 80, "ready_by": "07:30" },
+      "fri": { "enabled": true, "min_pct": 80, "ready_by": "07:30" },
+      "sat": { "enabled": false, "min_pct": 80, "ready_by": "09:00" },
+      "sun": { "enabled": false, "min_pct": 80, "ready_by": "09:00" }
+    },
+    "car": {
+      "id": "tesla-model-y-long-range",
+      "brand": "Tesla",
+      "model": "Model Y Long Range",
+      "battery_net_kwh": 75.0,
+      "max_ac_kw": 11.0,
+      "years": "2020–present"
+    }
+  }
+}
