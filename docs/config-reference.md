@@ -177,7 +177,6 @@ The car's SoC itself is **not** a config key — it's a runtime-store anchor (%,
 | `retention_days` | int | 365 | purge older samples |
 | `vacuum_on_start` | bool | true | reclaim space on boot |
 | `backup_keep` | int | 7 | daily VACUUM INTO snapshots kept in `<db_dir>/backups` (0 = disabled) |
-| `backup_dir` | path | /data/backups | DB/config backup target |
 
 ## `health`
 | Key | Type | Default | Effect |
