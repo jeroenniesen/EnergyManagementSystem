@@ -70,13 +70,21 @@ def test_risky_override_is_HELD_under_unsafe_data(tmp_path):
     ov_alert = next(a for a in alerts if a["key"] == "manual_override_active")
     assert "held" in ov_alert["message"]
     assert "forcing grid_charge_to_target" not in ov_alert["message"]
+    # B-37: the banner must also answer "is this safe" / "what can I do", not just describe it.
+    assert ov_alert["safe"].strip()
+    assert ov_alert["action"].strip()
 
 
 def test_risky_override_is_honoured_when_data_is_safe(tmp_path):
     with TestClient(_override_app(tmp_path, freshness=_fresh_tracker())) as c:
         c.post("/api/override", json={"intent": "grid_charge_to_target", "minutes": 30})
         b = c.get("/api/decision").json()
+        alerts = c.get("/api/alerts").json()["alerts"]
     assert b["intent"] == "grid_charge_to_target" and b["override_active"] is True
+    ov_alert = next(a for a in alerts if a["key"] == "manual_override_active")
+    assert "forcing" in ov_alert["message"]
+    assert ov_alert["safe"].strip()
+    assert ov_alert["action"].strip()
 
 
 def test_self_consumption_override_is_always_allowed_even_unsafe(tmp_path):
