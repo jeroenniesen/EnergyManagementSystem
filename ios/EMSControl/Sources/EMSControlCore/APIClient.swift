@@ -64,6 +64,7 @@ public struct APIClient: Sendable {
         async let reportResult = capture { try await fetchReport() }
         async let financeResult = capture { try await fetchFinance() }
         async let strategyResult = capture { try await fetchStrategy() }
+        async let carPlanResult = capture { try await fetchCarPlan() }
 
         return try await MobileDashboardSnapshot(
             generatedAt: Date(),
@@ -80,7 +81,8 @@ public struct APIClient: Sendable {
             batteryPlan: batteryPlanResult.optional ?? .empty,
             report: reportResult.optional ?? .empty,
             finance: financeResult.optional ?? .empty,
-            strategy: strategyResult.optional
+            strategy: strategyResult.optional,
+            carPlan: carPlanResult.optional ?? .empty
         )
     }
 
@@ -114,6 +116,10 @@ public struct APIClient: Sendable {
 
     public func fetchStrategy() async throws -> StrategySnapshot {
         try await get("api/strategy", as: StrategySnapshot.self)
+    }
+
+    public func fetchCarPlan() async throws -> CarPlanSnapshot {
+        try await get("api/car/plan", as: CarPlanSnapshot.self)
     }
 
     public func fetchEnergyStory(window: String = "next") async throws -> EnergyStorySnapshot {
@@ -171,6 +177,23 @@ public struct APIClient: Sendable {
         return try JSONDecoder.ems.decode(ChatResponse.self, from: data)
     }
 
+    // Set the manual car-SoC anchor. POSTs {"pct": n} exactly like sendChat and returns the fresh
+    // SoC estimate the server echoes back ({"soc": ...}); auth (401) surfaces as APIClientError.
+    public func setCarSoc(pct: Int) async throws -> CarSoc? {
+        var request = URLRequest(url: baseURL.appending(path: "api/car/soc"))
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        if let token, !token.isEmpty {
+            request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        }
+        request.httpBody = try JSONEncoder.ems.encode(CarSocRequest(pct: pct))
+        let (data, response) = try await transport.data(for: request)
+        guard (200 ..< 300).contains(response.statusCode) else {
+            throw APIClientError.httpStatus(response.statusCode)
+        }
+        return try JSONDecoder.ems.decode(CarSocResponse.self, from: data).soc
+    }
+
     private func get<T: Decodable>(_ path: String, as type: T.Type) async throws -> T {
         var request = URLRequest(url: url(path))
         request.httpMethod = "GET"
@@ -216,4 +239,12 @@ private extension Result {
         if case let .success(value) = self { return value }
         return nil
     }
+}
+
+private struct CarSocRequest: Encodable {
+    let pct: Int
+}
+
+private struct CarSocResponse: Decodable {
+    let soc: CarSoc?
 }

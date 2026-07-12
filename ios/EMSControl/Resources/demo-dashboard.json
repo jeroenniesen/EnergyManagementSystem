@@ -747,5 +747,76 @@
       "days_with_prices": 1,
       "days_with_data": 1
     }
+  },
+  "car_plan": {
+    "enabled": true,
+    "effective_kw": 11.0,
+    "soc": {
+      "soc_pct": 55.0,
+      "anchor_pct": 55.0,
+      "anchor_ts": "2026-06-29T09:00:00+00:00",
+      "added_kwh": 0.0,
+      "sessions_since_anchor": 0,
+      "age_hours": 4.0,
+      "stale": false
+    },
+    "plan": {
+      "soc": 55.0,
+      "deadlines": [
+        {
+          "ready_by": "2026-06-30T07:30:00+02:00",
+          "min_pct": 80,
+          "required_kwh": 18.75,
+          "planned_kwh": 18.75,
+          "pending_kwh": 18.75,
+          "shortfall_kwh": 0.0,
+          "already_met": false,
+          "feasible": true
+        }
+      ],
+      "slots": [
+        {
+          "start": "2026-06-30T02:00:00+02:00",
+          "kw": 11.0,
+          "ac_kwh": 5.5,
+          "battery_kwh": 4.95,
+          "eur_per_kwh_effective": 0.112,
+          "est_cost_eur": 0.62,
+          "solar_surplus": false,
+          "for_deadline": "2026-06-30T07:30:00+02:00"
+        }
+      ],
+      "windows": [
+        {
+          "start": "2026-06-30T02:00:00+02:00",
+          "end": "2026-06-30T04:15:00+02:00",
+          "ac_kwh": 20.83,
+          "battery_kwh": 18.75,
+          "est_cost_eur": 2.10,
+          "solar_share_pct": 0,
+          "reason": "Cheapest slots to reach 80% by Tue 07:30."
+        }
+      ],
+      "advice": "Plug in Tue 02:00–04:15 (18.8 kWh, ≈ €2.10) to reach 80% by Tue 07:30.",
+      "total_est_cost_eur": 2.10,
+      "total_planned_kwh": 18.75
+    },
+    "schedule": {
+      "mon": { "enabled": true, "min_pct": 80, "ready_by": "07:30" },
+      "tue": { "enabled": true, "min_pct": 80, "ready_by": "07:30" },
+      "wed": { "enabled": true, "min_pct": 80, "ready_by": "07:30" },
+      "thu": { "enabled": true, "min_pct": 80, "ready_by": "07:30" },
+      "fri": { "enabled": true, "min_pct": 80, "ready_by": "07:30" },
+      "sat": { "enabled": false, "min_pct": 80, "ready_by": "09:00" },
+      "sun": { "enabled": false, "min_pct": 80, "ready_by": "09:00" }
+    },
+    "car": {
+      "id": "tesla-model-y-long-range",
+      "brand": "Tesla",
+      "model": "Model Y Long Range",
+      "battery_net_kwh": 75.0,
+      "max_ac_kw": 11.0,
+      "years": "2020–present"
+    }
   }
 }
