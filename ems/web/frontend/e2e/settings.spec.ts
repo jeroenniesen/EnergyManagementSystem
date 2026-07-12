@@ -1,7 +1,7 @@
 import { expect, test } from "@playwright/test";
 
 // A small stand-in schema for the mocked-API tests (so they never touch the shared dev DB
-// or race other workers). The real schema is exercised by the read-only test below.
+// or race other workers). The real schema is exercised by the read-only tests below.
 const SCHEMA = [
   {
     key: "planner.charge_slots", label: "Charge window", type: "int", default: 12,
@@ -32,6 +32,7 @@ test.describe("EMS settings", () => {
   test("the solar-confidence planner setting renders as a drag slider", async ({ page }) => {
     await page.goto("/");
     await page.getByTestId("nav-settings").click();
+    // Sidebar → open the Planner section in the content pane (one section at a time now).
     await page.getByTestId("group-planner").click();
     const field = page.getByTestId("field-planner.solar_confidence");
     await expect(field).toBeVisible();
@@ -39,41 +40,53 @@ test.describe("EMS settings", () => {
     await expect(field.locator("input[type=range]")).toBeVisible();
   });
 
-  test("Settings tab renders grouped basic settings; advanced is hidden by default", async ({
+  test("the sidebar groups sections; a section opens in the content pane on click", async ({
     page,
   }) => {
     await page.goto("/");
     await page.getByTestId("nav-settings").click();
     const s = page.getByTestId("settings");
     await expect(s).toBeVisible();
-    // Group sections are collapsible (headers always visible); expand the ones we check.
+    // The sidebar lists the section titles (grouped under the three intent headers).
     await expect(s).toContainText("Connection");
     await expect(s).toContainText("Energy meters (HomeWizard)");
+    await expect(s).toContainText("Your setup");
+    await expect(s).toContainText("How it runs");
+    // Opening a section shows its fields in the (single-column) content pane.
     await page.getByTestId("group-meters").click();
-    await page.getByTestId("group-ui").click();
     await expect(page.getByTestId("field-meters.p1_ip")).toBeVisible();
+    await page.getByTestId("group-ui").click();
     await expect(page.getByTestId("field-ui.theme")).toBeVisible();
-    // Advanced planner economics are hidden until the toggle is enabled.
-    await expect(page.getByTestId("field-planner.round_trip_efficiency")).toHaveCount(0);
-    await page.getByTestId("advanced-toggle").check();
-    await page.getByTestId("group-planner").click();
-    await expect(page.getByTestId("field-planner.round_trip_efficiency")).toBeVisible();
     // The dashboard panels must be hidden while the Settings view is active.
     await expect(page.getByTestId("status-grid")).toHaveCount(0);
+  });
+
+  test("advanced fields hide behind an in-place Advanced divider (no global toggle)", async ({
+    page,
+  }) => {
+    await page.goto("/");
+    await page.getByTestId("nav-settings").click();
+    await page.getByTestId("group-planner").click();
+    // The advanced planner economics are collapsed by default...
+    await expect(page.getByTestId("field-planner.round_trip_efficiency")).toHaveCount(0);
+    // ...and revealed by the section's own Advanced disclosure.
+    await page.getByTestId("settings-advanced-toggle").click();
+    await expect(page.getByTestId("settings-advanced-body")).toBeVisible();
+    await expect(page.getByTestId("field-planner.round_trip_efficiency")).toBeVisible();
   });
 
   test("device IPs and the Tibber token are configurable (grouped by type)", async ({ page }) => {
     await page.goto("/");
     await page.getByTestId("nav-settings").click();
-    // Devices are no longer hard-wired — they're editable fields grouped by type (expand each).
+    // Devices are editable fields grouped by type — open each section from the sidebar.
     await page.getByTestId("group-meters").click();
-    await page.getByTestId("group-battery").click();
-    await page.getByTestId("group-prices").click();
     await expect(page.getByTestId("field-meters.p1_ip")).toBeVisible();
-    await expect(page.getByTestId("field-battery.indevolt_ip")).toBeVisible();
-    await expect(page.getByTestId("field-prices.tibber_token")).toBeVisible();
     // Connection fields are flagged as needing a restart.
     await expect(page.getByTestId("field-meters.p1_ip")).toContainText("restart");
+    await page.getByTestId("group-battery").click();
+    await expect(page.getByTestId("field-battery.indevolt_ip")).toBeVisible();
+    await page.getByTestId("group-prices").click();
+    await expect(page.getByTestId("field-prices.tibber_token")).toBeVisible();
   });
 
   test("operational-mode toggle is present, off by default, and flagged restart", async ({
@@ -86,8 +99,96 @@ test.describe("EMS settings", () => {
     await expect(op).toBeVisible();
     await expect(op).toContainText("control the battery");
     await expect(op).toContainText("restart");
-    // Default OFF (dry-run) — the checkbox is unchecked, so the battery is never commanded.
+    // Default OFF (dry-run) — the switch is unchecked, so the battery is never commanded.
     await expect(op.locator("#set-control\\.operational")).not.toBeChecked();
+  });
+
+  test("a boolean setting renders as a toggle switch that stays keyboard-togglable", async ({
+    page,
+  }) => {
+    await page.goto("/");
+    await page.getByTestId("nav-settings").click();
+    await page.getByTestId("group-strategy").click();
+    const sw = page.locator("#set-strategy\\.summer_grid_topup");
+    await expect(sw).toBeVisible();
+    // Styled as a switch (role=switch) but still an <input type=checkbox> under the hood.
+    await expect(sw).toHaveAttribute("role", "switch");
+    await expect(sw).toHaveAttribute("type", "checkbox");
+    await expect(sw).toBeChecked(); // default ON
+    await sw.click();
+    await expect(sw).not.toBeChecked(); // still togglable
+  });
+
+  test("search filters the sidebar and jumps to (and highlights) the matching field", async ({
+    page,
+  }) => {
+    await page.goto("/");
+    await page.getByTestId("nav-settings").click();
+    await page.getByTestId("settings-search").fill("efficiency");
+    // The Planner section surfaces as a match, with a matched-field count.
+    await expect(page.getByTestId("nav-count-planner")).toHaveText("1");
+    // Selecting the result opens that section (auto-revealing its Advanced group) and highlights
+    // the matched field — even though round_trip_efficiency is an advanced field.
+    await page.getByTestId("group-planner").click();
+    const field = page.getByTestId("field-planner.round_trip_efficiency");
+    await expect(field).toBeVisible();
+    await expect(
+      page.locator(".field-highlight").getByTestId("field-planner.round_trip_efficiency"),
+    ).toBeVisible();
+    // Esc clears the search.
+    await page.getByTestId("settings-search").press("Escape");
+    await expect(page.getByTestId("settings-search")).toHaveValue("");
+  });
+
+  test("the sticky save bar appears on edit with the change count and saves", async ({ page }) => {
+    let saved: Record<string, unknown> = {};
+    await page.route("**/api/settings", async (route) => {
+      if (route.request().method() === "POST") {
+        saved = JSON.parse(route.request().postData() || "{}");
+        await route.fulfill({
+          status: 200, contentType: "application/json",
+          body: JSON.stringify({ values: { ...BASE_VALUES, ...saved } }),
+        });
+      } else {
+        await route.fulfill({
+          status: 200, contentType: "application/json",
+          body: JSON.stringify({ schema: SCHEMA, values: BASE_VALUES }),
+        });
+      }
+    });
+    await page.goto("/");
+    await page.getByTestId("nav-settings").click();
+    await page.getByTestId("group-ui").click();
+    // No save bar until something is dirty.
+    await expect(page.getByTestId("settings-savebar")).toHaveCount(0);
+    await page.locator("#set-ui\\.theme").selectOption("dark");
+    const bar = page.getByTestId("settings-savebar");
+    await expect(bar).toBeVisible();
+    await expect(bar).toContainText("1 unsaved change");
+    await page.getByTestId("settings-save").click();
+    await expect(page.getByTestId("settings-saved")).toBeVisible();
+    expect(saved["ui.theme"]).toBe("dark");
+  });
+
+  test("Discard reverts pending edits and hides the save bar", async ({ page }) => {
+    await page.route("**/api/settings", async (route) => {
+      if (route.request().method() === "GET") {
+        await route.fulfill({
+          status: 200, contentType: "application/json",
+          body: JSON.stringify({ schema: SCHEMA, values: BASE_VALUES }),
+        });
+      } else {
+        await route.fulfill({ status: 200, contentType: "application/json", body: "{}" });
+      }
+    });
+    await page.goto("/");
+    await page.getByTestId("nav-settings").click();
+    await page.getByTestId("group-ui").click();
+    await page.locator("#set-ui\\.theme").selectOption("dark");
+    await expect(page.getByTestId("settings-savebar")).toBeVisible();
+    await page.getByTestId("settings-discard").click();
+    await expect(page.getByTestId("settings-savebar")).toHaveCount(0);
+    await expect(page.locator("#set-ui\\.theme")).toHaveValue("auto");
   });
 
   test("changing a planner setting shows a before/after plan-impact preview", async ({ page }) => {
@@ -124,8 +225,9 @@ test.describe("EMS settings", () => {
     });
     await page.goto("/");
     await page.getByTestId("nav-settings").click();
-    await page.getByTestId("advanced-toggle").check();
     await page.getByTestId("group-planner").click();
+    // charge_slots is advanced here — reveal it, then edit.
+    await page.getByTestId("settings-advanced-toggle").click();
     const input = page.locator("#set-planner\\.charge_slots");
     await input.fill("4");
     await input.blur();
@@ -153,13 +255,31 @@ test.describe("EMS settings", () => {
     await page.goto("/");
     await page.getByTestId("nav-settings").click();
     await page.getByTestId("group-ui").click();
-    const save = page.getByTestId("settings-save");
-    await expect(save).toBeDisabled(); // nothing changed yet
+    // The Save button lives in the sticky bar, which only exists once something is dirty.
+    await expect(page.getByTestId("settings-save")).toHaveCount(0);
     await page.locator("#set-ui\\.theme").selectOption("dark");
+    const save = page.getByTestId("settings-save");
     await expect(save).toBeEnabled();
     await save.click();
     await expect(page.getByTestId("settings-saved")).toBeVisible();
     expect(saved["ui.theme"]).toBe("dark");
+  });
+
+  test("mobile: the sidebar is a drill-in list (list → section → back)", async ({ page }) => {
+    await page.setViewportSize({ width: 390, height: 844 });
+    await page.goto("/");
+    await page.getByTestId("nav-settings").click();
+    // Starts on the section list: the sidebar is shown, the content pane hidden.
+    await expect(page.getByTestId("group-ui")).toBeVisible();
+    await expect(page.getByTestId("settings-back")).toBeHidden();
+    // Drill into a section: the content pane shows, the back button appears.
+    await page.getByTestId("group-ui").click();
+    await expect(page.getByTestId("field-ui.theme")).toBeVisible();
+    await expect(page.getByTestId("settings-back")).toBeVisible();
+    // Back returns to the list.
+    await page.getByTestId("settings-back").click();
+    await expect(page.getByTestId("group-ui")).toBeVisible();
+    await expect(page.getByTestId("field-ui.theme")).toBeHidden();
   });
 
   test("the Car group shows the 7-day weekly charge schedule editor", async ({ page }) => {
@@ -238,11 +358,12 @@ test.describe("EMS settings", () => {
     await page.goto("/");
     await page.getByTestId("nav-settings").click();
     await page.getByTestId("group-ev").click();
-    const save = page.getByTestId("settings-save");
-    await expect(save).toBeDisabled();
+    // The save bar only exists once something changes.
+    await expect(page.getByTestId("settings-save")).toHaveCount(0);
     await page.getByTestId("ev-schedule-mon-enabled").check();
     await page.getByTestId("ev-schedule-mon-ready-by").fill("06:15");
     await page.getByTestId("ev-schedule-mon-min-pct").fill("90");
+    const save = page.getByTestId("settings-save");
     await expect(save).toBeEnabled();
     await save.click();
     await expect(page.getByTestId("settings-saved")).toBeVisible();
@@ -343,6 +464,45 @@ test.describe("EMS settings", () => {
     await brandSelect.selectOption("");
     await expect(page.getByTestId("car-picker-specs")).toHaveCount(0);
     await expect(page.locator("#set-ev\\.battery_kwh")).toHaveValue("75");
+  });
+
+  test("enum selects show humanised labels while submitting the raw token", async ({ page }) => {
+    const SCHEMA_ENUM = [
+      {
+        key: "prices.export_price_model", label: "Export (feed-in) value", type: "enum",
+        default: "net_metering", group: "prices", help: "",
+        min: null, max: null, options: ["net_metering", "spot_minus_tax", "fixed"],
+        step: null, unit: "", advanced: false, applies: "live",
+      },
+    ];
+    let saved: Record<string, unknown> = {};
+    await page.route("**/api/settings", async (route) => {
+      if (route.request().method() === "POST") {
+        saved = JSON.parse(route.request().postData() || "{}");
+        await route.fulfill({
+          status: 200, contentType: "application/json",
+          body: JSON.stringify({ values: { "prices.export_price_model": saved["prices.export_price_model"] } }),
+        });
+      } else {
+        await route.fulfill({
+          status: 200, contentType: "application/json",
+          body: JSON.stringify({
+            schema: SCHEMA_ENUM, values: { "prices.export_price_model": "net_metering" },
+          }),
+        });
+      }
+    });
+    await page.goto("/");
+    await page.getByTestId("nav-settings").click();
+    await page.getByTestId("group-prices").click();
+    const sel = page.locator("#set-prices\\.export_price_model");
+    // No raw snake_case tokens on screen — options are humanised.
+    await expect(sel.locator("option")).toContainText(["Net metering", "Spot minus tax", "Fixed"]);
+    // The submitted VALUE stays the token.
+    await sel.selectOption("spot_minus_tax");
+    await page.getByTestId("settings-save").click();
+    await expect(page.getByTestId("settings-saved")).toBeVisible();
+    expect(saved["prices.export_price_model"]).toBe("spot_minus_tax");
   });
 
   test("an invalid value surfaces a per-field error from the API", async ({ page }) => {

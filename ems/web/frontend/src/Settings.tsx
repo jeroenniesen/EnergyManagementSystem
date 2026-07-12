@@ -1,6 +1,8 @@
 import { useEffect, useState } from "react";
 
 import { authHeaders, getToken, setToken } from "./auth";
+import { humanize } from "./labels";
+import { SectionIcon } from "./settingsIcons";
 
 export type SettingField = {
   key: string;
@@ -163,7 +165,7 @@ function EvScheduleEditor({
 }
 
 // Brand → Model picker for `ev.car_id`, backed by GET /api/cars (fetched once, lazily, by the
-// parent when the Car group first renders). "Custom" (empty brand) clears `ev.car_id` — the user
+// parent when the Car section first opens). "Custom" (empty brand) clears `ev.car_id` — the user
 // then enters battery_kwh/charger_kw themselves. Picking a model hands the full CarModel back to
 // the caller, which autofills battery_kwh but deliberately leaves charger_kw alone (the wallbox
 // is a separate physical thing — see the inline AC-limit hint rendered next to that field).
@@ -232,9 +234,13 @@ function CarPicker({
   );
 }
 
-// Group display order + titles. Connection-type groups first (what most people need), tuning last.
-const GROUP_ORDER = ["strategy", "connection", "meters", "battery", "prices", "site", "control",
-  "planner", "ai", "access", "ui", "reporting", "ev"];
+// Two-pane menu: sidebar sections grouped under three intent headers. This order REPLACES the old
+// flat GROUP_ORDER for navigation; any unknown/future group appends under "App" (see below).
+const NAV_GROUPS: { header: string; sections: string[] }[] = [
+  { header: "Your setup", sections: ["connection", "meters", "battery", "prices", "site"] },
+  { header: "How it runs", sections: ["strategy", "planner", "control", "ev"] },
+  { header: "App", sections: ["ai", "reporting", "access", "ui"] },
+];
 const GROUP_TITLE: Record<string, string> = {
   strategy: "Strategy",
   connection: "Connection",
@@ -268,6 +274,35 @@ const GROUP_HINT: Record<string, string> = {
   ev: "Optional. Off by default. Shows a dashboard card suggesting the cheapest window to plug "
     + "in the car — advisory only, the EMS never controls the car.",
 };
+
+// First sentence of the help (always shown) + the remainder (behind a "More" disclosure). Splits
+// on the FIRST sentence-ending punctuation that is followed by whitespace, so mid-word dots
+// (developer.tibber.com, MiniMax-M2.7) never split the text.
+function splitHelp(help: string): { first: string; rest: string } {
+  const m = help.match(/^([\s\S]*?[.!?])(\s+)([\s\S]+)$/);
+  if (!m) return { first: help.trim(), rest: "" };
+  return { first: m[1].trim(), rest: m[3].trim() };
+}
+
+function FieldHelp({ help }: { help: string }) {
+  const { first, rest } = splitHelp(help);
+  const [open, setOpen] = useState(false);
+  if (!rest) return <p className="field-help">{first}</p>;
+  return (
+    <p className="field-help">
+      {first}
+      {open ? ` ${rest}` : ""}{" "}
+      <button
+        type="button"
+        className="help-more"
+        aria-expanded={open}
+        onClick={() => setOpen((v) => !v)}
+      >
+        {open ? "Less" : "More"}
+      </button>
+    </p>
+  );
+}
 
 function NumberInput({
   field,
@@ -344,18 +379,43 @@ function Field({
   onChange: (v: number | boolean | string) => void;
 }) {
   const id = `set-${field.key}`;
-  let control;
+  const label = (
+    <label htmlFor={id} className="field-label">
+      {field.label}
+      {field.unit && <span className="field-unit"> ({field.unit})</span>}
+      {field.applies === "restart" && <span className="field-badge">restart</span>}
+    </label>
+  );
+  // Booleans render as a proper toggle switch, laid out as a row (label left, switch right). It's
+  // still an <input type=checkbox> under the hood (role=switch), so it stays keyboard-togglable.
   if (field.type === "bool") {
-    control = (
-      <input id={id} type="checkbox" checked={Boolean(value)} disabled={disabled}
-        onChange={(e) => onChange(e.target.checked)} />
+    return (
+      <div className={`field field-bool${error ? " field-error" : ""}`} data-testid={`field-${field.key}`}>
+        <div className="field-bool-row">
+          {label}
+          <input
+            id={id}
+            className="switch-input"
+            type="checkbox"
+            role="switch"
+            checked={Boolean(value)}
+            disabled={disabled}
+            onChange={(e) => onChange(e.target.checked)}
+          />
+        </div>
+        {field.help && <FieldHelp help={field.help} />}
+        {error && <p className="field-err" data-testid={`err-${field.key}`}>{error}</p>}
+      </div>
     );
-  } else if (field.type === "enum") {
+  }
+  let control;
+  if (field.type === "enum") {
     control = (
       <select id={id} value={String(value)} disabled={disabled}
         onChange={(e) => onChange(e.target.value)}>
         {(field.options ?? []).map((o) => (
-          <option key={o} value={o}>{o}</option>
+          // Humanise the raw token for display; the submitted VALUE stays the token.
+          <option key={o} value={o}>{humanize(o)}</option>
         ))}
       </select>
     );
@@ -378,13 +438,9 @@ function Field({
   }
   return (
     <div className={`field${error ? " field-error" : ""}`} data-testid={`field-${field.key}`}>
-      <label htmlFor={id} className="field-label">
-        {field.label}
-        {field.unit && <span className="field-unit"> ({field.unit})</span>}
-        {field.applies === "restart" && <span className="field-badge">restart</span>}
-      </label>
+      {label}
       {control}
-      {field.help && <p className="field-help">{field.help}</p>}
+      {field.help && <FieldHelp help={field.help} />}
       {error && (
         <p className="field-err" data-testid={`err-${field.key}`}>{error}</p>
       )}
@@ -414,21 +470,21 @@ export function Settings({ onSaved }: { onSaved?: (values: Values) => void } = {
   const [loadError, setLoadError] = useState<string | null>(null);
   const [auth, setAuth] = useState<{ required: boolean; authenticated: boolean } | null>(null);
   const [tokenInput, setTokenInput] = useState(getToken());
-  const [showAdvanced, setShowAdvanced] = useState(false);
   const [impact, setImpact] = useState<Impact | null>(null);
   const [solarAdvice, setSolarAdvice] = useState<SolarConfidenceAdvice | null>(null);
   const [cars, setCars] = useState<CarModel[] | null>(null);
-  // Collapsible groups (tames a long, dense page). Strategy — the headline — is open by default;
-  // the rest start collapsed and expand on demand. A group with a save error auto-expands.
-  const [openGroups, setOpenGroups] = useState<Set<string>>(new Set(["strategy"]));
-  function toggleGroup(g: string) {
-    setOpenGroups((prev) => {
-      const next = new Set(prev);
-      if (next.has(g)) next.delete(g);
-      else next.add(g);
-      return next;
-    });
-  }
+  // --- Two-pane shell navigation state ---
+  const [activeSection, setActiveSection] = useState<string | null>(null);
+  const [search, setSearch] = useState("");
+  // Which sections have their in-place "Advanced" disclosure expanded (collapsed by default).
+  const [advancedOpen, setAdvancedOpen] = useState<Set<string>>(new Set());
+  // Field flashed after a search-driven jump (brief highlight + scroll-into-view).
+  const [highlightKey, setHighlightKey] = useState<string | null>(null);
+  // Sections whose saved changes need a restart to take effect (client-side, this session).
+  const [restartPending, setRestartPending] = useState<Set<string>>(new Set());
+  const [lastSaveRestart, setLastSaveRestart] = useState(false);
+  // Mobile drill-in (≤700px): start on the section list, then drill into one section.
+  const [mobileList, setMobileList] = useState(true);
 
   async function refreshAuth() {
     try {
@@ -485,9 +541,9 @@ export function Settings({ onSaved }: { onSaved?: (values: Values) => void } = {
   }
 
   // The car database is static (ems/cars.py) — fetched once, lazily, the first time the Car
-  // group is expanded (not on every Settings load, since most homes never open it).
+  // section is opened (not on every Settings load, since most homes never open it).
   useEffect(() => {
-    if (!openGroups.has("ev") || cars !== null) return;
+    if (activeSection !== "ev" || cars !== null) return;
     let alive = true;
     (async () => {
       try {
@@ -502,7 +558,7 @@ export function Settings({ onSaved }: { onSaved?: (values: Values) => void } = {
     return () => {
       alive = false;
     };
-  }, [openGroups, cars]);
+  }, [activeSection, cars]);
   const selectedCar = (cars ?? []).find((c) => c.id === String(edited["ev.car_id"] ?? "")) ?? null;
 
   // Only send schema keys whose value actually changed (skip the "<key>.__set" secret flags).
@@ -511,7 +567,8 @@ export function Settings({ onSaved }: { onSaved?: (values: Values) => void } = {
   for (const k of Object.keys(edited)) {
     if (schemaKeys.has(k) && edited[k] !== values[k]) changed[k] = edited[k];
   }
-  const dirty = Object.keys(changed).length > 0;
+  const changeCount = Object.keys(changed).length;
+  const dirty = changeCount > 0;
   // Did any changed field require a restart to take effect?
   const restartChanged = (schema ?? []).some(
     (f) => f.applies === "restart" && f.key in changed,
@@ -548,17 +605,65 @@ export function Settings({ onSaved }: { onSaved?: (values: Values) => void } = {
     };
   }, [plannerKey]);
 
-  // A save error in a collapsed group would be invisible — auto-expand any group that has one.
+  // A save error in a collapsed/off-screen section would be invisible — jump to the first section
+  // with an error and reveal its Advanced group if the offending field lives there.
   useEffect(() => {
     const errKeys = Object.keys(errors).filter((k) => k !== "_");
     if (!errKeys.length || !schema) return;
-    const withErrors = schema.filter((f) => errKeys.includes(f.key)).map((f) => f.group);
-    if (withErrors.length) setOpenGroups((prev) => new Set([...prev, ...withErrors]));
+    const errField = schema.find((f) => errKeys.includes(f.key));
+    if (!errField) return;
+    setActiveSection(errField.group);
+    setMobileList(false);
+    if (errField.advanced) setAdvancedOpen((prev) => new Set([...prev, errField.group]));
   }, [errors, schema]);
+
+  // Scroll the highlighted (search-jumped) field into view once its section + advanced state have
+  // rendered.
+  useEffect(() => {
+    if (!highlightKey) return;
+    const el = document.querySelector(`[data-testid="field-${highlightKey}"]`);
+    if (el) {
+      const reduce = window.matchMedia?.("(prefers-reduced-motion: reduce)").matches;
+      el.scrollIntoView({ block: "center", behavior: reduce ? "auto" : "smooth" });
+    }
+  }, [highlightKey, activeSection, advancedOpen]);
+
+  function matchedKeys(group: string): string[] {
+    const q = search.trim().toLowerCase();
+    if (!q) return [];
+    return (schema ?? [])
+      .filter((f) => f.group === group)
+      .filter(
+        (f) =>
+          f.label.toLowerCase().includes(q) ||
+          (f.help ?? "").toLowerCase().includes(q) ||
+          f.key.toLowerCase().includes(q),
+      )
+      .map((f) => f.key);
+  }
+
+  function openSection(group: string, highlight: string | null = null) {
+    setActiveSection(group);
+    setMobileList(false);
+    setHighlightKey(highlight);
+    if (highlight) {
+      const f = (schema ?? []).find((x) => x.key === highlight);
+      if (f?.advanced) setAdvancedOpen((prev) => new Set([...prev, group]));
+    }
+  }
+
+  function handleNavClick(group: string) {
+    // In search mode, selecting a result jumps to (and highlights) the first matching field.
+    const keys = search.trim() ? matchedKeys(group) : [];
+    openSection(group, keys[0] ?? null);
+  }
 
   async function save() {
     setStatus("saving");
     setErrors({});
+    const restartGroups = (schema ?? [])
+      .filter((f) => f.applies === "restart" && f.key in changed)
+      .map((f) => f.group);
     try {
       const r = await fetch("/api/settings", {
         method: "POST",
@@ -580,11 +685,23 @@ export function Settings({ onSaved }: { onSaved?: (values: Values) => void } = {
       setValues(b.values);
       setEdited(b.values);
       setStatus("saved");
+      if (restartGroups.length) {
+        setRestartPending((prev) => new Set([...prev, ...restartGroups]));
+        setLastSaveRestart(true);
+      } else {
+        setLastSaveRestart(false);
+      }
       onSaved?.(b.values);
     } catch (e) {
       setErrors({ _: String(e) });
       setStatus("error");
     }
+  }
+
+  function reset() {
+    setEdited(values);
+    setErrors({});
+    setStatus("idle");
   }
 
   if (loadError) {
@@ -596,28 +713,98 @@ export function Settings({ onSaved }: { onSaved?: (values: Values) => void } = {
   }
   if (!schema) return <div className="loading">Loading settings…</div>;
 
-  const visible = schema.filter((f) => showAdvanced || !f.advanced);
-  const groups = GROUP_ORDER.filter((g) => visible.some((f) => f.group === g)).concat(
-    [...new Set(visible.map((f) => f.group))].filter((g) => !GROUP_ORDER.includes(g)),
-  );
-  const hiddenAdvanced = schema.filter((f) => f.advanced).length;
+  // Build the navigation: known sections under their headers + any unknown/future group appended
+  // under "App". Only sections actually present in the schema are shown.
+  const present = new Set(schema.map((f) => f.group));
+  const known = new Set(NAV_GROUPS.flatMap((g) => g.sections));
+  const unknown = [...present].filter((g) => !known.has(g));
+  const navGroups = NAV_GROUPS.map((g, i) => ({
+    header: g.header,
+    sections: (i === NAV_GROUPS.length - 1 ? [...g.sections, ...unknown] : g.sections).filter((s) =>
+      present.has(s),
+    ),
+  }));
+  const orderedSections = navGroups.flatMap((g) => g.sections);
+
+  const q = search.trim().toLowerCase();
+  const matchCount: Record<string, number> = {};
+  if (q) for (const s of orderedSections) matchCount[s] = matchedKeys(s).length;
+  const visibleSections = q ? orderedSections.filter((s) => matchCount[s] > 0) : orderedSections;
+
+  // Effective active section: keep the selection valid, else fall back to the first section.
+  const active =
+    activeSection && present.has(activeSection) ? activeSection : orderedSections[0] ?? null;
+
+  function renderField(f: SettingField) {
+    const highlighted = f.key === highlightKey ? " field-highlight" : "";
+    return (
+      <div className={`field-with-hint${highlighted}`} key={f.key}>
+        {f.key === "ev.schedule" ? (
+          <div className="field" data-testid={`field-${f.key}`}>
+            <label className="field-label">{f.label}</label>
+            <EvScheduleEditor
+              value={String(edited[f.key] ?? f.default)}
+              disabled={status === "saving"}
+              onChange={(v) => set(f.key, v)}
+            />
+            {f.help && <FieldHelp help={f.help} />}
+          </div>
+        ) : f.key === "ev.car_id" ? (
+          <div className="field" data-testid={`field-${f.key}`}>
+            <label className="field-label">{f.label}</label>
+            <CarPicker
+              carId={String(edited[f.key] ?? f.default)}
+              cars={cars ?? []}
+              disabled={status === "saving"}
+              onPick={(car) => {
+                if (car) {
+                  set("ev.car_id", car.id);
+                  set("ev.battery_kwh", car.battery_net_kwh);
+                } else {
+                  set("ev.car_id", "");
+                }
+              }}
+            />
+            {f.help && <FieldHelp help={f.help} />}
+          </div>
+        ) : (
+          <Field
+            field={f}
+            value={edited[f.key]}
+            error={errors[f.key]}
+            disabled={status === "saving"}
+            secretSet={Boolean(values[`${f.key}.__set`])}
+            onChange={(v) => set(f.key, v)}
+          />
+        )}
+        {f.key === "planner.solar_confidence" && solarAdvice && (
+          <SolarConfidenceHint advice={solarAdvice} />
+        )}
+        {f.key === "ev.charger_kw" && selectedCar && (
+          <p className="advisor-hint" data-testid="car-ac-hint">
+            {selectedCar.model}'s onboard AC charger tops out at{" "}
+            <strong>{selectedCar.max_ac_kw} kW</strong> — the car, not the wallbox, caps the charge
+            speed above that. This field is your wallbox and is left as-is.
+          </p>
+        )}
+      </div>
+    );
+  }
+
+  const sectionFields = active ? schema.filter((f) => f.group === active) : [];
+  const basicFields = sectionFields.filter((f) => !f.advanced);
+  const advancedFields = sectionFields.filter((f) => f.advanced);
+  const advIsOpen = active ? advancedOpen.has(active) : false;
+  const showSaveBar = dirty || status === "saved";
 
   return (
-    <section data-testid="settings">
-      <div className="settings-top">
-        <label className="adv-toggle">
-          <input
-            type="checkbox"
-            checked={showAdvanced}
-            onChange={(e) => setShowAdvanced(e.target.checked)}
-            data-testid="advanced-toggle"
-          />
-          Show advanced settings{hiddenAdvanced ? ` (${hiddenAdvanced})` : ""}
-        </label>
-      </div>
-
+    <section
+      data-testid="settings"
+      className="settings-shell"
+      data-mobile={mobileList ? "list" : "section"}
+    >
       {auth?.required && (
-        <div className="settings-group" data-testid="settings-access">
+        <div className="settings-access-bar" data-testid="settings-access">
           <h2 className="settings-group-title">Authorise this browser</h2>
           <p className="settings-group-hint">
             Saving is protected. Enter the access token to authorise writes from this browser.{" "}
@@ -627,14 +814,10 @@ export function Settings({ onSaved }: { onSaved?: (values: Values) => void } = {
               <span className="settings-msg-err">not authorised</span>
             )}
           </p>
-          <div className="settings-fields">
-            <div className="field">
-              <label className="field-label" htmlFor="set-access-token">Access token</label>
-              <input id="set-access-token" type="password" value={tokenInput}
-                onChange={(e) => setTokenInput(e.target.value)} data-testid="access-token" />
-            </div>
-          </div>
-          <div className="settings-actions">
+          <div className="settings-access-row">
+            <input id="set-access-token" type="password" value={tokenInput}
+              aria-label="Access token"
+              onChange={(e) => setTokenInput(e.target.value)} data-testid="access-token" />
             <button className="btn-ghost" data-testid="access-token-save"
               onClick={() => { setToken(tokenInput); refreshAuth(); }}>
               Save token
@@ -643,154 +826,190 @@ export function Settings({ onSaved }: { onSaved?: (values: Values) => void } = {
         </div>
       )}
 
-      <div className="settings-expand-row">
-        <button
-          type="button"
-          className="settings-expand-all"
-          data-testid="settings-expand-all"
-          onClick={() =>
-            setOpenGroups(openGroups.size >= groups.length ? new Set() : new Set(groups))
-          }
-        >
-          {openGroups.size >= groups.length ? "Collapse all" : "Expand all"}
-        </button>
+      <div className="settings-panes">
+        <aside className="settings-sidebar">
+          <div className="settings-search-wrap">
+            <input
+              className="settings-search"
+              data-testid="settings-search"
+              type="search"
+              value={search}
+              placeholder="Search settings…"
+              aria-label="Search settings"
+              onChange={(e) => setSearch(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Escape") setSearch("");
+              }}
+            />
+          </div>
+          <nav className="settings-nav" aria-label="Settings sections">
+            {navGroups.map((grp) => {
+              const secs = grp.sections.filter((s) => visibleSections.includes(s));
+              if (!secs.length) return null;
+              return (
+                <div className="settings-nav-group" key={grp.header}>
+                  <p className="settings-nav-header">{grp.header}</p>
+                  {secs.map((s) => {
+                    const secDirty = schema.some((f) => f.group === s && f.key in changed);
+                    const secRestart = restartPending.has(s);
+                    const isActive = s === active;
+                    return (
+                      <button
+                        key={s}
+                        type="button"
+                        className={`settings-nav-item${isActive ? " active" : ""}`}
+                        data-testid={`group-${s}`}
+                        aria-current={isActive ? "page" : undefined}
+                        onClick={() => handleNavClick(s)}
+                      >
+                        <SectionIcon group={s} className="settings-nav-icon" />
+                        <span className="settings-nav-label">{GROUP_TITLE[s] ?? s}</span>
+                        {q && matchCount[s] > 0 && (
+                          <span className="settings-nav-count" data-testid={`nav-count-${s}`}>
+                            {matchCount[s]}
+                          </span>
+                        )}
+                        {secDirty && <span className="settings-nav-dot" title="unsaved changes" />}
+                        {secRestart && (
+                          <span className="settings-nav-restart" title="restart to apply">
+                            restart
+                          </span>
+                        )}
+                      </button>
+                    );
+                  })}
+                </div>
+              );
+            })}
+            {q && visibleSections.length === 0 && (
+              <p className="settings-nav-empty" data-testid="settings-search-empty">
+                No settings match “{search}”.
+              </p>
+            )}
+          </nav>
+        </aside>
+
+        <div className="settings-content">
+          <button
+            type="button"
+            className="settings-back"
+            data-testid="settings-back"
+            onClick={() => setMobileList(true)}
+          >
+            ← All settings
+          </button>
+
+          {active && (
+            <div className="settings-content-inner">
+              <header className="settings-section-head">
+                <span className="settings-section-icon">
+                  <SectionIcon group={active} />
+                </span>
+                <div className="settings-section-headtext">
+                  <h2 className="settings-section-title">{GROUP_TITLE[active] ?? active}</h2>
+                  {GROUP_HINT[active] && (
+                    <p className="settings-section-hint">{GROUP_HINT[active]}</p>
+                  )}
+                </div>
+              </header>
+
+              <div className="settings-section-fields">
+                {basicFields.map((f) => renderField(f))}
+              </div>
+
+              {advancedFields.length > 0 && (
+                <div className="settings-advanced">
+                  <button
+                    type="button"
+                    className={`settings-advanced-toggle${advIsOpen ? " open" : ""}`}
+                    data-testid="settings-advanced-toggle"
+                    aria-expanded={advIsOpen}
+                    onClick={() =>
+                      setAdvancedOpen((prev) => {
+                        const next = new Set(prev);
+                        if (next.has(active)) next.delete(active);
+                        else next.add(active);
+                        return next;
+                      })
+                    }
+                  >
+                    <span className="settings-advanced-line" aria-hidden="true" />
+                    <span className="settings-advanced-label">Advanced</span>
+                    <span className="settings-advanced-count">{advancedFields.length}</span>
+                    <span className="settings-advanced-chevron" aria-hidden="true">▾</span>
+                  </button>
+                  {advIsOpen && (
+                    <div className="settings-section-fields" data-testid="settings-advanced-body">
+                      {advancedFields.map((f) => renderField(f))}
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {active === "planner" && impact?.current && impact?.proposed && (
+                <div className="impact" data-testid="settings-impact">
+                  <span className="metric-label">Impact on the plan (next 24h)</span>
+                  <div className="impact-row">
+                    <span className="impact-col">
+                      <span className="impact-tag">now</span>
+                      <span className="impact-text">{impact.current.summary}</span>
+                      <span className="impact-savings">
+                        ~€{impact.current.savings_eur.toFixed(2)}/day · {impact.current.charge_slots}{" "}
+                        charge / {impact.current.discharge_slots} discharge
+                      </span>
+                    </span>
+                    <span className="impact-arrow">→</span>
+                    <span className="impact-col">
+                      <span className="impact-tag impact-tag-new">after save</span>
+                      <span className="impact-text" data-testid="impact-proposed">
+                        {impact.proposed.summary}
+                      </span>
+                      <span className="impact-savings">
+                        ~€{impact.proposed.savings_eur.toFixed(2)}/day ·{" "}
+                        {impact.proposed.charge_slots} charge / {impact.proposed.discharge_slots}{" "}
+                        discharge
+                      </span>
+                    </span>
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
+        </div>
       </div>
 
-      {groups.map((g) => {
-        const groupFields = visible.filter((f) => f.group === g);
-        const isOpen = openGroups.has(g);
-        const groupDirty = groupFields.some((f) => f.key in changed);
-        return (
-          <div className={`settings-group settings-collapsible${isOpen ? " open" : ""}`} key={g}>
-            <button
-              type="button"
-              className="settings-group-head"
-              aria-expanded={isOpen}
-              onClick={() => toggleGroup(g)}
-              data-testid={`group-${g}`}
-            >
-              <span className="settings-group-title">{GROUP_TITLE[g] ?? g}</span>
-              {groupDirty && <span className="group-dot" title="unsaved changes" />}
-              <span className="settings-group-count">{groupFields.length}</span>
-              <span className="settings-group-chevron" aria-hidden="true">▾</span>
-            </button>
-            {isOpen && (
-              <div className="settings-group-body">
-                {GROUP_HINT[g] && <p className="settings-group-hint">{GROUP_HINT[g]}</p>}
-                <div className="settings-fields">
-                  {groupFields.map((f) => (
-                    <div
-                      className={`field-with-hint${
-                        f.key === "ev.schedule" || f.key === "ev.car_id" ? " field-full-width" : ""
-                      }`}
-                      key={f.key}
-                    >
-                      {f.key === "ev.schedule" ? (
-                        <div className="field" data-testid={`field-${f.key}`}>
-                          <label className="field-label">{f.label}</label>
-                          <EvScheduleEditor
-                            value={String(edited[f.key] ?? f.default)}
-                            disabled={status === "saving"}
-                            onChange={(v) => set(f.key, v)}
-                          />
-                          {f.help && <p className="field-help">{f.help}</p>}
-                        </div>
-                      ) : f.key === "ev.car_id" ? (
-                        <div className="field" data-testid={`field-${f.key}`}>
-                          <label className="field-label">{f.label}</label>
-                          <CarPicker
-                            carId={String(edited[f.key] ?? f.default)}
-                            cars={cars ?? []}
-                            disabled={status === "saving"}
-                            onPick={(car) => {
-                              if (car) {
-                                set("ev.car_id", car.id);
-                                set("ev.battery_kwh", car.battery_net_kwh);
-                              } else {
-                                set("ev.car_id", "");
-                              }
-                            }}
-                          />
-                          {f.help && <p className="field-help">{f.help}</p>}
-                        </div>
-                      ) : (
-                        <Field
-                          field={f}
-                          value={edited[f.key]}
-                          error={errors[f.key]}
-                          disabled={status === "saving"}
-                          secretSet={Boolean(values[`${f.key}.__set`])}
-                          onChange={(v) => set(f.key, v)}
-                        />
-                      )}
-                      {f.key === "planner.solar_confidence" && solarAdvice && (
-                        <SolarConfidenceHint advice={solarAdvice} />
-                      )}
-                      {f.key === "ev.charger_kw" && selectedCar && (
-                        <p className="advisor-hint" data-testid="car-ac-hint">
-                          {selectedCar.model}'s onboard AC charger tops out at{" "}
-                          <strong>{selectedCar.max_ac_kw} kW</strong> — the car, not the wallbox,
-                          caps the charge speed above that. This field is your wallbox and is left
-                          as-is.
-                        </p>
-                      )}
-                    </div>
-                  ))}
-                </div>
-              </div>
-            )}
-          </div>
-        );
-      })}
-
-      {impact?.current && impact?.proposed && (
-        <div className="impact" data-testid="settings-impact">
-          <span className="metric-label">Impact on the plan (next 24h)</span>
-          <div className="impact-row">
-            <span className="impact-col">
-              <span className="impact-tag">now</span>
-              <span className="impact-text">{impact.current.summary}</span>
-              <span className="impact-savings">
-                ~€{impact.current.savings_eur.toFixed(2)}/day · {impact.current.charge_slots} charge /{" "}
-                {impact.current.discharge_slots} discharge
-              </span>
-            </span>
-            <span className="impact-arrow">→</span>
-            <span className="impact-col">
-              <span className="impact-tag impact-tag-new">after save</span>
-              <span className="impact-text" data-testid="impact-proposed">
-                {impact.proposed.summary}
-              </span>
-              <span className="impact-savings">
-                ~€{impact.proposed.savings_eur.toFixed(2)}/day · {impact.proposed.charge_slots} charge
-                / {impact.proposed.discharge_slots} discharge
-              </span>
-            </span>
+      {showSaveBar && (
+        <div className="settings-savebar" data-testid="settings-savebar">
+          <div className="settings-savebar-inner">
+            <div className="settings-savebar-msg">
+              {dirty && (
+                <span className="settings-dirty" data-testid="settings-dirty">
+                  {changeCount} unsaved change{changeCount === 1 ? "" : "s"}
+                  {restartChanged ? " · some apply on restart" : ""}
+                </span>
+              )}
+              {status === "saved" && (
+                <span className="settings-msg-ok" data-testid="settings-saved">
+                  Saved{lastSaveRestart ? " — restart to apply connection changes" : ""}
+                </span>
+              )}
+              {status === "error" && errors._ && (
+                <span className="settings-msg-err">{errors._}</span>
+              )}
+            </div>
+            <div className="settings-savebar-actions">
+              <button className="btn-ghost" data-testid="settings-discard" onClick={reset}
+                disabled={!dirty}>
+                Discard
+              </button>
+              <button className="btn-primary" data-testid="settings-save" onClick={save}
+                disabled={!dirty || status === "saving"}>
+                {status === "saving" ? "Saving…" : "Save"}
+              </button>
+            </div>
           </div>
         </div>
       )}
-
-      <div className="settings-actions">
-        <button className="btn-primary" onClick={save} disabled={!dirty || status === "saving"}
-          data-testid="settings-save">
-          {status === "saving" ? "Saving…" : "Save changes"}
-        </button>
-        <button className="btn-ghost" onClick={() => { setEdited(values); setErrors({}); setStatus("idle"); }}
-          disabled={!dirty}>
-          Reset
-        </button>
-        {status === "saved" && (
-          <span className="settings-msg-ok" data-testid="settings-saved">
-            Saved{restartChanged ? " — restart to apply connection changes" : ""}
-          </span>
-        )}
-        {status === "error" && errors._ && <span className="settings-msg-err">{errors._}</span>}
-        {dirty && status !== "saved" && (
-          <span className="settings-dirty">
-            unsaved changes{restartChanged ? " (some apply on restart)" : ""}
-          </span>
-        )}
-      </div>
     </section>
   );
 }
