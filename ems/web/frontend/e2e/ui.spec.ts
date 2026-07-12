@@ -671,6 +671,26 @@ test.describe("EMS dashboard", () => {
     await expect(page.getByTestId("car-meter-missing")).toContainText("after driving or charging");
   });
 
+  test("the car card explains manual-only SoC in the needs-schedule state too", async ({ page }) => {
+    // Parity: the no-EV-meter warning must also show when a schedule is missing (not only in the
+    // needs-anchor state), matching the iOS card which shows it in every enabled state.
+    await page.route("**/api/car/plan", (route) =>
+      route.fulfill({
+        status: 200, contentType: "application/json",
+        body: JSON.stringify({
+          enabled: true,
+          car_meter_configured: false,
+          plan: null,
+          soc: { pct: 55, source: "manual" },
+          needs_schedule: true,
+        }),
+      }),
+    );
+    await page.goto("/");
+    await expect(page.getByTestId("car-meter-missing")).toContainText("No EV meter");
+    await expect(page.getByTestId("car-schedule-link")).toBeVisible();
+  });
+
   test("the car card shows the full plan (SoC, advice, windows, timeline)", async ({ page }) => {
     // Slot/deadline times are anchored to "now" (floored to the 15-min grid, matching the
     // card's own timeline math) so the mocked plan lands inside the card's 48h window regardless

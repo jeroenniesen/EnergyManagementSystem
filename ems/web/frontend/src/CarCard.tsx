@@ -293,6 +293,11 @@ export function CarCard({ onOpenSettings }: { onOpenSettings: () => void }) {
     return (
       <section className="car-card" data-testid="car-card">
         <CardHead />
+        {data.car_meter_configured === false && (
+          <p className="advisor-hint" data-testid="car-meter-missing">
+            No EV meter is configured, so update the car level after driving or charging.
+          </p>
+        )}
         <p className="override-hint">No weekly minimum charge level set yet.</p>
         <button
           type="button"
