@@ -170,3 +170,22 @@ def test_empty_prices_yields_empty_plan():
     # past-only prices are filtered out too
     past = [PriceSlot(T0 - 4 * SLOT, 0.1)]
     assert plan_summer(past, [], T0, soc_pct=50.0, cfg=_cfg()).slots == ()
+
+
+def test_negative_price_soak_charges_below_zero_even_with_grid_topup_off():
+    # allow_grid_topup OFF: normally no grid charging at all (see test_grid_topup_can_be_disabled).
+    # With the soak on, a sub-zero slot is STILL a charge slot — you are PAID to consume — bounded
+    # by the existing shortfall sizing. A real shortfall exists (50%->80% of 10 kWh, no sun).
+    prices = [PriceSlot(T0 + i * SLOT, -0.05 if i == 2 else 0.20) for i in range(16)]
+    fc = _forecast([0.0] * 16)  # no sun → a genuine night shortfall to fill
+    off = plan_summer(prices, fc, T0, soc_pct=50.0, cfg=_cfg(allow_grid_topup=False))
+    on = plan_summer(prices, fc, T0, soc_pct=50.0,
+                     cfg=_cfg(allow_grid_topup=False, negative_price_soak=True))
+    off_charge = [s for s in off.slots if s.intent is BatteryIntent.GRID_CHARGE_TO_TARGET]
+    on_charge = [s for s in on.slots if s.intent is BatteryIntent.GRID_CHARGE_TO_TARGET]
+    assert off_charge == []  # grid top-up off + no soak → nothing bought
+    soaked = [s for s in on_charge if s.start == T0 + 2 * SLOT]
+    assert soaked, "the sub-zero slot must be soaked as a charge slot"
+    assert "paid to charge" in soaked[0].reason
+    # Only the sub-zero slot is soaked — the €0.20 slots stay off (grid top-up is disabled).
+    assert all(s.start == T0 + 2 * SLOT for s in on_charge)

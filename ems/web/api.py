@@ -22,7 +22,7 @@ from fastapi.staticfiles import StaticFiles
 
 from ems import export_package as expkg
 from ems.alerts import data_quality, derive_alerts
-from ems.analysis import forecast_error
+from ems.analysis import forecast_error, recommend_solar_confidence
 from ems.control.failsafe import failsafe_intent
 from ems.control.mode_controller import ModeController
 from ems.control.override import (
@@ -39,6 +39,7 @@ from ems.control.override import (
 from ems.diagnostics import build_diagnostics, overall_status
 from ems.domain import BatteryIntent, PhysicalMode
 from ems.energy_flow import build_daily_flows
+from ems.ev_advisor import advise_charge_window
 from ems.finance import day_finance
 from ems.freshness import FreshnessTracker
 from ems.lifecycle import OwnershipState
@@ -60,7 +61,7 @@ from ems.planner.strategy import build_plan, select_strategy_with_reason
 from ems.planner.summer import SummerConfig, sunset_after
 from ems.planner.validator import PlanValidation, validate_plan
 from ems.readiness import Readiness, compute_readiness, home_state
-from ems.reporting import build_report, build_series, gas_m3_consumed, resolve_window
+from ems.reporting import build_report, build_series, gas_m3_consumed, gas_summary, resolve_window
 from ems.retrospect import build_past_story, past_headline
 from ems.savings import estimate_daily_savings_eur
 from ems.sense import Recorder
@@ -265,8 +266,9 @@ def history_row_cap(
 
 
 # Bump when the finance math changes so completed-day rows cached under the OLD formula are
-# recomputed instead of served stale (finding 4). v2 = same-window wear (dis_priced) + price-gate.
-_FINANCE_CALC_VERSION = 2
+# recomputed instead of served stale (finding 4). v2 = same-window wear (dis_priced) + price-gate;
+# v3 = export credited via the configurable feed-in model (B-05), not always the full spot price.
+_FINANCE_CALC_VERSION = 3
 
 
 def create_app(
@@ -430,6 +432,7 @@ def create_app(
             risk_margin_eur_per_kwh=s["planner.risk_margin_eur_per_kwh"],
             charge_slots=s["planner.charge_slots"],
             discharge_slots=s["planner.discharge_slots"],
+            negative_price_soak=s["planner.negative_price_soak"],
         )
 
     def _planner_cfg() -> PlannerConfig:
@@ -585,6 +588,7 @@ def create_app(
             solar_confidence=s["planner.solar_confidence"] / 100.0,
             allow_grid_topup=s["strategy.summer_grid_topup"],
             max_topup_price_eur_per_kwh=s["strategy.summer_max_topup_price"],
+            negative_price_soak=s["planner.negative_price_soak"],
         )
 
     def _strategy_inputs(now: datetime):
@@ -643,6 +647,7 @@ def create_app(
             degradation_eur_per_kwh=s["planner.degradation_eur_per_kwh"],
             risk_margin_eur_per_kwh=s["planner.risk_margin_eur_per_kwh"],
             solar_confidence=s["planner.solar_confidence"] / 100.0,
+            negative_price_soak=s["planner.negative_price_soak"],
         )
 
     async def _audit_decision_loop(stop: asyncio.Event) -> None:
@@ -1992,6 +1997,23 @@ def create_app(
         stored = [PriceSlot(datetime.fromisoformat(r["start_ts"]), r["eur_per_kwh"]) for r in rows]
         return live + stored
 
+    async def _window_carbon_factor(
+        start_iso: str, end_iso: str
+    ) -> tuple[float | None, str | None]:
+        """Roadmap F3 (Insights reporting only): the window's average LIVE grid CO2 intensity
+        (kg/kWh) from stored `carbon_intensity` rows (upserted by the recorder each cycle from
+        the configured carbon source), plus a short note for the CO₂ score's explanation. A plain
+        (unweighted) mean over the window's 15-min slots. (None, None) when nothing is stored for
+        this window — the caller then stays on the flat `reporting.grid_co2_factor` setting, no
+        different from before this feature existed."""
+        if store is None:
+            return None, None
+        rows = await store.carbon_between(start_iso, end_iso)
+        if not rows:
+            return None, None
+        avg = sum(r["kg_per_kwh"] for r in rows) / len(rows)
+        return avg, f" (live grid signal, avg {avg:.2f} kg/kWh)"
+
     async def _recent_actuals(now: datetime) -> list[dict]:
         """The last RECENT_HOURS of RECORDED actuals on the 15-min grid (oldest→now), so the planner
         timeline can show what really happened just before now: actual SoC, actual solar, and the
@@ -2385,6 +2407,13 @@ def create_app(
         start, end, label, partial = resolve_window(period, anchor, site_tz, now_local)
         grid_factor = float(settings_cache.get("reporting.grid_co2_factor", 0.27))
         gas_factor = float(settings_cache.get("reporting.gas_co2_factor", 1.78))
+        gas_price = float(settings_cache.get("reporting.gas_price_eur_per_m3", 1.40))
+        # Roadmap F3: use the window's live grid-CO2 average when the recorder has persisted any
+        # (else stay on the flat factor above — unchanged behaviour without the live signal).
+        live_grid_factor, grid_factor_note = await _window_carbon_factor(
+            start.astimezone(UTC).isoformat(), end.astimezone(UTC).isoformat())
+        if live_grid_factor is not None:
+            grid_factor = live_grid_factor
         # Stored prices so the best-price score is right for HISTORICAL windows too, not just
         # whatever the live feed still carries.
         prices = await _window_price_slots(start.astimezone(UTC).isoformat(),
@@ -2393,8 +2422,9 @@ def create_app(
         if store is None or start > now_local:
             resp = build_report([], [], prices, period=period, start=start, end=end, label=label,
                                 partial=partial, grid_factor=grid_factor,
-                                gas_factor=gas_factor).to_dict()
+                                gas_factor=gas_factor, grid_factor_note=grid_factor_note).to_dict()
             resp["series"] = build_series([], [], period=period, start=start, end=end, tz=site_tz)
+            resp["gas"] = None
             return resp
         q_end = min(end, now_local + timedelta(minutes=1))  # never query the future
         # Size the row cap to the window AND the recorder cadence (finding 10) so week/month/year
@@ -2409,10 +2439,67 @@ def create_app(
         gas = gas_m3_consumed(gas_rows)
         resp = build_report(raw, der, prices, period=period, start=start, end=end, label=label,
                             partial=partial, grid_factor=grid_factor,
-                            gas_factor=gas_factor, gas_m3=gas).to_dict()
+                            gas_factor=gas_factor, gas_m3=gas,
+                            grid_factor_note=grid_factor_note).to_dict()
         # The behavior series (P1/house/car/solar per bucket) rides on the same rows/window.
         resp["series"] = build_series(raw, der, period=period, start=start, end=end, tz=site_tz)
+        # Makes gas VISIBLE (beyond folding into the CO₂ score): m³/kWh-eq/€/CO₂ for the Insights
+        # gas panel. None-safe — the panel hides itself when there's fewer than 2 gas readings.
+        resp["gas"] = gas_summary(gas_rows, price_eur_per_m3=gas_price, co2_factor=gas_factor)
         return resp
+
+    @app.get("/api/advisor/solar-confidence")
+    async def advisor_solar_confidence() -> dict:
+        """Advisory-only recommendation for `planner.solar_confidence`, derived from how the
+        stored day-ahead forecast has actually performed over the last 14 days (SPEC: solar
+        confidence should come from evidence, not a hand-tuned guess). NEVER applied automatically
+        — the Settings UI renders this as a hint next to the field; the user decides. Read-only,
+        gated like any other /api/* read (only if `web.require_auth` is on) — see /api/report."""
+        advice = None
+        if store is not None:
+            now = datetime.now(UTC)
+            start = now - timedelta(days=14)
+            start_iso, end_iso = start.isoformat(), now.isoformat()
+            limit = history_row_cap((now - start).total_seconds(), _sample_cadence_seconds())
+            raw = await store.raw_between(start_iso, end_iso, limit=limit)
+            forecasts = await store.forecasts_between(start_iso, end_iso)
+            current = settings_cache.get("planner.solar_confidence")
+            advice = recommend_solar_confidence(
+                forecasts, raw, current_pct=float(current) if current is not None else None)
+        return {"advice": advice}
+
+    @app.get("/api/advisor/ev-charge")
+    def advisor_ev_charge() -> dict:
+        """Advisory-only "best time to charge the car" (docs/v2-ev-control.md: v2 EV control is
+        out of scope — this never commands anything, just recommends a window). Off unless
+        `ev.advice_enabled` is on; needs live prices. Reuses the same price/forecast access as
+        /api/plan (price_source.slots() + solar_forecast.slots())."""
+        if not settings_cache.get("ev.advice_enabled") or price_source is None:
+            return {"advice": None}
+        now = datetime.now(UTC)
+        now_local = now.astimezone(site_tz)
+        try:
+            hh, mm = (int(x) for x in str(settings_cache["ev.departure_time"]).split(":", 1))
+            assert 0 <= hh < 24 and 0 <= mm < 60
+        except (ValueError, AssertionError):
+            hh, mm = 7, 30  # fail-safe: an unparsable time never breaks the card
+        departure_local = now_local.replace(hour=hh, minute=mm, second=0, microsecond=0)
+        if departure_local <= now_local:
+            departure_local += timedelta(days=1)
+        forecast = solar_forecast.slots() if solar_forecast is not None else []
+        advice = advise_charge_window(
+            price_source.slots(),
+            {f.start: f.p50_w for f in forecast},
+            departure=departure_local,  # kept in site_tz so the reason shows local wall-clock time
+            kwh_needed=float(settings_cache["ev.charge_kwh"]),
+            charger_kw=float(settings_cache["ev.charger_kw"]),
+            export_model=str(settings_cache.get("prices.export_price_model", "net_metering")),
+            energy_tax_eur_per_kwh=float(settings_cache.get("prices.energy_tax_eur_per_kwh", 0.13)),
+            fixed_feed_in_eur_per_kwh=float(
+                settings_cache.get("prices.fixed_feed_in_eur_per_kwh", 0.01)),
+            now=now,
+        )
+        return {"advice": advice}
 
     async def _ensure_day_finance(day_local: date_cls) -> dict:
         """Compute (or return the current-version cached) finance rollup for one LOCAL day,
@@ -2432,6 +2519,9 @@ def create_app(
             if cached and cached[0]["data"].get("calc_v") == _FINANCE_CALC_VERSION:
                 return cached[0]["data"]
         degradation = float(settings_cache.get("planner.degradation_eur_per_kwh", 0.05))
+        export_model = str(settings_cache.get("prices.export_price_model", "net_metering"))
+        energy_tax = float(settings_cache.get("prices.energy_tax_eur_per_kwh", 0.13))
+        fixed_feed_in = float(settings_cache.get("prices.fixed_feed_in_eur_per_kwh", 0.01))
         q_end = min(nxt, now_local + timedelta(minutes=1))
         # Cadence-aware per-day cap (finding 10): sized to the recorder frequency, not a fixed
         # 3000 that would truncate a finer sampling rate.
@@ -2441,7 +2531,10 @@ def create_app(
         price_rows = await store.prices_between(cur.astimezone(UTC).isoformat(),
                                                 nxt.astimezone(UTC).isoformat())
         f = day_finance(raw, price_rows, day=day_label,
-                        degradation_eur_per_kwh=degradation).to_dict()
+                        degradation_eur_per_kwh=degradation,
+                        export_price_model=export_model,
+                        energy_tax_eur_per_kwh=energy_tax,
+                        fixed_feed_in_eur_per_kwh=fixed_feed_in).to_dict()
         f["calc_v"] = _FINANCE_CALC_VERSION
         if completed:
             await store.upsert_daily_finance(day_label, f)
@@ -2584,6 +2677,9 @@ def create_app(
         saved_total = round(sum(saved_vals), 2) if saved_vals else None
         window = {"start": start_iso, "end": end_iso}
         fc_skill = forecast_error(forecasts, raw)
+        solar_advice = recommend_solar_confidence(
+            forecasts, raw,
+            current_pct=float(settings_cache.get("planner.solar_confidence", 80.0)))
         members = {
             "raw_samples.csv": expkg.rows_to_csv(raw, expkg.RAW_COLUMNS),
             "derived_samples.csv": expkg.rows_to_csv(derived, expkg.DERIVED_COLUMNS),
@@ -2601,7 +2697,7 @@ def create_app(
             "validation_summary.txt": expkg.validation_summary(
                 generated_at=now.isoformat(), app_version=expkg.app_version(), window=window,
                 counts=counts, validation=validation, saved_total_eur=saved_total,
-                forecast_skill=fc_skill,
+                forecast_skill=fc_skill, solar_confidence_advice=solar_advice,
             ),
         }
         data = expkg.build_zip(members)

@@ -85,6 +85,26 @@ SETTINGS_SCHEMA: tuple[SettingsField, ...] = (
         help="Personal token from developer.tibber.com. Stored locally; leave blank to keep the "
         "current value.", applies="restart",
     ),
+    SettingsField(
+        "prices.export_price_model", "Export (feed-in) value", "enum", "net_metering", "prices",
+        help="How much each kWh you export (feed back to the grid) is worth. Until 2027, Dutch "
+        "net-metering (saldering) nets your export against your import at the FULL price — that's "
+        "net-metering, today's behaviour. Switch to spot-minus-tax when saldering ends (2027), or "
+        "if your dynamic contract already pays the spot price minus energy tax for export; pick "
+        "fixed if your contract pays a flat feed-in tariff regardless of the spot price.",
+        options=("net_metering", "spot_minus_tax", "fixed"),
+    ),
+    SettingsField(
+        "prices.energy_tax_eur_per_kwh", "Export energy tax", "number", 0.13, "prices",
+        help="Energy tax subtracted from the spot price when export is valued at spot-minus-tax "
+        "(post-2027 dynamic contracts).",
+        min=0.0, max=0.5, step=0.005, unit="€/kWh", advanced=True,
+    ),
+    SettingsField(
+        "prices.fixed_feed_in_eur_per_kwh", "Fixed feed-in tariff", "number", 0.01, "prices",
+        help="Flat price paid per exported kWh when the export value is set to fixed.",
+        min=0.0, max=0.5, step=0.005, unit="€/kWh", advanced=True,
+    ),
     # --- Battery (Indevolt) — connection + capacity/reserve ---
     SettingsField(
         "battery.indevolt_ip", "Indevolt main tower IP", "text", "", "battery",
@@ -240,6 +260,13 @@ SETTINGS_SCHEMA: tuple[SettingsField, ...] = (
         "24 ≈ 6 hours.",
         min=1, max=96, unit="× 15 min", advanced=True,
     ),
+    SettingsField(
+        "planner.negative_price_soak", "Charge on negative prices", "bool", False, "planner",
+        help="When the electricity price goes below zero you are PAID to consume. With this on, "
+        "the planner adds negative-price slots as battery-charge slots (up to battery headroom), "
+        "even outside normal charge windows and even when summer grid top-up is off. Off = today's "
+        "behaviour.",
+    ),
     # --- AI explanations (optional, OFF by default; the one off-device feature — SPEC §12) ---
     SettingsField(
         "explainer.mode", "AI explanations", "enum", "template", "ai",
@@ -309,6 +336,21 @@ SETTINGS_SCHEMA: tuple[SettingsField, ...] = (
     ),
     # --- Insights & reporting (CO₂ accounting factors) ---
     SettingsField(
+        "reporting.carbon_signal", "Grid CO₂ signal", "enum", "static", "reporting",
+        help="Static (default) uses the flat grid CO₂ factor below — works offline, no key. Live "
+        "(electricityMaps) fetches the grid's actual CO₂ intensity as it varies through the day — "
+        "needs a free personal API key from electricitymaps.com. Falls back to the flat factor if "
+        "the key is missing or the live signal is ever unavailable. Reporting only: this never "
+        "changes when or how the battery is controlled. Takes effect after a restart.",
+        options=("static", "electricitymaps"), applies="restart",
+    ),
+    SettingsField(
+        "reporting.electricitymaps_api_key", "electricityMaps API key", "secret", "", "reporting",
+        help="Personal API key from electricitymaps.com (free tier). Stored locally; leave blank "
+        "to keep the current value. Only used when the grid CO₂ signal above is set to live.",
+        applies="restart",
+    ),
+    SettingsField(
         "reporting.grid_co2_factor", "Grid CO₂ factor", "number", 0.27, "reporting",
         help="kg CO₂ per kWh of imported electricity, used by the CO₂ score. NL grid-mix ≈ 0.27 "
         "(2025, trending down). Lower it as the grid greens.",
@@ -319,6 +361,33 @@ SETTINGS_SCHEMA: tuple[SettingsField, ...] = (
         help="kg CO₂ per m³ of natural gas burned (combustion ≈ 1.78). Used once gas metering is "
         "added to the CO₂ score.",
         min=0.0, max=5.0, step=0.01, unit="kg/m³", advanced=True,
+    ),
+    SettingsField(
+        "reporting.gas_price_eur_per_m3", "Gas price", "number", 1.40, "reporting",
+        help="Your gas contract's variable price per m³ (incl. tax) — used for the Insights gas "
+        "panel.",
+        min=0.0, max=5.0, step=0.05, unit="€/m³",
+    ),
+    # --- Car (v2 EV control is out of scope — advisory only, docs/v2-ev-control.md) ---
+    SettingsField(
+        "ev.advice_enabled", "Show best-time-to-charge card", "bool", False, "ev",
+        help="Off by default so non-EV homes never see it. On shows a dashboard card suggesting "
+        "the cheapest window to plug in the car before it needs to leave. Advisory only — the "
+        "EMS never controls the car.",
+    ),
+    SettingsField(
+        "ev.departure_time", "Usual departure time", "text", "07:30", "ev",
+        help="When the car usually needs to be ready (24h HH:MM).",
+    ),
+    SettingsField(
+        "ev.charge_kwh", "Typical energy to add", "number", 20.0, "ev",
+        help="Roughly how much energy a typical top-up adds.",
+        min=1.0, max=100.0, step=1.0, unit="kWh",
+    ),
+    SettingsField(
+        "ev.charger_kw", "Charger power", "number", 11.0, "ev",
+        help="The car charger's power — sets how long a charge takes.",
+        min=1.0, max=22.0, step=0.5, unit="kW",
     ),
     # --- Appearance ---
     SettingsField(

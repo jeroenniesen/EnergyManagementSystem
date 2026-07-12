@@ -337,3 +337,50 @@ def test_purge_trims_prices_but_keeps_daily_finance(tmp_path):
     prices, fin = asyncio.run(run())
     assert [p["start_ts"] for p in prices] == ["2026-06-28T10:00:00+00:00"]
     assert [f["day"] for f in fin] == ["2026-01-01"]
+
+
+def test_carbon_intensity_upsert_and_query(tmp_path):
+    # Roadmap F3: time-varying grid CO2 intensity, mirrors price_slots (reporting-only).
+    store = HistoryStore(str(tmp_path / "ems.sqlite"))
+
+    async def run():
+        await store.init()
+        await store.upsert_carbon([("2026-06-28T10:00:00+00:00", 0.20),
+                                   ("2026-06-28T10:15:00+00:00", 0.25)])
+        # Same slot again with a corrected value → overwrites, no duplicate row.
+        await store.upsert_carbon([("2026-06-28T10:15:00+00:00", 0.30)])
+        return await store.carbon_between("2026-06-28T00:00:00+00:00",
+                                          "2026-06-29T00:00:00+00:00")
+
+    rows = asyncio.run(run())
+    assert [(r["start_ts"], r["kg_per_kwh"]) for r in rows] == [
+        ("2026-06-28T10:00:00+00:00", 0.20), ("2026-06-28T10:15:00+00:00", 0.30)]
+
+
+def test_carbon_intensity_upsert_empty_list_is_noop(tmp_path):
+    store = HistoryStore(str(tmp_path / "ems.sqlite"))
+
+    async def run():
+        await store.init()
+        await store.upsert_carbon([])
+        return await store.carbon_between("2020-01-01T00:00:00+00:00",
+                                          "2030-01-01T00:00:00+00:00")
+
+    assert asyncio.run(run()) == []
+
+
+def test_purge_trims_carbon_intensity_but_keeps_recent(tmp_path):
+    store = HistoryStore(str(tmp_path / "ems.sqlite"))
+
+    async def run():
+        await store.init()
+        await store.upsert_carbon([("2026-01-01T10:00:00+00:00", 0.30),   # old (purged)
+                                   ("2026-06-28T10:00:00+00:00", 0.20)])  # kept
+        deleted = await store.purge_older_than("2026-06-01T00:00:00+00:00")
+        rows = await store.carbon_between("2020-01-01T00:00:00+00:00",
+                                          "2030-01-01T00:00:00+00:00")
+        return deleted, rows
+
+    deleted, rows = asyncio.run(run())
+    assert deleted >= 1
+    assert [r["start_ts"] for r in rows] == ["2026-06-28T10:00:00+00:00"]

@@ -17,6 +17,7 @@ import {
   SIGNAL_NAME,
 } from "./labels";
 import { OverrideCard } from "./Override";
+import { EVAdvice } from "./EVAdvice";
 import { Settings } from "./Settings";
 import { type Strategy, StrategyCard } from "./StrategyCard";
 import { AiValidationCard } from "./AiValidationCard";
@@ -560,6 +561,9 @@ export function App() {
       {view === "dashboard" && status && (
         <OverrideCard dataQuality={alertsData?.data_quality} />
       )}
+
+      {/* Opt-in, advisory-only "best time to charge the car" — hidden until enabled/available. */}
+      {view === "dashboard" && status && <EVAdvice />}
 
       {/* Advanced — the full detail, tucked away by default (opens on demand). */}
       {view === "dashboard" && status && (

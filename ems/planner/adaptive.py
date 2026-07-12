@@ -18,6 +18,7 @@ from dataclasses import dataclass
 from datetime import datetime
 
 from ems.domain import BatteryIntent
+from ems.planner import economics
 from ems.planner.schedule import SLOT, Plan, PlanSlot
 from ems.sources.forecast import ForecastSlot
 from ems.sources.prices import PriceSlot
@@ -36,9 +37,28 @@ class AdaptiveConfig:
     # Fraction of the EXPECTED (P50) forecast we count on filling the battery (0..1); see summer.py.
     solar_confidence: float = 0.8
     horizon_slots: int = 96
+    negative_price_soak: bool = False  # opt-in: charge on sub-zero slots (paid to consume)
 
 
 def plan_adaptive(
+    prices: list[PriceSlot],
+    forecast: list[ForecastSlot],
+    now: datetime,
+    *,
+    soc_pct: float,
+    load_w_by: dict[datetime, float],
+    cfg: AdaptiveConfig,
+) -> Plan:
+    """Demand-aware charge plan (see the module docstring). With `cfg.negative_price_soak` (opt-in,
+    default OFF) every sub-zero-priced slot is additionally turned into a charge slot afterwards —
+    you are *paid* to consume — even outside a normal cheap window (`_soak_negative`)."""
+    plan = _plan_adaptive(prices, forecast, now, soc_pct=soc_pct, load_w_by=load_w_by, cfg=cfg)
+    if cfg.negative_price_soak:
+        plan = _soak_negative(plan, prices, cfg)
+    return plan
+
+
+def _plan_adaptive(
     prices: list[PriceSlot],
     forecast: list[ForecastSlot],
     now: datetime,
@@ -61,8 +81,12 @@ def plan_adaptive(
     # The price at which charging starts to pay (cheapest-quartile price + round-trip losses).
     ranked = sorted(p.eur_per_kwh for p in future)
     charge_price = ranked[len(ranked) // 4]
-    breakeven = (charge_price / cfg.round_trip_efficiency
-                 + cfg.degradation_eur_per_kwh + cfg.risk_margin_eur_per_kwh)
+    breakeven = economics.breakeven(
+        charge_price,
+        round_trip_efficiency=cfg.round_trip_efficiency,
+        degradation_eur_per_kwh=cfg.degradation_eur_per_kwh,
+        risk_margin_eur_per_kwh=cfg.risk_margin_eur_per_kwh,
+    )
 
     def net_w(p: PriceSlot) -> float:  # + deficit (load over solar) / − surplus
         return load_w_by.get(p.start, 0.0) - p50.get(p.start, 0.0)
@@ -153,3 +177,26 @@ def plan_adaptive(
     # strategy; a direct caller gets an honest None rather than a misleading "summer".
     return Plan(created_at=now, slots=tuple(out), strategy=None, target_soc=target_soc_pct,
                 deadline=last_need)
+
+
+def _soak_negative(plan: Plan, prices: list[PriceSlot], cfg: AdaptiveConfig) -> Plan:
+    """Negative-price soak (`negative_price_soak`, opt-in, default OFF). When a slot's price is
+    below €0 you are *paid* to consume, so rewrite it to a full grid-charge — up to battery
+    headroom, even outside a normal cheap window. A sub-zero slot can therefore never remain a
+    discharge slot. Every other slot is left untouched (flag off ⇒ byte-identical plan)."""
+    price_by = {p.start: p.eur_per_kwh for p in prices}
+    eta = math.sqrt(max(1e-6, min(1.0, cfg.round_trip_efficiency)))
+    per_slot_kwh = round(cfg.max_charge_w * _DH / 1000.0 * eta, 3)
+    floor = max(0.0, min(100.0, cfg.reserve_soc_pct))
+    out = tuple(
+        PlanSlot(
+            s.start, BatteryIntent.GRID_CHARGE_TO_TARGET,
+            f"charge: price €{price_by[s.start]:.2f}/kWh below €0 — you are paid to charge",
+            target_soc=100.0, target_kwh=per_slot_kwh, power_w=cfg.max_charge_w,
+            floor_soc=floor, deadline=s.deadline,
+        )
+        if price_by.get(s.start, 0.0) < 0.0 else s
+        for s in plan.slots
+    )
+    return Plan(created_at=plan.created_at, slots=out, strategy=plan.strategy,
+                target_soc=plan.target_soc, deadline=plan.deadline)

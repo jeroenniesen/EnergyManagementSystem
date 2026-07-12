@@ -344,7 +344,7 @@ Selection is **configurable** (calendar month, rolling solar-forecast threshold,
 2. **Today's surplus** = forecast solar − expected daytime load. Use **P50** for the expected plan but **P10** when *guaranteeing* the overnight run (so a cloudy surprise doesn't leave you short).
 3. **If surplus ≥ need:** daytime `AUTO` (solar fills the battery); evening/night `DISCHARGE`/`AUTO`. **No grid charging** — and specifically **do not grid-charge before a forecast strong-solar morning** (`avoid_precharge_before_solar`): a morning that will refill the battery for free makes pre-dawn grid charging wasteful.
 4. **If surplus < need (cloudy):** schedule a **deficit-only** top-up `CHARGE` in the cheapest slots — **top up only the deficit, never the whole battery** (solar tops it up by day; don't waste cycles).
-5. **Midday negative prices** are a **separate, explicit policy** (`midday_negative_price_action`): one of `charge_battery` (soak free/paid energy), `allow_export` (if export is paid), or `shift_ev` (v2). Not bundled into normal self-consumption.
+5. **Midday negative prices** are a **separate, explicit policy** — implemented as the opt-in **`planner.negative_price_soak`** bool (default **off**, so this is *dry-run before every live strategy*: today's behaviour is unchanged until you turn it on). When on, any slot priced **below €0** (you are *paid* to consume) becomes a battery-charge slot — up to headroom, even outside a normal cheap window and even when summer grid top-up is off. Each such slot carries the plain reason "price below €0 — you are paid to charge". (`allow_export` and `shift_ev` remain future policies; export *valuation* is handled separately by `prices.export_price_model`, §8.3.) Not bundled into normal self-consumption.
 
 ### 8.3 Winter strategy — "buy the dip, spend the peak" (with honest economics)
 **Objective:** charge at the cheapest window(s), discharge at the most expensive, **serving load** (not dumping power), never running empty before the evening peak.
@@ -367,6 +367,15 @@ Selection is **configurable** (calendar month, rolling solar-forecast threshold,
 6. **Cycle budget.** Respect `max_cycles_per_day` / `max_cycles_per_month` for arbitrage, where **one equivalent full cycle = (kWh charged + kWh discharged) / (2 × `usable_kwh`)** (definition in [`docs/control-model.md`](docs/control-model.md) §4); once exhausted, stop trading for the period.
 7. **Hysteresis & no-trade mode.** On "barely profitable" days apply hysteresis (don't flip on a 1-cent wobble). If projected daily savings `< daily_min_savings_eur`, enter **no-trade mode** (`AUTO` all day) — the cycles aren't worth the wear.
 8. Add forecast solar on top (reduces how much must be bought).
+
+> **Implemented — post-2027 economics (`ems/planner/economics.py`).** Two shared, pure money functions back both live planners *and* the finance/savings math, so the arbitrage gate and the reported benefit never drift apart:
+> - `breakeven(charge_price, …)` — the sell price a stored kWh must beat (charge price grossed up for round-trip losses + wear + risk margin). This is the profitability test in step 2, factored out.
+> - `export_value(price, model, …)` — what one **exported** kWh is worth under a configurable feed-in model (`prices.export_price_model`):
+>   - **`net_metering`** (default) — the full retail price (today's Dutch *saldering*: export nets against import at the full price);
+>   - **`spot_minus_tax`** — spot price **−** energy tax (post-2027 dynamic export). This **may be negative** on a negative-spot slot — exporting can *cost* money — and is deliberately **not** clamped (§2 "negative prices & export tariffs are real");
+>   - **`fixed`** — a flat feed-in tariff, independent of spot.
+>
+>   `day_finance` credits export via the selected model in **both** the actual and the no-battery baseline cost, so under a low feed-in the battery's measured benefit grows honestly rather than assuming export is free. The consume-side counterpart is the **negative-price soak** (`planner.negative_price_soak`, §8.2 step 5): charge when the price is below €0.
 
 ### 8.4 Strategy selection & seasonal hysteresis
 - `summer_solar_threshold_kwh` is **roof-specific**, **calibrated from PVGIS / actual yield** (§6.3), not a guessed 12 kWh.
@@ -495,7 +504,10 @@ prices:
     tibber_total_includes_all: false  # CONFIRM@M0 for your tariff
     import_fee_eur_per_kwh: 0.0       # added on top if above is false
     export_fee_eur_per_kwh: 0.0
-  export_tariff_eur_per_kwh: 0.0      # value of exported energy (often ~spot or 0)
+  export_price_model: net_metering    # net_metering (default, today's saldering) | spot_minus_tax (post-2027) | fixed
+  energy_tax_eur_per_kwh: 0.13        # subtracted from spot when export = spot_minus_tax
+  fixed_feed_in_eur_per_kwh: 0.01     # flat €/kWh paid per export when export = fixed
+  export_tariff_eur_per_kwh: 0.0      # (legacy) flat export value; superseded by export_price_model
 
 arbitrage:
   degradation_cost_eur_per_kwh: 0.05  # battery wear allowance per kWh cycled
@@ -522,7 +534,7 @@ strategy:
   strategy_switch_band_kwh: 2.0
   night_reserve_kwh: 2.0
   avoid_precharge_before_solar: true
-  midday_negative_price_action: charge_battery   # charge_battery | allow_export | shift_ev(v2)
+  negative_price_soak: false          # opt-in: charge when price < €0 (you're PAID to consume); off = today's behaviour (planner.*, §8.2 step 5)
   target_soc_ceiling: { summer: 95, winter: 90 } # don't charge above unless needed (§8.9; cell life)
   hold_reserve_blocks_solar_charge: false        # HOLD_RESERVE: false = solar may still charge (§7.1)
   borderline_day_policy: solar_first             # solar_first | price_first (§8.10)
@@ -988,5 +1000,6 @@ Each milestone is independently useful and testable.
 - **Iteration 7 — Accelerators + external explainer (this revision).**
   - **Accelerator-agnostic ML:** generalized the GPU gate from CUDA-only to **any supported accelerator** — CUDA (Jetson), **Metal/CoreML/MLX (Apple Silicon)**, CPU fallback. `require_gpu` → **`require_accelerator`**; runtimes set to `auto`; `capabilities.py` detects the best backend. Apple Silicon is now a first-class ML dev host (§11.6), with the caveat that Docker-on-macOS has no GPU passthrough → the ML sidecar runs **natively** (same localhost-sidecar pattern as the Jetson).
   - **Explainer decoupled + external option:** the **`Explainer`** is its own top-level config block with three backends — `template` (offline, default), `local_llm` (accelerator), and **`external_llm`** (a cloud LLM API, e.g. MiniMax) which **works on a plain Pi**. `external_llm` is **off by default, opt-in**, sends a **minimal redacted payload**, never touches control, falls back to the template, and its API key is a secret (privacy/security §12). Touched §2, §6.5/§7.1, §9 config, §9.1/§9.3, §11.6, §12, §13, §15, ml-layer.md, jetson-deployment.md, config-reference.md, CLAUDE.md, README.md, GOAL.md.
+- **Iteration 8 — Post-2027 economics pass.** Export-price-aware valuation in the new pure `ems/planner/economics.py`: shared `breakeven()` (factored out of the arbitrage gate, both planners behaviour-identical) + `export_value()` with `net_metering` (default, today's *saldering*) / `spot_minus_tax` (post-2027, may go negative, unclamped) / `fixed` models; `day_finance` credits export per model in **both** the actual and the no-battery baseline. Added the opt-in **negative-price soak** (`planner.negative_price_soak`, default **off**) across the winter, adaptive and summer planners — charge when the price is below €0, with a plain "you are paid to charge" reason and a plan-level "+N negative-price slots" note. Replaced the old `midday_negative_price_action` sketch with the implemented bool. Touched §8.2/§8.3, §9 config, config-reference.md.
 
 *End of specification.*

@@ -1,6 +1,6 @@
 from zoneinfo import ZoneInfo
 
-from ems.connection import _battery_ips, build_wiring
+from ems.connection import _battery_ips, build_carbon_source, build_wiring
 from ems.settings import (
     SETTINGS_BY_KEY,
     effective_settings,
@@ -148,6 +148,42 @@ def test_battery_ips_orders_master_first_and_dedupes():
     # blanks dropped, master never duplicated, whitespace trimmed
     assert _battery_ips("10.0.0.1", " 10.0.0.1 , , 10.0.0.2 ") == ["10.0.0.1", "10.0.0.2"]
     assert _battery_ips("", None) == []
+
+
+def test_build_carbon_source_defaults_to_static():
+    from ems.sources.carbon import StaticCarbonSource
+
+    cs = build_carbon_source(effective_settings({}))
+    assert isinstance(cs, StaticCarbonSource)
+    assert cs.factor == 0.27
+
+
+def test_build_carbon_source_uses_configured_flat_factor():
+    from ems.sources.carbon import StaticCarbonSource
+
+    cs = build_carbon_source(effective_settings({"reporting.grid_co2_factor": 0.15}))
+    assert isinstance(cs, StaticCarbonSource)
+    assert cs.factor == 0.15
+
+
+def test_build_carbon_source_electricitymaps_with_key():
+    from ems.sources.carbon import ElectricityMapsCarbonSource
+
+    eff = effective_settings({
+        "reporting.carbon_signal": "electricitymaps",
+        "reporting.electricitymaps_api_key": "key-123",
+    })
+    cs = build_carbon_source(eff)
+    assert isinstance(cs, ElectricityMapsCarbonSource)
+    assert cs.api_key == "key-123"
+
+
+def test_build_carbon_source_electricitymaps_without_key_falls_back_to_static():
+    from ems.sources.carbon import StaticCarbonSource
+
+    eff = effective_settings({"reporting.carbon_signal": "electricitymaps"})  # no key configured
+    cs = build_carbon_source(eff)
+    assert isinstance(cs, StaticCarbonSource)
 
 
 def test_live_devices_build_a_multi_tower_cluster_reader():

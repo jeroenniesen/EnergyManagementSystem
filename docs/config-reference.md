@@ -50,7 +50,10 @@ Legend: **UI** = also editable from the web UI (overlays the file). **CONFIRM** 
 | `grid_fees.tibber_total_includes_all` | bool | false · **CONFIRM** | whether to add extra fees |
 | `grid_fees.import_fee_eur_per_kwh` | €/kWh | 0.0 | added to import price if above false |
 | `grid_fees.export_fee_eur_per_kwh` | €/kWh | 0.0 | export cost |
-| `export_tariff_eur_per_kwh` | €/kWh | 0.0 | value of exported energy |
+| `export_price_model` | enum | `net_metering`\|`spot_minus_tax`\|`fixed` = net_metering | how each exported kWh is valued (`economics.export_value`, §8.3): `net_metering`=full price (today's saldering); `spot_minus_tax`=post-2027 (may go negative, unclamped); `fixed`=flat feed-in. **UI** |
+| `energy_tax_eur_per_kwh` | €/kWh | 0.13 | subtracted from spot when export = `spot_minus_tax`. **UI** |
+| `fixed_feed_in_eur_per_kwh` | €/kWh | 0.01 | flat export value when export = `fixed`. **UI** |
+| `export_tariff_eur_per_kwh` | €/kWh | 0.0 | (legacy) flat export value; superseded by `export_price_model` |
 
 ## `arbitrage`
 | Key | Type | Default | Effect |
@@ -83,7 +86,7 @@ Legend: **UI** = also editable from the web UI (overlays the file). **CONFIRM** 
 | `strategy_switch_band_kwh` | kWh | 2.0 | hysteresis band around threshold |
 | `night_reserve_kwh` | kWh | 2.0 | extra reserve on overnight need. **UI** |
 | `avoid_precharge_before_solar` | bool | true | skip pre-dawn grid charge before strong solar |
-| `midday_negative_price_action` | enum | charge_battery / allow_export / shift_ev(v2) | negative-price policy |
+| `negative_price_soak` | bool | false | negative-price policy (replaces `midday_negative_price_action`); runtime key `planner.negative_price_soak`, see `planner` below |
 | `target_soc_ceiling` | map | {summer: 95, winter: 90} | don't charge above unless needed (cell life) |
 | `hold_reserve_blocks_solar_charge` | bool | false | HOLD_RESERVE: false = solar may still charge |
 | `borderline_day_policy` | enum | `solar_first`\|`price_first` = solar_first | wait for solar vs buy cheap on borderline days |
@@ -130,6 +133,7 @@ Legend: **UI** = also editable from the web UI (overlays the file). **CONFIRM** 
 | Key | Type | Default | Effect |
 |---|---|---|---|
 | `mode` | enum | `rule_based`\|`ml`\|`advisory` = rule_based | which planner produces the executed `Plan` (`SPEC §8`). **UI-editable.** `ml`/`advisory` require the ML layer |
+| `negative_price_soak` | bool | false | opt-in: charge on sub-zero-priced slots (you're PAID to consume), up to headroom — even outside a normal cheap window and with summer grid top-up off. Off = today's behaviour (§8.2 step 5). Applies to the winter, adaptive and summer planners. **UI** |
 
 ## `ml` (optional forecaster/optimizer layer — off on a plain Pi; full schema in `ml-layer.md`)
 | Key | Type | Default | Effect |

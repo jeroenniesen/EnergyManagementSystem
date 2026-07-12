@@ -136,6 +136,38 @@ def test_validation_summary_includes_incidents_section():
     assert "2026-06-26T09:00:00+00:00" in text
 
 
+# ---- validation_summary + _forecast_skill_lines: the solar_confidence advisory suggestion ----
+
+_FORECAST_SKILL = {
+    "n_slots": 100, "bias_w": -50.0, "mae_w": 120.0, "band_coverage_pct": 88.0,
+    "actual_solar_kwh": 12.3, "forecast_p50_kwh": 13.0,
+}
+
+
+def test_validation_summary_adds_suggestion_line_when_advice_given():
+    advice = {"recommended_pct": 70.0, "n_slots": 96, "median_ratio_pct": 82.0,
+              "p25_ratio_pct": 70.0, "current_pct": 80.0, "delta_pct": -10.0}
+    text = validation_summary(
+        generated_at="2026-06-28T12:00:00+00:00", app_version="0.0.1",
+        window={"start": "2026-05-28T00:00:00+00:00", "end": "2026-06-28T12:00:00+00:00"},
+        counts={"raw_samples": 1}, saved_total_eur=None, validation={},
+        forecast_skill=_FORECAST_SKILL, solar_confidence_advice=advice,
+    )
+    assert "Solar forecast skill" in text
+    assert "Suggested solar_confidence: 70% (currently 80%)" in text
+
+
+def test_validation_summary_omits_suggestion_line_when_advice_is_none():
+    text = validation_summary(
+        generated_at="2026-06-28T12:00:00+00:00", app_version="0.0.1",
+        window={"start": "2026-05-28T00:00:00+00:00", "end": "2026-06-28T12:00:00+00:00"},
+        counts={"raw_samples": 1}, saved_total_eur=None, validation={},
+        forecast_skill=_FORECAST_SKILL,
+    )
+    assert "Solar forecast skill" in text
+    assert "Suggested solar_confidence" not in text
+
+
 # ---- endpoint: GET /api/export/package returns a ZIP of the CSVs + manifest ----
 import asyncio  # noqa: E402
 from datetime import UTC, datetime, timedelta  # noqa: E402
@@ -292,11 +324,10 @@ def test_export_package_backfill_is_best_effort_per_day(tmp_path, monkeypatch):
     import ems.web.api as api_mod
     real_day_finance = api_mod.day_finance
 
-    def flaky_day_finance(raw, price_rows, *, day, degradation_eur_per_kwh):
+    def flaky_day_finance(raw, price_rows, *, day, **kwargs):
         if day == flaky_day:
             raise RuntimeError("boom — simulated compute failure")
-        return real_day_finance(raw, price_rows, day=day,
-                                degradation_eur_per_kwh=degradation_eur_per_kwh)
+        return real_day_finance(raw, price_rows, day=day, **kwargs)
 
     monkeypatch.setattr(api_mod, "day_finance", flaky_day_finance)
 
@@ -478,3 +509,54 @@ def test_incident_rollup_matches_hyphenated_failsafe():
     ]
     r = incident_rollup(rows)
     assert r["total"] == 1 and r["by_type"].get("fallback") == 1
+
+
+# ---- endpoint: GET /api/advisor/solar-confidence — advisory only, never applied automatically ----
+
+def _seed_solar_evidence(db: str) -> None:
+    # 48 matched daytime (p50=1000W >= 200W floor) slots inside the last 14 days, 12 each of
+    # ratio 0.7/0.8/0.9/1.0 (interleaved — recommend_solar_confidence sorts internally, so order
+    # doesn't matter): p25 -> 70%, median -> 80%, recommended -> 70% (matches test_analysis.py's
+    # known-ratio case, against the default current_pct=80.0 -> delta -10.0).
+    async def go():
+        store = HistoryStore(db)
+        await store.init()
+        anchor = datetime.now(UTC).replace(minute=0, second=0, microsecond=0) - timedelta(hours=1)
+        ratios = [0.7, 0.8, 0.9, 1.0]
+        for i in range(48):
+            ts = (anchor - timedelta(minutes=15 * i)).isoformat()
+            solar_w = 1000.0 * ratios[i % 4]
+            raw = RawSample(grid_power_w=100.0, solar_power_w=solar_w, battery_power_w=0.0,
+                            ev_power_w=0.0, soc_pct=50.0)
+            await store.record(ts, raw, reconstruct(raw))
+            await store.upsert_forecast_snapshot(ts[:10], [(ts, 500.0, 1000.0, 1500.0)])
+    asyncio.run(go())
+
+
+def test_advisor_endpoint_returns_recommendation_with_enough_evidence(tmp_path):
+    db = str(tmp_path / "ems.sqlite")
+    _seed_solar_evidence(db)
+    with TestClient(_app(db)) as c:
+        body = c.get("/api/advisor/solar-confidence").json()
+    advice = body["advice"]
+    assert advice is not None
+    assert advice["n_slots"] == 48
+    assert advice["p25_ratio_pct"] == 70.0
+    assert advice["median_ratio_pct"] == 80.0
+    assert advice["recommended_pct"] == 70.0
+    assert advice["current_pct"] == 80.0  # planner.solar_confidence default
+    assert advice["delta_pct"] == -10.0
+
+
+def test_advisor_endpoint_returns_null_advice_without_enough_evidence(tmp_path):
+    db = str(tmp_path / "ems.sqlite")
+    with TestClient(_app(db)) as c:  # fresh store — zero matched slots
+        body = c.get("/api/advisor/solar-confidence").json()
+    assert body == {"advice": None}
+
+
+def test_advisor_endpoint_returns_null_advice_without_a_store():
+    app = create_app(MockSource(), dry_run=True, dev_mode="mock", tz=AMS)
+    with TestClient(app) as c:
+        body = c.get("/api/advisor/solar-confidence").json()
+    assert body == {"advice": None}

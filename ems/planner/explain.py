@@ -82,7 +82,13 @@ def _summary(slots, price_by: dict[datetime, float]) -> str:
                  if s.intent is BatteryIntent.DISCHARGE_FOR_LOAD and s.start in price_by]
     parts: list[str] = []
     if charge:
-        parts.append(f"charge {len(charge)}×15m at ≤€{max(charge):.2f}/kWh")
+        part = f"charge {len(charge)}×15m at ≤€{max(charge):.2f}/kWh"
+        # Negative-price soak: charge slots priced below €0 mean you're PAID to consume — call it
+        # out so the plan-level "why" mentions the soak whenever it fired.
+        n_neg = sum(1 for c in charge if c < 0.0)
+        if n_neg:
+            part += f" (+{n_neg} negative-price slots — paid to charge)"
+        parts.append(part)
     if discharge:
         parts.append(f"discharge {len(discharge)}×15m at ≥€{min(discharge):.2f}/kWh")
     if counts.get(BatteryIntent.HOLD_RESERVE):

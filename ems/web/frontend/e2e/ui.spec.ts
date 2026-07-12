@@ -611,6 +611,38 @@ test.describe("EMS dashboard", () => {
     await expect(page.getByTestId("ai-check")).toBeVisible();
   });
 
+  test("the EV advice card is absent when there's no advice", async ({ page }) => {
+    await page.route("**/api/advisor/ev-charge", (route) =>
+      route.fulfill({
+        status: 200, contentType: "application/json",
+        body: JSON.stringify({ advice: null }),
+      }),
+    );
+    await page.goto("/");
+    await expect(page.getByTestId("status-grid")).toBeVisible();
+    await expect(page.getByTestId("ev-advice")).toHaveCount(0);
+  });
+
+  test("the EV advice card shows the cheapest window when enabled (mocked)", async ({ page }) => {
+    await page.route("**/api/advisor/ev-charge", (route) =>
+      route.fulfill({
+        status: 200, contentType: "application/json",
+        body: JSON.stringify({
+          advice: {
+            start: "2026-06-28T02:00:00+00:00", end: "2026-06-28T04:00:00+00:00",
+            est_cost_eur: 1.23, solar_share_pct: 0, slots: 8,
+            reason: "Cheapest 2h window before your 07:30 departure.",
+          },
+        }),
+      }),
+    );
+    await page.goto("/");
+    await expect(page.getByTestId("ev-advice")).toBeVisible();
+    await expect(page.getByTestId("ev-advice")).toContainText("Best time to charge the car");
+    await expect(page.getByTestId("ev-advice-window")).toContainText("€1.23");
+    await expect(page.getByTestId("ev-advice")).toContainText("never controls the car");
+  });
+
   test("shows the error banner when the status API returns 500", async ({ page }) => {
     await page.route("**/api/status", (route) =>
       route.fulfill({ status: 500, contentType: "application/json", body: '{"detail":"boom"}' }),
