@@ -3005,6 +3005,26 @@ def create_app(
                           "answer": need.reason})
         except Exception:
             pass
+        try:
+            if settings_cache.get("ev.advice_enabled"):
+                car = car_by_id(str(settings_cache.get("ev.car_id") or ""))
+                subject = f"Your {car.brand} {car.model}" if car is not None else "The car"
+                items.append({
+                    "key": "why_charge_car",
+                    "question": "Why should I charge the car then?",
+                    "answer": (
+                        "The car card works out the cheapest way to hit each day's scheduled "
+                        "minimum by its ready-by time: it buys the cheapest priced slots before "
+                        "each deadline, and when solar is forecast in surplus during a slot, that "
+                        "slot only costs what the surplus would otherwise have earned feeding in "
+                        f"(often far cheaper, sometimes free). {subject}'s SoC is estimated from "
+                        "the % you last anchored plus what the car meter has measured charging "
+                        "since — driving isn't modeled, so re-anchor after a trip to keep the "
+                        "estimate honest."
+                    ),
+                })
+        except Exception:
+            pass
         return {"items": items, "ai_on": _explainer_active()}
 
     @app.post("/api/chat")
