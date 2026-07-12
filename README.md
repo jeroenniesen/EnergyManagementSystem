@@ -126,6 +126,9 @@ Project conventions are in [`CLAUDE.md`](./CLAUDE.md); the north-star vision in 
 ## What you'll see
 
 - **Dashboard** — live status, the current strategy, the next-24h plan, and today's energy Sankey.
+- **Car card** (optional, off by default) — set a weekly minimum-charge schedule and it tells you the
+  cheapest window to plug in before each ready-by, from a manual SoC anchor plus the car's measured
+  charging (dashboard and iOS app). Advisory only — v1 never controls a charger or the car.
 - **Insights** — three 0–100 scores that trend over **day / week / month / year**: *self-consumption*
   (solar kept on-site), *CO₂* (% avoided vs. a no-solar/battery/EMS home), and *best-price* (how well
   grid imports were timed) — each explaining itself — plus a *where-your-energy-went* panel (kWh from

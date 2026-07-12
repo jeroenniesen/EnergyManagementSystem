@@ -11,8 +11,11 @@ Everything here is pure (no I/O) so it is trivially unit-testable.
 """
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 from typing import Any
+
+from ems.ev_schedule import default_schedule
 
 
 @dataclass(frozen=True)
@@ -376,6 +379,21 @@ SETTINGS_SCHEMA: tuple[SettingsField, ...] = (
         "EMS never controls the car.",
     ),
     SettingsField(
+        "ev.car_id", "Car", "text", "", "ev",
+        help="Pick your car so capacity and AC limit are right.",
+    ),
+    SettingsField(
+        "ev.battery_kwh", "Battery capacity", "number", 57.5, "ev",
+        help="Usable battery capacity — autofilled from the car picker, override if you know "
+        "better.",
+        min=10.0, max=150.0, step=0.5, unit="kWh",
+    ),
+    SettingsField(
+        "ev.charge_efficiency", "Charging efficiency", "number", 0.90, "ev",
+        help="AC energy → battery energy factor (charging losses).",
+        min=0.7, max=1.0, step=0.01, advanced=True,
+    ),
+    SettingsField(
         "ev.departure_time", "Usual departure time", "text", "07:30", "ev",
         help="When the car usually needs to be ready (24h HH:MM).",
     ),
@@ -388,6 +406,10 @@ SETTINGS_SCHEMA: tuple[SettingsField, ...] = (
         "ev.charger_kw", "Charger power", "number", 11.0, "ev",
         help="The car charger's power — sets how long a charge takes.",
         min=1.0, max=22.0, step=0.5, unit="kW",
+    ),
+    SettingsField(
+        "ev.schedule", "Weekly charge schedule", "text", json.dumps(default_schedule()), "ev",
+        help="Weekly minimum charge schedule — edited with the schedule editor below.",
     ),
     # --- Appearance ---
     SettingsField(

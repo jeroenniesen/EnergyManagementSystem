@@ -384,3 +384,38 @@ def test_purge_trims_carbon_intensity_but_keeps_recent(tmp_path):
     deleted, rows = asyncio.run(run())
     assert deleted >= 1
     assert [r["start_ts"] for r in rows] == ["2026-06-28T10:00:00+00:00"]
+
+
+def test_car_soc_anchor_set_get_roundtrip(tmp_path):
+    # feat/ev-charging: the manual (pct, ts) car-SoC anchor persists in a KV row.
+    store = HistoryStore(str(tmp_path / "ems.sqlite"))
+
+    async def run():
+        await store.init()
+        await store.set_car_soc_anchor(42.5, "2026-07-12T08:00:00+00:00")
+        return await store.get_car_soc_anchor()
+
+    assert asyncio.run(run()) == (42.5, "2026-07-12T08:00:00+00:00")
+
+
+def test_car_soc_anchor_overwrites_previous(tmp_path):
+    # Re-anchoring after a drive replaces the old anchor — there is only one 'last known' value.
+    store = HistoryStore(str(tmp_path / "ems.sqlite"))
+
+    async def run():
+        await store.init()
+        await store.set_car_soc_anchor(40.0, "2026-07-12T08:00:00+00:00")
+        await store.set_car_soc_anchor(63.0, "2026-07-12T20:00:00+00:00")
+        return await store.get_car_soc_anchor()
+
+    assert asyncio.run(run()) == (63.0, "2026-07-12T20:00:00+00:00")
+
+
+def test_car_soc_anchor_none_when_unset(tmp_path):
+    store = HistoryStore(str(tmp_path / "ems.sqlite"))
+
+    async def run():
+        await store.init()
+        return await store.get_car_soc_anchor()
+
+    assert asyncio.run(run()) is None

@@ -1,0 +1,139 @@
+{
+  "" : {
+    "diagnostics" : "/Users/jeroenniesen/Development/EnergyManagementSystem/ios/EMSControl/build/Build/Intermediates.noindex/EMSControl.build/Debug-iphonesimulator/EMSControlCore.build/Objects-normal/arm64/EMSControlCore-primary.dia",
+    "emit-module-dependencies" : "/Users/jeroenniesen/Development/EnergyManagementSystem/ios/EMSControl/build/Build/Intermediates.noindex/EMSControl.build/Debug-iphonesimulator/EMSControlCore.build/Objects-normal/arm64/EMSControlCore-primary-emit-module.d",
+    "emit-module-diagnostics" : "/Users/jeroenniesen/Development/EnergyManagementSystem/ios/EMSControl/build/Build/Intermediates.noindex/EMSControl.build/Debug-iphonesimulator/EMSControlCore.build/Objects-normal/arm64/EMSControlCore-primary-emit-module.dia",
+    "pch" : "/Users/jeroenniesen/Development/EnergyManagementSystem/ios/EMSControl/build/Build/Intermediates.noindex/EMSControl.build/Debug-iphonesimulator/EMSControlCore.build/Objects-normal/arm64/EMSControlCore-primary-Bridging-header.pch",
+    "swift-dependencies" : "/Users/jeroenniesen/Development/EnergyManagementSystem/ios/EMSControl/build/Build/Intermediates.noindex/EMSControl.build/Debug-iphonesimulator/EMSControlCore.build/Objects-normal/arm64/EMSControlCore-primary.swiftdeps"
+  },
+  "/Users/jeroenniesen/Development/EnergyManagementSystem/ios/EMSControl/Sources/EMSControlCore/APIClient.swift" : {
+    "const-values" : "/Users/jeroenniesen/Development/EnergyManagementSystem/ios/EMSControl/build/Build/Intermediates.noindex/EMSControl.build/Debug-iphonesimulator/EMSControlCore.build/Objects-normal/arm64/APIClient.swiftconstvalues",
+    "dependencies" : "/Users/jeroenniesen/Development/EnergyManagementSystem/ios/EMSControl/build/Build/Intermediates.noindex/EMSControl.build/Debug-iphonesimulator/EMSControlCore.build/Objects-normal/arm64/APIClient.d",
+    "diagnostics" : "/Users/jeroenniesen/Development/EnergyManagementSystem/ios/EMSControl/build/Build/Intermediates.noindex/EMSControl.build/Debug-iphonesimulator/EMSControlCore.build/Objects-normal/arm64/APIClient.dia",
+    "index-unit-output-path" : "/EMSControl.build/Debug-iphonesimulator/EMSControlCore.build/Objects-normal/arm64/APIClient.o",
+    "llvm-bc" : "/Users/jeroenniesen/Development/EnergyManagementSystem/ios/EMSControl/build/Build/Intermediates.noindex/EMSControl.build/Debug-iphonesimulator/EMSControlCore.build/Objects-normal/arm64/APIClient.bc",
+    "object" : "/Users/jeroenniesen/Development/EnergyManagementSystem/ios/EMSControl/build/Build/Intermediates.noindex/EMSControl.build/Debug-iphonesimulator/EMSControlCore.build/Objects-normal/arm64/APIClient.o",
+    "swift-dependencies" : "/Users/jeroenniesen/Development/EnergyManagementSystem/ios/EMSControl/build/Build/Intermediates.noindex/EMSControl.build/Debug-iphonesimulator/EMSControlCore.build/Objects-normal/arm64/APIClient.swiftdeps",
+    "swiftmodule" : "/Users/jeroenniesen/Development/EnergyManagementSystem/ios/EMSControl/build/Build/Intermediates.noindex/EMSControl.build/Debug-iphonesimulator/EMSControlCore.build/Objects-normal/arm64/APIClient~partial.swiftmodule"
+  },
+  "/Users/jeroenniesen/Development/EnergyManagementSystem/ios/EMSControl/Sources/EMSControlCore/ActivityStore.swift" : {
+    "const-values" : "/Users/jeroenniesen/Development/EnergyManagementSystem/ios/EMSControl/build/Build/Intermediates.noindex/EMSControl.build/Debug-iphonesimulator/EMSControlCore.build/Objects-normal/arm64/ActivityStore.swiftconstvalues",
+    "dependencies" : "/Users/jeroenniesen/Development/EnergyManagementSystem/ios/EMSControl/build/Build/Intermediates.noindex/EMSControl.build/Debug-iphonesimulator/EMSControlCore.build/Objects-normal/arm64/ActivityStore.d",
+    "diagnostics" : "/Users/jeroenniesen/Development/EnergyManagementSystem/ios/EMSControl/build/Build/Intermediates.noindex/EMSControl.build/Debug-iphonesimulator/EMSControlCore.build/Objects-normal/arm64/ActivityStore.dia",
+    "index-unit-output-path" : "/EMSControl.build/Debug-iphonesimulator/EMSControlCore.build/Objects-normal/arm64/ActivityStore.o",
+    "llvm-bc" : "/Users/jeroenniesen/Development/EnergyManagementSystem/ios/EMSControl/build/Build/Intermediates.noindex/EMSControl.build/Debug-iphonesimulator/EMSControlCore.build/Objects-normal/arm64/ActivityStore.bc",
+    "object" : "/Users/jeroenniesen/Development/EnergyManagementSystem/ios/EMSControl/build/Build/Intermediates.noindex/EMSControl.build/Debug-iphonesimulator/EMSControlCore.build/Objects-normal/arm64/ActivityStore.o",
+    "swift-dependencies" : "/Users/jeroenniesen/Development/EnergyManagementSystem/ios/EMSControl/build/Build/Intermediates.noindex/EMSControl.build/Debug-iphonesimulator/EMSControlCore.build/Objects-normal/arm64/ActivityStore.swiftdeps",
+    "swiftmodule" : "/Users/jeroenniesen/Development/EnergyManagementSystem/ios/EMSControl/build/Build/Intermediates.noindex/EMSControl.build/Debug-iphonesimulator/EMSControlCore.build/Objects-normal/arm64/ActivityStore~partial.swiftmodule"
+  },
+  "/Users/jeroenniesen/Development/EnergyManagementSystem/ios/EMSControl/Sources/EMSControlCore/ChatStore.swift" : {
+    "const-values" : "/Users/jeroenniesen/Development/EnergyManagementSystem/ios/EMSControl/build/Build/Intermediates.noindex/EMSControl.build/Debug-iphonesimulator/EMSControlCore.build/Objects-normal/arm64/ChatStore.swiftconstvalues",
+    "dependencies" : "/Users/jeroenniesen/Development/EnergyManagementSystem/ios/EMSControl/build/Build/Intermediates.noindex/EMSControl.build/Debug-iphonesimulator/EMSControlCore.build/Objects-normal/arm64/ChatStore.d",
+    "diagnostics" : "/Users/jeroenniesen/Development/EnergyManagementSystem/ios/EMSControl/build/Build/Intermediates.noindex/EMSControl.build/Debug-iphonesimulator/EMSControlCore.build/Objects-normal/arm64/ChatStore.dia",
+    "index-unit-output-path" : "/EMSControl.build/Debug-iphonesimulator/EMSControlCore.build/Objects-normal/arm64/ChatStore.o",
+    "llvm-bc" : "/Users/jeroenniesen/Development/EnergyManagementSystem/ios/EMSControl/build/Build/Intermediates.noindex/EMSControl.build/Debug-iphonesimulator/EMSControlCore.build/Objects-normal/arm64/ChatStore.bc",
+    "object" : "/Users/jeroenniesen/Development/EnergyManagementSystem/ios/EMSControl/build/Build/Intermediates.noindex/EMSControl.build/Debug-iphonesimulator/EMSControlCore.build/Objects-normal/arm64/ChatStore.o",
+    "swift-dependencies" : "/Users/jeroenniesen/Development/EnergyManagementSystem/ios/EMSControl/build/Build/Intermediates.noindex/EMSControl.build/Debug-iphonesimulator/EMSControlCore.build/Objects-normal/arm64/ChatStore.swiftdeps",
+    "swiftmodule" : "/Users/jeroenniesen/Development/EnergyManagementSystem/ios/EMSControl/build/Build/Intermediates.noindex/EMSControl.build/Debug-iphonesimulator/EMSControlCore.build/Objects-normal/arm64/ChatStore~partial.swiftmodule"
+  },
+  "/Users/jeroenniesen/Development/EnergyManagementSystem/ios/EMSControl/Sources/EMSControlCore/DashboardStore.swift" : {
+    "const-values" : "/Users/jeroenniesen/Development/EnergyManagementSystem/ios/EMSControl/build/Build/Intermediates.noindex/EMSControl.build/Debug-iphonesimulator/EMSControlCore.build/Objects-normal/arm64/DashboardStore.swiftconstvalues",
+    "dependencies" : "/Users/jeroenniesen/Development/EnergyManagementSystem/ios/EMSControl/build/Build/Intermediates.noindex/EMSControl.build/Debug-iphonesimulator/EMSControlCore.build/Objects-normal/arm64/DashboardStore.d",
+    "diagnostics" : "/Users/jeroenniesen/Development/EnergyManagementSystem/ios/EMSControl/build/Build/Intermediates.noindex/EMSControl.build/Debug-iphonesimulator/EMSControlCore.build/Objects-normal/arm64/DashboardStore.dia",
+    "index-unit-output-path" : "/EMSControl.build/Debug-iphonesimulator/EMSControlCore.build/Objects-normal/arm64/DashboardStore.o",
+    "llvm-bc" : "/Users/jeroenniesen/Development/EnergyManagementSystem/ios/EMSControl/build/Build/Intermediates.noindex/EMSControl.build/Debug-iphonesimulator/EMSControlCore.build/Objects-normal/arm64/DashboardStore.bc",
+    "object" : "/Users/jeroenniesen/Development/EnergyManagementSystem/ios/EMSControl/build/Build/Intermediates.noindex/EMSControl.build/Debug-iphonesimulator/EMSControlCore.build/Objects-normal/arm64/DashboardStore.o",
+    "swift-dependencies" : "/Users/jeroenniesen/Development/EnergyManagementSystem/ios/EMSControl/build/Build/Intermediates.noindex/EMSControl.build/Debug-iphonesimulator/EMSControlCore.build/Objects-normal/arm64/DashboardStore.swiftdeps",
+    "swiftmodule" : "/Users/jeroenniesen/Development/EnergyManagementSystem/ios/EMSControl/build/Build/Intermediates.noindex/EMSControl.build/Debug-iphonesimulator/EMSControlCore.build/Objects-normal/arm64/DashboardStore~partial.swiftmodule"
+  },
+  "/Users/jeroenniesen/Development/EnergyManagementSystem/ios/EMSControl/Sources/EMSControlCore/DemoDataStore.swift" : {
+    "const-values" : "/Users/jeroenniesen/Development/EnergyManagementSystem/ios/EMSControl/build/Build/Intermediates.noindex/EMSControl.build/Debug-iphonesimulator/EMSControlCore.build/Objects-normal/arm64/DemoDataStore.swiftconstvalues",
+    "dependencies" : "/Users/jeroenniesen/Development/EnergyManagementSystem/ios/EMSControl/build/Build/Intermediates.noindex/EMSControl.build/Debug-iphonesimulator/EMSControlCore.build/Objects-normal/arm64/DemoDataStore.d",
+    "diagnostics" : "/Users/jeroenniesen/Development/EnergyManagementSystem/ios/EMSControl/build/Build/Intermediates.noindex/EMSControl.build/Debug-iphonesimulator/EMSControlCore.build/Objects-normal/arm64/DemoDataStore.dia",
+    "index-unit-output-path" : "/EMSControl.build/Debug-iphonesimulator/EMSControlCore.build/Objects-normal/arm64/DemoDataStore.o",
+    "llvm-bc" : "/Users/jeroenniesen/Development/EnergyManagementSystem/ios/EMSControl/build/Build/Intermediates.noindex/EMSControl.build/Debug-iphonesimulator/EMSControlCore.build/Objects-normal/arm64/DemoDataStore.bc",
+    "object" : "/Users/jeroenniesen/Development/EnergyManagementSystem/ios/EMSControl/build/Build/Intermediates.noindex/EMSControl.build/Debug-iphonesimulator/EMSControlCore.build/Objects-normal/arm64/DemoDataStore.o",
+    "swift-dependencies" : "/Users/jeroenniesen/Development/EnergyManagementSystem/ios/EMSControl/build/Build/Intermediates.noindex/EMSControl.build/Debug-iphonesimulator/EMSControlCore.build/Objects-normal/arm64/DemoDataStore.swiftdeps",
+    "swiftmodule" : "/Users/jeroenniesen/Development/EnergyManagementSystem/ios/EMSControl/build/Build/Intermediates.noindex/EMSControl.build/Debug-iphonesimulator/EMSControlCore.build/Objects-normal/arm64/DemoDataStore~partial.swiftmodule"
+  },
+  "/Users/jeroenniesen/Development/EnergyManagementSystem/ios/EMSControl/Sources/EMSControlCore/ISOTimestamp.swift" : {
+    "const-values" : "/Users/jeroenniesen/Development/EnergyManagementSystem/ios/EMSControl/build/Build/Intermediates.noindex/EMSControl.build/Debug-iphonesimulator/EMSControlCore.build/Objects-normal/arm64/ISOTimestamp.swiftconstvalues",
+    "dependencies" : "/Users/jeroenniesen/Development/EnergyManagementSystem/ios/EMSControl/build/Build/Intermediates.noindex/EMSControl.build/Debug-iphonesimulator/EMSControlCore.build/Objects-normal/arm64/ISOTimestamp.d",
+    "diagnostics" : "/Users/jeroenniesen/Development/EnergyManagementSystem/ios/EMSControl/build/Build/Intermediates.noindex/EMSControl.build/Debug-iphonesimulator/EMSControlCore.build/Objects-normal/arm64/ISOTimestamp.dia",
+    "index-unit-output-path" : "/EMSControl.build/Debug-iphonesimulator/EMSControlCore.build/Objects-normal/arm64/ISOTimestamp.o",
+    "llvm-bc" : "/Users/jeroenniesen/Development/EnergyManagementSystem/ios/EMSControl/build/Build/Intermediates.noindex/EMSControl.build/Debug-iphonesimulator/EMSControlCore.build/Objects-normal/arm64/ISOTimestamp.bc",
+    "object" : "/Users/jeroenniesen/Development/EnergyManagementSystem/ios/EMSControl/build/Build/Intermediates.noindex/EMSControl.build/Debug-iphonesimulator/EMSControlCore.build/Objects-normal/arm64/ISOTimestamp.o",
+    "swift-dependencies" : "/Users/jeroenniesen/Development/EnergyManagementSystem/ios/EMSControl/build/Build/Intermediates.noindex/EMSControl.build/Debug-iphonesimulator/EMSControlCore.build/Objects-normal/arm64/ISOTimestamp.swiftdeps",
+    "swiftmodule" : "/Users/jeroenniesen/Development/EnergyManagementSystem/ios/EMSControl/build/Build/Intermediates.noindex/EMSControl.build/Debug-iphonesimulator/EMSControlCore.build/Objects-normal/arm64/ISOTimestamp~partial.swiftmodule"
+  },
+  "/Users/jeroenniesen/Development/EnergyManagementSystem/ios/EMSControl/Sources/EMSControlCore/InsightsStore.swift" : {
+    "const-values" : "/Users/jeroenniesen/Development/EnergyManagementSystem/ios/EMSControl/build/Build/Intermediates.noindex/EMSControl.build/Debug-iphonesimulator/EMSControlCore.build/Objects-normal/arm64/InsightsStore.swiftconstvalues",
+    "dependencies" : "/Users/jeroenniesen/Development/EnergyManagementSystem/ios/EMSControl/build/Build/Intermediates.noindex/EMSControl.build/Debug-iphonesimulator/EMSControlCore.build/Objects-normal/arm64/InsightsStore.d",
+    "diagnostics" : "/Users/jeroenniesen/Development/EnergyManagementSystem/ios/EMSControl/build/Build/Intermediates.noindex/EMSControl.build/Debug-iphonesimulator/EMSControlCore.build/Objects-normal/arm64/InsightsStore.dia",
+    "index-unit-output-path" : "/EMSControl.build/Debug-iphonesimulator/EMSControlCore.build/Objects-normal/arm64/InsightsStore.o",
+    "llvm-bc" : "/Users/jeroenniesen/Development/EnergyManagementSystem/ios/EMSControl/build/Build/Intermediates.noindex/EMSControl.build/Debug-iphonesimulator/EMSControlCore.build/Objects-normal/arm64/InsightsStore.bc",
+    "object" : "/Users/jeroenniesen/Development/EnergyManagementSystem/ios/EMSControl/build/Build/Intermediates.noindex/EMSControl.build/Debug-iphonesimulator/EMSControlCore.build/Objects-normal/arm64/InsightsStore.o",
+    "swift-dependencies" : "/Users/jeroenniesen/Development/EnergyManagementSystem/ios/EMSControl/build/Build/Intermediates.noindex/EMSControl.build/Debug-iphonesimulator/EMSControlCore.build/Objects-normal/arm64/InsightsStore.swiftdeps",
+    "swiftmodule" : "/Users/jeroenniesen/Development/EnergyManagementSystem/ios/EMSControl/build/Build/Intermediates.noindex/EMSControl.build/Debug-iphonesimulator/EMSControlCore.build/Objects-normal/arm64/InsightsStore~partial.swiftmodule"
+  },
+  "/Users/jeroenniesen/Development/EnergyManagementSystem/ios/EMSControl/Sources/EMSControlCore/KeychainCredentialStore.swift" : {
+    "const-values" : "/Users/jeroenniesen/Development/EnergyManagementSystem/ios/EMSControl/build/Build/Intermediates.noindex/EMSControl.build/Debug-iphonesimulator/EMSControlCore.build/Objects-normal/arm64/KeychainCredentialStore.swiftconstvalues",
+    "dependencies" : "/Users/jeroenniesen/Development/EnergyManagementSystem/ios/EMSControl/build/Build/Intermediates.noindex/EMSControl.build/Debug-iphonesimulator/EMSControlCore.build/Objects-normal/arm64/KeychainCredentialStore.d",
+    "diagnostics" : "/Users/jeroenniesen/Development/EnergyManagementSystem/ios/EMSControl/build/Build/Intermediates.noindex/EMSControl.build/Debug-iphonesimulator/EMSControlCore.build/Objects-normal/arm64/KeychainCredentialStore.dia",
+    "index-unit-output-path" : "/EMSControl.build/Debug-iphonesimulator/EMSControlCore.build/Objects-normal/arm64/KeychainCredentialStore.o",
+    "llvm-bc" : "/Users/jeroenniesen/Development/EnergyManagementSystem/ios/EMSControl/build/Build/Intermediates.noindex/EMSControl.build/Debug-iphonesimulator/EMSControlCore.build/Objects-normal/arm64/KeychainCredentialStore.bc",
+    "object" : "/Users/jeroenniesen/Development/EnergyManagementSystem/ios/EMSControl/build/Build/Intermediates.noindex/EMSControl.build/Debug-iphonesimulator/EMSControlCore.build/Objects-normal/arm64/KeychainCredentialStore.o",
+    "swift-dependencies" : "/Users/jeroenniesen/Development/EnergyManagementSystem/ios/EMSControl/build/Build/Intermediates.noindex/EMSControl.build/Debug-iphonesimulator/EMSControlCore.build/Objects-normal/arm64/KeychainCredentialStore.swiftdeps",
+    "swiftmodule" : "/Users/jeroenniesen/Development/EnergyManagementSystem/ios/EMSControl/build/Build/Intermediates.noindex/EMSControl.build/Debug-iphonesimulator/EMSControlCore.build/Objects-normal/arm64/KeychainCredentialStore~partial.swiftmodule"
+  },
+  "/Users/jeroenniesen/Development/EnergyManagementSystem/ios/EMSControl/Sources/EMSControlCore/Models.swift" : {
+    "const-values" : "/Users/jeroenniesen/Development/EnergyManagementSystem/ios/EMSControl/build/Build/Intermediates.noindex/EMSControl.build/Debug-iphonesimulator/EMSControlCore.build/Objects-normal/arm64/Models.swiftconstvalues",
+    "dependencies" : "/Users/jeroenniesen/Development/EnergyManagementSystem/ios/EMSControl/build/Build/Intermediates.noindex/EMSControl.build/Debug-iphonesimulator/EMSControlCore.build/Objects-normal/arm64/Models.d",
+    "diagnostics" : "/Users/jeroenniesen/Development/EnergyManagementSystem/ios/EMSControl/build/Build/Intermediates.noindex/EMSControl.build/Debug-iphonesimulator/EMSControlCore.build/Objects-normal/arm64/Models.dia",
+    "index-unit-output-path" : "/EMSControl.build/Debug-iphonesimulator/EMSControlCore.build/Objects-normal/arm64/Models.o",
+    "llvm-bc" : "/Users/jeroenniesen/Development/EnergyManagementSystem/ios/EMSControl/build/Build/Intermediates.noindex/EMSControl.build/Debug-iphonesimulator/EMSControlCore.build/Objects-normal/arm64/Models.bc",
+    "object" : "/Users/jeroenniesen/Development/EnergyManagementSystem/ios/EMSControl/build/Build/Intermediates.noindex/EMSControl.build/Debug-iphonesimulator/EMSControlCore.build/Objects-normal/arm64/Models.o",
+    "swift-dependencies" : "/Users/jeroenniesen/Development/EnergyManagementSystem/ios/EMSControl/build/Build/Intermediates.noindex/EMSControl.build/Debug-iphonesimulator/EMSControlCore.build/Objects-normal/arm64/Models.swiftdeps",
+    "swiftmodule" : "/Users/jeroenniesen/Development/EnergyManagementSystem/ios/EMSControl/build/Build/Intermediates.noindex/EMSControl.build/Debug-iphonesimulator/EMSControlCore.build/Objects-normal/arm64/Models~partial.swiftmodule"
+  },
+  "/Users/jeroenniesen/Development/EnergyManagementSystem/ios/EMSControl/Sources/EMSControlCore/SeriesGeometry.swift" : {
+    "const-values" : "/Users/jeroenniesen/Development/EnergyManagementSystem/ios/EMSControl/build/Build/Intermediates.noindex/EMSControl.build/Debug-iphonesimulator/EMSControlCore.build/Objects-normal/arm64/SeriesGeometry.swiftconstvalues",
+    "dependencies" : "/Users/jeroenniesen/Development/EnergyManagementSystem/ios/EMSControl/build/Build/Intermediates.noindex/EMSControl.build/Debug-iphonesimulator/EMSControlCore.build/Objects-normal/arm64/SeriesGeometry.d",
+    "diagnostics" : "/Users/jeroenniesen/Development/EnergyManagementSystem/ios/EMSControl/build/Build/Intermediates.noindex/EMSControl.build/Debug-iphonesimulator/EMSControlCore.build/Objects-normal/arm64/SeriesGeometry.dia",
+    "index-unit-output-path" : "/EMSControl.build/Debug-iphonesimulator/EMSControlCore.build/Objects-normal/arm64/SeriesGeometry.o",
+    "llvm-bc" : "/Users/jeroenniesen/Development/EnergyManagementSystem/ios/EMSControl/build/Build/Intermediates.noindex/EMSControl.build/Debug-iphonesimulator/EMSControlCore.build/Objects-normal/arm64/SeriesGeometry.bc",
+    "object" : "/Users/jeroenniesen/Development/EnergyManagementSystem/ios/EMSControl/build/Build/Intermediates.noindex/EMSControl.build/Debug-iphonesimulator/EMSControlCore.build/Objects-normal/arm64/SeriesGeometry.o",
+    "swift-dependencies" : "/Users/jeroenniesen/Development/EnergyManagementSystem/ios/EMSControl/build/Build/Intermediates.noindex/EMSControl.build/Debug-iphonesimulator/EMSControlCore.build/Objects-normal/arm64/SeriesGeometry.swiftdeps",
+    "swiftmodule" : "/Users/jeroenniesen/Development/EnergyManagementSystem/ios/EMSControl/build/Build/Intermediates.noindex/EMSControl.build/Debug-iphonesimulator/EMSControlCore.build/Objects-normal/arm64/SeriesGeometry~partial.swiftmodule"
+  },
+  "/Users/jeroenniesen/Development/EnergyManagementSystem/ios/EMSControl/Sources/EMSControlCore/ServerAddressValidator.swift" : {
+    "const-values" : "/Users/jeroenniesen/Development/EnergyManagementSystem/ios/EMSControl/build/Build/Intermediates.noindex/EMSControl.build/Debug-iphonesimulator/EMSControlCore.build/Objects-normal/arm64/ServerAddressValidator.swiftconstvalues",
+    "dependencies" : "/Users/jeroenniesen/Development/EnergyManagementSystem/ios/EMSControl/build/Build/Intermediates.noindex/EMSControl.build/Debug-iphonesimulator/EMSControlCore.build/Objects-normal/arm64/ServerAddressValidator.d",
+    "diagnostics" : "/Users/jeroenniesen/Development/EnergyManagementSystem/ios/EMSControl/build/Build/Intermediates.noindex/EMSControl.build/Debug-iphonesimulator/EMSControlCore.build/Objects-normal/arm64/ServerAddressValidator.dia",
+    "index-unit-output-path" : "/EMSControl.build/Debug-iphonesimulator/EMSControlCore.build/Objects-normal/arm64/ServerAddressValidator.o",
+    "llvm-bc" : "/Users/jeroenniesen/Development/EnergyManagementSystem/ios/EMSControl/build/Build/Intermediates.noindex/EMSControl.build/Debug-iphonesimulator/EMSControlCore.build/Objects-normal/arm64/ServerAddressValidator.bc",
+    "object" : "/Users/jeroenniesen/Development/EnergyManagementSystem/ios/EMSControl/build/Build/Intermediates.noindex/EMSControl.build/Debug-iphonesimulator/EMSControlCore.build/Objects-normal/arm64/ServerAddressValidator.o",
+    "swift-dependencies" : "/Users/jeroenniesen/Development/EnergyManagementSystem/ios/EMSControl/build/Build/Intermediates.noindex/EMSControl.build/Debug-iphonesimulator/EMSControlCore.build/Objects-normal/arm64/ServerAddressValidator.swiftdeps",
+    "swiftmodule" : "/Users/jeroenniesen/Development/EnergyManagementSystem/ios/EMSControl/build/Build/Intermediates.noindex/EMSControl.build/Debug-iphonesimulator/EMSControlCore.build/Objects-normal/arm64/ServerAddressValidator~partial.swiftmodule"
+  },
+  "/Users/jeroenniesen/Development/EnergyManagementSystem/ios/EMSControl/Sources/EMSControlCore/ServerDiscovery.swift" : {
+    "const-values" : "/Users/jeroenniesen/Development/EnergyManagementSystem/ios/EMSControl/build/Build/Intermediates.noindex/EMSControl.build/Debug-iphonesimulator/EMSControlCore.build/Objects-normal/arm64/ServerDiscovery.swiftconstvalues",
+    "dependencies" : "/Users/jeroenniesen/Development/EnergyManagementSystem/ios/EMSControl/build/Build/Intermediates.noindex/EMSControl.build/Debug-iphonesimulator/EMSControlCore.build/Objects-normal/arm64/ServerDiscovery.d",
+    "diagnostics" : "/Users/jeroenniesen/Development/EnergyManagementSystem/ios/EMSControl/build/Build/Intermediates.noindex/EMSControl.build/Debug-iphonesimulator/EMSControlCore.build/Objects-normal/arm64/ServerDiscovery.dia",
+    "index-unit-output-path" : "/EMSControl.build/Debug-iphonesimulator/EMSControlCore.build/Objects-normal/arm64/ServerDiscovery.o",
+    "llvm-bc" : "/Users/jeroenniesen/Development/EnergyManagementSystem/ios/EMSControl/build/Build/Intermediates.noindex/EMSControl.build/Debug-iphonesimulator/EMSControlCore.build/Objects-normal/arm64/ServerDiscovery.bc",
+    "object" : "/Users/jeroenniesen/Development/EnergyManagementSystem/ios/EMSControl/build/Build/Intermediates.noindex/EMSControl.build/Debug-iphonesimulator/EMSControlCore.build/Objects-normal/arm64/ServerDiscovery.o",
+    "swift-dependencies" : "/Users/jeroenniesen/Development/EnergyManagementSystem/ios/EMSControl/build/Build/Intermediates.noindex/EMSControl.build/Debug-iphonesimulator/EMSControlCore.build/Objects-normal/arm64/ServerDiscovery.swiftdeps",
+    "swiftmodule" : "/Users/jeroenniesen/Development/EnergyManagementSystem/ios/EMSControl/build/Build/Intermediates.noindex/EMSControl.build/Debug-iphonesimulator/EMSControlCore.build/Objects-normal/arm64/ServerDiscovery~partial.swiftmodule"
+  },
+  "/Users/jeroenniesen/Development/EnergyManagementSystem/ios/EMSControl/Sources/EMSControlCore/Theme.swift" : {
+    "const-values" : "/Users/jeroenniesen/Development/EnergyManagementSystem/ios/EMSControl/build/Build/Intermediates.noindex/EMSControl.build/Debug-iphonesimulator/EMSControlCore.build/Objects-normal/arm64/Theme.swiftconstvalues",
+    "dependencies" : "/Users/jeroenniesen/Development/EnergyManagementSystem/ios/EMSControl/build/Build/Intermediates.noindex/EMSControl.build/Debug-iphonesimulator/EMSControlCore.build/Objects-normal/arm64/Theme.d",
+    "diagnostics" : "/Users/jeroenniesen/Development/EnergyManagementSystem/ios/EMSControl/build/Build/Intermediates.noindex/EMSControl.build/Debug-iphonesimulator/EMSControlCore.build/Objects-normal/arm64/Theme.dia",
+    "index-unit-output-path" : "/EMSControl.build/Debug-iphonesimulator/EMSControlCore.build/Objects-normal/arm64/Theme.o",
+    "llvm-bc" : "/Users/jeroenniesen/Development/EnergyManagementSystem/ios/EMSControl/build/Build/Intermediates.noindex/EMSControl.build/Debug-iphonesimulator/EMSControlCore.build/Objects-normal/arm64/Theme.bc",
+    "object" : "/Users/jeroenniesen/Development/EnergyManagementSystem/ios/EMSControl/build/Build/Intermediates.noindex/EMSControl.build/Debug-iphonesimulator/EMSControlCore.build/Objects-normal/arm64/Theme.o",
+    "swift-dependencies" : "/Users/jeroenniesen/Development/EnergyManagementSystem/ios/EMSControl/build/Build/Intermediates.noindex/EMSControl.build/Debug-iphonesimulator/EMSControlCore.build/Objects-normal/arm64/Theme.swiftdeps",
+    "swiftmodule" : "/Users/jeroenniesen/Development/EnergyManagementSystem/ios/EMSControl/build/Build/Intermediates.noindex/EMSControl.build/Debug-iphonesimulator/EMSControlCore.build/Objects-normal/arm64/Theme~partial.swiftmodule"
+  }
+}

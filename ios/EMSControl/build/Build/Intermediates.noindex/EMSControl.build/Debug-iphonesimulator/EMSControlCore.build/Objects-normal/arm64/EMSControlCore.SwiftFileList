@@ -1,0 +1,13 @@
+/Users/jeroenniesen/Development/EnergyManagementSystem/ios/EMSControl/Sources/EMSControlCore/APIClient.swift
+/Users/jeroenniesen/Development/EnergyManagementSystem/ios/EMSControl/Sources/EMSControlCore/ActivityStore.swift
+/Users/jeroenniesen/Development/EnergyManagementSystem/ios/EMSControl/Sources/EMSControlCore/ChatStore.swift
+/Users/jeroenniesen/Development/EnergyManagementSystem/ios/EMSControl/Sources/EMSControlCore/DashboardStore.swift
+/Users/jeroenniesen/Development/EnergyManagementSystem/ios/EMSControl/Sources/EMSControlCore/DemoDataStore.swift
+/Users/jeroenniesen/Development/EnergyManagementSystem/ios/EMSControl/Sources/EMSControlCore/ISOTimestamp.swift
+/Users/jeroenniesen/Development/EnergyManagementSystem/ios/EMSControl/Sources/EMSControlCore/InsightsStore.swift
+/Users/jeroenniesen/Development/EnergyManagementSystem/ios/EMSControl/Sources/EMSControlCore/KeychainCredentialStore.swift
+/Users/jeroenniesen/Development/EnergyManagementSystem/ios/EMSControl/Sources/EMSControlCore/Models.swift
+/Users/jeroenniesen/Development/EnergyManagementSystem/ios/EMSControl/Sources/EMSControlCore/SeriesGeometry.swift
+/Users/jeroenniesen/Development/EnergyManagementSystem/ios/EMSControl/Sources/EMSControlCore/ServerAddressValidator.swift
+/Users/jeroenniesen/Development/EnergyManagementSystem/ios/EMSControl/Sources/EMSControlCore/ServerDiscovery.swift
+/Users/jeroenniesen/Development/EnergyManagementSystem/ios/EMSControl/Sources/EMSControlCore/Theme.swift

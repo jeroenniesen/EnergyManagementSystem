@@ -193,6 +193,7 @@ public struct MobileDashboardSnapshot: Codable, Equatable, Sendable {
     public let report: ReportSnapshot
     public let finance: FinanceSnapshot
     public let strategy: StrategySnapshot?
+    public var carPlan: CarPlanSnapshot = .empty
 
     public var isDemo: Bool { serverName.lowercased().contains("demo") }
     public var degradedSections: [String] {
@@ -217,7 +218,8 @@ public struct MobileDashboardSnapshot: Codable, Equatable, Sendable {
         batteryPlan: BatteryPlanSnapshot = .empty,
         report: ReportSnapshot,
         finance: FinanceSnapshot,
-        strategy: StrategySnapshot? = nil
+        strategy: StrategySnapshot? = nil,
+        carPlan: CarPlanSnapshot = .empty
     ) {
         self.generatedAt = generatedAt
         self.serverName = serverName
@@ -234,6 +236,7 @@ public struct MobileDashboardSnapshot: Codable, Equatable, Sendable {
         self.report = report
         self.finance = finance
         self.strategy = strategy
+        self.carPlan = carPlan
     }
 
     public init(legacy snapshot: DashboardSnapshot) {
@@ -276,6 +279,7 @@ public struct MobileDashboardSnapshot: Codable, Equatable, Sendable {
         case report
         case finance
         case strategy
+        case carPlan
     }
 
     public init(from decoder: Decoder) throws {
@@ -295,7 +299,8 @@ public struct MobileDashboardSnapshot: Codable, Equatable, Sendable {
             batteryPlan: try container.decodeIfPresent(BatteryPlanSnapshot.self, forKey: .batteryPlan) ?? .empty,
             report: try container.decodeIfPresent(ReportSnapshot.self, forKey: .report) ?? .empty,
             finance: try container.decodeIfPresent(FinanceSnapshot.self, forKey: .finance) ?? .empty,
-            strategy: try container.decodeIfPresent(StrategySnapshot.self, forKey: .strategy)
+            strategy: try container.decodeIfPresent(StrategySnapshot.self, forKey: .strategy),
+            carPlan: try container.decodeIfPresent(CarPlanSnapshot.self, forKey: .carPlan) ?? .empty
         )
     }
 
@@ -316,6 +321,7 @@ public struct MobileDashboardSnapshot: Codable, Equatable, Sendable {
         try container.encode(report, forKey: .report)
         try container.encode(finance, forKey: .finance)
         try container.encodeIfPresent(strategy, forKey: .strategy)
+        try container.encode(carPlan, forKey: .carPlan)
     }
 }
 
@@ -1345,6 +1351,123 @@ public struct FinanceTotals: Codable, Equatable, Sendable {
     public let gridExportKwh: Double?
     public let daysWithPrices: Int?
     public let daysWithData: Int?
+}
+
+// MARK: - Car charging (advisory)
+
+// GET /api/car/plan is progressive: `enabled:false` (feature off), `needs_anchor` (no SoC set),
+// `needs_schedule` (nothing enabled in the weekly schedule), else the full plan. Every field beyond
+// `enabled` is optional so all four shapes decode without throwing; `.empty` is the fan-out fallback.
+public struct CarPlanSnapshot: Codable, Equatable, Sendable {
+    public let enabled: Bool
+    public let needsAnchor: Bool?
+    public let needsSchedule: Bool?
+    public let soc: CarSoc?
+    public let plan: CarPlanBody?
+    public let effectiveKw: Double?
+    public let car: CarInfo?
+
+    public static let empty = CarPlanSnapshot(
+        enabled: false,
+        needsAnchor: nil,
+        needsSchedule: nil,
+        soc: nil,
+        plan: nil,
+        effectiveKw: nil,
+        car: nil
+    )
+
+    public init(
+        enabled: Bool,
+        needsAnchor: Bool?,
+        needsSchedule: Bool?,
+        soc: CarSoc?,
+        plan: CarPlanBody?,
+        effectiveKw: Double?,
+        car: CarInfo?
+    ) {
+        self.enabled = enabled
+        self.needsAnchor = needsAnchor
+        self.needsSchedule = needsSchedule
+        self.soc = soc
+        self.plan = plan
+        self.effectiveKw = effectiveKw
+        self.car = car
+    }
+}
+
+public struct CarSoc: Codable, Equatable, Sendable {
+    public let socPct: Double?
+    public let anchorPct: Double?
+    public let anchorTs: String?
+    public let addedKwh: Double?
+    public let sessionsSinceAnchor: Int?
+    public let ageHours: Double?
+    public let stale: Bool?
+}
+
+public struct CarPlanBody: Codable, Equatable, Sendable {
+    public let soc: Double?
+    public let deadlines: [CarDeadline]
+    public let windows: [CarWindow]
+    public let advice: String?
+    public let totalEstCostEur: Double?
+    public let totalPlannedKwh: Double?
+
+    enum CodingKeys: String, CodingKey {
+        case soc
+        case deadlines
+        case windows
+        case advice
+        case totalEstCostEur
+        case totalPlannedKwh
+    }
+
+    // Tolerant decode: a degraded/older backend that omits `deadlines`/`windows` degrades to empty
+    // arrays instead of throwing (mirrors BatteryPlanGraph, finding #10).
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        soc = try c.decodeIfPresent(Double.self, forKey: .soc)
+        deadlines = try c.decodeIfPresent([CarDeadline].self, forKey: .deadlines) ?? []
+        windows = try c.decodeIfPresent([CarWindow].self, forKey: .windows) ?? []
+        advice = try c.decodeIfPresent(String.self, forKey: .advice)
+        totalEstCostEur = try c.decodeIfPresent(Double.self, forKey: .totalEstCostEur)
+        totalPlannedKwh = try c.decodeIfPresent(Double.self, forKey: .totalPlannedKwh)
+    }
+}
+
+public struct CarDeadline: Codable, Equatable, Identifiable, Sendable {
+    public let readyBy: String?
+    public let minPct: Double?
+    public let requiredKwh: Double?
+    public let plannedKwh: Double?
+    public let pendingKwh: Double?
+    public let shortfallKwh: Double?
+    public let alreadyMet: Bool?
+    public let feasible: Bool?
+
+    public var id: String { readyBy ?? "\(minPct ?? 0)" }
+}
+
+public struct CarWindow: Codable, Equatable, Identifiable, Sendable {
+    public let start: String?
+    public let end: String?
+    public let acKwh: Double?
+    public let batteryKwh: Double?
+    public let estCostEur: Double?
+    public let solarSharePct: Double?
+    public let reason: String?
+
+    public var id: String { "\(start ?? "")-\(end ?? "")" }
+}
+
+public struct CarInfo: Codable, Equatable, Sendable {
+    public let id: String?
+    public let brand: String?
+    public let model: String?
+    public let batteryNetKwh: Double?
+    public let maxAcKw: Double?
+    public let years: String?
 }
 
 public struct FAQItem: Codable, Equatable, Identifiable, Sendable {

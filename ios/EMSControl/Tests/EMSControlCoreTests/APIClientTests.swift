@@ -110,6 +110,8 @@ final class APIClientTests: XCTestCase {
         XCTAssertEqual(snapshot.batteryPlan.status, "on_track")
         XCTAssertEqual(snapshot.batteryPlan.graph.priceWindows.count, 1)
         XCTAssertNil(snapshot.finance.totals.savedEur)
+        XCTAssertTrue(snapshot.carPlan.enabled)
+        XCTAssertEqual(snapshot.carPlan.plan?.deadlines.first?.minPct, 80)
     }
 
     func testFetchFAQUsesExpectedPathAndAuthorizationHeader() async throws {
@@ -183,6 +185,62 @@ final class APIClientTests: XCTestCase {
             try JSONEncoder.ems.encode(ChatRequest(question: "Why is the battery charging?"))
         )
     }
+
+    func testFetchCarPlanUsesExpectedPathAndAuthorizationHeader() async throws {
+        let transport = RecordingTransport(data: carPlanFullJSON())
+        let client = APIClient(baseURL: URL(string: "http://ems.local:8080")!, token: "abc123", transport: transport)
+
+        let response = try await client.fetchCarPlan()
+
+        XCTAssertTrue(response.enabled)
+        XCTAssertEqual(response.effectiveKw, 11.0)
+        XCTAssertEqual(response.plan?.deadlines.first?.minPct, 80)
+        XCTAssertEqual(response.car?.id, "tesla-model-y-long-range")
+        XCTAssertEqual(transport.lastRequest?.url?.path, "/api/car/plan")
+        XCTAssertEqual(transport.lastRequest?.httpMethod, "GET")
+        XCTAssertEqual(transport.lastRequest?.value(forHTTPHeaderField: "Authorization"), "Bearer abc123")
+    }
+
+    func testSetCarSocPostsPctBodyAndParsesReturnedSoc() async throws {
+        let transport = RecordingTransport(data: carSocResponseJSON())
+        let client = APIClient(baseURL: URL(string: "http://ems.local:8080")!, token: "abc123", transport: transport)
+
+        let soc = try await client.setCarSoc(pct: 55)
+
+        XCTAssertEqual(soc?.socPct, 55.0)
+        XCTAssertEqual(soc?.anchorPct, 55.0)
+        XCTAssertEqual(transport.lastRequest?.url?.path, "/api/car/soc")
+        XCTAssertEqual(transport.lastRequest?.httpMethod, "POST")
+        XCTAssertEqual(transport.lastRequest?.value(forHTTPHeaderField: "Content-Type"), "application/json")
+        XCTAssertEqual(transport.lastRequest?.value(forHTTPHeaderField: "Authorization"), "Bearer abc123")
+
+        let body = try XCTUnwrap(transport.lastRequest?.httpBody)
+        let json = try JSONSerialization.jsonObject(with: body) as? [String: Any]
+        XCTAssertEqual(json?["pct"] as? Int, 55)
+    }
+
+    func testSetCarSocSurfacesUnauthorized() async throws {
+        let transport = StatusCodeTransport(data: Data("{\"detail\":\"unauthorized\"}".utf8), statusCode: 401)
+        let client = APIClient(baseURL: URL(string: "http://ems.local:8080")!, transport: transport)
+
+        do {
+            _ = try await client.setCarSoc(pct: 50)
+            XCTFail("Expected setCarSoc to throw on 401")
+        } catch let error as APIClientError {
+            XCTAssertEqual(error, .httpStatus(401))
+        }
+    }
+
+    func testDashboardCarPlanFallsBackToEmptyWhenCarPlanEndpointFails() async throws {
+        let transport = PartiallyFailingDashboardTransport(failingPath: "/api/car/plan")
+        let client = APIClient(baseURL: URL(string: "http://ems.local:8080")!, transport: transport)
+
+        let snapshot = try await client.fetchDashboard()
+
+        XCTAssertFalse(snapshot.carPlan.enabled)
+        XCTAssertNil(snapshot.carPlan.plan)
+        XCTAssertEqual(snapshot.status.socPct, 55.0)
+    }
 }
 
 private final class RecordingTransport: HTTPTransport, @unchecked Sendable {
@@ -237,12 +295,78 @@ private final class PartiallyFailingDashboardTransport: HTTPTransport, @unchecke
             data = reportJSON()
         case "/api/finance":
             data = financeJSON()
+        case "/api/car/plan":
+            data = carPlanFullJSON()
         default:
             data = #"{"detail":"unexpected path"}"#.data(using: .utf8)!
             return (data, HTTPURLResponse(url: request.url!, statusCode: 404, httpVersion: nil, headerFields: nil)!)
         }
         return (data, HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!)
     }
+}
+
+private final class StatusCodeTransport: HTTPTransport, @unchecked Sendable {
+    var lastRequest: URLRequest?
+    let data: Data
+    let statusCode: Int
+
+    init(data: Data, statusCode: Int) {
+        self.data = data
+        self.statusCode = statusCode
+    }
+
+    func data(for request: URLRequest) async throws -> (Data, HTTPURLResponse) {
+        lastRequest = request
+        return (data, HTTPURLResponse(url: request.url!, statusCode: statusCode, httpVersion: nil, headerFields: nil)!)
+    }
+}
+
+private func carPlanFullJSON() -> Data {
+    """
+    {
+      "enabled": true,
+      "effective_kw": 11.0,
+      "soc": {
+        "soc_pct": 20.0,
+        "anchor_pct": 20.0,
+        "anchor_ts": "2026-07-12T06:00:00+00:00",
+        "added_kwh": 0.0,
+        "sessions_since_anchor": 0,
+        "age_hours": 5.0,
+        "stale": false
+      },
+      "plan": {
+        "soc": 20.0,
+        "deadlines": [
+          {"ready_by": "2026-07-13T07:30:00+02:00", "min_pct": 80, "required_kwh": 34.5, "planned_kwh": 34.5, "pending_kwh": 34.5, "shortfall_kwh": 0.0, "already_met": false, "feasible": true}
+        ],
+        "slots": [],
+        "windows": [
+          {"start": "2026-07-13T02:00:00+02:00", "end": "2026-07-13T05:30:00+02:00", "ac_kwh": 38.3, "battery_kwh": 34.5, "est_cost_eur": 4.05, "solar_share_pct": 0, "reason": "Cheapest slots."}
+        ],
+        "advice": "Plug in overnight to reach 80%.",
+        "total_est_cost_eur": 4.05,
+        "total_planned_kwh": 34.5
+      },
+      "car": {"id": "tesla-model-y-long-range", "brand": "Tesla", "model": "Model Y Long Range", "battery_net_kwh": 75.0, "max_ac_kw": 11.0, "years": "2020–present"}
+    }
+    """.data(using: .utf8)!
+}
+
+private func carSocResponseJSON() -> Data {
+    """
+    {
+      "soc": {
+        "soc_pct": 55.0,
+        "anchor_pct": 55.0,
+        "anchor_ts": "2026-07-12T12:00:00+00:00",
+        "added_kwh": 0.0,
+        "sessions_since_anchor": 0,
+        "age_hours": 0.0,
+        "stale": false
+      }
+    }
+    """.data(using: .utf8)!
 }
 
 private func batteryPlanJSON() -> Data {

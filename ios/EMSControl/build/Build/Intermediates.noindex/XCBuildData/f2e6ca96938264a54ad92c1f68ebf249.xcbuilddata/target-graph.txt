@@ -1,0 +1,4 @@
+Target dependency graph (2 targets)
+Target 'EMSControl' in project 'EMSControl'
+➜ Explicit dependency on target 'EMSControlCore' in project 'EMSControl'
+Target 'EMSControlCore' in project 'EMSControl' (no dependencies)

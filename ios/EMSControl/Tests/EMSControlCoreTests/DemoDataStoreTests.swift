@@ -21,4 +21,14 @@ final class DemoDataStoreTests: XCTestCase {
         XCTAssertTrue(statuses.contains("behind_target"))
         XCTAssertTrue(statuses.contains("paused_safely"))
     }
+
+    func testDemoDashboardIncludesEnabledCarPlan() throws {
+        let store = DemoDataStore()
+        let snapshot = try store.dashboardSnapshot()
+
+        XCTAssertTrue(snapshot.carPlan.enabled)
+        XCTAssertEqual(snapshot.carPlan.car?.id, "tesla-model-y-long-range")
+        XCTAssertEqual(snapshot.carPlan.plan?.deadlines.first?.minPct, 80)
+        XCTAssertFalse(snapshot.carPlan.plan?.windows.isEmpty ?? true)
+    }
 }

@@ -37,6 +37,11 @@ struct DashboardView: View {
                             // 4. Battery
                             BatteryPanel(snapshot: snapshot, theme: theme)
 
+                            // Car charging (advisory) — shown only when the EV feature is enabled.
+                            if snapshot.carPlan.enabled {
+                                CarPanel(carPlan: snapshot.carPlan, theme: theme)
+                            }
+
                             // 5. Strategy
                             if let strategy = snapshot.strategy {
                                 StrategyCard(strategy: strategy, theme: theme)
@@ -1213,6 +1218,329 @@ private struct BatteryPanel: View {
 
     private var fill: Double {
         min(max((snapshot.battery.aggregate?.socPct ?? snapshot.status.socPct ?? 0) / 100, 0), 1)
+    }
+}
+
+// Advisory car-charging panel (GET /api/car/plan). Progressive: prompt for a SoC anchor, then a
+// weekly schedule, then show the cheapest plug-in windows. Writes the SoC anchor via POST
+// /api/car/soc and refreshes the dashboard on success. Never commands the battery.
+private struct CarPanel: View {
+    @Environment(DashboardStore.self) private var dashboardStore
+    let carPlan: CarPlanSnapshot
+    let theme: EMSTheme
+
+    @State private var sliderValue: Double = 50
+    @State private var isSubmitting = false
+    @State private var errorMessage: String?
+    @State private var showReanchor = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            header
+
+            if carPlan.needsAnchor == true {
+                anchorPrompt(
+                    title: "What's the car's charge now?",
+                    subtitle: "Set the battery level so EMS can plan the cheapest time to charge."
+                )
+            } else if carPlan.needsSchedule == true {
+                needsScheduleHint
+            } else if let plan = carPlan.plan {
+                fullPlan(plan)
+            }
+        }
+        .padding(16)
+        .background(themeColor(theme.panel))
+        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .stroke(themeColor(theme.line), lineWidth: 1)
+        }
+        .onAppear { sliderValue = initialSlider }
+    }
+
+    // MARK: sections
+
+    private var header: some View {
+        HStack(alignment: .top, spacing: 10) {
+            Label("Car charging", systemImage: "bolt.car.fill")
+                .font(.headline)
+                .foregroundStyle(themeColor(theme.text))
+            Spacer(minLength: 8)
+            if let name = carName {
+                Text(name)
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(themeColor(theme.muted))
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.7)
+            }
+        }
+    }
+
+    private var needsScheduleHint: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            socRow
+            Label(
+                "Set a weekly minimum in the web app's Settings → Car to get a charging plan.",
+                systemImage: "calendar.badge.plus"
+            )
+            .font(.footnote)
+            .foregroundStyle(themeColor(theme.muted))
+            .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+
+    private func fullPlan(_ plan: CarPlanBody) -> some View {
+        VStack(alignment: .leading, spacing: 12) {
+            socRow
+
+            if let advice = plan.advice, !advice.isEmpty {
+                Text(advice)
+                    .font(.footnote)
+                    .foregroundStyle(themeColor(theme.text))
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            if let deadline = plan.deadlines.first {
+                deadlineLine(deadline)
+            }
+
+            if !plan.windows.isEmpty {
+                DisclosureGroup {
+                    VStack(alignment: .leading, spacing: 8) {
+                        ForEach(plan.windows) { window in
+                            windowRow(window)
+                        }
+                        if let total = plan.totalPlannedKwh, total > 0 {
+                            Text("Total \(kwh(total)) · ≈ \(euro(plan.totalEstCostEur))")
+                                .font(.caption)
+                                .foregroundStyle(themeColor(theme.muted))
+                        }
+                    }
+                    .padding(.top, 8)
+                } label: {
+                    Label("Charge windows", systemImage: "clock.arrow.circlepath")
+                        .font(.footnote.weight(.semibold))
+                        .foregroundStyle(themeColor(theme.text))
+                }
+                .tint(themeColor(theme.muted))
+            }
+
+            reanchorControl
+        }
+    }
+
+    private var socRow: some View {
+        HStack(alignment: .firstTextBaseline, spacing: 6) {
+            Text(percent(carPlan.soc?.socPct))
+                .font(.title2.weight(.bold))
+                .foregroundStyle(themeColor(theme.accent))
+            Text("charge")
+                .font(.caption)
+                .foregroundStyle(themeColor(theme.muted))
+            if let age = carPlan.soc?.ageHours {
+                Text("· \(agoText(age))")
+                    .font(.caption)
+                    .foregroundStyle(themeColor(theme.muted))
+            }
+            Spacer(minLength: 8)
+            if carPlan.soc?.stale == true {
+                StatusBadge(text: "Stale", color: theme.amber, theme: theme)
+            }
+        }
+    }
+
+    private func deadlineLine(_ deadline: CarDeadline) -> some View {
+        let style = deadlineStyle(deadline)
+        return HStack(alignment: .top, spacing: 8) {
+            Image(systemName: style.icon)
+                .font(.footnote.weight(.semibold))
+                .foregroundStyle(themeColor(style.color))
+                .frame(width: 18)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(deadlineTitle(deadline))
+                    .font(.footnote.weight(.semibold))
+                    .foregroundStyle(themeColor(theme.text))
+                Text(style.label)
+                    .font(.caption)
+                    .foregroundStyle(themeColor(style.color))
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            Spacer(minLength: 0)
+        }
+        .padding(10)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(themeColor(theme.secondaryPanel))
+        .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .accessibilityElement(children: .combine)
+    }
+
+    private func windowRow(_ window: CarWindow) -> some View {
+        VStack(alignment: .leading, spacing: 3) {
+            HStack {
+                Text(windowRange(window))
+                    .font(.footnote.weight(.semibold))
+                    .foregroundStyle(themeColor(theme.text))
+                Spacer(minLength: 8)
+                Text("\(kwh(window.batteryKwh)) · ≈ \(euro(window.estCostEur))")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(themeColor(theme.muted))
+            }
+            if let sun = window.solarSharePct, sun > 0 {
+                Label("\(Int(sun))% from expected solar", systemImage: "sun.max.fill")
+                    .font(.caption2)
+                    .foregroundStyle(themeColor(theme.amber))
+            }
+        }
+        .padding(10)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(themeColor(theme.secondaryPanel))
+        .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+    }
+
+    @ViewBuilder
+    private var reanchorControl: some View {
+        if showReanchor {
+            anchorPrompt(title: "Update the car's charge level", subtitle: nil)
+        } else {
+            Button {
+                sliderValue = initialSlider
+                errorMessage = nil
+                withAnimation { showReanchor = true }
+            } label: {
+                Label("Update charge level", systemImage: "pencil")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(themeColor(theme.accent))
+            }
+            .buttonStyle(.plain)
+        }
+    }
+
+    private func anchorPrompt(title: String, subtitle: String?) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text(title)
+                .font(.subheadline.weight(.semibold))
+                .foregroundStyle(themeColor(theme.text))
+            if let subtitle {
+                Text(subtitle)
+                    .font(.footnote)
+                    .foregroundStyle(themeColor(theme.muted))
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            HStack {
+                Text("Charge level")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(themeColor(theme.muted))
+                Spacer()
+                Text("\(Int(sliderValue.rounded()))%")
+                    .font(.subheadline.weight(.bold))
+                    .foregroundStyle(themeColor(theme.accent))
+            }
+            Slider(value: $sliderValue, in: 0 ... 100, step: 5)
+                .tint(themeColor(theme.accent))
+                .disabled(isSubmitting)
+                .accessibilityLabel("Car charge level")
+                .accessibilityValue("\(Int(sliderValue.rounded())) percent")
+
+            if let errorMessage {
+                Label(errorMessage, systemImage: "exclamationmark.triangle")
+                    .font(.caption)
+                    .foregroundStyle(themeColor(theme.error))
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            Button {
+                Task { await submit() }
+            } label: {
+                HStack(spacing: 8) {
+                    if isSubmitting { ProgressView().controlSize(.small) }
+                    Text(isSubmitting ? "Setting…" : "Set charge level")
+                }
+                .font(.footnote.weight(.semibold))
+                .foregroundStyle(themeColor(theme.accent))
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 10)
+                .background(themeColor(theme.accent).opacity(0.16))
+                .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+            }
+            .buttonStyle(.plain)
+            .disabled(isSubmitting)
+        }
+    }
+
+    // MARK: actions
+
+    private func submit() async {
+        errorMessage = nil
+        guard let client = dashboardStore.client else {
+            // Demo / disconnected: no server to write to, so just collapse the editor.
+            withAnimation { showReanchor = false }
+            return
+        }
+        isSubmitting = true
+        defer { isSubmitting = false }
+        do {
+            _ = try await client.setCarSoc(pct: Int(sliderValue.rounded()))
+            withAnimation { showReanchor = false }
+            await dashboardStore.refresh()
+        } catch {
+            errorMessage = (error as? LocalizedError)?.errorDescription
+                ?? "Couldn't set the car's charge level."
+        }
+    }
+
+    // MARK: helpers
+
+    private var carName: String? {
+        var parts: [String] = []
+        if let car = carPlan.car {
+            let label = [car.brand, car.model].compactMap(\.self).joined(separator: " ")
+            if !label.isEmpty { parts.append(label) }
+        }
+        if let kw = carPlan.effectiveKw {
+            parts.append("\(kw.formatted(.number.precision(.fractionLength(0 ... 1)))) kW")
+        }
+        let joined = parts.joined(separator: " · ")
+        return joined.isEmpty ? nil : joined
+    }
+
+    private var initialSlider: Double {
+        let base = carPlan.soc?.anchorPct ?? carPlan.soc?.socPct ?? 50
+        return (min(max(base, 0), 100) / 5).rounded() * 5
+    }
+
+    private func agoText(_ hours: Double) -> String {
+        if hours < 1 { return "anchored just now" }
+        if hours < 48 { return "anchored \(Int(hours.rounded()))h ago" }
+        return "anchored \(Int((hours / 24).rounded()))d ago"
+    }
+
+    private func deadlineTitle(_ deadline: CarDeadline) -> String {
+        let pct = deadline.minPct.map { "\($0.formatted(.number.precision(.fractionLength(0))))%" } ?? "target"
+        if let by = deadline.readyBy.flatMap(ISOTimestamp.parse) {
+            return "\(pct) by \(by.formatted(.dateTime.weekday(.abbreviated).hour().minute()))"
+        }
+        return pct
+    }
+
+    private func deadlineStyle(_ deadline: CarDeadline) -> (color: HexColor, icon: String, label: String) {
+        if deadline.alreadyMet == true {
+            return (theme.accent, "checkmark.circle.fill", "Already charged enough for this.")
+        }
+        if deadline.feasible == false {
+            return (theme.error, "exclamationmark.triangle.fill", "Not enough time to reach this — plug in sooner.")
+        }
+        return (theme.winter, "clock.fill", "Charging planned to reach this in time.")
+    }
+
+    private func windowRange(_ window: CarWindow) -> String {
+        guard let start = window.start.flatMap(ISOTimestamp.parse) else { return "Charge window" }
+        let startLabel = start.formatted(.dateTime.weekday(.abbreviated).hour().minute())
+        if let end = window.end.flatMap(ISOTimestamp.parse) {
+            return "\(startLabel)–\(end.formatted(.dateTime.hour().minute()))"
+        }
+        return startLabel
     }
 }
 

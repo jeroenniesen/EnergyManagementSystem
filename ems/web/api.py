@@ -23,6 +23,10 @@ from fastapi.staticfiles import StaticFiles
 from ems import export_package as expkg
 from ems.alerts import data_quality, derive_alerts
 from ems.analysis import forecast_error, recommend_solar_confidence
+from ems.cars import CARS
+from ems.cars import brands as car_brands
+from ems.cars import by_id as car_by_id
+from ems.cars import to_dict as car_to_dict
 from ems.control.failsafe import failsafe_intent
 from ems.control.mode_controller import ModeController
 from ems.control.override import (
@@ -40,6 +44,9 @@ from ems.diagnostics import build_diagnostics, overall_status
 from ems.domain import BatteryIntent, PhysicalMode
 from ems.energy_flow import build_daily_flows
 from ems.ev_advisor import advise_charge_window
+from ems.ev_planner import plan_car_charging
+from ems.ev_schedule import materialize_deadlines, parse_schedule
+from ems.ev_session import detect_sessions, estimate_soc
 from ems.finance import day_finance
 from ems.freshness import FreshnessTracker
 from ems.lifecycle import OwnershipState
@@ -860,7 +867,7 @@ def create_app(
     # the dashboard degrades to read-only during an HA outage; set `web.require_auth` to gate reads
     # too — do that before reaching the app over a VPN / from outside the home network.
     _WRITE_API_PATHS = frozenset({
-        "/api/override", "/api/settings", "/api/ai/validate", "/api/chat",
+        "/api/override", "/api/settings", "/api/ai/validate", "/api/chat", "/api/car/soc",
     })
     # Always reachable without a token: auth discovery, so a client can learn a token is required
     # and prompt for it. (Health probes live under /health and are never gated here.)
@@ -2473,7 +2480,10 @@ def create_app(
         """Advisory-only "best time to charge the car" (docs/v2-ev-control.md: v2 EV control is
         out of scope — this never commands anything, just recommends a window). Off unless
         `ev.advice_enabled` is on; needs live prices. Reuses the same price/forecast access as
-        /api/plan (price_source.slots() + solar_forecast.slots())."""
+        /api/plan (price_source.slots() + solar_forecast.slots()).
+
+        DEPRECATED: superseded by GET /api/car/plan (schedule-aware, multi-deadline, SoC-anchored).
+        Kept unchanged for compatibility with any existing client; do not extend it."""
         if not settings_cache.get("ev.advice_enabled") or price_source is None:
             return {"advice": None}
         now = datetime.now(UTC)
@@ -2500,6 +2510,127 @@ def create_app(
             now=now,
         )
         return {"advice": advice}
+
+    @app.get("/api/cars")
+    def cars_endpoint() -> dict:
+        """Static car-picker data (ems/cars.py) for the Settings "Car" group: sorted brand list
+        + every model as a plain dict. Read-only and cacheable — the dataset never changes at
+        runtime, so this never touches settings/store."""
+        return {"brands": car_brands(), "cars": [car_to_dict(c) for c in CARS]}
+
+    async def _car_soc_estimate(
+        now: datetime, anchor_pct: float, anchor_ts: str
+    ) -> dict | None:
+        """Estimate the car SoC from a manual anchor + charging measured over the last 14 days of
+        recorded samples (ems/ev_session.estimate_soc). Shared by GET /api/car/plan and the block
+        POST /api/car/soc echoes back. `store` must not be None (both call sites guard it). Returns
+        None only for a degenerate anchor/capacity (estimate_soc's own contract)."""
+        start = now - timedelta(days=14)
+        limit = history_row_cap((now - start).total_seconds(), _sample_cadence_seconds())
+        rows = await store.raw_between(start.isoformat(), now.isoformat(), limit=limit)
+        return estimate_soc(
+            rows,
+            anchor_pct=anchor_pct,
+            anchor_ts=anchor_ts,
+            battery_net_kwh=float(settings_cache["ev.battery_kwh"]),
+            now=now,
+            charge_efficiency=float(settings_cache["ev.charge_efficiency"]),
+        )
+
+    @app.get("/api/car/plan")
+    async def car_plan() -> dict:
+        """The EV feature's main read (design 2026-07-12): when to plug in the car to meet the
+        weekly minimum-charge schedule as cheaply as possible. Advisory only — never commands
+        anything. Wires ems/ev_schedule + ems/ev_session + ems/ev_planner to settings, the manual
+        SoC anchor, and the SAME price/forecast access as /api/advisor/ev-charge.
+
+        Progressive states so the UI can prompt for what's missing: `enabled:false` (feature off),
+        `needs_anchor` (no SoC set — "set your car's charge level"), `needs_schedule` (nothing
+        enabled in the weekly schedule), else the full plan. `soc.stale` (>72 h) is carried in the
+        soc block and does NOT stop planning — the plan is still shown with the staleness flag."""
+        if not settings_cache.get("ev.advice_enabled"):
+            return {"enabled": False, "plan": None, "soc": None}
+
+        now = datetime.now(UTC)
+
+        # --- car SoC estimate from the manual anchor (no anchor ⇒ prompt to set one) ---
+        soc = None
+        if store is not None:
+            anchor = await store.get_car_soc_anchor()
+            if anchor is not None:
+                soc = await _car_soc_estimate(now, anchor_pct=anchor[0], anchor_ts=anchor[1])
+        if soc is None:
+            return {"enabled": True, "plan": None, "soc": None, "needs_anchor": True}
+
+        # --- weekly schedule → concrete, tz-aware deadlines (empty ⇒ prompt to set a schedule) ---
+        schedule = parse_schedule(settings_cache.get("ev.schedule"))
+        deadlines = materialize_deadlines(schedule, now, site_tz)
+        if not deadlines:
+            return {"enabled": True, "soc": soc, "plan": None, "needs_schedule": True}
+
+        # --- effective charge power = min(charger, car AC limit) (charger alone if no car) ---
+        car = car_by_id(str(settings_cache.get("ev.car_id") or ""))
+        charger_kw = float(settings_cache["ev.charger_kw"])
+        effective_kw = min(charger_kw, car.max_ac_kw) if car is not None else charger_kw
+
+        # --- prices + solar P50, gathered exactly like /api/advisor/ev-charge ---
+        prices = price_source.slots() if price_source is not None else []
+        forecast = solar_forecast.slots() if solar_forecast is not None else []
+        p50_map = {f.start: f.p50_w for f in forecast}
+
+        # surplus_threshold_w is left at plan_car_charging's default (1000 W) — the same surplus
+        # threshold the advisor uses, so both price a sunny slot the same way.
+        plan = plan_car_charging(
+            now,
+            deadlines,
+            prices,
+            p50_map,
+            soc_pct=soc["soc_pct"],
+            battery_net_kwh=float(settings_cache["ev.battery_kwh"]),
+            charge_efficiency=float(settings_cache["ev.charge_efficiency"]),
+            power_kw=effective_kw,
+            export_model=str(settings_cache.get("prices.export_price_model", "net_metering")),
+            energy_tax_eur_per_kwh=float(
+                settings_cache.get("prices.energy_tax_eur_per_kwh", 0.13)),
+            fixed_feed_in_eur_per_kwh=float(
+                settings_cache.get("prices.fixed_feed_in_eur_per_kwh", 0.01)),
+        )
+        return {
+            "enabled": True,
+            "soc": soc,
+            "plan": plan,
+            "schedule": schedule,
+            "effective_kw": effective_kw,
+            "car": car_to_dict(car) if car is not None else None,
+        }
+
+    @app.post("/api/car/soc")
+    async def set_car_soc(request: Request, body: dict | None = None) -> JSONResponse:
+        """Set the manual car-SoC anchor (a percent, timestamped now) — the app's SoC "ground
+        truth" it estimates forward from. Auth is enforced centrally by _AccessMiddleware (this
+        path is in _WRITE_API_PATHS) and the write is audited exactly like POST /api/override."""
+        if store is None:
+            return JSONResponse({"detail": "history store not configured"}, status_code=503)
+        body = body or {}
+        pct = body.get("pct")
+        if isinstance(pct, bool) or not isinstance(pct, (int, float)):
+            return JSONResponse(
+                {"detail": "invalid car soc", "errors": {"pct": "must be a number"}},
+                status_code=422)
+        if not (0 <= pct <= 100):
+            return JSONResponse(
+                {"detail": "invalid car soc", "errors": {"pct": "must be between 0 and 100"}},
+                status_code=422)
+        now = datetime.now(UTC)
+        await store.set_car_soc_anchor(float(pct), now.isoformat())
+        if audit_store is not None:
+            await audit_store.append(
+                now.isoformat(), "car_soc_anchor",
+                f"Car SoC anchored at {pct:g}%",
+                {"pct": float(pct), "ts": now.isoformat()},
+            )
+        soc = await _car_soc_estimate(now, anchor_pct=float(pct), anchor_ts=now.isoformat())
+        return JSONResponse({"soc": soc})
 
     async def _ensure_day_finance(day_local: date_cls) -> dict:
         """Compute (or return the current-version cached) finance rollup for one LOCAL day,
@@ -2655,6 +2786,15 @@ def create_app(
             finance = [r["data"] for r in fin_rows]
         if audit_store is not None:
             audit = list(reversed(await audit_store.recent(limit=5000)))  # oldest→newest
+        # EV charging sessions are DETECTED on-demand from the already-fetched raw rows (no
+        # recorder state machine — see ems/ev_session.py) so the algorithm can be validated/tuned
+        # from production data (docs/superpowers/specs/2026-07-12-ev-charging-design.md, "Export").
+        ev_sessions = detect_sessions(raw)
+        ev_soc_anchor: dict[str, Any] | None = None
+        if store is not None:
+            anchor = await store.get_car_soc_anchor()
+            if anchor is not None:
+                ev_soc_anchor = {"pct": anchor[0], "ts": anchor[1]}
         # Production-validation payload — privacy-safe (only the replay-safe settings, no IPs /
         # tokens / location). Lets a reviewer see run mode, the planner knobs in effect, and live
         # health (data quality, whether the battery capability probed, recorder liveness).
@@ -2668,11 +2808,22 @@ def create_app(
                 "recorder": recorder.health() if recorder is not None else None,
             },
             "incidents": expkg.incident_rollup(audit),
+            # Config needed to replay the EV charging algorithm against ev_sessions.csv — no
+            # tokens/IPs/location; a % + timestamp anchor is privacy-safe and useful for replay.
+            "ev": {
+                "schedule": parse_schedule(settings_cache.get("ev.schedule")),
+                "car_id": settings_cache.get("ev.car_id"),
+                "battery_kwh": settings_cache.get("ev.battery_kwh"),
+                "charger_kw": settings_cache.get("ev.charger_kw"),
+                "charge_efficiency": settings_cache.get("ev.charge_efficiency"),
+                "advice_enabled": settings_cache.get("ev.advice_enabled"),
+                "soc_anchor": ev_soc_anchor,
+            },
         }
         counts = {"raw_samples": len(raw), "derived_samples": len(derived),
                   "prices": len(prices), "forecasts": len(forecasts),
                   "daily_finance": len(finance), "audit_log": len(audit),
-                  "plan_history": len(plan), "gas": len(gas)}
+                  "plan_history": len(plan), "gas": len(gas), "ev_sessions": len(ev_sessions)}
         saved_vals = [d["saved_eur"] for d in finance if d.get("saved_eur") is not None]
         saved_total = round(sum(saved_vals), 2) if saved_vals else None
         window = {"start": start_iso, "end": end_iso}
@@ -2680,6 +2831,7 @@ def create_app(
         solar_advice = recommend_solar_confidence(
             forecasts, raw,
             current_pct=float(settings_cache.get("planner.solar_confidence", 80.0)))
+        ev_adherence = expkg.ev_price_adherence(ev_sessions, prices)
         members = {
             "raw_samples.csv": expkg.rows_to_csv(raw, expkg.RAW_COLUMNS),
             "derived_samples.csv": expkg.rows_to_csv(derived, expkg.DERIVED_COLUMNS),
@@ -2689,6 +2841,7 @@ def create_app(
             "audit_log.csv": expkg.rows_to_csv(audit, expkg.AUDIT_COLUMNS),
             "plan_history.csv": expkg.rows_to_csv(plan, expkg.PLAN_COLUMNS),
             "gas.csv": expkg.rows_to_csv(gas, expkg.GAS_COLUMNS),
+            "ev_sessions.csv": expkg.rows_to_csv(ev_sessions, expkg.EV_SESSION_COLUMNS),
             "manifest.json": expkg.build_manifest(
                 generated_at=now.isoformat(), app_version=expkg.app_version(),
                 window_start=start_iso, window_end=end_iso, counts=counts, extra=validation,
@@ -2698,6 +2851,7 @@ def create_app(
                 generated_at=now.isoformat(), app_version=expkg.app_version(), window=window,
                 counts=counts, validation=validation, saved_total_eur=saved_total,
                 forecast_skill=fc_skill, solar_confidence_advice=solar_advice,
+                ev_price_adherence=ev_adherence,
             ),
         }
         data = expkg.build_zip(members)
@@ -2849,6 +3003,26 @@ def create_app(
             need = _night_target_soc(_current_soc(now))
             items.append({"key": "tonight", "question": "What happens tonight?",
                           "answer": need.reason})
+        except Exception:
+            pass
+        try:
+            if settings_cache.get("ev.advice_enabled"):
+                car = car_by_id(str(settings_cache.get("ev.car_id") or ""))
+                subject = f"Your {car.brand} {car.model}" if car is not None else "The car"
+                items.append({
+                    "key": "why_charge_car",
+                    "question": "Why should I charge the car then?",
+                    "answer": (
+                        "The car card works out the cheapest way to hit each day's scheduled "
+                        "minimum by its ready-by time: it buys the cheapest priced slots before "
+                        "each deadline, and when solar is forecast in surplus during a slot, that "
+                        "slot only costs what the surplus would otherwise have earned feeding in "
+                        f"(often far cheaper, sometimes free). {subject}'s SoC is estimated from "
+                        "the % you last anchored plus what the car meter has measured charging "
+                        "since — driving isn't modeled, so re-anchor after a trip to keep the "
+                        "estimate honest."
+                    ),
+                })
         except Exception:
             pass
         return {"items": items, "ai_on": _explainer_active()}

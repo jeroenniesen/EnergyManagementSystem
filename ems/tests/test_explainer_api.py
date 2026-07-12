@@ -188,6 +188,41 @@ def test_faq_answers_deterministically_without_ai(tmp_path):
     assert safe["answer"] and isinstance(safe["answer"], str)
 
 
+def test_faq_omits_car_entry_when_ev_advice_is_off(tmp_path):
+    # The "why charge the car" explainer only applies once the car card is actually on.
+    with TestClient(_app(tmp_path)) as c:  # ev.advice_enabled defaults False
+        b = c.get("/api/faq").json()
+    assert "why_charge_car" not in {i["key"] for i in b["items"]}
+
+
+def test_faq_explains_car_charging_when_ev_advice_is_on(tmp_path):
+    # Grounded FAQ entry (design 2026-07-12): covers schedule minimums, cheapest-slots-before-
+    # deadline, solar surplus valued at feed-in, the anchor+car-meter SoC estimate, and the
+    # driving-not-modeled caveat — deterministic, no AI required.
+    with TestClient(_app(tmp_path)) as c:
+        c.post("/api/settings", json={
+            "ev.advice_enabled": True, "ev.car_id": "tesla-model-y-long-range",
+        })
+        b = c.get("/api/faq").json()
+    item = next(i for i in b["items"] if i["key"] == "why_charge_car")
+    assert item["question"] == "Why should I charge the car then?"
+    answer = item["answer"]
+    assert "Tesla Model Y" in answer  # grounded in the picked car, not a generic "the car"
+    assert "cheapest" in answer and "ready-by" in answer  # schedule minimums + cheapest slots
+    assert "feeding in" in answer  # solar surplus valued at feed-in
+    assert "anchored" in answer and "car meter" in answer  # measured SoC from anchor + car meter
+    assert "driving isn't modeled" in answer and "re-anchor" in answer
+
+
+def test_faq_car_entry_falls_back_to_generic_subject_without_a_picked_car(tmp_path):
+    with TestClient(_app(tmp_path)) as c:
+        c.post("/api/settings", json={"ev.advice_enabled": True})  # no ev.car_id
+        b = c.get("/api/faq").json()
+    item = next(i for i in b["items"] if i["key"] == "why_charge_car")
+    assert item["answer"].startswith("The car card works out")
+    assert "The car's SoC is estimated" in item["answer"]
+
+
 def test_chat_rejects_empty_question(tmp_path):
     with TestClient(_app(tmp_path)) as c:
         assert c.post("/api/chat", json={"question": "   "}).status_code == 400
