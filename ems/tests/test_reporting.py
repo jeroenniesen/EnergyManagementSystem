@@ -8,7 +8,13 @@ from fastapi.testclient import TestClient
 
 from ems.domain import RawSample
 from ems.load_model import DerivedSample
-from ems.reporting import _import_price_slots, build_report, gas_m3_consumed, resolve_window
+from ems.reporting import (
+    _import_price_slots,
+    build_report,
+    gas_m3_consumed,
+    gas_summary,
+    resolve_window,
+)
 from ems.sources.mock import MockSource
 from ems.sources.prices import MockPriceSource
 from ems.storage.history import HistoryStore
@@ -95,6 +101,35 @@ def test_build_report_threads_gas_into_co2_score():
     assert "Gas heating" in co2["explanation"]  # gas folded into the footprint
 
 
+def test_build_report_grid_factor_note_appended_to_co2_explanation():
+    # Roadmap F3: the API appends a short note when it resolved grid_factor from a live window
+    # average rather than the flat setting — build_report's job is just to thread it onto the
+    # existing co2_score explanation, unchanged otherwise.
+    start = datetime(2026, 6, 28, tzinfo=UTC)
+    end = start + timedelta(days=1)
+    raw = [{"ts": (start + timedelta(hours=12)).isoformat(), "grid_power_w": 1000,
+            "solar_power_w": 0, "battery_power_w": 0, "ev_power_w": 0.0, "soc_pct": 50.0}]
+    der = [{"ts": (start + timedelta(hours=12)).isoformat(), "house_load_w": 1000,
+            "non_ev_load_w": 1000}]
+    r = build_report(raw, der, [], period="day", start=start, end=end, label="x", partial=False,
+                     grid_factor=0.19, grid_factor_note=" (live grid signal, avg 0.19 kg/kWh)")
+    co2 = next(s for s in r.scores if s["key"] == "co2")
+    assert co2["explanation"].endswith("(live grid signal, avg 0.19 kg/kWh)")
+
+
+def test_build_report_no_note_when_grid_factor_note_omitted():
+    start = datetime(2026, 6, 28, tzinfo=UTC)
+    end = start + timedelta(days=1)
+    raw = [{"ts": (start + timedelta(hours=12)).isoformat(), "grid_power_w": 1000,
+            "solar_power_w": 0, "battery_power_w": 0, "ev_power_w": 0.0, "soc_pct": 50.0}]
+    der = [{"ts": (start + timedelta(hours=12)).isoformat(), "house_load_w": 1000,
+            "non_ev_load_w": 1000}]
+    r = build_report(raw, der, [], period="day", start=start, end=end, label="x", partial=False,
+                     grid_factor=0.27)
+    co2 = next(s for s in r.scores if s["key"] == "co2")
+    assert "live grid signal" not in co2["explanation"]
+
+
 def test_gas_m3_consumed_is_last_minus_first():
     rows = [{"ts": "2026-06-28T00:00:00+00:00", "total_gas_m3": 1000.0},
             {"ts": "2026-06-28T12:00:00+00:00", "total_gas_m3": 1002.5},
@@ -118,6 +153,20 @@ def test_gas_m3_consumed_is_monotonic_over_more_readings():
     rows = [{"ts": f"2026-06-28T{h:02d}:00:00+00:00", "total_gas_m3": 1000.0 + h * 0.1}
             for h in range(24)]
     assert abs(gas_m3_consumed(rows) - 2.3) < 1e-9
+
+
+def test_gas_summary_math():
+    # 10 m³ consumed @ €1.40/m³, 1.78 kg CO₂/m³.
+    rows = [{"ts": "2026-06-28T00:00:00+00:00", "total_gas_m3": 1000.0},
+            {"ts": "2026-06-28T23:00:00+00:00", "total_gas_m3": 1010.0}]
+    g = gas_summary(rows, price_eur_per_m3=1.40, co2_factor=1.78)
+    assert g == {"m3": 10.0, "kwh_eq": 97.7, "eur": 14.0, "co2_kg": 17.8}
+
+
+def test_gas_summary_none_with_fewer_than_two_rows():
+    assert gas_summary([], price_eur_per_m3=1.40, co2_factor=1.78) is None
+    one = [{"ts": "2026-06-28T00:00:00+00:00", "total_gas_m3": 1000.0}]
+    assert gas_summary(one, price_eur_per_m3=1.40, co2_factor=1.78) is None
 
 
 def _seed(db: str) -> None:
@@ -175,6 +224,68 @@ def test_report_endpoint_no_gas_readings_omits_gas_from_co2_explanation(tmp_path
         b = c.get("/api/report?period=day&date=2026-06-28").json()
     co2 = next(s for s in b["scores"] if s["key"] == "co2")
     assert "Gas heating" not in co2["explanation"]  # no gas meter/readings → untouched footprint
+
+
+def test_report_endpoint_uses_live_carbon_window_average_when_present(tmp_path):
+    # Roadmap F3: when the recorder has persisted carbon_intensity rows for this window, the CO2
+    # score uses their plain average as grid_factor and the explanation notes it's live.
+    db = str(tmp_path / "ems.sqlite")
+    _seed(db)
+
+    async def seed_carbon():
+        store = HistoryStore(db)
+        await store.init()
+        await store.upsert_carbon([
+            (PAST.astimezone(UTC).isoformat(), 0.10),
+            ((PAST + timedelta(hours=6)).astimezone(UTC).isoformat(), 0.20),
+        ])
+    asyncio.run(seed_carbon())
+
+    with TestClient(_app(db)) as c:
+        b = c.get("/api/report?period=day&date=2026-06-28").json()
+    co2 = next(s for s in b["scores"] if s["key"] == "co2")
+    assert "live grid signal, avg 0.15 kg/kWh" in co2["explanation"]
+
+
+def test_report_endpoint_flat_factor_when_no_carbon_rows(tmp_path):
+    db = str(tmp_path / "ems.sqlite")
+    _seed(db)
+    with TestClient(_app(db)) as c:
+        b = c.get("/api/report?period=day&date=2026-06-28").json()
+    co2 = next(s for s in b["scores"] if s["key"] == "co2")
+    assert "live grid signal" not in co2["explanation"]
+
+
+def test_report_endpoint_gas_panel_present_with_two_or_more_readings(tmp_path):
+    db = str(tmp_path / "ems.sqlite")
+    _seed(db)
+
+    async def seed_gas():
+        store = HistoryStore(db)
+        await store.init()
+        await store.record_gas(PAST.astimezone(UTC).isoformat(), 1000.0)
+        await store.record_gas((PAST + timedelta(hours=6)).astimezone(UTC).isoformat(), 1010.0)
+    asyncio.run(seed_gas())
+
+    with TestClient(_app(db)) as c:
+        b = c.get("/api/report?period=day&date=2026-06-28").json()
+    assert b["gas"] == {"m3": 10.0, "kwh_eq": 97.7, "eur": 14.0, "co2_kg": 17.8}
+
+
+def test_report_endpoint_gas_panel_none_without_two_readings(tmp_path):
+    db = str(tmp_path / "ems.sqlite")
+    _seed(db)
+    with TestClient(_app(db)) as c:
+        b = c.get("/api/report?period=day&date=2026-06-28").json()
+    assert b["gas"] is None
+
+
+def test_report_endpoint_gas_panel_none_for_future_window(tmp_path):
+    db = str(tmp_path / "ems.sqlite")
+    _seed(db)
+    with TestClient(_app(db)) as c:
+        b = c.get("/api/report?period=day&date=2099-01-01").json()
+    assert b["gas"] is None
 
 
 def test_report_endpoint_validation_and_future(tmp_path):

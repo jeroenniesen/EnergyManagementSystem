@@ -25,6 +25,9 @@
      CVD-validated as a set (worst adjacent ΔE 20.7 protan, ≥3:1 on --panel). */
   --house: #a583e0;
   --car: #d878a8;
+  /* Gas (Insights gas panel): amber/orange, distinct from --car (pink) and --house (violet). */
+  --gas: #e08a3a;
+  --gas-text: #e08a3a;
   font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
 }
 
@@ -53,6 +56,8 @@
   --winter-tint: rgba(47, 127, 196, 0.12);
   --house: #7c5cc4;
   --car: #b0568c;
+  --gas: #b0660c;
+  --gas-text: #8a5109; /* darker gas/amber for text — AA on white */
 }
 
 * { box-sizing: border-box; }
@@ -753,6 +758,17 @@ body {
 }
 .badge-car svg { flex: none; }
 
+/* Opt-in, advisory-only "best time to charge the car" card (never controls the car). */
+.ev-advice {
+  margin-top: 24px; background: var(--panel); border: 1px solid var(--line);
+  border-left: 3px solid var(--car); border-radius: var(--radius); padding: 14px 18px;
+  box-shadow: var(--shadow);
+}
+.ev-advice-window {
+  margin: 8px 0 0; font-size: 0.95rem; font-weight: 600; font-variant-numeric: tabular-nums;
+}
+.ev-advice-footer { margin: 10px 0 0; font-size: 0.74rem; color: var(--muted); }
+
 .freshness {
   display: flex;
   flex-wrap: wrap;
@@ -882,6 +898,16 @@ body {
 .field-help { color: var(--muted); font-size: 0.78rem; margin: 0; line-height: 1.45; }
 .field-error input, .field-error select { border-color: rgba(220, 80, 80, 0.6); }
 .field-err { color: var(--error); font-size: 0.74rem; margin: 0; }
+
+/* A field plus its optional evidence-based advisory hint (e.g. planner.solar_confidence) — same
+   grid cell, stacked below the field so the recommendation sits right where the decision is made. */
+.field-with-hint { display: flex; flex-direction: column; gap: 8px; }
+.advisor-hint {
+  margin: 0; font-size: 0.78rem; line-height: 1.5; color: var(--muted);
+  background: var(--panel-2); border-left: 3px solid var(--accent);
+  border-radius: 6px; padding: 8px 10px;
+}
+.advisor-hint strong { color: var(--text); font-variant-numeric: tabular-nums; }
 
 .impact {
   margin-top: 20px; background: var(--panel-2); border: 1px solid var(--line);
@@ -1385,6 +1411,30 @@ body {
 .fin-caveat { color: var(--muted); font-size: 12px; margin: 6px 0; }
 @media (max-width: 560px) {
   .fin-tiles { flex-direction: column; }
+}
+
+/* ---- Insights: gas panel (m³ → kWh-equivalent → € → CO₂) ---- */
+.gas-panel {
+  background: var(--panel); border: 1px solid var(--line);
+  border-radius: var(--radius); padding: 18px; box-shadow: var(--shadow);
+  margin-top: 20px;
+}
+.gas-head { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; }
+.gas-dot { width: 10px; height: 10px; border-radius: 3px; background: var(--gas); flex: none; }
+.gas-m3 { font-size: 22px; font-weight: 600; font-variant-numeric: tabular-nums; }
+.gas-window { color: var(--muted); font-size: 0.9rem; }
+.gas-tiles { display: flex; flex-wrap: wrap; gap: 12px; margin-top: 12px; }
+.gas-tile {
+  flex: 1 1 120px; background: var(--panel-2); border: 1px solid var(--line);
+  border-radius: 12px; padding: 10px 14px;
+}
+.gas-tile-val {
+  font-size: 18px; font-weight: 600; font-variant-numeric: tabular-nums; color: var(--gas-text);
+}
+.gas-tile-name { color: var(--muted); font-size: 12px; margin-top: 2px; }
+.gas-hint { margin: 12px 0 0; font-size: 0.82rem; color: var(--muted); }
+@media (max-width: 560px) {
+  .gas-tiles { flex-direction: column; }
 }
 
 /* Behavior chart: two aligned panels (consumption / solar & grid) */
