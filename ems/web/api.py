@@ -11,6 +11,7 @@ import logging
 import os
 import secrets
 import threading
+from collections.abc import Awaitable, Callable
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
 from datetime import date as date_cls
@@ -56,6 +57,7 @@ from ems.detectors import (
     typical_daily_solar_kwh,
 )
 from ems.diagnostics import build_diagnostics, overall_status
+from ems.digest import build_digest
 from ems.domain import BatteryIntent, PhysicalMode
 from ems.energy_flow import build_daily_flows
 from ems.ev_advisor import advise_charge_window
@@ -213,6 +215,96 @@ async def _run_detectors(
                 await notifier.send(**result)
         except Exception:
             _log.warning("%s detector failed (non-fatal)", name, exc_info=True)
+
+
+def _last_completed_week_monday(now_local: datetime) -> date_cls:
+    """The Monday of the most recently FULLY COMPLETED Mon-Sun week as of local `now_local`
+    (BACKLOG B-58): always LAST week's Monday, even a few seconds after midnight on a Monday — the
+    week that just started hasn't run yet, so it's never "the last completed week". Pure, so the
+    Mon-Sun boundary is unit-testable without spinning up the app or faking a clock deep inside a
+    closure."""
+    this_monday = now_local.date() - timedelta(days=now_local.weekday())
+    return this_monday - timedelta(days=7)
+
+
+_DIGEST_CACHE_KEY = "digest:last_week_sent"
+_DIGEST_CACHE_TTL_SECONDS = 32 * 24 * 3600.0  # comfortably longer than the weekly cadence
+
+
+def _digest_title(saved_eur: float | None) -> str:
+    if saved_eur is None:
+        return "Your week"
+    sign = "−" if saved_eur < 0 else ""
+    return f"Your week: saved {sign}€{abs(saved_eur):.2f}"
+
+
+async def _run_weekly_digest(
+    store: HistoryStore | None,
+    cache_store: CacheStore | None,
+    notifier: Notifier | None,
+    now: datetime,
+    tz: ZoneInfo,
+    gather: Callable[[date_cls], Awaitable[dict]],
+) -> dict | None:
+    """Sunday-evening delivery of the weekly digest (BACKLOG B-58 / roadmap P2 "the Sunday
+    read"): once local time crosses Sunday 18:00, build + send the just-completed week's digest
+    exactly once. Mirrors `_run_backup`'s shape — a plain, directly-testable function, NOT a
+    closure — so the gate and the dedupe can be tested without running `_notify_loop`.
+
+    GATE: only fires on a local Sunday at/after 18:00 — a mid-week restart, or a Sunday morning
+    tick, never sends early.
+
+    DEDUPE: the completed week's label is recorded in `cache_store` (`digest:last_week_sent`,
+    PERSISTED so it survives a restart — unlike an in-memory box such as `_backup_state`, which
+    only guards the same process); a week already recorded there is skipped WITHOUT calling
+    `gather` again (no point re-assembling a digest nobody will see). The `Notifier`'s own
+    `dedupe_key=f"digest:{week_label}"` is a second, independent safety net (see `ems/notify.py`'s
+    module docstring) — belt and braces, so even a lost/cleared cache row can't double-send.
+
+    `gather(monday)` does the actual I/O (finance/report/audit/advice for the week starting
+    `monday`, then `build_digest`) — injected so this function stays a thin, testable gate +
+    delivery wrapper, exactly like `_run_backup` delegates the real backup I/O to
+    `store.backup_to`.
+
+    Best-effort: any failure is logged and swallowed — a digest hiccup must never take down the
+    notify loop (the same fail-safe convention as `_run_backup` / `Notifier.send`). Returns the
+    digest dict that was actually sent, or None when it didn't fire (gate closed, dedupe, or no
+    store/notifier configured)."""
+    if store is None or notifier is None:
+        return None
+    now_local = now.astimezone(tz)
+    if now_local.weekday() != 6 or now_local.hour < 18:  # 6 = Sunday
+        return None
+    # THIS week's Monday — the week ending TODAY (Sunday), not `_last_completed_week_monday`
+    # (which is for /api/digest's default and deliberately looks back a full week, so a mid-week
+    # browse never shows a still-changing window). The Sunday push is about the week just wrapping
+    # up, accepting that its last few evening hours aren't in yet.
+    monday = now_local.date() - timedelta(days=now_local.weekday())
+    week_label = f"Week of {monday.isoformat()}"
+    if cache_store is not None:
+        try:
+            already_sent = await asyncio.to_thread(cache_store.get, _DIGEST_CACHE_KEY)
+        except Exception:
+            already_sent = None
+        if already_sent == week_label:
+            return None
+    try:
+        digest = await gather(monday)
+    except Exception:
+        _log.exception("weekly digest gather failed; retry next cycle (fail-safe)")
+        return None
+    body = f"{digest['headline']} {digest['tweak']}".strip()
+    await notifier.send(
+        "weekly_digest", _digest_title(digest.get("saved_eur")), body,
+        dedupe_key=f"digest:{week_label}",
+    )
+    if cache_store is not None:
+        try:
+            await asyncio.to_thread(
+                cache_store.set, _DIGEST_CACHE_KEY, week_label, _DIGEST_CACHE_TTL_SECONDS)
+        except Exception:
+            _log.warning("weekly digest cache write failed (non-fatal)", exc_info=True)
+    return digest
 
 
 _recorder_died = _task_died("Recorder")
@@ -1580,10 +1672,11 @@ def create_app(
         )
 
     async def _notify_loop(stop: asyncio.Event) -> None:
-        """Periodic forecast-driven notifications (BACKLOG B-75). Its own tiny loop (not
-        `_control_loop` — see `_run_detector_cycle`'s docstring), started whenever a store +
-        notifier exist regardless of dry_run/controller. Fail-safe: a gathering error is logged
-        and the loop just retries next cycle."""
+        """Periodic forecast-driven notifications (BACKLOG B-75) + the Sunday weekly-digest
+        delivery (BACKLOG B-58). Its own tiny loop (not `_control_loop` — see
+        `_run_detector_cycle`'s docstring), started whenever a store + notifier exist regardless
+        of dry_run/controller. Fail-safe: a gathering error is logged and the loop just retries
+        next cycle."""
         while True:
             try:
                 await asyncio.wait_for(stop.wait(), timeout=control_cycle_seconds)
@@ -1594,6 +1687,11 @@ def create_app(
                 await _run_detector_cycle(datetime.now(UTC))
             except Exception:
                 _log.exception("detector cycle failed; retry next cycle (fail-safe)")
+            try:
+                await _run_weekly_digest(
+                    store, cache_store, notifier, datetime.now(UTC), site_tz, _gather_digest)
+            except Exception:
+                _log.exception("weekly digest cycle failed; retry next cycle (fail-safe)")
 
     @app.get("/health/live")
     def live() -> dict:
@@ -2699,25 +2797,16 @@ def create_app(
         return {"now": now.isoformat(), "sunrise": sunrise, "sunset": sunset,
                 "cloud_cover": cloud_cover}
 
-    @app.get("/api/report")
-    async def report(
-        period: str = Query(default="day", pattern="^(day|week|month|year)$"),
-        date: str | None = None,
+    async def _report_for_window(
+        period: str, start: datetime, end: datetime, label: str, partial: bool,
+        now_local: datetime,
     ) -> dict:
-        """Insights: the energy-flow distribution + the three scores (self-consumption, CO₂,
-        best-price) over a day/week/month/year window. Rolled up on demand from recorded history —
-        off the dashboard poll, bounded to the window's rows, read-only. `date` (YYYY-MM-DD, site
-        tz) is any day inside the window; omitted = the current period."""
-        now_local = datetime.now(UTC).astimezone(site_tz)
-        if date:
-            try:
-                anchor = date_cls.fromisoformat(date)
-            except ValueError:
-                return JSONResponse(  # type: ignore[return-value]
-                    {"detail": "date must be YYYY-MM-DD"}, status_code=422)
-        else:
-            anchor = now_local.date()
-        start, end, label, partial = resolve_window(period, anchor, site_tz, now_local)
+        """The energy-flow distribution + the three scores (self-consumption, CO₂, best-price)
+        for an ALREADY-RESOLVED window — the shared body behind `/api/report` and the weekly
+        digest gather (BACKLOG B-58), which needs exactly this rollup for a week window without
+        going through HTTP. `now_local` bounds queries to "not the future" and gates the empty-
+        report fast path; the caller supplies it so a digest job computing several things off one
+        `now` never risks a several-datetimes-now() race."""
         grid_factor = float(settings_cache.get("reporting.grid_co2_factor", 0.27))
         gas_factor = float(settings_cache.get("reporting.gas_co2_factor", 1.78))
         gas_price = float(settings_cache.get("reporting.gas_price_eur_per_m3", 1.40))
@@ -2761,25 +2850,99 @@ def create_app(
         resp["gas"] = gas_summary(gas_rows, price_eur_per_m3=gas_price, co2_factor=gas_factor)
         return resp
 
-    @app.get("/api/advisor/solar-confidence")
-    async def advisor_solar_confidence() -> dict:
+    @app.get("/api/report")
+    async def report(
+        period: str = Query(default="day", pattern="^(day|week|month|year)$"),
+        date: str | None = None,
+    ) -> dict:
+        """Insights: the energy-flow distribution + the three scores (self-consumption, CO₂,
+        best-price) over a day/week/month/year window. Rolled up on demand from recorded history —
+        off the dashboard poll, bounded to the window's rows, read-only. `date` (YYYY-MM-DD, site
+        tz) is any day inside the window; omitted = the current period."""
+        now_local = datetime.now(UTC).astimezone(site_tz)
+        if date:
+            try:
+                anchor = date_cls.fromisoformat(date)
+            except ValueError:
+                return JSONResponse(  # type: ignore[return-value]
+                    {"detail": "date must be YYYY-MM-DD"}, status_code=422)
+        else:
+            anchor = now_local.date()
+        start, end, label, partial = resolve_window(period, anchor, site_tz, now_local)
+        return await _report_for_window(period, start, end, label, partial, now_local)
+
+    async def _solar_confidence_advice(now: datetime) -> dict | None:
         """Advisory-only recommendation for `planner.solar_confidence`, derived from how the
         stored day-ahead forecast has actually performed over the last 14 days (SPEC: solar
-        confidence should come from evidence, not a hand-tuned guess). NEVER applied automatically
-        — the Settings UI renders this as a hint next to the field; the user decides. Read-only,
-        gated like any other /api/* read (only if `web.require_auth` is on) — see /api/report."""
-        advice = None
+        confidence should come from evidence, not a hand-tuned guess). None with no store. Shared
+        by `/api/advisor/solar-confidence` and the weekly digest gather (BACKLOG B-58) — one
+        recommendation, reused, never applied automatically anywhere; the human decides."""
+        if store is None:
+            return None
+        start = now - timedelta(days=14)
+        start_iso, end_iso = start.isoformat(), now.isoformat()
+        limit = history_row_cap((now - start).total_seconds(), _sample_cadence_seconds())
+        raw = await store.raw_between(start_iso, end_iso, limit=limit)
+        forecasts = await store.forecasts_between(start_iso, end_iso)
+        current = settings_cache.get("planner.solar_confidence")
+        return recommend_solar_confidence(
+            forecasts, raw, current_pct=float(current) if current is not None else None)
+
+    @app.get("/api/advisor/solar-confidence")
+    async def advisor_solar_confidence() -> dict:
+        """Advisory-only recommendation for `planner.solar_confidence` — the Settings UI renders
+        this as a hint next to the field; the user decides. Read-only, gated like any other
+        /api/* read (only if `web.require_auth` is on) — see /api/report."""
+        return {"advice": await _solar_confidence_advice(datetime.now(UTC))}
+
+    async def _gather_digest(anchor: date_cls) -> dict:
+        """Gather everything `build_digest` needs for the week containing local date `anchor` and
+        assemble it (BACKLOG B-58 / roadmap P2 "the Sunday read") — shared by `GET /api/digest`
+        and the Sunday delivery job (`_run_weekly_digest`) so the notification and the on-demand
+        read always agree for the same week.
+
+        Finance rows only cover days up to "now" (a future/in-progress day has nothing to measure
+        yet — `_ensure_day_finance` itself would refuse a future day); the week's flows/scores come
+        from the SAME `_report_for_window` the Insights week view uses; the audit rows are the raw
+        week-windowed audit log (`AuditStore.between`) build_digest counts patterns out of."""
+        now_local = datetime.now(UTC).astimezone(site_tz)
+        start, end, label, partial = resolve_window("week", anchor, site_tz, now_local)
+        finance_rows: list[dict] = []
         if store is not None:
-            now = datetime.now(UTC)
-            start = now - timedelta(days=14)
-            start_iso, end_iso = start.isoformat(), now.isoformat()
-            limit = history_row_cap((now - start).total_seconds(), _sample_cadence_seconds())
-            raw = await store.raw_between(start_iso, end_iso, limit=limit)
-            forecasts = await store.forecasts_between(start_iso, end_iso)
-            current = settings_cache.get("planner.solar_confidence")
-            advice = recommend_solar_confidence(
-                forecasts, raw, current_pct=float(current) if current is not None else None)
-        return {"advice": advice}
+            cur = start
+            while cur < end and cur <= now_local:
+                finance_rows.append(await _ensure_day_finance(cur.date()))
+                cur += timedelta(days=1)
+        report = await _report_for_window("week", start, end, label, partial, now_local)
+        audit_rows: list[dict] = []
+        if audit_store is not None:
+            audit_rows = await audit_store.between(
+                start.astimezone(UTC).isoformat(), end.astimezone(UTC).isoformat())
+        advice = await _solar_confidence_advice(datetime.now(UTC))
+        export_model = str(settings_cache.get("prices.export_price_model", "net_metering"))
+        return build_digest(
+            finance_rows=finance_rows, flows=report["flows"], scores=report["scores"],
+            audit_rows=audit_rows, advice=advice, week_label=label,
+            export_price_model=export_model,
+        )
+
+    @app.get("/api/digest")
+    async def digest(week: str | None = None) -> dict:
+        """The weekly digest (BACKLOG B-58 / roadmap P2 "Your week"): what you saved, what the
+        system did, one suggested tweak — the same figures the Sunday-evening notification sends
+        (see `_run_weekly_digest`), available on demand. Read-only. `week` (YYYY-MM-DD) is any
+        date inside the desired week; omitted = the last COMPLETED Mon-Sun week (the current,
+        still-running week is deliberately not the default — its numbers would keep changing)."""
+        now_local = datetime.now(UTC).astimezone(site_tz)
+        if week:
+            try:
+                anchor = date_cls.fromisoformat(week)
+            except ValueError:
+                return JSONResponse(  # type: ignore[return-value]
+                    {"detail": "week must be YYYY-MM-DD"}, status_code=422)
+        else:
+            anchor = _last_completed_week_monday(now_local)
+        return await _gather_digest(anchor)
 
     @app.get("/api/accuracy")
     async def accuracy() -> dict:

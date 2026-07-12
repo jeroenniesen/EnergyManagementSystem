@@ -67,6 +67,31 @@ class AuditStore:
             out.append(d)
         return out
 
+    async def between(self, start_iso: str, end_iso: str, limit: int = 2000) -> list[dict]:
+        """Audit entries with `ts` in [start, end), oldest-first (`ts` is ISO-8601 UTC, so a
+        lexicographic comparison is a correct time comparison — same convention as every other
+        `_between` reader in `ems/storage/history.py`). For the weekly digest (BACKLOG B-58):
+        windowing by time, not `recent()`'s row-count cap, so a busy week is never truncated
+        before it's fully counted. `detail` is decoded exactly like `recent()` (empty dict on any
+        decode error — never raises)."""
+        async with self._conn() as db:
+            db.row_factory = aiosqlite.Row
+            cur = await db.execute(
+                "SELECT id, ts, category, summary, detail FROM audit_log "
+                "WHERE ts >= ? AND ts < ? ORDER BY id ASC LIMIT ?",
+                (start_iso, end_iso, limit),
+            )
+            rows = await cur.fetchall()
+        out: list[dict] = []
+        for r in rows:
+            d = dict(r)
+            try:
+                d["detail"] = json.loads(d["detail"])
+            except (ValueError, TypeError):
+                d["detail"] = {}
+            out.append(d)
+        return out
+
     async def last_decision_mode(self) -> str | None:
         """The desired_mode of the most recent battery_decision entry — used to dedupe so we only
         log a decision when the mode actually changes (≤ a handful a day)."""

@@ -9,6 +9,7 @@ import { FinanceSection } from "./FinanceSection";
 import { HeatingAdvice } from "./HeatingAdvice";
 import { scoreBand, ScoreRing } from "./ScoreRing";
 import { scoreCaption } from "./scoreCopy";
+import { WeekDigest } from "./WeekDigest";
 
 type Score = {
   key: string;
@@ -170,6 +171,7 @@ export function Insights() {
 
   return (
     <section className="insights" data-testid="insights" aria-label="Insights and reporting">
+      <WeekDigest />
       <div className="insights-head">
         <div>
           <h2 className="card-title">Insights</h2>

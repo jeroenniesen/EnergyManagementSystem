@@ -1632,6 +1632,56 @@ body {
   max-width: 60ch;
 }
 
+/* "Your week" digest (BACKLOG B-58 / roadmap P2): the Sunday-read panel at the top of Insights,
+   above the score grid. The toggle row IS the one collapsed line (headline text doubles as the
+   disclosure label, like .advanced-toggle); the week stepper reuses the existing .day-nav/
+   .day-label building blocks from Insights' own period-nav. */
+.week-digest {
+  background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius);
+  padding: 16px 18px; box-shadow: var(--shadow); margin-bottom: 20px;
+}
+.week-digest-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.week-digest-toggle {
+  display: flex; align-items: center; gap: 9px; min-width: 0; flex: 1 1 auto;
+  border: none; background: transparent; color: var(--text); text-align: left;
+  padding: 0; cursor: pointer; font: inherit; font-size: 0.98rem; line-height: 1.4;
+}
+.week-digest-toggle span:last-child {
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.week-digest-chevron {
+  flex: none; display: inline-block; font-size: 1.1rem; color: var(--muted);
+  transition: transform 0.2s ease;
+}
+.week-digest-toggle.open .week-digest-chevron { transform: rotate(90deg); }
+@media (prefers-reduced-motion: reduce) { .week-digest-chevron { transition: none; } }
+.week-nav { flex: none; display: flex; align-items: center; gap: 8px; }
+.week-digest-body { margin-top: 16px; }
+.week-digest-hero { display: flex; align-items: baseline; gap: 10px; margin-bottom: 12px; }
+.week-digest-hero-val {
+  font-size: 2rem; font-weight: 700; color: var(--text); font-variant-numeric: tabular-nums;
+}
+.week-digest-hero-good { color: var(--green-text); }
+.week-digest-hero-label { color: var(--muted); font-size: 0.9rem; }
+.week-digest-facts {
+  display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; margin-bottom: 12px;
+}
+.week-digest-fact {
+  background: var(--panel-2); border: 1px solid var(--line); border-radius: 12px;
+  padding: 10px 12px; text-align: center;
+}
+.week-digest-fact-val {
+  font-size: 1.15rem; font-weight: 600; font-variant-numeric: tabular-nums; color: var(--text);
+}
+.week-digest-fact-name { color: var(--muted); font-size: 0.75rem; margin-top: 2px; }
+.week-digest-best-day { color: var(--muted); font-size: 0.85rem; margin: 0 0 10px; }
+.week-digest-tweak { margin-bottom: 8px; }
+.week-digest-coverage { color: var(--muted); font-size: 0.78rem; margin: 0; }
+@media (max-width: 560px) {
+  .week-digest-facts { grid-template-columns: 1fr; }
+  .week-digest-head { flex-wrap: wrap; }
+}
+
 .score-grid {
   display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
   gap: 14px; margin-bottom: 16px; transition: opacity 0.2s ease;

@@ -400,3 +400,115 @@ test.describe("Insights: behavior chart + money", () => {
     await expect(page.getByTestId("fin-error")).toContainText("Money history could not be loaded");
   });
 });
+
+const DIGEST = {
+  week_label: "Week of 2026-06-22",
+  saved_eur: 12.34,
+  best_day: { date: "2026-06-25", saved_eur: 3.2 },
+  self_sufficiency_pct: 78.4,
+  solar_kwh: 24.5,
+  co2_avoided_note: "Avoided 62% of a no-solar home's CO₂ (12 kg vs 32 kg).",
+  actions: { mode_switches: 3, negative_soaks: 1, overrides: 1 },
+  tweak: "No tweak this week — settings look right.",
+  headline:
+    "You saved €12.34 this week, ran 78% self-sufficient and the panels made 24.5 kWh. " +
+    "Steady week — settings look right.",
+  days_measured: 7,
+  days_total: 7,
+};
+
+test.describe("Insights: your week digest (B-58)", () => {
+  test("shows the headline, saved €, facts and tweak at the top of Insights", async ({ page }) => {
+    await page.route("**/api/report**", (route) =>
+      route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(REPORT) }),
+    );
+    await page.route("**/api/digest**", (route) =>
+      route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(DIGEST) }),
+    );
+    await page.goto("/");
+    await page.getByTestId("nav-insights").click();
+    const panel = page.getByTestId("week-digest");
+    await expect(panel).toBeVisible();
+    await expect(page.getByTestId("week-digest-headline")).toContainText("You saved €12.34");
+    await expect(page.getByTestId("week-digest-saved")).toContainText("€12.34");
+    await expect(page.getByTestId("week-digest-fact-self-sufficiency")).toContainText("78%");
+    await expect(page.getByTestId("week-digest-fact-solar")).toContainText("24.5 kWh");
+    await expect(page.getByTestId("week-digest-fact-actions")).toContainText("4"); // 3 switches + 1 override
+    await expect(page.getByTestId("week-digest-tweak")).toContainText("No tweak this week");
+    await expect(page.getByTestId("week-digest-best-day")).toContainText("2026-06-25");
+    await expect(page.getByTestId("week-digest-coverage")).toHaveCount(0); // full week, no caveat
+    await expect(page.getByTestId("week-digest-label")).toHaveText("Week of 2026-06-22");
+  });
+
+  test("shows the partial-week caveat when fewer than 7 days were measured", async ({ page }) => {
+    await page.route("**/api/report**", (route) =>
+      route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(REPORT) }),
+    );
+    await page.route("**/api/digest**", (route) =>
+      route.fulfill({
+        status: 200, contentType: "application/json",
+        body: JSON.stringify({ ...DIGEST, days_measured: 5, days_total: 7 }),
+      }),
+    );
+    await page.goto("/");
+    await page.getByTestId("nav-insights").click();
+    await expect(page.getByTestId("week-digest-coverage")).toContainText("5 of 7 days measured");
+  });
+
+  test("collapses to one line (the headline) and expands again", async ({ page }) => {
+    await page.route("**/api/report**", (route) =>
+      route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(REPORT) }),
+    );
+    await page.route("**/api/digest**", (route) =>
+      route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(DIGEST) }),
+    );
+    await page.goto("/");
+    await page.getByTestId("nav-insights").click();
+    const toggle = page.getByTestId("week-digest-toggle");
+    await expect(page.getByTestId("week-digest-body")).toBeVisible();
+    await expect(toggle).toHaveAttribute("aria-expanded", "true");
+    await toggle.click();
+    await expect(page.getByTestId("week-digest-body")).toHaveCount(0);
+    await expect(toggle).toHaveAttribute("aria-expanded", "false");
+    // The headline (the "one line") stays visible while collapsed.
+    await expect(page.getByTestId("week-digest-headline")).toBeVisible();
+    await toggle.click();
+    await expect(page.getByTestId("week-digest-body")).toBeVisible();
+  });
+
+  test("the ‹ › week stepper navigates to the previous and next week", async ({ page }) => {
+    await page.route("**/api/report**", (route) =>
+      route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(REPORT) }),
+    );
+    await page.route("**/api/digest**", (route) => {
+      const week = new URL(route.request().url()).searchParams.get("week");
+      const label = week === "2026-06-15" ? "Week of 2026-06-15" : "Week of 2026-06-22";
+      route.fulfill({
+        status: 200, contentType: "application/json",
+        body: JSON.stringify({ ...DIGEST, week_label: label }),
+      });
+    });
+    await page.goto("/");
+    await page.getByTestId("nav-insights").click();
+    await expect(page.getByTestId("week-digest-label")).toHaveText("Week of 2026-06-22");
+    await page.getByTestId("week-digest-prev").click();
+    await expect(page.getByTestId("week-digest-label")).toHaveText("Week of 2026-06-15");
+    await page.getByTestId("week-digest-next").click();
+    await expect(page.getByTestId("week-digest-label")).toHaveText("Week of 2026-06-22");
+  });
+
+  test("stays hidden without blocking the rest of Insights when /api/digest fails", async ({
+    page,
+  }) => {
+    await page.route("**/api/report**", (route) =>
+      route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(REPORT) }),
+    );
+    await page.route("**/api/digest**", (route) =>
+      route.fulfill({ status: 503, contentType: "application/json", body: "{\"detail\":\"down\"}" }),
+    );
+    await page.goto("/");
+    await page.getByTestId("nav-insights").click();
+    await expect(page.getByTestId("week-digest")).toHaveCount(0);
+    await expect(page.getByTestId("score-grid")).toBeVisible();
+  });
+});
