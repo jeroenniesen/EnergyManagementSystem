@@ -89,6 +89,7 @@ def build_app():
         cache_store=cache_store,
         control_cycle_seconds=cfg.control_cycle_seconds,
         history_retention_days=cfg.retention_days,
+        history_backup_keep=cfg.backup_keep,
         web_auth_token=os.environ.get("EMS_WEB_TOKEN") or None,
         static_dir=_STATIC_DIR,
     )

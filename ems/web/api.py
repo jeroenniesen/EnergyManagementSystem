@@ -3,10 +3,12 @@ from __future__ import annotations
 
 import asyncio
 import csv
+import glob
 import hashlib
 import io
 import json
 import logging
+import os
 import secrets
 import threading
 from contextlib import asynccontextmanager
@@ -102,6 +104,42 @@ def _task_died(name: str):
             _log.error("%s task exited unexpectedly: %s", name, exc, exc_info=exc)
 
     return _cb
+
+
+async def _run_backup(store: HistoryStore, db_path: str, keep: int,
+                      state: dict[str, Any]) -> None:
+    """Once-per-maintenance-cycle online DB backup + rotation (SPEC §11 durability). Writes
+    `<db_dir>/backups/ems-YYYYMMDD.sqlite` (one snapshot per UTC day; skipped if today's already
+    exists, so restarts don't re-snapshot), then prunes so only the newest `keep` snapshots remain
+    — filenames sort lexicographically = chronologically. `keep <= 0` disables backups entirely.
+
+    Best-effort: on ANY failure it logs loudly, records last_backup_ok=False in `state`, and NEVER
+    raises — a durability hiccup must not kill the maintenance loop that also runs retention + WAL
+    truncation. `state` is mutated in place (surfaced via /api/diagnostics)."""
+    if keep <= 0:
+        return  # backups disabled by config (history.backup_keep = 0)
+    now = datetime.now(UTC)
+    backups_dir = os.path.join(os.path.dirname(db_path) or ".", "backups")
+    dest = os.path.join(backups_dir, f"ems-{now:%Y%m%d}.sqlite")
+    try:
+        if not os.path.exists(dest):
+            size = await store.backup_to(dest)
+            state["last_backup_ts"] = now.isoformat()
+            state["last_backup_ok"] = True
+            state["last_backup_size"] = size
+            _log.info("history backup: wrote %s (%d bytes)", dest, size)
+        # Rotate: keep the newest `keep` by name (ems-YYYYMMDD sorts chronologically). Runs every
+        # cycle even when today's snapshot was skipped, so an in-day restart still trims backlog.
+        existing = sorted(glob.glob(os.path.join(backups_dir, "ems-*.sqlite")))
+        stale = existing[:-keep]
+        for path in stale:
+            os.remove(path)
+        state["backups_kept"] = len(existing) - len(stale)
+    except Exception as exc:
+        state["last_backup_ts"] = now.isoformat()
+        state["last_backup_ok"] = False
+        _log.warning("history backup failed (%s: %s); retrying next cycle",
+                     type(exc).__name__, exc)
 
 
 _recorder_died = _task_died("Recorder")
@@ -309,6 +347,7 @@ def create_app(
     cache_store: CacheStore | None = None,
     control_cycle_seconds: float = 300.0,
     history_retention_days: int = 90,
+    history_backup_keep: int = 7,
     web_auth_token: str | None = None,
     static_dir: str | Path | None = None,
 ) -> FastAPI:
@@ -356,6 +395,12 @@ def create_app(
     # Strong refs to fire-and-forget override-triggered control cycles (see _spawn_tracked). Without
     # this the loop keeps only a weak ref and the task can be GC'd mid-run (the "charge now" no-op).
     _override_tasks: set[asyncio.Task] = set()
+    # Last scheduled-backup outcome (SPEC §11 durability), surfaced in /api/diagnostics so a
+    # silently-failing backup is VISIBLE. Mutated in place by _run_backup in the maintenance loop.
+    _backup_state: dict[str, Any] = {
+        "last_backup_ts": None, "last_backup_ok": None,
+        "last_backup_size": None, "backups_kept": 0,
+    }
 
     def _apply_control_settings() -> None:
         """Push the control.* settings onto the live controller (preserves its switch counters)."""
@@ -733,9 +778,10 @@ def create_app(
                 await _run_validation()  # already guarded + never raises
 
     async def _maintenance_loop(stop: asyncio.Event) -> None:
-        """Daily history maintenance for a 24/7 install: purge rows past the retention window and
-        truncate the WAL / reclaim freed space. Runs once at boot, then every 24 h. Best-effort —
-        a busy DB just retries tomorrow. retention_days <= 0 keeps everything (purge skipped)."""
+        """Daily history maintenance for a 24/7 install: purge rows past the retention window,
+        truncate the WAL / reclaim freed space, and take a rotated online DB backup (SPEC §11).
+        Runs once at boot, then every 24 h. Best-effort — a busy DB just retries tomorrow.
+        retention_days <= 0 keeps everything (purge skipped); backup_keep <= 0 disables backups."""
         first = True
         while True:
             if not first:
@@ -757,6 +803,10 @@ def create_app(
             except Exception as exc:
                 _log.warning("history maintenance failed (%s: %s); retrying next cycle",
                              type(exc).__name__, exc)
+            # Backup is its OWN best-effort step (never raises): a failed backup must not skip the
+            # retention/WAL work above, nor vice-versa. Runs after maintain() so it snapshots the
+            # freshly-checkpointed DB.
+            await _run_backup(store, store.db_path, history_backup_keep, _backup_state)
 
     async def _shutdown_restore() -> None:
         """Graceful-shutdown safety (SPEC §6.5 / runbook): in operational mode, hand the battery
@@ -1569,6 +1619,10 @@ def create_app(
                 storage = await store.db_stats()
             except Exception:
                 storage = None
+            # Durability status (SPEC §11): the last scheduled-backup outcome + retained count, so
+            # a silently-failing backup is visible alongside DB size. Copied out of the loop's box.
+            if storage is not None:
+                storage["backup"] = dict(_backup_state)
         return {"overall": overall_status(checks), "checks": [c.to_dict() for c in checks],
                 "cache": cache_stats, "readiness": readiness, "storage": storage,
                 "recorder": recorder.health() if recorder is not None else None}

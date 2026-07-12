@@ -15,6 +15,7 @@ control:
 history:
   db_path: ems/data/ems.sqlite
   retention_days: 90   # history older than this is purged daily (0 = keep forever)
+  backup_keep: 7       # daily VACUUM-INTO snapshots kept in <db_dir>/backups (0 = off, max 60)
 web:
   port: 8080
 
