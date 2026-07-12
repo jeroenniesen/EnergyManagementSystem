@@ -14,8 +14,10 @@ RUN cd ems/web/frontend && npm run build
 FROM python:3.12-slim
 WORKDIR /app
 
-# Official static-binary install method (no pip/pipx bootstrap needed).
-COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
+# Official static-binary install method (no pip/pipx bootstrap needed). Pinned — not :latest —
+# so the "reproducible from uv.lock" claim holds for the builder too (supply-chain review);
+# bump deliberately alongside the local uv version.
+COPY --from=ghcr.io/astral-sh/uv:0.11.25 /uv /usr/local/bin/uv
 
 # Dependency layer first (cache-friendly): resolved *exactly* from uv.lock, never re-resolved
 # (--frozen) and without the dev group (pytest/ruff). All runtime deps ship prebuilt wheels for
