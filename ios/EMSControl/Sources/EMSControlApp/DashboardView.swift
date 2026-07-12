@@ -1237,6 +1237,9 @@ private struct CarPanel: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             header
+            if carPlan.carMeterConfigured == false {
+                meterHint
+            }
 
             if carPlan.needsAnchor == true {
                 anchorPrompt(
@@ -1277,6 +1280,16 @@ private struct CarPanel: View {
         }
     }
 
+    private var meterHint: some View {
+        Label(
+            "No EV meter is configured, so update the car level after driving or charging.",
+            systemImage: "exclamationmark.triangle"
+        )
+        .font(.caption)
+        .foregroundStyle(themeColor(theme.amber))
+        .fixedSize(horizontal: false, vertical: true)
+    }
+
     private var needsScheduleHint: some View {
         VStack(alignment: .leading, spacing: 8) {
             socRow
@@ -1298,6 +1311,13 @@ private struct CarPanel: View {
                 Text(advice)
                     .font(.footnote)
                     .foregroundStyle(themeColor(theme.text))
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            if let hint = plan.negativePriceHint, !hint.isEmpty {
+                Label(hint, systemImage: "bolt.fill")
+                    .font(.caption)
+                    .foregroundStyle(themeColor(theme.amber))
                     .fixedSize(horizontal: false, vertical: true)
             }
 
@@ -1530,6 +1550,9 @@ private struct CarPanel: View {
         }
         if deadline.feasible == false {
             return (theme.error, "exclamationmark.triangle.fill", "Not enough time to reach this — plug in sooner.")
+        }
+        if let pending = deadline.pendingKwh, pending > 0.05 {
+            return (theme.amber, "hourglass", "Waiting for more price data for \(kwh(pending)).")
         }
         return (theme.winter, "clock.fill", "Charging planned to reach this in time.")
     }

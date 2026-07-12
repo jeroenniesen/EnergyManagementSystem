@@ -58,6 +58,7 @@ def test_enabled_without_anchor_needs_anchor(tmp_path):
     assert body["plan"] is None
     assert body["soc"] is None
     assert body["needs_anchor"] is True
+    assert body["car_meter_configured"] is False
 
 
 def test_anchor_but_empty_schedule_needs_schedule(tmp_path):
@@ -90,6 +91,7 @@ def test_full_plan_happy_path_and_effective_kw(tmp_path):
     assert body["car"]["max_ac_kw"] == by_id("tesla-model-y-long-range").max_ac_kw == 11.0
     assert body["schedule"]["mon"]["enabled"] is True
     assert body["soc"]["soc_pct"] == 20.0
+    assert body["car_meter_configured"] is False
 
     plan = body["plan"]
     assert plan is not None
@@ -107,6 +109,18 @@ def test_full_plan_happy_path_and_effective_kw(tmp_path):
     assert isinstance(plan["slots"], list)
     assert isinstance(plan["windows"], list)
     assert isinstance(plan["advice"], str)
+
+
+def test_car_meter_configured_is_exposed_when_ev_meter_ip_is_set(tmp_path):
+    with TestClient(_app(tmp_path)) as c:
+        c.post("/api/settings", json={
+            "ev.advice_enabled": True,
+            "meters.car_ip": "192.0.2.44",
+            "ev.schedule": json.dumps(_all_days_enabled()),
+        })
+        c.post("/api/car/soc", json={"pct": 40})
+        body = c.get("/api/car/plan").json()
+    assert body["car_meter_configured"] is True
 
 
 def test_no_car_picked_uses_charger_kw_as_effective(tmp_path):

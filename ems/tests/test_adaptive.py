@@ -99,5 +99,13 @@ def test_below_reserve_holds_deficit_slots_until_recovered():
     assert any(s.intent is BatteryIntent.GRID_CHARGE_TO_TARGET for s in plan.slots)
 
 
+def test_deficit_slot_that_would_cross_reserve_holds_instead():
+    prices = _prices([0.30, 0.30, 0.10, 0.10, 0.40, 0.40])
+    fc = _fc([0.0] * 6)
+    load = _load([3000.0, 800.0, 800.0, 800.0, 3000.0, 3000.0])
+    plan = plan_adaptive(prices, fc, T0, soc_pct=12.0, load_w_by=load, cfg=_cfg())
+    assert plan.slots[0].intent is BatteryIntent.HOLD_RESERVE
+
+
 def test_empty_prices_yields_empty_plan():
     assert plan_adaptive([], [], T0, soc_pct=50.0, load_w_by={}, cfg=_cfg()).slots == ()
