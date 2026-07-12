@@ -99,6 +99,34 @@ def test_maintain_and_db_stats(tmp_path):
     assert stats["db_bytes"] > 0 and stats["wal_bytes"] >= 0
 
 
+def test_backup_to_produces_valid_snapshot(tmp_path):
+    # SPEC §11 durability: an online VACUUM INTO backup creates its parent dir on demand, returns
+    # the byte size, and is a valid, independent SQLite file whose row counts match the source.
+    store = HistoryStore(str(tmp_path / "ems.sqlite"))
+    dest = tmp_path / "backups" / "snap.sqlite"  # parent dir does NOT exist yet
+
+    async def run():
+        await store.init()
+        for i, ts in enumerate(["2026-06-27T10:00:00+00:00", "2026-06-27T10:05:00+00:00",
+                                 "2026-06-27T10:10:00+00:00"]):
+            raw = _raw(i)
+            await store.record(ts, raw, reconstruct(raw))
+        return await store.backup_to(str(dest))
+
+    size = asyncio.run(run())
+    assert dest.exists()  # parent dir was created on demand
+    assert size == dest.stat().st_size > 0  # returned size matches the real file
+
+    import sqlite3
+
+    con = sqlite3.connect(str(dest))
+    try:
+        assert con.execute("SELECT COUNT(*) FROM raw_samples").fetchone()[0] == 3
+        assert con.execute("SELECT COUNT(*) FROM derived_samples").fetchone()[0] == 3
+    finally:
+        con.close()
+
+
 def test_price_slots_upsert_and_query(tmp_path):
     # Spec 2026-07-03: prices persist so finance/best-price survive beyond the live price window.
     store = HistoryStore(str(tmp_path / "ems.sqlite"))

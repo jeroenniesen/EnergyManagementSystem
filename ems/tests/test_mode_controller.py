@@ -1,4 +1,6 @@
+import logging
 from datetime import UTC, datetime, timedelta
+from zoneinfo import ZoneInfo
 
 from ems.control.mode_controller import ModeController
 from ems.domain import BatteryIntent, PhysicalMode
@@ -278,3 +280,41 @@ def test_switch_cap_resets_on_a_new_local_day():
     assert blocked.outcome == "cap_reached"
     next_day = ctl.decide(BatteryIntent.HOLD_RESERVE, T0 + timedelta(days=1, seconds=200))
     assert next_day.outcome == "applied"  # counter reset at the new local date
+
+
+def test_switch_cap_window_rolls_at_local_midnight_not_utc():
+    # The daily switch cap resets at LOCAL midnight (the documented contract), NOT UTC. In Amsterdam
+    # summer (CEST = UTC+2) 23:30 UTC is 01:30 the NEXT local day, so a switch at that instant
+    # belongs to that local day; a later switch on the SAME local day is still capped, and only
+    # once local midnight passes does the counter reset. (Under a UTC day-boundary the second switch
+    # would land on a new UTC date and wrongly reset the cap early — the main.py wiring bug.)
+    ams = ZoneInfo("Europe/Amsterdam")
+    d = MockBatteryDriver()
+    ctl = ModeController(d, _controlling_lifecycle(), dry_run=False, max_switches_per_day=1, tz=ams)
+
+    at_2330_utc = datetime(2026, 7, 1, 23, 30, tzinfo=UTC)     # 01:30 CEST, local day = Jul 2
+    first = ctl.decide(BatteryIntent.GRID_CHARGE_TO_TARGET, at_2330_utc)
+    assert first.outcome == "applied"                           # 1/1 for local day Jul 2
+
+    same_local_day = datetime(2026, 7, 2, 21, 0, tzinfo=UTC)    # 23:00 CEST, still local day Jul 2
+    blocked = ctl.decide(BatteryIntent.HOLD_RESERVE, same_local_day)
+    assert blocked.outcome == "cap_reached"                     # belongs to the SAME local day
+
+    after_local_midnight = datetime(2026, 7, 2, 22, 30, tzinfo=UTC)  # 00:30 CEST, new local day
+    reset = ctl.decide(BatteryIntent.HOLD_RESERVE, after_local_midnight)
+    assert reset.outcome == "applied"                           # counter reset at local midnight
+
+
+def test_persist_failure_is_logged_not_swallowed(caplog):
+    # A broken control-state store must never crash a control decision (persistence is best-effort),
+    # but it must NOT vanish silently — _persist logs a warning so a broken store is visible.
+    def _boom(_snapshot):
+        raise RuntimeError("disk full")
+
+    d = MockBatteryDriver()
+    ctl = ModeController(d, _controlling_lifecycle(), dry_run=False, on_state_change=_boom)
+    with caplog.at_level(logging.WARNING):
+        dec = ctl.decide(BatteryIntent.GRID_CHARGE_TO_TARGET, T0 + timedelta(seconds=200))
+    assert dec.outcome == "applied"                 # the decision still succeeded (non-fatal)
+    assert d.current_mode() is PhysicalMode.CHARGE
+    assert "persist failed" in caplog.text

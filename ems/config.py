@@ -17,6 +17,9 @@ class Config:
     db_path: str
     cycle_seconds: float
     retention_days: int  # history older than this is purged daily (0 = keep forever)
+    # Daily rotated online DB backups kept in <db_dir>/backups (SPEC §11). 0 = backups disabled;
+    # clamped to [0, 60] on load. Has a default so existing Config(...) construction stays valid.
+    backup_keep: int = 7
     # Live device integration (read-only sensing). Defaults keep the credential-free mock path.
     sources_mode: str = "mock"  # mock | live  (live reads the HomeWizard/Indevolt device IPs)
     prices_provider: str = "mock"  # mock | tibber  (tibber needs TIBBER_TOKEN env)
@@ -70,6 +73,8 @@ def load_config(path: str | Path) -> Config:
         db_path=db_path,
         cycle_seconds=cycle_seconds,
         retention_days=int(history.get("retention_days", 90)),
+        # Sanity-bound the retained-backup count (0 disables, 60 ceiling) at the config boundary.
+        backup_keep=max(0, min(60, int(history.get("backup_keep", 7)))),
         control_cycle_seconds=float(control.get("control_cycle_seconds", 60)),
         sources_mode=sources_mode,
         prices_provider=prices_provider,

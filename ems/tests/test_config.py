@@ -40,6 +40,23 @@ def test_cycle_seconds_env_override_and_retention(tmp_path: Path, monkeypatch):
     assert load_config(p).cycle_seconds == 5.0  # env override wins (dev fast-sampling)
 
 
+def test_backup_keep_default_and_clamp(tmp_path: Path, monkeypatch):
+    # SPEC §11 durability: backup_keep defaults to 7 and is sanity-bounded to [0, 60] on load.
+    _no_source_env(monkeypatch)
+    p = tmp_path / "config.yaml"
+    p.write_text("site:\n  timezone: Europe/Amsterdam\n")
+    assert load_config(p).backup_keep == 7  # default when unset
+
+    p.write_text("history:\n  backup_keep: 0\n")
+    assert load_config(p).backup_keep == 0  # 0 = disabled, allowed
+
+    p.write_text("history:\n  backup_keep: 999\n")
+    assert load_config(p).backup_keep == 60  # clamped to the ceiling
+
+    p.write_text("history:\n  backup_keep: -5\n")
+    assert load_config(p).backup_keep == 0  # clamped to the floor
+
+
 def test_dev_mock_forces_dry_run(tmp_path: Path):
     p = tmp_path / "config.yaml"
     p.write_text("dev:\n  mode: mock\ncontrol:\n  dry_run: false\n")

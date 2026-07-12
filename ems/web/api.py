@@ -3,10 +3,12 @@ from __future__ import annotations
 
 import asyncio
 import csv
+import glob
 import hashlib
 import io
 import json
 import logging
+import os
 import secrets
 import threading
 from contextlib import asynccontextmanager
@@ -104,7 +106,55 @@ def _task_died(name: str):
     return _cb
 
 
+async def _run_backup(store: HistoryStore, db_path: str, keep: int,
+                      state: dict[str, Any]) -> None:
+    """Once-per-maintenance-cycle online DB backup + rotation (SPEC §11 durability). Writes
+    `<db_dir>/backups/ems-YYYYMMDD.sqlite` (one snapshot per UTC day; skipped if today's already
+    exists, so restarts don't re-snapshot), then prunes so only the newest `keep` snapshots remain
+    — filenames sort lexicographically = chronologically. `keep <= 0` disables backups entirely.
+
+    Best-effort: on ANY failure it logs loudly, records last_backup_ok=False in `state`, and NEVER
+    raises — a durability hiccup must not kill the maintenance loop that also runs retention + WAL
+    truncation. `state` is mutated in place (surfaced via /api/diagnostics)."""
+    if keep <= 0:
+        return  # backups disabled by config (history.backup_keep = 0)
+    now = datetime.now(UTC)
+    backups_dir = os.path.join(os.path.dirname(db_path) or ".", "backups")
+    dest = os.path.join(backups_dir, f"ems-{now:%Y%m%d}.sqlite")
+    try:
+        if not os.path.exists(dest):
+            size = await store.backup_to(dest)
+            state["last_backup_ts"] = now.isoformat()
+            state["last_backup_ok"] = True
+            state["last_backup_size"] = size
+            _log.info("history backup: wrote %s (%d bytes)", dest, size)
+        # Rotate: keep the newest `keep` by name (ems-YYYYMMDD sorts chronologically). Runs every
+        # cycle even when today's snapshot was skipped, so an in-day restart still trims backlog.
+        existing = sorted(glob.glob(os.path.join(backups_dir, "ems-*.sqlite")))
+        stale = existing[:-keep]
+        for path in stale:
+            os.remove(path)
+        state["backups_kept"] = len(existing) - len(stale)
+    except Exception as exc:
+        state["last_backup_ts"] = now.isoformat()
+        state["last_backup_ok"] = False
+        _log.warning("history backup failed (%s: %s); retrying next cycle",
+                     type(exc).__name__, exc)
+
+
 _recorder_died = _task_died("Recorder")
+
+
+def _spawn_tracked(coro, name: str, task_set: set[asyncio.Task]) -> asyncio.Task:
+    """Fire-and-forget a coroutine while keeping a STRONG ref to the task (the event loop keeps
+    only a weak one — without this the task can be GC'd mid-run, so a "charge now" control cycle
+    silently no-ops). Drop the ref on completion and surface a crash loudly (like the lifespan
+    tasks)."""
+    task = asyncio.create_task(coro)
+    task_set.add(task)
+    task.add_done_callback(task_set.discard)
+    task.add_done_callback(_task_died(name))
+    return task
 
 
 def _explain_cache_key(reason: str, language: str, model: str) -> str:
@@ -297,6 +347,7 @@ def create_app(
     cache_store: CacheStore | None = None,
     control_cycle_seconds: float = 300.0,
     history_retention_days: int = 90,
+    history_backup_keep: int = 7,
     web_auth_token: str | None = None,
     static_dir: str | Path | None = None,
 ) -> FastAPI:
@@ -341,6 +392,15 @@ def create_app(
     _held_box: dict[str, Any] = {"sig": None}
     # Sky cloud-cover cache: Open-Meteo is polled at most every 15 min (best-effort) for the sky.
     _sky_box: dict[str, Any] = {"cc": None, "at": None}
+    # Strong refs to fire-and-forget override-triggered control cycles (see _spawn_tracked). Without
+    # this the loop keeps only a weak ref and the task can be GC'd mid-run (the "charge now" no-op).
+    _override_tasks: set[asyncio.Task] = set()
+    # Last scheduled-backup outcome (SPEC §11 durability), surfaced in /api/diagnostics so a
+    # silently-failing backup is VISIBLE. Mutated in place by _run_backup in the maintenance loop.
+    _backup_state: dict[str, Any] = {
+        "last_backup_ts": None, "last_backup_ok": None,
+        "last_backup_size": None, "backups_kept": 0,
+    }
 
     def _apply_control_settings() -> None:
         """Push the control.* settings onto the live controller (preserves its switch counters)."""
@@ -718,9 +778,10 @@ def create_app(
                 await _run_validation()  # already guarded + never raises
 
     async def _maintenance_loop(stop: asyncio.Event) -> None:
-        """Daily history maintenance for a 24/7 install: purge rows past the retention window and
-        truncate the WAL / reclaim freed space. Runs once at boot, then every 24 h. Best-effort —
-        a busy DB just retries tomorrow. retention_days <= 0 keeps everything (purge skipped)."""
+        """Daily history maintenance for a 24/7 install: purge rows past the retention window,
+        truncate the WAL / reclaim freed space, and take a rotated online DB backup (SPEC §11).
+        Runs once at boot, then every 24 h. Best-effort — a busy DB just retries tomorrow.
+        retention_days <= 0 keeps everything (purge skipped); backup_keep <= 0 disables backups."""
         first = True
         while True:
             if not first:
@@ -742,6 +803,10 @@ def create_app(
             except Exception as exc:
                 _log.warning("history maintenance failed (%s: %s); retrying next cycle",
                              type(exc).__name__, exc)
+            # Backup is its OWN best-effort step (never raises): a failed backup must not skip the
+            # retention/WAL work above, nor vice-versa. Runs after maintain() so it snapshots the
+            # freshly-checkpointed DB.
+            await _run_backup(store, store.db_path, history_backup_keep, _backup_state)
 
     async def _shutdown_restore() -> None:
         """Graceful-shutdown safety (SPEC §6.5 / runbook): in operational mode, hand the battery
@@ -784,11 +849,11 @@ def create_app(
             await store.init()
         if settings_store is not None:
             await settings_store.init()
-            # Build the new dict BEFORE touching the cache, then swap with no await between
-            # clear() and update() — otherwise a concurrent reader could observe an empty cache.
-            loaded = effective_settings(await settings_store.all())
-            settings_cache.clear()
-            settings_cache.update(loaded)
+            # In-place update ONLY (never clear()+update): effective_settings always returns the
+            # FULL keyset (defaults ∪ valid overrides), so no key ever disappears and a threadpool
+            # GET can never observe a missing key. clear()+update() briefly exposed an empty dict
+            # between the two statements → KeyError/500 for a concurrent reader.
+            settings_cache.update(effective_settings(await settings_store.all()))
             _apply_control_settings()
             _apply_site_settings()
             _apply_explainer_settings()
@@ -994,7 +1059,7 @@ def create_app(
         ov = override_box["ov"]
         if ov.active(now):
             assert ov.intent is not None and ov.expires_at is not None
-            until = ov.expires_at.astimezone().strftime("%H:%M")
+            until = ov.expires_at.astimezone(site_tz).strftime("%H:%M")
             intent, override_active = ov.intent, True
             # Gate a RISKY override (anything other than self-consumption) on data quality: EMS
             # won't force charge/discharge/hold when critical data is unsafe — it can't trust SoC or
@@ -1407,7 +1472,7 @@ def create_app(
         out = [{"key": a.key, "severity": a.severity, "message": a.message} for a in alerts]
         if override_active:
             ov = override_box["ov"]
-            until = ov.expires_at.astimezone().strftime("%H:%M") if ov.expires_at else "?"
+            until = ov.expires_at.astimezone(site_tz).strftime("%H:%M") if ov.expires_at else "?"
             # If the override was HELD (gated on unsafe data), say so — never claim it's "forcing"
             # the requested action when the battery is actually held at self-consumption.
             held = ov.intent is not None and intent is not ov.intent
@@ -1554,6 +1619,10 @@ def create_app(
                 storage = await store.db_stats()
             except Exception:
                 storage = None
+            # Durability status (SPEC §11): the last scheduled-backup outcome + retained count, so
+            # a silently-failing backup is visible alongside DB size. Copied out of the loop's box.
+            if storage is not None:
+                storage["backup"] = dict(_backup_state)
         return {"overall": overall_status(checks), "checks": [c.to_dict() for c in checks],
                 "cache": cache_stats, "readiness": readiness, "storage": storage,
                 "recorder": recorder.health() if recorder is not None else None}
@@ -1595,7 +1664,8 @@ def create_app(
                     "Manual override cleared — back to the automatic plan", {"action": "clear"},
                 )
             if not dry_run:
-                asyncio.create_task(_run_control_cycle())  # apply now, don't wait a full cycle
+                # apply now, don't wait a full cycle (tracked so it can't be GC'd mid-run)
+                _spawn_tracked(_run_control_cycle(), "Override control cycle", _override_tasks)
             return JSONResponse(get_override())
         errors: dict[str, str] = {}
         try:
@@ -1622,7 +1692,7 @@ def create_app(
         # Apply the override on the battery NOW (and audit the confirmed result) instead of waiting
         # up to a full control cycle — what the operator expects when they press "charge".
         if not dry_run:
-            asyncio.create_task(_run_control_cycle())
+            _spawn_tracked(_run_control_cycle(), "Override control cycle", _override_tasks)
         return JSONResponse(get_override())
 
     def _battery_cluster(now: datetime) -> tuple[list[dict], dict | None]:
@@ -2898,9 +2968,9 @@ def create_app(
                 {"detail": "invalid settings", "errors": errors}, status_code=422
             )
         await settings_store.set_many(clean)
-        refreshed = effective_settings(await settings_store.all())
-        settings_cache.clear()
-        settings_cache.update(refreshed)
+        # In-place update ONLY (never clear()+update): the effective set is always the full keyset,
+        # so a concurrent threadpool GET never observes a missing key (the KeyError/500 race).
+        settings_cache.update(effective_settings(await settings_store.all()))
         _apply_control_settings()
         _apply_site_settings()
         _apply_explainer_settings()

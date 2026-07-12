@@ -1,0 +1,85 @@
+name: CI
+
+# Backend (Python/FastAPI) + frontend (React/Vite + Playwright e2e) checks.
+# iOS has its own path-filtered workflow (ios.yml) since it needs macos-latest.
+# Never targets self-hosted/Pi/Jetson runners (SPEC §11) — ubuntu-latest only.
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  backend:
+    name: Backend (ruff + pytest)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      # --extra dev pulls in ruff/pytest (pyproject's optional "dev" group);
+      # a bare `uv sync --frozen` only installs the runtime deps.
+      - name: Install dependencies
+        run: uv sync --frozen --extra dev
+
+      - name: Lint (ruff)
+        run: uv run ruff check ems
+
+      - name: Test (pytest)
+        run: uv run pytest ems/tests
+
+  frontend:
+    name: Frontend (build + bundle-size + e2e)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      # Needed for the Playwright webServer, which boots the FastAPI app
+      # itself via `uv run uvicorn ...` (see playwright.config.ts) — hermetic,
+      # no live devices, mock sources/prices, a throwaway SQLite DB.
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Install backend dependencies (for the e2e webServer)
+        run: uv sync --frozen
+
+      - name: Install Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: ems/web/frontend/package-lock.json
+
+      - name: Install frontend dependencies
+        working-directory: ems/web/frontend
+        run: npm ci --no-audit --no-fund
+
+      - name: Build the SPA
+        working-directory: ems/web/frontend
+        run: npm run build
+
+      # SPEC §9.1: initial JS bundle <= 300 KB gzipped.
+      - name: Bundle-size gate
+        run: python3 scripts/check_bundle_size.py
+
+      - name: Install Playwright browsers
+        working-directory: ems/web/frontend
+        run: npx playwright install --with-deps chromium
+
+      - name: e2e (Playwright)
+        working-directory: ems/web/frontend
+        run: npx playwright test

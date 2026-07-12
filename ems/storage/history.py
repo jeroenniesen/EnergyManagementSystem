@@ -148,6 +148,25 @@ class HistoryStore:
             await db.execute("PRAGMA wal_checkpoint(TRUNCATE)")
             await db.commit()
 
+    async def backup_to(self, dest_path: str) -> int:
+        """Online backup of the whole DB to `dest_path` via `VACUUM INTO` (SPEC §11 durability).
+        VACUUM INTO reads a consistent snapshot and is SAFE on a live WAL database — unlike a raw
+        file copy, which can catch a torn write mid-checkpoint — and it produces a compact,
+        single-file, independent SQLite DB. Creates the parent directory. Returns the resulting
+        file size in bytes. Raises on ANY error — the caller (maintenance loop) decides whether a
+        failure is fatal (it treats it as best-effort and logs loudly)."""
+        import os
+
+        os.makedirs(os.path.dirname(dest_path) or ".", exist_ok=True)
+        # Own connection (not _conn): VACUUM requires NO other statement in progress, so the
+        # busy_timeout pragma must be fully fetched/finalised first. Parameterised INTO filename
+        # (SQLite >= 3.27); no manual transaction — VACUUM cannot run inside one.
+        async with aiosqlite.connect(self.db_path) as db:
+            cur = await db.execute(f"PRAGMA busy_timeout={_BUSY_TIMEOUT_MS}")
+            await cur.fetchall()
+            await db.execute("VACUUM INTO ?", (dest_path,))
+        return os.path.getsize(dest_path)
+
     async def db_stats(self) -> dict:
         """Cheap size/row diagnostics for the System page (page_count×page_size = DB bytes; the
         two sample row counts; WAL bytes from the -wal sidecar file if present)."""

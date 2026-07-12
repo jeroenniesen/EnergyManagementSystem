@@ -9,6 +9,7 @@ restarts (runtime_state.py) — a documented follow-up.
 """
 from __future__ import annotations
 
+import logging
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
@@ -17,6 +18,8 @@ from zoneinfo import ZoneInfo
 from ems.domain import BatteryIntent, PhysicalMode
 from ems.lifecycle import Lifecycle
 from ems.sources.battery import BatteryDriver, BatteryWriteUnconfirmed, intent_to_mode
+
+log = logging.getLogger(__name__)
 
 
 def _mode_or_none(value: object) -> PhysicalMode | None:
@@ -106,8 +109,10 @@ class ModeController:
         if self._on_state_change is not None:
             try:
                 self._on_state_change(self.state_snapshot())
-            except Exception:
-                pass  # persistence is best-effort; never fail a control decision over it
+            except Exception as e:
+                # Persistence is best-effort; never fail a control decision over it — but don't
+                # swallow it silently (a broken store must be visible in the logs).
+                log.warning("persist failed: %s", e)
 
     def _desired(self, intent: BatteryIntent) -> PhysicalMode:
         return intent_to_mode(intent, allow_export_discharge=self.allow_export_discharge)

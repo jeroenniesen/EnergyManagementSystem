@@ -35,6 +35,22 @@ def test_post_settings_persists_and_is_reflected(tmp_path):
         assert c.get("/api/settings").json()["values"]["planner.charge_slots"] == 8
 
 
+def test_settings_cache_keyset_stable_across_post_no_transient_empty(tmp_path):
+    # The effective-config cache is updated IN PLACE with a full-keyset dict (never clear()+update),
+    # so a concurrent threadpool GET can never observe a missing key / empty dict — the KeyError/500
+    # race. True concurrency isn't cheap to unit-test deterministically (a sequential GET after the
+    # POST completes always sees the settled cache); instead we assert the invariant the fix
+    # guarantees: the exposed keyset never shrinks across a settings POST.
+    with TestClient(_app(tmp_path)) as c:
+        before = set(c.get("/api/settings").json()["values"])
+        assert before  # a full keyset exists before any write
+        r = c.post("/api/settings", json={"ui.theme": "dark"})
+        assert r.status_code == 200
+        after = set(c.get("/api/settings").json()["values"])
+    assert before <= after  # no key ever disappears (superset)
+    assert before == after  # in fact the keyset is identical — nothing added or removed
+
+
 def test_post_settings_survives_restart(tmp_path):
     # A second app on the same DB must load the persisted value (real persistence, not memory).
     with TestClient(_app(tmp_path)) as c:

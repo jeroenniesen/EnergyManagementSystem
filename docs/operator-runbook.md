@@ -28,16 +28,20 @@
 
 ## Back up & restore
 
-**What to back up** (`history.backup_dir`, default `/data/backups`):
-- `/data/ems.sqlite` (history + runtime settings)
+**Automatic (B-52):** the app snapshots its own DB daily — an online `VACUUM INTO` copy at
+`<db_dir>/backups/ems-YYYYMMDD.sqlite`, keeping the newest `history.backup_keep` (default 7,
+`0` disables). Check it ran: `GET /api/diagnostics` → `storage.backup` (last time/size/ok).
+These snapshots live on the **same disk** — still copy the newest one off-machine on your own
+schedule, plus:
 - `config.yaml`
 - a note of **where** each secret lives (env/secret file path) — **not** the secret values
 
 **Restore:**
-1. `docker compose stop ems`
-2. Copy the backed-up `ems.sqlite` and `config.yaml` into place.
+1. Stop the app (`docker compose stop ems`, or `make uninstall` / `launchctl` on a Mac install).
+2. Copy a snapshot from `backups/ems-YYYYMMDD.sqlite` over `ems.sqlite` (remove any leftover
+   `ems.sqlite-wal`/`-shm` files); restore `config.yaml`.
 3. Ensure secrets are present in their env/secret source.
-4. `docker compose up -d ems`; verify `/health/ready`, freshness, and that the last plan loads.
+4. Start the app; verify `/health/ready`, freshness, and that the last plan loads.
 
 ## Health & maintenance
 
