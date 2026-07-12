@@ -1,0 +1,47 @@
+# Keep the build context small and the image reproducible (B-43): none of this should leak into
+# — or, in the case of node_modules, clobber — the image via the broad `COPY ems ...` /
+# `COPY ems/web/frontend ...` steps in the Dockerfile.
+
+# VCS / editor / OS
+.git/
+.github/
+.idea/
+.vscode/
+.DS_Store
+
+# Python toolchain (image installs its own via uv sync)
+.venv/
+.uv-cache/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Frontend toolchain (image installs its own via npm ci) + test artifacts
+**/node_modules/
+ems/web/static/dist/
+ems/web/frontend/test-results/
+ems/web/frontend/playwright-report/
+ems/web/frontend/.e2e-data/
+**/*.tsbuildinfo
+.playwright-mcp/
+
+# Runtime data / secrets — never bake into the image
+ems/data/
+/data/
+*.sqlite
+*.sqlite-*
+secrets.yaml
+.env
+*.local.yaml
+.demo-data/
+.e2e-data/
+
+# Unrelated large trees not needed to build the EMS image
+ios/
+docs/
+.worktrees/
+.tools/
+*.png
