@@ -83,7 +83,14 @@ function rawText(s: Score): string {
 }
 
 // A warm one-line summary of the window, synthesised from the flows + scores (goal A: motivation).
-function headline(report: Report, f: Flows): string {
+// Day-just-starting (period=day, window still in progress, <1 kWh measured): a night reading is
+// not a verdict — "You ran 0%… cut 0%…" at 00:30 read as failure in production. Calm line instead.
+function isEarlyDay(period: string, report: Report, f: Flows): boolean {
+  return period === "day" && report.partial && (f.home_kwh ?? 0) < 1.0;
+}
+
+function headline(report: Report, f: Flows, early: boolean): string {
+  if (early) return "The day's just starting — scores build as the sun comes up.";
   const ss = f.self_sufficiency_pct;
   if (ss == null) return "";
   const co2 = report.scores.find((s) => s.key === "co2")?.value;
@@ -231,35 +238,48 @@ export function Insights() {
 
       {report && hasData && f && (
         <>
-          {headline(report, f) && (
+          {headline(report, f, isEarlyDay(period, report, f)) && (
             <p className="insights-headline" data-testid="insights-headline">
-              {headline(report, f)}
+              {headline(report, f, isEarlyDay(period, report, f))}
             </p>
           )}
           <div className={`score-grid${loading ? " is-loading" : ""}`} data-testid="score-grid">
-            {report.scores.map((s) => (
+            {report.scores.map((s) => {
+              const early = isEarlyDay(period, report, f);
+              const value = early ? null : s.value;
+              return (
               <div
                 key={s.key}
-                className={`score-card score-${scoreBand(s.value)}`}
+                className={`score-card score-${scoreBand(value)}`}
                 data-testid={`score-${s.key}`}
+                data-state={early ? "early" : undefined}
                 role="group"
-                aria-label={`${s.label} score: ${
-                  s.value == null ? "not available" : `${Math.round(s.value)} out of 100`
-                }`}
+                aria-label={
+                  early
+                    ? `${s.label}: the day's just starting`
+                    : `${s.label} score: ${
+                        s.value == null ? "not available" : `${Math.round(s.value)} out of 100`
+                      }`
+                }
               >
                 <ScoreRing
-                  value={s.value}
+                  value={value}
                   label={s.label}
-                  caption={scoreCaption(s.key, s.value)}
+                  caption={early ? "Waiting for the sun" : scoreCaption(s.key, s.value)}
                   size={116}
                   testId={`score-${s.key}-value`}
                 />
                 <div className="score-detail">
-                  {s.raw != null && s.unit !== "%" && <div className="score-raw">{rawText(s)}</div>}
-                  <p className="score-explain">{s.explanation}</p>
+                  {!early && s.raw != null && s.unit !== "%" && (
+                    <div className="score-raw">{rawText(s)}</div>
+                  )}
+                  <p className="score-explain">
+                    {early ? "Scores build as the day fills in." : s.explanation}
+                  </p>
                 </div>
               </div>
-            ))}
+              );
+            })}
           </div>
 
           {report.series && (

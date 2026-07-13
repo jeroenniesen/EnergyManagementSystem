@@ -6,7 +6,7 @@ import { ScoreCard } from "./ScoreCard";
 import { homeSummary } from "./scoreCopy";
 
 export type Score = { key: string; label: string; value: number | null; explanation: string };
-export type Report = { partial: boolean; flows: { has_data: boolean }; scores: Score[] };
+export type Report = { partial: boolean; flows: { has_data: boolean; home_kwh?: number }; scores: Score[] };
 
 export function HomeScores({
   report,
@@ -17,7 +17,13 @@ export function HomeScores({
 }) {
   if (!report || !report.flows?.has_data) return null;
 
-  const summary = homeSummary(report.scores);
+  // Day-just-starting: a partial day with <1 kWh measured is the middle of the night, not a bad
+  // score day — red zeros at 00:30 read as failure (production screenshot finding). Calm dash
+  // instead; real zeros on COMPLETED days still show (partial === false).
+  const early = report.partial && (report.flows.home_kwh ?? 0) < 1.0;
+  const summary = early
+    ? { tone: "neutral" as const, text: "The day's just starting" }
+    : homeSummary(report.scores);
 
   return (
     <section className="home-scores" data-testid="home-scores" aria-label="Today's energy scores">
@@ -50,7 +56,7 @@ export function HomeScores({
       </div>
       <div className="home-scores-pills">
         {report.scores.map((s) => (
-          <ScoreCard key={s.key} score={s} onOpen={onOpenDetail} />
+          <ScoreCard key={s.key} score={s} onOpen={onOpenDetail} early={early} />
         ))}
       </div>
     </section>

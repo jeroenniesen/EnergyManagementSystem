@@ -409,7 +409,7 @@ const DIGEST = {
   solar_kwh: 24.5,
   co2_avoided_note: "Avoided 62% of a no-solar home's CO₂ (12 kg vs 32 kg).",
   actions: { mode_switches: 3, negative_soaks: 1, overrides: 1 },
-  tweak: "No tweak this week — settings look right.",
+  tweak: null, // null case: the callout must be ABSENT (headline tail already says it)
   headline:
     "You saved €12.34 this week, ran 78% self-sufficient and the panels made 24.5 kWh. " +
     "Steady week — settings look right.",
@@ -434,7 +434,7 @@ test.describe("Insights: your week digest (B-58)", () => {
     await expect(page.getByTestId("week-digest-fact-self-sufficiency")).toContainText("78%");
     await expect(page.getByTestId("week-digest-fact-solar")).toContainText("24.5 kWh");
     await expect(page.getByTestId("week-digest-fact-actions")).toContainText("4"); // 3 switches + 1 override
-    await expect(page.getByTestId("week-digest-tweak")).toContainText("No tweak this week");
+    await expect(page.getByTestId("week-digest-tweak")).toHaveCount(0); // calm = absence
     await expect(page.getByTestId("week-digest-best-day")).toContainText("2026-06-25");
     await expect(page.getByTestId("week-digest-coverage")).toHaveCount(0); // full week, no caveat
     await expect(page.getByTestId("week-digest-label")).toHaveText("Week of 2026-06-22");
@@ -510,5 +510,41 @@ test.describe("Insights: your week digest (B-58)", () => {
     await page.getByTestId("nav-insights").click();
     await expect(page.getByTestId("week-digest")).toHaveCount(0);
     await expect(page.getByTestId("score-grid")).toBeVisible();
+  });
+});
+
+
+test.describe("Insights: day-just-starting honesty", () => {
+  const early = {
+    period: "day", label: "today", partial: true,
+    window_start: "2026-07-13T00:00:00+02:00", window_end: "2026-07-14T00:00:00+02:00",
+    flows: { has_data: true, home_kwh: 0.3, solar_kwh: 0, grid_import_kwh: 0.3, grid_export_kwh: 0,
+             battery_charge_kwh: 0, battery_discharge_kwh: 0, car_kwh: 0, self_sufficiency_pct: 0,
+             solar_self_consumption_pct: 0, car_guard_leak_kwh: 0 },
+    scores: [
+      { key: "self_consumption", label: "Self-consumption", value: 0, raw: null, unit: "%", explanation: "real explanation" },
+      { key: "co2", label: "CO2", value: 0, raw: 0.2, unit: "kg", explanation: "real explanation" },
+    ],
+  };
+
+  test("a partial day with <1 kWh shows the calm headline and dashes", async ({ page }) => {
+    await page.route("**/api/report**", (r) => r.fulfill({ contentType: "application/json", body: JSON.stringify(early) }));
+    await page.goto("/");
+    await page.getByTestId("nav-insights").click();
+    await expect(page.getByTestId("insights-headline")).toContainText("day's just starting");
+    const card = page.getByTestId("score-self_consumption");
+    await expect(card).toHaveAttribute("data-state", "early");
+    await expect(card).toContainText("Waiting for the sun");
+  });
+
+  test("a COMPLETED zero day still shows its real zeros (honesty is day-scoped)", async ({ page }) => {
+    const done = { ...early, partial: false, label: "2026-07-10" };
+    await page.route("**/api/report**", (r) => r.fulfill({ contentType: "application/json", body: JSON.stringify(done) }));
+    await page.goto("/");
+    await page.getByTestId("nav-insights").click();
+    await expect(page.getByTestId("insights-headline")).toContainText("You ran 0%");
+    const card = page.getByTestId("score-self_consumption");
+    await expect(card).not.toHaveAttribute("data-state", "early");
+    await expect(card).toContainText("real explanation");
   });
 });

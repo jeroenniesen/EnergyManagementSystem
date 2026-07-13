@@ -911,6 +911,57 @@ test.describe("EMS dashboard", () => {
     await expect(page.getByTestId("demo-cta")).toHaveCount(0);
   });
 
+  test("a barely-started day shows calm dashes, not red zeros (early state)", async ({ page }) => {
+    // Production finding: at 00:30 the pills showed red 0s ("Leaning on the grid") — a night
+    // reading is not a verdict. partial day + <1 kWh measured → neutral dash state.
+    await page.route("**/api/report**", (route) =>
+      route.fulfill({
+        contentType: "application/json",
+        body: JSON.stringify({
+          period: "day", label: "today", partial: true,
+          window_start: "2026-07-13T00:00:00+02:00", window_end: "2026-07-14T00:00:00+02:00",
+          flows: { has_data: true, home_kwh: 0.2, solar_kwh: 0.0, grid_import_kwh: 0.2,
+                   self_sufficiency_pct: 0.0 },
+          scores: [
+            { key: "self_consumption", label: "Self-consumption", value: 0, raw: null, unit: "%", explanation: "x" },
+            { key: "co2", label: "CO2", value: 0, raw: 0.1, unit: "kg", explanation: "x" },
+            { key: "best_price", label: "Best price", value: 100, raw: 0.2, unit: "€", explanation: "x" },
+          ],
+        }),
+      }),
+    );
+    await page.goto("/");
+    const pill = page.getByTestId("score-card-self_consumption");
+    await expect(pill).toBeVisible();
+    await expect(pill).toHaveAttribute("data-state", "early");
+    await expect(pill.getByTestId("ring-self_consumption")).toContainText("—");
+    await expect(pill).toContainText("The day's just starting");
+    await expect(page.getByTestId("home-scores-summary")).toContainText("day's just starting");
+    // Early state nulls EVERY pill (a night reading is no verdict for any score).
+    const best = page.getByTestId("score-card-best_price");
+    await expect(best.getByTestId("ring-best_price")).toContainText("—");
+  });
+
+  test("a 3-digit ring value gets the fit class (the '100' clipping fix)", async ({ page }) => {
+    await page.route("**/api/report**", (route) =>
+      route.fulfill({
+        contentType: "application/json",
+        body: JSON.stringify({
+          period: "day", label: "today", partial: true,
+          flows: { has_data: true, home_kwh: 5.0, solar_kwh: 6.0, self_sufficiency_pct: 90 },
+          scores: [
+            { key: "self_consumption", label: "Self-consumption", value: 100, raw: null, unit: "%", explanation: "x" },
+          ],
+        }),
+      }),
+    );
+    await page.goto("/");
+    const pill = page.getByTestId("score-card-self_consumption");
+    await expect(pill).toBeVisible();
+    await expect(pill.locator(".ring-value")).toHaveClass(/ring-value-3/);
+    await expect(pill.locator(".ring-value")).toContainText("100");
+  });
+
   test("the score pills link through to Insights", async ({ page }) => {
     await page.goto("/");
     const pills = page.getByTestId("home-scores");

@@ -8,24 +8,35 @@ import { scoreCaption, scoreHeadline } from "./scoreCopy";
 
 type Score = { key: string; label: string; value: number | null; explanation: string };
 
-export function ScoreCard({ score, onOpen }: { score: Score; onOpen: () => void }) {
-  const headline = scoreHeadline(score.key, score.value);
-  const caption = scoreCaption(score.key, score.value);
-  const band = scoreBand(score.value);
-  const spoken =
-    `${score.label} score: ${score.value == null ? "not available" : `${Math.round(score.value)} out of 100`}` +
-    `${headline ? `. ${headline}` : ""}${caption ? ` ${caption}` : ""} — open Insights`;
+export function ScoreCard({
+  score,
+  onOpen,
+  early = false,
+}: {
+  score: Score;
+  onOpen: () => void;
+  early?: boolean; // day-just-starting: a night reading isn't a failure — show a calm dash, not a red 0
+}) {
+  const value = early ? null : score.value;
+  const headline = early ? "" : scoreHeadline(score.key, score.value);
+  const caption = early ? "The day's just starting" : scoreCaption(score.key, score.value);
+  const band = scoreBand(value);
+  const spoken = early
+    ? `${score.label}: the day's just starting — scores build as the sun comes up. Open Insights`
+    : `${score.label} score: ${score.value == null ? "not available" : `${Math.round(score.value)} out of 100`}` +
+      `${headline ? `. ${headline}` : ""}${caption ? ` ${caption}` : ""} — open Insights`;
 
   return (
     <button
       type="button"
       className={`score-pill score-${band}`}
+      data-state={early ? "early" : undefined}
       data-testid={`score-card-${score.key}`}
       aria-label={spoken}
       title={headline}
       onClick={onOpen}
     >
-      <ScoreRing value={score.value} label={score.label} size={54} testId={`ring-${score.key}`} />
+      <ScoreRing value={value} label={score.label} size={54} testId={`ring-${score.key}`} />
       <span className="sc-copy">
         {caption && <span className="sc-caption">{caption}</span>}
         {headline && <span className="sc-headline">{headline}</span>}

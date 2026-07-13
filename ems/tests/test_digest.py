@@ -208,7 +208,7 @@ def test_tweak_ignores_advisor_when_delta_is_below_5pp():
               "median_ratio_pct": 80.0, "p25_ratio_pct": 82.0}
     d = build_digest(finance_rows=FULL_WEEK, flows=FLOWS, scores=SCORES, audit_rows=[],
                      advice=advice, week_label=WEEK_LABEL, export_price_model="spot_minus_tax")
-    assert d["tweak"] == "No tweak this week — settings look right."
+    assert d["tweak"] is None  # null case: calm = absence (headline tail says it)
 
 
 def test_tweak_falls_back_to_export_model_reminder_near_the_2027_boundary():
@@ -222,26 +222,26 @@ def test_tweak_export_model_reminder_does_not_fire_before_october_2026():
     d = build_digest(finance_rows=FULL_WEEK, flows=FLOWS, scores=SCORES, audit_rows=[],
                      advice=None, week_label="Week of 2026-09-28",
                      export_price_model="net_metering")
-    assert d["tweak"] == "No tweak this week — settings look right."
+    assert d["tweak"] is None  # null case: calm = absence (headline tail says it)
 
 
 def test_tweak_export_model_reminder_does_not_fire_off_net_metering():
     d = build_digest(finance_rows=FULL_WEEK, flows=FLOWS, scores=SCORES, audit_rows=[],
                      advice=None, week_label="Week of 2026-11-01",
                      export_price_model="spot_minus_tax")
-    assert d["tweak"] == "No tweak this week — settings look right."
+    assert d["tweak"] is None  # null case: calm = absence (headline tail says it)
 
 
 def test_tweak_null_case_is_the_exact_reassuring_sentence():
     d = build_digest(finance_rows=FULL_WEEK, flows=FLOWS, scores=SCORES, audit_rows=[],
                      advice=None, week_label=WEEK_LABEL)
-    assert d["tweak"] == "No tweak this week — settings look right."
+    assert d["tweak"] is None  # null case: calm = absence (headline tail says it)
 
 
 def test_tweak_survives_an_unparseable_week_label():
     d = build_digest(finance_rows=FULL_WEEK, flows=FLOWS, scores=SCORES, audit_rows=[],
                      advice=None, week_label="This week", export_price_model="net_metering")
-    assert d["tweak"] == "No tweak this week — settings look right."
+    assert d["tweak"] is None  # null case: calm = absence (headline tail says it)
 
 
 # --- headline --------------------------------------------------------------------------------
@@ -285,7 +285,7 @@ def test_build_digest_full_shape():
         "solar_kwh": 24.5,
         "co2_avoided_note": "Avoided 62% of a no-solar home's CO₂ (12 kg vs 32 kg).",
         "actions": {"mode_switches": 0, "negative_soaks": 0, "overrides": 1},
-        "tweak": "No tweak this week — settings look right.",
+        "tweak": None,
         "headline": "You saved €6.70 this week, ran 78% self-sufficient and the panels made "
                     "24.5 kWh. Steady week — settings look right.",
         "days_measured": 7,

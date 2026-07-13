@@ -82,18 +82,38 @@ def test_forecast_only_names_the_missing_price_signal():
     assert "forecast" in out["reasons"][0].lower()
 
 
-def test_missing_forecast_skill_caps_at_medium_as_still_learning():
+def test_missing_forecast_skill_caps_at_medium_as_no_evidence_yet():
+    # n_slots == 0 (or no skill dict at all) must NEVER render "0.0 days" (production finding) —
+    # it reads as the honest "no evidence yet" sentence instead.
     out = _confidence(forecast_skill=None)
     assert out["level"] == "medium"
-    assert "still learning your roof" in out["reasons"][0].lower()
+    assert "no forecast evidence yet" in out["reasons"][0].lower()
+    assert "0.0" not in out["reasons"][0]
+
+
+def test_zero_matched_slots_reads_as_no_evidence_yet():
+    zero = {**_GOOD_SKILL, "n_slots": 0}
+    out = _confidence(forecast_skill=zero)
+    assert out["level"] == "medium"
+    assert "no forecast evidence yet" in out["reasons"][0].lower()
 
 
 def test_thin_forecast_evidence_caps_at_medium():
+    # 20 matched daytime slots ≈ 20/48 = 0.42 of a sunny day → "about half a day".
     thin = {**_GOOD_SKILL, "n_slots": 20}
     out = _confidence(forecast_skill=thin)
     assert out["level"] == "medium"
     assert "still learning your roof" in out["reasons"][0].lower()
-    assert "days of forecast evidence" in out["reasons"][0].lower()
+    assert "about half a day" in out["reasons"][0].lower()
+
+
+def test_almost_enough_evidence_reads_about_one_day():
+    # 47/48 = 0.98 → rounds to "about 1 day" (singular, no float).
+    thin = {**_GOOD_SKILL, "n_slots": 47}
+    out = _confidence(forecast_skill=thin)
+    assert out["level"] == "medium"
+    assert "about 1 day" in out["reasons"][0].lower()
+    assert "days" not in out["reasons"][0].split("about 1 day")[1][:1]
 
 
 def test_forecast_bias_beyond_threshold_caps_at_medium():
@@ -122,7 +142,7 @@ def test_reasons_are_capped_at_two_and_capping_reason_is_first():
     assert out["level"] == "medium"
     assert len(out["reasons"]) == 2
     assert "stale" in out["reasons"][0].lower()  # data_quality bullet ordered before forecast one
-    assert "still learning your roof" in out["reasons"][1].lower()
+    assert "no forecast evidence yet" in out["reasons"][1].lower()
 
 
 def test_low_level_reasons_are_capped_at_two_with_unsafe_first():

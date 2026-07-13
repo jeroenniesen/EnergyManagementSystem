@@ -17,7 +17,7 @@ type Digest = {
   solar_kwh: number;
   co2_avoided_note: string | null;
   actions: { mode_switches: number; negative_soaks: number; overrides: number };
-  tweak: string;
+  tweak: string | null;
   headline: string;
   days_measured: number;
   days_total: number;
@@ -139,12 +139,16 @@ export function WeekDigest() {
               <div className="week-digest-fact-name">self-sufficient</div>
             </div>
             <div className="week-digest-fact" data-testid="week-digest-fact-solar">
-              <div className="week-digest-fact-val">{digest.solar_kwh.toFixed(1)} kWh</div>
+              <div className="week-digest-fact-val">{digest.solar_kwh % 1 === 0 ? digest.solar_kwh.toFixed(0) : digest.solar_kwh.toFixed(1)} kWh</div>
               <div className="week-digest-fact-name">from the sun</div>
             </div>
-            <div className="week-digest-fact" data-testid="week-digest-fact-actions">
+            <div
+              className="week-digest-fact"
+              data-testid="week-digest-fact-actions"
+              title={`${digest.actions.mode_switches} battery mode changes · ${digest.actions.negative_soaks} paid-to-charge · ${digest.actions.overrides} manual`}
+            >
               <div className="week-digest-fact-val">{actionsTotal}</div>
-              <div className="week-digest-fact-name">actions taken</div>
+              <div className="week-digest-fact-name">battery adjustments</div>
             </div>
           </div>
 
@@ -154,9 +158,11 @@ export function WeekDigest() {
             </p>
           )}
 
-          <p className="advisor-hint week-digest-tweak" data-testid="week-digest-tweak">
-            {digest.tweak}
-          </p>
+          {digest.tweak && (
+            <p className="advisor-hint week-digest-tweak" data-testid="week-digest-tweak">
+              {digest.tweak}
+            </p>
+          )}
 
           {partial && (
             <p className="week-digest-coverage" data-testid="week-digest-coverage">
