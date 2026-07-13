@@ -54,7 +54,9 @@ def test_digest_endpoint_returns_the_requested_week(tmp_path):
     assert b["days_total"] == 7
     assert b["saved_eur"] is not None
     assert isinstance(b["headline"], str) and b["headline"]
-    assert isinstance(b["tweak"], str) and b["tweak"]
+    # No advisor evidence seeded -> the null-tweak case is None (calm = absence; the headline
+    # tail carries "settings look right").
+    assert b["tweak"] is None
     assert b["self_sufficiency_pct"] is not None
     assert b["solar_kwh"] > 0
 

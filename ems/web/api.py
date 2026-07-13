@@ -293,7 +293,7 @@ async def _run_weekly_digest(
     except Exception:
         _log.exception("weekly digest gather failed; retry next cycle (fail-safe)")
         return None
-    body = f"{digest['headline']} {digest['tweak']}".strip()
+    body = " ".join(x for x in (digest["headline"], digest.get("tweak")) if x).strip()
     await notifier.send(
         "weekly_digest", _digest_title(digest.get("saved_eur")), body,
         dedupe_key=f"digest:{week_label}",

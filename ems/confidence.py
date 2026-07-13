@@ -18,8 +18,9 @@ sentences). Pure — no clock, no I/O — trivially unit-testable against a hand
 from __future__ import annotations
 
 _SLOT_HOURS = 0.25  # 15-minute planner slots (CLAUDE.md "Planner granularity")
-_SLOTS_PER_DAY = 24.0 / _SLOT_HOURS  # 96
-_MIN_SKILL_SLOTS = 48  # mirrors ems.analysis._MIN_SLOTS — "a few days" of matched evidence
+_MIN_SKILL_SLOTS = 48  # mirrors ems.analysis._MIN_SLOTS — n_slots counts MATCHED DAYTIME slots,
+# not all 96 15-minute slots in a day, so ~48 is roughly one day's worth of sunny-hours evidence;
+# also doubles as the "days of evidence so far" denominator in _learning_reason below.
 _MAX_BIAS_FRACTION = 0.25  # |bias_w| beyond 25% of mean forecast p50 reads as "running hot/cold"
 _MIN_BAND_COVERAGE_PCT = 60.0
 
@@ -49,9 +50,18 @@ def _dq_reason(quality: str) -> str:
 
 
 def _learning_reason(forecast_skill: dict | None) -> str:
+    """Humanized evidence-so-far copy. n_slots counts matched DAYTIME slots (~48 ≈ one sunny
+    day), and a raw float here read as nonsense in production ("under 0.0 days")."""
     n_slots = (forecast_skill or {}).get("n_slots") or 0
-    days = n_slots / _SLOTS_PER_DAY
-    return f"Still learning your roof — under {days:.1f} days of forecast evidence so far."
+    if n_slots == 0:
+        return "No forecast evidence yet — the first sunny days are being recorded."
+    days = n_slots / _MIN_SKILL_SLOTS
+    if days < 0.75:
+        amount = "about half a day"
+    else:
+        n = max(1, round(days))
+        amount = f"about {n} day" + ("" if n == 1 else "s")
+    return f"Still learning your roof — {amount} of sunny-hours evidence so far."
 
 
 def _forecast_bias_flag(skill: dict) -> bool:

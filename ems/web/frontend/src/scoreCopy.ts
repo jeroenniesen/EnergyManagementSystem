@@ -57,7 +57,7 @@ export function scoreHeadline(key: string, value: number | null): string | undef
   return HEADLINES[key]?.[scoreBand(value)];
 }
 
-export type SummaryTone = "great" | "good" | "grow";
+export type SummaryTone = "great" | "good" | "grow" | "neutral"; // neutral: day-just-starting, no verdict yet
 
 type ScoreLike = { value: number | null };
 

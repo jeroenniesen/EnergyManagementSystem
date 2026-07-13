@@ -120,7 +120,7 @@ def _count_actions(audit_rows: list[dict]) -> dict:
     return {"mode_switches": switches, "negative_soaks": soaks, "overrides": overrides}
 
 
-def _tweak(advice: dict | None, week_label: str, export_price_model: str) -> str:
+def _tweak(advice: dict | None, week_label: str, export_price_model: str) -> str | None:
     """ONE suggestion, in precedence order (roadmap P2 "one suggested tweak"):
       1. The solar-confidence advisor (`ems.analysis.recommend_solar_confidence`), when its
          suggestion differs from the current setting by >= 5 percentage points either way — a
@@ -144,7 +144,9 @@ def _tweak(advice: dict | None, week_label: str, export_price_model: str) -> str
             "Review your export model before 2027 — net metering (saldering) is expected to phase "
             "out then, and switching early beats switching in a hurry."
         )
-    return "No tweak this week — settings look right."
+    # Null case: return None — the headline's "Steady week — settings look right." tail already
+    # says it, and rendering BOTH duplicated the sentence in production. Calm = absence.
+    return None
 
 
 def _headline(
@@ -163,7 +165,8 @@ def _headline(
     if self_sufficiency_pct is not None:
         bits.append(f"ran {self_sufficiency_pct:.0f}% self-sufficient")
     if solar_kwh > 0.05:
-        bits.append(f"the panels made {solar_kwh:.1f} kWh")
+        kwh = f"{solar_kwh:.1f}".rstrip("0").rstrip(".")  # 153.0 → 153, 24.5 stays
+        bits.append(f"the panels made {kwh} kWh")
     if bits:
         lead += ", " + " and ".join(bits)
     tail = ("Steady week — settings look right." if tweak_is_null
@@ -199,7 +202,7 @@ def build_digest(
     days_measured = sum(1 for r in finance_rows if r.get("saved_eur") is not None)
     days_total = len(finance_rows)
     tweak = _tweak(advice, week_label, export_price_model)
-    tweak_is_null = tweak.startswith("No tweak this week")
+    tweak_is_null = tweak is None
     self_sufficiency_pct = flows.get("self_sufficiency_pct")
     solar_kwh = round(float(flows.get("solar_kwh") or 0.0), 2)
 

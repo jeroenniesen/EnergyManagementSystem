@@ -73,7 +73,9 @@ export function ScoreRing({
           />
         </svg>
         <span className="ring-center" aria-hidden="true">
-          <span className="ring-value">{value == null ? "—" : Math.round(value)}</span>
+          <span className={`ring-value${value != null && Math.round(value) >= 100 ? " ring-value-3" : ""}`}>
+            {value == null ? "—" : Math.round(value)}
+          </span>
           <span className="ring-name">{label}</span>
         </span>
       </span>
