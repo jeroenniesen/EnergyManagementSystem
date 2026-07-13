@@ -1,7 +1,7 @@
 """Route-wiring regression net for the B-25 router split.
 
-`web/api.py` used to define every route inside `create_app`; five self-contained domains
-(car / digest / notify / export / accuracy) now live in `ems/web/routes/*` as
+`web/api.py` used to define every route inside `create_app`; six self-contained domains
+(car / digest / notify / export / accuracy / whatif) now live in `ems/web/routes/*` as
 `build_router(ctx)` and are attached with `app.include_router(...)`. This guards the split:
 
 1. the DIRECTLY-registered route set (everything still defined on `app` in api.py) is snapshotted
@@ -68,7 +68,7 @@ EXPECTED_DIRECT_ROUTES = frozenset({
     ("PATCH", "/api/{rest:path}"),
 })
 
-# The routes the five extracted domains OWN — reachable via their included sub-routers.
+# The routes the six extracted domains OWN — reachable via their included sub-routers.
 EXTRACTED_GET_ROUTES = [
     "/api/cars",                       # car
     "/api/car/plan",                   # car
@@ -78,11 +78,17 @@ EXTRACTED_GET_ROUTES = [
     "/api/export/package",             # export
     "/api/accuracy",                   # accuracy
     "/api/advisor/solar-confidence",   # accuracy
+    "/api/counterfactual",             # whatif (B-69)
 ]
 EXTRACTED_WRITE_ROUTES = [
     "/api/car/soc",                    # car
     "/api/notifications/read",         # notify
 ]
+# POST /api/whatif (B-73) is reachable but deliberately NOT a gated write (see api.py's
+# _WRITE_API_PATHS comment + ems/web/routes/whatif.py's module docstring) — checked separately
+# below rather than folded into EXTRACTED_WRITE_ROUTES, whose whole point is the OPPOSITE guarantee
+# (that those paths stay auth-gated).
+EXTRACTED_NO_AUTH_POST_ROUTES = ["/api/whatif"]
 
 
 def _direct_routes(app) -> set[tuple[str, str]]:
@@ -118,6 +124,16 @@ def test_extracted_write_routes_are_wired():
             assert resp.status_code != 404, f"{path} fell through to the 404 catch-all"
 
 
+def test_extracted_no_auth_post_routes_are_wired():
+    # POST /api/whatif (B-73): reachable exactly like EXTRACTED_WRITE_ROUTES above (503 without a
+    # store proves the handler ran), but see test_no_auth_post_routes_stay_open_with_a_token below
+    # for the auth guarantee that actually distinguishes it from that set.
+    with TestClient(create_app(MockSource(), dry_run=True, dev_mode="mock")) as client:
+        for path in EXTRACTED_NO_AUTH_POST_ROUTES:
+            resp = client.post(path, json={})
+            assert resp.status_code != 404, f"{path} fell through to the 404 catch-all"
+
+
 def test_unknown_api_path_still_404s():
     # The catch-all must still guard genuinely-unknown /api paths.
     with TestClient(create_app(MockSource(), dry_run=True, dev_mode="mock")) as client:
@@ -133,3 +149,13 @@ def test_moved_write_paths_are_gated_by_auth_middleware():
             assert client.post(path, json={}).status_code == 401, f"{path} not auth-gated"
             ok = client.post(path, json={}, headers={"Authorization": "Bearer s3cret"})
             assert ok.status_code != 401, f"{path} rejected a valid token"
+
+
+def test_no_auth_post_routes_stay_open_with_a_token():
+    # POST /api/whatif (B-73) is deliberately OUTSIDE _WRITE_API_PATHS (it's read-only by
+    # construction — see api.py's comment + the whatif.py module docstring): even with a token
+    # configured and no Authorization header, it must NOT 401 like the real write paths above.
+    app = create_app(MockSource(), dry_run=True, dev_mode="mock", web_auth_token="s3cret")
+    with TestClient(app) as client:
+        for path in EXTRACTED_NO_AUTH_POST_ROUTES:
+            assert client.post(path, json={}).status_code != 401, f"{path} unexpectedly auth-gated"

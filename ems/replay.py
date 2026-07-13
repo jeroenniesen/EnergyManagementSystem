@@ -51,6 +51,13 @@ from ems.timeutil import day_slot_count
 _DH = 0.25  # hours per 15-min slot (energy = power × this)
 _COVERAGE_MIN = 0.80  # a day needs ≥80% slot coverage of BOTH load and prices to be replayable
 SCENARIOS = ("no_battery", "auto_selfuse", "planner")
+# Matches every writer connection's own busy_timeout (storage/history.py, storage/settings.py):
+# without it, a `mode=ro` connection has SQLite's default (fail-instantly) timeout, so a replay
+# started from a LIVE app (B-69/B-73's web routes) can race the daily maintenance loop's
+# `PRAGMA wal_checkpoint(TRUNCATE)` right after boot and get an immediate "database is locked" —
+# which `_query` below then silently reads as "no data" rather than retrying. Waiting it out here
+# is the fix, not loosening that (deliberately narrow) except clause.
+_RO_BUSY_TIMEOUT_MS = 3000
 
 
 def _clamp(value: float, low: float, high: float) -> float:
@@ -476,8 +483,11 @@ def replay_day(
 # --------------------------------------------------------------------------------------------------
 def _ro_conn(db_path: str) -> sqlite3.Connection:
     """A strictly READ-ONLY connection (mode=ro URI): any write raises. Guards the promise that a
-    replay can never mutate the live history DB."""
-    return sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
+    replay can never mutate the live history DB. `busy_timeout` lets a transient writer lock
+    (e.g. the maintenance loop's WAL checkpoint) be waited out instead of failing instantly."""
+    conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
+    conn.execute(f"PRAGMA busy_timeout={_RO_BUSY_TIMEOUT_MS}")
+    return conn
 
 
 def _query(conn: sqlite3.Connection, sql: str, params: tuple) -> list[dict]:

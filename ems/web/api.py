@@ -111,6 +111,7 @@ from ems.web.routes.digest import (
 )
 from ems.web.routes.export import build_router as build_export_router
 from ems.web.routes.notify import build_router as build_notify_router
+from ems.web.routes.whatif import build_router as build_whatif_router
 
 _log = logging.getLogger("ems.recorder")
 
@@ -1026,6 +1027,10 @@ def create_app(
         "/api/override", "/api/settings", "/api/ai/validate", "/api/chat", "/api/car/soc",
         "/api/notifications/read",
     })
+    # POST /api/whatif (B-73 scenario simulator, ems/web/routes/whatif.py) is DELIBERATELY not in
+    # this set: it only opens `replay_range`'s read-only (mode=ro) history DB connection and never
+    # touches `settings_store` — there is nothing to protect, so gating it like a write would
+    # misrepresent what it does. It stays reachable exactly like any other read.
     # Always reachable without a token: auth discovery, so a client can learn a token is required
     # and prompt for it. (Health probes live under /health and are never gated here.)
     _AUTH_EXEMPT_API_PATHS = frozenset({"/api/auth"})
@@ -3152,7 +3157,7 @@ def create_app(
         report_for_window=_report_for_window,
     )
     for build in (build_car_router, build_digest_router, build_notify_router,
-                  build_export_router, build_accuracy_router):
+                  build_export_router, build_accuracy_router, build_whatif_router):
         app.include_router(build(ctx))
 
     # Unknown /api/* paths must return a JSON 404 — NOT fall through to the SPA catch-all

@@ -10,6 +10,7 @@ import { HeatingAdvice } from "./HeatingAdvice";
 import { scoreBand, ScoreRing } from "./ScoreRing";
 import { scoreCaption } from "./scoreCopy";
 import { WeekDigest } from "./WeekDigest";
+import { WhatIf } from "./WhatIf";
 
 type Score = {
   key: string;
@@ -379,6 +380,7 @@ export function Insights() {
           )}
 
           <FinanceSection period={period} anchor={anchor} />
+          <WhatIf />
         </>
       )}
     </section>
