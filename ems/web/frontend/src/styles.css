@@ -1705,6 +1705,12 @@ body {
 .score-detail { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
 .score-raw { font-size: 0.85rem; color: var(--muted); font-variant-numeric: tabular-nums; }
 .score-explain { font-size: 0.82rem; color: var(--text); margin: 0; line-height: 1.4; }
+/* B-06: period-over-period trend chip. Calm on purpose — a worse score is muted amber, never the
+   alarm-red used for warnings elsewhere; "same" stays fully muted. */
+.score-trend { font-size: 0.78rem; font-weight: 600; font-variant-numeric: tabular-nums; }
+.score-trend-up { color: var(--green-text); }
+.score-trend-down { color: var(--amber-text); }
+.score-trend-same { color: var(--muted); font-weight: 500; }
 
 /* A non-interactive ring (Insights) doesn't lift or show a pointer. */
 .ring-static { flex: none; cursor: default; }

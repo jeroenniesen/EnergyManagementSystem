@@ -15,6 +15,12 @@ type PriceWindow = {
 // reachability the backend already tracks. Reasons is never empty, at most two entries.
 export type PlanConfidence = { level: "high" | "medium" | "low"; reasons: string[] };
 
+// B-03b: the footer's "Saved today" figure is MEASURED (from /api/finance, recorded samples +
+// stored prices), never a plan estimate — so it can never show a false "€0.00" before any price
+// history exists. "measuring" means the day has no priced/recorded coverage yet (finance's
+// totals.saved_eur is null); the footer then says so instead of inventing a number.
+export type SavedToday = { status: "measured"; eur: number } | { status: "measuring" };
+
 export type BatteryPlanData = {
   status: "on_track" | "needs_topup" | "behind_target" | "paused_safely" | "data_stale";
   summary: string;
@@ -89,23 +95,31 @@ const poly = (seg: XY[]) => seg.map((p) => `${p.x.toFixed(1)},${p.y.toFixed(1)}`
 // row carried, now travelling with the plan they describe. Each triplet renders only when known, so
 // a lagging endpoint just leaves a gap rather than a "—".
 function PlanFooter({
-  savings,
+  savedToday,
   socPct,
   batteryMode,
   onBatteryClick,
 }: {
-  savings: number | null;
+  savedToday: SavedToday | null;
   socPct: number | null;
   batteryMode: string | null;
   onBatteryClick?: () => void;
 }) {
-  if (savings == null && socPct == null && !batteryMode) return null;
+  if (!savedToday && socPct == null && !batteryMode) return null;
   return (
     <div className="battery-plan-footer" data-testid="story-footer">
-      {savings != null && (
-        <span className="bp-foot" title="Rough estimate of what smart charging saved today vs. leaving the battery on its own.">
+      {savedToday && (
+        <span
+          className="bp-foot"
+          data-testid="saved-today"
+          title="Measured vs. a no-battery day."
+        >
           <span className="bp-foot-label">Saved today</span>
-          <span className="bp-foot-value">€{savings.toFixed(2)}</span>
+          <span className="bp-foot-value">
+            {savedToday.status === "measured"
+              ? `€${savedToday.eur.toFixed(2)} measured`
+              : "€— · measuring"}
+          </span>
         </span>
       )}
       {socPct != null &&
@@ -140,13 +154,13 @@ function PlanFooter({
 
 export function BatteryPlan({
   plan,
-  savings = null,
+  savedToday = null,
   socPct = null,
   batteryMode = null,
   onBatteryClick,
 }: {
   plan: BatteryPlanData | null;
-  savings?: number | null;
+  savedToday?: SavedToday | null;
   socPct?: number | null;
   batteryMode?: string | null;
   onBatteryClick?: () => void;
@@ -156,7 +170,7 @@ export function BatteryPlan({
       <section className="battery-plan battery-plan-loading" data-testid="battery-plan">
         <p className="battery-plan-summary">Loading battery plan…</p>
         <PlanFooter
-          savings={savings}
+          savedToday={savedToday}
           socPct={socPct}
           batteryMode={batteryMode}
           onBatteryClick={onBatteryClick}
@@ -271,7 +285,7 @@ export function BatteryPlan({
         <span><i className="leg reserve" /> reserve</span>
       </div>
       <PlanFooter
-        savings={savings}
+        savedToday={savedToday}
         socPct={socPct}
         batteryMode={batteryMode}
         onBatteryClick={onBatteryClick}

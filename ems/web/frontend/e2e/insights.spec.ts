@@ -25,6 +25,23 @@ const REPORT = {
   ],
 };
 
+// B-06 trend chips: the app fetches the SAME period one step back using its own local-calendar
+// date math (Insights.tsx's shiftAnchor). Mirror that math here so the mock can tell "today"'s
+// request apart from "yesterday"'s regardless of which real day the test happens to run on.
+function ymd(d: Date): string {
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(
+    d.getDate(),
+  ).padStart(2, "0")}`;
+}
+function todayStr(): string {
+  return ymd(new Date());
+}
+function shiftDay(d: string, delta: number): string {
+  const dt = new Date(`${d}T00:00:00`);
+  dt.setDate(dt.getDate() + delta);
+  return ymd(dt);
+}
+
 test.describe("Insights", () => {
   test("shows the three scores and the energy-flow amounts", async ({ page }) => {
     await page.route("**/api/report**", (route) =>
@@ -95,6 +112,69 @@ test.describe("Insights", () => {
     // Every card reads as a win.
     await expect(page.getByTestId("score-card-self_consumption")).toContainText("Mostly your own sun");
     await expect(page.getByTestId("score-card-best_price")).toContainText("Bought at the right times");
+  });
+
+  // B-06: "you vs last {period}" — a small trend chip per score card, fetched via one extra,
+  // best-effort call for the same period one step back.
+  test("B-06: shows an up trend chip when this period beats the previous one", async ({ page }) => {
+    const today = todayStr();
+    const yesterday = shiftDay(today, -1);
+    await page.route("**/api/report**", (route) => {
+      const date = new URL(route.request().url()).searchParams.get("date");
+      const body =
+        date === yesterday
+          ? { ...REPORT, scores: REPORT.scores.map((s) =>
+              s.key === "self_consumption" ? { ...s, value: 74 } : s) }
+          : REPORT; // today: self_consumption 80 (REPORT's default)
+      return route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(body) });
+    });
+    await page.goto("/");
+    await page.getByTestId("nav-insights").click();
+    const trend = page.getByTestId("score-self_consumption-trend");
+    await expect(trend).toBeVisible();
+    await expect(trend).toContainText("▲ +6 vs last day");
+  });
+
+  test("B-06: shows a muted-amber down trend chip (never a red alarm) when this period is worse", async ({
+    page,
+  }) => {
+    const today = todayStr();
+    const yesterday = shiftDay(today, -1);
+    await page.route("**/api/report**", (route) => {
+      const date = new URL(route.request().url()).searchParams.get("date");
+      const body =
+        date === yesterday
+          ? { ...REPORT, scores: REPORT.scores.map((s) => (s.key === "co2" ? { ...s, value: 64 } : s)) }
+          : REPORT; // today: co2 60
+      return route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(body) });
+    });
+    await page.goto("/");
+    await page.getByTestId("nav-insights").click();
+    const trend = page.getByTestId("score-co2-trend");
+    await expect(trend).toBeVisible();
+    await expect(trend).toContainText("▼ −4 vs last day");
+    await expect(trend).toHaveClass(/score-trend-down/);
+    // Down is muted amber styling, not the app's red/error class.
+    await expect(trend).not.toHaveClass(/error|alert|danger/);
+  });
+
+  test("B-06: no trend chip when there's no comparable previous period", async ({ page }) => {
+    const today = todayStr();
+    const yesterday = shiftDay(today, -1);
+    await page.route("**/api/report**", (route) => {
+      const date = new URL(route.request().url()).searchParams.get("date");
+      if (date === yesterday) {
+        // No history that far back yet.
+        return route.fulfill({ status: 404, contentType: "application/json", body: "{}" });
+      }
+      return route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(REPORT) });
+    });
+    await page.goto("/");
+    await page.getByTestId("nav-insights").click();
+    await expect(page.getByTestId("score-self_consumption")).toBeVisible();
+    await expect(page.getByTestId("score-self_consumption-trend")).toHaveCount(0);
+    await expect(page.getByTestId("score-co2-trend")).toHaveCount(0);
+    await expect(page.getByTestId("score-best_price-trend")).toHaveCount(0);
   });
 
   test("the period picker switches windows", async ({ page }) => {

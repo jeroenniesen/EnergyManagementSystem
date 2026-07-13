@@ -75,6 +75,25 @@ function shiftAnchor(anchor: string, period: Period, dir: number): string {
 
 const kwh = (n: number) => `${n.toFixed(1)} kWh`;
 
+// B-06: "you vs last {period}" — a small trend chip per score card. Reuses the same period-nav
+// date math (shiftAnchor) to fetch the SAME period one step back, then diffs each score by key.
+// Muted styling throughout: a worse score is never alarm-red, just a muted amber "▼".
+type Trend = { dir: "up" | "down" | "same"; diff: number };
+
+function scoreTrend(score: Score, prevReport: Report | null): Trend | null {
+  if (!prevReport || !prevReport.flows?.has_data || score.value == null) return null;
+  const prevScore = prevReport.scores.find((p) => p.key === score.key);
+  if (!prevScore || prevScore.value == null) return null;
+  const diff = Math.round(score.value - prevScore.value);
+  return { dir: diff > 0 ? "up" : diff < 0 ? "down" : "same", diff };
+}
+
+function trendLabel(trend: Trend, period: Period): string {
+  if (trend.dir === "up") return `▲ +${trend.diff} vs last ${period}`;
+  if (trend.dir === "down") return `▼ −${Math.abs(trend.diff)} vs last ${period}`;
+  return `· same as last ${period}`;
+}
+
 function rawText(s: Score): string {
   if (s.raw == null) return "";
   if (s.unit === "kg") return `${s.raw.toFixed(1)} kg CO₂`;
@@ -144,6 +163,7 @@ export function Insights() {
   const [period, setPeriod] = useState<Period>("day");
   const [anchor, setAnchor] = useState<string>(todayStr());
   const [report, setReport] = useState<Report | null>(null);
+  const [prevReport, setPrevReport] = useState<Report | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(false);
 
@@ -167,6 +187,26 @@ export function Insights() {
           setError(true);
           setLoading(false);
         }
+      });
+    return () => {
+      alive = false;
+    };
+  }, [period, anchor]);
+
+  // B-06: one extra, best-effort fetch per period/anchor change — the SAME period one step back,
+  // reusing shiftAnchor's date math — so every score card can show a "vs last {period}" trend
+  // without each card issuing its own request. Failure (or no history that far back) just means no
+  // trend chip renders; it never blocks or errors the main report.
+  useEffect(() => {
+    let alive = true;
+    const prevAnchor = shiftAnchor(anchor, period, -1);
+    fetch(`/api/report?period=${period}&date=${prevAnchor}`)
+      .then((r) => (r.ok ? r.json() : null))
+      .then((v: Report | null) => {
+        if (alive) setPrevReport(v);
+      })
+      .catch(() => {
+        if (alive) setPrevReport(null);
       });
     return () => {
       alive = false;
@@ -273,6 +313,18 @@ export function Insights() {
                   {!early && s.raw != null && s.unit !== "%" && (
                     <div className="score-raw">{rawText(s)}</div>
                   )}
+                  {!early && (() => {
+                    const trend = scoreTrend(s, prevReport);
+                    if (!trend) return null;
+                    return (
+                      <div
+                        className={`score-trend score-trend-${trend.dir}`}
+                        data-testid={`score-${s.key}-trend`}
+                      >
+                        {trendLabel(trend, period)}
+                      </div>
+                    );
+                  })()}
                   <p className="score-explain">
                     {early ? "Scores build as the day fills in." : s.explanation}
                   </p>
