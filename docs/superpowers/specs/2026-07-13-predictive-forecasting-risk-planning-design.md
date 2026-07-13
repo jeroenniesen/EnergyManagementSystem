@@ -2,7 +2,7 @@
 
 **Date:** 2026-07-13
 **Scope:** BACKLOG B-63, B-64, B-65, and B-67; B-78 is a later follow-up
-**Status:** Approved design, awaiting implementation plan
+**Status:** Revised after integration review, awaiting reviewer approval and implementation plan
 
 ## 1. Purpose
 
@@ -76,6 +76,13 @@ The initial protected-window success thresholds are 95% for `cautious`, 85% for 
 planning buffer; no preference permits crossing the deterministic hard reserve. Threshold changes
 require replay evidence and an explicit specification/configuration change, not silent model tuning.
 
+**Protected expensive window** means the contiguous interval from the first through the last
+forecast-deficit slot in the planning horizon whose import price exceeds the shared degradation-
+and-efficiency-aware breakeven threshold. Success means the projected battery can serve every such
+deficit slot without reaching the hard reserve and forcing peak-price import. When no slot qualifies,
+the protected-window constraint is vacuously satisfied and economics—not an invented evening
+window—decides among candidates.
+
 ### 2.5 Reserve changes remain suggest-first
 
 B-67 recommends a daily planning reserve and explains why it differs from the user's default. It
@@ -142,17 +149,91 @@ It owns:
 CPU-heavy training runs outside the FastAPI event loop in a worker process. A training
 failure or process crash cannot stop sensing, planning, API service, or battery control.
 
-### 3.3 Planner integration
+### 3.3 One forecast-evidence authority
+
+The prediction ledger and its scorer become the single authority for user-visible forecast quality.
+The existing `ems.analysis.forecast_error()` matched-slot calculation must not remain as a parallel
+source capable of producing a different answer.
+
+The scorer returns one versioned `ForecastEvidenceReport` containing separate `solar` and `load`
+component metrics plus an aggregate `Low | Medium | High` result. The aggregate uses
+worst-component-wins across components required by the current plan; its deciding reason names that
+component. Component panels may show their own status, but every consumer receives them from this
+same report and evidence window.
+
+Reconcile all existing consumers in the first delivery batch:
+
+- `plan_confidence()` consumes the canonical `ForecastQuality` result rather than its current
+  `_MIN_SKILL_SLOTS`/matched-slot gate.
+- B-76 `model_health()` consumes the same result and does not import or re-derive separate solar
+  evidence thresholds.
+- `GET /api/accuracy`, the System page, the support export, and the solar-confidence advisor read
+  the same canonical scoring service.
+- `forecast_error()` may remain temporarily as a compatibility view for legacy exports/tests, but
+  it must delegate to canonical ledger evidence or be labeled legacy diagnostic data; it cannot
+  drive a second household-facing score.
+
+Contract tests assert that plan confidence, model health, API accuracy, advisor evidence, and export
+report the same evidence version, eligible-day count, quality label, and deciding reason. This avoids
+the trust failure of two screens reporting different forecast quality from the same history.
+
+### 3.4 Planner integration and bounded candidate generation
 
 The forecaster supplies uncertain load trajectories to `ems.intelligence`. The existing
-deterministic adaptive planner generates a bounded set of candidate `Plan` objects using different
-forecast paths and charge targets. The current baseline rule plan is always included.
+deterministic adaptive planner currently returns one plan, so candidate enumeration is explicit new
+machinery rather than an assumed capability. Add a pure candidate generator with at most six unique
+plans:
+
+1. The current baseline rule plan.
+2. The prior still-valid plan, when one exists.
+3. An adaptive plan sized to the 50th-percentile protected-window net demand.
+4. An adaptive plan sized to the 70th-percentile protected-window net demand.
+5. An adaptive plan sized to the 85th-percentile protected-window net demand.
+6. An adaptive plan sized to the 95th-percentile protected-window net demand.
+
+Identical plans are deduplicated before evaluation. Candidate sizing may change only the forecast
+path/energy target supplied to the existing planner; it does not add new intents or bypass planner
+economics. Candidate-generation failure returns only the baseline rule plan.
 
 The intelligence layer evaluates every candidate across the same set of plausible load-and-solar
 trajectories using the existing energy projection model. It selects the lowest-cost candidate that
 satisfies the chosen risk preference, then sends it through the unchanged plan validator.
 
+This work implements the required B-47 slice: a `Planner` protocol, registry entry for the baseline
+and risk-aware planners, and a persisted `PlannerInputSnapshot`. The snapshot owns the deterministic
+scenario seed and cache key. The broader future learned-planner `rule_based | ml | advisory` switch
+remains separate.
+
+Scenario construction and candidate evaluation run off the event loop with a hard two-second caller
+budget. An overrun discards that evaluation and returns the baseline rule plan for the cycle. Only
+one evaluation is in flight: while an over-budget worker finishes, later cycles use baseline rather
+than queueing more work; a worker still running after ten seconds is terminated/restarted. The
+result is memoized by `PlannerInputSnapshot` for the quantized control cycle so dashboard, API, and
+iOS reads cannot trigger duplicate ensembles. This is the planning-critical slice of B-48; the
+backlog item retains its broader per-cycle reporting/projection cleanup.
+
 No learned model emits unrestricted battery actions or continuous power commands.
+
+### 3.5 Relationship to the existing optional ML design
+
+This design deliberately changes the current `SPEC.md`/`docs/ml-layer.md` premise that all learned
+load forecasting is accelerator-gated:
+
+- CPU baseline and quantile-tree load forecasting become an optional forecasting capability that
+  can run on Mac, Pi, or Jetson.
+- `forecast.use_developing_model` controls early forecast blending.
+- `planner.risk_preference` controls the deterministic risk-aware planner and is orthogonal to
+  model family.
+- The existing `planner.mode = rule_based | ml | advisory` contract is reserved for a future
+  learned planner; this cluster does not implement or activate `MlPlanner`.
+- A future neural load forecaster may be CPU- or accelerator-backed behind `LoadForecaster` without
+  changing the deterministic planner contract.
+- Local-LLM acceleration and the independent external/template explainer choices remain unchanged.
+
+The first implementation batch must reconcile `SPEC.md` §§2/4/8/9/13/15,
+`docs/ml-layer.md`, `docs/config-reference.md`, `CLAUDE.md`, and `README.md` with these boundaries.
+Documentation updates ship in the same commits as their corresponding schema/config/runtime changes;
+the implementation is not complete while the old accelerator-gated forecaster story remains.
 
 ## 4. Data foundation and provenance
 
@@ -214,6 +295,47 @@ Weather may be added later only after issue-time weather snapshots are stored an
 shows repeatable unseen-data improvement. Present-day or hindsight weather must never be joined into
 historical training examples.
 
+### 4.5 Migration and historical backfill
+
+This is the first schema evolution that cannot be expressed safely with another
+`CREATE TABLE IF NOT EXISTS`. Complete B-52's remaining ordered `PRAGMA user_version` migration
+runner before changing forecast storage. Startup migration must be transactional, idempotent,
+backup-tested, and exercised against both the previous schema and a fresh database.
+
+During migration:
+
+- Aggregate retained raw/derived samples into the 400-day compact observation table.
+- Copy existing `(issued_date, start)` forecast rows into the prediction ledger without deleting
+  the legacy table until export/replay compatibility has moved.
+- Mark migrated rows `provenance=legacy_date_keyed` and never pretend they have exact issue time.
+- Treat a legacy date as an approximate midnight snapshot only when raw-recorder evidence exists
+  within the first 15 minutes of that UTC date; assign `issued_at=00:00Z` and require at least an
+  18-hour target lead. All other legacy rows are `legacy_unknown` and excluded from quality gates.
+- Eligible `legacy_date_keyed` rows may warm-start `Low`/`Medium` evidence and residual calibration,
+  but cannot contribute to `High`, canonical head-to-head promotion, or the four-week stability
+  requirement. The UI explains when quality is temporarily based partly on migrated evidence.
+
+This backfill prevents a continuously running installation with valid historical snapshots from
+needlessly restarting at zero while preserving the anti-leakage distinction between approximate
+legacy provenance and the new canonical 18:00 snapshots.
+
+### 4.6 Pre-migration production diagnostic
+
+Before writing the migration, capture a read-only diagnostic from the live production database:
+
+- Raw, derived, and forecast row counts and date ranges.
+- Forecast rows grouped by `issued_date`.
+- Raw/forecast 15-minute bucket overlap and daytime overlap.
+- Parse failures, timezone offsets, duplicate target slots, and first/last recorder timestamps per
+  issue date.
+- The exact rows supplied to the current `forecast_error()` path when it reports `n_slots=0`.
+
+Classify the cause as missing persistence, no elapsed overlap, timestamp parsing/alignment, query
+window/cap, wrong database, or another demonstrated condition. Add a regression fixture reproducing
+the finding before building the ledger on the same pipeline. If the live database is unavailable,
+the implementation batch is blocked at this diagnostic gate rather than inferring from demo/e2e
+data.
+
 ## 5. Forecast model and feature procedure
 
 ### 5.1 Features
@@ -266,12 +388,13 @@ Initial versioned evidence gates, evaluated over the most recent eligible 56 day
 - `Medium`: at least 7 complete evaluation days containing at least 5 weekdays and 2 weekend days;
   at least 80% usable slot coverage; absolute daily-energy bias no greater than 20%; normalized MAE
   no greater than 45% of mean observed load; nominal 80% interval coverage between 60% and 95%; and
-  weighted interval score no more than 5% worse than `BaselineLoadForecaster`.
+  normalized mean 80% interval width no greater than 200%; and weighted interval score no more than
+  5% worse than `BaselineLoadForecaster`.
 - `High`: at least 28 complete evaluation days containing at least 20 weekdays and 8 weekend days;
   at least 90% usable slot coverage; absolute daily-energy bias no greater than 10%; normalized MAE
-  no greater than 30%; nominal 80% interval coverage between 72% and 88%; and the bias, normalized
-  MAE, and coverage thresholds holding independently in each of the last four complete weekly
-  evaluation windows.
+  no greater than 30%; nominal 80% interval coverage between 72% and 88%; normalized mean interval
+  width no greater than 125%; and the bias, normalized MAE, coverage, and width thresholds holding
+  independently in each of the last four complete weekly evaluation windows.
 
 If 28 eligible days do not naturally contain 20 weekdays and 8 weekend days because rows were
 excluded, evaluation expands backward within the 56-day cap; otherwise quality remains `Medium`.
@@ -280,7 +403,9 @@ starting gates to be validated with replay, stored with a `quality_rules_version
 deliberately. Elapsed age or sample count alone never awards a higher label.
 
 Normalized MAE divides MAE by `max(mean observed load, 100 W)` so an unusually low-load evaluation
-window cannot create an unstable ratio.
+window cannot create an unstable ratio. Normalized interval width uses the same denominator. The
+width ceilings prevent an uninformatively broad band from earning `Medium` merely by covering most
+observations.
 
 Before 7 complete evaluation days exist, no tree model is eligible for promotion. After 3 complete
 days, the developing path may apply only the regularized recent-demand correction, subject to the
@@ -294,6 +419,21 @@ Combining per-slot low solar with high load does not create a known end-to-end s
 because forecast errors persist across adjacent slots. Preserve temporal correlation by sampling
 complete historical residual blocks from comparable days. Until enough comparable residual days
 exist, use broad, conservative default trajectories.
+
+Load and solar residuals are sampled as a paired local-calendar-day block so their observed
+correlation is retained. Comparable-day selection is deterministic and hierarchical:
+
+1. Prefer the same weekday/weekend class, climatological season (`DJF`, `MAM`, `JJA`, `SON`), and
+   canonical forecast-solar daily-energy tercile (`low`, `middle`, `high`).
+2. If fewer than 14 eligible paired days remain, drop the solar-tercile match.
+3. If still fewer than 14 remain, drop weekday/weekend matching but retain season.
+4. A pool of 7–13 days may be used only with residual magnitudes inflated by 25% and forecast
+   quality capped at `Low` for risk-planning purposes.
+5. Fewer than 7 eligible paired days disables block bootstrap; use the versioned broad analytic
+   fallback trajectories and the baseline rule plan remains the only executable plan.
+
+Sampling is with replacement from the selected pool. Pool definition, member dates, fallback tier,
+and inflation factor are stored with the `PlannerInputSnapshot` for replay.
 
 Every planning evaluation uses a fixed random seed derived from its input snapshot or an otherwise
 stored scenario-set identifier. Replaying the same snapshot must reproduce the same choice.
@@ -416,6 +556,12 @@ scikit-learn and its transitive numerical runtime. If it is absent or incompatib
 is reported as unavailable and the baseline starts normally. Model data and artifacts remain local;
 no household history is sent to an external training service.
 
+B-43's default lean image remains unchanged and must continue to build with
+`uv sync --frozen --no-dev` without installing scikit-learn. A separate documented forecasting
+install/build target uses `uv sync --frozen --no-dev --extra forecasting`; its lockfile state is
+committed and tested in CI. The Mac installer and container deployment expose an explicit
+forecasting-capability option rather than silently enlarging every installation.
+
 ## 9. Manual training and UI/API contract
 
 ### 9.1 Settings and endpoints
@@ -439,7 +585,9 @@ use household language: `Forecast improved`, `Current model remains better`, `Mo
 
 ### 9.2 Portal and iOS
 
-The web System page and iOS Model Health view show:
+The web System page extends its existing B-76 panel. iOS has no Model Health view today, so this
+batch adds a new read-mostly `ModelHealthView`, API models/client methods, navigation entry, loading/
+error/empty states, and Swift tests. Both surfaces show:
 
 - Forecast quality and its deciding reason.
 - Active baseline/developing/mature source and fallback state.
@@ -483,7 +631,9 @@ outcome, and any unavailable capability.
 - Forecast bundles are finite, non-negative, aligned, and ordered.
 - Baseline, tree, blended, and fake future-neural adapters satisfy the same public contract.
 - Quality transitions and developing-model gates are deterministic.
+- Medium/High width ceilings reject uninformatively broad intervals.
 - All risk preferences select only eligible candidates and preserve the hard reserve.
+- Candidate generation emits at most six unique plans and degrades to baseline-only on error.
 - Artifact promotion, rollback, checksum failure, and version incompatibility are safe.
 
 Statistical tests use fixed inputs/seeds and assert invariants or bounded metrics rather than fragile
@@ -503,28 +653,71 @@ byte-for-byte model coefficients.
 ### 11.3 Integration and failure tests
 
 - Prediction/outcome ledger persistence and canonical lead-time scoring.
+- Previous-schema migration, backup/restore, legacy provenance classification, and historical
+  observation/forecast backfill.
+- A production `n_slots=0` regression fixture captured from the diagnostic in §4.6.
+- Plan confidence, B-76 model health, `/api/accuracy`, advisor evidence, and export all report the
+  same canonical evidence version and quality result.
 - Scheduled and manually triggered training.
 - Concurrent-trigger deduplication and clean shutdown/interruption.
 - Authenticated web and iOS requests.
 - Fresh-process artifact reload.
 - Missing dependency, corrupt artifact, timeout, worker crash, and partial-horizon fallback.
+- A candidate/scenario computation exceeding two seconds returns the baseline plan and does not
+  block the event loop; no second evaluation queues behind it; a ten-second worker is restarted;
+  repeated reads in one control cycle hit the snapshot memo.
 - Promotion does not immediately command the battery.
 - Advisory/dry-run/live mode boundaries remain intact.
 
-## 12. Delivery sequence
+## 12. Delivery batches
 
-1. Compact observation store, prediction ledger, baseline forecast contract, and quality label.
-2. Model service, artifact registry, manual `Update models now` job, web/iOS status surfaces.
-3. Quantile-tree challenger in shadow mode with rolling-origin evaluation.
-4. Developing-model toggle and calibrated shrinkage.
-5. Solar-band calibration with canonical lead-time provenance.
-6. Whole-trajectory scenario generation and risk-aware candidate evaluation in replay/advisory mode.
-7. Risk-aware planner behind the existing dry-run gate.
-8. Live activation only after replay and dry-run show no safety regression.
-9. Recommendation-only dynamic reserve advisor.
+This design is implemented through three separately reviewed implementation plans. A batch may use
+multiple small PRs, but its acceptance gate is shared. Do not create one 500-line-design-sized
+implementation plan or one monolithic PR.
 
-This order delivers visible value after step 1 and user-triggered learning after step 2, while
-keeping forecast-driven control changes behind evidence, replay, and dry-run gates.
+### Batch A — Evidence foundation, migration, and status surfaces (start next)
+
+1. Run the live `n_slots=0` diagnostic and land its regression fixture.
+2. Complete B-52's migration runner and verify backup/restore from the previous schema.
+3. Add/backfill the compact observation store and exact-provenance prediction ledger.
+4. Add the baseline forecast contract, canonical 18:00 snapshot, single scoring authority, quality
+   rules, and legacy warm-start classification.
+5. Rewire plan confidence, B-76 model health, `/api/accuracy`, solar advisor, and export to that one
+   scoring authority.
+6. Add the model-service shell, status/manual-update job lifecycle, audit events, and baseline-only
+   `Update models now` behavior.
+7. Extend the web System panel and add the new iOS `ModelHealthView` with contract tests.
+8. Reconcile SPEC/ML/config/CLAUDE/README documentation and establish optional-dependency build
+   targets without installing scikit-learn in the default image.
+
+Deploy Batch A as soon as its migration and regression gates pass. Evidence only accumulates after
+the ledger exists: each week of delay moves the 7-day `Medium` and 28-day `High` earliest dates by a
+week. Historical backfill reduces, but cannot eliminate, that delay because migrated approximate
+snapshots cannot qualify for `High`.
+
+### Batch B — Personalized challenger and calibration
+
+1. Add the shared versioned feature builder and quantile-tree optional adapter.
+2. Add worker-process training, atomic artifacts, rolling-origin evaluation, and promotion gates.
+3. Run the quantile tree as a shadow challenger and expose comparisons in model status.
+4. Add the developing-model toggle and recalibrated shrinkage.
+5. Add canonical solar-band calibration and scheduled/manual retraining behavior.
+
+Batch B does not change executable battery plans. Acceptance requires forecast contract, leakage,
+artifact-failure, and shadow-evaluation tests plus production evidence from Batch A.
+
+### Batch C — Risk-aware planning and reserve advice
+
+1. Implement the B-47 planner-protocol/input-snapshot slice and bounded candidate generator.
+2. Add comparable-day paired residual blocks, analytic low-data fallback, deterministic 200-path
+   ensembles, the two-second budget, and B-48-style per-snapshot memoization.
+3. Evaluate candidates in replay/advisory mode and expose minimal B-65 evidence.
+4. Enable risk-aware selection behind the existing dry-run gate.
+5. Activate live only after replay and multi-week dry-run show no safety regression.
+6. Ship recommendation-only B-67 dynamic reserve advice; retain B-78 as the later automation item.
+
+This sequencing starts the time-dependent evidence clock immediately while keeping personalized
+forecasting and forecast-driven control as separate, independently reversible releases.
 
 ## 13. Explicit non-goals
 
