@@ -9,6 +9,11 @@ actually happened, over three independent tracks (B-72):
   deadline arrives, when the gap actually means something).
 - `load_baseline_error`: how predictable the household's own load is, against a simple
   trailing-mean day-of-week/hour baseline — the number a future load model (B-64) must beat.
+- `model_health` (B-76): a synthesized ok/warn/unknown verdict per track — SYNTHESIS ONLY, no new
+  measurement — for the System page's "Model health" panel. Reuses the exact same evidence-gate and
+  bias/band-coverage rule `ems.confidence.plan_confidence` already applies to the solar track (the
+  constants and the rule function are imported from there, not duplicated), so the panel and the
+  plan-confidence chip never disagree about what "the forecast is running hot/cold" means.
 
 Pure — no clock, no I/O. The export endpoint / `/api/accuracy` hand in stored rows (forecast
 snapshots, raw samples, plan history) and these functions score them.
@@ -19,6 +24,8 @@ import math
 from collections import defaultdict
 from datetime import UTC, datetime, timedelta
 
+from ems.confidence import _MAX_BIAS_FRACTION, _MIN_BAND_COVERAGE_PCT, _MIN_SKILL_SLOTS
+from ems.confidence import _forecast_bias_flag as _solar_bias_or_band_flag
 from ems.retrospect import _floor, _mean, _parse
 
 _DH = 15 / 60.0  # hours per 15-min slot
@@ -320,4 +327,77 @@ def load_baseline_error(raw_rows: list[dict], *, tz) -> dict | None:
         "n_hours": n_hours,
         "mape_pct": round(_mean(pct_errors), 1) if pct_errors else None,
         "bias_w": round(_mean(errors), 1),
+    }
+
+
+# B-76 "Model and optimization health": the load/plan_execution warn thresholds are new (no sibling
+# constant elsewhere to mirror); the solar rule reuses confidence.py's constants/function verbatim
+# (see the imports above) instead of re-deriving the same 25%/60% numbers a second time.
+_LOAD_MAPE_WARN_PCT = 40.0  # household load MAPE beyond this reads as "harder to predict lately"
+_PLAN_HIT_RATE_WARN_PCT = 70.0  # deadline hit-rate below this reads as "missing targets lately"
+
+
+def _solar_health(solar: dict | None) -> tuple[str, str | None]:
+    """`solar` is `forecast_error()`'s return shape (always a dict, never None, once there's a
+    store at all — see `/api/accuracy`). Below `_MIN_SKILL_SLOTS` matched daytime slots there simply
+    isn't enough evidence to call it either way — same evidence gate `plan_confidence` already uses
+    for its own "still learning your roof" reason — so this reads 'unknown', not a falsely-confident
+    'ok'."""
+    if solar is None or (solar.get("n_slots") or 0) < _MIN_SKILL_SLOTS:
+        return "unknown", None
+    if _solar_bias_or_band_flag(solar):
+        return "warn", (
+            f"Solar forecast bias is beyond {_MAX_BIAS_FRACTION * 100:.0f}% of typical output, "
+            f"or fewer than {_MIN_BAND_COVERAGE_PCT:.0f}% of readings landed inside its forecast "
+            "band, over the last 14 days."
+        )
+    return "ok", None
+
+
+def _load_health(load: dict | None) -> tuple[str, str | None]:
+    """`load` is `load_baseline_error()`'s return — None below its own evidence minimum (24
+    evaluable hours), or (rarely) a dict with `mape_pct` still None (every evaluable hour had zero
+    actual load) — both read as 'unknown', never a fabricated 'ok'."""
+    mape = None if load is None else load.get("mape_pct")
+    if mape is None:
+        return "unknown", None
+    if mape > _LOAD_MAPE_WARN_PCT:
+        return "warn", (
+            "Household load has been harder to predict than a simple weekly baseline lately."
+        )
+    return "ok", None
+
+
+def _plan_execution_health(plan_execution: dict | None) -> tuple[str, str | None]:
+    """`plan_execution` is `plan_execution_error()`'s return — None below its own evidence minimum
+    (3 measurable deadlines)."""
+    hit_rate = None if plan_execution is None else plan_execution.get("hit_rate_pct")
+    if hit_rate is None:
+        return "unknown", None
+    if hit_rate < _PLAN_HIT_RATE_WARN_PCT:
+        return "warn", "The plan has been missing its SoC-by-deadline targets more than expected."
+    return "ok", None
+
+
+def model_health(
+    *, solar: dict | None, load: dict | None, plan_execution: dict | None
+) -> dict:
+    """Synthesize an ok/warn/unknown verdict per accuracy track (BACKLOG B-76) — SYNTHESIS ONLY,
+    no new measurement is taken here; the three inputs are exactly `/api/accuracy`'s `solar` /
+    `load` / `plan_execution` values. Powers the System page's "Model health" panel: whether EMS is
+    predicting and executing well enough to trust, at a glance.
+
+    Returns `{"solar": ..., "load": ..., "plan_execution": ..., "notes": [str, ...]}` — each of the
+    first three is "ok" | "warn" | "unknown" (never anything else); `notes` holds one plain-language
+    sentence per warn row, in solar/load/plan_execution order (never for "unknown" — that state is
+    its own honest, non-alarming "still collecting evidence" story, not a note).
+    """
+    solar_status, solar_note = _solar_health(solar)
+    load_status, load_note = _load_health(load)
+    plan_status, plan_note = _plan_execution_health(plan_execution)
+    return {
+        "solar": solar_status,
+        "load": load_status,
+        "plan_execution": plan_status,
+        "notes": [n for n in (solar_note, load_note, plan_note) if n],
     }

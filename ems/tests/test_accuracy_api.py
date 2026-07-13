@@ -85,6 +85,9 @@ def test_accuracy_endpoint_returns_all_three_tracks_with_enough_evidence(tmp_pat
     assert body["load"] is not None
     assert body["load"]["n_hours"] == 30
 
+    # B-76: with solid evidence across all three tracks and nothing amiss, health reads all-ok.
+    assert body["health"] == {"solar": "ok", "load": "ok", "plan_execution": "ok", "notes": []}
+
 
 def test_accuracy_endpoint_returns_nulls_without_enough_evidence(tmp_path):
     db = str(tmp_path / "ems.sqlite")
@@ -95,17 +98,25 @@ def test_accuracy_endpoint_returns_nulls_without_enough_evidence(tmp_path):
     assert body["solar"]["n_slots"] == 0
     assert body["plan_execution"] is None
     assert body["load"] is None
+    # B-76: no evidence anywhere yet reads as an honest 'unknown' per track, never alarming.
+    assert body["health"] == {
+        "solar": "unknown", "load": "unknown", "plan_execution": "unknown", "notes": [],
+    }
 
 
 def test_accuracy_endpoint_returns_nulls_without_a_store():
     app = create_app(MockSource(), dry_run=True, dev_mode="mock", tz=AMS)
     with TestClient(app) as c:
         body = c.get("/api/accuracy").json()
-    assert body == {"solar": None, "plan_execution": None, "load": None}
+    assert body == {
+        "solar": None, "plan_execution": None, "load": None,
+        "health": {"solar": "unknown", "load": "unknown", "plan_execution": "unknown",
+                   "notes": []},
+    }
 
 
-def test_accuracy_endpoint_shape_has_exactly_the_three_keys(tmp_path):
+def test_accuracy_endpoint_shape_has_exactly_the_four_keys(tmp_path):
     db = str(tmp_path / "ems.sqlite")
     with TestClient(_app(db)) as c:
         body = c.get("/api/accuracy").json()
-    assert set(body.keys()) == {"solar", "plan_execution", "load"}
+    assert set(body.keys()) == {"solar", "plan_execution", "load", "health"}

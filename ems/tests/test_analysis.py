@@ -3,9 +3,12 @@ household load-baseline error, over matched slots/deadlines/hours."""
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
+import ems.confidence as confidence
+from ems import analysis
 from ems.analysis import (
     forecast_error,
     load_baseline_error,
+    model_health,
     plan_execution_error,
     recommend_solar_confidence,
 )
@@ -372,3 +375,143 @@ def test_load_baseline_error_below_24_evaluable_hours_is_none():
 
 def test_load_baseline_error_empty_input_is_none():
     assert load_baseline_error([], tz=UTC) is None
+
+
+# ---- model_health (B-76): synthesized ok/warn/unknown verdict per track, no new measurement ----
+
+# A solar-skill dict with plenty of evidence and a well-calibrated forecast — mirrors
+# test_confidence.py's _GOOD_SKILL: mean p50 = 42 kWh * 1000 / (200 * 0.25h) = 840 W.
+_GOOD_SOLAR = {
+    "n_slots": 200, "bias_w": 10.0, "mae_w": 50.0, "band_coverage_pct": 92.0,
+    "actual_solar_kwh": 40.0, "forecast_p50_kwh": 42.0,
+}
+_GOOD_LOAD = {"n_hours": 100, "mape_pct": 10.0, "bias_w": 5.0}
+_GOOD_PLAN = {"n_deadlines": 10, "mean_error_pp": 0.5, "mae_pp": 1.0, "hit_rate_pct": 90.0}
+
+
+def test_model_health_imports_not_duplicates_confidence_constants():
+    # The task is explicit: mirror confidence.py's thresholds by IMPORTING them, never re-deriving
+    # the same 25%/60% numbers a second time — importing binds the identical object, so `is` holds.
+    assert analysis._MAX_BIAS_FRACTION is confidence._MAX_BIAS_FRACTION
+    assert analysis._MIN_BAND_COVERAGE_PCT is confidence._MIN_BAND_COVERAGE_PCT
+    assert analysis._MIN_SKILL_SLOTS is confidence._MIN_SKILL_SLOTS
+
+
+def test_model_health_everything_fine_is_all_ok_with_no_notes():
+    out = model_health(solar=_GOOD_SOLAR, load=_GOOD_LOAD, plan_execution=_GOOD_PLAN)
+    assert out == {"solar": "ok", "load": "ok", "plan_execution": "ok", "notes": []}
+
+
+def test_model_health_all_none_tracks_are_unknown_not_alarming():
+    # The honest fresh-install empty state (item 3): no evidence yet must never read as ok or warn.
+    out = model_health(solar=None, load=None, plan_execution=None)
+    assert out == {"solar": "unknown", "load": "unknown", "plan_execution": "unknown", "notes": []}
+
+
+def test_model_health_zero_evidence_solar_dict_is_unknown_not_ok():
+    # forecast_error() always returns a dict (never None) even with zero matched slots — that must
+    # still read 'unknown', not a falsely-confident 'ok'.
+    zero = {"n_slots": 0, "bias_w": None, "mae_w": None, "band_coverage_pct": None,
+            "actual_solar_kwh": None, "forecast_p50_kwh": None}
+    out = model_health(solar=zero, load=_GOOD_LOAD, plan_execution=_GOOD_PLAN)
+    assert out["solar"] == "unknown"
+
+
+def test_model_health_thin_solar_evidence_below_min_skill_slots_is_unknown():
+    thin = {**_GOOD_SOLAR, "n_slots": confidence._MIN_SKILL_SLOTS - 1}
+    out = model_health(solar=thin, load=_GOOD_LOAD, plan_execution=_GOOD_PLAN)
+    assert out["solar"] == "unknown"
+
+
+def test_model_health_solar_bias_beyond_threshold_warns_with_a_note():
+    # 300 W bias vs. 840 W mean p50 exceeds the 25% threshold (210 W) — same fixture as
+    # test_confidence.py's equivalent case.
+    hot = {**_GOOD_SOLAR, "bias_w": 300.0}
+    out = model_health(solar=hot, load=_GOOD_LOAD, plan_execution=_GOOD_PLAN)
+    assert out["solar"] == "warn"
+    assert len(out["notes"]) == 1
+    assert "solar forecast" in out["notes"][0].lower()
+
+
+def test_model_health_solar_bias_exactly_at_threshold_is_not_warn():
+    # Strict '>' (mirrors confidence.py's _forecast_bias_flag) — exactly 25% of mean p50 is fine.
+    at_threshold = {**_GOOD_SOLAR, "bias_w": 210.0}
+    out = model_health(solar=at_threshold, load=_GOOD_LOAD, plan_execution=_GOOD_PLAN)
+    assert out["solar"] == "ok"
+
+
+def test_model_health_thin_band_coverage_warns_even_with_low_bias():
+    thin_band = {**_GOOD_SOLAR, "band_coverage_pct": 40.0}
+    out = model_health(solar=thin_band, load=_GOOD_LOAD, plan_execution=_GOOD_PLAN)
+    assert out["solar"] == "warn"
+
+
+def test_model_health_band_coverage_exactly_at_threshold_is_not_warn():
+    at_threshold = {**_GOOD_SOLAR, "band_coverage_pct": 60.0}  # strict '<' — 60 itself is fine
+    out = model_health(solar=at_threshold, load=_GOOD_LOAD, plan_execution=_GOOD_PLAN)
+    assert out["solar"] == "ok"
+
+
+def test_model_health_load_none_is_unknown():
+    out = model_health(solar=_GOOD_SOLAR, load=None, plan_execution=_GOOD_PLAN)
+    assert out["load"] == "unknown"
+
+
+def test_model_health_load_dict_with_no_mape_is_unknown():
+    # Rare edge case in load_baseline_error: every evaluable hour had zero actual load, so
+    # mape_pct is None even though the dict itself isn't.
+    out = model_health(
+        solar=_GOOD_SOLAR, load={"n_hours": 30, "mape_pct": None, "bias_w": 0.0},
+        plan_execution=_GOOD_PLAN,
+    )
+    assert out["load"] == "unknown"
+
+
+def test_model_health_load_mape_above_40pct_warns_with_a_note():
+    out = model_health(
+        solar=_GOOD_SOLAR, load={**_GOOD_LOAD, "mape_pct": 40.1}, plan_execution=_GOOD_PLAN,
+    )
+    assert out["load"] == "warn"
+    assert any("load" in n.lower() for n in out["notes"])
+
+
+def test_model_health_load_mape_exactly_40pct_is_not_warn():
+    out = model_health(
+        solar=_GOOD_SOLAR, load={**_GOOD_LOAD, "mape_pct": 40.0}, plan_execution=_GOOD_PLAN,
+    )
+    assert out["load"] == "ok"
+
+
+def test_model_health_plan_execution_none_is_unknown():
+    out = model_health(solar=_GOOD_SOLAR, load=_GOOD_LOAD, plan_execution=None)
+    assert out["plan_execution"] == "unknown"
+
+
+def test_model_health_plan_execution_hit_rate_below_70pct_warns_with_a_note():
+    out = model_health(
+        solar=_GOOD_SOLAR, load=_GOOD_LOAD,
+        plan_execution={**_GOOD_PLAN, "hit_rate_pct": 69.9},
+    )
+    assert out["plan_execution"] == "warn"
+    assert any("plan" in n.lower() for n in out["notes"])
+
+
+def test_model_health_plan_execution_hit_rate_exactly_70pct_is_not_warn():
+    out = model_health(
+        solar=_GOOD_SOLAR, load=_GOOD_LOAD,
+        plan_execution={**_GOOD_PLAN, "hit_rate_pct": 70.0},
+    )
+    assert out["plan_execution"] == "ok"
+
+
+def test_model_health_notes_are_ordered_solar_load_plan_execution():
+    out = model_health(
+        solar={**_GOOD_SOLAR, "bias_w": 300.0},
+        load={**_GOOD_LOAD, "mape_pct": 50.0},
+        plan_execution={**_GOOD_PLAN, "hit_rate_pct": 50.0},
+    )
+    assert out["solar"] == out["load"] == out["plan_execution"] == "warn"
+    assert len(out["notes"]) == 3
+    assert "solar" in out["notes"][0].lower()
+    assert "load" in out["notes"][1].lower()
+    assert "plan" in out["notes"][2].lower()

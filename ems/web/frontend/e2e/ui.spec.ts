@@ -40,6 +40,43 @@ function batteryPlanFixture(confidence: { level: string; reasons: string[] }) {
   };
 }
 
+// B-76: a minimal-but-complete /api/diagnostics payload, so a test can override just `storage`/
+// `recorder` (the Model-health panel's two ops rows) without hand-building the readiness checks.
+function diagnosticsFixture(overrides: Record<string, unknown> = {}) {
+  return {
+    overall: "ok",
+    checks: [
+      { key: "mode", label: "Run mode", status: "ok", detail: "mock, dry-run on" },
+      { key: "history_store", label: "History store", status: "ok", detail: "reachable" },
+      { key: "prices", label: "Electricity prices", status: "ok", detail: "price source configured" },
+      { key: "battery", label: "Battery driver", status: "ok", detail: "probed; P1 paired" },
+      { key: "data_quality", label: "Data quality", status: "ok", detail: "complete" },
+      { key: "auth", label: "Write protection", status: "ok", detail: "open" },
+    ],
+    readiness: { control_ready: true, sensing_ready: true, summary: "Everything's on track." },
+    storage: {
+      backup: {
+        last_backup_ts: null, last_backup_ok: null, last_backup_size: null, backups_kept: 0,
+      },
+    },
+    recorder: {
+      last_success_at: new Date().toISOString(), consecutive_failures: 0, last_error: null,
+      clamped_samples: 0,
+    },
+    ...overrides,
+  };
+}
+
+// B-76: a minimal /api/accuracy payload — pass only the `health` overrides a test cares about.
+function accuracyFixture(health: Record<string, unknown> = {}) {
+  return {
+    solar: { bias_w: -12.0, n_slots: 300 },
+    load: { mape_pct: 8.0, n_hours: 120 },
+    plan_execution: { hit_rate_pct: 92.0, n_deadlines: 20 },
+    health: { solar: "ok", load: "ok", plan_execution: "ok", notes: [], ...health },
+  };
+}
+
 test.describe("EMS dashboard", () => {
   test("the calm home surfaces the essentials, with detail behind disclosures", async ({ page }) => {
     // A first-time viewer sees the hero (one verdict), the score pills, the story card, the
@@ -889,6 +926,111 @@ test.describe("EMS dashboard", () => {
     await page.getByTestId("nav-system").click();
     await expect(page.getByTestId("system-readiness")).toBeVisible();
     await expect(page.getByTestId("check-group-Battery & control")).toBeVisible();
+  });
+
+  // B-76: Model and optimization health — synthesized ok/warn/unknown verdict per accuracy track.
+  test("Model health panel shows OK rows with headline numbers and the ops rows (mocked)", async ({
+    page,
+  }) => {
+    await page.route("**/api/diagnostics", (route) =>
+      route.fulfill({
+        status: 200, contentType: "application/json",
+        body: JSON.stringify(diagnosticsFixture({
+          storage: {
+            backup: {
+              last_backup_ts: "2026-07-10T08:00:00+00:00", last_backup_ok: true,
+              last_backup_size: 123456, backups_kept: 3,
+            },
+          },
+          recorder: {
+            last_success_at: new Date().toISOString(), consecutive_failures: 0,
+            last_error: null, clamped_samples: 3,
+          },
+        })),
+      }),
+    );
+    await page.route("**/api/accuracy", (route) =>
+      route.fulfill({
+        status: 200, contentType: "application/json", body: JSON.stringify(accuracyFixture()),
+      }),
+    );
+    await page.goto("/");
+    await page.getByTestId("nav-system").click();
+    await expect(page.getByTestId("model-health")).toBeVisible();
+
+    // Each row shows a status DOT plus a plain-language STATUS TEXT (never colour-only).
+    await expect(page.getByTestId("health-solar")).toContainText("OK");
+    await expect(page.getByTestId("health-solar")).toContainText("-12");
+    await expect(page.getByTestId("health-load")).toContainText("OK");
+    await expect(page.getByTestId("health-load")).toContainText("8");
+    await expect(page.getByTestId("health-plan_execution")).toContainText("OK");
+    await expect(page.getByTestId("health-plan_execution")).toContainText("92");
+    // Nothing to flag -> no warn notes anywhere.
+    await expect(page.locator('[data-testid^="health-note-"]')).toHaveCount(0);
+
+    // The two ops rows, reusing the diagnostics data already fetched on this page.
+    await expect(page.getByTestId("health-backups")).toContainText("ok");
+    await expect(page.getByTestId("health-clamped-samples")).toContainText("3");
+
+    await expect(page.getByTestId("model-health")).toContainText(
+      "Detailed numbers: the export package's validation summary.",
+    );
+  });
+
+  test("Model health panel shows a warn row with its plain-language note (mocked)", async ({
+    page,
+  }) => {
+    await page.route("**/api/accuracy", (route) =>
+      route.fulfill({
+        status: 200, contentType: "application/json",
+        body: JSON.stringify({
+          solar: { bias_w: 300.0, n_slots: 300 },
+          load: { mape_pct: 8.0, n_hours: 120 },
+          plan_execution: null,
+          health: {
+            solar: "warn", load: "ok", plan_execution: "unknown",
+            notes: ["Solar forecast bias is beyond 25% of typical output, or fewer than 60% of "
+              + "readings landed inside its forecast band, over the last 14 days."],
+          },
+        }),
+      }),
+    );
+    await page.goto("/");
+    await page.getByTestId("nav-system").click();
+    await expect(page.getByTestId("model-health")).toBeVisible();
+
+    await expect(page.getByTestId("health-solar")).toContainText("Check");
+    await expect(page.getByTestId("health-note-solar")).toContainText("Solar forecast bias");
+    await expect(page.getByTestId("health-load")).toContainText("OK");
+    // The unmeasurable track reads as an honest, non-alarming empty state, not a false OK/warn.
+    await expect(page.getByTestId("health-plan_execution")).toContainText("Still collecting evidence");
+    await expect(page.getByTestId("health-note-plan_execution")).toHaveCount(0);
+  });
+
+  test("Model health panel's empty state reads 'still collecting evidence', never alarming (mocked)", async ({
+    page,
+  }) => {
+    await page.route("**/api/accuracy", (route) =>
+      route.fulfill({
+        status: 200, contentType: "application/json",
+        body: JSON.stringify({
+          solar: { bias_w: null, n_slots: 0 },
+          load: null,
+          plan_execution: null,
+          health: { solar: "unknown", load: "unknown", plan_execution: "unknown", notes: [] },
+        }),
+      }),
+    );
+    await page.goto("/");
+    await page.getByTestId("nav-system").click();
+    await expect(page.getByTestId("model-health")).toBeVisible();
+
+    for (const row of ["health-solar", "health-load", "health-plan_execution"]) {
+      await expect(page.getByTestId(row)).toContainText("Still collecting evidence");
+    }
+    await expect(page.locator('[data-testid^="health-note-"]')).toHaveCount(0);
+    // Never a false-positive OK or an alarming warn word when there's no evidence yet.
+    await expect(page.getByTestId("model-health")).not.toContainText("Check");
   });
 
   test("the chat answers a question when AI is enabled (mocked)", async ({ page }) => {
