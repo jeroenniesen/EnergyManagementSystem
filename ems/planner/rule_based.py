@@ -14,6 +14,7 @@ from datetime import datetime
 
 from ems.domain import BatteryIntent
 from ems.planner import economics
+from ems.planner.charge_need import stored_kwh_per_slot
 from ems.planner.schedule import SLOT, Plan, PlanSlot
 from ems.sources.prices import PriceSlot
 
@@ -113,7 +114,8 @@ def _plan_winter(
     eta = math.sqrt(max(1e-6, min(1.0, cfg.round_trip_efficiency)))
     target_soc: float | None = None
     floor = reserve_soc_pct if load_w_by is not None else None
-    per_slot_kwh = round(max_charge_w * _DH / 1000.0 * eta, 3) if load_w_by is not None else None
+    slot_stored_kwh = stored_kwh_per_slot(max_charge_w, cfg.round_trip_efficiency)
+    per_slot_kwh = round(slot_stored_kwh, 3) if load_w_by is not None else None
     if load_w_by is not None:
         # Demand-sized: the energy the expensive window needs from the battery, above what's already
         # stored over reserve. Size the cheap-window charge (pre-peak) to exactly that shortfall.
@@ -125,7 +127,7 @@ def _plan_winter(
         if peak_load_kwh <= 1e-9:
             return _all_auto(horizon, now, "no-trade: no house load in the expensive window")
         shortfall_dc = max(0.0, peak_load_kwh / eta - avail_now_kwh)
-        slot_kwh = max_charge_w * _DH / 1000.0 * eta
+        slot_kwh = slot_stored_kwh
         n_charge = math.ceil(shortfall_dc / slot_kwh) if slot_kwh > 0 and shortfall_dc > 1e-9 else 0
         # Pool = every slot before the LAST profitable peak that is strictly worth buying — i.e.
         # charge + round-trip losses + wear + risk still undercut the cheapest peak it would
@@ -194,8 +196,7 @@ def _soak_negative(
     other slot is left untouched, so with the flag off (this is never called) the plan is
     byte-identical to before."""
     price_by = {p.start: p.eur_per_kwh for p in prices}
-    eta = math.sqrt(max(1e-6, min(1.0, cfg.round_trip_efficiency)))
-    per_slot_kwh = round(max_charge_w * _DH / 1000.0 * eta, 3)
+    per_slot_kwh = round(stored_kwh_per_slot(max_charge_w, cfg.round_trip_efficiency), 3)
     out = tuple(
         PlanSlot(
             s.start, BatteryIntent.GRID_CHARGE_TO_TARGET,

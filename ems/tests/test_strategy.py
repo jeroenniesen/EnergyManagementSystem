@@ -1,13 +1,20 @@
 """Strategy selection (auto by season, or forced) + the dispatcher that maps a strategy name to
 its planner. Both planners emit the same Plan, so everything downstream is unchanged."""
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime, timedelta
 from zoneinfo import ZoneInfo
 
 from ems.domain import BatteryIntent
 from ems.planner.adaptive import AdaptiveConfig
 from ems.planner.rule_based import PlannerConfig
 from ems.planner.schedule import SLOT
-from ems.planner.strategy import build_plan, select_strategy, select_strategy_with_reason
+from ems.planner.strategy import (
+    HysteresisState,
+    apply_hysteresis,
+    build_plan,
+    resolve_strategy_hysteretic,
+    select_strategy,
+    select_strategy_with_reason,
+)
 from ems.planner.summer import SummerConfig
 from ems.sources.forecast import ForecastSlot
 from ems.sources.prices import PriceSlot
@@ -138,3 +145,107 @@ def test_winter_falls_back_to_rule_based_without_a_load_profile():
     )
     assert plan.strategy == "winter"
     assert BatteryIntent.GRID_CHARGE_TO_TARGET in {s.intent for s in plan.slots}
+
+
+# --- Seasonal-transition hysteresis (SPEC §8.4 / BACKLOG B-15) ------------------------------------
+def _advance(state, raw, day, *, days=3):
+    return apply_hysteresis(raw, state, hysteresis_days=days, day=day)
+
+
+def test_hysteresis_fresh_state_commits_immediately_like_today():
+    # Fresh install (no memory) → the current pick stands on the FIRST evaluation, no switch delay.
+    committed, state = _advance(HysteresisState(), "winter", date(2026, 3, 1))
+    assert committed == "winter" and state.committed == "winter"
+
+
+def test_hysteresis_zero_days_disables_and_switches_instantly():
+    start = HysteresisState(committed="winter", last_day="2026-03-01")
+    committed, state = _advance(start, "summer", date(2026, 3, 2), days=0)
+    assert committed == "summer" and state.committed == "summer"
+
+
+def test_hysteresis_holds_until_n_consecutive_days_then_switches():
+    state = HysteresisState(committed="winter", last_day="2026-02-28")
+    base = date(2026, 3, 1)
+    # Day 1 and 2 lean summer → still HELD on winter (the committed season).
+    committed, state = _advance(state, "summer", base)
+    assert committed == "winter" and state.count == 1
+    committed, state = _advance(state, "summer", base + timedelta(days=1))
+    assert committed == "winter" and state.count == 2
+    # Day 3 completes the run → the switch commits.
+    committed, state = _advance(state, "summer", base + timedelta(days=2))
+    assert committed == "summer" and state.committed == "summer" and state.pending is None
+
+
+def test_hysteresis_flapping_signal_never_switches():
+    # A shoulder-month signal that flips summer/winter day by day must resolve to a run that never
+    # reaches 3 consecutive → the committed season is held the whole time.
+    state = HysteresisState(committed="winter", last_day="2026-02-28")
+    base = date(2026, 3, 1)
+    picks = ["summer", "winter", "summer", "winter", "summer", "winter"]
+    for i, raw in enumerate(picks):
+        committed, state = _advance(state, raw, base + timedelta(days=i))
+        assert committed == "winter"  # never flaps
+    assert state.committed == "winter"
+
+
+def test_hysteresis_agreeing_day_resets_the_run():
+    state = HysteresisState(committed="winter", last_day="2026-02-28")
+    base = date(2026, 3, 1)
+    _, state = _advance(state, "summer", base)                       # count 1
+    _, state = _advance(state, "summer", base + timedelta(days=1))    # count 2
+    _, state = _advance(state, "winter", base + timedelta(days=2))    # agrees → reset
+    assert state.count == 0 and state.pending is None
+    # A fresh summer run must now start from zero (so 2 more days aren't enough).
+    committed, state = _advance(state, "summer", base + timedelta(days=3))
+    assert committed == "winter" and state.count == 1
+
+
+def test_hysteresis_does_not_double_count_within_one_day():
+    # The 5-min control loop calls this many times a day; only ONE advance may land per date.
+    state = HysteresisState(committed="winter", last_day="2026-02-28")
+    day = date(2026, 3, 1)
+    committed, state = _advance(state, "summer", day)
+    assert state.count == 1
+    for _ in range(50):  # a day of control cycles
+        committed, state = _advance(state, "summer", day)
+    assert committed == "winter" and state.count == 1  # still just one day counted
+
+
+def test_hysteresis_state_survives_a_simulated_restart():
+    # Build up two steady days, persist (JSON) + rehydrate as a restart would, then the third day
+    # still completes the switch — the counter is not lost across a reboot.
+    state = HysteresisState(committed="winter", last_day="2026-02-28")
+    base = date(2026, 3, 1)
+    _, state = _advance(state, "summer", base)
+    _, state = _advance(state, "summer", base + timedelta(days=1))
+    restored = HysteresisState.from_json(state.to_json())
+    assert restored == state and restored.count == 2
+    committed, restored = _advance(restored, "summer", base + timedelta(days=2))
+    assert committed == "summer"
+
+
+def test_hysteresis_from_json_tolerates_garbage():
+    assert HysteresisState.from_json(None) == HysteresisState()
+    assert HysteresisState.from_json("not json{") == HysteresisState()
+
+
+def test_resolve_hysteretic_forced_mode_bypasses_and_rebaselines():
+    # A forced season is honoured NOW regardless of the pending counter, and clears the memory.
+    state = HysteresisState(committed="winter", pending="summer", count=2, last_day="2026-03-01")
+    strat, why, new = resolve_strategy_hysteretic(
+        datetime(2026, 3, 2, 12, tzinfo=UTC), "summer", AMS, state)
+    assert strat == "summer" and "You chose" in why
+    assert new.committed == "summer" and new.pending is None and new.count == 0
+
+
+def test_resolve_hysteretic_auto_dampens_shoulder_switch_with_a_reason():
+    # committed winter; a single strong-surplus March day should NOT flip yet, and should explain
+    # that it is waiting for the switch to hold.
+    state = HysteresisState(committed="winter", last_day="2026-02-28")
+    strat, why, new = resolve_strategy_hysteretic(
+        datetime(2026, 3, 1, 12, tzinfo=UTC), "auto", AMS, state,
+        surplus_kwh=8.0, price_spread_eur=0.05, hysteresis_days=3)
+    assert strat == "winter"  # held
+    assert "Holding price-smart" in why and "1/3" in why
+    assert new.pending == "summer" and new.count == 1

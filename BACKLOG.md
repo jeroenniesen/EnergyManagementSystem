@@ -106,15 +106,15 @@ Saldering ends hard 1 Jan 2027: self-consumption-first weighting, export-price a
 
 ### B-15 · Strategy auto-switch hysteresis + sunset deadline — Feature · S
 Rolling solar threshold + hysteresis days (SPEC §8.4) instead of calendar-month switching; `astral`-based sunset deadlines. Fewer wrong-season plans in shoulder months.
-**Track:** Pool · E-04 · ⬜
+**Track:** ✅ done — [PR #25](https://github.com/jeroenniesen/EnergyManagementSystem/pull/25). strategy.hysteresis_days (3) dampens auto season switches (day-keyed, restart-safe, forced modes bypass); sunset was already forecast-derived — better than almanac, noted in §8.4.
 
 ### B-16 · Missed-window recovery — Feature · M
 SPEC §8.12 (`planner/recovery.py`): charge-completion checks and a catch-up path when a cheap window is missed (outage, stale data, dwell block).
-**Track:** Pool · E-04 · ⬜
+**Track:** ✅ done — [PR #25](https://github.com/jeroenniesen/EnergyManagementSystem/pull/25). planner/recovery.py: completion check + cheapest-remaining catch-up through the unchanged validator + caps; WINTER-ONLY (summer catch-up would over-buy); honest partial + notification when impossible.
 
 ### B-22 · Projected-SoC gating in the plan validator — Feature · S–M
 SPEC §8.5's "later step": use the SoC projection (already computed for display) to reject/adjust plans pre-apply.
-**Track:** Pool · E-04 · ⬜
+**Track:** ✅ done — [PR #25](https://github.com/jeroenniesen/EnergyManagementSystem/pull/25). Validator check #6: grid-charge plans projecting >5pp short of their own target are rejected with the numbers named (complete-data only; reserve check #5 already existed). planner.validate_projection default ON.
 
 ## EPIC E-05 · Quiet motivation
 *Goal: progress you can watch — trends, recaps, and honest wins, without confetti.* (Motivation)
@@ -320,7 +320,7 @@ Notify only for predicted meaningful events: low solar tomorrow, EV needs plug-i
 ### B-76 · Model and optimization health dashboard — Feature · S–M
 Expose internal model health: solar error, load error, plan execution error, battery response error, data freshness, and optimization fallback rate.
 **Done when:** support/debug views show whether EMS is predicting and executing well enough to trust.
-**Track:** Pool · E-08 · ⬜
+**Track:** ✅ done — [PR #25](https://github.com/jeroenniesen/EnergyManagementSystem/pull/25). /api/accuracy health block (thresholds imported from confidence.py) + System-page Model-health panel with honest 'still collecting evidence' empty states + backups/clamped-samples ops rows.
 
 ### B-77 · Historical replay optimization suite — Feature + Test · M
 Replay historical days through the planner to compare rule changes, validate reserve behavior, measure savings, and prevent seasonal regressions.
@@ -378,7 +378,7 @@ Now **3,079 lines** with 44 routes, most inside one `create_app()` closure; doma
 
 ### B-26 · Reconcile SPEC with reality — Refactor/docs · S · P2
 SPEC mandates HA integration (`entity_map`, WS/REST) and lists MQTT (`ems/publish/`) + a §14 visual/bundle/WCAG gate; the code reads devices directly, has no `ems/publish/`, and the visual gate is unimplemented — and works. Update SPEC §5/§9/§11/§13/§14 + CLAUDE.md deliberately (or build the gaps: HA client = B-18, visual/bundle gate ships with B-44). **Note:** the `ports.py`/`Planner` seam is now recommended to be **built** (B-47), not deleted from the SPEC.
-**Track:** Pool · ⬜
+**Track:** ✅ done — [PR #25](https://github.com/jeroenniesen/EnergyManagementSystem/pull/25). Major drift surfaced honestly: HA/MQTT/Solcast/Pi-Docker are planned-not-implemented; production = Mac Mini LaunchAgent, direct-device, armed control; §9.1 endpoints grep-verified (48 routes); §13 tree matched file-for-file; CLAUDE.md premise corrected to match.
 
 ### B-27 · Dead & duplicated planner logic — Refactor · S · P3
 Remove or wire `planner/optimal.py` (tested, never dispatched); dedupe `api._charge_kind` vs `energy_flow._allocate_slot`.

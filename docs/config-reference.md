@@ -96,7 +96,7 @@ The car's SoC itself is **not** a config key — it's a runtime-store anchor (%,
 | `mode` | enum | auto | auto/summer_solar/winter_arbitrage/manual. **UI** |
 | `summer_months` | list[int] | [4..9] | calendar coarse override |
 | `summer_solar_threshold_kwh` | kWh | 12 · **CALIBRATE** | rolling forecast to count as summer |
-| `strategy_switch_hysteresis_days` | int | 3 | consecutive days past band before switching |
+| `strategy_switch_hysteresis_days` | int | 3 | consecutive days the signal must lean the other way before `auto` switches season (0 = instant); runtime key `strategy.hysteresis_days`. Damps shoulder-month flip-flop (§8.4/B-15); fresh state = today's instantaneous pick; KV-persisted, restart-safe. **UI** |
 | `strategy_switch_band_kwh` | kWh | 2.0 | hysteresis band around threshold |
 | `night_reserve_kwh` | kWh | 2.0 | extra reserve on overnight need. **UI** |
 | `avoid_precharge_before_solar` | bool | true | skip pre-dawn grid charge before strong solar |
@@ -116,20 +116,32 @@ The car's SoC itself is **not** a config key — it's a runtime-store anchor (%,
 | `min_replan_interval_seconds` | int | 600 | cap replan churn |
 | `soc_deviation_replan_pct` | % | 10 | planned-vs-actual SoC gap that triggers a replan |
 
-## `homeassistant`
+## `homeassistant` — planned, not yet implemented (BACKLOG B-18, pool)
 | Key | Type | Default | Effect |
 |---|---|---|---|
 | `base_url` | url | http://homeassistant.local:8123 | HA endpoint |
 | `token` | secret | `!secret` | long-lived token |
 | `entity_map` | map | — | role→entity id (pin; validated at startup) |
 
-## `mqtt`
+> None of these keys are read by the shipped code — there is no `ems/sources/ha.py` and the real `config.yaml` has no `homeassistant:` block. Devices are read/written directly (`SPEC §5.2`).
+
+## `mqtt` — planned, not yet implemented (BACKLOG B-18, pool)
 | Key | Type | Default | Effect |
 |---|---|---|---|
 | `host` | str | localhost | broker (use host IP on compose) |
 | `topic_prefix` | str | ems | topic namespace |
 | `publish_discovery` | bool | true | expose HA entities; false = UI only |
 | `retain_config` | bool | true | retain discovery configs |
+
+> `paho-mqtt` is not a project dependency and there is no `ems/publish/` module — nothing above is wired up (`SPEC §9.2`).
+
+## `notify` — implemented (BACKLOG B-20), missing from this reference until now
+| Key | Type | Default | Effect |
+|---|---|---|---|
+| `ntfy_url` | str | "" (empty = disabled) | ntfy.sh or self-hosted base URL for phone pushes |
+| `ntfy_topic` | str | "" | the ntfy topic to POST to; subscribe to it in the ntfy app |
+
+> Backs the notification outbox (`ems/notify.py`) and header bell (`GET /api/notifications`, `SPEC §9.3`). In-app storage works with no `notify.*` set; the ntfy push is the optional extra.
 
 ## `web`
 | Key | Type | Default | Effect |
@@ -148,6 +160,8 @@ The car's SoC itself is **not** a config key — it's a runtime-store anchor (%,
 |---|---|---|---|
 | `mode` | enum | `rule_based`\|`ml`\|`advisory` = rule_based | which planner produces the executed `Plan` (`SPEC §8`). **UI-editable.** `ml`/`advisory` require the ML layer |
 | `negative_price_soak` | bool | false | opt-in: charge on sub-zero-priced slots (you're PAID to consume), up to headroom — even outside a normal cheap window and with summer grid top-up off. Off = today's behaviour (§8.2 step 5). Applies to the winter, adaptive and summer planners. **UI** |
+| `validate_projection` | bool | true | pre-apply projected-SoC gate (§8.5/§8.11/B-22): reject a grid-charge plan whose forward projection can't reach its `target_soc` by its `deadline` (>5 pp short) → fail safe to `AUTO`. Default on (a rejection is never worse than no EMS); conservative + skipped when data-quality ≠ `complete`, so a stale forecast never triggers it. **UI** |
+| `recovery_enabled` | bool | true | missed-window recovery (§8.12/B-16): if a committed cheap charge window is missed (outage, held decisions, price spike) and the deadline is still ahead, top up in the cheapest REMAINING slots toward the SAME target (honest partial when too few hours remain). Default on — it only ADDS charging through the same §8.11 validator + control caps (bypasses nothing) and prevents the costly "woke up short before the morning peak"; audited + calmly notified, one recovery per window per day. Off = a missed window is left as-is. **UI** |
 
 ## `ml` (optional forecaster/optimizer layer — off on a plain Pi; full schema in `ml-layer.md`)
 | Key | Type | Default | Effect |

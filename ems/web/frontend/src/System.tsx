@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 
-import { INCIDENT_TYPE_LABEL, SYSTEM_OVERALL } from "./labels";
+import { HEALTH_ROW_LABEL, HEALTH_STATUS, INCIDENT_TYPE_LABEL, SYSTEM_OVERALL } from "./labels";
 
 type Check = { key: string; label: string; status: "ok" | "warn" | "fail"; detail: string };
 type Readiness = {
@@ -8,7 +8,20 @@ type Readiness = {
   sensing_ready: boolean;
   summary: string;
 };
-type Diag = { overall: "ok" | "warn" | "fail"; checks: Check[]; readiness?: Readiness };
+// The two ops signals (B-76) borrowed from /api/diagnostics's existing `storage`/`recorder` reads
+// — no new measurement, just surfaced alongside Model health so "is the data layer healthy" has
+// one home. Kept loose (only the fields this page reads) rather than mirroring the full contract.
+type BackupState = {
+  last_backup_ts: string | null;
+  last_backup_ok: boolean | null;
+};
+type Diag = {
+  overall: "ok" | "warn" | "fail";
+  checks: Check[];
+  readiness?: Readiness;
+  storage?: { backup?: BackupState | null } | null;
+  recorder?: { clamped_samples: number } | null;
+};
 type IncidentRollup = {
   total: number;
   by_type: Record<string, number>;
@@ -16,6 +29,48 @@ type IncidentRollup = {
   most_recent: string | null;
   last_7_days: number;
 };
+
+// /api/accuracy's synthesized B-76 health block + the three headline numbers it was derived from.
+type HealthStatusValue = "ok" | "warn" | "unknown";
+type ModelHealth = {
+  solar: HealthStatusValue;
+  load: HealthStatusValue;
+  plan_execution: HealthStatusValue;
+  notes: string[];
+};
+type Accuracy = {
+  solar: { bias_w: number | null } | null;
+  load: { mape_pct: number | null } | null;
+  plan_execution: { hit_rate_pct: number | null } | null;
+  health: ModelHealth;
+};
+
+const HEALTH_ROW_ORDER: (keyof Omit<ModelHealth, "notes">)[] = ["solar", "load", "plan_execution"];
+
+// notes[] holds one entry per WARN row, in solar/load/plan_execution order, skipping ok/unknown —
+// this walks the same order to attribute each note back to the row it belongs to.
+function noteForRow(health: ModelHealth, row: keyof Omit<ModelHealth, "notes">): string | null {
+  let i = 0;
+  for (const key of HEALTH_ROW_ORDER) {
+    if (health[key] !== "warn") continue;
+    if (key === row) return health.notes[i] ?? null;
+    i++;
+  }
+  return null;
+}
+
+function headlineFor(row: keyof Omit<ModelHealth, "notes">, acc: Accuracy): string | null {
+  if (row === "solar") {
+    const v = acc.solar?.bias_w;
+    return v == null ? null : `${v} W bias`;
+  }
+  if (row === "load") {
+    const v = acc.load?.mape_pct;
+    return v == null ? null : `${v}% MAPE`;
+  }
+  const v = acc.plan_execution?.hit_rate_pct;
+  return v == null ? null : `${v}% hit rate`;
+}
 
 function when(ts: string): string {
   const d = new Date(ts);
@@ -54,6 +109,7 @@ export function SystemView() {
   const [diag, setDiag] = useState<Diag | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const [incidents, setIncidents] = useState<IncidentRollup | null>(null);
+  const [accuracy, setAccuracy] = useState<Accuracy | null>(null);
 
   useEffect(() => {
     let alive = true;
@@ -88,6 +144,28 @@ export function SystemView() {
         if (!r.ok) return;
         const b = await r.json();
         if (alive) setIncidents(b.incidents ?? null);
+      } catch {
+        // best-effort — the panel simply stays hidden
+      }
+    }
+    load();
+    const id = setInterval(load, 30000);
+    return () => {
+      alive = false;
+      clearInterval(id);
+    };
+  }, []);
+
+  // Model health (B-76): the synthesized solar/load/plan-execution verdict — one extra, best-effort
+  // fetch (same pattern as incidents above); a hiccup here never blocks the readiness checks.
+  useEffect(() => {
+    let alive = true;
+    async function load() {
+      try {
+        const r = await fetch("/api/accuracy");
+        if (!r.ok) return;
+        const b = await r.json();
+        if (alive) setAccuracy(b);
       } catch {
         // best-effort — the panel simply stays hidden
       }
@@ -190,6 +268,60 @@ export function SystemView() {
               </ul>
             </>
           )}
+        </div>
+      )}
+
+      {accuracy && (
+        <div className="model-health" data-testid="model-health">
+          <span className="metric-label">Model health</span>
+          <ul className="health-rows" data-testid="health-rows">
+            {HEALTH_ROW_ORDER.map((row) => {
+              const status = accuracy.health[row];
+              const note = status === "warn" ? noteForRow(accuracy.health, row) : null;
+              const headline = status === "unknown" ? null : headlineFor(row, accuracy);
+              return (
+                <li
+                  key={row}
+                  className={`health-row health-${status}`}
+                  data-testid={`health-${row}`}
+                >
+                  <span className={`check-dot dot-${status}`} aria-hidden="true" />
+                  <span className="health-label">{HEALTH_ROW_LABEL[row]}</span>
+                  <span className="health-value">{headline ?? "—"}</span>
+                  <span className="health-status" data-status={status}>
+                    {HEALTH_STATUS[status]?.label ?? status}
+                  </span>
+                  {note && (
+                    <span className="health-note" data-testid={`health-note-${row}`}>
+                      {note}
+                    </span>
+                  )}
+                </li>
+              );
+            })}
+          </ul>
+
+          <ul className="health-ops" data-testid="health-ops">
+            <li className="health-ops-row" data-testid="health-backups">
+              <span className="health-ops-label">Backups</span>
+              <span className="health-ops-value">
+                {diag.storage?.backup?.last_backup_ts
+                  ? `${when(diag.storage.backup.last_backup_ts)} — ` +
+                    (diag.storage.backup.last_backup_ok ? "ok" : "failed")
+                  : "No backup has run yet"}
+              </span>
+            </li>
+            <li className="health-ops-row" data-testid="health-clamped-samples">
+              <span className="health-ops-label">Clamped samples</span>
+              <span className="health-ops-value">
+                {diag.recorder ? diag.recorder.clamped_samples : "—"}
+              </span>
+            </li>
+          </ul>
+
+          <p className="health-footer">
+            Detailed numbers: the export package's validation summary.
+          </p>
         </div>
       )}
 

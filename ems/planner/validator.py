@@ -59,10 +59,16 @@ def validate_plan(
     max_switches_per_day: int = 10,
     min_dwell: timedelta = timedelta(seconds=600),
     slot_horizon: int = 96,
+    validate_projection: bool = True,
+    projection_target_margin_pp: float = 5.0,
 ) -> PlanValidation:
     """Validate `plan` against the current conditions. Returns a PlanValidation; `unsafe` ⇒ the
     controller must hold AUTO. Each check appends at most one representative finding (not one per
-    slot) so the result reads as a short, actionable list."""
+    slot) so the result reads as a short, actionable list.
+
+    `validate_projection` (default on — the SPEC §8.5 "later step", BACKLOG B-22) adds the
+    projected-target reachability gate below. It is a pure safety net: a rejection just falls back
+    to AUTO, which is never worse than "no EMS", so it defaults on."""
     findings: list[Finding] = []
     slots = plan.slots[:slot_horizon]
 
@@ -129,6 +135,25 @@ def validate_plan(
         if any(p.soc_pct > 100.0 + 1e-6 for p in projection):
             findings.append(Finding(_WARN, "projection_overfill",
                                     "The plan is projected to overfill the battery."))
+
+    # 6. Projected-target reachability (SPEC §8.5 "later step", BACKLOG B-22): a plan that COMMITS
+    #    to grid-charging toward a target SoC by a deadline, but whose own forward projection can't
+    #    reach that target by a clear margin, is rejected → fail safe to AUTO. Scoped to grid-charge
+    #    plans (a summer solar plan's target is weather-hoped, not committed — that's the top-up
+    #    logic's job, not a hard reject). Data-quality-aware: only runs on `complete` inputs, so a
+    #    missing/stale forecast never triggers it — that path is the data fail-safe's, not ours.
+    if (validate_projection and projection and data_quality == "complete"
+            and plan.target_soc is not None and plan.deadline is not None
+            and any(s.intent in _CHARGE_INTENTS for s in slots)):
+        by_deadline = [p.soc_pct for p in projection if p.start <= plan.deadline]
+        if by_deadline:
+            reached = max(by_deadline)
+            if reached < plan.target_soc - projection_target_margin_pp:
+                when = plan.deadline.strftime("%H:%M")
+                findings.append(Finding(
+                    _UNSAFE, "projection_short_of_target",
+                    f"Plan targets {plan.target_soc:.0f}% by {when} but projects only "
+                    f"{reached:.0f}% — the charge windows can't reach it in time."))
 
     status = (_UNSAFE if any(f.severity == _UNSAFE for f in findings)
               else _WARN if findings else "valid")

@@ -152,7 +152,9 @@ def test_meter_data_never_enters_persistent_cache(tmp_path, monkeypatch):
     keys = [r[0] for r in con.execute("SELECT key FROM cache").fetchall()]
     con.close()
     assert keys, "the explanation should have been persisted"
-    allowed = ("explain:", "tibber:", "forecast_solar:")
+    # `strategy:` = the seasonal-hysteresis counter (season name + an int, §8.4/B-15) — no meter
+    # data, same class of legitimate persisted state as the digest-dedupe key.
+    allowed = ("explain:", "tibber:", "forecast_solar:", "strategy:")
     assert all(any(k.startswith(p) for p in allowed) for k in keys), keys
     # belt-and-braces: nothing meter-shaped ever lands in the persistent cache
     assert not any(t in k.lower() for k in keys for t in ("soc", "meter", "sample", "grid", "p1"))

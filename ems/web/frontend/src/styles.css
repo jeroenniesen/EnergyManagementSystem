@@ -1433,6 +1433,40 @@ body {
 }
 .incident-type-count { font-weight: 700; color: var(--text); }
 
+/* Model health panel (System page, B-76) */
+.model-health {
+  margin-top: 24px; background: var(--panel); border: 1px solid var(--line);
+  border-left: 3px solid var(--accent); border-radius: var(--radius); padding: 14px 18px;
+  box-shadow: var(--shadow);
+}
+.dot-unknown { background: var(--muted); }
+.health-rows {
+  list-style: none; margin: 12px 0 0; padding: 0; display: flex; flex-direction: column; gap: 10px;
+}
+.health-row {
+  display: grid; grid-template-columns: auto 1fr auto auto; align-items: center; gap: 6px 12px;
+}
+.health-label { font-weight: 600; font-size: 0.88rem; }
+.health-value { font-size: 0.84rem; color: var(--muted); text-align: right; }
+.health-status {
+  font-size: 0.72rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.04em;
+}
+.health-status[data-status="ok"] { color: var(--green-text); }
+.health-status[data-status="warn"] { color: var(--amber-text); }
+.health-status[data-status="unknown"] { color: var(--muted); }
+.health-note {
+  grid-column: 1 / -1; font-size: 0.78rem; color: var(--amber-text);
+}
+.health-ops {
+  list-style: none; margin: 14px 0 0; padding: 10px 0 0; border-top: 1px solid var(--line);
+  display: flex; flex-direction: column; gap: 6px;
+}
+.health-ops-row {
+  display: flex; justify-content: space-between; gap: 12px; font-size: 0.8rem; color: var(--muted);
+}
+.health-ops-value { color: var(--text); }
+.health-footer { margin: 12px 0 0; font-size: 0.74rem; color: var(--muted); }
+
 /* AI second-opinion card */
 .ai-validation {
   margin-top: 24px; background: var(--panel); border: 1px solid var(--line);
