@@ -286,6 +286,16 @@ SETTINGS_SCHEMA: tuple[SettingsField, ...] = (
         "than running no system at all. Skipped automatically when the forecast is stale.",
         advanced=True,
     ),
+    SettingsField(
+        "planner.recovery_enabled", "Catch up on a missed charge window", "bool", True, "planner",
+        help="If a cheap overnight charge window is missed — a power cut, a run of blocked "
+        "switches, or a price spike that emptied the cheap slots — and the deadline is still "
+        "ahead, top up in the cheapest slots that remain, toward the SAME target the plan already "
+        "committed to. On by default: it only ADDS charging through the same safety checks, and "
+        "the failure it prevents (waking up short before the morning peak) is the expensive one. "
+        "Off = today's behaviour (a missed window is left as-is).",
+        advanced=True,
+    ),
     # --- AI explanations (optional, OFF by default; the one off-device feature — SPEC §12) ---
     SettingsField(
         "explainer.mode", "AI explanations", "enum", "template", "ai",

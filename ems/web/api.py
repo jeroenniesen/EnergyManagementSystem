@@ -69,6 +69,7 @@ from ems.planner.explain import (
 )
 from ems.planner.load_profile import build_load_profile
 from ems.planner.projection import BatteryModel, project_energy
+from ems.planner.recovery import recover_if_needed
 from ems.planner.rule_based import PlannerConfig, plan_rule_based
 from ems.planner.strategy import HysteresisState, build_plan, resolve_strategy_hysteretic
 from ems.planner.summer import SummerConfig, sunset_after
@@ -218,6 +219,109 @@ async def _run_detectors(
                 await notifier.send(**result)
         except Exception:
             _log.warning("%s detector failed (non-fatal)", name, exc_info=True)
+
+
+# One recovery per committed window (its deadline) per day; the KV key IS the deadline so it is
+# inherently per-window — the TTL only bounds table growth past the window it protects.
+_RECOVERY_DEDUPE_TTL_SECONDS = 24 * 3600
+
+
+async def _run_recovery(
+    plan,
+    now: datetime,
+    *,
+    soc_pct: float,
+    prices: list[Any],
+    usable_kwh: float,
+    reserve_soc_pct: float,
+    max_charge_w: float,
+    round_trip_efficiency: float,
+    enabled: bool,
+    tz: ZoneInfo,
+    cache_store: CacheStore | None,
+    notifier: Notifier | None,
+    audit_store: AuditStore | None,
+    validate_fn: Any,
+    margin_pp: float = 5.0,
+    dedupe_ttl_seconds: float = _RECOVERY_DEDUPE_TTL_SECONDS,
+) -> dict | None:
+    """Missed-window recovery side effects (SPEC §8.12 / BACKLOG B-16).
+
+    Diagnoses the FRESH (pre-recovery) plan's charge completion and, on a MISSED window, runs the
+    SAME §8.11 validator over the catch-up plan (`validate_fn` — recovery bypasses NOTHING) then
+    AUDITs ("plan recovered: …") and sends a calm, B-37-style notification — on a full catch-up and
+    on an impossible/partial one. Rate-limited to ONE recovery per committed window per day via the
+    KV cache. The plan the controller acts on is reshaped separately in `_current_plan` (a pure,
+    deterministic fold), so this stays a plain, directly-testable function — like `_run_detectors`.
+    Returns a summary dict for tests/observability, or None when nothing was done. Never raises."""
+    if not enabled or plan is None:
+        return None
+    _reshaped, status, catch = recover_if_needed(
+        plan, now, soc_pct=soc_pct, prices=prices, usable_kwh=usable_kwh,
+        reserve_soc_pct=reserve_soc_pct, max_charge_w=max_charge_w,
+        round_trip_efficiency=round_trip_efficiency, enabled=True, margin_pp=margin_pp,
+    )
+    if catch is None:  # on-pace / behind (within margin) / complete / not-applicable → nothing
+        return None
+
+    dedupe_key = f"recovery:{plan.deadline.isoformat()}"
+    if cache_store is not None:
+        try:
+            if await asyncio.to_thread(cache_store.get, dedupe_key) is not None:
+                return None  # this window already handled today (rate-limit)
+        except Exception:
+            _log.debug("recovery dedupe read failed (non-fatal)", exc_info=True)
+
+    # Recovery NEVER bypasses the validator: the catch-up plan passes through the SAME §8.11 gate
+    # (incl. the B-22 projection_short_of_target check). A rejected plan is not acted on — the
+    # controller then holds AUTO exactly as it does for any invalid plan.
+    accepted = False
+    finding = "failed validation"
+    try:
+        val = validate_fn(catch.plan, now)
+        accepted = val.ok
+        if not accepted and val.findings:
+            finding = val.findings[0].message
+    except Exception:
+        _log.warning("recovery plan validation failed (non-fatal); holding plan as-is",
+                     exc_info=True)
+
+    ts = now.isoformat()
+    summary = (f"plan recovered: {catch.reason}" if accepted
+               else f"plan recovery rejected (holding self-consumption): {finding}")
+    if audit_store is not None:
+        try:
+            await audit_store.append(ts, "plan_recovery", summary, {
+                "status": status.to_dict(), "feasible": catch.feasible,
+                "target_soc": round(catch.target_soc, 1), "kwh_short": catch.kwh_short,
+                "slots_used": catch.slots_used, "accepted": accepted, "reason": catch.reason,
+            })
+        except Exception:
+            _log.warning("failed to write recovery audit (non-fatal)", exc_info=True)
+
+    day = now.astimezone(tz).date().isoformat()
+    if notifier is not None and accepted:
+        # Calm B-37 shape (what happened + battery is safe + what EMS does / nothing to do). One
+        # message on a full catch-up, one on an impossible/partial one.
+        title = ("Catching up on a missed charge window" if catch.feasible
+                 else "Only a partial catch-up is possible")
+        try:
+            await notifier.send(
+                key="plan_recovery", title=title, body=catch.note,
+                confidence="medium" if catch.feasible else "high",
+                dedupe_key=f"recovery:{day}:{plan.deadline.isoformat()}",
+            )
+        except Exception:
+            _log.debug("recovery notification failed (non-fatal)", exc_info=True)
+
+    if cache_store is not None:  # mark handled today whether accepted or rejected (no churn)
+        try:
+            await asyncio.to_thread(cache_store.set, dedupe_key, ts, dedupe_ttl_seconds)
+        except Exception:
+            _log.debug("recovery dedupe write failed (non-fatal)", exc_info=True)
+
+    return {"accepted": accepted, "feasible": catch.feasible, "status": status.status,
+            "summary": summary}
 
 
 _recorder_died = _task_died("Recorder")
@@ -1125,10 +1229,20 @@ def create_app(
 
     app.add_middleware(_AccessMiddleware)
 
-    def _current_plan():
-        """Single source of the current plan (DRY) so /api/plan, /api/savings, /api/decision and
-        /api/alerts all reflect the same computation. Dispatches to the active strategy
-        (summer solar-first / winter arbitrage). Returns (now, prices, plan) or None."""
+    def _recovery_sizing() -> dict:
+        """Battery sizing the §8.12 catch-up needs, from the live settings cache."""
+        s = settings_cache
+        return {
+            "usable_kwh": s["battery.usable_kwh"],
+            "reserve_soc_pct": s["battery.min_reserve_soc"],
+            "max_charge_w": s["battery.max_charge_w"],
+            "round_trip_efficiency": s["planner.round_trip_efficiency"],
+        }
+
+    def _build_plan_now():
+        """The fresh plan the active strategy builds THIS instant, BEFORE any missed-window
+        recovery. Dispatches to the active strategy (summer solar-first / winter arbitrage).
+        Returns (now, prices, plan) or None. Used by `_current_plan` and the recovery cycle."""
         if price_source is None:
             return None
         now = datetime.now(UTC)
@@ -1146,6 +1260,25 @@ def create_app(
             load_w_by=load_by, adaptive_cfg=_adaptive_cfg(),
         )
         return now, prices, plan
+
+    def _current_plan():
+        """Single source of the plan to ACT on (DRY) so /api/plan, /api/savings, /api/decision, the
+        control loop and the validator all reflect the SAME computation: the fresh strategy plan
+        with SPEC §8.12 missed-window recovery folded in (BACKLOG B-16). Recovery is a PURE,
+        deterministic reshape — when a committed grid-charge window is missed and the deadline is
+        still ahead, it re-routes the charge to the cheapest REMAINING slots toward the SAME target;
+        otherwise it returns the plan untouched. Because it runs here, the recovered plan still
+        passes through `_validate_plan_obj` (§8.11 incl. the B-22 projection gate) and the control
+        caps/dwell before any write — recovery bypasses nothing. Returns (now, prices, plan)."""
+        pp = _build_plan_now()
+        if pp is None:
+            return None
+        now, prices, plan = pp
+        recovered, _status, _catch = recover_if_needed(
+            plan, now, soc_pct=_current_soc(now), prices=prices,
+            enabled=bool(settings_cache["planner.recovery_enabled"]), **_recovery_sizing(),
+        )
+        return now, prices, recovered
 
     def _data_quality(now: datetime) -> str:
         """Single source of the current data-quality level (SPEC §8.11)."""
@@ -1616,6 +1749,24 @@ def create_app(
             confidence_level=confidence_level, price_slots_tomorrow=price_slots_tomorrow,
         )
 
+    async def _run_recovery_cycle(now: datetime) -> None:
+        """Missed-window recovery side effects (SPEC §8.12 / B-16), once per cycle on the same
+        cadence as the detectors and DELIBERATELY independent of dry_run — a missed cheap window is
+        worth surfacing during dry-run acceptance too. Diagnoses the FRESH (pre-recovery) plan and,
+        on a missed window, validates the catch-up + audits + notifies (rate-limited). The plan the
+        controller acts on is reshaped in `_current_plan` through the same validator + caps; this
+        loop only makes it observable. Fail-safe — an error is logged, never propagated."""
+        pp = await asyncio.to_thread(_build_plan_now)
+        if pp is None:
+            return
+        plan_now, prices, plan = pp
+        await _run_recovery(
+            plan, plan_now, soc_pct=_current_soc(plan_now), prices=prices,
+            enabled=bool(settings_cache["planner.recovery_enabled"]), tz=site_tz,
+            cache_store=cache_store, notifier=notifier, audit_store=audit_store,
+            validate_fn=_validate_plan_obj, **_recovery_sizing(),
+        )
+
     async def _notify_loop(stop: asyncio.Event) -> None:
         """Periodic forecast-driven notifications (BACKLOG B-75) + the Sunday weekly-digest
         delivery (BACKLOG B-58). Its own tiny loop (not `_control_loop` — see
@@ -1632,6 +1783,10 @@ def create_app(
                 await _run_detector_cycle(datetime.now(UTC))
             except Exception:
                 _log.exception("detector cycle failed; retry next cycle (fail-safe)")
+            try:
+                await _run_recovery_cycle(datetime.now(UTC))
+            except Exception:
+                _log.exception("recovery cycle failed; retry next cycle (fail-safe)")
             try:
                 await _run_weekly_digest(
                     store, cache_store, notifier, datetime.now(UTC), site_tz,

@@ -10,6 +10,21 @@ from __future__ import annotations
 import math
 from dataclasses import dataclass
 
+_SLOT_HOURS = 0.25  # hours in a 15-min slot (energy = power × this)
+
+
+def stored_kwh_per_slot(
+    max_charge_w: float, round_trip_efficiency: float, *, slot_hours: float = _SLOT_HOURS
+) -> float:
+    """DC energy (kWh) a single full-power charge slot adds to the pack.
+
+    eta = √round_trip_efficiency is the charge-side share of the round trip (SPEC §4 / projection).
+    Single source of the per-slot charge quantum so the winter planner (`rule_based`) and the
+    missed-window catch-up (`recovery`) size a charge slot identically — the math lives here once,
+    not copied into each caller."""
+    eta = math.sqrt(max(1e-6, min(1.0, round_trip_efficiency)))
+    return max_charge_w * slot_hours / 1000.0 * eta
+
 
 @dataclass(frozen=True)
 class ChargeNeed:
