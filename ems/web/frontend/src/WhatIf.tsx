@@ -120,7 +120,7 @@ export function WhatIf() {
     cf.days_used > 0 &&
     cf.deltas.planner_vs_no_battery != null &&
     cf.deltas.planner_vs_auto != null
-      ? `Over the last ${cf.days_used} days your setup beat no-battery by ` +
+      ? `Over the last ${cf.days_used === 1 ? "measured day" : `${cf.days_used} days`} your setup beat no-battery by ` +
         `${eur(cf.deltas.planner_vs_no_battery)} and vendor-auto by ${eur(cf.deltas.planner_vs_auto)}.`
       : null;
 
