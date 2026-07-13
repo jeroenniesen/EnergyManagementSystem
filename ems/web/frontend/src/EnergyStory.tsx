@@ -141,6 +141,40 @@ export function EnergyStory({
   const recentCount = recent.length;
   const t = story?.totals;
 
+  // B-31: "No grid top-up needed" (server trust_markers) and the on-track banner's "...with no
+  // grid top-up planned" caution are the SAME fact — no BatteryIntent.GRID_CHARGE_TO_TARGET slot
+  // in the plan — computed independently server-side (api.py _trust_markers / _on_track), so both
+  // can be true at once (BACKLOG B-31). Single-voice it here instead: the comfort chip only holds
+  // while the plan is genuinely on track; once the verdict is "behind" the caution above already
+  // owns this fact, so suppress the duplicate comfort chip.
+  const trustMarkers = (story?.trust_markers ?? []).filter(
+    (m) => !(onTrack?.status === "behind" && m === "No grid top-up needed"),
+  );
+
+  // B-08: two "quiet success" claims computed client-side from fields already in this payload
+  // (never invented, never from a forecast) — each renders ONLY when honestly provable. Both are
+  // PAST-window only: they are stated in the past tense ("ran"/"bought"), so a forecast promise
+  // must never masquerade as one of them.
+  //   - "ran the night on battery": night = slots with ~zero solar (solar_w < 5W) — a signal read
+  //     straight off the payload, not a guess about local clock hours/timezone. Requires a real
+  //     stretch of night (>= 2h of 15-min slots) that actually carried load, with zero grid import
+  //     (grid_w <= 5W) across every one of those slots. Per the load = grid + solar + battery
+  //     balance (CLAUDE.md energy model), if grid and solar both sat at ~0 while load was flowing,
+  //     the battery must have supplied it.
+  //   - "bought only in the cheap window": every slot with meaningful grid import (grid_w > 5W)
+  //     carries action "grid_charge" — the same per-slot field BatteryPlan's chart legends as the
+  //     "cheap window" (a deliberate, planned grid-charge, never incidental import). Requires at
+  //     least one such slot — nothing bought means nothing to honestly claim.
+  const nightSlots = isPast ? slots.filter((s) => s.solar_w < 5) : [];
+  const ranNightOnBattery =
+    isPast &&
+    nightSlots.length >= 8 &&
+    nightSlots.some((s) => s.load_w > 50) &&
+    nightSlots.every((s) => s.grid_w <= 5);
+  const importSlots = isPast ? slots.filter((s) => s.grid_w > 5) : [];
+  const boughtOnlyInCheapWindow =
+    isPast && importSlots.length > 0 && importSlots.every((s) => s.action === "grid_charge");
+
   // Two SoC series: the MEASURED line (solid) and, for "next", the FORECAST line (dashed) bridged
   // from the last measured point so they join cleanly at "now". For "past" the slots ARE measured.
   const toPt = (s: StorySlot) => ({ t: Date.parse(s.start), soc: s.soc_pct as number });
@@ -268,13 +302,23 @@ export function EnergyStory({
         </p>
       )}
 
-      {story?.trust_markers && story.trust_markers.length > 0 && (
+      {(trustMarkers.length > 0 || ranNightOnBattery || boughtOnlyInCheapWindow) && (
         <div className="trust-markers" data-testid="trust-markers">
-          {story.trust_markers.map((m) => (
+          {trustMarkers.map((m) => (
             <span key={m} className="trust-marker">
               <Icon name="check" /> {m}
             </span>
           ))}
+          {ranNightOnBattery && (
+            <span className="trust-marker" data-testid="quiet-marker-night">
+              ☀︎ ran the night on battery
+            </span>
+          )}
+          {boughtOnlyInCheapWindow && (
+            <span className="trust-marker" data-testid="quiet-marker-cheap">
+              ✓ bought only in the cheap window
+            </span>
+          )}
         </div>
       )}
 

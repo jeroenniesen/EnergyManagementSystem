@@ -3,7 +3,7 @@ import { useEffect, useRef, useState } from "react";
 import { type Battery, BatteryChips } from "./BatteryChips";
 import { EnergyDistribution } from "./EnergyDistribution";
 import { type EnergyStoryData, EnergyStory } from "./EnergyStory";
-import { BatteryPlan, type BatteryPlanData, type PlanConfidence } from "./BatteryPlan";
+import { BatteryPlan, type BatteryPlanData, type PlanConfidence, type SavedToday } from "./BatteryPlan";
 import { Icon, type IconName } from "./icons";
 import {
   DATA_QUALITY,
@@ -78,6 +78,14 @@ type ViewName = "dashboard" | "insights" | "chat" | "audit" | "settings" | "syst
 // at most once per ~30 s regardless of this, so a snappy poll no longer floods the hardware; 10 s
 // keeps the UI lively while halving HTTP chatter vs. the old 5 s.
 const POLL_MS = 10000;
+// Local-calendar "today" (matches the same convention Insights/EnergyDistribution use for their
+// day anchors) — used to ask /api/finance for B-03b's measured "Saved today" figure.
+function todayStr(): string {
+  const d = new Date();
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(
+    d.getDate(),
+  ).padStart(2, "0")}`;
+}
 // Alert hierarchy: control-blocking (critical) above degraded (warning) above info (energy review).
 const SEVERITY_RANK: Record<string, number> = { critical: 3, warning: 2, info: 1 };
 const VIEWS: ViewName[] = ["dashboard", "insights", "chat", "audit", "settings", "system"];
@@ -239,7 +247,10 @@ export function App() {
   const [decision, setDecision] = useState<Decision | null>(null);
   const [alertsData, setAlertsData] = useState<AlertsResp | null>(null);
   const [chargeNeed, setChargeNeed] = useState<ChargeNeed | null>(null);
-  const [savings, setSavings] = useState<number | null>(null);
+  // B-03b: MEASURED (from /api/finance), not a plan estimate — null until the first successful
+  // fetch (then the footer stat stays hidden; a later failure just keeps the last-known value,
+  // same best-effort convention as the other polled cards below).
+  const [savedToday, setSavedToday] = useState<SavedToday | null>(null);
   const [report, setReport] = useState<Report | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [view, setViewState] = useState<ViewName>(() => viewFromHash(window.location.hash));
@@ -357,7 +368,16 @@ export function App() {
       fill("/api/battery", setBattery);
       fill("/api/decision", setDecision);
       fill("/api/alerts", setAlertsData);
-      fill("/api/savings", (v: { today_eur?: number }) => setSavings(v?.today_eur ?? null));
+      // B-03b: the measured figure, not the old plan-estimate tile — never a fake €0.00. finance's
+      // totals.saved_eur is null until a day of prices has been recorded, in which case the footer
+      // shows "measuring" instead of inventing a number.
+      fill(
+        `/api/finance?period=day&date=${todayStr()}`,
+        (v: { totals?: { saved_eur: number | null } }) => {
+          const eurVal = v?.totals?.saved_eur;
+          setSavedToday(eurVal == null ? { status: "measuring" } : { status: "measured", eur: eurVal });
+        },
+      );
       fill("/api/charge-need", (v: ChargeNeed) => setChargeNeed(v ?? null));
     }
     poll();
@@ -661,7 +681,7 @@ export function App() {
       {view === "dashboard" && (
         <BatteryPlan
           plan={batteryPlan}
-          savings={savings}
+          savedToday={savedToday}
           socPct={status?.soc_pct ?? null}
           batteryMode={batteryModeLabel}
           onBatteryClick={batteryHasDetail ? () => setBatteryDetail("soc") : undefined}

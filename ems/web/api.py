@@ -2,16 +2,13 @@
 from __future__ import annotations
 
 import asyncio
-import csv
 import glob
 import hashlib
-import io
 import json
 import logging
 import os
 import secrets
 import threading
-from collections.abc import Awaitable, Callable
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
 from datetime import date as date_cls
@@ -20,21 +17,16 @@ from typing import Any
 from zoneinfo import ZoneInfo
 
 from fastapi import FastAPI, Query, Request
-from fastapi.responses import JSONResponse, Response
+from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from ems import export_package as expkg
 from ems.alerts import data_quality, derive_alerts
 from ems.analysis import (
     forecast_error,
-    load_baseline_error,
-    plan_execution_error,
     recommend_solar_confidence,
 )
-from ems.cars import CARS
-from ems.cars import brands as car_brands
 from ems.cars import by_id as car_by_id
-from ems.cars import to_dict as car_to_dict
 from ems.confidence import plan_confidence
 from ems.control.failsafe import failsafe_intent
 from ems.control.mode_controller import ModeController
@@ -57,13 +49,9 @@ from ems.detectors import (
     typical_daily_solar_kwh,
 )
 from ems.diagnostics import build_diagnostics, overall_status
-from ems.digest import build_digest
 from ems.domain import BatteryIntent, PhysicalMode
 from ems.energy_flow import build_daily_flows
 from ems.ev_advisor import advise_charge_window
-from ems.ev_planner import plan_car_charging
-from ems.ev_schedule import materialize_deadlines, parse_schedule
-from ems.ev_session import detect_sessions, estimate_soc
 from ems.finance import day_finance
 from ems.freshness import FreshnessTracker
 from ems.lifecycle import OwnershipState
@@ -106,9 +94,24 @@ from ems.sources.indevolt import aggregate_soc
 from ems.sources.prices import PriceSlot, PriceSource, current_price
 from ems.storage.audit import AuditStore
 from ems.storage.cache import CacheStore
-from ems.storage.history import DERIVED_COLUMNS, RAW_COLUMNS, HistoryStore
+from ems.storage.history import HistoryStore
 from ems.storage.settings import SettingsStore
 from ems.weather import cloud_cover_pct
+from ems.web.context import AppContext, history_row_cap
+from ems.web.routes.accuracy import build_router as build_accuracy_router
+from ems.web.routes.car import build_router as build_car_router
+from ems.web.routes.car import gather_car_plan
+from ems.web.routes.digest import (
+    _last_completed_week_monday,  # noqa: F401 — re-exported for tests (test_digest_api)
+    _run_weekly_digest,
+    gather_digest,
+)
+from ems.web.routes.digest import (
+    build_router as build_digest_router,
+)
+from ems.web.routes.export import build_router as build_export_router
+from ems.web.routes.notify import build_router as build_notify_router
+from ems.web.routes.whatif import build_router as build_whatif_router
 
 _log = logging.getLogger("ems.recorder")
 
@@ -215,96 +218,6 @@ async def _run_detectors(
                 await notifier.send(**result)
         except Exception:
             _log.warning("%s detector failed (non-fatal)", name, exc_info=True)
-
-
-def _last_completed_week_monday(now_local: datetime) -> date_cls:
-    """The Monday of the most recently FULLY COMPLETED Mon-Sun week as of local `now_local`
-    (BACKLOG B-58): always LAST week's Monday, even a few seconds after midnight on a Monday — the
-    week that just started hasn't run yet, so it's never "the last completed week". Pure, so the
-    Mon-Sun boundary is unit-testable without spinning up the app or faking a clock deep inside a
-    closure."""
-    this_monday = now_local.date() - timedelta(days=now_local.weekday())
-    return this_monday - timedelta(days=7)
-
-
-_DIGEST_CACHE_KEY = "digest:last_week_sent"
-_DIGEST_CACHE_TTL_SECONDS = 32 * 24 * 3600.0  # comfortably longer than the weekly cadence
-
-
-def _digest_title(saved_eur: float | None) -> str:
-    if saved_eur is None:
-        return "Your week"
-    sign = "−" if saved_eur < 0 else ""
-    return f"Your week: saved {sign}€{abs(saved_eur):.2f}"
-
-
-async def _run_weekly_digest(
-    store: HistoryStore | None,
-    cache_store: CacheStore | None,
-    notifier: Notifier | None,
-    now: datetime,
-    tz: ZoneInfo,
-    gather: Callable[[date_cls], Awaitable[dict]],
-) -> dict | None:
-    """Sunday-evening delivery of the weekly digest (BACKLOG B-58 / roadmap P2 "the Sunday
-    read"): once local time crosses Sunday 18:00, build + send the just-completed week's digest
-    exactly once. Mirrors `_run_backup`'s shape — a plain, directly-testable function, NOT a
-    closure — so the gate and the dedupe can be tested without running `_notify_loop`.
-
-    GATE: only fires on a local Sunday at/after 18:00 — a mid-week restart, or a Sunday morning
-    tick, never sends early.
-
-    DEDUPE: the completed week's label is recorded in `cache_store` (`digest:last_week_sent`,
-    PERSISTED so it survives a restart — unlike an in-memory box such as `_backup_state`, which
-    only guards the same process); a week already recorded there is skipped WITHOUT calling
-    `gather` again (no point re-assembling a digest nobody will see). The `Notifier`'s own
-    `dedupe_key=f"digest:{week_label}"` is a second, independent safety net (see `ems/notify.py`'s
-    module docstring) — belt and braces, so even a lost/cleared cache row can't double-send.
-
-    `gather(monday)` does the actual I/O (finance/report/audit/advice for the week starting
-    `monday`, then `build_digest`) — injected so this function stays a thin, testable gate +
-    delivery wrapper, exactly like `_run_backup` delegates the real backup I/O to
-    `store.backup_to`.
-
-    Best-effort: any failure is logged and swallowed — a digest hiccup must never take down the
-    notify loop (the same fail-safe convention as `_run_backup` / `Notifier.send`). Returns the
-    digest dict that was actually sent, or None when it didn't fire (gate closed, dedupe, or no
-    store/notifier configured)."""
-    if store is None or notifier is None:
-        return None
-    now_local = now.astimezone(tz)
-    if now_local.weekday() != 6 or now_local.hour < 18:  # 6 = Sunday
-        return None
-    # THIS week's Monday — the week ending TODAY (Sunday), not `_last_completed_week_monday`
-    # (which is for /api/digest's default and deliberately looks back a full week, so a mid-week
-    # browse never shows a still-changing window). The Sunday push is about the week just wrapping
-    # up, accepting that its last few evening hours aren't in yet.
-    monday = now_local.date() - timedelta(days=now_local.weekday())
-    week_label = f"Week of {monday.isoformat()}"
-    if cache_store is not None:
-        try:
-            already_sent = await asyncio.to_thread(cache_store.get, _DIGEST_CACHE_KEY)
-        except Exception:
-            already_sent = None
-        if already_sent == week_label:
-            return None
-    try:
-        digest = await gather(monday)
-    except Exception:
-        _log.exception("weekly digest gather failed; retry next cycle (fail-safe)")
-        return None
-    body = " ".join(x for x in (digest["headline"], digest.get("tweak")) if x).strip()
-    await notifier.send(
-        "weekly_digest", _digest_title(digest.get("saved_eur")), body,
-        dedupe_key=f"digest:{week_label}",
-    )
-    if cache_store is not None:
-        try:
-            await asyncio.to_thread(
-                cache_store.set, _DIGEST_CACHE_KEY, week_label, _DIGEST_CACHE_TTL_SECONDS)
-        except Exception:
-            _log.warning("weekly digest cache write failed (non-fatal)", exc_info=True)
-    return digest
 
 
 _recorder_died = _task_died("Recorder")
@@ -469,24 +382,6 @@ def _uslot_totals(slots: list[dict]) -> dict:
     }
 
 
-def history_row_cap(
-    span_seconds: float,
-    cycle_seconds: float,
-    *,
-    margin: float = 2.0,
-    floor: int = 1000,
-    ceiling: int = 200_000,
-) -> int:
-    """Row limit for a history query spanning `span_seconds`, sized to the recorder cadence rather
-    than hardcoded (finding 10). The recorder writes ~one row every `cycle_seconds`, so a report
-    stays correct if the sampling frequency changes (e.g. faster in dev) instead of silently
-    truncating at a fixed 3000/day or a 1-row-per-minute ceiling. `margin` gives headroom for
-    write jitter; the result is clamped to `[floor, ceiling]`."""
-    cadence = max(float(cycle_seconds), 1.0)
-    rows = int(max(span_seconds, 0.0) / cadence) + 1
-    return max(floor, min(ceiling, int(rows * margin)))
-
-
 # Bump when the finance math changes so completed-day rows cached under the OLD formula are
 # recomputed instead of served stale (finding 4). v2 = same-window wear (dis_priced) + price-gate;
 # v3 = export credited via the configurable feed-in model (B-05), not always the full spot price.
@@ -637,16 +532,19 @@ def create_app(
                     try:
                         hit = await asyncio.to_thread(cache_store.get, ckey)
                     except Exception:
+                        _log.debug("explanation cache read failed (non-fatal)", exc_info=True)
                         hit = None
                     if hit:
                         try:
                             return json.loads(hit)
                         except (ValueError, TypeError):
+                            _log.debug("cached explanation unreadable (non-fatal)", exc_info=True)
                             pass  # corrupt entry → fall through and regenerate
                 try:
                     expl = await asyncio.to_thread(explainer_box["ex"].explain, reason, facts)
                     out = {"text": expl.text, "source": expl.source}
                 except Exception:
+                    _log.debug("explainer failed; using template (non-fatal)", exc_info=True)
                     return {"text": reason, "source": "template"}
                 if cache_store is not None and out["source"] == "external_llm":
                     ttl = float(settings_cache.get("explainer.cache_hours", 168.0)) * 3600.0
@@ -656,6 +554,7 @@ def create_app(
                                 cache_store.set, ckey, json.dumps(out), ttl
                             )
                         except Exception:
+                            _log.debug("explanation cache write failed (non-fatal)", exc_info=True)
                             pass  # cache write is best-effort; never fail the request over it
                 return out
             _bounded_put(cache, key, asyncio.ensure_future(_run()), _EXPLAIN_MEM_CACHE_MAX)
@@ -707,6 +606,7 @@ def create_app(
         try:
             _capability_box["cap"] = await asyncio.to_thread(controller.driver.probe)
         except Exception:
+            _log.debug("battery capability probe failed (non-fatal)", exc_info=True)
             _capability_box["cap"] = None
 
     def _coalesce_s() -> float:
@@ -717,6 +617,7 @@ def create_app(
             return float(settings_cache.get("control.live_read_seconds")
                          or _LIVE_SAMPLE_COALESCE_SECONDS)
         except (TypeError, ValueError):
+            _log.debug("invalid control.live_read_seconds; default (non-fatal)", exc_info=True)
             return _LIVE_SAMPLE_COALESCE_SECONDS
 
     def _sample_fresh(now: datetime) -> bool:
@@ -733,6 +634,7 @@ def create_app(
             try:
                 _sample_cache["sample"], _sample_cache["at"] = source.read(), now
             except Exception:
+                _log.debug("live sample read failed; keeping last good (non-fatal)", exc_info=True)
                 pass  # keep the last good sample (fail-safe)
             return _sample_cache["sample"]
 
@@ -762,6 +664,7 @@ def create_app(
             try:
                 _tower_cache["towers"], _tower_cache["at"] = reader.read_towers(), now
             except Exception:
+                _log.debug("per-tower read failed; keeping last good (non-fatal)", exc_info=True)
                 pass  # keep last good snapshot (fail-safe)
             return _tower_cache["towers"]
 
@@ -782,6 +685,7 @@ def create_app(
         try:
             return controller.driver.current_mode()
         except Exception:
+            _log.debug("battery mode read failed (non-fatal)", exc_info=True)
             return None
 
     def _battery_reachable(now: datetime) -> bool:
@@ -849,14 +753,14 @@ def create_app(
                 surplus = sum(max(0.0, f.p50_w - load.get(f.start, 0.0)) * 0.25 / 1000.0
                               for f in fc)
         except Exception:
-            pass
+            _log.debug("strategy surplus estimate failed (non-fatal)", exc_info=True)
         try:
             if price_source is not None:
                 ps = [p.eur_per_kwh for p in price_source.slots()[:96]]
                 if ps:
                     spread = max(ps) - min(ps)
         except Exception:
-            pass
+            _log.debug("strategy price-spread estimate failed (non-fatal)", exc_info=True)
         return surplus, spread
 
     def _resolve_strategy(now: datetime) -> tuple[str, str]:
@@ -953,7 +857,7 @@ def create_app(
                 try:
                     await asyncio.to_thread(cache_store.purge_expired)
                 except Exception:
-                    pass
+                    _log.debug("external cache purge failed (non-fatal)", exc_info=True)
             if float(settings_cache.get("explainer.validate_hours", 0) or 0) > 0:
                 await _run_validation()  # already guarded + never raises
 
@@ -1020,7 +924,7 @@ def create_app(
                     {"target": target.value, "confirmed": ok},
                 )
             except Exception:
-                pass
+                _log.warning("shutdown-restore audit append failed (non-fatal)", exc_info=True)
 
     @asynccontextmanager
     async def lifespan(_app: FastAPI):
@@ -1057,6 +961,7 @@ def create_app(
             try:
                 _capability_box["cap"] = await asyncio.to_thread(controller.driver.probe)
             except Exception:
+                _log.debug("battery capability probe at startup failed (non-fatal)", exc_info=True)
                 pass  # unreachable battery → leave None; the validator just skips that warn-check
         # Start the read-only sense loop / recorder (SPEC §5.3). Take one awaited startup
         # sample so /api/series and /api/freshness are populated deterministically, then
@@ -1067,6 +972,7 @@ def create_app(
             try:
                 await recorder.record_now()
             except Exception:
+                _log.warning("initial recorder sample failed (non-fatal)", exc_info=True)
                 pass  # fail-safe: a bad first read must not block startup
             task = asyncio.create_task(recorder.run(stop))
             task.add_done_callback(_recorder_died)
@@ -1121,6 +1027,10 @@ def create_app(
         "/api/override", "/api/settings", "/api/ai/validate", "/api/chat", "/api/car/soc",
         "/api/notifications/read",
     })
+    # POST /api/whatif (B-73 scenario simulator, ems/web/routes/whatif.py) is DELIBERATELY not in
+    # this set: it only opens `replay_range`'s read-only (mode=ro) history DB connection and never
+    # touches `settings_store` — there is nothing to protect, so gating it like a write would
+    # misrepresent what it does. It stays reachable exactly like any other read.
     # Always reachable without a token: auth discovery, so a client can learn a token is required
     # and prompt for it. (Health probes live under /health and are never gated here.)
     _AUTH_EXEMPT_API_PATHS = frozenset({"/api/auth"})
@@ -1238,6 +1148,7 @@ def create_app(
                 model=_battery_model(), charge_target_soc_pct=None,
             )
         except Exception:
+            _log.debug("plan projection failed; skipping SoC checks (non-fatal)", exc_info=True)
             return None  # projection is best-effort; its absence just skips those checks
 
     def _validate_plan_obj(plan, now: datetime) -> PlanValidation:
@@ -1362,7 +1273,7 @@ def create_app(
         try:
             lines.append(f"Battery level now: {_current_soc(now):.0f}%")
         except Exception:
-            pass
+            _log.debug("chat context: battery level unavailable (non-fatal)", exc_info=True)
         try:
             intent, reason, override_active, _t, _p, _v = _effective_intent(now)
             if intent is not None:
@@ -1371,7 +1282,7 @@ def create_app(
                     + (" (manual override active)" if override_active else "")
                 )
         except Exception:
-            pass
+            _log.debug("chat context: current decision unavailable (non-fatal)", exc_info=True)
         pp = _current_plan()
         if pp is not None:
             _now, prices, plan = pp
@@ -1379,7 +1290,7 @@ def create_app(
                 fc = solar_forecast.slots() if solar_forecast is not None else None
                 lines.append(f"Plan: {build_plan_detail(_now, prices, plan, fc)['summary']}")
             except Exception:
-                pass
+                _log.debug("chat context: plan summary unavailable (non-fatal)", exc_info=True)
             try:
                 by = {p.start: p.eur_per_kwh for p in prices}
                 lines.append(
@@ -1387,7 +1298,7 @@ def create_app(
                     f"€{estimate_daily_savings_eur(plan, by):.2f}"
                 )
             except Exception:
-                pass
+                _log.debug("chat context: savings estimate unavailable (non-fatal)", exc_info=True)
             future = [p for p in prices if p.start >= _now]
             if future:
                 lines.append(
@@ -1407,7 +1318,7 @@ def create_app(
                 f"reserve floor: {settings_cache['battery.min_reserve_soc']:.0f}%"
             )
         except Exception:
-            pass
+            _log.debug("chat context: night target unavailable (non-fatal)", exc_info=True)
         return "\n".join(lines)
 
     async def _run_validation() -> dict | None:
@@ -1630,7 +1541,7 @@ def create_app(
         except Exception:
             _log.warning("B-75: typical-solar lookup failed (non-fatal)", exc_info=True)
 
-        car_plan_resp = await _car_plan_dict(now)
+        car_plan_resp = await gather_car_plan(ctx, now)
         car_charging_now = _car_charging(now)
 
         projected_soc_at_peak: float | None = None
@@ -1689,7 +1600,8 @@ def create_app(
                 _log.exception("detector cycle failed; retry next cycle (fail-safe)")
             try:
                 await _run_weekly_digest(
-                    store, cache_store, notifier, datetime.now(UTC), site_tz, _gather_digest)
+                    store, cache_store, notifier, datetime.now(UTC), site_tz,
+                    lambda m: gather_digest(ctx, m))
             except Exception:
                 _log.exception("weekly digest cycle failed; retry next cycle (fail-safe)")
 
@@ -1703,6 +1615,7 @@ def create_app(
         try:
             dq = _data_quality(now)
         except Exception:
+            _log.debug("readiness: data-quality probe failed (non-fatal)", exc_info=True)
             dq = "unsafe"
         plan_valid = True
         plan_ok = False
@@ -1712,6 +1625,7 @@ def create_app(
             if pp is not None:
                 plan_valid = _validate_plan_obj(pp[2], now).ok
         except Exception:
+            _log.debug("readiness: plan validation probe failed (non-fatal)", exc_info=True)
             plan_ok, plan_valid = False, False
         return compute_readiness(
             store_ok=store is not None,
@@ -1886,6 +1800,7 @@ def create_app(
                 await store.table_names()
                 store_ok = True
             except Exception:
+                _log.debug("diagnostics: history-store probe failed (non-fatal)", exc_info=True)
                 store_ok = False
         settings_ok = False
         if settings_store is not None:
@@ -1893,6 +1808,7 @@ def create_app(
                 await settings_store.all()
                 settings_ok = True
             except Exception:
+                _log.debug("diagnostics: settings-store probe failed (non-fatal)", exc_info=True)
                 settings_ok = False
         # probe() is a SYNC, possibly-networked call — run it off the event loop and guard it so an
         # unreachable battery shows as a warn check, not a 500 (and never blocks the loop).
@@ -1902,6 +1818,7 @@ def create_app(
             try:
                 p1_paired = (await asyncio.to_thread(battery.probe)).p1_paired
             except Exception:
+                _log.debug("diagnostics: battery probe failed (non-fatal)", exc_info=True)
                 battery_ok = False
         # data-quality / plan / readiness all run sync helpers that touch cached source/price/
         # forecast reads — compute them off the event loop so a slow device can't stall /api/health.
@@ -1932,6 +1849,7 @@ def create_app(
             try:
                 cache_stats = await asyncio.to_thread(cache_store.breakdown)
             except Exception:
+                _log.debug("diagnostics: cache breakdown failed (non-fatal)", exc_info=True)
                 cache_stats = None
         # Long-run diagnostics (review): DB/WAL size + sample row counts, and recorder health so a
         # stuck recorder (full disk, DB lock, dead device) is VISIBLE, not just inferred from stale.
@@ -1940,6 +1858,7 @@ def create_app(
             try:
                 storage = await store.db_stats()
             except Exception:
+                _log.debug("diagnostics: db_stats failed (non-fatal)", exc_info=True)
                 storage = None
             # Durability status (SPEC §11): the last scheduled-backup outcome + retained count, so
             # a silently-failing backup is visible alongside DB size. Copied out of the loop's box.
@@ -2350,6 +2269,7 @@ def create_app(
         try:
             return (datetime.fromisoformat(slot["start"]) + timedelta(minutes=15)).isoformat()
         except Exception:
+            _log.debug("slot end-time parse failed; using slot start (non-fatal)", exc_info=True)
             return slot["start"]
 
     def _action_blocks(slots: list[dict]) -> list[dict]:
@@ -2793,7 +2713,7 @@ def create_app(
                     cloud_cover = await asyncio.to_thread(cloud_cover_pct, lat_f, lon_f)
                     _sky_box["cc"], _sky_box["at"] = cloud_cover, now
         except (TypeError, ValueError):
-            pass
+            _log.debug("sky: sun/cloud lookup failed (non-fatal)", exc_info=True)
         return {"now": now.isoformat(), "sunrise": sunrise, "sunset": sunset,
                 "cloud_cover": cloud_cover}
 
@@ -2888,91 +2808,6 @@ def create_app(
         return recommend_solar_confidence(
             forecasts, raw, current_pct=float(current) if current is not None else None)
 
-    @app.get("/api/advisor/solar-confidence")
-    async def advisor_solar_confidence() -> dict:
-        """Advisory-only recommendation for `planner.solar_confidence` — the Settings UI renders
-        this as a hint next to the field; the user decides. Read-only, gated like any other
-        /api/* read (only if `web.require_auth` is on) — see /api/report."""
-        return {"advice": await _solar_confidence_advice(datetime.now(UTC))}
-
-    async def _gather_digest(anchor: date_cls) -> dict:
-        """Gather everything `build_digest` needs for the week containing local date `anchor` and
-        assemble it (BACKLOG B-58 / roadmap P2 "the Sunday read") — shared by `GET /api/digest`
-        and the Sunday delivery job (`_run_weekly_digest`) so the notification and the on-demand
-        read always agree for the same week.
-
-        Finance rows only cover days up to "now" (a future/in-progress day has nothing to measure
-        yet — `_ensure_day_finance` itself would refuse a future day); the week's flows/scores come
-        from the SAME `_report_for_window` the Insights week view uses; the audit rows are the raw
-        week-windowed audit log (`AuditStore.between`) build_digest counts patterns out of."""
-        now_local = datetime.now(UTC).astimezone(site_tz)
-        start, end, label, partial = resolve_window("week", anchor, site_tz, now_local)
-        finance_rows: list[dict] = []
-        if store is not None:
-            cur = start
-            while cur < end and cur <= now_local:
-                finance_rows.append(await _ensure_day_finance(cur.date()))
-                cur += timedelta(days=1)
-        report = await _report_for_window("week", start, end, label, partial, now_local)
-        audit_rows: list[dict] = []
-        if audit_store is not None:
-            audit_rows = await audit_store.between(
-                start.astimezone(UTC).isoformat(), end.astimezone(UTC).isoformat())
-        advice = await _solar_confidence_advice(datetime.now(UTC))
-        export_model = str(settings_cache.get("prices.export_price_model", "net_metering"))
-        return build_digest(
-            finance_rows=finance_rows, flows=report["flows"], scores=report["scores"],
-            audit_rows=audit_rows, advice=advice, week_label=label,
-            export_price_model=export_model,
-        )
-
-    @app.get("/api/digest")
-    async def digest(week: str | None = None) -> dict:
-        """The weekly digest (BACKLOG B-58 / roadmap P2 "Your week"): what you saved, what the
-        system did, one suggested tweak — the same figures the Sunday-evening notification sends
-        (see `_run_weekly_digest`), available on demand. Read-only. `week` (YYYY-MM-DD) is any
-        date inside the desired week; omitted = the last COMPLETED Mon-Sun week (the current,
-        still-running week is deliberately not the default — its numbers would keep changing)."""
-        now_local = datetime.now(UTC).astimezone(site_tz)
-        if week:
-            try:
-                anchor = date_cls.fromisoformat(week)
-            except ValueError:
-                return JSONResponse(  # type: ignore[return-value]
-                    {"detail": "week must be YYYY-MM-DD"}, status_code=422)
-        else:
-            anchor = _last_completed_week_monday(now_local)
-        return await _gather_digest(anchor)
-
-    @app.get("/api/accuracy")
-    async def accuracy() -> dict:
-        """All three forecast/prediction-accuracy tracks (B-72) in one read-only call — solar
-        forecast skill, plan-execution (target_soc-by-deadline vs. achieved SoC), and load-baseline
-        (household load vs. a naive day-of-week/hour trailing mean, the bar B-64 must beat). Each
-        is `None` below its own measurable-evidence minimum (see `ems.analysis`), independently.
-        Gathered the same way as /api/advisor/solar-confidence: solar over the last 14 days (the
-        same evidence window as that advisor); plan-execution and load need more history to reach
-        their evidence minimums (deadlines are ~daily, day-of-week/hour baselines need several
-        weeks), so those two are gathered over the last 60 days instead."""
-        solar = None
-        plan_execution = None
-        load = None
-        if store is not None:
-            now = datetime.now(UTC)
-
-            solar = await _solar_forecast_skill(now)
-
-            long_start = now - timedelta(days=60)
-            plan_rows = await store.plan_history_between(long_start.isoformat(), now.isoformat())
-            plan_execution = plan_execution_error(plan_rows, tz=site_tz)
-
-            long_limit = history_row_cap(
-                (now - long_start).total_seconds(), _sample_cadence_seconds())
-            long_raw = await store.raw_between(
-                long_start.isoformat(), now.isoformat(), limit=long_limit)
-            load = load_baseline_error(long_raw, tz=site_tz)
-        return {"solar": solar, "plan_execution": plan_execution, "load": load}
-
     @app.get("/api/advisor/ev-charge")
     def advisor_ev_charge() -> dict:
         """Advisory-only "best time to charge the car" (docs/v2-ev-control.md: v2 EV control is
@@ -2990,6 +2825,7 @@ def create_app(
             hh, mm = (int(x) for x in str(settings_cache["ev.departure_time"]).split(":", 1))
             assert 0 <= hh < 24 and 0 <= mm < 60
         except (ValueError, AssertionError):
+            _log.debug("invalid ev.departure_time; using 07:30 (non-fatal)", exc_info=True)
             hh, mm = 7, 30  # fail-safe: an unparsable time never breaks the card
         departure_local = now_local.replace(hour=hh, minute=mm, second=0, microsecond=0)
         if departure_local <= now_local:
@@ -3008,141 +2844,6 @@ def create_app(
             now=now,
         )
         return {"advice": advice}
-
-    @app.get("/api/cars")
-    def cars_endpoint() -> dict:
-        """Static car-picker data (ems/cars.py) for the Settings "Car" group: sorted brand list
-        + every model as a plain dict. Read-only and cacheable — the dataset never changes at
-        runtime, so this never touches settings/store."""
-        return {"brands": car_brands(), "cars": [car_to_dict(c) for c in CARS]}
-
-    async def _car_soc_estimate(
-        now: datetime, anchor_pct: float, anchor_ts: str
-    ) -> dict | None:
-        """Estimate the car SoC from a manual anchor + charging measured over the last 14 days of
-        recorded samples (ems/ev_session.estimate_soc). Shared by GET /api/car/plan and the block
-        POST /api/car/soc echoes back. `store` must not be None (both call sites guard it). Returns
-        None only for a degenerate anchor/capacity (estimate_soc's own contract)."""
-        start = now - timedelta(days=14)
-        limit = history_row_cap((now - start).total_seconds(), _sample_cadence_seconds())
-        rows = await store.raw_between(start.isoformat(), now.isoformat(), limit=limit)
-        return estimate_soc(
-            rows,
-            anchor_pct=anchor_pct,
-            anchor_ts=anchor_ts,
-            battery_net_kwh=float(settings_cache["ev.battery_kwh"]),
-            now=now,
-            charge_efficiency=float(settings_cache["ev.charge_efficiency"]),
-        )
-
-    async def _car_plan_dict(now: datetime) -> dict:
-        """The EV feature's main read (design 2026-07-12): when to plug in the car to meet the
-        weekly minimum-charge schedule as cheaply as possible. Advisory only — never commands
-        anything. Wires ems/ev_schedule + ems/ev_session + ems/ev_planner to settings, the manual
-        SoC anchor, and the SAME price/forecast access as /api/advisor/ev-charge.
-
-        Progressive states so the UI can prompt for what's missing: `enabled:false` (feature off),
-        `needs_anchor` (no SoC set — "set your car's charge level"), `needs_schedule` (nothing
-        enabled in the weekly schedule), else the full plan. `soc.stale` (>72 h) is carried in the
-        soc block and does NOT stop planning — the plan is still shown with the staleness flag.
-
-        Extracted from the GET /api/car/plan handler (`now` is the only thing that varies) so
-        `_run_detector_cycle` (B-75 `ev_plug_in_reminder`) reuses the EXACT same gathering instead
-        of duplicating it."""
-        if not settings_cache.get("ev.advice_enabled"):
-            return {"enabled": False, "plan": None, "soc": None}
-
-        car_meter_configured = bool(str(settings_cache.get("meters.car_ip") or "").strip())
-
-        # --- car SoC estimate from the manual anchor (no anchor ⇒ prompt to set one) ---
-        soc = None
-        if store is not None:
-            anchor = await store.get_car_soc_anchor()
-            if anchor is not None:
-                soc = await _car_soc_estimate(now, anchor_pct=anchor[0], anchor_ts=anchor[1])
-        if soc is None:
-            return {
-                "enabled": True, "plan": None, "soc": None, "needs_anchor": True,
-                "car_meter_configured": car_meter_configured,
-            }
-
-        # --- weekly schedule → concrete, tz-aware deadlines (empty ⇒ prompt to set a schedule) ---
-        schedule = parse_schedule(settings_cache.get("ev.schedule"))
-        deadlines = materialize_deadlines(schedule, now, site_tz)
-        if not deadlines:
-            return {
-                "enabled": True, "soc": soc, "plan": None, "needs_schedule": True,
-                "car_meter_configured": car_meter_configured,
-            }
-
-        # --- effective charge power = min(charger, car AC limit) (charger alone if no car) ---
-        car = car_by_id(str(settings_cache.get("ev.car_id") or ""))
-        charger_kw = float(settings_cache["ev.charger_kw"])
-        effective_kw = min(charger_kw, car.max_ac_kw) if car is not None else charger_kw
-
-        # --- prices + solar P50, gathered exactly like /api/advisor/ev-charge ---
-        prices = price_source.slots() if price_source is not None else []
-        forecast = solar_forecast.slots() if solar_forecast is not None else []
-        p50_map = {f.start: f.p50_w for f in forecast}
-
-        # surplus_threshold_w is left at plan_car_charging's default (1000 W) — the same surplus
-        # threshold the advisor uses, so both price a sunny slot the same way.
-        plan = plan_car_charging(
-            now,
-            deadlines,
-            prices,
-            p50_map,
-            soc_pct=soc["soc_pct"],
-            battery_net_kwh=float(settings_cache["ev.battery_kwh"]),
-            charge_efficiency=float(settings_cache["ev.charge_efficiency"]),
-            power_kw=effective_kw,
-            export_model=str(settings_cache.get("prices.export_price_model", "net_metering")),
-            energy_tax_eur_per_kwh=float(
-                settings_cache.get("prices.energy_tax_eur_per_kwh", 0.13)),
-            fixed_feed_in_eur_per_kwh=float(
-                settings_cache.get("prices.fixed_feed_in_eur_per_kwh", 0.01)),
-        )
-        return {
-            "enabled": True,
-            "soc": soc,
-            "plan": plan,
-            "schedule": schedule,
-            "effective_kw": effective_kw,
-            "car": car_to_dict(car) if car is not None else None,
-            "car_meter_configured": car_meter_configured,
-        }
-
-    @app.get("/api/car/plan")
-    async def car_plan() -> dict:
-        return await _car_plan_dict(datetime.now(UTC))
-
-    @app.post("/api/car/soc")
-    async def set_car_soc(request: Request, body: dict | None = None) -> JSONResponse:
-        """Set the manual car-SoC anchor (a percent, timestamped now) — the app's SoC "ground
-        truth" it estimates forward from. Auth is enforced centrally by _AccessMiddleware (this
-        path is in _WRITE_API_PATHS) and the write is audited exactly like POST /api/override."""
-        if store is None:
-            return JSONResponse({"detail": "history store not configured"}, status_code=503)
-        body = body or {}
-        pct = body.get("pct")
-        if isinstance(pct, bool) or not isinstance(pct, (int, float)):
-            return JSONResponse(
-                {"detail": "invalid car soc", "errors": {"pct": "must be a number"}},
-                status_code=422)
-        if not (0 <= pct <= 100):
-            return JSONResponse(
-                {"detail": "invalid car soc", "errors": {"pct": "must be between 0 and 100"}},
-                status_code=422)
-        now = datetime.now(UTC)
-        await store.set_car_soc_anchor(float(pct), now.isoformat())
-        if audit_store is not None:
-            await audit_store.append(
-                now.isoformat(), "car_soc_anchor",
-                f"Car SoC anchored at {pct:g}%",
-                {"pct": float(pct), "ts": now.isoformat()},
-            )
-        soc = await _car_soc_estimate(now, anchor_pct=float(pct), anchor_ts=now.isoformat())
-        return JSONResponse({"soc": soc})
 
     async def _ensure_day_finance(day_local: date_cls) -> dict:
         """Compute (or return the current-version cached) finance rollup for one LOCAL day,
@@ -3225,156 +2926,6 @@ def create_app(
                 "window_start": start.astimezone(UTC).isoformat(),
                 "window_end": end.astimezone(UTC).isoformat(),
                 "partial": partial, "days": days, "totals": totals}
-
-    @app.get("/api/export")
-    async def export(
-        kind: str = Query(default="raw", pattern="^(raw|derived)$"),
-        fmt: str = Query(default="csv", pattern="^(csv|json)$", alias="format"),
-        limit: int = Query(default=1000, ge=1, le=2000),
-    ) -> Response:
-        # Download recent history (oldest→newest) as CSV or JSON. Read-only, open like reads.
-        columns = RAW_COLUMNS if kind == "raw" else DERIVED_COLUMNS
-        rows: list[dict] = []
-        if store is not None:
-            recent = store.recent_raw if kind == "raw" else store.recent_derived
-            rows = list(reversed(await recent(limit)))  # recent_* is newest-first; export ascending
-        if fmt == "json":
-            return JSONResponse(rows)
-        buf = io.StringIO()
-        writer = csv.DictWriter(buf, fieldnames=list(columns), extrasaction="ignore")
-        writer.writeheader()
-        writer.writerows(rows)
-        # Build the filename from a locally-asserted safe value (not the raw query param) so the
-        # header can never carry injected bytes even if the upstream regex guard were relaxed.
-        safe_kind = "raw" if kind == "raw" else "derived"
-        return Response(
-            content=buf.getvalue(),
-            media_type="text/csv",
-            headers={"Content-Disposition": f'attachment; filename="ems-{safe_kind}.csv"'},
-        )
-
-    @app.get("/api/export/package")
-    async def export_package_endpoint(days: int = Query(default=90, ge=1, le=400)) -> Response:
-        """One ZIP: the recorded history as analytics-ready CSVs (energy, prices, daily finance,
-        audit trail) plus a manifest for validating production operation. Read-only and privacy-safe
-        to share: the manifest carries only the replay-safe settings subset — no tokens, IPs or
-        location."""
-        now = datetime.now(UTC)
-        start = now - timedelta(days=days)
-        start_iso, end_iso = start.isoformat(), now.isoformat()
-        raw: list[dict] = []
-        derived: list[dict] = []
-        prices: list[dict] = []
-        forecasts: list[dict] = []
-        finance: list[dict] = []
-        audit: list[dict] = []
-        plan: list[dict] = []
-        gas: list[dict] = []
-        if store is not None:
-            row_cap = min(600_000, days * 24 * 60 + 1000)  # ~one row/min ceiling over the window
-            raw = await store.raw_between(start_iso, end_iso, limit=row_cap)
-            derived = await store.derived_between(start_iso, end_iso, limit=row_cap)
-            prices = await store.prices_between(start_iso, end_iso)
-            forecasts = await store.forecasts_between(start_iso, end_iso)
-            plan = await store.plan_history_between(start_iso, end_iso)
-            gas = await store.gas_between(start_iso, end_iso)
-            # Self-complete the window before reading it back: `daily_finance` rows are otherwise
-            # only ever written when a finance view for that day was requested (/api/finance), so
-            # a day nobody looked at is silently absent from the export. Backfill every COMPLETED
-            # local day the export window touches (already bounded by `days` <= 400) so
-            # daily_finance.csv covers the whole window, not just previously-viewed days. One bad
-            # day must not fail the whole export — best-effort per day.
-            today_local = now.astimezone(site_tz).date()
-            backfill_day = start.astimezone(site_tz).date()
-            while backfill_day < today_local:
-                try:
-                    await _ensure_day_finance(backfill_day)
-                except Exception:
-                    _log.exception(
-                        "export/package: failed to backfill daily_finance for %s", backfill_day)
-                backfill_day += timedelta(days=1)
-            fin_rows = await store.daily_finance_between(
-                start.date().isoformat(), (now.date() + timedelta(days=1)).isoformat())
-            finance = [r["data"] for r in fin_rows]
-        if audit_store is not None:
-            audit = list(reversed(await audit_store.recent(limit=5000)))  # oldest→newest
-        # EV charging sessions are DETECTED on-demand from the already-fetched raw rows (no
-        # recorder state machine — see ems/ev_session.py) so the algorithm can be validated/tuned
-        # from production data (docs/superpowers/specs/2026-07-12-ev-charging-design.md, "Export").
-        ev_sessions = detect_sessions(raw)
-        ev_soc_anchor: dict[str, Any] | None = None
-        if store is not None:
-            anchor = await store.get_car_soc_anchor()
-            if anchor is not None:
-                ev_soc_anchor = {"pct": anchor[0], "ts": anchor[1]}
-        # Production-validation payload — privacy-safe (only the replay-safe settings, no IPs /
-        # tokens / location). Lets a reviewer see run mode, the planner knobs in effect, and live
-        # health (data quality, whether the battery capability probed, recorder liveness).
-        validation = {
-            "operational": {"dry_run": dry_run, "dev_mode": dev_mode, "timezone": str(tz)},
-            "config": {k: settings_cache.get(k)
-                       for k in _REPLAY_SETTING_KEYS if k in settings_cache},
-            "health": {
-                "data_quality": _data_quality(now),
-                "capability_present": _capability_box["cap"] is not None,
-                "recorder": recorder.health() if recorder is not None else None,
-            },
-            "incidents": expkg.incident_rollup(audit),
-            # Config needed to replay the EV charging algorithm against ev_sessions.csv — no
-            # tokens/IPs/location; a % + timestamp anchor is privacy-safe and useful for replay.
-            "ev": {
-                "schedule": parse_schedule(settings_cache.get("ev.schedule")),
-                "car_id": settings_cache.get("ev.car_id"),
-                "battery_kwh": settings_cache.get("ev.battery_kwh"),
-                "charger_kw": settings_cache.get("ev.charger_kw"),
-                "charge_efficiency": settings_cache.get("ev.charge_efficiency"),
-                "advice_enabled": settings_cache.get("ev.advice_enabled"),
-                "soc_anchor": ev_soc_anchor,
-            },
-        }
-        counts = {"raw_samples": len(raw), "derived_samples": len(derived),
-                  "prices": len(prices), "forecasts": len(forecasts),
-                  "daily_finance": len(finance), "audit_log": len(audit),
-                  "plan_history": len(plan), "gas": len(gas), "ev_sessions": len(ev_sessions)}
-        saved_vals = [d["saved_eur"] for d in finance if d.get("saved_eur") is not None]
-        saved_total = round(sum(saved_vals), 2) if saved_vals else None
-        window = {"start": start_iso, "end": end_iso}
-        fc_skill = forecast_error(forecasts, raw)
-        solar_advice = recommend_solar_confidence(
-            forecasts, raw,
-            current_pct=float(settings_cache.get("planner.solar_confidence", 80.0)))
-        ev_adherence = expkg.ev_price_adherence(ev_sessions, prices)
-        # Two more forecast-accuracy tracks (B-72), scored off the SAME rows already fetched for
-        # plan_history.csv / raw_samples.csv above — no extra store round-trip.
-        plan_exec_error = plan_execution_error(plan, tz=site_tz)
-        load_baseline = load_baseline_error(raw, tz=site_tz)
-        members = {
-            "raw_samples.csv": expkg.rows_to_csv(raw, expkg.RAW_COLUMNS),
-            "derived_samples.csv": expkg.rows_to_csv(derived, expkg.DERIVED_COLUMNS),
-            "prices.csv": expkg.rows_to_csv(prices, expkg.PRICE_COLUMNS),
-            "forecasts.csv": expkg.rows_to_csv(forecasts, expkg.FORECAST_COLUMNS),
-            "daily_finance.csv": expkg.rows_to_csv(finance, expkg.FINANCE_COLUMNS),
-            "audit_log.csv": expkg.rows_to_csv(audit, expkg.AUDIT_COLUMNS),
-            "plan_history.csv": expkg.rows_to_csv(plan, expkg.PLAN_COLUMNS),
-            "gas.csv": expkg.rows_to_csv(gas, expkg.GAS_COLUMNS),
-            "ev_sessions.csv": expkg.rows_to_csv(ev_sessions, expkg.EV_SESSION_COLUMNS),
-            "manifest.json": expkg.build_manifest(
-                generated_at=now.isoformat(), app_version=expkg.app_version(),
-                window_start=start_iso, window_end=end_iso, counts=counts, extra=validation,
-            ),
-            "README.md": expkg.readme_text(),
-            "validation_summary.txt": expkg.validation_summary(
-                generated_at=now.isoformat(), app_version=expkg.app_version(), window=window,
-                counts=counts, validation=validation, saved_total_eur=saved_total,
-                forecast_skill=fc_skill, solar_confidence_advice=solar_advice,
-                ev_price_adherence=ev_adherence,
-                plan_execution_error=plan_exec_error, load_baseline_error=load_baseline,
-            ),
-        }
-        data = expkg.build_zip(members)
-        fname = f"ems-export-{now.strftime('%Y%m%d')}.zip"
-        return Response(content=data, media_type="application/zip",
-                        headers={"Content-Disposition": f'attachment; filename="{fname}"'})
 
     @app.get("/api/series")
     async def series(limit: int = Query(default=100, ge=1, le=2000)) -> dict:
@@ -3470,36 +3021,6 @@ def create_app(
             return {"incidents": expkg.incident_rollup([])}
         return {"incidents": expkg.incident_rollup(await audit_store.recent(limit=5000))}
 
-    @app.get("/api/notifications")
-    async def notifications_endpoint(
-        limit: int = Query(default=50, ge=1, le=200),
-    ) -> dict:
-        """The outbox feed for the header bell (B-20): most recent notifications + the unread
-        count. Read-only, like /api/audit — gated only when `web.require_auth` is on. Empty when
-        no history store is configured. A 30-day window is generous: notifications are sparse by
-        construction (dedupe_key), so this never approaches the 500-row internal cap."""
-        if store is None:
-            return {"items": [], "unread": 0}
-        now = datetime.now(UTC)
-        start = now - timedelta(days=30)
-        rows = await store.notifications_between(start.isoformat(), now.isoformat(), limit=500)
-        items = list(reversed(rows))[:limit]  # newest-first for the dropdown feed
-        return {"items": items, "unread": await store.unread_count()}
-
-    @app.post("/api/notifications/read")
-    async def mark_notifications_read_endpoint(body: dict | None = None) -> JSONResponse:
-        """Mark notifications read: {"all": true} marks every unread row, {"ids": [1, 2, 3]} marks
-        just those (an unknown id is silently ignored). Auth is enforced centrally by the
-        _enforce_access middleware (writes always gated)."""
-        if store is None:
-            return JSONResponse({"detail": "history store not configured"}, status_code=503)
-        body = body or {}
-        mark_all = bool(body.get("all"))
-        raw_ids = body.get("ids") if not mark_all else None
-        ids = [int(i) for i in raw_ids] if isinstance(raw_ids, list) else None
-        await store.mark_notifications_read(ids=ids, mark_all=mark_all)
-        return JSONResponse({"unread": await store.unread_count()})
-
     @app.get("/api/ai/validation")
     def ai_validation_latest() -> dict:
         """The latest AI second-opinion (advisory), for the dashboard. null until one has run."""
@@ -3512,6 +3033,7 @@ def create_app(
         try:
             result = await _run_validation()
         except Exception:
+            _log.debug("on-demand AI validation failed (non-fatal)", exc_info=True)
             result = None
         return JSONResponse({"latest": result, "active": _explainer_active()})
 
@@ -3538,20 +3060,20 @@ def create_app(
                 safe += " EMS is read-only here — it can't command the battery."
             items.append({"key": "battery_safe", "question": "Is my battery safe?", "answer": safe})
         except Exception:
-            pass
+            _log.debug("faq: 'is my battery safe?' item failed (non-fatal)", exc_info=True)
         try:
             intent, reason, *_ = _effective_intent(now)
             if intent is not None and reason:
                 items.append({"key": "why_mode", "question": "Why is it in this mode?",
                               "answer": reason})
         except Exception:
-            pass
+            _log.debug("faq: 'why this mode?' item failed (non-fatal)", exc_info=True)
         try:
             need = _night_target_soc(_current_soc(now))
             items.append({"key": "tonight", "question": "What happens tonight?",
                           "answer": need.reason})
         except Exception:
-            pass
+            _log.debug("faq: 'what happens tonight?' item failed (non-fatal)", exc_info=True)
         try:
             if settings_cache.get("ev.advice_enabled"):
                 car = car_by_id(str(settings_cache.get("ev.car_id") or ""))
@@ -3571,7 +3093,7 @@ def create_app(
                     ),
                 })
         except Exception:
-            pass
+            _log.debug("faq: 'why charge the car?' item failed (non-fatal)", exc_info=True)
         return {"items": items, "ai_on": _explainer_active()}
 
     @app.post("/api/chat")
@@ -3583,6 +3105,7 @@ def create_app(
         try:
             data = await request.json()
         except Exception:
+            _log.debug("chat: request body parse failed (non-fatal)", exc_info=True)
             data = {}
         question = (data.get("question") or "").strip()[:500] if isinstance(data, dict) else ""
         if not question:
@@ -3600,6 +3123,42 @@ def create_app(
             return JSONResponse(
                 {"answer": "Sorry — the assistant isn't available right now.", "source": "error"}
             )
+
+    # --- Extracted per-domain routers (BACKLOG B-25, incremental slice) --------------------------
+    # Build the shared context ONCE (all its helper closures are defined above) and include each
+    # self-contained domain's APIRouter. `settings_cache` is passed by reference (mutated in place,
+    # never rebound) so a router sees a just-saved setting immediately, exactly like the closures.
+    # Included BEFORE the /api/{rest} catch-all below so the specific routes match first. AUTH is
+    # unchanged: their paths (incl. the writes /api/car/soc + /api/notifications/read) are still
+    # gated by _AccessMiddleware via _WRITE_API_PATHS / _read_auth_required — moving a handler into
+    # a router does not change its path.
+    ctx = AppContext(
+        source=source,
+        store=store,
+        settings_cache=settings_cache,
+        audit_store=audit_store,
+        cache_store=cache_store,
+        notifier=notifier,
+        price_source=price_source,
+        solar_forecast=solar_forecast,
+        recorder=recorder,
+        site_tz=site_tz,
+        tz=tz,
+        dry_run=dry_run,
+        dev_mode=dev_mode,
+        replay_setting_keys=_REPLAY_SETTING_KEYS,
+        car_charging=_car_charging,
+        data_quality=_data_quality,
+        sample_cadence_seconds=_sample_cadence_seconds,
+        capability_present=lambda: _capability_box["cap"] is not None,
+        ensure_day_finance=_ensure_day_finance,
+        solar_forecast_skill=_solar_forecast_skill,
+        solar_confidence_advice=_solar_confidence_advice,
+        report_for_window=_report_for_window,
+    )
+    for build in (build_car_router, build_digest_router, build_notify_router,
+                  build_export_router, build_accuracy_router, build_whatif_router):
+        app.include_router(build(ctx))
 
     # Unknown /api/* paths must return a JSON 404 — NOT fall through to the SPA catch-all
     # below (which would serve index.html with a 200, silently breaking API clients).

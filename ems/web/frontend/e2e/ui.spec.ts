@@ -195,6 +195,47 @@ test.describe("EMS dashboard", () => {
     await expect(detail).toContainText("1.00 kW");
   });
 
+  // B-03b: "Saved today" now derives from /api/finance (measured), never the old plan-estimate tile
+  // — and never a false "€0.00" before any price history exists.
+  test("B-03b: the story footer shows the MEASURED saved-today figure from /api/finance", async ({
+    page,
+  }) => {
+    await page.route("**/api/finance**", (route) =>
+      route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          period: "day", label: "today", partial: false, days: [],
+          totals: { grid_cost_eur: 1.1, battery_cost_eur: 0.08, saved_eur: 2.34,
+                    days_with_prices: 1, days_with_data: 1 },
+        }),
+      }),
+    );
+    await page.goto("/");
+    const stat = page.getByTestId("saved-today");
+    await expect(stat).toBeVisible();
+    await expect(stat).toContainText("€2.34 measured");
+  });
+
+  test("B-03b: no price history yet shows 'measuring', never a false €0.00", async ({ page }) => {
+    await page.route("**/api/finance**", (route) =>
+      route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          period: "day", label: "today", partial: true, days: [],
+          totals: { grid_cost_eur: null, battery_cost_eur: null, saved_eur: null,
+                    days_with_prices: 0, days_with_data: 0 },
+        }),
+      }),
+    );
+    await page.goto("/");
+    const stat = page.getByTestId("saved-today");
+    await expect(stat).toBeVisible();
+    await expect(stat).toContainText("measuring");
+    await expect(stat).not.toContainText("€0.00");
+  });
+
   test("no API error banner when backend is up", async ({ page }) => {
     await page.goto("/");
     await expect(page.getByTestId("battery-plan")).toBeVisible();
@@ -316,6 +357,191 @@ test.describe("EMS dashboard", () => {
     await expect(page.getByTestId("story-soc-line")).toBeAttached();
     // The "did we do right" review (solar vs forecast) is shown.
     await expect(page.getByTestId("recent-review")).toContainText("of the 4.0 kWh forecast");
+  });
+
+  // B-08: quiet, PAST-window-only "success marker" chips computed client-side from fields already
+  // in the /api/energy-story payload — night = solar_w<5 (timezone-agnostic, no clock-hour guess),
+  // grid-buy = per-slot action "grid_charge" (the same field BatteryPlan's chart legends "cheap
+  // window"). Each renders ONLY when the payload can prove it; see EnergyStory.tsx for the exact
+  // fields/thresholds.
+  test("B-08: quiet success markers render only when the payload can honestly prove them", async ({
+    page,
+  }) => {
+    const base = Date.parse("2026-06-29T00:00:00Z");
+    const SLOT = 15 * 60 * 1000;
+    // 3h of clean night: no solar, no grid import, the battery alone covering real load.
+    const night = Array.from({ length: 12 }, (_, i) => ({
+      start: new Date(base + i * SLOT).toISOString(),
+      soc_pct: 70 - i * 0.5, grid_w: 0, solar_w: 0, battery_w: 500, load_w: 480,
+      eur_per_kwh: 0.1, action: "discharge",
+    }));
+    // 1h of a deliberate, cheap grid-charge (the ONLY grid import in the window).
+    const buy = Array.from({ length: 4 }, (_, i) => ({
+      start: new Date(base + (12 + i) * SLOT).toISOString(),
+      soc_pct: 64 + i, grid_w: 800, solar_w: 50, battery_w: -800, load_w: 300,
+      eur_per_kwh: 0.05, action: "grid_charge",
+    }));
+    const slots = [...night, ...buy];
+    const totals = {
+      import_kwh: 0.8, export_kwh: 0, solar_kwh: 0.2, charge_kwh: 0.8, discharge_kwh: 2.4,
+      load_kwh: 3.1, grid_cost_eur: 0.04, self_sufficiency_pct: 74,
+      soc_start_pct: 70, soc_end_pct: 68, soc_min_pct: 62, soc_max_pct: 70,
+    };
+    await page.route("**/api/energy-story**", (route) => {
+      if (route.request().url().includes("window=past")) {
+        return route.fulfill({
+          status: 200, contentType: "application/json",
+          body: JSON.stringify({
+            window: "past", now: new Date(base + 16 * SLOT).toISOString(), current_soc_pct: 68,
+            reserve_soc_pct: 10, target_soc_pct: 88, target_kwh: 9, target_deadline: null,
+            current_price_eur_per_kwh: 0.1, slots, totals,
+            headline: "Last 24h — ran the night on the battery.",
+          }),
+        });
+      }
+      return route.continue();
+    });
+    await page.goto("/");
+    await openPlan(page);
+    await page.getByTestId("story-past").click();
+    await expect(page.getByTestId("quiet-marker-night")).toContainText("ran the night on battery");
+    await expect(page.getByTestId("quiet-marker-cheap")).toContainText(
+      "bought only in the cheap window",
+    );
+  });
+
+  test("B-08: withholds a marker the payload can't honestly support", async ({ page }) => {
+    const base = Date.parse("2026-06-29T00:00:00Z");
+    const SLOT = 15 * 60 * 1000;
+    // Same night stretch, but one slot draws from the grid — the battery did NOT run the whole
+    // night alone, so the "ran the night on battery" claim must be withheld.
+    const night = Array.from({ length: 12 }, (_, i) => ({
+      start: new Date(base + i * SLOT).toISOString(),
+      soc_pct: 70 - i * 0.5, grid_w: i === 6 ? 300 : 0, solar_w: 0, battery_w: 500, load_w: 480,
+      eur_per_kwh: 0.1, action: i === 6 ? "self_consume" : "discharge",
+    }));
+    // One import slot landed OUTSIDE a deliberate grid-charge — "bought only in the cheap window"
+    // must also be withheld.
+    const buy = Array.from({ length: 4 }, (_, i) => ({
+      start: new Date(base + (12 + i) * SLOT).toISOString(),
+      soc_pct: 64 + i, grid_w: 800, solar_w: 50, battery_w: -800, load_w: 300,
+      eur_per_kwh: 0.05, action: i === 0 ? "self_consume" : "grid_charge",
+    }));
+    const slots = [...night, ...buy];
+    const totals = {
+      import_kwh: 1.0, export_kwh: 0, solar_kwh: 0.2, charge_kwh: 0.8, discharge_kwh: 2.4,
+      load_kwh: 3.1, grid_cost_eur: 0.06, self_sufficiency_pct: 68,
+      soc_start_pct: 70, soc_end_pct: 68, soc_min_pct: 62, soc_max_pct: 70,
+    };
+    await page.route("**/api/energy-story**", (route) => {
+      if (route.request().url().includes("window=past")) {
+        return route.fulfill({
+          status: 200, contentType: "application/json",
+          body: JSON.stringify({
+            window: "past", now: new Date(base + 16 * SLOT).toISOString(), current_soc_pct: 68,
+            reserve_soc_pct: 10, target_soc_pct: 88, target_kwh: 9, target_deadline: null,
+            current_price_eur_per_kwh: 0.1, slots, totals, headline: "Last 24h.",
+          }),
+        });
+      }
+      return route.continue();
+    });
+    await page.goto("/");
+    await openPlan(page);
+    await page.getByTestId("story-past").click();
+    await expect(page.getByTestId("story-soc")).toBeVisible(); // the past story did load
+    await expect(page.getByTestId("quiet-marker-night")).toHaveCount(0);
+    await expect(page.getByTestId("quiet-marker-cheap")).toHaveCount(0);
+  });
+
+  // B-31: the story could show "✓ No grid top-up needed" (server trust_markers) right beside
+  // "⚠ Short of the target with no grid top-up planned" (the on-track caution) — the SAME fact
+  // (no GRID_CHARGE_TO_TARGET slot in the plan) told as both comfort and warning. Single-voiced:
+  // the comfort chip is suppressed once the verdict is "behind".
+  test("B-31: suppresses the redundant comfort chip when the verdict is behind", async ({ page }) => {
+    const base = Date.parse("2026-06-29T09:00:00Z");
+    const SLOT = 15 * 60 * 1000;
+    const slots = Array.from({ length: 20 }, (_, i) => ({
+      start: new Date(base + i * SLOT).toISOString(),
+      soc_pct: 60 + i * 0.2, grid_w: 50, solar_w: 600, battery_w: 0, load_w: 400,
+      eur_per_kwh: 0.2, action: "self_consume",
+    }));
+    const totals = {
+      import_kwh: 1.2, export_kwh: 0, solar_kwh: 6, charge_kwh: 0, discharge_kwh: 0, load_kwh: 4,
+      grid_cost_eur: 0.24, self_sufficiency_pct: 70, soc_start_pct: 60, soc_end_pct: 64,
+      soc_min_pct: 58, soc_max_pct: 66,
+    };
+    await page.route("**/api/energy-story**", (route) => {
+      if (route.request().url().includes("window=past")) return route.continue();
+      return route.fulfill({
+        status: 200, contentType: "application/json",
+        body: JSON.stringify({
+          window: "next", now: new Date(base).toISOString(), current_soc_pct: 60,
+          reserve_soc_pct: 10, target_soc_pct: 88, target_kwh: 9, target_deadline: null,
+          current_price_eur_per_kwh: 0.2, slots, totals,
+          headline: "Next 24h — running on solar + battery; no grid charging.",
+          trust_markers: ["Reserve respected", "No grid top-up needed"],
+          recent_hours: 3, recent: [],
+          on_track: {
+            status: "behind", actual_soc_pct: 60, target_soc_pct: 88, deficit_kwh: 6.2,
+            message: "Short of the 88% target with no grid top-up planned — about 1.2 kWh will "
+              + "come from the grid.",
+          },
+        }),
+      });
+    });
+    await page.goto("/");
+    // The hero's synthesis line (B-32) already, legitimately, mirrors this same on_track.message
+    // as a quick-glance summary — that's a summary/detail sync, not the B-31 bug. The bug is the
+    // comfort CHIP ("No grid top-up needed") appearing anywhere alongside it.
+    await expect(page.getByTestId("hero-synthesis")).toContainText("no grid top-up planned");
+    await openPlan(page);
+    const verdict = page.getByTestId("on-track");
+    await expect(verdict).toContainText("no grid top-up planned");
+    const markers = page.getByTestId("trust-markers");
+    await expect(markers).toContainText("Reserve respected");
+    await expect(markers).not.toContainText("No grid top-up needed");
+    // The comfort chip's exact copy never appears anywhere on the page once the verdict is behind.
+    await expect(page.getByText("No grid top-up needed")).toHaveCount(0);
+  });
+
+  test("B-31: the comfort chip still shows when the plan really is on track (not over-suppressed)", async ({
+    page,
+  }) => {
+    const base = Date.parse("2026-06-29T09:00:00Z");
+    const SLOT = 15 * 60 * 1000;
+    const slots = Array.from({ length: 20 }, (_, i) => ({
+      start: new Date(base + i * SLOT).toISOString(),
+      soc_pct: 60 + i, grid_w: 0, solar_w: 700, battery_w: -100, load_w: 300,
+      eur_per_kwh: 0.2, action: "self_consume",
+    }));
+    const totals = {
+      import_kwh: 0, export_kwh: 1, solar_kwh: 7, charge_kwh: 1, discharge_kwh: 0, load_kwh: 4,
+      grid_cost_eur: 0, self_sufficiency_pct: 100, soc_start_pct: 60, soc_end_pct: 90,
+      soc_min_pct: 60, soc_max_pct: 92,
+    };
+    await page.route("**/api/energy-story**", (route) => {
+      if (route.request().url().includes("window=past")) return route.continue();
+      return route.fulfill({
+        status: 200, contentType: "application/json",
+        body: JSON.stringify({
+          window: "next", now: new Date(base).toISOString(), current_soc_pct: 60,
+          reserve_soc_pct: 10, target_soc_pct: 88, target_kwh: 9, target_deadline: null,
+          current_price_eur_per_kwh: 0.2, slots, totals,
+          headline: "Next 24h — your solar fills the battery, then runs the evening on it.",
+          trust_markers: ["Reserve respected", "No grid top-up needed", "On track for tonight's target"],
+          recent_hours: 3, recent: [],
+          on_track: {
+            status: "ahead", actual_soc_pct: 60, target_soc_pct: 88, deficit_kwh: 0,
+            message: "On track — projected to reach the 88% night target.",
+          },
+        }),
+      });
+    });
+    await page.goto("/");
+    await openPlan(page);
+    const markers = page.getByTestId("trust-markers");
+    await expect(markers).toContainText("No grid top-up needed");
   });
 
   test("shows the strategy card with a season picker and explanation", async ({ page }) => {
