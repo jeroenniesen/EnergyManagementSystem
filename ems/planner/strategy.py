@@ -10,7 +10,9 @@ the same `Plan`, so the projection, validator, UI and controller paths are uncha
 """
 from __future__ import annotations
 
-from dataclasses import replace
+import json
+from dataclasses import dataclass, replace
+from datetime import date as date_cls
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
@@ -28,6 +30,10 @@ DEFAULT_SUMMER_MONTHS: frozenset[int] = frozenset({4, 5, 6, 7, 8, 9})
 # spread this wide makes arbitrage (price-smart) worthwhile.
 AUTO_SURPLUS_KWH = 3.0
 AUTO_SPREAD_EUR = 0.10
+# Seasonal-transition hysteresis (SPEC §8.4, BACKLOG B-15): a season change must persist this many
+# consecutive daily evaluations before it commits, so a borderline shoulder-month day can't flap
+# summer↔winter. 0 disables (switch instantly, the pre-B-15 behaviour).
+DEFAULT_HYSTERESIS_DAYS = 3
 
 
 def select_strategy(
@@ -75,6 +81,116 @@ def select_strategy_with_reason(
     season = "summer" if now.astimezone(tz).month in summer_months else "winter"
     label = "solar-first" if season == "summer" else "price-smart"
     return season, f"Running {label} by season — not enough forecast/price data to decide yet."
+
+
+# --------------------------------------------------------------------------------------------------
+# Seasonal-transition hysteresis (SPEC §8.4 / BACKLOG B-15)
+# --------------------------------------------------------------------------------------------------
+@dataclass(frozen=True)
+class HysteresisState:
+    """Cross-cycle memory that dampens summer↔winter flips. Restart-safe: persisted as JSON in the
+    KV cache and reloaded on boot, following the digest-dedupe / car-anchor pattern.
+
+    `committed` is the season currently in force (None = fresh install, no memory yet). `pending` is
+    the candidate season a run of disagreeing days is counting toward; `count` is how many
+    consecutive days it has held; `last_day` is the local date (ISO) of the last day the counter
+    moved — so a 5-min control loop advances it at most ONCE per calendar day (§8.4 counts DAYS,
+    not cycles)."""
+
+    committed: str | None = None
+    pending: str | None = None
+    count: int = 0
+    last_day: str | None = None
+
+    def to_json(self) -> str:
+        return json.dumps({"committed": self.committed, "pending": self.pending,
+                           "count": self.count, "last_day": self.last_day})
+
+    @classmethod
+    def from_json(cls, raw: str | None) -> HysteresisState:
+        """Rehydrate from the KV cache; any absent/corrupt value → a fresh (empty) state, which
+        behaves exactly like today (the current pick commits immediately, no switch delay)."""
+        if not raw:
+            return cls()
+        try:
+            d = json.loads(raw)
+            return cls(committed=d.get("committed"), pending=d.get("pending"),
+                       count=int(d.get("count", 0)), last_day=d.get("last_day"))
+        except (ValueError, TypeError):
+            return cls()
+
+
+def apply_hysteresis(
+    raw: str,
+    state: HysteresisState,
+    *,
+    hysteresis_days: int,
+    day: date_cls | str,
+) -> tuple[str, HysteresisState]:
+    """Dampen the instantaneous season pick `raw` (SPEC §8.4). Returns (committed_season, state).
+
+    Fresh memory (`state.committed is None`) OR `hysteresis_days <= 0` commits `raw` at once — so a
+    fresh install / disabled hysteresis behaves exactly like the pre-B-15 instantaneous pick, with
+    NO first-evaluation delay. Hysteresis only ever damps a *change* away from the committed season:
+    the opposite-season signal must hold `hysteresis_days` consecutive days (a single agreeing day
+    resets the run) before the switch commits. The day counter advances at most once per distinct
+    `day`, so the control loop's cadence (every 5 min) can't fast-forward it."""
+    day_key = day.isoformat() if isinstance(day, date_cls) else str(day)
+    # Fresh memory OR disabled → commit the raw pick straight away.
+    if state.committed is None or hysteresis_days <= 0:
+        return raw, HysteresisState(committed=raw, last_day=day_key)
+    # Signal agrees with the committed season → clear any pending switch (rewrite only if needed).
+    if raw == state.committed:
+        if state.pending is None and state.count == 0:
+            return state.committed, state
+        return state.committed, HysteresisState(committed=state.committed, last_day=state.last_day)
+    # Disagreement: advance the consecutive-day counter at most once per calendar day.
+    if state.last_day == day_key:
+        return state.committed, state  # already evaluated today — hold, don't double-count
+    count = state.count + 1 if state.pending == raw else 1
+    if count >= hysteresis_days:  # held long enough — the switch commits
+        return raw, HysteresisState(committed=raw, last_day=day_key)
+    return state.committed, HysteresisState(committed=state.committed, pending=raw,
+                                            count=count, last_day=day_key)
+
+
+def resolve_strategy_hysteretic(
+    now: datetime,
+    mode: str | None,
+    tz: ZoneInfo,
+    state: HysteresisState,
+    *,
+    surplus_kwh: float | None = None,
+    price_spread_eur: float | None = None,
+    summer_months: frozenset[int] = DEFAULT_SUMMER_MONTHS,
+    hysteresis_days: int = DEFAULT_HYSTERESIS_DAYS,
+) -> tuple[str, str, HysteresisState]:
+    """`select_strategy_with_reason` + seasonal hysteresis (SPEC §8.4). Returns
+    (strategy, reason, new_state); persist `new_state` so the counter survives restarts.
+
+    A forced mode (`summer`/`winter`) is honoured verbatim and bypasses hysteresis — the user's
+    explicit choice takes effect now — but re-baselines the memory to that season (clearing any
+    stale pending count) so a later return to `auto` starts clean. For `auto`, the instantaneous
+    energy-condition pick is dampened: a season change waits `hysteresis_days` steady days."""
+    raw, why = select_strategy_with_reason(
+        now, mode, tz, surplus_kwh=surplus_kwh, price_spread_eur=price_spread_eur,
+        summer_months=summer_months,
+    )
+    m = (mode or "auto").lower()
+    if m in ("summer", "winter"):
+        return raw, why, HysteresisState(committed=raw, last_day=state.last_day)
+    committed, new_state = apply_hysteresis(
+        raw, state, hysteresis_days=hysteresis_days, day=now.astimezone(tz).date(),
+    )
+    if committed == raw:
+        return committed, why, new_state
+    # A switch is pending but hasn't held long enough — stay put and SAY why (explainability first:
+    # "why it is NOT acting" on the season, CLAUDE.md).
+    label = "solar-first" if committed == "summer" else "price-smart"
+    other = "solar-first" if raw == "summer" else "price-smart"
+    held = (f"Holding {label} — today's signal leans {other}, but a season switch waits for "
+            f"{new_state.count}/{hysteresis_days} steady days (avoids shoulder-season flip-flop).")
+    return committed, held, new_state
 
 
 def build_plan(

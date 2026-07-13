@@ -40,7 +40,7 @@ from ems.domain import BatteryIntent
 from ems.planner.adaptive import AdaptiveConfig
 from ems.planner.economics import export_value
 from ems.planner.rule_based import PlannerConfig
-from ems.planner.strategy import build_plan, select_strategy_with_reason
+from ems.planner.strategy import HysteresisState, build_plan, resolve_strategy_hysteretic
 from ems.planner.summer import SummerConfig
 from ems.retrospect import _floor, _mean, _parse
 from ems.settings import SETTINGS_BY_KEY, effective_settings, validate_settings
@@ -91,6 +91,7 @@ class ReplayConfig:
     strategy: str  # auto | summer | winter
     summer_grid_topup: bool
     summer_max_topup_price: float
+    hysteresis_days: int  # §8.4 seasonal-transition damping (0 = instant switch); B-15
     overnight_load_kwh: float
     # Export (feed-in) valuation — mirrors finance.py
     export_price_model: str
@@ -121,6 +122,7 @@ class ReplayConfig:
             strategy=s["strategy.mode"],
             summer_grid_topup=s["strategy.summer_grid_topup"],
             summer_max_topup_price=s["strategy.summer_max_topup_price"],
+            hysteresis_days=int(s["strategy.hysteresis_days"]),
             overnight_load_kwh=s["battery.overnight_load_kwh"],
             export_price_model=s["prices.export_price_model"],
             energy_tax_eur_per_kwh=s["prices.energy_tax_eur_per_kwh"],
@@ -340,21 +342,29 @@ def _resolve_strategy(
     prices: list[PriceSlot],
     forecast: list[ForecastSlot],
     load_by: dict[datetime, float],
-) -> str:
-    """Resolve cfg.strategy → 'summer' | 'winter', exactly as the app's `_resolve_strategy`: an
-    explicit mode is honoured; `auto` decides by forecast surplus + price spread (energy review
-    P1.1), falling back to the calendar season when those inputs are absent."""
+    state: HysteresisState | None = None,
+) -> tuple[str, HysteresisState]:
+    """Resolve cfg.strategy → ('summer'|'winter', new_hysteresis_state), exactly as the app's
+    `_resolve_strategy`: an explicit mode is honoured; `auto` decides by forecast surplus + price
+    spread (energy review P1.1), then dampened by the seasonal-transition hysteresis (§8.4 / B-15)
+    so a replayed range doesn't flap in the shoulder months. `state` carries the pending-switch
+    counter across days; None ⇒ a fresh state (instantaneous pick, today's per-day behaviour)."""
+    if state is None:
+        state = HysteresisState()
     mode = (cfg.strategy or "auto").lower()
     if mode in ("summer", "winter"):
-        return select_strategy_with_reason(now, mode, cfg.tz)[0]
+        strat, _why, new_state = resolve_strategy_hysteretic(
+            now, mode, cfg.tz, state, hysteresis_days=cfg.hysteresis_days)
+        return strat, new_state
     surplus = sum(
         max(0.0, f.p50_w - load_by.get(f.start, 0.0)) * _DH / 1000.0 for f in forecast[:96]
     ) if forecast else None
     ps = [p.eur_per_kwh for p in prices[:96]]
     spread = (max(ps) - min(ps)) if ps else None
-    return select_strategy_with_reason(
-        now, mode, cfg.tz, surplus_kwh=surplus, price_spread_eur=spread
-    )[0]
+    strat, _why, new_state = resolve_strategy_hysteretic(
+        now, mode, cfg.tz, state, surplus_kwh=surplus, price_spread_eur=spread,
+        hysteresis_days=cfg.hysteresis_days)
+    return strat, new_state
 
 
 def replay_day(
@@ -363,13 +373,19 @@ def replay_day(
     forecast_rows: list[dict],
     *,
     cfg: ReplayConfig,
+    hysteresis_box: dict[str, HysteresisState] | None = None,
 ) -> DayResult:
     """Replay ONE day (rows already windowed to the local day) through all three scenarios.
 
     Reconstructs load = grid + solar + battery per 15-min slot (SPEC §4 / `load_model`), reads the
     stored price + day-ahead forecast, then simulates no_battery / auto_selfuse / planner sharing
     one battery model. A day with <80% slot coverage of load OR prices is not replayed — it returns
-    `data_ok=False` with a `skip_reason` and empty scenarios (never a fabricated number)."""
+    `data_ok=False` with a `skip_reason` and empty scenarios (never a fabricated number).
+
+    `hysteresis_box` (optional `{"state": HysteresisState}`) carries the seasonal-transition counter
+    across the days of a range replay so `auto` is dampened exactly like the live app (§8.4 / B-15);
+    updated in place. Omit it (a one-off day replay) and each day resolves independently, which for
+    the counter means today's instantaneous per-day pick."""
     tz = cfg.tz
 
     # --- per-slot series from raw samples (mean power per 15-min slot) ---
@@ -455,7 +471,10 @@ def replay_day(
     # reconstructed load (a faithful proxy for the learned profile it would have used).
     now = first_slot
     prices = [PriceSlot(start=s, eur_per_kwh=price_by[s]) for s in sorted(price_by)]
-    strategy = _resolve_strategy(cfg, now, prices, fc_slots, load_by)
+    _hyst_in = hysteresis_box["state"] if hysteresis_box is not None else None
+    strategy, _hyst_out = _resolve_strategy(cfg, now, prices, fc_slots, load_by, _hyst_in)
+    if hysteresis_box is not None:
+        hysteresis_box["state"] = _hyst_out
     plan = build_plan(
         strategy, prices=prices, forecast=fc_slots, now=now, soc_pct=start_soc,
         winter_cfg=_winter_cfg(cfg), summer_cfg=_summer_cfg(cfg),
@@ -531,6 +550,10 @@ def replay_range(
 
         results: list[DayResult] = []
         results_b: list[DayResult] | None = [] if cfg_b is not None else None
+        # One hysteresis memory per config, carried across the days in order (§8.4 / B-15) so the
+        # replayed `auto` season is dampened just like the live app. A/B get independent counters.
+        hyst_box: dict[str, HysteresisState] = {"state": HysteresisState()}
+        hyst_box_b: dict[str, HysteresisState] = {"state": HysteresisState()}
         for d in dates:
             start_iso, end_iso = _day_window(d, cfg.tz)
             raw = _query(
@@ -548,9 +571,10 @@ def replay_range(
                 "SELECT issued_date, start, p10_w, p50_w, p90_w FROM forecast_snapshots "
                 "WHERE start >= ? AND start < ? ORDER BY issued_date ASC, start ASC",
                 (start_iso, end_iso))
-            results.append(replay_day(raw, prices, forecast, cfg=cfg))
+            results.append(replay_day(raw, prices, forecast, cfg=cfg, hysteresis_box=hyst_box))
             if results_b is not None and cfg_b is not None:
-                results_b.append(replay_day(raw, prices, forecast, cfg=cfg_b))
+                results_b.append(
+                    replay_day(raw, prices, forecast, cfg=cfg_b, hysteresis_box=hyst_box_b))
     finally:
         conn.close()
 

@@ -20,7 +20,10 @@ from zoneinfo import ZoneInfo
 
 from ems.domain import RawSample
 from ems.load_model import reconstruct
-from ems.replay import ReplayConfig, main, replay_day, replay_range
+from ems.planner.strategy import HysteresisState
+from ems.replay import ReplayConfig, _resolve_strategy, main, replay_day, replay_range
+from ems.sources.forecast import ForecastSlot
+from ems.sources.prices import PriceSlot
 from ems.storage.history import HistoryStore
 
 UTZ = ZoneInfo("UTC")
@@ -285,3 +288,22 @@ def test_replay_never_writes_db(tmp_path):
     replay_range(db, 3, _cfg(**{"strategy.mode": "winter"}))
     # The file is untouched (mode=ro would raise on any write anyway).
     assert os.path.getmtime(db) == before
+
+
+def test_resolve_strategy_threads_hysteresis_across_days():
+    # B-15: replay's _resolve_strategy dampens the season the same way the live app does. Start
+    # committed to winter, then feed a strong-surplus (summer-leaning) forecast on three
+    # consecutive days: the switch to summer must not land until the 3rd day (hysteresis_days=3).
+    cfg = _cfg()  # strategy.mode defaults to auto, hysteresis_days=3
+    assert cfg.strategy == "auto" and cfg.hysteresis_days == 3
+    state = HysteresisState(committed="winter", last_day="2026-02-28")
+    seen = []
+    for day_offset in range(3):
+        d = datetime(2026, 3, 1 + day_offset, 12, tzinfo=UTC)
+        # Sunny forecast (high surplus) + a tiny price spread → the raw pick leans summer.
+        fc = [ForecastSlot(d + i * timedelta(minutes=15), 3000.0, 3000.0, 3000.0)
+              for i in range(96)]
+        prices = [PriceSlot(d + i * timedelta(minutes=15), 0.20) for i in range(96)]
+        strat, state = _resolve_strategy(cfg, d, prices, fc, {}, state)
+        seen.append(strat)
+    assert seen == ["winter", "winter", "summer"]  # held two days, switched on the third

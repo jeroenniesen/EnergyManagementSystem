@@ -7,7 +7,8 @@ Quick, concrete cheat-sheet for every integration. Details and rationale are in 
 ## Indevolt battery — OpenData API (local)
 
 - **Model:** SolidFlex 2000, Gen-2, 2-tower cluster. Control the cluster as **one** device.
-- **Primary control path = Home Assistant** (official integration, repo `github.com/INDEVOLT/homeassistant-indevolt`). **Resolve the exact surface with the M1a capability probe** (`../SPEC.md` §6.5) — the integration exposes **fewer services than you might assume**:
+- **Implemented reality (BACKLOG B-26):** only the **direct RPC** path below ships (`ems/sources/indevolt.py` / `indevolt_driver.py`). There is no HA client in the codebase, so the "Primary control path = Home Assistant" bullet and the whole "Home Assistant (the EMS talks to HA)" section at the bottom of this file are **planned, not yet implemented** (BACKLOG B-18, pool). The device also needs **no auth in practice** — plain HTTP POST, IP-only — contrary to the Digest-auth line below.
+- **Primary control path (target design) = Home Assistant** (official integration, repo `github.com/INDEVOLT/homeassistant-indevolt`). **Resolve the exact surface with the M1a capability probe** (`../SPEC.md` §6.5) — the integration exposes **fewer services than you might assume**:
   - **Services (the only two):** `indevolt.charge` and `indevolt.discharge` — each runs *until a target SoC*. Treat `{power: W, target_soc: %}` as **candidate** params and **confirm the schema at the probe**.
   - **No `indevolt.stop`, no `indevolt.change_mode`.** Those are **entities**, not services:
     - **Standby / idle hold** → a **button** entity ("Enable standby mode").
@@ -16,9 +17,9 @@ Quick, concrete cheat-sheet for every integration. Details and rationale are in 
     - **Max AC output / feed-in / inverter input limit** → **number** entities (Gen-2).
     - **Grid charging** → a **switch** entity ("Allow grid charging"). Plus bypass/LED switches.
   - SoC/power exposed as **sensors**. `battery.py` builds its mode→action mapping from what the probe finds (`../SPEC.md` §6.5).
-- **Fallback = direct RPC** (enable local API in the Indevolt app first):
+- **Fallback (target design) / actually-shipped path today = direct RPC** (enable local API in the Indevolt app first):
   - `POST http://<ip>:8080/rpc/Indevolt.GetData` (read) · `…/Indevolt.SetData` (write) · `…/Sys.GetConfig`
-  - Auth: **HTTP Digest** (user `opend` + device key).
+  - Auth: **HTTP Digest** (user `opend` + device key) per the OpenData docs — **not observed or required in practice**; the shipped client (`ems/sources/indevolt.py`) posts unauthenticated and it works.
   - **Mode** = data point `47005`: `1` self-consumption · `4` real-time control · `5` ToU schedule · `0` outdoor.
   - **Real-time control** (mode 4), write together: `47015` state (`0` idle / `1` charge / `2` discharge) · `47016` power W (≈50–2400, model-dependent — read real max from GetData) · `47017` target SoC (5–100 %).
 - **Rate limit:** ≥ 5 s between writes (1 s min). **Not** for continuous modulation.
@@ -72,7 +73,8 @@ Quick, concrete cheat-sheet for every integration. Details and rationale are in 
 
 ## Solar forecast
 
-- **Solcast (primary, free Hobbyist):** account → **10 calls/day** (new accounts; older = 50). `GET https://api.solcast.com.au/rooftop_sites/{resource_id}/forecasts?format=json` → `pv_estimate` (kW, P50), `pv_estimate10/90`, `period_end`. 7-day, 30-min. **The EMS owns the refresh** on a daylight schedule and keeps a **daily call-budget ledger** (resets at local midnight) so a retry/refresh loop can't exhaust the 10/day budget. Store each forecast's **issue time + provider**.
+- **Implemented reality:** only Forecast.Solar ships (`ems/sources/forecast_solar.py`); Solcast below is **planned, not yet implemented** (BACKLOG B-14, pool — see `../SPEC.md` §6.3). P10/P90 today are derived from the Forecast.Solar P50 via fixed multipliers, not real provider percentiles.
+- **Solcast (primary, free Hobbyist — target design):** account → **10 calls/day** (new accounts; older = 50). `GET https://api.solcast.com.au/rooftop_sites/{resource_id}/forecasts?format=json` → `pv_estimate` (kW, P50), `pv_estimate10/90`, `period_end`. 7-day, 30-min. **The EMS owns the refresh** on a daylight schedule and keeps a **daily call-budget ledger** (resets at local midnight) so a retry/refresh loop can't exhaust the 10/day budget. Store each forecast's **issue time + provider**.
 - **Forecast.Solar (fallback, keyless — rate-limited, NOT "uncapped"):** `GET https://api.forecast.solar/estimate/{lat}/{lon}/{tilt}/{azimuth}/{kwp}` → `watts`, `watt_hours_period`, `watt_hours_day`. **Limit ~12/hr per IP**, 1 plane, today+tomorrow, hourly. Azimuth: **0 = south** (raw API); **HA UI uses 180 = south**.
 - **Open-Meteo (documented optional fallback only — out of core scope):** `global_tilted_irradiance` w/ `tilt`/`azimuth` (0=south). `PV_kWh = GTI/1000 × kWp × PR` (PR ≈ 0.80). ~10k calls/day, CC-BY. Add only if Forecast.Solar proves insufficient.
 - **PVGIS:** one-off annual baseline (not a forecast).
@@ -84,7 +86,9 @@ Quick, concrete cheat-sheet for every integration. Details and rationale are in 
 - Caution: amp changes wake the car; cloud ≈30 cmd/min; `set_charging_amps` min/max undocumented — debounce + min dwell, read bounds at runtime.
 - v1: EV is read-only via the **HomeWizard car meter** (no Tesla credentials needed).
 
-## Home Assistant (the EMS talks to HA)
+## Home Assistant (the EMS talks to HA) — planned, not yet implemented
+
+> **BACKLOG B-26 reconcile:** none of this section is wired up today. There is no `ems/sources/ha.py`, no `entity_map` in the shipped `config.yaml`, no MQTT publisher (`paho-mqtt` isn't even a dependency), and Home Assistant is not required to run the EMS — every device below is read/written directly (see the Indevolt and HomeWizard sections above, and `../SPEC.md` §5.2). This section describes the target integration, tracked as **BACKLOG B-18** (pool, not scheduled).
 
 - WebSocket `ws://<host>:8123/api/websocket` (auth → `subscribe_entities` / `call_service`) — preferred for live state, for calling the `indevolt.charge`/`discharge` **services**, and for setting the Indevolt **entities** (energy-mode select, standby button, discharge-limit number, grid-charge switch). REST as fallback.
 - **Entity mapping:** pin role→entity ids in config `entity_map` (don't rely only on discovery names); validate they exist with sane `state_class`/units at startup (`../SPEC.md` §5.2, §11.5).

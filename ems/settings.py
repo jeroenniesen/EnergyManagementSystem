@@ -57,6 +57,13 @@ SETTINGS_SCHEMA: tuple[SettingsField, ...] = (
         help="Never grid-charge in summer above this price.",
         min=0.0, max=2.0, step=0.01, unit="€/kWh", advanced=True,
     ),
+    SettingsField(
+        "strategy.hysteresis_days", "Season switch hysteresis", "int", 3, "strategy",
+        help="On Auto, how many consecutive days the solar/price signal must lean the other way "
+        "before the season actually switches. Stops shoulder-month days (March, October) from "
+        "flip-flopping solar-first↔price-smart. 0 = switch the instant the signal flips.",
+        min=0, max=14, unit="days", advanced=True,
+    ),
     # --- Connection: which sources to use (device/service wiring; applied at startup) ---
     SettingsField(
         "connection.use_live_devices", "Use live devices", "bool", False, "connection",
@@ -269,6 +276,15 @@ SETTINGS_SCHEMA: tuple[SettingsField, ...] = (
         "the planner adds negative-price slots as battery-charge slots (up to battery headroom), "
         "even outside normal charge windows and even when summer grid top-up is off. Off = today's "
         "behaviour.",
+    ),
+    SettingsField(
+        "planner.validate_projection", "Reject plans that can't hit their target", "bool", True,
+        "planner",
+        help="Before acting, simulate the plan forward: if a grid-charge plan clearly can't reach "
+        "its own target charge in time, drop it and hold self-consumption. On by default — a "
+        "rejection only ever falls back to your battery's safe AUTO mode, which is never worse "
+        "than running no system at all. Skipped automatically when the forecast is stale.",
+        advanced=True,
     ),
     # --- AI explanations (optional, OFF by default; the one off-device feature — SPEC §12) ---
     SettingsField(

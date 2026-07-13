@@ -92,3 +92,67 @@ def test_sub_dwell_churn_warns():
     slots = [_self(0), _charge(1), _self(2)]  # changes every 15 min
     v = validate_plan(_plan(*slots), **_ctx(), min_dwell=timedelta(minutes=30))
     assert any(f.code == "dwell_churn" for f in v.findings)
+
+
+# --- Projected-target reachability gate (SPEC §8.5 later-step / BACKLOG B-22) ---------------------
+def _charge_plan(target: float, deadline_slot: int) -> Plan:
+    """A grid-charge plan carrying a plan-level target SoC + deadline (the seam the gate reads)."""
+    slots = tuple(_charge(i, target_soc=target) for i in range(4))
+    return Plan(created_at=T0, slots=slots, strategy="winter",
+                target_soc=target, deadline=T0 + deadline_slot * SLOT)
+
+
+def _proj(*soc_by_slot: float) -> list[ProjectedSlot]:
+    return [ProjectedSlot(T0 + i * SLOT, BatteryIntent.GRID_CHARGE_TO_TARGET, soc, 0, 0, 0, 0)
+            for i, soc in enumerate(soc_by_slot)]
+
+
+def test_projection_short_of_target_is_unsafe_with_the_numbers():
+    # Plan commits to 88% by slot 4, but the projection tops out at 71% → clear (>5pp) shortfall.
+    plan = _charge_plan(88.0, deadline_slot=4)
+    proj = _proj(40.0, 55.0, 65.0, 71.0, 71.0)
+    v = validate_plan(plan, projection=proj, **_ctx())
+    assert v.status == "unsafe"
+    f = next(f for f in v.findings if f.code == "projection_short_of_target")
+    assert "88%" in f.message and "71%" in f.message
+
+
+def test_projection_within_margin_passes():
+    # 84% projected vs an 88% target = 4pp short, inside the 5pp margin → not a violation.
+    plan = _charge_plan(88.0, deadline_slot=4)
+    proj = _proj(40.0, 60.0, 75.0, 84.0, 84.0)
+    v = validate_plan(plan, projection=proj, **_ctx())
+    assert not any(f.code == "projection_short_of_target" for f in v.findings)
+    assert v.ok is True
+
+
+def test_projection_reaches_target_passes():
+    plan = _charge_plan(88.0, deadline_slot=4)
+    proj = _proj(40.0, 62.0, 80.0, 90.0, 90.0)
+    v = validate_plan(plan, projection=proj, **_ctx())
+    assert not any(f.code == "projection_short_of_target" for f in v.findings)
+
+
+def test_projection_gate_skipped_when_data_degraded():
+    # A short projection must NOT reject the plan when inputs are degraded — that's the data
+    # fail-safe's call, not this gate's (don't reject a plan because the forecast is missing).
+    plan = _charge_plan(88.0, deadline_slot=4)
+    proj = _proj(40.0, 55.0, 65.0, 71.0, 71.0)
+    v = validate_plan(plan, projection=proj, **_ctx(data_quality="degraded"))
+    assert not any(f.code == "projection_short_of_target" for f in v.findings)
+
+
+def test_projection_gate_can_be_disabled():
+    plan = _charge_plan(88.0, deadline_slot=4)
+    proj = _proj(40.0, 55.0, 65.0, 71.0, 71.0)
+    v = validate_plan(plan, projection=proj, validate_projection=False, **_ctx())
+    assert not any(f.code == "projection_short_of_target" for f in v.findings)
+
+
+def test_projection_gate_ignores_non_charge_plan_short_of_target():
+    # No grid-charge slot → the target is not a committed charge goal; don't hard-reject on it.
+    plan = Plan(created_at=T0, slots=(_self(0), _self(1), _self(2), _self(3)),
+                strategy="summer", target_soc=88.0, deadline=T0 + 4 * SLOT)
+    proj = _proj(40.0, 45.0, 50.0, 55.0, 55.0)
+    v = validate_plan(plan, projection=proj, **_ctx())
+    assert not any(f.code == "projection_short_of_target" for f in v.findings)

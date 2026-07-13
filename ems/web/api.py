@@ -70,7 +70,7 @@ from ems.planner.explain import (
 from ems.planner.load_profile import build_load_profile
 from ems.planner.projection import BatteryModel, project_energy
 from ems.planner.rule_based import PlannerConfig, plan_rule_based
-from ems.planner.strategy import build_plan, select_strategy_with_reason
+from ems.planner.strategy import HysteresisState, build_plan, resolve_strategy_hysteretic
 from ems.planner.summer import SummerConfig, sunset_after
 from ems.planner.validator import PlanValidation, validate_plan
 from ems.readiness import Readiness, compute_readiness, home_state
@@ -441,6 +441,13 @@ def create_app(
     # place via the "ov" key so the closure stays valid; loaded in lifespan, set by POST /override.
     override_box: dict[str, Override] = {"ov": OVERRIDE_NONE}
     _OV_INTENT, _OV_EXP = "override.intent", "override.expires_at"
+    # Seasonal-transition hysteresis memory (SPEC §8.4 / B-15). Kept in memory so the frequently
+    # called `_resolve_strategy` needn't hit SQLite each time; seeded from the KV cache at boot and
+    # persisted there only when it CHANGES (≤ once/day), so the pending-switch counter is restart-
+    # safe — the digest-dedupe / car-anchor pattern.
+    _hysteresis_box: dict[str, HysteresisState] = {"state": HysteresisState()}
+    _HYSTERESIS_KEY = "strategy:hysteresis"
+    _HYSTERESIS_TTL_SECONDS = 90 * 24 * 3600.0  # long enough to bridge shoulder-season gaps
     # Serialise control cycles: the periodic loop and an immediate override-triggered cycle must not
     # run decide()/apply() concurrently (two writes racing the battery).
     _control_lock = asyncio.Lock()
@@ -763,16 +770,35 @@ def create_app(
             _log.debug("strategy price-spread estimate failed (non-fatal)", exc_info=True)
         return surplus, spread
 
+    def _commit_hysteresis(new_state: HysteresisState) -> None:
+        """Adopt `new_state` and, only when it actually changed, persist it to the KV cache so the
+        pending-switch counter survives a restart (§8.4 / B-15). Best-effort — a cache hiccup must
+        never break strategy resolution."""
+        if new_state == _hysteresis_box["state"]:
+            return
+        _hysteresis_box["state"] = new_state
+        if cache_store is not None:
+            try:
+                cache_store.set(_HYSTERESIS_KEY, new_state.to_json(), _HYSTERESIS_TTL_SECONDS)
+            except Exception:
+                _log.debug("hysteresis state persist failed (non-fatal)", exc_info=True)
+
     def _resolve_strategy(now: datetime) -> tuple[str, str]:
         """(strategy, reason). Forced modes skip the (cheap-but-unneeded) energy-input computation;
-        `auto` decides by forecast surplus + price spread (energy review P1.1)."""
+        `auto` decides by forecast surplus + price spread (energy review P1.1), then dampened by the
+        seasonal-transition hysteresis (SPEC §8.4 / B-15) so shoulder-month days can't flap."""
         mode = settings_cache["strategy.mode"]
+        hyst_days = int(settings_cache["strategy.hysteresis_days"])
         if mode in ("summer", "winter"):
-            return select_strategy_with_reason(now, mode, site_tz)
-        surplus, spread = _strategy_inputs(now)
-        return select_strategy_with_reason(
-            now, mode, site_tz, surplus_kwh=surplus, price_spread_eur=spread
+            surplus = spread = None
+        else:
+            surplus, spread = _strategy_inputs(now)
+        strat, why, new_state = resolve_strategy_hysteretic(
+            now, mode, site_tz, _hysteresis_box["state"],
+            surplus_kwh=surplus, price_spread_eur=spread, hysteresis_days=hyst_days,
         )
+        _commit_hysteresis(new_state)
+        return strat, why
 
     def _active_strategy(now: datetime) -> str:
         return _resolve_strategy(now)[0]
@@ -954,6 +980,13 @@ def create_app(
             await asyncio.to_thread(cache_store.init)
             # One-off housekeeping at boot so the cache table can't grow without bound.
             await asyncio.to_thread(cache_store.purge_expired)
+            # Restore the seasonal-transition hysteresis counter (§8.4 / B-15) so a restart doesn't
+            # reset a pending switch. Absent/expired ⇒ a fresh state = today's instantaneous pick.
+            try:
+                raw = await asyncio.to_thread(cache_store.get, _HYSTERESIS_KEY)
+                _hysteresis_box["state"] = HysteresisState.from_json(raw)
+            except Exception:
+                _log.debug("hysteresis state restore failed (non-fatal)", exc_info=True)
         # If no settings store exists, still probe once so the §8.11 validator can sanity-check
         # requested power without a networked probe per decision. Normal startup already probes via
         # _apply_battery_power_settings(), after applying battery.* power settings to the driver.
@@ -1160,6 +1193,7 @@ def create_app(
             max_switches_per_day=int(settings_cache["control.max_switches_per_day"]),
             min_dwell=timedelta(seconds=settings_cache["control.min_dwell_seconds"]),
             capability=_capability_box["cap"], projection=_projection_sync(plan, now),
+            validate_projection=bool(settings_cache["planner.validate_projection"]),
         )
 
     def _effective_intent(now: datetime):
