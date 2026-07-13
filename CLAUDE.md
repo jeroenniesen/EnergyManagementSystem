@@ -4,7 +4,7 @@ Project context and conventions for agents working in this repository.
 
 ## What this project is
 
-A home energy management system that **switches the operating mode of an Indevolt home battery** based on a solar forecast and dynamic Tibber prices. Goal: run the house on battery overnight in summer; arbitrage cheap/expensive price windows in winter. Runs on a Raspberry Pi alongside Home Assistant.
+A home energy management system that **switches the operating mode of an Indevolt home battery** based on a solar forecast and dynamic Tibber prices. Goal: run the house on battery overnight in summer; arbitrage cheap/expensive price windows in winter. Production today runs on a **Mac Mini (Apple Silicon) via a launchd LaunchAgent** with direct-device integrations; the Raspberry-Pi-alongside-Home-Assistant deployment remains a documented target (SPEC §11), not the running reality.
 
 **`SPEC.md` is the source of truth.** Read it before implementing anything. `docs/api-reference.md` is the endpoint/auth cheat-sheet. If code and SPEC disagree, the SPEC wins — update it deliberately, don't drift from it.
 
@@ -20,7 +20,7 @@ A home energy management system that **switches the operating mode of an Indevol
 - **P1 is *net grid flow*, not house load.** House load is **reconstructed**: `house_load = grid + solar + battery_power` (see SPEC §4 / `docs/energy-model.md`). Never read any single meter as "house consumption". Sign conventions are fixed and normalised in `load_model.py`.
 - **Fail safe.** If prices/forecast/meters are stale or anything is uncertain, fall back to the battery's own `AUTO` (self-consumption) mode. The system must never be worse than "no EMS".
 - **Dry-run before every live strategy.** New control logic ships behind `control.dry_run` (log decisions, no writes) for a multi-day acceptance period; only enable writes after comparing plan vs. actual. Honour `max_mode_switches_per_day` **and** a minimum mode dwell time.
-- **Read via Home Assistant, write the battery via HA.** HA owns the device integrations (HomeWizard, Tibber, Solcast/Forecast.Solar). HA is **required for live telemetry/control**; the web UI degrades to read-only (SQLite history) during an HA outage. Pin HA entity ids in an explicit `entity_map` (don't rely on auto-discovery names).
+- **Direct-device reads/writes today; HA integration is planned, not implemented (B-26 reconcile).** The shipped code reads HomeWizard/Tibber/Forecast.Solar and reads+writes the Indevolt battery **directly** — there is no `sources/ha.py`, no MQTT dependency, no `entity_map`. The HA-mediated architecture (read via HA, entity map, MQTT discovery) remains the SPEC §5/§9.2 target for the Pi deployment; when building it, HA becomes required for live telemetry and the web UI degrades read-only during an HA outage.
 - **Explainability first.** Every decision carries a human-readable reason — **including why it is *not* acting** — surfaced in the web UI and (optionally) MQTT.
 
 ## Architecture
