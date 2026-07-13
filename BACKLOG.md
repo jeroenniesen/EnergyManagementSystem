@@ -71,7 +71,7 @@ Per-day financial history measured from recorded samples + stored prices: grid c
 ### B-03b · Dashboard "Saved today" goes measured — Feature + UX · S
 Swap the plan-based estimate tile (`ems/savings.py`, self-described "rough, illustrative") to the measured number from B-03a; label "measured" vs "estimated" explicitly; stop letting "€0.00" dominate (emotional-design review: never overpromise savings).
 **Done when:** the tile derives from `/api/finance`; estimate label gone or truthful.
-**Track:** Sprint 2 · E-02 · ⬜
+**Track:** ✅ done — [PR #24](https://github.com/jeroenniesen/EnergyManagementSystem/pull/24). Story-card footer shows the measured finance figure ('€X.XX measured' / '€— · measuring'); the false €0.00 is gone.
 
 ### B-13 · Long-horizon energy rollups — Feature enabler · S–M
 Monthly/weekly **kWh** aggregates so year-over-year trends survive the 365-day raw purge (the finance half shipped with B-03a: `daily_finance` is never purged). Without this, next summer's "vs last year" comparison silently breaks.
@@ -121,22 +121,22 @@ SPEC §8.5's "later step": use the SoC projection (already computed for display)
 
 ### B-06 · Score trends: "you vs last week/month" — UX · S
 Verify/complete the trend spark-lines the Insights spec promised; add period-over-period comparison ("3 points better than last week") to score tiles and the Insights headline. Empty-history states degrade gracefully.
-**Track:** Sprint 1 · E-05 · ⬜
+**Track:** ✅ done — [PR #24](https://github.com/jeroenniesen/EnergyManagementSystem/pull/24). Trend chips vs the previous period on the Insights score cards; muted, never alarm-red; early-day aware.
 
 ### B-08 · Quiet success markers in Energy Story — UX · S
 "Reserve respected", "evening peak covered from the battery", "no grid top-up needed" — shown only when true, from recorded data. *(Design review P2)*
-**Track:** Sprint 3 · E-05 · ⬜
+**Track:** ✅ done — [PR #24](https://github.com/jeroenniesen/EnergyManagementSystem/pull/24). Two physics-provable markers (night-on-battery, cheap-window-only buying) — render only when verifiably true.
 
 ### B-07 · Weekly recap — Feature + UX · M
 "Your week in energy": best day, the three scores with deltas, € saved, one concrete improvement suggestion. In-app (web + iOS), quiet tone. Defines which moments would ever deserve a push (B-20).
-**Track:** Pool · E-05 · ⬜
+**Track:** ✅ superseded — B-58's weekly digest (Sunday read + notification) and B-06's trend chips together cover this item's intent; nothing left to build separately.
 
 ## EPIC E-06 · Trust & guidance
 *Goal: every warning answers "is the battery safe, what happens now, what can I do" — and setup feels commissioned, not toggled.* (Trust)
 
 ### B-31 · Don't render "no top-up" as both comfort and warning — UX · S
 The story can show "✓ No grid top-up needed" beside "⚠ Short of the 88% target with no grid top-up planned" — the same fact as reassurance and problem. Suppress the marker when the on-track verdict is `behind` (`api.py` `_trust_markers`/`_on_track`).
-**Track:** Sprint 2 · E-06 · ⬜
+**Track:** ✅ done — [PR #24](https://github.com/jeroenniesen/EnergyManagementSystem/pull/24). Comfort chip yields to the 'behind' caution — one voice per fact.
 
 ### B-09 · Emotionally complete failure states — UX · S
 Every warning/error answers: is the battery safe, what will the EMS do now, what can I do. Shipped on the System page; missing on the alerts strip and API-error banners. *(Design review P0 remainder)*
@@ -285,7 +285,7 @@ Show a confidence score for each plan based on data freshness, forecast uncertai
 ### B-69 · Counterfactual savings engine — Feature · M–L
 Compare actual EMS behavior against realistic alternatives: no battery, battery without EMS, solar-only self-use, and simple cheap-hour charging.
 **Done when:** savings reports are measured against transparent baselines, not only against planned behavior.
-**Track:** Pool · E-08 · ⬜
+**Track:** ✅ done — [PR #24](https://github.com/jeroenniesen/EnergyManagementSystem/pull/24). /api/counterfactual: planner vs no-battery vs vendor-auto over the recorded window (15-min cache). Naive-cheap-hours scenario honestly skipped — no engine knob for it; revisit only if a real question needs it.
 
 ### B-70 · Energy anomaly detection — Feature · M
 Detect suspicious behavior such as battery not following commands, solar underperforming forecast, EV charging unexpected power, inconsistent meters, or inverter mode drift.
@@ -305,7 +305,7 @@ Track solar, load, price, and plan-execution error over time so EMS knows when a
 ### B-73 · Scenario simulator — Feature + UX · M
 Let the homeowner explore "what if" questions such as changing reserve, charging the car tonight, cloudy weather, or negative prices.
 **Done when:** simulations are read-only, clearly separate from the active plan, and explain cost/reserve impact.
-**Track:** Pool · E-08 · ⬜
+**Track:** ✅ done — [PR #24](https://github.com/jeroenniesen/EnergyManagementSystem/pull/24). What-if panel: allowlisted A/B replay, read-only by construction, 'simulation — nothing is changed' badge.
 
 ### B-74 · Optimization explainability layer — Feature · M
 Make optimization decisions produce structured reasons: selected window, alternative rejected, expected benefit, risk, and safety constraint.
@@ -370,11 +370,11 @@ Badges, confetti, pressure-style streaks, per-person leaderboards, cute error st
 
 ### B-24 · Control-path & observability exceptions — Refactor · S · **P1**
 (1) Inspect the silent `except Exception: pass` at `ems/control/mode_controller.py:208` — it sits in the control path. (2) Add log lines to the ~32 silent `except: pass` sites (concentrated in `web/api.py`): a failing explainer/cache/enrichment path is invisible today.
-**Track:** Pool · ⬜
+**Track:** ✅ done — [PR #24](https://github.com/jeroenniesen/EnergyManagementSystem/pull/24). 38 silent excepts now log (severity by blast radius); mode_controller's site was already fixed by B-42.
 
 ### B-25 · Split `web/api.py` — Refactor · M · P2
 Now **3,079 lines** with 44 routes, most inside one `create_app()` closure; domain logic in route handlers. Split into `APIRouter`s per domain (status/plan/car/insights/finance/control/settings) + a thin service layer, **incrementally as routes get touched**. Do after **B-46** (extract the control service + app-context) so routers take an injected context instead of closures.
-**Track:** Pool · ⬜
+**Track:** 🟨 first slice done — [PR #24](https://github.com/jeroenniesen/EnergyManagementSystem/pull/24): minimal AppContext + car/digest/notify/export/accuracy routers, api.py 3618→3172. Remaining core (control/status/settings) rides B-46 as designed.
 
 ### B-26 · Reconcile SPEC with reality — Refactor/docs · S · P2
 SPEC mandates HA integration (`entity_map`, WS/REST) and lists MQTT (`ems/publish/`) + a §14 visual/bundle/WCAG gate; the code reads devices directly, has no `ems/publish/`, and the visual gate is unimplemented — and works. Update SPEC §5/§9/§11/§13/§14 + CLAUDE.md deliberately (or build the gaps: HA client = B-18, visual/bundle gate ships with B-44). **Note:** the `ports.py`/`Planner` seam is now recommended to be **built** (B-47), not deleted from the SPEC.
