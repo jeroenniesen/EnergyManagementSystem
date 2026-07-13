@@ -255,17 +255,17 @@ A shareable annual review (savings, sunniest day, best arbitrage catch) plus mil
 ### B-63 · Probabilistic solar/load forecasting — Feature · M
 Replace single-point forecasts with pessimistic/expected/optimistic bands for solar and home load, calibrated from historical forecast error.
 **Done when:** planner inputs include confidence bands and the UI can say how likely the battery is to cover the evening peak.
-**Track:** Pool · E-08 · ⬜
+**Track:** Pool · E-08 · 🟨 first code slice: `ems.intelligence.build_planning_scenarios()` turns P10/P50/P90 solar + load uncertainty into pessimistic/expected/optimistic planner inputs. Remaining = calibrate bands from historical error and expose the likelihood read in UI/API.
 
 ### B-64 · Household load prediction model — Feature · M
 Learn normal household demand by time of day, weekday, season, weather, and recent behavior so the planner has a better baseline for evening, overnight, and morning load.
 **Done when:** load forecast error is tracked and improves over the naive recent-average baseline.
-**Track:** Pool · E-08 · ⬜
+**Track:** Pool · E-08 · 🟨 first code slice: `build_planning_scenarios()` consumes the existing learned `LoadProfile` and produces per-slot expected/high/low load maps for planning. Remaining = add weather/season features and prove improvement over the existing baseline.
 
 ### B-65 · Risk-aware battery planning — Feature · L
 Optimize for expected cost while respecting reserve and comfort under uncertainty, for example targeting enough charge to cover the evening in 80-90% of plausible scenarios.
 **Done when:** planner decisions can trade off cost vs confidence explicitly and expose the selected risk level.
-**Track:** Pool · E-08 · ⬜
+**Track:** Pool · E-08 · 🟨 first code slice: `plan_risk_aware_adaptive()` selects a conservative/expected/optimistic scenario and delegates to the safe adaptive planner. Remaining = wire policy selection into live planning, validation evidence, and UI explanation.
 
 ### B-66 · Battery degradation-aware economics — Feature · M
 Add battery wear cost to charge/discharge decisions so EMS avoids cycling when the price spread is too small to justify degradation.
