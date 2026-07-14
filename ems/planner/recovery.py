@@ -198,9 +198,11 @@ def build_catch_up_plan(
     discharge_prices = [p.eur_per_kwh for p in prices if p.start in discharging]
     max_buy = (min(discharge_prices) * round_trip_efficiency
                if discharge_prices else float("inf"))
+    executable_starts = {s.start for s in plan.slots}
     candidates = sorted(
         (p for p in prices
          if p.start + SLOT > now and p.start < deadline and p.start not in discharging
+         and p.start in executable_starts
          and p.eur_per_kwh <= max_buy),
         key=lambda p: (p.eur_per_kwh, p.start),
     )
@@ -285,9 +287,15 @@ def recover_if_needed(
     re-picks the season, so the §8.4 hysteresis counter is untouched."""
     status = check_charge_completion(plan, now, soc_pct, margin_pp=margin_pp)
     # A missed diagnosis is still useful for audit, but there is no safe recovery
-    # once the committed deadline has passed.
+    # once the applicable (latest, for multi-peak plans) deadline has passed.
+    effective_deadline = plan.deadline
+    if effective_deadline is not None:
+        peak_starts = [s.start for s in plan.slots
+                       if s.intent is BatteryIntent.DISCHARGE_FOR_LOAD]
+        if peak_starts:
+            effective_deadline = max(effective_deadline, max(peak_starts))
     if (not enabled or not status.needs_recovery or plan.strategy != "winter"
-            or plan.deadline is None or now >= plan.deadline):
+            or effective_deadline is None or now >= effective_deadline):
         return plan, status, None
     catch_up = build_catch_up_plan(
         plan, now, soc_pct=soc_pct, prices=prices, usable_kwh=usable_kwh,
