@@ -4,13 +4,17 @@ SAME price/forecast access as /api/advisor/ev-charge. Advisory only — never co
 POST /api/car/soc is auth-gated + audited exactly like POST /api/override (its first write)."""
 from __future__ import annotations
 
+import asyncio
 import json
+from datetime import UTC, datetime, timedelta
 from zoneinfo import ZoneInfo
 
 from fastapi.testclient import TestClient
 
 from ems.cars import by_id
+from ems.domain import RawSample
 from ems.ev_schedule import default_schedule
+from ems.load_model import reconstruct
 from ems.sources.forecast import MockSolarForecastSource
 from ems.sources.mock import MockSource
 from ems.sources.prices import MockPriceSource
@@ -181,3 +185,65 @@ def test_post_soc_writes_audit_entry_and_persists(tmp_path):
 def test_post_soc_without_store_returns_503():
     app = create_app(MockSource(), dry_run=True, dev_mode="mock")  # no history store
     assert TestClient(app).post("/api/car/soc", json={"pct": 50}).status_code == 503
+
+
+# ---- GET /api/car/sessions (Car tab history table) ----
+
+def _seeded_app_with_session(tmp_path):
+    """An app whose store carries one clear ~1 h charging session (ev_power_w above the 1500 W
+    detection threshold) plus surrounding idle rows, so detect_sessions finds exactly one."""
+    store = HistoryStore(str(tmp_path / "ems.sqlite"))
+
+    async def seed():
+        await store.init()
+        base = datetime.now(UTC) - timedelta(days=1)
+        # 3 idle rows, then 13 rows at 3.2 kW spanning ~1 h (>= min_duration), then idle again.
+        for i in range(3):
+            raw = RawSample(grid_power_w=200, solar_power_w=0, battery_power_w=0,
+                            ev_power_w=0, soc_pct=55)
+            await store.record((base + timedelta(minutes=5 * i)).isoformat(), raw, reconstruct(raw))
+        for i in range(13):
+            raw = RawSample(grid_power_w=3400, solar_power_w=0, battery_power_w=0,
+                            ev_power_w=3200, soc_pct=55)
+            ts = base + timedelta(minutes=5 * (3 + i))
+            await store.record(ts.isoformat(), raw, reconstruct(raw))
+        for i in range(3):
+            raw = RawSample(grid_power_w=200, solar_power_w=0, battery_power_w=0,
+                            ev_power_w=0, soc_pct=55)
+            ts = base + timedelta(minutes=5 * (16 + i))
+            await store.record(ts.isoformat(), raw, reconstruct(raw))
+
+    asyncio.run(seed())
+    return create_app(MockSource(), dry_run=True, dev_mode="mock", tz=AMS, store=store,
+                      settings_store=SettingsStore(str(tmp_path / "ems.sqlite")))
+
+
+def test_sessions_detected_from_history_newest_first(tmp_path):
+    with TestClient(_seeded_app_with_session(tmp_path)) as c:
+        body = c.get("/api/car/sessions").json()
+    assert body["days"] == 14
+    assert len(body["sessions"]) == 1
+    s = body["sessions"][0]
+    assert set(s) == {"start", "end", "kwh", "avg_kw", "peak_kw"}  # exact shape, no `samples`
+    assert s["avg_kw"] == 3.2
+    assert s["peak_kw"] == 3.2
+    assert s["kwh"] > 0
+
+
+def test_sessions_honours_days_query(tmp_path):
+    with TestClient(_seeded_app_with_session(tmp_path)) as c:
+        body = c.get("/api/car/sessions", params={"days": 30}).json()
+    assert body["days"] == 30
+    assert len(body["sessions"]) == 1  # the ~1-day-old session is inside a 30-day window
+
+
+def test_sessions_empty_when_no_charging_in_history(tmp_path):
+    with TestClient(_app(tmp_path)) as c:  # store initialised but no charging rows recorded
+        body = c.get("/api/car/sessions").json()
+    assert body == {"sessions": [], "days": 14}
+
+
+def test_sessions_without_store_returns_empty():
+    app = create_app(MockSource(), dry_run=True, dev_mode="mock")  # no history store
+    body = TestClient(app).get("/api/car/sessions").json()
+    assert body == {"sessions": [], "days": 14}

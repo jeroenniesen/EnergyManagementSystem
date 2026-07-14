@@ -706,7 +706,7 @@ test.describe("EMS dashboard", () => {
 
   test("the hold-battery-when-car-charging setting is in the panel", async ({ page }) => {
     await page.goto("/");
-    await page.getByTestId("nav-settings").click();
+    await page.getByTestId("nav-manage").click();
     await page.getByTestId("group-control").click();
     await expect(page.getByTestId("field-control.hold_battery_when_car_charging")).toBeVisible();
     await expect(
@@ -875,7 +875,8 @@ test.describe("EMS dashboard", () => {
       }),
     );
     await page.goto("/");
-    await page.getByTestId("nav-system").click();
+    await page.getByTestId("nav-manage").click();
+    await page.getByTestId("manage-tab-system").click();
     await expect(page.getByTestId("system")).toBeVisible();
     await expect(page.getByTestId("checks")).toBeVisible();
     // Fully wired mock backend -> history store reachable, battery probed, writes open.
@@ -928,7 +929,8 @@ test.describe("EMS dashboard", () => {
       }),
     );
     await page.goto("/");
-    await page.getByTestId("nav-system").click();
+    await page.getByTestId("nav-manage").click();
+    await page.getByTestId("manage-tab-system").click();
     const incidents = page.getByTestId("incidents");
     await expect(incidents).toContainText("15 incidents in the last 7 days");
     const types = page.getByTestId("incident-types");
@@ -958,7 +960,8 @@ test.describe("EMS dashboard", () => {
 
   test("System tab groups checks with a readiness sentence", async ({ page }) => {
     await page.goto("/");
-    await page.getByTestId("nav-system").click();
+    await page.getByTestId("nav-manage").click();
+    await page.getByTestId("manage-tab-system").click();
     await expect(page.getByTestId("system-readiness")).toBeVisible();
     await expect(page.getByTestId("check-group-Battery & control")).toBeVisible();
   });
@@ -990,7 +993,8 @@ test.describe("EMS dashboard", () => {
       }),
     );
     await page.goto("/");
-    await page.getByTestId("nav-system").click();
+    await page.getByTestId("nav-manage").click();
+    await page.getByTestId("manage-tab-system").click();
     await expect(page.getByTestId("model-health")).toBeVisible();
 
     // Each row shows a status DOT plus a plain-language STATUS TEXT (never colour-only).
@@ -1034,7 +1038,8 @@ test.describe("EMS dashboard", () => {
       }),
     );
     await page.goto("/");
-    await page.getByTestId("nav-system").click();
+    await page.getByTestId("nav-manage").click();
+    await page.getByTestId("manage-tab-system").click();
     await expect(page.getByTestId("model-health")).toBeVisible();
 
     // Sentence-case "Check", not the shouty "NEEDS A LOOK" chip.
@@ -1082,7 +1087,8 @@ test.describe("EMS dashboard", () => {
       }),
     );
     await page.goto("/");
-    await page.getByTestId("nav-system").click();
+    await page.getByTestId("nav-manage").click();
+    await page.getByTestId("manage-tab-system").click();
     await expect(page.getByTestId("model-health")).toBeVisible();
 
     // Load: no dial to tune, so the action stays in "collecting evidence" register, not a command.
@@ -1110,7 +1116,8 @@ test.describe("EMS dashboard", () => {
       }),
     );
     await page.goto("/");
-    await page.getByTestId("nav-system").click();
+    await page.getByTestId("nav-manage").click();
+    await page.getByTestId("manage-tab-system").click();
     await expect(page.getByTestId("model-health")).toBeVisible();
 
     for (const row of ["health-solar", "health-load", "health-plan_execution"]) {
@@ -1138,7 +1145,8 @@ test.describe("EMS dashboard", () => {
       }),
     );
     await page.goto("/");
-    await page.getByTestId("nav-system").click();
+    await page.getByTestId("nav-manage").click();
+    await page.getByTestId("manage-tab-system").click();
     await expect(page.getByTestId("health-backups")).toContainText("No backup has run yet");
     await expect(page.getByTestId("health-backups")).toContainText(
       "first run happens with tonight's maintenance (~03:00)",
@@ -1168,7 +1176,8 @@ test.describe("EMS dashboard", () => {
 
   test("the Audit tab shows the change log", async ({ page }) => {
     await page.goto("/");
-    await page.getByTestId("nav-audit").click();
+    await page.getByTestId("nav-manage").click();
+    await page.getByTestId("manage-tab-audit").click();
     await expect(page.getByTestId("audit")).toBeVisible();
     await expect(page.getByTestId("audit")).toContainText("Audit log");
     await expect(page.getByTestId("audit-filter")).toBeVisible();
@@ -1189,7 +1198,8 @@ test.describe("EMS dashboard", () => {
       }),
     );
     await page.goto("/");
-    await page.getByTestId("nav-audit").click();
+    await page.getByTestId("nav-manage").click();
+    await page.getByTestId("manage-tab-audit").click();
     await expect(page.getByTestId("audit-list")).toContainText("Would set battery to charge");
     await expect(page.getByTestId("audit-list")).toContainText("Changed 1 setting");
   });
@@ -1299,7 +1309,7 @@ test.describe("EMS dashboard", () => {
     await expect(page.getByTestId("car-schedule-link")).toBeVisible();
   });
 
-  test("the car card shows the full plan (SoC, advice, windows, timeline)", async ({ page }) => {
+  test("the Car view shows the full plan (SoC, advice, windows, timeline)", async ({ page }) => {
     // Slot/deadline times are anchored to "now" (floored to the 15-min grid, matching the
     // card's own timeline math) so the mocked plan lands inside the card's 48h window regardless
     // of when the suite happens to run.
@@ -1348,6 +1358,9 @@ test.describe("EMS dashboard", () => {
       }),
     );
     await page.goto("/");
+    // The full plan (windows + 48h timeline) lives in the dedicated Car view; the dashboard shows
+    // only the compact card (SoC + deadline + advice + "Open Car →").
+    await page.getByTestId("nav-car").click();
     const card = page.getByTestId("car-card");
     await expect(card).toBeVisible();
     await expect(page.getByTestId("car-soc-value")).toHaveText("42.3%");
@@ -1375,9 +1388,9 @@ test.describe("EMS dashboard", () => {
     const cta = page.getByTestId("demo-cta");
     await expect(cta).toBeVisible();
     await expect(cta).toContainText("demo home");
-    // The link opens Settings (which lands on the Connection section by default).
+    // The link opens Manage → Settings (which lands on the Connection section by default).
     await page.getByTestId("demo-cta-link").click();
-    await expect(page.getByTestId("nav-settings")).toHaveClass(/nav-active/);
+    await expect(page.getByTestId("nav-manage")).toHaveClass(/nav-active/);
     await expect(page.getByTestId("settings")).toBeVisible();
     // Back to the dashboard: still there (dismiss is per-session, not per-navigation).
     await page.getByTestId("nav-dashboard").click();

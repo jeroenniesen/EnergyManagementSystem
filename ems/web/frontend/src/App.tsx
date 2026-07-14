@@ -18,12 +18,11 @@ import {
 import { NotificationBell } from "./Notifications";
 import { OverrideCard } from "./Override";
 import { CarCard } from "./CarCard";
-import { Settings } from "./Settings";
+import { CarView } from "./Car";
+import { Manage, type ManageTab } from "./Manage";
 import { type Strategy, StrategyCard } from "./StrategyCard";
 import { AiValidationCard } from "./AiValidationCard";
-import { AuditView } from "./AuditView";
 import { ChatPanel } from "./ChatPanel";
-import { SystemView } from "./System";
 import { Insights } from "./Insights";
 import { HomeScores, type Report } from "./HomeScores";
 import { homeSummary } from "./scoreCopy";
@@ -72,7 +71,14 @@ type ChargeNeed = {
 // to the bare message — so an alert without the fields still renders exactly as before.
 type AlertItem = { key: string; severity: string; message: string; safe?: string; action?: string };
 type AlertsResp = { data_quality: string; alerts: AlertItem[] };
-type ViewName = "dashboard" | "insights" | "chat" | "audit" | "settings" | "system";
+// The nav restructure (feat/ux-batch-3): five top-level views. Settings/System/Audit are no longer
+// top-level — they are sub-tabs of "manage" (see Manage.tsx + `ManageTab`). "car" is a first-class
+// view because the weekly schedule changes often and car config/insight was scattered before.
+type ViewName = "dashboard" | "insights" | "car" | "chat" | "manage";
+// A route is the top-level view plus, for "manage", which sub-tab is showing. The manage tab is
+// carried even on other views so returning to Manage can be deterministic, and so the hash router
+// (below) can round-trip `#manage/system` etc.
+type Route = { view: ViewName; tab: ManageTab };
 
 // Dashboard refresh cadence. Device reads (battery cluster, meters) are coalesced server-side to
 // at most once per ~30 s regardless of this, so a snappy poll no longer floods the hardware; 10 s
@@ -88,7 +94,8 @@ function todayStr(): string {
 }
 // Alert hierarchy: control-blocking (critical) above degraded (warning) above info (energy review).
 const SEVERITY_RANK: Record<string, number> = { critical: 3, warning: 2, info: 1 };
-const VIEWS: ViewName[] = ["dashboard", "insights", "chat", "audit", "settings", "system"];
+const VIEWS: ViewName[] = ["dashboard", "insights", "car", "chat", "manage"];
+const MANAGE_TABS: ManageTab[] = ["settings", "system", "audit"];
 // B-68: plain-language chip label for the plan-confidence score, keyed by the backend's level.
 const CONFIDENCE_CHIP_LABEL: Record<PlanConfidence["level"], string> = {
   high: "High confidence",
@@ -96,9 +103,27 @@ const CONFIDENCE_CHIP_LABEL: Record<PlanConfidence["level"], string> = {
   low: "Low confidence",
 };
 
-function viewFromHash(hash: string): ViewName {
+// Hash → route. Canonical hashes: #dashboard #insights #car #chat #manage #manage/system
+// #manage/audit. LEGACY hashes still work so old bookmarks / deep-links don't break: bare
+// #settings|#system|#audit redirect to the matching Manage sub-tab. Anything unknown falls back to
+// the dashboard (loop-2's finding — a mistyped hash must never blank the app).
+function routeFromHash(hash: string): Route {
   const raw = hash.replace(/^#\/?/, "");
-  return VIEWS.includes(raw as ViewName) ? (raw as ViewName) : "dashboard";
+  // Legacy top-level Settings/System/Audit → the Manage sub-tab they became.
+  if (raw === "settings") return { view: "manage", tab: "settings" };
+  if (raw === "system") return { view: "manage", tab: "system" };
+  if (raw === "audit") return { view: "manage", tab: "audit" };
+  // Manage + its sub-tabs. Bare #manage (and #manage/settings) open the Settings tab.
+  if (raw === "manage") return { view: "manage", tab: "settings" };
+  const m = raw.match(/^manage\/(.+)$/);
+  if (m) {
+    const tab = m[1] as ManageTab;
+    return { view: "manage", tab: MANAGE_TABS.includes(tab) ? tab : "settings" };
+  }
+  return {
+    view: VIEWS.includes(raw as ViewName) ? (raw as ViewName) : "dashboard",
+    tab: "settings",
+  };
 }
 
 function fmtW(w: number): string {
@@ -253,7 +278,9 @@ export function App() {
   const [savedToday, setSavedToday] = useState<SavedToday | null>(null);
   const [report, setReport] = useState<Report | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [view, setViewState] = useState<ViewName>(() => viewFromHash(window.location.hash));
+  const [route, setRoute] = useState<Route>(() => routeFromHash(window.location.hash));
+  const view = route.view;
+  const manageTab = route.tab;
   // "See the full plan" disclosure — collapsed by default, choice remembered across visits so a
   // homeowner who wants the detail keeps it, and one who doesn't never sees it re-expand.
   const [planOpen, setPlanOpen] = useState<boolean>(() => {
@@ -292,7 +319,7 @@ export function App() {
     };
   }, []);
   useEffect(() => {
-    const onHash = () => setViewState(viewFromHash(window.location.hash));
+    const onHash = () => setRoute(routeFromHash(window.location.hash));
     window.addEventListener("hashchange", onHash);
     return () => window.removeEventListener("hashchange", onHash);
   }, []);
@@ -335,11 +362,16 @@ export function App() {
     }
   }
 
-  function setView(next: ViewName) {
-    if (window.location.hash !== `#${next}`) {
-      window.location.hash = next;
+  // Navigate to a view (and, for "manage", a sub-tab). Writes the canonical hash so the URL always
+  // round-trips (bookmarks, back/forward); the hashchange listener also fires and re-derives the
+  // route, but setting state here too keeps the switch instant. `tab` defaults to "settings" so a
+  // bare `navigate("manage")` opens the Settings sub-tab, matching #manage.
+  function navigate(next: ViewName, tab: ManageTab = "settings") {
+    const hash = next === "manage" && tab !== "settings" ? `manage/${tab}` : next;
+    if (window.location.hash.replace(/^#\/?/, "") !== hash) {
+      window.location.hash = hash;
     }
-    setViewState(next);
+    setRoute({ view: next, tab: next === "manage" ? tab : route.tab });
   }
 
   useEffect(() => {
@@ -509,7 +541,7 @@ export function App() {
         <nav className="nav" aria-label="Views">
           <button
             className={`nav-btn${view === "dashboard" ? " nav-active" : ""}`}
-            onClick={() => setView("dashboard")}
+            onClick={() => navigate("dashboard")}
             data-testid="nav-dashboard"
             aria-current={view === "dashboard" ? "page" : undefined}
           >
@@ -517,43 +549,38 @@ export function App() {
           </button>
           <button
             className={`nav-btn${view === "insights" ? " nav-active" : ""}`}
-            onClick={() => setView("insights")}
+            onClick={() => navigate("insights")}
             data-testid="nav-insights"
             aria-current={view === "insights" ? "page" : undefined}
           >
             Insights
           </button>
           <button
+            className={`nav-btn nav-btn-car${view === "car" ? " nav-active" : ""}`}
+            onClick={() => navigate("car")}
+            data-testid="nav-car"
+            aria-current={view === "car" ? "page" : undefined}
+          >
+            <span className="car-dot" aria-hidden="true" />
+            Car
+          </button>
+          <button
             className={`nav-btn${view === "chat" ? " nav-active" : ""}`}
-            onClick={() => setView("chat")}
+            onClick={() => navigate("chat")}
             data-testid="nav-chat"
             aria-current={view === "chat" ? "page" : undefined}
           >
             Chat
           </button>
+          {/* Manage folds the three ops surfaces (Settings · System · Audit) — "often used
+              together and eat menu space" — behind one item with its own segmented sub-nav. */}
           <button
-            className={`nav-btn${view === "settings" ? " nav-active" : ""}`}
-            onClick={() => setView("settings")}
-            data-testid="nav-settings"
-            aria-current={view === "settings" ? "page" : undefined}
+            className={`nav-btn${view === "manage" ? " nav-active" : ""}`}
+            onClick={() => navigate("manage")}
+            data-testid="nav-manage"
+            aria-current={view === "manage" ? "page" : undefined}
           >
-            Settings
-          </button>
-          <button
-            className={`nav-btn${view === "audit" ? " nav-active" : ""}`}
-            onClick={() => setView("audit")}
-            data-testid="nav-audit"
-            aria-current={view === "audit" ? "page" : undefined}
-          >
-            Audit
-          </button>
-          <button
-            className={`nav-btn${view === "system" ? " nav-active" : ""}`}
-            onClick={() => setView("system")}
-            data-testid="nav-system"
-            aria-current={view === "system" ? "page" : undefined}
-          >
-            System
+            Manage
           </button>
         </nav>
       </header>
@@ -641,7 +668,7 @@ export function App() {
                   type="button"
                   className="hero-demo-link"
                   data-testid="demo-cta-link"
-                  onClick={() => setView("settings")}
+                  onClick={() => navigate("manage", "settings")}
                 >
                   Use my real home →
                 </button>
@@ -660,20 +687,24 @@ export function App() {
         </section>
       )}
 
-      {view === "settings" && (
-        <Settings onSaved={(v) => setTheme((v["ui.theme"] as Theme) ?? "auto")} />
+      {view === "manage" && (
+        <Manage
+          tab={manageTab}
+          onTab={(t) => navigate("manage", t)}
+          onSettingsSaved={(v) => setTheme((v["ui.theme"] as Theme) ?? "auto")}
+        />
       )}
 
       {view === "insights" && <Insights />}
 
       {view === "chat" && <ChatPanel />}
 
-      {view === "audit" && <AuditView />}
-
-      {view === "system" && <SystemView />}
+      {view === "car" && (
+        <CarView onOpenSettings={() => navigate("manage", "settings")} />
+      )}
 
       {view === "dashboard" && (
-        <HomeScores report={report} onOpenDetail={() => setView("insights")} />
+        <HomeScores report={report} onOpenDetail={() => navigate("insights")} />
       )}
 
       {/* The ONE today-story: the single narrative + chart. Its footer carries the live snapshot
@@ -721,7 +752,7 @@ export function App() {
           strategy={strategy}
           onChange={setStrategyMode}
           onSetGridTopup={setGridTopup}
-          onTune={() => setView("settings")}
+          onTune={() => navigate("manage", "settings")}
         />
       )}
 
@@ -730,8 +761,11 @@ export function App() {
         <OverrideCard dataQuality={alertsData?.data_quality} />
       )}
 
-      {/* Opt-in, advisory-only car-charging plan — hidden until enabled/set up. */}
-      {view === "dashboard" && status && <CarCard onOpenSettings={() => setView("settings")} />}
+      {/* Opt-in, advisory-only car-charging plan — the COMPACT variant here (SoC + next window +
+          advice + "Open Car →"); the full plan lives in the dedicated Car view. */}
+      {view === "dashboard" && status && (
+        <CarCard compact onOpenCar={() => navigate("car")} />
+      )}
 
       {/* Advanced — the full detail, tucked away by default (opens on demand). */}
       {view === "dashboard" && status && (

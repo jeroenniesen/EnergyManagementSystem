@@ -160,7 +160,7 @@ function ScoreDetailLine({ text, testId }: { text: string; testId: string }) {
 // the top of the page (a fixed bar sliding in, the same idiom as Settings' sticky save bar —
 // see .settings-savebar — just flipped to the top), and tracks which section is currently under
 // the bar via `aria-current`. Never touches `window.location.hash` — App.tsx's hash router treats
-// any unrecognised fragment as "dashboard" (see viewFromHash), so a real `href="#id"` anchor would
+// any unrecognised fragment as "dashboard" (see routeFromHash), so a real `href="#id"` anchor would
 // silently navigate the WHOLE APP away from Insights; scrollIntoView keeps this purely in-page.
 type NavSection = { id: string; label: string };
 

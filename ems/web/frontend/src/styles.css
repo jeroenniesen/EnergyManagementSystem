@@ -925,6 +925,39 @@ body {
   position: absolute; top: -14px; left: -1px; font-size: 0.8rem; line-height: 1; color: var(--summer-text);
 }
 
+/* Compact dashboard variant of the car card (feat/ux-batch-3): the "Open Car →" link sits under
+   the advice, dropping the windows/timeline detail (see CarCard.tsx). No extra styling needed
+   beyond the existing .strategy-more link, but the hook is here for future tuning. */
+.car-card-compact .strategy-more { margin-top: 12px; }
+
+/* ---- Car view (feat/ux-batch-3): full card + config + sessions history ---------------------- */
+.car-config {
+  margin-top: 24px; background: var(--panel); border: 1px solid var(--line);
+  border-left: 3px solid var(--car); border-radius: var(--radius); padding: 16px 18px;
+  box-shadow: var(--shadow);
+}
+.car-config-field { margin-top: 16px; }
+.car-config-field:first-of-type { margin-top: 14px; }
+.link-inline {
+  font: inherit; color: var(--accent); background: none; border: none; padding: 0;
+  cursor: pointer; text-decoration: underline;
+}
+.link-inline:hover { color: var(--text); }
+.link-inline:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+.car-sessions {
+  margin-top: 24px; background: var(--panel); border: 1px solid var(--line);
+  border-radius: var(--radius); padding: 16px 18px; box-shadow: var(--shadow);
+}
+.car-sessions-list { list-style: none; margin: 12px 0 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+.car-session-row {
+  display: flex; align-items: baseline; justify-content: space-between; gap: 12px;
+  font-size: 0.85rem; font-variant-numeric: tabular-nums;
+  background: var(--panel-2); border-radius: 8px; padding: 8px 12px;
+}
+.car-session-when { font-weight: 600; }
+.car-session-stats { color: var(--muted); }
+
 .freshness {
   display: flex;
   flex-wrap: wrap;
@@ -962,6 +995,30 @@ body {
 .nav-btn:hover { color: var(--text); background: var(--panel-2); }
 .nav-btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 .nav-active { color: var(--text); background: var(--panel-2); border-color: var(--line); }
+/* The Car nav item carries the --car dot accent (matching the card + iOS), so it reads as its own
+   thing among the five. inline-flex keeps the dot vertically centred with the label. */
+.nav-btn-car { display: inline-flex; align-items: center; }
+.nav-btn-car .car-dot { margin-right: 6px; }
+
+/* Manage sub-nav: a slim segmented switch between Settings · System · Audit (the three folded
+   surfaces). Reuses the nav-btn token language so it reads as the same family, one level down. */
+.manage-subnav {
+  display: flex; gap: 4px; flex-wrap: wrap; margin-bottom: 20px;
+  padding: 4px; background: var(--panel-2); border: 1px solid var(--line);
+  border-radius: 10px; width: fit-content; max-width: 100%;
+}
+.manage-tab {
+  font: inherit; font-size: 0.85rem; color: var(--muted);
+  background: transparent; border: 1px solid transparent; border-radius: 7px;
+  padding: 6px 16px; cursor: pointer;
+  transition: background 0.15s ease, color 0.15s ease, border-color 0.15s ease;
+}
+.manage-tab:hover { color: var(--text); }
+.manage-tab:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.manage-tab.active {
+  color: var(--text); background: var(--panel); border-color: var(--line);
+  box-shadow: var(--shadow);
+}
 
 /* Settings form */
 .settings-group {

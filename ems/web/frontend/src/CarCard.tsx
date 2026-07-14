@@ -5,9 +5,13 @@
 // whatever is missing:
 //   enabled:false                        -> render nothing (feature is off)
 //   enabled:true, needs_anchor:true      -> ask for the car's current charge level
-//   enabled:true, needs_schedule:true    -> point at Settings -> Car
+//   enabled:true, needs_schedule:true    -> point at the Car tab (schedule editor lives there)
 //   enabled:true, soc + plan             -> the full plan (SoC, next deadline, advice, windows,
 //                                           a 48h plug-in timeline)
+//
+// A `compact` variant (feat/ux-batch-3) is what the DASHBOARD renders: SoC + next deadline +
+// advice sentence + an "Open Car →" link, dropping the windows list, the 48h timeline and the
+// re-anchor form. The full variant (compact=false) is what the dedicated Car view renders.
 // The one write here (POST /api/car/soc, the manual SoC anchor) reuses the exact auth-header +
 // 401/422 handling pattern as OverrideCard's `apply()` (see Override.tsx).
 import { useEffect, useState } from "react";
@@ -211,7 +215,13 @@ function CardHead() {
   );
 }
 
-export function CarCard({ onOpenSettings }: { onOpenSettings: () => void }) {
+export function CarCard({
+  compact = false,
+  onOpenCar,
+}: {
+  compact?: boolean;
+  onOpenCar?: () => void;
+}) {
   const [data, setData] = useState<CarPlanResp | null>(null);
   const [pctInput, setPctInput] = useState(50);
   const [editingAnchor, setEditingAnchor] = useState(false);
@@ -299,14 +309,22 @@ export function CarCard({ onOpenSettings }: { onOpenSettings: () => void }) {
           </p>
         )}
         <p className="override-hint">No weekly minimum charge level set yet.</p>
-        <button
-          type="button"
-          className="strategy-more"
-          onClick={onOpenSettings}
-          data-testid="car-schedule-link"
-        >
-          Set a weekly minimum in Settings → Car
-        </button>
+        {onOpenCar ? (
+          // Compact (dashboard): send them to the Car tab, whose schedule editor sets this.
+          <button
+            type="button"
+            className="strategy-more"
+            onClick={onOpenCar}
+            data-testid="car-schedule-link"
+          >
+            Set a weekly minimum in the Car tab →
+          </button>
+        ) : (
+          // Full (Car view): the schedule editor is right below this card — no link needed.
+          <p className="override-hint" data-testid="car-schedule-below">
+            Set a weekly minimum in the schedule below.
+          </p>
+        )}
       </section>
     );
   }
@@ -330,7 +348,11 @@ export function CarCard({ onOpenSettings }: { onOpenSettings: () => void }) {
       : ".");
 
   return (
-    <section className="car-card" data-testid="car-card">
+    <section
+      className={`car-card${compact ? " car-card-compact" : ""}`}
+      data-testid="car-card"
+      data-compact={compact ? "true" : undefined}
+    >
       <CardHead />
 
       <div className="car-soc-row" data-testid="car-soc-row">
@@ -343,21 +365,25 @@ export function CarCard({ onOpenSettings }: { onOpenSettings: () => void }) {
             stale
           </span>
         )}
-        <button
-          type="button"
-          className="car-edit-btn"
-          aria-label="Re-anchor the car's charge level"
-          onClick={() => {
-            setPctInput(Math.round(soc.soc_pct));
-            setErr(null);
-            setEditingAnchor((v) => !v);
-          }}
-          data-testid="car-reanchor-btn"
-        >
-          ✎
-        </button>
+        {/* Re-anchoring is a full-view action — the compact dashboard card sends you to the Car
+            tab instead (the ✎ + inline form would crowd the one-glance summary). */}
+        {!compact && (
+          <button
+            type="button"
+            className="car-edit-btn"
+            aria-label="Re-anchor the car's charge level"
+            onClick={() => {
+              setPctInput(Math.round(soc.soc_pct));
+              setErr(null);
+              setEditingAnchor((v) => !v);
+            }}
+            data-testid="car-reanchor-btn"
+          >
+            ✎
+          </button>
+        )}
       </div>
-      {editingAnchor && (
+      {!compact && editingAnchor && (
         <SocSetForm
           pct={pctInput}
           onChange={setPctInput}
@@ -366,13 +392,13 @@ export function CarCard({ onOpenSettings }: { onOpenSettings: () => void }) {
           busy={busy}
         />
       )}
-      {err && (
+      {!compact && err && (
         <p className="field-err" data-testid="car-error">
           {err}
         </p>
       )}
 
-      {data.car_meter_configured === false && (
+      {!compact && data.car_meter_configured === false && (
         <p className="advisor-hint" data-testid="car-meter-missing">
           No EV meter is configured, so this estimate only changes when you update it manually.
         </p>
@@ -395,72 +421,87 @@ export function CarCard({ onOpenSettings }: { onOpenSettings: () => void }) {
         {plan.advice}
       </p>
 
-      {plan.negative_price_hint && (
-        <p className="advisor-hint" data-testid="car-negative-price-hint">
-          ⚡ {plan.negative_price_hint}
-        </p>
-      )}
-
-      {plan.windows.length > 0 && (
-        <ul className="car-windows" data-testid="car-windows">
-          {plan.windows.map((w) => (
-            <li key={w.start} className="car-window-row" data-testid="car-window-row">
-              {dayTime(w.start)}–{hm(w.end)} · {w.battery_kwh.toFixed(1)} kWh · ≈€
-              {w.est_cost_eur.toFixed(2)} · {w.solar_share_pct}% sun
-            </li>
-          ))}
-        </ul>
-      )}
-
-      <div className="car-timeline-wrap">
-        <div
-          className="car-timeline"
-          data-testid="car-timeline"
-          role="img"
-          aria-label={timelineLabel}
+      {/* Compact stops here with a link into the full Car view; everything below (the negative-
+          price hint, the window list and the 48h timeline) is full-view detail only. */}
+      {compact ? (
+        <button
+          type="button"
+          className="strategy-more"
+          onClick={onOpenCar}
+          data-testid="car-open-full"
         >
-          <div className="car-timeline-track">
-            {cells.map((c) => (
-              <span
-                key={c.startMs}
-                data-testid="car-timeline-cell"
-                className={`car-timeline-cell${
-                  c.slot ? (c.slot.solar_surplus ? " car-cell-solar" : " car-cell-fill") : ""
-                }`}
-                title={
-                  c.slot
-                    ? `${fmtTime(c.startMs)} · ${
-                        c.slot.solar_surplus ? "solar surplus" : "charging"
-                      } · ${c.slot.battery_kwh.toFixed(1)} kWh`
-                    : undefined
-                }
-              />
-            ))}
-            {midnightTicks.map((m) => (
-              <div
-                key={m.ms}
-                className="car-timeline-midnight"
-                style={{ left: `${pctOf(m.ms, startMs)}%` }}
-              >
-                <span className="car-timeline-day-label">{m.label}</span>
+          Open Car →
+        </button>
+      ) : (
+        <>
+          {plan.negative_price_hint && (
+            <p className="advisor-hint" data-testid="car-negative-price-hint">
+              ⚡ {plan.negative_price_hint}
+            </p>
+          )}
+
+          {plan.windows.length > 0 && (
+            <ul className="car-windows" data-testid="car-windows">
+              {plan.windows.map((w) => (
+                <li key={w.start} className="car-window-row" data-testid="car-window-row">
+                  {dayTime(w.start)}–{hm(w.end)} · {w.battery_kwh.toFixed(1)} kWh · ≈€
+                  {w.est_cost_eur.toFixed(2)} · {w.solar_share_pct}% sun
+                </li>
+              ))}
+            </ul>
+          )}
+
+          <div className="car-timeline-wrap">
+            <div
+              className="car-timeline"
+              data-testid="car-timeline"
+              role="img"
+              aria-label={timelineLabel}
+            >
+              <div className="car-timeline-track">
+                {cells.map((c) => (
+                  <span
+                    key={c.startMs}
+                    data-testid="car-timeline-cell"
+                    className={`car-timeline-cell${
+                      c.slot ? (c.slot.solar_surplus ? " car-cell-solar" : " car-cell-fill") : ""
+                    }`}
+                    title={
+                      c.slot
+                        ? `${fmtTime(c.startMs)} · ${
+                            c.slot.solar_surplus ? "solar surplus" : "charging"
+                          } · ${c.slot.battery_kwh.toFixed(1)} kWh`
+                        : undefined
+                    }
+                  />
+                ))}
+                {midnightTicks.map((m) => (
+                  <div
+                    key={m.ms}
+                    className="car-timeline-midnight"
+                    style={{ left: `${pctOf(m.ms, startMs)}%` }}
+                  >
+                    <span className="car-timeline-day-label">{m.label}</span>
+                  </div>
+                ))}
+                {deadlineMarkers.map(({ d, pct }) => (
+                  <div
+                    key={d.ready_by}
+                    className="car-timeline-deadline"
+                    style={{ left: `${pct}%` }}
+                    title={`${dayTime(d.ready_by)} · ≥${d.min_pct}%`}
+                    data-testid="car-timeline-deadline"
+                  >
+                    <span className="car-timeline-flag" aria-hidden="true">
+                      ⚑
+                    </span>
+                  </div>
+                ))}
               </div>
-            ))}
-            {deadlineMarkers.map(({ d, pct }) => (
-              <div
-                key={d.ready_by}
-                className="car-timeline-deadline"
-                style={{ left: `${pct}%` }}
-                title={`${dayTime(d.ready_by)} · ≥${d.min_pct}%`}
-                data-testid="car-timeline-deadline"
-              >
-                <span className="car-timeline-flag" aria-hidden="true">
-                  ⚑
-                </span>
-              </div>
-            ))}
+            </div>
           </div>
-        </div>
-      </div>
+        </>
+      )}
     </section>
   );
 }
