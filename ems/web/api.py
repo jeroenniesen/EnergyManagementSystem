@@ -1332,13 +1332,19 @@ def create_app(
         /api/accuracy's 'solar' track already gathers. Factored out so /api/battery-plan's plan
         confidence score (B-68) reuses this ONE extra store read instead of recomputing accuracy
         from scratch. None only when there's no store at all (forecast_error itself always returns
-        a dict, even with zero matched slots)."""
+        a dict, even with zero matched slots).
+
+        Reads the prediction ledger's CANONICAL solar rows (design §4.2/§4.3) — the single scoring
+        source every solar-accuracy surface shares (System page, this endpoint's callers, the
+        solar-confidence advisor, the export package); a same-day nowcast is never scored, only
+        the 18:00 day-ahead snapshot."""
         if store is None:
             return None
         start = now - timedelta(days=14)
         limit = history_row_cap((now - start).total_seconds(), _sample_cadence_seconds())
         raw = await store.raw_between(start.isoformat(), now.isoformat(), limit=limit)
-        forecasts = await store.forecasts_between(start.isoformat(), now.isoformat())
+        forecasts = await store.ledger_canonical_between(
+            "solar", start.isoformat(), now.isoformat())
         return forecast_error(forecasts, raw)
 
     _WRITE_METHODS = frozenset({"POST", "PUT", "PATCH", "DELETE"})
@@ -3174,14 +3180,18 @@ def create_app(
         stored day-ahead forecast has actually performed over the last 14 days (SPEC: solar
         confidence should come from evidence, not a hand-tuned guess). None with no store. Shared
         by `/api/advisor/solar-confidence` and the weekly digest gather (BACKLOG B-58) — one
-        recommendation, reused, never applied automatically anywhere; the human decides."""
+        recommendation, reused, never applied automatically anywhere; the human decides.
+
+        Reads the prediction ledger's CANONICAL solar rows (design §4.2/§4.3) — same single
+        scoring source as `_solar_forecast_skill`, so this advisor and the accuracy/health surfaces
+        can never disagree about how the day-ahead forecast has actually performed."""
         if store is None:
             return None
         start = now - timedelta(days=14)
         start_iso, end_iso = start.isoformat(), now.isoformat()
         limit = history_row_cap((now - start).total_seconds(), _sample_cadence_seconds())
         raw = await store.raw_between(start_iso, end_iso, limit=limit)
-        forecasts = await store.forecasts_between(start_iso, end_iso)
+        forecasts = await store.ledger_canonical_between("solar", start_iso, end_iso)
         current = settings_cache.get("planner.solar_confidence")
         return recommend_solar_confidence(
             forecasts, raw, current_pct=float(current) if current is not None else None)

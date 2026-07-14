@@ -318,10 +318,13 @@ async def _migrate_v3_forecast_ledger(db: aiosqlite.Connection) -> None:
       ``canonical=1`` (they were the day-ahead first-write-wins record — the nearest legacy
       equivalent of the new canonical snapshot).
 
-    `forecast_snapshots` is left INTACT (the recorder keeps writing it; the reconciliation
-    iteration retires the read path). Guarded by `has_table` so a truly ancient v0 DB without the
-    snapshot table — and the migration-runner test harness, which builds only raw/derived — still
-    migrates cleanly (INSERT..SELECT with no source table would raise)."""
+    `forecast_snapshots` is left INTACT here (this migration only ADDS the ledger, never deletes
+    the source table). The reconciliation iteration (design §3.3) separately retires the
+    recorder's WRITE to that table (see `ems.sense.Recorder._persist_forecast`) now that every
+    solar-accuracy reader scores the ledger's canonical rows instead — `forecast_snapshots` remains
+    only as a read-only historic/migration-source table. Guarded by `has_table` so a truly ancient
+    v0 DB without the snapshot table — and the migration-runner test harness, which builds only
+    raw/derived — still migrates cleanly (INSERT..SELECT with no source table would raise)."""
     await db.execute(_FORECAST_LEDGER_DDL)
     await db.execute(_FORECAST_LEDGER_INDEX_DDL)
     if await has_table(db, "forecast_snapshots"):
@@ -407,11 +410,13 @@ class HistoryStore:
                 "CREATE TABLE IF NOT EXISTS daily_finance "
                 "(day TEXT PRIMARY KEY, data TEXT NOT NULL)"
             )
-            # Solar forecast snapshots (observability-data): the day-ahead P10/P50/P90 forecast
-            # for each 15-min slot, keyed by the date it was ISSUED — so a later same-day cycle
-            # can't overwrite it with a nowcast. Needed to measure forecast-vs-actual error
-            # (join `start` to raw_samples.solar_power_w). Upserted by the recorder, purged with
-            # the samples (bounded by slot `start`, like price_slots).
+            # DEPRECATED (reconciliation iteration, design §3.3): solar forecast snapshots — the
+            # day-ahead P10/P50/P90 forecast for each 15-min slot, keyed by the date it was ISSUED.
+            # No longer written by the recorder (see `ems.sense.Recorder._persist_forecast`); every
+            # solar-accuracy reader now scores the prediction ledger's canonical rows instead (see
+            # `forecast_ledger` below). Retained as a read-only historic/migration-source table
+            # (migration v3 backfills it into the ledger) — never dropped, still purged with the
+            # samples (bounded by slot `start`, like price_slots).
             await db.execute(
                 "CREATE TABLE IF NOT EXISTS forecast_snapshots "
                 "(issued_date TEXT NOT NULL, start TEXT NOT NULL, p10_w REAL NOT NULL, "
@@ -654,7 +659,13 @@ class HistoryStore:
     async def upsert_forecast_snapshot(
         self, issued_date: str, slots: list[tuple[str, float, float, float]]
     ) -> None:
-        """Record the day-ahead solar forecast for each slot, keyed by (issued_date, start).
+        """DEPRECATED (reconciliation iteration, design §3.3): nothing writes this anymore — the
+        recorder now appends solar forecasts to the prediction ledger exclusively (see
+        `ems.sense.Recorder._persist_forecast` / `ledger_append`). Kept only so the migration v3
+        backfill (`_migrate_v3_forecast_ledger`) and direct tests of the legacy table still work;
+        do not call this from new code.
+
+        Record the day-ahead solar forecast for each slot, keyed by (issued_date, start).
         INSERT OR IGNORE: the FIRST snapshot recorded for a given (issued_date, slot) sticks — we
         want the day-ahead forecast, not a later-cycle nowcast overwriting it for error analysis."""
         if not slots:
@@ -668,7 +679,13 @@ class HistoryStore:
             await db.commit()
 
     async def forecasts_between(self, start_iso: str, end_iso: str) -> list[dict]:
-        """Stored forecast snapshots with slot `start` in [start, end), ordered by
+        """DEPRECATED (reconciliation iteration, design §3.3): every live solar-accuracy reader now
+        calls `ledger_canonical_between('solar', ...)` instead — this table is no longer written
+        (see `upsert_forecast_snapshot`), so this helper only serves historic data recorded before
+        the ledger existed and the migration v3 legacy-backfill path. Kept for that read, not for
+        new scoring code.
+
+        Stored forecast snapshots with slot `start` in [start, end), ordered by
         (issued_date, start) (UTC-ISO ⇒ lexicographic = time)."""
         async with self._conn() as db:
             db.row_factory = aiosqlite.Row

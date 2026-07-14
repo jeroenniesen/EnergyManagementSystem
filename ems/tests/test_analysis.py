@@ -1,11 +1,17 @@
 """Forecast/prediction accuracy (pure): solar forecast skill, plan-execution error, and
-household load-baseline error, over matched slots/deadlines/hours."""
+household load-baseline error, over matched slots/deadlines/hours.
+
+`forecast_error`/`recommend_solar_confidence` consume the prediction ledger's CANONICAL row shape
+natively (`target_start, low_w, expected_w, high_w` — see `ems.storage.history.HistoryStore.
+ledger_canonical_between`), so `_forecast_row` below builds fixtures in that shape rather than the
+legacy `forecast_snapshots` one (`issued_date, start, p10_w, p50_w, p90_w`)."""
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
 import ems.confidence as confidence
 from ems import analysis
 from ems.analysis import (
+    _legacy_snapshot_row,
     forecast_error,
     load_baseline_error,
     model_health,
@@ -16,8 +22,8 @@ from ems.analysis import (
 UTC = ZoneInfo("UTC")
 
 
-def _forecast_row(start: str, p10: float, p50: float, p90: float) -> dict:
-    return {"issued_date": start[:10], "start": start, "p10_w": p10, "p50_w": p50, "p90_w": p90}
+def _forecast_row(start: str, low: float, expected: float, high: float) -> dict:
+    return {"target_start": start, "low_w": low, "expected_w": expected, "high_w": high}
 
 
 def _raw_row(ts: str, solar_w: float) -> dict:
@@ -109,6 +115,22 @@ def test_no_overlap_between_forecast_and_raw_windows_is_zero_slots():
     raw = [_raw_row("2026-06-29T10:00:00+00:00", 900.0)]  # a different day entirely
     out = forecast_error(forecasts, raw)
     assert out["n_slots"] == 0
+
+
+def test_legacy_snapshot_row_maps_to_ledger_native_shape():
+    # _legacy_snapshot_row exists so a legacy forecast_snapshots-shaped row (retained as a
+    # read-only archive/migration-source table, no longer written by the recorder) can still be
+    # scored through forecast_error/recommend_solar_confidence without duplicating the mapping.
+    legacy = {"issued_date": "2026-06-28", "start": "2026-06-28T10:00:00+00:00",
+              "p10_w": 500.0, "p50_w": 1000.0, "p90_w": 1500.0}
+    assert _legacy_snapshot_row(legacy) == {
+        "target_start": "2026-06-28T10:00:00+00:00",
+        "low_w": 500.0, "expected_w": 1000.0, "high_w": 1500.0,
+    }
+    # And the mapped shape actually scores identically to a native ledger row.
+    native = _forecast_row("2026-06-28T10:00:00+00:00", 500.0, 1000.0, 1500.0)
+    raw = [_raw_row("2026-06-28T10:00:00+00:00", 900.0)]
+    assert forecast_error([_legacy_snapshot_row(legacy)], raw) == forecast_error([native], raw)
 
 
 # ---- recommend_solar_confidence: evidence-based advisory recommendation for the settings knob ----

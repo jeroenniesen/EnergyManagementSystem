@@ -2,7 +2,8 @@
 with the documented date-only approximation, PK dedupe, index), the store helpers' first-write-wins,
 the recorder's throttled nowcast append, the 18:00 canonical day-ahead job (gate, dedupe, full
 DST-aware slot coverage, retry-until-20:00-then-exclude, baseline load bands), the 400-day purge,
-and proof the legacy forecast_snapshots write path is untouched."""
+and proof the legacy forecast_snapshots WRITE path is retired (the recorder no longer writes it;
+only the ledger is written — see §3.3's reconciliation)."""
 import asyncio
 from datetime import UTC, datetime, timedelta
 from zoneinfo import ZoneInfo
@@ -192,8 +193,12 @@ def test_recorder_ledger_write_is_throttled_to_30_min(tmp_path):
     assert issued == {t0.isoformat(), (t0 + timedelta(minutes=35)).isoformat()}  # +35 crossed
 
 
-def test_recorder_writes_both_snapshot_and_ledger(tmp_path):
-    # The ledger append is ADDITIVE — the legacy forecast_snapshots write still happens untouched.
+def test_recorder_writes_ledger_only_snapshot_table_no_longer_written(tmp_path):
+    # Reconciliation iteration (design §3.3): the legacy forecast_snapshots write is RETIRED — the
+    # recorder appends solar forecasts to the prediction ledger EXCLUSIVELY now. This is the proof
+    # that the legacy table is no longer written by anything while the ledger still is (every
+    # solar-accuracy surface scores the ledger's canonical rows, so a stale-but-still-fed legacy
+    # table would risk a second, contradictory read).
     store = HistoryStore(str(tmp_path / "ems.sqlite"))
     fresh = FreshnessTracker()
     fresh.register(*SIGNALS)
@@ -210,8 +215,7 @@ def test_recorder_writes_both_snapshot_and_ledger(tmp_path):
         return snaps, ledger
 
     snaps, ledger = asyncio.run(run())
-    assert len(snaps) == 1  # legacy snapshot still written (first-write-wins, unchanged behaviour)
-    assert (snaps[0]["p10_w"], snaps[0]["p50_w"], snaps[0]["p90_w"]) == (100.0, 200.0, 300.0)
+    assert snaps == []  # legacy forecast_snapshots table is NEVER written by the recorder anymore
     assert len(ledger) == 1
     assert ledger[0]["issued_at"] == t0.isoformat()  # ledger carries the TRUE issue time
     assert ledger[0]["source"] == "_StubForecast" and ledger[0]["canonical"] == 0

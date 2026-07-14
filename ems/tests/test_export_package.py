@@ -349,8 +349,11 @@ def _seed(db: str) -> None:
                         ev_power_w=4000.0, soc_pct=55.0)
         await store.record("2026-06-28T10:00:00+00:00", raw, reconstruct(raw))
         await store.upsert_price_slots([("2026-06-28T10:00:00+00:00", 0.18)])
-        await store.upsert_forecast_snapshot(
-            "2026-06-28", [("2026-06-28T10:00:00+00:00", 1000.0, 2000.0, 3000.0)])
+        # Canonical prediction-ledger row (design §4.2/§4.3) — the export's forecasts.csv and
+        # "Solar forecast skill" section now score `ledger_canonical_between('solar', ...)`.
+        await store.ledger_append([
+            ("2026-06-28T10:00:00+00:00", "solar", "2026-06-28T10:00:00+00:00",
+             1000.0, 2000.0, 3000.0, "test", None, None, 1)])
         # calc_v stamped so the export's backfill (which now runs _ensure_day_finance over every
         # completed day in its window) trusts this as an up-to-date cache hit instead of treating
         # it as stale and recomputing it from the raw sample above (which would overwrite 0.42).
@@ -625,9 +628,9 @@ def test_package_includes_readme_and_validation_summary(tmp_path):
 
 
 def test_validation_summary_includes_solar_forecast_skill_section(tmp_path):
-    # _seed() records one raw sample (solar_power_w=3500.0) and one forecast snapshot
-    # (p10=1000.0, p50=2000.0, p90=3000.0) both at 2026-06-28T10:00:00+00:00 — the same 15-min
-    # slot — so the export should match them into exactly one slot and score the error.
+    # _seed() records one raw sample (solar_power_w=3500.0) and one canonical ledger row
+    # (low=1000.0, expected=2000.0, high=3000.0) both at 2026-06-28T10:00:00+00:00 — the same
+    # 15-min slot — so the export should match them into exactly one slot and score the error.
     db = str(tmp_path / "ems.sqlite")
     _seed(db)
     with TestClient(_app(db)) as c:
@@ -769,10 +772,12 @@ def test_incident_rollup_matches_hyphenated_failsafe():
 # ---- endpoint: GET /api/advisor/solar-confidence — advisory only, never applied automatically ----
 
 def _seed_solar_evidence(db: str) -> None:
-    # 48 matched daytime (p50=1000W >= 200W floor) slots inside the last 14 days, 12 each of
+    # 48 matched daytime (expected=1000W >= 200W floor) slots inside the last 14 days, 12 each of
     # ratio 0.7/0.8/0.9/1.0 (interleaved — recommend_solar_confidence sorts internally, so order
     # doesn't matter): p25 -> 70%, median -> 80%, recommended -> 70% (matches test_analysis.py's
     # known-ratio case, against the default current_pct=80.0 -> delta -10.0).
+    # Seeded as CANONICAL (canonical=1) prediction-ledger rows — the advisor now scores
+    # `ledger_canonical_between('solar', ...)`, the single scoring source (design §3.3).
     async def go():
         store = HistoryStore(db)
         await store.init()
@@ -784,7 +789,8 @@ def _seed_solar_evidence(db: str) -> None:
             raw = RawSample(grid_power_w=100.0, solar_power_w=solar_w, battery_power_w=0.0,
                             ev_power_w=0.0, soc_pct=50.0)
             await store.record(ts, raw, reconstruct(raw))
-            await store.upsert_forecast_snapshot(ts[:10], [(ts, 500.0, 1000.0, 1500.0)])
+            await store.ledger_append(
+                [(ts, "solar", ts, 500.0, 1000.0, 1500.0, "test", None, None, 1)])
     asyncio.run(go())
 
 

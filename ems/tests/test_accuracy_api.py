@@ -22,6 +22,8 @@ def _app(db: str):
 def _seed_solar_evidence(store: HistoryStore, now: datetime) -> None:
     # 48 matched daytime slots within the last 14 days (the endpoint's solar window), 12 each of
     # ratio 0.7/0.8/0.9/1.0 — same shape as test_export_package.py's _seed_solar_evidence.
+    # Seeded as CANONICAL (canonical=1) prediction-ledger rows — /api/accuracy's solar track now
+    # scores `ledger_canonical_between('solar', ...)`, the single scoring source (design §3.3).
     anchor = now.replace(minute=0, second=0, microsecond=0) - timedelta(hours=1)
     ratios = [0.7, 0.8, 0.9, 1.0]
     for i in range(48):
@@ -30,7 +32,8 @@ def _seed_solar_evidence(store: HistoryStore, now: datetime) -> None:
         raw = RawSample(grid_power_w=100.0, solar_power_w=solar_w, battery_power_w=0.0,
                         ev_power_w=0.0, soc_pct=50.0)
         asyncio.run(store.record(ts, raw, reconstruct(raw)))
-        asyncio.run(store.upsert_forecast_snapshot(ts[:10], [(ts, 500.0, 1000.0, 1500.0)]))
+        asyncio.run(store.ledger_append(
+            [(ts, "solar", ts, 500.0, 1000.0, 1500.0, "test", None, None, 1)]))
 
 
 def _seed_plan_execution_evidence(store: HistoryStore, now: datetime) -> None:

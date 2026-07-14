@@ -2,6 +2,11 @@
 actually happened, over three independent tracks (B-72):
 
 - `forecast_error` / `recommend_solar_confidence`: the day-ahead solar forecast vs. actual solar.
+  Both consume the CANONICAL rows of the prediction ledger (design doc §4.2/§4.3,
+  `ems.storage.history.HistoryStore.ledger_canonical_between`) — the single scoring source every
+  solar-accuracy surface reads (System page, `/api/accuracy`, the solar-confidence advisor, the
+  export package). Nowcasts and other same-day rows are never scored, only the 18:00 day-ahead
+  canonical snapshot — see `forecast_error`'s docstring for why.
 - `plan_execution_error`: the planner's committed target_soc-by-deadline vs. the SoC actually
   reached — deadline-aware, NOT a naive SoC-vs-target gap at every cycle (a plan's `target_soc` is
   a deadline target, not an instantaneous setpoint, so SoC is legitimately below target while
@@ -15,8 +20,8 @@ actually happened, over three independent tracks (B-72):
   constants and the rule function are imported from there, not duplicated), so the panel and the
   plan-confidence chip never disagree about what "the forecast is running hot/cold" means.
 
-Pure — no clock, no I/O. The export endpoint / `/api/accuracy` hand in stored rows (forecast
-snapshots, raw samples, plan history) and these functions score them.
+Pure — no clock, no I/O. The export endpoint / `/api/accuracy` hand in stored rows (ledger
+canonical rows, raw samples, plan history) and these functions score them.
 """
 from __future__ import annotations
 
@@ -34,11 +39,13 @@ _DH = 15 / 60.0  # hours per 15-min slot
 def _matched_slots(
     forecast_rows: list[dict], raw_rows: list[dict]
 ) -> list[tuple[float, float, float, float]]:
-    """Bucket actual solar (raw_rows) into 15-min slots and pair each forecast row (`start,
-    p10_w, p50_w, p90_w`) with its matched actual — the shared bucketing behind both
-    `forecast_error` and `recommend_solar_confidence`, so they score the exact same slots.
+    """Bucket actual solar (raw_rows) into 15-min slots and pair each ledger CANONICAL solar row
+    (`target_start, low_w, expected_w, high_w` — the shape returned by
+    `ems.storage.history.HistoryStore.ledger_canonical_between('solar', ...)`) with its matched
+    actual — the shared bucketing behind both `forecast_error` and `recommend_solar_confidence`,
+    so they score the exact same slots.
 
-    Returns a list of `(actual_w, p10_w, p50_w, p90_w)` tuples, one per slot where both a
+    Returns a list of `(actual_w, low_w, expected_w, high_w)` tuples, one per slot where both a
     forecast and at least one raw sample exist; a forecast slot with no recorded actual is
     skipped (not fabricated).
     """
@@ -51,30 +58,62 @@ def _matched_slots(
 
     matched: list[tuple[float, float, float, float]] = []
     for row in forecast_rows:
-        dt = _parse(row.get("start"))
+        dt = _parse(row.get("target_start"))
         if dt is None:
             continue
         samples = actual_by_slot.get(_floor(dt))
         if not samples:
             continue  # no actual recorded for this forecast slot — skip, don't fabricate a match
         actual = _mean(samples)
-        p50 = float(row.get("p50_w", 0.0))
-        p10 = float(row.get("p10_w", 0.0))
-        p90 = float(row.get("p90_w", 0.0))
-        matched.append((actual, p10, p50, p90))
+        expected = float(row.get("expected_w", 0.0))
+        low = float(row.get("low_w", 0.0))
+        high = float(row.get("high_w", 0.0))
+        matched.append((actual, low, expected, high))
     return matched
 
 
+def _legacy_snapshot_row(row: dict) -> dict:
+    """Map a legacy `forecast_snapshots`-shaped row (`issued_date, start, p10_w, p50_w, p90_w` —
+    the table `ems.storage.history` retains as an archive/migration source, no longer written by
+    the recorder) to the ledger-native shape `forecast_error`/`recommend_solar_confidence` consume
+    (`target_start, low_w, expected_w, high_w`). Nothing in the live gather path calls this —
+    every reader now queries `ledger_canonical_between` directly — it exists only so a
+    legacy-shaped caller (e.g. a one-off script reading the retained `forecast_snapshots` table
+    straight, design §4.5) can still score through the same two functions without duplicating the
+    field mapping."""
+    return {
+        "target_start": row.get("start"),
+        "low_w": row.get("p10_w"),
+        "expected_w": row.get("p50_w"),
+        "high_w": row.get("p90_w"),
+    }
+
+
 def forecast_error(forecast_rows: list[dict], raw_rows: list[dict]) -> dict:
-    """Bucket actual solar (raw_rows) into 15-min slots and compare against the forecast
-    (forecast_rows, each `start, p10_w, p50_w, p90_w`) over the slots where both exist.
+    """Bucket actual solar (raw_rows) into 15-min slots and compare against the CANONICAL
+    day-ahead ledger rows for solar (forecast_rows, each `target_start, low_w, expected_w,
+    high_w` — see `ems.storage.history.HistoryStore.ledger_canonical_between('solar', ...)`) over
+    the slots where both exist.
+
+    Scoring is restricted to canonical rows on purpose (design doc §3.3/§4.3): the prediction
+    ledger's canonical (18:00 local, day-ahead) snapshot is the single scoring source every
+    solar-accuracy surface reads — a same-day nowcast is easier to get right than a genuine
+    day-ahead commitment, so scoring it too would make the forecast look better than the number
+    the planner actually acted on. This intentionally EXCLUDES nowcasts and other same-day rows
+    even though they remain in the ledger for lead-time diagnostics — the reported bias/MAE/
+    coverage numbers are therefore slightly WORSE than the old date-keyed, same-day-inclusive
+    read, but honest, and the same for every consumer (no more contradictory "solar accuracy"
+    figures across the UI).
 
     Returns:
         n_slots: matched slot count (0 if forecast and actuals never overlap).
-        bias_w: mean(actual − p50) — negative means the forecast over-predicts solar.
-        mae_w: mean(|actual − p50|).
-        band_coverage_pct: % of matched slots where p10 <= actual <= p90.
-        actual_solar_kwh / forecast_p50_kwh: energy over the matched slots only.
+        bias_w: mean(actual − expected) — negative means the forecast over-predicts solar.
+        mae_w: mean(|actual − expected|).
+        band_coverage_pct: % of matched slots where low <= actual <= high.
+        actual_solar_kwh / forecast_p50_kwh: energy over the matched slots only (the `p50` in
+            `forecast_p50_kwh`'s name is historical — the value is the canonical `expected_w`
+            energy; the key is unchanged so existing consumers, e.g. `ems.confidence`, need no
+            change).
     """
     matched = _matched_slots(forecast_rows, raw_rows)
     n_slots = len(matched)
@@ -91,15 +130,15 @@ def forecast_error(forecast_rows: list[dict], raw_rows: list[dict]) -> dict:
             "daytime_band_coverage_pct": None,
         }
 
-    errors = [actual - p50 for actual, _p10, p50, _p90 in matched]
+    errors = [actual - expected for actual, _low, expected, _high in matched]
     abs_errors = [abs(e) for e in errors]
-    in_band = sum(1 for actual, p10, _p50, p90 in matched if p10 <= actual <= p90)
-    actual_kwh = sum(actual * _DH / 1000.0 for actual, _p10, _p50, _p90 in matched)
-    forecast_kwh = sum(p50 * _DH / 1000.0 for _actual, _p10, p50, _p90 in matched)
+    in_band = sum(1 for actual, low, _expected, high in matched if low <= actual <= high)
+    actual_kwh = sum(actual * _DH / 1000.0 for actual, _low, _expected, _high in matched)
+    forecast_kwh = sum(expected * _DH / 1000.0 for _actual, _low, expected, _high in matched)
 
     daytime = [m for m in matched if m[2] >= _MIN_DAYTIME_W]
-    daytime_errors = [a - p50 for a, _p10, p50, _p90 in daytime]
-    daytime_in_band = sum(1 for a, p10, _p50, p90 in daytime if p10 <= a <= p90)
+    daytime_errors = [a - expected for a, _low, expected, _high in daytime]
+    daytime_in_band = sum(1 for a, low, _expected, high in daytime if low <= a <= high)
     return {
         "n_slots": n_slots,
         "bias_w": round(_mean(errors), 1),
@@ -130,27 +169,31 @@ def _percentile(sorted_vals: list[float], p: float) -> float:
 def recommend_solar_confidence(
     forecast_rows: list[dict], raw_rows: list[dict], *, current_pct: float | None = None
 ) -> dict | None:
-    """Recommend a value for `planner.solar_confidence` from logged day-ahead forecast
-    performance, over daytime slots (`p50_w >= 200 W`) matched the same way as `forecast_error`.
+    """Recommend a value for `planner.solar_confidence` from logged CANONICAL day-ahead forecast
+    performance (`forecast_rows` — see `forecast_error`'s docstring for the row shape and why
+    nowcasts are excluded from scoring), over daytime slots (`expected_w >= 200 W`) matched the
+    same way as `forecast_error`.
 
-    Why the 25th percentile (not the mean/median): `solar_confidence` scales P50 down to a "safe
-    to count on" forecast used to size a *commitment* (grid top-up, overnight guarantee) — the
-    same risk-aware logic the planner already applies via P10 for commitment sizing. So the
-    recommendation should reflect what solar delivers on the disappointing quarter of days, not
-    a typical day; sizing off the median would under-charge on the worse half of days.
+    Why the 25th percentile (not the mean/median): `solar_confidence` scales the expected forecast
+    down to a "safe to count on" forecast used to size a *commitment* (grid top-up, overnight
+    guarantee) — the same risk-aware logic the planner already applies via the low band for
+    commitment sizing. So the recommendation should reflect what solar delivers on the
+    disappointing quarter of days, not a typical day; sizing off the median would under-charge on
+    the worse half of days.
 
     Returns None ("not enough data yet") below `_MIN_SLOTS` (48) matched daytime slots (~a few
     days). Otherwise returns:
         recommended_pct: p25 ratio, clamped to [30, 100] and rounded to the nearest 5.
         n_slots: matched daytime slot count the recommendation is based on.
-        median_ratio_pct / p25_ratio_pct: the raw actual/p50 ratio percentiles (not clamped or
-            rounded).
+        median_ratio_pct / p25_ratio_pct: the raw actual/expected ratio percentiles (not clamped
+            or rounded).
         current_pct: the value passed in, unchanged.
         delta_pct: recommended_pct − current_pct, or None if current_pct is None.
     """
     matched = _matched_slots(forecast_rows, raw_rows)
     ratios = sorted(
-        actual / p50 for actual, _p10, p50, _p90 in matched if p50 >= _MIN_DAYTIME_W
+        actual / expected for actual, _low, expected, _high in matched
+        if expected >= _MIN_DAYTIME_W
     )
     n = len(ratios)
     if n < _MIN_SLOTS:

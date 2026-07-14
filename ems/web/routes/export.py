@@ -84,7 +84,10 @@ def build_router(ctx: AppContext) -> APIRouter:
             raw = await ctx.store.raw_between(start_iso, end_iso, limit=row_cap)
             derived = await ctx.store.derived_between(start_iso, end_iso, limit=row_cap)
             prices = await ctx.store.prices_between(start_iso, end_iso)
-            forecasts = await ctx.store.forecasts_between(start_iso, end_iso)
+            # Canonical prediction-ledger rows (design §4.2/§4.3) — the SAME single scoring
+            # source `/api/accuracy` and the solar-confidence advisor read, so forecasts.csv /
+            # the "Solar forecast skill" section below can never disagree with those surfaces.
+            forecasts = await ctx.store.ledger_canonical_between("solar", start_iso, end_iso)
             plan = await ctx.store.plan_history_between(start_iso, end_iso)
             gas = await ctx.store.gas_between(start_iso, end_iso)
             # Self-complete the window before reading it back: `daily_finance` rows are otherwise
