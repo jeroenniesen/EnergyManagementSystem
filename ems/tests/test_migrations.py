@@ -44,8 +44,9 @@ def test_fresh_db_gets_full_schema_stamped_to_latest(tmp_path):
         return await store.schema_version(), await store.table_names()
 
     version, names = asyncio.run(run())
-    assert version == LATEST_SCHEMA_VERSION == 2
+    assert version == LATEST_SCHEMA_VERSION == 3
     assert "observations" in names and "daily_energy" in names
+    assert "forecast_ledger" in names
 
 
 def test_existing_v0_db_migrates_in_order_to_latest(tmp_path):
@@ -61,8 +62,9 @@ def test_existing_v0_db_migrates_in_order_to_latest(tmp_path):
         return await store.schema_version(), await store.table_names()
 
     version, names = asyncio.run(run())
-    assert version == 2
+    assert version == 3
     assert "observations" in names and "daily_energy" in names
+    assert "forecast_ledger" in names
 
 
 def test_reinit_is_idempotent_applies_nothing(tmp_path):
@@ -83,7 +85,7 @@ def test_reinit_is_idempotent_applies_nothing(tmp_path):
         return v1, v2, obs1, obs2
 
     v1, v2, obs1, obs2 = asyncio.run(run())
-    assert v1 == v2 == 2
+    assert v1 == v2 == 3
     assert obs1 == obs2  # backfilled rows unchanged by the second init
 
 

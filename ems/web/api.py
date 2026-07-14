@@ -337,6 +337,105 @@ async def _run_recovery(
             "summary": summary}
 
 
+# Canonical day-ahead snapshot dedupe TTL: keyed by the target DATE, so a couple of days comfortably
+# outlives the one evening it guards (a new day is a new key regardless).
+_CANONICAL_DEDUPE_TTL_SECONDS = 48 * 3600.0
+# The learned hour-of-day load profile has no native low/high band, so canonical LOAD rows use a
+# deliberately broad, honest placeholder: expected ±30% (clamped ≥ 0). A calibrated load-forecast
+# band replaces this in a later batch (design §5.2); documented here so the default is explicit.
+_LOAD_BAND_FRACTION = 0.30
+
+
+def _canonical_ledger_rows(
+    *, issued_at: str, tomorrow: date_cls, tz: ZoneInfo, solar_slots: list[Any],
+    solar_source_name: str, load_profile: Any, band: float = _LOAD_BAND_FRACTION,
+) -> list[tuple]:
+    """Pure builder for the canonical (`canonical=1`) day-ahead ledger rows covering EVERY 15-min
+    slot of the NEXT local calendar day (design §4.3).
+
+    The slot grid is generated in UTC across the local day's TRUE span, so it is DST-correct: 96
+    slots normally, 92 on the spring-forward day, 100 on the fall-back day. For each slot we emit a
+    LOAD row from the learned baseline profile (`expected_w`; low/high = expected ±`band`, clamped
+    ≥ 0) and, when the live solar forecast has that exact slot, a SOLAR row (p10/p50/p90). Both
+    carry the true `issued_at`; quality/model_version are NULL (no scorer in this batch)."""
+    day_start = datetime(tomorrow.year, tomorrow.month, tomorrow.day, tzinfo=tz)
+    start_utc = day_start.astimezone(UTC)
+    end_utc = (day_start + timedelta(days=1)).astimezone(UTC)  # DST-correct next local midnight
+    solar_by = {s.start.astimezone(UTC): s for s in solar_slots}
+    rows: list[tuple] = []
+    slot = start_utc
+    while slot < end_utc:
+        slot_iso = slot.isoformat()
+        exp = max(0.0, float(load_profile.expected_w(slot)))
+        low = max(0.0, exp * (1.0 - band))
+        high = exp * (1.0 + band)
+        rows.append(
+            (issued_at, "load", slot_iso, low, exp, high, "baseline_profile", None, None, 1))
+        fc = solar_by.get(slot)
+        if fc is not None:
+            rows.append((issued_at, "solar", slot_iso, float(fc.p10_w), float(fc.p50_w),
+                         float(fc.p90_w), solar_source_name, None, None, 1))
+        slot += timedelta(minutes=15)
+    return rows
+
+
+async def _run_canonical_forecast(
+    store: HistoryStore | None,
+    cache_store: CacheStore | None,
+    now: datetime,
+    tz: ZoneInfo,
+    *,
+    solar_slots: list[Any],
+    solar_source_name: str,
+    load_profile: Any,
+    load_band: float = _LOAD_BAND_FRACTION,
+) -> int | None:
+    """Persist the canonical day-ahead solar + load forecast for tomorrow (design §4.3). Mirrors
+    `_run_weekly_digest`'s shape — a plain, directly-testable gate + dedupe + write, NOT a closure.
+
+    GATE: only fires when local time is in [18:00, 20:00). At/after 18:00 it writes; if that write
+    FAILS it retries every cycle (the dedupe key is set only on success) until 20:00, after which
+    the target day gets NO canonical forecast — it is excluded, never backfilled with hindsight.
+
+    DEDUPE: `ledger:canonical:<tomorrow>` in `cache_store` — once tomorrow's snapshot is written it
+    is skipped for the rest of the evening. `ledger_append`'s first-write-wins is a second safety
+    net. Returns the row count written, or None when it didn't fire (gate closed, deduped, or no
+    store). Never raises — a snapshot hiccup must not take down the notify loop."""
+    if store is None:
+        return None
+    now_local = now.astimezone(tz)
+    if now_local.hour < 18 or now_local.hour >= 20:  # window [18:00, 20:00)
+        return None
+    tomorrow = now_local.date() + timedelta(days=1)
+    dedupe_key = f"ledger:canonical:{tomorrow.isoformat()}"
+    if cache_store is not None:
+        try:
+            if await asyncio.to_thread(cache_store.get, dedupe_key) is not None:
+                return None
+        except Exception:
+            _log.debug("canonical forecast dedupe read failed (non-fatal)", exc_info=True)
+    issued_at = now.astimezone(UTC).isoformat()
+    rows = _canonical_ledger_rows(
+        issued_at=issued_at, tomorrow=tomorrow, tz=tz, solar_slots=solar_slots,
+        solar_source_name=solar_source_name, load_profile=load_profile, band=load_band)
+    try:
+        await store.ledger_append(rows)
+    except Exception:
+        # Write failed — do NOT set the dedupe key, so the next cycle retries (until 20:00).
+        _log.warning("canonical forecast write failed; will retry until 20:00 local (fail-safe)",
+                     exc_info=True)
+        return None
+    if cache_store is not None:
+        try:
+            await asyncio.to_thread(
+                cache_store.set, dedupe_key, issued_at, _CANONICAL_DEDUPE_TTL_SECONDS)
+        except Exception:
+            _log.warning("canonical forecast dedupe write failed (non-fatal)", exc_info=True)
+    _log.info("canonical forecast: wrote %d day-ahead rows (solar+load) for %s",
+              len(rows), tomorrow.isoformat())
+    return len(rows)
+
+
 _recorder_died = _task_died("Recorder")
 
 
@@ -1053,6 +1152,14 @@ def create_app(
                 if purged:
                     _log.info("observation retention: purged %d rows older than %d days",
                               purged, OBSERVATION_RETENTION_DAYS)
+                # Prediction ledger shares the 400-day horizon (purged by target_start, symmetric
+                # with observations — a forecast is only scorable against an actual we still keep).
+                nowcast_cutoff = (datetime.now(UTC) - timedelta(days=60)).isoformat()
+                purged_ledger = await store.purge_ledger_older_than(
+                    obs_cutoff, nowcast_cutoff_iso=nowcast_cutoff)
+                if purged_ledger:
+                    _log.info("forecast ledger retention: purged %d rows older than %d days",
+                              purged_ledger, OBSERVATION_RETENTION_DAYS)
             except Exception as exc:
                 _log.warning("history maintenance failed (%s: %s); retrying next cycle",
                              type(exc).__name__, exc)
@@ -1815,12 +1922,42 @@ def create_app(
             **_recovery_sizing(),
         )
 
+    async def _run_canonical_forecast_cycle(now: datetime) -> None:
+        """Gather the live solar forecast + the learned baseline load profile and hand them to
+        `_run_canonical_forecast` (the 18:00 day-ahead canonical snapshot, design §4.3). Cheap
+        gate FIRST — outside the [18:00, 20:00) window, or once tomorrow's snapshot is already
+        written, it skips the profile/forecast gather entirely so it isn't rebuilt every cycle.
+        Fail-safe — a gather error is logged, never propagated."""
+        if store is None:
+            return
+        now_local = now.astimezone(site_tz)
+        if now_local.hour < 18 or now_local.hour >= 20:
+            return
+        tomorrow = now_local.date() + timedelta(days=1)
+        if cache_store is not None:
+            try:
+                if await asyncio.to_thread(
+                    cache_store.get, f"ledger:canonical:{tomorrow.isoformat()}"
+                ) is not None:
+                    return  # already snapshotted tomorrow today — don't rebuild the profile
+            except Exception:
+                _log.debug("canonical forecast dedupe pre-check failed (non-fatal)", exc_info=True)
+        drows = await store.recent_derived(2016)  # ~7 days of derived history for the profile
+        fallback_w = settings_cache["battery.overnight_load_kwh"] * 1000.0 / 12.0
+        profile = build_load_profile(drows, site_tz, fallback_w=fallback_w)
+        solar_slots = (await asyncio.to_thread(solar_forecast.slots)
+                       if solar_forecast is not None else [])
+        source_name = type(solar_forecast).__name__ if solar_forecast is not None else "none"
+        await _run_canonical_forecast(
+            store, cache_store, now, site_tz, solar_slots=solar_slots,
+            solar_source_name=source_name, load_profile=profile)
+
     async def _notify_loop(stop: asyncio.Event) -> None:
         """Periodic forecast-driven notifications (BACKLOG B-75) + the Sunday weekly-digest
-        delivery (BACKLOG B-58). Its own tiny loop (not `_control_loop` — see
-        `_run_detector_cycle`'s docstring), started whenever a store + notifier exist regardless
-        of dry_run/controller. Fail-safe: a gathering error is logged and the loop just retries
-        next cycle."""
+        delivery (BACKLOG B-58) + the 18:00 canonical day-ahead forecast snapshot (design §4.3).
+        Its own tiny loop (not `_control_loop` — see `_run_detector_cycle`'s docstring), started
+        whenever a store + notifier exist regardless of dry_run/controller. Fail-safe: a gathering
+        error is logged and the loop just retries next cycle."""
         while True:
             try:
                 await asyncio.wait_for(stop.wait(), timeout=control_cycle_seconds)
@@ -1835,6 +1972,10 @@ def create_app(
                 await _run_recovery_cycle(datetime.now(UTC))
             except Exception:
                 _log.exception("recovery cycle failed; retry next cycle (fail-safe)")
+            try:
+                await _run_canonical_forecast_cycle(datetime.now(UTC))
+            except Exception:
+                _log.exception("canonical forecast cycle failed; retry next cycle (fail-safe)")
             try:
                 await _run_weekly_digest(
                     store, cache_store, notifier, datetime.now(UTC), site_tz,

@@ -43,6 +43,32 @@ _DAILY_ENERGY_DDL = (
     "battery_discharge_kwh REAL, coverage REAL)"
 )
 
+# --- Prediction ledger (design §4.2 / §4.3) -----------------------------------------------------
+# Every forecast is persisted BEFORE its outcome is known, with its EXACT `issued_at` — this is the
+# single out-of-sample scoring source (recomputing a historical forecast with later knowledge is
+# not valid evaluation). `canonical=1` marks the anti-leakage day-ahead snapshot (the 18:00
+# next-day forecast the scorer grades); throttled nowcasts land as `canonical=0` and remain for
+# lead-time diagnostics. First-write-wins per (issued_at, kind, target_start). Retained for the
+# same 400-day horizon as observations (purged by `target_start` — you can only score a target
+# against an observation you still have).
+_FORECAST_LEDGER_DDL = (
+    "CREATE TABLE IF NOT EXISTS forecast_ledger "
+    "(issued_at TEXT NOT NULL, kind TEXT NOT NULL, target_start TEXT NOT NULL, "
+    "low_w REAL, expected_w REAL, high_w REAL, source TEXT, model_version TEXT, "
+    "quality TEXT, canonical INTEGER NOT NULL DEFAULT 0, "
+    "PRIMARY KEY (issued_at, kind, target_start))"
+)
+# Serves the scorer's hot path: "canonical rows for this kind over this target window".
+_FORECAST_LEDGER_INDEX_DDL = (
+    "CREATE INDEX IF NOT EXISTS idx_forecast_ledger_canonical "
+    "ON forecast_ledger(kind, canonical, target_start)"
+)
+# Fixed tuple order for ledger_append() rows (documented so callers can't misplace a field).
+_LEDGER_COLS = (
+    "issued_at", "kind", "target_start", "low_w", "expected_w", "high_w",
+    "source", "model_version", "quality", "canonical",
+)
+
 
 def _parse_utc(ts: object) -> datetime | None:
     """Parse a stored ISO `ts` to an aware UTC datetime (naive ⇒ assumed UTC). None on garbage."""
@@ -280,12 +306,42 @@ async def _migrate_v2_daily_energy(db: aiosqlite.Connection) -> None:
         day = nxt
 
 
+async def _migrate_v3_forecast_ledger(db: aiosqlite.Connection) -> None:
+    """v3: exact-`issued_at` prediction ledger (design §4.2/§4.3). Create the table + index, then
+    copy the legacy date-keyed `forecast_snapshots` in as their nearest equivalent. Those were
+    first-write-wins day-ahead SOLAR snapshots by design, so we map each to:
+
+    * ``issued_at = issued_date || 'T00:00:00+00:00'`` — a DOCUMENTED approximation: the legacy
+      rows carry only a DATE, never a real issue time. Downstream must treat these as approximate
+      legacy provenance, never as a canonical 18:00 snapshot (design §4.5).
+    * ``kind='solar'``; ``low/expected/high = p10/p50/p90``; ``source='legacy_snapshot'``;
+      ``canonical=1`` (they were the day-ahead first-write-wins record — the nearest legacy
+      equivalent of the new canonical snapshot).
+
+    `forecast_snapshots` is left INTACT (the recorder keeps writing it; the reconciliation
+    iteration retires the read path). Guarded by `has_table` so a truly ancient v0 DB without the
+    snapshot table — and the migration-runner test harness, which builds only raw/derived — still
+    migrates cleanly (INSERT..SELECT with no source table would raise)."""
+    await db.execute(_FORECAST_LEDGER_DDL)
+    await db.execute(_FORECAST_LEDGER_INDEX_DDL)
+    if await has_table(db, "forecast_snapshots"):
+        await db.execute(
+            "INSERT OR IGNORE INTO forecast_ledger "
+            "(issued_at, kind, target_start, low_w, expected_w, high_w, source, model_version, "
+            "quality, canonical) "
+            "SELECT issued_date || 'T00:00:00+00:00', 'solar', start, p10_w, p50_w, p90_w, "
+            "'legacy_snapshot', NULL, NULL, 1 FROM forecast_snapshots"
+        )
+
+
 # Ordered migration registry (see storage/migrations.py). Append-only: never renumber or edit a
 # shipped migration — add a new one. Each `apply` runs its DDL + bounded backfill in the runner's
 # transaction and must not commit.
 MIGRATIONS = [
     Migration(1, "compact 15-min observation store (design §4.1)", _migrate_v1_observations),
     Migration(2, "long-horizon daily kWh rollups (B-13)", _migrate_v2_daily_energy),
+    Migration(3, "exact-issued_at prediction ledger (design §4.2/§4.3)",
+              _migrate_v3_forecast_ledger),
 ]
 LATEST_SCHEMA_VERSION = max(m.version for m in MIGRATIONS)
 
@@ -417,6 +473,10 @@ class HistoryStore:
             # migrations above already created (and backfilled) them, so these are no-ops.
             await db.execute(_OBSERVATIONS_DDL)
             await db.execute(_DAILY_ENERGY_DDL)
+            # Prediction ledger (design §4.2/§4.3): baseline for a FRESH DB; migration v3 already
+            # created + backfilled it on an EXISTING DB, so these are no-ops there.
+            await db.execute(_FORECAST_LEDGER_DDL)
+            await db.execute(_FORECAST_LEDGER_INDEX_DDL)
             await db.commit()
             # Fresh DB: baseline just built the FULL current schema (with auto_vacuum latched), so
             # stamp straight to the latest version — the numbered migrations would only re-create
@@ -617,6 +677,73 @@ class HistoryStore:
                 "WHERE start >= ? AND start < ? ORDER BY issued_date ASC, start ASC",
                 (start_iso, end_iso))
             return [dict(r) for r in await cur.fetchall()]
+
+    async def ledger_append(self, rows: list[tuple]) -> None:
+        """Append prediction-ledger rows (design §4.2). Each row is the fixed tuple
+        ``(issued_at, kind, target_start, low_w, expected_w, high_w, source, model_version,
+        quality, canonical)`` (see `_LEDGER_COLS`). INSERT OR IGNORE ⇒ FIRST write per
+        (issued_at, kind, target_start) wins — persist-before-outcome provenance is never mutated,
+        and a canonical write can't be clobbered by a nowcast that happened to share an instant."""
+        if not rows:
+            return
+        async with self._conn() as db:
+            await db.executemany(
+                f"INSERT OR IGNORE INTO forecast_ledger ({', '.join(_LEDGER_COLS)}) "
+                f"VALUES ({', '.join('?' for _ in _LEDGER_COLS)})",
+                rows,
+            )
+            await db.commit()
+
+    async def ledger_canonical_between(
+        self, kind: str, start_iso: str, end_iso: str
+    ) -> list[dict]:
+        """Canonical (`canonical=1`) ledger rows of `kind` with `target_start` in [start, end),
+        oldest-first — the anti-leakage day-ahead snapshot the forecast scorer grades. Uses the
+        (kind, canonical, target_start) index."""
+        async with self._conn() as db:
+            db.row_factory = aiosqlite.Row
+            cur = await db.execute(
+                f"SELECT {', '.join(_LEDGER_COLS)} FROM forecast_ledger "
+                "WHERE kind = ? AND canonical = 1 AND target_start >= ? AND target_start < ? "
+                "ORDER BY target_start ASC",
+                (kind, start_iso, end_iso))
+            return [dict(r) for r in await cur.fetchall()]
+
+    async def ledger_between(self, kind: str, start_iso: str, end_iso: str) -> list[dict]:
+        """ALL ledger rows of `kind` with `target_start` in [start, end) — every issue time, not
+        just canonical — ordered by (target_start, issued_at) for lead-time/nowcast diagnostics
+        (UTC-ISO ⇒ lexicographic = time)."""
+        async with self._conn() as db:
+            db.row_factory = aiosqlite.Row
+            cur = await db.execute(
+                f"SELECT {', '.join(_LEDGER_COLS)} FROM forecast_ledger "
+                "WHERE kind = ? AND target_start >= ? AND target_start < ? "
+                "ORDER BY target_start ASC, issued_at ASC",
+                (kind, start_iso, end_iso))
+            return [dict(r) for r in await cur.fetchall()]
+
+    async def purge_ledger_older_than(
+        self, cutoff_iso: str, *, nowcast_cutoff_iso: str | None = None
+    ) -> int:
+        """Delete ledger rows with `target_start` < `cutoff_iso` (the 400-day horizon), returning
+        the row count. Purged by TARGET, symmetric with observations: a forecast whose target slot
+        has aged past the observation horizon can no longer be scored, so it need not be kept.
+
+        `nowcast_cutoff_iso` (differentiated retention): canonical=0 nowcast rows dominate the DB
+        (~96 nowcasts per slot vs 1 canonical) but only the canonical rows are scored — nowcasts
+        exist for lead-time diagnostics, so they get a much shorter horizon (60 days at the call
+        site) keeping the ledger ~95% smaller without touching the evidence."""
+        async with self._conn() as db:
+            cur = await db.execute(
+                "DELETE FROM forecast_ledger WHERE target_start < ?", (cutoff_iso,))
+            n = cur.rowcount or 0
+            if nowcast_cutoff_iso is not None:
+                cur = await db.execute(
+                    "DELETE FROM forecast_ledger WHERE canonical = 0 AND target_start < ?",
+                    (nowcast_cutoff_iso,))
+                n += cur.rowcount or 0
+            await db.commit()
+            return n
 
     async def record_plan(self, ts: str, snapshot: dict) -> None:
         """Append one plan/target history row (observability-data): what the planner intended

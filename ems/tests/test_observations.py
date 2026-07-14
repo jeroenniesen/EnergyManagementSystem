@@ -214,7 +214,7 @@ def test_backfill_on_migration_populates_observations_and_daily_energy(tmp_path)
         return await store.schema_version(), obs, daily
 
     version, obs, daily = asyncio.run(run())
-    assert version == 2
+    assert version == 3
     assert len(obs) == 1 and obs[0]["mean_solar_w"] == 1000.0
     assert len(daily) == 1  # backfill keys by UTC day (storage layer has no site tz at migration)
     d = daily[0]

@@ -280,7 +280,8 @@ SETTINGS_SCHEMA: tuple[SettingsField, ...] = (
     SettingsField(
         "planner.validate_projection", "Keep plans honest about reachability", "bool", True,
         "planner",
-        help="Before acting, the system checks whether the plan can really reach its target in time. "
+        help="Before acting, the system checks whether the plan can really reach its target "
+             "in time. "
         "If not, it keeps your battery in its safe automatic mode. On by default, and skipped "
         "when the forecast is too stale to trust.",
         advanced=True,
