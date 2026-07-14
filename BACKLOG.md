@@ -75,7 +75,7 @@ Swap the plan-based estimate tile (`ems/savings.py`, self-described "rough, illu
 
 ### B-13 · Long-horizon energy rollups — Feature enabler · S–M
 Monthly/weekly **kWh** aggregates so year-over-year trends survive the 365-day raw purge (the finance half shipped with B-03a: `daily_finance` is never purged). Without this, next summer's "vs last year" comparison silently breaks.
-**Track:** ✅ done — finance half PR #3; kWh half [PR #26](https://github.com/jeroenniesen/EnergyManagementSystem/pull/26): daily_energy rollups (never purged) backfilled from history, year views read them.
+**Track:** ✅ done — finance half PR #3; kWh half [PR #27](https://github.com/jeroenniesen/EnergyManagementSystem/pull/27): daily_energy rollups (never purged) backfilled from history, year views read them.
 
 ## EPIC E-03 · Family reach: the iOS app
 *Goal: the scores and the calm story reach the family's phones, not just the LAN browser.* (Motivation)
@@ -480,7 +480,7 @@ year view; every store connects-per-call; and `build_report`/`build_series`/`bui
 to ~200k rows of CPU **on the event loop** (unlike `_forward_projection`, which uses `to_thread`). Bulk-read
 finance days once, hold a long-lived connection per store, wrap the report assembly in `to_thread`, and
 pre-aggregate/down-sample the year view (dovetails with B-13 rollups).
-**Track:** ✅ done — [PR #26](https://github.com/jeroenniesen/EnergyManagementSystem/pull/26). Long-lived store connections, finance year view 3 round-trips instead of >=90 (query-count-tested), report CPU off the event loop, year series on rollups. Suite runtime halved as a side effect.
+**Track:** ✅ done — [PR #27](https://github.com/jeroenniesen/EnergyManagementSystem/pull/27). Long-lived store connections, finance year view 3 round-trips instead of >=90 (query-count-tested), report CPU off the event loop, year series on rollups. Suite runtime halved as a side effect.
 
 ### B-50 · iOS architecture cleanup — Refactor · M–L · P2/P3
 `DashboardView.swift` is 2241 lines (~40 nested view structs) and `Models.swift` is 1642 (contract models
@@ -506,7 +506,7 @@ wipes all (never-purged) financial history. And the schema is entirely `CREATE T
 `PRAGMA user_version`/migration path (the finance `calc_v` recompute is a good per-cache pattern but not a
 general one). Add a scheduled `VACUUM INTO`/`.backup` to `_maintenance_loop` and a small ordered
 migration runner at startup before the schema needs a real `ALTER`.
-**Track:** ✅ done — backups PR #19 + migration runner [PR #26](https://github.com/jeroenniesen/EnergyManagementSystem/pull/26) (PRAGMA user_version, per-step transactions, loud failure; proven by the v1-v3 observation/rollup/ledger migrations incl. a live backfill).
+**Track:** ✅ done — backups PR #19 + migration runner [PR #27](https://github.com/jeroenniesen/EnergyManagementSystem/pull/27) (PRAGMA user_version, per-step transactions, loud failure; proven by the v1-v3 observation/rollup/ledger migrations incl. a live backfill).
 
 ### B-53 · Deploy consistency (Pi/Jetson) — Ops · M · P2
 Only macOS is scripted (host `uv` + LaunchAgent); the Pi/Jetson are Docker Compose targets but there is
