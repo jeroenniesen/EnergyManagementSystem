@@ -867,6 +867,7 @@ test.describe("EMS dashboard", () => {
         body: JSON.stringify({
           incidents: {
             total: 2, by_type: { cluster_mismatch: 1, command_failed: 1 },
+            by_type_last_7_days: { cluster_mismatch: 1, command_failed: 1 },
             by_day: { "2026-06-28": 2 }, most_recent: "2026-06-28T18:00:00+00:00",
             last_7_days: 2,
           },
@@ -902,6 +903,40 @@ test.describe("EMS dashboard", () => {
     await expect(page.getByTestId("export-replay")).toHaveAttribute("href", "/api/replay");
     // Dashboard panels hidden while on the System view.
     await expect(page.getByTestId("battery-plan")).toHaveCount(0);
+  });
+
+  // Trust-bug regression: the headline ("N incidents in the last 7 days") and the by-type
+  // breakdown must describe the SAME window. The full-window `by_type` (which can span months —
+  // the export manifest's rollup) must never leak into this panel's breakdown, even though it's
+  // present in the payload for the export.
+  test("System tab's incident breakdown matches the 7-day headline, not the full audit window", async ({
+    page,
+  }) => {
+    await page.route("**/api/incidents", (route) =>
+      route.fulfill({
+        status: 200, contentType: "application/json",
+        body: JSON.stringify({
+          incidents: {
+            total: 28, last_7_days: 15,
+            // Full window (e.g. months of audit history) — sums to 28, must NOT appear here.
+            by_type: { cluster_mismatch: 20, command_failed: 8 },
+            // Same trailing 7 days as `last_7_days` — sums to 15, must be what's shown.
+            by_type_last_7_days: { cluster_mismatch: 10, command_failed: 5 },
+            by_day: {}, most_recent: "2026-06-28T18:00:00+00:00",
+          },
+        }),
+      }),
+    );
+    await page.goto("/");
+    await page.getByTestId("nav-system").click();
+    const incidents = page.getByTestId("incidents");
+    await expect(incidents).toContainText("15 incidents in the last 7 days");
+    const types = page.getByTestId("incident-types");
+    await expect(types).toContainText("10");
+    await expect(types).toContainText("5");
+    await expect(types).not.toContainText("20");
+    await expect(types).not.toContainText("28");
+    // The windowed by-type rows sum to the SAME 15 the headline says — no more trust bug.
   });
 
   test("the Chat tab shows the assistant, off until AI is enabled", async ({ page }) => {
@@ -987,7 +1022,7 @@ test.describe("EMS dashboard", () => {
       route.fulfill({
         status: 200, contentType: "application/json",
         body: JSON.stringify({
-          solar: { bias_w: 300.0, n_slots: 300 },
+          solar: { bias_w: -300.0, n_slots: 300 },
           load: { mape_pct: 8.0, n_hours: 120 },
           plan_execution: null,
           health: {
@@ -1002,15 +1037,62 @@ test.describe("EMS dashboard", () => {
     await page.getByTestId("nav-system").click();
     await expect(page.getByTestId("model-health")).toBeVisible();
 
-    await expect(page.getByTestId("health-solar")).toContainText("Needs a look");
-    await expect(page.getByTestId("health-note-solar")).toContainText("Solar forecast bias");
+    // Sentence-case "Check", not the shouty "NEEDS A LOOK" chip.
+    await expect(page.getByTestId("health-solar")).toContainText("Check");
+    await expect(page.getByTestId("health-solar")).not.toContainText("Needs a look");
+    // Primary line = plain verdict (bias_w = -300 -> over-predicted -> "ran hot"); the technical
+    // threshold text moves to a title tooltip instead of appearing as visible wall-of-text.
+    const solarNote = page.getByTestId("health-note-solar");
+    await expect(solarNote).toContainText("Forecasts ran hot by ~300 W");
+    await expect(solarNote).not.toContainText("beyond 25%");
+    await expect(solarNote).toHaveAttribute("title", /beyond 25% of typical output/);
+    // The new B-37 ACTION line: what to actually do, not just the diagnosis.
+    await expect(page.getByTestId("health-action-solar")).toContainText(
+      "solar forecast advisor in Settings → Planner",
+    );
     await expect(page.getByTestId("health-load")).toContainText("Working well");
+    await expect(page.getByTestId("health-action-load")).toHaveCount(0); // only warn rows get one
     // The unmeasurable track reads as an honest, non-alarming empty state, not a false OK/warn.
     await expect(page.getByTestId("health-plan_execution")).toContainText("Still collecting evidence");
     await expect(page.getByTestId("health-note-plan_execution")).toHaveCount(0);
+    await expect(page.getByTestId("health-action-plan_execution")).toHaveCount(0);
     await expect(page.getByTestId("model-health-summary")).toContainText(
       "safe planning continues",
     );
+  });
+
+  test("Model health panel: plan-execution and load warn rows show their B-37 action lines (mocked)", async ({
+    page,
+  }) => {
+    await page.route("**/api/accuracy", (route) =>
+      route.fulfill({
+        status: 200, contentType: "application/json",
+        body: JSON.stringify({
+          solar: { bias_w: -12.0, n_slots: 300 },
+          load: { mape_pct: 55.0, n_hours: 120 },
+          plan_execution: { hit_rate_pct: 40.0, n_deadlines: 10 },
+          health: {
+            solar: "ok", load: "warn", plan_execution: "warn",
+            notes: [
+              "Household load has been harder to predict than a simple weekly baseline lately.",
+              "The plan has been missing its SoC-by-deadline targets more than expected.",
+            ],
+          },
+        }),
+      }),
+    );
+    await page.goto("/");
+    await page.getByTestId("nav-system").click();
+    await expect(page.getByTestId("model-health")).toBeVisible();
+
+    // Load: no dial to tune, so the action stays in "collecting evidence" register, not a command.
+    await expect(page.getByTestId("health-load")).toContainText("Check");
+    await expect(page.getByTestId("health-action-load")).toContainText(
+      "more weeks of your routine are recorded",
+    );
+    // Plan-execution: points at a concrete place to look.
+    await expect(page.getByTestId("health-plan_execution")).toContainText("Check");
+    await expect(page.getByTestId("health-action-plan_execution")).toContainText("Audit log");
   });
 
   test("Model health panel's empty state reads 'still collecting evidence', never alarming (mocked)", async ({
@@ -1035,8 +1117,32 @@ test.describe("EMS dashboard", () => {
       await expect(page.getByTestId(row)).toContainText("Still collecting evidence");
     }
     await expect(page.locator('[data-testid^="health-note-"]')).toHaveCount(0);
+    await expect(page.locator('[data-testid^="health-action-"]')).toHaveCount(0);
     // Never a false-positive OK or an alarming warn word when there's no evidence yet.
     await expect(page.getByTestId("model-health")).not.toContainText("Needs a look");
+    await expect(page.getByTestId("model-health")).not.toContainText("Check");
+  });
+
+  test("Model health panel's backups row nudges toward tonight's maintenance when never run (mocked)", async ({
+    page,
+  }) => {
+    // diagnosticsFixture() defaults to last_backup_ts: null (never run).
+    await page.route("**/api/diagnostics", (route) =>
+      route.fulfill({
+        status: 200, contentType: "application/json", body: JSON.stringify(diagnosticsFixture()),
+      }),
+    );
+    await page.route("**/api/accuracy", (route) =>
+      route.fulfill({
+        status: 200, contentType: "application/json", body: JSON.stringify(accuracyFixture()),
+      }),
+    );
+    await page.goto("/");
+    await page.getByTestId("nav-system").click();
+    await expect(page.getByTestId("health-backups")).toContainText("No backup has run yet");
+    await expect(page.getByTestId("health-backups")).toContainText(
+      "first run happens with tonight's maintenance (~03:00)",
+    );
   });
 
   test("the chat answers a question when AI is enabled (mocked)", async ({ page }) => {

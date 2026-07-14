@@ -1358,7 +1358,7 @@ body {
 
 @media (prefers-reduced-motion: reduce) {
   .switch-input, .switch-input::before, .settings-advanced-chevron { transition: none; }
-  .field-highlight, .settings-savebar { animation: none; }
+  .field-highlight, .settings-savebar, .insights-section-nav-bar { animation: none; }
 }
 
 @media (max-width: 700px) {
@@ -1456,6 +1456,11 @@ body {
 .health-status[data-status="unknown"] { color: var(--muted); }
 .health-note {
   grid-column: 1 / -1; font-size: 0.78rem; color: var(--amber-text);
+}
+/* B-37: the ACTION line under a warn row's diagnosis — calmer than the note (muted, not amber),
+   since it's guidance/reassurance rather than the finding itself. */
+.health-action {
+  grid-column: 1 / -1; font-size: 0.78rem; color: var(--muted);
 }
 .health-ops {
   list-style: none; margin: 14px 0 0; padding: 10px 0 0; border-top: 1px solid var(--line);
@@ -1671,6 +1676,31 @@ body {
   max-width: 60ch;
 }
 
+/* Slim sticky in-page section nav — Insights is now a long stack, so this appears (slides down)
+   only once the user has scrolled past the top, the same fixed-bar idiom as .settings-savebar
+   (just flipped to the top edge). Reuses the .nav-btn/.period-btn token language (muted →
+   text-on-active) rather than inventing a new button style. */
+.insights-section-nav-bar {
+  position: fixed; left: 0; right: 0; top: 0; z-index: 30;
+  background: color-mix(in srgb, var(--panel) 92%, transparent);
+  backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px);
+  border-bottom: 1px solid var(--line); box-shadow: 0 6px 20px rgba(0, 0, 0, 0.14);
+  animation: insights-nav-in 0.2s ease both;
+}
+@keyframes insights-nav-in { from { transform: translateY(-100%); } to { transform: translateY(0); } }
+.insights-section-nav-inner {
+  max-width: 920px; margin: 0 auto; padding: 8px 20px;
+  display: flex; align-items: center; gap: 2px; overflow-x: auto;
+}
+.insights-section-nav-item {
+  flex: none; border: none; background: transparent; color: var(--muted); white-space: nowrap;
+  font: inherit; font-size: 0.82rem; font-weight: 600; padding: 6px 12px; border-radius: 999px;
+  cursor: pointer;
+}
+.insights-section-nav-item:hover { color: var(--text); background: var(--panel-2); }
+.insights-section-nav-item:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.insights-section-nav-item[aria-current="true"] { color: var(--text); background: var(--panel-2); }
+
 /* "Your week" digest (BACKLOG B-58 / roadmap P2): the Sunday-read panel at the top of Insights,
    above the score grid. The toggle row IS the one collapsed line (headline text doubles as the
    disclosure label, like .advanced-toggle); the week stepper reuses the existing .day-nav/
@@ -1737,7 +1767,14 @@ body {
   border-radius: var(--radius); padding: 16px 18px; box-shadow: var(--shadow);
 }
 .score-detail { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
-.score-raw { font-size: 0.85rem; color: var(--muted); font-variant-numeric: tabular-nums; }
+/* One consistent anatomy per card: ring | headline word | trend chip | ONE detail line.
+   .score-headline echoes .sc-caption's role in the home pill (short, bold, band-coloured) so
+   the same "how am I doing" read appears the same way on both surfaces. */
+.score-headline { font-size: 0.92rem; font-weight: 700; line-height: 1.25; margin: 0; }
+.score-good .score-headline { color: var(--green-text); }
+.score-ok .score-headline { color: var(--amber-text); }
+.score-low .score-headline { color: var(--error); }
+.score-na .score-headline { color: var(--muted); }
 .score-explain { font-size: 0.82rem; color: var(--text); margin: 0; line-height: 1.4; }
 /* B-06: period-over-period trend chip. Calm on purpose — a worse score is muted amber, never the
    alarm-red used for warnings elsewhere; "same" stays fully muted. */
@@ -1877,7 +1914,10 @@ body {
 .ring-name {
   font-size: 0.68rem; color: var(--muted); font-weight: 500;
   max-width: 80px; text-align: center; line-height: 1.12;
-  overflow-wrap: anywhere; hyphens: auto;
+  /* No forced/auto hyphenation — it broke "Self-consumption" mid-word into "Self-consump-tion"
+     in production. Labels wrap at existing word/hyphen boundaries only (ringLabel() in
+     scoreCopy.ts also shortens the tightest ones, e.g. "Self-use" for the ring specifically). */
+  overflow-wrap: normal; word-break: normal; hyphens: none;
 }
 .ring-caption {
   font-size: 0.74rem; font-weight: 500; color: var(--muted);

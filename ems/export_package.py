@@ -91,12 +91,23 @@ def incident_rollup(audit_rows: list[dict]) -> dict:
 
     Each row is classified by scanning its `summary` + `detail` text (case-insensitive) against
     `_INCIDENT_TYPES`, in order; a row counts once, under the first type that matches. Rows
-    matching none are not incidents and are ignored. Pure — no clock, no I/O; `last_7_days` is
-    computed relative to the newest incident found in the data, not wall-clock time.
+    matching none are not incidents and are ignored. Pure — no clock, no I/O; `last_7_days` /
+    `by_type_last_7_days` are computed relative to the newest incident found in the data, not
+    wall-clock time.
+
+    Two by-type breakdowns, over two DIFFERENT windows — this is deliberate, not an oversight:
+    `by_type` covers the FULL set of rows handed in (whatever window the caller fetched — the
+    export manifest looks back up to 5000 rows, so this can span months); `by_type_last_7_days` is
+    the SAME breakdown restricted to the same trailing-7-day window as `last_7_days`. A UI that
+    shows a "N incidents in the last 7 days" headline MUST pair it with `by_type_last_7_days` (see
+    the System panel) — pairing that headline with the full-window `by_type` is the bug this
+    dual-window shape fixes (headline said 15, the by-type rows summed to 28). The export manifest
+    keeps both, clearly labelled (see `validation_summary`/README), since a reviewer wants the
+    full-window rollup too.
     """
     by_type: dict[str, int] = {}
     by_day: dict[str, int] = {}
-    incident_ts: list[str] = []
+    incidents: list[tuple[str, str]] = []  # (itype, ts) — only rows with a usable timestamp
     for row in audit_rows:
         summary = row.get("summary") or ""
         detail = row.get("detail") or ""
@@ -108,20 +119,30 @@ def incident_rollup(audit_rows: list[dict]) -> dict:
         text = f"{summary} {detail_text}".lower().replace("-", "")
         for itype, keywords in _INCIDENT_TYPES:
             if any(kw in text for kw in keywords):
-                by_type[itype] = by_type.get(itype, 0) + 1
                 ts = row.get("ts")
-                if ts:
-                    by_day[ts[:10]] = by_day.get(ts[:10], 0) + 1
-                    incident_ts.append(ts)
+                if not ts:
+                    break  # can't place it on a day/window — not counted anywhere
+                by_type[itype] = by_type.get(itype, 0) + 1
+                by_day[ts[:10]] = by_day.get(ts[:10], 0) + 1
+                incidents.append((itype, ts))
                 break
-    if not incident_ts:
-        return {"total": 0, "by_type": {}, "by_day": {}, "most_recent": None, "last_7_days": 0}
-    most_recent = max(incident_ts)
+    if not incidents:
+        return {
+            "total": 0, "by_type": {}, "by_type_last_7_days": {}, "by_day": {},
+            "most_recent": None, "last_7_days": 0,
+        }
+    most_recent = max(ts for _, ts in incidents)
     newest_day = most_recent[:10]
-    last_7_days = sum(1 for ts in incident_ts if _days_between(ts[:10], newest_day) <= 7)
+    by_type_last_7_days: dict[str, int] = {}
+    last_7_days = 0
+    for itype, ts in incidents:
+        if _days_between(ts[:10], newest_day) <= 7:
+            by_type_last_7_days[itype] = by_type_last_7_days.get(itype, 0) + 1
+            last_7_days += 1
     return {
-        "total": len(incident_ts),
+        "total": len(incidents),
         "by_type": by_type,
+        "by_type_last_7_days": by_type_last_7_days,
         "by_day": by_day,
         "most_recent": most_recent,
         "last_7_days": last_7_days,
@@ -278,6 +299,11 @@ health check of production operation. All timestamps are **UTC, ISO-8601**. All 
   (run mode, planner settings, data quality, recorder health). No tokens, IPs or location.
   `manifest.incidents` summarises control-health events from the audit log (command failures,
   cluster mismatches, fallbacks, reverts) — a rollup, not a replacement for `audit_log.csv`.
+  It carries two by-type breakdowns over two different windows, labelled explicitly so they're
+  never confused: `by_type` is the FULL window this export covers; `by_type_last_7_days` is the
+  same breakdown restricted to the trailing 7 days that `last_7_days` already counts (the same
+  windowing the System page's dashboard panel uses, so its headline and its by-type rows always
+  describe the same period).
   `manifest.ev` carries the config needed to replay the charging algorithm against
   `ev_sessions.csv`: the weekly `schedule`, `car_id`, `battery_kwh`, `charger_kw`,
   `charge_efficiency`, `advice_enabled`, and the manual `soc_anchor` (`{"pct", "ts"}` or `null` if
@@ -457,6 +483,8 @@ def validation_summary(
     incidents = validation.get("incidents") or {}
     by_type = incidents.get("by_type") or {}
     by_type_text = ", ".join(f"{k}={v}" for k, v in by_type.items()) if by_type else "none"
+    by_type_7d = incidents.get("by_type_last_7_days") or {}
+    by_type_7d_text = ", ".join(f"{k}={v}" for k, v in by_type_7d.items()) if by_type_7d else "none"
     saved = "—" if saved_total_eur is None else f"€{saved_total_eur:.2f}"
     lines = [
         "EMS export — validation summary",
@@ -482,7 +510,12 @@ def validation_summary(
         f"  Total:          {incidents.get('total', 0)} "
         f"(last 7 days: {incidents.get('last_7_days', 0)})",
         f"  Most recent:    {incidents.get('most_recent') or '—'}",
-        f"  By type:        {by_type_text}",
+        # Two windows, labelled explicitly: the full window this export covers, and the same
+        # trailing 7 days the "Total (last 7 days: N)" line above already refers to. Never mix
+        # the two on one line — that mismatch (headline vs. a differently-windowed breakdown) is
+        # exactly the trust bug this labelling fixes.
+        f"  By type (full window):   {by_type_text}",
+        f"  By type (last 7 days):   {by_type_7d_text}",
         *_forecast_skill_lines(forecast_skill, solar_confidence_advice),
         *_prediction_accuracy_lines(plan_execution_error, load_baseline_error),
         *_ev_charging_lines(ev_price_adherence),

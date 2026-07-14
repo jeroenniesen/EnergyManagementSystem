@@ -25,6 +25,10 @@ type Diag = {
 type IncidentRollup = {
   total: number;
   by_type: Record<string, number>;
+  // Windowed the SAME as `last_7_days` — the System panel's breakdown reads THIS, never
+  // `by_type` (full audit window), so the headline count and the by-type rows always describe
+  // the same period. `by_type` (full window) is still carried for the export manifest.
+  by_type_last_7_days: Record<string, number>;
   by_day: Record<string, number>;
   most_recent: string | null;
   last_7_days: number;
@@ -71,6 +75,31 @@ function headlineFor(row: keyof Omit<ModelHealth, "notes">, acc: Accuracy): stri
   const v = acc.plan_execution?.hit_rate_pct;
   return v == null ? null : `${v}% hit rate`;
 }
+
+// A plain verdict for the solar row (B-37): replaces the technical diagnosis as the visible
+// primary line — the threshold text ("beyond 25% ... fewer than 60%...") moves to a title
+// tooltip (see the health-note rendering below) instead of reading as a wall of jargon.
+// `bias_w` is mean(actual − expected) (ems/analysis.py forecast_error) over the last ~14 days:
+// negative means the forecast over-promised ("ran hot"), positive means it under-promised
+// ("ran cool").
+function solarVerdict(biasW: number | null | undefined): string | null {
+  if (biasW == null) return null;
+  const mag = Math.round(Math.abs(biasW));
+  return `Forecasts ran ${biasW < 0 ? "hot" : "cool"} by ~${mag} W these two weeks`;
+}
+
+// B-37: each warn row gets a short ACTION line, not just a diagnosis. Solar and plan-execution
+// point at something concrete to check; load has no dial to tune (household routines just vary),
+// so its copy stays in the same honest "still collecting evidence" register the unknown state
+// already uses, rather than inventing a fix.
+const HEALTH_ACTION: Record<keyof Omit<ModelHealth, "notes">, string> = {
+  solar: "Check the solar forecast advisor in Settings → Planner — it suggests a calibrated "
+    + "setting.",
+  load: "This usually settles as more weeks of your routine are recorded — no setting to change, "
+    + "just more evidence.",
+  plan_execution: "Often caused by weeks with manual overrides or missed cheap windows — see the "
+    + "Audit log; recovery now catches these.",
+};
 
 function healthSummary(health: ModelHealth): string {
   const states = [health.solar, health.load, health.plan_execution];
@@ -271,7 +300,7 @@ export function SystemView() {
                 {incidents.most_recent ? when(incidents.most_recent) : "unknown"}
               </p>
               <ul className="incident-types" data-testid="incident-types">
-                {Object.entries(incidents.by_type).map(([type, count]) => (
+                {Object.entries(incidents.by_type_last_7_days).map(([type, count]) => (
                   <li key={type} className="incident-type-row">
                     <span className="incident-type-label">
                       {INCIDENT_TYPE_LABEL[type] ?? type}
@@ -300,6 +329,15 @@ export function SystemView() {
               const status = accuracy.health[row];
               const note = status === "warn" ? noteForRow(accuracy.health, row) : null;
               const headline = status === "unknown" ? null : headlineFor(row, accuracy);
+              // Solar's note gets softened to a plain verdict; the raw technical note becomes a
+              // hover tooltip instead of visible text. Load/plan-execution notes are already
+              // plain-language, so they render as-is.
+              const verdict =
+                row === "solar" && status === "warn"
+                  ? solarVerdict(accuracy.solar?.bias_w)
+                  : null;
+              const displayNote = verdict ?? note;
+              const noteTooltip = verdict ? (note ?? undefined) : undefined;
               return (
                 <li
                   key={row}
@@ -312,9 +350,18 @@ export function SystemView() {
                   <span className="health-status" data-status={status}>
                     {HEALTH_STATUS[status]?.label ?? status}
                   </span>
-                  {note && (
-                    <span className="health-note" data-testid={`health-note-${row}`}>
-                      {note}
+                  {displayNote && (
+                    <span
+                      className="health-note"
+                      data-testid={`health-note-${row}`}
+                      title={noteTooltip}
+                    >
+                      {displayNote}
+                    </span>
+                  )}
+                  {status === "warn" && (
+                    <span className="health-action" data-testid={`health-action-${row}`}>
+                      {HEALTH_ACTION[row]}
                     </span>
                   )}
                 </li>
@@ -329,7 +376,8 @@ export function SystemView() {
                 {diag.storage?.backup?.last_backup_ts
                   ? `${when(diag.storage.backup.last_backup_ts)} — ` +
                     (diag.storage.backup.last_backup_ok ? "ok" : "failed")
-                  : "No backup has run yet"}
+                  : "No backup has run yet — first run happens with tonight's maintenance " +
+                    "(~03:00)"}
               </span>
             </li>
             <li className="health-ops-row" data-testid="health-clamped-samples">

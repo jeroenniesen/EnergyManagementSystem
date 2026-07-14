@@ -8,7 +8,7 @@ import { EnergyBehavior, type SeriesBucket } from "./EnergyBehavior";
 import { FinanceSection } from "./FinanceSection";
 import { HeatingAdvice } from "./HeatingAdvice";
 import { scoreBand, ScoreRing } from "./ScoreRing";
-import { scoreCaption } from "./scoreCopy";
+import { ringLabel, scoreCaption, splitExplanation } from "./scoreCopy";
 import { WeekDigest } from "./WeekDigest";
 import { WhatIf } from "./WhatIf";
 
@@ -95,13 +95,6 @@ function trendLabel(trend: Trend, period: Period): string {
   return `· same as last ${period}`;
 }
 
-function rawText(s: Score): string {
-  if (s.raw == null) return "";
-  if (s.unit === "kg") return `${s.raw.toFixed(1)} kg CO₂`;
-  if (s.unit === "€/kWh") return `€${s.raw.toFixed(2)} / kWh avg import`;
-  return `${s.raw} ${s.unit}`;
-}
-
 // A warm one-line summary of the window, synthesised from the flows + scores (goal A: motivation).
 // Day-just-starting (period=day, window still in progress, <1 kWh measured): a night reading is
 // not a verdict — "You ran 0%… cut 0%…" at 00:30 read as failure in production. Calm line instead.
@@ -127,6 +120,121 @@ function FlowRow({ color, label, val }: { color: string; label: string; val: num
       <span className="flow-name">{label}</span>
       <span className="flow-kwh">{kwh(val)}</span>
     </div>
+  );
+}
+
+// The score card's ONE detail line (first sentence of the score's explanation, always shown) +
+// the remainder behind a "More" disclosure — the exact same progressive-disclosure idiom
+// Settings' field help uses (splitHelp/FieldHelp: first sentence always visible, the rest one
+// tap away), reused here so a two-sentence score (e.g. CO₂ with a gas footnote) doesn't read as
+// a wall of text next to a one-sentence score (production screenshot finding). The full
+// explanation is ALSO available without tapping, via the ring's own hover tooltip.
+function ScoreDetailLine({ text, testId }: { text: string; testId: string }) {
+  const { first, rest } = splitExplanation(text);
+  const [open, setOpen] = useState(false);
+  if (!rest) {
+    return (
+      <p className="score-explain" data-testid={testId}>
+        {first}
+      </p>
+    );
+  }
+  return (
+    <p className="score-explain" data-testid={testId}>
+      {first}
+      {open ? ` ${rest}` : ""}{" "}
+      <button
+        type="button"
+        className="help-more"
+        aria-expanded={open}
+        onClick={() => setOpen((v) => !v)}
+      >
+        {open ? "Less" : "More"}
+      </button>
+    </p>
+  );
+}
+
+// Slim sticky in-page section nav (roadmap: Insights is now a long stack — digest, scores,
+// behavior, flows, gas, heating, finance, what-if). Appears only once the user has scrolled past
+// the top of the page (a fixed bar sliding in, the same idiom as Settings' sticky save bar —
+// see .settings-savebar — just flipped to the top), and tracks which section is currently under
+// the bar via `aria-current`. Never touches `window.location.hash` — App.tsx's hash router treats
+// any unrecognised fragment as "dashboard" (see viewFromHash), so a real `href="#id"` anchor would
+// silently navigate the WHOLE APP away from Insights; scrollIntoView keeps this purely in-page.
+type NavSection = { id: string; label: string };
+
+function useSectionNav(sections: NavSection[]): { activeId: string | null; visible: boolean } {
+  const [activeId, setActiveId] = useState<string | null>(null);
+  const [visible, setVisible] = useState(false);
+  const key = sections.map((s) => s.id).join("|");
+
+  useEffect(() => {
+    if (sections.length === 0) {
+      setVisible(false);
+      setActiveId(null);
+      return;
+    }
+    function onScroll() {
+      setVisible(window.scrollY > 280);
+      // The section whose top has scrolled up past the bar's height "owns" the current view.
+      let current = sections[0].id;
+      for (const s of sections) {
+        const el = document.getElementById(s.id);
+        if (el && el.getBoundingClientRect().top <= 96) current = s.id;
+      }
+      // The LAST section can be too short to ever scroll its own top past the 96px line (nothing
+      // below it to scroll further into) — once the page is scrolled to its bottom, that section
+      // is unambiguously the one in view, regardless of where its top sits.
+      const atBottom =
+        window.innerHeight + window.scrollY >= document.documentElement.scrollHeight - 4;
+      if (atBottom) current = sections[sections.length - 1].id;
+      setActiveId(current);
+    }
+    onScroll();
+    window.addEventListener("scroll", onScroll, { passive: true });
+    window.addEventListener("resize", onScroll);
+    return () => {
+      window.removeEventListener("scroll", onScroll);
+      window.removeEventListener("resize", onScroll);
+    };
+    // `key` (the joined id list) is the real dependency — it changes exactly when `sections`'
+    // content changes, and the effect closes over the current `sections` from this render.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [key]);
+
+  return { activeId, visible };
+}
+
+function scrollToSection(id: string) {
+  const el = document.getElementById(id);
+  if (!el) return;
+  const reduce = window.matchMedia?.("(prefers-reduced-motion: reduce)").matches;
+  el.scrollIntoView({ behavior: reduce ? "auto" : "smooth", block: "start" });
+}
+
+function SectionNav({ sections, activeId }: { sections: NavSection[]; activeId: string | null }) {
+  return (
+    <nav
+      className="insights-section-nav-bar"
+      aria-label="Jump to section"
+      data-testid="insights-section-nav"
+    >
+      <div className="insights-section-nav-inner">
+        {sections.map((s) => (
+          <button
+            key={s.id}
+            type="button"
+            className="insights-section-nav-item"
+            data-testid={`insights-nav-${s.id.replace("insights-sec-", "")}`}
+            aria-current={activeId === s.id ? "true" : undefined}
+            onClick={() => scrollToSection(s.id)}
+          >
+            {s.label}
+          </button>
+        ))}
+      </div>
+    </nav>
   );
 }
 
@@ -217,9 +325,27 @@ export function Insights() {
   const f = report?.flows;
   const hasData = !!f && f.has_data;
 
+  // Which sections actually exist right now (Gas only when the report has gas data; everything
+  // past "Week" needs hasData) — the nav only ever links to something that's really on the page.
+  // Ordered to match the page's actual top-to-bottom order (Gas sits before Money in the stack
+  // today — see the "no reordering" note below) so the active-section scan and each tap's
+  // direction stay sane.
+  const sections: NavSection[] = [{ id: "insights-sec-week", label: "Week" }];
+  if (report && hasData && f) {
+    sections.push({ id: "insights-sec-scores", label: "Scores" });
+    sections.push({ id: "insights-sec-energy", label: "Energy" });
+    if (report.gas) sections.push({ id: "insights-sec-gas", label: "Gas" });
+    sections.push({ id: "insights-sec-money", label: "Money" });
+    sections.push({ id: "insights-sec-whatif", label: "What-if" });
+  }
+  const { activeId, visible } = useSectionNav(sections);
+
   return (
     <section className="insights" data-testid="insights" aria-label="Insights and reporting">
-      <WeekDigest />
+      {visible && sections.length > 1 && <SectionNav sections={sections} activeId={activeId} />}
+      <div id="insights-sec-week">
+        <WeekDigest />
+      </div>
       <div className="insights-head">
         <div>
           <h2 className="card-title">Insights</h2>
@@ -284,10 +410,23 @@ export function Insights() {
               {headline(report, f, isEarlyDay(period, report, f))}
             </p>
           )}
-          <div className={`score-grid${loading ? " is-loading" : ""}`} data-testid="score-grid">
+          {/* One consistent anatomy per card (B-37-style): ring | headline word | trend chip |
+              ONE detail line. The full explanation lives behind the ring's own hover tooltip AND
+              a "More" disclosure on the detail line (Settings' field-help idiom) — never as a
+              second/third paragraph, so a two-sentence score (CO₂ with a gas footnote) doesn't
+              tower over a one-sentence score (production screenshot: wall-of-text vs. an
+              almost-empty card side by side). */}
+          <div
+            id="insights-sec-scores"
+            className={`score-grid${loading ? " is-loading" : ""}`}
+            data-testid="score-grid"
+          >
             {report.scores.map((s) => {
               const early = isEarlyDay(period, report, f);
               const value = early ? null : s.value;
+              const headlineWord = early ? "Waiting for the sun" : (scoreCaption(s.key, s.value) ?? "—");
+              const trend = early ? null : scoreTrend(s, prevReport);
+              const detailText = early ? "Scores build as the day fills in." : s.explanation;
               return (
               <div
                 key={s.key}
@@ -305,69 +444,68 @@ export function Insights() {
               >
                 <ScoreRing
                   value={value}
-                  label={s.label}
-                  caption={early ? "Waiting for the sun" : scoreCaption(s.key, s.value)}
+                  label={ringLabel(s.key, s.label)}
+                  hint={early ? undefined : s.explanation}
                   size={116}
                   testId={`score-${s.key}-value`}
                 />
                 <div className="score-detail">
-                  {!early && s.raw != null && s.unit !== "%" && (
-                    <div className="score-raw">{rawText(s)}</div>
-                  )}
-                  {!early && (() => {
-                    const trend = scoreTrend(s, prevReport);
-                    if (!trend) return null;
-                    return (
-                      <div
-                        className={`score-trend score-trend-${trend.dir}`}
-                        data-testid={`score-${s.key}-trend`}
-                      >
-                        {trendLabel(trend, period)}
-                      </div>
-                    );
-                  })()}
-                  <p className="score-explain">
-                    {early ? "Scores build as the day fills in." : s.explanation}
+                  <p className="score-headline" data-testid={`score-${s.key}-headline`}>
+                    {headlineWord}
                   </p>
+                  {trend && (
+                    <div
+                      className={`score-trend score-trend-${trend.dir}`}
+                      data-testid={`score-${s.key}-trend`}
+                    >
+                      {trendLabel(trend, period)}
+                    </div>
+                  )}
+                  <ScoreDetailLine text={detailText} testId={`score-${s.key}-line`} />
                 </div>
               </div>
               );
             })}
           </div>
 
-          {report.series && (
-            <EnergyBehavior buckets={report.series} period={period} partial={report.partial} />
-          )}
-
-          <div className="flow-report" data-testid="flow-report">
-            <h3 className="card-title flow-title">
-              Where your energy went{report.partial ? " (so far)" : ""}
-            </h3>
-            <div className="flow-cols">
-              <div className="flow-col">
-                <div className="flow-col-head">Came from</div>
-                <FlowRow color="var(--summer)" label="Solar" val={f.solar_kwh} />
-                <FlowRow color="var(--winter)" label="Grid" val={f.grid_import_kwh} />
-                <FlowRow color="var(--accent)" label="Battery" val={f.battery_discharge_kwh} />
-              </div>
-              <div className="flow-col">
-                <div className="flow-col-head">Went to</div>
-                <FlowRow color="var(--text)" label="House" val={f.home_kwh} />
-                <FlowRow color="var(--text)" label="Car" val={f.car_kwh} />
-                <FlowRow color="var(--winter)" label="Exported" val={f.grid_export_kwh} />
-                <FlowRow color="var(--accent)" label="Battery charged" val={f.battery_charge_kwh} />
-              </div>
-            </div>
-            {f.car_guard_leak_kwh > 0.05 && (
-              <p className="flow-warn" data-testid="leak-warn">
-                ⚠ {kwh(f.car_guard_leak_kwh)} went from the battery into the car — the car-guard
-                should prevent this.
-              </p>
+          <div id="insights-sec-energy">
+            {report.series && (
+              <EnergyBehavior buckets={report.series} period={period} partial={report.partial} />
             )}
+
+            <div className="flow-report" data-testid="flow-report">
+              <h3 className="card-title flow-title">
+                Where your energy went{report.partial ? " (so far)" : ""}
+              </h3>
+              <div className="flow-cols">
+                <div className="flow-col">
+                  <div className="flow-col-head">Came from</div>
+                  <FlowRow color="var(--summer)" label="Solar" val={f.solar_kwh} />
+                  <FlowRow color="var(--winter)" label="Grid" val={f.grid_import_kwh} />
+                  <FlowRow color="var(--accent)" label="Battery" val={f.battery_discharge_kwh} />
+                </div>
+                <div className="flow-col">
+                  <div className="flow-col-head">Went to</div>
+                  <FlowRow color="var(--text)" label="House" val={f.home_kwh} />
+                  <FlowRow color="var(--text)" label="Car" val={f.car_kwh} />
+                  <FlowRow color="var(--winter)" label="Exported" val={f.grid_export_kwh} />
+                  <FlowRow color="var(--accent)" label="Battery charged" val={f.battery_charge_kwh} />
+                </div>
+              </div>
+              {f.car_guard_leak_kwh > 0.05 && (
+                <p className="flow-warn" data-testid="leak-warn">
+                  ⚠ {kwh(f.car_guard_leak_kwh)} went from the battery into the car — the car-guard
+                  should prevent this.
+                </p>
+              )}
+            </div>
           </div>
 
+          {/* Page order stays exactly as it was (Gas before Money) — a restructure of the stack
+              is a separate loop's job; the nav below is ordered to MATCH this actual order so
+              the active-section tracking and the "next" direction of each tap stay sane. */}
           {report.gas && (
-            <>
+            <div id="insights-sec-gas">
               <GasPanel gas={report.gas} partial={report.partial} />
               <HeatingAdvice
                 gas={report.gas}
@@ -376,11 +514,16 @@ export function Insights() {
                 windowStart={report.window_start}
                 windowEnd={report.window_end}
               />
-            </>
+            </div>
           )}
 
-          <FinanceSection period={period} anchor={anchor} />
-          <WhatIf />
+          <div id="insights-sec-money">
+            <FinanceSection period={period} anchor={anchor} />
+          </div>
+
+          <div id="insights-sec-whatif">
+            <WhatIf />
+          </div>
         </>
       )}
     </section>
