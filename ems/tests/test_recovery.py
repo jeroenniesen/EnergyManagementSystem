@@ -185,9 +185,9 @@ CAP = CapabilityReport(services=("charge", "discharge"), energy_mode_options=(),
 def _project(plan, soc):
     model = BatteryModel(usable_kwh=USABLE, max_charge_w=MAX_CHARGE_W, max_discharge_w=MAX_CHARGE_W,
                          round_trip_efficiency=RTE, reserve_soc_pct=RESERVE)
-    load_by = {s.start: 200.0 for s in plan.slots}  # light overnight load
+    load_by = {s.start: 0.0 for s in plan.slots}  # isolate charge reachability
     return project_energy(plan.slots, start_soc_pct=soc, solar_w_by={}, load_w_by=load_by,
-                          model=model, charge_target_soc_pct=None)
+                         model=model, charge_target_soc_pct=plan.target_soc)
 
 
 def _validate(plan, soc):

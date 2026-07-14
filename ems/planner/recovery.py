@@ -176,6 +176,13 @@ def build_catch_up_plan(
     returning MISSED). Pure — the caller validates, audits and installs the result."""
     assert plan.target_soc is not None and plan.deadline is not None
     target, deadline = plan.target_soc, plan.deadline
+    # A winter plan may cover several peaks while retaining the first peak as its
+    # plan-level deadline.  Recovery must retain the full horizon so cheap valley
+    # slots between peaks are not discarded.
+    discharge_starts = [s.start for s in plan.slots
+                        if s.intent is BatteryIntent.DISCHARGE_FOR_LOAD]
+    if discharge_starts:
+        deadline = max(deadline, max(discharge_starts))
     reserve = max(0.0, reserve_soc_pct)
 
     slot_kwh = stored_kwh_per_slot(max_charge_w, round_trip_efficiency)
@@ -185,9 +192,18 @@ def build_catch_up_plan(
     # Candidate slots: still ahead (slot_end > now), before the deadline, and NOT a peak the plan is
     # discharging into. Cheapest first, ties by earliest start (deterministic).
     discharging = {s.start for s in plan.slots if s.intent is BatteryIntent.DISCHARGE_FOR_LOAD}
+    # Never buy above the price of the peak being shaved (grossed up for round-trip
+    # losses).  The normal planner tightens this ceiling further for wear/risk;
+    # this conservative local equivalent prevents recovery from buying at a loss.
+    discharge_prices = [p.eur_per_kwh for p in prices if p.start in discharging]
+    max_buy = (min(discharge_prices) * round_trip_efficiency
+               if discharge_prices else float("inf"))
+    executable_starts = {s.start for s in plan.slots}
     candidates = sorted(
         (p for p in prices
-         if p.start + SLOT > now and p.start < deadline and p.start not in discharging),
+         if p.start + SLOT > now and p.start < deadline and p.start not in discharging
+         and p.start in executable_starts
+         and p.eur_per_kwh <= max_buy),
         key=lambda p: (p.eur_per_kwh, p.start),
     )
 
@@ -270,7 +286,16 @@ def recover_if_needed(
     exactly the failure the §8.11 B-22 gate also declines to touch for summer plans. Recovery never
     re-picks the season, so the §8.4 hysteresis counter is untouched."""
     status = check_charge_completion(plan, now, soc_pct, margin_pp=margin_pp)
-    if not enabled or not status.needs_recovery or plan.strategy != "winter":
+    # A missed diagnosis is still useful for audit, but there is no safe recovery
+    # once the applicable (latest, for multi-peak plans) deadline has passed.
+    effective_deadline = plan.deadline
+    if effective_deadline is not None:
+        peak_starts = [s.start for s in plan.slots
+                       if s.intent is BatteryIntent.DISCHARGE_FOR_LOAD]
+        if peak_starts:
+            effective_deadline = max(effective_deadline, max(peak_starts))
+    if (not enabled or not status.needs_recovery or plan.strategy != "winter"
+            or effective_deadline is None or now >= effective_deadline):
         return plan, status, None
     catch_up = build_catch_up_plan(
         plan, now, soc_pct=soc_pct, prices=prices, usable_kwh=usable_kwh,

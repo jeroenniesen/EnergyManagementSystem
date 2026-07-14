@@ -86,6 +86,9 @@ def forecast_error(forecast_rows: list[dict], raw_rows: list[dict]) -> dict:
             "band_coverage_pct": None,
             "actual_solar_kwh": None,
             "forecast_p50_kwh": None,
+            "n_daytime_slots": 0,
+            "daytime_bias_w": None,
+            "daytime_band_coverage_pct": None,
         }
 
     errors = [actual - p50 for actual, _p10, p50, _p90 in matched]
@@ -94,6 +97,9 @@ def forecast_error(forecast_rows: list[dict], raw_rows: list[dict]) -> dict:
     actual_kwh = sum(actual * _DH / 1000.0 for actual, _p10, _p50, _p90 in matched)
     forecast_kwh = sum(p50 * _DH / 1000.0 for _actual, _p10, p50, _p90 in matched)
 
+    daytime = [m for m in matched if m[2] >= _MIN_DAYTIME_W]
+    daytime_errors = [a - p50 for a, _p10, p50, _p90 in daytime]
+    daytime_in_band = sum(1 for a, p10, _p50, p90 in daytime if p10 <= a <= p90)
     return {
         "n_slots": n_slots,
         "bias_w": round(_mean(errors), 1),
@@ -101,6 +107,10 @@ def forecast_error(forecast_rows: list[dict], raw_rows: list[dict]) -> dict:
         "band_coverage_pct": round(in_band / n_slots * 100.0, 1),
         "actual_solar_kwh": round(actual_kwh, 2),
         "forecast_p50_kwh": round(forecast_kwh, 2),
+        "n_daytime_slots": len(daytime),
+        "daytime_bias_w": round(_mean(daytime_errors), 1) if daytime else None,
+        "daytime_band_coverage_pct": (round(daytime_in_band / len(daytime) * 100.0, 1)
+                                      if daytime else None),
     }
 
 
@@ -337,15 +347,27 @@ _LOAD_MAPE_WARN_PCT = 40.0  # household load MAPE beyond this reads as "harder t
 _PLAN_HIT_RATE_WARN_PCT = 70.0  # deadline hit-rate below this reads as "missing targets lately"
 
 
-def _solar_health(solar: dict | None) -> tuple[str, str | None]:
+def _solar_health(solar: dict | None, *, daytime_only: bool = False) -> tuple[str, str | None]:
     """`solar` is `forecast_error()`'s return shape (always a dict, never None, once there's a
     store at all — see `/api/accuracy`). Below `_MIN_SKILL_SLOTS` matched daytime slots there simply
     isn't enough evidence to call it either way — same evidence gate `plan_confidence` already uses
     for its own "still learning your roof" reason — so this reads 'unknown', not a falsely-confident
     'ok'."""
-    if solar is None or (solar.get("n_slots") or 0) < _MIN_SKILL_SLOTS:
+    # Model health is deliberately daytime-only; legacy payloads without daytime evidence are
+    # unknown rather than silently falling back to night-inclusive counts.
+    if (
+        solar is None
+        or (daytime_only and "n_daytime_slots" not in solar)
+        or ((solar.get("n_daytime_slots") if daytime_only else solar.get("n_slots")) or 0)
+        < _MIN_SKILL_SLOTS
+    ):
         return "unknown", None
-    if _solar_bias_or_band_flag(solar):
+    daytime = dict(solar)
+    if daytime_only:
+        daytime["n_slots"] = daytime["n_daytime_slots"]
+        daytime["bias_w"] = daytime.get("daytime_bias_w")
+        daytime["band_coverage_pct"] = daytime.get("daytime_band_coverage_pct")
+    if _solar_bias_or_band_flag(daytime):
         return "warn", (
             f"Solar forecast bias is beyond {_MAX_BIAS_FRACTION * 100:.0f}% of typical output, "
             f"or fewer than {_MIN_BAND_COVERAGE_PCT:.0f}% of readings landed inside its forecast "
@@ -380,7 +402,8 @@ def _plan_execution_health(plan_execution: dict | None) -> tuple[str, str | None
 
 
 def model_health(
-    *, solar: dict | None, load: dict | None, plan_execution: dict | None
+    *, solar: dict | None, load: dict | None, plan_execution: dict | None,
+    daytime_only: bool = False,
 ) -> dict:
     """Synthesize an ok/warn/unknown verdict per accuracy track (BACKLOG B-76) — SYNTHESIS ONLY,
     no new measurement is taken here; the three inputs are exactly `/api/accuracy`'s `solar` /
@@ -392,7 +415,7 @@ def model_health(
     sentence per warn row, in solar/load/plan_execution order (never for "unknown" — that state is
     its own honest, non-alarming "still collecting evidence" story, not a note).
     """
-    solar_status, solar_note = _solar_health(solar)
+    solar_status, solar_note = _solar_health(solar, daytime_only=daytime_only)
     load_status, load_note = _load_health(load)
     plan_status, plan_note = _plan_execution_health(plan_execution)
     return {

@@ -143,17 +143,32 @@ def validate_plan(
     #    logic's job, not a hard reject). Data-quality-aware: only runs on `complete` inputs, so a
     #    missing/stale forecast never triggers it — that path is the data fail-safe's, not ours.
     if (validate_projection and projection and data_quality == "complete"
+            and plan.strategy == "winter"
             and plan.target_soc is not None and plan.deadline is not None
             and any(s.intent in _CHARGE_INTENTS for s in slots)):
-        by_deadline = [p.soc_pct for p in projection if p.start <= plan.deadline]
-        if by_deadline:
-            reached = max(by_deadline)
-            if reached < plan.target_soc - projection_target_margin_pp:
-                when = plan.deadline.strftime("%H:%M")
+        # Check each committed charge window independently.  Winter plans can span
+        # multiple peaks while the plan-level deadline refers to the first one.
+        commitments = {(s.deadline or plan.deadline,
+                        s.target_soc if s.target_soc is not None else plan.target_soc)
+                       for s in slots if s.intent in _CHARGE_INTENTS}
+        for deadline, target in sorted(commitments, key=lambda x: x[0]):
+            # ProjectedSlot.soc_pct is the *end* SoC of its slot.  A slot that
+            # starts at the deadline has not completed by the deadline and must
+            # not count toward reachability.
+            reached_values = [p.soc_pct for p in projection
+                              if p.start + timedelta(minutes=15) <= deadline]
+            if reached_values:
+                # Use the value at the latest projected instant, not the maximum
+                # transient value (which can hide a drop before the deadline).
+                reached = reached_values[-1]
+                if reached >= target - projection_target_margin_pp:
+                    continue
+                when = deadline.strftime("%H:%M")
                 findings.append(Finding(
                     _UNSAFE, "projection_short_of_target",
-                    f"Plan targets {plan.target_soc:.0f}% by {when} but projects only "
+                    f"Plan targets {target:.0f}% by {when} but projects only "
                     f"{reached:.0f}% — the charge windows can't reach it in time."))
+                break
 
     status = (_UNSAFE if any(f.severity == _UNSAFE for f in findings)
               else _WARN if findings else "valid")

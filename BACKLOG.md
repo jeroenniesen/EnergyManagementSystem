@@ -41,7 +41,7 @@ observability (B-24); numbered date-less sprints, Issues+Milestones on GitHub.
 | **E-05 · Quiet motivation** | ⬜ B-06 trends | | ⬜ B-08 markers | B-07 |
 | **E-06 · Trust & guidance** | | ⬜ B-31 marker | | B-09 B-12 B-21 |
 | **E-07 · Consumer-ready commercial product** | 🟨 B-55 settings menu | | | B-32 B-33 B-34 B-35 🟨 B-36 B-37 🟨 B-38 B-39 ✅ B-40 B-41 B-56 B-57 B-58 B-59 B-60 B-61 B-62 |
-| **E-08 · Predictive optimization intelligence** | | | | B-63 B-64 B-65 B-66 B-67 B-68 B-69 B-70 B-71 B-72 B-73 B-74 B-75 B-76 B-77 |
+| **E-08 · Predictive optimization intelligence** | | | | B-63 B-64 B-65 B-66 B-67 B-68 B-69 B-70 B-71 B-72 B-73 B-74 B-75 B-76 B-77 B-78 |
 | *Big levers (pool)* | | | | B-17 B-18 B-19 B-20 B-23 |
 | *Refactoring (pool)* | | | | B-24 B-25 B-26 B-27 B-28 B-29 |
 | *Architecture & platform (pool)* | | | | **P1:** B-42 B-43 B-44 B-52 · B-45 B-46 B-47 B-48 B-49 B-50 B-51 B-53 B-54 |
@@ -276,6 +276,16 @@ Add battery wear cost to charge/discharge decisions so EMS avoids cycling when t
 Recommend reserve levels based on forecast uncertainty, expected overnight demand, tomorrow's solar, current prices, and household comfort preference.
 **Done when:** the app can explain why today's recommended reserve differs from the default.
 **Track:** Pool · E-08 · ⬜
+
+### B-78 · Automatic dynamic reserve adoption — Feature · M
+Optionally apply B-67's daily reserve recommendation automatically after the recommendation-only
+release has built enough evidence. This is a separate, explicit opt-in: retain a user-configured
+hard reserve floor, bound day-to-day changes, explain every adjustment, audit-log it, and revert to
+the last manual reserve whenever forecast/model quality is insufficient or stale.
+**Done when:** an opted-in household can let EMS adjust reserve automatically without crossing its
+hard comfort floor; every adjustment is explainable and reversible; replay plus a multi-week dry-run
+shows no additional reserve breaches versus recommendation-only operation.
+**Track:** Pool · E-08 · ⬜ follow-up to B-67; do not start before B-67 has production evidence.
 
 ### B-68 · Plan confidence score — UX + Feature · S–M
 Show a confidence score for each plan based on data freshness, forecast uncertainty, device health, and planner validation quality.

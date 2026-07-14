@@ -212,6 +212,17 @@ def test_hysteresis_does_not_double_count_within_one_day():
     assert committed == "winter" and state.count == 1  # still just one day counted
 
 
+def test_hysteresis_transient_agreeing_tick_does_not_reset_pending_run():
+    """A same-day signal blip must not erase progress toward a seasonal switch."""
+    state = HysteresisState(committed="winter", last_day="2026-02-28")
+    day = date(2026, 3, 1)
+    _, state = _advance(state, "summer", day)
+    _, state = _advance(state, "winter", day)  # transient agreement, same tick-day
+    assert state.pending == "summer" and state.count == 1
+    _, state = _advance(state, "summer", day + timedelta(days=1))
+    assert state.count == 2
+
+
 def test_hysteresis_state_survives_a_simulated_restart():
     # Build up two steady days, persist (JSON) + rehydrate as a restart would, then the third day
     # still completes the switch — the counter is not lost across a reboot.
