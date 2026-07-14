@@ -155,7 +155,8 @@ def validate_plan(
             # ProjectedSlot.soc_pct is the *end* SoC of its slot.  A slot that
             # starts at the deadline has not completed by the deadline and must
             # not count toward reachability.
-            reached_values = [p.soc_pct for p in projection if p.start + timedelta(minutes=15) <= deadline]
+            reached_values = [p.soc_pct for p in projection
+                              if p.start + timedelta(minutes=15) <= deadline]
             if reached_values:
                 # Use the value at the latest projected instant, not the maximum
                 # transient value (which can hide a drop before the deadline).

@@ -249,8 +249,9 @@ async def _run_recovery(
 ) -> dict | None:
     """Missed-window recovery side effects (SPEC §8.12 / BACKLOG B-16).
 
-    Uses the FRESH (pre-recovery) plan's charge-completion diagnosis and, on a MISSED window, runs the
-    SAME §8.11 validator over the catch-up plan (`validate_fn` — recovery bypasses NOTHING) then
+    Uses the FRESH (pre-recovery) plan's charge-completion diagnosis and, on a MISSED window,
+    runs the SAME §8.11 validator over the catch-up plan (`validate_fn` — recovery bypasses
+    NOTHING) then
     AUDITs ("plan recovered: …") and sends a calm, B-37-style notification — on a full catch-up and
     on an impossible/partial one. Rate-limited to ONE recovery per committed window per day via the
     KV cache. The plan the controller acts on is reshaped separately in `_current_plan` (a pure,
@@ -266,7 +267,8 @@ async def _run_recovery(
         )
     else:
         catch = precomputed_catch
-        status = precomputed_status or check_charge_completion(plan, now, soc_pct, margin_pp=margin_pp)
+        status = (precomputed_status
+                  or check_charge_completion(plan, now, soc_pct, margin_pp=margin_pp))
     if catch is None:  # on-pace / behind (within margin) / complete / not-applicable → nothing
         return None
 

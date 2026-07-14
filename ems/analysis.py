@@ -109,7 +109,8 @@ def forecast_error(forecast_rows: list[dict], raw_rows: list[dict]) -> dict:
         "forecast_p50_kwh": round(forecast_kwh, 2),
         "n_daytime_slots": len(daytime),
         "daytime_bias_w": round(_mean(daytime_errors), 1) if daytime else None,
-        "daytime_band_coverage_pct": round(daytime_in_band / len(daytime) * 100.0, 1) if daytime else None,
+        "daytime_band_coverage_pct": (round(daytime_in_band / len(daytime) * 100.0, 1)
+                                      if daytime else None),
     }
 
 
@@ -354,7 +355,12 @@ def _solar_health(solar: dict | None, *, daytime_only: bool = False) -> tuple[st
     'ok'."""
     # Model health is deliberately daytime-only; legacy payloads without daytime evidence are
     # unknown rather than silently falling back to night-inclusive counts.
-    if solar is None or (daytime_only and "n_daytime_slots" not in solar) or ((solar.get("n_daytime_slots") if daytime_only else solar.get("n_slots")) or 0) < _MIN_SKILL_SLOTS:
+    if (
+        solar is None
+        or (daytime_only and "n_daytime_slots" not in solar)
+        or ((solar.get("n_daytime_slots") if daytime_only else solar.get("n_slots")) or 0)
+        < _MIN_SKILL_SLOTS
+    ):
         return "unknown", None
     daytime = dict(solar)
     if daytime_only:

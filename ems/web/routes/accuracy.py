@@ -63,7 +63,8 @@ def build_router(ctx: AppContext) -> APIRouter:
             load = load_baseline_error(long_raw, tz=ctx.site_tz)
         # B-76: a synthesized ok/warn/unknown verdict per track for the System page's "Model
         # health" panel — pure synthesis of the three tracks above, no new measurement.
-        health = model_health(solar=solar, load=load, plan_execution=plan_execution, daytime_only=True)
+        health = model_health(solar=solar, load=load, plan_execution=plan_execution,
+                              daytime_only=True)
         return {"solar": solar, "plan_execution": plan_execution, "load": load, "health": health}
 
     return router

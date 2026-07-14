@@ -310,7 +310,7 @@ def test_resolve_strategy_threads_hysteresis_across_days():
 
 
 def test_replay_hysteresis_matches_live_same_day_tick_semantics():
-    """Replay callers may evaluate multiple snapshots in a day; transient agreement preserves run."""
+    """Replay may evaluate multiple snapshots in a day; transient agreement preserves the run."""
     cfg = _cfg()
     d = datetime(2026, 3, 1, 12, tzinfo=UTC)
     state = HysteresisState(committed="winter", last_day="2026-02-28")

@@ -173,7 +173,8 @@ def test_projection_gate_checks_each_winter_peak_deadline():
         PlanSlot(T0, BatteryIntent.GRID_CHARGE_TO_TARGET, "first", target_soc=70, deadline=first),
         PlanSlot(T0 + SLOT, BatteryIntent.ALLOW_SELF_CONSUMPTION, "valley"),
         PlanSlot(first, BatteryIntent.ALLOW_SELF_CONSUMPTION, "peak"),
-        PlanSlot(T0 + 3 * SLOT, BatteryIntent.GRID_CHARGE_TO_TARGET, "second", target_soc=88, deadline=second),
+        PlanSlot(T0 + 3 * SLOT, BatteryIntent.GRID_CHARGE_TO_TARGET, "second",
+                 target_soc=88, deadline=second),
     )
     plan = Plan(created_at=T0, slots=slots, strategy="winter", target_soc=88, deadline=first)
     # First peak is reached, second is not; the old plan-level check incorrectly passed.
