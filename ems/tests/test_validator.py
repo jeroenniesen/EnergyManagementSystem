@@ -156,3 +156,38 @@ def test_projection_gate_ignores_non_charge_plan_short_of_target():
     proj = _proj(40.0, 45.0, 50.0, 55.0, 55.0)
     v = validate_plan(plan, projection=proj, **_ctx())
     assert not any(f.code == "projection_short_of_target" for f in v.findings)
+
+
+def test_projection_gate_exempts_summer_charge_plan():
+    plan = _charge_plan(88.0, deadline_slot=4)
+    plan = Plan(created_at=plan.created_at, slots=plan.slots, strategy="summer",
+                target_soc=plan.target_soc, deadline=plan.deadline)
+    v = validate_plan(plan, projection=_proj(40.0, 45.0, 50.0, 55.0, 55.0), **_ctx())
+    assert not any(f.code == "projection_short_of_target" for f in v.findings)
+
+
+def test_projection_gate_checks_each_winter_peak_deadline():
+    first = T0 + 2 * SLOT
+    second = T0 + 5 * SLOT
+    slots = (
+        PlanSlot(T0, BatteryIntent.GRID_CHARGE_TO_TARGET, "first", target_soc=70, deadline=first),
+        PlanSlot(T0 + SLOT, BatteryIntent.ALLOW_SELF_CONSUMPTION, "valley"),
+        PlanSlot(first, BatteryIntent.ALLOW_SELF_CONSUMPTION, "peak"),
+        PlanSlot(T0 + 3 * SLOT, BatteryIntent.GRID_CHARGE_TO_TARGET, "second", target_soc=88, deadline=second),
+    )
+    plan = Plan(created_at=T0, slots=slots, strategy="winter", target_soc=88, deadline=first)
+    # First peak is reached, second is not; the old plan-level check incorrectly passed.
+    projection = _proj(50, 68, 70, 65, 72, 72)
+    v = validate_plan(plan, projection=projection, **_ctx())
+    assert v.status == "unsafe"
+    finding = next(f for f in v.findings if f.code == "projection_short_of_target")
+    assert "88%" in finding.message and "72%" in finding.message
+
+
+def test_projection_margin_is_exactly_five_points():
+    plan = _charge_plan(88.0, deadline_slot=4)
+    # Exactly five points short is allowed; one tenth below is rejected.
+    assert not any(f.code == "projection_short_of_target" for f in
+                   validate_plan(plan, projection=_proj(40, 60, 70, 83, 83), **_ctx()).findings)
+    assert any(f.code == "projection_short_of_target" for f in
+               validate_plan(plan, projection=_proj(40, 60, 70, 82.9, 82.9), **_ctx()).findings)
