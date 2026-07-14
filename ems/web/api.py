@@ -52,7 +52,7 @@ from ems.diagnostics import build_diagnostics, overall_status
 from ems.domain import BatteryIntent, PhysicalMode
 from ems.energy_flow import build_daily_flows
 from ems.ev_advisor import advise_charge_window
-from ems.finance import day_finance
+from ems.finance import day_finance, price_rows_by_local_day, raw_rows_by_local_day
 from ems.freshness import FreshnessTracker
 from ems.lifecycle import OwnershipState
 from ems.load_model import reconstruct
@@ -75,7 +75,14 @@ from ems.planner.strategy import HysteresisState, build_plan, resolve_strategy_h
 from ems.planner.summer import SummerConfig, sunset_after
 from ems.planner.validator import PlanValidation, validate_plan
 from ems.readiness import Readiness, compute_readiness, home_state
-from ems.reporting import build_report, build_series, gas_m3_consumed, gas_summary, resolve_window
+from ems.reporting import (
+    build_report,
+    build_series,
+    build_series_from_daily_energy,
+    gas_m3_consumed,
+    gas_summary,
+    resolve_window,
+)
 from ems.retrospect import build_past_story, past_headline
 from ems.savings import estimate_daily_savings_eur
 from ems.sense import Recorder
@@ -95,7 +102,12 @@ from ems.sources.indevolt import aggregate_soc
 from ems.sources.prices import PriceSlot, PriceSource, current_price
 from ems.storage.audit import AuditStore
 from ems.storage.cache import CacheStore
-from ems.storage.history import HistoryStore
+from ems.storage.history import (
+    OBSERVATION_RETENTION_DAYS,
+    HistoryStore,
+    materialize_daily_energy,
+    materialize_observations,
+)
 from ems.storage.settings import SettingsStore
 from ems.weather import cloud_cover_pct
 from ems.web.context import AppContext, history_row_cap
@@ -330,6 +342,105 @@ async def _run_recovery(
 
     return {"accepted": accepted, "feasible": catch.feasible, "status": status.status,
             "summary": summary}
+
+
+# Canonical day-ahead snapshot dedupe TTL: keyed by the target DATE, so a couple of days comfortably
+# outlives the one evening it guards (a new day is a new key regardless).
+_CANONICAL_DEDUPE_TTL_SECONDS = 48 * 3600.0
+# The learned hour-of-day load profile has no native low/high band, so canonical LOAD rows use a
+# deliberately broad, honest placeholder: expected ±30% (clamped ≥ 0). A calibrated load-forecast
+# band replaces this in a later batch (design §5.2); documented here so the default is explicit.
+_LOAD_BAND_FRACTION = 0.30
+
+
+def _canonical_ledger_rows(
+    *, issued_at: str, tomorrow: date_cls, tz: ZoneInfo, solar_slots: list[Any],
+    solar_source_name: str, load_profile: Any, band: float = _LOAD_BAND_FRACTION,
+) -> list[tuple]:
+    """Pure builder for the canonical (`canonical=1`) day-ahead ledger rows covering EVERY 15-min
+    slot of the NEXT local calendar day (design §4.3).
+
+    The slot grid is generated in UTC across the local day's TRUE span, so it is DST-correct: 96
+    slots normally, 92 on the spring-forward day, 100 on the fall-back day. For each slot we emit a
+    LOAD row from the learned baseline profile (`expected_w`; low/high = expected ±`band`, clamped
+    ≥ 0) and, when the live solar forecast has that exact slot, a SOLAR row (p10/p50/p90). Both
+    carry the true `issued_at`; quality/model_version are NULL (no scorer in this batch)."""
+    day_start = datetime(tomorrow.year, tomorrow.month, tomorrow.day, tzinfo=tz)
+    start_utc = day_start.astimezone(UTC)
+    end_utc = (day_start + timedelta(days=1)).astimezone(UTC)  # DST-correct next local midnight
+    solar_by = {s.start.astimezone(UTC): s for s in solar_slots}
+    rows: list[tuple] = []
+    slot = start_utc
+    while slot < end_utc:
+        slot_iso = slot.isoformat()
+        exp = max(0.0, float(load_profile.expected_w(slot)))
+        low = max(0.0, exp * (1.0 - band))
+        high = exp * (1.0 + band)
+        rows.append(
+            (issued_at, "load", slot_iso, low, exp, high, "baseline_profile", None, None, 1))
+        fc = solar_by.get(slot)
+        if fc is not None:
+            rows.append((issued_at, "solar", slot_iso, float(fc.p10_w), float(fc.p50_w),
+                         float(fc.p90_w), solar_source_name, None, None, 1))
+        slot += timedelta(minutes=15)
+    return rows
+
+
+async def _run_canonical_forecast(
+    store: HistoryStore | None,
+    cache_store: CacheStore | None,
+    now: datetime,
+    tz: ZoneInfo,
+    *,
+    solar_slots: list[Any],
+    solar_source_name: str,
+    load_profile: Any,
+    load_band: float = _LOAD_BAND_FRACTION,
+) -> int | None:
+    """Persist the canonical day-ahead solar + load forecast for tomorrow (design §4.3). Mirrors
+    `_run_weekly_digest`'s shape — a plain, directly-testable gate + dedupe + write, NOT a closure.
+
+    GATE: only fires when local time is in [18:00, 20:00). At/after 18:00 it writes; if that write
+    FAILS it retries every cycle (the dedupe key is set only on success) until 20:00, after which
+    the target day gets NO canonical forecast — it is excluded, never backfilled with hindsight.
+
+    DEDUPE: `ledger:canonical:<tomorrow>` in `cache_store` — once tomorrow's snapshot is written it
+    is skipped for the rest of the evening. `ledger_append`'s first-write-wins is a second safety
+    net. Returns the row count written, or None when it didn't fire (gate closed, deduped, or no
+    store). Never raises — a snapshot hiccup must not take down the notify loop."""
+    if store is None:
+        return None
+    now_local = now.astimezone(tz)
+    if now_local.hour < 18 or now_local.hour >= 20:  # window [18:00, 20:00)
+        return None
+    tomorrow = now_local.date() + timedelta(days=1)
+    dedupe_key = f"ledger:canonical:{tomorrow.isoformat()}"
+    if cache_store is not None:
+        try:
+            if await asyncio.to_thread(cache_store.get, dedupe_key) is not None:
+                return None
+        except Exception:
+            _log.debug("canonical forecast dedupe read failed (non-fatal)", exc_info=True)
+    issued_at = now.astimezone(UTC).isoformat()
+    rows = _canonical_ledger_rows(
+        issued_at=issued_at, tomorrow=tomorrow, tz=tz, solar_slots=solar_slots,
+        solar_source_name=solar_source_name, load_profile=load_profile, band=load_band)
+    try:
+        await store.ledger_append(rows)
+    except Exception:
+        # Write failed — do NOT set the dedupe key, so the next cycle retries (until 20:00).
+        _log.warning("canonical forecast write failed; will retry until 20:00 local (fail-safe)",
+                     exc_info=True)
+        return None
+    if cache_store is not None:
+        try:
+            await asyncio.to_thread(
+                cache_store.set, dedupe_key, issued_at, _CANONICAL_DEDUPE_TTL_SECONDS)
+        except Exception:
+            _log.warning("canonical forecast dedupe write failed (non-fatal)", exc_info=True)
+    _log.info("canonical forecast: wrote %d day-ahead rows (solar+load) for %s",
+              len(rows), tomorrow.isoformat())
+    return len(rows)
 
 
 _recorder_died = _task_died("Recorder")
@@ -1030,6 +1141,32 @@ def create_app(
                         _log.info("history retention: purged %d rows older than %d days",
                                   deleted, history_retention_days)
                 await store.maintain()
+                # Compact long-horizon stores (design §4.1 / B-13): materialize YESTERDAY (local)
+                # into the 15-min observation store + the daily kWh rollup — idempotent upserts, so
+                # a re-run (restart, retry) just overwrites. Observations then purge at their OWN
+                # 400-day horizon, INDEPENDENTLY of raw retention_days; daily_energy is never purged
+                # (that is the point — year-over-year kWh survives the raw purge).
+                now_local = datetime.now(UTC).astimezone(site_tz)
+                y = now_local.date() - timedelta(days=1)
+                day_start = datetime(y.year, y.month, y.day, tzinfo=site_tz)
+                day_end = day_start + timedelta(days=1)
+                cadence = _sample_cadence_seconds()
+                await materialize_observations(store, day_start, day_end, cadence_seconds=cadence)
+                await materialize_daily_energy(store, day_start, day_end, cadence_seconds=cadence)
+                obs_cutoff = (datetime.now(UTC)
+                              - timedelta(days=OBSERVATION_RETENTION_DAYS)).isoformat()
+                purged = await store.purge_observations_older_than(obs_cutoff)
+                if purged:
+                    _log.info("observation retention: purged %d rows older than %d days",
+                              purged, OBSERVATION_RETENTION_DAYS)
+                # Prediction ledger shares the 400-day horizon (purged by target_start, symmetric
+                # with observations — a forecast is only scorable against an actual we still keep).
+                nowcast_cutoff = (datetime.now(UTC) - timedelta(days=60)).isoformat()
+                purged_ledger = await store.purge_ledger_older_than(
+                    obs_cutoff, nowcast_cutoff_iso=nowcast_cutoff)
+                if purged_ledger:
+                    _log.info("forecast ledger retention: purged %d rows older than %d days",
+                              purged_ledger, OBSERVATION_RETENTION_DAYS)
             except Exception as exc:
                 _log.warning("history maintenance failed (%s: %s); retrying next cycle",
                              type(exc).__name__, exc)
@@ -1168,6 +1305,11 @@ def create_app(
             for t in (task, control_task, audit_task, validate_task, maintenance_task, notify_task):
                 if t is not None:
                     await t
+            # Close each store's shared long-lived connection (perf: B-49) now that every
+            # background task has stopped touching it — a clean shutdown, not a leaked handle.
+            for s in (store, settings_store, override_store, audit_store):
+                if s is not None:
+                    await s.close()
 
     app = FastAPI(title="Smart Energy Manager", version="0.0.1", lifespan=lifespan)
 
@@ -1202,13 +1344,19 @@ def create_app(
         /api/accuracy's 'solar' track already gathers. Factored out so /api/battery-plan's plan
         confidence score (B-68) reuses this ONE extra store read instead of recomputing accuracy
         from scratch. None only when there's no store at all (forecast_error itself always returns
-        a dict, even with zero matched slots)."""
+        a dict, even with zero matched slots).
+
+        Reads the prediction ledger's CANONICAL solar rows (design §4.2/§4.3) — the single scoring
+        source every solar-accuracy surface shares (System page, this endpoint's callers, the
+        solar-confidence advisor, the export package); a same-day nowcast is never scored, only
+        the 18:00 day-ahead snapshot."""
         if store is None:
             return None
         start = now - timedelta(days=14)
         limit = history_row_cap((now - start).total_seconds(), _sample_cadence_seconds())
         raw = await store.raw_between(start.isoformat(), now.isoformat(), limit=limit)
-        forecasts = await store.forecasts_between(start.isoformat(), now.isoformat())
+        forecasts = await store.ledger_canonical_between(
+            "solar", start.isoformat(), now.isoformat())
         return forecast_error(forecasts, raw)
 
     _WRITE_METHODS = frozenset({"POST", "PUT", "PATCH", "DELETE"})
@@ -1792,12 +1940,42 @@ def create_app(
             **_recovery_sizing(),
         )
 
+    async def _run_canonical_forecast_cycle(now: datetime) -> None:
+        """Gather the live solar forecast + the learned baseline load profile and hand them to
+        `_run_canonical_forecast` (the 18:00 day-ahead canonical snapshot, design §4.3). Cheap
+        gate FIRST — outside the [18:00, 20:00) window, or once tomorrow's snapshot is already
+        written, it skips the profile/forecast gather entirely so it isn't rebuilt every cycle.
+        Fail-safe — a gather error is logged, never propagated."""
+        if store is None:
+            return
+        now_local = now.astimezone(site_tz)
+        if now_local.hour < 18 or now_local.hour >= 20:
+            return
+        tomorrow = now_local.date() + timedelta(days=1)
+        if cache_store is not None:
+            try:
+                if await asyncio.to_thread(
+                    cache_store.get, f"ledger:canonical:{tomorrow.isoformat()}"
+                ) is not None:
+                    return  # already snapshotted tomorrow today — don't rebuild the profile
+            except Exception:
+                _log.debug("canonical forecast dedupe pre-check failed (non-fatal)", exc_info=True)
+        drows = await store.recent_derived(2016)  # ~7 days of derived history for the profile
+        fallback_w = settings_cache["battery.overnight_load_kwh"] * 1000.0 / 12.0
+        profile = build_load_profile(drows, site_tz, fallback_w=fallback_w)
+        solar_slots = (await asyncio.to_thread(solar_forecast.slots)
+                       if solar_forecast is not None else [])
+        source_name = type(solar_forecast).__name__ if solar_forecast is not None else "none"
+        await _run_canonical_forecast(
+            store, cache_store, now, site_tz, solar_slots=solar_slots,
+            solar_source_name=source_name, load_profile=profile)
+
     async def _notify_loop(stop: asyncio.Event) -> None:
         """Periodic forecast-driven notifications (BACKLOG B-75) + the Sunday weekly-digest
-        delivery (BACKLOG B-58). Its own tiny loop (not `_control_loop` — see
-        `_run_detector_cycle`'s docstring), started whenever a store + notifier exist regardless
-        of dry_run/controller. Fail-safe: a gathering error is logged and the loop just retries
-        next cycle."""
+        delivery (BACKLOG B-58) + the 18:00 canonical day-ahead forecast snapshot (design §4.3).
+        Its own tiny loop (not `_control_loop` — see `_run_detector_cycle`'s docstring), started
+        whenever a store + notifier exist regardless of dry_run/controller. Fail-safe: a gathering
+        error is logged and the loop just retries next cycle."""
         while True:
             try:
                 await asyncio.wait_for(stop.wait(), timeout=control_cycle_seconds)
@@ -1812,6 +1990,10 @@ def create_app(
                 await _run_recovery_cycle(datetime.now(UTC))
             except Exception:
                 _log.exception("recovery cycle failed; retry next cycle (fail-safe)")
+            try:
+                await _run_canonical_forecast_cycle(datetime.now(UTC))
+            except Exception:
+                _log.exception("canonical forecast cycle failed; retry next cycle (fail-safe)")
             try:
                 await _run_weekly_digest(
                     store, cache_store, notifier, datetime.now(UTC), site_tz,
@@ -2973,16 +3155,35 @@ def create_app(
         gas_rows = await store.gas_between(start.astimezone(UTC).isoformat(),
                                            q_end.astimezone(UTC).isoformat())
         gas = gas_m3_consumed(gas_rows)
-        resp = build_report(raw, der, prices, period=period, start=start, end=end, label=label,
-                            partial=partial, grid_factor=grid_factor,
-                            gas_factor=gas_factor, gas_m3=gas,
-                            grid_factor_note=grid_factor_note).to_dict()
-        # The behavior series (P1/house/car/solar per bucket) rides on the same rows/window.
-        resp["series"] = build_series(raw, der, period=period, start=start, end=end, tz=site_tz)
-        # Makes gas VISIBLE (beyond folding into the CO₂ score): m³/kWh-eq/€/CO₂ for the Insights
-        # gas panel. None-safe — the panel hides itself when there's fewer than 2 gas readings.
-        resp["gas"] = gas_summary(gas_rows, price_eur_per_m3=gas_price, co2_factor=gas_factor)
-        return resp
+        # Year view pre-aggregation (BACKLOG B-49 §4): the SERIES bucket comes from the never-
+        # purged daily_energy rollup (~365 rows) instead of re-iterating the window's raw/derived
+        # rows a SECOND time (build_report's flows already do that once — the Sankey attribution
+        # can't be reconstructed from daily totals, so flows/scores keep the raw path unchanged).
+        daily_rows = None
+        if period == "year":
+            daily_rows = await store.daily_energy_between(
+                start.date().isoformat(), end.date().isoformat())
+
+        def _assemble() -> dict:
+            # CPU assembly (up to ~200k rows for a year) off the event loop (item 3), mirroring
+            # _forward_projection's to_thread pattern — build_report/build_series/gas_summary are
+            # all pure functions over plain data, safe to run in a worker thread.
+            resp = build_report(raw, der, prices, period=period, start=start, end=end, label=label,
+                                partial=partial, grid_factor=grid_factor,
+                                gas_factor=gas_factor, gas_m3=gas,
+                                grid_factor_note=grid_factor_note).to_dict()
+            if daily_rows is not None:
+                resp["series"] = build_series_from_daily_energy(
+                    daily_rows, start=start, end=end, tz=site_tz)
+            else:
+                resp["series"] = build_series(raw, der, period=period, start=start, end=end,
+                                              tz=site_tz)
+            # Makes gas VISIBLE (beyond folding into the CO₂ score): m³/kWh-eq/€/CO₂ for the
+            # Insights gas panel. None-safe — the panel hides itself with <2 gas readings.
+            resp["gas"] = gas_summary(gas_rows, price_eur_per_m3=gas_price, co2_factor=gas_factor)
+            return resp
+
+        return await asyncio.to_thread(_assemble)
 
     @app.get("/api/report")
     async def report(
@@ -3010,14 +3211,18 @@ def create_app(
         stored day-ahead forecast has actually performed over the last 14 days (SPEC: solar
         confidence should come from evidence, not a hand-tuned guess). None with no store. Shared
         by `/api/advisor/solar-confidence` and the weekly digest gather (BACKLOG B-58) — one
-        recommendation, reused, never applied automatically anywhere; the human decides."""
+        recommendation, reused, never applied automatically anywhere; the human decides.
+
+        Reads the prediction ledger's CANONICAL solar rows (design §4.2/§4.3) — same single
+        scoring source as `_solar_forecast_skill`, so this advisor and the accuracy/health surfaces
+        can never disagree about how the day-ahead forecast has actually performed."""
         if store is None:
             return None
         start = now - timedelta(days=14)
         start_iso, end_iso = start.isoformat(), now.isoformat()
         limit = history_row_cap((now - start).total_seconds(), _sample_cadence_seconds())
         raw = await store.raw_between(start_iso, end_iso, limit=limit)
-        forecasts = await store.forecasts_between(start_iso, end_iso)
+        forecasts = await store.ledger_canonical_between("solar", start_iso, end_iso)
         current = settings_cache.get("planner.solar_confidence")
         return recommend_solar_confidence(
             forecasts, raw, current_pct=float(current) if current is not None else None)
@@ -3098,6 +3303,63 @@ def create_app(
             await store.upsert_daily_finance(day_label, f)
         return f
 
+    async def _finance_window(start: datetime, end: datetime, now_local: datetime) -> list[dict]:
+        """Batched replacement for calling `_ensure_day_finance` once per day (BACKLOG B-49): the
+        old loop did up to 365 round trips for a year view (raw + prices + cached-lookup, PER
+        day). Here the whole window's raw rows / price slots / cached daily_finance rows are each
+        fetched in ONE round trip, sliced back into per-day inputs in memory
+        (`raw_rows_by_local_day` / `price_rows_by_local_day`), and the per-day `day_finance()` math
+        + cache-guard decision runs OFF the event loop in a worker thread (item 3: CPU that used to
+        run inline for up to 365 days). Only days that actually need (re)computing are upserted —
+        same calc_v cache-guard contract as `_ensure_day_finance`, which stays UNCHANGED (and is
+        still used, one day at a time, by the export package for arbitrary/non-contiguous days)."""
+        q_end = min(end, now_local + timedelta(minutes=1))
+        limit = history_row_cap((end - start).total_seconds(), _sample_cadence_seconds())
+        raw = await store.raw_between(start.astimezone(UTC).isoformat(),
+                                      q_end.astimezone(UTC).isoformat(), limit=limit)
+        price_rows = await store.prices_between(start.astimezone(UTC).isoformat(),
+                                                end.astimezone(UTC).isoformat())
+        cached = await store.daily_finance_between(start.date().isoformat(), end.date().isoformat())
+        cached_by_day = {c["day"]: c["data"] for c in cached}
+        raw_by_day = raw_rows_by_local_day(raw, start, end, site_tz)
+        price_by_day = price_rows_by_local_day(price_rows, start, end, site_tz)
+
+        degradation = float(settings_cache.get("planner.degradation_eur_per_kwh", 0.05))
+        export_model = str(settings_cache.get("prices.export_price_model", "net_metering"))
+        energy_tax = float(settings_cache.get("prices.energy_tax_eur_per_kwh", 0.13))
+        fixed_feed_in = float(settings_cache.get("prices.fixed_feed_in_eur_per_kwh", 0.01))
+
+        def _compute() -> list[tuple[str, dict, bool]]:
+            out: list[tuple[str, dict, bool]] = []
+            cur = start
+            while cur < end and cur <= now_local:
+                day_label = cur.date().isoformat()
+                nxt = cur + timedelta(days=1)
+                completed = nxt <= now_local
+                cached_data = cached_by_day.get(day_label)
+                if completed and cached_data is not None \
+                        and cached_data.get("calc_v") == _FINANCE_CALC_VERSION:
+                    out.append((day_label, cached_data, False))
+                else:
+                    f = day_finance(
+                        raw_by_day.get(day_label, []), price_by_day.get(day_label, []),
+                        day=day_label, degradation_eur_per_kwh=degradation,
+                        export_price_model=export_model, energy_tax_eur_per_kwh=energy_tax,
+                        fixed_feed_in_eur_per_kwh=fixed_feed_in,
+                    ).to_dict()
+                    f["calc_v"] = _FINANCE_CALC_VERSION
+                    out.append((day_label, f, completed))
+                cur = nxt
+            return out
+
+        computed = await asyncio.to_thread(_compute)
+        days: list[dict] = []
+        for day_label, data, needs_upsert in computed:
+            if needs_upsert:
+                await store.upsert_daily_finance(day_label, data)
+            days.append(data)
+        return days
+
     @app.get("/api/finance")
     async def finance(
         period: str = Query(default="day", pattern="^(day|week|month|year)$"),
@@ -3117,11 +3379,7 @@ def create_app(
         else:
             anchor = now_local.date()
         start, end, label, partial = resolve_window(period, anchor, site_tz, now_local)
-        days: list[dict] = []
-        cur = start
-        while cur < end and cur <= now_local and store is not None:
-            days.append(await _ensure_day_finance(cur.date()))
-            cur = cur + timedelta(days=1)
+        days = await _finance_window(start, end, now_local) if store is not None else []
 
         def _sum(key: str) -> float | None:
             vals = [d[key] for d in days if d.get(key) is not None]

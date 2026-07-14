@@ -11,14 +11,16 @@ from ems.load_model import DerivedSample
 from ems.reporting import (
     _import_price_slots,
     build_report,
+    build_series_from_daily_energy,
     gas_m3_consumed,
     gas_summary,
     resolve_window,
 )
 from ems.sources.mock import MockSource
 from ems.sources.prices import MockPriceSource
-from ems.storage.history import HistoryStore
+from ems.storage.history import HistoryStore, materialize_daily_energy, materialize_observations
 from ems.storage.settings import SettingsStore
+from ems.web import api as api_mod
 from ems.web.api import create_app
 
 AMS = ZoneInfo("Europe/Amsterdam")
@@ -355,6 +357,59 @@ def test_build_series_year_month_buckets():
     assert buckets[0]["samples"] == 0
 
 
+def test_build_series_from_daily_energy_sums_days_into_months():
+    # BACKLOG B-49 §4: the year view built from the daily_energy rollup instead of raw iteration.
+    jan1 = datetime(2026, 1, 1, tzinfo=AMS)
+    daily_rows = [
+        {"date": "2026-03-10", "solar_kwh": 5.0, "non_ev_load_kwh": 8.0, "ev_kwh": 1.0,
+         "grid_import_kwh": 3.0, "grid_export_kwh": 1.0, "coverage": 1.0},
+        {"date": "2026-03-11", "solar_kwh": 4.0, "non_ev_load_kwh": 7.0, "ev_kwh": 0.5,
+         "grid_import_kwh": 2.0, "grid_export_kwh": 0.5, "coverage": 1.0},
+        {"date": "2026-07-01", "solar_kwh": 9.0, "non_ev_load_kwh": 6.0, "ev_kwh": 0.0,
+         "grid_import_kwh": 0.0, "grid_export_kwh": 3.0, "coverage": 1.0},
+    ]
+    buckets = build_series_from_daily_energy(
+        daily_rows, start=jan1, end=datetime(2027, 1, 1, tzinfo=AMS), tz=AMS)
+    assert len(buckets) == 12  # a stable 12-month axis, same shape as build_series(period="year")
+    march = buckets[2]
+    assert abs(march["solar_kwh"] - 9.0) < 1e-9        # 5.0 + 4.0
+    assert abs(march["house_kwh"] - 15.0) < 1e-9       # 8.0 + 7.0 (non_ev_load_kwh)
+    assert abs(march["car_kwh"] - 1.5) < 1e-9          # 1.0 + 0.5 (ev_kwh)
+    assert abs(march["grid_import_kwh"] - 5.0) < 1e-9
+    assert abs(march["grid_export_kwh"] - 1.5) < 1e-9
+    assert march["samples"] == 2                       # two contributing days
+    july = buckets[6]
+    assert abs(july["solar_kwh"] - 9.0) < 1e-9
+    assert july["samples"] == 1
+    # An empty month reports an honest all-zero bucket, not a missing one.
+    assert buckets[0] == {
+        "start": buckets[0]["start"], "grid_import_kwh": 0.0, "grid_export_kwh": 0.0,
+        "house_kwh": 0.0, "car_kwh": 0.0, "solar_kwh": 0.0, "samples": 0,
+    }
+    assert buckets[0]["start"].startswith("2026-01-01")
+
+
+def test_build_series_from_daily_energy_ignores_rows_outside_the_year_and_bad_dates():
+    jan1 = datetime(2026, 1, 1, tzinfo=AMS)
+    daily_rows = [
+        {"date": "2025-12-31", "solar_kwh": 99.0, "coverage": 1.0},  # previous year → dropped
+        {"date": "not-a-date", "solar_kwh": 99.0, "coverage": 1.0},  # malformed → dropped
+        {"date": "2026-05-05", "solar_kwh": 2.0, "coverage": 1.0},
+    ]
+    buckets = build_series_from_daily_energy(
+        daily_rows, start=jan1, end=datetime(2027, 1, 1, tzinfo=AMS), tz=AMS)
+    assert sum(b["solar_kwh"] for b in buckets) == 2.0
+    assert buckets[4]["solar_kwh"] == 2.0  # May
+
+
+def test_build_series_from_daily_energy_zero_coverage_day_does_not_count_as_a_sample():
+    jan1 = datetime(2026, 1, 1, tzinfo=AMS)
+    daily_rows = [{"date": "2026-02-14", "solar_kwh": 0.0, "coverage": 0.0}]
+    buckets = build_series_from_daily_energy(
+        daily_rows, start=jan1, end=datetime(2027, 1, 1, tzinfo=AMS), tz=AMS)
+    assert buckets[1]["samples"] == 0  # February
+
+
 def _seed_prices(db: str) -> None:
     async def go():
         store = HistoryStore(db)
@@ -375,6 +430,57 @@ def test_report_endpoint_includes_series(tmp_path):
     noon = next(s for s in b["series"] if s["start"] == PAST.astimezone(UTC).isoformat())
     assert abs(noon["grid_export_kwh"] - 0.25) < 1e-9  # −1000 W for one 15-min slot
     assert abs(noon["house_kwh"] - 0.25) < 1e-9
+
+
+def _seed_2025_day_with_rollup(db: str) -> None:
+    """One day of raw+derived history in a fully-PAST year (2025), plus its materialized
+    observation + daily_energy rollup — so a year-period /api/report over 2025 has a real rollup
+    row to pre-aggregate from (BACKLOG B-49 §4)."""
+    async def go():
+        store = HistoryStore(db)
+        await store.init()
+        day_start = datetime(2025, 3, 10, tzinfo=AMS)
+        ts = day_start + timedelta(hours=12)
+        await store.record(ts.isoformat(), RawSample(-1000, 3000, -1000, 0.0, 50.0),
+                           DerivedSample(1000, 1000))
+        await materialize_observations(store, day_start, day_start + timedelta(days=1))
+        await materialize_daily_energy(store, day_start, day_start + timedelta(days=1))
+    asyncio.run(go())
+
+
+def test_report_endpoint_year_series_comes_from_daily_energy_rollup(tmp_path, monkeypatch):
+    # BACKLOG B-49 §4: for period=year, the SERIES is built from the daily_energy rollup (one
+    # query, ~365 rows) instead of build_series() re-iterating the window's raw/derived rows a
+    # second time. day/week/month must be UNCHANGED (still build_series over the raw rows).
+    db = str(tmp_path / "ems.sqlite")
+    _seed_2025_day_with_rollup(db)
+
+    calls = {"daily_energy_between": 0, "build_series": 0}
+    orig_daily_energy_between = HistoryStore.daily_energy_between
+
+    async def counting_daily_energy_between(self, *a, **kw):
+        calls["daily_energy_between"] += 1
+        return await orig_daily_energy_between(self, *a, **kw)
+
+    monkeypatch.setattr(HistoryStore, "daily_energy_between", counting_daily_energy_between)
+    orig_build_series = api_mod.build_series
+
+    def counting_build_series(*a, **kw):
+        calls["build_series"] += 1
+        return orig_build_series(*a, **kw)
+
+    monkeypatch.setattr(api_mod, "build_series", counting_build_series)
+
+    with TestClient(_app(db)) as c:
+        year = c.get("/api/report?period=year&date=2025-06-15").json()
+        c.get("/api/report?period=day&date=2025-03-10").json()
+
+    assert calls["daily_energy_between"] == 1  # only the year request touched the rollup
+    assert calls["build_series"] == 1          # only the day request used the raw-iteration path
+    assert len(year["series"]) == 12
+    march = year["series"][2]
+    assert abs(march["solar_kwh"] - 0.75) < 1e-9  # 3000 W solar for one 15-min slot
+    assert march["samples"] == 1                  # one contributing day that month
 
 
 def test_finance_endpoint_computes_and_persists_rollup(tmp_path):

@@ -959,11 +959,14 @@ test.describe("EMS dashboard", () => {
     await expect(page.getByTestId("model-health")).toBeVisible();
 
     // Each row shows a status DOT plus a plain-language STATUS TEXT (never colour-only).
-    await expect(page.getByTestId("health-solar")).toContainText("OK");
+    await expect(page.getByTestId("health-solar")).toContainText("Working well");
     await expect(page.getByTestId("health-solar")).toContainText("-12");
-    await expect(page.getByTestId("health-load")).toContainText("OK");
+    await expect(page.getByTestId("health-load")).toContainText("Working well");
     await expect(page.getByTestId("health-load")).toContainText("8");
-    await expect(page.getByTestId("health-plan_execution")).toContainText("OK");
+    await expect(page.getByTestId("health-plan_execution")).toContainText("Working well");
+    await expect(page.getByTestId("model-health-summary")).toContainText(
+      "Recent forecasts and plans are tracking well",
+    );
     await expect(page.getByTestId("health-plan_execution")).toContainText("92");
     // Nothing to flag -> no warn notes anywhere.
     await expect(page.locator('[data-testid^="health-note-"]')).toHaveCount(0);
@@ -973,7 +976,7 @@ test.describe("EMS dashboard", () => {
     await expect(page.getByTestId("health-clamped-samples")).toContainText("3");
 
     await expect(page.getByTestId("model-health")).toContainText(
-      "Detailed numbers: the export package's validation summary.",
+      "Detailed measurements are available in the export package.",
     );
   });
 
@@ -999,12 +1002,15 @@ test.describe("EMS dashboard", () => {
     await page.getByTestId("nav-system").click();
     await expect(page.getByTestId("model-health")).toBeVisible();
 
-    await expect(page.getByTestId("health-solar")).toContainText("Check");
+    await expect(page.getByTestId("health-solar")).toContainText("Needs a look");
     await expect(page.getByTestId("health-note-solar")).toContainText("Solar forecast bias");
-    await expect(page.getByTestId("health-load")).toContainText("OK");
+    await expect(page.getByTestId("health-load")).toContainText("Working well");
     // The unmeasurable track reads as an honest, non-alarming empty state, not a false OK/warn.
     await expect(page.getByTestId("health-plan_execution")).toContainText("Still collecting evidence");
     await expect(page.getByTestId("health-note-plan_execution")).toHaveCount(0);
+    await expect(page.getByTestId("model-health-summary")).toContainText(
+      "safe planning continues",
+    );
   });
 
   test("Model health panel's empty state reads 'still collecting evidence', never alarming (mocked)", async ({
@@ -1030,7 +1036,7 @@ test.describe("EMS dashboard", () => {
     }
     await expect(page.locator('[data-testid^="health-note-"]')).toHaveCount(0);
     // Never a false-positive OK or an alarming warn word when there's no evidence yet.
-    await expect(page.getByTestId("model-health")).not.toContainText("Check");
+    await expect(page.getByTestId("model-health")).not.toContainText("Needs a look");
   });
 
   test("the chat answers a question when AI is enabled (mocked)", async ({ page }) => {

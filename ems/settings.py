@@ -278,22 +278,19 @@ SETTINGS_SCHEMA: tuple[SettingsField, ...] = (
         "behaviour.",
     ),
     SettingsField(
-        "planner.validate_projection", "Reject plans that can't hit their target", "bool", True,
+        "planner.validate_projection", "Keep plans honest about reachability", "bool", True,
         "planner",
-        help="Before acting, simulate the plan forward: if a grid-charge plan clearly can't reach "
-        "its own target charge in time, drop it and hold self-consumption. On by default — a "
-        "rejection only ever falls back to your battery's safe AUTO mode, which is never worse "
-        "than running no system at all. Skipped automatically when the forecast is stale.",
+        help="Before acting, the system checks whether the plan can really reach its target "
+             "in time. "
+        "If not, it keeps your battery in its safe automatic mode. On by default, and skipped "
+        "when the forecast is too stale to trust.",
         advanced=True,
     ),
     SettingsField(
-        "planner.recovery_enabled", "Catch up on a missed charge window", "bool", True, "planner",
-        help="If a cheap overnight charge window is missed — a power cut, a run of blocked "
-        "switches, or a price spike that emptied the cheap slots — and the deadline is still "
-        "ahead, top up in the cheapest slots that remain, toward the SAME target the plan already "
-        "committed to. On by default: it only ADDS charging through the same safety checks, and "
-        "the failure it prevents (waking up short before the morning peak) is the expensive one. "
-        "Off = today's behaviour (a missed window is left as-is).",
+        "planner.recovery_enabled", "Recover a missed charge window", "bool", True, "planner",
+        help="If a planned low-cost charge is missed and the deadline is still ahead, the system "
+        "can use the best worthwhile slots that remain. It never bypasses the same safety checks "
+        "or buys above its break-even limit. Turn it off to leave missed windows untouched.",
         advanced=True,
     ),
     # --- AI explanations (optional, OFF by default; the one off-device feature — SPEC §12) ---

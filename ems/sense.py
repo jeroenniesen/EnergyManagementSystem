@@ -6,7 +6,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections.abc import Callable
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 from ems.domain import RawSample
 from ems.freshness import FreshnessTracker
@@ -19,6 +19,11 @@ _log = logging.getLogger("ems.recorder")
 
 # Per-signal names tracked for freshness (SPEC §4.7).
 SIGNALS = ("grid", "solar", "ev", "battery", "soc")
+
+# Prediction-ledger throttle (design §4.2): append the CURRENT solar forecast to the ledger with
+# its true `issued_at` at most once per this interval (in-instance timestamp) — enough to preserve
+# real issue-time provenance for nowcast lead-times without letting a 5-min sense cadence bloat it.
+_LEDGER_MIN_INTERVAL = timedelta(minutes=30)
 
 
 def _utcnow() -> datetime:
@@ -58,6 +63,9 @@ class Recorder:
         # Counts readings clamped by the plausibility guard (defense-in-depth against a future
         # sensor/comms glitch) — surfaced on /api/diagnostics so an operator can SEE it happening.
         self.clamped_samples = 0
+        # In-instance throttle for the prediction-ledger nowcast append (see _LEDGER_MIN_INTERVAL).
+        # Not persisted: a restart simply writes one extra ledger row, which is harmless.
+        self._last_ledger_write_at: datetime | None = None
 
     def health(self) -> dict:
         return {
@@ -109,20 +117,32 @@ class Recorder:
             _log.warning("price persist failed (non-fatal): %s: %s", type(exc).__name__, exc)
 
     async def _persist_forecast(self, now: datetime) -> None:
-        """Snapshot today's day-ahead solar forecast so it can later be compared against actual
-        production (forecast-vs-actual error, observability-data). The store's INSERT OR IGNORE
-        keeps the FIRST forecast recorded per (issued_date, slot) — later cycles the same day are
-        no-ops. Best-effort: a forecast-source failure must never kill the sense cycle."""
+        """Append the current solar forecast to the exact-provenance prediction ledger (design
+        §4.2) with the TRUE `issued_at = now` (canonical=0 nowcast), throttled to
+        `_LEDGER_MIN_INTERVAL` — enough to preserve real issue-time provenance for nowcast
+        lead-times without letting a 5-min sense cadence bloat the ledger. Best-effort: a
+        forecast-source or store failure must never kill the sense cycle.
+
+        RETIRED (reconciliation iteration, design §3.3): this used to ALSO upsert the legacy
+        date-keyed `forecast_snapshots` table every cycle. Every solar-accuracy reader now scores
+        the ledger's canonical rows exclusively (see `ems.analysis.forecast_error`), so that write
+        is gone — `forecast_snapshots` is retained ONLY as a read-only historic/migration-source
+        table (`ems.storage.history.HistoryStore.upsert_forecast_snapshot`/`forecasts_between` are
+        deprecated, not deleted) and is no longer written by anything."""
         if self.solar_forecast is None:
             return
         try:
-            issued = now.astimezone(UTC).date().isoformat()
             slots = await asyncio.to_thread(self.solar_forecast.slots)
-            await self.store.upsert_forecast_snapshot(
-                issued,
-                [(s.start.astimezone(UTC).isoformat(), float(s.p10_w), float(s.p50_w),
-                  float(s.p90_w)) for s in slots],
-            )
+            if (self._last_ledger_write_at is None
+                    or (now - self._last_ledger_write_at) >= _LEDGER_MIN_INTERVAL):
+                issued_at = now.astimezone(UTC).isoformat()
+                source = type(self.solar_forecast).__name__
+                await self.store.ledger_append([
+                    (issued_at, "solar", s.start.astimezone(UTC).isoformat(),
+                     float(s.p10_w), float(s.p50_w), float(s.p90_w), source, None, None, 0)
+                    for s in slots
+                ])
+                self._last_ledger_write_at = now
         except Exception as exc:
             _log.warning("forecast persist failed (non-fatal): %s: %s", type(exc).__name__, exc)
 

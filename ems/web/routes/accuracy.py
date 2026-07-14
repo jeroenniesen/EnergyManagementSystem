@@ -39,6 +39,12 @@ def build_router(ctx: AppContext) -> APIRouter:
         their evidence minimums (deadlines are ~daily, day-of-week/hour baselines need several
         weeks), so those two are gathered over the last 60 days instead.
 
+        The solar track (`ctx.solar_forecast_skill`) scores the prediction ledger's CANONICAL
+        day-ahead rows (design §4.2/§4.3) — the SAME single scoring source the System page, the
+        solar-confidence advisor and the export package all read, so this endpoint can never
+        disagree with them about "how good is the solar forecast" (the duplicate-narrative class
+        of trust bug this design retires).
+
         Also returns a fourth key, `health` (B-76): `ems.analysis.model_health`'s synthesized
         ok/warn/unknown verdict + plain-language notes for the three tracks above — the System
         page's "Model health" panel reads this directly rather than re-deriving thresholds in the

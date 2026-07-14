@@ -220,8 +220,10 @@ class _BoomForecast:
         raise RuntimeError("solcast down")
 
 
-def test_sense_once_persists_forecast_snapshot(tmp_path):
-    # observability-data: each cycle snapshots today's day-ahead solar forecast.
+def test_sense_once_persists_forecast_to_ledger(tmp_path):
+    # observability-data: each cycle appends today's solar forecast to the prediction ledger
+    # (design §4.2) with its TRUE issue time. The legacy forecast_snapshots write is RETIRED
+    # (design §3.3 reconciliation) — see test_forecast_ledger.py's proof it's no longer written.
     from ems.sources.forecast import ForecastSlot
 
     store = HistoryStore(str(tmp_path / "ems.sqlite"))
@@ -234,19 +236,21 @@ def test_sense_once_persists_forecast_snapshot(tmp_path):
     async def run():
         await store.init()
         await rec.sense_once(NOW)
-        return await store.forecasts_between("2020-01-01T00:00:00+00:00",
-                                             "2030-01-01T00:00:00+00:00")
+        return await store.ledger_between(
+            "solar", "2020-01-01T00:00:00+00:00", "2030-01-01T00:00:00+00:00")
 
     rows = asyncio.run(run())
-    assert [(r["start"], r["p10_w"], r["p50_w"], r["p90_w"]) for r in rows] == [
+    assert [(r["target_start"], r["low_w"], r["expected_w"], r["high_w"]) for r in rows] == [
         (NOW.isoformat(), 100.0, 200.0, 300.0),
         (NOW.replace(minute=15).isoformat(), 110.0, 210.0, 310.0),
     ]
+    assert all(r["issued_at"] == NOW.isoformat() and r["canonical"] == 0 for r in rows)
 
 
-def test_sense_once_forecast_snapshot_idempotent_same_day(tmp_path):
-    # A SECOND sense_once the same UTC day must NOT change the recorded snapshot (first sticks —
-    # we want the day-ahead forecast, not a later nowcast).
+def test_sense_once_forecast_ledger_write_is_throttled_within_the_same_cycle_timestamp(tmp_path):
+    # A SECOND sense_once at the SAME timestamp (well inside the ledger's write throttle, see
+    # ems.sense._LEDGER_MIN_INTERVAL) must NOT append a second ledger entry, and a changed
+    # (nowcast) forecast on that second cycle must not overwrite the first.
     from ems.sources.forecast import ForecastSlot
 
     store = HistoryStore(str(tmp_path / "ems.sqlite"))
@@ -262,12 +266,12 @@ def test_sense_once_forecast_snapshot_idempotent_same_day(tmp_path):
         await rec.sense_once(NOW)
         forecast._slots = later  # simulate a later cycle with a changed (nowcast) forecast
         await rec.sense_once(NOW)
-        return await store.forecasts_between("2020-01-01T00:00:00+00:00",
-                                             "2030-01-01T00:00:00+00:00")
+        return await store.ledger_between(
+            "solar", "2020-01-01T00:00:00+00:00", "2030-01-01T00:00:00+00:00")
 
     rows = asyncio.run(run())
     assert len(rows) == 1
-    assert (rows[0]["p10_w"], rows[0]["p50_w"], rows[0]["p90_w"]) == (100.0, 200.0, 300.0)
+    assert (rows[0]["low_w"], rows[0]["expected_w"], rows[0]["high_w"]) == (100.0, 200.0, 300.0)
 
 
 def test_forecast_persist_failure_never_kills_the_cycle(tmp_path):

@@ -23,7 +23,8 @@ from __future__ import annotations
 
 from collections import defaultdict
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
 
 from ems.planner.economics import export_value
 from ems.retrospect import _floor, _mean, _parse
@@ -134,3 +135,48 @@ def day_finance(
                           imp, exp, chg, dis)
     # No priced slots at all → can't compute money figures; report energy only.
     return DayFinance(day, n_slots > 0, coverage, None, None, None, None, imp, exp, chg, dis)
+
+
+def _rows_by_local_day(
+    rows: list[dict], ts_field: str, start: datetime, end: datetime, tz: ZoneInfo,
+) -> dict[str, list[dict]]:
+    """Group already-fetched rows (spanning [start, end) in `tz`) by their LOCAL calendar day
+    (YYYY-MM-DD) — the shared grouping behind `raw_rows_by_local_day`/`price_rows_by_local_day`.
+
+    BACKLOG B-49: lets `/api/finance` fetch a WHOLE window's rows in ONE round trip instead of one
+    round trip PER local day (up to 365 for a year view), then slice them back into day_finance()'s
+    per-day inputs in memory. Every local day in [start, end) is present as a key (possibly an
+    empty list) so a day with zero samples still gets a data-less day_finance() row — matching the
+    unbatched per-day fetch's behaviour exactly."""
+    by_day: dict[str, list[dict]] = {}
+    cur = start
+    while cur < end:
+        by_day[cur.date().isoformat()] = []
+        cur += timedelta(days=1)
+    for r in rows:
+        dt = _parse(r.get(ts_field))
+        if dt is None:
+            continue
+        local = dt.astimezone(tz)
+        if local < start or local >= end:
+            continue
+        key = local.date().isoformat()
+        bucket = by_day.get(key)
+        if bucket is not None:
+            bucket.append(r)
+    return by_day
+
+
+def raw_rows_by_local_day(
+    raw_rows: list[dict], start: datetime, end: datetime, tz: ZoneInfo,
+) -> dict[str, list[dict]]:
+    """Group already-fetched raw rows (`ts`) by LOCAL calendar day — see `_rows_by_local_day`."""
+    return _rows_by_local_day(raw_rows, "ts", start, end, tz)
+
+
+def price_rows_by_local_day(
+    price_rows: list[dict], start: datetime, end: datetime, tz: ZoneInfo,
+) -> dict[str, list[dict]]:
+    """Group already-fetched price-slot rows (`start_ts`) by LOCAL calendar day — see
+    `_rows_by_local_day`."""
+    return _rows_by_local_day(price_rows, "start_ts", start, end, tz)
