@@ -191,3 +191,13 @@ def test_projection_margin_is_exactly_five_points():
                    validate_plan(plan, projection=_proj(40, 60, 70, 83, 83), **_ctx()).findings)
     assert any(f.code == "projection_short_of_target" for f in
                validate_plan(plan, projection=_proj(40, 60, 70, 82.9, 82.9), **_ctx()).findings)
+
+
+def test_projection_slot_starting_at_deadline_does_not_count():
+    plan = _charge_plan(88.0, deadline_slot=4)
+    # Slot 4 starts exactly at the deadline but ends afterward; its 90% result
+    # must not mask the 70% result reached by the deadline.
+    projection = _proj(40, 55, 62, 70, 90)
+    finding = next((f for f in validate_plan(plan, projection=projection, **_ctx()).findings
+                    if f.code == "projection_short_of_target"), None)
+    assert finding is not None and "70%" in finding.message

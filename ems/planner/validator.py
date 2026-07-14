@@ -152,7 +152,10 @@ def validate_plan(
                         s.target_soc if s.target_soc is not None else plan.target_soc)
                        for s in slots if s.intent in _CHARGE_INTENTS}
         for deadline, target in sorted(commitments, key=lambda x: x[0]):
-            reached_values = [p.soc_pct for p in projection if p.start <= deadline]
+            # ProjectedSlot.soc_pct is the *end* SoC of its slot.  A slot that
+            # starts at the deadline has not completed by the deadline and must
+            # not count toward reachability.
+            reached_values = [p.soc_pct for p in projection if p.start + timedelta(minutes=15) <= deadline]
             if reached_values:
                 # Use the value at the latest projected instant, not the maximum
                 # transient value (which can hide a drop before the deadline).
