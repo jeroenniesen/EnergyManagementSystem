@@ -52,7 +52,7 @@ from ems.diagnostics import build_diagnostics, overall_status
 from ems.domain import BatteryIntent, PhysicalMode
 from ems.energy_flow import build_daily_flows
 from ems.ev_advisor import advise_charge_window
-from ems.finance import day_finance
+from ems.finance import day_finance, price_rows_by_local_day, raw_rows_by_local_day
 from ems.freshness import FreshnessTracker
 from ems.lifecycle import OwnershipState
 from ems.load_model import reconstruct
@@ -75,7 +75,14 @@ from ems.planner.strategy import HysteresisState, build_plan, resolve_strategy_h
 from ems.planner.summer import SummerConfig, sunset_after
 from ems.planner.validator import PlanValidation, validate_plan
 from ems.readiness import Readiness, compute_readiness, home_state
-from ems.reporting import build_report, build_series, gas_m3_consumed, gas_summary, resolve_window
+from ems.reporting import (
+    build_report,
+    build_series,
+    build_series_from_daily_energy,
+    gas_m3_consumed,
+    gas_summary,
+    resolve_window,
+)
 from ems.retrospect import build_past_story, past_headline
 from ems.savings import estimate_daily_savings_eur
 from ems.sense import Recorder
@@ -1298,6 +1305,11 @@ def create_app(
             for t in (task, control_task, audit_task, validate_task, maintenance_task, notify_task):
                 if t is not None:
                     await t
+            # Close each store's shared long-lived connection (perf: B-49) now that every
+            # background task has stopped touching it — a clean shutdown, not a leaked handle.
+            for s in (store, settings_store, override_store, audit_store):
+                if s is not None:
+                    await s.close()
 
     app = FastAPI(title="Smart Energy Manager", version="0.0.1", lifespan=lifespan)
 
@@ -3143,16 +3155,35 @@ def create_app(
         gas_rows = await store.gas_between(start.astimezone(UTC).isoformat(),
                                            q_end.astimezone(UTC).isoformat())
         gas = gas_m3_consumed(gas_rows)
-        resp = build_report(raw, der, prices, period=period, start=start, end=end, label=label,
-                            partial=partial, grid_factor=grid_factor,
-                            gas_factor=gas_factor, gas_m3=gas,
-                            grid_factor_note=grid_factor_note).to_dict()
-        # The behavior series (P1/house/car/solar per bucket) rides on the same rows/window.
-        resp["series"] = build_series(raw, der, period=period, start=start, end=end, tz=site_tz)
-        # Makes gas VISIBLE (beyond folding into the CO₂ score): m³/kWh-eq/€/CO₂ for the Insights
-        # gas panel. None-safe — the panel hides itself when there's fewer than 2 gas readings.
-        resp["gas"] = gas_summary(gas_rows, price_eur_per_m3=gas_price, co2_factor=gas_factor)
-        return resp
+        # Year view pre-aggregation (BACKLOG B-49 §4): the SERIES bucket comes from the never-
+        # purged daily_energy rollup (~365 rows) instead of re-iterating the window's raw/derived
+        # rows a SECOND time (build_report's flows already do that once — the Sankey attribution
+        # can't be reconstructed from daily totals, so flows/scores keep the raw path unchanged).
+        daily_rows = None
+        if period == "year":
+            daily_rows = await store.daily_energy_between(
+                start.date().isoformat(), end.date().isoformat())
+
+        def _assemble() -> dict:
+            # CPU assembly (up to ~200k rows for a year) off the event loop (item 3), mirroring
+            # _forward_projection's to_thread pattern — build_report/build_series/gas_summary are
+            # all pure functions over plain data, safe to run in a worker thread.
+            resp = build_report(raw, der, prices, period=period, start=start, end=end, label=label,
+                                partial=partial, grid_factor=grid_factor,
+                                gas_factor=gas_factor, gas_m3=gas,
+                                grid_factor_note=grid_factor_note).to_dict()
+            if daily_rows is not None:
+                resp["series"] = build_series_from_daily_energy(
+                    daily_rows, start=start, end=end, tz=site_tz)
+            else:
+                resp["series"] = build_series(raw, der, period=period, start=start, end=end,
+                                              tz=site_tz)
+            # Makes gas VISIBLE (beyond folding into the CO₂ score): m³/kWh-eq/€/CO₂ for the
+            # Insights gas panel. None-safe — the panel hides itself with <2 gas readings.
+            resp["gas"] = gas_summary(gas_rows, price_eur_per_m3=gas_price, co2_factor=gas_factor)
+            return resp
+
+        return await asyncio.to_thread(_assemble)
 
     @app.get("/api/report")
     async def report(
@@ -3272,6 +3303,63 @@ def create_app(
             await store.upsert_daily_finance(day_label, f)
         return f
 
+    async def _finance_window(start: datetime, end: datetime, now_local: datetime) -> list[dict]:
+        """Batched replacement for calling `_ensure_day_finance` once per day (BACKLOG B-49): the
+        old loop did up to 365 round trips for a year view (raw + prices + cached-lookup, PER
+        day). Here the whole window's raw rows / price slots / cached daily_finance rows are each
+        fetched in ONE round trip, sliced back into per-day inputs in memory
+        (`raw_rows_by_local_day` / `price_rows_by_local_day`), and the per-day `day_finance()` math
+        + cache-guard decision runs OFF the event loop in a worker thread (item 3: CPU that used to
+        run inline for up to 365 days). Only days that actually need (re)computing are upserted —
+        same calc_v cache-guard contract as `_ensure_day_finance`, which stays UNCHANGED (and is
+        still used, one day at a time, by the export package for arbitrary/non-contiguous days)."""
+        q_end = min(end, now_local + timedelta(minutes=1))
+        limit = history_row_cap((end - start).total_seconds(), _sample_cadence_seconds())
+        raw = await store.raw_between(start.astimezone(UTC).isoformat(),
+                                      q_end.astimezone(UTC).isoformat(), limit=limit)
+        price_rows = await store.prices_between(start.astimezone(UTC).isoformat(),
+                                                end.astimezone(UTC).isoformat())
+        cached = await store.daily_finance_between(start.date().isoformat(), end.date().isoformat())
+        cached_by_day = {c["day"]: c["data"] for c in cached}
+        raw_by_day = raw_rows_by_local_day(raw, start, end, site_tz)
+        price_by_day = price_rows_by_local_day(price_rows, start, end, site_tz)
+
+        degradation = float(settings_cache.get("planner.degradation_eur_per_kwh", 0.05))
+        export_model = str(settings_cache.get("prices.export_price_model", "net_metering"))
+        energy_tax = float(settings_cache.get("prices.energy_tax_eur_per_kwh", 0.13))
+        fixed_feed_in = float(settings_cache.get("prices.fixed_feed_in_eur_per_kwh", 0.01))
+
+        def _compute() -> list[tuple[str, dict, bool]]:
+            out: list[tuple[str, dict, bool]] = []
+            cur = start
+            while cur < end and cur <= now_local:
+                day_label = cur.date().isoformat()
+                nxt = cur + timedelta(days=1)
+                completed = nxt <= now_local
+                cached_data = cached_by_day.get(day_label)
+                if completed and cached_data is not None \
+                        and cached_data.get("calc_v") == _FINANCE_CALC_VERSION:
+                    out.append((day_label, cached_data, False))
+                else:
+                    f = day_finance(
+                        raw_by_day.get(day_label, []), price_by_day.get(day_label, []),
+                        day=day_label, degradation_eur_per_kwh=degradation,
+                        export_price_model=export_model, energy_tax_eur_per_kwh=energy_tax,
+                        fixed_feed_in_eur_per_kwh=fixed_feed_in,
+                    ).to_dict()
+                    f["calc_v"] = _FINANCE_CALC_VERSION
+                    out.append((day_label, f, completed))
+                cur = nxt
+            return out
+
+        computed = await asyncio.to_thread(_compute)
+        days: list[dict] = []
+        for day_label, data, needs_upsert in computed:
+            if needs_upsert:
+                await store.upsert_daily_finance(day_label, data)
+            days.append(data)
+        return days
+
     @app.get("/api/finance")
     async def finance(
         period: str = Query(default="day", pattern="^(day|week|month|year)$"),
@@ -3291,11 +3379,7 @@ def create_app(
         else:
             anchor = now_local.date()
         start, end, label, partial = resolve_window(period, anchor, site_tz, now_local)
-        days: list[dict] = []
-        cur = start
-        while cur < end and cur <= now_local and store is not None:
-            days.append(await _ensure_day_finance(cur.date()))
-            cur = cur + timedelta(days=1)
+        days = await _finance_window(start, end, now_local) if store is not None else []
 
         def _sum(key: str) -> float | None:
             vals = [d[key] for d in days if d.get(key) is not None]

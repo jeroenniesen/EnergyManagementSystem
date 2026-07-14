@@ -2,6 +2,7 @@
 so derived values can always be recomputed after a sign/calibration fix."""
 from __future__ import annotations
 
+import asyncio
 import json
 from collections import defaultdict
 from contextlib import asynccontextmanager
@@ -256,9 +257,10 @@ async def materialize_observations(
     store: HistoryStore, start: datetime, end: datetime, *,
     cadence_seconds: float = _DEFAULT_CADENCE_S,
 ) -> int:
-    """Public wrapper: materialize observations for [start, end) (tz-aware datetimes) on a fresh
-    connection, committed. Idempotent upsert — safe to re-run for the same window."""
-    async with store._conn() as db:
+    """Public wrapper: materialize observations for [start, end) (tz-aware datetimes) on the
+    store's shared connection (write-serialized), committed. Idempotent upsert — safe to re-run
+    for the same window."""
+    async with store._write_conn() as db:
         n = await _materialize_observations(
             db, start.astimezone(UTC).isoformat(), end.astimezone(UTC).isoformat(), cadence_seconds)
         await db.commit()
@@ -270,8 +272,9 @@ async def materialize_daily_energy(
     cadence_seconds: float = _DEFAULT_CADENCE_S,
 ) -> None:
     """Public wrapper: materialize the daily_energy row for the local day [day_start, day_end)
-    (tz-aware local-midnight bounds) on a fresh connection, committed. Idempotent upsert."""
-    async with store._conn() as db:
+    (tz-aware local-midnight bounds) on the store's shared connection (write-serialized),
+    committed. Idempotent upsert."""
+    async with store._write_conn() as db:
         await _materialize_daily_energy(db, day_start, day_end, cadence_seconds)
         await db.commit()
 
@@ -356,17 +359,94 @@ class HistoryStore:
 
     def __init__(self, db_path: str) -> None:
         self.db_path = db_path
+        # Long-lived connection (perf: BACKLOG B-49) — opened lazily on first use and kept for the
+        # store's lifetime, instead of a fresh aiosqlite connection (its own worker thread) per
+        # call. `_connect_lock` guards the lazy-open race (two first-callers can't each start a
+        # connection); `_write_lock` serializes WRITES so a multi-statement write body (e.g.
+        # record()'s raw+derived pair, or init()'s DDL) always runs through to its commit before
+        # another write's statements can be interleaved on the SAME connection. aiosqlite already
+        # serializes every individual statement through the connection's own single worker thread
+        # (verified: `Connection` proxies all execute/commit calls onto one background Thread), so
+        # this lock is purely an app-level "don't interleave two logical write transactions" guard,
+        # not a driver-level race.
+        #
+        # Reads (`_conn()`) do NOT take the lock — a lone SELECT is trivially atomic on its own,
+        # and requiring reads to queue behind writes would reintroduce the very serialization this
+        # change is meant to avoid. The accepted trade-off: sharing one connection means a read CAN
+        # now (same as any single SQLite connection sees its own uncommitted work) observe a
+        # half-written multi-statement invariant if it lands between a write's own statements
+        # (e.g. raw inserted, derived not yet). This is a narrow, pre-existing-in-spirit risk — the
+        # previous per-call-connection design avoided it via full connection isolation — judged
+        # acceptable here given reporting reads are windowed aggregates, not per-row invariants.
+        self._db: aiosqlite.Connection | None = None
+        self._connect_lock = asyncio.Lock()
+        self._write_lock = asyncio.Lock()
+
+    async def _connection(self) -> aiosqlite.Connection:
+        """The shared connection, opened + configured on first use (idempotent, reopens lazily
+        after `close()`)."""
+        if self._db is None:
+            async with self._connect_lock:
+                if self._db is None:
+                    conn = aiosqlite.connect(self.db_path)
+                    # Daemonize the worker thread BEFORE it's started (awaiting `conn` below starts
+                    # it) — belt-and-suspenders with `__del__`'s direct close: a store that's never
+                    # explicitly close()'d (common in ad-hoc scripts/tests) must never be able to
+                    # keep the interpreter alive at exit.
+                    conn._thread.daemon = True
+                    db = await conn
+                    await db.execute(f"PRAGMA busy_timeout={_BUSY_TIMEOUT_MS}")
+                    self._db = db
+        return self._db
 
     @asynccontextmanager
     async def _conn(self):
-        async with aiosqlite.connect(self.db_path) as db:
-            await db.execute(f"PRAGMA busy_timeout={_BUSY_TIMEOUT_MS}")
-            yield db
+        """Read seam: the shared connection, WITHOUT closing it (perf: B-49). Kept as the seam
+        name so every existing read call site is unchanged."""
+        yield await self._connection()
+
+    @asynccontextmanager
+    async def _write_conn(self):
+        """Write seam: the same shared connection, serialized behind `_write_lock` (see the
+        `__init__` docstring) so a multi-statement write body can't be torn by a concurrent one."""
+        async with self._write_lock:
+            yield await self._connection()
+
+    async def close(self) -> None:
+        """Close the shared connection (app shutdown). Safe to call when never opened, or twice."""
+        async with self._connect_lock:
+            if self._db is not None:
+                await self._db.close()
+                self._db = None
+
+    def __del__(self) -> None:
+        """Best-effort SYNCHRONOUS cleanup for callers that discard a store without awaiting
+        close() (common in tests: create → use → let it fall out of scope). Deferring to
+        aiosqlite's own async close() here would push the actual file close onto its background
+        worker thread at an INDETERMINATE later time (possibly after this object's owning event
+        loop has already closed) — observed to leave the db file's mtime touched well after the
+        caller's last awaited call returned, which is surprising for anything that snapshots file
+        state around an unrelated operation (e.g. a read-only replay's "never writes" guarantee).
+        Closing the underlying sqlite3 connection directly here restores the OLD per-call-
+        connection design's guarantee: nothing touches the file once the last awaited call has
+        returned. Nulling `_connection` also makes aiosqlite's own `Connection.__del__` a silent
+        no-op (no ResourceWarning, no redundant stop()); the worker thread is left idle on its
+        queue, harmless since it was daemonized in `_connection()`."""
+        db = self._db
+        if db is None:
+            return
+        conn = getattr(db, "_connection", None)
+        if conn is not None:
+            db._connection = None
+            try:
+                conn.close()
+            except Exception:
+                pass
 
     async def init(self) -> None:
         # WAL allows concurrent reads during writes. Create both tables in one transaction
         # (single commit) so they appear atomically — a crash can't leave one without the other.
-        async with self._conn() as db:
+        async with self._write_conn() as db:
             await db.execute("PRAGMA journal_mode=WAL")
             # INCREMENTAL auto-vacuum lets maintenance reclaim space freed by retention purges
             # without a full table-locking VACUUM. Only takes effect on a fresh DB (set before the
@@ -494,7 +574,7 @@ class HistoryStore:
         """Delete rows older than `cutoff_iso` (UTC-ISO) from BOTH sample tables atomically (one
         commit), so retention can never leave raw/derived out of sync. Returns total rows deleted.
         `ts` is UTC-ISO, so the lexicographic `<` is a correct time comparison."""
-        async with self._conn() as db:
+        async with self._write_conn() as db:
             cur = await db.execute("DELETE FROM raw_samples WHERE ts < ?", (cutoff_iso,))
             deleted = cur.rowcount or 0
             cur = await db.execute("DELETE FROM derived_samples WHERE ts < ?", (cutoff_iso,))
@@ -520,7 +600,7 @@ class HistoryStore:
         """Periodic housekeeping for a 24/7 install: truncate the WAL so it can't grow unbounded,
         and reclaim space freed by purges (incremental_vacuum is a no-op unless auto_vacuum is on).
         Best-effort and non-fatal — a busy DB just retries next cycle."""
-        async with self._conn() as db:
+        async with self._write_conn() as db:
             await db.execute("PRAGMA incremental_vacuum")
             await db.execute("PRAGMA wal_checkpoint(TRUNCATE)")
             await db.commit()
@@ -568,7 +648,7 @@ class HistoryStore:
                 "raw_rows": raw_rows, "derived_rows": derived_rows}
 
     async def record(self, ts: str, raw: RawSample, derived: DerivedSample) -> None:
-        async with self._conn() as db:
+        async with self._write_conn() as db:
             await db.execute(
                 "INSERT INTO raw_samples "
                 "(ts, grid_power_w, solar_power_w, battery_power_w, ev_power_w, soc_pct) "
@@ -641,7 +721,7 @@ class HistoryStore:
         """Idempotently store (start_ts UTC-ISO, €/kWh) slots — re-fetches simply overwrite."""
         if not slots:
             return
-        async with self._conn() as db:
+        async with self._write_conn() as db:
             await db.executemany(
                 "INSERT OR REPLACE INTO price_slots (start_ts, eur_per_kwh) VALUES (?, ?)", slots)
             await db.commit()
@@ -670,7 +750,7 @@ class HistoryStore:
         want the day-ahead forecast, not a later-cycle nowcast overwriting it for error analysis."""
         if not slots:
             return
-        async with self._conn() as db:
+        async with self._write_conn() as db:
             await db.executemany(
                 "INSERT OR IGNORE INTO forecast_snapshots "
                 "(issued_date, start, p10_w, p50_w, p90_w) VALUES (?, ?, ?, ?, ?)",
@@ -703,7 +783,7 @@ class HistoryStore:
         and a canonical write can't be clobbered by a nowcast that happened to share an instant."""
         if not rows:
             return
-        async with self._conn() as db:
+        async with self._write_conn() as db:
             await db.executemany(
                 f"INSERT OR IGNORE INTO forecast_ledger ({', '.join(_LEDGER_COLS)}) "
                 f"VALUES ({', '.join('?' for _ in _LEDGER_COLS)})",
@@ -750,7 +830,7 @@ class HistoryStore:
         (~96 nowcasts per slot vs 1 canonical) but only the canonical rows are scored — nowcasts
         exist for lead-time diagnostics, so they get a much shorter horizon (60 days at the call
         site) keeping the ledger ~95% smaller without touching the evidence."""
-        async with self._conn() as db:
+        async with self._write_conn() as db:
             cur = await db.execute(
                 "DELETE FROM forecast_ledger WHERE target_start < ?", (cutoff_iso,))
             n = cur.rowcount or 0
@@ -767,7 +847,7 @@ class HistoryStore:
         THIS cycle. `snapshot` is the {"strategy","target_soc","deadline","soc_pct","intent"} dict
         assembled by the API's `_plan_snapshot` — missing keys default to None (a partial snapshot
         still records something rather than nothing)."""
-        async with self._conn() as db:
+        async with self._write_conn() as db:
             await db.execute(
                 "INSERT INTO plan_history (ts, strategy, target_soc, deadline, soc_pct, intent) "
                 "VALUES (?, ?, ?, ?, ?, ?)",
@@ -791,7 +871,7 @@ class HistoryStore:
         """Upsert one cumulative gas meter reading (B-02). INSERT OR REPLACE: `ts` is the
         recorder's sense timestamp (one row/cycle in practice), so a re-record at the same `ts`
         (e.g. a retried cycle) simply overwrites rather than duplicating."""
-        async with self._conn() as db:
+        async with self._write_conn() as db:
             await db.execute(
                 "INSERT OR REPLACE INTO gas_readings (ts, total_gas_m3) VALUES (?, ?)",
                 (ts, total_gas_m3))
@@ -810,7 +890,7 @@ class HistoryStore:
 
     async def upsert_daily_finance(self, day: str, data: dict) -> None:
         """Store/replace one local day's finance rollup (day = YYYY-MM-DD, data = JSON-able)."""
-        async with self._conn() as db:
+        async with self._write_conn() as db:
             await db.execute(
                 "INSERT OR REPLACE INTO daily_finance (day, data) VALUES (?, ?)",
                 (day, json.dumps(data)))
@@ -854,7 +934,7 @@ class HistoryStore:
         """Delete observations with slot_start < `cutoff_iso` (the 400-day horizon), returning the
         row count. Deliberately SEPARATE from purge_older_than: observations outlive the raw
         samples they were distilled from, and daily_energy is never purged at all."""
-        async with self._conn() as db:
+        async with self._write_conn() as db:
             cur = await db.execute("DELETE FROM observations WHERE slot_start < ?", (cutoff_iso,))
             await db.commit()
             return cur.rowcount or 0
@@ -876,7 +956,7 @@ class HistoryStore:
         (roadmap F3, reporting-only)."""
         if not rows:
             return
-        async with self._conn() as db:
+        async with self._write_conn() as db:
             await db.executemany(
                 "INSERT OR REPLACE INTO carbon_intensity (start_ts, kg_per_kwh) VALUES (?, ?)",
                 rows)
@@ -897,7 +977,7 @@ class HistoryStore:
         """Store/replace the manual car-SoC anchor: a percent at an ISO timestamp, from which EV
         SoC is estimated. Single-row upsert — a new anchor overwrites the previous one (there is
         only ever one 'last known' anchor)."""
-        async with self._conn() as db:
+        async with self._write_conn() as db:
             await db.execute(
                 "INSERT OR REPLACE INTO car_soc_anchor (key, value) VALUES (?, ?)",
                 (_CAR_SOC_ANCHOR_KEY, json.dumps({"pct": float(pct), "ts": ts})),
@@ -930,7 +1010,7 @@ class HistoryStore:
         suppressed, a NEW day is simply a different key and always gets through. `delivered`
         starts as `["in_app"]` — storing the row IS the in-app delivery; a channel like ntfy is
         added afterwards via `set_notification_delivered` once (if) it actually succeeds."""
-        async with self._conn() as db:
+        async with self._write_conn() as db:
             if dedupe_key is not None:
                 cur = await db.execute(
                     "SELECT 1 FROM notifications WHERE dedupe_key = ? LIMIT 1", (dedupe_key,))
@@ -948,7 +1028,7 @@ class HistoryStore:
     async def set_notification_delivered(self, notification_id: int, delivered: list[str]) -> None:
         """Overwrite the delivered-channel list for one notification (Notifier calls this after a
         successful ntfy push has actually gone out)."""
-        async with self._conn() as db:
+        async with self._write_conn() as db:
             await db.execute(
                 "UPDATE notifications SET delivered = ? WHERE id = ?",
                 (json.dumps(delivered), notification_id),
@@ -991,7 +1071,7 @@ class HistoryStore:
         """Mark notifications read: `mark_all=True` marks every currently-unread row; otherwise
         marks exactly the given `ids` (an id that doesn't exist is silently ignored). Returns the
         number of rows actually changed."""
-        async with self._conn() as db:
+        async with self._write_conn() as db:
             if mark_all:
                 cur = await db.execute("UPDATE notifications SET read = 1 WHERE read = 0")
             elif ids:

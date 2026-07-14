@@ -3,6 +3,7 @@ plan, every configuration change, and AI validations — each with a human-reada
 JSON detail blob. Lives in the shared SQLite DB. Read-only from the UI; never holds secrets."""
 from __future__ import annotations
 
+import asyncio
 import json
 from contextlib import asynccontextmanager
 
@@ -17,15 +18,55 @@ class AuditStore:
 
     def __init__(self, db_path: str) -> None:
         self.db_path = db_path
+        # Long-lived connection (perf: BACKLOG B-49), mirroring HistoryStore — see its `__init__`
+        # docstring for the full rationale (lazy-open, write-lock-serialized, reads share freely).
+        self._db: aiosqlite.Connection | None = None
+        self._connect_lock = asyncio.Lock()
+        self._write_lock = asyncio.Lock()
+
+    async def _connection(self) -> aiosqlite.Connection:
+        if self._db is None:
+            async with self._connect_lock:
+                if self._db is None:
+                    conn = aiosqlite.connect(self.db_path)
+                    conn._thread.daemon = True  # see HistoryStore._connection() for rationale
+                    db = await conn
+                    await db.execute(f"PRAGMA busy_timeout={_BUSY_TIMEOUT_MS}")
+                    self._db = db
+        return self._db
 
     @asynccontextmanager
     async def _conn(self):
-        async with aiosqlite.connect(self.db_path) as db:
-            await db.execute(f"PRAGMA busy_timeout={_BUSY_TIMEOUT_MS}")
-            yield db
+        yield await self._connection()
+
+    @asynccontextmanager
+    async def _write_conn(self):
+        async with self._write_lock:
+            yield await self._connection()
+
+    async def close(self) -> None:
+        async with self._connect_lock:
+            if self._db is not None:
+                await self._db.close()
+                self._db = None
+
+    def __del__(self) -> None:
+        # Synchronous cleanup for a discarded-without-close() store — see HistoryStore.__del__
+        # for the full rationale (avoids an indeterminate deferred file-close on aiosqlite's
+        # background worker thread).
+        db = self._db
+        if db is None:
+            return
+        conn = getattr(db, "_connection", None)
+        if conn is not None:
+            db._connection = None
+            try:
+                conn.close()
+            except Exception:
+                pass
 
     async def init(self) -> None:
-        async with self._conn() as db:
+        async with self._write_conn() as db:
             await db.execute("PRAGMA journal_mode=WAL")
             await db.execute(
                 "CREATE TABLE IF NOT EXISTS audit_log "
@@ -37,7 +78,7 @@ class AuditStore:
     async def append(
         self, ts: str, category: str, summary: str, detail: dict | None = None
     ) -> None:
-        async with self._conn() as db:
+        async with self._write_conn() as db:
             await db.execute(
                 "INSERT INTO audit_log (ts, category, summary, detail) VALUES (?, ?, ?, ?)",
                 (ts, category, summary, json.dumps(detail or {})),

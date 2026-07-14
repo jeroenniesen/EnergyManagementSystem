@@ -212,6 +212,66 @@ def build_series(
     return out
 
 
+def build_series_from_daily_energy(
+    daily_rows: list[dict], *, start: datetime, end: datetime, tz: ZoneInfo,
+) -> list[dict]:
+    """Year-view series (spec 2026-07-03 A) built from the `daily_energy` ROLLUP (one row/day,
+    B-13) instead of iterating raw/derived samples (BACKLOG B-49 §4): the same 12-month bucket
+    axis as `build_series(period="year", ...)`, but O(days in the window) instead of O(raw rows in
+    the window) — for a year at a 300s cadence that's ~365 rows read/summed instead of ~100k+
+    iterated twice (once for the Sankey flows, once again for this series). Day/week/month keep
+    the raw path (`build_series`) — daily_energy is a DAILY rollup, too coarse for those finer
+    buckets, and the raw fetch is already bounded to a much smaller window there.
+
+    Field mapping — documented honestly, not every `build_series` field has an exact rollup
+    equivalent:
+      * `grid_import_kwh` / `grid_export_kwh` / `solar_kwh` — direct from the rollup, exact (same
+        per-slot grid+/solar aggregation `aggregate_daily_energy` and `build_series` both do).
+      * `house_kwh` — the rollup's `non_ev_load_kwh` (the same quantity `build_series`' `house_by`
+        sums: derived `non_ev_load_w`).
+      * `car_kwh` — the rollup's `ev_kwh`, inferred as `load_kwh − non_ev_load_kwh` using the
+        load_model's THRESHOLDED ev signal (`load_model.reconstruct` zeroes sub-200W phantom
+        draw), NOT the raw metered `ev_power_w` that `build_series` sums directly. The two are
+        very close but not bit-identical — an honest approximation for the year view, not a
+        regression in the day/week/month path (which is unchanged).
+      * `samples` — `build_series` counts raw rows per bucket; the rollup has no row count, so
+        this reports the number of days that month with any coverage (`coverage > 0`) instead. The
+        frontend (`EnergyBehavior.tsx`) only ever tests `samples > 0` as a has-data/gap gate, which
+        this preserves faithfully — it never reads the count itself.
+    """
+    months = [datetime(start.year, m, 1, tzinfo=tz) for m in range(1, 13)]
+    buckets = {
+        (b.year, b.month): {
+            "start": b.isoformat(),
+            "grid_import_kwh": 0.0, "grid_export_kwh": 0.0, "house_kwh": 0.0,
+            "car_kwh": 0.0, "solar_kwh": 0.0, "samples": 0,
+        }
+        for b in months
+    }
+    for row in daily_rows:
+        try:
+            d = date_cls.fromisoformat(str(row.get("date")))
+        except (ValueError, TypeError):
+            continue
+        b = buckets.get((d.year, d.month))
+        if b is None:
+            continue
+        b["grid_import_kwh"] += float(row.get("grid_import_kwh") or 0.0)
+        b["grid_export_kwh"] += float(row.get("grid_export_kwh") or 0.0)
+        b["house_kwh"] += float(row.get("non_ev_load_kwh") or 0.0)
+        b["car_kwh"] += float(row.get("ev_kwh") or 0.0)
+        b["solar_kwh"] += float(row.get("solar_kwh") or 0.0)
+        if float(row.get("coverage") or 0.0) > 0.0:
+            b["samples"] += 1
+    out = []
+    for b in months:
+        row = buckets[(b.year, b.month)]
+        for k in ("grid_import_kwh", "grid_export_kwh", "house_kwh", "car_kwh", "solar_kwh"):
+            row[k] = round(row[k], 3)
+        out.append(row)
+    return out
+
+
 def build_report(
     raw_rows: list[dict],
     derived_rows: list[dict],

@@ -10,7 +10,7 @@ from zoneinfo import ZoneInfo
 from fastapi.testclient import TestClient
 
 from ems.domain import RawSample
-from ems.finance import day_finance
+from ems.finance import day_finance, price_rows_by_local_day, raw_rows_by_local_day
 from ems.load_model import reconstruct
 from ems.sources.mock import MockSource
 from ems.sources.prices import MockPriceSource
@@ -205,3 +205,83 @@ def test_calc_version_bump_invalidates_stored_finance_row(tmp_path):
     # Stored under the CURRENT version → trusted verbatim (the sentinel survives).
     asyncio.run(seed(_FINANCE_CALC_VERSION))
     assert fetch()["saved_eur"] == 999.0
+
+
+# --- raw_rows_by_local_day / price_rows_by_local_day (BACKLOG B-49: finance N+1 batching) -------
+
+def _row_at(y, m, d, h, grid_w) -> dict:
+    ts = datetime(y, m, d, h, tzinfo=AMS).astimezone(UTC).isoformat()
+    return {"ts": ts, "grid_power_w": grid_w}
+
+
+def test_raw_rows_by_local_day_groups_a_multi_day_window():
+    start = datetime(2026, 6, 28, tzinfo=AMS)
+    end = start + timedelta(days=3)
+    rows = [
+        _row_at(2026, 6, 28, 10, 1),
+        _row_at(2026, 6, 28, 11, 2),
+        _row_at(2026, 6, 29, 10, 3),
+    ]
+    by_day = raw_rows_by_local_day(rows, start, end, AMS)
+    # Every local day in the window is present, even the one with zero rows.
+    assert set(by_day) == {"2026-06-28", "2026-06-29", "2026-06-30"}
+    assert len(by_day["2026-06-28"]) == 2
+    assert len(by_day["2026-06-29"]) == 1
+    assert by_day["2026-06-30"] == []
+
+
+def test_raw_rows_by_local_day_respects_local_midnight_not_utc():
+    # 23:30 LOCAL on the 28th = 21:30 UTC — must land in the 28th's bucket, not spill into the 29th
+    # (mirrors build_series' week-bucket DST/local-midnight test).
+    start = datetime(2026, 6, 28, tzinfo=AMS)
+    end = start + timedelta(days=2)
+    late = datetime(2026, 6, 28, 23, 30, tzinfo=AMS).astimezone(UTC)
+    rows = [{"ts": late.isoformat(), "grid_power_w": 1}]
+    by_day = raw_rows_by_local_day(rows, start, end, AMS)
+    assert len(by_day["2026-06-28"]) == 1
+    assert by_day["2026-06-29"] == []
+
+
+def test_raw_rows_by_local_day_drops_rows_outside_the_window():
+    start = datetime(2026, 6, 28, tzinfo=AMS)
+    end = start + timedelta(days=1)
+    rows = [
+        _row_at(2026, 6, 27, 23, 1),
+        _row_at(2026, 6, 28, 12, 2),
+        _row_at(2026, 6, 29, 1, 3),
+    ]
+    by_day = raw_rows_by_local_day(rows, start, end, AMS)
+    assert set(by_day) == {"2026-06-28"}
+    assert len(by_day["2026-06-28"]) == 1
+
+
+def test_raw_rows_by_local_day_drops_unparseable_ts():
+    start = datetime(2026, 6, 28, tzinfo=AMS)
+    end = start + timedelta(days=1)
+    rows = [{"ts": "not-a-timestamp", "grid_power_w": 1}]
+    by_day = raw_rows_by_local_day(rows, start, end, AMS)
+    assert by_day["2026-06-28"] == []
+
+
+def test_price_rows_by_local_day_uses_start_ts_field():
+    start = datetime(2026, 6, 28, tzinfo=AMS)
+    end = start + timedelta(days=1)
+    rows = [{"start_ts": datetime(2026, 6, 28, 10, tzinfo=AMS).astimezone(UTC).isoformat(),
+            "eur_per_kwh": 0.20}]
+    by_day = price_rows_by_local_day(rows, start, end, AMS)
+    assert by_day["2026-06-28"] == rows
+
+
+def test_grouped_rows_feed_day_finance_identically_to_the_unbatched_per_day_fetch():
+    # The whole point of batching: day_finance() fed the GROUPED slice must produce the exact same
+    # result as day_finance() fed rows that were fetched ONE DAY AT A TIME.
+    day0 = datetime(2026, 6, 28, tzinfo=AMS)
+    raw = _rows([(1, 1, 4000.0, -4000.0), (19, 2, 0.0, 2000.0)])  # spans one day only
+    prices = _prices({1: 0.10, 19: 0.40, 20: 0.40})
+    unbatched = day_finance(raw, prices, day="2026-06-28", degradation_eur_per_kwh=0.05)
+
+    raw_by_day = raw_rows_by_local_day(raw, day0, day0 + timedelta(days=1), AMS)
+    price_by_day = price_rows_by_local_day(prices, day0, day0 + timedelta(days=1), AMS)
+    batched = day_finance(raw_by_day["2026-06-28"], price_by_day["2026-06-28"],
+                          day="2026-06-28", degradation_eur_per_kwh=0.05)
+    assert batched.to_dict() == unbatched.to_dict()
