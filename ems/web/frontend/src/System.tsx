@@ -274,6 +274,10 @@ export function SystemView() {
       {accuracy && (
         <div className="model-health" data-testid="model-health">
           <span className="metric-label">Model health</span>
+          <p className="settings-group-hint" data-testid="model-health-intro">
+            This is the system learning how well its forecasts match your home. It never makes
+            unsafe decisions from a low-confidence result — the safe baseline stays in charge.
+          </p>
           <ul className="health-rows" data-testid="health-rows">
             {HEALTH_ROW_ORDER.map((row) => {
               const status = accuracy.health[row];
@@ -320,7 +324,8 @@ export function SystemView() {
           </ul>
 
           <p className="health-footer">
-            Detailed numbers: the export package's validation summary.
+            We collect more history before calling a forecast dependable. Detailed measurements
+            are available in the export package.
           </p>
         </div>
       )}
