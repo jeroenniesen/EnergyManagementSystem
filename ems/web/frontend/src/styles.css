@@ -1094,7 +1094,8 @@ body {
 }
 .adv-toggle input { width: 16px; height: 16px; accent-color: var(--accent); }
 .field-unit { color: var(--muted); font-weight: 400; }
-.field input[type="number"], .field select {
+.field input[type="number"], .field select,
+.car-config-field input[type="number"], .car-config-field select {
   font: inherit;
   color: var(--text);
   background: var(--panel-2);

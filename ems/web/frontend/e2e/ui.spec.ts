@@ -1206,7 +1206,7 @@ test.describe("EMS dashboard", () => {
     await expect(solarNote).toHaveAttribute("title", /beyond 25% of typical output/);
     // The new B-37 ACTION line: what to actually do, not just the diagnosis.
     await expect(page.getByTestId("health-action-solar")).toContainText(
-      "solar forecast advisor in Settings → Planner",
+      "solar forecast advisor in Manage → Settings → Planner",
     );
     await expect(page.getByTestId("health-load")).toContainText("Working well");
     await expect(page.getByTestId("health-action-load")).toHaveCount(0); // only warn rows get one

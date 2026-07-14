@@ -100,7 +100,7 @@ function solarVerdict(biasW: number | null | undefined): string | null {
 // so its copy stays in the same honest "still collecting evidence" register the unknown state
 // already uses, rather than inventing a fix.
 const HEALTH_ACTION: Record<keyof Omit<ModelHealth, "notes">, string> = {
-  solar: "Check the solar forecast advisor in Settings → Planner — it suggests a calibrated "
+  solar: "Check the solar forecast advisor in Manage → Settings → Planner — it suggests a calibrated "
     + "setting.",
   load: "This usually settles as more weeks of your routine are recorded — no setting to change, "
     + "just more evidence.",
