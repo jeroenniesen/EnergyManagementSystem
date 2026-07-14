@@ -130,3 +130,34 @@ export const HEALTH_ROW_LABEL: Record<"solar" | "load" | "plan_execution", strin
   load: "Home energy pattern",
   plan_execution: "Plan follow-through",
 };
+
+/** Plan-provenance line (feat/ux-batch-3): which planner FUNCTION produced the live plan, in plain
+ * words, keyed the same as /api/battery-plan's `provenance.planner`. "rule_based" only ever occurs
+ * for the winter arbitrage planner; "adaptive"/"summer" only ever occur for the summer solar-first
+ * strategy (ems.web.api's `_resolved_planner_name` mirrors ems.planner.strategy.build_plan's own
+ * dispatch), so the season is safely folded into the copy without a separate field. */
+export const PLANNER_PROVENANCE_LABEL: Record<string, string> = {
+  rule_based: "rule-based winter planner",
+  adaptive: "adaptive summer planner",
+  summer: "solar-first summer planner",
+};
+
+/** Scenario/ML planning-intelligence layer status (CLAUDE.md honesty ask, feat/ux-batch-3):
+ * ems/intelligence/planning.py builds pessimistic/expected/optimistic planning scenarios (E-08),
+ * but it is NOT wired into live planning — it validates in the background against real outcomes,
+ * it never steers a plan. `/api/battery-plan`'s `provenance.intelligence` (backend constant
+ * `ems.web.api.INTELLIGENCE_MODE`) is the SOURCE OF TRUTH: BatteryPlan.tsx's inline provenance
+ * fragment reads that LIVE value through this map's `short` text. System.tsx's standalone
+ * "Planning intelligence" row does not fetch /api/battery-plan, so it reads
+ * `CURRENT_INTELLIGENCE_MODE` below (this map's `label`/`detail`) instead of a second hardcoded
+ * sentence. Either way there is exactly ONE place to flip when a mode starts actually steering a
+ * plan: add its entry here, point `CURRENT_INTELLIGENCE_MODE` at it, and flip
+ * `ems.web.api.INTELLIGENCE_MODE` to match. */
+export const INTELLIGENCE_COPY: Record<string, { label: string; detail: string; short: string }> = {
+  shadow: {
+    label: "Planning intelligence",
+    detail: "validating in shadow; the dependable baseline plans today",
+    short: "validating, not steering yet",
+  },
+};
+export const CURRENT_INTELLIGENCE_MODE: keyof typeof INTELLIGENCE_COPY = "shadow";

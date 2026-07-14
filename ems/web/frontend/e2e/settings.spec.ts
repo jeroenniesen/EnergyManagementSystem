@@ -40,6 +40,23 @@ test.describe("EMS settings", () => {
     await expect(field.locator("input[type=range]")).toBeVisible();
   });
 
+  // feat/ux-batch-3 (CLAUDE.md honesty ask): a read-only info callout under solar_confidence,
+  // never a fake toggle — scenario-based planning isn't live yet.
+  test("a read-only scenario-intelligence callout sits under solar confidence (no fake toggle)", async ({
+    page,
+  }) => {
+    await page.goto("/");
+    await page.getByTestId("nav-manage").click();
+    await page.getByTestId("group-planner").click();
+    const hint = page.getByTestId("scenario-intelligence-hint");
+    await expect(hint).toBeVisible();
+    await expect(hint).toContainText("forecast dial the planner actually uses today");
+    await expect(hint).toContainText("Scenario-based planning");
+    await expect(hint).toContainText("pessimistic/expected/optimistic futures");
+    // Informational only — no input/toggle inside the callout itself.
+    await expect(hint.locator("input, button")).toHaveCount(0);
+  });
+
   test("the sidebar groups sections; a section opens in the content pane on click", async ({
     page,
   }) => {

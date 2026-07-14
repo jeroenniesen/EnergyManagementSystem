@@ -1,4 +1,5 @@
 import { Icon } from "./icons";
+import { INTELLIGENCE_COPY, PLANNER_PROVENANCE_LABEL } from "./labels";
 
 type Point = { ts: string; soc_pct: number | null };
 type SolarPoint = { ts: string; forecast_w: number; actual_w: number | null };
@@ -15,11 +16,25 @@ type PriceWindow = {
 // reachability the backend already tracks. Reasons is never empty, at most two entries.
 export type PlanConfidence = { level: "high" | "medium" | "low"; reasons: string[] };
 
+// Plan-provenance (feat/ux-batch-3, CLAUDE.md honesty ask): what's ACTUALLY planning today —
+// never what the scenario/ML intelligence layer might one day do. See /api/battery-plan's
+// `_plan_provenance` (ems/web/api.py).
+export type PlanProvenance = {
+  forecast_source: string;
+  solar_confidence_pct: number;
+  planner: "rule_based" | "adaptive" | "summer";
+  intelligence: string;
+};
+
 // B-03b: the footer's "Saved today" figure is MEASURED (from /api/finance, recorded samples +
 // stored prices), never a plan estimate — so it can never show a false "€0.00" before any price
 // history exists. "measuring" means the day has no priced/recorded coverage yet (finance's
 // totals.saved_eur is null); the footer then says so instead of inventing a number.
 export type SavedToday = { status: "measured"; eur: number } | { status: "measuring" };
+
+// The PLANNED car-charging windows (from /api/car/plan's `plan.windows`) overlaid on this chart —
+// advisory only, never a control signal. Only `start`/`end` are needed to place the band.
+export type CarWindow = { start: string; end: string };
 
 export type BatteryPlanData = {
   status: "on_track" | "needs_topup" | "behind_target" | "paused_safely" | "data_stale";
@@ -45,6 +60,7 @@ export type BatteryPlanData = {
     solar: SolarPoint[];
   };
   confidence?: PlanConfidence;
+  provenance?: PlanProvenance;
 };
 
 const STATUS_LABEL: Record<BatteryPlanData["status"], string> = {
@@ -158,12 +174,19 @@ export function BatteryPlan({
   socPct = null,
   batteryMode = null,
   onBatteryClick,
+  carWindows = [],
+  carWindowsEnabled = false,
 }: {
   plan: BatteryPlanData | null;
   savedToday?: SavedToday | null;
   socPct?: number | null;
   batteryMode?: string | null;
   onBatteryClick?: () => void;
+  // The car's PLANNED charging windows (from /api/car/plan) + whether EV advice is even on — only
+  // rendered when BOTH are true, so a car with the feature off never shows a stray band (App.tsx
+  // threads these down from its own /api/car/plan poll).
+  carWindows?: CarWindow[];
+  carWindowsEnabled?: boolean;
 }) {
   if (!plan) {
     return (
@@ -190,6 +213,7 @@ export function BatteryPlan({
   const tone = plan.status === "on_track" ? "good" :
     plan.status === "needs_topup" ? "warn" :
     plan.status === "behind_target" || plan.status === "data_stale" ? "bad" : "muted";
+  const showCarWindows = carWindowsEnabled && carWindows.length > 0;
 
   return (
     <section className={`battery-plan battery-plan-${tone}`} data-testid="battery-plan" data-status={plan.status}>
@@ -225,6 +249,37 @@ export function BatteryPlan({
             className="bp-price-window"
           />
         ))}
+        {/* Planned car-charging windows (feat/ux-batch-3): subtle --car-tinted bands + a tiny car
+            glyph, so "when should the car charge" is answered right on the main chart, not buried
+            in a separate card. Advisory only — never rendered when EV advice is off. */}
+        {showCarWindows && (
+          <g
+            aria-label={`Planned car-charging windows: ${carWindows.length}`}
+            data-testid="bp-car-windows"
+          >
+            {carWindows.map((w) => (
+              <g key={`${w.start}-${w.end}`}>
+                <rect
+                  x={x(w.start)}
+                  y={PAD.t}
+                  width={Math.max(1, x(w.end) - x(w.start))}
+                  height={H - PAD.t - PAD.b}
+                  className="bp-car-window"
+                  data-testid="bp-car-window"
+                />
+                <text
+                  x={(x(w.start) + x(w.end)) / 2}
+                  y={PAD.t + 9}
+                  textAnchor="middle"
+                  className="bp-car-glyph"
+                  aria-hidden="true"
+                >
+                  🚗
+                </text>
+              </g>
+            ))}
+          </g>
+        )}
         {plan.graph.planned_actions.map((b) => (
           <rect
             key={`${b.start}-${b.end}-${b.action}`}
@@ -281,9 +336,33 @@ export function BatteryPlan({
         <span><i className="leg actual" /> actual</span>
         <span><i className="leg forecast" /> forecast</span>
         <span><i className="leg cheap" /> cheap window</span>
+        {showCarWindows && <span><i className="leg car" /> car window</span>}
         <span><i className="leg target" /> target</span>
         <span><i className="leg reserve" /> reserve</span>
       </div>
+      {plan.provenance && (
+        <p className="battery-plan-provenance" data-testid="battery-plan-provenance">
+          Planned with{" "}
+          <span title="The live solar forecast source feeding today's plan.">
+            {plan.provenance.forecast_source} at {plan.provenance.solar_confidence_pct}% confidence
+          </span>
+          {" · "}
+          <span
+            title="Which planner actually produced this plan — the dependable rule-based/adaptive
+              baseline, not a black box."
+          >
+            {PLANNER_PROVENANCE_LABEL[plan.provenance.planner] ?? plan.provenance.planner}
+          </span>
+          {" · "}
+          <span
+            title="Scenario planning (pessimistic/expected/optimistic futures) is built and being
+              validated against real outcomes — it does not steer the plan yet."
+          >
+            scenario intelligence:{" "}
+            {INTELLIGENCE_COPY[plan.provenance.intelligence]?.short ?? plan.provenance.intelligence}
+          </span>
+        </p>
+      )}
       <PlanFooter
         savedToday={savedToday}
         socPct={socPct}

@@ -66,6 +66,12 @@ type ChargeNeed = {
   reason: string;
 };
 
+// Just enough of GET /api/car/plan (CarCard.tsx owns the full shape) to overlay the car's PLANNED
+// charging windows on the main battery-plan chart (feat/ux-batch-3) — "when should the car
+// charge" answered right on the dashboard, not only inside the Car tab/compact card.
+type CarPlanWindow = { start: string; end: string };
+type CarPlanSummary = { enabled: boolean; windows: CarPlanWindow[] };
+
 // `safe` and `action` are optional, structured sub-lines (B-37): "is my home safe" + "what can I
 // do". The backend adds them incrementally; the UI renders them only when present, else falls back
 // to the bare message — so an alert without the fields still renders exactly as before.
@@ -272,6 +278,10 @@ export function App() {
   const [decision, setDecision] = useState<Decision | null>(null);
   const [alertsData, setAlertsData] = useState<AlertsResp | null>(null);
   const [chargeNeed, setChargeNeed] = useState<ChargeNeed | null>(null);
+  // The car's planned charging windows, threaded down to BatteryPlan's chart overlay (see
+  // CarPlanSummary above) — null until the first fetch resolves, same best-effort convention as
+  // the other polled cards below.
+  const [carPlan, setCarPlan] = useState<CarPlanSummary | null>(null);
   // B-03b: MEASURED (from /api/finance), not a plan estimate — null until the first successful
   // fetch (then the footer stat stays hidden; a later failure just keeps the last-known value,
   // same best-effort convention as the other polled cards below).
@@ -411,6 +421,17 @@ export function App() {
         },
       );
       fill("/api/charge-need", (v: ChargeNeed) => setChargeNeed(v ?? null));
+      // Planned car-charging windows for the chart overlay (feat/ux-batch-3) — `enabled:false`
+      // (feature off) carries no `plan`, so windows are only ever read when the feature is on.
+      fill(
+        "/api/car/plan",
+        (v: { enabled?: boolean; plan?: { windows?: CarPlanWindow[] } | null }) => {
+          setCarPlan({
+            enabled: Boolean(v?.enabled),
+            windows: v?.enabled ? v.plan?.windows ?? [] : [],
+          });
+        },
+      );
     }
     poll();
     const id = setInterval(poll, POLL_MS);
@@ -716,6 +737,8 @@ export function App() {
           socPct={status?.soc_pct ?? null}
           batteryMode={batteryModeLabel}
           onBatteryClick={batteryHasDetail ? () => setBatteryDetail("soc") : undefined}
+          carWindows={carPlan?.windows ?? []}
+          carWindowsEnabled={carPlan?.enabled ?? false}
         />
       )}
 

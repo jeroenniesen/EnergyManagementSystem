@@ -1519,6 +1519,10 @@ body {
 .health-action {
   grid-column: 1 / -1; font-size: 0.78rem; color: var(--muted);
 }
+/* Planning-intelligence row (feat/ux-batch-3): the shadow-mode scenario planner's status is
+   informational, not a finding — muted like the "still collecting evidence" unknown state, never
+   the warn-row amber. */
+.planning-intelligence-note { color: var(--muted); }
 .health-ops {
   list-style: none; margin: 14px 0 0; padding: 10px 0 0; border-top: 1px solid var(--line);
   display: flex; flex-direction: column; gap: 6px;
@@ -2198,6 +2202,10 @@ body {
 }
 .bp-bg { fill: var(--panel-2); }
 .bp-price-window { fill: var(--accent); opacity: 0.13; }
+/* Planned car-charging windows (feat/ux-batch-3): a subtle --car-tinted band + tiny glyph,
+   deliberately quieter than the price-window band so it reads as advisory, not a control signal. */
+.bp-car-window { fill: var(--car); opacity: 0.16; }
+.bp-car-glyph { font-size: 9px; opacity: 0.85; pointer-events: none; }
 .bp-solar { fill: var(--summer); opacity: 0.38; }
 .bp-reserve {
   stroke: var(--muted);
@@ -2246,11 +2254,23 @@ body {
 .leg.actual { background: var(--accent); }
 .leg.forecast { background: var(--amber); }
 .leg.cheap { height: 9px; background: color-mix(in srgb, var(--accent) 35%, transparent); }
+.leg.car { height: 9px; background: color-mix(in srgb, var(--car) 45%, transparent); }
 .leg.target {
   background: repeating-linear-gradient(90deg, var(--amber) 0 6px, transparent 6px 10px);
 }
 .leg.reserve {
   background: repeating-linear-gradient(90deg, var(--muted) 0 4px, transparent 4px 8px);
+}
+
+/* The plan-provenance line (feat/ux-batch-3, CLAUDE.md honesty ask): what's ACTUALLY planning
+   today — forecast source, the solar-confidence dial, which planner ran, and the scenario/ML
+   intelligence layer's honest (shadow, non-steering) status. Quiet by design — a footnote, not a
+   claim. Each segment carries its own tooltip (see BatteryPlan.tsx), so a hover explains that part. */
+.battery-plan-provenance {
+  margin: 8px 0 0;
+  font-size: 0.76rem;
+  line-height: 1.5;
+  color: var(--muted);
 }
 
 /* The live snapshot folded onto the story card (B-32): saved / battery / mode as one quiet row of

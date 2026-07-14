@@ -7,6 +7,7 @@ import hashlib
 import json
 import logging
 import os
+import re
 import secrets
 import threading
 from contextlib import asynccontextmanager
@@ -489,6 +490,25 @@ _LIVE_SAMPLE_COALESCE_SECONDS = 30.0
 # How much recorded history to show as "actuals" leading into the next-24h plan, so the operator can
 # see whether reality is following the plan ("am I on track?"). 3 hours = 12 quarter-hour slots.
 RECENT_HOURS = 3
+
+# Plan-provenance line (CLAUDE.md honesty ask): humanized forecast-source class names for
+# /api/battery-plan's `provenance.forecast_source`. Keyed on `type(solar_forecast).__name__` — an
+# unknown/future adapter class falls back to a plain word-split of the name (see
+# _forecast_source_label) rather than leaking raw CamelCase to the UI.
+_FORECAST_SOURCE_LABEL: dict[str, str] = {
+    "ForecastSolarSource": "Forecast.Solar",
+    "MockSolarForecastSource": "Built-in model",
+}
+
+# The scenario/ML "intelligence" layer's honest status for the plan-provenance line: ems/
+# intelligence/planning.py (pessimistic/expected/optimistic scenario planning, E-08) is BUILT and
+# VALIDATING against real outcomes, but it is NOT wired into live planning — it never steers a plan.
+# "shadow" is the only value this can be today. The frontend's single source of truth for this
+# value is THIS constant via /api/battery-plan's `provenance.intelligence` (BatteryPlan.tsx); where
+# a view can't fetch that (System.tsx's static row), it mirrors the copy from
+# ems/web/frontend/src/labels.ts's `INTELLIGENCE_COPY` — flip both together the day a mode actually
+# starts steering a plan.
+INTELLIGENCE_MODE = "shadow"
 
 # Cluster per-tower mode LABEL (from tower_mode_label) → PhysicalMode, so the coalesced cluster
 # read can serve the control loop's idempotency/reachability without a separate master mode-read.
@@ -2577,7 +2597,12 @@ def create_app(
             )
             return {"now": now, "current_soc": soc, "projected": projected, "need": need,
                     "deadline": sunset_after(fc_slots, now),
-                    "price_by": {p.start: p.eur_per_kwh for p in prices_}}
+                    "price_by": {p.start: p.eur_per_kwh for p in prices_},
+                    # The resolved season ('summer'/'winter') the ACTIVE plan was built with —
+                    # carried through so /api/battery-plan's provenance line never has to rebuild
+                    # the plan (or re-touch the seasonal-hysteresis counter) to know which planner
+                    # ran.
+                    "strategy": plan.strategy}
 
         return await asyncio.to_thread(_compute)
 
@@ -2866,6 +2891,46 @@ def create_app(
             ),
         }
 
+    def _forecast_source_label() -> str:
+        """Humanized forecast-source class name for the plan-provenance line — 'what's actually
+        feeding today's forecast', not a raw Python class name. Deliberately keyed on the CLASS
+        (ForecastSolarSource / MockSolarForecastSource), not on whether ForecastSolarSource's own
+        internal model-curve fallback happened to fire on the last fetch — that distinction is
+        already surfaced honestly by /api/forecast's `source_label`."""
+        if solar_forecast is None:
+            return "No forecast source"
+        name = type(solar_forecast).__name__
+        if name in _FORECAST_SOURCE_LABEL:
+            return _FORECAST_SOURCE_LABEL[name]
+        # Unknown/future adapter: split CamelCase into words instead of leaking the raw class name.
+        words = re.findall(r"[A-Z][a-z0-9]*", name.removesuffix("Source")) or [name]
+        return " ".join(words)
+
+    def _resolved_planner_name(strategy: str) -> str:
+        """Which planner FUNCTION produced the live plan (ems.planner.strategy.build_plan), not just
+        which season — the plan-provenance line reads 'rule-based winter planner', not just
+        'winter'. `build_plan` overwrites `Plan.strategy` to the season name for the rest of the
+        system, so this mirrors its dispatch instead of reading it back: `_current_plan` (via
+        `_build_plan_now`) always supplies `load_w_by` + `AdaptiveConfig`, so 'summer' always
+        resolves to the demand-aware adaptive charger and 'winter' always to the rule-based
+        arbitrage planner. 'summer' (the plain solar-first planner, `build_plan`'s fallback when a
+        caller omits the load profile) is kept as a valid value for completeness, even though this
+        endpoint's live wiring never takes that path."""
+        return "adaptive" if strategy == "summer" else "rule_based"
+
+    def _plan_provenance(strategy: str) -> dict:
+        """The plan-provenance line (CLAUDE.md honesty ask, feat/ux-batch-3): what is ACTUALLY
+        steering today's plan — the forecast source, the solar_confidence dial, which planner
+        function ran, and the scenario/ML intelligence layer's real (shadow, non-steering) status.
+        No field here may overstate what's live: ems/intelligence/planning.py is pure and built, but
+        unwired into live planning (see INTELLIGENCE_MODE)."""
+        return {
+            "forecast_source": _forecast_source_label(),
+            "solar_confidence_pct": settings_cache["planner.solar_confidence"],
+            "planner": _resolved_planner_name(strategy),
+            "intelligence": INTELLIGENCE_MODE,
+        }
+
     @app.get("/api/battery-plan")
     async def battery_plan() -> dict:
         """Homeowner-facing battery confidence contract: the answer first, then graph proof.
@@ -2905,6 +2970,9 @@ def create_app(
                           "target_line": [], "planned_actions": [],
                           "price_windows": [], "solar": []},
                 "confidence": confidence,
+                # No plan exists yet, so there is no plan.strategy to read back — resolve it fresh
+                # (idempotent: see _resolve_strategy/apply_hysteresis) just for the provenance line.
+                "provenance": _plan_provenance(_active_strategy(now)),
             }
 
         projected, price_by, need, deadline = (
@@ -3000,6 +3068,7 @@ def create_app(
                            "actual_w": None} for s in slots],
             },
             "confidence": confidence,
+            "provenance": _plan_provenance(fp["strategy"]),
         }
 
     async def _past_story(reserve_pct: float) -> dict:

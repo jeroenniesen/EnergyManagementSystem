@@ -626,6 +626,17 @@ export function Settings({ onSaved }: { onSaved?: (values: Values) => void } = {
             }}
           />
         )}
+        {/* Read-only, honesty-first info callout (CLAUDE.md, feat/ux-batch-3): this dial is what
+            the planner ACTUALLY uses today. No toggle here — scenario-based planning
+            (ems/intelligence/planning.py) is built and validating in shadow, not steering a plan
+            yet, so there is nothing live to switch on. */}
+        {f.key === "planner.solar_confidence" && (
+          <p className="advisor-hint" data-testid="scenario-intelligence-hint">
+            This is the forecast dial the planner actually uses today. Scenario-based planning
+            (pessimistic/expected/optimistic futures) is in validation and will appear here when
+            it can steer.
+          </p>
+        )}
         {f.key === "ev.charger_kw" && selectedCar && (
           <p className="advisor-hint" data-testid="car-ac-hint">
             {selectedCar.model}'s onboard AC charger tops out at{" "}

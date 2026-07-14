@@ -14,9 +14,21 @@ async function openPlan(page: Page) {
   await expect(page.getByTestId("plan-disclosure-body")).toBeVisible();
 }
 
+// feat/ux-batch-3: the default plan-provenance block a mocked /api/battery-plan carries — a test
+// that cares about it can override just this, matching batteryPlanFixture's `confidence` pattern.
+const DEFAULT_PROVENANCE = {
+  forecast_source: "Forecast.Solar",
+  solar_confidence_pct: 80,
+  planner: "rule_based",
+  intelligence: "shadow",
+};
+
 // B-68: a minimal-but-complete /api/battery-plan payload, so a test can mock just the
 // `confidence` block without hand-building the rest of the (large) contract every time.
-function batteryPlanFixture(confidence: { level: string; reasons: string[] }) {
+function batteryPlanFixture(
+  confidence: { level: string; reasons: string[] },
+  provenance: Record<string, unknown> = DEFAULT_PROVENANCE,
+) {
   const now = new Date();
   return {
     status: "on_track",
@@ -37,6 +49,31 @@ function batteryPlanFixture(confidence: { level: string; reasons: string[] }) {
       planned_actions: [], price_windows: [], solar: [],
     },
     confidence,
+    provenance,
+  };
+}
+
+// feat/ux-batch-3: a car-charging window aligned to "now" (relative offsets in hours), so a mocked
+// GET /api/car/plan lands inside whatever the live /api/battery-plan's plotted window happens to be.
+function carWindowFixture(startOffsetH: number, endOffsetH: number) {
+  const now = Date.now();
+  return {
+    start: new Date(now + startOffsetH * 3600e3).toISOString(),
+    end: new Date(now + endOffsetH * 3600e3).toISOString(),
+    ac_kwh: 3.7, battery_kwh: 3.33, est_cost_eur: 0.42, solar_share_pct: 50,
+    reason: "Cheapest slots to reach 80%.",
+  };
+}
+
+function carPlanFixture(enabled: boolean, windows: ReturnType<typeof carWindowFixture>[] = []) {
+  return {
+    enabled,
+    soc: enabled ? { soc_pct: 50, anchor_pct: 50, anchor_ts: new Date().toISOString(),
+      added_kwh: 0, sessions_since_anchor: 0, age_hours: 1, stale: false } : null,
+    plan: enabled ? {
+      soc: 50, deadlines: [], slots: [], windows, advice: "Plug in later.",
+      negative_price_hint: null, total_est_cost_eur: 0, total_planned_kwh: 0,
+    } : null,
   };
 }
 
@@ -209,6 +246,99 @@ test.describe("EMS dashboard", () => {
     // Only the FIRST reason renders as the visible sub-line.
     const reason = page.getByTestId("hero-confidence-reason");
     await expect(reason).toHaveText("Safety fallback active — EMS is holding, not planning.");
+  });
+
+  // feat/ux-batch-3: the plan-provenance line (CLAUDE.md honesty ask) — what's ACTUALLY planning
+  // today, never overstating the still-shadow scenario/ML intelligence layer.
+  test("the plan-provenance line explains what's actually planning today (mocked)", async ({
+    page,
+  }) => {
+    await page.route("**/api/battery-plan", (route) =>
+      route.fulfill({
+        status: 200, contentType: "application/json",
+        body: JSON.stringify(batteryPlanFixture(
+          { level: "high", reasons: ["Fresh data, calibrated forecast, battery responding."] },
+          {
+            forecast_source: "Forecast.Solar", solar_confidence_pct: 80,
+            planner: "rule_based", intelligence: "shadow",
+          },
+        )),
+      }),
+    );
+    await page.goto("/");
+    const line = page.getByTestId("battery-plan-provenance");
+    await expect(line).toBeVisible();
+    await expect(line).toContainText("Planned with");
+    await expect(line).toContainText("Forecast.Solar at 80% confidence");
+    await expect(line).toContainText("rule-based winter planner");
+    await expect(line).toContainText("scenario intelligence: validating, not steering yet");
+  });
+
+  test("the plan-provenance line reflects the resolved summer/adaptive planner (mocked)", async ({
+    page,
+  }) => {
+    await page.route("**/api/battery-plan", (route) =>
+      route.fulfill({
+        status: 200, contentType: "application/json",
+        body: JSON.stringify(batteryPlanFixture(
+          { level: "high", reasons: ["ok"] },
+          {
+            forecast_source: "Built-in model", solar_confidence_pct: 65,
+            planner: "adaptive", intelligence: "shadow",
+          },
+        )),
+      }),
+    );
+    await page.goto("/");
+    const line = page.getByTestId("battery-plan-provenance");
+    await expect(line).toContainText("Built-in model at 65% confidence");
+    await expect(line).toContainText("adaptive summer planner");
+  });
+
+  // feat/ux-batch-3: the main dashboard chart overlays the car's PLANNED charging windows so "when
+  // should the car charge" is answered right there, not only inside the Car tab/compact card.
+  test("the dashboard chart overlays planned car-charging windows when EV advice is on (mocked)", async ({
+    page,
+  }) => {
+    await page.route("**/api/car/plan", (route) =>
+      route.fulfill({
+        status: 200, contentType: "application/json",
+        body: JSON.stringify(carPlanFixture(true, [carWindowFixture(2, 4)])),
+      }),
+    );
+    await page.goto("/");
+    await expect(page.getByTestId("battery-plan")).toBeVisible();
+    await expect(page.getByTestId("bp-car-windows")).toBeAttached();
+    await expect(page.getByTestId("bp-car-window")).toHaveCount(1);
+    // Legend text — never colour-only.
+    await expect(page.getByTestId("battery-plan")).toContainText("car window");
+  });
+
+  test("no car-charging bands render when EV advice is disabled (mocked)", async ({ page }) => {
+    await page.route("**/api/car/plan", (route) =>
+      route.fulfill({
+        status: 200, contentType: "application/json",
+        body: JSON.stringify(carPlanFixture(false)),
+      }),
+    );
+    await page.goto("/");
+    await expect(page.getByTestId("battery-plan")).toBeVisible();
+    await expect(page.getByTestId("bp-car-windows")).toHaveCount(0);
+    await expect(page.getByTestId("battery-plan")).not.toContainText("car window");
+  });
+
+  test("no car-charging bands render when EV advice is on but no windows are planned (mocked)", async ({
+    page,
+  }) => {
+    await page.route("**/api/car/plan", (route) =>
+      route.fulfill({
+        status: 200, contentType: "application/json",
+        body: JSON.stringify(carPlanFixture(true, [])),
+      }),
+    );
+    await page.goto("/");
+    await expect(page.getByTestId("battery-plan")).toBeVisible();
+    await expect(page.getByTestId("bp-car-windows")).toHaveCount(0);
   });
 
   test("renders the status dashboard with reconstructed load", async ({ page }) => {
@@ -964,6 +1094,29 @@ test.describe("EMS dashboard", () => {
     await page.getByTestId("manage-tab-system").click();
     await expect(page.getByTestId("system-readiness")).toBeVisible();
     await expect(page.getByTestId("check-group-Battery & control")).toBeVisible();
+  });
+
+  // feat/ux-batch-3: the "Planning intelligence" row — the scenario/ML layer is built and
+  // validating in shadow, not steering a plan yet. Muted/unknown styling, links nowhere.
+  test("Model health panel shows the muted Planning intelligence row (mocked)", async ({ page }) => {
+    await page.route("**/api/accuracy", (route) =>
+      route.fulfill({
+        status: 200, contentType: "application/json", body: JSON.stringify(accuracyFixture()),
+      }),
+    );
+    await page.goto("/");
+    await page.getByTestId("nav-manage").click();
+    await page.getByTestId("manage-tab-system").click();
+    const row = page.getByTestId("health-planning-intelligence");
+    await expect(row).toBeVisible();
+    await expect(row).toContainText("Planning intelligence");
+    await expect(page.getByTestId("planning-intelligence-note")).toContainText(
+      "validating in shadow; the dependable baseline plans today",
+    );
+    // Muted, unknown-style dot — the same visual language as "still collecting evidence" rows.
+    await expect(row.locator(".dot-unknown")).toBeVisible();
+    // Links nowhere: no anchor/button inside the row.
+    await expect(row.locator("a, button")).toHaveCount(0);
   });
 
   // B-76: Model and optimization health — synthesized ok/warn/unknown verdict per accuracy track.
