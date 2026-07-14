@@ -115,14 +115,14 @@ export const INCIDENT_TYPE_LABEL: Record<string, string> = {
 /** Model-health track verdict (B-76, from /api/accuracy's `health` block) → dot colour + text
  * label (never colour-only) + a title for the "still collecting evidence" honest empty state. */
 export const HEALTH_STATUS: Record<"ok" | "warn" | "unknown", Labelled> = {
-  ok: { label: "OK", title: "Tracking well — nothing to flag." },
-  warn: { label: "Check", title: "Worth a look — see the note below." },
+  ok: { label: "Working well", title: "The recent evidence looks dependable." },
+  warn: { label: "Needs a look", title: "There is something worth reviewing below." },
   unknown: { label: "Still collecting evidence", title: "Not enough history yet to judge this." },
 };
 
 /** Row titles for the Model-health panel (B-76), keyed the same as /api/accuracy's health block. */
 export const HEALTH_ROW_LABEL: Record<"solar" | "load" | "plan_execution", string> = {
-  solar: "Solar forecast",
-  load: "Load predictability",
-  plan_execution: "Plan execution",
+  solar: "Solar outlook",
+  load: "Home energy pattern",
+  plan_execution: "Plan follow-through",
 };

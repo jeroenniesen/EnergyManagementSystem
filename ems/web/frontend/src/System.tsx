@@ -72,6 +72,20 @@ function headlineFor(row: keyof Omit<ModelHealth, "notes">, acc: Accuracy): stri
   return v == null ? null : `${v}% hit rate`;
 }
 
+function healthSummary(health: ModelHealth): string {
+  const states = [health.solar, health.load, health.plan_execution];
+  if (states.every((state) => state === "unknown")) {
+    return "We’re gathering enough history to give you a trustworthy answer.";
+  }
+  if (states.some((state) => state === "warn")) {
+    return "One part of the picture needs a look; safe planning continues in the meantime.";
+  }
+  if (states.every((state) => state === "ok")) {
+    return "Recent forecasts and plans are tracking well for your home.";
+  }
+  return "Some evidence is still being collected; the safe baseline remains active.";
+}
+
 function when(ts: string): string {
   const d = new Date(ts);
   return Number.isNaN(d.getTime()) ? ts : d.toLocaleString([], { dateStyle: "medium" });
@@ -274,6 +288,13 @@ export function SystemView() {
       {accuracy && (
         <div className="model-health" data-testid="model-health">
           <span className="metric-label">Model health</span>
+          <p className="settings-group-hint" data-testid="model-health-intro">
+            This is the system learning how well its forecasts match your home. Low confidence
+            never overrides safety — the dependable baseline remains in charge.
+          </p>
+          <p className="health-summary" data-testid="model-health-summary">
+            {healthSummary(accuracy.health)}
+          </p>
           <ul className="health-rows" data-testid="health-rows">
             {HEALTH_ROW_ORDER.map((row) => {
               const status = accuracy.health[row];
@@ -320,7 +341,8 @@ export function SystemView() {
           </ul>
 
           <p className="health-footer">
-            Detailed numbers: the export package's validation summary.
+            We collect more history before calling a forecast dependable. Detailed measurements
+            are available in the export package.
           </p>
         </div>
       )}
