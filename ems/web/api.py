@@ -879,6 +879,14 @@ def create_app(
         pending-switch counter survives a restart (§8.4 / B-15). Best-effort — a cache hiccup must
         never break strategy resolution."""
         if new_state == _hysteresis_box["state"]:
+            # Refresh the TTL during stable seasons too; otherwise a quiet season expires after
+            # 90 days and a restart loses the damping state.  This is intentionally a cheap
+            # idempotent write on each control evaluation.
+            if cache_store is not None:
+                try:
+                    cache_store.set(_HYSTERESIS_KEY, new_state.to_json(), _HYSTERESIS_TTL_SECONDS)
+                except Exception:
+                    _log.debug("hysteresis state TTL refresh failed (non-fatal)", exc_info=True)
             return
         _hysteresis_box["state"] = new_state
         if cache_store is not None:

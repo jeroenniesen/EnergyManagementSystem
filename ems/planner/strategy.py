@@ -142,8 +142,13 @@ def apply_hysteresis(
     # Signal agrees with the committed season → clear any pending switch (rewrite only if needed).
     if raw == state.committed:
         if state.pending is None and state.count == 0:
+            # Keep the persisted day marker current; callers can use it to refresh TTL once/day.
             return state.committed, state
-        return state.committed, HysteresisState(committed=state.committed, last_day=state.last_day)
+        # A transient agreeing tick must not erase a multi-day run.  Reset only on the first
+        # evaluation of a new local day; the control loop runs every few minutes.
+        if state.last_day == day_key:
+            return state.committed, state
+        return state.committed, HysteresisState(committed=state.committed, last_day=day_key)
     # Disagreement: advance the consecutive-day counter at most once per calendar day.
     if state.last_day == day_key:
         return state.committed, state  # already evaluated today — hold, don't double-count
