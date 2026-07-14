@@ -3,12 +3,15 @@ so derived values can always be recomputed after a sign/calibration fix."""
 from __future__ import annotations
 
 import json
+from collections import defaultdict
 from contextlib import asynccontextmanager
+from datetime import UTC, datetime, timedelta
 
 import aiosqlite
 
 from ems.domain import RawSample
 from ems.load_model import DerivedSample
+from ems.storage.migrations import Migration, has_table, run_migrations
 
 _RAW_COLS = ("ts", "grid_power_w", "solar_power_w", "battery_power_w", "ev_power_w", "soc_pct")
 _DERIVED_COLS = ("ts", "house_load_w", "non_ev_load_w")
@@ -17,6 +20,274 @@ RAW_COLUMNS = _RAW_COLS
 DERIVED_COLUMNS = _DERIVED_COLS
 _BUSY_TIMEOUT_MS = 3000
 _CAR_SOC_ANCHOR_KEY = "anchor"  # single-row key for the manual car-SoC anchor (see set/get below)
+
+# --- Compact long-horizon observation store (design §4.1) + daily kWh rollups (B-13) ----------
+_SLOT_SECONDS = 900  # 15-min observation slot
+_SLOT_HOURS = _SLOT_SECONDS / 3600.0  # energy = mean power × slot hours
+_DEFAULT_CADENCE_S = 300.0  # recorder default (config cycle_seconds); used for backfill coverage
+_LOW_COVERAGE = 0.8  # coverage below this ⇒ the v1 "low_coverage" flag (strict <)
+# 400 days of 15-min observations ≈ 35k rows — retained INDEPENDENTLY of raw retention_days so a
+# full year of seasonal evidence survives the (much shorter) raw purge. daily_energy is never
+# purged at all (see purge notes below).
+OBSERVATION_RETENTION_DAYS = 400
+
+_OBSERVATIONS_DDL = (
+    "CREATE TABLE IF NOT EXISTS observations "
+    "(slot_start TEXT PRIMARY KEY, mean_load_w REAL, mean_non_ev_load_w REAL, mean_solar_w REAL, "
+    "samples INTEGER, coverage REAL, flags TEXT NOT NULL DEFAULT '[]')"
+)
+_DAILY_ENERGY_DDL = (
+    "CREATE TABLE IF NOT EXISTS daily_energy "
+    "(date TEXT PRIMARY KEY, solar_kwh REAL, load_kwh REAL, non_ev_load_kwh REAL, ev_kwh REAL, "
+    "grid_import_kwh REAL, grid_export_kwh REAL, battery_charge_kwh REAL, "
+    "battery_discharge_kwh REAL, coverage REAL)"
+)
+
+
+def _parse_utc(ts: object) -> datetime | None:
+    """Parse a stored ISO `ts` to an aware UTC datetime (naive ⇒ assumed UTC). None on garbage."""
+    if not isinstance(ts, str):
+        return None
+    try:
+        dt = datetime.fromisoformat(ts)
+    except ValueError:
+        return None
+    return dt.replace(tzinfo=UTC) if dt.tzinfo is None else dt.astimezone(UTC)
+
+
+def _floor15(dt: datetime) -> datetime:
+    """Floor an aware UTC datetime to its 15-min slot start."""
+    return dt.replace(minute=(dt.minute // 15) * 15, second=0, microsecond=0)
+
+
+def _mean(xs: list[float]) -> float:
+    return sum(xs) / len(xs) if xs else 0.0
+
+
+def aggregate_observations(
+    raw_rows: list[dict], derived_rows: list[dict], cadence_seconds: float = _DEFAULT_CADENCE_S
+) -> list[dict]:
+    """Pure: group raw+derived samples into 15-min UTC observation rows. `mean_non_ev_load_w`
+    comes straight from the recorded derived `non_ev_load_w`, which ALREADY excludes EV charging
+    per the load_model threshold rule (`reconstruct`), so EV exclusion happens once, at ingest.
+
+    `coverage` is cadence-aware: samples / (900s / cadence), capped at 1.0. `flags` in v1 is a JSON
+    array carrying ONLY "low_coverage" (coverage < 0.8). Deliberately NOT yet emitted (documented
+    honestly for a later iteration): clamped/implausible input, manual-override, and
+    calibration/setup-activity exclusions."""
+    expected = max(1.0, _SLOT_SECONDS / max(float(cadence_seconds), 1.0))
+    solar_by: dict[datetime, list[float]] = defaultdict(list)
+    load_by: dict[datetime, list[float]] = defaultdict(list)
+    nonev_by: dict[datetime, list[float]] = defaultdict(list)
+    count_by: dict[datetime, int] = defaultdict(int)
+    for r in raw_rows:
+        dt = _parse_utc(r.get("ts"))
+        if dt is None:
+            continue
+        slot = _floor15(dt)
+        solar_by[slot].append(max(0.0, float(r.get("solar_power_w", 0.0))))  # production ≥ 0 (§4.7)
+        count_by[slot] += 1
+    for r in derived_rows:
+        dt = _parse_utc(r.get("ts"))
+        if dt is None:
+            continue
+        slot = _floor15(dt)
+        load_by[slot].append(float(r.get("house_load_w", 0.0)))
+        nonev_by[slot].append(float(r.get("non_ev_load_w", 0.0)))
+    out: list[dict] = []
+    for slot in sorted(count_by):
+        samples = count_by[slot]
+        coverage = min(1.0, samples / expected)
+        flags = ["low_coverage"] if coverage < _LOW_COVERAGE else []
+        out.append({
+            "slot_start": slot.isoformat(),
+            "mean_load_w": _mean(load_by[slot]),
+            "mean_non_ev_load_w": _mean(nonev_by[slot]),
+            "mean_solar_w": _mean(solar_by[slot]),
+            "samples": samples,
+            "coverage": coverage,
+            "flags": flags,
+        })
+    return out
+
+
+def aggregate_daily_energy(
+    obs_rows: list[dict], raw_rows: list[dict], day_start: datetime, day_end: datetime,
+    cadence_seconds: float = _DEFAULT_CADENCE_S,
+) -> dict:
+    """Pure: integrate one LOCAL day's observations + raw grid/battery into kWh node totals.
+    `day_start`/`day_end` are tz-aware local-midnight bounds — their span is DST-correct (23h/25h
+    on transition days), which the coverage denominator and slot count both inherit for free.
+
+    Solar/load/non-EV come from `obs_rows` (already EV-excluded); grid/battery are aggregated from
+    `raw_rows` with the fixed sign conventions (reporting.py / energy_flow.py): grid + = import /
+    − = export; battery + = discharge / − = charge. Node totals only — no source→sink attribution
+    (that's energy_flow.build_flows' job for the live Sankey; here we just need year-over-year kWh).
+    """
+    dh = _SLOT_HOURS
+    solar_kwh = sum(float(o.get("mean_solar_w") or 0.0) for o in obs_rows) * dh / 1000.0
+    load_kwh = sum(float(o.get("mean_load_w") or 0.0) for o in obs_rows) * dh / 1000.0
+    non_ev_kwh = sum(float(o.get("mean_non_ev_load_w") or 0.0) for o in obs_rows) * dh / 1000.0
+    ev_kwh = max(0.0, load_kwh - non_ev_kwh)
+    samples = sum(int(o.get("samples") or 0) for o in obs_rows)
+
+    grid_by: dict[datetime, list[float]] = defaultdict(list)
+    batt_by: dict[datetime, list[float]] = defaultdict(list)
+    for r in raw_rows:
+        dt = _parse_utc(r.get("ts"))
+        if dt is None:
+            continue
+        slot = _floor15(dt)
+        grid_by[slot].append(float(r.get("grid_power_w", 0.0)))
+        batt_by[slot].append(float(r.get("battery_power_w", 0.0)))
+    grid_import = grid_export = batt_charge = batt_discharge = 0.0
+    for xs in grid_by.values():
+        g = _mean(xs)
+        grid_import += max(0.0, g) * dh / 1000.0
+        grid_export += max(0.0, -g) * dh / 1000.0
+    for xs in batt_by.values():
+        b = _mean(xs)
+        batt_charge += max(0.0, -b) * dh / 1000.0
+        batt_discharge += max(0.0, b) * dh / 1000.0
+
+    # Convert to UTC before differencing: subtracting two datetimes that share the SAME tzinfo
+    # object does NAIVE wall-clock arithmetic (always 24 h) and would silently drop the DST hour.
+    # Via UTC the span is the true 23 h / 24 h / 25 h, which the coverage denominator inherits.
+    span_s = (day_end.astimezone(UTC) - day_start.astimezone(UTC)).total_seconds()
+    expected = max(1.0, span_s / max(float(cadence_seconds), 1.0))
+    coverage = min(1.0, samples / expected)
+
+    def r3(x: float) -> float:
+        return round(x, 3) + 0.0  # +0.0 collapses -0.0
+
+    return {
+        "date": day_start.date().isoformat(),
+        "solar_kwh": r3(solar_kwh), "load_kwh": r3(load_kwh),
+        "non_ev_load_kwh": r3(non_ev_kwh), "ev_kwh": r3(ev_kwh),
+        "grid_import_kwh": r3(grid_import), "grid_export_kwh": r3(grid_export),
+        "battery_charge_kwh": r3(batt_charge), "battery_discharge_kwh": r3(batt_discharge),
+        "coverage": round(coverage, 4),
+    }
+
+
+async def _materialize_observations(
+    db: aiosqlite.Connection, start_iso: str, end_iso: str, cadence_seconds: float
+) -> int:
+    """Aggregate raw_samples+derived_samples in [start, end) into observation rows and upsert.
+    Operates on the given connection WITHOUT committing — the caller owns the transaction (a
+    migration backfill shares init()'s connection; the store wrapper opens its own + commits)."""
+    cur = await db.execute(
+        "SELECT ts, solar_power_w FROM raw_samples WHERE ts >= ? AND ts < ?", (start_iso, end_iso))
+    raw_rows = [{"ts": t, "solar_power_w": s} for (t, s) in await cur.fetchall()]
+    cur = await db.execute(
+        "SELECT ts, house_load_w, non_ev_load_w FROM derived_samples WHERE ts >= ? AND ts < ?",
+        (start_iso, end_iso))
+    der_rows = [{"ts": t, "house_load_w": h, "non_ev_load_w": n} for (t, h, n) in
+                await cur.fetchall()]
+    obs = aggregate_observations(raw_rows, der_rows, cadence_seconds)
+    if not obs:
+        return 0
+    await db.executemany(
+        "INSERT OR REPLACE INTO observations "
+        "(slot_start, mean_load_w, mean_non_ev_load_w, mean_solar_w, samples, coverage, flags) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?)",
+        [(o["slot_start"], o["mean_load_w"], o["mean_non_ev_load_w"], o["mean_solar_w"],
+          o["samples"], o["coverage"], json.dumps(o["flags"])) for o in obs],
+    )
+    return len(obs)
+
+
+async def _materialize_daily_energy(
+    db: aiosqlite.Connection, day_start: datetime, day_end: datetime, cadence_seconds: float
+) -> None:
+    """Derive one local day's daily_energy row from observations (solar/load/non-EV/EV) + raw
+    grid/battery, keyed by the LOCAL date `day_start.date()`. Upsert; no commit (caller owns it)."""
+    su = day_start.astimezone(UTC).isoformat()
+    eu = day_end.astimezone(UTC).isoformat()
+    cur = await db.execute(
+        "SELECT slot_start, mean_load_w, mean_non_ev_load_w, mean_solar_w, samples "
+        "FROM observations WHERE slot_start >= ? AND slot_start < ?", (su, eu))
+    obs_rows = [{"slot_start": a, "mean_load_w": b, "mean_non_ev_load_w": c, "mean_solar_w": d,
+                 "samples": e} for (a, b, c, d, e) in await cur.fetchall()]
+    cur = await db.execute(
+        "SELECT ts, grid_power_w, battery_power_w FROM raw_samples WHERE ts >= ? AND ts < ?",
+        (su, eu))
+    raw_rows = [{"ts": t, "grid_power_w": g, "battery_power_w": bt} for (t, g, bt) in
+                await cur.fetchall()]
+    d = aggregate_daily_energy(obs_rows, raw_rows, day_start, day_end, cadence_seconds)
+    await db.execute(
+        "INSERT OR REPLACE INTO daily_energy "
+        "(date, solar_kwh, load_kwh, non_ev_load_kwh, ev_kwh, grid_import_kwh, grid_export_kwh, "
+        "battery_charge_kwh, battery_discharge_kwh, coverage) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        (d["date"], d["solar_kwh"], d["load_kwh"], d["non_ev_load_kwh"], d["ev_kwh"],
+         d["grid_import_kwh"], d["grid_export_kwh"], d["battery_charge_kwh"],
+         d["battery_discharge_kwh"], d["coverage"]),
+    )
+
+
+async def materialize_observations(
+    store: HistoryStore, start: datetime, end: datetime, *,
+    cadence_seconds: float = _DEFAULT_CADENCE_S,
+) -> int:
+    """Public wrapper: materialize observations for [start, end) (tz-aware datetimes) on a fresh
+    connection, committed. Idempotent upsert — safe to re-run for the same window."""
+    async with store._conn() as db:
+        n = await _materialize_observations(
+            db, start.astimezone(UTC).isoformat(), end.astimezone(UTC).isoformat(), cadence_seconds)
+        await db.commit()
+        return n
+
+
+async def materialize_daily_energy(
+    store: HistoryStore, day_start: datetime, day_end: datetime, *,
+    cadence_seconds: float = _DEFAULT_CADENCE_S,
+) -> None:
+    """Public wrapper: materialize the daily_energy row for the local day [day_start, day_end)
+    (tz-aware local-midnight bounds) on a fresh connection, committed. Idempotent upsert."""
+    async with store._conn() as db:
+        await _materialize_daily_energy(db, day_start, day_end, cadence_seconds)
+        await db.commit()
+
+
+async def _migrate_v1_observations(db: aiosqlite.Connection) -> None:
+    """v1: create the observation store and backfill it from ALL existing raw history — on an
+    upgrade, production's weeks of samples count as seasonal evidence from day one (bounded: a few
+    weeks of 15-min slots is only ~thousands of rows). Backfill coverage assumes the default
+    recorder cadence; the daily maintenance recomputes recent days at the true cadence."""
+    await db.execute(_OBSERVATIONS_DDL)
+    await _materialize_observations(db, "0000", "9999", _DEFAULT_CADENCE_S)
+
+
+async def _migrate_v2_daily_energy(db: aiosqlite.Connection) -> None:
+    """v2: create the never-purged daily kWh rollup and backfill one row per UTC day that has
+    observations. The storage layer has no site timezone at migration time, so DEEP backfill uses
+    UTC day boundaries; the daily maintenance re-materializes recent days (yesterday) with the real
+    site tz, so recent history is local-accurate and old history is UTC-approximate — the ≤2h
+    midnight offset is immaterial for year-over-year kWh trends."""
+    await db.execute(_DAILY_ENERGY_DDL)
+    cur = await db.execute("SELECT MIN(slot_start), MAX(slot_start) FROM observations")
+    row = await cur.fetchone()
+    if not row or row[0] is None:
+        return
+    first, last = _parse_utc(row[0]), _parse_utc(row[1])
+    if first is None or last is None:
+        return
+    day = datetime(first.year, first.month, first.day, tzinfo=UTC)
+    while day <= last:
+        nxt = day + timedelta(days=1)
+        await _materialize_daily_energy(db, day, nxt, _DEFAULT_CADENCE_S)
+        day = nxt
+
+
+# Ordered migration registry (see storage/migrations.py). Append-only: never renumber or edit a
+# shipped migration — add a new one. Each `apply` runs its DDL + bounded backfill in the runner's
+# transaction and must not commit.
+MIGRATIONS = [
+    Migration(1, "compact 15-min observation store (design §4.1)", _migrate_v1_observations),
+    Migration(2, "long-horizon daily kWh rollups (B-13)", _migrate_v2_daily_energy),
+]
+LATEST_SCHEMA_VERSION = max(m.version for m in MIGRATIONS)
 
 
 class HistoryStore:
@@ -40,8 +311,19 @@ class HistoryStore:
             await db.execute("PRAGMA journal_mode=WAL")
             # INCREMENTAL auto-vacuum lets maintenance reclaim space freed by retention purges
             # without a full table-locking VACUUM. Only takes effect on a fresh DB (set before the
-            # first table); harmless no-op on an existing one (retention still bounds row growth).
+            # first table AND before any header write); harmless no-op on an existing one (retention
+            # still bounds row growth).
             await db.execute("PRAGMA auto_vacuum=INCREMENTAL")
+            # "Existing history schema?" is keyed off raw_samples (our v0 ROOT table), NOT "any
+            # table" — the SQLite file is shared with the audit/settings/cache stores, so their
+            # tables must not make a brand-new history schema look already-migrated. An EXISTING
+            # pre-runner DB gets its pending migrations applied HERE, before the idempotent baseline
+            # below (see storage/migrations.py for the full fresh/existing contract). A DB WITHOUT
+            # raw_samples skips migrations — the baseline builds every table — and is stamped to the
+            # latest version AFTER the baseline (below), so a backfill never runs before its tables.
+            existing = await has_table(db, "raw_samples")
+            if existing:
+                await run_migrations(db, MIGRATIONS, fresh=False)
             await db.execute(
                 "CREATE TABLE IF NOT EXISTS raw_samples "
                 "(ts TEXT NOT NULL, grid_power_w REAL NOT NULL, solar_power_w REAL NOT NULL, "
@@ -130,7 +412,18 @@ class HistoryStore:
                 "CREATE INDEX IF NOT EXISTS idx_notifications_dedupe "
                 "ON notifications(dedupe_key)"
             )
+            # Compact 15-min observation store (design §4.1, 400-day horizon) + never-purged daily
+            # kWh rollups (B-13). Part of the v0 baseline for a FRESH DB; on an EXISTING DB the
+            # migrations above already created (and backfilled) them, so these are no-ops.
+            await db.execute(_OBSERVATIONS_DDL)
+            await db.execute(_DAILY_ENERGY_DDL)
             await db.commit()
+            # Fresh DB: baseline just built the FULL current schema (with auto_vacuum latched), so
+            # stamp straight to the latest version — the numbered migrations would only re-create
+            # what exists and find no raw history to backfill.
+            if not existing:
+                await db.execute(f"PRAGMA user_version = {int(LATEST_SCHEMA_VERSION)}")
+                await db.commit()
 
     async def purge_older_than(self, cutoff_iso: str) -> int:
         """Delete rows older than `cutoff_iso` (UTC-ISO) from BOTH sample tables atomically (one
@@ -387,6 +680,52 @@ class HistoryStore:
                 "SELECT day, data FROM daily_finance WHERE day >= ? AND day < ? "
                 "ORDER BY day ASC", (start_day, end_day))
             return [{"day": r["day"], "data": json.loads(r["data"])} for r in await cur.fetchall()]
+
+    async def schema_version(self) -> int:
+        """The DB's PRAGMA user_version (the applied migration level; see storage/migrations.py)."""
+        async with self._conn() as db:
+            cur = await db.execute("PRAGMA user_version")
+            return int((await cur.fetchone())[0])
+
+    async def observations_between(self, start_iso: str, end_iso: str) -> list[dict]:
+        """Compact 15-min observations with slot_start in [start, end), oldest-first (UTC-ISO ⇒
+        lexicographic = time). `flags` is decoded from JSON to a list (a corrupt value ⇒ [])."""
+        async with self._conn() as db:
+            db.row_factory = aiosqlite.Row
+            cur = await db.execute(
+                "SELECT slot_start, mean_load_w, mean_non_ev_load_w, mean_solar_w, samples, "
+                "coverage, flags FROM observations WHERE slot_start >= ? AND slot_start < ? "
+                "ORDER BY slot_start ASC", (start_iso, end_iso))
+            out = []
+            for r in await cur.fetchall():
+                row = dict(r)
+                try:
+                    row["flags"] = json.loads(row["flags"]) if row["flags"] else []
+                except (ValueError, TypeError):
+                    row["flags"] = []
+                out.append(row)
+            return out
+
+    async def purge_observations_older_than(self, cutoff_iso: str) -> int:
+        """Delete observations with slot_start < `cutoff_iso` (the 400-day horizon), returning the
+        row count. Deliberately SEPARATE from purge_older_than: observations outlive the raw
+        samples they were distilled from, and daily_energy is never purged at all."""
+        async with self._conn() as db:
+            cur = await db.execute("DELETE FROM observations WHERE slot_start < ?", (cutoff_iso,))
+            await db.commit()
+            return cur.rowcount or 0
+
+    async def daily_energy_between(self, start_date: str, end_date: str) -> list[dict]:
+        """Daily kWh rollups (B-13) for local dates in [start, end) as dicts, oldest-first. Never
+        purged, so this is the year-over-year record that survives the raw retention purge."""
+        cols = ("date", "solar_kwh", "load_kwh", "non_ev_load_kwh", "ev_kwh", "grid_import_kwh",
+                "grid_export_kwh", "battery_charge_kwh", "battery_discharge_kwh", "coverage")
+        async with self._conn() as db:
+            db.row_factory = aiosqlite.Row
+            cur = await db.execute(
+                f"SELECT {', '.join(cols)} FROM daily_energy WHERE date >= ? AND date < ? "
+                "ORDER BY date ASC", (start_date, end_date))
+            return [dict(r) for r in await cur.fetchall()]
 
     async def upsert_carbon(self, rows: list[tuple[str, float]]) -> None:
         """Idempotently store (start_ts UTC-ISO, kg CO2/kWh) slots — re-fetches simply overwrite

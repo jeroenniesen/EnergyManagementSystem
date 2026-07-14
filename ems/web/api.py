@@ -95,7 +95,12 @@ from ems.sources.indevolt import aggregate_soc
 from ems.sources.prices import PriceSlot, PriceSource, current_price
 from ems.storage.audit import AuditStore
 from ems.storage.cache import CacheStore
-from ems.storage.history import HistoryStore
+from ems.storage.history import (
+    OBSERVATION_RETENTION_DAYS,
+    HistoryStore,
+    materialize_daily_energy,
+    materialize_observations,
+)
 from ems.storage.settings import SettingsStore
 from ems.weather import cloud_cover_pct
 from ems.web.context import AppContext, history_row_cap
@@ -1030,6 +1035,24 @@ def create_app(
                         _log.info("history retention: purged %d rows older than %d days",
                                   deleted, history_retention_days)
                 await store.maintain()
+                # Compact long-horizon stores (design §4.1 / B-13): materialize YESTERDAY (local)
+                # into the 15-min observation store + the daily kWh rollup — idempotent upserts, so
+                # a re-run (restart, retry) just overwrites. Observations then purge at their OWN
+                # 400-day horizon, INDEPENDENTLY of raw retention_days; daily_energy is never purged
+                # (that is the point — year-over-year kWh survives the raw purge).
+                now_local = datetime.now(UTC).astimezone(site_tz)
+                y = now_local.date() - timedelta(days=1)
+                day_start = datetime(y.year, y.month, y.day, tzinfo=site_tz)
+                day_end = day_start + timedelta(days=1)
+                cadence = _sample_cadence_seconds()
+                await materialize_observations(store, day_start, day_end, cadence_seconds=cadence)
+                await materialize_daily_energy(store, day_start, day_end, cadence_seconds=cadence)
+                obs_cutoff = (datetime.now(UTC)
+                              - timedelta(days=OBSERVATION_RETENTION_DAYS)).isoformat()
+                purged = await store.purge_observations_older_than(obs_cutoff)
+                if purged:
+                    _log.info("observation retention: purged %d rows older than %d days",
+                              purged, OBSERVATION_RETENTION_DAYS)
             except Exception as exc:
                 _log.warning("history maintenance failed (%s: %s); retrying next cycle",
                              type(exc).__name__, exc)
