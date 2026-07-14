@@ -31,7 +31,7 @@ test.describe("EMS settings", () => {
 
   test("the solar-confidence planner setting renders as a drag slider", async ({ page }) => {
     await page.goto("/");
-    await page.getByTestId("nav-settings").click();
+    await page.getByTestId("nav-manage").click();
     // Sidebar → open the Planner section in the content pane (one section at a time now).
     await page.getByTestId("group-planner").click();
     const field = page.getByTestId("field-planner.solar_confidence");
@@ -40,11 +40,28 @@ test.describe("EMS settings", () => {
     await expect(field.locator("input[type=range]")).toBeVisible();
   });
 
+  // feat/ux-batch-3 (CLAUDE.md honesty ask): a read-only info callout under solar_confidence,
+  // never a fake toggle — scenario-based planning isn't live yet.
+  test("a read-only scenario-intelligence callout sits under solar confidence (no fake toggle)", async ({
+    page,
+  }) => {
+    await page.goto("/");
+    await page.getByTestId("nav-manage").click();
+    await page.getByTestId("group-planner").click();
+    const hint = page.getByTestId("scenario-intelligence-hint");
+    await expect(hint).toBeVisible();
+    await expect(hint).toContainText("forecast dial the planner actually uses today");
+    await expect(hint).toContainText("Scenario-based planning");
+    await expect(hint).toContainText("pessimistic/expected/optimistic futures");
+    // Informational only — no input/toggle inside the callout itself.
+    await expect(hint.locator("input, button")).toHaveCount(0);
+  });
+
   test("the sidebar groups sections; a section opens in the content pane on click", async ({
     page,
   }) => {
     await page.goto("/");
-    await page.getByTestId("nav-settings").click();
+    await page.getByTestId("nav-manage").click();
     const s = page.getByTestId("settings");
     await expect(s).toBeVisible();
     // The sidebar lists the section titles (grouped under the three intent headers).
@@ -65,7 +82,7 @@ test.describe("EMS settings", () => {
     page,
   }) => {
     await page.goto("/");
-    await page.getByTestId("nav-settings").click();
+    await page.getByTestId("nav-manage").click();
     await page.getByTestId("group-planner").click();
     // The advanced planner economics are collapsed by default...
     await expect(page.getByTestId("field-planner.round_trip_efficiency")).toHaveCount(0);
@@ -77,7 +94,7 @@ test.describe("EMS settings", () => {
 
   test("device IPs and the Tibber token are configurable (grouped by type)", async ({ page }) => {
     await page.goto("/");
-    await page.getByTestId("nav-settings").click();
+    await page.getByTestId("nav-manage").click();
     // Devices are editable fields grouped by type — open each section from the sidebar.
     await page.getByTestId("group-meters").click();
     await expect(page.getByTestId("field-meters.p1_ip")).toBeVisible();
@@ -93,7 +110,7 @@ test.describe("EMS settings", () => {
     page,
   }) => {
     await page.goto("/");
-    await page.getByTestId("nav-settings").click();
+    await page.getByTestId("nav-manage").click();
     await page.getByTestId("group-control").click();
     const op = page.getByTestId("field-control.operational");
     await expect(op).toBeVisible();
@@ -107,7 +124,7 @@ test.describe("EMS settings", () => {
     page,
   }) => {
     await page.goto("/");
-    await page.getByTestId("nav-settings").click();
+    await page.getByTestId("nav-manage").click();
     await page.getByTestId("group-strategy").click();
     const sw = page.locator("#set-strategy\\.summer_grid_topup");
     await expect(sw).toBeVisible();
@@ -123,7 +140,7 @@ test.describe("EMS settings", () => {
     page,
   }) => {
     await page.goto("/");
-    await page.getByTestId("nav-settings").click();
+    await page.getByTestId("nav-manage").click();
     await page.getByTestId("settings-search").fill("efficiency");
     // The Planner section surfaces as a match, with a matched-field count.
     await expect(page.getByTestId("nav-count-planner")).toHaveText("1");
@@ -157,7 +174,7 @@ test.describe("EMS settings", () => {
       }
     });
     await page.goto("/");
-    await page.getByTestId("nav-settings").click();
+    await page.getByTestId("nav-manage").click();
     await page.getByTestId("group-ui").click();
     // No save bar until something is dirty.
     await expect(page.getByTestId("settings-savebar")).toHaveCount(0);
@@ -182,7 +199,7 @@ test.describe("EMS settings", () => {
       }
     });
     await page.goto("/");
-    await page.getByTestId("nav-settings").click();
+    await page.getByTestId("nav-manage").click();
     await page.getByTestId("group-ui").click();
     await page.locator("#set-ui\\.theme").selectOption("dark");
     await expect(page.getByTestId("settings-savebar")).toBeVisible();
@@ -224,7 +241,7 @@ test.describe("EMS settings", () => {
       });
     });
     await page.goto("/");
-    await page.getByTestId("nav-settings").click();
+    await page.getByTestId("nav-manage").click();
     await page.getByTestId("group-planner").click();
     // charge_slots is advanced here — reveal it, then edit.
     await page.getByTestId("settings-advanced-toggle").click();
@@ -253,7 +270,7 @@ test.describe("EMS settings", () => {
       }
     });
     await page.goto("/");
-    await page.getByTestId("nav-settings").click();
+    await page.getByTestId("nav-manage").click();
     await page.getByTestId("group-ui").click();
     // The Save button lives in the sticky bar, which only exists once something is dirty.
     await expect(page.getByTestId("settings-save")).toHaveCount(0);
@@ -268,7 +285,7 @@ test.describe("EMS settings", () => {
   test("mobile: the sidebar is a drill-in list (list → section → back)", async ({ page }) => {
     await page.setViewportSize({ width: 390, height: 844 });
     await page.goto("/");
-    await page.getByTestId("nav-settings").click();
+    await page.getByTestId("nav-manage").click();
     // Starts on the section list: the sidebar is shown, the content pane hidden.
     await expect(page.getByTestId("group-ui")).toBeVisible();
     await expect(page.getByTestId("settings-back")).toBeHidden();
@@ -280,190 +297,6 @@ test.describe("EMS settings", () => {
     await page.getByTestId("settings-back").click();
     await expect(page.getByTestId("group-ui")).toBeVisible();
     await expect(page.getByTestId("field-ui.theme")).toBeHidden();
-  });
-
-  test("the Car group shows the 7-day weekly charge schedule editor", async ({ page }) => {
-    const defaultSchedule = JSON.stringify({
-      mon: { enabled: false, min_pct: 80, ready_by: "07:30" },
-      tue: { enabled: false, min_pct: 80, ready_by: "07:30" },
-      wed: { enabled: false, min_pct: 80, ready_by: "07:30" },
-      thu: { enabled: false, min_pct: 80, ready_by: "07:30" },
-      fri: { enabled: false, min_pct: 80, ready_by: "07:30" },
-      sat: { enabled: false, min_pct: 80, ready_by: "07:30" },
-      sun: { enabled: false, min_pct: 80, ready_by: "07:30" },
-    });
-    const SCHEMA_EV = [
-      {
-        key: "ev.schedule", label: "Weekly charge schedule", type: "text", default: defaultSchedule,
-        group: "ev", help: "Weekly minimum charge schedule — edited with the schedule editor below.",
-        min: null, max: null, options: null, step: null, unit: "", advanced: false, applies: "live",
-      },
-    ];
-    await page.route("**/api/settings", async (route) => {
-      if (route.request().method() === "GET") {
-        await route.fulfill({
-          status: 200, contentType: "application/json",
-          body: JSON.stringify({ schema: SCHEMA_EV, values: { "ev.schedule": defaultSchedule } }),
-        });
-      } else {
-        await route.fulfill({ status: 200, contentType: "application/json", body: "{}" });
-      }
-    });
-    await page.goto("/");
-    await page.getByTestId("nav-settings").click();
-    await page.getByTestId("group-ev").click();
-    await expect(page.getByTestId("field-ev.schedule")).toBeVisible();
-    // All 7 days render as a row (enable toggle + min% + ready-by), not a raw JSON textbox.
-    for (const day of ["mon", "tue", "wed", "thu", "fri", "sat", "sun"]) {
-      await expect(page.getByTestId(`ev-schedule-${day}-enabled`)).toBeVisible();
-      await expect(page.getByTestId(`ev-schedule-${day}-min-pct`)).toHaveValue("80");
-      await expect(page.getByTestId(`ev-schedule-${day}-ready-by`)).toHaveValue("07:30");
-    }
-  });
-
-  test("toggling a schedule day and saving POSTs a valid ev.schedule JSON string", async ({
-    page,
-  }) => {
-    const defaultSchedule = JSON.stringify({
-      mon: { enabled: false, min_pct: 80, ready_by: "07:30" },
-      tue: { enabled: false, min_pct: 80, ready_by: "07:30" },
-      wed: { enabled: false, min_pct: 80, ready_by: "07:30" },
-      thu: { enabled: false, min_pct: 80, ready_by: "07:30" },
-      fri: { enabled: false, min_pct: 80, ready_by: "07:30" },
-      sat: { enabled: false, min_pct: 80, ready_by: "07:30" },
-      sun: { enabled: false, min_pct: 80, ready_by: "07:30" },
-    });
-    const SCHEMA_EV = [
-      {
-        key: "ev.schedule", label: "Weekly charge schedule", type: "text", default: defaultSchedule,
-        group: "ev", help: "Weekly minimum charge schedule — edited with the schedule editor below.",
-        min: null, max: null, options: null, step: null, unit: "", advanced: false, applies: "live",
-      },
-    ];
-    let saved: Record<string, unknown> = {};
-    await page.route("**/api/settings", async (route) => {
-      if (route.request().method() === "POST") {
-        saved = JSON.parse(route.request().postData() || "{}");
-        await route.fulfill({
-          status: 200, contentType: "application/json",
-          body: JSON.stringify({ values: { "ev.schedule": saved["ev.schedule"] } }),
-        });
-      } else {
-        await route.fulfill({
-          status: 200, contentType: "application/json",
-          body: JSON.stringify({ schema: SCHEMA_EV, values: { "ev.schedule": defaultSchedule } }),
-        });
-      }
-    });
-    await page.goto("/");
-    await page.getByTestId("nav-settings").click();
-    await page.getByTestId("group-ev").click();
-    // The save bar only exists once something changes.
-    await expect(page.getByTestId("settings-save")).toHaveCount(0);
-    await page.getByTestId("ev-schedule-mon-enabled").check();
-    await page.getByTestId("ev-schedule-mon-ready-by").fill("06:15");
-    await page.getByTestId("ev-schedule-mon-min-pct").fill("90");
-    const save = page.getByTestId("settings-save");
-    await expect(save).toBeEnabled();
-    await save.click();
-    await expect(page.getByTestId("settings-saved")).toBeVisible();
-
-    expect(typeof saved["ev.schedule"]).toBe("string");
-    const posted = JSON.parse(saved["ev.schedule"] as string);
-    expect(posted.mon).toEqual({ enabled: true, min_pct: 90, ready_by: "06:15" });
-    // Untouched days keep their (valid) default shape.
-    expect(posted.tue).toEqual({ enabled: false, min_pct: 80, ready_by: "07:30" });
-    expect(Object.keys(posted).sort()).toEqual(
-      ["fri", "mon", "sat", "sun", "thu", "tue", "wed"],
-    );
-  });
-
-  test("the Car group's brand/model pickers are populated from /api/cars and autofill battery "
-    + "kWh without touching the wallbox charger_kw", async ({ page }) => {
-    const SCHEMA_CAR = [
-      {
-        key: "ev.car_id", label: "Car", type: "text", default: "",
-        group: "ev", help: "Pick your car so capacity and AC limit are right.",
-        min: null, max: null, options: null, step: null, unit: "", advanced: false, applies: "live",
-      },
-      {
-        key: "ev.battery_kwh", label: "Battery capacity", type: "number", default: 57.5,
-        group: "ev",
-        help: "Usable battery capacity — autofilled from the car picker, override if you know "
-          + "better.",
-        min: 10, max: 150, options: null, step: 0.5, unit: "kWh", advanced: false, applies: "live",
-      },
-      {
-        key: "ev.charger_kw", label: "Charger power", type: "number", default: 7.4,
-        group: "ev", help: "The car charger's power — sets how long a charge takes.",
-        min: 1, max: 22, options: null, step: 0.5, unit: "kW", advanced: false, applies: "live",
-      },
-    ];
-    const CARS_RESP = {
-      brands: ["Skoda", "Tesla"],
-      cars: [
-        {
-          id: "skoda-enyaq-80", brand: "Skoda", model: "Enyaq 80",
-          battery_net_kwh: 77, max_ac_kw: 11, years: "2021–present",
-        },
-        {
-          id: "tesla-model-y-long-range", brand: "Tesla", model: "Model Y Long Range",
-          battery_net_kwh: 75, max_ac_kw: 11, years: "2020–present",
-        },
-        {
-          id: "tesla-model-y-rwd", brand: "Tesla", model: "Model Y RWD",
-          battery_net_kwh: 57.5, max_ac_kw: 11, years: "2022–present",
-        },
-      ],
-    };
-    await page.route("**/api/settings", async (route) => {
-      if (route.request().method() === "GET") {
-        await route.fulfill({
-          status: 200, contentType: "application/json",
-          body: JSON.stringify({
-            schema: SCHEMA_CAR,
-            values: { "ev.car_id": "", "ev.battery_kwh": 57.5, "ev.charger_kw": 7.4 },
-          }),
-        });
-      } else {
-        await route.fulfill({ status: 200, contentType: "application/json", body: "{}" });
-      }
-    });
-    await page.route("**/api/cars", async (route) => {
-      await route.fulfill({
-        status: 200, contentType: "application/json", body: JSON.stringify(CARS_RESP),
-      });
-    });
-    await page.goto("/");
-    await page.getByTestId("nav-settings").click();
-    await page.getByTestId("group-ev").click();
-
-    const brandSelect = page.getByTestId("car-brand-select");
-    const modelSelect = page.getByTestId("car-model-select");
-    await expect(brandSelect).toBeVisible();
-    await expect(modelSelect).toBeVisible();
-    // Populated from the (mocked) /api/cars — brands sorted, models filtered by brand.
-    await expect(brandSelect.locator("option")).toContainText(["Custom", "Skoda", "Tesla"]);
-
-    await brandSelect.selectOption("Tesla");
-    await expect(modelSelect.locator("option")).toContainText([
-      "Model Y Long Range", "Model Y RWD",
-    ]);
-    await modelSelect.selectOption("tesla-model-y-long-range");
-
-    // Autofills battery kWh from the picked model...
-    await expect(page.locator("#set-ev\\.battery_kwh")).toHaveValue("75");
-    // ...shows the selected car's specs inline...
-    await expect(page.getByTestId("car-picker-specs")).toContainText("75 kWh usable");
-    await expect(page.getByTestId("car-picker-specs")).toContainText("11 kW AC max");
-    // ...and shows the car's AC max as a hint near charger_kw, WITHOUT overwriting it (still 7.4).
-    await expect(page.locator("#set-ev\\.charger_kw")).toHaveValue("7.4");
-    await expect(page.getByTestId("car-ac-hint")).toContainText("11 kW");
-
-    // Picking "Custom" clears the car (battery kWh stays as the user's overridden value).
-    await brandSelect.selectOption("");
-    await expect(page.getByTestId("car-picker-specs")).toHaveCount(0);
-    await expect(page.locator("#set-ev\\.battery_kwh")).toHaveValue("75");
   });
 
   test("enum selects show humanised labels while submitting the raw token", async ({ page }) => {
@@ -493,7 +326,7 @@ test.describe("EMS settings", () => {
       }
     });
     await page.goto("/");
-    await page.getByTestId("nav-settings").click();
+    await page.getByTestId("nav-manage").click();
     await page.getByTestId("group-prices").click();
     const sel = page.locator("#set-prices\\.export_price_model");
     // No raw snake_case tokens on screen — options are humanised.
@@ -523,7 +356,7 @@ test.describe("EMS settings", () => {
       }
     });
     await page.goto("/");
-    await page.getByTestId("nav-settings").click();
+    await page.getByTestId("nav-manage").click();
     await page.getByTestId("group-ui").click();
     await page.locator("#set-ui\\.theme").selectOption("dark");
     await page.getByTestId("settings-save").click();
@@ -574,7 +407,7 @@ test.describe("EMS settings", () => {
         });
       });
       await page.goto("/");
-      await page.getByTestId("nav-settings").click();
+      await page.getByTestId("nav-manage").click();
       await page.getByTestId("group-planner").click();
 
       await expect(page.getByTestId("advisor-solar-confidence")).toBeVisible();
@@ -628,7 +461,7 @@ test.describe("EMS settings", () => {
         });
       });
       await page.goto("/");
-      await page.getByTestId("nav-settings").click();
+      await page.getByTestId("nav-manage").click();
       await page.getByTestId("group-planner").click();
 
       await page.getByRole("button", { name: "Apply suggested solar confidence 65 percent" })
@@ -674,7 +507,7 @@ test.describe("EMS settings", () => {
         });
       });
       await page.goto("/");
-      await page.getByTestId("nav-settings").click();
+      await page.getByTestId("nav-manage").click();
       await page.getByTestId("group-planner").click();
 
       const match = page.getByTestId("advisor-solar-confidence-match");

@@ -43,7 +43,7 @@ test.describe("EMS access token", () => {
     });
 
     await page.goto("/");
-    await page.getByTestId("nav-settings").click();
+    await page.getByTestId("nav-manage").click();
     // The Access section only shows because /api/auth said required.
     await expect(page.getByTestId("settings-access")).toBeVisible();
     await page.getByTestId("access-token").fill("s3cret");

@@ -43,7 +43,7 @@ test.describe("EMS theme", () => {
 
   test("choosing light applies the light theme immediately", async ({ page }) => {
     await page.goto("/");
-    await page.getByTestId("nav-settings").click();
+    await page.getByTestId("nav-manage").click();
     await page.getByTestId("group-ui").click();
     await page.locator("#set-ui\\.theme").selectOption("light");
     await page.getByTestId("settings-save").click();

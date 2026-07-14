@@ -34,16 +34,18 @@ def _fresh_tracker():
 
 
 def _app(tmp_path, *, source=None, freshness=_DEFAULT_FRESHNESS, store=None,
-         with_forecast=True, token=None):
+         with_forecast=True, token=None, solar_forecast=None):
     db = str(tmp_path / "ems.sqlite")
     store = store or HistoryStore(db)
     if freshness is _DEFAULT_FRESHNESS:
         freshness = _fresh_tracker()
+    if solar_forecast is None:
+        solar_forecast = MockSolarForecastSource(AMS) if with_forecast else None
     return create_app(
         source or MockSource(), dry_run=True, dev_mode="mock", tz=AMS,
         store=store, freshness=freshness,
         price_source=MockPriceSource(AMS),
-        solar_forecast=MockSolarForecastSource(AMS) if with_forecast else None,
+        solar_forecast=solar_forecast,
         settings_store=SettingsStore(db),
         web_auth_token=token,
     )
@@ -196,3 +198,76 @@ def test_battery_plan_read_is_open_on_lan_but_gated_by_require_auth(tmp_path):
         assert c.get("/api/battery-plan").status_code == 401
         assert c.get("/api/battery-plan",
                      headers={"Authorization": "Bearer s3cret"}).status_code == 200
+
+
+# --- Plan provenance (feat/ux-batch-3): what's ACTUALLY steering the plan, never overstating the
+# still-shadow scenario/ML intelligence layer (ems/intelligence/planning.py) — CLAUDE.md honesty.
+
+
+def test_battery_plan_carries_a_provenance_block_with_the_expected_shape(tmp_path):
+    with TestClient(_app(tmp_path)) as c:
+        body = c.get("/api/battery-plan").json()
+
+    prov = body["provenance"]
+    assert set(prov) == {"forecast_source", "solar_confidence_pct", "planner", "intelligence"}
+    # MockSolarForecastSource (no live forecast wired in this test) humanizes to "Built-in model".
+    assert prov["forecast_source"] == "Built-in model"
+    assert prov["solar_confidence_pct"] == 80.0  # planner.solar_confidence default
+    assert prov["planner"] in {"rule_based", "adaptive", "summer"}
+    # The scenario/ML intelligence layer never claims to be steering — it is honestly "shadow".
+    assert prov["intelligence"] == "shadow"
+
+
+def test_battery_plan_provenance_reflects_the_solar_confidence_setting(tmp_path):
+    with TestClient(_app(tmp_path)) as c:
+        assert c.post("/api/settings", json={"planner.solar_confidence": 65}).status_code == 200
+        body = c.get("/api/battery-plan").json()
+
+    assert body["provenance"]["solar_confidence_pct"] == 65.0
+
+
+def test_battery_plan_provenance_reflects_a_forced_winter_strategy(tmp_path):
+    with TestClient(_app(tmp_path)) as c:
+        assert c.post("/api/settings", json={"strategy.mode": "winter"}).status_code == 200
+        body = c.get("/api/battery-plan").json()
+
+    # Winter always dispatches to the rule-based arbitrage planner (ems.planner.strategy).
+    assert body["provenance"]["planner"] == "rule_based"
+
+
+def test_battery_plan_provenance_reflects_a_forced_summer_strategy(tmp_path):
+    with TestClient(_app(tmp_path)) as c:
+        assert c.post("/api/settings", json={"strategy.mode": "summer"}).status_code == 200
+        body = c.get("/api/battery-plan").json()
+
+    # Summer, with a live load profile + AdaptiveConfig (always supplied by _build_plan_now),
+    # dispatches to the demand-aware adaptive charger, not the plain solar-first planner.
+    assert body["provenance"]["planner"] == "adaptive"
+
+
+def test_battery_plan_provenance_humanizes_the_forecast_solar_class_name(tmp_path):
+    from ems.sources.forecast_solar import ForecastSolarSource
+
+    fc = ForecastSolarSource(
+        tz=AMS, lat=52.0, lon=5.0, tilt=35.0, azimuth=0.0, kwp=3.0,
+        # Empty watts -> falls back to the model curve internally, but the CLASS stays the same.
+        http_get=lambda url: {"result": {"watts": {}}},
+    )
+    with TestClient(_app(tmp_path, solar_forecast=fc)) as c:
+        body = c.get("/api/battery-plan").json()
+
+    assert body["provenance"]["forecast_source"] == "Forecast.Solar"
+
+
+def test_battery_plan_provenance_is_present_even_when_paused_safely(tmp_path):
+    # No solar forecast -> no forward projection -> the safe, empty contract branch — provenance
+    # must still be present and honest (never a missing key just because there's no plan yet).
+    with TestClient(_app(tmp_path, with_forecast=False)) as c:
+        body = c.get("/api/battery-plan").json()
+
+    assert body["status"] == "paused_safely"
+    prov = body["provenance"]
+    assert prov["forecast_source"] == "No forecast source"
+    assert prov["solar_confidence_pct"] == 80.0
+    assert prov["planner"] in {"rule_based", "adaptive", "summer"}
+    assert prov["intelligence"] == "shadow"

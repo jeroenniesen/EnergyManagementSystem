@@ -30,6 +30,19 @@ export function scoreCaption(key: string, value: number | null): string | undefi
   return CAPTIONS[key]?.[scoreBand(value)];
 }
 
+// The ring's inner name badge has very little width (see .ring-name) — "Self-consumption" there
+// wrapped and got auto-hyphenated into "Self-consump-tion" (a production screenshot finding).
+// Rather than fight the layout, the RING gets a short alias for the keys that need one; every
+// other surface (aria text, headline, explanation, the Insights card's own label) still uses the
+// full label the backend sends (ems/scores.py) — unaffected callers just get their label back.
+const RING_LABEL: Record<string, string> = {
+  self_consumption: "Self-use",
+};
+
+export function ringLabel(key: string, label: string): string {
+  return RING_LABEL[key] ?? label;
+}
+
 // A fuller sentence for the home score cards (the line above the caption) — plain-language,
 // band-aware, and warm on a good day.
 const HEADLINES: Record<string, Record<Band, string>> = {
@@ -55,6 +68,18 @@ const HEADLINES: Record<string, Record<Band, string>> = {
 
 export function scoreHeadline(key: string, value: number | null): string | undefined {
   return HEADLINES[key]?.[scoreBand(value)];
+}
+
+// Splits a score's explanation into its first sentence (always shown, as the Insights card's ONE
+// detail line) + the remainder (behind a "More" disclosure) — the SAME idiom Settings' field help
+// uses (splitHelp/FieldHelp there): split on the first sentence-ending punctuation that's followed
+// by whitespace, so a mid-number decimal ("60%", "€0.13/kWh") never triggers an early split.
+// Single-sentence explanations (most of them) come back with an empty `rest` — no disclosure
+// renders, and the one line reads as the whole thought, not a truncation.
+export function splitExplanation(explanation: string): { first: string; rest: string } {
+  const m = explanation.match(/^([\s\S]*?[.!?])(\s+)([\s\S]+)$/);
+  if (!m) return { first: explanation.trim(), rest: "" };
+  return { first: m[1].trim(), rest: m[3].trim() };
 }
 
 export type SummaryTone = "great" | "good" | "grow" | "neutral"; // neutral: day-just-starting, no verdict yet

@@ -12,7 +12,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
 
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, Query, Request
 from fastapi.responses import JSONResponse
 
 from ems.cars import CARS
@@ -21,7 +21,7 @@ from ems.cars import by_id as car_by_id
 from ems.cars import to_dict as car_to_dict
 from ems.ev_planner import plan_car_charging
 from ems.ev_schedule import materialize_deadlines, parse_schedule
-from ems.ev_session import estimate_soc
+from ems.ev_session import detect_sessions, estimate_soc
 from ems.web.context import AppContext, history_row_cap
 
 
@@ -135,6 +135,28 @@ def build_router(ctx: AppContext) -> APIRouter:
     @router.get("/api/car/plan")
     async def car_plan() -> dict:
         return await gather_car_plan(ctx, datetime.now(UTC))
+
+    @router.get("/api/car/sessions")
+    async def car_sessions(days: int = Query(default=14, ge=1, le=90)) -> dict:
+        """Detected EV charging sessions over the last `days`, newest-first, for the Car tab's
+        history table. Sessions are computed ON DEMAND from the already-recorded raw samples
+        (ems/ev_session.detect_sessions — no recorder state machine), reusing the SAME gathering
+        the export package does. Read-only; returns an empty list (never an error) when there is no
+        history store or no charging in the window, so the UI can render an honest empty state.
+        Shape: [{start, end, kwh, avg_kw, peak_kw}]."""
+        if ctx.store is None:
+            return {"sessions": [], "days": days}
+        now = datetime.now(UTC)
+        start = now - timedelta(days=days)
+        limit = history_row_cap((now - start).total_seconds(), ctx.sample_cadence_seconds())
+        rows = await ctx.store.raw_between(start.isoformat(), now.isoformat(), limit=limit)
+        sessions = [
+            {"start": s["start"], "end": s["end"], "kwh": s["kwh"],
+             "avg_kw": s["avg_kw"], "peak_kw": s["peak_kw"]}
+            for s in detect_sessions(rows)
+        ]
+        sessions.reverse()  # detect_sessions is chronological; the history table reads newest-first
+        return {"sessions": sessions, "days": days}
 
     @router.post("/api/car/soc")
     async def set_car_soc(request: Request, body: dict | None = None) -> JSONResponse:

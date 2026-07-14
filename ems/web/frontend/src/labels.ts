@@ -54,10 +54,13 @@ export const CONFIDENCE: Record<string, string> = {
   unsafe: "Plan paused until battery/meter data returns; the battery is safe.",
 };
 
-/** System-view overall health badge (same palette as data quality). */
+/** System-view overall health badge (same palette as data quality). Sentence-case "Check" so this
+ * chip and the per-check-row STATUS_LABEL ("Check") read as the same vocabulary — a shouty
+ * all-caps "NEEDS A LOOK" (this label is upper-cased by CSS, like every badge) came across as an
+ * alarm in production screenshots for something that's calm-safe, not broken. */
 export const SYSTEM_OVERALL: Record<string, Labelled> = {
   ok: { label: "All good", title: "Every readiness check passed." },
-  warn: { label: "Needs a look", title: "One or more checks want attention, but nothing is broken." },
+  warn: { label: "Check", title: "One or more checks want attention, but nothing is broken." },
   fail: { label: "Problem", title: "A readiness check failed — see the list below." },
 };
 
@@ -113,10 +116,11 @@ export const INCIDENT_TYPE_LABEL: Record<string, string> = {
 };
 
 /** Model-health track verdict (B-76, from /api/accuracy's `health` block) → dot colour + text
- * label (never colour-only) + a title for the "still collecting evidence" honest empty state. */
+ * label (never colour-only) + a title for the "still collecting evidence" honest empty state.
+ * "Check" (not "Needs a look") matches the System page's check-row STATUS_LABEL convention. */
 export const HEALTH_STATUS: Record<"ok" | "warn" | "unknown", Labelled> = {
   ok: { label: "Working well", title: "The recent evidence looks dependable." },
-  warn: { label: "Needs a look", title: "There is something worth reviewing below." },
+  warn: { label: "Check", title: "There is something worth reviewing below." },
   unknown: { label: "Still collecting evidence", title: "Not enough history yet to judge this." },
 };
 
@@ -126,3 +130,34 @@ export const HEALTH_ROW_LABEL: Record<"solar" | "load" | "plan_execution", strin
   load: "Home energy pattern",
   plan_execution: "Plan follow-through",
 };
+
+/** Plan-provenance line (feat/ux-batch-3): which planner FUNCTION produced the live plan, in plain
+ * words, keyed the same as /api/battery-plan's `provenance.planner`. "rule_based" only ever occurs
+ * for the winter arbitrage planner; "adaptive"/"summer" only ever occur for the summer solar-first
+ * strategy (ems.web.api's `_resolved_planner_name` mirrors ems.planner.strategy.build_plan's own
+ * dispatch), so the season is safely folded into the copy without a separate field. */
+export const PLANNER_PROVENANCE_LABEL: Record<string, string> = {
+  rule_based: "rule-based winter planner",
+  adaptive: "adaptive summer planner",
+  summer: "solar-first summer planner",
+};
+
+/** Scenario/ML planning-intelligence layer status (CLAUDE.md honesty ask, feat/ux-batch-3):
+ * ems/intelligence/planning.py builds pessimistic/expected/optimistic planning scenarios (E-08),
+ * but it is NOT wired into live planning — it validates in the background against real outcomes,
+ * it never steers a plan. `/api/battery-plan`'s `provenance.intelligence` (backend constant
+ * `ems.web.api.INTELLIGENCE_MODE`) is the SOURCE OF TRUTH: BatteryPlan.tsx's inline provenance
+ * fragment reads that LIVE value through this map's `short` text. System.tsx's standalone
+ * "Planning intelligence" row does not fetch /api/battery-plan, so it reads
+ * `CURRENT_INTELLIGENCE_MODE` below (this map's `label`/`detail`) instead of a second hardcoded
+ * sentence. Either way there is exactly ONE place to flip when a mode starts actually steering a
+ * plan: add its entry here, point `CURRENT_INTELLIGENCE_MODE` at it, and flip
+ * `ems.web.api.INTELLIGENCE_MODE` to match. */
+export const INTELLIGENCE_COPY: Record<string, { label: string; detail: string; short: string }> = {
+  shadow: {
+    label: "Planning intelligence",
+    detail: "validating in shadow; the dependable baseline plans today",
+    short: "validating, not steering yet",
+  },
+};
+export const CURRENT_INTELLIGENCE_MODE: keyof typeof INTELLIGENCE_COPY = "shadow";

@@ -4,7 +4,7 @@
 // button that opens the Insights tab; its accessible name carries the score value + copy.
 import { ScoreRing } from "./ScoreRing";
 import { scoreBand } from "./ScoreRing";
-import { scoreCaption, scoreHeadline } from "./scoreCopy";
+import { ringLabel, scoreCaption, scoreHeadline } from "./scoreCopy";
 
 type Score = { key: string; label: string; value: number | null; explanation: string };
 
@@ -36,7 +36,12 @@ export function ScoreCard({
       title={headline}
       onClick={onOpen}
     >
-      <ScoreRing value={value} label={score.label} size={54} testId={`ring-${score.key}`} />
+      <ScoreRing
+        value={value}
+        label={ringLabel(score.key, score.label)}
+        size={54}
+        testId={`ring-${score.key}`}
+      />
       <span className="sc-copy">
         {caption && <span className="sc-caption">{caption}</span>}
         {headline && <span className="sc-headline">{headline}</span>}

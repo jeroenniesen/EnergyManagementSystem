@@ -144,11 +144,17 @@ def test_incident_rollup_classifies_counts_and_dates():
     assert out["by_day"] == {"2026-06-20": 1, "2026-06-25": 1, "2026-06-26": 1}
     assert out["most_recent"] == "2026-06-26T09:00:00+00:00"
     assert out["last_7_days"] == 3  # newest day minus 6/20 = 6 days -> all three within 7
+    # Same window here (all three incidents land within 7 days of the newest) -> the two
+    # by-type breakdowns agree, but they are NOT the same field (see the windowed test below).
+    assert out["by_type_last_7_days"] == {"cluster_mismatch": 1, "command_failed": 2}
 
 
 def test_incident_rollup_empty_input_is_zeros():
     out = incident_rollup([])
-    assert out == {"total": 0, "by_type": {}, "by_day": {}, "most_recent": None, "last_7_days": 0}
+    assert out == {
+        "total": 0, "by_type": {}, "by_type_last_7_days": {}, "by_day": {},
+        "most_recent": None, "last_7_days": 0,
+    }
 
 
 def test_incident_rollup_priority_order_first_match_wins():
@@ -181,6 +187,34 @@ def test_incident_rollup_last_7_days_excludes_older_incidents():
     assert out["last_7_days"] == 1  # only the 6/20 incident is within 7 days of itself
 
 
+def test_incident_rollup_by_type_last_7_days_is_windowed_not_full():
+    # The production trust bug this fixes: a "15 incidents in the last 7 days" headline paired
+    # with by-type rows that summed to 28 (the FULL audit window, not the last 7 days). Here: 5
+    # cluster_mismatch rows outside the 7-day window (older) + 2 inside it, plus 1
+    # command_failed inside it. `by_type` (full window) must sum to `total` (8); `by_type_last_7_
+    # days` must sum to `last_7_days` (3) and describe ONLY the recent window.
+    rows = [
+        {"ts": f"2026-05-{d:02d}T00:00:00+00:00", "summary": "Battery cluster mismatch",
+         "detail": {}}
+        for d in range(1, 6)  # 5 old incidents, well outside the trailing 7 days
+    ] + [
+        {"ts": "2026-06-25T00:00:00+00:00", "summary": "Battery cluster mismatch", "detail": {}},
+        {"ts": "2026-06-26T09:00:00+00:00", "summary": "Battery charge unconfirmed", "detail": {}},
+        {"ts": "2026-06-26T12:00:00+00:00", "summary": "Battery cluster mismatch", "detail": {}},
+    ]
+    out = incident_rollup(rows)
+    assert out["total"] == 8
+    assert out["last_7_days"] == 3
+    assert out["by_type"] == {"cluster_mismatch": 7, "command_failed": 1}  # full window
+    assert sum(out["by_type"].values()) == out["total"]
+    assert out["by_type_last_7_days"] == {"cluster_mismatch": 2, "command_failed": 1}  # windowed
+    assert sum(out["by_type_last_7_days"].values()) == out["last_7_days"]
+    # The headline (last_7_days=3) and the windowed breakdown (sums to 3) now describe the SAME
+    # window — unlike `by_type` (sums to 8, the full window), which the headline must NOT be
+    # paired against.
+    assert sum(out["by_type_last_7_days"].values()) != sum(out["by_type"].values())
+
+
 def test_validation_summary_includes_incidents_section():
     text = validation_summary(
         generated_at="2026-06-28T12:00:00+00:00", app_version="0.0.1",
@@ -189,10 +223,14 @@ def test_validation_summary_includes_incidents_section():
         validation={"incidents": {"total": 2, "last_7_days": 1,
                                    "most_recent": "2026-06-26T09:00:00+00:00",
                                    "by_type": {"cluster_mismatch": 1, "command_failed": 1},
+                                   "by_type_last_7_days": {"command_failed": 1},
                                    "by_day": {}}},
     )
     assert "Incidents" in text
     assert "Total:          2 (last 7 days: 1)" in text
+    # Both windows appear, distinctly labelled, and do NOT collapse into one line.
+    assert "By type (full window):   cluster_mismatch=1, command_failed=1" in text
+    assert "By type (last 7 days):   command_failed=1" in text
     assert "cluster_mismatch=1" in text and "command_failed=1" in text
     assert "2026-06-26T09:00:00+00:00" in text
 
@@ -513,7 +551,8 @@ def test_manifest_carries_validation_payload_and_no_secrets(tmp_path):
     assert "data_quality" in manifest["health"]
     assert "capability_present" in manifest["health"]
     assert manifest["incidents"] == {  # the seeded audit entry is benign -> zero incidents
-        "total": 0, "by_type": {}, "by_day": {}, "most_recent": None, "last_7_days": 0,
+        "total": 0, "by_type": {}, "by_type_last_7_days": {}, "by_day": {},
+        "most_recent": None, "last_7_days": 0,
     }
     # Privacy: no secrets / IPs / location keys anywhere in the manifest text.
     blob = json.dumps(manifest).lower()
@@ -746,6 +785,7 @@ def test_incidents_endpoint_rolls_up_the_audit_log(tmp_path):
         body = c.get("/api/incidents").json()
     assert body["incidents"]["total"] == 1
     assert body["incidents"]["by_type"] == {"cluster_mismatch": 1}
+    assert body["incidents"]["by_type_last_7_days"] == {"cluster_mismatch": 1}
 
 
 def test_incidents_endpoint_empty_without_audit_store():
@@ -753,7 +793,8 @@ def test_incidents_endpoint_empty_without_audit_store():
     with TestClient(app) as c:
         body = c.get("/api/incidents").json()
     assert body["incidents"] == {
-        "total": 0, "by_type": {}, "by_day": {}, "most_recent": None, "last_7_days": 0,
+        "total": 0, "by_type": {}, "by_type_last_7_days": {}, "by_day": {},
+        "most_recent": None, "last_7_days": 0,
     }
 
 

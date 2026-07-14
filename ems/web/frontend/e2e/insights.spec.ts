@@ -784,3 +784,133 @@ test.describe("Insights: what-if scenario simulator (B-73) + counterfactual (B-6
     await expect(page.getByTestId("whatif-verdict")).toContainText("30 measured days");
   });
 });
+
+test.describe("Insights: score card anatomy (ring | headline | trend | one detail line)", () => {
+  // A co2 explanation with a second sentence (the gas footnote) — the "wall of text" side of the
+  // production imbalance. self_consumption's explanation is always one sentence — the "almost
+  // empty card" side. Both now get the SAME structure: one detail line, extra behind "More".
+  const TWO_SENTENCE_CO2 = {
+    ...REPORT,
+    scores: REPORT.scores.map((s) =>
+      s.key === "co2"
+        ? {
+            ...s,
+            explanation: "Avoided 60% of a no-solar home's CO₂ (2 kg vs 4 kg). Gas heating is "
+              + "35% of your footprint — the biggest cut left.",
+          }
+        : s,
+    ),
+  };
+
+  test("every card shows ring, headline word, trend chip and exactly one detail line", async ({
+    page,
+  }) => {
+    await page.route("**/api/report**", (route) =>
+      route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(REPORT) }),
+    );
+    await page.goto("/");
+    await page.getByTestId("nav-insights").click();
+
+    const selfCard = page.getByTestId("score-self_consumption");
+    await expect(selfCard.getByTestId("score-self_consumption-value")).toBeVisible(); // ring
+    await expect(page.getByTestId("score-self_consumption-headline")).toContainText(
+      "Mostly your own sun",
+    ); // headline word
+    await expect(page.getByTestId("score-self_consumption-line")).toContainText(
+      "Kept 80% of your solar on-site",
+    ); // the one detail line
+    // Single-sentence explanation -> nothing left to disclose, no "More" button.
+    await expect(selfCard.locator(".help-more")).toHaveCount(0);
+  });
+
+  test("a two-sentence explanation (CO₂ + gas) shows only the first sentence, with a More disclosure", async ({
+    page,
+  }) => {
+    await page.route("**/api/report**", (route) =>
+      route.fulfill({
+        status: 200, contentType: "application/json", body: JSON.stringify(TWO_SENTENCE_CO2),
+      }),
+    );
+    await page.goto("/");
+    await page.getByTestId("nav-insights").click();
+
+    const line = page.getByTestId("score-co2-line");
+    await expect(line).toContainText("Avoided 60% of a no-solar home's CO₂ (2 kg vs 4 kg).");
+    await expect(line).not.toContainText("Gas heating");
+    const more = page.getByTestId("score-co2").locator(".help-more");
+    await expect(more).toHaveText("More");
+    await more.click();
+    await expect(line).toContainText("Gas heating is 35% of your footprint");
+    await expect(more).toHaveText("Less");
+    // The full explanation is ALSO available without tapping, via the ring's own hover tooltip.
+    await expect(page.getByTestId("score-co2-value")).toHaveAttribute(
+      "title", /Gas heating is 35% of your footprint/,
+    );
+  });
+
+  test("the ring's inner label is shortened to avoid hyphenation, but the full label reads elsewhere", async ({
+    page,
+  }) => {
+    await page.route("**/api/report**", (route) =>
+      route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(REPORT) }),
+    );
+    await page.goto("/");
+    await page.getByTestId("nav-insights").click();
+
+    // The ring's own name badge uses the short alias ("Self-consump-tion" hyphenation bug, fixed
+    // by shortening rather than fighting the CSS).
+    const ring = page.getByTestId("score-self_consumption-value");
+    await expect(ring).toContainText("Self-use");
+    await expect(ring).not.toContainText("Self-consumption");
+    // Every other surface on the SAME card still uses the full label.
+    const card = page.getByTestId("score-self_consumption");
+    await expect(card).toHaveAttribute("aria-label", /Self-consumption score/);
+  });
+});
+
+test.describe("Insights: sticky in-page section nav", () => {
+  test("stays hidden until scrolled, then shows section links with the active one marked", async ({
+    page,
+  }) => {
+    await page.route("**/api/report**", (route) =>
+      route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(REPORT) }),
+    );
+    await page.goto("/");
+    await page.getByTestId("nav-insights").click();
+    await expect(page.getByTestId("score-grid")).toBeVisible();
+
+    const nav = page.getByTestId("insights-section-nav");
+    await expect(nav).toHaveCount(0); // hidden at the top of the page
+
+    await page.mouse.wheel(0, 900);
+    await expect(nav).toBeVisible();
+    for (const id of ["week", "scores", "energy", "money", "whatif"]) {
+      await expect(page.getByTestId(`insights-nav-${id}`)).toBeVisible();
+    }
+    // REPORT (the base fixture) has no gas data -> no Gas link even though the nav is showing.
+    await expect(page.getByTestId("insights-nav-gas")).toHaveCount(0);
+
+    // Clicking a link scrolls to its section without touching the app's own hash-based router
+    // (a real `#id` anchor would kick the whole app back to the dashboard — see viewFromHash).
+    await page.getByTestId("insights-nav-whatif").click();
+    await expect(page).toHaveURL(/#insights$/);
+    await expect(page.getByTestId("nav-insights")).toHaveAttribute("aria-current", "page");
+    await expect
+      .poll(async () => page.getByTestId("insights-nav-whatif").getAttribute("aria-current"))
+      .toBe("true");
+  });
+
+  test("omits the Gas link when the report has no gas data", async ({ page }) => {
+    await page.route("**/api/report**", (route) =>
+      route.fulfill({
+        status: 200, contentType: "application/json",
+        body: JSON.stringify({ ...REPORT, gas: null }),
+      }),
+    );
+    await page.goto("/");
+    await page.getByTestId("nav-insights").click();
+    await page.mouse.wheel(0, 900);
+    await expect(page.getByTestId("insights-section-nav")).toBeVisible();
+    await expect(page.getByTestId("insights-nav-gas")).toHaveCount(0);
+  });
+});

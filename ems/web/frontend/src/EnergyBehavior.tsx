@@ -214,7 +214,7 @@ export function EnergyBehavior({ buckets, period, partial }: {
             <span className="legend-item"><span className="legend-dot"
               style={{ background: "var(--house)" }} />House</span>
             <span className="legend-item"><span className="legend-dot"
-              style={{ background: "var(--car)" }} />Car (stacked on top)</span>
+              style={{ background: "var(--car)" }} />Car (charging)</span>
           </div>
         </div>
 
