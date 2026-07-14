@@ -307,3 +307,18 @@ def test_resolve_strategy_threads_hysteresis_across_days():
         strat, state = _resolve_strategy(cfg, d, prices, fc, {}, state)
         seen.append(strat)
     assert seen == ["winter", "winter", "summer"]  # held two days, switched on the third
+
+
+def test_replay_hysteresis_matches_live_same_day_tick_semantics():
+    """Replay callers may evaluate multiple snapshots in a day; transient agreement preserves run."""
+    cfg = _cfg()
+    d = datetime(2026, 3, 1, 12, tzinfo=UTC)
+    state = HysteresisState(committed="winter", last_day="2026-02-28")
+    sunny = [ForecastSlot(d + i * timedelta(minutes=15), 3000.0, 3000.0, 3000.0)
+             for i in range(96)]
+    flat = [ForecastSlot(d + i * timedelta(minutes=15), 0.0, 0.0, 0.0) for i in range(96)]
+    prices = [PriceSlot(d + i * timedelta(minutes=15), 0.20) for i in range(96)]
+    _, state = _resolve_strategy(cfg, d, prices, sunny, {}, state)
+    assert state.count == 1
+    _, state = _resolve_strategy(cfg, d, prices, flat, {}, state)  # same-day transient agreement
+    assert state.pending == "summer" and state.count == 1
