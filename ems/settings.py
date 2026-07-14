@@ -394,6 +394,16 @@ SETTINGS_SCHEMA: tuple[SettingsField, ...] = (
         "panel.",
         min=0.0, max=5.0, step=0.05, unit="€/m³",
     ),
+    # App state, not a tunable: which of the Insights heating-advice cards (balancing/flow_temp/
+    # dhw_eco) the household has marked done, and when — a JSON object of {item key: "YYYY-MM-DD"}.
+    # Written directly by HeatingAdvice.tsx's "Mark as done"/"Undo" (POSTs only this one key,
+    # immediately, never through the Settings save bar). Generic "text" validation only — the shape
+    # is owned by the UI, same as ev.schedule above. No `hidden` flag exists in SettingsField, so
+    # this still renders in the two-pane Settings UI; harmless, and the help text says why.
+    SettingsField(
+        "heating.done", "Heating advice: done items", "text", "{}", "reporting",
+        help="Managed from the Insights heating cards — not meant to be edited here.",
+    ),
     # --- Notifications (optional, off by default — B-20 outbox + ntfy push channel) ---
     SettingsField(
         "notify.ntfy_url", "ntfy server", "text", "", "notify",

@@ -4,10 +4,16 @@ import {
   CURRENT_INTELLIGENCE_MODE,
   HEALTH_ROW_LABEL,
   HEALTH_STATUS,
+  INCIDENT_TYPE_ACTION,
   INCIDENT_TYPE_LABEL,
   INTELLIGENCE_COPY,
   SYSTEM_OVERALL,
 } from "./labels";
+
+// Manage sub-tabs a System-page action line can jump to (kept local rather than importing
+// Manage's ManageTab — Manage.tsx already imports FROM this file, so re-importing its type here
+// would be circular; "settings"/"audit" are the only two destinations these actions ever need).
+type NavTarget = "settings" | "audit";
 
 type Check = { key: string; label: string; status: "ok" | "warn" | "fail"; detail: string };
 type Readiness = {
@@ -99,22 +105,76 @@ function solarVerdict(biasW: number | null | undefined): string | null {
 // point at something concrete to check; load has no dial to tune (household routines just vary),
 // so its copy stays in the same honest "still collecting evidence" register the unknown state
 // already uses, rather than inventing a fix.
-const HEALTH_ACTION: Record<keyof Omit<ModelHealth, "notes">, string> = {
-  solar: "Check the solar forecast advisor in Manage → Settings → Planner — it suggests a calibrated "
-    + "setting.",
-  load: "This usually settles as more weeks of your routine are recorded — no setting to change, "
-    + "just more evidence.",
-  plan_execution: "Often caused by weeks with manual overrides or missed cheap windows — see the "
-    + "Audit log; recovery now catches these.",
+// Production feedback ("don't know what action I need to take here"): solar/plan_execution's
+// destination phrase (the bit naming where to go) is split out of the sentence so it can render
+// as a real link/button when a live `onNavigate` is available — `before`/`after` are the sentence,
+// `link`/`target` are the clickable destination. `load` has nowhere to send you, so it stays a
+// single `before` string (no link, no `after`).
+type HealthActionCopy = { before: string; link?: string; after?: string; target?: NavTarget };
+const HEALTH_ACTION: Record<keyof Omit<ModelHealth, "notes">, HealthActionCopy> = {
+  solar: {
+    before: "Check the solar forecast advisor in ",
+    link: "Manage → Settings → Planner",
+    after: " — it suggests a calibrated setting.",
+    target: "settings",
+  },
+  load: {
+    before: "This usually settles as more weeks of your routine are recorded — no setting to "
+      + "change, just more evidence.",
+  },
+  plan_execution: {
+    before: "Often caused by weeks with manual overrides or missed cheap windows — see the ",
+    link: "Audit log",
+    after: "; recovery now catches these.",
+    target: "audit",
+  },
 };
 
+// Renders a HEALTH_ACTION entry, turning its `link` phrase into a real button when the page can
+// navigate (`onNavigate` present) — otherwise it falls back to the exact same sentence as plain
+// text, so a mount without the prop (or a row with no link, like `load`) is unchanged.
+function HealthActionLine({
+  row,
+  onNavigate,
+}: {
+  row: keyof Omit<ModelHealth, "notes">;
+  onNavigate?: (tab: NavTarget) => void;
+}) {
+  const { before, link, after, target } = HEALTH_ACTION[row];
+  return (
+    <span className="health-action" data-testid={`health-action-${row}`}>
+      {before}
+      {link &&
+        (target && onNavigate ? (
+          <button
+            type="button"
+            className="health-action-link"
+            data-testid={`health-action-link-${row}`}
+            onClick={() => onNavigate(target)}
+          >
+            {link}
+          </button>
+        ) : (
+          link
+        ))}
+      {after}
+    </span>
+  );
+}
+
+// Production feedback: this sentence must COUNT the flagged rows, not always say "One part" —
+// a screenshot showed the singular sentence sitting above two warn rows.
 function healthSummary(health: ModelHealth): string {
   const states = [health.solar, health.load, health.plan_execution];
   if (states.every((state) => state === "unknown")) {
     return "We’re gathering enough history to give you a trustworthy answer.";
   }
-  if (states.some((state) => state === "warn")) {
-    return "One part of the picture needs a look; safe planning continues in the meantime.";
+  const warnCount = states.filter((state) => state === "warn").length;
+  if (warnCount > 0) {
+    const count = warnCount === 1 ? "One" : warnCount === 2 ? "Two" : "Three";
+    const noun = warnCount === 1 ? "part" : "parts";
+    const verb = warnCount === 1 ? "needs" : "need";
+    return `${count} ${noun} of the picture ${verb} a look; safe planning continues in the meantime.`;
   }
   if (states.every((state) => state === "ok")) {
     return "Recent forecasts and plans are tracking well for your home.";
@@ -155,7 +215,9 @@ const RECOVERY: Record<string, string> = {
   "sensor.battery": "The battery power reading is delayed; SoC-based decisions may lag.",
 };
 
-export function SystemView() {
+export function SystemView({
+  onNavigate,
+}: { onNavigate?: (tab: NavTarget) => void } = {}) {
   const [diag, setDiag] = useState<Diag | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const [incidents, setIncidents] = useState<IncidentRollup | null>(null);
@@ -309,10 +371,23 @@ export function SystemView() {
               <ul className="incident-types" data-testid="incident-types">
                 {Object.entries(incidents.by_type_last_7_days).map(([type, count]) => (
                   <li key={type} className="incident-type-row">
-                    <span className="incident-type-label">
-                      {INCIDENT_TYPE_LABEL[type] ?? type}
-                    </span>
-                    <span className="incident-type-count">{count}</span>
+                    <div className="incident-type-head">
+                      <span className="incident-type-label">
+                        {INCIDENT_TYPE_LABEL[type] ?? type}
+                      </span>
+                      <span className="incident-type-count">{count}</span>
+                    </div>
+                    {/* B-37 parity: a short, honest "what to do" line per incident TYPE — only
+                        for types actually present this window, never a wall of every possible
+                        type. */}
+                    {INCIDENT_TYPE_ACTION[type] && (
+                      <p
+                        className="incident-type-action"
+                        data-testid={`incident-type-action-${type}`}
+                      >
+                        {INCIDENT_TYPE_ACTION[type]}
+                      </p>
+                    )}
                   </li>
                 ))}
               </ul>
@@ -385,11 +460,7 @@ export function SystemView() {
                       {displayNote}
                     </span>
                   )}
-                  {status === "warn" && (
-                    <span className="health-action" data-testid={`health-action-${row}`}>
-                      {HEALTH_ACTION[row]}
-                    </span>
-                  )}
+                  {status === "warn" && <HealthActionLine row={row} onNavigate={onNavigate} />}
                 </li>
               );
             })}

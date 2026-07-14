@@ -134,12 +134,48 @@ test.describe("Car view", () => {
     await page.goto("/");
     await page.getByTestId("nav-car").click();
     await expect(page.getByTestId("ev-schedule-editor")).toBeVisible();
-    // All 7 days render as a row (enable toggle + min% + ready-by), not a raw JSON textbox.
+    // All 7 days render as a row (day name + an enable switch), not a raw JSON textbox. Every day
+    // starts disabled (DEFAULT_SCHEDULE) — a disabled day shows the switch but NO min-%/ready-by
+    // inputs (those only mount once the day is enabled; see the dedicated test below).
     for (const day of ["mon", "tue", "wed", "thu", "fri", "sat", "sun"]) {
-      await expect(page.getByTestId(`ev-schedule-${day}-enabled`)).toBeVisible();
-      await expect(page.getByTestId(`ev-schedule-${day}-min-pct`)).toHaveValue("80");
-      await expect(page.getByTestId(`ev-schedule-${day}-ready-by`)).toHaveValue("07:30");
+      const sw = page.getByTestId(`ev-schedule-${day}-enabled`);
+      await expect(sw).toBeVisible();
+      await expect(sw).toHaveAttribute("role", "switch");
+      await expect(sw).not.toBeChecked();
+      await expect(page.getByTestId(`ev-schedule-${day}-min-pct`)).toHaveCount(0);
+      await expect(page.getByTestId(`ev-schedule-${day}-ready-by`)).toHaveCount(0);
     }
+  });
+
+  test("a disabled day shows no min-%/ready-by inputs; enabling reveals them", async ({ page }) => {
+    await page.route("**/api/settings", async (route) => {
+      if (route.request().method() === "GET") {
+        await route.fulfill({ status: 200, contentType: "application/json",
+          body: JSON.stringify({ schema: [], values: { "ev.schedule": DEFAULT_SCHEDULE } }) });
+      } else {
+        await route.fulfill({ status: 200, contentType: "application/json", body: "{}" });
+      }
+    });
+    await mockCars(page);
+    await page.goto("/");
+    await page.getByTestId("nav-car").click();
+
+    const row = page.getByTestId("ev-schedule-row-mon");
+    await expect(row).toBeVisible();
+    // Disabled: a muted day name + a quiet "–" placeholder in each of the two input columns —
+    // never a ghosted-but-present input.
+    await expect(row.locator(".ev-schedule-day-muted")).toContainText("Monday");
+    await expect(page.getByTestId("ev-schedule-mon-min-pct")).toHaveCount(0);
+    await expect(page.getByTestId("ev-schedule-mon-ready-by")).toHaveCount(0);
+    await expect(row.locator(".ev-schedule-placeholder")).toHaveCount(2);
+
+    await page.getByTestId("ev-schedule-mon-enabled").check();
+
+    // Enabling mounts the real inputs (with their defaults) and clears the muted styling.
+    await expect(page.getByTestId("ev-schedule-mon-min-pct")).toHaveValue("80");
+    await expect(page.getByTestId("ev-schedule-mon-ready-by")).toHaveValue("07:30");
+    await expect(row.locator(".ev-schedule-day-muted")).toHaveCount(0);
+    await expect(row.locator(".ev-schedule-placeholder")).toHaveCount(0);
   });
 
   test("editing the schedule in the Car view saves a valid ev.schedule via the settings POST",
@@ -161,7 +197,11 @@ test.describe("Car view", () => {
 
     // The Car view has its OWN sticky save bar; it only appears once something changes.
     await expect(page.getByTestId("car-save")).toHaveCount(0);
-    await page.getByTestId("ev-schedule-mon-enabled").check();
+    // The day-enable control is the app's switch (role=switch), reusing .switch-input — still a
+    // real checkbox underneath, so .check()/.fill() keep working exactly as before.
+    const monEnabled = page.getByTestId("ev-schedule-mon-enabled");
+    await expect(monEnabled).toHaveAttribute("role", "switch");
+    await monEnabled.check();
     await page.getByTestId("ev-schedule-mon-ready-by").fill("06:15");
     await page.getByTestId("ev-schedule-mon-min-pct").fill("90");
     const save = page.getByTestId("car-save");

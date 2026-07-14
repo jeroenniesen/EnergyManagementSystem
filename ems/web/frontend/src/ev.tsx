@@ -92,36 +92,53 @@ export function EvScheduleEditor({
             <div className="ev-schedule-row" key={day} data-testid={`ev-schedule-row-${day}`}>
               <input
                 type="checkbox"
+                role="switch"
+                className="switch-input"
                 checked={d.enabled}
                 disabled={disabled}
                 aria-label={`Enable ${DAY_LABEL[day]}`}
                 data-testid={`ev-schedule-${day}-enabled`}
                 onChange={(e) => updateDay(day, { enabled: e.target.checked })}
               />
-              <span className="ev-schedule-day">{DAY_LABEL[day]}</span>
-              <input
-                type="number"
-                min={0}
-                max={100}
-                step={5}
-                value={d.min_pct}
-                disabled={disabled || !d.enabled}
-                aria-label={`${DAY_LABEL[day]} minimum percent`}
-                data-testid={`ev-schedule-${day}-min-pct`}
-                onChange={(e) => {
-                  const n = Number(e.target.value);
-                  const clamped = Number.isFinite(n) ? Math.max(0, Math.min(100, Math.round(n))) : 0;
-                  updateDay(day, { min_pct: clamped });
-                }}
-              />
-              <input
-                type="time"
-                value={d.ready_by}
-                disabled={disabled || !d.enabled}
-                aria-label={`${DAY_LABEL[day]} ready by`}
-                data-testid={`ev-schedule-${day}-ready-by`}
-                onChange={(e) => updateDay(day, { ready_by: e.target.value || "07:30" })}
-              />
+              <span className={`ev-schedule-day${d.enabled ? "" : " ev-schedule-day-muted"}`}>
+                {DAY_LABEL[day]}
+              </span>
+              {/* Disabled days show a quiet placeholder instead of a ghosted, faint-looking input —
+                  the min-%/ready-by inputs only exist in the DOM once the day is enabled. */}
+              {d.enabled ? (
+                <span className="ev-schedule-minpct">
+                  <input
+                    type="number"
+                    min={0}
+                    max={100}
+                    step={5}
+                    value={d.min_pct}
+                    disabled={disabled}
+                    aria-label={`${DAY_LABEL[day]} minimum percent`}
+                    data-testid={`ev-schedule-${day}-min-pct`}
+                    onChange={(e) => {
+                      const n = Number(e.target.value);
+                      const clamped = Number.isFinite(n) ? Math.max(0, Math.min(100, Math.round(n))) : 0;
+                      updateDay(day, { min_pct: clamped });
+                    }}
+                  />
+                  <span className="ev-schedule-unit" aria-hidden="true">%</span>
+                </span>
+              ) : (
+                <span className="ev-schedule-placeholder" aria-hidden="true">–</span>
+              )}
+              {d.enabled ? (
+                <input
+                  type="time"
+                  value={d.ready_by}
+                  disabled={disabled}
+                  aria-label={`${DAY_LABEL[day]} ready by`}
+                  data-testid={`ev-schedule-${day}-ready-by`}
+                  onChange={(e) => updateDay(day, { ready_by: e.target.value || "07:30" })}
+                />
+              ) : (
+                <span className="ev-schedule-placeholder" aria-hidden="true">–</span>
+              )}
             </div>
           );
         })}

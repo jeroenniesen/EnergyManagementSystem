@@ -115,6 +115,25 @@ export const INCIDENT_TYPE_LABEL: Record<string, string> = {
   revert: "Reverted to safe mode",
 };
 
+/** Production feedback ("don't know what action I need to take here"): each incident TYPE gets a
+ * short, honest "what to do" line under its count row on the System page (B-37 parity) — covers
+ * every key in INCIDENT_TYPE_LABEL above. command_failed/cluster_mismatch point at something
+ * concrete to check; fallback/revert are EMS protecting itself, so the copy stays reassuring
+ * rather than inventing a fix — only recurring incidents warrant a look. */
+export const INCIDENT_TYPE_ACTION: Record<string, string> = {
+  command_failed:
+    "The battery didn't confirm some commands; EMS retried or fell back safely. If this keeps " +
+    "growing, check the Indevolt gateway's power/network.",
+  cluster_mismatch:
+    "A tower is running its own mode — power-cycle it if it hasn't rejoined after a few cycles.",
+  fallback:
+    "EMS chose a safe default rather than risk an uncertain command — no action needed unless " +
+    "this keeps recurring.",
+  revert:
+    "EMS reverted to the battery's own safe mode to protect your home — no action needed unless " +
+    "this keeps recurring.",
+};
+
 /** Model-health track verdict (B-76, from /api/accuracy's `health` block) → dot colour + text
  * label (never colour-only) + a title for the "still collecting evidence" honest empty state.
  * "Check" (not "Needs a look") matches the System page's check-row STATUS_LABEL convention. */
