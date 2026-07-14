@@ -346,18 +346,21 @@ _LOAD_MAPE_WARN_PCT = 40.0  # household load MAPE beyond this reads as "harder t
 _PLAN_HIT_RATE_WARN_PCT = 70.0  # deadline hit-rate below this reads as "missing targets lately"
 
 
-def _solar_health(solar: dict | None) -> tuple[str, str | None]:
+def _solar_health(solar: dict | None, *, daytime_only: bool = False) -> tuple[str, str | None]:
     """`solar` is `forecast_error()`'s return shape (always a dict, never None, once there's a
     store at all — see `/api/accuracy`). Below `_MIN_SKILL_SLOTS` matched daytime slots there simply
     isn't enough evidence to call it either way — same evidence gate `plan_confidence` already uses
     for its own "still learning your roof" reason — so this reads 'unknown', not a falsely-confident
     'ok'."""
-    if solar is None or (solar.get("n_daytime_slots", solar.get("n_slots")) or 0) < _MIN_SKILL_SLOTS:
+    # Model health is deliberately daytime-only; legacy payloads without daytime evidence are
+    # unknown rather than silently falling back to night-inclusive counts.
+    if solar is None or (daytime_only and "n_daytime_slots" not in solar) or ((solar.get("n_daytime_slots") if daytime_only else solar.get("n_slots")) or 0) < _MIN_SKILL_SLOTS:
         return "unknown", None
     daytime = dict(solar)
-    daytime["n_slots"] = daytime.get("n_daytime_slots", solar.get("n_slots"))
-    daytime["bias_w"] = daytime.get("daytime_bias_w", solar.get("bias_w"))
-    daytime["band_coverage_pct"] = daytime.get("daytime_band_coverage_pct", solar.get("band_coverage_pct"))
+    if daytime_only:
+        daytime["n_slots"] = daytime["n_daytime_slots"]
+        daytime["bias_w"] = daytime.get("daytime_bias_w")
+        daytime["band_coverage_pct"] = daytime.get("daytime_band_coverage_pct")
     if _solar_bias_or_band_flag(daytime):
         return "warn", (
             f"Solar forecast bias is beyond {_MAX_BIAS_FRACTION * 100:.0f}% of typical output, "
@@ -393,7 +396,8 @@ def _plan_execution_health(plan_execution: dict | None) -> tuple[str, str | None
 
 
 def model_health(
-    *, solar: dict | None, load: dict | None, plan_execution: dict | None
+    *, solar: dict | None, load: dict | None, plan_execution: dict | None,
+    daytime_only: bool = False,
 ) -> dict:
     """Synthesize an ok/warn/unknown verdict per accuracy track (BACKLOG B-76) — SYNTHESIS ONLY,
     no new measurement is taken here; the three inputs are exactly `/api/accuracy`'s `solar` /
@@ -405,7 +409,7 @@ def model_health(
     sentence per warn row, in solar/load/plan_execution order (never for "unknown" — that state is
     its own honest, non-alarming "still collecting evidence" story, not a note).
     """
-    solar_status, solar_note = _solar_health(solar)
+    solar_status, solar_note = _solar_health(solar, daytime_only=daytime_only)
     load_status, load_note = _load_health(load)
     plan_status, plan_note = _plan_execution_health(plan_execution)
     return {

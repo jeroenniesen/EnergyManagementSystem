@@ -243,12 +243,13 @@ async def _run_recovery(
     audit_store: AuditStore | None,
     validate_fn: Any,
     precomputed_catch: Any = None,
+    precomputed_status: Any = None,
     margin_pp: float = 5.0,
     dedupe_ttl_seconds: float = _RECOVERY_DEDUPE_TTL_SECONDS,
 ) -> dict | None:
     """Missed-window recovery side effects (SPEC §8.12 / BACKLOG B-16).
 
-    Diagnoses the FRESH (pre-recovery) plan's charge completion and, on a MISSED window, runs the
+    Uses the FRESH (pre-recovery) plan's charge-completion diagnosis and, on a MISSED window, runs the
     SAME §8.11 validator over the catch-up plan (`validate_fn` — recovery bypasses NOTHING) then
     AUDITs ("plan recovered: …") and sends a calm, B-37-style notification — on a full catch-up and
     on an impossible/partial one. Rate-limited to ONE recovery per committed window per day via the
@@ -265,7 +266,7 @@ async def _run_recovery(
         )
     else:
         catch = precomputed_catch
-        status = check_charge_completion(plan, now, soc_pct, margin_pp=margin_pp)
+        status = precomputed_status or check_charge_completion(plan, now, soc_pct, margin_pp=margin_pp)
     if catch is None:  # on-pace / behind (within margin) / complete / not-applicable → nothing
         return None
 
@@ -1785,7 +1786,8 @@ def create_app(
             plan, plan_now, soc_pct=_current_soc(plan_now), prices=prices,
             enabled=bool(settings_cache["planner.recovery_enabled"]), tz=site_tz,
             cache_store=cache_store, notifier=notifier, audit_store=audit_store,
-            validate_fn=_validate_plan_obj, precomputed_catch=catch, **_recovery_sizing(),
+            validate_fn=_validate_plan_obj, precomputed_catch=catch, precomputed_status=_status,
+            **_recovery_sizing(),
         )
 
     async def _notify_loop(stop: asyncio.Event) -> None:
