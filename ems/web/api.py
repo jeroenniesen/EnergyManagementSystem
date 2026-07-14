@@ -69,7 +69,7 @@ from ems.planner.explain import (
 )
 from ems.planner.load_profile import build_load_profile
 from ems.planner.projection import BatteryModel, project_energy
-from ems.planner.recovery import recover_if_needed
+from ems.planner.recovery import check_charge_completion, recover_if_needed
 from ems.planner.rule_based import PlannerConfig, plan_rule_based
 from ems.planner.strategy import HysteresisState, build_plan, resolve_strategy_hysteretic
 from ems.planner.summer import SummerConfig, sunset_after
@@ -242,6 +242,7 @@ async def _run_recovery(
     notifier: Notifier | None,
     audit_store: AuditStore | None,
     validate_fn: Any,
+    precomputed_catch: Any = None,
     margin_pp: float = 5.0,
     dedupe_ttl_seconds: float = _RECOVERY_DEDUPE_TTL_SECONDS,
 ) -> dict | None:
@@ -256,11 +257,15 @@ async def _run_recovery(
     Returns a summary dict for tests/observability, or None when nothing was done. Never raises."""
     if not enabled or plan is None:
         return None
-    _reshaped, status, catch = recover_if_needed(
-        plan, now, soc_pct=soc_pct, prices=prices, usable_kwh=usable_kwh,
-        reserve_soc_pct=reserve_soc_pct, max_charge_w=max_charge_w,
-        round_trip_efficiency=round_trip_efficiency, enabled=True, margin_pp=margin_pp,
-    )
+    if precomputed_catch is None:
+        _reshaped, status, catch = recover_if_needed(
+            plan, now, soc_pct=soc_pct, prices=prices, usable_kwh=usable_kwh,
+            reserve_soc_pct=reserve_soc_pct, max_charge_w=max_charge_w,
+            round_trip_efficiency=round_trip_efficiency, enabled=True, margin_pp=margin_pp,
+        )
+    else:
+        catch = precomputed_catch
+        status = check_charge_completion(plan, now, soc_pct, margin_pp=margin_pp)
     if catch is None:  # on-pace / behind (within margin) / complete / not-applicable → nothing
         return None
 
@@ -1269,7 +1274,7 @@ def create_app(
         )
         return now, prices, plan
 
-    def _current_plan():
+    def _plan_with_recovery():
         """Single source of the plan to ACT on (DRY) so /api/plan, /api/savings, /api/decision, the
         control loop and the validator all reflect the SAME computation: the fresh strategy plan
         with SPEC §8.12 missed-window recovery folded in (BACKLOG B-16). Recovery is a PURE,
@@ -1282,11 +1287,15 @@ def create_app(
         if pp is None:
             return None
         now, prices, plan = pp
-        recovered, _status, _catch = recover_if_needed(
+        recovered, status, catch = recover_if_needed(
             plan, now, soc_pct=_current_soc(now), prices=prices,
             enabled=bool(settings_cache["planner.recovery_enabled"]), **_recovery_sizing(),
         )
-        return now, prices, recovered
+        return now, prices, recovered, status, catch
+
+    def _current_plan():
+        pp = _plan_with_recovery()
+        return None if pp is None else pp[:3]
 
     def _data_quality(now: datetime) -> str:
         """Single source of the current data-quality level (SPEC §8.11)."""
@@ -1764,15 +1773,19 @@ def create_app(
         on a missed window, validates the catch-up + audits + notifies (rate-limited). The plan the
         controller acts on is reshaped in `_current_plan` through the same validator + caps; this
         loop only makes it observable. Fail-safe — an error is logged, never propagated."""
-        pp = await asyncio.to_thread(_build_plan_now)
+        pp = await asyncio.to_thread(_plan_with_recovery)
         if pp is None:
             return
-        plan_now, prices, plan = pp
+        plan_now, prices, plan, _status, catch = pp
+        # Recovery was already computed for the plan the controller/UI will see; pass the
+        # resulting catch-up through the side-effect path without rebuilding or re-diagnosing it.
+        if catch is None:
+            return
         await _run_recovery(
             plan, plan_now, soc_pct=_current_soc(plan_now), prices=prices,
             enabled=bool(settings_cache["planner.recovery_enabled"]), tz=site_tz,
             cache_store=cache_store, notifier=notifier, audit_store=audit_store,
-            validate_fn=_validate_plan_obj, **_recovery_sizing(),
+            validate_fn=_validate_plan_obj, precomputed_catch=catch, **_recovery_sizing(),
         )
 
     async def _notify_loop(stop: asyncio.Event) -> None:
