@@ -154,6 +154,10 @@ function deadlineStatus(d: Deadline): { cls: string; badge: string; label: strin
   return { cls: "car-tick-good", badge: "badge-live", label: "planned" };
 }
 
+// One line: the question as the row label, then the shared settings-slider (range 0-100 step 5)
+// with its live "N%" read-out, then Set (+ Cancel when re-anchoring). Reuses the exact
+// `.slider-row`/`.slider`/`.slider-value` classes the Settings sliders use (see Settings.tsx's
+// NumberInput) so the anchor prompt doesn't fork its own input styling.
 function SocSetForm({
   pct,
   onChange,
@@ -168,38 +172,50 @@ function SocSetForm({
   busy: boolean;
 }) {
   return (
-    <div className="override-controls car-anchor-form" data-testid="car-anchor-form">
-      <input
-        type="number"
-        min={0}
-        max={100}
-        step={1}
-        value={pct}
-        onChange={(e) => onChange(Number(e.target.value))}
-        aria-label="Car charge level (%)"
-        className="car-pct-input"
-        data-testid="car-soc-input"
-      />
-      <button
-        type="button"
-        className="btn-primary"
-        disabled={busy}
-        onClick={onSubmit}
-        data-testid="car-soc-set"
-      >
-        Set
-      </button>
-      {onCancel && (
+    <div className="car-anchor-form" data-testid="car-anchor-form">
+      <label htmlFor="car-soc-slider" className="car-anchor-label">
+        What&apos;s the car&apos;s charge now?
+      </label>
+      <div className="slider-row car-anchor-slider-row">
+        <input
+          id="car-soc-slider"
+          type="range"
+          className="slider"
+          min={0}
+          max={100}
+          step={5}
+          value={pct}
+          disabled={busy}
+          onChange={(e) => onChange(Number(e.target.value))}
+          aria-label="Car charge level (%)"
+          data-testid="car-soc-input"
+        />
+        <output className="slider-value" htmlFor="car-soc-slider">
+          {pct}%
+        </output>
+      </div>
+      <div className="car-anchor-actions">
         <button
           type="button"
-          className="btn-ghost"
+          className="btn-primary"
           disabled={busy}
-          onClick={onCancel}
-          data-testid="car-anchor-cancel"
+          onClick={onSubmit}
+          data-testid="car-soc-set"
         >
-          Cancel
+          Set
         </button>
-      )}
+        {onCancel && (
+          <button
+            type="button"
+            className="btn-ghost"
+            disabled={busy}
+            onClick={onCancel}
+            data-testid="car-anchor-cancel"
+          >
+            Cancel
+          </button>
+        )}
+      </div>
     </div>
   );
 }
@@ -283,7 +299,6 @@ export function CarCard({
     return (
       <section className="car-card" data-testid="car-card">
         <CardHead />
-        <p className="override-hint">What&apos;s the car&apos;s charge now?</p>
         {data.car_meter_configured === false && (
           <p className="advisor-hint" data-testid="car-meter-missing">
             No EV meter is configured, so update this after driving or charging.
@@ -373,7 +388,7 @@ export function CarCard({
             className="car-edit-btn"
             aria-label="Re-anchor the car's charge level"
             onClick={() => {
-              setPctInput(Math.round(soc.soc_pct));
+              setPctInput(Math.round(soc.soc_pct / 5) * 5);
               setErr(null);
               setEditingAnchor((v) => !v);
             }}

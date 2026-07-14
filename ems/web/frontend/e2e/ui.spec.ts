@@ -1071,6 +1071,74 @@ test.describe("EMS dashboard", () => {
     // The windowed by-type rows sum to the SAME 15 the headline says — no more trust bug.
   });
 
+  // Production feedback ("don't know what action I need to take here"): every incident TYPE gets a
+  // short "what to do" line under its count row (B-37 parity) — one per type covered by
+  // INCIDENT_TYPE_LABEL/INCIDENT_TYPE_ACTION in labels.ts.
+  test("Incidents panel shows a what-to-do action line per incident type present (mocked)", async ({
+    page,
+  }) => {
+    await page.route("**/api/incidents", (route) =>
+      route.fulfill({
+        status: 200, contentType: "application/json",
+        body: JSON.stringify({
+          incidents: {
+            total: 4, last_7_days: 4,
+            by_type: { command_failed: 1, cluster_mismatch: 1, fallback: 1, revert: 1 },
+            by_type_last_7_days: { command_failed: 1, cluster_mismatch: 1, fallback: 1, revert: 1 },
+            by_day: { "2026-06-28": 4 }, most_recent: "2026-06-28T18:00:00+00:00",
+          },
+        }),
+      }),
+    );
+    await page.goto("/");
+    await page.getByTestId("nav-manage").click();
+    await page.getByTestId("manage-tab-system").click();
+    await expect(page.getByTestId("incident-type-action-command_failed")).toContainText(
+      "check the Indevolt gateway's power/network",
+    );
+    await expect(page.getByTestId("incident-type-action-cluster_mismatch")).toContainText(
+      "power-cycle it",
+    );
+    // fallback/revert: honest "EMS protected itself" copy, never inventing a fix to chase.
+    await expect(page.getByTestId("incident-type-action-fallback")).toContainText(
+      "no action needed unless this keeps recurring",
+    );
+    await expect(page.getByTestId("incident-type-action-revert")).toContainText(
+      "own safe mode to protect your home",
+    );
+    // Muted, one line each — never the alarming warn-amber used for readiness checks.
+    for (const type of ["command_failed", "cluster_mismatch", "fallback", "revert"]) {
+      await expect(
+        page.getByTestId(`incident-type-action-${type}`),
+      ).toHaveClass(/incident-type-action/);
+    }
+  });
+
+  test("Incidents panel renders an action line only for the types actually present (mocked)", async ({
+    page,
+  }) => {
+    await page.route("**/api/incidents", (route) =>
+      route.fulfill({
+        status: 200, contentType: "application/json",
+        body: JSON.stringify({
+          incidents: {
+            total: 1, last_7_days: 1,
+            by_type: { command_failed: 1 },
+            by_type_last_7_days: { command_failed: 1 },
+            by_day: { "2026-06-28": 1 }, most_recent: "2026-06-28T18:00:00+00:00",
+          },
+        }),
+      }),
+    );
+    await page.goto("/");
+    await page.getByTestId("nav-manage").click();
+    await page.getByTestId("manage-tab-system").click();
+    await expect(page.getByTestId("incident-type-action-command_failed")).toBeVisible();
+    await expect(page.getByTestId("incident-type-action-cluster_mismatch")).toHaveCount(0);
+    await expect(page.getByTestId("incident-type-action-fallback")).toHaveCount(0);
+    await expect(page.getByTestId("incident-type-action-revert")).toHaveCount(0);
+  });
+
   test("the Chat tab shows the assistant, off until AI is enabled", async ({ page }) => {
     await page.goto("/");
     await page.getByTestId("nav-chat").click();
@@ -1254,6 +1322,143 @@ test.describe("EMS dashboard", () => {
     await expect(page.getByTestId("health-action-plan_execution")).toContainText("Audit log");
   });
 
+  // Production feedback ("don't know what action I need to take here"): the destination phrase in
+  // each warn-row action line is a real, clickable link now — not just plain text naming a place to
+  // go. Clicking navigates straight to that Manage sub-tab.
+  test("the solar action's link navigates to Manage → Settings (mocked)", async ({ page }) => {
+    await page.route("**/api/accuracy", (route) =>
+      route.fulfill({
+        status: 200, contentType: "application/json",
+        body: JSON.stringify(accuracyFixture({
+          solar: "warn", load: "ok", plan_execution: "ok",
+          notes: ["Solar forecast bias is beyond 25% of typical output over the last 14 days."],
+        })),
+      }),
+    );
+    await page.goto("/");
+    await page.getByTestId("nav-manage").click();
+    await page.getByTestId("manage-tab-system").click();
+    const link = page.getByTestId("health-action-link-solar");
+    await expect(link).toBeVisible();
+    await expect(link).toHaveText("Manage → Settings → Planner");
+    // The sentence around the link is preserved — only the destination phrase is clickable.
+    await expect(page.getByTestId("health-action-solar")).toContainText(
+      "it suggests a calibrated setting.",
+    );
+    await link.click();
+    await expect(page.getByTestId("manage-tab-settings")).toHaveAttribute("aria-selected", "true");
+    await expect(page.getByTestId("settings")).toBeVisible();
+    await expect(page.getByTestId("system")).toHaveCount(0);
+  });
+
+  test("the plan-execution action's link navigates to the Audit sub-tab (mocked)", async ({
+    page,
+  }) => {
+    await page.route("**/api/accuracy", (route) =>
+      route.fulfill({
+        status: 200, contentType: "application/json",
+        body: JSON.stringify(accuracyFixture({
+          solar: "ok", load: "ok", plan_execution: "warn",
+          notes: ["The plan has been missing its SoC-by-deadline targets more than expected."],
+        })),
+      }),
+    );
+    await page.goto("/");
+    await page.getByTestId("nav-manage").click();
+    await page.getByTestId("manage-tab-system").click();
+    const link = page.getByTestId("health-action-link-plan_execution");
+    await expect(link).toBeVisible();
+    await expect(link).toHaveText("Audit log");
+    await link.click();
+    await expect(page.getByTestId("manage-tab-audit")).toHaveAttribute("aria-selected", "true");
+    await expect(page.getByTestId("audit")).toBeVisible();
+    await expect(page.getByTestId("system")).toHaveCount(0);
+  });
+
+  // The load row has nowhere to send you ("no dial to tune") — its action line must stay plain
+  // text, never grow a link of its own.
+  test("the load action never renders a link (mocked)", async ({ page }) => {
+    await page.route("**/api/accuracy", (route) =>
+      route.fulfill({
+        status: 200, contentType: "application/json",
+        body: JSON.stringify(accuracyFixture({
+          solar: "ok", load: "warn", plan_execution: "ok",
+          notes: ["Household load has been harder to predict than a simple weekly baseline lately."],
+        })),
+      }),
+    );
+    await page.goto("/");
+    await page.getByTestId("nav-manage").click();
+    await page.getByTestId("manage-tab-system").click();
+    await expect(page.getByTestId("health-action-load")).toBeVisible();
+    await expect(page.getByTestId("health-action-link-load")).toHaveCount(0);
+  });
+
+  // Production feedback: "One part of the picture needs a look" was rendered above TWO flagged
+  // rows — the sentence must count the warn rows, not hardcode "One".
+  test("Model health headline says 'One part' for exactly one flagged row (mocked)", async ({
+    page,
+  }) => {
+    await page.route("**/api/accuracy", (route) =>
+      route.fulfill({
+        status: 200, contentType: "application/json",
+        body: JSON.stringify(accuracyFixture({
+          solar: "warn", load: "ok", plan_execution: "ok",
+          notes: ["Solar forecast bias is beyond 25% of typical output over the last 14 days."],
+        })),
+      }),
+    );
+    await page.goto("/");
+    await page.getByTestId("nav-manage").click();
+    await page.getByTestId("manage-tab-system").click();
+    await expect(page.getByTestId("model-health-summary")).toHaveText(
+      "One part of the picture needs a look; safe planning continues in the meantime.",
+    );
+  });
+
+  test("Model health headline says 'Two parts ... need' for exactly two flagged rows (mocked)", async ({
+    page,
+  }) => {
+    await page.route("**/api/accuracy", (route) =>
+      route.fulfill({
+        status: 200, contentType: "application/json",
+        body: JSON.stringify(accuracyFixture({
+          solar: "warn", load: "warn", plan_execution: "ok",
+          notes: [
+            "Solar forecast bias is beyond 25% of typical output over the last 14 days.",
+            "Household load has been harder to predict than a simple weekly baseline lately.",
+          ],
+        })),
+      }),
+    );
+    await page.goto("/");
+    await page.getByTestId("nav-manage").click();
+    await page.getByTestId("manage-tab-system").click();
+    await expect(page.getByTestId("model-health-summary")).toHaveText(
+      "Two parts of the picture need a look; safe planning continues in the meantime.",
+    );
+  });
+
+  test("Model health headline says 'Three parts ... need' when every row is flagged (mocked)", async ({
+    page,
+  }) => {
+    await page.route("**/api/accuracy", (route) =>
+      route.fulfill({
+        status: 200, contentType: "application/json",
+        body: JSON.stringify(accuracyFixture({
+          solar: "warn", load: "warn", plan_execution: "warn",
+          notes: ["note one", "note two", "note three"],
+        })),
+      }),
+    );
+    await page.goto("/");
+    await page.getByTestId("nav-manage").click();
+    await page.getByTestId("manage-tab-system").click();
+    await expect(page.getByTestId("model-health-summary")).toHaveText(
+      "Three parts of the picture need a look; safe planning continues in the meantime.",
+    );
+  });
+
   test("Model health panel's empty state reads 'still collecting evidence', never alarming (mocked)", async ({
     page,
   }) => {
@@ -1416,7 +1621,15 @@ test.describe("EMS dashboard", () => {
     const card = page.getByTestId("car-card");
     await expect(card).toBeVisible();
     await expect(card).toContainText("What's the car's charge now?");
-    await page.getByTestId("car-soc-input").fill("55");
+    // A styled range slider (0-100, step 5), not a bare number spinner — targeted by its slider
+    // role, with a live "N%" read-out beside it.
+    const slider = page.getByRole("slider", { name: "Car charge level (%)" });
+    await expect(slider).toHaveAttribute("type", "range");
+    await expect(slider).toHaveAttribute("min", "0");
+    await expect(slider).toHaveAttribute("max", "100");
+    await expect(slider).toHaveAttribute("step", "5");
+    await slider.fill("55");
+    await expect(page.getByTestId("car-anchor-form")).toContainText("55%");
     const [req] = await Promise.all([
       page.waitForRequest("**/api/car/soc"),
       page.getByTestId("car-soc-set").click(),

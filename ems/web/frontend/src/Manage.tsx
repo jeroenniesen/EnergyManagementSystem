@@ -1,9 +1,10 @@
 // Manage view (feat/ux-batch-3): folds the three operator surfaces — Settings, System, Audit —
 // behind one top-level nav item with a slim segmented sub-nav. The user's words: they're "often
-// used together and eat menu space." The EXISTING components (Settings / SystemView / AuditView)
-// are mounted UNCHANGED — this is purely a container + sub-router; it never reaches into their
-// internals. The active sub-tab + hash routing (#manage, #manage/system, #manage/audit) live in
-// App.tsx; this component just renders the tab it's told to.
+// used together and eat menu space." Settings/AuditView are mounted UNCHANGED. SystemView gets one
+// optional prop (`onNavigate`, production feedback: its action lines needed a real destination) —
+// this is purely a container + sub-router otherwise; it never reaches into their internals. The
+// active sub-tab + hash routing (#manage, #manage/system, #manage/audit) live in App.tsx; this
+// component just renders the tab it's told to.
 import { AuditView } from "./AuditView";
 import { Settings } from "./Settings";
 import { SystemView } from "./System";
@@ -42,9 +43,12 @@ export function Manage({
           </button>
         ))}
       </nav>
-      {/* One surface at a time; each is the exact same component the old top-level views mounted. */}
+      {/* One surface at a time; each is the exact same component the old top-level views mounted.
+          SystemView's model-health action lines (B-37/production feedback) need to jump to another
+          Manage sub-tab — `onTab` is already threaded in from App for the sub-nav above, so it's
+          reused as-is (no App.tsx change needed) rather than adding a second navigation prop. */}
       {tab === "settings" && <Settings onSaved={onSettingsSaved} />}
-      {tab === "system" && <SystemView />}
+      {tab === "system" && <SystemView onNavigate={onTab} />}
       {tab === "audit" && <AuditView />}
     </section>
   );

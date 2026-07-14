@@ -155,3 +155,37 @@ def test_ev_charge_efficiency_validate_range():
     assert "ev.charge_efficiency" in errors
     clean, errors2 = validate_settings({"ev.charge_efficiency": 0.95})
     assert clean["ev.charge_efficiency"] == 0.95 and errors2 == {}
+
+
+def test_heating_done_field_defaults_to_empty_json_object():
+    # App state (which Insights heating-advice cards are marked done, and when) — not a user
+    # tunable, but no `hidden` mechanism exists in SettingsField, so it lives in "reporting" with a
+    # help note pointing back at where it's actually managed.
+    field = SETTINGS_BY_KEY["heating.done"]
+    assert field.type == "text"
+    assert field.group == "reporting"
+    assert field.default == "{}"
+    assert json.loads(field.default) == {}
+    assert "Insights" in field.help
+    assert defaults()["heating.done"] == "{}"
+
+
+def test_heating_done_field_accepts_arbitrary_json_string():
+    # Generic "text" validation only, same as ev.schedule — HeatingAdvice.tsx owns the shape
+    # ({itemKey: "YYYY-MM-DD"}), posted as ONE key, immediately, never through the save bar.
+    payload = json.dumps({"balancing": "2026-07-15", "flow_temp": "2026-07-16"})
+    clean, errors = validate_settings({"heating.done": payload})
+    assert errors == {}
+    assert clean["heating.done"] == payload
+    assert json.loads(clean["heating.done"]) == {
+        "balancing": "2026-07-15", "flow_temp": "2026-07-16",
+    }
+
+
+def test_heating_done_field_overlays_onto_effective_settings():
+    payload = json.dumps({"dhw_eco": "2026-07-01"})
+    eff = effective_settings({"heating.done": payload})
+    assert eff["heating.done"] == payload
+    # An invalid (non-string) stored value must never break the dashboard — falls back to default.
+    eff_bad = effective_settings({"heating.done": 123})
+    assert eff_bad["heating.done"] == "{}"

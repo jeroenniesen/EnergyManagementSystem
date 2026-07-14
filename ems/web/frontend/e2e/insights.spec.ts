@@ -365,6 +365,121 @@ test.describe("Insights: heating advice (B-11, advice-only)", () => {
   });
 });
 
+// Production feedback: "Can't check these items as done." Each advice card can be marked done
+// (one-off jobs, not a recurring habit) — state lives in ONE settings field, `heating.done`, saved
+// immediately on click (never via the Settings dirty-bar). /api/settings is mocked here (both GET
+// and POST) so these tests never touch the shared e2e DB — see e2e-needs-clean-db in project memory.
+test.describe("Insights: heating advice — mark as done", () => {
+  const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+  function doneLabel(iso: string): string {
+    const d = new Date(`${iso}T00:00:00`);
+    return `${d.getDate()} ${MONTHS[d.getMonth()]}`;
+  }
+
+  function mockSettings(
+    page: import("@playwright/test").Page,
+    initialDone: Record<string, string>,
+    onPost?: (body: Record<string, unknown>) => void,
+  ) {
+    return page.route("**/api/settings", async (route) => {
+      if (route.request().method() === "POST") {
+        onPost?.(JSON.parse(route.request().postData() || "{}"));
+        await route.fulfill({
+          status: 200, contentType: "application/json",
+          body: JSON.stringify({ values: {}, restart_required: false }),
+        });
+        return;
+      }
+      await route.fulfill({
+        status: 200, contentType: "application/json",
+        body: JSON.stringify({ schema: [], values: { "heating.done": JSON.stringify(initialDone) } }),
+      });
+    });
+  }
+
+  test.beforeEach(async ({ page }) => {
+    await page.route("**/api/report**", (route) =>
+      route.fulfill({
+        status: 200, contentType: "application/json",
+        body: JSON.stringify({ ...REPORT, gas: { m3: 8, kwh_eq: 78.2, eur: 12, co2_kg: 14.2 } }),
+      }),
+    );
+  });
+
+  test("marking a card done collapses it to a done line and POSTs only heating.done", async ({
+    page,
+  }) => {
+    let posted: Record<string, unknown> | undefined;
+    await mockSettings(page, {}, (body) => {
+      posted = body;
+    });
+    await page.goto("/");
+    await page.getByTestId("nav-insights").click();
+    const card = page.getByTestId("advice-balancing");
+    await expect(card).toBeVisible();
+    await page.getByTestId("advice-balancing-mark-done").click();
+
+    const today = todayStr();
+    await expect(card).toHaveAttribute("data-done", "true");
+    await expect(card).toContainText(`✓ Balanced radiators — done ${doneLabel(today)}`);
+    await expect(card.getByTestId("advice-balancing-undo")).toBeVisible();
+    // The full advice text is gone, not just hidden.
+    await expect(card).not.toContainText("Advice only");
+
+    await expect.poll(() => posted).toBeTruthy();
+    expect(posted).toEqual({ "heating.done": JSON.stringify({ balancing: today }) });
+  });
+
+  test("undo restores the full card and POSTs the item removed from heating.done", async ({
+    page,
+  }) => {
+    let posted: Record<string, unknown> | undefined;
+    await mockSettings(page, { balancing: "2026-06-01" }, (body) => {
+      posted = body;
+    });
+    await page.goto("/");
+    await page.getByTestId("nav-insights").click();
+    const card = page.getByTestId("advice-balancing");
+    await expect(card).toHaveAttribute("data-done", "true");
+    await expect(card).toContainText("done 1 Jun");
+
+    await page.getByTestId("advice-balancing-undo").click();
+    await expect(card).not.toHaveAttribute("data-done", "true");
+    await expect(card).toContainText("Balance your radiators");
+    await expect(card).toContainText("Advice only — nothing changes automatically.");
+    await expect(page.getByTestId("advice-balancing-mark-done")).toBeVisible();
+
+    await expect.poll(() => posted).toBeTruthy();
+    expect(posted).toEqual({ "heating.done": JSON.stringify({}) });
+  });
+
+  test("a done card sorts below the not-done cards", async ({ page }) => {
+    await mockSettings(page, { flow_temp: "2026-06-01" });
+    await page.goto("/");
+    await page.getByTestId("nav-insights").click();
+    await expect(page.getByTestId("advice-flow-temp")).toHaveAttribute("data-done", "true");
+
+    const cards = page.locator(".advice-cards > div");
+    await expect(cards).toHaveCount(3);
+    const order = await cards.evaluateAll((els) => els.map((el) => el.getAttribute("data-testid")));
+    expect(order).toEqual(["advice-balancing", "advice-dhw-eco", "advice-flow-temp"]);
+  });
+
+  test("the header swaps to the all-done state once every card is marked done", async ({ page }) => {
+    await mockSettings(page, {
+      balancing: "2026-06-01", flow_temp: "2026-06-01", dhw_eco: "2026-06-01",
+    });
+    await page.goto("/");
+    await page.getByTestId("nav-insights").click();
+    const advice = page.getByTestId("heating-advice");
+    await expect(advice).toContainText("Heating — all three done ✓");
+    await expect(advice).not.toContainText("Heating — the biggest lever left");
+    const alldone = page.getByTestId("heating-advice-alldone");
+    await expect(alldone).toContainText("one-offs");
+    await expect(alldone).toContainText("revisit if your setup changes");
+  });
+});
+
 const SERIES = Array.from({ length: 96 }, (_, i) => {
   const h = String(Math.floor(i / 4)).padStart(2, "0");
   const m = String((i % 4) * 15).padStart(2, "0");
