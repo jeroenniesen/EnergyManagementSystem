@@ -965,6 +965,68 @@ body {
 .car-session-when { font-weight: 600; }
 .car-session-stats { color: var(--muted); }
 
+/* ---- "While the car charges" battery-mode section (feat/car-charge-modes) ------------------
+   Same card recipe as .car-config/.car-sessions (left-accent, panel bg). The master toggle sits
+   in the head row; below it, a vertical radiogroup of "radio cards" — each a button (role=radio,
+   roving tabindex, arrow-key navigation like .strategy-seg) so the wattage input for
+   static_discharge can sit as a plain sibling, never nested inside the button. Saves are
+   immediate (the heating mark-as-done idiom), not the sticky Settings save-bar. */
+.car-mode {
+  margin-top: 24px; background: var(--panel); border: 1px solid var(--line);
+  border-left: 3px solid var(--car); border-radius: var(--radius); padding: 16px 18px;
+  box-shadow: var(--shadow);
+}
+.car-mode-head {
+  display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap;
+}
+.car-mode-options {
+  display: flex; flex-direction: column; gap: 10px; margin-top: 14px;
+}
+.car-mode-option {
+  background: var(--panel-2); border: 1px solid var(--line); border-radius: 12px;
+  transition: border-color 0.15s ease, background 0.15s ease;
+}
+.car-mode-option-selected {
+  border-color: var(--car);
+  background: color-mix(in srgb, var(--car) 10%, var(--panel-2));
+}
+.car-mode-option-head {
+  width: 100%; display: flex; align-items: flex-start; gap: 12px; text-align: left;
+  font: inherit; color: inherit; background: none; border: 0; border-radius: 12px;
+  padding: 14px 16px; cursor: pointer;
+}
+.car-mode-option-head:hover { color: var(--text); }
+.car-mode-option-head:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+.car-mode-radio-dot {
+  flex: none; width: 16px; height: 16px; margin-top: 2px; border-radius: 999px;
+  border: 2px solid var(--line); position: relative;
+}
+.car-mode-option-selected .car-mode-radio-dot { border-color: var(--car); }
+.car-mode-option-selected .car-mode-radio-dot::after {
+  content: ""; position: absolute; inset: 2px; border-radius: 999px; background: var(--car);
+}
+.car-mode-option-body { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.car-mode-option-title { font-weight: 600; font-size: 0.92rem; }
+.car-mode-option-desc { color: var(--muted); font-size: 0.82rem; line-height: 1.5; }
+.car-mode-watts {
+  padding: 0 16px 14px 44px;
+}
+.car-mode-watts-row { display: flex; align-items: center; gap: 8px; max-width: 220px; }
+.car-mode-watts input[type="number"] {
+  font: inherit; color: var(--text); background: var(--panel); border: 1px solid var(--line);
+  border-radius: 8px; padding: 7px 10px; width: 100%; font-variant-numeric: tabular-nums;
+}
+.car-mode-watts input:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.car-mode-warning {
+  margin: 8px 0 0; font-size: 0.8rem; line-height: 1.5; color: var(--amber-text);
+  background: color-mix(in srgb, var(--amber) 14%, transparent); border-radius: 8px;
+  padding: 8px 10px;
+}
+.car-mode-status { margin: 10px 0 0; font-size: 0.82rem; }
+@media (max-width: 480px) {
+  .car-mode-watts { padding-left: 16px; }
+}
+
 .freshness {
   display: flex;
   flex-wrap: wrap;

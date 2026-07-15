@@ -115,6 +115,9 @@ The car's SoC itself is **not** a config key — it's a runtime-store anchor (%,
 | `dry_run` | bool | true | log decisions, no writes (per-strategy gate) |
 | `min_replan_interval_seconds` | int | 600 | cap replan churn |
 | `soc_deviation_replan_pct` | % | 10 | planned-vs-actual SoC gap that triggers a replan |
+| `hold_battery_when_car_charging` | bool | true | **reworded master switch** (feat/car-charge-modes) — the on/off for ALL special battery behaviour while the car charges. Off: the planner runs exactly as it would with no car — untouched. On: the battery follows `car_charging_battery_mode` below. **UI** (Car tab, moved out of Settings) |
+| `car_charging_battery_mode` | enum | `hold` | `hold` (default, today's guard: idles so it can't feed the car) \| `static_discharge` (fixed `car_discharge_w`; any part above the actual house load deliberately feeds the car) \| `match_home_load` (discharges only the predicted non-EV house load, so the grid — not the battery — keeps feeding the car). Only takes effect while `hold_battery_when_car_charging` is on; see `SPEC.md §4.5`. **UI** (Car tab) |
+| `car_discharge_w` | W | 800 | fixed discharge power for `car_charging_battery_mode: static_discharge`, clamped to `[100, max_discharge_w]`; ignored by the other two modes. **UI** (Car tab) |
 
 ## `homeassistant` — planned, not yet implemented (BACKLOG B-18, pool)
 | Key | Type | Default | Effect |

@@ -6,6 +6,8 @@ import { type EnergyStoryData, EnergyStory } from "./EnergyStory";
 import { BatteryPlan, type BatteryPlanData, type PlanConfidence, type SavedToday } from "./BatteryPlan";
 import { Icon, type IconName } from "./icons";
 import {
+  CAR_BADGE_SUFFIX,
+  CAR_BADGE_SUFFIX_DEFAULT,
   DATA_QUALITY,
   DATA_SOURCE,
   FRESHNESS_STATE,
@@ -847,7 +849,8 @@ export function App() {
                 <span className="metric-label">Controller</span>
                 {decision.car_charging && (
                   <span className="badge badge-car" data-testid="car-charging">
-                    <Icon name="car" /> Car charging — battery held
+                    <Icon name="car" /> Car charging —{" "}
+                    {CAR_BADGE_SUFFIX[decision.desired_mode ?? ""] ?? CAR_BADGE_SUFFIX_DEFAULT}
                   </span>
                 )}
               </div>
