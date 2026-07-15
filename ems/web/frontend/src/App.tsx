@@ -11,6 +11,8 @@ import {
   DATA_QUALITY,
   DATA_SOURCE,
   FRESHNESS_STATE,
+  CONFIDENCE_MEANING,
+  CONFIDENCE_SAFETY,
   humanize,
   nowDrawerCopy,
   OUTCOME_LABEL,
@@ -82,6 +84,14 @@ type SavingsData = {
   complete_days: number;
   lower_bound_eur: number | null;
   upper_bound_eur: number | null;
+};
+
+// Just the headline accuracy numbers the confidence drawer shows behind "Show technical details"
+// (the full block lives in System.tsx). All nullable — shown as "—" until there's evidence.
+type Accuracy = {
+  solar?: { bias_w: number | null } | null;
+  load?: { mape_pct: number | null } | null;
+  plan_execution?: { hit_rate_pct: number | null } | null;
 };
 
 // Just enough of GET /api/car/plan (CarCard.tsx owns the full shape) to overlay the car's PLANNED
@@ -240,55 +250,6 @@ function Metric({
   );
 }
 
-function Modal({
-  title,
-  onClose,
-  children,
-  testId,
-}: {
-  title: string;
-  onClose: () => void;
-  children: React.ReactNode;
-  testId?: string;
-}) {
-  const closeRef = useRef<HTMLButtonElement>(null);
-  useEffect(() => {
-    closeRef.current?.focus();
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") onClose();
-    };
-    document.addEventListener("keydown", onKey);
-    return () => document.removeEventListener("keydown", onKey);
-  }, [onClose]);
-  return (
-    <div className="modal-backdrop" onClick={onClose}>
-      <div
-        className="modal"
-        role="dialog"
-        aria-modal="true"
-        aria-label={title}
-        onClick={(e) => e.stopPropagation()}
-        data-testid={testId}
-      >
-        <div className="modal-head">
-          <span className="metric-label">{title}</span>
-          <button
-            ref={closeRef}
-            type="button"
-            className="modal-close"
-            onClick={onClose}
-            aria-label="Close"
-            data-testid="modal-close"
-          >
-            ×
-          </button>
-        </div>
-        {children}
-      </div>
-    </div>
-  );
-}
-
 function ChargeTarget({ n }: { n: ChargeNeed }) {
   return (
     <section className="charge-need" data-testid="charge-need">
@@ -348,6 +309,7 @@ export function App() {
   const [savedToday, setSavedToday] = useState<SavedToday | null>(null);
   const [savings, setSavings] = useState<SavingsData | null>(null);
   const [decisions, setDecisions] = useState<DecisionEvent[]>([]);
+  const [accuracy, setAccuracy] = useState<Accuracy | null>(null);
   const [report, setReport] = useState<Report | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [route, setRoute] = useState<Route>(() => routeFromHash(window.location.hash));
@@ -515,6 +477,7 @@ export function App() {
       fill("/api/charge-need", (v: ChargeNeed) => setChargeNeed(v ?? null));
       fill("/api/savings", (v: SavingsData) => setSavings(v ?? null));
       fill("/api/decisions", (v: { events?: DecisionEvent[] }) => setDecisions(v?.events ?? []));
+      fill("/api/accuracy", (v: Accuracy) => setAccuracy(v ?? null));
       // Planned car-charging windows for the chart overlay (feat/ux-batch-3) — `enabled:false`
       // (feature off) carries no `plan`, so windows are only ever read when the feature is on.
       fill(
@@ -765,14 +728,16 @@ export function App() {
               {home.headline}
             </p>
             {confidence && (
-              <span
+              <button
+                type="button"
                 className={`badge confidence-chip confidence-${confidence.level}`}
                 data-testid="confidence-chip"
                 data-level={confidence.level}
                 title={confidence.reasons.join(" ")}
+                onClick={() => openDrawer({ kind: "confidence" })}
               >
                 {CONFIDENCE_CHIP_LABEL[confidence.level]}
-              </span>
+              </button>
             )}
           </div>
           {confidence && confidence.level !== "high" && (
@@ -865,7 +830,14 @@ export function App() {
           savedToday={savedToday}
           socPct={status?.soc_pct ?? null}
           batteryMode={batteryModeLabel}
-          onBatteryClick={batteryHasDetail ? () => setBatteryDetail("soc") : undefined}
+          onBatteryClick={
+            batteryHasDetail
+              ? () => {
+                  setBatteryDetail("soc");
+                  openDrawer({ kind: "battery" });
+                }
+              : undefined
+          }
           carWindows={carPlan?.windows ?? []}
           carWindowsEnabled={carPlan?.enabled ?? false}
         />
@@ -962,7 +934,14 @@ export function App() {
                   : "Power leaving the battery to run the house, or going in to charge it."
               }
               icon="bolt"
-              onClick={batteryHasDetail ? () => setBatteryDetail("power") : undefined}
+              onClick={
+                batteryHasDetail
+                  ? () => {
+                      setBatteryDetail("power");
+                      openDrawer({ kind: "battery" });
+                    }
+                  : undefined
+              }
               testId="battery-power-tile"
             />
             <Metric
@@ -1038,15 +1017,6 @@ export function App() {
         </Advanced>
       )}
 
-      {view === "dashboard" && batteryDetail && batteryHasDetail && (
-        <Modal
-          title={batteryDetail === "power" ? "Battery power — per tower" : "Battery — per tower"}
-          onClose={() => setBatteryDetail(null)}
-          testId="battery-modal"
-        >
-          <BatteryChips battery={battery} metric={batteryDetail} />
-        </Modal>
-      )}
 
       {/* One reusable contextual drawer for the dashboard "tell me more" surfaces. Content per
           kind is filled in across Tasks 3–5; Task 1 establishes the shell + the Now trigger. */}
@@ -1164,6 +1134,52 @@ export function App() {
               </>
             );
           })()}
+
+        {drawer?.kind === "confidence" && confidence && (
+          <>
+            <div className="drawer-section">
+              <span className="drawer-label">How much to trust today's plan</span>
+              <p className="drawer-lede" data-testid="confidence-meaning">
+                {CONFIDENCE_MEANING[confidence.level]}
+              </p>
+            </div>
+            <div className="drawer-section">
+              <span className="drawer-label">Why</span>
+              <p data-testid="confidence-reason">
+                {confidence.reasons.length ? confidence.reasons.join(" ") : "—"}
+              </p>
+            </div>
+            <div className="drawer-act drawer-act-calm" data-testid="confidence-safety">
+              <span className="drawer-label">Is my battery safe?</span>
+              <p>{CONFIDENCE_SAFETY}</p>
+            </div>
+            <details className="drawer-tech" data-testid="confidence-tech">
+              <summary>Show technical details</summary>
+              <dl className="drawer-tech-dl">
+                <dt>Solar forecast bias</dt>
+                <dd>
+                  {accuracy?.solar?.bias_w != null ? `${Math.round(accuracy.solar.bias_w)} W` : "—"}
+                </dd>
+                <dt>Load forecast error (MAPE)</dt>
+                <dd>
+                  {accuracy?.load?.mape_pct != null
+                    ? `${accuracy.load.mape_pct.toFixed(0)}%`
+                    : "—"}
+                </dd>
+                <dt>Plan hit rate</dt>
+                <dd>
+                  {accuracy?.plan_execution?.hit_rate_pct != null
+                    ? `${accuracy.plan_execution.hit_rate_pct.toFixed(0)}%`
+                    : "—"}
+                </dd>
+              </dl>
+            </details>
+          </>
+        )}
+
+        {drawer?.kind === "battery" && battery && (
+          <BatteryChips battery={battery} metric={batteryDetail ?? "soc"} />
+        )}
       </DetailDrawer>
       </div>
     </>

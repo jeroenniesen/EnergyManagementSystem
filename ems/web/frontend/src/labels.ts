@@ -250,3 +250,15 @@ export function nowDrawerCopy(i: NowDrawerInputs): NowDrawerCopy {
   const action = i.actCalm ? "No action needed." : i.actText;
   return { happened, why, next, action, calm: i.actCalm };
 }
+
+// --- Confidence drawer (2026-07-15 plan) ------------------------------------------------------
+// Plain-language meaning of the plan-confidence level, and the always-true safety net line.
+export const CONFIDENCE_MEANING: Record<"high" | "medium" | "low", string> = {
+  high: "Recent forecasts are tracking well, so today's plan is dependable.",
+  medium: "Useful for planning, but cautious — EMS leans conservative where it isn't sure.",
+  low: "The safe baseline is active — EMS is holding the battery's own safe mode rather than "
+    + "planning aggressively.",
+};
+export const CONFIDENCE_SAFETY =
+  "Your battery is never put at risk: whenever EMS isn't confident, it falls back to the "
+  + "battery's own safe self-consumption mode.";

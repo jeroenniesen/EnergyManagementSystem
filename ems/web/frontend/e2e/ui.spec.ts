@@ -876,14 +876,15 @@ test.describe("EMS dashboard", () => {
     const tile = page.getByTestId("battery-tile");
     await expect(tile).toContainText("see each battery");
     await tile.click();
-    await expect(page.getByTestId("battery-modal")).toBeVisible();
+    // The per-tower breakdown now lives in the shared contextual drawer (2026-07-15 plan).
+    await expect(page.getByTestId("detail-drawer")).toBeVisible();
     await expect(page.getByTestId("tower-chip-aggregate")).toContainText("cluster avg");
     await expect(page.getByTestId("tower-chip")).toHaveCount(2);
     await expect(page.getByTestId("tower-chips")).toContainText("master");
     await expect(page.getByTestId("tower-chips")).toContainText("slave");
     // Escape closes the dialog.
     await page.keyboard.press("Escape");
-    await expect(page.getByTestId("battery-modal")).toHaveCount(0);
+    await expect(page.getByTestId("detail-drawer")).toHaveCount(0);
   });
 
   test("the Battery (power) tile opens a per-tower power breakdown", async ({ page }) => {
@@ -915,14 +916,14 @@ test.describe("EMS dashboard", () => {
     const tile = page.getByTestId("battery-power-tile");
     await expect(tile).toContainText("see each battery");
     await tile.click();
-    const modal = page.getByTestId("battery-modal");
-    await expect(modal).toBeVisible();
-    await expect(modal).toContainText("Battery power — per tower");
+    const drawer = page.getByTestId("detail-drawer");
+    await expect(drawer).toBeVisible();
+    await expect(page.getByTestId("detail-drawer-heading")).toContainText("Battery detail");
     // Per-tower power with direction: one charging ("in"), one discharging ("out").
     await expect(page.getByTestId("tower-chips")).toContainText("250 W in");
     await expect(page.getByTestId("tower-chips")).toContainText("600 W out");
     await page.keyboard.press("Escape");
-    await expect(modal).toHaveCount(0);
+    await expect(drawer).toHaveCount(0);
   });
 
   test("the daily energy-distribution Sankey renders and the day can be changed", async ({
@@ -2161,5 +2162,68 @@ test.describe("EMS dashboard", () => {
     await page.goto("/#dashboard/decision/9");
     await expect(page.getByTestId("decision-action")).toContainText(/check the battery/i);
     await expect(page.getByTestId("decision-severity")).toHaveAttribute("data-severity", "warning");
+  });
+
+  function mockConfidence(page: Page, level: string, reasons: string[]) {
+    return page.route("**/api/battery-plan", (route) =>
+      route.fulfill({
+        status: 200, contentType: "application/json",
+        body: JSON.stringify(batteryPlanFixture({ level, reasons })),
+      }),
+    );
+  }
+
+  test("confidence drawer explains a high-confidence plan and its safety net", async ({ page }) => {
+    await mockConfidence(page, "high", ["Over 5 days of forecast evidence, tracking closely."]);
+    await page.goto("/#dashboard/confidence");
+    await expect(page.getByTestId("confidence-meaning")).toContainText(/tracking well/i);
+    await expect(page.getByTestId("confidence-safety")).toContainText(/safe/i);
+    await expect(page.getByTestId("confidence-tech")).toBeVisible();
+  });
+
+  test("confidence drawer explains a medium-confidence plan", async ({ page }) => {
+    await mockConfidence(page, "medium", ["Still learning your roof."]);
+    await page.goto("/#dashboard/confidence");
+    await expect(page.getByTestId("confidence-meaning")).toContainText(/cautious/i);
+  });
+
+  test("confidence drawer states the safe baseline at low confidence", async ({ page }) => {
+    await mockConfidence(page, "low", ["Some live data is stale."]);
+    await page.goto("/#dashboard/confidence");
+    await expect(page.getByTestId("confidence-meaning")).toContainText(/safe baseline/i);
+    await expect(page.getByTestId("confidence-safety")).toBeVisible();
+  });
+
+  test("battery drawer shows per-tower detail and closes on Escape", async ({ page }) => {
+    await page.route("**/api/battery", (route) =>
+      route.fulfill({
+        status: 200, contentType: "application/json",
+        body: JSON.stringify({
+          current_mode: "auto",
+          capabilities: { services: ["charge", "discharge"], p1_paired: true },
+          aggregate: { soc_pct: 62, power_w: -400, capacity_kwh: 10.8, online_towers: 2,
+            total_towers: 2 },
+          towers: [
+            { ip: "10.0.0.2", role: "master", soc_pct: 63, power_w: -200, capacity_kwh: 5.4,
+              online: true, mode: "charging" },
+            { ip: "10.0.0.3", role: "slave", soc_pct: 61, power_w: -200, capacity_kwh: 5.4,
+              online: true, mode: "self-consumption" },
+          ],
+        }),
+      }),
+    );
+    await page.goto("/#dashboard/battery");
+    await expect(page.getByTestId("detail-drawer")).toBeVisible();
+    await expect(page.getByTestId("tower-chips")).toBeVisible();
+    await page.keyboard.press("Escape");
+    await expect(page.getByTestId("detail-drawer")).toHaveCount(0);
+  });
+
+  test("confidence chip opens the confidence drawer", async ({ page }) => {
+    await mockConfidence(page, "medium", ["Still learning your roof."]);
+    await page.goto("/");
+    await page.getByTestId("confidence-chip").click();
+    await expect(page.getByTestId("detail-drawer")).toBeVisible();
+    await expect(page.getByTestId("confidence-meaning")).toBeVisible();
   });
 });
