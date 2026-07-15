@@ -112,14 +112,16 @@ def test_accuracy_endpoint_returns_nulls_without_a_store():
     with TestClient(app) as c:
         body = c.get("/api/accuracy").json()
     assert body == {
-        "solar": None, "plan_execution": None, "load": None,
+        "solar": None,
+        "solar_advice": None, "plan_execution": None, "load": None,
         "health": {"solar": "unknown", "load": "unknown", "plan_execution": "unknown",
                    "notes": []},
     }
 
 
-def test_accuracy_endpoint_shape_has_exactly_the_four_keys(tmp_path):
+def test_accuracy_endpoint_shape_has_exactly_the_five_keys(tmp_path):
     db = str(tmp_path / "ems.sqlite")
     with TestClient(_app(db)) as c:
         body = c.get("/api/accuracy").json()
-    assert set(body.keys()) == {"solar", "plan_execution", "load", "health"}
+    # solar_advice rides along so the System page can name the suggested setting (advisor-trail fix)
+    assert set(body.keys()) == {"solar", "solar_advice", "plan_execution", "load", "health"}
