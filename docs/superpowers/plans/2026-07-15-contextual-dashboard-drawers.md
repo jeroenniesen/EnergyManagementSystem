@@ -66,15 +66,16 @@
 - [ ] Run `npm run build` and the focused tests; verify GREEN.
 - [ ] Commit `feat(web): explain current and next energy actions`.
 
-### Task 4: Savings drawer and decision timeline
+### Task 4: Savings and decision data contract
 
-**Files:** Create `ems/web/frontend/src/DecisionTimeline.tsx`; modify `ems/web/frontend/src/App.tsx` and `ems/web/frontend/src/styles.css`; test `ems/web/frontend/e2e/ui.spec.ts`.
+**Files:** Inspect and, if required, modify `ems/web/api.py`, `ems/web/routes/accuracy.py`, `ems/web/routes/export.py`, and the existing finance/audit storage readers; create or modify `ems/web/frontend/src/DecisionTimeline.tsx`, `ems/web/frontend/src/App.tsx`, and `ems/web/frontend/src/styles.css`; tests `ems/tests/test_accuracy_api.py`, relevant finance/audit tests, and `ems/web/frontend/e2e/ui.spec.ts`.
 
-**Interfaces:** `DecisionTimeline` consumes `DecisionEvent[]` with `{id, time, title, reason, consequence, action, severity}`. Savings consumes existing finance data and distinguishes `estimated`, `realized`, and `unknown`; it never invents a value.
+**Interfaces:** The backend must expose enough data for `DecisionEvent[]` with `{id, time, title, reason, consequence, action, severity}` and a savings object with `{today, month, estimate, realized, lower_bound, upper_bound, complete_days}`. If an existing endpoint cannot provide a field, add it to the existing authenticated response rather than fabricating it in the browser. `DecisionTimeline` consumes the event contract and savings distinguishes `estimated`, `realized`, and `unknown`.
 
-- [ ] Add failing tests for estimated savings, realized savings, missing complete-day evidence, economic skip, safety fallback, and “No action needed”.
+- [ ] Add failing backend tests proving the response distinguishes estimated savings from realized savings, reports the number of complete days, and returns structured decision events for an executed plan, an economic skip, a safety fallback, and a no-action event.
+- [ ] Add failing frontend tests for estimated savings, realized savings, missing complete-day evidence, economic skip, safety fallback, and “No action needed”.
 - [ ] Run `npx playwright test e2e/ui.spec.ts -g "savings drawer|decision timeline" --reporter=line`; verify RED.
-- [ ] Add a Dashboard savings trigger and a recent-decisions timeline. Drawer order is `What happened`, `Why`, consequence, and action/no-action. Put formulas behind “How this was calculated”.
+- [ ] Implement or extend the authenticated backend response using existing finance and audit storage; preserve the existing safety and privacy boundaries. Add a Dashboard savings trigger and a recent-decisions timeline. Drawer order is `What happened`, `Why`, consequence, and action/no-action. Put formulas behind “How this was calculated”.
 - [ ] Include explicit examples for skipped actions: “Prices were above the break-even point” and “The safe baseline remains active”.
 - [ ] Run `npm run build` and focused tests; verify GREEN.
 - [ ] Commit `feat(web): explain savings and planner decisions`.
