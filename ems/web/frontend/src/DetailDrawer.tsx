@@ -24,6 +24,7 @@ export function DetailDrawer({
   testId = "detail-drawer",
 }: DetailDrawerProps) {
   const closeRef = useRef<HTMLButtonElement>(null);
+  const panelRef = useRef<HTMLDivElement>(null);
   // The element that had focus when the drawer opened, so it can be restored on close.
   const restoreRef = useRef<HTMLElement | null>(null);
 
@@ -35,6 +36,29 @@ export function DetailDrawer({
       if (e.key === "Escape") {
         e.stopPropagation();
         onClose();
+        return;
+      }
+      // Focus trap: Tab must cycle within the dialog, never escaping to the page behind it.
+      if (e.key === "Tab") {
+        const panel = panelRef.current;
+        if (!panel) return;
+        const focusables = Array.from(
+          panel.querySelectorAll<HTMLElement>(
+            'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), ' +
+              'textarea:not([disabled]), summary, [tabindex]:not([tabindex="-1"])',
+          ),
+        ).filter((el) => el.offsetParent !== null || el === document.activeElement);
+        if (focusables.length === 0) return;
+        const first = focusables[0];
+        const last = focusables[focusables.length - 1];
+        const active = document.activeElement;
+        if (e.shiftKey && active === first) {
+          e.preventDefault();
+          last.focus();
+        } else if (!e.shiftKey && active === last) {
+          e.preventDefault();
+          first.focus();
+        }
       }
     };
     document.addEventListener("keydown", onKey);
@@ -52,6 +76,7 @@ export function DetailDrawer({
   return (
     <div className="drawer-backdrop" onClick={onClose} data-testid={`${testId}-backdrop`}>
       <div
+        ref={panelRef}
         className="drawer-panel"
         role="dialog"
         aria-modal="true"
