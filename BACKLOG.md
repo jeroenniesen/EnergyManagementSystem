@@ -343,7 +343,7 @@ Replay historical days through the planner to compare rule changes, validate res
 
 ### B-17 · EV smart charging + battery-HOLD coordination — Feature · L
 Solar-surplus + dynamic-price charging with a departure deadline; the hardened car-guard becomes part of a real EV strategy. ~€250–700/yr, worth more post-2027. **Trigger:** E-02/E-04 sprint work live; Tesla auth/BLE decision. *(Roadmap F4, `docs/v2-ev-control.md`)*
-**Track:** Pool · 🟨 **advisory + usability half shipped & merged 2026-07-12** — [PR #16](https://github.com/jeroenniesen/EnergyManagementSystem/pull/16) (weekly min-SoC schedule, multi-day look-ahead charge planner, car DB + picker, SoC anchor + session detection, Web/iOS Car cards, export) + [PR #17](https://github.com/jeroenniesen/EnergyManagementSystem/pull/17) (reserve-safety hold + manual-only-meter warnings; validated). Remaining = the **control half** (charger/car API), gated on `docs/v2-ev-control.md` being written.
+**Track:** Pool · 🟨 advisory half shipped (PR #16); **battery-HOLD coordination now has three modes** — [PR #31](https://github.com/jeroenniesen/EnergyManagementSystem/pull/31): hold (default) / static-W discharge / match-predicted-house-load, bounded writes (recommand rule + 10-min dwell + 6-command cap, write-count proven), reserve floor inviolable, unsafe-data suppresses discharge. Remaining = the charger/car CONTROL half, gated on the v2 spec + hardware.
 
 ### B-18 · HA client + MQTT publishing — Feature · M
 WebSocket/REST HA read client + publish EMS state/scores as HA entities (SPEC'd, unbuilt). Enabler for B-19. **Trigger:** committing to heating control or a real HA-automation need.
