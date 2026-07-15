@@ -85,6 +85,18 @@ export const FRESHNESS_STATE: Record<string, string> = {
   missing: "unavailable",
 };
 
+/** The dashboard's car badge (App.tsx), keyed by the controller's `desired_mode` (from
+ * /api/decision) — feat/car-charge-modes made the badge mode-aware, since the guard now has three
+ * behaviours instead of always holding. `desired_mode: "discharge"` here reliably means the narrow
+ * car-session mapping is active (`intent_to_mode(..., car_session=True)`, SPEC §7.1) — the operator
+ * picked `static_discharge`/`match_home_load` and the battery is actually covering the house — so
+ * it's the one token worth a distinct phrase; every other mode (idle/auto/charge) is the safe hold,
+ * today's default, byte-for-byte. Fall back to CAR_BADGE_SUFFIX_DEFAULT for anything unmapped. */
+export const CAR_BADGE_SUFFIX: Record<string, string> = {
+  discharge: "battery covering the house",
+};
+export const CAR_BADGE_SUFFIX_DEFAULT = "battery held";
+
 /** Controller decision outcomes in plain words (every token the controller/API can emit). */
 export const OUTCOME_LABEL: Record<string, string> = {
   dry_run: "Watching only",

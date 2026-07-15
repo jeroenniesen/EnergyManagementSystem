@@ -834,14 +834,18 @@ test.describe("EMS dashboard", () => {
     await expect(page.getByTestId("decision")).toContainText("won't discharge into the car");
   });
 
-  test("the hold-battery-when-car-charging setting is in the panel", async ({ page }) => {
+  // feat/car-charge-modes moved the master switch (+ the mode picker + the discharge wattage) out
+  // of Settings' "Control & safety" group into the Car tab's own "While the car charges" section —
+  // same idiom as the ev.* fields before it (see car.spec.ts for full coverage of that section).
+  test("the hold-battery-when-car-charging setting is no longer in the Settings panel", async ({
+    page,
+  }) => {
     await page.goto("/");
     await page.getByTestId("nav-manage").click();
     await page.getByTestId("group-control").click();
-    await expect(page.getByTestId("field-control.hold_battery_when_car_charging")).toBeVisible();
-    await expect(
-      page.getByTestId("field-control.hold_battery_when_car_charging"),
-    ).toContainText("car");
+    await expect(page.getByTestId("field-control.hold_battery_when_car_charging")).toHaveCount(0);
+    await expect(page.getByTestId("field-control.car_charging_battery_mode")).toHaveCount(0);
+    await expect(page.getByTestId("field-control.car_discharge_w")).toHaveCount(0);
   });
 
   test("shows a per-tower breakdown for a multi-battery cluster", async ({ page }) => {

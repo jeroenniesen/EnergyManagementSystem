@@ -114,8 +114,9 @@ class ModeController:
                 # swallow it silently (a broken store must be visible in the logs).
                 log.warning("persist failed: %s", e)
 
-    def _desired(self, intent: BatteryIntent) -> PhysicalMode:
-        return intent_to_mode(intent, allow_export_discharge=self.allow_export_discharge)
+    def _desired(self, intent: BatteryIntent, *, car_session: bool = False) -> PhysicalMode:
+        return intent_to_mode(intent, allow_export_discharge=self.allow_export_discharge,
+                              car_session=car_session)
 
     def _effective_switches(self, now: datetime) -> int:
         """Today's switch count, treating a new local date as a fresh 0 (read-only)."""
@@ -126,7 +127,7 @@ class ModeController:
     def _gate(
         self, intent: BatteryIntent, now: datetime, desired: PhysicalMode,
         *, observed_mode: PhysicalMode | None = None, manual: bool = False,
-        priority: bool = False,
+        priority: bool = False, force: bool = False,
     ) -> ActionDecision | None:
         """Return a blocking ActionDecision, or None if a write should proceed. No side effects.
         `observed_mode`, when supplied (by the read-only UI preview), is used for the idempotency
@@ -143,7 +144,14 @@ class ModeController:
           fail-safe can never be blocked, or an expiring override/hold could leave the battery
           stuck in real-time).
         dry_run / not_controlling / idempotency still apply to everyone; idempotency means even a
-        bypassed write happens at most once per actual mode change (no device hammering)."""
+        bypassed write happens at most once per actual mode change (no device hammering).
+
+        `force=True` skips ONLY the idempotency check (dry_run / not_controlling still apply). It
+        exists for the car-charging discharge session (feat/car-charge-modes): the setpoint
+        (power_w) can change while the physical mode stays DISCHARGE, and a mode-only idempotency
+        check would otherwise swallow that re-command. The caller (control tick) sets it only when
+        it has decided a bounded re-command is warranted (car_mode.recommand + a 10-min car dwell),
+        so it never re-introduces device hammering."""
         if self.dry_run:
             return ActionDecision(
                 intent, desired, False, "dry_run", f"dry-run: would set {desired}"
@@ -154,7 +162,7 @@ class ModeController:
                 f"not commanding (state={self.lifecycle.state})",
             )
         current = observed_mode if observed_mode is not None else self.driver.current_mode()
-        if desired == current:
+        if desired == current and not force:
             return ActionDecision(intent, desired, False, "idempotent", f"already in {desired}")
         if manual or priority or desired is PhysicalMode.AUTO:
             return None  # operator command / safety hold / return-to-safe: never gated
@@ -170,12 +178,14 @@ class ModeController:
         self, intent: BatteryIntent, now: datetime, *,
         target_soc: float | None = None, power_w: float | None = None,
         observed_mode: PhysicalMode | None = None, manual: bool = False,
-        priority: bool = False,
+        priority: bool = False, car_session: bool = False,
     ) -> ActionDecision:
         """Read-only: what decide() WOULD do right now. Never writes or mutates state. Pass
         `observed_mode` (a recently-observed mode) to avoid a hardware mode-read per call;
-        `manual` / `priority` so the preview matches decide()'s gate bypass (see _gate)."""
-        desired = self._desired(intent)
+        `manual` / `priority` so the preview matches decide()'s gate bypass (see _gate);
+        `car_session` so the previewed mode matches the car-charging discharge mapping (DISCHARGE
+        rather than AUTO), keeping the dashboard/audit honest about what would run."""
+        desired = self._desired(intent, car_session=car_session)
         blocked = self._gate(intent, now, desired, observed_mode=observed_mode, manual=manual,
                              priority=priority)
         if blocked is not None:
@@ -189,7 +199,7 @@ class ModeController:
         self, intent: BatteryIntent, now: datetime, *,
         target_soc: float | None = None, power_w: float | None = None,
         observed_mode: PhysicalMode | None = None, manual: bool = False,
-        priority: bool = False,
+        priority: bool = False, car_session: bool = False, force: bool = False,
     ) -> ActionDecision:
         """Write path: applies at most one mode change. The ONLY caller of driver.apply. The plan's
         target SoC + power are passed through to the driver (which refuses a target-less charge).
@@ -198,10 +208,12 @@ class ModeController:
         post-write CONFIRM still re-reads fresh, so a stale observation can at worst cause one
         redundant (idempotent) write, never an unconfirmed change. `manual=True` (operator override)
         and `priority=True` (a safety action, e.g. the car-guard hold) bypass dwell + cap — see
-        _gate."""
-        desired = self._desired(intent)
+        _gate. `car_session=True` maps DISCHARGE_FOR_LOAD to a real DISCHARGE at the bounded
+        setpoint (feat/car-charge-modes); `force=True` lets a car-session setpoint re-command past
+        the mode-only idempotency gate (also see _gate)."""
+        desired = self._desired(intent, car_session=car_session)
         blocked = self._gate(intent, now, desired, observed_mode=observed_mode, manual=manual,
-                             priority=priority)
+                             priority=priority, force=force)
         if blocked is not None:
             return blocked
 

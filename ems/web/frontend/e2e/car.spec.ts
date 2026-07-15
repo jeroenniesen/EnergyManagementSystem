@@ -267,3 +267,164 @@ test.describe("Car view", () => {
     await expect(page.getByTestId("car-window-row").first()).toBeVisible();
   });
 });
+
+// "While the car charges" battery-mode section (feat/car-charge-modes): the home-BATTERY's
+// behaviour during a charging session — hold (default) / a fixed discharge wattage / match the
+// predicted house load — moved out of Settings' "Control & safety" group into its own radio-card
+// picker here, saving immediately (no sticky save bar, unlike the schedule editor above).
+test.describe("Car view — while the car charges (battery mode)", () => {
+  // A minimal control.* seed merged over the component's own defaults (hold/on/800W) — tests only
+  // need to override what they care about. `/api/settings` POST is mocked per-test so every save
+  // is deterministic and isolated from the real (mock) backend's persisted state.
+  async function mockSettings(
+    page: Page,
+    controlValues: Record<string, unknown>,
+    onPost?: (body: Record<string, unknown>) => void,
+  ) {
+    await page.route("**/api/settings", async (route) => {
+      if (route.request().method() === "GET") {
+        await route.fulfill({
+          status: 200, contentType: "application/json",
+          body: JSON.stringify({ schema: [], values: controlValues }),
+        });
+      } else {
+        onPost?.(JSON.parse(route.request().postData() || "{}"));
+        await route.fulfill({ status: 200, contentType: "application/json", body: "{}" });
+      }
+    });
+  }
+
+  test("mode cards render with hold selected by default", async ({ page }) => {
+    await mockSettings(page, {});
+    await mockCars(page);
+    await page.goto("/");
+    await page.getByTestId("nav-car").click();
+
+    await expect(page.getByTestId("car-battery-mode")).toBeVisible();
+    await expect(page.getByTestId("car-mode-hold-toggle")).toHaveAttribute("aria-checked", "true");
+    await expect(page.getByTestId("car-mode-hold")).toHaveAttribute("aria-checked", "true");
+    await expect(page.getByTestId("car-mode-static_discharge")).toHaveAttribute("aria-checked", "false");
+    await expect(page.getByTestId("car-mode-match_home_load")).toHaveAttribute("aria-checked", "false");
+    // The wattage input only mounts once static_discharge is actually selected.
+    await expect(page.getByTestId("car-mode-watts")).toHaveCount(0);
+  });
+
+  test("selecting the fixed-power mode reveals the W input and POSTs both keys", async ({ page }) => {
+    let saved: Record<string, unknown> = {};
+    await mockSettings(page, {
+      "control.hold_battery_when_car_charging": true,
+      "control.car_charging_battery_mode": "hold",
+      "control.car_discharge_w": 800,
+    }, (body) => { saved = body; });
+    await mockCars(page);
+    await page.goto("/");
+    await page.getByTestId("nav-car").click();
+
+    await expect(page.getByTestId("car-mode-watts")).toHaveCount(0);
+    await page.getByTestId("car-mode-static_discharge").click();
+
+    await expect(page.getByTestId("car-mode-static_discharge")).toHaveAttribute("aria-checked", "true");
+    await expect(page.getByTestId("car-mode-watts")).toBeVisible();
+    await expect(page.getByTestId("car-mode-watts-input")).toHaveValue("800");
+    await expect(page.getByTestId("car-mode-saved")).toBeVisible();
+
+    expect(saved).toEqual({
+      "control.car_charging_battery_mode": "static_discharge",
+      "control.car_discharge_w": 800,
+    });
+  });
+
+  test("selecting the automatic (match-home-load) mode POSTs just the mode key", async ({ page }) => {
+    let saved: Record<string, unknown> = {};
+    let posts = 0;
+    await mockSettings(page, {
+      "control.hold_battery_when_car_charging": true,
+      "control.car_charging_battery_mode": "hold",
+      "control.car_discharge_w": 800,
+    }, (body) => { saved = body; posts += 1; });
+    await mockCars(page);
+    await page.goto("/");
+    await page.getByTestId("nav-car").click();
+
+    await page.getByTestId("car-mode-match_home_load").click();
+
+    await expect(page.getByTestId("car-mode-match_home_load")).toHaveAttribute("aria-checked", "true");
+    await expect(page.getByTestId("car-mode-saved")).toBeVisible();
+    expect(posts).toBe(1);
+    expect(saved).toEqual({ "control.car_charging_battery_mode": "match_home_load" });
+  });
+
+  test("the fixed-power physics warning appears only above the home's usual draw", async ({ page }) => {
+    await mockSettings(page, {
+      "control.hold_battery_when_car_charging": true,
+      "control.car_charging_battery_mode": "static_discharge",
+      "control.car_discharge_w": 400,
+    });
+    await page.route("**/api/status", (route) =>
+      route.fulfill({
+        status: 200, contentType: "application/json",
+        body: JSON.stringify({
+          dry_run: true, dev_mode: "mock", soc_pct: 50, grid_power_w: 0, solar_power_w: 0,
+          battery_power_w: 0, house_load_w: 600, non_ev_load_w: 600,
+        }),
+      }));
+    await mockCars(page);
+    await page.goto("/");
+    await page.getByTestId("nav-car").click();
+
+    const input = page.getByTestId("car-mode-watts-input");
+    await expect(input).toHaveValue("400");
+    await expect(page.getByTestId("car-mode-watts-warning")).toHaveCount(0);
+
+    // Below the (mocked) 600 W usual draw — still no warning.
+    await input.fill("500");
+    await expect(page.getByTestId("car-mode-watts-warning")).toHaveCount(0);
+
+    // Above it — the honest physics line appears.
+    await input.fill("900");
+    await expect(page.getByTestId("car-mode-watts-warning")).toBeVisible();
+    await expect(page.getByTestId("car-mode-watts-warning")).toContainText(
+      "the extra feeds the car from the battery, which is your choice");
+
+    // Back below — the warning clears again (it's a live, honest comparison, not a one-shot flag).
+    await input.fill("500");
+    await expect(page.getByTestId("car-mode-watts-warning")).toHaveCount(0);
+  });
+
+  test("mode cards are keyboard-operable: arrow keys move + select, space activates", async ({ page }) => {
+    await mockSettings(page, {});
+    await mockCars(page);
+    await page.goto("/");
+    await page.getByTestId("nav-car").click();
+
+    const hold = page.getByTestId("car-mode-hold");
+    const staticOpt = page.getByTestId("car-mode-static_discharge");
+    const matchOpt = page.getByTestId("car-mode-match_home_load");
+
+    await expect(hold).toHaveAttribute("aria-checked", "true");
+    await expect(hold).toHaveAttribute("tabindex", "0");
+    await expect(staticOpt).toHaveAttribute("tabindex", "-1");
+
+    // Arrow-right from the focused (selected) card moves focus AND selects the next one.
+    await hold.focus();
+    await hold.press("ArrowRight");
+    await expect(staticOpt).toHaveAttribute("aria-checked", "true");
+    await expect(staticOpt).toBeFocused();
+    await expect(page.getByTestId("car-mode-watts")).toBeVisible();
+
+    await staticOpt.press("ArrowRight");
+    await expect(matchOpt).toHaveAttribute("aria-checked", "true");
+    await expect(matchOpt).toBeFocused();
+
+    await matchOpt.press("ArrowLeft");
+    await expect(staticOpt).toHaveAttribute("aria-checked", "true");
+    await expect(staticOpt).toBeFocused();
+
+    // Space activates a focused card directly (native <button> semantics) — reach `hold` by
+    // focusing it programmatically (a screen-reader/keyboard user would arrow back to it; arrow
+    // navigation is already covered above) and confirm Space alone selects it.
+    await hold.focus();
+    await hold.press("Space");
+    await expect(hold).toHaveAttribute("aria-checked", "true");
+  });
+});

@@ -87,10 +87,17 @@ const GROUP_HINT: Record<string, string> = {
     + "the Car tab.",
 };
 
-// Fields moved OUT of Settings into the Car tab (feat/ux-batch-3): the weekly schedule, the car
-// picker, and the battery capacity the picker autofills. Settings still loads their VALUES (the AC
-// hint below reads the chosen car), it just doesn't render them as editable fields here.
-const CAR_TAB_KEYS = new Set(["ev.schedule", "ev.car_id", "ev.battery_kwh"]);
+// Fields moved OUT of Settings into the Car tab: the weekly schedule, the car picker, and the
+// battery capacity the picker autofills (feat/ux-batch-3); plus, since feat/car-charge-modes, the
+// "while the car charges" battery-mode master switch, mode picker and discharge wattage — now their
+// own dedicated radio-card section there (see Car.tsx), immediate-save rather than the sticky
+// save-bar draft flow the rest of Settings uses. Settings still loads their VALUES (the AC hint
+// below reads the chosen car), it just doesn't render them as editable fields here.
+const CAR_TAB_KEYS = new Set([
+  "ev.schedule", "ev.car_id", "ev.battery_kwh",
+  "control.hold_battery_when_car_charging", "control.car_charging_battery_mode",
+  "control.car_discharge_w",
+]);
 
 // First sentence of the help (always shown) + the remainder (behind a "More" disclosure). Splits
 // on the FIRST sentence-ending punctuation that is followed by whitespace, so mid-word dots

@@ -29,16 +29,33 @@ _INTENT_TO_MODE: dict[BatteryIntent, PhysicalMode] = {
 }
 
 
-def intent_to_mode(intent: BatteryIntent, *, allow_export_discharge: bool = False) -> PhysicalMode:
+def intent_to_mode(
+    intent: BatteryIntent, *, allow_export_discharge: bool = False, car_session: bool = False,
+) -> PhysicalMode:
     """Map a planner intent to the physical mode to command.
 
     DISCHARGE_FOR_LOAD serves the house via vendor self-consumption (AUTO) by default; it only
     becomes a forced DISCHARGE (deliberate grid export) when `allow_export_discharge` is set.
     Defaulting to AUTO keeps it fail-safe so a control loop can't export by accident
     (SPEC §7.1/§8.3). KeyError on any unmapped intent is intentional (loud failure).
+
+    `car_session=True` is the ONE narrow, deliberate exception (feat/car-charge-modes): while the
+    car is charging and the operator picked a discharge behaviour, DISCHARGE_FOR_LOAD becomes a real
+    forced DISCHARGE (at the caller's bounded setpoint) EVEN when `allow_export_discharge` is False.
+    Why this is safe-enough:
+      * the setpoint is clamped ≤ `max_discharge_w` and to ~the predicted non-EV house load
+        (ems.control.car_mode), so the battery covers the HOUSE, not the car — any export is either
+        the small, explicit overshoot the operator opted into (static mode) or ≈0 (match mode);
+      * the car session is re-evaluated EVERY control cycle, so a stopped car ends this DISCHARGE
+        within one cycle; the only export exposure is the brief window between the car stopping and
+        the next cycle — bounded and accepted;
+      * nothing else is loosened — the §8.11 validator, the reserve floor and the single writer all
+        stay in force. (SPEC §7.1's note on this was updated in iteration 3; not touched here.)
     """
     if intent is BatteryIntent.DISCHARGE_FOR_LOAD:
-        return PhysicalMode.DISCHARGE if allow_export_discharge else PhysicalMode.AUTO
+        if allow_export_discharge or car_session:
+            return PhysicalMode.DISCHARGE
+        return PhysicalMode.AUTO
     return _INTENT_TO_MODE[intent]
 
 
