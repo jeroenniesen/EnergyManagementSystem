@@ -211,15 +211,36 @@ SETTINGS_SCHEMA: tuple[SettingsField, ...] = (
         advanced=True,
     ),
     SettingsField(
-        "control.hold_battery_when_car_charging", "Hold battery while the car charges", "bool",
-        True, "control",
-        help="When the car is charging, put the battery in standby (real-time idle) so it neither "
-        "discharges into the car nor charges — the car is served by solar + grid. Needs the EV "
+        "control.hold_battery_when_car_charging", "Special battery behaviour while the car charges",
+        "bool", True, "control",
+        help="The master on/off for ALL special battery behaviour while the car is charging. OFF: "
+        "the planner runs exactly as it would with no car — the battery is untouched. ON: the "
+        "battery follows the 'While the car charges' mode below (Hold by default). Needs the EV "
         "meter configured to detect charging. Re-checked every control cycle.",
     ),
     SettingsField(
+        "control.car_charging_battery_mode", "While the car charges", "enum", "hold", "control",
+        help="What the home battery does while the car is charging (only when the master switch "
+        "above is on). Hold (default): the battery idles so it can't discharge into the car — so "
+        "solar and grid cover the car, exactly as before. Discharge a set amount: it discharges "
+        "at the fixed wattage below; note that any part of that ABOVE the actual house load DOES "
+        "feed the car from the battery — a deliberate choice. Match the house load: the battery "
+        "discharges only as much as the house (excluding the car) is predicted to use, so it "
+        "quietly covers the house while the grid keeps feeding the car and the battery never ends "
+        "up charging the car.",
+        options=("hold", "static_discharge", "match_home_load"),
+    ),
+    SettingsField(
+        "control.car_discharge_w", "Car-charging discharge power", "number", 800.0, "control",
+        help="How many watts the battery discharges while the car charges, when 'While the car "
+        "charges' is set to 'Discharge a set amount'. Above your actual house load this surplus "
+        "feeds the car from the battery; use 'Match the house load' if you don't want that. "
+        "Ignored by the other two modes.",
+        min=100.0, max=5000.0, step=50.0, unit="W",
+    ),
+    SettingsField(
         "control.car_charging_threshold_w", "Car-charging threshold", "number", 500.0, "control",
-        help="EV power above this counts as 'charging' for the hold-battery rule.",
+        help="EV power above this counts as 'charging' for the special battery behaviour above.",
         min=100.0, max=11000.0, step=100.0, unit="W", advanced=True,
     ),
     SettingsField(
