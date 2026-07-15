@@ -88,16 +88,15 @@ type ViewName = "dashboard" | "insights" | "car" | "chat" | "manage";
 // A route is the top-level view plus, for "manage", which sub-tab is showing. The manage tab is
 // carried even on other views so returning to Manage can be deterministic, and so the hash router
 // (below) can round-trip `#manage/system` etc.
-type Route = { view: ViewName; tab: ManageTab };
-
 // A contextual dashboard drawer (2026-07-15 plan). Each kind is one "tell me more" surface; the
-// drawer is a peer of the top-level route so it can be deep-linked (`#dashboard/<kind>`) in Task 2.
+// drawer is a peer of the top-level route so it can be deep-linked (`#dashboard/<kind>`).
 type DrawerRoute =
   | { kind: "now" }
   | { kind: "savings" }
   | { kind: "confidence" }
   | { kind: "battery" }
   | { kind: "decision"; id: string };
+type Route = { view: ViewName; tab: ManageTab; drawer: DrawerRoute | null };
 
 // Dashboard refresh cadence. Device reads (battery cluster, meters) are coalesced server-side to
 // at most once per ~30 s regardless of this, so a snappy poll no longer floods the hardware; 10 s
@@ -134,22 +133,48 @@ const DRAWER_TITLE: Record<DrawerRoute["kind"], string> = {
 // #manage/audit. LEGACY hashes still work so old bookmarks / deep-links don't break: bare
 // #settings|#system|#audit redirect to the matching Manage sub-tab. Anything unknown falls back to
 // the dashboard (loop-2's finding — a mistyped hash must never blank the app).
+// `#dashboard/<kind>` → the contextual drawer to show, or null. Unknown dashboard subroutes
+// resolve to no drawer (plain Dashboard), matching the "mistyped hash never blanks the app" rule.
+function parseDrawer(raw: string): DrawerRoute | null {
+  const m = raw.match(/^dashboard\/(.+)$/);
+  if (!m) return null;
+  const rest = m[1];
+  if (rest === "now" || rest === "savings" || rest === "confidence" || rest === "battery") {
+    return { kind: rest };
+  }
+  const dm = rest.match(/^decision\/(.+)$/);
+  if (dm) return { kind: "decision", id: decodeURIComponent(dm[1]) };
+  return null;
+}
+
+// The hash a drawer serialises to (the inverse of parseDrawer), for deep-links + browser Back.
+function drawerHash(d: DrawerRoute): string {
+  return d.kind === "decision"
+    ? `dashboard/decision/${encodeURIComponent(d.id)}`
+    : `dashboard/${d.kind}`;
+}
+
 function routeFromHash(hash: string): Route {
   const raw = hash.replace(/^#\/?/, "");
+  // Contextual dashboard drawers (`#dashboard/now`, `#dashboard/decision/<id>`, …) — the drawer
+  // renders over the dashboard, so the view is always "dashboard" here.
+  const drawer = parseDrawer(raw);
+  if (drawer) return { view: "dashboard", tab: "settings", drawer };
   // Legacy top-level Settings/System/Audit → the Manage sub-tab they became.
-  if (raw === "settings") return { view: "manage", tab: "settings" };
-  if (raw === "system") return { view: "manage", tab: "system" };
-  if (raw === "audit") return { view: "manage", tab: "audit" };
+  if (raw === "settings") return { view: "manage", tab: "settings", drawer: null };
+  if (raw === "system") return { view: "manage", tab: "system", drawer: null };
+  if (raw === "audit") return { view: "manage", tab: "audit", drawer: null };
   // Manage + its sub-tabs. Bare #manage (and #manage/settings) open the Settings tab.
-  if (raw === "manage") return { view: "manage", tab: "settings" };
+  if (raw === "manage") return { view: "manage", tab: "settings", drawer: null };
   const m = raw.match(/^manage\/(.+)$/);
   if (m) {
     const tab = m[1] as ManageTab;
-    return { view: "manage", tab: MANAGE_TABS.includes(tab) ? tab : "settings" };
+    return { view: "manage", tab: MANAGE_TABS.includes(tab) ? tab : "settings", drawer: null };
   }
   return {
     view: VIEWS.includes(raw as ViewName) ? (raw as ViewName) : "dashboard",
     tab: "settings",
+    drawer: null,
   };
 }
 
@@ -312,9 +337,11 @@ export function App() {
   const [route, setRoute] = useState<Route>(() => routeFromHash(window.location.hash));
   const view = route.view;
   const manageTab = route.tab;
-  // The open contextual drawer, or null. Held in App state (Task 1); wired to the hash in Task 2.
-  const [drawer, setDrawer] = useState<DrawerRoute | null>(null);
-  const closeDrawer = () => setDrawer(null);
+  // The open contextual drawer is DERIVED from the hash (deep-linkable, reload-safe, Back-aware).
+  const drawer = route.drawer;
+  // Whether WE pushed the current drawer entry (so close can pop it symmetrically); false when the
+  // drawer was reached by a fresh deep-link load (nothing of ours to pop — rewrite in place).
+  const drawerPushedRef = useRef(false);
   // "See the full plan" disclosure — collapsed by default, choice remembered across visits so a
   // homeowner who wants the detail keeps it, and one who doesn't never sees it re-expand.
   const [planOpen, setPlanOpen] = useState<boolean>(() => {
@@ -357,6 +384,10 @@ export function App() {
     window.addEventListener("hashchange", onHash);
     return () => window.removeEventListener("hashchange", onHash);
   }, []);
+  // Once no drawer is showing, we hold no pushed entry of our own (a Back or close cleared it).
+  useEffect(() => {
+    if (route.drawer === null) drawerPushedRef.current = false;
+  }, [route.drawer]);
   // Keep <html data-theme> in sync and cache the choice for the next load's first paint.
   useEffect(() => {
     storeTheme(theme);
@@ -405,7 +436,28 @@ export function App() {
     if (window.location.hash.replace(/^#\/?/, "") !== hash) {
       window.location.hash = hash;
     }
-    setRoute({ view: next, tab: next === "manage" ? tab : route.tab });
+    // Navigating to a top-level view always closes any open drawer.
+    setRoute({ view: next, tab: next === "manage" ? tab : route.tab, drawer: null });
+  }
+
+  // Open a contextual drawer by pushing its hash — the hashchange listener re-derives the route,
+  // so a browser Back (or the close button, below) returns to the plain dashboard. Marking the
+  // push lets close() pop symmetrically instead of stacking a forward entry.
+  function openDrawer(d: DrawerRoute) {
+    drawerPushedRef.current = true;
+    window.location.hash = drawerHash(d);
+  }
+
+  // Close the open drawer. If we pushed the entry, pop it (Back-symmetric, no forward pollution);
+  // if the drawer was deep-linked as the first entry, rewrite the hash to the dashboard in place.
+  function closeDrawer() {
+    if (drawerPushedRef.current) {
+      drawerPushedRef.current = false;
+      window.history.back();
+    } else {
+      window.history.replaceState(null, "", "#dashboard");
+      setRoute(routeFromHash("#dashboard"));
+    }
   }
 
   useEffect(() => {
@@ -711,7 +763,7 @@ export function App() {
             type="button"
             className="hero-details-link"
             data-testid="dashboard-now-trigger"
-            onClick={() => setDrawer({ kind: "now" })}
+            onClick={() => openDrawer({ kind: "now" })}
           >
             What is EMS doing? →
           </button>

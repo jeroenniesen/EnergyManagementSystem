@@ -2015,4 +2015,19 @@ test.describe("EMS dashboard", () => {
     await page.keyboard.press("Escape");
     await expect(drawer).toHaveCount(0);
   });
+
+  test("drawer route deep-links, survives reload, and closes on browser Back", async ({ page }) => {
+    // Deep link straight to a drawer, and it stays open across a reload (hash-derived state).
+    await page.goto("/#dashboard/now");
+    await expect(page.getByTestId("detail-drawer")).toBeVisible();
+    await page.reload();
+    await expect(page.getByTestId("detail-drawer")).toBeVisible();
+    // Opening from the dashboard pushes history; browser Back closes the drawer to the dashboard.
+    await page.goto("/#dashboard");
+    await page.getByTestId("dashboard-now-trigger").click();
+    await expect(page.getByTestId("detail-drawer")).toBeVisible();
+    await page.goBack();
+    await expect(page.getByTestId("detail-drawer")).toHaveCount(0);
+    await expect(page.getByTestId("home-state")).toBeVisible();
+  });
 });
