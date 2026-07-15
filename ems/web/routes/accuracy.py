@@ -50,12 +50,17 @@ def build_router(ctx: AppContext) -> APIRouter:
         page's "Model health" panel reads this directly rather than re-deriving thresholds in the
         frontend."""
         solar = None
+        solar_advice = None
         plan_execution = None
         load = None
         if ctx.store is not None:
             now = datetime.now(UTC)
 
             solar = await ctx.solar_forecast_skill(now)
+            # The advisor's concrete suggestion rides along so the System page's solar action can
+            # say "suggests 95% (you're at 85%)" instead of sending the user on a settings hunt —
+            # the production dead-end this fixes. None = not enough canonical daytime evidence yet.
+            solar_advice = await ctx.solar_confidence_advice(now)
 
             long_start = now - timedelta(days=60)
             plan_rows = await ctx.store.plan_history_between(
@@ -71,6 +76,7 @@ def build_router(ctx: AppContext) -> APIRouter:
         # health" panel — pure synthesis of the three tracks above, no new measurement.
         health = model_health(solar=solar, load=load, plan_execution=plan_execution,
                               daytime_only=True)
-        return {"solar": solar, "plan_execution": plan_execution, "load": load, "health": health}
+        return {"solar": solar, "solar_advice": solar_advice, "plan_execution": plan_execution,
+                "load": load, "health": health}
 
     return router

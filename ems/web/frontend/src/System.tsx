@@ -55,8 +55,12 @@ type ModelHealth = {
   plan_execution: HealthStatusValue;
   notes: string[];
 };
+type SolarAdvice = { recommended_pct: number; current_pct: number | null } | null;
 type Accuracy = {
   solar: { bias_w: number | null } | null;
+  // The advisor's concrete suggestion — lets the solar action name the numbers instead of
+  // sending the user hunting for "a calibrated setting" (production feedback).
+  solar_advice?: SolarAdvice;
   load: { mape_pct: number | null } | null;
   plan_execution: { hit_rate_pct: number | null } | null;
   health: ModelHealth;
@@ -136,11 +140,27 @@ const HEALTH_ACTION: Record<keyof Omit<ModelHealth, "notes">, HealthActionCopy> 
 function HealthActionLine({
   row,
   onNavigate,
+  solarAdvice,
 }: {
   row: keyof Omit<ModelHealth, "notes">;
   onNavigate?: (tab: NavTarget) => void;
+  solarAdvice?: SolarAdvice;
 }) {
-  const { before, link, after, target } = HEALTH_ACTION[row];
+  let { before, link, after, target } = HEALTH_ACTION[row];
+  if (row === "solar") {
+    // Name the numbers when the advisor has them; be honest when it doesn't yet.
+    if (solarAdvice?.recommended_pct != null) {
+      before =
+        `The advisor suggests ${solarAdvice.recommended_pct}% solar confidence` +
+        (solarAdvice.current_pct != null ? ` (you're at ${solarAdvice.current_pct}%)` : "") +
+        " — open ";
+      after = " and tap Apply next to the Solar forecast confidence slider.";
+    } else {
+      before = "The advisor needs a few more sunny days of evidence before it can suggest a "
+        + "number — check back via ";
+      after = ".";
+    }
+  }
   return (
     <span className="health-action" data-testid={`health-action-${row}`}>
       {before}
@@ -460,7 +480,9 @@ export function SystemView({
                       {displayNote}
                     </span>
                   )}
-                  {status === "warn" && <HealthActionLine row={row} onNavigate={onNavigate} />}
+                  {status === "warn" && (
+                    <HealthActionLine row={row} onNavigate={onNavigate} solarAdvice={accuracy?.solar_advice} />
+                  )}
                 </li>
               );
             })}

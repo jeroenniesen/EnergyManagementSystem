@@ -1240,6 +1240,32 @@ test.describe("EMS dashboard", () => {
     );
   });
 
+  test("the solar action names the advisor's suggested setting when it has one", async ({
+    page,
+  }) => {
+    await page.route("**/api/accuracy", (route) =>
+      route.fulfill({
+        status: 200, contentType: "application/json",
+        body: JSON.stringify({
+          solar: { bias_w: 270.0, n_slots: 300 },
+          solar_advice: { recommended_pct: 95, current_pct: 85 },
+          load: null,
+          plan_execution: null,
+          health: { solar: "warn", load: "unknown", plan_execution: "unknown", notes: ["x"] },
+        }),
+      }),
+    );
+    await page.goto("/");
+    await page.getByTestId("nav-manage").click();
+    await page.getByTestId("manage-tab-system").click();
+    const action = page.getByTestId("health-action-solar");
+    // The user's exact production question was "what setting should I adjust?" — the answer is
+    // now IN the row: the suggested value, their current value, and where the Apply lives.
+    await expect(action).toContainText("suggests 95% solar confidence");
+    await expect(action).toContainText("you're at 85%");
+    await expect(action).toContainText("Apply next to the Solar forecast confidence slider");
+  });
+
   test("Model health panel shows a warn row with its plain-language note (mocked)", async ({
     page,
   }) => {
@@ -1272,10 +1298,12 @@ test.describe("EMS dashboard", () => {
     await expect(solarNote).toContainText("Forecasts ran hot by ~300 W");
     await expect(solarNote).not.toContainText("beyond 25%");
     await expect(solarNote).toHaveAttribute("title", /beyond 25% of typical output/);
-    // The new B-37 ACTION line: what to actually do, not just the diagnosis.
+    // The new B-37 ACTION line: without an advisor suggestion yet, be honest about it —
+    // no more "it suggests a calibrated setting" scavenger hunt (production feedback).
     await expect(page.getByTestId("health-action-solar")).toContainText(
-      "solar forecast advisor in Manage → Settings → Planner",
+      "needs a few more sunny days of evidence",
     );
+    await expect(page.getByTestId("health-action-solar")).toContainText("Manage → Settings → Planner");
     await expect(page.getByTestId("health-load")).toContainText("Working well");
     await expect(page.getByTestId("health-action-load")).toHaveCount(0); // only warn rows get one
     // The unmeasurable track reads as an honest, non-alarming empty state, not a false OK/warn.
@@ -1342,8 +1370,9 @@ test.describe("EMS dashboard", () => {
     await expect(link).toBeVisible();
     await expect(link).toHaveText("Manage → Settings → Planner");
     // The sentence around the link is preserved — only the destination phrase is clickable.
+    // (No solar_advice in this mock → the honest needs-more-evidence wording.)
     await expect(page.getByTestId("health-action-solar")).toContainText(
-      "it suggests a calibrated setting.",
+      "needs a few more sunny days of evidence",
     );
     await link.click();
     await expect(page.getByTestId("manage-tab-settings")).toHaveAttribute("aria-selected", "true");
