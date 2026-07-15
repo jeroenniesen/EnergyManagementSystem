@@ -1370,8 +1370,9 @@ test.describe("EMS dashboard", () => {
     await expect(link).toBeVisible();
     await expect(link).toHaveText("Manage → Settings → Planner");
     // The sentence around the link is preserved — only the destination phrase is clickable.
+    // (No solar_advice in this mock → the honest needs-more-evidence wording.)
     await expect(page.getByTestId("health-action-solar")).toContainText(
-      "it suggests a calibrated setting.",
+      "needs a few more sunny days of evidence",
     );
     await link.click();
     await expect(page.getByTestId("manage-tab-settings")).toHaveAttribute("aria-selected", "true");
