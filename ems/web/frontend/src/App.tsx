@@ -32,6 +32,7 @@ import { SkyBackdrop } from "./SkyBackdrop";
 import { Advanced } from "./Advanced";
 import { applyTheme, readStoredTheme, storeTheme, type Theme } from "./theme";
 import { authHeaders } from "./auth";
+import { DetailDrawer } from "./DetailDrawer";
 
 type Status = {
   dry_run: boolean;
@@ -89,6 +90,15 @@ type ViewName = "dashboard" | "insights" | "car" | "chat" | "manage";
 // (below) can round-trip `#manage/system` etc.
 type Route = { view: ViewName; tab: ManageTab };
 
+// A contextual dashboard drawer (2026-07-15 plan). Each kind is one "tell me more" surface; the
+// drawer is a peer of the top-level route so it can be deep-linked (`#dashboard/<kind>`) in Task 2.
+type DrawerRoute =
+  | { kind: "now" }
+  | { kind: "savings" }
+  | { kind: "confidence" }
+  | { kind: "battery" }
+  | { kind: "decision"; id: string };
+
 // Dashboard refresh cadence. Device reads (battery cluster, meters) are coalesced server-side to
 // at most once per ~30 s regardless of this, so a snappy poll no longer floods the hardware; 10 s
 // keeps the UI lively while halving HTTP chatter vs. the old 5 s.
@@ -110,6 +120,14 @@ const CONFIDENCE_CHIP_LABEL: Record<PlanConfidence["level"], string> = {
   high: "High confidence",
   medium: "Medium confidence",
   low: "Low confidence",
+};
+// Homeowner-first drawer headings, keyed by drawer kind (content lands in Tasks 3–5).
+const DRAWER_TITLE: Record<DrawerRoute["kind"], string> = {
+  now: "What EMS is doing now",
+  savings: "Your savings",
+  confidence: "How much to trust this",
+  battery: "Battery detail",
+  decision: "Why EMS acted",
 };
 
 // Hash → route. Canonical hashes: #dashboard #insights #car #chat #manage #manage/system
@@ -294,6 +312,9 @@ export function App() {
   const [route, setRoute] = useState<Route>(() => routeFromHash(window.location.hash));
   const view = route.view;
   const manageTab = route.tab;
+  // The open contextual drawer, or null. Held in App state (Task 1); wired to the hash in Task 2.
+  const [drawer, setDrawer] = useState<DrawerRoute | null>(null);
+  const closeDrawer = () => setDrawer(null);
   // "See the full plan" disclosure — collapsed by default, choice remembered across visits so a
   // homeowner who wants the detail keeps it, and one who doesn't never sees it re-expand.
   const [planOpen, setPlanOpen] = useState<boolean>(() => {
@@ -686,6 +707,14 @@ export function App() {
             {!actLine.calm && <Icon name="alert" className="hero-act-icon" />}
             {actLine.text}
           </p>
+          <button
+            type="button"
+            className="hero-details-link"
+            data-testid="dashboard-now-trigger"
+            onClick={() => setDrawer({ kind: "now" })}
+          >
+            What is EMS doing? →
+          </button>
           {demoActive && (
             <div className="hero-demo-cta" data-testid="demo-cta">
               <span>
@@ -915,6 +944,19 @@ export function App() {
           <BatteryChips battery={battery} metric={batteryDetail} />
         </Modal>
       )}
+
+      {/* One reusable contextual drawer for the dashboard "tell me more" surfaces. Content per
+          kind is filled in across Tasks 3–5; Task 1 establishes the shell + the Now trigger. */}
+      <DetailDrawer
+        open={drawer !== null}
+        title={drawer ? DRAWER_TITLE[drawer.kind] : ""}
+        eyebrow="Dashboard detail"
+        onClose={closeDrawer}
+      >
+        {drawer?.kind === "now" && (
+          <p data-testid="drawer-placeholder">{home?.headline ?? "EMS status"}</p>
+        )}
+      </DetailDrawer>
       </div>
     </>
   );

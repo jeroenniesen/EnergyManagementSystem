@@ -2002,4 +2002,17 @@ test.describe("EMS dashboard", () => {
     await page.getByTestId("notif-bell").click();
     await expect(page.getByTestId("notif-empty")).toContainText("No notifications yet.");
   });
+
+  // --- Contextual dashboard drawers (2026-07-15 plan) -------------------------------------------
+  test("drawer opens from the hero, focuses close, and closes on Escape", async ({ page }) => {
+    await page.goto("/");
+    await page.getByTestId("dashboard-now-trigger").click();
+    const drawer = page.getByTestId("detail-drawer");
+    await expect(drawer).toBeVisible();
+    await expect(drawer).toHaveAttribute("role", "dialog");
+    // The close button takes focus when the drawer opens (accessible dialog).
+    await expect(page.getByTestId("detail-drawer-close")).toBeFocused();
+    await page.keyboard.press("Escape");
+    await expect(drawer).toHaveCount(0);
+  });
 });
