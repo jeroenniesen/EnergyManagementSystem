@@ -29,6 +29,11 @@ from ems.analysis import (
 )
 from ems.cars import by_id as car_by_id
 from ems.confidence import plan_confidence
+from ems.control.car_mode import (
+    CarModeAction,
+    decide_car_mode_action,
+    predict_house_load_w,
+)
 from ems.control.failsafe import failsafe_intent
 from ems.control.mode_controller import ModeController
 from ems.control.override import (
@@ -631,6 +636,64 @@ def _uslot_totals(slots: list[dict]) -> dict:
 _FINANCE_CALC_VERSION = 3
 
 
+# --- Car-charging discharge session (feat/car-charge-modes) --------------------------------------
+# How far back to pull observation rows for the non-EV house-load prediction (same-weekday-hour
+# matched inside predict_house_load_w). Four weeks gives a few samples per (weekday, hour) bucket;
+# a bounded, cheap query cached per control cycle. Horizon: the next ~2h the car keeps charging.
+_CAR_PRED_LOOKBACK_DAYS = 28
+_CAR_PRED_HORIZON_HOURS = 2.0
+# A SEPARATE, deliberately conservative safety dwell between car-mode battery commands (independent
+# of the planner's own min_dwell/cap, which a car-session command bypasses as a priority action).
+# It bounds how often a moving prediction can re-command the setpoint, on top of car_mode's own
+# rebond threshold.
+_CAR_SESSION_DWELL = timedelta(minutes=10)
+# Hard belt-and-braces ceiling on commands per session — beyond this we hold the last setpoint and
+# warn, so a pathologically oscillating prediction can never hammer the battery.
+_CAR_SESSION_MAX_COMMANDS = 6
+_CAR_ATTEMPTED_OUTCOMES = frozenset(
+    {"applied", "unconfirmed", "failed_recovered", "failed_unrecovered"})
+
+
+def _decide_car_command(
+    session: dict, car_action: CarModeAction, now: datetime, *,
+    dwell: timedelta = _CAR_SESSION_DWELL, max_commands: int = _CAR_SESSION_MAX_COMMANDS,
+) -> tuple[bool, dict, str]:
+    """PURE. Given the current car-session box, the discharge `CarModeAction` decided this cycle and
+    `now`, decide whether to actually (re-)command the battery and compute the NEXT session box.
+
+    Returns ``(command, next_session, event)`` where `event` is one of ``"start"`` (first command of
+    a session), ``"recommand"`` (a later command), ``"hold"`` (keep the current setpoint, no write)
+    or ``"cap"`` (a re-command was wanted but the per-session command budget is spent → hold+warn).
+
+    Layered on top of `car_action.recommand` (car_mode's own bounded re-command rule) are two extra
+    safety gates that live in the wiring, not the pure core: a >= `dwell` gap between car-mode
+    commands, and a hard `max_commands` ceiling per session. This is what keeps a whole charging
+    session to a handful of writes even with a noisy prediction — assert-tested directly."""
+    active = bool(session.get("active"))
+    setpoint = session.get("setpoint_w")
+    commands = int(session.get("commands") or 0)
+    commanded_at = session.get("commanded_at")
+    first = not active
+    dwell_ok = True
+    if commanded_at:
+        try:
+            dwell_ok = (now - datetime.fromisoformat(commanded_at)) >= dwell
+        except (TypeError, ValueError):
+            dwell_ok = True  # a corrupt timestamp must never wedge the session
+    want = car_action.recommand and (first or dwell_ok)
+    if want and commands >= max_commands:
+        # Budget spent: stop chasing the prediction, hold the last setpoint (no write).
+        return False, dict(session, active=True), "cap"
+    if want:
+        nxt = {"active": True, "setpoint_w": car_action.power_w,
+               "commanded_at": now.isoformat(), "commands": commands + 1}
+        return True, nxt, ("start" if first else "recommand")
+    # Hold this cycle — keep the session alive at its current setpoint (first cycle seeds it).
+    seed = setpoint if setpoint is not None else car_action.power_w
+    return False, {"active": True, "setpoint_w": seed,
+                   "commanded_at": commanded_at, "commands": commands}, "hold"
+
+
 def create_app(
     source: Source,
     *,
@@ -700,6 +763,16 @@ def create_app(
     # Held-decision dedup: the (outcome, desired_mode) we last audited as a HELD/blocked decision
     # (dwell/cap/not_controlling), so a recurring hold is explained ONCE, not logged every cycle.
     _held_box: dict[str, Any] = {"sig": None}
+    # Car-charging discharge session (feat/car-charge-modes). IN-MEMORY ONLY: a restart mid-session
+    # simply starts a fresh session and re-commands ONCE next cycle (documented, acceptable — the
+    # battery keeps whatever mode it was in until then, and the session re-derives from live input).
+    # {active, setpoint_w (last commanded W), commanded_at (iso of last car command), commands}.
+    _car_session: dict[str, Any] = {
+        "active": False, "setpoint_w": None, "commanded_at": None, "commands": 0}
+    # Per-control-cycle cache of recent observation rows for the non-EV house-load prediction,
+    # refreshed by the async control cycle ONLY while the car is charging (a bounded, cheap query).
+    # The sync guard/control-tick read it; an empty/stale box just falls back to the load profile.
+    _car_obs_box: dict[str, Any] = {"rows": None, "at": None}
     # Sky cloud-cover cache: Open-Meteo is polled at most every 15 min (best-effort) for the sky.
     _sky_box: dict[str, Any] = {"cc": None, "at": None}
     # Strong refs to fire-and-forget override-triggered control cycles (see _spawn_tracked). Without
@@ -954,19 +1027,68 @@ def create_app(
         return s is not None and float(s.ev_power_w) > settings_cache[
             "control.car_charging_threshold_w"]
 
-    def _car_guard(now: datetime, intent, reason):
-        """Never feed the car from the home battery: while the car is charging, force any
-        discharging intent to HOLD (the battery holds / may still charge from solar; solar + grid
-        cover the car). GRID_CHARGE/HOLD pass through. Re-evaluated every cycle, so it engages as
-        soon as the car plugs in and releases when it stops."""
-        if (intent is None or not settings_cache["control.hold_battery_when_car_charging"]
+    def _car_predicted_house_w(now: datetime) -> float:
+        """Predicted non-EV house load (W) for the car-mode discharge setpoint: same-weekday-hour
+        observations (cached per cycle in `_car_obs_box`) with the learned load profile as the
+        fallback (or the overnight-load baseline if no profile yet). Pure wrt the caller — never
+        reads a clock or the device."""
+        rows = _car_obs_box.get("rows") or []
+        prof = _load_profile_box["profile"]
+        profile_w = (prof.expected_w(now) if prof is not None
+                     else settings_cache["battery.overnight_load_kwh"] * 1000.0 / 12.0)
+        return predict_house_load_w(rows, profile_w, now=now,
+                                    horizon_hours=_CAR_PRED_HORIZON_HOURS)
+
+    def _car_mode_action(now: datetime, *, current_setpoint_w: float | None = None):
+        """Resolve the car-charging battery action this cycle, or None when car-mode is dormant
+        (master switch off, or the car isn't drawing above the threshold). Reads the mode + wattage
+        from settings, SoC from the coalesced sample (NEVER a fresh device read — flood risk) and
+        the predicted house load. Delegates the actual decision to the pure `decide_car_mode_action`
+        and does NOT mutate the session box."""
+        if (not settings_cache["control.hold_battery_when_car_charging"]
                 or not _car_charging(now)):
-            return intent, reason
-        if intent in (BatteryIntent.DISCHARGE_FOR_LOAD, BatteryIntent.ALLOW_SELF_CONSUMPTION):
-            return (BatteryIntent.HOLD_RESERVE,
-                    "car charging — holding the battery so it won't discharge into the car "
-                    "(solar + grid cover the car)")
-        return intent, reason
+            return None
+        return decide_car_mode_action(
+            settings_cache["control.car_charging_battery_mode"],
+            car_charging=True, soc_pct=_current_soc(now),
+            min_reserve_soc=settings_cache["battery.min_reserve_soc"],
+            max_discharge_w=settings_cache["battery.max_discharge_w"],
+            static_w=settings_cache["control.car_discharge_w"],
+            predicted_house_w=_car_predicted_house_w(now),
+            current_setpoint_w=current_setpoint_w,
+        )
+
+    def _car_guard(now: datetime, intent, reason):
+        """Never let the home battery FEED the car — the final guardrail over the plan AND a manual
+        override. While the car is charging (and the master switch is on) it consults the operator's
+        chosen behaviour via `decide_car_mode_action`:
+
+        * ``hold``            → force HOLD_RESERVE (today's behaviour, byte-for-byte): the battery
+                                idles so it can't discharge into the car; solar + grid cover it.
+        * ``static_discharge``/``match_home_load`` → force DISCHARGE_FOR_LOAD at the decided,
+                                bounded setpoint (carried out via `car_action.power_w` below) so the
+                                battery covers the (predicted) HOUSE while the grid feeds the car.
+
+        Returns ``(intent, reason, car_action)``; `car_action` is the CarModeAction (or None when
+        car-mode is dormant / the plan intent isn't discharge-shaped). GRID_CHARGE/HOLD plan intents
+        pass through untouched, exactly as before. FAIL-SAFE: a discharge is suppressed to a HOLD
+        when data quality is `unsafe` — an untrusted SoC must never drive a discharge (CLAUDE)."""
+        if intent is None or intent not in (
+                BatteryIntent.DISCHARGE_FOR_LOAD, BatteryIntent.ALLOW_SELF_CONSUMPTION):
+            return intent, reason, None
+        car_action = _car_mode_action(now, current_setpoint_w=_car_session["setpoint_w"])
+        if car_action is None:
+            return intent, reason, None
+        if car_action.action == "discharge":
+            if _data_quality(now) == "unsafe":
+                return (BatteryIntent.HOLD_RESERVE,
+                        "car charging — holding the battery so it won't discharge into the car "
+                        "(sensor data is unsafe, so EMS won't discharge on an untrusted level)",
+                        None)
+            return BatteryIntent.DISCHARGE_FOR_LOAD, car_action.reason, car_action
+        if car_action.action == "hold":
+            return BatteryIntent.HOLD_RESERVE, car_action.reason, None
+        return intent, reason, None  # "none" — defensive (car_charging was True), unchanged
 
     def _night_target_soc(soc_pct: float):
         """The night-carry target (overnight load + reserve + floor), via compute_charge_need."""
@@ -1091,13 +1213,14 @@ def create_app(
                 pass
             try:
                 now = datetime.now(UTC)
-                intent, reason, override_active, tgt, pw, _val = await asyncio.to_thread(
-                    _effective_intent, now
-                )
+                intent, reason, override_active, tgt, pw, _val, car_action = (
+                    await asyncio.to_thread(_effective_intent, now))
                 if intent is None:
                     continue
+                car_session = car_action is not None and car_action.action == "discharge"
                 d = await asyncio.to_thread(
-                    controller.preview, intent, now, target_soc=tgt, power_w=pw
+                    controller.preview, intent, now, target_soc=tgt, power_w=pw,
+                    car_session=car_session,
                 )
                 mode = str(d.desired_mode)
                 if mode == last_mode:
@@ -1519,17 +1642,22 @@ def create_app(
 
     def _effective_intent(now: datetime):
         """The intent the controller should act on now + its energy sizing, honouring an active
-        manual override and the data-quality fail-safe. Returns
-        (intent|None, reason|None, override_active, target_soc|None, power_w|None, validation|None).
+        manual override and the data-quality fail-safe. Returns (intent|None, reason|None,
+        override_active, target_soc|None, power_w|None, validation|None, car_action|None).
 
         An active override wins over the plan AND the fail-safe (deliberate, time-boxed operator
         action — the UI shows the data-quality badge). The planner path is gated: unsafe data falls
         back to self-consumption (CLAUDE.md "fail safe"). Sizing (target_soc/power_w) is taken from
         the SAME plan slot we resolved, and ONLY when the final intent still matches that slot's
-        intent — an override, a fail-safe or a car-guard substitution carries no sizing, so a stale
-        target can never leak to the driver. A target is emitted only for a physical CHARGE
-        (the slot target SoC) or, when export-discharge is enabled, a forced DISCHARGE (the reserve
-        floor); a DISCHARGE_FOR_LOAD that maps to AUTO needs none."""
+        intent — an override or a fail-safe substitution carries no sizing, so a stale target can
+        never leak to the driver. A target is emitted only for a physical CHARGE (the slot target
+        SoC) or, when export-discharge is enabled, a forced DISCHARGE (the reserve floor); a
+        DISCHARGE_FOR_LOAD that maps to AUTO needs none.
+
+        `car_action` (the 7th element) is the CarModeAction chosen by the car-charging guard, or
+        None when car-mode is dormant. When it is a discharge, the intent is DISCHARGE_FOR_LOAD at
+        the bounded car setpoint (power_w = car_action.power_w, target_soc = the reserve floor) and
+        the control tick treats it as a car session (car_session=True → a real DISCHARGE)."""
         cur = None
         val: PlanValidation | None = None
         ov = override_box["ov"]
@@ -1550,10 +1678,10 @@ def create_app(
         else:
             pp = _current_plan()
             if pp is None:
-                return None, None, False, None, None, None
+                return None, None, False, None, None, None, None
             cur = pp[2].intent_at(now)
             if cur is None:
-                return None, None, False, None, None, None
+                return None, None, False, None, None, None, None
             # §8.11 hard gate: a plan that fails validation (impossible target, projected below
             # reserve, …) must not be acted on — hold self-consumption, like the data fail-safe.
             # Validate the plan we ALREADY fetched (no second _current_plan rebuild).
@@ -1570,10 +1698,16 @@ def create_app(
                 intent, reason = ((safe, fs_reason) if fs_reason is not None
                                   else (cur.intent, cur.reason))
                 override_active = False
-        # Final guardrail (over the plan AND a manual override): never discharge into the car.
-        intent, reason = _car_guard(now, intent, reason)
+        # Final guardrail (over the plan AND a manual override): never FEED the car — hold, or (if
+        # the operator chose a discharge behaviour) cover the house at a bounded setpoint.
+        intent, reason, car_action = _car_guard(now, intent, reason)
         target_soc = power_w = None
-        if override_active:
+        if car_action is not None and car_action.action == "discharge":
+            # Car session: the setpoint is authoritative; the reserve floor is the stop. This takes
+            # precedence over the override/plan sizing below (it IS the final guardrail).
+            power_w = car_action.power_w
+            target_soc = settings_cache["battery.min_reserve_soc"]
+        elif override_active:
             # A manual override is an EXPLICIT operator command, so it carries its own target —
             # "charge now" means charge toward full (deliberate, not the planner's silent default),
             # a forced discharge stops at the reserve floor. (Gated overrides held to
@@ -1593,7 +1727,7 @@ def create_app(
             elif (intent is BatteryIntent.DISCHARGE_FOR_LOAD and controller is not None
                   and controller.allow_export_discharge):
                 target_soc, power_w = cur.floor_soc, cur.power_w  # forced discharge → reserve floor
-        return intent, reason, override_active, target_soc, power_w, val
+        return intent, reason, override_active, target_soc, power_w, val, car_action
 
     def _plan_snapshot(now: datetime) -> dict | None:
         """Plan/target history snapshot (observability-data): what the planner intended THIS
@@ -1630,7 +1764,7 @@ def create_app(
         except Exception:
             _log.debug("chat context: battery level unavailable (non-fatal)", exc_info=True)
         try:
-            intent, reason, override_active, _t, _p, _v = _effective_intent(now)
+            intent, reason, override_active, _t, _p, _v, _ca = _effective_intent(now)
             if intent is not None:
                 lines.append(
                     f"Current decision: {intent} — {reason}"
@@ -1736,6 +1870,76 @@ def create_app(
             "detail": {"event": "cluster_drift", "commanded": desired.value, "laggards": modes},
         }
 
+    def _car_session_reset() -> None:
+        _car_session.update(active=False, setpoint_w=None, commanded_at=None, commands=0)
+
+    def _car_session_end_if_active(now: datetime) -> list[dict]:
+        """If a car discharge session is active but this cycle is no longer a car discharge (car
+        stopped, mode switched to hold, master toggled off, or the reserve floor reached), end it:
+        audit it and reset the box. The NORMAL intent (the resolved plan/hold) then flows through
+        the ordinary decide() path below — mirroring how today's car-guard hold simply releases and
+        lets the next intent apply (return-to-AUTO / plan intent is never gated)."""
+        if not _car_session["active"]:
+            return []
+        _car_session_reset()
+        return [{"summary": "car session ended — resuming plan",
+                 "detail": {"event": "car_session_end"}}]
+
+    def _car_session_command(
+        now: datetime, car_action: CarModeAction, target_soc, override_active, observed,
+    ) -> list[dict]:
+        """WRITE PATH: run one cycle of a car-charging discharge session. Consults the bounded
+        re-command + 10-min car dwell + 6-command cap (`_decide_car_command`), commands the battery
+        through the ONE writer (controller.decide, car_session=True so DISCHARGE_FOR_LOAD becomes a
+        real DISCHARGE; force=True only on an actual (re-)command so a setpoint change within
+        DISCHARGE isn't swallowed by mode-only idempotency), mutates the in-memory session box, and
+        returns audit records. A transport timeout during a car command rides the established
+        BatteryWriteUnconfirmed HOLD path (decide never raises past its contract; it returns the
+        `unconfirmed` outcome — we hold, we do NOT revert)."""
+        command, nxt, event = _decide_car_command(_car_session, car_action, now)
+        power = car_action.power_w
+        if not command:
+            _car_session.update(nxt)  # keep the session alive (hold the current setpoint, no write)
+            if event == "cap":
+                return [{"summary": ("car session: command budget spent — holding the current "
+                                     f"setpoint (~{_car_session['setpoint_w']:.0f} W), not "
+                                     "re-commanding a moving prediction"),
+                         "detail": {"event": "car_session_cap",
+                                    "setpoint_w": _car_session["setpoint_w"],
+                                    "commands": _car_session["commands"]}}]
+            return []  # quiet hold — the normal steady state of a car session (no audit spam)
+        dec = controller.decide(
+            BatteryIntent.DISCHARGE_FOR_LOAD, now, target_soc=target_soc, power_w=power,
+            observed_mode=observed, manual=override_active, priority=True,
+            car_session=True, force=True)
+        # Any attempted device write advances the session (bounds retries via the cap); dry-run /
+        # not-controlling did not touch the device, so the session doesn't advance on those.
+        if dec.outcome in _CAR_ATTEMPTED_OUTCOMES:
+            _car_session.update(nxt)
+        else:
+            # dry_run / not_controlling — no device write (unreachable here in prod: the tick gates
+            # on lc.can_command and dry-run never runs the tick). Seed a coherent box anyway so a
+            # later real command has a setpoint to compare against (no every-cycle recommand loop).
+            _car_session.update(active=True, setpoint_w=power)
+        first = event == "start"
+        lead = "car session started" if first else "car session"
+        if dec.outcome == "applied":
+            summary = f"{lead}: {car_action.reason} (command sent)"
+        elif dec.outcome == "unconfirmed":
+            summary = (f"{lead}: {power:.0f} W unconfirmed — device slow to respond; holding "
+                       "(not reverting), will re-verify next cycle")
+        elif dec.outcome in ("failed_recovered", "failed_unrecovered"):
+            summary = f"{lead}: discharge command FAILED ({dec.reason})"
+        elif dec.outcome == "dry_run":
+            summary = f"{lead} (dry-run): would cover the house at {power:.0f} W — no write"
+        else:  # not_controlling (or any future outcome) — surfaced honestly
+            summary = f"{lead}: not commanded ({dec.reason})"
+        return [{"summary": summary,
+                 "detail": {"event": "car_session", "first": first, "setpoint_w": power,
+                            "commands": _car_session["commands"], "outcome": dec.outcome,
+                            "accepted": dec.applied, "reason": car_action.reason,
+                            "override_active": override_active}}]
+
     def _control_tick(now: datetime) -> list[dict]:
         """Operational mode ONLY: advance the ownership lifecycle and, once CONTROLLING, apply the
         current intent — the single battery write per cycle. Every safety gate (dwell, daily cap,
@@ -1766,9 +1970,16 @@ def create_app(
         lc.tick(now)
         if not lc.can_command(now):
             return []
-        intent, _reason, override_active, tgt, pw, _v = _effective_intent(now)
+        intent, _reason, override_active, tgt, pw, _v, car_action = _effective_intent(now)
         if intent is None:
-            return []
+            return _car_session_end_if_active(now)  # end a dangling session, nothing else to do
+        # A car-charging discharge session owns its own bounded command cadence (a real DISCHARGE at
+        # the covered-house setpoint) — handled separately from the ordinary single-write path.
+        if car_action is not None and car_action.action == "discharge":
+            return _car_session_command(now, car_action, tgt, override_active, observed)
+        # Not a car discharge this cycle: if a session was active (car stopped / hold / mode-change)
+        # end it now, then let the resolved intent apply through the ordinary path.
+        records: list[dict] = _car_session_end_if_active(now)
         # decide() uses `observed` for the idempotency gate; its post-write CONFIRM re-reads the
         # device fresh, so a stale observation only risks a redundant idempotent write. `manual` (an
         # active operator override) and `priority` (a SAFETY action — the car-guard hold while the
@@ -1778,7 +1989,6 @@ def create_app(
         priority = _car_charging(now)
         dec = controller.decide(intent, now, target_soc=tgt, power_w=pw,
                                 observed_mode=observed, manual=override_active, priority=priority)
-        records: list[dict] = []
         if dec.outcome in ("applied", "failed_recovered", "failed_unrecovered"):
             # An ACTUAL device write — audit it. `accepted` = the device acknowledged the command
             # (result:true); the mode switches with latency, so whether it actually TOOK is verified
@@ -1829,6 +2039,21 @@ def create_app(
                                "override_active": override_active}})
         return records
 
+    async def _refresh_car_obs(now: datetime) -> None:
+        """Warm `_car_obs_box` with a bounded recent slice of observations for the non-EV house-load
+        prediction — ONLY while the car is charging (that's the only time the prediction is used, so
+        the cheap query never runs otherwise). Best-effort: a failed read keeps the last good rows,
+        and an empty box just falls back to the load profile inside `_car_predicted_house_w`."""
+        if store is None or not _car_charging(now):
+            return
+        start = (now - timedelta(days=_CAR_PRED_LOOKBACK_DAYS)).isoformat()
+        try:
+            _car_obs_box["rows"] = await store.observations_between(start, now.isoformat())
+            _car_obs_box["at"] = now
+        except Exception:
+            _log.debug("car-mode observation read failed; keeping last good (non-fatal)",
+                       exc_info=True)
+
     async def _run_control_cycle() -> None:
         """One operational control cycle: run the (blocking) tick off the event loop, then AUDIT the
         CONFIRMED mode change it reports. Serialised by `_control_lock` so the periodic loop and an
@@ -1837,6 +2062,7 @@ def create_app(
             return
         async with _control_lock:
             now = datetime.now(UTC)
+            await _refresh_car_obs(now)  # warm the house-load prediction before the (sync) tick
             try:
                 records = await asyncio.to_thread(_control_tick, now)
             except Exception:
@@ -2096,12 +2322,14 @@ def create_app(
         # The controller's would-do outcome (read-only preview) feeds battery-failure alerts.
         # Honour an active override so the outcome reflects what the controller would really do.
         outcome: str | None = None
-        intent, _reason, override_active, tgt, pw, _v = _effective_intent(now)
+        intent, _reason, override_active, tgt, pw, _v, _ca = _effective_intent(now)
         if intent is not None and controller is not None:
             outcome = controller.preview(intent, now, target_soc=tgt, power_w=pw,
                                          observed_mode=_current_mode(now),
                                          manual=override_active,
-                                         priority=_car_charging(now)).outcome
+                                         priority=_car_charging(now),
+                                         car_session=_ca is not None and _ca.action == "discharge",
+                                         ).outcome
         alerts = derive_alerts(snap, dry_run=dry_run, decision_outcome=outcome)
         out = [{"key": a.key, "severity": a.severity, "message": a.message,
                 "safe": a.safe, "action": a.action} for a in alerts]
@@ -2157,7 +2385,7 @@ def create_app(
         # may read battery mode) runs off the event loop, so a slow device can't freeze the loop.
         def _snapshot():
             car_charging = _car_charging(now)
-            intent, reason, override_active, tgt, pw, val = _effective_intent(now)
+            intent, reason, override_active, tgt, pw, val, car_action = _effective_intent(now)
             if intent is None:
                 return None, {"intent": None, "desired_mode": None, "applied": False,
                               "outcome": "no_plan", "reason": "no plan slot for now",
@@ -2165,9 +2393,11 @@ def create_app(
                               "car_charging": car_charging}
             # preview() is read-only — a GET must never write to the battery or mutate counters.
             # Pass the coalesced observed mode so this poll doesn't read battery mode every cycle.
+            # car_session keeps the previewed mode honest (DISCHARGE, not AUTO) in a car session.
+            car_session = car_action is not None and car_action.action == "discharge"
             d = controller.preview(intent, now, target_soc=tgt, power_w=pw,
                                    observed_mode=_current_mode(now), manual=override_active,
-                                   priority=car_charging)
+                                   priority=car_charging, car_session=car_session)
             home = home_state(
                 _readiness(now), intent=str(d.intent), override_active=override_active,
                 simulated=dev_mode != "live",
@@ -2435,7 +2665,7 @@ def create_app(
         strat, why = _resolve_strategy(now)
         val = _validate_plan_obj(plan, now)
         proj = _projection_sync(plan, now) or []
-        intent, dreason, override_active, tgt, _pw, _v = _effective_intent(now)
+        intent, dreason, override_active, tgt, _pw, _v, _ca = _effective_intent(now)
         s = settings_cache
         fc = solar_forecast.slots()[:96] if solar_forecast is not None else []
         return {
@@ -2986,7 +3216,7 @@ def create_app(
         totals = _uslot_totals(slots)
         recent = await _recent_actuals(fp["now"])
         grid_charge_kwh = totals["grid_charge_kwh"]
-        _intent, reason, _override, _target, _power, validation = _effective_intent(fp["now"])
+        _intent, reason, _override, _target, _power, validation, _ca = _effective_intent(fp["now"])
 
         # "Are we on track?" is derived from the ACTUAL plan (same engine as the story line), NOT a
         # compare of two actual SoC samples — so it measures the plan against target/reserve and
