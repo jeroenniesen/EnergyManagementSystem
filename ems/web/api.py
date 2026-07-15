@@ -47,6 +47,7 @@ from ems.control.override import (
 from ems.control.override import (
     from_stored as override_from_stored,
 )
+from ems.decisions import decision_events
 from ems.detectors import (
     ev_plug_in_reminder,
     evening_peak_risk,
@@ -763,6 +764,9 @@ def create_app(
     # Held-decision dedup: the (outcome, desired_mode) we last audited as a HELD/blocked decision
     # (dwell/cap/not_controlling), so a recurring hold is explained ONCE, not logged every cycle.
     _held_box: dict[str, Any] = {"sig": None}
+    # Economic-skip dedup: a no-trade day is a real (non-)decision worth surfacing, but only ONCE
+    # per distinct reason — not every 5-min cycle it stays quiet. Reset when an action happens.
+    _skip_box: dict[str, Any] = {"sig": None}
     # Car-charging discharge session (feat/car-charge-modes). IN-MEMORY ONLY: a restart mid-session
     # simply starts a fresh session and re-commands ONCE next cycle (documented, acceptable — the
     # battery keeps whatever mode it was in until then, and the session re-derives from live input).
@@ -1991,7 +1995,7 @@ def create_app(
         lc.tick(now)
         if not lc.can_command(now):
             return []
-        intent, _reason, override_active, tgt, pw, _v, car_action = _effective_intent(now)
+        intent, reason, override_active, tgt, pw, _v, car_action = _effective_intent(now)
         if intent is None:
             return _car_session_end_if_active(now)  # end a dangling session, nothing else to do
         # A car-charging discharge session owns its own bounded command cadence (a real DISCHARGE at
@@ -2017,6 +2021,7 @@ def create_app(
             # on a later cycle by the cluster-consistency check below (which flags a tower that
             # never follows). So this logs "command sent" / "FAILED", not a premature "confirmed".
             _held_box["sig"] = None  # an action happened — re-explain any future hold afresh
+            _skip_box["sig"] = None  # ...and re-log the next no-trade day (the quiet was broken)
             before = observed.value if observed is not None else "unknown"
             accepted = dec.applied
             records.append({
@@ -2033,6 +2038,19 @@ def create_app(
             drift = _cluster_drift_record(dec.desired_mode, towers)
             if drift is not None:
                 records.append(drift)
+            # Economic skip: on a no-trade day the plan deliberately does NOT cycle the battery
+            # (the spread doesn't beat break-even, or there's no peak load to shave). That's a real
+            # decision worth showing on the timeline — recorded once per distinct reason (deduped),
+            # not every quiet cycle. The reason string is the planner's own ("no-trade: …").
+            if "no-trade" in (reason or "").lower():
+                sig = ("economic_skip", reason)
+                if _skip_box["sig"] != sig:
+                    _skip_box["sig"] = sig
+                    records.append({
+                        "summary": f"No trade today — {reason}",
+                        "detail": {"desired_mode": dec.desired_mode.value,
+                                   "intent": str(dec.intent),
+                                   "outcome": "economic_skip", "reason": reason}})
         elif dec.outcome == "unconfirmed":
             # The write TIMED OUT (device slow/unreachable) — we did NOT revert (the device likely
             # got it; reverting would also time out). Surface it (deduped) so a recurring "charge
@@ -2653,13 +2671,51 @@ def create_app(
         return out
 
     @app.get("/api/savings")
-    def savings_endpoint() -> dict:
+    async def savings_endpoint() -> dict:
+        """Savings the homeowner can trust (2026-07-15 plan): today's plan-based ESTIMATE, the
+        MEASURED (realized) savings from completed days, and how many complete days back the
+        realized figure — never a fabricated number. Realized comes from recorded meters + stored
+        prices via the same finance path as /api/finance; the estimate carries a clearly-labelled
+        band (the solar-confidence haircut), never presented as measured."""
+        now_local = datetime.now(UTC).astimezone(site_tz)
+        # Today's plan-based estimate (optimistic P50 end of the band).
+        estimate: float | None = None
         pp = _current_plan()
-        if pp is None:
-            return {"today_eur": None}
-        _now, prices, plan = pp
-        by_start = {p.start: p.eur_per_kwh for p in prices}
-        return {"today_eur": estimate_daily_savings_eur(plan, by_start)}
+        if pp is not None:
+            _now, prices, plan = pp
+            by_start = {p.start: p.eur_per_kwh for p in prices}
+            estimate = round(estimate_daily_savings_eur(plan, by_start), 2)
+        # Measured savings: today-so-far (partial, informational) + the completed-day total this
+        # month. `has_data`/`saved_eur` come straight from day_finance — no plan, no fabrication.
+        realized_today: float | None = None
+        month_realized: float | None = None
+        complete_days = 0
+        if store is not None:
+            month_start = now_local.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+            end = now_local.replace(hour=0, minute=0, second=0, microsecond=0) + timedelta(days=1)
+            today_label = now_local.date().isoformat()
+            realized_sum = 0.0
+            for d in await _finance_window(month_start, end, now_local):
+                saved = d.get("saved_eur")
+                if d.get("day") == today_label:
+                    realized_today = round(saved, 2) if saved is not None else None
+                elif d.get("has_data") and saved is not None:
+                    realized_sum += saved
+                    complete_days += 1
+            month_realized = round(realized_sum, 2) if complete_days else None
+        # Estimate band from the solar-confidence haircut — labelled 'estimate' in the UI, never
+        # measured. The P50 estimate is the optimistic end; the haircut is the conservative lower.
+        conf = max(0.0, min(1.0, float(settings_cache["planner.solar_confidence"]) / 100.0))
+        lower = round(estimate * conf, 2) if estimate is not None else None
+        return {
+            "today_eur": estimate,  # back-compat with the existing dashboard caller
+            "estimate_eur": estimate,
+            "realized_today_eur": realized_today,
+            "month_realized_eur": month_realized,
+            "complete_days": complete_days,
+            "lower_bound_eur": lower,
+            "upper_bound_eur": estimate,
+        }
 
     # Planning knobs that shape the plan — the ONLY settings included in a replay bundle. Explicit
     # allow-list, so no meter IP, token, key or location can ever leak into an export (privacy §12).
@@ -3804,6 +3860,17 @@ def create_app(
         if audit_store is None:
             return {"entries": []}
         return {"entries": await audit_store.recent(limit, category)}
+
+    @app.get("/api/decisions")
+    async def decisions_endpoint(limit: int = Query(default=20, ge=1, le=100)) -> dict:
+        """The recent-decisions timeline for the dashboard (2026-07-15 plan): battery-control audit
+        rows mapped to homeowner-facing events — what happened, why, the consequence, and whether
+        any action is needed. Read-only; empty when no audit store is configured. `limit` bounds
+        the rows read (more than the events returned, since non-control rows are filtered)."""
+        if audit_store is None:
+            return {"events": []}
+        rows = await audit_store.recent(limit * 3)
+        return {"events": decision_events(rows)[:limit]}
 
     @app.get("/api/incidents")
     async def incidents_endpoint() -> dict:

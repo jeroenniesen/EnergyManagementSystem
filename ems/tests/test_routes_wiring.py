@@ -33,6 +33,7 @@ EXPECTED_DIRECT_ROUTES = frozenset({
     ("GET", "/api/battery-plan"),
     ("GET", "/api/charge-need"),
     ("GET", "/api/decision"),
+    ("GET", "/api/decisions"),
     ("GET", "/api/diagnostics"),
     ("GET", "/api/energy-distribution"),
     ("GET", "/api/energy-forecast"),

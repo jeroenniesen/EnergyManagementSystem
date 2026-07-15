@@ -2099,4 +2099,67 @@ test.describe("EMS dashboard", () => {
     await expect(page.getByTestId("drawer-happened")).toBeVisible();
     await expect(page.getByTestId("drawer-action")).toContainText(/safe/i);
   });
+
+  function mockSavings(page: Page, s: Record<string, unknown>) {
+    return page.route("**/api/savings", (route) =>
+      route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(s) }),
+    );
+  }
+  function mockDecisions(page: Page, events: unknown[]) {
+    return page.route("**/api/decisions", (route) =>
+      route.fulfill({
+        status: 200, contentType: "application/json", body: JSON.stringify({ events }),
+      }),
+    );
+  }
+
+  test("savings drawer shows an estimate and flags missing realized evidence", async ({ page }) => {
+    await mockSavings(page, {
+      today_eur: 0.42, estimate_eur: 0.42, realized_today_eur: null, month_realized_eur: null,
+      complete_days: 0, lower_bound_eur: 0.34, upper_bound_eur: 0.42,
+    });
+    await page.goto("/#dashboard/savings");
+    await expect(page.getByTestId("savings-estimate")).toContainText("0.42");
+    await expect(page.getByTestId("savings-estimate")).toContainText(/estimate/i);
+    // No completed days yet → realized is explicitly "not measured yet", never a fake number.
+    await expect(page.getByTestId("savings-realized")).toContainText(/no complete|not measured|measuring/i);
+  });
+
+  test("savings drawer shows realized savings with complete-day evidence", async ({ page }) => {
+    await mockSavings(page, {
+      today_eur: 0.5, estimate_eur: 0.5, realized_today_eur: 0.3, month_realized_eur: 12.3,
+      complete_days: 14, lower_bound_eur: 0.4, upper_bound_eur: 0.5,
+    });
+    await page.goto("/#dashboard/savings");
+    await expect(page.getByTestId("savings-realized")).toContainText("12.3");
+    await expect(page.getByTestId("savings-realized")).toContainText("14");
+  });
+
+  test("decision timeline lists events and each opens its own drawer (economic skip)", async ({ page }) => {
+    await mockDecisions(page, [{
+      id: "7", time: "2026-07-15T10:00:00+00:00", title: "Skipped trading today",
+      reason: "no-trade: spread below break-even",
+      consequence: "The safe baseline (self-consumption) remains active.",
+      action: "No action needed.", severity: "info",
+    }]);
+    await page.goto("/");
+    const item = page.getByTestId("decision-item-7");
+    await expect(item).toBeVisible();
+    await item.click();
+    await expect(page.getByTestId("detail-drawer")).toBeVisible();
+    await expect(page.getByTestId("decision-consequence")).toContainText("safe baseline");
+    await expect(page.getByTestId("decision-action")).toContainText(/no action/i);
+  });
+
+  test("decision timeline flags a safety fallback and its action", async ({ page }) => {
+    await mockDecisions(page, [{
+      id: "9", time: "2026-07-15T09:00:00+00:00",
+      title: "Couldn't switch to charging — reverted to safe mode", reason: "unconfirmed",
+      consequence: "The safe baseline (self-consumption) remains active.",
+      action: "Check the battery is reachable if this repeats.", severity: "warning",
+    }]);
+    await page.goto("/#dashboard/decision/9");
+    await expect(page.getByTestId("decision-action")).toContainText(/check the battery/i);
+    await expect(page.getByTestId("decision-severity")).toHaveAttribute("data-severity", "warning");
+  });
 });

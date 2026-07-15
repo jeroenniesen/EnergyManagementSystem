@@ -34,6 +34,7 @@ import { Advanced } from "./Advanced";
 import { applyTheme, readStoredTheme, storeTheme, type Theme } from "./theme";
 import { authHeaders } from "./auth";
 import { DetailDrawer } from "./DetailDrawer";
+import { DecisionTimeline, type DecisionEvent } from "./DecisionTimeline";
 
 type Status = {
   dry_run: boolean;
@@ -69,6 +70,18 @@ type ChargeNeed = {
   deficit_kwh: number;
   on_track: boolean;
   reason: string;
+};
+
+// Savings drawer contract (2026-07-15 plan): today's plan ESTIMATE + its band, and MEASURED
+// (realized) savings from completed days — realized is null until a day completes (never faked).
+type SavingsData = {
+  today_eur: number | null;
+  estimate_eur: number | null;
+  realized_today_eur: number | null;
+  month_realized_eur: number | null;
+  complete_days: number;
+  lower_bound_eur: number | null;
+  upper_bound_eur: number | null;
 };
 
 // Just enough of GET /api/car/plan (CarCard.tsx owns the full shape) to overlay the car's PLANNED
@@ -333,6 +346,8 @@ export function App() {
   // fetch (then the footer stat stays hidden; a later failure just keeps the last-known value,
   // same best-effort convention as the other polled cards below).
   const [savedToday, setSavedToday] = useState<SavedToday | null>(null);
+  const [savings, setSavings] = useState<SavingsData | null>(null);
+  const [decisions, setDecisions] = useState<DecisionEvent[]>([]);
   const [report, setReport] = useState<Report | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [route, setRoute] = useState<Route>(() => routeFromHash(window.location.hash));
@@ -498,6 +513,8 @@ export function App() {
         },
       );
       fill("/api/charge-need", (v: ChargeNeed) => setChargeNeed(v ?? null));
+      fill("/api/savings", (v: SavingsData) => setSavings(v ?? null));
+      fill("/api/decisions", (v: { events?: DecisionEvent[] }) => setDecisions(v?.events ?? []));
       // Planned car-charging windows for the chart overlay (feat/ux-batch-3) — `enabled:false`
       // (feature off) carries no `plan`, so windows are only ever read when the feature is on.
       fill(
@@ -775,14 +792,24 @@ export function App() {
             {!actLine.calm && <Icon name="alert" className="hero-act-icon" />}
             {actLine.text}
           </p>
-          <button
-            type="button"
-            className="hero-details-link"
-            data-testid="dashboard-now-trigger"
-            onClick={() => openDrawer({ kind: "now" })}
-          >
-            What is EMS doing? →
-          </button>
+          <div className="hero-details-row">
+            <button
+              type="button"
+              className="hero-details-link"
+              data-testid="dashboard-now-trigger"
+              onClick={() => openDrawer({ kind: "now" })}
+            >
+              What is EMS doing? →
+            </button>
+            <button
+              type="button"
+              className="hero-details-link"
+              data-testid="dashboard-savings-trigger"
+              onClick={() => openDrawer({ kind: "savings" })}
+            >
+              See your savings →
+            </button>
+          </div>
           {demoActive && (
             <div className="hero-demo-cta" data-testid="demo-cta">
               <span>
@@ -841,6 +868,14 @@ export function App() {
           onBatteryClick={batteryHasDetail ? () => setBatteryDetail("soc") : undefined}
           carWindows={carPlan?.windows ?? []}
           carWindowsEnabled={carPlan?.enabled ?? false}
+        />
+      )}
+
+      {/* Recent decisions: what EMS did or chose not to do; each row opens its decision drawer. */}
+      {view === "dashboard" && (
+        <DecisionTimeline
+          events={decisions}
+          onOpen={(id) => openDrawer({ kind: "decision", id })}
         />
       )}
 
@@ -1055,6 +1090,80 @@ export function App() {
             </details>
           </>
         )}
+
+        {drawer?.kind === "savings" && (
+          <>
+            <div className="drawer-section">
+              <span className="drawer-label">Estimated saving today</span>
+              <p className="drawer-lede" data-testid="savings-estimate">
+                {savings?.estimate_eur != null
+                  ? `About €${savings.estimate_eur.toFixed(2)} (estimate` +
+                    (savings.lower_bound_eur != null && savings.upper_bound_eur != null
+                      ? `, roughly €${savings.lower_bound_eur.toFixed(2)}–€${savings.upper_bound_eur.toFixed(2)})`
+                      : ")")
+                  : "No estimate yet — the plan is still loading."}
+              </p>
+            </div>
+            <div className="drawer-section">
+              <span className="drawer-label">Measured (realized) savings</span>
+              <p data-testid="savings-realized">
+                {savings && savings.complete_days > 0 && savings.month_realized_eur != null
+                  ? `€${savings.month_realized_eur.toFixed(2)} measured over ${savings.complete_days} ` +
+                    `complete day${savings.complete_days === 1 ? "" : "s"} this month.`
+                  : "No complete days measured yet — today's figure is still an estimate, " +
+                    "not a measured amount."}
+              </p>
+            </div>
+            <details className="drawer-tech" data-testid="savings-calc">
+              <summary>How this was calculated</summary>
+              <p className="drawer-tech-note">
+                The estimate is the avoided expensive-window energy minus the charge cost (adjusted
+                for round-trip efficiency), battery wear and a risk margin. Realized savings are
+                measured from your recorded meters and the prices that were actually active, and
+                only count once a day is complete — so they're never inflated by an optimistic
+                forecast.
+              </p>
+            </details>
+          </>
+        )}
+
+        {drawer?.kind === "decision" &&
+          (() => {
+            const ev = decisions.find((e) => e.id === drawer.id);
+            if (!ev) {
+              return (
+                <p data-testid="decision-missing">
+                  This decision is no longer in the recent list.
+                </p>
+              );
+            }
+            return (
+              <>
+                <div className="drawer-section">
+                  <span className="drawer-label">What happened</span>
+                  <p className="drawer-lede" data-testid="decision-title">{ev.title}</p>
+                </div>
+                <div className="drawer-section">
+                  <span className="drawer-label">Why</span>
+                  <p data-testid="decision-reason">{ev.reason}</p>
+                </div>
+                <div className="drawer-section">
+                  <span className="drawer-label">What it means</span>
+                  <p data-testid="decision-consequence">{ev.consequence}</p>
+                </div>
+                <div
+                  className={`drawer-act ${
+                    ev.severity === "info" ? "drawer-act-calm" : "drawer-act-attention"
+                  }`}
+                  data-testid="decision-severity"
+                  data-severity={ev.severity}
+                >
+                  <span className="drawer-label">Do I need to act?</span>
+                  <p data-testid="decision-action">{ev.action}</p>
+                </div>
+              </>
+            );
+          })()}
       </DetailDrawer>
       </div>
     </>
