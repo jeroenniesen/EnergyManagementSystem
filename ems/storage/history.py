@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 from collections import defaultdict
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
@@ -13,6 +14,8 @@ import aiosqlite
 from ems.domain import RawSample
 from ems.load_model import DerivedSample
 from ems.storage.migrations import Migration, has_table, run_migrations
+
+_log = logging.getLogger("ems.storage.history")
 
 _RAW_COLS = ("ts", "grid_power_w", "solar_power_w", "battery_power_w", "ev_power_w", "soc_pct")
 _DERIVED_COLS = ("ts", "house_load_w", "non_ev_load_w")
@@ -806,18 +809,28 @@ class HistoryStore:
                 (kind, start_iso, end_iso))
             return [dict(r) for r in await cur.fetchall()]
 
-    async def ledger_between(self, kind: str, start_iso: str, end_iso: str) -> list[dict]:
+    async def ledger_between(
+        self, kind: str, start_iso: str, end_iso: str, *, limit: int = 200_000
+    ) -> list[dict]:
         """ALL ledger rows of `kind` with `target_start` in [start, end) — every issue time, not
         just canonical — ordered by (target_start, issued_at) for lead-time/nowcast diagnostics
-        (UTC-ISO ⇒ lexicographic = time)."""
+        (UTC-ISO ⇒ lexicographic = time).
+
+        Bounded by `limit` (default effectively unbounded for real windows) so a pathologically
+        wide window can't pull an unbounded result set into memory. Hitting the cap is logged, not
+        silent — the earliest target_starts are kept."""
         async with self._conn() as db:
             db.row_factory = aiosqlite.Row
             cur = await db.execute(
                 f"SELECT {', '.join(_LEDGER_COLS)} FROM forecast_ledger "
                 "WHERE kind = ? AND target_start >= ? AND target_start < ? "
-                "ORDER BY target_start ASC, issued_at ASC",
-                (kind, start_iso, end_iso))
-            return [dict(r) for r in await cur.fetchall()]
+                "ORDER BY target_start ASC, issued_at ASC LIMIT ?",
+                (kind, start_iso, end_iso, limit))
+            rows = [dict(r) for r in await cur.fetchall()]
+        if len(rows) >= limit:
+            _log.warning("ledger_between hit the %d-row cap for kind=%s in [%s, %s) — result "
+                         "truncated to the earliest target_starts", limit, kind, start_iso, end_iso)
+        return rows
 
     async def purge_ledger_older_than(
         self, cutoff_iso: str, *, nowcast_cutoff_iso: str | None = None

@@ -31,6 +31,7 @@ import { homeSummary } from "./scoreCopy";
 import { SkyBackdrop } from "./SkyBackdrop";
 import { Advanced } from "./Advanced";
 import { applyTheme, readStoredTheme, storeTheme, type Theme } from "./theme";
+import { authHeaders } from "./auth";
 
 type Status = {
   dry_run: boolean;
@@ -453,7 +454,9 @@ export function App() {
     try {
       const res = await fetch("/api/settings", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        // /api/settings is always write-gated once a token is set — send it, or the write 401s
+        // and silently reverts (matches Settings.tsx). Empty object when no token is configured.
+        headers: { "Content-Type": "application/json", ...authHeaders() },
         body: JSON.stringify(body),
       });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);

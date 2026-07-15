@@ -4,13 +4,14 @@ freshness (§4.7). Read-only and fail-safe: a bad read never kills the loop."""
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import logging
 from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 
 from ems.domain import RawSample
 from ems.freshness import FreshnessTracker
-from ems.load_model import reconstruct, sanitize_sample
+from ems.load_model import is_soc_jump_implausible, reconstruct, sanitize_sample
 from ems.retrospect import _floor
 from ems.sources.base import Source
 from ems.storage.history import HistoryStore
@@ -63,6 +64,12 @@ class Recorder:
         # Counts readings clamped by the plausibility guard (defense-in-depth against a future
         # sensor/comms glitch) — surfaced on /api/diagnostics so an operator can SEE it happening.
         self.clamped_samples = 0
+        # SoC-jump guard (SPEC §4.7): the last SoC we ACCEPTED and when. A physically impossible
+        # jump (>rate) is rejected — held at last-good, not marked fresh — so a comms glitch never
+        # reaches the planner as a trusted value. `rejected_soc_samples` is surfaced for visibility.
+        self._prev_soc: float | None = None
+        self._prev_soc_at: datetime | None = None
+        self.rejected_soc_samples = 0
         # In-instance throttle for the prediction-ledger nowcast append (see _LEDGER_MIN_INTERVAL).
         # Not persisted: a restart simply writes one extra ledger row, which is harmless.
         self._last_ledger_write_at: datetime | None = None
@@ -73,6 +80,7 @@ class Recorder:
             "consecutive_failures": self.consecutive_failures,
             "last_error": self.last_error,
             "clamped_samples": self.clamped_samples,
+            "rejected_soc_samples": self.rejected_soc_samples,
         }
 
     async def sense_once(self, now: datetime) -> None:
@@ -92,6 +100,28 @@ class Recorder:
             if self.clamped_samples == 1 or self.clamped_samples % 12 == 0:
                 _log.warning("implausible reading clamped (%d so far): %s",
                              self.clamped_samples, ", ".join(clamped))
+        # SoC-jump plausibility guard (SPEC §4.7): only when SoC was actually read this cycle (a
+        # source that didn't report it leaves "soc" out of `fresh` — never seed the guard from a
+        # non-fresh 0.0). An impossible jump is rejected: not marked fresh (so it ages to STALE and
+        # the planner fails safe), counted, and held at the last-good value in the recorded sample.
+        # The accepted value + its time only advance on a plausible reading, so a genuine-but-large
+        # drift is eventually admitted as the allowed window grows with elapsed time.
+        if "soc" in fresh:
+            elapsed_min = ((now - self._prev_soc_at).total_seconds() / 60.0
+                           if self._prev_soc_at is not None else 0.0)
+            if is_soc_jump_implausible(self._prev_soc, raw.soc_pct, elapsed_min):
+                self.rejected_soc_samples += 1
+                if self.rejected_soc_samples == 1 or self.rejected_soc_samples % 12 == 0:
+                    _log.warning("implausible SoC jump rejected (%d so far): %.1f%% → %.1f%% in "
+                                 "%.1f min — holding last-good", self.rejected_soc_samples,
+                                 self._prev_soc if self._prev_soc is not None else float("nan"),
+                                 raw.soc_pct, elapsed_min)
+                fresh = fresh - {"soc"}
+                if self._prev_soc is not None:
+                    raw = dataclasses.replace(raw, soc_pct=self._prev_soc)
+            else:
+                self._prev_soc = raw.soc_pct
+                self._prev_soc_at = now
         derived = reconstruct(raw)
         await self.store.record(now.isoformat(), raw, derived)
         for sig in fresh:

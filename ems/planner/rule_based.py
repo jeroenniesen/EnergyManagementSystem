@@ -145,11 +145,18 @@ def _plan_winter(
         pool = sorted((p for p in horizon if p.start < last_need and p.eur_per_kwh <= max_buy),
                       key=lambda p: (p.eur_per_kwh, p.start))
         charge_set = {p.start for p in pool[:n_charge]}
+        # Commit only to what the chosen charge slots can actually store. When the cheap pool is
+        # too small to cover the shortfall, target the reachable PARTIAL SoC (like recovery.py)
+        # rather than the full demand target — otherwise the §8.11 projected-target reachability
+        # gate rejects the whole plan → AUTO, and a tight-supply day charges nothing instead of
+        # what it can. When supply is adequate `delivered >= shortfall`, so this is unchanged.
+        delivered_dc = len(charge_set) * slot_stored_kwh
+        committed_dc = min(shortfall_dc, delivered_dc)
         if len(pool) < n_charge:  # not enough cheap room before the last peak → will under-charge
             _log.warning("winter planner under-charge: need %d cheap pre-peak slots, only %d "
-                         "available (shortfall %.2f kWh) — battery may enter the peak short",
+                         "available (shortfall %.2f kWh) — targeting the reachable partial SoC",
                          n_charge, len(pool), shortfall_dc)
-        target_soc = min(100.0, (reserve_kwh + avail_now_kwh + shortfall_dc) / usable_kwh * 100.0)
+        target_soc = min(100.0, (reserve_kwh + avail_now_kwh + committed_dc) / usable_kwh * 100.0)
     else:
         charge_set = {p.start for p in charge_candidates}
 

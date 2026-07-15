@@ -118,12 +118,13 @@ class IndevoltBatteryDriver:
     """BatteryDriver for the real Indevolt. Reads via IndevoltReadClient; writes via SetData ONLY
     when explicitly armed AND a real transport is injected (neither true in the default wiring).
 
-    CLUSTER WRITES: the command is written to EVERY tower (master + slaves), not just the master.
-    An Indevolt cluster does NOT relay real-time-control from the master to its slaves — verified
-    live: commanding only the master leaves the slave self-consuming, which the cluster-mismatch
-    audit flagged ("1 tower NOT following the commanded charge"). Each tower is an independent
-    OpenData endpoint, so we command each one. The cluster's requested power is split evenly across
-    towers so the total matches what the planner sized."""
+    CLUSTER WRITES (verified live — see `apply()` for the full rationale): a real-time command
+    (CHARGE/DISCHARGE/IDLE) is written to the MASTER ONLY, with the FULL cluster power (`power_w` is
+    the cluster total, NOT split across towers). The master coordinates the slaves in lockstep; a
+    slave keeps REPORTING self-consumption while it follows, which is normal. Writing a real-time
+    state to a slave directly BREAKS that coordination (the towers fight). AUTO (return to safe
+    self-consumption) IS written to every tower so the whole cluster drops back to the vendor mode.
+    (An earlier build wrote every tower and split the power — that was WRONG and is reverted.)"""
 
     def __init__(
         self,

@@ -1,5 +1,5 @@
 import asyncio
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 from ems.domain import RawSample
 from ems.freshness import Freshness, FreshnessTracker
@@ -26,6 +26,17 @@ class _ImplausibleBatterySource:
             ev_power_w=0.0,
             soc_pct=55.0,
         )
+
+
+class _SocSource:
+    """Stub whose SoC reading can be changed between cycles to simulate a comms/sensor glitch."""
+
+    def __init__(self, soc):
+        self.soc = soc
+
+    def read(self):
+        return RawSample(grid_power_w=100.0, solar_power_w=0.0, battery_power_w=0.0,
+                         ev_power_w=0.0, soc_pct=self.soc)
 
 
 class _BoomStore:
@@ -68,6 +79,56 @@ def test_sense_once_clamps_implausible_battery_reading(tmp_path):
     assert len(rows) == 1
     assert rows[0]["battery_power_w"] == 20000.0
     assert rec.health()["clamped_samples"] == 1
+
+
+def test_sense_once_rejects_implausible_soc_jump(tmp_path):
+    # SPEC §4.7: a physically impossible SoC jump (comms/sensor glitch) must not be published as
+    # a fresh reading; it is counted, and the last-good SoC is held in place of the garbage so it
+    # never reaches the planner as a fresh value.
+    store = HistoryStore(str(tmp_path / "ems.sqlite"))
+    fresh = FreshnessTracker(stale_after_s=600)
+    fresh.register(*SIGNALS)
+    src = _SocSource(55.0)
+    rec = Recorder(src, store, fresh)
+    t0 = NOW
+    t1 = NOW + timedelta(minutes=5)
+
+    async def run():
+        await store.init()
+        await rec.sense_once(t0)  # 55% — first sample, accepted (no prior to compare)
+        src.soc = 5.0             # 50pp drop in 5 min — impossible (>20%/5min)
+        await rec.sense_once(t1)
+        return await store.recent_raw(10)
+
+    rows = asyncio.run(run())
+    assert rec.health()["rejected_soc_samples"] == 1
+    assert all(r["soc_pct"] != 5.0 for r in rows), "the garbage SoC never enters history"
+    assert rows[0]["soc_pct"] == 55.0, "the last-good SoC is held on the rejected cycle"
+    # SoC was NOT refreshed at t1 (its mark stays at t0), while other signals WERE marked at t1.
+    check = t1 + timedelta(seconds=400)  # soc: age from t0 = 700s > 600 → STALE; grid: 400s → FRESH
+    assert fresh.state("soc", check) is Freshness.STALE
+    assert fresh.state("grid", check) is Freshness.FRESH
+
+
+def test_sense_once_accepts_gradual_soc_change(tmp_path):
+    # A within-rate change (≤20%/5min) is accepted normally and stays fresh.
+    store = HistoryStore(str(tmp_path / "ems.sqlite"))
+    fresh = FreshnessTracker(stale_after_s=600)
+    fresh.register(*SIGNALS)
+    src = _SocSource(50.0)
+    rec = Recorder(src, store, fresh)
+
+    async def run():
+        await store.init()
+        await rec.sense_once(NOW)
+        src.soc = 60.0  # +10pp in 5 min — plausible
+        await rec.sense_once(NOW + timedelta(minutes=5))
+        return await store.recent_raw(10)
+
+    rows = asyncio.run(run())
+    assert rec.health()["rejected_soc_samples"] == 0
+    assert rows[0]["soc_pct"] == 60.0  # accepted
+    assert fresh.state("soc", NOW + timedelta(minutes=5)) is Freshness.FRESH
 
 
 def test_sense_once_normal_reading_does_not_clamp(tmp_path):

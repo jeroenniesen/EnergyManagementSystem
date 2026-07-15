@@ -33,6 +33,28 @@ class _StubForecast:
         return self._slots
 
 
+def test_ledger_between_honours_a_row_limit(tmp_path):
+    # ledger_between is bounded so a pathologically wide window can't pull unbounded rows into
+    # memory. The limit keeps the EARLIEST target_starts (ORDER BY target_start ASC); the default
+    # is effectively unbounded so existing full-history callers are unchanged.
+    async def run():
+        store = HistoryStore(str(tmp_path / "ems.sqlite"))
+        await store.init()
+        base = datetime(2026, 1, 1, tzinfo=UTC)
+        rows = [("2026-01-01T00:00:00+00:00", "solar",
+                 (base + timedelta(minutes=15 * i)).isoformat(),
+                 float(i), float(i), float(i), "Stub", None, None, 0) for i in range(3)]
+        await store.ledger_append(rows)
+        capped = await store.ledger_between("solar", *_WIDE, limit=2)
+        allrows = await store.ledger_between("solar", *_WIDE)
+        return capped, allrows
+
+    capped, allrows = asyncio.run(run())
+    assert len(capped) == 2
+    assert len(allrows) == 3
+    assert [r["expected_w"] for r in capped] == [0.0, 1.0]  # earliest target_starts kept
+
+
 # --- Migration v3 -------------------------------------------------------------------------------
 
 async def _make_v0_with_snapshots(path: str, snaps: list[tuple]) -> None:

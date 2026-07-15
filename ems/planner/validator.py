@@ -120,7 +120,13 @@ def validate_plan(
         findings.append(Finding(_WARN, "excessive_switches",
                                 f"The plan switches mode {len(transitions)}× — above the "
                                 f"{max_switches_per_day}/day budget."))
-    if any((b.start - a.start) < min_dwell for a, b in transitions):
+    # A mode's dwell is the run length between the transition that ENTERS it and the one that
+    # EXITS it — i.e. the gap between consecutive transition starts. (Comparing ADJACENT slots is
+    # meaningless: consecutive slots are always exactly one SLOT apart.) Boundary runs — before the
+    # first transition and after the last — are open-ended and not penalised here.
+    switch_starts = [b.start for _, b in transitions]
+    if any((switch_starts[i] - switch_starts[i - 1]) < min_dwell
+           for i in range(1, len(switch_starts))):
         findings.append(Finding(_WARN, "dwell_churn",
                                 "The plan changes mode faster than the minimum dwell time."))
 

@@ -114,3 +114,10 @@ def test_mark_notifications_read_requires_token_when_configured(tmp_path):
 def test_get_notifications_is_open_even_with_token(tmp_path):
     with TestClient(_app(tmp_path, web_auth_token="s3cret")) as c:
         assert c.get("/api/notifications").status_code == 200
+
+
+def test_mark_notifications_read_rejects_non_integer_ids(tmp_path):
+    # A malformed body ({"ids": ["abc"]}) must be a clean 422, not an unhandled 500.
+    with TestClient(_app(tmp_path)) as c:
+        r = c.post("/api/notifications/read", json={"ids": ["abc"]})
+    assert r.status_code == 422

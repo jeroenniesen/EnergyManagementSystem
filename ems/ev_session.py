@@ -197,6 +197,7 @@ def estimate_soc(
     battery_net_kwh: float,
     now: datetime,
     charge_efficiency: float = 0.90,
+    threshold_w: float = 1500.0,
 ) -> dict | None:
     """Estimate the car's SoC from a manual anchor + the charging energy measured since it.
 
@@ -219,7 +220,7 @@ def estimate_soc(
         return None
 
     samples, deltas, cadence, sessions = _sessions(
-        raw_rows, threshold_w=1500.0, min_duration_min=5.0, gap_tolerance_min=10.0)
+        raw_rows, threshold_w=threshold_w, min_duration_min=5.0, gap_tolerance_min=10.0)
 
     added_kwh_ac = 0.0
     sessions_since = 0

@@ -1027,6 +1027,15 @@ def create_app(
         return s is not None and float(s.ev_power_w) > settings_cache[
             "control.car_charging_threshold_w"]
 
+    def _car_guard_active(now: datetime) -> bool:
+        """True when the car-charging guard is actively CONSTRAINING the battery this cycle (a hold
+        or a bounded discharge): the master switch is ON *and* the car is drawing above threshold —
+        exactly the condition under which `_car_mode_action` returns non-None. This — NOT raw
+        `_car_charging` — is what justifies bypassing the dwell/daily-cap gates: a car-guard safety
+        action must never be starved by a spent switch budget (e42828e), but with the switch OFF the
+        ordinary planner intent MUST still respect the caps (<10 writes/day, CLAUDE.md)."""
+        return bool(settings_cache["control.hold_battery_when_car_charging"]) and _car_charging(now)
+
     def _car_predicted_house_w(now: datetime) -> float:
         """Predicted non-EV house load (W) for the car-mode discharge setpoint: same-weekday-hour
         observations (cached per cycle in `_car_obs_box`) with the learned load profile as the
@@ -1322,35 +1331,42 @@ def create_app(
         """Graceful-shutdown safety (SPEC §6.5 / runbook): in operational mode, hand the battery
         back to its safe vendor mode before exiting, so an upgrade/reboot/launchd restart can't
         leave it in a forced charge/hold/discharge. Bounded + best-effort — a slow or offline
-        device can never hang shutdown — and the outcome is audited."""
+        device can never hang shutdown — and the outcome is audited.
+
+        SERIALISED on `_control_lock` (the same lock every `_run_control_cycle` holds around its
+        write): otherwise this restore's apply() could run CONCURRENTLY with an in-flight control-
+        or override-triggered cycle's apply() — two writers on the one battery, violating the
+        single-writer + >=5s-spacing invariant (SPEC §2/§6.5). The lock is held only briefly; a slow
+        cycle is already bounded by its own write timeout, so shutdown can't hang here."""
         if dry_run or controller is None or not getattr(controller.driver, "armed", False):
             return
-        # Nothing to undo unless EMS actually commanded a non-AUTO mode this run.
-        last = controller.last_confirmed_action
-        if last is None or last is PhysicalMode.AUTO:
-            return
-        # Prefer the mode the battery had before EMS took control, but NEVER restore into a forced
-        # energy flow — fall back to AUTO (vendor self-consumption / P1-zeroing), the safe default.
-        target = controller.original_vendor_mode or PhysicalMode.AUTO
-        if target in (PhysicalMode.CHARGE, PhysicalMode.DISCHARGE):
-            target = PhysicalMode.AUTO
-        ok = False
-        try:
-            ok = await asyncio.wait_for(
-                asyncio.to_thread(controller.driver.apply, target), timeout=8.0
-            )
-        except Exception as exc:
-            _log.warning("shutdown restore failed (%s: %s)", type(exc).__name__, exc)
-        if audit_store is not None:
+        async with _control_lock:
+            # Nothing to undo unless EMS actually commanded a non-AUTO mode this run.
+            last = controller.last_confirmed_action
+            if last is None or last is PhysicalMode.AUTO:
+                return
+            # Prefer the mode the battery had before EMS took control, but NEVER restore into a
+            # forced energy flow — fall back to AUTO (vendor self-consumption / P1-zeroing), safe.
+            target = controller.original_vendor_mode or PhysicalMode.AUTO
+            if target in (PhysicalMode.CHARGE, PhysicalMode.DISCHARGE):
+                target = PhysicalMode.AUTO
+            ok = False
             try:
-                await audit_store.append(
-                    datetime.now(UTC).isoformat(), "shutdown_restore",
-                    f"Graceful shutdown — restored battery to {target.value} "
-                    f"({'confirmed' if ok else 'UNCONFIRMED — verify the device'})",
-                    {"target": target.value, "confirmed": ok},
+                ok = await asyncio.wait_for(
+                    asyncio.to_thread(controller.driver.apply, target), timeout=8.0
                 )
-            except Exception:
-                _log.warning("shutdown-restore audit append failed (non-fatal)", exc_info=True)
+            except Exception as exc:
+                _log.warning("shutdown restore failed (%s: %s)", type(exc).__name__, exc)
+            if audit_store is not None:
+                try:
+                    await audit_store.append(
+                        datetime.now(UTC).isoformat(), "shutdown_restore",
+                        f"Graceful shutdown — restored battery to {target.value} "
+                        f"({'confirmed' if ok else 'UNCONFIRMED — verify the device'})",
+                        {"target": target.value, "confirmed": ok},
+                    )
+                except Exception:
+                    _log.warning("shutdown-restore audit append failed (non-fatal)", exc_info=True)
 
     @asynccontextmanager
     async def lifespan(_app: FastAPI):
@@ -1448,6 +1464,11 @@ def create_app(
             for t in (task, control_task, audit_task, validate_task, maintenance_task, notify_task):
                 if t is not None:
                     await t
+            # Drain any in-flight override-triggered control cycles too (they're tracked in
+            # `_override_tasks`, not the tuple above) so none is still running — and still touching
+            # the battery or a store — past this point.
+            if _override_tasks:
+                await asyncio.gather(*list(_override_tasks), return_exceptions=True)
             # Close each store's shared long-lived connection (perf: B-49) now that every
             # background task has stopped touching it — a clean shutdown, not a leaked handle.
             for s in (store, settings_store, override_store, audit_store):
@@ -1982,11 +2003,12 @@ def create_app(
         records: list[dict] = _car_session_end_if_active(now)
         # decide() uses `observed` for the idempotency gate; its post-write CONFIRM re-reads the
         # device fresh, so a stale observation only risks a redundant idempotent write. `manual` (an
-        # active operator override) and `priority` (a SAFETY action — the car-guard hold while the
-        # car charges) bypass the automatic dwell/cap gates: never leave the battery draining into
-        # the car just because today's switch budget is spent (a return to AUTO is always allowed
-        # too; see _gate).
-        priority = _car_charging(now)
+        # active operator override) and `priority` (a SAFETY action — the car-guard hold/discharge
+        # while the car charges) bypass the automatic dwell/cap gates: never leave the battery
+        # draining into the car just because today's switch budget is spent (a return to AUTO is
+        # always allowed too; see _gate). `priority` is the GUARD being active, not raw car-charging
+        # — with the guard switch off the ordinary planner intent still respects the caps.
+        priority = _car_guard_active(now)
         dec = controller.decide(intent, now, target_soc=tgt, power_w=pw,
                                 observed_mode=observed, manual=override_active, priority=priority)
         if dec.outcome in ("applied", "failed_recovered", "failed_unrecovered"):
@@ -2327,7 +2349,7 @@ def create_app(
             outcome = controller.preview(intent, now, target_soc=tgt, power_w=pw,
                                          observed_mode=_current_mode(now),
                                          manual=override_active,
-                                         priority=_car_charging(now),
+                                         priority=_car_guard_active(now),
                                          car_session=_ca is not None and _ca.action == "discharge",
                                          ).outcome
         alerts = derive_alerts(snap, dry_run=dry_run, decision_outcome=outcome)
@@ -2397,7 +2419,7 @@ def create_app(
             car_session = car_action is not None and car_action.action == "discharge"
             d = controller.preview(intent, now, target_soc=tgt, power_w=pw,
                                    observed_mode=_current_mode(now), manual=override_active,
-                                   priority=car_charging, car_session=car_session)
+                                   priority=_car_guard_active(now), car_session=car_session)
             home = home_state(
                 _readiness(now), intent=str(d.intent), override_active=override_active,
                 simulated=dev_mode != "live",

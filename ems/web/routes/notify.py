@@ -46,7 +46,12 @@ def build_router(ctx: AppContext) -> APIRouter:
         body = body or {}
         mark_all = bool(body.get("all"))
         raw_ids = body.get("ids") if not mark_all else None
-        ids = [int(i) for i in raw_ids] if isinstance(raw_ids, list) else None
+        ids: list[int] | None = None
+        if isinstance(raw_ids, list):
+            try:
+                ids = [int(i) for i in raw_ids]
+            except (TypeError, ValueError):
+                return JSONResponse({"detail": "ids must be a list of integers"}, status_code=422)
         await ctx.store.mark_notifications_read(ids=ids, mark_all=mark_all)
         return JSONResponse({"unread": await ctx.store.unread_count()})
 

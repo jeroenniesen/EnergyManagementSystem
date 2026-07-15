@@ -119,6 +119,24 @@ def test_estimate_soc_anchor_math():
     assert est["anchor_pct"] == 40.0 and est["anchor_ts"] == anchor_ts
 
 
+def test_estimate_soc_honours_a_lower_detection_threshold():
+    # A slow 800 W charge is above the live car-guard threshold (500 W) but below the 1500 W
+    # default. Aligning estimate_soc's detection threshold to the guard's means that energy IS
+    # counted (else the SoC estimate reads low and the plan over-buys — the mismatch bug).
+    anchor_ts = (BASE - timedelta(minutes=1)).isoformat()
+    rows = [_row(BASE, 5 * i, 800) for i in range(12)]  # 1 h @ 800 W = 0.8 kWh AC
+    counted = estimate_soc(rows, anchor_pct=40.0, anchor_ts=anchor_ts, battery_net_kwh=50.0,
+                           now=BASE + timedelta(hours=2), threshold_w=500.0)
+    assert counted is not None
+    assert counted["added_kwh"] == 0.72  # 0.8 kWh AC × 0.90
+    assert counted["sessions_since_anchor"] == 1
+    # With the old 1500 W threshold the same slow charge is invisible — under-counting the SoC.
+    missed = estimate_soc(rows, anchor_pct=40.0, anchor_ts=anchor_ts, battery_net_kwh=50.0,
+                          now=BASE + timedelta(hours=2), threshold_w=1500.0)
+    assert missed["added_kwh"] == 0.0
+    assert missed["sessions_since_anchor"] == 0
+
+
 def test_estimate_soc_straddling_session_counts_only_post_anchor():
     # A 6 kW session runs from 15 min BEFORE the anchor to 10 min after it. Only the post-anchor
     # part counts: samples at 0/+5/+10 min hold 5 + 5 + 5 = 15 min → 6 kW × 0.25 h = 1.5 kWh (AC).

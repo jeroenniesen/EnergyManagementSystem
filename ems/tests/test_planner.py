@@ -2,6 +2,7 @@ from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
 from ems.domain import BatteryIntent
+from ems.planner.charge_need import stored_kwh_per_slot
 from ems.planner.rule_based import PlannerConfig, plan_rule_based
 from ems.sources.prices import MockPriceSource, PriceSlot
 
@@ -85,6 +86,33 @@ def test_replanned_mid_peak_buys_the_valley_before_the_next_peak():
     assert all(s.deadline is not None and s.deadline >= s.start for s in charge), (
         "a charge slot's deadline (the peak it feeds) must not lie in the past")
     assert all(s.deadline <= last_peak_start for s in charge)
+
+
+def test_scarce_cheap_pool_commits_an_honest_partial_target():
+    # Big evening peak (12×€0.50, ~4 kW load) but only 2 cheap slots before it. The planner can't
+    # reach the full demand target, so it must commit only the SoC those 2 slots can actually
+    # deliver — not the full target (which the §8.11 reachability gate would then reject → AUTO).
+    start = MIDNIGHT
+    pre = [PriceSlot(start + i * timedelta(minutes=15), 0.05) for i in range(2)]
+    peak = [PriceSlot(start + (2 + i) * timedelta(minutes=15), 0.50) for i in range(12)]
+    post = [PriceSlot(start + (14 + i) * timedelta(minutes=15), 0.05) for i in range(24)]
+    prices = pre + peak + post
+    peak_starts = {p.start for p in peak}
+    load = {p.start: (4000.0 if p.start in peak_starts else 300.0) for p in prices}
+    plan = plan_rule_based(
+        prices, start, PlannerConfig(), soc_pct=50.0, load_w_by=load,
+        usable_kwh=10.8, reserve_soc_pct=10.0, max_charge_w=4000.0,
+    )
+    charge = [s for s in plan.slots if s.intent is BatteryIntent.GRID_CHARGE_TO_TARGET]
+    assert charge, "a scarce-supply day must still charge what it can, not collapse to no-trade"
+    assert len(charge) == 2, "only the two cheap pre-peak slots are buyable"
+    # Honest partial: the target must not exceed what those charge slots physically add over 50%.
+    slot_kwh = stored_kwh_per_slot(4000.0, 0.90)
+    reachable = 50.0 + len(charge) * slot_kwh / 10.8 * 100.0
+    assert plan.target_soc is not None
+    assert plan.target_soc <= reachable + 0.6, (
+        f"committed {plan.target_soc:.1f}% but only {reachable:.1f}% is reachable")
+    assert plan.target_soc > 50.0, "it does add the charge it can"
 
 
 def test_no_charge_after_last_discharge():

@@ -12,6 +12,7 @@
 // the Settings dirty-bar/save button; this is app state the user just acted on, not a draft edit to
 // review before saving (see App.tsx's patchStrategy for the same immediate-POST idiom).
 import { useEffect, useState } from "react";
+import { authHeaders } from "./auth";
 
 export type GasSummary = { m3: number; kwh_eq: number; eur: number; co2_kg: number };
 export type Period = "day" | "week" | "month" | "year";
@@ -233,7 +234,9 @@ export function HeatingAdvice({
     setDoneMap(next);
     fetch("/api/settings", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      // /api/settings is write-gated once a token is set — send it or the write 401s (matches
+      // Settings.tsx / App.patchStrategy). Empty object when no token is configured.
+      headers: { "Content-Type": "application/json", ...authHeaders() },
       body: JSON.stringify({ "heating.done": JSON.stringify(next) }),
     })
       .then((r) => {

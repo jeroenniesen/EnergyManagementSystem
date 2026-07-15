@@ -2,7 +2,9 @@
 decision flips any discharging intent to HOLD (idle). Controllable EV reading + flat prices (so the
 plan is plain self-consumption), via /api/decision."""
 import ast
+import asyncio
 import json
+import time
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
@@ -10,18 +12,30 @@ from zoneinfo import ZoneInfo
 from fastapi.testclient import TestClient
 
 from ems.control.mode_controller import ModeController
-from ems.domain import RawSample
+from ems.domain import PhysicalMode, RawSample
 from ems.ev_schedule import default_schedule
+from ems.freshness import FreshnessTracker
 from ems.lifecycle import Lifecycle
 from ems.planner.schedule import SLOT
+from ems.sense import SIGNALS
 from ems.sources.battery import MockBatteryDriver
 from ems.sources.forecast import MockSolarForecastSource
 from ems.sources.prices import PriceSlot
+from ems.storage.audit import AuditStore
 from ems.storage.history import HistoryStore
 from ems.storage.settings import SettingsStore
 from ems.web.api import create_app
 
 AMS = ZoneInfo("Europe/Amsterdam")
+
+
+def _fresh():
+    fr = FreshnessTracker()
+    fr.register(*SIGNALS)
+    now = datetime.now(UTC)
+    for s in SIGNALS:
+        fr.mark(s, now)
+    return fr
 
 
 class _Source:
@@ -157,6 +171,100 @@ def test_car_guard_holds_even_while_an_ev_charging_window_is_active(tmp_path):
     assert b["intent"] == "hold_reserve"  # still held, EV plan or no EV plan
     assert b["desired_mode"] == "idle"
     assert "car charging" in b["plan_reason"]
+
+
+class _ChargeSource:
+    """Read-only source with a settable EV power and a low SoC (so a real charge deficit exists)."""
+
+    def __init__(self, ev_w: float, soc: float = 20.0) -> None:
+        self.ev_w = ev_w
+        self.soc = soc
+
+    def read(self) -> RawSample:
+        return RawSample(grid_power_w=0.0, solar_power_w=0.0, battery_power_w=0.0,
+                         ev_power_w=self.ev_w, soc_pct=self.soc)
+
+
+class _ChargeNowPrices:
+    """Cheap NOW window (+ next ~3h) then an expensive peak → the winter plan grid-charges NOW."""
+
+    def __init__(self) -> None:
+        now = datetime.now(UTC)
+        base = now.replace(minute=(now.minute // 15) * 15, second=0, microsecond=0)
+
+        def price(i: int) -> float:
+            if i < 0:
+                return 0.20
+            if i < 12:
+                return 0.05  # the cheap window, includes NOW
+            if i < 36:
+                return 0.60  # the profitable evening peak to discharge into
+            return 0.20
+
+        self._slots = [PriceSlot(base + i * SLOT, price(i)) for i in range(-2, 96)]
+
+    def slots(self) -> list[PriceSlot]:
+        return self._slots
+
+
+def _operational_cap_app(tmp_path, *, prices, ev_w: float, guard_on: bool):
+    """An OPERATIONAL (dry_run=False) app with the daily switch cap pre-exhausted and the car-guard
+    master switch pre-seeded (so its state is right from the FIRST control cycle — no POST race).
+    Returns (app, driver) so the test can observe the real battery mode. cap_reached is only
+    reachable operationally: dry-run short-circuits the gate before the cap check."""
+    db = str(tmp_path / "ems.sqlite")
+    driver = MockBatteryDriver()  # starts AUTO
+    ctl = ModeController(driver, Lifecycle(dry_run=False, startup_grace_seconds=0), dry_run=False)
+    ctl.switches_today = 999  # daily switch cap thoroughly exhausted
+
+    async def _seed():
+        st = SettingsStore(db)
+        await st.init()
+        await st.set_many({"strategy.mode": "winter",
+                           "control.hold_battery_when_car_charging": guard_on})
+        await st.close()
+
+    asyncio.run(_seed())
+    app = create_app(
+        _ChargeSource(ev_w), dry_run=False, dev_mode="live", tz=AMS,
+        price_source=prices, solar_forecast=MockSolarForecastSource(AMS),
+        controller=ctl, freshness=_fresh(),
+        settings_store=SettingsStore(db), audit_store=AuditStore(db),
+        control_cycle_seconds=0.02,
+    )
+    return app, driver
+
+
+def test_car_charging_with_guard_off_does_not_bypass_the_switch_cap(tmp_path):
+    # Bug (two reviewers converged): `priority` bypassed the dwell/daily-cap gates whenever the car
+    # was merely drawing power — even with the car-guard master switch OFF, silently disabling the
+    # "<10 writes/day" constraint for the ORDINARY planner intent. With the switch OFF, the planner
+    # grid-charge (which the guard passes through untouched) must be HELD by the exhausted cap.
+    app, driver = _operational_cap_app(tmp_path, prices=_ChargeNowPrices(), ev_w=3000.0,
+                                       guard_on=False)
+    with TestClient(app) as c:
+        deadline = time.time() + 3.0
+        held: list = []
+        while time.time() < deadline and not held:
+            time.sleep(0.05)
+            held = [e for e in c.get("/api/audit").json()["entries"]
+                    if e["category"] == "battery_decision"
+                    and e["detail"].get("outcome") == "cap_reached"]
+        assert held, "the planner charge must be HELD by the exhausted cap — no car-charging bypass"
+        assert held[0]["detail"]["desired_mode"] == "charge"
+        assert driver.current_mode() is PhysicalMode.AUTO  # it never actually switched
+
+
+def test_car_guard_hold_still_bypasses_the_cap_when_switch_on(tmp_path):
+    # Protected case (e42828e): flat prices → the plan is self-consumption, so the guard (switch ON,
+    # car charging) forces a HOLD → IDLE. That safety hold MUST still bypass the exhausted cap, so
+    # the battery can't be left draining into the car just because the switch budget is spent.
+    app, driver = _operational_cap_app(tmp_path, prices=_FlatPrices(), ev_w=3000.0, guard_on=True)
+    with TestClient(app):
+        deadline = time.time() + 3.0
+        while time.time() < deadline and driver.current_mode() is not PhysicalMode.IDLE:
+            time.sleep(0.05)
+    assert driver.current_mode() is PhysicalMode.IDLE  # the guard hold bypassed the exhausted cap
 
 
 _EV_ADVISORY_MODULES = ("ems/ev_planner.py", "ems/ev_schedule.py", "ems/ev_session.py")

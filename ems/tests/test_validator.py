@@ -89,7 +89,23 @@ def test_excessive_switches_warns():
 
 
 def test_sub_dwell_churn_warns():
-    slots = [_self(0), _charge(1), _self(2)]  # changes every 15 min
+    slots = [_self(0), _charge(1), _self(2)]  # charge held one 15-min slot, exited < 30 min later
+    v = validate_plan(_plan(*slots), **_ctx(), min_dwell=timedelta(minutes=30))
+    assert any(f.code == "dwell_churn" for f in v.findings)
+
+
+def test_long_holds_are_not_dwell_churn():
+    # Each mode is held for a full hour; with a 30-min dwell floor this is NOT churn. The broken
+    # check compared adjacent slots (always 15 min apart) and wrongly flagged any transition.
+    slots = [_self(i) for i in range(4)] + [_charge(i) for i in range(4, 8)] \
+        + [_self(i) for i in range(8, 12)]
+    v = validate_plan(_plan(*slots), **_ctx(), min_dwell=timedelta(minutes=30))
+    assert not any(f.code == "dwell_churn" for f in v.findings)
+
+
+def test_brief_mode_blip_between_long_holds_is_churn():
+    # A single-slot charge wedged between two long self runs is held only 15 min → churn at 30-min.
+    slots = [_self(i) for i in range(4)] + [_charge(4)] + [_self(i) for i in range(5, 9)]
     v = validate_plan(_plan(*slots), **_ctx(), min_dwell=timedelta(minutes=30))
     assert any(f.code == "dwell_churn" for f in v.findings)
 

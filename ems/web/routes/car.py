@@ -42,6 +42,10 @@ async def car_soc_estimate(
         battery_net_kwh=float(ctx.settings_cache["ev.battery_kwh"]),
         now=now,
         charge_efficiency=float(ctx.settings_cache["ev.charge_efficiency"]),
+        # Use the SAME threshold the live car-guard uses to detect charging, so a slow (1-phase /
+        # reduced-amp) charge that trips the guard is also COUNTED here — otherwise the estimate
+        # reads low and the charge plan over-buys (detection/accounting mismatch).
+        threshold_w=float(ctx.settings_cache["control.car_charging_threshold_w"]),
     )
 
 
