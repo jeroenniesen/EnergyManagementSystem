@@ -2030,4 +2030,73 @@ test.describe("EMS dashboard", () => {
     await expect(page.getByTestId("detail-drawer")).toHaveCount(0);
     await expect(page.getByTestId("home-state")).toBeVisible();
   });
+
+  function mockDecision(page: Page, d: Record<string, unknown>) {
+    return page.route("**/api/decision", (route) =>
+      route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(d) }),
+    );
+  }
+  function mockAlerts(page: Page, dq: string, alerts: unknown[] = []) {
+    return page.route("**/api/alerts", (route) =>
+      route.fulfill({
+        status: 200, contentType: "application/json",
+        body: JSON.stringify({ data_quality: dq, alerts }),
+      }),
+    );
+  }
+
+  test("Now / Next / Why drawer explains normal operation", async ({ page }) => {
+    await page.route("**/api/battery-plan", (route) =>
+      route.fulfill({
+        status: 200, contentType: "application/json",
+        body: JSON.stringify(batteryPlanFixture({ level: "high", reasons: [] })),
+      }),
+    );
+    await mockDecision(page, {
+      intent: "allow_self_consumption", desired_mode: "auto", applied: true, outcome: "applied",
+      reason: "self-consumption", plan_reason: "Running the house on stored energy.",
+      plan_reason_explained: "Your battery is covering the house right now.",
+      override_active: false, car_charging: false, target_soc: null,
+      home_state: { headline: "All good", tone: "good", simulated: true },
+    });
+    await mockAlerts(page, "complete");
+    await page.goto("/#dashboard/now");
+    await expect(page.getByTestId("drawer-happened")).toContainText(/powering your home/i);
+    await expect(page.getByTestId("drawer-why")).toContainText("covering the house");
+    await expect(page.getByTestId("drawer-action")).toContainText(/no action needed/i);
+  });
+
+  test("Now / Next / Why drawer renders under low confidence", async ({ page }) => {
+    await page.route("**/api/battery-plan", (route) =>
+      route.fulfill({
+        status: 200, contentType: "application/json",
+        body: JSON.stringify(batteryPlanFixture({
+          level: "low", reasons: ["Some live data is stale, so the plan can't be trusted."],
+        })),
+      }),
+    );
+    await mockDecision(page, {
+      intent: "allow_self_consumption", desired_mode: "auto", applied: true, outcome: "applied",
+      reason: "self-consumption", plan_reason_explained: "Your battery is covering the house.",
+      override_active: false, home_state: { headline: "Watching", tone: "watching", simulated: true },
+    });
+    await mockAlerts(page, "complete");
+    await page.goto("/#dashboard/now");
+    await expect(page.getByTestId("drawer-happened")).toBeVisible();
+    await expect(page.getByTestId("drawer-why")).toBeVisible();
+    await expect(page.getByTestId("drawer-action")).toBeVisible();
+  });
+
+  test("Now / Next / Why drawer names the safe fallback when data is unsafe", async ({ page }) => {
+    await mockDecision(page, {
+      intent: "allow_self_consumption", desired_mode: "auto", applied: false, outcome: "dry_run",
+      reason: "holding self-consumption — data unsafe",
+      plan_reason_explained: "EMS is holding the battery's own safe mode.",
+      override_active: false, home_state: { headline: "Paused safely", tone: "watching", simulated: true },
+    });
+    await mockAlerts(page, "unsafe");
+    await page.goto("/#dashboard/now");
+    await expect(page.getByTestId("drawer-happened")).toBeVisible();
+    await expect(page.getByTestId("drawer-action")).toContainText(/safe/i);
+  });
 });

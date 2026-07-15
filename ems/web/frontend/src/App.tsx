@@ -12,6 +12,7 @@ import {
   DATA_SOURCE,
   FRESHNESS_STATE,
   humanize,
+  nowDrawerCopy,
   OUTCOME_LABEL,
   PHYSICAL_MODE,
   RUN_MODE,
@@ -596,6 +597,21 @@ export function App() {
     ? PHYSICAL_MODE[battery.current_mode] ?? humanize(battery.current_mode)
     : null;
 
+  // Homeowner copy for the Now / Next / Why drawer — reuses the SAME act line as the hero, so the
+  // "do I need to act?" answer can never disagree between the hero and the drawer.
+  const nowCopy = decision
+    ? nowDrawerCopy({
+        currentAction: batteryPlan?.current_action ?? null,
+        intent: decision.intent,
+        why: decision.plan_reason_explained || decision.plan_reason || decision.reason,
+        targetSocPct: batteryPlan?.target_soc_pct ?? null,
+        plannedTopupKwh: batteryPlan?.planned_grid_topup_kwh ?? null,
+        overrideActive: !!decision.override_active,
+        actText: actLine.text,
+        actCalm: actLine.calm,
+      })
+    : null;
+
   // B-57: on demo/mock data, a persistent friendly nudge into real onboarding (Settings opens on
   // the Connection section by default). Dismissible for the session; back on next visit.
   const demoActive = !!home?.simulated && !demoDismissed;
@@ -1005,8 +1021,39 @@ export function App() {
         eyebrow="Dashboard detail"
         onClose={closeDrawer}
       >
-        {drawer?.kind === "now" && (
-          <p data-testid="drawer-placeholder">{home?.headline ?? "EMS status"}</p>
+        {drawer?.kind === "now" && nowCopy && (
+          <>
+            <div className="drawer-section">
+              <span className="drawer-label">What is happening</span>
+              <p className="drawer-lede" data-testid="drawer-happened">{nowCopy.happened}</p>
+            </div>
+            <div className="drawer-section">
+              <span className="drawer-label">Why</span>
+              <p data-testid="drawer-why">{nowCopy.why}</p>
+            </div>
+            <div className="drawer-section">
+              <span className="drawer-label">What's next</span>
+              <p data-testid="drawer-next">{nowCopy.next}</p>
+            </div>
+            <div
+              className={`drawer-act ${nowCopy.calm ? "drawer-act-calm" : "drawer-act-attention"}`}
+              data-testid="drawer-action-block"
+            >
+              <span className="drawer-label">Do I need to act?</span>
+              <p data-testid="drawer-action">{nowCopy.action}</p>
+            </div>
+            <details className="drawer-tech" data-testid="drawer-now-tech">
+              <summary>Show technical details</summary>
+              <dl className="drawer-tech-dl">
+                <dt>Intent</dt>
+                <dd data-testid="drawer-now-intent">{decision?.intent ?? "—"}</dd>
+                <dt>Mode</dt>
+                <dd>{decision?.desired_mode ?? battery?.current_mode ?? "—"}</dd>
+                <dt>Outcome</dt>
+                <dd>{decision ? OUTCOME_LABEL[decision.outcome] ?? decision.outcome : "—"}</dd>
+              </dl>
+            </details>
+          </>
         )}
       </DetailDrawer>
       </div>
