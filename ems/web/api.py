@@ -2685,22 +2685,21 @@ def create_app(
             _now, prices, plan = pp
             by_start = {p.start: p.eur_per_kwh for p in prices}
             estimate = round(estimate_daily_savings_eur(plan, by_start), 2)
-        # Measured savings: today-so-far (partial, informational) + the completed-day total this
-        # month. `has_data`/`saved_eur` come straight from day_finance — no plan, no fabrication.
-        realized_today: float | None = None
+        # Measured savings from COMPLETED days this month — read-only (this is a polled GET, so it
+        # must never trigger the finance UPSERT that `_finance_window` does; it reads only the
+        # already-cached daily_finance rows). `has_data`/`saved_eur` come straight from day_finance
+        # — no plan, no fabrication. A day not yet cached simply isn't counted (conservative).
+        realized_today: float | None = None  # today is the ESTIMATE, not a measured figure
         month_realized: float | None = None
         complete_days = 0
         if store is not None:
             month_start = now_local.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
-            end = now_local.replace(hour=0, minute=0, second=0, microsecond=0) + timedelta(days=1)
-            today_label = now_local.date().isoformat()
+            today_label = now_local.date().isoformat()  # exclusive end ⇒ only completed days
             realized_sum = 0.0
-            for d in await _finance_window(month_start, end, now_local):
-                saved = d.get("saved_eur")
-                if d.get("day") == today_label:
-                    realized_today = round(saved, 2) if saved is not None else None
-                elif d.get("has_data") and saved is not None:
-                    realized_sum += saved
+            for c in await store.daily_finance_between(month_start.date().isoformat(), today_label):
+                data = c.get("data") or {}
+                if data.get("has_data") and data.get("saved_eur") is not None:
+                    realized_sum += data["saved_eur"]
                     complete_days += 1
             month_realized = round(realized_sum, 2) if complete_days else None
         # Estimate band from the solar-confidence haircut — labelled 'estimate' in the UI, never
