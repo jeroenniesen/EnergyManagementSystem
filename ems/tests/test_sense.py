@@ -153,6 +153,51 @@ def test_run_survives_store_error():
     asyncio.run(run())  # completes cleanly == loop survived store errors
 
 
+class _ResetCountingStore:
+    """A store stub that only counts reset_connection() calls (B-49 watchdog test)."""
+
+    def __init__(self):
+        self.resets = 0
+
+    async def reset_connection(self):
+        self.resets += 1
+
+
+def test_watchdog_resets_store_at_three_consecutive_failures():
+    # B-49 watchdog: exactly at the 3rd consecutive persist failure, force the store to discard +
+    # reopen its shared connection (a dead long-lived connection otherwise never recovers).
+    store = _ResetCountingStore()
+    fresh = FreshnessTracker()
+    fresh.register(*SIGNALS)
+    rec = Recorder(MockSource(), store, fresh)
+
+    async def run():
+        for _ in range(5):
+            await rec._note_cycle_failure(RuntimeError("persist boom"))
+
+    asyncio.run(run())
+    assert store.resets == 1  # once, at the 3rd failure — not on every subsequent failure
+    assert rec.consecutive_failures == 5
+    assert rec.health()["consecutive_failures"] == 5
+
+
+def test_watchdog_no_op_when_store_lacks_reset_connection():
+    # A stub store without reset_connection() (older/mocked stores) must not crash the watchdog.
+    class _NoResetStore:
+        pass
+
+    fresh = FreshnessTracker()
+    fresh.register(*SIGNALS)
+    rec = Recorder(MockSource(), _NoResetStore(), fresh)
+
+    async def run():
+        for _ in range(4):
+            await rec._note_cycle_failure(RuntimeError("boom"))  # must not raise
+
+    asyncio.run(run())
+    assert rec.consecutive_failures == 4
+
+
 class _StubPrices:
     """Minimal price source: .slots() → objects with .start / .eur_per_kwh."""
 

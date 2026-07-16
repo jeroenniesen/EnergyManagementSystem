@@ -59,10 +59,19 @@ class Notifier:
     async def send(
         self, key: str, title: str, body: str, *,
         confidence: str | None = None, dedupe_key: str | None = None,
+        push_even_if_store_fails: bool = False,
     ) -> int | None:
         """Store + (optionally) push one notification. Returns the new row id, or None if it was
         deduped (already sent — see `HistoryStore.add_notification`) or if storing itself failed.
-        Never raises."""
+        Never raises.
+
+        `push_even_if_store_fails` (targeted, B-49): normally a failed in-app store write short-
+        circuits the push too. But the `store_unhealthy` alert exists PRECISELY because the history
+        store is wedged — so for it we still attempt the ntfy push (ntfy needs no store), so the
+        operator gets word even though the in-app copy couldn't be written. The delivered-channel
+        update is skipped in that case (there's no row to update)."""
+        row_id: int | None = None
+        stored = True
         try:
             row_id = await self.store.add_notification(
                 datetime.now(UTC).isoformat(), key, title, body,
@@ -70,8 +79,11 @@ class Notifier:
             )
         except Exception as exc:
             _log.warning("notification store failed (non-fatal): %s: %s", type(exc).__name__, exc)
-            return None
-        if row_id is None:
+            stored = False
+            if not push_even_if_store_fails:
+                return None
+            # else: fall through and still try ntfy — the dead store is what we're alerting about
+        if stored and row_id is None:
             return None  # deduped — already sent for this dedupe_key, skip the push too
         cfg = self._cfg()
         url = str(cfg.get("notify.ntfy_url") or "").strip()
@@ -83,7 +95,8 @@ class Notifier:
 
             target = f"{url.rstrip('/')}/{topic}"
             await asyncio.to_thread(self._post, target, body.encode(), {"Title": title})
-            await self.store.set_notification_delivered(row_id, ["in_app", "ntfy"])
+            if row_id is not None:  # skip when the store write failed (no row to mark delivered)
+                await self.store.set_notification_delivered(row_id, ["in_app", "ntfy"])
         except Exception as exc:
             _log.warning("ntfy push failed (non-fatal): %s: %s", type(exc).__name__, exc)
         return row_id

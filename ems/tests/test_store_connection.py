@@ -4,6 +4,8 @@ connection (its own worker thread) per call. Writes are serialized behind an asy
 multi-statement write body (e.g. HistoryStore.record()'s raw+derived pair) can't be torn by another
 write interleaving on the SAME shared connection; reads share the connection freely."""
 import asyncio
+import logging
+import sqlite3
 
 import aiosqlite
 import pytest
@@ -11,7 +13,7 @@ import pytest
 from ems.domain import RawSample
 from ems.load_model import reconstruct
 from ems.storage.audit import AuditStore
-from ems.storage.history import HistoryStore
+from ems.storage.history import HistoryStore, is_dead_connection_error
 from ems.storage.settings import SettingsStore
 
 
@@ -143,6 +145,125 @@ def test_audit_store_opens_one_connection_for_many_calls(tmp_path, monkeypatch):
 
     asyncio.run(run())
     assert calls["n"] == 1
+
+
+# --- Self-healing shared connection (B-49 follow-up) -------------------------------------------
+# The bug: when the long-lived aiosqlite connection / its worker thread dies, the OLD code kept
+# returning the dead handle FOREVER — every persist failed (logged only) for hours until a restart.
+# These tests kill the connection under a live store and prove the very next call recovers.
+
+
+async def _new_store(Store, path):
+    store = Store(path)
+    await store.init()
+    return store
+
+
+async def _read(store):
+    """One representative READ per store (opens/uses the shared connection)."""
+    if isinstance(store, HistoryStore):
+        return await store.recent_raw(1)
+    if isinstance(store, SettingsStore):
+        return await store.all()
+    return await store.recent(1)  # AuditStore
+
+
+async def _write(store):
+    """One representative WRITE per store."""
+    if isinstance(store, HistoryStore):
+        raw = RawSample(grid_power_w=1, solar_power_w=0, battery_power_w=0, ev_power_w=0,
+                        soc_pct=50)
+        await store.record("2026-07-16T10:00:00+00:00", raw, reconstruct(raw))
+    elif isinstance(store, SettingsStore):
+        await store.set_many({"k": 1})
+    else:
+        await store.append("2026-07-16T10:00:00+00:00", "config_change", "x", {})
+
+
+def test_dead_connection_predicate_enumerates_conservatively():
+    # Dead → reheal.
+    assert is_dead_connection_error(sqlite3.ProgrammingError("Cannot operate on a closed db."))
+    assert is_dead_connection_error(ValueError("Connection closed"))
+    assert is_dead_connection_error(ValueError("no active connection"))
+    assert is_dead_connection_error(sqlite3.OperationalError("unable to open database file"))
+    assert is_dead_connection_error(sqlite3.OperationalError("disk I/O error"))
+    # NOT dead → must NOT reheal (transient contention busy_timeout handles, or unrelated errors).
+    assert not is_dead_connection_error(sqlite3.OperationalError("database is locked"))
+    assert not is_dead_connection_error(sqlite3.OperationalError("database is busy"))
+    assert not is_dead_connection_error(sqlite3.IntegrityError("UNIQUE constraint failed"))
+    assert not is_dead_connection_error(ValueError("Expecting value: line 1 column 1"))
+    assert not is_dead_connection_error(RuntimeError("boom"))
+
+
+@pytest.mark.parametrize("Store", [HistoryStore, SettingsStore, AuditStore])
+def test_store_self_heals_read_path_after_worker_dies(tmp_path, Store, caplog):
+    # Kill mode: stop the aiosqlite worker (its .close() sets _running=False / _connection=None) —
+    # the proactive liveness check in _connection() should reopen on the very next READ.
+    async def run():
+        store = await _new_store(Store, str(tmp_path / "ems.sqlite"))
+        await _read(store)  # prime the shared connection
+        await store._db.close()  # underlying connection dies
+        return await _read(store)  # must transparently re-heal + succeed
+
+    with caplog.at_level(logging.WARNING, logger="ems.storage"):
+        result = asyncio.run(run())
+    assert result is not None  # the read succeeded on the reopened connection
+
+
+@pytest.mark.parametrize("Store", [HistoryStore, SettingsStore, AuditStore])
+def test_store_self_heals_write_path_after_worker_dies(tmp_path, Store):
+    async def run():
+        store = await _new_store(Store, str(tmp_path / "ems.sqlite"))
+        await _write(store)  # prime
+        await store._db.close()  # underlying connection dies
+        await _write(store)  # must transparently re-heal + succeed (no raise)
+        return store
+
+    store = asyncio.run(run())
+    assert store.reheal_stats()["last_reheal_iso"] is not None  # a reheal was recorded
+
+
+@pytest.mark.parametrize("Store", [HistoryStore, SettingsStore, AuditStore])
+def test_store_self_heals_when_raw_handle_closed_mid_flight(tmp_path, Store, caplog):
+    # Kill mode: close ONLY the raw sqlite3 handle on its worker thread, leaving aiosqlite's flags
+    # 'alive' — the proactive check can't see it, so the operation raises ProgrammingError and the
+    # reactive `self_healing` retry (one retry) must catch it, reopen, and succeed on the SAME call.
+    async def run():
+        store = await _new_store(Store, str(tmp_path / "ems.sqlite"))
+        await _read(store)  # prime
+        # Run the raw close on the worker thread (check_same_thread), flags left intact.
+        await store._db._execute(store._db._connection.close)
+        return await _read(store)  # ProgrammingError → reheal + retry → success
+
+    with caplog.at_level(logging.WARNING, logger="ems.storage"):
+        result = asyncio.run(run())
+    assert result is not None
+    warnings = [r for r in caplog.records if "shared connection unusable" in r.getMessage()]
+    assert len(warnings) == 1  # logged loudly, ONCE per incident (not per call)
+
+
+def test_reheal_stats_none_until_first_reheal(tmp_path):
+    async def run():
+        store = await _new_store(HistoryStore, str(tmp_path / "ems.sqlite"))
+        await _read(store)
+        return store.reheal_stats()
+
+    assert asyncio.run(run()) == {"last_reheal_iso": None}
+
+
+@pytest.mark.parametrize("Store", [HistoryStore, SettingsStore, AuditStore])
+def test_reset_connection_forces_reopen(tmp_path, Store, monkeypatch):
+    # The watchdog hook: reset_connection() drops the shared connection so the next call reopens.
+    calls = _count_connects(monkeypatch)
+
+    async def run():
+        store = await _new_store(Store, str(tmp_path / "ems.sqlite"))
+        await _read(store)  # opens connection #1
+        await store.reset_connection()
+        await _read(store)  # opens connection #2
+
+    asyncio.run(run())
+    assert calls["n"] == 2
 
 
 @pytest.mark.parametrize("Store", [HistoryStore, AuditStore])

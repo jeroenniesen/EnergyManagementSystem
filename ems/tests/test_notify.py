@@ -146,3 +146,51 @@ def test_send_store_failure_is_swallowed_not_raised(tmp_path):
     notifier = Notifier(_BoomStore(), {"notify.ntfy_url": "", "notify.ntfy_topic": ""})
     row_id = asyncio.run(notifier.send("k", "t", "b"))  # must not raise
     assert row_id is None
+
+
+class _DeadStore:
+    """A store whose in-app write always fails — the wedged history store B-49 alerts on."""
+
+    async def add_notification(self, *a, **kw):
+        import sqlite3
+        raise sqlite3.ProgrammingError("Cannot operate on a closed database.")
+
+    async def set_notification_delivered(self, *a, **kw):
+        raise AssertionError("must not be called when there is no stored row")
+
+
+def test_send_pushes_ntfy_even_when_store_write_fails_for_targeted_key():
+    # B-49: the `store_unhealthy` alert exists because the store is dead — so with the targeted
+    # push_even_if_store_fails flag the ntfy push STILL goes out though the in-app write failed.
+    captured = {}
+
+    def fake_post(url, data, headers):
+        captured["url"] = url
+        captured["data"] = data
+
+    notifier = Notifier(
+        _DeadStore(), {"notify.ntfy_url": "https://ntfy.sh", "notify.ntfy_topic": "t"},
+        post=fake_post,
+    )
+    row_id = asyncio.run(notifier.send(
+        "store_unhealthy", "title", "body", push_even_if_store_fails=True))
+
+    assert row_id is None  # nothing was stored (no row id)
+    assert captured["url"] == "https://ntfy.sh/t"  # but the push still fired
+    assert captured["data"] == b"body"
+
+
+def test_send_without_the_flag_does_not_push_when_store_fails():
+    # Default behaviour is unchanged: a failed store write short-circuits the push too.
+    calls = {"n": 0}
+
+    def fake_post(url, data, headers):
+        calls["n"] += 1
+
+    notifier = Notifier(
+        _DeadStore(), {"notify.ntfy_url": "https://ntfy.sh", "notify.ntfy_topic": "t"},
+        post=fake_post,
+    )
+    row_id = asyncio.run(notifier.send("k", "t", "b"))  # no flag
+    assert row_id is None
+    assert calls["n"] == 0

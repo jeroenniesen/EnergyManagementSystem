@@ -10,13 +10,17 @@ from __future__ import annotations
 import asyncio
 import json
 from contextlib import asynccontextmanager
+from datetime import UTC, datetime
 from typing import Any
 
 import aiosqlite
 
+from ems.storage.history import _connection_is_dead, _log, self_healing
+
 _BUSY_TIMEOUT_MS = 3000
 
 
+@self_healing
 class SettingsStore:
     def __init__(self, db_path: str, *, table: str = "settings") -> None:
         if not table.isidentifier():
@@ -28,8 +32,12 @@ class SettingsStore:
         self._db: aiosqlite.Connection | None = None
         self._connect_lock = asyncio.Lock()
         self._write_lock = asyncio.Lock()
+        self._last_reheal_at: datetime | None = None  # see HistoryStore for the self-heal rationale
 
     async def _connection(self) -> aiosqlite.Connection:
+        db = self._db
+        if db is not None and _connection_is_dead(db):  # proactive self-heal (see HistoryStore)
+            await self._discard_connection(reason="worker thread stopped / connection gone")
         if self._db is None:
             async with self._connect_lock:
                 if self._db is None:
@@ -39,6 +47,32 @@ class SettingsStore:
                     await db.execute(f"PRAGMA busy_timeout={_BUSY_TIMEOUT_MS}")
                     self._db = db
         return self._db
+
+    async def _note_dead_connection(self, exc: BaseException) -> None:
+        # Called by the `self_healing` retry wrapper — see HistoryStore for the full rationale.
+        await self._discard_connection(reason=f"{type(exc).__name__}: {exc}")
+
+    async def reset_connection(self) -> None:
+        """Force the shared connection to be discarded + reopened on the next call (best-effort)."""
+        await self._discard_connection(reason="watchdog reset")
+
+    async def _discard_connection(self, *, reason: str) -> None:
+        async with self._connect_lock:
+            db = self._db
+            if db is None:
+                return
+            self._db = None
+            self._last_reheal_at = datetime.now(UTC)
+            _log.warning("%s: shared connection unusable (%s) — discarding; reopening on next call",
+                         type(self).__name__, reason)
+            try:
+                await db.close()
+            except Exception:
+                pass
+
+    def reheal_stats(self) -> dict:
+        at = self._last_reheal_at
+        return {"last_reheal_iso": at.isoformat() if at else None}
 
     @asynccontextmanager
     async def _conn(self):

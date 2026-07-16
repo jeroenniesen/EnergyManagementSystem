@@ -109,6 +109,27 @@ def test_diagnostics_exposes_long_run_storage_and_recorder_health(tmp_path):
     assert b["recorder"]["consecutive_failures"] == 0  # startup sample succeeded
 
 
+def test_diagnostics_exposes_history_store_self_heal_stats(tmp_path):
+    # B-49: the storage block carries the recorder's consecutive persist-failure streak + the last
+    # time the history store had to re-heal a dead connection, so the System page can surface it.
+    from ems.sense import Recorder
+
+    fr = FreshnessTracker()
+    fr.register(*SIGNALS)
+    store = HistoryStore(str(tmp_path / "ems.sqlite"))
+    app = create_app(
+        MockSource(), dry_run=True, dev_mode="mock", store=store,
+        settings_store=SettingsStore(str(tmp_path / "ems.sqlite")),
+        recorder=Recorder(MockSource(), store, fr, cycle_seconds=999),
+    )
+    with TestClient(app) as c:
+        b = c.get("/api/diagnostics").json()
+    hs = b["storage"]["history_store"]
+    assert set(hs) == {"consecutive_persist_failures", "last_reheal_iso"}
+    assert hs["consecutive_persist_failures"] == 0  # startup sample succeeded
+    assert hs["last_reheal_iso"] is None  # never had to re-heal
+
+
 def test_diagnostics_exposes_canonical_forecast_job_state(tmp_path):
     # The 18:00 canonical-forecast job (design §4.3) is otherwise invisible when dead — its state
     # box must ride along in /api/diagnostics under storage.canonical_forecast, same shape as the

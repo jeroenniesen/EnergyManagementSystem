@@ -8,9 +8,11 @@ location (privacy §12).
 """
 from __future__ import annotations
 
+import asyncio
 import csv
 import io
 import logging
+import os
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
@@ -26,6 +28,7 @@ from ems.analysis import (
 )
 from ems.ev_schedule import parse_schedule
 from ems.ev_session import detect_sessions
+from ems.settings import SECRET_KEYS
 from ems.storage.history import DERIVED_COLUMNS, RAW_COLUMNS
 from ems.web.context import AppContext
 
@@ -33,6 +36,20 @@ _log = logging.getLogger("ems.web.export")
 # daily_energy is never purged (B-13) and stays small — it rides along IN FULL regardless of the
 # `days` window, so the year-over-year story is always in the export, not just the requested slice.
 _FULL_DATE_RANGE = ("0000", "9999")
+# server_log_tail.txt: bound how much of the app's own log rides along (B-40's noted diagnosis gap).
+_SERVER_LOG_MAX_LINES = 400
+
+
+def _read_text_file(path: str) -> str | None:
+    """Best-effort whole-file text read for the server-log export member: `None` when the file is
+    absent or unreadable for any reason (permissions, odd encoding) — never raises. Run off the
+    event loop via `asyncio.to_thread` by the caller; the file is small (size-rotated, a few MB at
+    most — see `ems/logging_setup.py`), so a single blocking read is cheap."""
+    try:
+        with open(path, encoding="utf-8", errors="replace") as f:
+            return f.read()
+    except OSError:
+        return None
 
 
 def build_router(ctx: AppContext) -> APIRouter:
@@ -137,6 +154,28 @@ def build_router(ctx: AppContext) -> APIRouter:
         # tokens / location). Lets a reviewer see run mode, the planner knobs in effect, and live
         # health (data quality, whether the battery capability probed, recorder liveness).
         s = ctx.settings_cache
+        # server_log_tail.txt (B-40's noted diagnosis gap): the last ~400 lines of the app's own
+        # log file, REDACTED, when one is resolvable. The launchd install logs to
+        # ems/data/server.log NEXT TO the database (EMS_LOG_FILE — see ems/logging_setup.py); the
+        # path is derived from the db_path's DIRECTORY (not hardcoded) so a custom db_path still
+        # finds its sibling log. Absent/unreadable (dev run, fresh install, permissions) means the
+        # member is simply omitted — never a failed export; the README explains why.
+        server_log_text: str | None = None
+        server_log_lines = 0
+        if ctx.store is not None and ctx.store.db_path:
+            log_path = os.path.join(os.path.dirname(ctx.store.db_path) or ".", "server.log")
+            raw_log = await asyncio.to_thread(_read_text_file, log_path)
+            if raw_log is not None:
+                tail = expkg.tail_lines(raw_log, _SERVER_LOG_MAX_LINES)
+                # Mask the CURRENT value of every secret-type setting + the ntfy topic (privacy-
+                # sensitive even though it isn't schema-typed "secret") verbatim, on top of the
+                # pattern-based Bearer/API-key redaction inside redact_log_text.
+                secret_values = [v for k in SECRET_KEYS if (v := s.get(k))]
+                ntfy_topic = s.get("notify.ntfy_topic")
+                if ntfy_topic:
+                    secret_values.append(ntfy_topic)
+                server_log_text = expkg.redact_log_text(tail, secret_values=secret_values)
+                server_log_lines = len(tail.splitlines())
         validation = {
             "operational": {"dry_run": ctx.dry_run, "dev_mode": ctx.dev_mode,
                             "timezone": str(ctx.tz)},
@@ -164,7 +203,7 @@ def build_router(ctx: AppContext) -> APIRouter:
                   "daily_finance": len(finance), "audit_log": len(audit),
                   "plan_history": len(plan), "gas": len(gas), "ev_sessions": len(ev_sessions),
                   "observations": len(observations), "daily_energy": len(daily_energy),
-                  "notifications": len(notifications)}
+                  "notifications": len(notifications), "server_log_lines": server_log_lines}
         saved_vals = [d["saved_eur"] for d in finance if d.get("saved_eur") is not None]
         saved_total = round(sum(saved_vals), 2) if saved_vals else None
         window = {"start": start_iso, "end": end_iso}
@@ -203,6 +242,8 @@ def build_router(ctx: AppContext) -> APIRouter:
                 plan_execution_error=plan_exec_error, load_baseline_error=load_baseline,
             ),
         }
+        if server_log_text is not None:
+            members["server_log_tail.txt"] = server_log_text
         data = expkg.build_zip(members)
         fname = f"ems-export-{now.strftime('%Y%m%d')}.zip"
         return Response(content=data, media_type="application/zip",

@@ -14,7 +14,9 @@ from __future__ import annotations
 import csv
 import io
 import json
+import re
 import zipfile
+from collections.abc import Iterable
 from datetime import datetime, timedelta
 from typing import Any
 
@@ -88,6 +90,44 @@ def read_member(data: bytes, name: str) -> str:
     """Read one member's text from a ZIP (helper for tests)."""
     with zipfile.ZipFile(io.BytesIO(data)) as zf:
         return zf.read(name).decode("utf-8")
+
+
+# ---- server_log_tail.txt (B-40's noted diagnosis gap) -------------------------------------------
+# Token-ish patterns worth masking even when the current setting VALUE isn't known to the caller
+# (a since-rotated token can still sit in an old log line): a Bearer auth header, and a MiniMax-
+# style `sk-...` API key. Layered UNDER the caller's own `secret_values` (the actually-configured
+# secret settings + the ntfy topic) — see `redact_log_text`.
+_BEARER_RE = re.compile(r"Bearer\s+\S+")
+_API_KEY_RE = re.compile(r"sk-[A-Za-z0-9_-]+")
+
+
+def tail_lines(text: str, max_lines: int = 400) -> str:
+    """The last `max_lines` lines of `text` (bounding the server log before it rides along in the
+    export), newline-joined. Fewer lines than the cap pass through unchanged; a trailing newline in
+    the input is preserved so the member reads like an ordinary text file. Pure, never raises."""
+    lines = text.splitlines()
+    tail = lines[-max_lines:] if max_lines > 0 else []
+    trailing = "\n" if tail and text.endswith("\n") else ""
+    return "\n".join(tail) + trailing
+
+
+def redact_log_text(text: str, *, secret_values: Iterable[str] = ()) -> str:
+    """Mask token-ish content out of raw log text before it may ride along in the export — the
+    server log can carry a `Bearer <token>` auth header, a `sk-...`-shaped API key, or an ntfy
+    topic in some error message, none of which may leak into a shared support bundle.
+
+    Two layers: pattern-based (`Bearer \\S+`, `sk-[A-Za-z0-9_-]+`) catches a token even from a
+    since-rotated setting the caller no longer has; `secret_values` additionally masks the
+    CURRENT secret-ish setting values (see `ems.settings.SECRET_KEYS`) and the configured ntfy
+    topic verbatim, whatever shape they take — a literal substring replace, applied after the
+    pattern passes. Order-independent, idempotent, pure — never raises on odd input."""
+    out = _BEARER_RE.sub("Bearer [REDACTED]", text)
+    out = _API_KEY_RE.sub("[REDACTED]", out)
+    for value in secret_values:
+        v = str(value).strip()
+        if v:
+            out = out.replace(v, "[REDACTED]")
+    return out
 
 
 # Incident classification: (type, keywords) in priority order — a row is classified by the FIRST
@@ -326,6 +366,14 @@ health check of production operation. All timestamps are **UTC, ISO-8601**. All 
   whether you'd seen it — deliberately LEAN, **`body` is intentionally excluded** (the message
   text isn't needed to see what fired/when/read, and leaving it out keeps this file small and
   free of templated live figures): `ts, key, title, read`.
+- **server_log_tail.txt** — the last ~400 lines of the app's own log file (B-40's noted diagnosis
+  gap: production incidents were hard to root-cause from the audit trail alone). Only present when
+  a log file is actually resolvable (the launchd install logs to `ems/data/server.log`, next to
+  the database) AND readable — **omitted entirely** on a dev run, a fresh install, or a permissions
+  problem; `manifest.counts.server_log_lines` is `0` whenever it's omitted. REDACTED before it's
+  written: any `Bearer <token>` header, any `sk-...`-shaped API key, the configured ntfy topic (if
+  set), and the current value of every secret-type setting are masked as `[REDACTED]` — see
+  `ems/export_package.py`'s `redact_log_text`.
 - **manifest.json** — what/when/window, row counts, and a privacy-safe validation block
   (run mode, planner settings, data quality, recorder health). No tokens, IPs or location.
   `manifest.incidents` summarises control-health events from the audit log (command failures,
