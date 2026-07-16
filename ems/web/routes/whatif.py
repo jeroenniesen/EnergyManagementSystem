@@ -36,9 +36,14 @@ from typing import Any
 from fastapi import APIRouter, Query
 from fastapi.responses import JSONResponse
 
-from ems.replay import SCENARIOS, DayResult, RangeResult, ReplayConfig, replay_range
+from ems.replay import DayResult, RangeResult, ReplayConfig, replay_range
 from ems.settings import validate_settings
 from ems.web.context import AppContext
+
+# The homeowner-facing counterfactual shows only the three ACHIEVABLE real-world baselines. The
+# replay tool's `SCENARIOS` also carries `oracle` (a perfect-foresight hypothetical for the offline
+# value-gap study) — deliberately NOT surfaced here, so this API contract stays stable.
+_SCENARIOS = ("no_battery", "auto_selfuse", "planner")
 
 _CACHE_TTL_SECONDS = 15 * 60.0
 
@@ -61,7 +66,7 @@ def _scenario_totals(days: list[DayResult]) -> dict[str, dict[str, float | None]
     carrying import/export (which the aggregate dict doesn't)."""
     ok = [d for d in days if d.data_ok]
     out: dict[str, dict[str, float | None]] = {}
-    for name in SCENARIOS:
+    for name in _SCENARIOS:
         present = [d.scenarios[name] for d in ok if name in d.scenarios]
         costs = [s.cost_eur for s in present if s.cost_eur is not None]
         out[name] = {
@@ -178,7 +183,7 @@ def _empty_counterfactual(note: str) -> dict:
         "days_used": 0,
         "days_skipped": 0,
         "scenarios": {name: {"cost_eur": None, "import_kwh": 0.0, "export_kwh": 0.0}
-                      for name in SCENARIOS},
+                      for name in _SCENARIOS},
         "deltas": {"planner_vs_no_battery": None, "planner_vs_auto": None},
         "note": note,
     }

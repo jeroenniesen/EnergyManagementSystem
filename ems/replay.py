@@ -1,7 +1,7 @@
 """Historical replay optimization suite (backlog B-77): the engine that makes every future
 planner change measurable.
 
-Replay recorded days through THREE scenarios on the SAME actual weather + prices and compares
+Replay recorded days through FOUR scenarios on the SAME actual weather + prices and compares
 what each would have cost:
 
   a. **no_battery**    — the counterfactual meter with no storage at all (grid = load − solar).
@@ -10,11 +10,19 @@ what each would have cost:
   c. **planner**       — the app's OWN plan (`strategy.build_plan`, exactly as the control loop
                          builds it) applied slot by slot: grid-charge toward the target, hold idle,
                          self-consume otherwise.
+  d. **oracle**        — the SAME planner + strategy, but handed a PERFECT solar forecast (the day's
+                         ACTUAL solar fed in as the forecast). The planner→oracle cost gap is the €
+                         headroom a perfect SOLAR forecast would unlock — the ceiling for solar
+                         forecast / ML work. NOTE the planner scenario already feeds the planner the
+                         day's ACTUAL load (a faithful profile proxy), so load foresight is already
+                         perfect in BOTH — this gap isolates SOLAR-forecast value, not load-model
+                         value (that needs a separate learned-profile-vs-actual variant).
 
-The plan is built at day-start from that day's STORED prices + STORED (day-ahead) solar forecast —
-what the planner actually knew — while the simulation runs against the day's ACTUAL reconstructed
-load + ACTUAL solar. That asymmetry is deliberate: it's a faithful replay (plan against forecast,
-reality happens), not a perfect-foresight fantasy.
+The plan (b/c) is built at day-start from that day's STORED prices + STORED (day-ahead) solar
+forecast — what the planner actually knew — while the simulation runs against the day's ACTUAL
+reconstructed load + ACTUAL solar. That asymmetry is deliberate for the planner: a faithful replay
+(plan against forecast, reality happens). The oracle (d) removes only the solar-forecast error, so
+`planner_cost − oracle_cost` is an honest per-day ceiling on solar-forecast improvement.
 
 The battery model is shared across scenarios and mirrors `planner.projection` exactly: round-trip
 efficiency split as √η per side, a hard reserve floor discharge never crosses, and per-slot power
@@ -50,7 +58,7 @@ from ems.timeutil import day_slot_count
 
 _DH = 0.25  # hours per 15-min slot (energy = power × this)
 _COVERAGE_MIN = 0.80  # a day needs ≥80% slot coverage of BOTH load and prices to be replayable
-SCENARIOS = ("no_battery", "auto_selfuse", "planner")
+SCENARIOS = ("no_battery", "auto_selfuse", "planner", "oracle")
 # Matches every writer connection's own busy_timeout (storage/history.py, storage/settings.py):
 # without it, a `mode=ro` connection has SQLite's default (fail-instantly) timeout, so a replay
 # started from a LIVE app (B-69/B-73's web routes) can race the daily maintenance loop's
@@ -492,9 +500,28 @@ def replay_day(
         planner.cost_eur, planner.import_kwh, planner.export_kwh, planner.cycles_kwh,
         planner.reserve_breaches, switches)
 
+    # (d) oracle: the SAME strategy + actual load, but a PERFECT solar forecast (actual solar fed in
+    # as p10=p50=p90). Simulated against the same actual reality. planner→oracle cost = the € a
+    # perfect solar forecast would save (the solar-forecast/ML ceiling). We reuse the planner's
+    # resolved `strategy` so the ONLY changed variable is the solar forecast, and we do NOT touch
+    # the hysteresis box (oracle is a hypothetical, not part of the season-transition memory).
+    oracle_fc = [ForecastSlot(start=s, p10_w=solar_by[s], p50_w=solar_by[s], p90_w=solar_by[s])
+                 for s in slots]
+    oracle_plan = build_plan(
+        strategy, prices=prices, forecast=oracle_fc, now=now, soc_pct=start_soc,
+        winter_cfg=_winter_cfg(cfg), summer_cfg=_summer_cfg(cfg),
+        load_w_by=load_by, adaptive_cfg=_adaptive_cfg(cfg))
+    oracle_intents: dict[datetime, BatteryIntent] = {}
+    for s in slots:
+        ps = oracle_plan.intent_at(s)
+        oracle_intents[s] = ps.intent if ps is not None else BatteryIntent.ALLOW_SELF_CONSUMPTION
+    oracle = _simulate(
+        slots, load_by, solar_by, price_by, cfg=cfg, start_soc=start_soc,
+        battery_enabled=True, intents=oracle_intents, target_soc=oracle_plan.target_soc)
+
     return DayResult(
         date_str, len(slots), True, None, strategy,
-        {"no_battery": no_battery, "auto_selfuse": auto, "planner": planner})
+        {"no_battery": no_battery, "auto_selfuse": auto, "planner": planner, "oracle": oracle})
 
 
 # --------------------------------------------------------------------------------------------------
@@ -594,15 +621,20 @@ def _aggregate(days: list[DayResult], days_b: list[DayResult] | None) -> dict:
     nb = _sum_cost(ok, "no_battery")
     auto = _sum_cost(ok, "auto_selfuse")
     planner = _sum_cost(ok, "planner")
+    oracle = _sum_cost(ok, "oracle")
     agg = {
         "days_replayed": len(ok),
         "days_skipped": len(days) - len(ok),
         "no_battery_cost_eur": round(nb, 4),
         "auto_cost_eur": round(auto, 4),
         "planner_cost_eur": round(planner, 4),
+        "oracle_cost_eur": round(oracle, 4),
         # + = the planner is CHEAPER than the vendor-auto floor / than no battery at all.
         "planner_vs_auto_eur": round(auto - planner, 4),
         "planner_vs_no_battery_eur": round(nb - planner, 4),
+        # + = the € a PERFECT SOLAR forecast would have saved beyond the planner (headroom /
+        # ceiling for solar-forecast + ML work). ~0 means better solar forecasting can't help much.
+        "oracle_headroom_eur": round(planner - oracle, 4),
         "reserve_breaches": sum(
             d.scenarios["planner"].reserve_breaches for d in ok if "planner" in d.scenarios),
         "switches": sum(
@@ -658,38 +690,53 @@ def _fmt_eur(x: float | None) -> str:
 
 
 def format_table(result: RangeResult) -> str:
-    """A compact per-day table + an aggregate line (date | no-batt € | auto € | planner € | Δ |
-    breaches | notes). Δ = auto − planner (what the planner saved over the vendor-auto floor)."""
+    """A compact per-day table + an aggregate line and an annualized value-gap summary. Columns:
+    date | no-batt € | auto € | planner € | oracle € | Δ vs auto | breaches | notes. Δ = auto −
+    planner (planner's saving over the vendor-auto floor); oracle = planner + perfect solar."""
     lines = [
-        f"{'date':<12}{'no-batt €':>10}{'auto €':>9}{'planner €':>11}"
+        f"{'date':<12}{'no-batt €':>10}{'auto €':>9}{'planner €':>11}{'oracle €':>10}"
         f"{'Δ vs auto':>11}{'breach':>8}  notes",
-        "-" * 78,
+        "-" * 88,
     ]
     for d in result.days:
         if not d.data_ok:
-            lines.append(f"{d.date:<12}{'--':>10}{'--':>9}{'--':>11}{'--':>11}{'--':>8}  "
+            lines.append(f"{d.date:<12}{'--':>10}{'--':>9}{'--':>11}{'--':>10}{'--':>11}{'--':>8}  "
                          f"skipped: {d.skip_reason}")
             continue
         nb = d.scenarios["no_battery"].cost_eur
         auto = d.scenarios["auto_selfuse"].cost_eur
         pl = d.scenarios["planner"].cost_eur
+        orc = d.scenarios["oracle"].cost_eur
         delta = (auto - pl) if (auto is not None and pl is not None) else None
         breaches = d.scenarios["planner"].reserve_breaches
         lines.append(
             f"{d.date:<12}{_fmt_eur(nb):>10}{_fmt_eur(auto):>9}{_fmt_eur(pl):>11}"
-            f"{_fmt_eur(delta):>11}{breaches:>8}  {d.strategy}")
+            f"{_fmt_eur(orc):>10}{_fmt_eur(delta):>11}{breaches:>8}  {d.strategy}")
     a = result.aggregate
-    lines.append("-" * 78)
+    lines.append("-" * 88)
     lines.append(
         f"{'TOTAL':<12}{_fmt_eur(a['no_battery_cost_eur']):>10}"
         f"{_fmt_eur(a['auto_cost_eur']):>9}{_fmt_eur(a['planner_cost_eur']):>11}"
-        f"{_fmt_eur(a['planner_vs_auto_eur']):>11}{a['reserve_breaches']:>8}  "
-        f"{a['days_replayed']} days, {a['switches']} switches")
+        f"{_fmt_eur(a['oracle_cost_eur']):>10}{_fmt_eur(a['planner_vs_auto_eur']):>11}"
+        f"{a['reserve_breaches']:>8}  {a['days_replayed']} days, {a['switches']} switches")
     if "cfg_b" in a:
         b = a["cfg_b"]
         lines.append(
             f"config B planner € {b['planner_cost_eur']:.3f}  "
             f"(Δ vs A {b['delta_vs_a_eur']:+.3f}; + = B cheaper)")
+    n = a["days_replayed"]
+    if n:
+        scale = 365.0 / n
+        lines += [
+            "",
+            f"value gap over {n} replayed day(s) → annualized €/yr (×{scale:.1f}):",
+            f"  battery vs no battery  : {a['planner_vs_no_battery_eur'] * scale:+8.0f} €/yr"
+            "   (what the battery+EMS saves at all)",
+            f"  planner vs vendor-auto : {a['planner_vs_auto_eur'] * scale:+8.0f} €/yr"
+            "   (value of the app's own planning)",
+            f"  solar-forecast ceiling : {a['oracle_headroom_eur'] * scale:+8.0f} €/yr"
+            "   (MOST a perfect solar forecast / ML could add on top)",
+        ]
     return "\n".join(lines)
 
 
