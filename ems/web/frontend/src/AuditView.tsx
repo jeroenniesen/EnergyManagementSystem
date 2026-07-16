@@ -53,6 +53,7 @@ export function AuditView() {
           <option value="battery_decision">Battery decisions</option>
           <option value="config_change">Setting changes</option>
           <option value="manual_override">Manual overrides</option>
+          <option value="ai_validation">AI checks</option>
         </select>
       </div>
       <p className="settings-group-hint">

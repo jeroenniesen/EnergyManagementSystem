@@ -114,13 +114,23 @@ function solarVerdict(biasW: number | null | undefined): string | null {
 // as a real link/button when a live `onNavigate` is available — `before`/`after` are the sentence,
 // `link`/`target` are the clickable destination. `load` has nowhere to send you, so it stays a
 // single `before` string (no link, no `after`).
-type HealthActionCopy = { before: string; link?: string; after?: string; target?: NavTarget };
+// `section` (settings-only) names the Settings section the link should deep-link straight into —
+// "planner" for solar, so the advisor's own field is on-screen the moment you land, not just the
+// Settings tab in general.
+type HealthActionCopy = {
+  before: string;
+  link?: string;
+  after?: string;
+  target?: NavTarget;
+  section?: string;
+};
 const HEALTH_ACTION: Record<keyof Omit<ModelHealth, "notes">, HealthActionCopy> = {
   solar: {
     before: "Check the solar forecast advisor in ",
     link: "Manage → Settings → Planner",
     after: " — it suggests a calibrated setting.",
     target: "settings",
+    section: "planner",
   },
   load: {
     before: "This usually settles as more weeks of your routine are recorded — no setting to "
@@ -143,10 +153,10 @@ function HealthActionLine({
   solarAdvice,
 }: {
   row: keyof Omit<ModelHealth, "notes">;
-  onNavigate?: (tab: NavTarget) => void;
+  onNavigate?: (tab: NavTarget, section?: string) => void;
   solarAdvice?: SolarAdvice;
 }) {
-  let { before, link, after, target } = HEALTH_ACTION[row];
+  let { before, link, after, target, section } = HEALTH_ACTION[row];
   if (row === "solar") {
     // Name the numbers when the advisor has them; be honest when it doesn't yet.
     if (solarAdvice?.recommended_pct != null) {
@@ -170,7 +180,7 @@ function HealthActionLine({
             type="button"
             className="health-action-link"
             data-testid={`health-action-link-${row}`}
-            onClick={() => onNavigate(target)}
+            onClick={() => onNavigate(target, section)}
           >
             {link}
           </button>
@@ -237,7 +247,7 @@ const RECOVERY: Record<string, string> = {
 
 export function SystemView({
   onNavigate,
-}: { onNavigate?: (tab: NavTarget) => void } = {}) {
+}: { onNavigate?: (tab: NavTarget, section?: string) => void } = {}) {
   const [diag, setDiag] = useState<Diag | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const [incidents, setIncidents] = useState<IncidentRollup | null>(null);

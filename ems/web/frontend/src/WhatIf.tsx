@@ -6,6 +6,8 @@
 // this panel is clearly badged and never offers to "apply" anything.
 import { useEffect, useState } from "react";
 
+import { eur } from "./format";
+
 type ScenarioTotals = { cost_eur: number | null; import_kwh: number; export_kwh: number };
 
 type Counterfactual = {
@@ -61,8 +63,6 @@ const PRESETS: Preset[] = [
 ];
 
 const DAY_OPTIONS = [7, 14, 30] as const;
-
-const eur = (v: number) => `${v < 0 ? "−" : ""}€${Math.abs(v).toFixed(2)}`;
 
 function verdict(preset: Preset, delta: number | null, daysUsed: number): string {
   if (delta == null || daysUsed === 0) {

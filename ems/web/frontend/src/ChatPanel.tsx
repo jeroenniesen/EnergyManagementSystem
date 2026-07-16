@@ -105,7 +105,7 @@ export function ChatPanel() {
       {active === false ? (
         <p className="plan-reason" data-testid="chat-disabled">
           The answers above always work. For free-form questions, turn on{" "}
-          <b>AI explanations &amp; chat</b> in Settings.
+          <b>AI explanations &amp; chat</b> in Manage → Settings.
         </p>
       ) : (
         <>

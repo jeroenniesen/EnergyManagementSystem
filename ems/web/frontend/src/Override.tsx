@@ -37,7 +37,7 @@ const DURATIONS = [
 
 function endsAt(minutes: number): string {
   const t = new Date(Date.now() + minutes * 60_000);
-  return t.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+  return t.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", hour12: false });
 }
 
 export function OverrideCard({ dataQuality }: { dataQuality?: string }) {
@@ -82,7 +82,7 @@ export function OverrideCard({ dataQuality }: { dataQuality?: string }) {
       });
       const b = await r.json();
       if (r.status === 401) {
-        setErr("Unauthorized — set an access token in Settings.");
+        setErr("Unauthorized — set an access token in Manage → Settings.");
       } else if (r.status === 422) {
         setErr(Object.values(b.errors ?? {}).join("; ") || "invalid override");
       } else if (!r.ok) {

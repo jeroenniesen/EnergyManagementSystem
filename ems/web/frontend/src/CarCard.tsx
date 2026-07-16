@@ -3,7 +3,8 @@
 // charger API and never controls the car (docs/superpowers/specs/2026-07-12-ev-charging-design.md).
 // Consumes GET /api/car/plan, which returns a progressive set of shapes so the card can prompt for
 // whatever is missing:
-//   enabled:false                        -> render nothing (feature is off)
+//   enabled:false                        -> compact: render nothing; full: an honest "turn it on"
+//                                           card with a button into Manage → Settings → Car
 //   enabled:true, needs_anchor:true      -> ask for the car's current charge level
 //   enabled:true, needs_schedule:true    -> point at the Car tab (schedule editor lives there)
 //   enabled:true, soc + plan             -> the full plan (SoC, next deadline, advice, windows,
@@ -234,9 +235,14 @@ function CardHead() {
 export function CarCard({
   compact = false,
   onOpenCar,
+  onOpenSettings,
 }: {
   compact?: boolean;
   onOpenCar?: () => void;
+  // Only used by the FULL (non-compact) variant, when the feature is off (see the `!data.enabled`
+  // branch below) — sends the user to Manage → Settings → Car to turn it on. The compact dashboard
+  // card never renders anything in that state, so it never needs this.
+  onOpenSettings?: () => void;
 }) {
   const [data, setData] = useState<CarPlanResp | null>(null);
   const [pctInput, setPctInput] = useState(50);
@@ -275,7 +281,7 @@ export function CarCard({
       });
       const b = await r.json().catch(() => ({}));
       if (r.status === 401) {
-        setErr("Unauthorized — set an access token in Settings.");
+        setErr("Unauthorized — set an access token in Manage → Settings.");
       } else if (r.status === 422) {
         setErr(Object.values(b.errors ?? {}).join("; ") || "invalid charge level");
       } else if (!r.ok) {
@@ -293,7 +299,35 @@ export function CarCard({
     }
   }
 
-  if (!data || !data.enabled) return null;
+  if (!data) return null;
+
+  if (!data.enabled) {
+    // Compact (dashboard): stays calm and headless, same as before — the full Car view is where
+    // this gets addressed. Full (Car view): a fresh install otherwise lands on a blank tab with no
+    // clue why, so give it an honest, actionable card instead.
+    if (compact) return null;
+    return (
+      <section className="car-card" data-testid="car-card-disabled">
+        <CardHead />
+        <p className="override-hint">
+          The charge planner is off. Turn on &quot;Show best-time-to-charge card&quot; to get
+          plug-in advice and SoC tracking.
+        </p>
+        {onOpenSettings ? (
+          <button
+            type="button"
+            className="strategy-more"
+            onClick={onOpenSettings}
+            data-testid="car-enable-settings-link"
+          >
+            Manage → Settings → Car
+          </button>
+        ) : (
+          <span className="override-hint">Manage → Settings → Car</span>
+        )}
+      </section>
+    );
+  }
 
   if (data.needs_anchor) {
     return (

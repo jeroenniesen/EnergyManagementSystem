@@ -80,4 +80,55 @@ test.describe("Manage view + hash routing", () => {
     // And a real field of that section is rendered (the section actually opened, not just its nav).
     await expect(page.getByTestId("field-planner.solar_confidence")).toBeVisible();
   });
+
+  // Mirrors StrategyCard's segmented-control keyboard test: arrow keys move focus AND select,
+  // wrapping at the ends, like a native tablist.
+  test("the sub-nav is keyboard-operable: arrow keys move focus and select", async ({ page }) => {
+    await page.goto("/#manage");
+    const settingsTab = page.getByTestId("manage-tab-settings");
+    const systemTab = page.getByTestId("manage-tab-system");
+    const auditTab = page.getByTestId("manage-tab-audit");
+
+    await expect(settingsTab).toHaveAttribute("tabindex", "0");
+    await expect(systemTab).toHaveAttribute("tabindex", "-1");
+
+    await settingsTab.focus();
+    await settingsTab.press("ArrowRight");
+    await expect(systemTab).toHaveAttribute("aria-selected", "true");
+    await expect(systemTab).toBeFocused();
+    await expect(page.getByTestId("system")).toBeVisible();
+
+    await systemTab.press("ArrowRight");
+    await expect(auditTab).toHaveAttribute("aria-selected", "true");
+    await expect(auditTab).toBeFocused();
+    await expect(page.getByTestId("audit")).toBeVisible();
+
+    // Wraps from the last tab back to the first.
+    await auditTab.press("ArrowRight");
+    await expect(settingsTab).toHaveAttribute("aria-selected", "true");
+    await expect(settingsTab).toBeFocused();
+    await expect(page.getByTestId("settings")).toBeVisible();
+
+    // ArrowLeft moves the other way.
+    await settingsTab.press("ArrowLeft");
+    await expect(auditTab).toHaveAttribute("aria-selected", "true");
+    await expect(auditTab).toBeFocused();
+  });
+
+  test("each sub-tab exposes ARIA tab/tabpanel wiring", async ({ page }) => {
+    await page.goto("/#manage");
+    const settingsTab = page.getByTestId("manage-tab-settings");
+    await expect(settingsTab).toHaveAttribute("role", "tab");
+    await expect(settingsTab).toHaveAttribute("id", "manage-tab-settings");
+    await expect(settingsTab).toHaveAttribute("aria-controls", "manage-panel-settings");
+
+    const panel = page.getByTestId("manage-panel");
+    await expect(panel).toHaveAttribute("role", "tabpanel");
+    await expect(panel).toHaveAttribute("id", "manage-panel-settings");
+    await expect(panel).toHaveAttribute("aria-labelledby", "manage-tab-settings");
+
+    await page.getByTestId("manage-tab-system").click();
+    await expect(panel).toHaveAttribute("id", "manage-panel-system");
+    await expect(panel).toHaveAttribute("aria-labelledby", "manage-tab-system");
+  });
 });

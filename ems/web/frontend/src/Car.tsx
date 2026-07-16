@@ -507,8 +507,10 @@ export function CarView({ onOpenSettings }: { onOpenSettings?: () => void }) {
 
   return (
     <section data-testid="car-view">
-      {/* (a) The full car-charging card (same component as the dashboard, non-compact). */}
-      <CarCard />
+      {/* (a) The full car-charging card (same component as the dashboard, non-compact). Threads
+          the same onOpenSettings this view already has (used below by the config-section link) so
+          the feature-off empty state can send you to Manage → Settings → Car too. */}
+      <CarCard onOpenSettings={onOpenSettings} />
 
       {/* (b) The home-battery's behaviour while the car charges (feat/car-charge-modes) — saves
           immediately, independent of this view's own sticky save bar below. */}

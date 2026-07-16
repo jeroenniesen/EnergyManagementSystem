@@ -36,7 +36,8 @@ const fmtKwh = (k: number) => `${k.toFixed(k >= 10 ? 0 : 1)} kWh`;
 
 function bucketLabel(iso: string, period: Period): string {
   const d = new Date(iso);
-  if (period === "day") return d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+  if (period === "day")
+    return d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", hour12: false });
   if (period === "year") return d.toLocaleDateString([], { month: "short" });
   return d.toLocaleDateString([], {
     weekday: period === "week" ? "short" : undefined,

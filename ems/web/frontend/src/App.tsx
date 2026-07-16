@@ -293,6 +293,11 @@ export function App() {
   const [route, setRoute] = useState<Route>(() => routeFromHash(window.location.hash));
   const view = route.view;
   const manageTab = route.tab;
+  // Which Settings section a deep-link asked to open (System's "solar" health action → "planner",
+  // Car's "Manage → Settings → Car" → "ev") — runtime state only, never part of the hash (the
+  // canonical hash stays #manage/settings; CLAUDE.md: keep it simple). Reset whenever navigate()
+  // is called without one, so a plain nav click never leaves a stale section behind.
+  const [settingsSection, setSettingsSection] = useState<string | undefined>(undefined);
   // "See the full plan" disclosure — collapsed by default, choice remembered across visits so a
   // homeowner who wants the detail keeps it, and one who doesn't never sees it re-expand.
   const [planOpen, setPlanOpen] = useState<boolean>(() => {
@@ -377,13 +382,16 @@ export function App() {
   // Navigate to a view (and, for "manage", a sub-tab). Writes the canonical hash so the URL always
   // round-trips (bookmarks, back/forward); the hashchange listener also fires and re-derives the
   // route, but setting state here too keeps the switch instant. `tab` defaults to "settings" so a
-  // bare `navigate("manage")` opens the Settings sub-tab, matching #manage.
-  function navigate(next: ViewName, tab: ManageTab = "settings") {
+  // bare `navigate("manage")` opens the Settings sub-tab, matching #manage. `section` is a Settings
+  // deep-link (e.g. "planner", "ev") — runtime-only, never encoded in the hash; omitting it resets
+  // any section a previous deep-link left pending.
+  function navigate(next: ViewName, tab: ManageTab = "settings", section?: string) {
     const hash = next === "manage" && tab !== "settings" ? `manage/${tab}` : next;
     if (window.location.hash.replace(/^#\/?/, "") !== hash) {
       window.location.hash = hash;
     }
     setRoute({ view: next, tab: next === "manage" ? tab : route.tab });
+    setSettingsSection(section);
   }
 
   useEffect(() => {
@@ -713,8 +721,9 @@ export function App() {
       {view === "manage" && (
         <Manage
           tab={manageTab}
-          onTab={(t) => navigate("manage", t)}
+          onTab={(t, section) => navigate("manage", t, section)}
           onSettingsSaved={(v) => setTheme((v["ui.theme"] as Theme) ?? "auto")}
+          settingsSection={settingsSection}
         />
       )}
 
@@ -723,7 +732,9 @@ export function App() {
       {view === "chat" && <ChatPanel />}
 
       {view === "car" && (
-        <CarView onOpenSettings={() => navigate("manage", "settings")} />
+        // Lands on the Car section of Settings (feat/ux-batch-3's "ev" group) rather than just the
+        // Settings tab in general — the schedule/picker used to live there.
+        <CarView onOpenSettings={() => navigate("manage", "settings", "ev")} />
       )}
 
       {view === "dashboard" && (

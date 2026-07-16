@@ -84,7 +84,7 @@ const PAD = { l: 30, r: 12, t: 12, b: 4 };
 const SLOT_MS = 15 * 60 * 1000;
 
 function clock(ms: number): string {
-  return new Date(ms).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+  return new Date(ms).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", hour12: false });
 }
 
 function Stat({

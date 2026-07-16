@@ -107,3 +107,21 @@ def test_diagnostics_exposes_long_run_storage_and_recorder_health(tmp_path):
     assert b["recorder"] is not None
     assert {"last_success_at", "consecutive_failures", "last_error"} <= set(b["recorder"])
     assert b["recorder"]["consecutive_failures"] == 0  # startup sample succeeded
+
+
+def test_diagnostics_exposes_canonical_forecast_job_state(tmp_path):
+    # The 18:00 canonical-forecast job (design §4.3) is otherwise invisible when dead — its state
+    # box must ride along in /api/diagnostics under storage.canonical_forecast, same shape as the
+    # backup state, so a freshly-started app (no cycle has fired yet) reports the "never run" shape.
+    app = create_app(
+        MockSource(), dry_run=True, dev_mode="mock",
+        store=HistoryStore(str(tmp_path / "ems.sqlite")),
+        settings_store=SettingsStore(str(tmp_path / "ems.sqlite")),
+    )
+    with TestClient(app) as c:
+        b = c.get("/api/diagnostics").json()
+    assert b["storage"] is not None
+    assert "canonical_forecast" in b["storage"]
+    assert b["storage"]["canonical_forecast"] == {
+        "last_success_date": None, "last_attempt_iso": None, "ok": None,
+    }

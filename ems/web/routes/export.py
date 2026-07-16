@@ -30,6 +30,9 @@ from ems.storage.history import DERIVED_COLUMNS, RAW_COLUMNS
 from ems.web.context import AppContext
 
 _log = logging.getLogger("ems.web.export")
+# daily_energy is never purged (B-13) and stays small — it rides along IN FULL regardless of the
+# `days` window, so the year-over-year story is always in the export, not just the requested slice.
+_FULL_DATE_RANGE = ("0000", "9999")
 
 
 def build_router(ctx: AppContext) -> APIRouter:
@@ -79,6 +82,9 @@ def build_router(ctx: AppContext) -> APIRouter:
         audit: list[dict] = []
         plan: list[dict] = []
         gas: list[dict] = []
+        observations: list[dict] = []
+        daily_energy: list[dict] = []
+        notifications: list[dict] = []
         if ctx.store is not None:
             row_cap = min(600_000, days * 24 * 60 + 1000)  # ~one row/min ceiling over the window
             raw = await ctx.store.raw_between(start_iso, end_iso, limit=row_cap)
@@ -90,6 +96,14 @@ def build_router(ctx: AppContext) -> APIRouter:
             forecasts = await ctx.store.ledger_canonical_between("solar", start_iso, end_iso)
             plan = await ctx.store.plan_history_between(start_iso, end_iso)
             gas = await ctx.store.gas_between(start_iso, end_iso)
+            # Compact 15-min observation rollup (design §4.1) + the outbox — windowed the SAME as
+            # raw/derived/prices above.
+            observations = await ctx.store.observations_between(start_iso, end_iso)
+            notifications = await ctx.store.notifications_between(
+                start_iso, end_iso, limit=5000)
+            # daily_energy is never purged (B-13) and stays small — export it IN FULL, not just
+            # this window's slice, so the year-over-year story is always in the package.
+            daily_energy = await ctx.store.daily_energy_between(*_FULL_DATE_RANGE)
             # Self-complete the window before reading it back: `daily_finance` rows are otherwise
             # only ever written when a finance view for that day was requested (/api/finance), so
             # a day nobody looked at is silently absent from the export. Backfill every COMPLETED
@@ -148,7 +162,9 @@ def build_router(ctx: AppContext) -> APIRouter:
         counts = {"raw_samples": len(raw), "derived_samples": len(derived),
                   "prices": len(prices), "forecasts": len(forecasts),
                   "daily_finance": len(finance), "audit_log": len(audit),
-                  "plan_history": len(plan), "gas": len(gas), "ev_sessions": len(ev_sessions)}
+                  "plan_history": len(plan), "gas": len(gas), "ev_sessions": len(ev_sessions),
+                  "observations": len(observations), "daily_energy": len(daily_energy),
+                  "notifications": len(notifications)}
         saved_vals = [d["saved_eur"] for d in finance if d.get("saved_eur") is not None]
         saved_total = round(sum(saved_vals), 2) if saved_vals else None
         window = {"start": start_iso, "end": end_iso}
@@ -171,6 +187,9 @@ def build_router(ctx: AppContext) -> APIRouter:
             "plan_history.csv": expkg.rows_to_csv(plan, expkg.PLAN_COLUMNS),
             "gas.csv": expkg.rows_to_csv(gas, expkg.GAS_COLUMNS),
             "ev_sessions.csv": expkg.rows_to_csv(ev_sessions, expkg.EV_SESSION_COLUMNS),
+            "observations.csv": expkg.rows_to_csv(observations, expkg.OBSERVATION_COLUMNS),
+            "daily_energy.csv": expkg.rows_to_csv(daily_energy, expkg.DAILY_ENERGY_COLUMNS),
+            "notifications.csv": expkg.rows_to_csv(notifications, expkg.NOTIFICATION_COLUMNS),
             "manifest.json": expkg.build_manifest(
                 generated_at=now.isoformat(), app_version=expkg.app_version(),
                 window_start=start_iso, window_end=end_iso, counts=counts, extra=validation,

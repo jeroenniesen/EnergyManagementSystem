@@ -3,7 +3,10 @@ import json
 
 from ems.export_package import (
     AUDIT_COLUMNS,
+    DAILY_ENERGY_COLUMNS,
     EV_SESSION_COLUMNS,
+    NOTIFICATION_COLUMNS,
+    OBSERVATION_COLUMNS,
     RAW_COLUMNS,
     build_manifest,
     build_zip,
@@ -50,6 +53,52 @@ def test_ev_session_columns_csv_has_header_and_a_row():
 
 def test_ev_session_columns_csv_empty_still_writes_header():
     assert rows_to_csv([], EV_SESSION_COLUMNS).strip() == ",".join(EV_SESSION_COLUMNS)
+
+
+# ---- observations.csv / daily_energy.csv / notifications.csv (the three newest tables) ---------
+
+def test_observation_columns_csv_has_header_and_a_row():
+    rows = [{"slot_start": "2026-06-28T10:00:00+00:00", "mean_load_w": 800.0,
+             "mean_non_ev_load_w": 500.0, "mean_solar_w": 200.0, "samples": 3,
+             "coverage": 1.0, "flags": []}]
+    out = rows_to_csv(rows, OBSERVATION_COLUMNS)
+    lines = out.strip().splitlines()
+    assert lines[0] == ",".join(OBSERVATION_COLUMNS)
+    assert "800.0" in lines[1] and "500.0" in lines[1]
+
+
+def test_observation_columns_csv_empty_still_writes_header():
+    assert rows_to_csv([], OBSERVATION_COLUMNS).strip() == ",".join(OBSERVATION_COLUMNS)
+
+
+def test_daily_energy_columns_csv_has_header_and_a_row():
+    rows = [{"date": "2026-06-28", "solar_kwh": 12.0, "load_kwh": 8.0, "non_ev_load_kwh": 6.0,
+             "ev_kwh": 2.0, "grid_import_kwh": 1.0, "grid_export_kwh": 4.0,
+             "battery_charge_kwh": 3.0, "battery_discharge_kwh": 2.5, "coverage": 1.0}]
+    out = rows_to_csv(rows, DAILY_ENERGY_COLUMNS)
+    lines = out.strip().splitlines()
+    assert lines[0] == ",".join(DAILY_ENERGY_COLUMNS)
+    assert "2026-06-28" in lines[1] and "12.0" in lines[1]
+
+
+def test_daily_energy_columns_csv_empty_still_writes_header():
+    assert rows_to_csv([], DAILY_ENERGY_COLUMNS).strip() == ",".join(DAILY_ENERGY_COLUMNS)
+
+
+def test_notification_columns_csv_has_header_row_and_excludes_body():
+    # Lean by design: `body` isn't in NOTIFICATION_COLUMNS, so even a row that carries one (as the
+    # live outbox does) must not leak it into the CSV — only ts/key/title/read ride along.
+    rows = [{"id": 1, "ts": "2026-06-28T18:00:00+00:00", "key": "backup_failed",
+             "title": "Backup failed", "body": "the full message text", "read": False}]
+    out = rows_to_csv(rows, NOTIFICATION_COLUMNS)
+    lines = out.strip().splitlines()
+    assert lines[0] == ",".join(NOTIFICATION_COLUMNS)
+    assert "backup_failed" in lines[1] and "Backup failed" in lines[1]
+    assert "the full message text" not in out
+
+
+def test_notification_columns_csv_empty_still_writes_header():
+    assert rows_to_csv([], NOTIFICATION_COLUMNS).strip() == ",".join(NOTIFICATION_COLUMNS)
 
 
 # ---- ev_price_adherence: volume-weighted price paid for EV charging vs. window average ----
@@ -372,7 +421,11 @@ from ems.load_model import reconstruct  # noqa: E402
 from ems.sources.mock import MockSource  # noqa: E402
 from ems.sources.prices import MockPriceSource  # noqa: E402
 from ems.storage.audit import AuditStore  # noqa: E402
-from ems.storage.history import HistoryStore  # noqa: E402
+from ems.storage.history import (  # noqa: E402
+    HistoryStore,
+    materialize_daily_energy,
+    materialize_observations,
+)
 from ems.storage.settings import SettingsStore  # noqa: E402
 from ems.web.api import _FINANCE_CALC_VERSION, create_app  # noqa: E402
 
@@ -431,7 +484,8 @@ def test_export_package_endpoint_returns_zip_with_all_members(tmp_path):
     names = set(zip_names(data))
     assert {"raw_samples.csv", "derived_samples.csv", "prices.csv", "forecasts.csv",
             "daily_finance.csv", "audit_log.csv", "plan_history.csv", "gas.csv",
-            "ev_sessions.csv", "manifest.json"} <= names
+            "ev_sessions.csv", "observations.csv", "daily_energy.csv", "notifications.csv",
+            "manifest.json"} <= names
     # Real data made it in.
     assert "1600.0" in read_member(data, "raw_samples.csv")
     assert "0.18" in read_member(data, "prices.csv")
@@ -451,6 +505,14 @@ def test_export_package_endpoint_returns_zip_with_all_members(tmp_path):
     assert manifest["counts"]["plan_history"] == 1
     assert manifest["counts"]["gas"] == 1
     assert manifest["counts"]["ev_sessions"] == 0
+    # _seed() never materializes observations/daily_energy or sends a notification -> present as
+    # header-only members with a zero count (same "no crash / not omitted" shape as ev_sessions).
+    assert manifest["counts"]["observations"] == 0
+    assert manifest["counts"]["daily_energy"] == 0
+    assert manifest["counts"]["notifications"] == 0
+    assert read_member(data, "observations.csv").strip() == ",".join(OBSERVATION_COLUMNS)
+    assert read_member(data, "daily_energy.csv").strip() == ",".join(DAILY_ENERGY_COLUMNS)
+    assert read_member(data, "notifications.csv").strip() == ",".join(NOTIFICATION_COLUMNS)
 
 
 def test_export_package_backfills_daily_finance_for_unviewed_days(tmp_path):
@@ -658,12 +720,20 @@ def test_package_includes_readme_and_validation_summary(tmp_path):
     assert "ev_sessions.csv" in readme
     assert "DETECTED" in readme and "not reported by the car" in readme  # detected, not telemetry
     assert "manifest.ev" in readme                                       # ev manifest documented
+    assert "observations.csv" in readme
+    assert "daily_energy.csv" in readme
+    assert "notifications.csv" in readme
+    assert "`body` is intentionally excluded" in readme  # documents the lean notifications shape
     summary = read_member(data, "validation_summary.txt")
     assert "Run mode:" in summary and "DRY-RUN" in summary              # run mode legible
     assert "Measured savings over the window: €0.42" in summary         # savings total from finance
     assert "Data quality:" in summary
     assert "Incidents" in summary                                       # control-health section
     assert "manifest.incidents" in readme                               # documented in the README
+    # The new tables' counts appear in the "Data collected" block alongside the existing ones.
+    assert "observations     0" in summary
+    assert "daily energy     0" in summary
+    assert "notifications    0" in summary
 
 
 def test_validation_summary_includes_solar_forecast_skill_section(tmp_path):
@@ -682,6 +752,49 @@ def test_validation_summary_includes_solar_forecast_skill_section(tmp_path):
     assert "Band coverage:   0.0% within [p10, p90]" in summary  # 3500 is above p90=3000
     assert "Actual vs P50:   0.88 kWh vs 0.5 kWh" in summary
     assert "under-predicted solar" in summary
+
+
+def test_observations_and_notifications_are_windowed_but_daily_energy_is_full(tmp_path):
+    # observations.csv / notifications.csv follow the SAME window as raw/derived/prices; but
+    # daily_energy.csv is never purged and small, so it rides along IN FULL regardless of `days` —
+    # a day well outside the requested window must still appear there (and ONLY there).
+    db = str(tmp_path / "ems.sqlite")
+
+    async def seed():
+        store = HistoryStore(db)
+        await store.init()
+        now = datetime.now(UTC)
+        recent = (now - timedelta(days=1)).replace(minute=0, second=0, microsecond=0)
+        old = (now - timedelta(days=200)).replace(minute=0, second=0, microsecond=0)
+        for moment in (recent, old):
+            raw = RawSample(grid_power_w=100.0, solar_power_w=0.0, battery_power_w=0.0,
+                            ev_power_w=0.0, soc_pct=50.0)
+            await store.record(moment.isoformat(), raw, reconstruct(raw))
+            day_start = datetime(moment.year, moment.month, moment.day, tzinfo=UTC)
+            await materialize_observations(store, day_start, day_start + timedelta(days=1))
+            await materialize_daily_energy(store, day_start, day_start + timedelta(days=1))
+        await store.add_notification(recent.isoformat(), "k_recent", "Recent notice", "body",
+                                     dedupe_key="k_recent:1")
+        await store.add_notification(old.isoformat(), "k_old", "Old notice", "body",
+                                     dedupe_key="k_old:1")
+        return recent, old
+    recent, old = asyncio.run(seed())
+
+    with TestClient(_app(db)) as c:
+        # A tight window: only "recent" (1 day back) is inside; "old" (200 days back) is not.
+        data = c.get("/api/export/package?days=5").content
+
+    obs_csv = read_member(data, "observations.csv")
+    assert recent.isoformat() in obs_csv
+    assert old.isoformat() not in obs_csv  # windowed out
+
+    notif_csv = read_member(data, "notifications.csv")
+    assert "Recent notice" in notif_csv
+    assert "Old notice" not in notif_csv  # windowed out
+
+    energy_csv = read_member(data, "daily_energy.csv")
+    assert recent.date().isoformat() in energy_csv
+    assert old.date().isoformat() in energy_csv  # FULL — unlike the two members above
 
 
 def test_package_never_leaks_a_stored_secret_value(tmp_path):
@@ -703,6 +816,17 @@ def test_package_never_leaks_a_stored_secret_value(tmp_path):
         store = HistoryStore(db)
         await store.init()
         await store.set_car_soc_anchor(60.0, "2026-06-28T08:00:00+00:00")
+        # The three newest members (B-8x): a notification whose BODY carries the secret — exactly
+        # the scenario notifications.csv's "no body column" design guards against (key/title stay
+        # clean either way). observations/daily_energy carry no settings at all, but materialize
+        # them too so the ZIP actually has non-empty rows to check, not just headers.
+        await store.add_notification(
+            "2026-06-28T09:00:00+00:00", "config_change", "Settings changed",
+            f"access.web_token was changed to {secret}", dedupe_key="cfg_changed:2026-06-28")
+        await materialize_observations(
+            store, datetime(2026, 6, 28, tzinfo=UTC), datetime(2026, 6, 29, tzinfo=UTC))
+        await materialize_daily_energy(
+            store, datetime(2026, 6, 28, tzinfo=UTC), datetime(2026, 6, 29, tzinfo=UTC))
 
     _seed(db)
     asyncio.run(seed_secret())
@@ -719,6 +843,14 @@ def test_package_never_leaks_a_stored_secret_value(tmp_path):
     assert manifest["ev"]["soc_anchor"] == {"pct": 60.0, "ts": "2026-06-28T08:00:00+00:00"}
     assert secret not in json.dumps(manifest["ev"])
     assert secret not in read_member(data, "ev_sessions.csv")
+    # The notification's title/key made it through (proving we didn't just drop the row), but the
+    # secret-laden body did not — notifications.csv has no body column at all.
+    notif_csv = read_member(data, "notifications.csv")
+    assert "config_change" in notif_csv and "Settings changed" in notif_csv
+    assert secret not in notif_csv
+    assert manifest["counts"]["observations"] == 1
+    assert manifest["counts"]["daily_energy"] == 1
+    assert manifest["counts"]["notifications"] == 1
 
 
 def test_recorder_wiring_persists_a_plan_history_row_on_startup(tmp_path):

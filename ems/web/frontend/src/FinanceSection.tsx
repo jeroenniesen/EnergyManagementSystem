@@ -4,6 +4,8 @@
 // partial-coverage caveat says exactly how much is covered.
 import { useEffect, useState } from "react";
 
+import { eur } from "./format";
+
 type DayFin = {
   day: string;
   has_data: boolean;
@@ -29,8 +31,6 @@ type FinResp = {
     days_with_data: number;
   };
 };
-
-const eur = (v: number) => `${v < 0 ? "−" : ""}€${Math.abs(v).toFixed(2)}`;
 
 const BW = 720;
 const BH = 150;
