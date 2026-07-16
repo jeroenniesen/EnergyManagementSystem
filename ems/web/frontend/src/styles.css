@@ -1272,7 +1272,9 @@ body {
 }
 @media (max-width: 480px) {
   .car-picker-row { flex-direction: column; }
-  .car-picker-row select { width: 100%; }
+  /* Reset the row-axis `flex: 1 1 200px` (above): once the row stacks, the 200px basis is the
+     MAIN axis = height, which balloons each <select> to a 200px-tall empty box. Content-height it. */
+  .car-picker-row select { width: 100%; flex: 0 0 auto; }
 }
 
 .impact {
