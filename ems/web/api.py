@@ -9,7 +9,6 @@ import logging
 import os
 import re
 import secrets
-import threading
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
 from datetime import date as date_cls
@@ -29,12 +28,6 @@ from ems.analysis import (
 )
 from ems.cars import by_id as car_by_id
 from ems.confidence import plan_confidence
-from ems.control.car_mode import (
-    CarModeAction,
-    decide_car_mode_action,
-    predict_house_load_w,
-)
-from ems.control.failsafe import failsafe_intent
 from ems.control.mode_controller import ModeController
 from ems.control.override import (
     MAX_MINUTES,
@@ -46,6 +39,16 @@ from ems.control.override import (
 )
 from ems.control.override import (
     from_stored as override_from_stored,
+)
+from ems.control.service import (
+    _CAR_SESSION_MAX_COMMANDS,  # noqa: F401 — re-exported for the closure-testing tests
+    _LABEL_TO_MODE,  # noqa: F401 — used by _current_mode below
+    ControlContext,
+    ControlService,
+    _commanded_family,  # noqa: F401 — re-exported for the closure-testing tests
+    _decide_car_command,  # noqa: F401 — re-exported for the closure-testing tests
+    _decide_car_session_end,  # noqa: F401 — re-exported for the closure-testing tests
+    _tower_family,  # noqa: F401 — re-exported for the closure-testing tests
 )
 from ems.detectors import (
     ev_plug_in_reminder,
@@ -60,7 +63,6 @@ from ems.energy_flow import build_daily_flows
 from ems.ev_advisor import advise_charge_window
 from ems.finance import day_finance, price_rows_by_local_day, raw_rows_by_local_day
 from ems.freshness import FreshnessTracker
-from ems.lifecycle import OwnershipState
 from ems.load_model import reconstruct
 from ems.notify import Notifier
 from ems.planner.adaptive import AdaptiveConfig
@@ -77,7 +79,7 @@ from ems.planner.load_profile import build_load_profile
 from ems.planner.projection import BatteryModel, project_energy
 from ems.planner.recovery import check_charge_completion, recover_if_needed
 from ems.planner.rule_based import PlannerConfig, plan_rule_based
-from ems.planner.strategy import HysteresisState, build_plan, resolve_strategy_hysteretic
+from ems.planner.strategy import HysteresisState, resolve_strategy_hysteretic
 from ems.planner.summer import SummerConfig, sunset_after
 from ems.planner.validator import PlanValidation, validate_plan
 from ems.readiness import Readiness, compute_readiness, home_state
@@ -593,33 +595,9 @@ _FORECAST_SOURCE_LABEL: dict[str, str] = {
 # starts steering a plan.
 INTELLIGENCE_MODE = "shadow"
 
-# Cluster per-tower mode LABEL (from tower_mode_label) → PhysicalMode, so the coalesced cluster
-# read can serve the control loop's idempotency/reachability without a separate master mode-read.
-_LABEL_TO_MODE = {
-    "self-consumption": PhysicalMode.AUTO,
-    "standby": PhysicalMode.IDLE,
-    "charging": PhysicalMode.CHARGE,
-    "discharging": PhysicalMode.DISCHARGE,
-    "outdoor": PhysicalMode.AUTO,
-    "schedule": PhysicalMode.AUTO,
-}
-# Mode FAMILY for cluster-consistency checks: the STABLE distinction is vendor self-consumption
-# (mode 1) vs EMS real-time control (mode 4). charging/discharging/standby are transient real-time
-# states (a battery that finished charging shows "standby", not "charging") — so we compare at the
-# family level to avoid false "didn't follow" flags. outdoor/schedule/unknown → None (don't judge).
-_REALTIME_LABELS = {"standby", "charging", "discharging"}
-
-
-def _tower_family(label: str | None) -> str | None:
-    if label == "self-consumption":
-        return "self-consumption"
-    if label in _REALTIME_LABELS:
-        return "real-time"
-    return None
-
-
-def _commanded_family(mode: PhysicalMode) -> str:
-    return "self-consumption" if mode is PhysicalMode.AUTO else "real-time"
+# The cluster per-tower mode LABEL→PhysicalMode map + the mode-FAMILY helpers (`_tower_family`,
+# `_commanded_family`) moved to ems/control/service.py (B-46, control domain). Imported at the top
+# and re-exported here so `_current_mode` and the closure-testing tests keep their import paths.
 
 # --- Unified energy-story slot/totals (shared by the past + next windows so they never drift) ---
 _INTENT_ACTION = {
@@ -714,89 +692,10 @@ def _uslot_totals(slots: list[dict]) -> dict:
 _FINANCE_CALC_VERSION = 3
 
 
-# --- Car-charging discharge session (feat/car-charge-modes) --------------------------------------
-# How far back to pull observation rows for the non-EV house-load prediction (same-weekday-hour
-# matched inside predict_house_load_w). Four weeks gives a few samples per (weekday, hour) bucket;
-# a bounded, cheap query cached per control cycle. Horizon: the next ~2h the car keeps charging.
-_CAR_PRED_LOOKBACK_DAYS = 28
-_CAR_PRED_HORIZON_HOURS = 2.0
-# A SEPARATE, deliberately conservative safety dwell between car-mode battery commands (independent
-# of the planner's own min_dwell/cap, which a car-session command bypasses as a priority action).
-# It bounds how often a moving prediction can re-command the setpoint, on top of car_mode's own
-# rebond threshold.
-_CAR_SESSION_DWELL = timedelta(minutes=10)
-# Hard belt-and-braces ceiling on commands per session — beyond this we hold the last setpoint and
-# warn, so a pathologically oscillating prediction can never hammer the battery.
-_CAR_SESSION_MAX_COMMANDS = 6
-_CAR_ATTEMPTED_OUTCOMES = frozenset(
-    {"applied", "unconfirmed", "failed_recovered", "failed_unrecovered"})
-
-
-def _decide_car_command(
-    session: dict, car_action: CarModeAction, now: datetime, *,
-    dwell: timedelta = _CAR_SESSION_DWELL, max_commands: int = _CAR_SESSION_MAX_COMMANDS,
-) -> tuple[bool, dict, str]:
-    """PURE. Given the current car-session box, the discharge `CarModeAction` decided this cycle and
-    `now`, decide whether to actually (re-)command the battery and compute the NEXT session box.
-
-    Returns ``(command, next_session, event)`` where `event` is one of ``"start"`` (first command of
-    a session), ``"recommand"`` (a later command), ``"hold"`` (keep the current setpoint, no write)
-    or ``"cap"`` (a re-command was wanted but the per-session command budget is spent → hold+warn).
-
-    Layered on top of `car_action.recommand` (car_mode's own bounded re-command rule) are two extra
-    safety gates that live in the wiring, not the pure core: a >= `dwell` gap between car-mode
-    commands, and a hard `max_commands` ceiling per session. This is what keeps a whole charging
-    session to a handful of writes even with a noisy prediction — assert-tested directly."""
-    active = bool(session.get("active"))
-    setpoint = session.get("setpoint_w")
-    commands = int(session.get("commands") or 0)
-    commanded_at = session.get("commanded_at")
-    first = not active
-    dwell_ok = True
-    if commanded_at:
-        try:
-            dwell_ok = (now - datetime.fromisoformat(commanded_at)) >= dwell
-        except (TypeError, ValueError):
-            dwell_ok = True  # a corrupt timestamp must never wedge the session
-    want = car_action.recommand and (first or dwell_ok)
-    if want and commands >= max_commands:
-        # Budget spent: stop chasing the prediction, hold the last setpoint (no write).
-        return False, dict(session, active=True), "cap"
-    if want:
-        nxt = {"active": True, "setpoint_w": car_action.power_w,
-               "commanded_at": now.isoformat(), "commands": commands + 1}
-        return True, nxt, ("start" if first else "recommand")
-    # Hold this cycle — keep the session alive at its current setpoint (first cycle seeds it).
-    seed = setpoint if setpoint is not None else car_action.power_w
-    return False, {"active": True, "setpoint_w": seed,
-                   "commanded_at": commanded_at, "commands": commands}, "hold"
-
-
-def _decide_car_session_end(
-    session: dict, *, car_below_threshold: bool, end_cycles: int,
-) -> tuple[bool, int]:
-    """PURE. Session-END hysteresis (production audit: a Tesla's charging power briefly dips below
-    `control.car_charging_threshold_w` — three-phase balancing / ramp pauses — so an active session
-    was ending and immediately restarting, each flip issuing a battery mode command).
-
-    Given the current session box and whether THIS cycle read below the threshold, decide whether
-    the session should actually end now. Only a below-threshold READ (`car_below_threshold=True`)
-    counts toward the grace window: `end_cycles` (>= 1) consecutive below-threshold cycles are
-    required before ending, and the counter resets the moment a cycle reads above threshold again.
-    `car_below_threshold=False` (this cycle's car reading is still above the threshold, but the
-    session is ending for some OTHER reason — the reserve floor reached, the master switch toggled
-    off) always ends the session on the spot, counter reset to 0 — those are genuine state changes,
-    never power-reading noise, and must never be delayed (safety).
-
-    Returns ``(end_now, next_below_threshold_cycles)``; the caller resets the whole box when
-    `end_now`, else merges the counter back into the session box. Session START is untouched —
-    it stays immediate, handled entirely by `_decide_car_command` above."""
-    if not car_below_threshold:
-        return True, 0
-    cycles = int(session.get("below_threshold_cycles") or 0) + 1
-    if cycles < max(1, end_cycles):
-        return False, cycles
-    return True, 0
+# The car-charging discharge-session constants + the two PURE decision helpers
+# (`_decide_car_command` / `_decide_car_session_end`) moved to ems/control/service.py (B-46).
+# `_decide_car_command`, `_decide_car_session_end` and `_CAR_SESSION_MAX_COMMANDS` are imported
+# at the top and re-exported here so the car-session tests keep their `ems.web.api` import path.
 
 
 def create_app(
@@ -848,43 +747,28 @@ def create_app(
     # In-memory effective-settings cache (defaults until the store loads in lifespan). Sync
     # endpoints read this; POST /api/settings refreshes it. Mutated in place (never rebound).
     settings_cache: dict[str, Any] = effective_settings({})
-    # Current manual override, cached in memory (expiry is evaluated per request). Mutated in
-    # place via the "ov" key so the closure stays valid; loaded in lifespan, set by POST /override.
-    override_box: dict[str, Override] = {"ov": OVERRIDE_NONE}
+    # The control cycle's mutable state (B-46): one typed home for the ~10 `*_box` dicts + locks the
+    # brain owns. Local aliases below keep the read/settings/strategy closures using their original
+    # names — the SAME shared objects the ControlService (constructed later) mutates in place, the
+    # `settings_cache` convention. Boxes touched ONLY by the control cycle (car session, held dedup,
+    # car-obs, control lock) live purely in `ctx` now; those still read by the endpoints / strategy
+    # closures are aliased here. B-46 stage 2 migrates the remaining closures to read ctx.*.
+    ctx = ControlContext()
+    override_box = ctx.override_box
     _OV_INTENT, _OV_EXP = "override.intent", "override.expires_at"
-    # Seasonal-transition hysteresis memory (SPEC §8.4 / B-15). Kept in memory so the frequently
-    # called `_resolve_strategy` needn't hit SQLite each time; seeded from the KV cache at boot and
-    # persisted there only when it CHANGES (≤ once/day), so the pending-switch counter is restart-
-    # safe — the digest-dedupe / car-anchor pattern.
-    _hysteresis_box: dict[str, HysteresisState] = {"state": HysteresisState()}
+    _hysteresis_box = ctx.hysteresis_box
     _HYSTERESIS_KEY = "strategy:hysteresis"
     _HYSTERESIS_TTL_SECONDS = 90 * 24 * 3600.0  # long enough to bridge shoulder-season gaps
-    # Serialise control cycles: the periodic loop and an immediate override-triggered cycle must not
-    # run decide()/apply() concurrently (two writes racing the battery).
-    _control_lock = asyncio.Lock()
-    # Cluster-drift dedup: the signature of towers currently NOT in the commanded mode family, so we
-    # audit a mismatch (or its resolution) ONCE per episode, not every cycle.
-    _drift_box: dict[str, Any] = {"sig": None}
-    # Held-decision dedup: the (outcome, desired_mode) we last audited as a HELD/blocked decision
-    # (dwell/cap/not_controlling), so a recurring hold is explained ONCE, not logged every cycle.
-    _held_box: dict[str, Any] = {"sig": None}
-    # Car-charging discharge session (feat/car-charge-modes). IN-MEMORY ONLY: a restart mid-session
-    # simply starts a fresh session and re-commands ONCE next cycle (documented, acceptable — the
-    # battery keeps whatever mode it was in until then, and the session re-derives from live input).
-    # {active, setpoint_w (last commanded W), commanded_at (iso of last car command), commands,
-    # below_threshold_cycles (the end-hysteresis counter, see _car_session_end_if_active)}.
-    _car_session: dict[str, Any] = {
-        "active": False, "setpoint_w": None, "commanded_at": None, "commands": 0,
-        "below_threshold_cycles": 0}
-    # Per-control-cycle cache of recent observation rows for the non-EV house-load prediction,
-    # refreshed by the async control cycle ONLY while the car is charging (a bounded, cheap query).
-    # The sync guard/control-tick read it; an empty/stale box just falls back to the load profile.
-    _car_obs_box: dict[str, Any] = {"rows": None, "at": None}
+    _drift_box = ctx.drift_box  # cluster-drift dedup — also read by /api/diagnostics
+    _override_tasks = ctx.override_tasks  # strong refs to override-triggered control cycles
     # Sky cloud-cover cache: Open-Meteo is polled at most every 15 min (best-effort) for the sky.
     _sky_box: dict[str, Any] = {"cc": None, "at": None}
-    # Strong refs to fire-and-forget override-triggered control cycles (see _spawn_tracked). Without
-    # this the loop keeps only a weak ref and the task can be GC'd mid-run (the "charge now" no-op).
-    _override_tasks: set[asyncio.Task] = set()
+    # Last scheduled-backup outcome (SPEC §11 durability), surfaced in /api/diagnostics so a
+    # silently-failing backup is VISIBLE. Mutated in place by _run_backup in the maintenance loop.
+    _backup_state: dict[str, Any] = {
+        "last_backup_ts": None, "last_backup_ok": None,
+        "last_backup_size": None, "backups_kept": 0,
+    }
     # Last scheduled-backup outcome (SPEC §11 durability), surfaced in /api/diagnostics so a
     # silently-failing backup is VISIBLE. Mutated in place by _run_backup in the maintenance loop.
     _backup_state: dict[str, Any] = {
@@ -1015,20 +899,16 @@ def create_app(
         return _planner_cfg_from(settings_cache)
 
     site_tz = tz or ZoneInfo("UTC")
-    # See _LIVE_SAMPLE_COALESCE_SECONDS: a short in-memory window so one dashboard refresh reads the
-    # hardware once. Meter/SoC data is never put in the persistent external cache.
-    _sample_cache: dict[str, Any] = {"sample": None, "at": None}
-    # Same idea for the PER-TOWER battery read (/api/battery): coalesce read_towers() across all
-    # dashboard endpoints and browser tabs so the Indevolt cluster is polled at most once per
-    # window, no matter how many clients are open. This is what stops the read flood that can knock
-    # a tower off the network — every battery touch here is read-only, but the VOLUME was the issue.
-    _tower_cache: dict[str, Any] = {"towers": None, "at": None}
-    # Single-flight locks: sync endpoints run in FastAPI's threadpool, so a cold start / cache
-    # expiry with several tabs polling can have multiple threads miss the cache at once. The lock +
-    # double-check means exactly ONE thread reads the hardware per window; the rest reuse its
-    # result. This is the device-flood protection at its highest-risk moment (cache expiry).
-    _sample_lock = threading.Lock()
-    _tower_lock = threading.Lock()
+    # See _LIVE_SAMPLE_COALESCE_SECONDS: a short in-memory window (`ctx.sample_cache`) so one
+    # dashboard refresh reads the hardware once; the PER-TOWER read (`ctx.tower_cache`) coalesces
+    # read_towers() across all endpoints/tabs so the Indevolt cluster is polled at most once per
+    # window. The single-flight locks mean exactly ONE threadpool thread reads the hardware per
+    # window at cache expiry (the read-flood protection). All live on `ctx` (B-46); aliased here so
+    # the read closures keep their names. Meter/SoC data is never put in the persistent cache.
+    _sample_cache = ctx.sample_cache
+    _tower_cache = ctx.tower_cache
+    _sample_lock = ctx.sample_lock
+    _tower_lock = ctx.tower_lock
     # Last good battery CapabilityReport (probed off the hot path — at startup + opportunistically),
     # so the §8.11 validator can check requested power vs the battery's rating without a networked
     # probe on every decision. None until first probed (the validator simply skips that warn-check).
@@ -1145,68 +1025,8 @@ def create_app(
         return s is not None and float(s.ev_power_w) > settings_cache[
             "control.car_charging_threshold_w"]
 
-    def _car_predicted_house_w(now: datetime) -> float:
-        """Predicted non-EV house load (W) for the car-mode discharge setpoint: same-weekday-hour
-        observations (cached per cycle in `_car_obs_box`) with the learned load profile as the
-        fallback (or the overnight-load baseline if no profile yet). Pure wrt the caller — never
-        reads a clock or the device."""
-        rows = _car_obs_box.get("rows") or []
-        prof = _load_profile_box["profile"]
-        profile_w = (prof.expected_w(now) if prof is not None
-                     else settings_cache["battery.overnight_load_kwh"] * 1000.0 / 12.0)
-        return predict_house_load_w(rows, profile_w, now=now,
-                                    horizon_hours=_CAR_PRED_HORIZON_HOURS)
-
-    def _car_mode_action(now: datetime, *, current_setpoint_w: float | None = None):
-        """Resolve the car-charging battery action this cycle, or None when car-mode is dormant
-        (master switch off, or the car isn't drawing above the threshold). Reads the mode + wattage
-        from settings, SoC from the coalesced sample (NEVER a fresh device read — flood risk) and
-        the predicted house load. Delegates the actual decision to the pure `decide_car_mode_action`
-        and does NOT mutate the session box."""
-        if (not settings_cache["control.hold_battery_when_car_charging"]
-                or not _car_charging(now)):
-            return None
-        return decide_car_mode_action(
-            settings_cache["control.car_charging_battery_mode"],
-            car_charging=True, soc_pct=_current_soc(now),
-            min_reserve_soc=settings_cache["battery.min_reserve_soc"],
-            max_discharge_w=settings_cache["battery.max_discharge_w"],
-            static_w=settings_cache["control.car_discharge_w"],
-            predicted_house_w=_car_predicted_house_w(now),
-            current_setpoint_w=current_setpoint_w,
-        )
-
-    def _car_guard(now: datetime, intent, reason):
-        """Never let the home battery FEED the car — the final guardrail over the plan AND a manual
-        override. While the car is charging (and the master switch is on) it consults the operator's
-        chosen behaviour via `decide_car_mode_action`:
-
-        * ``hold``            → force HOLD_RESERVE (today's behaviour, byte-for-byte): the battery
-                                idles so it can't discharge into the car; solar + grid cover it.
-        * ``static_discharge``/``match_home_load`` → force DISCHARGE_FOR_LOAD at the decided,
-                                bounded setpoint (carried out via `car_action.power_w` below) so the
-                                battery covers the (predicted) HOUSE while the grid feeds the car.
-
-        Returns ``(intent, reason, car_action)``; `car_action` is the CarModeAction (or None when
-        car-mode is dormant / the plan intent isn't discharge-shaped). GRID_CHARGE/HOLD plan intents
-        pass through untouched, exactly as before. FAIL-SAFE: a discharge is suppressed to a HOLD
-        when data quality is `unsafe` — an untrusted SoC must never drive a discharge (CLAUDE)."""
-        if intent is None or intent not in (
-                BatteryIntent.DISCHARGE_FOR_LOAD, BatteryIntent.ALLOW_SELF_CONSUMPTION):
-            return intent, reason, None
-        car_action = _car_mode_action(now, current_setpoint_w=_car_session["setpoint_w"])
-        if car_action is None:
-            return intent, reason, None
-        if car_action.action == "discharge":
-            if _data_quality(now) == "unsafe":
-                return (BatteryIntent.HOLD_RESERVE,
-                        "car charging — holding the battery so it won't discharge into the car "
-                        "(sensor data is unsafe, so EMS won't discharge on an untrusted level)",
-                        None)
-            return BatteryIntent.DISCHARGE_FOR_LOAD, car_action.reason, car_action
-        if car_action.action == "hold":
-            return BatteryIntent.HOLD_RESERVE, car_action.reason, None
-        return intent, reason, None  # "none" — defensive (car_charging was True), unchanged
+    # The car-charging guard (`_car_guard` → `_car_mode_action` → `_car_predicted_house_w`) moved
+    # into ControlService (B-46): it is used only by the control cycle's effective-intent path.
 
     def _night_target_soc(soc_pct: float):
         """The night-carry target (overnight load + reserve + floor), via compute_charge_need."""
@@ -1294,9 +1114,10 @@ def create_app(
     def _active_strategy(now: datetime) -> str:
         return _resolve_strategy(now)[0]
 
-    # Cached expected-load profile (learned async in _forward_projection) so the sync _current_plan
-    # can feed the adaptive charger without its own DB read. None until the first projection runs.
-    _load_profile_box: dict[str, Any] = {"profile": None}
+    # Cached expected-load profile (learned async in _forward_projection) so the sync plan path can
+    # feed the adaptive charger without its own DB read. None until the first projection runs. Lives
+    # on `ctx` (B-46) — shared with the ControlService plan path + car-load prediction.
+    _load_profile_box = ctx.load_profile_box
 
     def _load_by(starts: list[datetime]) -> dict[datetime, float]:
         prof = _load_profile_box["profile"]
@@ -1654,60 +1475,10 @@ def create_app(
 
     app.add_middleware(_AccessMiddleware)
 
-    def _recovery_sizing() -> dict:
-        """Battery sizing the §8.12 catch-up needs, from the live settings cache."""
-        s = settings_cache
-        return {
-            "usable_kwh": s["battery.usable_kwh"],
-            "reserve_soc_pct": s["battery.min_reserve_soc"],
-            "max_charge_w": s["battery.max_charge_w"],
-            "round_trip_efficiency": s["planner.round_trip_efficiency"],
-        }
-
-    def _build_plan_now():
-        """The fresh plan the active strategy builds THIS instant, BEFORE any missed-window
-        recovery. Dispatches to the active strategy (summer solar-first / winter arbitrage).
-        Returns (now, prices, plan) or None. Used by `_current_plan` and the recovery cycle."""
-        if price_source is None:
-            return None
-        now = datetime.now(UTC)
-        prices = price_source.slots()
-        strategy = _active_strategy(now)
-        # BOTH seasons now use the adaptive (demand-aware) charger, so both need the live SoC, the
-        # solar forecast and the expected-load profile — winter sizes the top-up to the evening
-        # peak load above reserve, not just the cheapest slots (energy review P1.2).
-        soc = _current_soc(now)
-        forecast = solar_forecast.slots() if solar_forecast is not None else []
-        load_by = _load_by([p.start for p in prices])
-        plan = build_plan(
-            strategy, prices=prices, forecast=forecast, now=now, soc_pct=soc,
-            winter_cfg=_planner_cfg(), summer_cfg=_summer_cfg(soc),
-            load_w_by=load_by, adaptive_cfg=_adaptive_cfg(),
-        )
-        return now, prices, plan
-
-    def _plan_with_recovery():
-        """Single source of the plan to ACT on (DRY) so /api/plan, /api/savings, /api/decision, the
-        control loop and the validator all reflect the SAME computation: the fresh strategy plan
-        with SPEC §8.12 missed-window recovery folded in (BACKLOG B-16). Recovery is a PURE,
-        deterministic reshape — when a committed grid-charge window is missed and the deadline is
-        still ahead, it re-routes the charge to the cheapest REMAINING slots toward the SAME target;
-        otherwise it returns the plan untouched. Because it runs here, the recovered plan still
-        passes through `_validate_plan_obj` (§8.11 incl. the B-22 projection gate) and the control
-        caps/dwell before any write — recovery bypasses nothing. Returns (now, prices, plan)."""
-        pp = _build_plan_now()
-        if pp is None:
-            return None
-        now, prices, plan = pp
-        recovered, status, catch = recover_if_needed(
-            plan, now, soc_pct=_current_soc(now), prices=prices,
-            enabled=bool(settings_cache["planner.recovery_enabled"]), **_recovery_sizing(),
-        )
-        return now, prices, recovered, status, catch
-
-    def _current_plan():
-        pp = _plan_with_recovery()
-        return None if pp is None else pp[:3]
+    # The recovery-integrated plan path (`_recovery_sizing`/`_build_plan_now`/`_plan_with_recovery`/
+    # `_current_plan`) + the car-guard + the effective-intent + the control tick/cycle moved into
+    # ControlService (B-46). It is constructed just below `_validate_plan_obj` (its last injected
+    # dependency); the aliases created there keep every endpoint + closure calling the same names.
 
     def _data_quality(now: datetime) -> str:
         """Single source of the current data-quality level (SPEC §8.11)."""
@@ -1758,94 +1529,28 @@ def create_app(
             validate_projection=bool(settings_cache["planner.validate_projection"]),
         )
 
-    def _effective_intent(now: datetime):
-        """The intent the controller should act on now + its energy sizing, honouring an active
-        manual override and the data-quality fail-safe. Returns (intent|None, reason|None,
-        override_active, target_soc|None, power_w|None, validation|None, car_action|None).
-
-        An active override wins over the plan AND the fail-safe (deliberate, time-boxed operator
-        action — the UI shows the data-quality badge). The planner path is gated: unsafe data falls
-        back to self-consumption (CLAUDE.md "fail safe"). Sizing (target_soc/power_w) is taken from
-        the SAME plan slot we resolved, and ONLY when the final intent still matches that slot's
-        intent — an override or a fail-safe substitution carries no sizing, so a stale target can
-        never leak to the driver. A target is emitted only for a physical CHARGE (the slot target
-        SoC) or, when export-discharge is enabled, a forced DISCHARGE (the reserve floor); a
-        DISCHARGE_FOR_LOAD that maps to AUTO needs none.
-
-        `car_action` (the 7th element) is the CarModeAction chosen by the car-charging guard, or
-        None when car-mode is dormant. When it is a discharge, the intent is DISCHARGE_FOR_LOAD at
-        the bounded car setpoint (power_w = car_action.power_w, target_soc = the reserve floor) and
-        the control tick treats it as a car session (car_session=True → a real DISCHARGE)."""
-        cur = None
-        val: PlanValidation | None = None
-        ov = override_box["ov"]
-        if ov.active(now):
-            assert ov.intent is not None and ov.expires_at is not None
-            until = ov.expires_at.astimezone(site_tz).strftime("%H:%M")
-            intent, override_active = ov.intent, True
-            # Gate a RISKY override (anything other than self-consumption) on data quality: EMS
-            # won't force charge/discharge/hold when critical data is unsafe — it can't trust SoC or
-            # reachability. Returning to self-consumption is always allowed (energy review #5).
-            risky = intent is not BatteryIntent.ALLOW_SELF_CONSUMPTION
-            if risky and _data_quality(now) == "unsafe":
-                intent = BatteryIntent.ALLOW_SELF_CONSUMPTION
-                reason = (f"manual override held — sensor data is unsafe, so EMS won't force "
-                          f"{ov.intent.value}; holding self-consumption until {until}")
-            else:
-                reason = f"manual override: {ov.intent.value} until {until}"
-        else:
-            pp = _current_plan()
-            if pp is None:
-                return None, None, False, None, None, None, None
-            cur = pp[2].intent_at(now)
-            if cur is None:
-                return None, None, False, None, None, None, None
-            # §8.11 hard gate: a plan that fails validation (impossible target, projected below
-            # reserve, …) must not be acted on — hold self-consumption, like the data fail-safe.
-            # Validate the plan we ALREADY fetched (no second _current_plan rebuild).
-            val = _validate_plan_obj(pp[2], now)
-            if not val.ok:
-                top = next((f for f in val.findings if f.severity == "unsafe"), None)
-                note = top.message if top is not None else "plan failed validation"
-                cur = None  # not acting on a plan slot — sizing must be None below
-                intent, reason, override_active = (
-                    BatteryIntent.ALLOW_SELF_CONSUMPTION,
-                    f"holding self-consumption — {note}", False)
-            else:
-                safe, fs_reason = failsafe_intent(cur.intent, _data_quality(now))
-                intent, reason = ((safe, fs_reason) if fs_reason is not None
-                                  else (cur.intent, cur.reason))
-                override_active = False
-        # Final guardrail (over the plan AND a manual override): never FEED the car — hold, or (if
-        # the operator chose a discharge behaviour) cover the house at a bounded setpoint.
-        intent, reason, car_action = _car_guard(now, intent, reason)
-        target_soc = power_w = None
-        if car_action is not None and car_action.action == "discharge":
-            # Car session: the setpoint is authoritative; the reserve floor is the stop. This takes
-            # precedence over the override/plan sizing below (it IS the final guardrail).
-            power_w = car_action.power_w
-            target_soc = settings_cache["battery.min_reserve_soc"]
-        elif override_active:
-            # A manual override is an EXPLICIT operator command, so it carries its own target —
-            # "charge now" means charge toward full (deliberate, not the planner's silent default),
-            # a forced discharge stops at the reserve floor. (Gated overrides held to
-            # self-consumption fall through with no target, which is correct.)
-            if intent is BatteryIntent.GRID_CHARGE_TO_TARGET:
-                target_soc = 100.0
-                # "charge now" = charge at the configured cluster max (default 4 kW), which the
-                # driver then splits across towers — not the driver's conservative 2 kW default.
-                power_w = settings_cache["battery.max_charge_w"]
-            elif (intent is BatteryIntent.DISCHARGE_FOR_LOAD and controller is not None
-                  and controller.allow_export_discharge):
-                target_soc = settings_cache["battery.min_reserve_soc"]
-                power_w = settings_cache["battery.max_discharge_w"]
-        elif cur is not None and intent is cur.intent:
-            if intent is BatteryIntent.GRID_CHARGE_TO_TARGET:
-                target_soc, power_w = cur.target_soc, cur.power_w
-            elif (intent is BatteryIntent.DISCHARGE_FOR_LOAD and controller is not None
-                  and controller.allow_export_discharge):
-                target_soc, power_w = cur.floor_soc, cur.power_w  # forced discharge → reserve floor
-        return intent, reason, override_active, target_soc, power_w, val, car_action
+    # --- The control brain (B-46): the plan-to-act path, intent resolution, car-session lifecycle
+    # and the single per-cycle write, lifted out of these closures into ControlService. It gets its
+    # collaborators explicitly; the coalesced live reads, data-quality, strategy resolution and
+    # planner-config builders stay as the closures above and are injected as callables. `settings`
+    # is THE live shared dict (never copied — the settings_cache convention). The aliases below let
+    # every endpoint + closure keep calling `_effective_intent` / `_current_plan` / … by name.
+    control = ControlService(
+        ctx=ctx, settings=settings_cache, controller=controller, store=store,
+        audit_store=audit_store, price_source=price_source, solar_forecast=solar_forecast,
+        site_tz=site_tz, dry_run=dry_run,
+        current_soc=_current_soc, current_mode=_current_mode, current_towers=_current_towers,
+        data_quality=_data_quality, car_charging=_car_charging, load_by=_load_by,
+        active_strategy=_active_strategy, validate_plan_obj=_validate_plan_obj,
+        planner_cfg=_planner_cfg, summer_cfg=_summer_cfg, adaptive_cfg=_adaptive_cfg,
+    )
+    _effective_intent = control.effective_intent
+    _current_plan = control.current_plan
+    _plan_with_recovery = control.plan_with_recovery
+    _build_plan_now = control.build_plan_now
+    _recovery_sizing = control.recovery_sizing
+    _control_tick = control.control_tick
+    _run_control_cycle = control.run_cycle
 
     def _plan_snapshot(now: datetime) -> dict | None:
         """Plan/target history snapshot (observability-data): what the planner intended THIS
@@ -1949,279 +1654,11 @@ def create_app(
             )
         return validation_box["latest"]
 
-    def _cluster_drift_record(desired: PhysicalMode, towers) -> dict | None:
-        """Deduped audit record when the cluster doesn't match the commanded mode FAMILY. Returns a
-        record once when drift starts and once when it clears; None while unchanged. towers = the
-        coalesced per-tower read (steady-state).
-
-        CLUSTER MODEL (asymmetric, verified live): the EMS commands the MASTER for real-time, which
-        drives the slaves in lockstep — a following slave keeps REPORTING self-consumption (7101=1)
-        even while it charges. So:
-        - Commanded REAL-TIME (charge/discharge/idle): judge the MASTER only (it reflects the mode);
-          a slave in self-consumption is FOLLOWING, not a fault — judging it falsely flagged it.
-        - Commanded SELF-CONSUMPTION (AUTO): every tower is commanded and must return to it, so flag
-          ANY tower still stuck in real-time (the genuine "didn't revert" fault)."""
-        if not towers:
-            return None
-        want = _commanded_family(desired)
-        if want == "self-consumption":
-            judged = [t for t in towers if t.online]  # all must have returned to self-consumption
-        else:
-            masters = [t for t in towers if t.online and t.role == "master"]
-            judged = masters or [t for t in towers if t.online]  # master drives real-time
-        laggards = [t for t in judged
-                    if t.mode and _tower_family(t.mode) not in (want, None)]
-        sig = tuple(sorted((t.ip, t.mode) for t in laggards))
-        if sig == _drift_box["sig"]:
-            return None  # already reported this exact state
-        prev = _drift_box["sig"]
-        _drift_box["sig"] = sig
-        if not laggards:
-            return ({"summary": "Battery cluster back in sync — all towers match the commanded "
-                                "mode",
-                     "detail": {"event": "drift_resolved", "commanded": desired.value}}
-                    if prev else None)
-        modes = {t.ip: t.mode for t in laggards}
-        return {
-            "summary": (f"Battery cluster MISMATCH — {len(laggards)} tower(s) NOT following the "
-                        f"commanded {desired.value}: {', '.join(sorted(set(modes.values())))}"),
-            "detail": {"event": "cluster_drift", "commanded": desired.value, "laggards": modes},
-        }
-
-    def _car_session_reset() -> None:
-        _car_session.update(active=False, setpoint_w=None, commanded_at=None, commands=0,
-                            below_threshold_cycles=0)
-
-    def _car_session_end_if_active(now: datetime) -> list[dict] | None:
-        """If a car discharge session is active but this cycle is no longer a car discharge (car
-        dipped below threshold, mode switched to hold, master toggled off, or the reserve floor
-        reached), decide whether to actually end it now.
-
-        A dip below `control.car_charging_threshold_w` (the production flap: three-phase balancing
-        / charging ramp pauses briefly drop EV power) is given `control.car_session_end_cycles`
-        consecutive cycles of grace (`_decide_car_session_end`) before the session ends — so a
-        one-cycle blip no longer flaps the battery mode on and off. Any OTHER reason (reserve
-        floor, master switch off) ends the session immediately, exactly as before this fix.
-
-        Returns ``None`` while the grace window is still open — the caller must hold this cycle
-        (no ordinary decide() call, no write) rather than resume the plan early. Otherwise returns
-        a (possibly empty) list of audit records: non-empty only when a session just ended (a
-        hysteresis-deferred end is NOT audited — silence is the point; see the debug log below).
-        The NORMAL intent (the resolved plan/hold) then flows through the ordinary decide() path
-        below — mirroring how today's car-guard hold simply releases and lets the next intent
-        apply (return-to-AUTO / plan intent is never gated)."""
-        if not _car_session["active"]:
-            return []
-        end_cycles = int(settings_cache["control.car_session_end_cycles"])
-        ended, cycles = _decide_car_session_end(
-            _car_session, car_below_threshold=not _car_charging(now), end_cycles=end_cycles)
-        if not ended:
-            _car_session["below_threshold_cycles"] = cycles
-            _log.debug("car session: below-threshold cycle %d/%d — holding session open "
-                      "(no end yet)", cycles, end_cycles)
-            return None
-        _car_session_reset()
-        return [{"summary": "car session ended — resuming plan",
-                 "detail": {"event": "car_session_end"}}]
-
-    def _car_session_command(
-        now: datetime, car_action: CarModeAction, target_soc, override_active, observed,
-    ) -> list[dict]:
-        """WRITE PATH: run one cycle of a car-charging discharge session. Consults the bounded
-        re-command + 10-min car dwell + 6-command cap (`_decide_car_command`), commands the battery
-        through the ONE writer (controller.decide, car_session=True so DISCHARGE_FOR_LOAD becomes a
-        real DISCHARGE; force=True only on an actual (re-)command so a setpoint change within
-        DISCHARGE isn't swallowed by mode-only idempotency), mutates the in-memory session box, and
-        returns audit records. A transport timeout during a car command rides the established
-        BatteryWriteUnconfirmed HOLD path (decide never raises past its contract; it returns the
-        `unconfirmed` outcome — we hold, we do NOT revert)."""
-        command, nxt, event = _decide_car_command(_car_session, car_action, now)
-        power = car_action.power_w
-        if not command:
-            _car_session.update(nxt)  # keep the session alive (hold the current setpoint, no write)
-            if event == "cap":
-                return [{"summary": ("car session: command budget spent — holding the current "
-                                     f"setpoint (~{_car_session['setpoint_w']:.0f} W), not "
-                                     "re-commanding a moving prediction"),
-                         "detail": {"event": "car_session_cap",
-                                    "setpoint_w": _car_session["setpoint_w"],
-                                    "commands": _car_session["commands"]}}]
-            return []  # quiet hold — the normal steady state of a car session (no audit spam)
-        dec = controller.decide(
-            BatteryIntent.DISCHARGE_FOR_LOAD, now, target_soc=target_soc, power_w=power,
-            observed_mode=observed, manual=override_active, priority=True,
-            car_session=True, force=True)
-        # Any attempted device write advances the session (bounds retries via the cap); dry-run /
-        # not-controlling did not touch the device, so the session doesn't advance on those.
-        if dec.outcome in _CAR_ATTEMPTED_OUTCOMES:
-            _car_session.update(nxt)
-        else:
-            # dry_run / not_controlling — no device write (unreachable here in prod: the tick gates
-            # on lc.can_command and dry-run never runs the tick). Seed a coherent box anyway so a
-            # later real command has a setpoint to compare against (no every-cycle recommand loop).
-            _car_session.update(active=True, setpoint_w=power)
-        first = event == "start"
-        lead = "car session started" if first else "car session"
-        if dec.outcome == "applied":
-            summary = f"{lead}: {car_action.reason} (command sent)"
-        elif dec.outcome == "unconfirmed":
-            summary = (f"{lead}: {power:.0f} W unconfirmed — device slow to respond; holding "
-                       "(not reverting), will re-verify next cycle")
-        elif dec.outcome in ("failed_recovered", "failed_unrecovered"):
-            summary = f"{lead}: discharge command FAILED ({dec.reason})"
-        elif dec.outcome == "dry_run":
-            summary = f"{lead} (dry-run): would cover the house at {power:.0f} W — no write"
-        else:  # not_controlling (or any future outcome) — surfaced honestly
-            summary = f"{lead}: not commanded ({dec.reason})"
-        return [{"summary": summary,
-                 "detail": {"event": "car_session", "first": first, "setpoint_w": power,
-                            "commands": _car_session["commands"], "outcome": dec.outcome,
-                            "accepted": dec.applied, "reason": car_action.reason,
-                            "override_active": override_active}}]
-
-    def _control_tick(now: datetime) -> list[dict]:
-        """Operational mode ONLY: advance the ownership lifecycle and, once CONTROLLING, apply the
-        current intent — the single battery write per cycle. Every safety gate (dwell, daily cap,
-        fail-safe AUTO on unsafe data, override) is enforced by ModeController.decide /
-        _effective_intent. Returns audit records for the async caller to log: a CONFIRMED
-        mode-change record when a write was attempted (applied/failed), and/or a cluster-mismatch
-        record when a tower isn't following the commanded mode (steady state). [] = nothing."""
-        if controller is None:
-            return []
-        lc = controller.lifecycle
-        if lc.state is OwnershipState.INACTIVE:
-            lc.start(now)
-        # Readiness sequence (SPEC §13.3): validated sensors, a reachable battery, a loaded plan.
-        if _data_quality(now) != "unsafe":
-            lc.mark_sensors_validated()
-        # Reachability + idempotency reuse the SHARED coalesced cluster read (observed) instead of a
-        # separate per-cycle master mode-read — far gentler on a device shared with HA + the app.
-        # IMPORTANT: "reachable" = the battery RESPONDED this cycle (a tower online), NOT that its
-        # mode decoded to a known label — else an unexpected mode value would stall ALL control
-        # (incl. manual overrides). `observed` may be None; decide() then reads fresh.
-        observed = _current_mode(now)
-        towers = _current_towers(now)
-        reachable = any(t.online for t in towers) if towers else observed is not None
-        if reachable:
-            lc.mark_probe_ok()  # battery readable this cycle
-        if _current_plan() is not None:
-            lc.mark_plan_loaded()
-        lc.tick(now)
-        if not lc.can_command(now):
-            return []
-        intent, _reason, override_active, tgt, pw, _v, car_action = _effective_intent(now)
-        if intent is None:
-            # End a dangling session, nothing else to do — [] both when already inactive and when
-            # the end-hysteresis grace window is still open (nothing to act on either way).
-            return _car_session_end_if_active(now) or []
-        # A car-charging discharge session owns its own bounded command cadence (a real DISCHARGE at
-        # the covered-house setpoint) — handled separately from the ordinary single-write path.
-        if car_action is not None and car_action.action == "discharge":
-            _car_session["below_threshold_cycles"] = 0  # the car read above threshold this cycle
-            return _car_session_command(now, car_action, tgt, override_active, observed)
-        # Not a car discharge this cycle: if a session was active (car dipped below threshold /
-        # hold / mode-change) decide whether to end it now (see _car_session_end_if_active) — a
-        # below-threshold dip gets a few cycles' grace, so `None` means "still in the grace window,
-        # hold — skip the ordinary decide() below" rather than resuming the plan on a blip.
-        records = _car_session_end_if_active(now)
-        if records is None:
-            return []
-        # decide() uses `observed` for the idempotency gate; its post-write CONFIRM re-reads the
-        # device fresh, so a stale observation only risks a redundant idempotent write. `manual` (an
-        # active operator override) and `priority` (a SAFETY action — the car-guard hold while the
-        # car charges) bypass the automatic dwell/cap gates: never leave the battery draining into
-        # the car just because today's switch budget is spent (a return to AUTO is always allowed
-        # too; see _gate).
-        priority = _car_charging(now)
-        dec = controller.decide(intent, now, target_soc=tgt, power_w=pw,
-                                observed_mode=observed, manual=override_active, priority=priority)
-        if dec.outcome in ("applied", "failed_recovered", "failed_unrecovered"):
-            # An ACTUAL device write — audit it. `accepted` = the device acknowledged the command
-            # (result:true); the mode switches with latency, so whether it actually TOOK is verified
-            # on a later cycle by the cluster-consistency check below (which flags a tower that
-            # never follows). So this logs "command sent" / "FAILED", not a premature "confirmed".
-            _held_box["sig"] = None  # an action happened — re-explain any future hold afresh
-            before = observed.value if observed is not None else "unknown"
-            accepted = dec.applied
-            records.append({
-                "summary": (f"Battery mode {before} → {dec.desired_mode.value} — "
-                            + ("command sent" if accepted else f"command FAILED ({dec.reason})")),
-                "detail": {"from_mode": before, "desired_mode": dec.desired_mode.value,
-                           "intent": str(dec.intent), "outcome": dec.outcome,
-                           "accepted": accepted, "reason": dec.reason}})
-        elif dec.outcome == "idempotent":
-            # Steady state: EMS believes it's already in `desired`. VERIFY the whole cluster —
-            # a tower that didn't follow (still self-consuming while we commanded real-time) is the
-            # silent slave-not-following bug. Towers are fresh here (no write this cycle).
-            _held_box["sig"] = None
-            drift = _cluster_drift_record(dec.desired_mode, towers)
-            if drift is not None:
-                records.append(drift)
-        elif dec.outcome == "unconfirmed":
-            # The write TIMED OUT (device slow/unreachable) — we did NOT revert (the device likely
-            # got it; reverting would also time out). Surface it (deduped) so a recurring "charge
-            # isn't sticking because the battery is slow to answer" is visible, not silent.
-            sig = (dec.outcome, dec.desired_mode.value)
-            if _held_box["sig"] != sig:
-                _held_box["sig"] = sig
-                records.append({
-                    "summary": (f"Battery {dec.desired_mode.value} unconfirmed — device slow to "
-                                "respond; holding and retrying (not reverting)"),
-                    "detail": {"desired_mode": dec.desired_mode.value, "intent": str(dec.intent),
-                               "outcome": dec.outcome, "reason": dec.reason,
-                               "override_active": override_active}})
-        elif dec.outcome in ("dwell", "cap_reached", "not_controlling"):
-            # A HELD decision: the EMS WANTED to switch but a guardrail blocked it. Never silent
-            # (CLAUDE.md "explainability first — including why it is NOT acting"). Deduped so a
-            # recurring hold is explained once per (outcome, desired_mode), not every cycle. With
-            # the manual/return-to-AUTO bypass this only fires for the AUTOMATIC planner now.
-            sig = (dec.outcome, dec.desired_mode.value)
-            if _held_box["sig"] != sig:
-                _held_box["sig"] = sig
-                records.append({
-                    "summary": f"Battery NOT switched to {dec.desired_mode.value} — {dec.reason}",
-                    "detail": {"desired_mode": dec.desired_mode.value, "intent": str(dec.intent),
-                               "outcome": dec.outcome, "reason": dec.reason,
-                               "override_active": override_active}})
-        return records
-
-    async def _refresh_car_obs(now: datetime) -> None:
-        """Warm `_car_obs_box` with a bounded recent slice of observations for the non-EV house-load
-        prediction — ONLY while the car is charging (that's the only time the prediction is used, so
-        the cheap query never runs otherwise). Best-effort: a failed read keeps the last good rows,
-        and an empty box just falls back to the load profile inside `_car_predicted_house_w`."""
-        if store is None or not _car_charging(now):
-            return
-        start = (now - timedelta(days=_CAR_PRED_LOOKBACK_DAYS)).isoformat()
-        try:
-            _car_obs_box["rows"] = await store.observations_between(start, now.isoformat())
-            _car_obs_box["at"] = now
-        except Exception:
-            _log.debug("car-mode observation read failed; keeping last good (non-fatal)",
-                       exc_info=True)
-
-    async def _run_control_cycle() -> None:
-        """One operational control cycle: run the (blocking) tick off the event loop, then AUDIT the
-        CONFIRMED mode change it reports. Serialised by `_control_lock` so the periodic loop and an
-        immediate override-triggered run can't overlap (two concurrent writes to the battery)."""
-        if controller is None or dry_run:
-            return
-        async with _control_lock:
-            now = datetime.now(UTC)
-            await _refresh_car_obs(now)  # warm the house-load prediction before the (sync) tick
-            try:
-                records = await asyncio.to_thread(_control_tick, now)
-            except Exception:
-                _log.exception("control tick failed; retry next cycle (fail-safe)")
-                return
-            for rec in records:
-                if audit_store is not None:
-                    try:
-                        await audit_store.append(now.isoformat(), "battery_decision",
-                                                 rec["summary"], rec["detail"])
-                    except Exception:
-                        _log.warning("failed to write battery-decision audit", exc_info=True)
-
+    # `_cluster_drift_record`, the car-session lifecycle (`_car_session_reset` /
+    # `_car_session_end_if_active` / `_car_session_command`), `_control_tick`, `_refresh_car_obs`
+    # and `_run_control_cycle` moved into ControlService (B-46). `_control_loop` below is the thin
+    # periodic driver (kept here — it owns the lifespan `stop` event + cadence) and delegates to
+    # `control.run_cycle()` via the `_run_control_cycle` alias set above.
     async def _control_loop(stop: asyncio.Event) -> None:
         """Operational control loop (SPEC §5.3 act): each cycle apply the intent + audit the
         confirmed result. Dry-run uses the advisory _audit_decision_loop instead. Fail-safe — a tick
