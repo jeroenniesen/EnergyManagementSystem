@@ -244,6 +244,14 @@ SETTINGS_SCHEMA: tuple[SettingsField, ...] = (
         min=100.0, max=11000.0, step=100.0, unit="W", advanced=True,
     ),
     SettingsField(
+        "control.car_session_end_cycles", "Car session end hysteresis", "int", 3, "control",
+        help="How many consecutive control cycles the car must read below the charging threshold "
+        "before a discharge session actually ends. Guards against brief power dips (three-phase "
+        "balancing, charging ramp pauses) flapping the battery mode on and off. 1 = end "
+        "immediately (the original behaviour). Session START stays immediate either way.",
+        min=1, max=12, advanced=True,
+    ),
+    SettingsField(
         "control.live_read_seconds", "Battery/meter read interval", "number", 60.0, "control",
         help="How often the app actually reads the battery + meters (live values are reused in "
         "between). RAISE this if the battery/Indevolt app feels slow or the master drops offline — "

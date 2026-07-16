@@ -13,7 +13,9 @@ from ems.export_package import (
     ev_price_adherence,
     incident_rollup,
     read_member,
+    redact_log_text,
     rows_to_csv,
+    tail_lines,
     validation_summary,
     zip_names,
 )
@@ -99,6 +101,57 @@ def test_notification_columns_csv_has_header_row_and_excludes_body():
 
 def test_notification_columns_csv_empty_still_writes_header():
     assert rows_to_csv([], NOTIFICATION_COLUMNS).strip() == ",".join(NOTIFICATION_COLUMNS)
+
+
+# ---- server_log_tail.txt: tail_lines / redact_log_text (B-40's noted diagnosis gap) ----
+
+def test_tail_lines_keeps_only_the_last_n_lines():
+    text = "\n".join(f"line{i}" for i in range(10))
+    out = tail_lines(text, max_lines=3)
+    assert out.splitlines() == ["line7", "line8", "line9"]
+
+
+def test_tail_lines_passes_short_input_through_unchanged():
+    text = "one\ntwo\n"
+    assert tail_lines(text, max_lines=400) == text
+
+
+def test_tail_lines_zero_cap_yields_empty():
+    assert tail_lines("a\nb\nc", max_lines=0) == ""
+
+
+def test_redact_log_text_masks_bearer_header():
+    out = redact_log_text("auth failed: Authorization: Bearer abc123.def-456_XYZ\n")
+    assert "abc123" not in out
+    assert "Bearer [REDACTED]" in out
+
+
+def test_redact_log_text_masks_sk_style_api_key():
+    out = redact_log_text("MiniMax call failed with key sk-Ab12_-34cd used\n")
+    assert "sk-Ab12_-34cd" not in out
+    assert "[REDACTED]" in out
+
+
+def test_redact_log_text_masks_configured_secret_values():
+    out = redact_log_text(
+        "tibber fetch failed for token S3CRET-TOKEN-DO-NOT-LEAK\n",
+        secret_values=["S3CRET-TOKEN-DO-NOT-LEAK"],
+    )
+    assert "S3CRET-TOKEN-DO-NOT-LEAK" not in out
+    assert "[REDACTED]" in out
+
+
+def test_redact_log_text_masks_ntfy_topic_verbatim():
+    out = redact_log_text(
+        "ntfy push to https://ntfy.sh/my-private-topic-xyz failed: 404\n",
+        secret_values=["my-private-topic-xyz"],
+    )
+    assert "my-private-topic-xyz" not in out
+    assert "[REDACTED]" in out
+
+
+def test_redact_log_text_ignores_blank_secret_values_and_never_raises():
+    assert redact_log_text("plain line\n", secret_values=["", "   ", None]) == "plain line\n"
 
 
 # ---- ev_price_adherence: volume-weighted price paid for EV charging vs. window average ----
@@ -799,7 +852,8 @@ def test_observations_and_notifications_are_windowed_but_daily_energy_is_full(tm
 
 def test_package_never_leaks_a_stored_secret_value(tmp_path):
     # Definitive redaction check: seed a recognisable secret value + a config-change audit that
-    # names the secret KEY, then assert the secret VALUE appears in NO member of the ZIP.
+    # names the secret KEY, then assert the secret VALUE appears in NO member of the ZIP —
+    # including server_log_tail.txt (B-8x), when a server.log file sits next to the DB.
     db = str(tmp_path / "ems.sqlite")
     secret = "S3CRET-TOKEN-DO-NOT-LEAK"
 
@@ -807,6 +861,9 @@ def test_package_never_leaks_a_stored_secret_value(tmp_path):
         settings = SettingsStore(db)
         await settings.init()
         await settings.set_many({"access.web_token": secret, "tibber.token": secret,
+                                  # A REAL secret-typed schema key (see ems.settings.SECRET_KEYS) —
+                                  # this is the one the server-log redaction actually reads.
+                                  "prices.tibber_token": secret,
                                   "ev.advice_enabled": True, "ev.car_id": "my-tesla"})
         audit = AuditStore(db)
         await audit.init()
@@ -830,12 +887,23 @@ def test_package_never_leaks_a_stored_secret_value(tmp_path):
 
     _seed(db)
     asyncio.run(seed_secret())
+    # A server.log file next to the DB (the launchd install's layout) with a realistic error
+    # message carrying the secret — proves the NEW log-member redaction (not just the settings
+    # allow-list) keeps a stored secret out of the export too.
+    (tmp_path / "server.log").write_text(
+        f"ERROR ems.sources.tibber: token refresh failed for token {secret}\n"
+    )
     with TestClient(_app(db)) as c:
         data = c.get("/api/export/package").content
+    assert "server_log_tail.txt" in zip_names(data)  # proves it wasn't just silently skipped
     for name in zip_names(data):
         assert secret not in read_member(data, name), f"secret leaked into {name}"
     # The audit entry is present (by key name), proving we didn't just drop the data.
     assert "access.web_token" in read_member(data, "audit_log.csv")
+    # The log member still carries the surrounding, non-secret text (proving we redacted the
+    # VALUE, not the whole file).
+    assert "token refresh failed" in read_member(data, "server_log_tail.txt")
+    assert "[REDACTED]" in read_member(data, "server_log_tail.txt")
     # The new EV members specifically: real (non-secret) config flows through, ev_sessions.csv is
     # clean, and the secret never rides along in the manifest's new "ev" block.
     manifest = json.loads(read_member(data, "manifest.json"))
@@ -851,6 +919,59 @@ def test_package_never_leaks_a_stored_secret_value(tmp_path):
     assert manifest["counts"]["observations"] == 1
     assert manifest["counts"]["daily_energy"] == 1
     assert manifest["counts"]["notifications"] == 1
+
+
+# ---- server_log_tail.txt endpoint wiring: present/omitted + redaction (B-40's diagnosis gap) ----
+
+def test_export_package_includes_server_log_tail_when_a_log_file_is_present(tmp_path):
+    db = str(tmp_path / "ems.sqlite")
+    _seed(db)
+    (tmp_path / "server.log").write_text("INFO boot\nWARNING something happened\nINFO steady\n")
+    with TestClient(_app(db)) as c:
+        data = c.get("/api/export/package").content
+    assert "server_log_tail.txt" in zip_names(data)
+    text = read_member(data, "server_log_tail.txt")
+    assert "WARNING something happened" in text
+    manifest = json.loads(read_member(data, "manifest.json"))
+    assert manifest["counts"]["server_log_lines"] == 3
+
+
+def test_export_package_omits_server_log_tail_when_no_log_file_exists(tmp_path):
+    # No ems/data/server.log next to the DB (a dev run / fresh install) — the member is simply
+    # omitted, not a failed export, and the counts entry says so explicitly.
+    db = str(tmp_path / "ems.sqlite")
+    _seed(db)
+    with TestClient(_app(db)) as c:
+        r = c.get("/api/export/package")
+    assert r.status_code == 200
+    assert "server_log_tail.txt" not in zip_names(r.content)
+    manifest = json.loads(read_member(r.content, "manifest.json"))
+    assert manifest["counts"]["server_log_lines"] == 0
+
+
+def test_export_package_server_log_tail_redacts_bearer_token_and_configured_ntfy_topic(tmp_path):
+    db = str(tmp_path / "ems.sqlite")
+    _seed(db)
+    token = "abcDEF123.secret-part_XYZ"
+    topic = "my-private-ntfy-topic-9f8e"
+
+    async def seed_ntfy():
+        settings = SettingsStore(db)
+        await settings.init()
+        await settings.set_many({"notify.ntfy_topic": topic, "notify.ntfy_url": "https://ntfy.sh"})
+    asyncio.run(seed_ntfy())
+
+    (tmp_path / "server.log").write_text(
+        f"WARNING auth failed: Authorization: Bearer {token}\n"
+        f"ERROR ntfy push to https://ntfy.sh/{topic} failed: 404\n"
+    )
+    with TestClient(_app(db)) as c:
+        data = c.get("/api/export/package").content
+    text = read_member(data, "server_log_tail.txt")
+    assert token not in text
+    assert topic not in text
+    assert "Bearer [REDACTED]" in text
+    assert text.count("[REDACTED]") >= 2
 
 
 def test_recorder_wiring_persists_a_plan_history_row_on_startup(tmp_path):

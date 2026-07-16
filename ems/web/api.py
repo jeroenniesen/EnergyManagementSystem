@@ -193,6 +193,42 @@ async def _run_backup(store: HistoryStore, db_path: str, keep: int,
             )
 
 
+async def _run_store_health_check(
+    recorder: Recorder | None, notifier: Notifier | None, now: datetime, tz,
+    state: dict[str, Any], *, threshold: int = 10,
+) -> None:
+    """B-49 escalation: when the recorder has failed to persist for `threshold` consecutive cycles,
+    the history store may be wedged (a dead long-lived connection, a full disk). Alert the operator
+    ONCE per LOCAL day via `notifier.send`. Module-level + injected (like `_run_backup`) so it's
+    directly unit-testable.
+
+    Two dedupe layers, because the store itself may be the thing that's broken:
+    * `state` is an in-memory ``{'alerted_date': iso|None}`` box — robust even when the store can't
+      dedupe (a dead store can't check `dedupe_key`).
+    * `push_even_if_store_fails=True` on the send, so the ntfy push still goes out even though the
+      in-app write is exactly what's failing (ntfy needs no store).
+
+    A no-op when recorder/notifier is absent or the streak is below `threshold`. Never raises here —
+    `Notifier.send` is itself best-effort — but the caller still wraps it fail-safe."""
+    if recorder is None or notifier is None:
+        return
+    streak = recorder.health().get("consecutive_failures", 0)
+    if streak < threshold:
+        return
+    today = now.astimezone(tz).date().isoformat()
+    if state.get("alerted_date") == today:
+        return  # already alerted today
+    state["alerted_date"] = today  # set BEFORE sending so a per-day alert fires at most once
+    await notifier.send(
+        "store_unhealthy", "Samples aren't being stored",
+        "EMS hasn't been able to save new energy samples for a little while. Your battery is still "
+        "being controlled safely, and everything already saved is intact. If this is still showing "
+        "in an hour, restart the app to clear it.",
+        dedupe_key=f"store_unhealthy:{today}",
+        push_even_if_store_fails=True,
+    )
+
+
 async def _run_detectors(
     store: HistoryStore | None,
     notifier: Notifier | None,
@@ -736,6 +772,33 @@ def _decide_car_command(
                    "commanded_at": commanded_at, "commands": commands}, "hold"
 
 
+def _decide_car_session_end(
+    session: dict, *, car_below_threshold: bool, end_cycles: int,
+) -> tuple[bool, int]:
+    """PURE. Session-END hysteresis (production audit: a Tesla's charging power briefly dips below
+    `control.car_charging_threshold_w` — three-phase balancing / ramp pauses — so an active session
+    was ending and immediately restarting, each flip issuing a battery mode command).
+
+    Given the current session box and whether THIS cycle read below the threshold, decide whether
+    the session should actually end now. Only a below-threshold READ (`car_below_threshold=True`)
+    counts toward the grace window: `end_cycles` (>= 1) consecutive below-threshold cycles are
+    required before ending, and the counter resets the moment a cycle reads above threshold again.
+    `car_below_threshold=False` (this cycle's car reading is still above the threshold, but the
+    session is ending for some OTHER reason — the reserve floor reached, the master switch toggled
+    off) always ends the session on the spot, counter reset to 0 — those are genuine state changes,
+    never power-reading noise, and must never be delayed (safety).
+
+    Returns ``(end_now, next_below_threshold_cycles)``; the caller resets the whole box when
+    `end_now`, else merges the counter back into the session box. Session START is untouched —
+    it stays immediate, handled entirely by `_decide_car_command` above."""
+    if not car_below_threshold:
+        return True, 0
+    cycles = int(session.get("below_threshold_cycles") or 0) + 1
+    if cycles < max(1, end_cycles):
+        return False, cycles
+    return True, 0
+
+
 def create_app(
     source: Source,
     *,
@@ -808,9 +871,11 @@ def create_app(
     # Car-charging discharge session (feat/car-charge-modes). IN-MEMORY ONLY: a restart mid-session
     # simply starts a fresh session and re-commands ONCE next cycle (documented, acceptable — the
     # battery keeps whatever mode it was in until then, and the session re-derives from live input).
-    # {active, setpoint_w (last commanded W), commanded_at (iso of last car command), commands}.
+    # {active, setpoint_w (last commanded W), commanded_at (iso of last car command), commands,
+    # below_threshold_cycles (the end-hysteresis counter, see _car_session_end_if_active)}.
     _car_session: dict[str, Any] = {
-        "active": False, "setpoint_w": None, "commanded_at": None, "commands": 0}
+        "active": False, "setpoint_w": None, "commanded_at": None, "commands": 0,
+        "below_threshold_cycles": 0}
     # Per-control-cycle cache of recent observation rows for the non-EV house-load prediction,
     # refreshed by the async control cycle ONLY while the car is charging (a bounded, cheap query).
     # The sync guard/control-tick read it; an empty/stale box just falls back to the load profile.
@@ -834,6 +899,9 @@ def create_app(
     _canonical_forecast_state: dict[str, Any] = {
         "last_success_date": None, "last_attempt_iso": None, "ok": None,
     }
+    # Store-health escalation (B-49): in-memory per-day dedupe for the `store_unhealthy` alert. Kept
+    # in memory (not the store's dedupe) so it stays robust even when the store is the dead thing.
+    _store_unhealthy_state: dict[str, Any] = {"alerted_date": None}
     # Notification outbox (B-20): built from the SAME history store + the live settings cache, so
     # a just-saved ntfy url/topic applies to the very next send without a restart. None when no
     # store is configured (e.g. some unit tests) — _run_backup treats a None notifier as a no-op.
@@ -1921,16 +1989,37 @@ def create_app(
         }
 
     def _car_session_reset() -> None:
-        _car_session.update(active=False, setpoint_w=None, commanded_at=None, commands=0)
+        _car_session.update(active=False, setpoint_w=None, commanded_at=None, commands=0,
+                            below_threshold_cycles=0)
 
-    def _car_session_end_if_active(now: datetime) -> list[dict]:
+    def _car_session_end_if_active(now: datetime) -> list[dict] | None:
         """If a car discharge session is active but this cycle is no longer a car discharge (car
-        stopped, mode switched to hold, master toggled off, or the reserve floor reached), end it:
-        audit it and reset the box. The NORMAL intent (the resolved plan/hold) then flows through
-        the ordinary decide() path below — mirroring how today's car-guard hold simply releases and
-        lets the next intent apply (return-to-AUTO / plan intent is never gated)."""
+        dipped below threshold, mode switched to hold, master toggled off, or the reserve floor
+        reached), decide whether to actually end it now.
+
+        A dip below `control.car_charging_threshold_w` (the production flap: three-phase balancing
+        / charging ramp pauses briefly drop EV power) is given `control.car_session_end_cycles`
+        consecutive cycles of grace (`_decide_car_session_end`) before the session ends — so a
+        one-cycle blip no longer flaps the battery mode on and off. Any OTHER reason (reserve
+        floor, master switch off) ends the session immediately, exactly as before this fix.
+
+        Returns ``None`` while the grace window is still open — the caller must hold this cycle
+        (no ordinary decide() call, no write) rather than resume the plan early. Otherwise returns
+        a (possibly empty) list of audit records: non-empty only when a session just ended (a
+        hysteresis-deferred end is NOT audited — silence is the point; see the debug log below).
+        The NORMAL intent (the resolved plan/hold) then flows through the ordinary decide() path
+        below — mirroring how today's car-guard hold simply releases and lets the next intent
+        apply (return-to-AUTO / plan intent is never gated)."""
         if not _car_session["active"]:
             return []
+        end_cycles = int(settings_cache["control.car_session_end_cycles"])
+        ended, cycles = _decide_car_session_end(
+            _car_session, car_below_threshold=not _car_charging(now), end_cycles=end_cycles)
+        if not ended:
+            _car_session["below_threshold_cycles"] = cycles
+            _log.debug("car session: below-threshold cycle %d/%d — holding session open "
+                      "(no end yet)", cycles, end_cycles)
+            return None
         _car_session_reset()
         return [{"summary": "car session ended — resuming plan",
                  "detail": {"event": "car_session_end"}}]
@@ -2022,14 +2111,21 @@ def create_app(
             return []
         intent, _reason, override_active, tgt, pw, _v, car_action = _effective_intent(now)
         if intent is None:
-            return _car_session_end_if_active(now)  # end a dangling session, nothing else to do
+            # End a dangling session, nothing else to do — [] both when already inactive and when
+            # the end-hysteresis grace window is still open (nothing to act on either way).
+            return _car_session_end_if_active(now) or []
         # A car-charging discharge session owns its own bounded command cadence (a real DISCHARGE at
         # the covered-house setpoint) — handled separately from the ordinary single-write path.
         if car_action is not None and car_action.action == "discharge":
+            _car_session["below_threshold_cycles"] = 0  # the car read above threshold this cycle
             return _car_session_command(now, car_action, tgt, override_active, observed)
-        # Not a car discharge this cycle: if a session was active (car stopped / hold / mode-change)
-        # end it now, then let the resolved intent apply through the ordinary path.
-        records: list[dict] = _car_session_end_if_active(now)
+        # Not a car discharge this cycle: if a session was active (car dipped below threshold /
+        # hold / mode-change) decide whether to end it now (see _car_session_end_if_active) — a
+        # below-threshold dip gets a few cycles' grace, so `None` means "still in the grace window,
+        # hold — skip the ordinary decide() below" rather than resuming the plan on a blip.
+        records = _car_session_end_if_active(now)
+        if records is None:
+            return []
         # decide() uses `observed` for the idempotency gate; its post-write CONFIRM re-reads the
         # device fresh, so a stale observation only risks a redundant idempotent write. `manual` (an
         # active operator override) and `priority` (a SAFETY action — the car-guard hold while the
@@ -2309,6 +2405,11 @@ def create_app(
                     lambda m: gather_digest(ctx, m))
             except Exception:
                 _log.exception("weekly digest cycle failed; retry next cycle (fail-safe)")
+            try:
+                await _run_store_health_check(
+                    recorder, notifier, datetime.now(UTC), site_tz, _store_unhealthy_state)
+            except Exception:
+                _log.exception("store-health check failed; retry next cycle (fail-safe)")
 
     @app.get("/health/live")
     def live() -> dict:
@@ -2576,6 +2677,14 @@ def create_app(
                 # 18:00 canonical-forecast job status (design §4.3) — a dead job is otherwise
                 # invisible until a gap shows up in forecasts.csv or the accuracy surfaces.
                 storage["canonical_forecast"] = dict(_canonical_forecast_state)
+                # Store self-heal visibility (B-49): the recorder's consecutive persist-failure
+                # streak (the operator-visible "samples aren't storing" signal) + the last time the
+                # history store had to discard + reopen a dead shared connection.
+                storage["history_store"] = {
+                    "consecutive_persist_failures": (
+                        recorder.health()["consecutive_failures"] if recorder is not None else 0),
+                    "last_reheal_iso": store.reheal_stats()["last_reheal_iso"],
+                }
         return {"overall": overall_status(checks), "checks": [c.to_dict() for c in checks],
                 "cache": cache_stats, "readiness": readiness, "storage": storage,
                 "recorder": recorder.health() if recorder is not None else None}

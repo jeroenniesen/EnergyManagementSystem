@@ -18,6 +18,7 @@ from ems.freshness import FreshnessTracker
 from ems.lifecycle import Lifecycle
 from ems.planner.schedule import SLOT
 from ems.sense import SIGNALS
+from ems.settings import defaults as settings_defaults
 from ems.sources.battery import BatteryWriteUnconfirmed, MockBatteryDriver, intent_to_mode
 from ems.sources.forecast import MockSolarForecastSource
 from ems.sources.prices import PriceSlot
@@ -27,6 +28,7 @@ from ems.storage.settings import SettingsStore
 from ems.web.api import (
     _CAR_SESSION_MAX_COMMANDS,
     _decide_car_command,
+    _decide_car_session_end,
     create_app,
 )
 
@@ -223,6 +225,80 @@ def test_write_count_proof_a_3h_noisy_session_stays_under_three_commands():
     assert d.apply_calls <= 3
     assert d.apply_calls >= 2  # the sustained step DID trigger a real re-command (not trivially 1)
     assert d.current_mode() is PhysicalMode.DISCHARGE
+
+
+# ==================================================================================================
+# 3b. _decide_car_session_end — the session-END hysteresis (below-threshold grace)
+#
+# Production audit: "car session started 13:22 -> ended 13:25 -> started 13:26" — the Tesla's
+# charging power evidently dipped below control.car_charging_threshold_w for a single 5-min cycle
+# (three-phase balancing / a charging ramp pause), so the session ended and immediately restarted,
+# each flip issuing a battery mode command. `_decide_car_session_end` requires N (>=1) CONSECUTIVE
+# below-threshold cycles before actually ending; `_control_tick` resets the counter to 0 directly
+# on any cycle that reads ABOVE threshold (car_action.action == "discharge") — mirrored below via
+# manual box mutation, exactly like the noisy-session write-count proof above.
+# ==================================================================================================
+
+def test_below_threshold_grace_holds_for_two_cycles_then_ends_on_the_third():
+    session = {"below_threshold_cycles": 0}
+    # Two below-threshold cycles: NOT ended, counter climbs 1 -> 2 (no end command either cycle).
+    ended, cycles = _decide_car_session_end(session, car_below_threshold=True, end_cycles=3)
+    assert (ended, cycles) == (False, 1)
+    session["below_threshold_cycles"] = cycles
+    ended, cycles = _decide_car_session_end(session, car_below_threshold=True, end_cycles=3)
+    assert (ended, cycles) == (False, 2)
+    session["below_threshold_cycles"] = cycles
+    # The THIRD consecutive below-threshold cycle ends it — exactly once.
+    ended, cycles = _decide_car_session_end(session, car_below_threshold=True, end_cycles=3)
+    assert (ended, cycles) == (True, 0)
+
+
+def test_counter_resets_when_a_cycle_reads_above_threshold():
+    # 2 below (climbs to 2) -> 1 above (the wiring resets the counter directly, mirrored here) ->
+    # 2 more below MUST NOT end (if the counter hadn't reset, 2+2=4 >= 3 would end early).
+    session = {"below_threshold_cycles": 0}
+    for _ in range(2):
+        _, cycles = _decide_car_session_end(session, car_below_threshold=True, end_cycles=3)
+        session["below_threshold_cycles"] = cycles
+    assert session["below_threshold_cycles"] == 2
+    session["below_threshold_cycles"] = 0  # mirrors _control_tick's direct reset on a discharge run
+    for _ in range(2):
+        ended, cycles = _decide_car_session_end(session, car_below_threshold=True, end_cycles=3)
+        assert ended is False
+        session["below_threshold_cycles"] = cycles
+    assert session["below_threshold_cycles"] == 2  # counting from 0 again, not resuming from 2
+
+
+def test_any_other_end_reason_bypasses_hysteresis_and_ends_immediately():
+    # car_below_threshold=False = the car is STILL reading above threshold but the session is
+    # ending for some other reason (reserve floor, master switch off) — never delayed (safety).
+    session = {"below_threshold_cycles": 1}  # even mid-grace, this must end on the spot
+    ended, cycles = _decide_car_session_end(session, car_below_threshold=False, end_cycles=3)
+    assert (ended, cycles) == (True, 0)
+
+
+def test_default_end_cycles_setting_is_honoured_by_the_pure_gate():
+    # control.car_session_end_cycles defaults to 3 — the SAME schema default _car_session_end_if_
+    # active reads via settings_cache, exercised here through the pure gate (no hardcoded "3").
+    end_cycles = int(settings_defaults()["control.car_session_end_cycles"])
+    assert end_cycles == 3
+    session = {"below_threshold_cycles": 0}
+    for _ in range(end_cycles - 1):
+        ended, cycles = _decide_car_session_end(
+            session, car_below_threshold=True, end_cycles=end_cycles)
+        assert ended is False
+        session["below_threshold_cycles"] = cycles
+    ended, _cycles = _decide_car_session_end(
+        session, car_below_threshold=True, end_cycles=end_cycles)
+    assert ended is True
+
+
+def test_end_cycles_one_reproduces_the_original_immediate_end_behaviour():
+    # Setting the knob to 1 is documented as "today's original behaviour" — a single below-
+    # threshold cycle must end the session right away, same as before this fix existed.
+    session = {"below_threshold_cycles": 0}
+    ended, cycles = _decide_car_session_end(session, car_below_threshold=True, end_cycles=1)
+    assert (ended, cycles) == (True, 0)
 
 
 # ==================================================================================================

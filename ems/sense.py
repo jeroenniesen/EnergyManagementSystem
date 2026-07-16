@@ -206,11 +206,30 @@ class Recorder:
                 await self.record_now()
             except Exception as exc:
                 # Fail-safe: a transient source/store error must not kill the recorder. The
-                # affected signal ages into STALE (SPEC §4.6/§4.7) and we retry next cycle — but
-                # TRACK the failure so a persistent problem (full disk, DB lock) is visible on
-                # /api/diagnostics, and log it (throttled: first failure + every 12th ~hourly).
-                self.consecutive_failures += 1
-                self.last_error = f"{type(exc).__name__}: {exc}"
-                if self.consecutive_failures == 1 or self.consecutive_failures % 12 == 0:
-                    _log.warning("recorder cycle failed (%d in a row): %s",
-                                 self.consecutive_failures, self.last_error)
+                # affected signal ages into STALE (SPEC §4.6/§4.7) and we retry next cycle.
+                await self._note_cycle_failure(exc)
+
+    async def _note_cycle_failure(self, exc: Exception) -> None:
+        """Record a failed sense cycle: TRACK it so a persistent problem (full disk, dead DB
+        connection) is visible on /api/diagnostics, log it (throttled: first failure + every 12th,
+        ~hourly), and run the store watchdog.
+
+        Watchdog (B-49): a long-lived store connection that dies otherwise NEVER recovers — every
+        best-effort persist then fails silently for hours. At 3 consecutive failures we force the
+        store to discard + reopen its shared connection (belt-and-suspenders with the store's own
+        per-call self-heal; harmless if the connection is actually fine). `reset_connection` is
+        looked up defensively so a stub store without it (some tests) is simply skipped."""
+        self.consecutive_failures += 1
+        self.last_error = f"{type(exc).__name__}: {exc}"
+        if self.consecutive_failures == 1 or self.consecutive_failures % 12 == 0:
+            _log.warning("recorder cycle failed (%d in a row): %s",
+                         self.consecutive_failures, self.last_error)
+        if self.consecutive_failures == 3:
+            reset = getattr(self.store, "reset_connection", None)
+            if reset is not None:
+                try:
+                    await reset()
+                    _log.error("recorder: %d consecutive failures — forced store connection reset",
+                               self.consecutive_failures)
+                except Exception:
+                    _log.exception("recorder: forced store connection reset failed (fail-safe)")

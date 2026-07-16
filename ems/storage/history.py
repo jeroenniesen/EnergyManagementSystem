@@ -3,7 +3,10 @@ so derived values can always be recomputed after a sign/calibration fix."""
 from __future__ import annotations
 
 import asyncio
+import functools
 import json
+import logging
+import sqlite3
 from collections import defaultdict
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
@@ -13,6 +16,8 @@ import aiosqlite
 from ems.domain import RawSample
 from ems.load_model import DerivedSample
 from ems.storage.migrations import Migration, has_table, run_migrations
+
+_log = logging.getLogger("ems.storage")
 
 _RAW_COLS = ("ts", "grid_power_w", "solar_power_w", "battery_power_w", "ev_power_w", "soc_pct")
 _DERIVED_COLS = ("ts", "house_load_w", "non_ev_load_w")
@@ -352,6 +357,92 @@ MIGRATIONS = [
 LATEST_SCHEMA_VERSION = max(m.version for m in MIGRATIONS)
 
 
+# --- Self-healing shared connection (BACKLOG B-49 follow-up) -----------------------------------
+# B-49 gave each store ONE long-lived aiosqlite connection (perf). The failure this fixes: when the
+# underlying connection / its worker thread dies, the OLD code kept returning the dead handle
+# forever — every best-effort persist then failed (logged only) for HOURS until an app restart, and
+# production silently lost raw samples across a day. These helpers let the store DETECT a dead
+# connection and reopen it on the next call, so a transient death costs one cycle, not a whole day.
+
+
+def _connection_is_dead(db: aiosqlite.Connection) -> bool:
+    """Cheap O(1) liveness probe (NO query): aiosqlite sets `_running=False` when its worker thread
+    has stopped and clears `_connection` when the sqlite3 handle is gone. Defensive getattr defaults
+    (`True`/sentinel) treat an unexpected shape as ALIVE so we never churn a healthy connection."""
+    return not getattr(db, "_running", True) or getattr(db, "_connection", True) is None
+
+
+def is_dead_connection_error(exc: BaseException) -> bool:
+    """True when `exc` means the shared aiosqlite connection is DEAD/unusable (→ discard + reopen),
+    as opposed to transient contention (which a reheal would NOT fix). Enumerated CONSERVATIVELY
+    from aiosqlite's failure modes (see aiosqlite/core.py) — shared by all three stores:
+
+    * ``sqlite3.ProgrammingError`` containing "closed" — the underlying sqlite3 connection was
+      closed out from under aiosqlite (our own ``__del__``, or an external close). The worker thread
+      then raises "Cannot operate on a closed database." on every op until reopened.
+    * ``ValueError`` "Connection closed" / "no active connection" — aiosqlite's OWN signals, raised
+      by ``Connection._execute()`` (``not self._running or not self._connection``) and the ``_conn``
+      property when its worker thread has stopped / the connection is gone. This is the exact
+      "worker dies" case the long-lived connection never recovered from. Matched by MESSAGE so an
+      unrelated ValueError (e.g. a JSON decode) can never be mistaken for a dead connection.
+    * ``sqlite3.OperationalError`` ONLY for persistent, connection-fatal variants (can't open the db
+      file, disk I/O error, malformed image, "not a database"). "database is locked"/"is busy" are
+      DELIBERATELY EXCLUDED: those are transient contention that ``busy_timeout`` already handles,
+      and churning the connection under load would make them worse, not better.
+    """
+    if isinstance(exc, sqlite3.ProgrammingError):
+        return "closed" in str(exc).lower()
+    if isinstance(exc, sqlite3.OperationalError):
+        msg = str(exc).lower()
+        if "locked" in msg or "busy" in msg:
+            return False  # transient contention — busy_timeout's job, not a reheal's
+        return any(s in msg for s in (
+            "unable to open database file", "disk i/o error",
+            "malformed", "not a database",
+        ))
+    if isinstance(exc, ValueError):
+        msg = str(exc).lower()
+        return "connection closed" in msg or "no active connection" in msg
+    return False
+
+
+# Public store methods that must NOT be auto-wrapped with the reheal-retry (startup/teardown, the
+# reheal itself, and backup_to which manages its OWN short-lived connection).
+_REHEAL_SKIP = frozenset({"init", "close", "reset_connection", "backup_to"})
+
+
+def self_healing(cls):
+    """Class decorator: wrap every PUBLIC async operation of a store so that a dead-connection error
+    (see `is_dead_connection_error`) discards the shared connection, logs ONCE, and retries the
+    operation EXACTLY ONCE — the connection seam reopens lazily on the retry. A second failure
+    propagates (best-effort semantics stay; we never loop). Per-call overhead is a single
+    try/except — no liveness/ping query. Methods in `_REHEAL_SKIP` and all `_private` methods are
+    left untouched. Re-running a write on the retry is safe: a dead-connection error surfaces before
+    any statement commits (commit is always last), so the failed attempt left nothing behind."""
+    for name, fn in list(vars(cls).items()):
+        if name.startswith("_") or name in _REHEAL_SKIP:
+            continue
+        if not asyncio.iscoroutinefunction(fn):
+            continue
+
+        def _make(method):
+            @functools.wraps(method)
+            async def _wrapped(self, *args, **kwargs):
+                try:
+                    return await method(self, *args, **kwargs)
+                except Exception as exc:
+                    if not is_dead_connection_error(exc):
+                        raise
+                    await self._note_dead_connection(exc)
+                    return await method(self, *args, **kwargs)  # one retry; 2nd failure propagates
+
+            return _wrapped
+
+        setattr(cls, name, _make(fn))
+    return cls
+
+
+@self_healing
 class HistoryStore:
     """Append-only history. `ts` is an ISO-8601 string; ordering uses rowid (insertion order)
     so it is correct regardless of timezone offset / DST in the `ts` text. WAL mode + a busy
@@ -381,10 +472,18 @@ class HistoryStore:
         self._db: aiosqlite.Connection | None = None
         self._connect_lock = asyncio.Lock()
         self._write_lock = asyncio.Lock()
+        # Last time the shared connection was discarded + reopened (self-heal, B-49 follow-up).
+        # None until the first reheal; surfaced on /api/diagnostics so a recovery is VISIBLE.
+        self._last_reheal_at: datetime | None = None
 
     async def _connection(self) -> aiosqlite.Connection:
         """The shared connection, opened + configured on first use (idempotent, reopens lazily
-        after `close()`)."""
+        after `close()` or a self-heal). Proactively discards a connection whose aiosqlite worker
+        thread has stopped / whose sqlite3 handle is gone — a cheap O(1) flag check (no query), so
+        the common 'worker died' case reopens on the very next call without a failed attempt."""
+        db = self._db
+        if db is not None and _connection_is_dead(db):
+            await self._discard_connection(reason="worker thread stopped / connection gone")
         if self._db is None:
             async with self._connect_lock:
                 if self._db is None:
@@ -398,6 +497,39 @@ class HistoryStore:
                     await db.execute(f"PRAGMA busy_timeout={_BUSY_TIMEOUT_MS}")
                     self._db = db
         return self._db
+
+    async def _note_dead_connection(self, exc: BaseException) -> None:
+        """Called by the `self_healing` retry wrapper: discard the dead connection (so the retry
+        reopens) and log the incident once."""
+        await self._discard_connection(reason=f"{type(exc).__name__}: {exc}")
+
+    async def reset_connection(self) -> None:
+        """Public: force the shared connection to be discarded now + reopened on the next call.
+        Used by the recorder watchdog (`ems.sense`) after repeated persist failures. Idempotent
+        and best-effort — never raises."""
+        await self._discard_connection(reason="watchdog reset")
+
+    async def _discard_connection(self, *, reason: str) -> None:
+        """Drop the shared connection under `_connect_lock`, closing it best-effort. Logs ONCE per
+        incident: a concurrent caller that finds `_db` already cleared skips the (duplicate) log."""
+        async with self._connect_lock:
+            db = self._db
+            if db is None:
+                return
+            self._db = None
+            self._last_reheal_at = datetime.now(UTC)
+            _log.warning("%s: shared connection unusable (%s) — discarding; reopening on next call",
+                         type(self).__name__, reason)
+            try:
+                await db.close()
+            except Exception:  # a dead connection may itself fail to close — that's fine
+                pass
+
+    def reheal_stats(self) -> dict:
+        """Self-heal diagnostics (B-49 follow-up): {'last_reheal_iso': iso|None} — the last time the
+        shared connection was discarded + reopened, or None if it never has been."""
+        at = self._last_reheal_at
+        return {"last_reheal_iso": at.isoformat() if at else None}
 
     @asynccontextmanager
     async def _conn(self):
