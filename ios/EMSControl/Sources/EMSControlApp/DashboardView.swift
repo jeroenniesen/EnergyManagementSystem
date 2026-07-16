@@ -4,6 +4,7 @@ import EMSControlCore
 struct DashboardView: View {
     @Environment(DashboardStore.self) private var dashboardStore
     @Environment(\.colorScheme) private var colorScheme
+    let notificationsStore: NotificationsStore
     @State private var showsDetails = false
 
     private var theme: EMSTheme {
@@ -52,6 +53,16 @@ struct DashboardView: View {
 
                             FinancePanel(finance: snapshot.finance, savings: snapshot.savings, theme: theme)
 
+                            // Weekly digest + notification outbox (web parity: WeekDigest.tsx and
+                            // the header bell). Hidden until the store has loaded, so an older
+                            // backend without these endpoints shows nothing rather than an error.
+                            if notificationsStore.digest != nil {
+                                WeekDigestPanel(store: notificationsStore, theme: theme)
+                            }
+                            if notificationsStore.loaded {
+                                NotificationsLinkRow(store: notificationsStore, theme: theme)
+                            }
+
                             DisclosureGroup(isExpanded: $showsDetails) {
                                 DetailGrid(snapshot: snapshot, theme: theme)
                                     .padding(.top, 10)
@@ -80,7 +91,10 @@ struct DashboardView: View {
                     }
                 }
             }
-            .refreshable { await dashboardStore.refresh() }
+            .refreshable {
+                await dashboardStore.refresh()
+                await notificationsStore.refresh()
+            }
         }
     }
 
