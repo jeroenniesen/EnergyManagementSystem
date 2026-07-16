@@ -496,6 +496,30 @@ def test_epoch_collision_abandoned_day_ahead_target_is_not_scored():
     assert out["n_deadlines"] == 3
 
 
+def test_version_churn_deadlines_score_once_each_not_once_per_cycle():
+    # Robustness guard against plan_version CHURN: the recorder writes one commit-bearing row per
+    # 5-min cycle, so if the version isn't a stable epoch identity (e.g. a rebuilt plan minting a
+    # fresh created_at every call), naive grouping turns ONE committed deadline into one singleton
+    # epoch PER CYCLE — n_deadlines inflates by cycle count and the blended rate is weighted by
+    # how long each commitment sat on the horizon, not 1-per-deadline. Epochs sharing a deadline
+    # must collapse to the freshest representative: one deadline, one scored sample.
+    rows: list[dict] = []
+    #                      (achieved, cycles): the miss sits on the horizon LONGER than the hits,
+    # so cycle-weighted scoring would report 4/9 = 44.4% instead of the true 2/3 = 66.7%.
+    for d, (achieved, cycles) in enumerate(((80.0, 2), (60.0, 5), (79.0, 2))):
+        deadline = f"2026-07-{11 + d:02d}T21:00:00+00:00"
+        dl = datetime.fromisoformat(deadline)
+        for i in range(cycles):  # each cycle re-records the SAME commitment under a fresh version
+            rows.append(_plan_row((dl - timedelta(minutes=5 * (cycles - i))).isoformat(),
+                                  target=80.0, floor=10.0, deadline=deadline, soc=70.0,
+                                  intent="grid_charge_to_target", plan_version=f"churn_{d}_{i}"))
+        rows.append(_plan_row((dl + timedelta(minutes=5)).isoformat(), soc=achieved))
+    out = plan_execution_error(rows, tz=UTC)
+    assert out["commitments"]["n_deadlines"] == 3
+    assert out["commitments"]["hit_rate_pct"] == 66.7
+    assert out["commitments"]["mean_error_pp"] == -7.0  # (0 - 20 - 1) / 3
+
+
 def test_reserve_breach_below_floor_minus_2pp_is_a_miss():
     # A reserve deadline is a MISS when SoC drops below floor - 2pp: night 1 lands at 6% under a 10%
     # floor (below the 8% tolerance) -> miss; the other two hold well above -> hits. 2/3 kept.

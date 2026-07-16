@@ -27,6 +27,16 @@ public final class NotificationsStore {
     /// the previous server's data immediately (mirrors CarStore / ActivityStore / InsightsStore).
     private var serverKey: String
 
+    /// The week the user stepped to with ‹ › (YYYY-MM-DD Monday), nil = the server's default week.
+    /// `refresh()` must honour it — without an anchor, any list-open or pull-to-refresh silently
+    /// resets the digest panel to the default week (web parity: WeekDigest keeps its own anchor).
+    private var digestWeek: String?
+
+    /// Bumped by `markAllRead()` so a refresh that was already in flight when the user tapped
+    /// "mark all read" knows its feed response predates the read POST and must not re-alarm
+    /// (re-raise `unread` / un-bold rows) with stale counts.
+    private var readGeneration = 0
+
     public init(client: APIClient?) {
         self.client = client
         self.serverKey = Self.serverKey(client)
@@ -38,15 +48,20 @@ public final class NotificationsStore {
         isLoading = true
         defer { isLoading = false }
 
+        let generation = readGeneration
         do {
             async let feed = client.fetchNotifications(limit: Self.feedLimit)
             // The digest is best-effort: an older backend without /api/digest (or a week the
             // server can't report on) must not blank the notifications feed — mirrors CarStore's
             // sessions handling. A failure keeps whatever digest was already shown.
-            async let digestResult = client.fetchDigest()
+            async let digestResult = client.fetchDigest(week: digestWeek)
             let response = try await feed
-            items = response.items
-            unread = response.unread
+            if generation == readGeneration {
+                items = response.items
+                unread = response.unread
+            }
+            // else: mark-all-read landed while this GET was in flight, so the response predates
+            // the read POST — keep the optimistic state; the next refresh brings the truth.
             digest = (try? await digestResult) ?? digest
             errorMessage = nil
             loaded = true
@@ -62,6 +77,7 @@ public final class NotificationsStore {
         guard let client else { return }
         if let fresh = try? await client.fetchDigest(week: week) {
             digest = fresh
+            digestWeek = week  // anchor only on success, so digest + anchor never desync
         }
     }
 
@@ -81,6 +97,7 @@ public final class NotificationsStore {
         guard unread > 0 else { return }
         // Optimistic, like the web bell: the dot clears immediately; a failed POST leaves the
         // local state to resync on the next refresh (never rolls back to re-alarm the user).
+        readGeneration += 1  // invalidate any refresh already in flight — its feed is pre-POST
         items = items.map { item in
             var next = item
             next.read = true
@@ -103,6 +120,7 @@ public final class NotificationsStore {
             items = []
             unread = 0
             digest = nil
+            digestWeek = nil
             errorMessage = nil
             loaded = false
         }
@@ -116,6 +134,7 @@ public final class NotificationsStore {
         items = NotificationItem.demoItems
         unread = NotificationItem.demoItems.filter { !$0.read }.count
         digest = .demo
+        digestWeek = nil
         errorMessage = nil
         loaded = true
     }

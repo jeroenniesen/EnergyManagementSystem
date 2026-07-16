@@ -453,6 +453,12 @@ def plan_execution_error(plan_rows: list[dict], *, tz) -> dict | None:
         (commit_errors if scored[0] == "commitments" else reserve_errors).append(scored[1])
 
     # --- epoch-grouped rows: one committed (target, deadline, floor, intent) per plan_version -----
+    # Two passes: first resolve each epoch's live representative, then collapse epochs that share
+    # a deadline to the FRESHEST one (largest last_seen). One real deadline must yield exactly one
+    # scored sample even when the version churns (a rebuilt plan minting a fresh version per
+    # cycle would otherwise shatter one commitment into a singleton epoch per recorder row,
+    # inflating n_deadlines by cycle count and weighting the rate by horizon time, not deadlines).
+    best_by_deadline: dict[str, tuple[datetime, datetime, dict]] = {}
     for rows in epochs.values():
         timed = [(_parse_local(r.get("ts"), tz), r) for r in rows]
         timed = [(t, r) for t, r in timed if t is not None]
@@ -465,12 +471,17 @@ def plan_execution_error(plan_rows: list[dict], *, tz) -> dict | None:
             continue
         if deadline_dt - last_seen > _EPOCH_MAX_STALENESS:
             continue  # replanned away before the slot arrived — an abandoned commitment
+        key = str(rep.get("deadline"))
+        cur = best_by_deadline.get(key)
+        if cur is None or last_seen > cur[1]:
+            best_by_deadline[key] = (deadline_dt, last_seen, rep)
+    for key, (deadline_dt, _last_seen, rep) in best_by_deadline.items():
         achieved = _achieved_at(deadline_dt, timed_soc)
         if achieved is None:
             continue
         _record(_score_deadline(intent=rep.get("intent"), target_soc=rep.get("target_soc"),
                                 floor_soc=rep.get("floor_soc"), achieved=achieved))
-        scored_deadlines.add(str(rep.get("deadline")))
+        scored_deadlines.add(key)
 
     # --- legacy rows: original best-effort grouping by raw deadline string ------------------------
     by_deadline: dict[str, list[dict]] = defaultdict(list)

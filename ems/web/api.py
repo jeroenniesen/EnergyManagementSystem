@@ -1443,19 +1443,24 @@ def create_app(
         _now, _prices, plan = pp
         strat, _why = _resolve_strategy(now)
         intent, *_rest = _effective_intent(now)
-        # plan_version (created_at = the plan's EPOCH identity) + floor_soc (the current slot's
-        # reserve floor) feed the intent-aware follow-through scorer (plan_execution_error):
-        # without the epoch key, abandoned day-ahead targets collide with later rolling plans on
-        # identical deadline strings; without the floor, discharge/hold deadlines are unscorable
-        # and fall out as "insufficient evidence" instead of being mis-scored as charge misses.
+        # plan_version (EPOCH identity) + floor_soc (the current slot's reserve floor) feed the
+        # intent-aware follow-through scorer (plan_execution_error): without the epoch key,
+        # abandoned day-ahead targets collide with later rolling plans on identical deadline
+        # strings; without the floor, discharge/hold deadlines are unscorable and fall out as
+        # "insufficient evidence" instead of being mis-scored as charge misses.
+        # The version derives from the COMMITMENT, not the plan object: `_current_plan()` rebuilds
+        # the plan every call (fresh created_at), so any object-identity version would churn per
+        # 5-min cycle and shatter one commitment into a singleton epoch per recorder row. Same
+        # committed (strategy, target, deadline) => same epoch, by construction.
         slot = plan.intent_at(now)
+        deadline_iso = plan.deadline.isoformat() if plan.deadline else None
         return {
             "strategy": strat,
             "target_soc": plan.target_soc,
-            "deadline": plan.deadline.isoformat() if plan.deadline else None,
+            "deadline": deadline_iso,
             "soc_pct": _current_soc(now),
             "intent": str(intent) if intent is not None else None,
-            "plan_version": plan.created_at.isoformat(),
+            "plan_version": f"{strat}|{plan.target_soc}|{deadline_iso or ''}",
             "floor_soc": slot.floor_soc if slot is not None else None,
         }
 

@@ -140,6 +140,47 @@ final class NotificationsStoreTests: XCTestCase {
         XCTAssertEqual(transport.lastDigestQuery, "week=2026-06-29")
     }
 
+    func testRefreshKeepsSteppedDigestWeek() async {
+        let transport = NotificationsRoutingTransport(feedData: feedJSON, digestData: digestJSON)
+        let store = makeStore(transport)
+        await store.refresh()
+        XCTAssertEqual(store.digest?.weekLabel, "Week of 2026-06-22")
+
+        await store.stepDigestWeek(direction: -1)
+        XCTAssertEqual(transport.lastDigestQuery, "week=2026-06-15")
+
+        // A list-open / pull-to-refresh must honour the user's stepped-to week, not silently
+        // reset the panel to the server's default week (web parity: WeekDigest keeps its anchor).
+        await store.refresh()
+
+        XCTAssertEqual(transport.lastDigestQuery, "week=2026-06-15")
+    }
+
+    func testInFlightRefreshDoesNotClobberOptimisticMarkAllRead() async {
+        let transport = NotificationsRoutingTransport(feedData: feedJSON, digestData: digestJSON)
+        let store = makeStore(transport)
+        await store.refresh()
+        XCTAssertEqual(store.unread, 1)
+
+        // Gate the next feed GET so mark-all-read can land while the refresh is suspended: the
+        // gated response predates the read POST, so its unread count is stale.
+        var openGate: AsyncStream<Void>.Continuation?
+        transport.feedGate = AsyncStream { openGate = $0 }
+        let arrived = expectation(description: "feed GET reached the transport")
+        transport.onFeedArrived = { arrived.fulfill() }
+
+        let refreshTask = Task { await store.refresh() }
+        await fulfillment(of: [arrived], timeout: 2)
+        await store.markAllRead()
+        XCTAssertEqual(store.unread, 0)
+        openGate?.yield()
+        openGate?.finish()
+        await refreshTask.value
+
+        XCTAssertEqual(store.unread, 0, "a feed response that predates mark-all-read must not re-alarm")
+        XCTAssertTrue(store.items.allSatisfy(\.read))
+    }
+
     func testStepDigestWeekWithoutAnchorDoesNothing() async {
         let transport = NotificationsRoutingTransport(
             feedData: feedJSON, digestData: Data(), digestStatus: 404)
@@ -237,6 +278,11 @@ private final class NotificationsRoutingTransport: HTTPTransport, @unchecked Sen
     var feedStatus: Int
     var digestStatus: Int
     let postStatus: Int
+    /// Test hooks for deterministic interleaving: when `feedGate` is set, the /api/notifications
+    /// response suspends until the stream yields; `onFeedArrived` fires just before the suspension
+    /// so the test knows the request is in flight.
+    var feedGate: AsyncStream<Void>?
+    var onFeedArrived: (@Sendable () -> Void)?
     private(set) var lastRequest: URLRequest?
     private(set) var lastPostBody: Data?
     private(set) var lastFeedQuery: String?
@@ -269,6 +315,10 @@ private final class NotificationsRoutingTransport: HTTPTransport, @unchecked Sen
         switch path {
         case "/api/notifications":
             lastFeedQuery = request.url?.query
+            if let gate = feedGate {
+                onFeedArrived?()
+                for await _ in gate { break }
+            }
             return respond(feedData, feedStatus)
         case "/api/digest":
             lastDigestQuery = request.url?.query
