@@ -445,7 +445,8 @@ SETTINGS_SCHEMA: tuple[SettingsField, ...] = (
         "notify.ntfy_topic", "ntfy topic", "text", "", "notify",
         help="A private, hard-to-guess topic name — anyone who knows it can read what's "
         "published there, so avoid anything guessable (a random string is safest). Subscribe to "
-        "the exact same topic in the ntfy app.",
+        "the exact same topic in the ntfy app. Pick a long random topic — anyone who knows it "
+        "can read these notifications on ntfy.sh.",
     ),
     # --- Car (v2 EV control is out of scope — advisory only, docs/v2-ev-control.md) ---
     SettingsField(

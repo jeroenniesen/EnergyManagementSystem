@@ -154,6 +154,46 @@ def test_redact_log_text_ignores_blank_secret_values_and_never_raises():
     assert redact_log_text("plain line\n", secret_values=["", "   ", None]) == "plain line\n"
 
 
+# --- S3: redaction hardening (case-insensitive bearer, any authorization header, ntfy URL) ------
+
+def test_redact_log_text_masks_lowercase_bearer():
+    # A lowercased "bearer" header (some clients/log formats) must still be redacted.
+    out = redact_log_text("httpx: sent header bearer sEcReT-lower-token here\n")
+    assert "sEcReT-lower-token" not in out
+    assert "[REDACTED]" in out
+
+
+def test_redact_log_text_masks_a_basic_authorization_header_value():
+    # Not every auth header is Bearer — a Basic (base64 user:pass) value must be masked too.
+    out = redact_log_text("request headers: Authorization: Basic dXNlcjpwYXNz\n")
+    assert "dXNlcjpwYXNz" not in out
+    assert "[REDACTED]" in out
+
+
+def test_redact_log_text_masks_lowercase_authorization_header_value():
+    out = redact_log_text("authorization: Token abc-123-secret\n")
+    assert "abc-123-secret" not in out
+    assert "[REDACTED]" in out
+
+
+def test_redact_log_text_masks_the_ntfy_url_in_an_httpx_error_line():
+    # The ntfy server URL is sourced into secret_values by routes/export.py — an httpx error line
+    # that echoes it must not leak it.
+    out = redact_log_text(
+        "httpx.ConnectError: failed to POST https://ntfy.example.com/topic-abc\n",
+        secret_values=["https://ntfy.example.com", "topic-abc"],
+    )
+    assert "ntfy.example.com" not in out
+    assert "topic-abc" not in out
+    assert "[REDACTED]" in out
+
+
+def test_redact_log_text_leaves_normal_lines_untouched():
+    # A benign line with no auth material must pass through byte-for-byte.
+    line = "INFO ems.sense: recorded sample soc=55.0 grid=200 solar=0\n"
+    assert redact_log_text(line) == line
+
+
 # ---- ev_price_adherence: volume-weighted price paid for EV charging vs. window average ----
 
 def test_ev_price_adherence_no_sessions_is_none():
@@ -787,6 +827,23 @@ def test_package_includes_readme_and_validation_summary(tmp_path):
     assert "observations     0" in summary
     assert "daily energy     0" in summary
     assert "notifications    0" in summary
+
+
+def test_readme_privacy_claim_is_honest_about_timezone_and_car_schedule(tmp_path):
+    # S4: the old "No tokens, IPs or location" claim was untrue — the manifest carries the timezone
+    # and the car's weekly schedule (both needed to replay the planner). The corrected claim must
+    # name what IS included and how to strip it.
+    db = str(tmp_path / "ems.sqlite")
+    _seed(db)
+    with TestClient(_app(db)) as c:
+        data = c.get("/api/export/package").content
+    readme = read_member(data, "README.md")
+    assert "No tokens, IPs or location." not in readme          # the old, false wording is gone
+    assert "No tokens, IPs or coordinates" in readme
+    assert "coordinates" in readme.lower()
+    assert "timezone" in readme.lower()
+    assert "weekly schedule" in readme.lower()
+    assert "delete manifest.json before sharing" in readme.lower()
 
 
 def test_validation_summary_includes_solar_forecast_skill_section(tmp_path):

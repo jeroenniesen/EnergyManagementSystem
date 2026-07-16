@@ -4,6 +4,7 @@ import asyncio
 from datetime import UTC, date, datetime, timedelta
 from zoneinfo import ZoneInfo
 
+import aiosqlite
 from fastapi.testclient import TestClient
 
 from ems.domain import RawSample
@@ -481,6 +482,55 @@ def test_report_endpoint_year_series_comes_from_daily_energy_rollup(tmp_path, mo
     march = year["series"][2]
     assert abs(march["solar_kwh"] - 0.75) < 1e-9  # 3000 W solar for one 15-min slot
     assert march["samples"] == 1                  # one contributing day that month
+
+
+def _seed_year_contradiction(db: str) -> None:
+    """F2 setup: 200 full daily_energy rollup rows across a PAST year (2025) — the never-purged
+    year evidence — plus raw for only ONE day that, on its own, gives a totally different
+    flows-based self-consumption/CO₂ (the 90-day-purged-raw situation a year view faces). The
+    rollup's full-year self-consumption is 90% and CO₂-avoided 75%; the lone raw day (pure grid
+    import, no solar) alone would score ~0%."""
+    async def go():
+        store = HistoryStore(db)
+        await store.init()
+        # A lone raw day: 800 W grid import at noon, no solar/battery → flows self-consumption ~0.
+        ts = datetime(2025, 6, 15, 12, 0, tzinfo=AMS)
+        await store.record(ts.isoformat(), RawSample(800, 0, 0, 0.0, 50.0), DerivedSample(800, 800))
+        await store.close()
+        # 200 identical rollup rows: solar 10 / load 8 (home 8, car 0) / import 2 / export 1 kWh.
+        async with aiosqlite.connect(db) as raw_db:
+            day = date(2025, 1, 1)
+            for _ in range(200):
+                await raw_db.execute(
+                    "INSERT OR REPLACE INTO daily_energy VALUES (?,?,?,?,?,?,?,?,?,?)",
+                    (day.isoformat(), 10.0, 8.0, 8.0, 0.0, 2.0, 1.0, 0.0, 0.0, 1.0))
+                day += timedelta(days=1)
+            await raw_db.commit()
+    asyncio.run(go())
+
+
+def test_report_year_scores_use_full_year_rollup_not_purged_raw(tmp_path):
+    # F2: for period=year, self-consumption and CO₂ come from the never-purged daily_energy rollup
+    # (full year), NOT the raw window (only partially retained). best_price stays raw-window-based
+    # but is LABELED, and the flows/Sankey block carries a window_note the frontend renders.
+    db = str(tmp_path / "ems.sqlite")
+    _seed_year_contradiction(db)
+    with TestClient(_app(db)) as c:
+        year = c.get("/api/report?period=year&date=2025-06-15").json()
+        month = c.get("/api/report?period=month&date=2025-06-15").json()
+
+    scores = {s["key"]: s for s in year["scores"]}
+    # Full-year totals: solar 2000, export 200 ⇒ 90% kept; import 400 vs load 1600 ⇒ 75% avoided.
+    assert scores["self_consumption"]["value"] == 90.0
+    assert scores["co2"]["value"] == 75.0
+    # best_price stays raw-window-based, now explicitly labeled as such.
+    assert "last 90 days" in scores["best_price"]["explanation"]
+    assert "slot prices needed" in scores["best_price"]["explanation"]
+    # The flows/Sankey block carries the window caption (raw window, not the full year).
+    assert year["flows"]["window_note"] == "last 90 days"
+
+    # Month view is UNCHANGED: no window_note, scores from the raw window as before.
+    assert month["flows"].get("window_note") is None
 
 
 def test_finance_endpoint_computes_and_persists_rollup(tmp_path):

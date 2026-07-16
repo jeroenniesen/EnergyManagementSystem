@@ -37,7 +37,7 @@ class SettingsStore:
     async def _connection(self) -> aiosqlite.Connection:
         db = self._db
         if db is not None and _connection_is_dead(db):  # proactive self-heal (see HistoryStore)
-            await self._discard_connection(reason="worker thread stopped / connection gone")
+            await self._discard_connection(db, reason="worker thread stopped / connection gone")
         if self._db is None:
             async with self._connect_lock:
                 if self._db is None:
@@ -48,18 +48,25 @@ class SettingsStore:
                     self._db = db
         return self._db
 
-    async def _note_dead_connection(self, exc: BaseException) -> None:
-        # Called by the `self_healing` retry wrapper — see HistoryStore for the full rationale.
-        await self._discard_connection(reason=f"{type(exc).__name__}: {exc}")
+    async def _note_dead_connection(self, exc: BaseException, dead_conn) -> None:
+        # Called by the `self_healing` retry wrapper — see HistoryStore for the full rationale
+        # (including why the discard targets the connection the failing call was using).
+        await self._discard_connection(dead_conn, reason=f"{type(exc).__name__}: {exc}")
 
     async def reset_connection(self) -> None:
         """Force the shared connection to be discarded + reopened on the next call (best-effort)."""
-        await self._discard_connection(reason="watchdog reset")
+        await self._discard_connection(self._db, reason="watchdog reset")
 
-    async def _discard_connection(self, *, reason: str) -> None:
+    async def _discard_connection(self, dead_conn, *, reason: str) -> None:
+        # See HistoryStore._discard_connection for the sibling-race rationale (a stale caller must
+        # not close a connection a sibling already healed).
         async with self._connect_lock:
             db = self._db
             if db is None:
+                return
+            if dead_conn is not None and db is not dead_conn:
+                _log.debug("%s: shared connection already healed by a sibling (%s) — skipping "
+                           "discard", type(self).__name__, reason)
                 return
             self._db = None
             self._last_reheal_at = datetime.now(UTC)

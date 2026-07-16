@@ -1168,6 +1168,57 @@ test.describe("EMS dashboard", () => {
     await expect(page.getByTestId("check-group-Battery & control")).toBeVisible();
   });
 
+  // S5 (security review): open writes are benign only while EMS is WATCHING. Once control is
+  // ARMED (operational — run-mode reads "dry-run off") and no token is set, the Write-protection
+  // row must escalate from OK to a warning naming the risk.
+  test("Write-protection row warns when control is armed AND writes are open", async ({ page }) => {
+    await page.route("**/api/diagnostics", (route) =>
+      route.fulfill({
+        status: 200, contentType: "application/json",
+        body: JSON.stringify(diagnosticsFixture({
+          checks: [
+            { key: "mode", label: "Run mode", status: "ok", detail: "live, dry-run off" },
+            { key: "history_store", label: "History store", status: "ok", detail: "reachable" },
+            { key: "battery", label: "Battery driver", status: "ok", detail: "probed; P1 paired" },
+            { key: "data_quality", label: "Data quality", status: "ok", detail: "complete" },
+            { key: "auth", label: "Write protection", status: "ok", detail: "open — set a token" },
+          ],
+        })),
+      }),
+    );
+    await page.goto("/");
+    await page.getByTestId("nav-manage").click();
+    await page.getByTestId("manage-tab-system").click();
+    const authRow = page.getByTestId("check-auth");
+    await expect(authRow.locator(".check-status")).toHaveAttribute("data-status", "warn");
+    await expect(authRow).toContainText(
+      "writes are open and battery control is armed — set a Web access token",
+    );
+  });
+
+  // The reassuring counterpart: while EMS is WATCHING (dry-run on), open writes stay OK — no scary
+  // warning on the common, intended observe-only install.
+  test("Write-protection row stays OK when watching-only and writes are open", async ({ page }) => {
+    await page.route("**/api/diagnostics", (route) =>
+      route.fulfill({
+        status: 200, contentType: "application/json",
+        body: JSON.stringify(diagnosticsFixture({
+          checks: [
+            { key: "mode", label: "Run mode", status: "ok", detail: "mock, dry-run on" },
+            { key: "history_store", label: "History store", status: "ok", detail: "reachable" },
+            { key: "auth", label: "Write protection", status: "ok", detail: "open — set a token" },
+          ],
+        })),
+      }),
+    );
+    await page.goto("/");
+    await page.getByTestId("nav-manage").click();
+    await page.getByTestId("manage-tab-system").click();
+    const authRow = page.getByTestId("check-auth");
+    await expect(authRow.locator(".check-status")).toHaveAttribute("data-status", "ok");
+    await expect(authRow).toContainText("open");
+  });
+
   // feat/ux-batch-3: the "Planning intelligence" row — the scenario/ML layer is built and
   // validating in shadow, not steering a plan yet. Muted/unknown styling, links nowhere.
   test("Model health panel shows the muted Planning intelligence row (mocked)", async ({ page }) => {

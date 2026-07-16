@@ -17,6 +17,7 @@ from ems.domain import BatteryIntent, PhysicalMode, RawSample
 from ems.freshness import FreshnessTracker
 from ems.lifecycle import Lifecycle
 from ems.planner.schedule import SLOT
+from ems.planner.strategy import HysteresisState
 from ems.sense import SIGNALS
 from ems.settings import defaults as settings_defaults
 from ems.sources.battery import BatteryWriteUnconfirmed, MockBatteryDriver, intent_to_mode
@@ -27,8 +28,10 @@ from ems.storage.history import HistoryStore
 from ems.storage.settings import SettingsStore
 from ems.web.api import (
     _CAR_SESSION_MAX_COMMANDS,
+    _commit_hysteresis_state,
     _decide_car_command,
     _decide_car_session_end,
+    _decide_grace_action,
     create_app,
 )
 
@@ -185,6 +188,164 @@ def test_command_cap_holds_and_flags_instead_of_re_commanding():
     cmd, nxt, event = _decide_car_command(session, _disc(2000.0, True), T0)
     assert cmd is False and event == "cap"
     assert nxt["setpoint_w"] == 1000.0  # unchanged (we did NOT chase the moving prediction)
+
+
+# ==================================================================================================
+# 3a. F1 — observed-mode reconciliation (the CRITICAL finding)
+#
+# A car-session discharge whose FIRST write returns 'unconfirmed' advances the session box as if it
+# applied; with a stable prediction `recommand` never fires again, so the battery sat in vendor AUTO
+# draining into the car for the whole session. Fix: each cycle the command decision ALSO considers
+# the OBSERVED battery mode (from the shared coalesced read, never a fresh device read) and the last
+# command's outcome — if the session is active but the battery isn't actually DISCHARGE (or the last
+# write was unconfirmed/failed), a re-command is DUE on a short (>= 1 cycle) reconciliation spacing,
+# still bounded by the 6-command session cap.
+# ==================================================================================================
+
+_RECON_SPACING = timedelta(seconds=300)
+
+
+def _recon_session(setpoint, commanded_at, *, commands=1, last_outcome="applied") -> dict:
+    return {"active": True, "setpoint_w": setpoint, "commanded_at": commanded_at.isoformat(),
+            "commands": commands, "last_outcome": last_outcome}
+
+
+def test_unconfirmed_first_write_re_commands_next_cycle_despite_stable_prediction():
+    # First write returned 'unconfirmed' -> the recorded DISCHARGE setpoint may never have taken.
+    # The prediction is stable (recommand=False), so ONLY the reconciliation path re-commands.
+    session = _recon_session(800.0, T0, last_outcome="unconfirmed")
+    cmd, nxt, event = _decide_car_command(
+        session, _disc(800.0, False), T0 + _RECON_SPACING,
+        observed_mode=PhysicalMode.AUTO, reconcile_spacing=_RECON_SPACING)
+    assert cmd is True and event == "reconcile"
+    assert nxt["commands"] == 2 and nxt["setpoint_w"] == 800.0
+
+
+def test_observed_auto_despite_recorded_setpoint_re_commands():
+    # Last write 'applied' but the battery is OBSERVED in AUTO (vendor drifted / never actually took
+    # the setpoint). Stable prediction -> the observed-mode reconciliation re-commands.
+    session = _recon_session(800.0, T0, last_outcome="applied")
+    cmd, _nxt, event = _decide_car_command(
+        session, _disc(800.0, False), T0 + _RECON_SPACING,
+        observed_mode=PhysicalMode.AUTO, reconcile_spacing=_RECON_SPACING)
+    assert cmd is True and event == "reconcile"
+
+
+def test_confirmed_and_observed_discharge_stays_quiet():
+    # Happy path: last write applied, observed DISCHARGE, stable prediction -> HOLD, no write.
+    session = _recon_session(800.0, T0 - timedelta(minutes=30), last_outcome="applied")
+    cmd, _nxt, event = _decide_car_command(
+        session, _disc(850.0, False), T0,
+        observed_mode=PhysicalMode.DISCHARGE, reconcile_spacing=_RECON_SPACING)
+    assert cmd is False and event == "hold"
+
+
+def test_reconcile_respects_the_short_retry_spacing_not_the_ten_minute_dwell():
+    # The reconcile re-command is spaced by >= 1 cycle (reconcile_spacing), NOT the 10-min dwell.
+    session = _recon_session(800.0, T0, last_outcome="unconfirmed")
+    early = _decide_car_command(session, _disc(800.0, False), T0 + timedelta(seconds=200),
+                                observed_mode=PhysicalMode.AUTO, reconcile_spacing=_RECON_SPACING)
+    assert early[0] is False and early[2] == "hold"          # within one cycle -> hold
+    late = _decide_car_command(session, _disc(800.0, False), T0 + timedelta(seconds=300),
+                               observed_mode=PhysicalMode.AUTO, reconcile_spacing=_RECON_SPACING)
+    assert late[0] is True and late[2] == "reconcile"        # one cycle elapsed -> reconcile
+
+
+def test_reconcile_cap_exhaustion_signals_the_hold_fallback():
+    # The reconcile re-command still counts toward the 6-command cap. Once spent, the pure gate
+    # signals 'cap_reconcile' so the caller falls back to the safe HOLD (idle) path — never keeps
+    # holding a discharge setpoint the battery never actually adopted.
+    session = _recon_session(800.0, T0, commands=_CAR_SESSION_MAX_COMMANDS,
+                             last_outcome="unconfirmed")
+    cmd, _nxt, event = _decide_car_command(
+        session, _disc(800.0, False), T0 + _RECON_SPACING,
+        observed_mode=PhysicalMode.AUTO, reconcile_spacing=_RECON_SPACING)
+    assert cmd is False and event == "cap_reconcile"
+
+
+def test_no_reconcile_when_observed_mode_is_unknown_and_last_outcome_good():
+    # observed_mode None (device unreadable this cycle) must NOT trigger a spurious reconcile when
+    # the last write was fine — we don't KNOW it drifted, so we stay quiet (avoids a flood).
+    session = _recon_session(800.0, T0 - timedelta(minutes=30), last_outcome="applied")
+    cmd, _nxt, event = _decide_car_command(
+        session, _disc(850.0, False), T0,
+        observed_mode=None, reconcile_spacing=_RECON_SPACING)
+    assert cmd is False and event == "hold"
+
+
+# ==================================================================================================
+# 3c. F3 / F5 — grace-window action (override / fail-safe / reserve floor must act THIS cycle)
+# ==================================================================================================
+
+def test_grace_override_falls_through_this_cycle():
+    # F3: a manual override lands during the below-threshold grace window -> end + apply now.
+    assert _decide_grace_action(
+        override_active=True, failsafe=False, soc_pct=55.0, min_reserve_soc=10.0) == "fall_through"
+
+
+def test_grace_failsafe_falls_through_this_cycle():
+    # F3: a data-quality fail-safe during grace -> end + apply the fail-safe now, don't hold.
+    assert _decide_grace_action(
+        override_active=False, failsafe=True, soc_pct=55.0, min_reserve_soc=10.0) == "fall_through"
+
+
+def test_grace_reserve_floor_holds_now():
+    # F5: SoC at the reserve floor during grace -> end + hold at reserve now (don't keep discharging
+    # through the grace window on a drained battery).
+    assert _decide_grace_action(
+        override_active=False, failsafe=False, soc_pct=10.5, min_reserve_soc=10.0) == "reserve_hold"
+
+
+def test_grace_benign_blip_holds_the_session():
+    # A pure car-power blip (no override, no fail-safe, SoC well above the floor) -> hold the
+    # setpoint through the grace window (unchanged behaviour — the whole point of the grace window).
+    assert _decide_grace_action(
+        override_active=False, failsafe=False, soc_pct=55.0, min_reserve_soc=10.0) == "hold"
+
+
+def test_grace_override_takes_precedence_over_the_reserve_floor():
+    # A deliberate operator override wins even at the floor (they see the badges).
+    assert _decide_grace_action(
+        override_active=True, failsafe=False, soc_pct=10.0, min_reserve_soc=10.0) == "fall_through"
+
+
+# ==================================================================================================
+# 3d. F6 — hysteresis-box commit is serialised across threads
+# ==================================================================================================
+
+def test_commit_hysteresis_state_serialises_concurrent_writers():
+    # _commit_hysteresis does a read-modify-write on the shared box + a cache_store.set from three
+    # unsynchronised threads (periodic loop, override-triggered cycle, dashboard read). A lock must
+    # serialise the RMW+persist so no writer's persist is lost or interleaved.
+    import threading
+
+    box = {"state": HysteresisState()}
+    lock = threading.Lock()
+
+    class _RacyCache:
+        def __init__(self) -> None:
+            self.sets = 0
+            self._inside = 0
+            self.max_concurrent = 0
+
+        def set(self, key, value, ttl):
+            self._inside += 1
+            self.max_concurrent = max(self.max_concurrent, self._inside)
+            time.sleep(0.002)  # widen the race window
+            self.sets += 1
+            self._inside -= 1
+
+    cache = _RacyCache()
+    states = [HysteresisState(committed="winter", pending="summer", count=i, last_day=None)
+              for i in range(1, 21)]
+    threads = [threading.Thread(target=_commit_hysteresis_state,
+                                args=(box, lock, s, cache, "k", 1.0)) for s in states]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    assert cache.sets == 20            # every writer persisted; none lost
+    assert cache.max_concurrent == 1   # the lock serialised them (no overlapping set())
 
 
 class _CountingDriver(MockBatteryDriver):
@@ -481,3 +642,62 @@ def test_live_session_ends_and_resumes_the_plan_when_the_car_condition_clears(tm
         assert driver.current_mode() is PhysicalMode.AUTO  # plan resumed (self-consumption)
         ended = _audit_summaries(c, "car session ended")
     assert ended, "the session end must be audited"
+
+
+class _UnconfirmFirstDischargeDriver(MockBatteryDriver):
+    """AUTO to start; the FIRST DISCHARGE write times out (BatteryWriteUnconfirmed) so the battery
+    stays AUTO with an 'unconfirmed' outcome — the exact live failure mode of F1. Every later write
+    (including the reconciliation re-command) is accepted normally."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.discharge_writes = 0
+
+    def apply(self, mode, *, target_soc=None, power_w=None):
+        if mode is PhysicalMode.DISCHARGE:
+            self.discharge_writes += 1
+            if self.discharge_writes == 1:
+                raise BatteryWriteUnconfirmed("first discharge write timed out")
+        return super().apply(mode, target_soc=target_soc, power_w=power_w)
+
+
+def test_live_unconfirmed_first_write_reconciles_to_discharge(tmp_path):
+    # F1 (CRITICAL): the first discharge write is unconfirmed, so the battery is still in vendor
+    # AUTO draining into the car. With a stable prediction the ordinary re-command never fires — the
+    # observed-mode reconciliation rescues it. The battery MUST reach a real DISCHARGE, and it takes
+    # at least a second (reconciling) discharge write to get there.
+    driver = _UnconfirmFirstDischargeDriver()
+    with TestClient(_operational_car_app(tmp_path, _CarSource(3000.0), driver)) as c:
+        c.post("/api/settings", json={"strategy.mode": "winter",
+                                      "control.car_charging_battery_mode": "static_discharge",
+                                      "control.car_discharge_w": 900})
+        _wait(lambda: driver.current_mode() is PhysicalMode.DISCHARGE)
+        assert driver.current_mode() is PhysicalMode.DISCHARGE  # reconciled off vendor AUTO
+        assert driver.discharge_writes >= 2  # first unconfirmed; reconciliation re-commanded
+
+
+def test_live_reserve_hold_keeps_the_session_alive_and_resumes(tmp_path):
+    # F2: SoC hitting the reserve floor mid-session must HOLD (idle) WITHOUT ending+restarting the
+    # session, and resume discharging once it recovers past the +3pp hysteresis band. The live SoC
+    # is coalesced (>= 15 s), so we move the FLOOR instead of the SoC — battery.min_reserve_soc is
+    # read fresh from settings every cycle. SoC is a fixed 45%: floor 10 -> discharge (45 > 11);
+    # floor 45 -> reserve hold (45 <= 46, and 45 < 48 keeps it held); floor 10 -> resume (45 >= 13).
+    driver = _CountingDriver()
+    with TestClient(_operational_car_app(tmp_path, _CarSource(3000.0, soc=45.0), driver)) as c:
+        c.post("/api/settings", json={"strategy.mode": "winter",
+                                      "control.car_charging_battery_mode": "static_discharge",
+                                      "control.car_discharge_w": 900})
+        _wait(lambda: driver.current_mode() is PhysicalMode.DISCHARGE)
+        assert driver.current_mode() is PhysicalMode.DISCHARGE
+        # Raise the reserve floor to SoC's band -> the battery idles (reserve hold), session HELD.
+        c.post("/api/settings", json={"battery.min_reserve_soc": 45.0})
+        _wait(lambda: driver.current_mode() is PhysicalMode.IDLE)
+        assert driver.current_mode() is PhysicalMode.IDLE
+        held = _audit_summaries(c, "held at the reserve floor")
+        # Lower the floor again -> recovery past the +3pp band -> discharge RESUMES (same session).
+        c.post("/api/settings", json={"battery.min_reserve_soc": 10.0})
+        _wait(lambda: driver.current_mode() is PhysicalMode.DISCHARGE)
+        assert driver.current_mode() is PhysicalMode.DISCHARGE
+        ended = _audit_summaries(c, "car session ended")
+    assert held, "the reserve-floor hold must be audited"
+    assert not ended, "the session must SURVIVE the reserve hold (never ended+restarted)"

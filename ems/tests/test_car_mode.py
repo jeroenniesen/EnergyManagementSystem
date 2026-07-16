@@ -152,6 +152,50 @@ def test_reserve_floor_holds_both_discharge_modes_within_the_1pp_band():
         assert clear.action == "discharge", mode
 
 
+# ---- Reserve floor REAL hysteresis (F2: two thresholds + carried state) --------------------------
+
+def test_reserve_hysteresis_enters_once_and_does_not_flap_on_noise():
+    # F2 review finding: the old `soc <= reserve+1` was a SINGLE threshold, not the band the
+    # docstring claimed. SoC noise around the floor (11.4/10.8/11.3/10.9, reserve 10) flapped the
+    # battery hold on and off. With real hysteresis (enter <= reserve+1, resume >= reserve+3) it
+    # enters the hold EXACTLY ONCE and never flaps back out (it never reaches 13.0).
+    reserve = 10.0
+    holding = False
+    holds = resumes = 0
+    for soc in (11.4, 10.8, 11.3, 10.9):
+        act = decide_car_mode_action(
+            "match_home_load", car_charging=True, soc_pct=soc, min_reserve_soc=reserve,
+            max_discharge_w=4000.0, static_w=0.0, predicted_house_w=800.0, reserve_holding=holding)
+        entered = act.reserve_hold and not holding
+        resumed = holding and not act.reserve_hold
+        holds += int(entered)
+        resumes += int(resumed)
+        holding = act.reserve_hold
+    assert holds == 1     # entered the hold once (at 10.8)
+    assert resumes == 0   # never flapped back to discharge on the noise
+
+
+def test_reserve_hysteresis_resumes_only_at_plus_three_pp():
+    reserve = 10.0
+    common = dict(car_charging=True, min_reserve_soc=reserve, max_discharge_w=4000.0,
+                  static_w=0.0, predicted_house_w=800.0)
+    # Enter the hold at reserve+0.8pp.
+    enter = decide_car_mode_action("match_home_load", soc_pct=10.8, reserve_holding=False, **common)
+    assert enter.action == "hold" and enter.reserve_hold is True
+    # Still holding at reserve+2.9pp (< the +3pp resume threshold) — no premature resume.
+    still = decide_car_mode_action("match_home_load", soc_pct=12.9, reserve_holding=True, **common)
+    assert still.action == "hold" and still.reserve_hold is True
+    # Resume the discharge only once recovered to reserve+3pp.
+    back = decide_car_mode_action("match_home_load", soc_pct=13.0, reserve_holding=True, **common)
+    assert back.action == "discharge" and back.reserve_hold is False
+
+
+def test_reserve_hold_flag_false_on_an_ordinary_discharge():
+    act = _decide("match_home_load", soc_pct=55.0, min_reserve_soc=10.0)
+    assert act.action == "discharge"
+    assert act.reserve_hold is False
+
+
 # ---- Bounded re-command (the anti-tracking rule) -------------------------------------------------
 
 def test_recommand_true_at_session_start():

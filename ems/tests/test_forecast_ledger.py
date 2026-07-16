@@ -5,6 +5,7 @@ DST-aware slot coverage, retry-until-20:00-then-exclude, baseline load bands), t
 and proof the legacy forecast_snapshots WRITE path is retired (the recorder no longer writes it;
 only the ledger is written — see §3.3's reconciliation)."""
 import asyncio
+from collections import Counter
 from datetime import UTC, datetime, timedelta
 from zoneinfo import ZoneInfo
 
@@ -290,6 +291,50 @@ def test_canonical_dedupes_once_per_day(tmp_path):
     first, second, load = asyncio.run(run())
     assert first is not None and second is None  # second didn't fire
     assert load[0]["expected_w"] == 500.0  # the 999 profile never got written
+
+
+class _CacheSetBoom(CacheStore):
+    """A cache whose `.set` fails (get still works) — simulates the dedupe key being lost AFTER a
+    successful ledger write, the exact window in which a naive retry would duplicate (F3)."""
+
+    def set(self, *a, **kw):
+        raise RuntimeError("cache write failed")
+
+
+def test_canonical_retry_after_cache_set_failure_writes_nothing_new(tmp_path):
+    # F3: the first run writes the canonical set but the dedupe-key .set FAILS, so the cache never
+    # learns tomorrow is done. Without a ledger-level guard, a later cycle the same evening would
+    # write a SECOND canonical set with a fresh issued_at (duplicates the scorer double-counts).
+    # The fix: before building, the job checks the ledger for tomorrow's canonical solar rows and,
+    # finding them, treats the run as already-done — skipping the write.
+    store = HistoryStore(str(tmp_path / "ems.sqlite"))
+    cache = _CacheSetBoom(str(tmp_path / "ems.sqlite"))
+    now_local = datetime(2026, 7, 10, 18, 30, tzinfo=_AMS)
+    lo, hi = _tomorrow_bounds(now_local)
+
+    async def run():
+        await store.init()
+        await asyncio.to_thread(cache.init)
+        first = await _run_canonical_forecast(
+            store, cache, now_local, _AMS, solar_slots=_mock_solar(now_local).slots(),
+            solar_source_name="MockSolar", load_profile=_flat_profile(500.0))
+        canonical_after_first = await store.ledger_canonical_between("solar", lo, hi)
+        # A later cycle the SAME evening. Cache still misses (its .set kept failing), so only the
+        # ledger guard can stop the duplicate write.
+        second = await _run_canonical_forecast(
+            store, cache, now_local + timedelta(minutes=20), _AMS,
+            solar_slots=_mock_solar(now_local).slots(), solar_source_name="MockSolar",
+            load_profile=_flat_profile(999.0))
+        canonical_after_second = await store.ledger_canonical_between("solar", lo, hi)
+        all_solar = await store.ledger_between("solar", lo, hi)  # every issued_at
+        return first, second, canonical_after_first, canonical_after_second, all_solar
+
+    first, second, after_first, after_second, all_solar = asyncio.run(run())
+    assert first is not None and first > 0  # first run wrote the canonical set
+    assert second is None  # retry skipped — the ledger guard treated tomorrow as already done
+    assert len(after_first) == len(after_second)  # no new canonical solar rows
+    counts = Counter(r["target_start"] for r in all_solar)
+    assert counts and all(c == 1 for c in counts.values())  # one canonical solar row per slot
 
 
 def test_canonical_gate_closed_before_18_and_after_20(tmp_path):

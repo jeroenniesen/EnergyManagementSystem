@@ -32,7 +32,7 @@ class AuditStore:
     async def _connection(self) -> aiosqlite.Connection:
         db = self._db
         if db is not None and _connection_is_dead(db):  # proactive self-heal (see HistoryStore)
-            await self._discard_connection(reason="worker thread stopped / connection gone")
+            await self._discard_connection(db, reason="worker thread stopped / connection gone")
         if self._db is None:
             async with self._connect_lock:
                 if self._db is None:
@@ -43,18 +43,25 @@ class AuditStore:
                     self._db = db
         return self._db
 
-    async def _note_dead_connection(self, exc: BaseException) -> None:
-        # Called by the `self_healing` retry wrapper — see HistoryStore for the full rationale.
-        await self._discard_connection(reason=f"{type(exc).__name__}: {exc}")
+    async def _note_dead_connection(self, exc: BaseException, dead_conn) -> None:
+        # Called by the `self_healing` retry wrapper — see HistoryStore for the full rationale
+        # (including why the discard targets the connection the failing call was using).
+        await self._discard_connection(dead_conn, reason=f"{type(exc).__name__}: {exc}")
 
     async def reset_connection(self) -> None:
         """Force the shared connection to be discarded + reopened on the next call (best-effort)."""
-        await self._discard_connection(reason="watchdog reset")
+        await self._discard_connection(self._db, reason="watchdog reset")
 
-    async def _discard_connection(self, *, reason: str) -> None:
+    async def _discard_connection(self, dead_conn, *, reason: str) -> None:
+        # See HistoryStore._discard_connection for the sibling-race rationale (a stale caller must
+        # not close a connection a sibling already healed).
         async with self._connect_lock:
             db = self._db
             if db is None:
+                return
+            if dead_conn is not None and db is not dead_conn:
+                _log.debug("%s: shared connection already healed by a sibling (%s) — skipping "
+                           "discard", type(self).__name__, reason)
                 return
             self._db = None
             self._last_reheal_at = datetime.now(UTC)
@@ -122,6 +129,12 @@ class AuditStore:
     async def recent(self, limit: int = 100, category: str | None = None) -> list[dict]:
         """Newest-first audit entries, optionally filtered by category. `detail` is decoded to a
         dict (empty on any decode error — never raises)."""
+        return await self._recent_rows(limit, category)
+
+    async def _recent_rows(self, limit: int, category: str | None) -> list[dict]:
+        """Private, UNWRAPPED query behind `recent()`. `last_decision_mode` (itself self-heal-
+        wrapped) calls THIS, not `recent()`, so a dead connection triggers the reheal-retry at ONE
+        level, not the nested up-to-4-attempts a wrapped-calls-wrapped path would cause (F7)."""
         where = "WHERE category = ? " if category else ""
         params: tuple = (category, limit) if category else (limit,)
         async with self._conn() as db:
@@ -169,6 +182,7 @@ class AuditStore:
 
     async def last_decision_mode(self) -> str | None:
         """The desired_mode of the most recent battery_decision entry — used to dedupe so we only
-        log a decision when the mode actually changes (≤ a handful a day)."""
-        rows = await self.recent(1, category="battery_decision")
+        log a decision when the mode actually changes (≤ a handful a day). Calls the private
+        `_recent_rows` (not the self-heal-wrapped `recent`) so the reheal-retry never nests (F7)."""
+        rows = await self._recent_rows(1, category="battery_decision")
         return rows[0]["detail"].get("desired_mode") if rows else None
