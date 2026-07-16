@@ -46,8 +46,10 @@ from ems.control.service import (
     ControlContext,
     ControlService,
     _commanded_family,  # noqa: F401 — re-exported for the closure-testing tests
+    _commit_hysteresis_state,  # noqa: F401 — re-exported for the closure-testing tests
     _decide_car_command,  # noqa: F401 — re-exported for the closure-testing tests
     _decide_car_session_end,  # noqa: F401 — re-exported for the closure-testing tests
+    _decide_grace_action,  # noqa: F401 — re-exported for the closure-testing tests
     _tower_family,  # noqa: F401 — re-exported for the closure-testing tests
 )
 from ems.detectors import (
@@ -84,6 +86,7 @@ from ems.planner.summer import SummerConfig, sunset_after
 from ems.planner.validator import PlanValidation, validate_plan
 from ems.readiness import Readiness, compute_readiness, home_state
 from ems.reporting import (
+    apply_year_totals,
     build_report,
     build_series,
     build_series_from_daily_energy,
@@ -502,6 +505,32 @@ async def _run_canonical_forecast(
                 return None
         except Exception:
             _log.debug("canonical forecast dedupe read failed (non-fatal)", exc_info=True)
+    # Ledger-level idempotency (F3): the cache dedupe key can be lost even after a successful
+    # ledger write (e.g. an earlier cache `.set` failed), and a naive retry would then append a
+    # SECOND canonical set with a fresh `issued_at` — duplicates the scorer double-counts. So before
+    # building, check whether tomorrow already has canonical solar rows; if so, treat the run as
+    # already-done: (re)set the cache key so future cycles dedupe cheaply, mark state, skip writes.
+    day_start = datetime(tomorrow.year, tomorrow.month, tomorrow.day, tzinfo=tz)
+    tomorrow_start = day_start.astimezone(UTC).isoformat()
+    tomorrow_end = (day_start + timedelta(days=1)).astimezone(UTC).isoformat()
+    try:
+        already = await store.ledger_canonical_between("solar", tomorrow_start, tomorrow_end)
+    except Exception:
+        already = []
+        _log.debug("canonical forecast ledger idempotency check failed (non-fatal)", exc_info=True)
+    if already:
+        if cache_store is not None:
+            try:
+                await asyncio.to_thread(
+                    cache_store.set, dedupe_key, "ledger-present", _CANONICAL_DEDUPE_TTL_SECONDS)
+            except Exception:
+                _log.debug("canonical forecast dedupe write failed (non-fatal)", exc_info=True)
+        if state is not None:
+            state["ok"] = True
+            state["last_success_date"] = tomorrow.isoformat()
+        _log.info("canonical forecast: tomorrow (%s) already has canonical rows — skipping write",
+                  tomorrow.isoformat())
+        return None
     issued_at = now.astimezone(UTC).isoformat()
     rows = _canonical_ledger_rows(
         issued_at=issued_at, tomorrow=tomorrow, tz=tz, solar_slots=solar_slots,
@@ -692,10 +721,11 @@ def _uslot_totals(slots: list[dict]) -> dict:
 _FINANCE_CALC_VERSION = 3
 
 
-# The car-charging discharge-session constants + the two PURE decision helpers
-# (`_decide_car_command` / `_decide_car_session_end`) moved to ems/control/service.py (B-46).
-# `_decide_car_command`, `_decide_car_session_end` and `_CAR_SESSION_MAX_COMMANDS` are imported
-# at the top and re-exported here so the car-session tests keep their `ems.web.api` import path.
+# The car-charging discharge-session constants + the PURE decision helpers (`_decide_car_command`,
+# `_decide_car_session_end`, `_decide_grace_action`) and the thread-safe hysteresis committer
+# (`_commit_hysteresis_state`) moved to ems/control/service.py (B-46). They are imported at the top
+# and re-exported here (with `_CAR_SESSION_MAX_COMMANDS`) so the car-session tests keep their
+# `ems.web.api` import path.
 
 
 def create_app(
@@ -757,6 +787,9 @@ def create_app(
     override_box = ctx.override_box
     _OV_INTENT, _OV_EXP = "override.intent", "override.expires_at"
     _hysteresis_box = ctx.hysteresis_box
+    # Serialise the hysteresis read-modify-write + persist across the three threads that reach
+    # `_commit_hysteresis` (periodic loop / override cycle / sync dashboard read) — see F6.
+    _hysteresis_lock = ctx.hysteresis_lock
     _HYSTERESIS_KEY = "strategy:hysteresis"
     _HYSTERESIS_TTL_SECONDS = 90 * 24 * 3600.0  # long enough to bridge shoulder-season gaps
     _drift_box = ctx.drift_box  # cluster-drift dedup — also read by /api/diagnostics
@@ -1074,25 +1107,16 @@ def create_app(
         return surplus, spread
 
     def _commit_hysteresis(new_state: HysteresisState) -> None:
-        """Adopt `new_state` and, only when it actually changed, persist it to the KV cache so the
-        pending-switch counter survives a restart (§8.4 / B-15). Best-effort — a cache hiccup must
-        never break strategy resolution."""
-        if new_state == _hysteresis_box["state"]:
-            # Refresh the TTL during stable seasons too; otherwise a quiet season expires after
-            # 90 days and a restart loses the damping state.  This is intentionally a cheap
-            # idempotent write on each control evaluation.
-            if cache_store is not None:
-                try:
-                    cache_store.set(_HYSTERESIS_KEY, new_state.to_json(), _HYSTERESIS_TTL_SECONDS)
-                except Exception:
-                    _log.debug("hysteresis state TTL refresh failed (non-fatal)", exc_info=True)
-            return
-        _hysteresis_box["state"] = new_state
-        if cache_store is not None:
-            try:
-                cache_store.set(_HYSTERESIS_KEY, new_state.to_json(), _HYSTERESIS_TTL_SECONDS)
-            except Exception:
-                _log.debug("hysteresis state persist failed (non-fatal)", exc_info=True)
+        """Adopt `new_state` and persist it to the KV cache so the pending-switch counter survives a
+        restart (§8.4 / B-15). The TTL is refreshed on every call — even a stable season — so a
+        quiet season can't expire and lose the damping state. Thread-safe (F6): the RMW on
+        `_hysteresis_box` and the persist run under `_hysteresis_lock`, so the periodic loop, an
+        override-triggered cycle and a synchronous dashboard read can't interleave a lost update.
+        Best-effort — a cache hiccup must never break strategy resolution."""
+        _commit_hysteresis_state(
+            _hysteresis_box, _hysteresis_lock, new_state, cache_store,
+            _HYSTERESIS_KEY, _HYSTERESIS_TTL_SECONDS,
+        )
 
     def _resolve_strategy(now: datetime) -> tuple[str, str]:
         """(strategy, reason). Forced modes skip the (cheap-but-unneeded) energy-input computation;
@@ -1235,6 +1259,13 @@ def create_app(
                 cadence = _sample_cadence_seconds()
                 await materialize_observations(store, day_start, day_end, cadence_seconds=cadence)
                 await materialize_daily_energy(store, day_start, day_end, cadence_seconds=cadence)
+                # Finance year-completeness (F5): also cache YESTERDAY's finance rollup now,
+                # mirroring the daily_energy materialization above. daily_finance was previously
+                # written ONLY on a view/export, so a day nobody looked at before the 90-day raw
+                # purge became permanently uncomputable — a silent year-view undercount. This makes
+                # every completed day's finance survive the raw purge. Idempotent: the day's cached
+                # row (under the current calc_v) is returned unchanged, never re-upserted.
+                await _ensure_day_finance(y)
                 obs_cutoff = (datetime.now(UTC)
                               - timedelta(days=OBSERVATION_RETENTION_DAYS)).isoformat()
                 purged = await store.purge_observations_older_than(obs_cutoff)
@@ -1408,6 +1439,20 @@ def create_app(
     # this set: it only opens `replay_range`'s read-only (mode=ro) history DB connection and never
     # touches `settings_store` — there is nothing to protect, so gating it like a write would
     # misrepresent what it does. It stays reachable exactly like any other read.
+    # The mutating-method routes that are verified read-only and so are NOT token-gated. Every
+    # POST/PUT/DELETE route MUST be in `_WRITE_API_PATHS` or here (the write-gating invariant test
+    # `test_every_mutating_route_is_write_gated_or_explicitly_exempt` fails loudly otherwise) —
+    # so a new mutating route can never ship un-triaged past the auth choke point.
+    WRITE_EXEMPT_PATHS = frozenset({
+        # Scenario simulator: opens the read-only history connection only, never `settings_store`.
+        "/api/whatif",
+        # Plan preview: recomputes a plan from the posted knobs in memory; persists nothing.
+        "/api/plan-preview",
+    })
+    # Exposed for the write-gating invariant test (S2) so it checks the LIVE classification, not a
+    # duplicated copy that could drift from what the middleware actually enforces.
+    app.state.write_api_paths = _WRITE_API_PATHS
+    app.state.write_exempt_paths = WRITE_EXEMPT_PATHS
     # Always reachable without a token: auth discovery, so a client can learn a token is required
     # and prompt for it. (Health probes live under /health and are never gated here.)
     _AUTH_EXEMPT_API_PATHS = frozenset({"/api/auth"})
@@ -1443,6 +1488,25 @@ def create_app(
 
     _WRITE_METHODS = frozenset({"POST", "PUT", "PATCH", "DELETE"})
 
+    def _cross_origin_write(request: Request) -> bool:
+        """True when a state-changing /api request carries an Origin whose host does NOT match the
+        request's Host — the cross-site write vector the SPEC §12 'CSRF-checked' claim relies on.
+        Browsers ALWAYS attach Origin to a cross-origin (and, in modern browsers, same-origin)
+        state-changing request, so a present-but-mismatched Origin is a genuine cross-site write;
+        an absent Origin (curl, server-to-server) is trusted and passes, exactly as before.
+        Compares only the host[:port] netloc; no proxy/forwarded headers are trusted."""
+        origin = request.headers.get("origin")
+        if not origin:
+            return False
+        # "scheme://host[:port]" -> "host[:port]"; "null"/opaque/bad -> "" (never same-origin).
+        netloc = origin.split("://", 1)[-1].split("/", 1)[0] if "://" in origin else ""
+        host = request.headers.get("host", "")
+        return netloc.strip().lower() != host.strip().lower()
+
+    def _cross_origin_error() -> JSONResponse:
+        return JSONResponse(
+            {"detail": "cross-origin writes are not allowed"}, status_code=403)
+
     class _AccessMiddleware:
         """One choke point for the whole JSON API (finding 1) — reuses the same `_authorized`
         check the writes always used. Deliberately a PURE-ASGI middleware, not
@@ -1451,7 +1515,12 @@ def create_app(
         The SPA shell + static assets stay open (so the browser can load its Access box); every
         datum it renders comes from a gated /api/* read. No proxy/forwarded headers are trusted —
         auth is the bearer token only (remote access is the LAN over a VPN); see
-        docs/remote-access.md."""
+        docs/remote-access.md.
+
+        Two independent gates, origin FIRST: (1) same-origin enforcement rejects every cross-site
+        state-changing /api write (SPEC §12 CSRF) REGARDLESS of token config — defense in depth, so
+        a browser-planted valid token can't be replayed cross-site; (2) the bearer-token gate for
+        writes (always) and reads (when `web.require_auth`)."""
 
         def __init__(self, app):
             self.app = app
@@ -1459,15 +1528,24 @@ def create_app(
         async def __call__(self, scope, receive, send):
             if scope["type"] == "http":
                 path = scope.get("path", "")
+                is_write_method = scope.get("method", "GET").upper() in _WRITE_METHODS
+                # (1) Same-origin gate — checked BEFORE the token so a cross-site request with a
+                # planted token is still rejected. Covers EVERY /api write (incl. the review's
+                # /api/ai/validate + /api/chat) via this one path; no per-endpoint code.
+                if (
+                    is_write_method
+                    and path.startswith("/api/")
+                    and _cross_origin_write(Request(scope))
+                ):
+                    await _cross_origin_error()(scope, receive, send)
+                    return
+                # (2) Token gate — unchanged.
                 if (
                     path.startswith("/api/")
                     and path not in _AUTH_EXEMPT_API_PATHS
                     and _effective_web_token() is not None
                 ):
-                    is_write = (
-                        scope.get("method", "GET").upper() in _WRITE_METHODS
-                        and path in _WRITE_API_PATHS
-                    )
+                    is_write = is_write_method and path in _WRITE_API_PATHS
                     if (is_write or _read_auth_required()) and not _authorized(Request(scope)):
                         await _auth_error()(scope, receive, send)
                         return
@@ -1538,7 +1616,7 @@ def create_app(
     control = ControlService(
         ctx=ctx, settings=settings_cache, controller=controller, store=store,
         audit_store=audit_store, price_source=price_source, solar_forecast=solar_forecast,
-        site_tz=site_tz, dry_run=dry_run,
+        site_tz=site_tz, dry_run=dry_run, control_cycle_seconds=control_cycle_seconds,
         current_soc=_current_soc, current_mode=_current_mode, current_towers=_current_towers,
         data_quality=_data_quality, car_charging=_car_charging, load_by=_load_by,
         active_strategy=_active_strategy, validate_plan_obj=_validate_plan_obj,
@@ -3086,6 +3164,11 @@ def create_app(
             if daily_rows is not None:
                 resp["series"] = build_series_from_daily_energy(
                     daily_rows, start=start, end=end, tz=site_tz)
+                # F2: the year SERIES is already full-year (rollup) but flows/scores were built from
+                # the (retention-bounded) raw window — recompute the totals-derivable scores from
+                # the same full-year rollup and label the raw-window best_price + flows caption.
+                apply_year_totals(resp, daily_rows, grid_factor=grid_factor,
+                                  gas_factor=gas_factor, raw_days=history_retention_days)
             else:
                 resp["series"] = build_series(raw, der, period=period, start=start, end=end,
                                               tz=site_tz)
