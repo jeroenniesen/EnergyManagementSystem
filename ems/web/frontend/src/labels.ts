@@ -192,3 +192,73 @@ export const INTELLIGENCE_COPY: Record<string, { label: string; detail: string; 
   },
 };
 export const CURRENT_INTELLIGENCE_MODE: keyof typeof INTELLIGENCE_COPY = "shadow";
+
+// --- Now / Next / Why drawer (2026-07-15 plan) ------------------------------------------------
+// Pure homeowner copy for the "What is EMS doing?" drawer. Kept decoupled from App types (plain
+// structural input) so it stays a pure, unit-testable function with no import cycle.
+export type NowDrawerInputs = {
+  currentAction: string | null; // battery-plan current_action (grid_charge/solar_charge/…)
+  intent: string | null; // decision intent, the fallback when there's no plan action yet
+  why: string | null; // the already-explained plan reason
+  targetSocPct: number | null;
+  plannedTopupKwh: number | null;
+  overrideActive: boolean;
+  actText: string; // the hero's already-derived "do I need to act?" line (kept consistent)
+  actCalm: boolean;
+};
+export type NowDrawerCopy = {
+  happened: string;
+  why: string;
+  next: string;
+  action: string;
+  calm: boolean;
+};
+
+// Homeowner phrasing for the current action — battery-plan action first, decision intent as a
+// fallback, so the drawer reads plainly even before the plan endpoint has answered.
+const NOW_HAPPENED_BY_ACTION: Record<string, string> = {
+  grid_charge: "Charging the battery from the grid",
+  solar_charge: "Storing today's solar in the battery",
+  discharge: "Your battery is powering your home",
+  self_consume: "Your battery is powering your home",
+  hold: "Holding your stored energy in reserve",
+  paused: "Running on the battery's own safe mode",
+};
+const NOW_HAPPENED_BY_INTENT: Record<string, string> = {
+  grid_charge_to_target: "Charging the battery from the grid",
+  discharge_for_load: "Your battery is powering your home",
+  allow_self_consumption: "Your battery is powering your home",
+  hold_reserve: "Holding your stored energy in reserve",
+};
+
+export function nowDrawerCopy(i: NowDrawerInputs): NowDrawerCopy {
+  const happened =
+    (i.currentAction ? NOW_HAPPENED_BY_ACTION[i.currentAction] : undefined) ??
+    (i.intent ? NOW_HAPPENED_BY_INTENT[i.intent] : undefined) ??
+    "EMS is following the current plan";
+  const why = i.why?.trim() || "EMS is following the current plan for your home.";
+  let next: string;
+  if (i.overrideActive) {
+    next = "You're directing the battery manually — it returns to the plan when the override ends.";
+  } else if (i.plannedTopupKwh != null && i.plannedTopupKwh > 0) {
+    next = "Charging is planned for the lower-cost period ahead.";
+  } else if (i.targetSocPct != null) {
+    next = `Aiming to keep the battery near ${Math.round(i.targetSocPct)}% on the current plan.`;
+  } else {
+    next = "No change is planned right now — EMS keeps following the plan.";
+  }
+  const action = i.actCalm ? "No action needed." : i.actText;
+  return { happened, why, next, action, calm: i.actCalm };
+}
+
+// --- Confidence drawer (2026-07-15 plan) ------------------------------------------------------
+// Plain-language meaning of the plan-confidence level, and the always-true safety net line.
+export const CONFIDENCE_MEANING: Record<"high" | "medium" | "low", string> = {
+  high: "Recent forecasts are tracking well, so today's plan is dependable.",
+  medium: "Useful for planning, but cautious — EMS leans conservative where it isn't sure.",
+  low: "The safe baseline is active — EMS is holding the battery's own safe mode rather than "
+    + "planning aggressively.",
+};
+export const CONFIDENCE_SAFETY =
+  "Your battery is never put at risk: whenever EMS isn't confident, it falls back to the "
+  + "battery's own safe self-consumption mode.";

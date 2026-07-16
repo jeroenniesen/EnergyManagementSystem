@@ -104,6 +104,7 @@ config, deployment). Supporting docs in **[`docs/`](./docs/)**:
   target-SoC math, the `Plan` object + validator, ownership state machine.
 - [`docs/energy-model.md`](./docs/energy-model.md) — sign conventions, house-load reconstruction.
 - [`docs/config-reference.md`](./docs/config-reference.md) — every config key.
+- [`docs/dashboard-navigation.md`](./docs/dashboard-navigation.md) — where things live in the web UI: Dashboard vs. contextual drawers vs. Manage vs. Insights, deep links, and back behaviour.
 - [`docs/live-integration.md`](./docs/live-integration.md) — wiring real HomeWizard/Tibber/Indevolt.
 - [`docs/operator-runbook.md`](./docs/operator-runbook.md) — disable EMS, force AUTO, restore.
 - [`docs/ml-layer.md`](./docs/ml-layer.md) — the optional, accelerator-gated ML layer.

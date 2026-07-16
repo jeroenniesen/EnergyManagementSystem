@@ -11,7 +11,10 @@ import {
   DATA_QUALITY,
   DATA_SOURCE,
   FRESHNESS_STATE,
+  CONFIDENCE_MEANING,
+  CONFIDENCE_SAFETY,
   humanize,
+  nowDrawerCopy,
   OUTCOME_LABEL,
   PHYSICAL_MODE,
   RUN_MODE,
@@ -32,6 +35,8 @@ import { SkyBackdrop } from "./SkyBackdrop";
 import { Advanced } from "./Advanced";
 import { applyTheme, readStoredTheme, storeTheme, type Theme } from "./theme";
 import { authHeaders } from "./auth";
+import { DetailDrawer } from "./DetailDrawer";
+import { DecisionTimeline, type DecisionEvent } from "./DecisionTimeline";
 
 type Status = {
   dry_run: boolean;
@@ -69,6 +74,26 @@ type ChargeNeed = {
   reason: string;
 };
 
+// Savings drawer contract (2026-07-15 plan): today's plan ESTIMATE + its band, and MEASURED
+// (realized) savings from completed days — realized is null until a day completes (never faked).
+type SavingsData = {
+  today_eur: number | null;
+  estimate_eur: number | null;
+  realized_today_eur: number | null;
+  month_realized_eur: number | null;
+  complete_days: number;
+  lower_bound_eur: number | null;
+  upper_bound_eur: number | null;
+};
+
+// Just the headline accuracy numbers the confidence drawer shows behind "Show technical details"
+// (the full block lives in System.tsx). All nullable — shown as "—" until there's evidence.
+type Accuracy = {
+  solar?: { bias_w: number | null } | null;
+  load?: { mape_pct: number | null } | null;
+  plan_execution?: { hit_rate_pct: number | null } | null;
+};
+
 // Just enough of GET /api/car/plan (CarCard.tsx owns the full shape) to overlay the car's PLANNED
 // charging windows on the main battery-plan chart (feat/ux-batch-3) — "when should the car
 // charge" answered right on the dashboard, not only inside the Car tab/compact card.
@@ -87,7 +112,15 @@ type ViewName = "dashboard" | "insights" | "car" | "chat" | "manage";
 // A route is the top-level view plus, for "manage", which sub-tab is showing. The manage tab is
 // carried even on other views so returning to Manage can be deterministic, and so the hash router
 // (below) can round-trip `#manage/system` etc.
-type Route = { view: ViewName; tab: ManageTab };
+// A contextual dashboard drawer (2026-07-15 plan). Each kind is one "tell me more" surface; the
+// drawer is a peer of the top-level route so it can be deep-linked (`#dashboard/<kind>`).
+type DrawerRoute =
+  | { kind: "now" }
+  | { kind: "savings" }
+  | { kind: "confidence" }
+  | { kind: "battery" }
+  | { kind: "decision"; id: string };
+type Route = { view: ViewName; tab: ManageTab; drawer: DrawerRoute | null };
 
 // Dashboard refresh cadence. Device reads (battery cluster, meters) are coalesced server-side to
 // at most once per ~30 s regardless of this, so a snappy poll no longer floods the hardware; 10 s
@@ -111,27 +144,61 @@ const CONFIDENCE_CHIP_LABEL: Record<PlanConfidence["level"], string> = {
   medium: "Medium confidence",
   low: "Low confidence",
 };
+// Homeowner-first drawer headings, keyed by drawer kind (content lands in Tasks 3–5).
+const DRAWER_TITLE: Record<DrawerRoute["kind"], string> = {
+  now: "What EMS is doing now",
+  savings: "Your savings",
+  confidence: "How much to trust this",
+  battery: "Battery detail",
+  decision: "Why EMS acted",
+};
 
 // Hash → route. Canonical hashes: #dashboard #insights #car #chat #manage #manage/system
 // #manage/audit. LEGACY hashes still work so old bookmarks / deep-links don't break: bare
 // #settings|#system|#audit redirect to the matching Manage sub-tab. Anything unknown falls back to
 // the dashboard (loop-2's finding — a mistyped hash must never blank the app).
+// `#dashboard/<kind>` → the contextual drawer to show, or null. Unknown dashboard subroutes
+// resolve to no drawer (plain Dashboard), matching the "mistyped hash never blanks the app" rule.
+function parseDrawer(raw: string): DrawerRoute | null {
+  const m = raw.match(/^dashboard\/(.+)$/);
+  if (!m) return null;
+  const rest = m[1];
+  if (rest === "now" || rest === "savings" || rest === "confidence" || rest === "battery") {
+    return { kind: rest };
+  }
+  const dm = rest.match(/^decision\/(.+)$/);
+  if (dm) return { kind: "decision", id: decodeURIComponent(dm[1]) };
+  return null;
+}
+
+// The hash a drawer serialises to (the inverse of parseDrawer), for deep-links + browser Back.
+function drawerHash(d: DrawerRoute): string {
+  return d.kind === "decision"
+    ? `dashboard/decision/${encodeURIComponent(d.id)}`
+    : `dashboard/${d.kind}`;
+}
+
 function routeFromHash(hash: string): Route {
   const raw = hash.replace(/^#\/?/, "");
+  // Contextual dashboard drawers (`#dashboard/now`, `#dashboard/decision/<id>`, …) — the drawer
+  // renders over the dashboard, so the view is always "dashboard" here.
+  const drawer = parseDrawer(raw);
+  if (drawer) return { view: "dashboard", tab: "settings", drawer };
   // Legacy top-level Settings/System/Audit → the Manage sub-tab they became.
-  if (raw === "settings") return { view: "manage", tab: "settings" };
-  if (raw === "system") return { view: "manage", tab: "system" };
-  if (raw === "audit") return { view: "manage", tab: "audit" };
+  if (raw === "settings") return { view: "manage", tab: "settings", drawer: null };
+  if (raw === "system") return { view: "manage", tab: "system", drawer: null };
+  if (raw === "audit") return { view: "manage", tab: "audit", drawer: null };
   // Manage + its sub-tabs. Bare #manage (and #manage/settings) open the Settings tab.
-  if (raw === "manage") return { view: "manage", tab: "settings" };
+  if (raw === "manage") return { view: "manage", tab: "settings", drawer: null };
   const m = raw.match(/^manage\/(.+)$/);
   if (m) {
     const tab = m[1] as ManageTab;
-    return { view: "manage", tab: MANAGE_TABS.includes(tab) ? tab : "settings" };
+    return { view: "manage", tab: MANAGE_TABS.includes(tab) ? tab : "settings", drawer: null };
   }
   return {
     view: VIEWS.includes(raw as ViewName) ? (raw as ViewName) : "dashboard",
     tab: "settings",
+    drawer: null,
   };
 }
 
@@ -179,55 +246,6 @@ function Metric({
   return (
     <div className={cls} title={title} data-testid={testId}>
       {inner}
-    </div>
-  );
-}
-
-function Modal({
-  title,
-  onClose,
-  children,
-  testId,
-}: {
-  title: string;
-  onClose: () => void;
-  children: React.ReactNode;
-  testId?: string;
-}) {
-  const closeRef = useRef<HTMLButtonElement>(null);
-  useEffect(() => {
-    closeRef.current?.focus();
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") onClose();
-    };
-    document.addEventListener("keydown", onKey);
-    return () => document.removeEventListener("keydown", onKey);
-  }, [onClose]);
-  return (
-    <div className="modal-backdrop" onClick={onClose}>
-      <div
-        className="modal"
-        role="dialog"
-        aria-modal="true"
-        aria-label={title}
-        onClick={(e) => e.stopPropagation()}
-        data-testid={testId}
-      >
-        <div className="modal-head">
-          <span className="metric-label">{title}</span>
-          <button
-            ref={closeRef}
-            type="button"
-            className="modal-close"
-            onClick={onClose}
-            aria-label="Close"
-            data-testid="modal-close"
-          >
-            ×
-          </button>
-        </div>
-        {children}
-      </div>
     </div>
   );
 }
@@ -289,11 +307,19 @@ export function App() {
   // fetch (then the footer stat stays hidden; a later failure just keeps the last-known value,
   // same best-effort convention as the other polled cards below).
   const [savedToday, setSavedToday] = useState<SavedToday | null>(null);
+  const [savings, setSavings] = useState<SavingsData | null>(null);
+  const [decisions, setDecisions] = useState<DecisionEvent[]>([]);
+  const [accuracy, setAccuracy] = useState<Accuracy | null>(null);
   const [report, setReport] = useState<Report | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [route, setRoute] = useState<Route>(() => routeFromHash(window.location.hash));
   const view = route.view;
   const manageTab = route.tab;
+  // The open contextual drawer is DERIVED from the hash (deep-linkable, reload-safe, Back-aware).
+  const drawer = route.drawer;
+  // Whether WE pushed the current drawer entry (so close can pop it symmetrically); false when the
+  // drawer was reached by a fresh deep-link load (nothing of ours to pop — rewrite in place).
+  const drawerPushedRef = useRef(false);
   // "See the full plan" disclosure — collapsed by default, choice remembered across visits so a
   // homeowner who wants the detail keeps it, and one who doesn't never sees it re-expand.
   const [planOpen, setPlanOpen] = useState<boolean>(() => {
@@ -336,6 +362,10 @@ export function App() {
     window.addEventListener("hashchange", onHash);
     return () => window.removeEventListener("hashchange", onHash);
   }, []);
+  // Once no drawer is showing, we hold no pushed entry of our own (a Back or close cleared it).
+  useEffect(() => {
+    if (route.drawer === null) drawerPushedRef.current = false;
+  }, [route.drawer]);
   // Keep <html data-theme> in sync and cache the choice for the next load's first paint.
   useEffect(() => {
     storeTheme(theme);
@@ -384,7 +414,28 @@ export function App() {
     if (window.location.hash.replace(/^#\/?/, "") !== hash) {
       window.location.hash = hash;
     }
-    setRoute({ view: next, tab: next === "manage" ? tab : route.tab });
+    // Navigating to a top-level view always closes any open drawer.
+    setRoute({ view: next, tab: next === "manage" ? tab : route.tab, drawer: null });
+  }
+
+  // Open a contextual drawer by pushing its hash — the hashchange listener re-derives the route,
+  // so a browser Back (or the close button, below) returns to the plain dashboard. Marking the
+  // push lets close() pop symmetrically instead of stacking a forward entry.
+  function openDrawer(d: DrawerRoute) {
+    drawerPushedRef.current = true;
+    window.location.hash = drawerHash(d);
+  }
+
+  // Close the open drawer. If we pushed the entry, pop it (Back-symmetric, no forward pollution);
+  // if the drawer was deep-linked as the first entry, rewrite the hash to the dashboard in place.
+  function closeDrawer() {
+    if (drawerPushedRef.current) {
+      drawerPushedRef.current = false;
+      window.history.back();
+    } else {
+      window.history.replaceState(null, "", "#dashboard");
+      setRoute(routeFromHash("#dashboard"));
+    }
   }
 
   useEffect(() => {
@@ -424,6 +475,9 @@ export function App() {
         },
       );
       fill("/api/charge-need", (v: ChargeNeed) => setChargeNeed(v ?? null));
+      fill("/api/savings", (v: SavingsData) => setSavings(v ?? null));
+      fill("/api/decisions", (v: { events?: DecisionEvent[] }) => setDecisions(v?.events ?? []));
+      fill("/api/accuracy", (v: Accuracy) => setAccuracy(v ?? null));
       // Planned car-charging windows for the chart overlay (feat/ux-batch-3) — `enabled:false`
       // (feature off) carries no `plan`, so windows are only ever read when the feature is on.
       fill(
@@ -521,6 +575,21 @@ export function App() {
 
   const batteryModeLabel = battery?.current_mode
     ? PHYSICAL_MODE[battery.current_mode] ?? humanize(battery.current_mode)
+    : null;
+
+  // Homeowner copy for the Now / Next / Why drawer — reuses the SAME act line as the hero, so the
+  // "do I need to act?" answer can never disagree between the hero and the drawer.
+  const nowCopy = decision
+    ? nowDrawerCopy({
+        currentAction: batteryPlan?.current_action ?? null,
+        intent: decision.intent,
+        why: decision.plan_reason_explained || decision.plan_reason || decision.reason,
+        targetSocPct: batteryPlan?.target_soc_pct ?? null,
+        plannedTopupKwh: batteryPlan?.planned_grid_topup_kwh ?? null,
+        overrideActive: !!decision.override_active,
+        actText: actLine.text,
+        actCalm: actLine.calm,
+      })
     : null;
 
   // B-57: on demo/mock data, a persistent friendly nudge into real onboarding (Settings opens on
@@ -659,14 +728,16 @@ export function App() {
               {home.headline}
             </p>
             {confidence && (
-              <span
+              <button
+                type="button"
                 className={`badge confidence-chip confidence-${confidence.level}`}
                 data-testid="confidence-chip"
                 data-level={confidence.level}
                 title={confidence.reasons.join(" ")}
+                onClick={() => openDrawer({ kind: "confidence" })}
               >
                 {CONFIDENCE_CHIP_LABEL[confidence.level]}
-              </span>
+              </button>
             )}
           </div>
           {confidence && confidence.level !== "high" && (
@@ -686,6 +757,24 @@ export function App() {
             {!actLine.calm && <Icon name="alert" className="hero-act-icon" />}
             {actLine.text}
           </p>
+          <div className="hero-details-row">
+            <button
+              type="button"
+              className="hero-details-link"
+              data-testid="dashboard-now-trigger"
+              onClick={() => openDrawer({ kind: "now" })}
+            >
+              What is EMS doing? →
+            </button>
+            <button
+              type="button"
+              className="hero-details-link"
+              data-testid="dashboard-savings-trigger"
+              onClick={() => openDrawer({ kind: "savings" })}
+            >
+              See your savings →
+            </button>
+          </div>
           {demoActive && (
             <div className="hero-demo-cta" data-testid="demo-cta">
               <span>
@@ -741,9 +830,24 @@ export function App() {
           savedToday={savedToday}
           socPct={status?.soc_pct ?? null}
           batteryMode={batteryModeLabel}
-          onBatteryClick={batteryHasDetail ? () => setBatteryDetail("soc") : undefined}
+          onBatteryClick={
+            batteryHasDetail
+              ? () => {
+                  setBatteryDetail("soc");
+                  openDrawer({ kind: "battery" });
+                }
+              : undefined
+          }
           carWindows={carPlan?.windows ?? []}
           carWindowsEnabled={carPlan?.enabled ?? false}
+        />
+      )}
+
+      {/* Recent decisions: what EMS did or chose not to do; each row opens its decision drawer. */}
+      {view === "dashboard" && (
+        <DecisionTimeline
+          events={decisions}
+          onOpen={(id) => openDrawer({ kind: "decision", id })}
         />
       )}
 
@@ -830,7 +934,14 @@ export function App() {
                   : "Power leaving the battery to run the house, or going in to charge it."
               }
               icon="bolt"
-              onClick={batteryHasDetail ? () => setBatteryDetail("power") : undefined}
+              onClick={
+                batteryHasDetail
+                  ? () => {
+                      setBatteryDetail("power");
+                      openDrawer({ kind: "battery" });
+                    }
+                  : undefined
+              }
               testId="battery-power-tile"
             />
             <Metric
@@ -906,15 +1017,170 @@ export function App() {
         </Advanced>
       )}
 
-      {view === "dashboard" && batteryDetail && batteryHasDetail && (
-        <Modal
-          title={batteryDetail === "power" ? "Battery power — per tower" : "Battery — per tower"}
-          onClose={() => setBatteryDetail(null)}
-          testId="battery-modal"
-        >
-          <BatteryChips battery={battery} metric={batteryDetail} />
-        </Modal>
-      )}
+
+      {/* One reusable contextual drawer for the dashboard "tell me more" surfaces. Content per
+          kind is filled in across Tasks 3–5; Task 1 establishes the shell + the Now trigger. */}
+      <DetailDrawer
+        open={drawer !== null}
+        title={drawer ? DRAWER_TITLE[drawer.kind] : ""}
+        eyebrow="Dashboard detail"
+        onClose={closeDrawer}
+      >
+        {drawer?.kind === "now" && nowCopy && (
+          <>
+            <div className="drawer-section">
+              <span className="drawer-label">What is happening</span>
+              <p className="drawer-lede" data-testid="drawer-happened">{nowCopy.happened}</p>
+            </div>
+            <div className="drawer-section">
+              <span className="drawer-label">Why</span>
+              <p data-testid="drawer-why">{nowCopy.why}</p>
+            </div>
+            <div className="drawer-section">
+              <span className="drawer-label">What's next</span>
+              <p data-testid="drawer-next">{nowCopy.next}</p>
+            </div>
+            <div
+              className={`drawer-act ${nowCopy.calm ? "drawer-act-calm" : "drawer-act-attention"}`}
+              data-testid="drawer-action-block"
+            >
+              <span className="drawer-label">Do I need to act?</span>
+              <p data-testid="drawer-action">{nowCopy.action}</p>
+            </div>
+            <details className="drawer-tech" data-testid="drawer-now-tech">
+              <summary>Show technical details</summary>
+              <dl className="drawer-tech-dl">
+                <dt>Intent</dt>
+                <dd data-testid="drawer-now-intent">{decision?.intent ?? "—"}</dd>
+                <dt>Mode</dt>
+                <dd>{decision?.desired_mode ?? battery?.current_mode ?? "—"}</dd>
+                <dt>Outcome</dt>
+                <dd>{decision ? OUTCOME_LABEL[decision.outcome] ?? decision.outcome : "—"}</dd>
+              </dl>
+            </details>
+          </>
+        )}
+
+        {drawer?.kind === "savings" && (
+          <>
+            <div className="drawer-section">
+              <span className="drawer-label">Estimated saving today</span>
+              <p className="drawer-lede" data-testid="savings-estimate">
+                {savings?.estimate_eur != null
+                  ? `About €${savings.estimate_eur.toFixed(2)} (estimate` +
+                    (savings.lower_bound_eur != null && savings.upper_bound_eur != null
+                      ? `, roughly €${savings.lower_bound_eur.toFixed(2)}–€${savings.upper_bound_eur.toFixed(2)})`
+                      : ")")
+                  : "No estimate yet — the plan is still loading."}
+              </p>
+            </div>
+            <div className="drawer-section">
+              <span className="drawer-label">Measured (realized) savings</span>
+              <p data-testid="savings-realized">
+                {savings && savings.complete_days > 0 && savings.month_realized_eur != null
+                  ? `€${savings.month_realized_eur.toFixed(2)} measured over ${savings.complete_days} ` +
+                    `complete day${savings.complete_days === 1 ? "" : "s"} this month.`
+                  : "No complete days measured yet — today's figure is still an estimate, " +
+                    "not a measured amount."}
+              </p>
+            </div>
+            <details className="drawer-tech" data-testid="savings-calc">
+              <summary>How this was calculated</summary>
+              <p className="drawer-tech-note">
+                The estimate is the avoided expensive-window energy minus the charge cost (adjusted
+                for round-trip efficiency), battery wear and a risk margin. Realized savings are
+                measured from your recorded meters and the prices that were actually active, and
+                only count once a day is complete — so they're never inflated by an optimistic
+                forecast.
+              </p>
+            </details>
+          </>
+        )}
+
+        {drawer?.kind === "decision" &&
+          (() => {
+            const ev = decisions.find((e) => e.id === drawer.id);
+            if (!ev) {
+              return (
+                <p data-testid="decision-missing">
+                  This decision is no longer in the recent list.
+                </p>
+              );
+            }
+            return (
+              <>
+                <div className="drawer-section">
+                  <span className="drawer-label">What happened</span>
+                  <p className="drawer-lede" data-testid="decision-title">{ev.title}</p>
+                </div>
+                <div className="drawer-section">
+                  <span className="drawer-label">Why</span>
+                  <p data-testid="decision-reason">{ev.reason}</p>
+                </div>
+                <div className="drawer-section">
+                  <span className="drawer-label">What it means</span>
+                  <p data-testid="decision-consequence">{ev.consequence}</p>
+                </div>
+                <div
+                  className={`drawer-act ${
+                    ev.severity === "info" ? "drawer-act-calm" : "drawer-act-attention"
+                  }`}
+                  data-testid="decision-severity"
+                  data-severity={ev.severity}
+                >
+                  <span className="drawer-label">Do I need to act?</span>
+                  <p data-testid="decision-action">{ev.action}</p>
+                </div>
+              </>
+            );
+          })()}
+
+        {drawer?.kind === "confidence" && confidence && (
+          <>
+            <div className="drawer-section">
+              <span className="drawer-label">How much to trust today's plan</span>
+              <p className="drawer-lede" data-testid="confidence-meaning">
+                {CONFIDENCE_MEANING[confidence.level]}
+              </p>
+            </div>
+            <div className="drawer-section">
+              <span className="drawer-label">Why</span>
+              <p data-testid="confidence-reason">
+                {confidence.reasons.length ? confidence.reasons.join(" ") : "—"}
+              </p>
+            </div>
+            <div className="drawer-act drawer-act-calm" data-testid="confidence-safety">
+              <span className="drawer-label">Is my battery safe?</span>
+              <p>{CONFIDENCE_SAFETY}</p>
+            </div>
+            <details className="drawer-tech" data-testid="confidence-tech">
+              <summary>Show technical details</summary>
+              <dl className="drawer-tech-dl">
+                <dt>Solar forecast bias</dt>
+                <dd>
+                  {accuracy?.solar?.bias_w != null ? `${Math.round(accuracy.solar.bias_w)} W` : "—"}
+                </dd>
+                <dt>Load forecast error (MAPE)</dt>
+                <dd>
+                  {accuracy?.load?.mape_pct != null
+                    ? `${accuracy.load.mape_pct.toFixed(0)}%`
+                    : "—"}
+                </dd>
+                <dt>Plan hit rate</dt>
+                <dd>
+                  {accuracy?.plan_execution?.hit_rate_pct != null
+                    ? `${accuracy.plan_execution.hit_rate_pct.toFixed(0)}%`
+                    : "—"}
+                </dd>
+              </dl>
+            </details>
+          </>
+        )}
+
+        {drawer?.kind === "battery" && battery && (
+          <BatteryChips battery={battery} metric={batteryDetail ?? "soc"} />
+        )}
+      </DetailDrawer>
       </div>
     </>
   );

@@ -876,14 +876,15 @@ test.describe("EMS dashboard", () => {
     const tile = page.getByTestId("battery-tile");
     await expect(tile).toContainText("see each battery");
     await tile.click();
-    await expect(page.getByTestId("battery-modal")).toBeVisible();
+    // The per-tower breakdown now lives in the shared contextual drawer (2026-07-15 plan).
+    await expect(page.getByTestId("detail-drawer")).toBeVisible();
     await expect(page.getByTestId("tower-chip-aggregate")).toContainText("cluster avg");
     await expect(page.getByTestId("tower-chip")).toHaveCount(2);
     await expect(page.getByTestId("tower-chips")).toContainText("master");
     await expect(page.getByTestId("tower-chips")).toContainText("slave");
     // Escape closes the dialog.
     await page.keyboard.press("Escape");
-    await expect(page.getByTestId("battery-modal")).toHaveCount(0);
+    await expect(page.getByTestId("detail-drawer")).toHaveCount(0);
   });
 
   test("the Battery (power) tile opens a per-tower power breakdown", async ({ page }) => {
@@ -915,14 +916,14 @@ test.describe("EMS dashboard", () => {
     const tile = page.getByTestId("battery-power-tile");
     await expect(tile).toContainText("see each battery");
     await tile.click();
-    const modal = page.getByTestId("battery-modal");
-    await expect(modal).toBeVisible();
-    await expect(modal).toContainText("Battery power — per tower");
+    const drawer = page.getByTestId("detail-drawer");
+    await expect(drawer).toBeVisible();
+    await expect(page.getByTestId("detail-drawer-heading")).toContainText("Battery detail");
     // Per-tower power with direction: one charging ("in"), one discharging ("out").
     await expect(page.getByTestId("tower-chips")).toContainText("250 W in");
     await expect(page.getByTestId("tower-chips")).toContainText("600 W out");
     await page.keyboard.press("Escape");
-    await expect(modal).toHaveCount(0);
+    await expect(drawer).toHaveCount(0);
   });
 
   test("the daily energy-distribution Sankey renders and the day can be changed", async ({
@@ -2001,5 +2002,228 @@ test.describe("EMS dashboard", () => {
     await expect(page.getByTestId("notif-unread-dot")).toHaveCount(0);
     await page.getByTestId("notif-bell").click();
     await expect(page.getByTestId("notif-empty")).toContainText("No notifications yet.");
+  });
+
+  // --- Contextual dashboard drawers (2026-07-15 plan) -------------------------------------------
+  test("drawer opens from the hero, focuses close, and closes on Escape", async ({ page }) => {
+    await page.goto("/");
+    await page.getByTestId("dashboard-now-trigger").click();
+    const drawer = page.getByTestId("detail-drawer");
+    await expect(drawer).toBeVisible();
+    await expect(drawer).toHaveAttribute("role", "dialog");
+    // The close button takes focus when the drawer opens (accessible dialog).
+    await expect(page.getByTestId("detail-drawer-close")).toBeFocused();
+    await page.keyboard.press("Escape");
+    await expect(drawer).toHaveCount(0);
+  });
+
+  test("drawer route deep-links, survives reload, and closes on browser Back", async ({ page }) => {
+    // Deep link straight to a drawer, and it stays open across a reload (hash-derived state).
+    await page.goto("/#dashboard/now");
+    await expect(page.getByTestId("detail-drawer")).toBeVisible();
+    await page.reload();
+    await expect(page.getByTestId("detail-drawer")).toBeVisible();
+    // Opening from the dashboard pushes history; browser Back closes the drawer to the dashboard.
+    await page.goto("/#dashboard");
+    await page.getByTestId("dashboard-now-trigger").click();
+    await expect(page.getByTestId("detail-drawer")).toBeVisible();
+    await page.goBack();
+    await expect(page.getByTestId("detail-drawer")).toHaveCount(0);
+    await expect(page.getByTestId("home-state")).toBeVisible();
+  });
+
+  function mockDecision(page: Page, d: Record<string, unknown>) {
+    return page.route("**/api/decision", (route) =>
+      route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(d) }),
+    );
+  }
+  function mockAlerts(page: Page, dq: string, alerts: unknown[] = []) {
+    return page.route("**/api/alerts", (route) =>
+      route.fulfill({
+        status: 200, contentType: "application/json",
+        body: JSON.stringify({ data_quality: dq, alerts }),
+      }),
+    );
+  }
+
+  test("Now / Next / Why drawer explains normal operation", async ({ page }) => {
+    await page.route("**/api/battery-plan", (route) =>
+      route.fulfill({
+        status: 200, contentType: "application/json",
+        body: JSON.stringify(batteryPlanFixture({ level: "high", reasons: [] })),
+      }),
+    );
+    await mockDecision(page, {
+      intent: "allow_self_consumption", desired_mode: "auto", applied: true, outcome: "applied",
+      reason: "self-consumption", plan_reason: "Running the house on stored energy.",
+      plan_reason_explained: "Your battery is covering the house right now.",
+      override_active: false, car_charging: false, target_soc: null,
+      home_state: { headline: "All good", tone: "good", simulated: true },
+    });
+    await mockAlerts(page, "complete");
+    await page.goto("/#dashboard/now");
+    await expect(page.getByTestId("drawer-happened")).toContainText(/powering your home/i);
+    await expect(page.getByTestId("drawer-why")).toContainText("covering the house");
+    await expect(page.getByTestId("drawer-action")).toContainText(/no action needed/i);
+  });
+
+  test("Now / Next / Why drawer renders under low confidence", async ({ page }) => {
+    await page.route("**/api/battery-plan", (route) =>
+      route.fulfill({
+        status: 200, contentType: "application/json",
+        body: JSON.stringify(batteryPlanFixture({
+          level: "low", reasons: ["Some live data is stale, so the plan can't be trusted."],
+        })),
+      }),
+    );
+    await mockDecision(page, {
+      intent: "allow_self_consumption", desired_mode: "auto", applied: true, outcome: "applied",
+      reason: "self-consumption", plan_reason_explained: "Your battery is covering the house.",
+      override_active: false, home_state: { headline: "Watching", tone: "watching", simulated: true },
+    });
+    await mockAlerts(page, "complete");
+    await page.goto("/#dashboard/now");
+    await expect(page.getByTestId("drawer-happened")).toBeVisible();
+    await expect(page.getByTestId("drawer-why")).toBeVisible();
+    await expect(page.getByTestId("drawer-action")).toBeVisible();
+  });
+
+  test("Now / Next / Why drawer names the safe fallback when data is unsafe", async ({ page }) => {
+    await mockDecision(page, {
+      intent: "allow_self_consumption", desired_mode: "auto", applied: false, outcome: "dry_run",
+      reason: "holding self-consumption — data unsafe",
+      plan_reason_explained: "EMS is holding the battery's own safe mode.",
+      override_active: false, home_state: { headline: "Paused safely", tone: "watching", simulated: true },
+    });
+    await mockAlerts(page, "unsafe");
+    await page.goto("/#dashboard/now");
+    await expect(page.getByTestId("drawer-happened")).toBeVisible();
+    await expect(page.getByTestId("drawer-action")).toContainText(/safe/i);
+  });
+
+  function mockSavings(page: Page, s: Record<string, unknown>) {
+    return page.route("**/api/savings", (route) =>
+      route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(s) }),
+    );
+  }
+  function mockDecisions(page: Page, events: unknown[]) {
+    return page.route("**/api/decisions", (route) =>
+      route.fulfill({
+        status: 200, contentType: "application/json", body: JSON.stringify({ events }),
+      }),
+    );
+  }
+
+  test("savings drawer shows an estimate and flags missing realized evidence", async ({ page }) => {
+    await mockSavings(page, {
+      today_eur: 0.42, estimate_eur: 0.42, realized_today_eur: null, month_realized_eur: null,
+      complete_days: 0, lower_bound_eur: 0.34, upper_bound_eur: 0.42,
+    });
+    await page.goto("/#dashboard/savings");
+    await expect(page.getByTestId("savings-estimate")).toContainText("0.42");
+    await expect(page.getByTestId("savings-estimate")).toContainText(/estimate/i);
+    // No completed days yet → realized is explicitly "not measured yet", never a fake number.
+    await expect(page.getByTestId("savings-realized")).toContainText(/no complete|not measured|measuring/i);
+  });
+
+  test("savings drawer shows realized savings with complete-day evidence", async ({ page }) => {
+    await mockSavings(page, {
+      today_eur: 0.5, estimate_eur: 0.5, realized_today_eur: 0.3, month_realized_eur: 12.3,
+      complete_days: 14, lower_bound_eur: 0.4, upper_bound_eur: 0.5,
+    });
+    await page.goto("/#dashboard/savings");
+    await expect(page.getByTestId("savings-realized")).toContainText("12.3");
+    await expect(page.getByTestId("savings-realized")).toContainText("14");
+  });
+
+  test("decision timeline lists events and each opens its own drawer (economic skip)", async ({ page }) => {
+    await mockDecisions(page, [{
+      id: "7", time: "2026-07-15T10:00:00+00:00", title: "Skipped trading today",
+      reason: "no-trade: spread below break-even",
+      consequence: "The safe baseline (self-consumption) remains active.",
+      action: "No action needed.", severity: "info",
+    }]);
+    await page.goto("/");
+    const item = page.getByTestId("decision-item-7");
+    await expect(item).toBeVisible();
+    await item.click();
+    await expect(page.getByTestId("detail-drawer")).toBeVisible();
+    await expect(page.getByTestId("decision-consequence")).toContainText("safe baseline");
+    await expect(page.getByTestId("decision-action")).toContainText(/no action/i);
+  });
+
+  test("decision timeline flags a safety fallback and its action", async ({ page }) => {
+    await mockDecisions(page, [{
+      id: "9", time: "2026-07-15T09:00:00+00:00",
+      title: "Couldn't switch to charging — reverted to safe mode", reason: "unconfirmed",
+      consequence: "The safe baseline (self-consumption) remains active.",
+      action: "Check the battery is reachable if this repeats.", severity: "warning",
+    }]);
+    await page.goto("/#dashboard/decision/9");
+    await expect(page.getByTestId("decision-action")).toContainText(/check the battery/i);
+    await expect(page.getByTestId("decision-severity")).toHaveAttribute("data-severity", "warning");
+  });
+
+  function mockConfidence(page: Page, level: string, reasons: string[]) {
+    return page.route("**/api/battery-plan", (route) =>
+      route.fulfill({
+        status: 200, contentType: "application/json",
+        body: JSON.stringify(batteryPlanFixture({ level, reasons })),
+      }),
+    );
+  }
+
+  test("confidence drawer explains a high-confidence plan and its safety net", async ({ page }) => {
+    await mockConfidence(page, "high", ["Over 5 days of forecast evidence, tracking closely."]);
+    await page.goto("/#dashboard/confidence");
+    await expect(page.getByTestId("confidence-meaning")).toContainText(/tracking well/i);
+    await expect(page.getByTestId("confidence-safety")).toContainText(/safe/i);
+    await expect(page.getByTestId("confidence-tech")).toBeVisible();
+  });
+
+  test("confidence drawer explains a medium-confidence plan", async ({ page }) => {
+    await mockConfidence(page, "medium", ["Still learning your roof."]);
+    await page.goto("/#dashboard/confidence");
+    await expect(page.getByTestId("confidence-meaning")).toContainText(/cautious/i);
+  });
+
+  test("confidence drawer states the safe baseline at low confidence", async ({ page }) => {
+    await mockConfidence(page, "low", ["Some live data is stale."]);
+    await page.goto("/#dashboard/confidence");
+    await expect(page.getByTestId("confidence-meaning")).toContainText(/safe baseline/i);
+    await expect(page.getByTestId("confidence-safety")).toBeVisible();
+  });
+
+  test("battery drawer shows per-tower detail and closes on Escape", async ({ page }) => {
+    await page.route("**/api/battery", (route) =>
+      route.fulfill({
+        status: 200, contentType: "application/json",
+        body: JSON.stringify({
+          current_mode: "auto",
+          capabilities: { services: ["charge", "discharge"], p1_paired: true },
+          aggregate: { soc_pct: 62, power_w: -400, capacity_kwh: 10.8, online_towers: 2,
+            total_towers: 2 },
+          towers: [
+            { ip: "10.0.0.2", role: "master", soc_pct: 63, power_w: -200, capacity_kwh: 5.4,
+              online: true, mode: "charging" },
+            { ip: "10.0.0.3", role: "slave", soc_pct: 61, power_w: -200, capacity_kwh: 5.4,
+              online: true, mode: "self-consumption" },
+          ],
+        }),
+      }),
+    );
+    await page.goto("/#dashboard/battery");
+    await expect(page.getByTestId("detail-drawer")).toBeVisible();
+    await expect(page.getByTestId("tower-chips")).toBeVisible();
+    await page.keyboard.press("Escape");
+    await expect(page.getByTestId("detail-drawer")).toHaveCount(0);
+  });
+
+  test("confidence chip opens the confidence drawer", async ({ page }) => {
+    await mockConfidence(page, "medium", ["Still learning your roof."]);
+    await page.goto("/");
+    await page.getByTestId("confidence-chip").click();
+    await expect(page.getByTestId("detail-drawer")).toBeVisible();
+    await expect(page.getByTestId("confidence-meaning")).toBeVisible();
   });
 });
