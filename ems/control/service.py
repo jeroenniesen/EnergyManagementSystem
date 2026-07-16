@@ -40,11 +40,23 @@ from ems.control.override import NONE as OVERRIDE_NONE
 from ems.control.override import Override
 from ems.domain import BatteryIntent, PhysicalMode
 from ems.lifecycle import OwnershipState
+from ems.planner.adaptive import AdaptiveConfig
+from ems.planner.charge_need import compute_charge_need
 from ems.planner.recovery import recover_if_needed
-from ems.planner.strategy import HysteresisState, build_plan
+from ems.planner.rule_based import PlannerConfig
+from ems.planner.strategy import HysteresisState, build_plan, resolve_strategy_hysteretic
+from ems.planner.summer import SummerConfig
 from ems.planner.validator import PlanValidation
 
 _log = logging.getLogger("ems.recorder")
+
+# How long a live meter/SoC read is reused before the hardware is re-read (UI-tunable via
+# control.live_read_seconds; this is the fallback). Moved from api.py with the coalesced reads.
+_LIVE_SAMPLE_COALESCE_SECONDS = 30.0
+# Seasonal-transition hysteresis persistence (§8.4 / B-15). The KEY is also read by the api.py
+# lifespan to SEED the box at boot, so it's exported here as the single source of truth.
+HYSTERESIS_KEY = "strategy:hysteresis"
+HYSTERESIS_TTL_SECONDS = 90 * 24 * 3600.0  # long enough to bridge shoulder-season gaps
 
 
 # --- Cluster per-tower mode mapping (moved verbatim from api.py; re-exported there) --------------
@@ -322,18 +334,29 @@ class ControlService:
         site_tz: Any,
         dry_run: bool,
         control_cycle_seconds: float = 300.0,
-        # --- injected callables (closures that stay in api.py) ---------------------------------
-        current_soc: Callable[[datetime], float],
-        current_mode: Callable[[datetime], PhysicalMode | None],
-        current_towers: Callable[[datetime], Any],
+        # B-46 stage 2: the coalesced live reads need the meter/battery `source` and the seasonal
+        # strategy resolution needs the KV `cache_store`; both are OPTIONAL so a unit test can build
+        # the service with only the injected callables below (no hardware, no cache).
+        source: Any | None = None,
+        cache_store: Any | None = None,
+        # --- injected callables ------------------------------------------------------------------
+        # `data_quality`/`validate_plan_obj` stay api.py closures (freshness- and capability-bound,
+        # web-facing) and are always injected. The rest are the reads / config builders / strategy
+        # resolution B-46 stage 2 moved INTO this service as methods: they default to those methods,
+        # so api.py leaves them None (the service is self-contained), while test_control_service
+        # keeps injecting trivial stand-ins (no `source`/`cache_store` needed) — construction and
+        # every behaviour-through-the-closures test are byte-for-byte unchanged.
         data_quality: Callable[[datetime], str],
-        car_charging: Callable[[datetime], bool],
-        load_by: Callable[[list[datetime]], dict[datetime, float]],
-        active_strategy: Callable[[datetime], str],
         validate_plan_obj: Callable[[Any, datetime], PlanValidation],
-        planner_cfg: Callable[[], Any],
-        summer_cfg: Callable[[float], Any],
-        adaptive_cfg: Callable[[], Any],
+        current_soc: Callable[[datetime], float] | None = None,
+        current_mode: Callable[[datetime], PhysicalMode | None] | None = None,
+        current_towers: Callable[[datetime], Any] | None = None,
+        car_charging: Callable[[datetime], bool] | None = None,
+        load_by: Callable[[list[datetime]], dict[datetime, float]] | None = None,
+        active_strategy: Callable[[datetime], str] | None = None,
+        planner_cfg: Callable[[], Any] | None = None,
+        summer_cfg: Callable[[float], Any] | None = None,
+        adaptive_cfg: Callable[[], Any] | None = None,
     ) -> None:
         self._ctx = ctx
         self._settings = settings  # the live shared dict — never copied (see module docstring)
@@ -345,17 +368,230 @@ class ControlService:
         self._site_tz = site_tz
         self._dry_run = dry_run
         self._control_cycle_seconds = control_cycle_seconds
-        self._current_soc = current_soc
-        self._current_mode = current_mode
-        self._current_towers = current_towers
+        self._source = source
+        self._cache_store = cache_store
         self._data_quality = data_quality
-        self._car_charging = car_charging
-        self._load_by = load_by
-        self._active_strategy = active_strategy
         self._validate_plan_obj = validate_plan_obj
-        self._planner_cfg = planner_cfg
-        self._summer_cfg = summer_cfg
-        self._adaptive_cfg = adaptive_cfg
+        # Resolve each moved dependency to the injected stand-in when given (tests), else this
+        # service's own method (production). Internals call `self._<name>` throughout, unchanged.
+        self._current_soc = current_soc if current_soc is not None else self.current_soc
+        self._current_mode = current_mode if current_mode is not None else self.current_mode
+        self._current_towers = (
+            current_towers if current_towers is not None else self.current_towers)
+        self._car_charging = car_charging if car_charging is not None else self.car_charging
+        self._load_by = load_by if load_by is not None else self.load_by
+        self._active_strategy = (
+            active_strategy if active_strategy is not None else self.active_strategy)
+        self._planner_cfg = planner_cfg if planner_cfg is not None else self.planner_cfg
+        self._summer_cfg = summer_cfg if summer_cfg is not None else self.summer_cfg
+        self._adaptive_cfg = adaptive_cfg if adaptive_cfg is not None else self.adaptive_cfg
+
+    # --- coalesced live reads / config builders / strategy resolution (B-46 stage 2) -------------
+    # Moved verbatim from api.py's create_app closures. Kept here because their primary caller is
+    # the control cycle (plan path, effective-intent, tick); api.py aliases them so its endpoints
+    # keep calling the same names. Pure wrt logic — the only state is `ctx`'s coalescing caches.
+
+    def _coalesce_s(self) -> float:
+        """How long a live read is reused before re-reading the hardware (UI-tunable, eases load on
+        a battery shared with Home Assistant + the Indevolt app); falls back to the module
+        default."""
+        try:
+            return float(self._settings.get("control.live_read_seconds")
+                         or _LIVE_SAMPLE_COALESCE_SECONDS)
+        except (TypeError, ValueError):
+            _log.debug("invalid control.live_read_seconds; default (non-fatal)", exc_info=True)
+            return _LIVE_SAMPLE_COALESCE_SECONDS
+
+    def _sample_fresh(self, now: datetime) -> bool:
+        cache = self._ctx.sample_cache
+        at = cache["at"]
+        return (at is not None and cache["sample"] is not None
+                and (now - at).total_seconds() < self._coalesce_s())
+
+    def current_sample(self, now: datetime):
+        if self._sample_fresh(now):  # fast path: no lock when the cache is warm
+            return self._ctx.sample_cache["sample"]
+        with self._ctx.sample_lock:  # single-flight: one thread reads hardware/window, others reuse
+            if self._sample_fresh(now):
+                return self._ctx.sample_cache["sample"]
+            try:
+                self._ctx.sample_cache["sample"], self._ctx.sample_cache["at"] = (
+                    self._source.read(), now)
+            except Exception:
+                _log.debug("live sample read failed; keeping last good (non-fatal)", exc_info=True)
+                pass  # keep the last good sample (fail-safe)
+            return self._ctx.sample_cache["sample"]
+
+    def current_soc(self, now: datetime) -> float:
+        s = self.current_sample(now)
+        return float(s.soc_pct) if s is not None else 0.0
+
+    def _towers_fresh(self, now: datetime) -> bool:
+        cache = self._ctx.tower_cache
+        at = cache["at"]
+        return (at is not None and cache["towers"] is not None
+                and (now - at).total_seconds() < self._coalesce_s())
+
+    def current_towers(self, now: datetime):
+        """Coalesced + single-flight per-tower battery read (same window as current_sample). Returns
+        the cached list of TowerReading, or None when there's no cluster reader (mock). On a read
+        failure the last good snapshot is kept (fail-safe). The lock means several tabs hitting
+        /api/battery at cache expiry poll the cluster ONCE, not once each."""
+        reader = getattr(self._source, "battery", None)
+        if reader is None or not hasattr(reader, "read_towers"):
+            return None
+        if self._towers_fresh(now):  # fast path
+            return self._ctx.tower_cache["towers"]
+        with self._ctx.tower_lock:
+            if self._towers_fresh(now):
+                return self._ctx.tower_cache["towers"]
+            try:
+                self._ctx.tower_cache["towers"], self._ctx.tower_cache["at"] = (
+                    reader.read_towers(), now)
+            except Exception:
+                _log.debug("per-tower read failed; keeping last good (non-fatal)", exc_info=True)
+                pass  # keep last good snapshot (fail-safe)
+            return self._ctx.tower_cache["towers"]
+
+    def current_mode(self, now: datetime):
+        """The battery's current physical mode, DERIVED from the shared coalesced cluster read
+        (current_towers) — so the dashboard previews AND the control loop reuse that one read
+        instead of each hitting the master with its own driver.current_mode(). None in dry-run / no
+        controller. Falls back to a direct driver read only when there's no cluster reader at
+        all."""
+        if self._controller is None or self._dry_run:
+            return None
+        towers = self._current_towers(now)
+        if towers is not None:  # cluster reader present → reuse its coalesced read, not the master
+            cand = next((t for t in towers if t.role == "master" and t.online and t.mode), None) \
+                or next((t for t in towers if t.online and t.mode), None)
+            return _LABEL_TO_MODE.get(cand.mode) if cand is not None else None
+        try:
+            return self._controller.driver.current_mode()
+        except Exception:
+            _log.debug("battery mode read failed (non-fatal)", exc_info=True)
+            return None
+
+    def battery_reachable(self, now: datetime) -> bool:
+        """Whether the battery cluster answered THIS read window — reuses the same coalesced reads
+        as everything else (no new device read). Any tower online counts; with no cluster reader
+        this falls back to whether the last coalesced sample read succeeded (confidence score)."""
+        towers = self._current_towers(now)
+        if towers is not None:
+            return any(t.online for t in towers)
+        return self.current_sample(now) is not None
+
+    def car_charging(self, now: datetime) -> bool:
+        s = self.current_sample(now)
+        return s is not None and float(s.ev_power_w) > self._settings[
+            "control.car_charging_threshold_w"]
+
+    def planner_cfg_from(self, s: dict) -> PlannerConfig:
+        return PlannerConfig(
+            round_trip_efficiency=s["planner.round_trip_efficiency"],
+            degradation_eur_per_kwh=s["planner.degradation_eur_per_kwh"],
+            risk_margin_eur_per_kwh=s["planner.risk_margin_eur_per_kwh"],
+            charge_slots=s["planner.charge_slots"],
+            discharge_slots=s["planner.discharge_slots"],
+            negative_price_soak=s["planner.negative_price_soak"],
+        )
+
+    def planner_cfg(self) -> PlannerConfig:
+        return self.planner_cfg_from(self._settings)
+
+    def night_target_soc(self, soc_pct: float):
+        """The night-carry target (overnight load + reserve + floor), via compute_charge_need."""
+        s = self._settings
+        return compute_charge_need(
+            soc_pct=soc_pct, usable_kwh=s["battery.usable_kwh"],
+            min_reserve_soc=s["battery.min_reserve_soc"],
+            night_reserve_kwh=s["battery.night_reserve_kwh"],
+            overnight_load_kwh=s["battery.overnight_load_kwh"],
+            round_trip_efficiency=s["planner.round_trip_efficiency"],
+        )
+
+    def summer_cfg(self, soc_pct: float) -> SummerConfig:
+        s = self._settings
+        return SummerConfig(
+            usable_kwh=s["battery.usable_kwh"],
+            target_soc_pct=self.night_target_soc(soc_pct).target_soc_pct,
+            round_trip_efficiency=s["planner.round_trip_efficiency"],
+            max_charge_w=s["battery.max_charge_w"],
+            expected_load_w=s["battery.overnight_load_kwh"] * 1000.0 / 12.0,
+            solar_confidence=s["planner.solar_confidence"] / 100.0,
+            allow_grid_topup=s["strategy.summer_grid_topup"],
+            max_topup_price_eur_per_kwh=s["strategy.summer_max_topup_price"],
+            negative_price_soak=s["planner.negative_price_soak"],
+        )
+
+    def adaptive_cfg(self) -> AdaptiveConfig:
+        s = self._settings
+        return AdaptiveConfig(
+            usable_kwh=s["battery.usable_kwh"],
+            reserve_soc_pct=s["battery.min_reserve_soc"],
+            round_trip_efficiency=s["planner.round_trip_efficiency"],
+            max_charge_w=s["battery.max_charge_w"],
+            degradation_eur_per_kwh=s["planner.degradation_eur_per_kwh"],
+            risk_margin_eur_per_kwh=s["planner.risk_margin_eur_per_kwh"],
+            solar_confidence=s["planner.solar_confidence"] / 100.0,
+            negative_price_soak=s["planner.negative_price_soak"],
+        )
+
+    def load_by(self, starts: list[datetime]) -> dict[datetime, float]:
+        prof = self._ctx.load_profile_box["profile"]
+        if prof is None:  # cold start: a flat overnight-derived baseline
+            fallback = self._settings["battery.overnight_load_kwh"] * 1000.0 / 12.0
+            return {s: fallback for s in starts}
+        return {s: prof.expected_w(s) for s in starts}
+
+    def strategy_inputs(self, now: datetime):
+        """(surplus_kwh, price_spread_eur) over the next ~24h, for the energy-condition `auto`
+        strategy choice. Defensive — any failure yields None so it falls back to the season."""
+        surplus = spread = None
+        try:
+            if self._solar_forecast is not None:
+                fc = self._solar_forecast.slots()[:96]
+                load = self._load_by([f.start for f in fc])
+                surplus = sum(max(0.0, f.p50_w - load.get(f.start, 0.0)) * 0.25 / 1000.0
+                              for f in fc)
+        except Exception:
+            _log.debug("strategy surplus estimate failed (non-fatal)", exc_info=True)
+        try:
+            if self._price_source is not None:
+                ps = [p.eur_per_kwh for p in self._price_source.slots()[:96]]
+                if ps:
+                    spread = max(ps) - min(ps)
+        except Exception:
+            _log.debug("strategy price-spread estimate failed (non-fatal)", exc_info=True)
+        return surplus, spread
+
+    def commit_hysteresis(self, new_state: HysteresisState) -> None:
+        """Adopt `new_state` and persist it to the KV cache so the pending-switch counter survives a
+        restart (§8.4 / B-15). Thread-safe (F6) via ctx.hysteresis_lock; best-effort persist."""
+        _commit_hysteresis_state(
+            self._ctx.hysteresis_box, self._ctx.hysteresis_lock, new_state, self._cache_store,
+            HYSTERESIS_KEY, HYSTERESIS_TTL_SECONDS,
+        )
+
+    def resolve_strategy(self, now: datetime) -> tuple[str, str]:
+        """(strategy, reason). Forced modes skip the (cheap-but-unneeded) energy-input computation;
+        `auto` decides by forecast surplus + price spread, then dampened by the seasonal-transition
+        hysteresis (SPEC §8.4 / B-15) so shoulder-month days can't flap."""
+        mode = self._settings["strategy.mode"]
+        hyst_days = int(self._settings["strategy.hysteresis_days"])
+        if mode in ("summer", "winter"):
+            surplus = spread = None
+        else:
+            surplus, spread = self.strategy_inputs(now)
+        strat, why, new_state = resolve_strategy_hysteretic(
+            now, mode, self._site_tz, self._ctx.hysteresis_box["state"],
+            surplus_kwh=surplus, price_spread_eur=spread, hysteresis_days=hyst_days,
+        )
+        self.commit_hysteresis(new_state)
+        return strat, why
+
+    def active_strategy(self, now: datetime) -> str:
+        return self.resolve_strategy(now)[0]
 
     # --- recovery-integrated plan path -----------------------------------------------------------
     def recovery_sizing(self) -> dict:
@@ -800,6 +1036,34 @@ class ControlService:
                 return [{"summary": f"car session held at the reserve floor — {car_action.reason}",
                          "detail": {"event": "car_session_reserve_hold", "outcome": dec.outcome}}]
             return []  # steady reserve hold — quiet (idempotent downstream)
+        # F2 (production audit: ~15 write timeouts/week, ALL inside ~10 kW car-charging windows —
+        # the Indevolt's single embedded HTTP server saturates and register writes time out). While
+        # a car discharge session is ACTIVE and the car is still drawing under car-mode management,
+        # DEFER a non-safety planner grid-charge instead of writing into the saturated device: no
+        # command, no daily-switch-cap / dwell spend, and the session stays alive. The B-16
+        # recovery/replan path re-issues the charge on the first post-session tick if it's still
+        # wanted. This NEVER defers a safety action: a manual override (override_active) is a
+        # deliberate priority command; the car-guard hold and the reserve hold act ABOVE (they set
+        # car_action and return); return-to-AUTO and the data fail-safe substitute self-consumption
+        # (AUTO), not GRID_CHARGE — so gating on GRID_CHARGE_TO_TARGET + not override_active is
+        # sufficient. Gated on the car ACTUALLY charging under the master switch so the deferral
+        # releases the instant the car stops (or the switch is off), letting the session end and the
+        # charge apply. Deduped via `held_box` so a long car+charge window is explained ONCE, not a
+        # row per cycle (explainability first, but not spam — mirrors a recurring held decision).
+        if (self._ctx.car_session["active"] and not override_active
+                and intent is BatteryIntent.GRID_CHARGE_TO_TARGET
+                and self._settings["control.hold_battery_when_car_charging"]
+                and self._car_charging(now)):
+            sig = ("deferred", PhysicalMode.CHARGE.value)
+            if self._ctx.held_box["sig"] == sig:
+                return []  # already explained this deferral episode (deduped like a held decision)
+            self._ctx.held_box["sig"] = sig
+            reason = ("car charging in progress — deferring grid-charge command to avoid Indevolt "
+                      "write timeouts; will retry after session ends")
+            return [{"summary": reason,
+                     "detail": {"desired_mode": PhysicalMode.CHARGE.value, "intent": str(intent),
+                                "outcome": "deferred", "reason": reason,
+                                "override_active": override_active}}]
         # Not a car discharge/reserve-hold this cycle: if a session was active (car dipped below
         # threshold / master off / plan resumed) decide whether to end it now
         # (see car_session_end_if_active) — a below-threshold dip gets a few cycles' grace, so
@@ -864,11 +1128,18 @@ class ControlService:
                 records.append(drift)
         elif dec.outcome == "unconfirmed":
             # The write TIMED OUT (device slow/unreachable) — we did NOT revert (the device likely
-            # got it; reverting would also time out). Surface it (deduped) so a recurring "charge
-            # isn't sticking because the battery is slow to answer" is visible, not silent.
-            sig = (dec.outcome, dec.desired_mode.value)
-            if held["sig"] != sig:
-                held["sig"] = sig
+            # got it; reverting would also time out). Surface it so a recurring "charge isn't
+            # sticking because the battery is slow to answer" is visible, not silent — but let the
+            # controller's F3 episode de-dupe decide whether THIS unconfirmed is a NEW incident row
+            # via `dec.audit`: True for the first unconfirmed of a stuck episode and again once
+            # ~60 min pass, False for the repeats in between. One incident per episode (with hourly
+            # evidence for a long outage), not the live 13-row-per-episode inflation. This is the
+            # dec.audit consumer (F3) — the gate lives in the controller; the tick just honours it,
+            # which SUPERSEDES the held-box latch here (the latch would swallow the hourly re-log).
+            # A write was attempted, so clear held["sig"] like the applied/failed paths — a later
+            # genuine dwell/cap hold then re-explains afresh.
+            held["sig"] = None
+            if dec.audit:
                 records.append({
                     "summary": (f"Battery {dec.desired_mode.value} unconfirmed — device slow to "
                                 "respond; holding and retrying (not reverting)"),
