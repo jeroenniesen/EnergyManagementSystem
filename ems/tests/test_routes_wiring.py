@@ -159,3 +159,53 @@ def test_no_auth_post_routes_stay_open_with_a_token():
     with TestClient(app) as client:
         for path in EXTRACTED_NO_AUTH_POST_ROUTES:
             assert client.post(path, json={}).status_code != 401, f"{path} unexpectedly auth-gated"
+
+
+# --- S2: write-gating invariant — every mutating route must be CLASSIFIED --------------------
+# The security guarantee: no mutating route ships un-triaged. Every POST/PUT/DELETE/PATCH route
+# must be either in `_WRITE_API_PATHS` (auth-gated) or in the explicit `WRITE_EXEMPT_PATHS`
+# allow-list (verified read-only). A new mutating route that lands in NEITHER fails this test
+# LOUDLY with its own path, so it can't slip past the auth choke point unnoticed.
+_CATCH_ALL = "{rest"  # the /api/{rest:path} JSON-404 fallback — not a real endpoint
+
+
+def _all_mutating_routes(app) -> set[str]:
+    """Every path that accepts a state-changing method, INCLUDING the include_router-mounted
+    sub-routers (which live under a `_IncludedRouter` on this Starlette version and don't show up
+    as plain routes in `app.routes` — see this module's docstring)."""
+    write_methods = {"POST", "PUT", "DELETE", "PATCH"}
+    paths: set[str] = set()
+
+    def walk(routes, prefix: str = "") -> None:
+        for route in routes:
+            if type(route).__name__ == "_IncludedRouter":
+                ctx = getattr(route, "include_context", None)
+                sub_prefix = getattr(ctx, "prefix", "") if ctx is not None else ""
+                walk(route.original_router.routes, prefix + sub_prefix)
+                continue
+            path = prefix + getattr(route, "path", "")
+            if _CATCH_ALL in path:
+                continue  # the 404 catch-all, registered for every method
+            if write_methods & (getattr(route, "methods", None) or set()):
+                paths.add(path)
+
+    walk(app.routes)
+    return paths
+
+
+def test_every_mutating_route_is_write_gated_or_explicitly_exempt():
+    app = create_app(MockSource(), dry_run=True, dev_mode="mock")
+    gated = app.state.write_api_paths
+    exempt = app.state.write_exempt_paths
+    for path in _all_mutating_routes(app):
+        assert path in gated or path in exempt, (
+            f"mutating route {path!r} is neither in _WRITE_API_PATHS (auth-gated) nor in "
+            f"WRITE_EXEMPT_PATHS (verified read-only) — classify it before shipping"
+        )
+
+
+def test_write_exempt_paths_are_exactly_the_verified_read_only_posts():
+    # Guard the exemption list itself: only the two POSTs proven read-only by construction may be
+    # here. Widening it must be a deliberate, reviewed edit — never an accident.
+    app = create_app(MockSource(), dry_run=True, dev_mode="mock")
+    assert app.state.write_exempt_paths == frozenset({"/api/whatif", "/api/plan-preview"})

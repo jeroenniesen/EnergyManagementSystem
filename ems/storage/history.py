@@ -96,6 +96,30 @@ def _mean(xs: list[float]) -> float:
     return sum(xs) / len(xs) if xs else 0.0
 
 
+_CADENCE_MIN_SAMPLES = 10  # below this, too little evidence to infer — trust the passed cadence
+_CADENCE_CLAMP = (15.0, 900.0)  # plausible recorder cadence bounds (sub-slot; ≥ the API's floor)
+
+
+def _infer_cadence_seconds(raw_rows: list[dict], fallback: float) -> float:
+    """Infer the recording cadence of `raw_rows` from the data itself (F4): the MEDIAN positive
+    inter-sample gap over the window, clamped to [15, 900]s. This is materialized-window-local so a
+    day recorded at one cadence is scored at THAT cadence even if the recorder's live setting has
+    since changed (the coverage denominator would otherwise be wrong). Falls back to the passed
+    `fallback` cadence below `_CADENCE_MIN_SAMPLES` samples — too few to infer honestly."""
+    times = sorted(dt for r in raw_rows if (dt := _parse_utc(r.get("ts"))) is not None)
+    if len(times) < _CADENCE_MIN_SAMPLES:
+        return fallback
+    gaps = sorted(
+        g for a, b in zip(times, times[1:], strict=False)
+        if (g := (b - a).total_seconds()) > 0
+    )
+    if not gaps:
+        return fallback
+    n = len(gaps)
+    median = gaps[n // 2] if n % 2 else (gaps[n // 2 - 1] + gaps[n // 2]) / 2.0
+    return min(_CADENCE_CLAMP[1], max(_CADENCE_CLAMP[0], median))
+
+
 def aggregate_observations(
     raw_rows: list[dict], derived_rows: list[dict], cadence_seconds: float = _DEFAULT_CADENCE_S
 ) -> list[dict]:
@@ -216,7 +240,9 @@ async def _materialize_observations(
         (start_iso, end_iso))
     der_rows = [{"ts": t, "house_load_w": h, "non_ev_load_w": n} for (t, h, n) in
                 await cur.fetchall()]
-    obs = aggregate_observations(raw_rows, der_rows, cadence_seconds)
+    # Score coverage at the window's OWN cadence (F4), falling back to the passed one when sparse.
+    cadence = _infer_cadence_seconds(raw_rows, cadence_seconds)
+    obs = aggregate_observations(raw_rows, der_rows, cadence)
     if not obs:
         return 0
     await db.executemany(
@@ -246,7 +272,9 @@ async def _materialize_daily_energy(
         (su, eu))
     raw_rows = [{"ts": t, "grid_power_w": g, "battery_power_w": bt} for (t, g, bt) in
                 await cur.fetchall()]
-    d = aggregate_daily_energy(obs_rows, raw_rows, day_start, day_end, cadence_seconds)
+    # Match the observation path: infer the day's real cadence for the coverage denominator (F4).
+    cadence = _infer_cadence_seconds(raw_rows, cadence_seconds)
+    d = aggregate_daily_energy(obs_rows, raw_rows, day_start, day_end, cadence)
     await db.execute(
         "INSERT OR REPLACE INTO daily_energy "
         "(date, solar_kwh, load_kwh, non_ev_load_kwh, ev_kwh, grid_import_kwh, grid_export_kwh, "
@@ -290,6 +318,15 @@ async def _migrate_v1_observations(db: aiosqlite.Connection) -> None:
     weeks of 15-min slots is only ~thousands of rows). Backfill coverage assumes the default
     recorder cadence; the daily maintenance recomputes recent days at the true cadence."""
     await db.execute(_OBSERVATIONS_DDL)
+    # Reset-clobber guard (F8): on an ABNORMAL user_version=0 DB whose observations table is
+    # already populated (e.g. a stamp reset after the tables were built), the INSERT-OR-REPLACE
+    # backfill would overwrite good rows with coarse UTC/default-cadence recomputes. Skip the
+    # backfill when the table already holds data — the DDL above still ensures it EXISTS, and the
+    # runner still stamps the version.
+    cur = await db.execute("SELECT 1 FROM observations LIMIT 1")
+    if await cur.fetchone() is not None:
+        _log.info("observations already populated — skipping backfill")
+        return
     await _materialize_observations(db, "0000", "9999", _DEFAULT_CADENCE_S)
 
 
@@ -300,6 +337,12 @@ async def _migrate_v2_daily_energy(db: aiosqlite.Connection) -> None:
     site tz, so recent history is local-accurate and old history is UTC-approximate — the ≤2h
     midnight offset is immaterial for year-over-year kWh trends."""
     await db.execute(_DAILY_ENERGY_DDL)
+    # Reset-clobber guard (F8): as in v1, skip the backfill when daily_energy already holds rows so
+    # an abnormal user_version=0 DB with good data isn't overwritten by coarse UTC-day recomputes.
+    cur = await db.execute("SELECT 1 FROM daily_energy LIMIT 1")
+    if await cur.fetchone() is not None:
+        _log.info("daily_energy already populated — skipping backfill")
+        return
     cur = await db.execute("SELECT MIN(slot_start), MAX(slot_start) FROM observations")
     row = await cur.fetchone()
     if not row or row[0] is None:
@@ -428,12 +471,17 @@ def self_healing(cls):
         def _make(method):
             @functools.wraps(method)
             async def _wrapped(self, *args, **kwargs):
+                # Capture the connection this call is using BEFORE the op runs (B-49 follow-up race
+                # fix): if a sibling coroutine failing on the SAME connection heals it first, our
+                # discard below must target the connection WE used, not whatever is current — so we
+                # never close a sibling's freshly-reopened handle (the thrash).
+                conn = self._db
                 try:
                     return await method(self, *args, **kwargs)
                 except Exception as exc:
                     if not is_dead_connection_error(exc):
                         raise
-                    await self._note_dead_connection(exc)
+                    await self._note_dead_connection(exc, conn)
                     return await method(self, *args, **kwargs)  # one retry; 2nd failure propagates
 
             return _wrapped
@@ -483,7 +531,7 @@ class HistoryStore:
         the common 'worker died' case reopens on the very next call without a failed attempt."""
         db = self._db
         if db is not None and _connection_is_dead(db):
-            await self._discard_connection(reason="worker thread stopped / connection gone")
+            await self._discard_connection(db, reason="worker thread stopped / connection gone")
         if self._db is None:
             async with self._connect_lock:
                 if self._db is None:
@@ -498,23 +546,32 @@ class HistoryStore:
                     self._db = db
         return self._db
 
-    async def _note_dead_connection(self, exc: BaseException) -> None:
-        """Called by the `self_healing` retry wrapper: discard the dead connection (so the retry
-        reopens) and log the incident once."""
-        await self._discard_connection(reason=f"{type(exc).__name__}: {exc}")
+    async def _note_dead_connection(self, exc: BaseException, dead_conn) -> None:
+        """Called by the `self_healing` retry wrapper: discard the dead connection `dead_conn` (the
+        one the failing call was using, so the retry reopens) and log the incident once."""
+        await self._discard_connection(dead_conn, reason=f"{type(exc).__name__}: {exc}")
 
     async def reset_connection(self) -> None:
         """Public: force the shared connection to be discarded now + reopened on the next call.
         Used by the recorder watchdog (`ems.sense`) after repeated persist failures. Idempotent
         and best-effort — never raises."""
-        await self._discard_connection(reason="watchdog reset")
+        await self._discard_connection(self._db, reason="watchdog reset")
 
-    async def _discard_connection(self, *, reason: str) -> None:
+    async def _discard_connection(self, dead_conn, *, reason: str) -> None:
         """Drop the shared connection under `_connect_lock`, closing it best-effort. Logs ONCE per
-        incident: a concurrent caller that finds `_db` already cleared skips the (duplicate) log."""
+        incident. `dead_conn` is the connection the caller was using: if a SIBLING coroutine that
+        failed on the same connection already healed it (so `self._db` is now a DIFFERENT, healthy
+        handle), this no-ops with a debug log rather than closing the sibling's fresh connection —
+        the caller just retries on the current handle (B-49 follow-up race fix). `dead_conn is None`
+        means the caller can't name its connection (a lazy-open first call, or the watchdog reset
+        with nothing open yet) — then we fall back to discarding whatever is current."""
         async with self._connect_lock:
             db = self._db
             if db is None:
+                return
+            if dead_conn is not None and db is not dead_conn:
+                _log.debug("%s: shared connection already healed by a sibling (%s) — skipping "
+                           "discard", type(self).__name__, reason)
                 return
             self._db = None
             self._last_reheal_at = datetime.now(UTC)

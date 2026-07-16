@@ -80,12 +80,20 @@ def _app(db: str):
     )
 
 
-def _count_method(monkeypatch, cls, name: str, calls: dict) -> None:
+def _count_method(
+    monkeypatch, cls, name: str, calls: dict, *, arg_before: str | None = None
+) -> None:
     orig = getattr(cls, name)
     calls[name] = 0
 
     async def counting(self, *a, **kw):
-        calls[name] += 1
+        # `arg_before` scopes the count to calls whose first (window-start) arg is strictly before
+        # it. The measured YEAR-2025 window's starts are all < "2026-01-01" (even the UTC-ISO ones,
+        # which fall on 2024-12-31 at the AMS offset), while the boot-time maintenance loop's
+        # YESTERDAY-finance caching (F5) queries the current year (>= 2026) — so it is
+        # DETERMINISTICALLY excluded regardless of task scheduling.
+        if arg_before is None or (a and isinstance(a[0], str) and a[0] < arg_before):
+            calls[name] += 1
         return await orig(self, *a, **kw)
 
     monkeypatch.setattr(cls, name, counting)
@@ -100,7 +108,8 @@ def test_finance_year_view_is_o1_db_round_trips_not_o_days(tmp_path, monkeypatch
 
     calls: dict = {}
     for name in ("raw_between", "prices_between", "daily_finance_between"):
-        _count_method(monkeypatch, HistoryStore, name, calls)
+        # Scope to the measured 2025 window (excludes the boot maintenance's yesterday-finance, F5).
+        _count_method(monkeypatch, HistoryStore, name, calls, arg_before=f"{YEAR + 1}-01-01")
 
     with TestClient(_app(db)) as c:
         body = c.get(f"/api/finance?period=year&date={YEAR}-06-15").json()
@@ -136,7 +145,8 @@ def test_report_year_series_reads_rollup_raw_reads_stay_single(tmp_path, monkeyp
 
     calls: dict = {}
     for name in ("raw_between", "derived_between", "daily_energy_between"):
-        _count_method(monkeypatch, HistoryStore, name, calls)
+        # Scope to the measured 2025 window (excludes the boot maintenance's yesterday-finance, F5).
+        _count_method(monkeypatch, HistoryStore, name, calls, arg_before=f"{YEAR + 1}-01-01")
 
     with TestClient(_app(db)) as c:
         body = c.get(f"/api/report?period=year&date={YEAR}-06-15").json()

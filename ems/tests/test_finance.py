@@ -167,6 +167,68 @@ def _econ_app(db: str):
     )
 
 
+def test_maintenance_caches_yesterday_finance_and_second_tick_no_ops(tmp_path):
+    # F5 (finance year undercount): daily_finance used to be written only on a view/export, so an
+    # unviewed day beyond the 90-day raw purge became permanently uncomputable. The nightly
+    # maintenance step must ALSO materialize YESTERDAY's finance row (mirroring daily_energy), and
+    # be idempotent — a second maintenance tick finds the cached row and does NOT re-upsert.
+    db = str(tmp_path / "ems.sqlite")
+    now_local = datetime.now(UTC).astimezone(AMS)
+    yesterday = now_local.date() - timedelta(days=1)
+
+    class _CountingStore(HistoryStore):
+        finance_upserts = 0
+
+        async def upsert_daily_finance(self, day, data):
+            type(self).finance_upserts += 1
+            await super().upsert_daily_finance(day, data)
+
+    store = _CountingStore(db)
+
+    async def seed():
+        await store.init()
+        ts = datetime(yesterday.year, yesterday.month, yesterday.day, 12, tzinfo=AMS)
+        iso = ts.astimezone(UTC).isoformat()
+        raw = RawSample(grid_power_w=2000.0, solar_power_w=0.0, battery_power_w=0.0,
+                        ev_power_w=0.0, soc_pct=50.0)
+        await store.record(iso, raw, reconstruct(raw))
+        await store.upsert_price_slots([(iso, 0.30)])
+        await store.close()
+
+    asyncio.run(seed())
+
+    def _app():
+        # backup disabled (keep=0) so the maintenance loop doesn't clutter tmp with snapshots.
+        return create_app(
+            MockSource(), dry_run=True, dev_mode="mock", tz=AMS,
+            store=store, settings_store=SettingsStore(db),
+            price_source=MockPriceSource(AMS), history_backup_keep=0)
+
+    # Boot 1: the lifespan's maintenance loop runs its first tick to completion on context exit.
+    _CountingStore.finance_upserts = 0
+    with TestClient(_app()):
+        pass
+    boot1_upserts = _CountingStore.finance_upserts
+
+    async def stored():
+        s = HistoryStore(db)
+        return await s.daily_finance_between(
+            yesterday.isoformat(), (yesterday + timedelta(days=1)).isoformat())
+
+    cached = asyncio.run(stored())
+
+    # Boot 2: yesterday is already cached under the current calc_v → the second tick is a no-op.
+    _CountingStore.finance_upserts = 0
+    with TestClient(_app()):
+        pass
+    boot2_upserts = _CountingStore.finance_upserts
+
+    assert len(cached) == 1  # the first maintenance tick materialized yesterday's finance row
+    assert cached[0]["data"]["calc_v"] == _FINANCE_CALC_VERSION
+    assert boot1_upserts >= 1  # first tick wrote it
+    assert boot2_upserts == 0  # idempotent — the cached row was skipped, not re-written
+
+
 def test_calc_version_bump_invalidates_stored_finance_row(tmp_path):
     # calc_v guards the daily_finance cache: a row cached under an OLDER finance formula must be
     # RECOMPUTED (so a math fix — like this B-05 export re-pricing — reaches history), while a row

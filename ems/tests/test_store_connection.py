@@ -266,6 +266,34 @@ def test_reset_connection_forces_reopen(tmp_path, Store, monkeypatch):
     assert calls["n"] == 2
 
 
+@pytest.mark.parametrize("Store", [HistoryStore, SettingsStore, AuditStore])
+def test_lagging_sibling_discard_does_not_thrash_a_healed_connection(tmp_path, Store, caplog):
+    # F1 (self-heal race): two coroutines both failed on connection X. Sibling A discards X and its
+    # retry reopens Y. A LAGGING sibling B — which was also using X — then calls
+    # _discard_connection(X): it must NO-OP (self._db is now the freshly-healed Y, not X) rather
+    # than close Y and force a needless reopen (the thrash the old code caused). Exactly one
+    # 'unusable' warning is logged for the incident (A's); B's stale discard is a debug no-op.
+    async def run():
+        store = await _new_store(Store, str(tmp_path / "ems.sqlite"))
+        await _read(store)  # prime: open X
+        x = store._db
+        # Sibling A: X died under it → discard X, then its retry reopens a healthy Y.
+        await store._discard_connection(x, reason="sibling A: dead connection")
+        y = await store._connection()
+        assert y is not x
+        # Sibling B (lagging): still holds the stale X, calls discard — must leave the live Y alone.
+        await store._discard_connection(x, reason="sibling B: stale handle")
+        assert store._db is y  # Y untouched — B did NOT thrash the healed connection
+        b_result = await _read(store)  # …and Y still serves B's retry
+        return b_result
+
+    with caplog.at_level(logging.WARNING, logger="ems.storage"):
+        b_result = asyncio.run(run())
+    assert b_result is not None
+    warns = [r for r in caplog.records if "shared connection unusable" in r.getMessage()]
+    assert len(warns) == 1  # one incident (A); B's stale discard never logged a second warning
+
+
 @pytest.mark.parametrize("Store", [HistoryStore, AuditStore])
 def test_store_close_allows_a_second_store_to_open_fresh(tmp_path, Store):
     # Sanity: closing one store's connection must not disturb a SECOND store instance pointed at

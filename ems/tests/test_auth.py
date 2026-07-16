@@ -94,3 +94,57 @@ def test_reads_are_open_even_with_token(tmp_path):
         assert c.get("/api/status").status_code == 200
         assert c.get("/api/settings").status_code == 200
         assert c.get("/api/charge-need").status_code == 200
+
+
+# --- S1: same-origin enforcement for writes (SPEC §12 CSRF; the cross-site write vector) --------
+# TestClient talks to Host "testserver"; an Origin whose host differs is a cross-site write.
+
+
+def test_cross_origin_write_is_rejected_403_even_without_a_token(tmp_path):
+    # Defense in depth: the origin check applies regardless of token config. A browser always sends
+    # Origin on a cross-origin state-changing request, so a mismatched Origin is the CSRF vector.
+    with TestClient(_app(tmp_path, token=None)) as c:
+        r = c.post("/api/settings", json={"ui.theme": "dark"},
+                   headers={"Origin": "http://evil.example"})
+        assert r.status_code == 403
+        assert r.json()["detail"] == "cross-origin writes are not allowed"
+
+
+def test_same_origin_write_passes(tmp_path):
+    # Origin host matches the request Host -> a legitimate first-party write, allowed.
+    with TestClient(_app(tmp_path, token=None)) as c:
+        r = c.post("/api/settings", json={"ui.theme": "dark"},
+                   headers={"Origin": "http://testserver"})
+        assert r.status_code == 200
+
+
+def test_write_without_origin_header_passes(tmp_path):
+    # curl / server-to-server clients send no Origin -> allowed exactly as before (no regression).
+    with TestClient(_app(tmp_path, token=None)) as c:
+        assert c.post("/api/settings", json={"ui.theme": "dark"}).status_code == 200
+
+
+def test_get_is_never_affected_by_a_cross_origin_header(tmp_path):
+    # The origin check only gates state-changing methods; a cross-origin GET is harmless and open.
+    with TestClient(_app(tmp_path, token=None)) as c:
+        assert c.get("/api/status", headers={"Origin": "http://evil.example"}).status_code == 200
+
+
+def test_cross_origin_write_403s_before_the_token_check_even_with_a_valid_bearer(tmp_path):
+    # Origin is checked FIRST: a browser-planted valid token from a cross-site context must STILL
+    # be rejected 403 (not let through as an authorized write).
+    with TestClient(_app(tmp_path, token="s3cret")) as c:
+        r = c.post("/api/settings", json={"ui.theme": "dark"},
+                   headers={"Origin": "http://evil.example", "Authorization": "Bearer s3cret"})
+        assert r.status_code == 403
+        assert r.json()["detail"] == "cross-origin writes are not allowed"
+
+
+def test_cross_origin_applies_to_bodyless_review_endpoints_via_the_same_middleware(tmp_path):
+    # The two endpoints the review named (/api/ai/validate, /api/chat) are gated by the SAME
+    # middleware path, no per-endpoint code — a cross-origin POST to either is rejected 403.
+    with TestClient(_app(tmp_path, token=None)) as c:
+        for path in ("/api/ai/validate", "/api/chat"):
+            r = c.post(path, json={}, headers={"Origin": "http://evil.example"})
+            assert r.status_code == 403, f"{path} not origin-gated"
+            assert r.json()["detail"] == "cross-origin writes are not allowed"

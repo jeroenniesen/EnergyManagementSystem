@@ -332,9 +332,26 @@ export function SystemView({
   const r = diag.readiness;
   // Tone the control-readiness sentence: safe-and-watching is reassuring, sensing-down needs attention.
   const tone = r ? (!r.sensing_ready ? "attention" : r.control_ready ? "good" : "watching") : "watching";
+  // S5 (security review): the Write-protection row is only benign at OK while EMS is watching
+  // only. Once battery control is ARMED (operational — the backend's run-mode check reads
+  // "dry-run off") AND writes are still OPEN (no token), an unauthenticated LAN request could
+  // drive the battery — so escalate that row to a warning. Derived from the existing diagnostics
+  // fields (the backend builds these rows; this page can't reach the check builder).
+  const controlArmed = diag.checks.some(
+    (c) => c.key === "mode" && /dry-run off/i.test(c.detail),
+  );
+  const checks = diag.checks.map((c) =>
+    c.key === "auth" && controlArmed && c.detail.startsWith("open")
+      ? {
+          ...c,
+          status: "warn" as const,
+          detail: "writes are open and battery control is armed — set a Web access token",
+        }
+      : c,
+  );
   const groups = GROUPS.map((g) => ({
     title: g.title,
-    checks: diag.checks.filter((c) => groupOf(c.key) === g.title),
+    checks: checks.filter((c) => groupOf(c.key) === g.title),
   })).filter((g) => g.checks.length > 0);
 
   return (

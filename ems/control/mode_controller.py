@@ -200,6 +200,7 @@ class ModeController:
         target_soc: float | None = None, power_w: float | None = None,
         observed_mode: PhysicalMode | None = None, manual: bool = False,
         priority: bool = False, car_session: bool = False, force: bool = False,
+        count_toward_cap: bool = True,
     ) -> ActionDecision:
         """Write path: applies at most one mode change. The ONLY caller of driver.apply. The plan's
         target SoC + power are passed through to the driver (which refuses a target-less charge).
@@ -210,12 +211,26 @@ class ModeController:
         and `priority=True` (a safety action, e.g. the car-guard hold) bypass dwell + cap — see
         _gate. `car_session=True` maps DISCHARGE_FOR_LOAD to a real DISCHARGE at the bounded
         setpoint (feat/car-charge-modes); `force=True` lets a car-session setpoint re-command past
-        the mode-only idempotency gate (also see _gate)."""
+        the mode-only idempotency gate (also see _gate).
+
+        `count_toward_cap=False` records a write WITHOUT advancing the daily switch counter or the
+        dwell timer (F4). A car-session command is a priority write whose cadence is bounded by the
+        car session's OWN gates (its 10-min dwell / reconciliation spacing / 6-command cap); making
+        it also spend the planner's daily switch budget starved the ordinary planner of switches for
+        the rest of the day. Ordinary planner writes leave it True and are unchanged."""
         desired = self._desired(intent, car_session=car_session)
         blocked = self._gate(intent, now, desired, observed_mode=observed_mode, manual=manual,
                              priority=priority, force=force)
         if blocked is not None:
             return blocked
+
+        def _record_switch() -> None:
+            # A write hit the device: start the dwell timer + spend a daily switch — UNLESS this is
+            # a car-session command (count_toward_cap=False), whose cadence is bounded by the car
+            # session's own gates and must not starve the planner's budget (F4).
+            if count_toward_cap:
+                self.switches_today += 1
+                self.last_switch_at = now
 
         self._reset_counter_if_new_day(now)
         # Capture the mode the battery was in BEFORE EMS first took control (to hand it back later).
@@ -234,8 +249,7 @@ class ModeController:
             # latency); hold the intent and let the NEXT cycle read the real mode and re-command.
             # Count it + start the dwell timer so automatic retries are spaced (a manual override
             # bypasses dwell and may retry sooner — what the operator wants).
-            self.switches_today += 1
-            self.last_switch_at = now
+            _record_switch()
             self._persist()
             return ActionDecision(intent, desired, False, "unconfirmed",
                                   f"{desired} unconfirmed — device slow/unreachable ({exc}); "
@@ -258,12 +272,10 @@ class ModeController:
             # never confirms (e.g. a flaky/half-offline tower) was retried every single control
             # cycle forever — write-amplification into already-struggling hardware. Now the dwell
             # gate spaces retries out and the daily cap stops them entirely after the budget.
-            self.switches_today += 1
-            self.last_switch_at = now
+            _record_switch()
             self._persist()
             return ActionDecision(intent, PhysicalMode.AUTO, recovered, outcome, reason)
-        self.switches_today += 1
-        self.last_switch_at = now
+        _record_switch()
         self.last_confirmed_action = desired
         self._persist()
         return ActionDecision(intent, desired, True, "applied", f"set {desired}")

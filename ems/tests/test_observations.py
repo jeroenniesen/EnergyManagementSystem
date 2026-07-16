@@ -103,6 +103,41 @@ def test_aggregate_observations_is_pure_and_coverage_caps_at_one():
     assert out[0]["flags"] == []
 
 
+def test_coverage_infers_cadence_from_data_not_the_boot_setting(tmp_path):
+    # F4: a day recorded at 300s cadence, materialized AFTER a boot-setting change to 60s, must
+    # read coverage from the DATA's real cadence (inferred median inter-sample gap over the window),
+    # not the passed 60s — otherwise a fully-covered slot reads 0.2 and is wrongly flagged. A
+    # genuinely sparse slot still flags low_coverage against that inferred cadence.
+    store = HistoryStore(str(tmp_path / "ems.sqlite"))
+
+    async def run():
+        await store.init()
+        base = datetime(2026, 7, 10, 10, 0, tzinfo=UTC)
+        samples = []
+        t = base
+        for _ in range(12):  # 12 samples @300s ⇒ 4 dense slots (3 each), enough to infer cadence
+            samples.append((t.isoformat(), _raw(grid=100, solar=200)))
+            t += timedelta(seconds=300)
+        # One lonely sample far later ⇒ a sparse slot at 11:30 with a single reading.
+        samples.append(((base + timedelta(minutes=90)).isoformat(), _raw(grid=100)))
+        await _seed(store, samples)
+        # Boot cadence is now 60s, but yesterday was actually recorded at 300s.
+        await materialize_observations(
+            store, base, base + timedelta(days=1), cadence_seconds=60.0)
+        return await store.observations_between("2026-07-10T00:00:00+00:00",
+                                                "2026-07-11T00:00:00+00:00")
+
+    rows = asyncio.run(run())
+    by = {r["slot_start"]: r for r in rows}
+    for slot in ("2026-07-10T10:00:00+00:00", "2026-07-10T10:15:00+00:00",
+                 "2026-07-10T10:30:00+00:00", "2026-07-10T10:45:00+00:00"):
+        assert by[slot]["coverage"] == 1.0  # inferred 300s ⇒ 3/3, NOT 3/15 = 0.2
+        assert by[slot]["flags"] == []
+    sparse = by["2026-07-10T11:30:00+00:00"]  # 1 of 3 expected at the inferred 300s cadence
+    assert round(sparse["coverage"], 4) == round(1 / 3, 4)
+    assert sparse["flags"] == ["low_coverage"]
+
+
 def test_daily_energy_kwh_and_sign_conventions(tmp_path):
     # A local day with one 12:00-local slot: solar 1000 W, grid −800 W (export), battery −400 W
     # (charging), load 600 W. Integrated over the 3 samples' single 15-min slot (0.25 h).

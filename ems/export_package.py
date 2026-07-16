@@ -94,11 +94,17 @@ def read_member(data: bytes, name: str) -> str:
 
 # ---- server_log_tail.txt (B-40's noted diagnosis gap) -------------------------------------------
 # Token-ish patterns worth masking even when the current setting VALUE isn't known to the caller
-# (a since-rotated token can still sit in an old log line): a Bearer auth header, and a MiniMax-
-# style `sk-...` API key. Layered UNDER the caller's own `secret_values` (the actually-configured
-# secret settings + the ntfy topic) — see `redact_log_text`.
-_BEARER_RE = re.compile(r"Bearer\s+\S+")
+# (a since-rotated token can still sit in an old log line): any Authorization header value, a
+# Bearer auth token (any case), and a MiniMax-style `sk-...` API key. Layered UNDER the caller's
+# own `secret_values` (the actually-configured secret settings + the ntfy URL & topic) — see
+# `redact_log_text`.
+_BEARER_RE = re.compile(r"Bearer\s+\S+", re.IGNORECASE)
 _API_KEY_RE = re.compile(r"sk-[A-Za-z0-9_-]+")
+# Any `authorization: <value>` header line — mask the VALUE to end-of-line, whatever the scheme
+# (Basic, Token, a raw key, …). The `(?!Bearer)` skip leaves a Bearer value to `_BEARER_RE` above
+# (so it still reads `Bearer [REDACTED]`, not the whole line collapsed); both end up masked either
+# way. Case-insensitive header name AND scheme.
+_AUTH_HEADER_RE = re.compile(r"(authorization:\s*)(?!Bearer)\S.*", re.IGNORECASE)
 
 
 def tail_lines(text: str, max_lines: int = 400) -> str:
@@ -116,12 +122,14 @@ def redact_log_text(text: str, *, secret_values: Iterable[str] = ()) -> str:
     server log can carry a `Bearer <token>` auth header, a `sk-...`-shaped API key, or an ntfy
     topic in some error message, none of which may leak into a shared support bundle.
 
-    Two layers: pattern-based (`Bearer \\S+`, `sk-[A-Za-z0-9_-]+`) catches a token even from a
-    since-rotated setting the caller no longer has; `secret_values` additionally masks the
-    CURRENT secret-ish setting values (see `ems.settings.SECRET_KEYS`) and the configured ntfy
-    topic verbatim, whatever shape they take — a literal substring replace, applied after the
-    pattern passes. Order-independent, idempotent, pure — never raises on odd input."""
+    Two layers: pattern-based (any `authorization:` header value, a `Bearer` token in ANY case,
+    an `sk-[A-Za-z0-9_-]+` key) catches a token even from a since-rotated setting the caller no
+    longer has; `secret_values` additionally masks the CURRENT secret-ish setting values (see
+    `ems.settings.SECRET_KEYS`) and the configured ntfy URL & topic verbatim, whatever shape they
+    take — a literal substring replace, applied after the pattern passes. Order-independent,
+    idempotent, pure — never raises on odd input."""
     out = _BEARER_RE.sub("Bearer [REDACTED]", text)
+    out = _AUTH_HEADER_RE.sub(r"\1[REDACTED]", out)
     out = _API_KEY_RE.sub("[REDACTED]", out)
     for value in secret_values:
         v = str(value).strip()
@@ -375,7 +383,9 @@ health check of production operation. All timestamps are **UTC, ISO-8601**. All 
   set), and the current value of every secret-type setting are masked as `[REDACTED]` — see
   `ems/export_package.py`'s `redact_log_text`.
 - **manifest.json** — what/when/window, row counts, and a privacy-safe validation block
-  (run mode, planner settings, data quality, recorder health). No tokens, IPs or location.
+  (run mode, planner settings, data quality, recorder health). No tokens, IPs or coordinates. The
+  manifest includes your timezone and the car's weekly schedule (needed to replay the planner) —
+  delete manifest.json before sharing if you prefer.
   `manifest.incidents` summarises control-health events from the audit log (command failures,
   cluster mismatches, fallbacks, reverts) — a rollup, not a replacement for `audit_log.csv`.
   It carries two by-type breakdowns over two different windows, labelled explicitly so they're
