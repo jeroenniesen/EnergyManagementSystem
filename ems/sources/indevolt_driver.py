@@ -25,6 +25,7 @@ from ems.sources.indevolt import (
     K_MODE,
     K_STATE,
     BatteryUnavailable,
+    DeviceQuiesce,
     IndevoltReadClient,
 )
 
@@ -140,6 +141,7 @@ class IndevoltBatteryDriver:
         timeout: float = 4.0,
         write_attempts: int = 2,
         write_retry_backoff: float = 0.5,
+        quiesce: DeviceQuiesce | None = None,
     ) -> None:
         self.ip = ip
         # Master first, then any slave towers; de-duped, blanks dropped. Reads still come from the
@@ -159,6 +161,10 @@ class IndevoltBatteryDriver:
         # retry a write a couple times so a transient slow response doesn't false-fail it.
         self._write_attempts = max(1, int(write_attempts))
         self._write_retry_backoff = max(0.0, float(write_retry_backoff))
+        # F1: while the SetData sequence (+ settle tail) is in flight, the cluster reader sharing
+        # this quiesce serves cache instead of piling reads onto the saturated device. None → own
+        # instance (unshared → inert; the standalone/test driver behaves exactly as before).
+        self._quiesce = quiesce or DeviceQuiesce()
         # One SetData transport per tower. post_factory(ip) builds a real per-tower transport in
         # production; rpc_post (if given) is reused for ALL towers (test injection); else refusing.
         self._has_transport = post_factory is not None or rpc_post is not None
@@ -264,13 +270,18 @@ class IndevoltBatteryDriver:
         # whole cluster returns to safe self-consumption). A transport failure on the first write
         # aborts (raises) before the rest — bounding the worst case to ~one write's retries.
         targets = self.ips if mode is PhysicalMode.AUTO else self.ips[:1]
-        for tower_ip in targets:
-            post = self._posts.get(tower_ip, _refusing_post)
-            for point, values in setdata_writes(mode, power_w=total_power, target_soc=soc,
-                                                max_power_w=cluster_max):
-                resp = self._post_with_retry(post, point, values, tower_ip)
-                if not (isinstance(resp, dict) and resp.get("result")):
-                    _log.error("Indevolt SetData %s %s=%s rejected: %s",
-                               tower_ip, point, values, resp)
-                    return False  # genuine device rejection → caller reverts to AUTO
+        # F1: quiesce device READS for the duration of the actual HTTP sequence (+ a settle tail),
+        # so the cluster reader sharing this quiesce doesn't flood the device's single embedded
+        # server mid-write. Reads never block on this; the settle deadline is set even if a write
+        # below raises/returns early (contextmanager finally), so reads can't be starved.
+        with self._quiesce.writing():
+            for tower_ip in targets:
+                post = self._posts.get(tower_ip, _refusing_post)
+                for point, values in setdata_writes(mode, power_w=total_power, target_soc=soc,
+                                                    max_power_w=cluster_max):
+                    resp = self._post_with_retry(post, point, values, tower_ip)
+                    if not (isinstance(resp, dict) and resp.get("result")):
+                        _log.error("Indevolt SetData %s %s=%s rejected: %s",
+                                   tower_ip, point, values, resp)
+                        return False  # genuine device rejection → caller reverts to AUTO
         return True  # accepted; the control loop confirms the mode took (latency)

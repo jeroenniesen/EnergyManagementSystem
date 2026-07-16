@@ -41,6 +41,12 @@ class ActionDecision:
     # applied | failed_recovered | failed_unrecovered | unconfirmed
     outcome: str
     reason: str
+    # F3 incident de-dupe: whether this decision is worth writing to the incident/audit trail as a
+    # NEW row. True for every ordinary outcome; set False on REPEAT `unconfirmed` cycles within one
+    # stuck episode so a single "charge isn't sticking" incident is logged once (then again only
+    # after ~60 min), not inflated to a row every dwell cycle. Control behaviour is unaffected —
+    # this only governs audit noise; the caller logs a new row when `audit` is True.
+    audit: bool = True
 
 
 class ModeController:
@@ -71,6 +77,11 @@ class ModeController:
         self.last_requested_action: PhysicalMode | None = None
         self.last_confirmed_action: PhysicalMode | None = None
         self.original_vendor_mode: PhysicalMode | None = None
+        # F3 incident de-dupe: the currently-open "unconfirmed" episode, so a stuck intent audits
+        # once per episode rather than every dwell cycle (one live episode inflated to 13 rows).
+        # Keyed by (intent, desired-mode); `_at` is when the episode was first (or last re-)logged.
+        self._unconfirmed_key: tuple[BatteryIntent, PhysicalMode] | None = None
+        self._unconfirmed_logged_at: datetime | None = None
         # Called (with state_snapshot()) whenever persistable state changes; the caller persists it.
         self._on_state_change = on_state_change
 
@@ -117,6 +128,32 @@ class ModeController:
     def _desired(self, intent: BatteryIntent, *, car_session: bool = False) -> PhysicalMode:
         return intent_to_mode(intent, allow_export_discharge=self.allow_export_discharge,
                               car_session=car_session)
+
+    # F3: re-log a still-stuck episode at most this often, so a long outage still leaves periodic
+    # evidence in the incident trail (not one row for hours, not a row every cycle).
+    _UNCONFIRMED_RELOG = timedelta(minutes=60)
+
+    def _note_unconfirmed_episode(
+        self, intent: BatteryIntent, desired: PhysicalMode, now: datetime,
+    ) -> bool:
+        """Record that `(intent, desired)` just came back `unconfirmed` and return whether THIS one
+        is audit-worthy (a NEW incident row). True for the first unconfirmed of an episode and again
+        once >60 min have passed since it was last logged; False for repeats in between. An episode
+        ends (and the next unconfirmed re-audits) when a write confirms or the intent/mode changes —
+        see `_clear_unconfirmed_episode`, called from decide()'s applied/failed paths."""
+        key = (intent, desired)
+        if (self._unconfirmed_key != key or self._unconfirmed_logged_at is None
+                or now - self._unconfirmed_logged_at >= self._UNCONFIRMED_RELOG):
+            self._unconfirmed_key = key
+            self._unconfirmed_logged_at = now
+            return True
+        return False  # same episode, within the re-log window → suppress the duplicate row
+
+    def _clear_unconfirmed_episode(self) -> None:
+        """End any open unconfirmed episode (a write confirmed, or was rejected and reverted to
+        AUTO) so a subsequent unconfirmed is audited as a fresh incident."""
+        self._unconfirmed_key = None
+        self._unconfirmed_logged_at = None
 
     def _effective_switches(self, now: datetime) -> int:
         """Today's switch count, treating a new local date as a fresh 0 (read-only)."""
@@ -236,10 +273,14 @@ class ModeController:
             # bypasses dwell and may retry sooner — what the operator wants).
             self.switches_today += 1
             self.last_switch_at = now
+            # F3: audit the FIRST unconfirmed of a stuck episode (and re-log after ~60 min);
+            # suppress the duplicate rows in between. HOLD/retry behaviour above is untouched — only
+            # the audit noise: one "charge isn't sticking because the device is slow" is one row.
+            audit = self._note_unconfirmed_episode(intent, desired, now)
             self._persist()
             return ActionDecision(intent, desired, False, "unconfirmed",
                                   f"{desired} unconfirmed — device slow/unreachable ({exc}); "
-                                  "holding (not reverting), will re-verify next cycle")
+                                  "holding (not reverting), will re-verify next cycle", audit=audit)
         if not accepted:
             # Genuine device REJECTION (result:false) -> revert to the safe vendor mode (SPEC §6.5).
             try:
@@ -260,11 +301,13 @@ class ModeController:
             # gate spaces retries out and the daily cap stops them entirely after the budget.
             self.switches_today += 1
             self.last_switch_at = now
+            self._clear_unconfirmed_episode()  # F3: a rejection is a distinct terminal event
             self._persist()
             return ActionDecision(intent, PhysicalMode.AUTO, recovered, outcome, reason)
         self.switches_today += 1
         self.last_switch_at = now
         self.last_confirmed_action = desired
+        self._clear_unconfirmed_episode()  # F3: a confirmed write ends the episode → re-audit later
         self._persist()
         return ActionDecision(intent, desired, True, "applied", f"set {desired}")
 

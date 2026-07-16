@@ -305,6 +305,91 @@ def test_switch_cap_window_rolls_at_local_midnight_not_utc():
     assert reset.outcome == "applied"                           # counter reset at local midnight
 
 
+class _StuckDriver(MockBatteryDriver):
+    """A driver whose apply() times out (BatteryWriteUnconfirmed) on demand, and always reports its
+    mode as AUTO so a CHARGE intent never short-circuits as idempotent — lets us drive an intent
+    that stays stuck across cycles and then recovers."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.stuck = True
+
+    def current_mode(self) -> PhysicalMode:
+        return PhysicalMode.AUTO  # never idempotent for a CHARGE/IDLE intent
+
+    def apply(self, mode, *, target_soc=None, power_w=None):
+        if self.stuck:
+            raise BatteryWriteUnconfirmed("device slow")
+        return super().apply(mode, target_soc=target_soc, power_w=power_w)
+
+
+def test_stuck_unconfirmed_episode_audits_once_across_cycles():
+    # One real "charge isn't sticking (device slow)" episode must produce ONE audit-worthy row, not
+    # a row every dwell cycle (the live 13-row inflation). manual=True bypasses dwell so all five
+    # cycles actually re-attempt the write and hit the unconfirmed branch.
+    d = _StuckDriver()
+    ctl = ModeController(d, _controlling_lifecycle(), dry_run=False)
+    audits = 0
+    for i in range(5):
+        dec = ctl.decide(BatteryIntent.GRID_CHARGE_TO_TARGET, T0 + timedelta(seconds=200 + i),
+                         target_soc=90, manual=True)
+        assert dec.outcome == "unconfirmed"  # control behaviour (HOLD) unchanged every cycle
+        audits += int(dec.audit)
+    assert audits == 1  # exactly one incident row for the whole episode
+
+
+def test_recovery_then_restick_audits_a_second_row():
+    d = _StuckDriver()
+    ctl = ModeController(d, _controlling_lifecycle(), dry_run=False)
+    first = ctl.decide(BatteryIntent.GRID_CHARGE_TO_TARGET, T0 + timedelta(seconds=200),
+                       target_soc=90, manual=True)
+    assert first.audit is True
+    again = ctl.decide(BatteryIntent.GRID_CHARGE_TO_TARGET, T0 + timedelta(seconds=201),
+                       target_soc=90, manual=True)
+    assert again.audit is False  # suppressed within the same episode
+    # The device recovers: the write confirms → episode ends.
+    d.stuck = False
+    ok = ctl.decide(BatteryIntent.GRID_CHARGE_TO_TARGET, T0 + timedelta(seconds=202),
+                    target_soc=90, manual=True)
+    assert ok.outcome == "applied"
+    # ...then it re-sticks: a fresh episode → a NEW audit row.
+    d.stuck = True
+    restick = ctl.decide(BatteryIntent.GRID_CHARGE_TO_TARGET, T0 + timedelta(seconds=203),
+                         target_soc=90, manual=True)
+    assert restick.outcome == "unconfirmed"
+    assert restick.audit is True
+
+
+def test_long_outage_relogs_after_61_minutes():
+    # A persistent outage still leaves periodic evidence: re-log once >60 min have passed since the
+    # episode was last logged, so hours of "not sticking" isn't a single stale row.
+    d = _StuckDriver()
+    ctl = ModeController(d, _controlling_lifecycle(), dry_run=False)
+    t1 = T0 + timedelta(seconds=200)
+    first = ctl.decide(BatteryIntent.GRID_CHARGE_TO_TARGET, t1, target_soc=90, manual=True)
+    assert first.audit is True
+    mid = ctl.decide(BatteryIntent.GRID_CHARGE_TO_TARGET, t1 + timedelta(minutes=30),
+                     target_soc=90, manual=True)
+    assert mid.audit is False  # still within the hour since the first log → suppressed
+    later = ctl.decide(BatteryIntent.GRID_CHARGE_TO_TARGET, t1 + timedelta(minutes=61),
+                       target_soc=90, manual=True)
+    assert later.audit is True  # >60 min since the last log → re-logged
+
+
+def test_different_intent_starts_a_new_episode_row():
+    # A different (intent, mode) is a distinct episode and audits afresh — even mid-suppression of
+    # another one.
+    d = _StuckDriver()
+    ctl = ModeController(d, _controlling_lifecycle(), dry_run=False)
+    charge = ctl.decide(BatteryIntent.GRID_CHARGE_TO_TARGET, T0 + timedelta(seconds=200),
+                        target_soc=90, manual=True)
+    assert charge.audit is True
+    # HOLD_RESERVE → IDLE: a different desired mode → a new episode, so it audits.
+    hold = ctl.decide(BatteryIntent.HOLD_RESERVE, T0 + timedelta(seconds=201), manual=True)
+    assert hold.outcome == "unconfirmed"
+    assert hold.audit is True
+
+
 def test_persist_failure_is_logged_not_swallowed(caplog):
     # A broken control-state store must never crash a control decision (persistence is best-effort),
     # but it must NOT vanish silently — _persist logs a warning so a broken store is visible.

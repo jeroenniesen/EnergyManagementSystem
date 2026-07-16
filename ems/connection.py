@@ -114,13 +114,21 @@ def build_wiring(eff: dict, tz: ZoneInfo, cache_store: object | None = None):
     # a real SetData transport and lifts dry_run. Default off -> dry_run, battery never written.
     operational = False
     if use_live_devices:
-        from ems.sources.indevolt import IndevoltClusterReader, IndevoltReadClient
+        from ems.sources.indevolt import (
+            DeviceQuiesce,
+            IndevoltClusterReader,
+            IndevoltReadClient,
+        )
         from ems.sources.indevolt_driver import IndevoltBatteryDriver, make_setdata_post
         from ems.sources.live import HomeWizardMeter, LiveSource
 
         ip = eff.get("battery.indevolt_ip") or ""
         port = int(eff.get("battery.indevolt_port") or 8080)
         operational = bool(eff.get("control.operational")) and bool(ip)
+        # F1: ONE DeviceQuiesce per master, shared by the cluster reader and the write driver below,
+        # so reads back off while a SetData sequence (+ settle tail) lands on the device's single
+        # embedded HTTP server (the charge-fails-under-car-load root cause).
+        quiesce = DeviceQuiesce()
         # Read the whole cluster (master + any extra towers) as one logical battery; the
         # dashboard SoC is the capacity-weighted average. Writes still target the master (`ip`).
         tower_ips = _battery_ips(ip, eff.get("battery.indevolt_ips_extra"))
@@ -128,7 +136,7 @@ def build_wiring(eff: dict, tz: ZoneInfo, cache_store: object | None = None):
         # cluster reader just aggregates over whatever responds.
         battery_reader = (
             IndevoltClusterReader([IndevoltReadClient(a, port=port, timeout=2.5)
-                                   for a in tower_ips])
+                                   for a in tower_ips], quiesce=quiesce)
             if tower_ips
             else None
         )
@@ -155,6 +163,7 @@ def build_wiring(eff: dict, tz: ZoneInfo, cache_store: object | None = None):
                 # cluster) and a too-tight timeout false-failed the charge, triggering the AUTO-
                 # revert spiral. A timeout now raises BatteryWriteUnconfirmed (hold, don't revert).
                 post_factory=lambda a, _p=port: make_setdata_post(a, _p, timeout=8.0),
+                quiesce=quiesce,  # F1: same lock as the reader → reads quiesce while a write lands
             )
         elif ip:
             controller_driver = IndevoltBatteryDriver(

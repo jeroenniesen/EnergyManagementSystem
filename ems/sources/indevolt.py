@@ -19,7 +19,10 @@ from __future__ import annotations
 
 import json
 import logging
+import threading
+import time
 from collections.abc import Callable, Iterable
+from contextlib import contextmanager
 from dataclasses import dataclass
 
 _log = logging.getLogger("ems.sources.indevolt")
@@ -144,6 +147,58 @@ def aggregate_soc(readings: list[TowerReading]) -> float:
     return sum(r.soc_pct for r in valid) / len(valid)  # type: ignore[misc]
 
 
+class DeviceQuiesce:
+    """Per-MASTER coordination between the battery WRITE path (IndevoltBatteryDriver.apply's SetData
+    sequence) and the cluster READ path (IndevoltClusterReader) — F1 device-I/O quiesce.
+
+    The Indevolt exposes ONE small embedded HTTP server, shared with Home Assistant and the vendor
+    app; under ~10 kW car charging it saturates. If the EMS's ~8-10 s reads pile onto it exactly
+    while a 4-POST charge sequence is trying to land, the write fails and its retries amplify the
+    load (the diagnosed production failure). While a write sequence is IN FLIGHT — plus a short
+    SETTLE TAIL after it — this suppresses device reads: the reader serves its last cached value
+    instead of issuing a fresh round-trip.
+
+    Reads do a NON-BLOCKING check (`reads_suppressed`) and fall back to cache; they NEVER wait on
+    the writer, so a slow/wedged write can't starve reads — the settle tail is time-bounded and the
+    in-flight count is released in a `finally`. The write path likewise never blocks on a read
+    (reads hold no lock the writer needs), so a write acquires even mid read-burst.
+
+    Thread-safe with a `threading.Lock`: both paths run on `asyncio.to_thread` worker threads, so an
+    `asyncio.Lock` (event-loop-bound, not thread-safe) would be wrong here. Share ONE instance by
+    threading it through both the reader and the driver addressing the same master IP (see
+    ems/connection.py). Default is per-object (quiesce=None → each builds its own), so a standalone
+    reader/driver behaves exactly as before — F1 is inert until a writer shares the lock."""
+
+    def __init__(
+        self, *, settle_seconds: float = 4.0, clock: Callable[[], float] | None = None,
+    ) -> None:
+        self._settle_seconds = max(0.0, float(settle_seconds))
+        self._clock = clock or time.monotonic
+        self._guard = threading.Lock()  # guards the counters below; held only momentarily
+        self._in_flight = 0             # active write sequences (writes may overlap → a count)
+        self._quiet_until = 0.0         # settle-tail deadline after the last write released
+
+    @contextmanager
+    def writing(self):
+        """Hold around a write's ACTUAL HTTP calls. Reads are suppressed while held and for
+        `settle_seconds` after release — whether the write succeeded, was rejected, or timed out
+        (the finally always sets the settle deadline, so reads recover on their own)."""
+        with self._guard:
+            self._in_flight += 1
+        try:
+            yield
+        finally:
+            with self._guard:
+                self._in_flight -= 1
+                self._quiet_until = self._clock() + self._settle_seconds
+
+    def reads_suppressed(self) -> bool:
+        """True while a write is in flight OR we are still inside the settle tail — the reader
+        should serve its cached value rather than add a read to the shared device."""
+        with self._guard:
+            return self._in_flight > 0 or self._clock() < self._quiet_until
+
+
 class IndevoltClusterReader:
     """Read several Indevolt towers as ONE logical battery (SPEC §6.5). Aggregates SoC
     (capacity-weighted) and power (signed sum) and exposes per-tower detail. Implements the
@@ -157,10 +212,14 @@ class IndevoltClusterReader:
     def __init__(
         self, clients: list[IndevoltReadClient], *, cache_seconds: float = 10.0,
         clock: Callable[[], float] | None = None,
+        quiesce: DeviceQuiesce | None = None,
     ) -> None:
         self._clients = list(clients)
         self._cap_cache: dict[str, float] = {}
         self._role_cache: dict[str, str] = {}
+        # F1: shared with the write path so device reads back off while a SetData sequence (+ settle
+        # tail) lands. None → own instance (never triggered standalone; behaviour unchanged).
+        self._quiesce = quiesce or DeviceQuiesce()
         # Coalesce the actual device read across the several callers that want tower data in quick
         # succession (the live sample's read_power_soc AND /api/battery's read_towers, the control
         # loop, multiple endpoints). The Indevolt's little embedded server is SHARED with Home
@@ -206,10 +265,17 @@ class IndevoltClusterReader:
     def read_towers(self) -> list[TowerReading]:
         # Serve a recent snapshot if one is within the coalescing window (eases load on the shared
         # device); otherwise read every tower once and cache it.
-        if self._cache is not None and self._clock() - self._cache[0] < self._cache_seconds:
+        now = self._clock()
+        if self._cache is not None and now - self._cache[0] < self._cache_seconds:
+            return self._cache[1]
+        # F1: while a battery write sequence (+ its settle tail) is landing on the device's single
+        # embedded HTTP server, do NOT add a read — serve the last cached value even if it is now
+        # stale (the write path shares this quiesce per master). If there is no cache yet we have
+        # nothing to serve, so fall through to a real read.
+        if self._cache is not None and self._quiesce.reads_suppressed():
             return self._cache[1]
         towers = [self._read_one(c) for c in self._clients]
-        self._cache = (self._clock(), towers)
+        self._cache = (now, towers)
         return towers
 
     def read_power_soc(self) -> tuple[float, float]:
