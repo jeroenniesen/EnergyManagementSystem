@@ -43,6 +43,18 @@ export function ringLabel(key: string, label: string): string {
   return RING_LABEL[key] ?? label;
 }
 
+// Day-just-starting: instead of repeating "The day's just starting" on every pill (the section
+// summary already says it once), each pill previews WHAT its score measures — so the empty row
+// teaches the three scores rather than echoing one line three times.
+const EARLY_PREVIEW: Record<string, string> = {
+  self_consumption: "Solar you use yourself",
+  co2: "How clean your energy is",
+  best_price: "How well you time prices",
+};
+export function earlyPreview(key: string): string {
+  return EARLY_PREVIEW[key] ?? "Builds through the day";
+}
+
 // A fuller sentence for the home score cards (the line above the caption) — plain-language,
 // band-aware, and warm on a good day.
 const HEADLINES: Record<string, Record<Band, string>> = {

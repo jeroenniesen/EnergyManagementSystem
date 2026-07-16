@@ -150,13 +150,31 @@ def test_battery_plan_reports_data_stale_when_inputs_are_unsafe(tmp_path):
 
     assert body["status"] == "data_stale"
     assert body["current_action"] == "paused"
-    assert "stale" in body["summary"].lower() or "missing" in body["summary"].lower()
+    # The badge carries "Data stale"; the summary explains the pause (it must not repeat the label).
+    assert "paused" in body["summary"].lower() or "fresh" in body["summary"].lower()
     assert body["warnings"]
     assert body["deviation"]["status"] == "missing"
     # B-68: unsafe data quality must cap the plan-confidence score at low, reason leading.
     assert body["confidence"]["level"] == "low"
     assert body["confidence"]["reasons"]
     assert "safety fallback" in body["confidence"]["reasons"][0].lower()
+
+
+def test_battery_plan_summary_never_repeats_the_status_badge(tmp_path):
+    # The status renders as a badge in the UI; the summary must NOT redundantly begin with the same
+    # label (the "Needs top-up — Behind the 88% target…" run-on the production dashboard showed,
+    # where "Needs top-up" was printed as both the badge and the summary's first phrase).
+    labels = {"on_track": "On track", "needs_topup": "Needs top-up",
+              "behind_target": "Behind target", "paused_safely": "Paused safely",
+              "data_stale": "Data stale"}
+    fresh = FreshnessTracker()
+    fresh.register(*SIGNALS)
+    with TestClient(_app(tmp_path, freshness=fresh)) as c:  # unsafe data → data_stale
+        b = c.get("/api/battery-plan").json()
+    assert not b["summary"].lower().startswith(labels[b["status"]].lower()), b["summary"]
+    with TestClient(_app(tmp_path, with_forecast=False)) as c:  # no forecast → paused_safely
+        b2 = c.get("/api/battery-plan").json()
+    assert not b2["summary"].lower().startswith(labels[b2["status"]].lower()), b2["summary"]
 
 
 def test_battery_plan_pauses_safely_when_there_is_no_plan(tmp_path):

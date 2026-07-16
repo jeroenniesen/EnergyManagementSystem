@@ -3308,10 +3308,13 @@ def create_app(
         }
         current_action = slots[0]["action"] if slots else "paused"
 
+        # The `status` renders as a badge in the UI, so the summary must NOT re-print the same label
+        # (that produced the "Needs top-up — Behind the 88% target…" run-on). The summary is the
+        # EXPLANATION; the badge is the tag.
         warnings: list[str] = []
         if quality == "unsafe":
             status = "data_stale"
-            summary = "Data stale — EMS is paused safely until critical inputs are fresh again."
+            summary = "Paused safely until critical inputs are fresh again."
             current_action = "paused"
             current_reason = reason or "Critical sensor, price or forecast data is stale."
             warnings.append(current_reason)
@@ -3321,18 +3324,18 @@ def create_app(
             status = "paused_safely"
             finding = (validation.findings[0].message if validation.findings
                        else "Plan validation failed.")
-            summary = f"Paused safely — {finding}"
+            summary = finding
             current_action = "paused"
             current_reason = finding
             warnings.append(finding)
             deviation = {"status": "missing", "message": finding}
         elif verdict["status"] == "behind" and grid_charge_kwh > 0.05:
             status = "needs_topup"
-            summary = f"Needs top-up — {verdict['message']}"
+            summary = verdict["message"]
             current_reason = reason or "Grid top-up is planned to reach the battery target."
         elif verdict["status"] == "behind":
             status = "behind_target"
-            summary = f"Behind target — {verdict['message']}"
+            summary = verdict["message"]
             current_reason = reason or "The battery is short of the night target."
             warnings.append(verdict["message"])
         else:

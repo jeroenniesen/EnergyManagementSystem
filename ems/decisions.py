@@ -53,8 +53,16 @@ def _from_battery_decision(base: dict, detail: dict) -> dict:
         return {**base, "title": f"Couldn't switch to {word} and couldn't confirm safe mode",
                 "consequence": "The battery may be in an unknown state.",
                 "action": "Check the battery now.", "severity": "critical"}
-    # Unknown/empty outcome — surface the summary, stay calm.
-    return {**base, "title": base.get("_summary") or "Battery decision",
+    # Watch-only (dry-run) advisory decision: EMS decided what it WOULD do but changed nothing.
+    # Render homeowner copy rather than leaking the raw "Would set battery → auto — …" dev summary.
+    if detail.get("dry_run") or detail.get("decided_only"):
+        title = (f"Would keep the battery on {word}" if mode == "auto"
+                 else f"Would set the battery to {word}")
+        return {**base, "title": title,
+                "consequence": "Watch-only mode — EMS is advising, not changing the battery.",
+                "action": _NO_ACTION, "severity": "info"}
+    # Truly unknown outcome — a calm generic title (never the raw dev summary).
+    return {**base, "title": (f"Battery decision — {word}" if mode else "Battery decision"),
             "consequence": "", "action": _NO_ACTION, "severity": "info"}
 
 

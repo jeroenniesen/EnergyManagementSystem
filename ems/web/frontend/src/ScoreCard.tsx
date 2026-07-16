@@ -4,7 +4,7 @@
 // button that opens the Insights tab; its accessible name carries the score value + copy.
 import { ScoreRing } from "./ScoreRing";
 import { scoreBand } from "./ScoreRing";
-import { ringLabel, scoreCaption, scoreHeadline } from "./scoreCopy";
+import { earlyPreview, ringLabel, scoreCaption, scoreHeadline } from "./scoreCopy";
 
 type Score = { key: string; label: string; value: number | null; explanation: string };
 
@@ -19,10 +19,12 @@ export function ScoreCard({
 }) {
   const value = early ? null : score.value;
   const headline = early ? "" : scoreHeadline(score.key, score.value);
-  const caption = early ? "The day's just starting" : scoreCaption(score.key, score.value);
+  // Early: preview what THIS score measures (distinct per pill) rather than repeating the section's
+  // "The day's just starting" three times.
+  const caption = early ? earlyPreview(score.key) : scoreCaption(score.key, score.value);
   const band = scoreBand(value);
   const spoken = early
-    ? `${score.label}: the day's just starting — scores build as the sun comes up. Open Insights`
+    ? `${score.label}: ${earlyPreview(score.key)} — the day's just starting, scores build as the sun comes up. Open Insights`
     : `${score.label} score: ${score.value == null ? "not available" : `${Math.round(score.value)} out of 100`}` +
       `${headline ? `. ${headline}` : ""}${caption ? ` ${caption}` : ""} — open Insights`;
 

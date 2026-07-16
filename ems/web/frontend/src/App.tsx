@@ -150,7 +150,7 @@ const DRAWER_TITLE: Record<DrawerRoute["kind"], string> = {
   savings: "Your savings",
   confidence: "How much to trust this",
   battery: "Battery detail",
-  decision: "Why EMS acted",
+  decision: "What EMS decided", // works for both an action taken and a watch-only "would" decision
 };
 
 // Hash → route. Canonical hashes: #dashboard #insights #car #chat #manage #manage/system
@@ -576,6 +576,20 @@ export function App() {
   const batteryModeLabel = battery?.current_mode
     ? PHYSICAL_MODE[battery.current_mode] ?? humanize(battery.current_mode)
     : null;
+
+  // Savings estimate copy: a calm zero state (no €0.00–€0.00 band) and a band only when it's
+  // actually a range. The "(estimate)" tag keeps it honestly labelled vs. measured savings.
+  const savingsEstimateText = (() => {
+    const s = savings;
+    if (!s || s.estimate_eur == null) return "No estimate yet — the plan is still loading.";
+    if (s.estimate_eur <= 0.005) return "€0.00 — no savings expected from today's plan yet.";
+    const lo = s.lower_bound_eur;
+    const hi = s.upper_bound_eur;
+    const band = lo != null && hi != null && hi - lo > 0.01
+      ? `, roughly €${lo.toFixed(2)}–€${hi.toFixed(2)}`
+      : "";
+    return `About €${s.estimate_eur.toFixed(2)} (estimate${band})`;
+  })();
 
   // Homeowner copy for the Now / Next / Why drawer — reuses the SAME act line as the hero, so the
   // "do I need to act?" answer can never disagree between the hero and the drawer.
@@ -1065,14 +1079,7 @@ export function App() {
           <>
             <div className="drawer-section">
               <span className="drawer-label">Estimated saving today</span>
-              <p className="drawer-lede" data-testid="savings-estimate">
-                {savings?.estimate_eur != null
-                  ? `About €${savings.estimate_eur.toFixed(2)} (estimate` +
-                    (savings.lower_bound_eur != null && savings.upper_bound_eur != null
-                      ? `, roughly €${savings.lower_bound_eur.toFixed(2)}–€${savings.upper_bound_eur.toFixed(2)})`
-                      : ")")
-                  : "No estimate yet — the plan is still loading."}
-              </p>
+              <p className="drawer-lede" data-testid="savings-estimate">{savingsEstimateText}</p>
             </div>
             <div className="drawer-section">
               <span className="drawer-label">Measured (realized) savings</span>
@@ -1138,7 +1145,7 @@ export function App() {
         {drawer?.kind === "confidence" && confidence && (
           <>
             <div className="drawer-section">
-              <span className="drawer-label">How much to trust today's plan</span>
+              <span className="drawer-label">In plain terms</span>
               <p className="drawer-lede" data-testid="confidence-meaning">
                 {CONFIDENCE_MEANING[confidence.level]}
               </p>

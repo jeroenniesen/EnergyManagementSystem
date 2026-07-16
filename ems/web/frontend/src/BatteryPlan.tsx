@@ -221,7 +221,9 @@ export function BatteryPlan({
         <span className={`battery-plan-status battery-plan-status-${tone}`}>
           {STATUS_LABEL[plan.status]}
         </span>
-        <span className="battery-plan-action">{ACTION_LABEL[plan.current_action]}</span>
+        <span className="battery-plan-action" data-testid="battery-plan-action">
+          Now · {ACTION_LABEL[plan.current_action]}
+        </span>
       </div>
       <p className="battery-plan-summary" data-testid="battery-plan-summary">{plan.summary}</p>
       <p className="battery-plan-reason" data-testid="battery-plan-reason">{plan.current_reason}</p>

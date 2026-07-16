@@ -154,7 +154,7 @@ def _plan_adaptive(
             continue
         if would_breach_reserve:
             intent = BatteryIntent.HOLD_RESERVE
-            reason = "hold reserve: serving this slot would cross the reserve floor"
+            reason = "holding for now — powering the house here would dip below your reserve"
             out.append(PlanSlot(p.start, intent, reason, target_soc=target_soc_pct,
                                 floor_soc=floor_soc, deadline=last_need))
             continue

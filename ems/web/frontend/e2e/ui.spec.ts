@@ -1828,8 +1828,14 @@ test.describe("EMS dashboard", () => {
     await expect(pill).toBeVisible();
     await expect(pill).toHaveAttribute("data-state", "early");
     await expect(pill.getByTestId("ring-self_consumption")).toContainText("—");
-    await expect(pill).toContainText("The day's just starting");
+    // "The day's just starting" lives ONCE, in the summary — not repeated on every pill.
     await expect(page.getByTestId("home-scores-summary")).toContainText("day's just starting");
+    await expect(pill).not.toContainText("The day's just starting");
+    // Each early pill previews its OWN metric, so the three captions are distinct.
+    await expect(pill).toContainText("Solar you use yourself");
+    const captions = await page.getByTestId("home-scores").locator(".sc-caption").allTextContents();
+    expect(captions.length).toBe(3);
+    expect(new Set(captions.map((c) => c.trim())).size).toBe(3);
     // Early state nulls EVERY pill (a night reading is no verdict for any score).
     const best = page.getByTestId("score-card-best_price");
     await expect(best.getByTestId("ring-best_price")).toContainText("—");
@@ -2124,6 +2130,17 @@ test.describe("EMS dashboard", () => {
     await expect(page.getByTestId("savings-estimate")).toContainText(/estimate/i);
     // No completed days yet → realized is explicitly "not measured yet", never a fake number.
     await expect(page.getByTestId("savings-realized")).toContainText(/no complete|not measured|measuring/i);
+  });
+
+  test("savings drawer shows a calm zero state, not a €0.00–€0.00 band", async ({ page }) => {
+    await mockSavings(page, {
+      today_eur: 0, estimate_eur: 0, realized_today_eur: null, month_realized_eur: null,
+      complete_days: 0, lower_bound_eur: 0, upper_bound_eur: 0,
+    });
+    await page.goto("/#dashboard/savings");
+    const est = page.getByTestId("savings-estimate");
+    await expect(est).not.toContainText("€0.00–€0.00");
+    await expect(est).toContainText(/no savings/i);
   });
 
   test("savings drawer shows realized savings with complete-day evidence", async ({ page }) => {

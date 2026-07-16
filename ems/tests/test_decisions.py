@@ -71,6 +71,22 @@ def test_unrelated_categories_are_ignored():
     assert len(ev) == 1 and ev[0]["id"] == "7"
 
 
+def test_watch_only_advisory_decision_reads_plainly():
+    # Dry-run/watch-only writes an advisory "Would set battery → auto — …" entry with NO outcome.
+    # The timeline must render homeowner copy, not leak the raw dev summary (arrow, "solar-first").
+    ev = decision_events([_row(9, "battery_decision",
+                               {"intent": "allow_self_consumption", "desired_mode": "auto",
+                                "dry_run": True, "decided_only": True,
+                                "reason": "solar-first: charging from your panels (1059 W)"},
+                               summary="Would set battery → auto — solar-first (1059 W)")])
+    e = ev[0]
+    assert "→" not in e["title"]
+    assert "would" in e["title"].lower()
+    assert "watch-only" in e["consequence"].lower()
+    assert e["severity"] == "info"
+    assert e["action"].lower().startswith("no action")
+
+
 def test_missing_detail_never_raises():
     ev = decision_events([_row(8, "battery_decision", {})])
     assert len(ev) == 1
