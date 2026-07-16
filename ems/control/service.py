@@ -47,6 +47,7 @@ from ems.planner.rule_based import PlannerConfig
 from ems.planner.strategy import HysteresisState, build_plan, resolve_strategy_hysteretic
 from ems.planner.summer import SummerConfig
 from ems.planner.validator import PlanValidation
+from ems.sources.battery import intent_to_mode
 
 _log = logging.getLogger("ems.recorder")
 
@@ -294,6 +295,16 @@ class ControlContext:
     # Held-decision dedup: the (outcome, desired_mode) last audited as a HELD/blocked decision
     # (dwell/cap/not_controlling/unconfirmed), so a recurring hold is explained ONCE, not per cycle.
     held_box: dict[str, Any] = field(default_factory=lambda: {"sig": None})
+    # Intent-persistence anti-flap state (07-12 guardrail-starvation incident: 13 routine
+    # auto<->idle flaps burned the daily switch cap by 09:48 and then starved a COMMITTED
+    # grid-charge). A ROUTINE (non-AUTO) intent change must be OBSERVED for
+    # control.intent_persistence_cycles consecutive cycles before it may command the battery.
+    # `mode` = the routine desired mode currently accumulating consecutive cycles (or None);
+    # `count` = how many consecutive cycles it has been the pending routine switch. The one-row
+    # dedup of the "confirming next cycle" audit rides the existing held_box (cleared on any real
+    # write), so a flap costs at most one row per flap, never one per cycle.
+    intent_persist_box: dict[str, Any] = field(
+        default_factory=lambda: {"mode": None, "count": 0})
     # Car-charging discharge session (feat/car-charge-modes). IN-MEMORY ONLY: a restart mid-session
     # simply starts a fresh session and re-commands ONCE next cycle (documented, acceptable). Keys:
     # {active, setpoint_w (last commanded W), commanded_at (iso of last car command), commands,
@@ -976,6 +987,54 @@ class ControlService:
                             "accepted": dec.applied, "reason": car_action.reason,
                             "override_active": override_active}}]
 
+    # --- intent-persistence anti-flap ------------------------------------------------------------
+    def _intent_persistence_cycles(self) -> int:
+        """How many consecutive cycles a ROUTINE intent change must persist before it commands the
+        battery (control.intent_persistence_cycles; 1 = legacy, no smoothing). Defensive: any bad
+        value falls back to 1 so a broken setting can never freeze control."""
+        try:
+            return max(1, int(self._settings["control.intent_persistence_cycles"]))
+        except (TypeError, ValueError, KeyError):
+            _log.debug("invalid control.intent_persistence_cycles; no smoothing (non-fatal)",
+                       exc_info=True)
+            return 1
+
+    def _confirm_routine_intent(
+        self, intent: BatteryIntent, desired: PhysicalMode, cycles: int,
+    ) -> list[dict] | None:
+        """Anti-flap gate for a ROUTINE (non-AUTO, non-commitment, non-priority, non-override) mode
+        change. Returns None to let this cycle's decide() ACT, or a (possibly empty) list of audit
+        records to OBSERVE this cycle instead of writing.
+
+        WHY (07-12 guardrail-starvation incident): 13 routine auto<->idle flaps exhausted the
+        10-switch daily cap by 09:48; the afternoon's committed grid-charge was then cap_reached-
+        blocked five times and missed its deadline by 66 min. Requiring a routine change to persist
+        `cycles` consecutive control cycles (first observes, second acts) means a transient flap
+        never spends a switch, so the cap is there when a commitment needs it. Side benefit: fewer
+        writes / less wear ('<10 writes/day' goal).
+
+        The "confirming next cycle" hold is deduped via held_box (which the tick clears on any real
+        write / idempotent), so a multi-cycle hold is one row and a flap is at most one row per
+        flap — never one row per cycle (explainability first, but not spam)."""
+        box = self._ctx.intent_persist_box
+        if box["mode"] == desired.value:
+            box["count"] += 1
+        else:  # a different pending routine mode (or the first appearance) — restart the count
+            box.update(mode=desired.value, count=1)
+        if box["count"] >= cycles:
+            box.update(mode=None, count=0)  # confirmed — act now (re-arm for the next change)
+            return None
+        sig = ("intent_pending", desired.value)
+        if self._ctx.held_box["sig"] == sig:
+            return []  # already explained this pending switch (deduped)
+        self._ctx.held_box["sig"] = sig
+        reason = (f"intent changed to {intent.value} — confirming for {cycles} cycles before "
+                  f"switching to {desired.value} (anti-flap)")
+        return [{"summary": f"Battery NOT switched to {desired.value} yet — {reason}",
+                 "detail": {"desired_mode": desired.value, "intent": str(intent),
+                            "outcome": "intent_pending", "reason": reason,
+                            "override_active": False}}]
+
     # --- the tick + the cycle --------------------------------------------------------------------
     def control_tick(self, now: datetime) -> list[dict]:
         """Operational mode ONLY: advance the ownership lifecycle and, once CONTROLLING, apply the
@@ -1100,9 +1159,30 @@ class ControlService:
         # the car just because today's switch budget is spent (a return to AUTO is always allowed
         # too; see _gate).
         priority = self._car_charging(now)
+        commitment = intent is BatteryIntent.GRID_CHARGE_TO_TARGET
+        # Intent-persistence anti-flap (07-12 starvation incident — see _confirm_routine_intent).
+        # A ROUTINE (non-AUTO) mode change must persist a few cycles before it commands the battery,
+        # so a transient auto<->idle flap can't burn the daily cap and starve a committed charge.
+        # EXEMPT — act immediately, exactly as before: a manual override (override_active), a
+        # car-charging safety context (priority), a committed grid-charge (commitment), and any
+        # return-to-AUTO / fail-safe (a desired AUTO is never held — mirrors _gate). Only when a
+        # switch is actually PENDING (desired differs from the observed mode) is it worth holding.
+        cycles = self._intent_persistence_cycles()
+        desired = intent_to_mode(
+            intent, allow_export_discharge=self._controller.allow_export_discharge)
+        routine_pending = (
+            cycles > 1 and not override_active and not priority and not commitment
+            and desired is not PhysicalMode.AUTO
+            and (observed is None or desired is not observed))
+        if routine_pending:
+            hold = self._confirm_routine_intent(intent, desired, cycles)
+            if hold is not None:  # observe this cycle; a later cycle acts once it persists
+                return records + hold
+        else:  # exempt / idempotent / a switch just confirmed — re-arm the anti-flap counter
+            self._ctx.intent_persist_box.update(mode=None, count=0)
         dec = self._controller.decide(intent, now, target_soc=tgt, power_w=pw,
                                       observed_mode=observed, manual=override_active,
-                                      priority=priority)
+                                      priority=priority, commitment=commitment)
         held = self._ctx.held_box
         if dec.outcome in ("applied", "failed_recovered", "failed_unrecovered"):
             # An ACTUAL device write — audit it. `accepted` = the device acknowledged the command

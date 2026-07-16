@@ -234,3 +234,117 @@ def test_repeated_unconfirmed_episode_records_one_incident_row_then_relogs_hourl
     later = svc.control_tick(NOW + timedelta(minutes=61))
     relog = [r for r in later if r["detail"].get("outcome") == "unconfirmed"]
     assert len(relog) == 1
+
+
+# ==================================================================================================
+# Intent persistence (anti-flap) — a ROUTINE (idle / non-AUTO) intent change must persist
+# control.intent_persistence_cycles consecutive cycles before it commands the battery, so a
+# transient auto<->idle flap can never burn the daily switch cap and starve a committed grid-charge
+# (the 07-12 incident: 13 routine flaps exhausted the cap by 09:48, a COMMITTED charge then missed
+# its deadline by 66 min). EXEMPT — act immediately, exactly as today: a manual override, a
+# car-charging safety context, a committed GRID_CHARGE_TO_TARGET, and any return-to-AUTO / fail-safe
+# (AUTO is never held, mirroring the controller's _gate). 1 = legacy (no smoothing).
+# ==================================================================================================
+
+_HOLD = (BatteryIntent.HOLD_RESERVE, "hold reserve", False, None, None, None, None)
+_CHARGE = (BatteryIntent.GRID_CHARGE_TO_TARGET, "cheap window", False, 90.0, 4000.0, None, None)
+_ASC = (BatteryIntent.ALLOW_SELF_CONSUMPTION, "self-consumption", False, None, None, None, None)
+
+
+def test_routine_intent_change_is_observed_before_switching():
+    # settings default intent_persistence_cycles=2 => cycle 1 OBSERVES (no write), cycle 2 ACTS.
+    controller = _controlling_controller()  # AUTO
+    svc, ctx = _service(controller)
+    svc.effective_intent = lambda now: _HOLD
+
+    first = svc.control_tick(NOW)
+    assert controller.driver.current_mode() is PhysicalMode.AUTO  # nothing written on cycle 1
+    assert len(first) == 1 and first[0]["detail"]["outcome"] == "intent_pending"
+    assert "confirming" in first[0]["summary"]
+    assert controller.switches_today == 0  # no switch spent while observing
+
+    svc.control_tick(NOW + timedelta(seconds=1))  # same intent persists -> act
+    assert controller.driver.current_mode() is PhysicalMode.IDLE
+
+
+def test_transient_flap_never_issues_a_switch_or_burns_the_cap():
+    # The 07-12 pattern: routine idle<->auto flapping at ~1-cycle period. With persistence=2 the
+    # idle side is never confirmed, so ZERO writes happen and the daily switch cap is untouched.
+    controller = _controlling_controller()  # AUTO
+    svc, ctx = _service(controller)
+    state = {"i": 0}
+
+    def flapping(now):
+        state["i"] += 1
+        return _HOLD if state["i"] % 2 else _ASC  # idle, auto, idle, auto, ...
+
+    svc.effective_intent = flapping
+    for k in range(12):
+        svc.control_tick(NOW + timedelta(seconds=k))
+    assert controller.driver.current_mode() is PhysicalMode.AUTO  # never switched to idle
+    assert controller.switches_today == 0                          # daily cap untouched
+
+
+def test_committed_grid_charge_is_never_held_for_persistence():
+    # A deadline-bearing commitment must not lose a cycle to smoothing.
+    controller = _controlling_controller()  # AUTO
+    svc, ctx = _service(controller)
+    svc.effective_intent = lambda now: _CHARGE
+    svc.control_tick(NOW)
+    assert controller.driver.current_mode() is PhysicalMode.CHARGE  # acted on the FIRST cycle
+
+
+def test_return_to_auto_acts_immediately_not_held():
+    # Return-to-AUTO / fail-safe is exempt: AUTO is never held (mirrors _gate).
+    controller = _controlling_controller()
+    controller.driver.apply(PhysicalMode.IDLE)  # start in IDLE
+    svc, ctx = _service(controller)
+    svc._current_mode = lambda now: PhysicalMode.IDLE
+    svc.effective_intent = lambda now: _ASC
+    svc.control_tick(NOW)
+    assert controller.driver.current_mode() is PhysicalMode.AUTO  # immediate on cycle 1
+
+
+def test_manual_override_bypasses_intent_persistence():
+    # A manual override is a deliberate priority command — never smoothed (HOLD_RESERVE -> IDLE).
+    controller = _controlling_controller()  # AUTO
+    svc, ctx = _service(controller)
+    svc.effective_intent = lambda now: (  # override_active=True (4th element)
+        BatteryIntent.HOLD_RESERVE, "override", True, None, None, None, None)
+    svc.control_tick(NOW)
+    assert controller.driver.current_mode() is PhysicalMode.IDLE  # acted at once
+
+
+def test_car_charging_safety_context_bypasses_persistence():
+    # While the car charges the final decide runs with priority=True (a safety context) — a routine
+    # hold there must act immediately, never be smoothed (car-guard exemption).
+    controller = _controlling_controller()  # AUTO
+    svc, ctx = _service(controller, car_charging=lambda now: True)
+    svc.effective_intent = lambda now: _HOLD  # car_action None -> falls through to the final decide
+    svc.control_tick(NOW)
+    assert controller.driver.current_mode() is PhysicalMode.IDLE  # acted at once (priority)
+
+
+def test_persistence_cycles_one_reproduces_legacy_immediate_switch():
+    controller = _controlling_controller()  # AUTO
+    svc, ctx = _service(controller)
+    svc._settings["control.intent_persistence_cycles"] = 1  # legacy: no smoothing
+    svc.effective_intent = lambda now: _HOLD
+    svc.control_tick(NOW)
+    assert controller.driver.current_mode() is PhysicalMode.IDLE  # acted on cycle 1
+
+
+def test_persistence_hold_is_audited_once_across_the_hold():
+    # A multi-cycle hold (persistence=3) is explained ONCE, deduped — not one log per cycle.
+    controller = _controlling_controller()  # AUTO
+    svc, ctx = _service(controller)
+    svc._settings["control.intent_persistence_cycles"] = 3  # observe two cycles, act on the third
+    svc.effective_intent = lambda now: _HOLD
+    c1 = svc.control_tick(NOW)
+    c2 = svc.control_tick(NOW + timedelta(seconds=1))
+    c3 = svc.control_tick(NOW + timedelta(seconds=2))  # noqa: F841 — acts here
+    pend1 = [r for r in c1 if r["detail"]["outcome"] == "intent_pending"]
+    pend2 = [r for r in c2 if r["detail"]["outcome"] == "intent_pending"]
+    assert len(pend1) == 1  # explained once...
+    assert pend2 == []      # ...deduped on the second observe cycle
+    assert controller.driver.current_mode() is PhysicalMode.IDLE  # acted on the third

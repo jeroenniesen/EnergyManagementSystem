@@ -826,6 +826,9 @@ def create_app(
         if controller is None:
             return
         controller.max_switches_per_day = settings_cache["control.max_switches_per_day"]
+        # Switches reserved for a committed grid-charge so routine flapping can't starve it (07-12
+        # guardrail-starvation incident); mirrors max_switches_per_day's live-push convention.
+        controller.commitment_reserve = settings_cache["control.commitment_reserve"]
         controller.min_dwell = timedelta(seconds=settings_cache["control.min_dwell_seconds"])
         controller.allow_export_discharge = settings_cache["control.allow_export_discharge"]
 
@@ -1821,6 +1824,7 @@ def create_app(
                                          manual=override_active,
                                          priority=_car_charging(now),
                                          car_session=_ca is not None and _ca.action == "discharge",
+                                         commitment=intent is BatteryIntent.GRID_CHARGE_TO_TARGET,
                                          ).outcome
         alerts = derive_alerts(snap, dry_run=dry_run, decision_outcome=outcome)
         out = [{"key": a.key, "severity": a.severity, "message": a.message,
@@ -1889,7 +1893,8 @@ def create_app(
             car_session = car_action is not None and car_action.action == "discharge"
             d = controller.preview(intent, now, target_soc=tgt, power_w=pw,
                                    observed_mode=_current_mode(now), manual=override_active,
-                                   priority=car_charging, car_session=car_session)
+                                   priority=car_charging, car_session=car_session,
+                                   commitment=intent is BatteryIntent.GRID_CHARGE_TO_TARGET)
             home = home_state(
                 _readiness(now), intent=str(d.intent), override_active=override_active,
                 simulated=dev_mode != "live",
