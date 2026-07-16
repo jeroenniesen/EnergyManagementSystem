@@ -94,7 +94,7 @@ export function BatteryChips({
                 ? ` · ${socLabel(t.soc_pct, t.online)}`
                 : ` · ${powerLabel(t.power_w)}`
               : ""}
-            {t.capacity_kwh != null ? ` · ${t.capacity_kwh.toFixed(2)} kWh` : ""}
+            {t.capacity_kwh != null ? ` · ${t.capacity_kwh.toFixed(1)} kWh` : ""}
             {t.online ? "" : " · offline"}
           </span>
           {t.online && t.mode && (

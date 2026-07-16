@@ -1357,7 +1357,9 @@ test.describe("EMS dashboard", () => {
   // Production feedback ("don't know what action I need to take here"): the destination phrase in
   // each warn-row action line is a real, clickable link now — not just plain text naming a place to
   // go. Clicking navigates straight to that Manage sub-tab.
-  test("the solar action's link navigates to Manage → Settings (mocked)", async ({ page }) => {
+  test("the solar action's link navigates to Manage → Settings, deep-linked to Planner (mocked)", async ({
+    page,
+  }) => {
     await page.route("**/api/accuracy", (route) =>
       route.fulfill({
         status: 200, contentType: "application/json",
@@ -1382,6 +1384,10 @@ test.describe("EMS dashboard", () => {
     await expect(page.getByTestId("manage-tab-settings")).toHaveAttribute("aria-selected", "true");
     await expect(page.getByTestId("settings")).toBeVisible();
     await expect(page.getByTestId("system")).toHaveCount(0);
+    // The deep-link lands straight on the Planner section (not just the Settings tab in general) —
+    // its own nav item is active and one of its real fields is already on screen.
+    await expect(page.getByTestId("group-planner")).toHaveAttribute("aria-current", "page");
+    await expect(page.getByTestId("field-planner.solar_confidence")).toBeVisible();
   });
 
   test("the plan-execution action's link navigates to the Audit sub-tab (mocked)", async ({
@@ -1593,6 +1599,22 @@ test.describe("EMS dashboard", () => {
     await page.getByTestId("manage-tab-audit").click();
     await expect(page.getByTestId("audit-list")).toContainText("Would set battery to charge");
     await expect(page.getByTestId("audit-list")).toContainText("Changed 1 setting");
+  });
+
+  test("the audit filter offers an AI checks option and requests that category", async ({ page }) => {
+    await page.route("**/api/audit**", (route) =>
+      route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ entries: [] }) }),
+    );
+    await page.goto("/");
+    await page.getByTestId("nav-manage").click();
+    await page.getByTestId("manage-tab-audit").click();
+    const filter = page.getByTestId("audit-filter");
+    await expect(filter.locator('option[value="ai_validation"]')).toHaveText("AI checks");
+    const [req] = await Promise.all([
+      page.waitForRequest("**/api/audit?limit=200&category=ai_validation"),
+      filter.selectOption("ai_validation"),
+    ]);
+    expect(req.url()).toContain("category=ai_validation");
   });
 
   test("the AI second-opinion card is hidden when AI is off", async ({ page }) => {

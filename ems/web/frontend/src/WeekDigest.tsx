@@ -7,6 +7,8 @@
 // the Advanced disclosure toggle) so it never dominates a repeat visit.
 import { useEffect, useState } from "react";
 
+import { eur } from "./format";
+
 type BestDay = { date: string; saved_eur: number } | null;
 
 type Digest = {
@@ -22,8 +24,6 @@ type Digest = {
   days_measured: number;
   days_total: number;
 };
-
-const eur = (v: number) => `${v < 0 ? "−" : ""}€${Math.abs(v).toFixed(2)}`;
 
 // The trailing YYYY-MM-DD in a "Week of YYYY-MM-DD" label — mirrors ems/digest.py's own parsing,
 // so the stepper can compute the adjacent week without a second round-trip just to learn the date.

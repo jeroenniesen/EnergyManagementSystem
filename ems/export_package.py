@@ -35,6 +35,22 @@ AUDIT_COLUMNS = ("id", "ts", "category", "summary", "detail")
 PLAN_COLUMNS = ("ts", "strategy", "target_soc", "deadline", "soc_pct", "intent")
 GAS_COLUMNS = ("ts", "total_gas_m3")
 EV_SESSION_COLUMNS = ("start", "end", "kwh", "avg_kw", "peak_kw", "samples")
+# Compact 15-min observation rollup (design §4.1) — the long-horizon (400-day) evidence behind the
+# load baseline / forecast-scoring surfaces, retained INDEPENDENTLY of raw_samples' shorter purge.
+OBSERVATION_COLUMNS = (
+    "slot_start", "mean_load_w", "mean_non_ev_load_w", "mean_solar_w", "samples", "coverage",
+    "flags",
+)
+# Never-purged daily kWh rollup (B-13) — the year-over-year record that survives the raw retention
+# purge. Every column it has; there is nothing to trim.
+DAILY_ENERGY_COLUMNS = (
+    "date", "solar_kwh", "load_kwh", "non_ev_load_kwh", "ev_kwh", "grid_import_kwh",
+    "grid_export_kwh", "battery_charge_kwh", "battery_discharge_kwh", "coverage",
+)
+# Deliberately LEAN: no `body`. The message text isn't needed to see what fired, when, and whether
+# it was seen — and keeping it out avoids carrying arbitrary free-form text (some of it templated
+# with live figures) into a file meant to stay small and privacy-safe. See README.md.
+NOTIFICATION_COLUMNS = ("ts", "key", "title", "read")
 
 
 def rows_to_csv(rows: list[dict], columns: tuple[str, ...]) -> str:
@@ -295,6 +311,21 @@ health check of production operation. All timestamps are **UTC, ISO-8601**. All 
   sub-threshold pauses bridged, short runs dropped; see `ems/ev_session.py`), one row per session:
   `start, end, kwh (AC-side), avg_kw, peak_kw, samples`. Empty (header only) when no sessions were
   detected in the window.
+- **observations.csv** — the compact 15-min observation rollup (design §4.1) behind the load
+  baseline / forecast-scoring surfaces, retained for 400 days INDEPENDENTLY of raw_samples' (much
+  shorter) retention, so a full year of seasonal evidence survives the raw purge:
+  `slot_start, mean_load_w, mean_non_ev_load_w, mean_solar_w, samples, coverage, flags`.
+  `coverage` (0..1) is the fraction of the slot's expected samples actually recorded (cadence-
+  aware); `flags` is a JSON list (e.g. `["low_coverage"]`) — empty `[]` when nothing's flagged.
+- **daily_energy.csv** — the never-purged daily kWh rollup (B-13), the year-over-year record that
+  survives the raw retention purge — **always exported IN FULL, regardless of the `days` window**
+  (it's small and never purged, so the whole history rides along):
+  `date, solar_kwh, load_kwh, non_ev_load_kwh, ev_kwh, grid_import_kwh, grid_export_kwh,
+  battery_charge_kwh, battery_discharge_kwh, coverage`.
+- **notifications.csv** — the in-app notification outbox (BACKLOG B-20): what fired, when, and
+  whether you'd seen it — deliberately LEAN, **`body` is intentionally excluded** (the message
+  text isn't needed to see what fired/when/read, and leaving it out keeps this file small and
+  free of templated live figures): `ts, key, title, read`.
 - **manifest.json** — what/when/window, row counts, and a privacy-safe validation block
   (run mode, planner settings, data quality, recorder health). No tokens, IPs or location.
   `manifest.incidents` summarises control-health events from the audit log (command failures,
@@ -497,6 +528,9 @@ def validation_summary(
         f"  price slots      {counts.get('prices', 0)}",
         f"  finance days     {counts.get('daily_finance', 0)}",
         f"  audit entries    {counts.get('audit_log', 0)}",
+        f"  observations     {counts.get('observations', 0)}",
+        f"  daily energy     {counts.get('daily_energy', 0)}",
+        f"  notifications    {counts.get('notifications', 0)}",
         "",
         "Operation",
         f"  Run mode:       {_run_mode(bool(op.get('dry_run')))}",

@@ -5,6 +5,8 @@
 // this is purely a container + sub-router otherwise; it never reaches into their internals. The
 // active sub-tab + hash routing (#manage, #manage/system, #manage/audit) live in App.tsx; this
 // component just renders the tab it's told to.
+import { useRef } from "react";
+
 import { AuditView } from "./AuditView";
 import { Settings } from "./Settings";
 import { SystemView } from "./System";
@@ -21,21 +23,53 @@ export function Manage({
   tab,
   onTab,
   onSettingsSaved,
+  settingsSection,
 }: {
   tab: ManageTab;
-  onTab: (t: ManageTab) => void;
+  // `section` is an optional second argument so this same callback can also carry a Settings
+  // deep-link (System's health actions) without a second prop — plain tab clicks below just omit
+  // it, which resets any pending section (see App.tsx's navigate()).
+  onTab: (t: ManageTab, section?: string) => void;
   onSettingsSaved?: (values: Record<string, number | boolean | string>) => void;
+  // Which Settings section to open on mount — threaded straight to Settings' `initialSection`.
+  settingsSection?: string;
 }) {
+  const refs = useRef<(HTMLButtonElement | null)[]>([]);
+  const idx = Math.max(0, TABS.findIndex((t) => t.key === tab));
+
+  // Arrow keys move through the sub-nav like a native tablist (mirrors StrategyCard's segmented
+  // control onKeyDown — roving tabindex, wraps around).
+  function onKeyDown(e: React.KeyboardEvent) {
+    const fwd = e.key === "ArrowRight" || e.key === "ArrowDown";
+    const back = e.key === "ArrowLeft" || e.key === "ArrowUp";
+    if (!fwd && !back) return;
+    e.preventDefault();
+    const next = (idx + (fwd ? 1 : -1) + TABS.length) % TABS.length;
+    onTab(TABS[next].key);
+    refs.current[next]?.focus();
+  }
+
   return (
     <section data-testid="manage">
-      <nav className="manage-subnav" role="tablist" aria-label="Manage sections">
-        {TABS.map((t) => (
+      <nav
+        className="manage-subnav"
+        role="tablist"
+        aria-label="Manage sections"
+        onKeyDown={onKeyDown}
+      >
+        {TABS.map((t, i) => (
           <button
             key={t.key}
+            ref={(el) => {
+              refs.current[i] = el;
+            }}
             type="button"
             role="tab"
+            id={`manage-tab-${t.key}`}
+            aria-controls={`manage-panel-${t.key}`}
             className={`manage-tab${tab === t.key ? " active" : ""}`}
             aria-selected={tab === t.key}
+            tabIndex={tab === t.key ? 0 : -1}
             data-testid={t.testid}
             onClick={() => onTab(t.key)}
           >
@@ -47,9 +81,19 @@ export function Manage({
           SystemView's model-health action lines (B-37/production feedback) need to jump to another
           Manage sub-tab — `onTab` is already threaded in from App for the sub-nav above, so it's
           reused as-is (no App.tsx change needed) rather than adding a second navigation prop. */}
-      {tab === "settings" && <Settings onSaved={onSettingsSaved} />}
-      {tab === "system" && <SystemView onNavigate={onTab} />}
-      {tab === "audit" && <AuditView />}
+      <div
+        className="manage-panel"
+        role="tabpanel"
+        id={`manage-panel-${tab}`}
+        aria-labelledby={`manage-tab-${tab}`}
+        data-testid="manage-panel"
+      >
+        {tab === "settings" && (
+          <Settings onSaved={onSettingsSaved} initialSection={settingsSection} />
+        )}
+        {tab === "system" && <SystemView onNavigate={onTab} />}
+        {tab === "audit" && <AuditView />}
+      </div>
     </section>
   );
 }

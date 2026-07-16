@@ -11,6 +11,7 @@ from zoneinfo import ZoneInfo
 import aiosqlite
 
 from ems.freshness import FreshnessTracker
+from ems.notify import Notifier
 from ems.planner.load_profile import LoadProfile
 from ems.sense import SIGNALS, Recorder
 from ems.sources.forecast import ForecastSlot, MockSolarForecastSource
@@ -379,6 +380,113 @@ def test_canonical_write_failure_retries_then_excluded_after_20(tmp_path):
     assert fail is None  # write raised → treated as a fail-safe no-op
     assert dedupe_after_fail is None  # NOT deduped → next cycle retries
     assert retry == 92 or retry == 96 or retry == 100  # retry within the window succeeded
+
+
+# --- Canonical job observability: state box + missed-day notification (mirrors _run_backup) -----
+
+def _fresh_canonical_state() -> dict:
+    return {"last_success_date": None, "last_attempt_iso": None, "ok": None}
+
+
+def test_canonical_forecast_state_records_success(tmp_path):
+    store = HistoryStore(str(tmp_path / "ems.sqlite"))
+    cache = CacheStore(str(tmp_path / "ems.sqlite"))
+    now_local = datetime(2026, 7, 10, 18, 30, tzinfo=_AMS)
+    state = _fresh_canonical_state()
+
+    async def run():
+        await store.init()
+        await asyncio.to_thread(cache.init)
+        await _run_canonical_forecast(
+            store, cache, now_local, _AMS, solar_slots=_mock_solar(now_local).slots(),
+            solar_source_name="MockSolar", load_profile=_flat_profile(500.0), state=state)
+    asyncio.run(run())
+
+    assert state["ok"] is True
+    assert state["last_success_date"] == "2026-07-11"
+    assert state["last_attempt_iso"] == now_local.isoformat()
+
+
+def test_canonical_forecast_state_retry_then_success(tmp_path):
+    # Mirrors test_canonical_write_failure_retries_then_excluded_after_20, but asserting on the
+    # OBSERVABILITY state box instead of the ledger: a failed attempt marks ok=False without
+    # touching last_success_date; a later in-window retry that succeeds flips both.
+    boom = _LedgerBoomStore(str(tmp_path / "ems.sqlite"))
+    good = HistoryStore(str(tmp_path / "ems.sqlite"))  # same file, working ledger_append
+    cache = CacheStore(str(tmp_path / "ems.sqlite"))
+    now_local = datetime(2026, 7, 10, 18, 30, tzinfo=_AMS)
+    state = _fresh_canonical_state()
+
+    async def run():
+        await boom.init()
+        await asyncio.to_thread(cache.init)
+        await _run_canonical_forecast(
+            boom, cache, now_local, _AMS, solar_slots=[], solar_source_name="x",
+            load_profile=_flat_profile(500.0), state=state)
+        after_fail = dict(state)
+        await _run_canonical_forecast(
+            good, cache, now_local + timedelta(minutes=30), _AMS, solar_slots=[],
+            solar_source_name="x", load_profile=_flat_profile(500.0), state=state)
+        return after_fail
+
+    after_fail = asyncio.run(run())
+    assert after_fail == {"last_success_date": None, "last_attempt_iso": now_local.isoformat(),
+                          "ok": False}
+    assert state["ok"] is True
+    assert state["last_success_date"] == "2026-07-11"
+
+
+def test_canonical_forecast_missed_day_sends_notification_once(tmp_path):
+    # The window closing (>= 20:00) with no success recorded for tomorrow marks the state box
+    # ok=False and sends exactly one `canonical_missed` notification for that day, even across
+    # repeated cycles the same evening (Notifier's own dedupe_key, mirroring backup_failed).
+    store = HistoryStore(str(tmp_path / "ems.sqlite"))
+    notifier = Notifier(store, {"notify.ntfy_url": "", "notify.ntfy_topic": ""})
+    state = _fresh_canonical_state()
+    after_20 = datetime(2026, 7, 10, 20, 30, tzinfo=_AMS)
+
+    async def run():
+        await store.init()
+        await _run_canonical_forecast(
+            store, None, after_20, _AMS, solar_slots=[], solar_source_name="x",
+            load_profile=None, state=state, notifier=notifier)
+        await _run_canonical_forecast(
+            store, None, after_20 + timedelta(minutes=15), _AMS, solar_slots=[],
+            solar_source_name="x", load_profile=None, state=state, notifier=notifier)
+        return await store.notifications_between(
+            "2020-01-01T00:00:00+00:00", "2030-01-01T00:00:00+00:00")
+
+    rows = asyncio.run(run())
+    assert state["ok"] is False
+    assert len(rows) == 1
+    assert rows[0]["key"] == "canonical_missed"
+
+
+def test_canonical_forecast_success_before_20_suppresses_missed_notification(tmp_path):
+    # A day that DID get its canonical snapshot before 20:00 must not be flagged missed later the
+    # same evening, and no notification is sent.
+    store = HistoryStore(str(tmp_path / "ems.sqlite"))
+    cache = CacheStore(str(tmp_path / "ems.sqlite"))
+    notifier = Notifier(store, {"notify.ntfy_url": "", "notify.ntfy_topic": ""})
+    state = _fresh_canonical_state()
+    now_local = datetime(2026, 7, 10, 18, 30, tzinfo=_AMS)
+
+    async def run():
+        await store.init()
+        await asyncio.to_thread(cache.init)
+        await _run_canonical_forecast(
+            store, cache, now_local, _AMS, solar_slots=_mock_solar(now_local).slots(),
+            solar_source_name="MockSolar", load_profile=_flat_profile(500.0),
+            state=state, notifier=notifier)
+        await _run_canonical_forecast(
+            store, cache, datetime(2026, 7, 10, 20, 30, tzinfo=_AMS), _AMS, solar_slots=[],
+            solar_source_name="x", load_profile=None, state=state, notifier=notifier)
+        return await store.notifications_between(
+            "2020-01-01T00:00:00+00:00", "2030-01-01T00:00:00+00:00")
+
+    rows = asyncio.run(run())
+    assert state["ok"] is True
+    assert rows == []
 
 
 def test_canonical_ledger_rows_builder_is_pure_dst_aware():

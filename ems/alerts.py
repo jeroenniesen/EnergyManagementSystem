@@ -90,7 +90,7 @@ def derive_alerts(
             "Watch-only mode — EMS observes and advises but won't change the battery.",
             safe="Yes — in this mode EMS only observes; it never writes to the battery.",
             action="Nothing needed — this is expected while you're evaluating EMS. Turn off "
-                   "dry-run in Settings when you're ready for it to act.",
+                   "dry-run in Manage → Settings when you're ready for it to act.",
         ))
     for sig, state in sorted(freshness.items()):
         if state in ("missing", "stale"):

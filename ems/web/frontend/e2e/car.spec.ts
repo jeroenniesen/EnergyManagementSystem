@@ -266,6 +266,35 @@ test.describe("Car view", () => {
     await expect(page.getByTestId("car-view")).toBeVisible();
     await expect(page.getByTestId("car-window-row").first()).toBeVisible();
   });
+
+  // The compact dashboard card stays headless when the feature is off (covered in ui.spec.ts) —
+  // but the full Car tab must not be left blank on a fresh install with no clue why.
+  test("the full Car view shows an honest enable-it card when the charge planner is off", async ({
+    page,
+  }) => {
+    await page.route("**/api/car/plan", (route) =>
+      route.fulfill({
+        status: 200, contentType: "application/json",
+        body: JSON.stringify({ enabled: false, plan: null, soc: null }),
+      }));
+    await page.goto("/");
+    await page.getByTestId("nav-car").click();
+    await expect(page.getByTestId("car-view")).toBeVisible();
+
+    const card = page.getByTestId("car-card-disabled");
+    await expect(card).toBeVisible();
+    await expect(card).toContainText("The charge planner is off");
+    await expect(card).toContainText("Show best-time-to-charge card");
+
+    // Its button lands on Manage → Settings, deep-linked straight to the Car section — not just
+    // the Settings tab in general.
+    const link = page.getByTestId("car-enable-settings-link");
+    await expect(link).toBeVisible();
+    await link.click();
+    await expect(page.getByTestId("manage-tab-settings")).toHaveAttribute("aria-selected", "true");
+    await expect(page.getByTestId("group-ev")).toHaveAttribute("aria-current", "page");
+    await expect(page.getByTestId("field-ev.advice_enabled")).toBeVisible();
+  });
 });
 
 // "While the car charges" battery-mode section (feat/car-charge-modes): the home-BATTERY's

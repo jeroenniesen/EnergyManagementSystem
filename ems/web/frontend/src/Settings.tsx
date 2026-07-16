@@ -326,7 +326,17 @@ function SolarConfidenceHint({
   );
 }
 
-export function Settings({ onSaved }: { onSaved?: (values: Values) => void } = {}) {
+export function Settings({
+  onSaved,
+  initialSection,
+}: {
+  onSaved?: (values: Values) => void;
+  // Deep-link: open this section on mount (e.g. System's "solar" health action → "planner", or
+  // Car's "Manage → Settings → Car" → "ev"). Runtime state only — reuses the same openSection
+  // machinery a sidebar click uses, so it needs no hash segment of its own (CLAUDE.md: keep the
+  // canonical #manage/settings hash simple).
+  initialSection?: string;
+} = {}) {
   const [schema, setSchema] = useState<SettingField[] | null>(null);
   const [values, setValues] = useState<Values>({});
   const [edited, setEdited] = useState<Values>({});
@@ -382,6 +392,14 @@ export function Settings({ onSaved }: { onSaved?: (values: Values) => void } = {
     return () => {
       alive = false;
     };
+  }, []);
+
+  // Deep-link on mount: open the requested section straight away (no extra click), reusing the
+  // exact openSection() a sidebar click would call — same mobileList/highlight behaviour. Runs
+  // once; later navigation is owned by the user's own clicks, not this prop.
+  useEffect(() => {
+    if (initialSection) openSection(initialSection);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   // Best-effort advisory fetch — hide the hint entirely on error or when there's not yet enough

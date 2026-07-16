@@ -392,6 +392,16 @@ def _canonical_ledger_rows(
     return rows
 
 
+# Calm B-37 shape for the "the 18:00 job never ran/never succeeded" notification: what happened +
+# the battery is safe + what EMS still does automatically. Sent at most once per missed day.
+_CANONICAL_MISSED_BODY = (
+    "Tonight's day-ahead solar + load snapshot (18:00-20:00) didn't complete, so tomorrow has no "
+    "canonical forecast to score against — nothing else is affected: your plan still runs on the "
+    "live forecast as normal, and the battery is unaffected. If this keeps happening, check the "
+    "System page for recent errors."
+)
+
+
 async def _run_canonical_forecast(
     store: HistoryStore | None,
     cache_store: CacheStore | None,
@@ -402,6 +412,8 @@ async def _run_canonical_forecast(
     solar_source_name: str,
     load_profile: Any,
     load_band: float = _LOAD_BAND_FRACTION,
+    state: dict[str, Any] | None = None,
+    notifier: Notifier | None = None,
 ) -> int | None:
     """Persist the canonical day-ahead solar + load forecast for tomorrow (design §4.3). Mirrors
     `_run_weekly_digest`'s shape — a plain, directly-testable gate + dedupe + write, NOT a closure.
@@ -413,17 +425,42 @@ async def _run_canonical_forecast(
     DEDUPE: `ledger:canonical:<tomorrow>` in `cache_store` — once tomorrow's snapshot is written it
     is skipped for the rest of the evening. `ledger_append`'s first-write-wins is a second safety
     net. Returns the row count written, or None when it didn't fire (gate closed, deduped, or no
-    store). Never raises — a snapshot hiccup must not take down the notify loop."""
+    store). Never raises — a snapshot hiccup must not take down the notify loop.
+
+    OBSERVABILITY (mirrors `_run_backup`'s `state` box — this job is otherwise invisible when
+    dead): when `state` is given, every write attempt inside the window records `last_attempt_iso`,
+    and either outcome (success, a cache-dedupe hit that proves an earlier attempt this evening
+    already succeeded, or a raised exception) sets `ok` + (on success) `last_success_date` (the
+    target day's ISO date). Once the window has closed (>= 20:00) with no recorded success for
+    tomorrow, `ok` is set `False` and — best-effort, via `notifier` — a calm `canonical_missed`
+    notification is sent, deduped per target day so a job that's been dead for a while doesn't spam
+    (mirrors `_run_backup`'s `backup_failed`). Both `state` and `notifier` default to `None` so
+    existing callers/tests are unaffected."""
     if store is None:
         return None
     now_local = now.astimezone(tz)
-    if now_local.hour < 18 or now_local.hour >= 20:  # window [18:00, 20:00)
-        return None
     tomorrow = now_local.date() + timedelta(days=1)
+    if now_local.hour < 18:
+        return None
+    if now_local.hour >= 20:  # window closed — did tomorrow ever get a successful snapshot?
+        if state is not None and state.get("last_success_date") != tomorrow.isoformat():
+            state["ok"] = False
+            if notifier is not None:
+                await notifier.send(
+                    "canonical_missed", "Tomorrow's forecast snapshot is missing",
+                    _CANONICAL_MISSED_BODY,
+                    dedupe_key=f"canonical_missed:{tomorrow.isoformat()}",
+                )
+        return None
+    if state is not None:
+        state["last_attempt_iso"] = now.isoformat()
     dedupe_key = f"ledger:canonical:{tomorrow.isoformat()}"
     if cache_store is not None:
         try:
             if await asyncio.to_thread(cache_store.get, dedupe_key) is not None:
+                if state is not None:
+                    state["ok"] = True
+                    state["last_success_date"] = tomorrow.isoformat()
                 return None
         except Exception:
             _log.debug("canonical forecast dedupe read failed (non-fatal)", exc_info=True)
@@ -435,6 +472,8 @@ async def _run_canonical_forecast(
         await store.ledger_append(rows)
     except Exception:
         # Write failed — do NOT set the dedupe key, so the next cycle retries (until 20:00).
+        if state is not None:
+            state["ok"] = False
         _log.warning("canonical forecast write failed; will retry until 20:00 local (fail-safe)",
                      exc_info=True)
         return None
@@ -444,6 +483,9 @@ async def _run_canonical_forecast(
                 cache_store.set, dedupe_key, issued_at, _CANONICAL_DEDUPE_TTL_SECONDS)
         except Exception:
             _log.warning("canonical forecast dedupe write failed (non-fatal)", exc_info=True)
+    if state is not None:
+        state["ok"] = True
+        state["last_success_date"] = tomorrow.isoformat()
     _log.info("canonical forecast: wrote %d day-ahead rows (solar+load) for %s",
               len(rows), tomorrow.isoformat())
     return len(rows)
@@ -783,6 +825,14 @@ def create_app(
     _backup_state: dict[str, Any] = {
         "last_backup_ts": None, "last_backup_ok": None,
         "last_backup_size": None, "backups_kept": 0,
+    }
+    # Last 18:00 canonical-forecast job outcome (design §4.3), surfaced in /api/diagnostics
+    # alongside the backup state — the job is otherwise invisible when dead (a gap only shows up
+    # much later, in forecasts.csv or the accuracy surfaces). Mutated in place by
+    # _run_canonical_forecast; `ok=False` covers both a failed write and a day that closed (past
+    # 20:00) without ever succeeding.
+    _canonical_forecast_state: dict[str, Any] = {
+        "last_success_date": None, "last_attempt_iso": None, "ok": None,
     }
     # Notification outbox (B-20): built from the SAME history store + the live settings cache, so
     # a just-saved ntfy url/topic applies to the very next send without a restart. None when no
@@ -2189,13 +2239,20 @@ def create_app(
     async def _run_canonical_forecast_cycle(now: datetime) -> None:
         """Gather the live solar forecast + the learned baseline load profile and hand them to
         `_run_canonical_forecast` (the 18:00 day-ahead canonical snapshot, design §4.3). Cheap
-        gate FIRST — outside the [18:00, 20:00) window, or once tomorrow's snapshot is already
-        written, it skips the profile/forecast gather entirely so it isn't rebuilt every cycle.
-        Fail-safe — a gather error is logged, never propagated."""
+        gate FIRST — outside [18:00, 20:00) the (possibly expensive) profile/forecast gather is
+        skipped; past 20:00 `_run_canonical_forecast` is still called (with empty/placeholder
+        gathered inputs it will never use) purely so it can record a missed day in
+        `_canonical_forecast_state` / notify — see that function's OBSERVABILITY note. Fail-safe —
+        a gather error is logged, never propagated."""
         if store is None:
             return
         now_local = now.astimezone(site_tz)
-        if now_local.hour < 18 or now_local.hour >= 20:
+        if now_local.hour < 18:
+            return
+        if now_local.hour >= 20:
+            await _run_canonical_forecast(
+                store, cache_store, now, site_tz, solar_slots=[], solar_source_name="",
+                load_profile=None, state=_canonical_forecast_state, notifier=notifier)
             return
         tomorrow = now_local.date() + timedelta(days=1)
         if cache_store is not None:
@@ -2203,7 +2260,12 @@ def create_app(
                 if await asyncio.to_thread(
                     cache_store.get, f"ledger:canonical:{tomorrow.isoformat()}"
                 ) is not None:
-                    return  # already snapshotted tomorrow today — don't rebuild the profile
+                    # Already snapshotted tomorrow today — don't rebuild the profile, but the
+                    # state box should still reflect the success (it may have already been set by
+                    # an earlier cycle, but a fresh restart starts with last_success_date=None).
+                    _canonical_forecast_state["ok"] = True
+                    _canonical_forecast_state["last_success_date"] = tomorrow.isoformat()
+                    return
             except Exception:
                 _log.debug("canonical forecast dedupe pre-check failed (non-fatal)", exc_info=True)
         drows = await store.recent_derived(2016)  # ~7 days of derived history for the profile
@@ -2214,7 +2276,8 @@ def create_app(
         source_name = type(solar_forecast).__name__ if solar_forecast is not None else "none"
         await _run_canonical_forecast(
             store, cache_store, now, site_tz, solar_slots=solar_slots,
-            solar_source_name=source_name, load_profile=profile)
+            solar_source_name=source_name, load_profile=profile,
+            state=_canonical_forecast_state, notifier=notifier)
 
     async def _notify_loop(stop: asyncio.Event) -> None:
         """Periodic forecast-driven notifications (BACKLOG B-75) + the Sunday weekly-digest
@@ -2510,6 +2573,9 @@ def create_app(
             # a silently-failing backup is visible alongside DB size. Copied out of the loop's box.
             if storage is not None:
                 storage["backup"] = dict(_backup_state)
+                # 18:00 canonical-forecast job status (design §4.3) — a dead job is otherwise
+                # invisible until a gap shows up in forecasts.csv or the accuracy surfaces.
+                storage["canonical_forecast"] = dict(_canonical_forecast_state)
         return {"overall": overall_status(checks), "checks": [c.to_dict() for c in checks],
                 "cache": cache_stats, "readiness": readiness, "storage": storage,
                 "recorder": recorder.health() if recorder is not None else None}
