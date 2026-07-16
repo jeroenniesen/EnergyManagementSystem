@@ -194,6 +194,54 @@ public struct APIClient: Sendable {
         return try JSONDecoder.ems.decode(CarSocResponse.self, from: data).soc
     }
 
+    // Detected EV charging sessions (GET /api/car/sessions), newest-first, for the Car tab's
+    // history table. Read-only: the server returns an empty list (never an error) when there is no
+    // history or no charging in the window.
+    public func fetchCarSessions(days: Int = 14) async throws -> CarSessionsResponse {
+        try await get("api/car/sessions?days=\(days)", as: CarSessionsResponse.self)
+    }
+
+    // Static car database (GET /api/cars) for the picker — read-only and cacheable.
+    public func fetchCars() async throws -> CarsResponse {
+        try await get("api/cars", as: CarsResponse.self)
+    }
+
+    // Effective settings (GET /api/settings) — the `values` map only (the Car tab renders fixed
+    // native controls, not the schema-driven form). Decoded with a PLAIN decoder (not `.ems`) so
+    // the dotted, snake_case setting keys ("control.car_charging_battery_mode", "ev.schedule") are
+    // preserved verbatim — `.convertFromSnakeCase` would mangle them into camelCase and break
+    // key lookups. Auth (401) surfaces as APIClientError like every other request.
+    public func fetchSettings() async throws -> [String: JSONValue] {
+        var request = URLRequest(url: url("api/settings"))
+        request.httpMethod = "GET"
+        if let token, !token.isEmpty {
+            request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        }
+        let (data, response) = try await transport.data(for: request)
+        guard (200 ..< 300).contains(response.statusCode) else {
+            throw APIClientError.httpStatus(response.statusCode)
+        }
+        return try JSONDecoder().decode(SettingsEnvelope.self, from: data).values
+    }
+
+    // Save only the changed setting keys (POST /api/settings) — the app's first settings write,
+    // following setCarSoc's POST pattern (bearer token rides automatically; audit-logged
+    // server-side). Encoded with a PLAIN encoder so the literal keys are sent verbatim (no
+    // snake-case conversion). Non-2xx (401 unauthorised, 422 rejected) surfaces as APIClientError.
+    public func postSettings(_ changes: [String: JSONValue]) async throws {
+        var request = URLRequest(url: baseURL.appending(path: "api/settings"))
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        if let token, !token.isEmpty {
+            request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        }
+        request.httpBody = try JSONEncoder().encode(changes)
+        let (_, response) = try await transport.data(for: request)
+        guard (200 ..< 300).contains(response.statusCode) else {
+            throw APIClientError.httpStatus(response.statusCode)
+        }
+    }
+
     private func get<T: Decodable>(_ path: String, as type: T.Type) async throws -> T {
         var request = URLRequest(url: url(path))
         request.httpMethod = "GET"
@@ -247,4 +295,10 @@ private struct CarSocRequest: Encodable {
 
 private struct CarSocResponse: Decodable {
     let soc: CarSoc?
+}
+
+// GET /api/settings returns {schema, values}; the Car tab only needs `values`. Decoded with a
+// plain decoder so the dictionary keys stay verbatim (see fetchSettings).
+private struct SettingsEnvelope: Decodable {
+    let values: [String: JSONValue]
 }
