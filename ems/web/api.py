@@ -1443,12 +1443,20 @@ def create_app(
         _now, _prices, plan = pp
         strat, _why = _resolve_strategy(now)
         intent, *_rest = _effective_intent(now)
+        # plan_version (created_at = the plan's EPOCH identity) + floor_soc (the current slot's
+        # reserve floor) feed the intent-aware follow-through scorer (plan_execution_error):
+        # without the epoch key, abandoned day-ahead targets collide with later rolling plans on
+        # identical deadline strings; without the floor, discharge/hold deadlines are unscorable
+        # and fall out as "insufficient evidence" instead of being mis-scored as charge misses.
+        slot = plan.intent_at(now)
         return {
             "strategy": strat,
             "target_soc": plan.target_soc,
             "deadline": plan.deadline.isoformat() if plan.deadline else None,
             "soc_pct": _current_soc(now),
             "intent": str(intent) if intent is not None else None,
+            "plan_version": plan.created_at.isoformat(),
+            "floor_soc": slot.floor_soc if slot is not None else None,
         }
 
     if recorder is not None:

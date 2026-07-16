@@ -265,6 +265,69 @@ def test_record_plan_roundtrip_via_plan_history_between(tmp_path):
     assert rows[1]["soc_pct"] == 58.0
 
 
+def test_record_plan_roundtrips_commitment_columns(tmp_path):
+    # plan_version + floor_soc (the intent-aware follow-through scorer's inputs) round-trip when a
+    # snapshot carries them; a snapshot without them still stores None (backward compatible).
+    store = HistoryStore(str(tmp_path / "ems.sqlite"))
+
+    async def run():
+        await store.init()
+        await store.record_plan("2026-06-28T10:00:00+00:00", {
+            "strategy": "summer", "target_soc": 55.0, "deadline": "2026-06-28T21:00:00+00:00",
+            "soc_pct": 40.0, "intent": "discharge_for_load",
+            "plan_version": "epoch-7", "floor_soc": 10.0,
+        })
+        await store.record_plan("2026-06-28T10:15:00+00:00", {"strategy": "summer"})  # no commit
+        return await store.plan_history_between(
+            "2026-06-28T00:00:00+00:00", "2026-06-29T00:00:00+00:00")
+
+    rows = asyncio.run(run())
+    assert rows[0]["plan_version"] == "epoch-7"
+    assert rows[0]["floor_soc"] == 10.0
+    assert rows[1]["plan_version"] is None and rows[1]["floor_soc"] is None
+
+
+def test_plan_history_gains_commitment_columns_on_an_existing_db(tmp_path):
+    # An EXISTING db whose plan_history predates the commitment columns must gain them on init
+    # (idempotent ALTER) without dropping its legacy rows — and those legacy rows read back with
+    # plan_version/floor_soc = None so the scorer's fallback path handles them.
+    import aiosqlite
+    path = str(tmp_path / "ems.sqlite")
+
+    async def run():
+        async with aiosqlite.connect(path) as db:  # pre-migration shape (raw_samples => "existing")
+            await db.execute(
+                "CREATE TABLE raw_samples (ts TEXT NOT NULL, grid_power_w REAL NOT NULL, "
+                "solar_power_w REAL NOT NULL, battery_power_w REAL NOT NULL, "
+                "ev_power_w REAL NOT NULL, soc_pct REAL NOT NULL)")
+            await db.execute(
+                "CREATE TABLE derived_samples (ts TEXT NOT NULL, house_load_w REAL NOT NULL, "
+                "non_ev_load_w REAL NOT NULL)")
+            await db.execute(
+                "CREATE TABLE plan_history (ts TEXT NOT NULL, strategy TEXT, target_soc REAL, "
+                "deadline TEXT, soc_pct REAL, intent TEXT)")  # OLD 6-column shape
+            await db.execute(
+                "INSERT INTO plan_history (ts, strategy, target_soc, deadline, soc_pct, intent) "
+                "VALUES ('2026-06-28T10:00:00+00:00','winter',80.0,"
+                "'2026-06-28T18:00:00+00:00',55.0,'grid_charge_to_target')")
+            await db.commit()
+
+        store = HistoryStore(path)
+        await store.init()  # must ALTER-add plan_version + floor_soc, preserving the legacy row
+        await store.record_plan("2026-06-28T10:15:00+00:00", {
+            "strategy": "winter", "target_soc": 80.0, "deadline": "2026-06-28T18:00:00+00:00",
+            "soc_pct": 58.0, "intent": "discharge_for_load",
+            "plan_version": "epoch-1", "floor_soc": 10.0})
+        return await store.plan_history_between(
+            "2026-06-28T00:00:00+00:00", "2026-06-29T00:00:00+00:00")
+
+    rows = asyncio.run(run())
+    assert len(rows) == 2
+    assert rows[0]["target_soc"] == 80.0  # legacy row preserved
+    assert rows[0]["plan_version"] is None and rows[0]["floor_soc"] is None
+    assert rows[1]["plan_version"] == "epoch-1" and rows[1]["floor_soc"] == 10.0
+
+
 def test_record_plan_missing_keys_default_to_none(tmp_path):
     store = HistoryStore(str(tmp_path / "ems.sqlite"))
 

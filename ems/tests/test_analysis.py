@@ -227,12 +227,101 @@ def test_recommend_empty_input_returns_none():
     assert recommend_solar_confidence([], []) is None
 
 
+# ---- recommend_solar_confidence: day-by-day STABILITY gate (production hardening) ----
+# The p25 recommendation flips day-to-day when the forecast bias is noisy; a "chase this number"
+# nudge is only surfaced once the daily recomputations agree within ±5pp. These fixtures span
+# several UTC days so `_daily_recommendations` has one cumulative recommendation per day-end.
+
+def _multi_day_daytime(
+    day_ratios: list[float], *, slots_per_day: int = 48, p50: float = 1000.0
+) -> tuple[list[dict], list[dict]]:
+    """Matched daytime rows across len(day_ratios) consecutive UTC days: `slots_per_day` 15-min
+    daytime slots each (06:00→ that day), with actual = day_ratios[d] * p50 for every slot of day d
+    (a constant per-day ratio keeps the cumulative p25 easy to reason about)."""
+    forecasts: list[dict] = []
+    raw: list[dict] = []
+    for d, ratio in enumerate(day_ratios):
+        base = datetime.fromisoformat("2026-06-01T06:00:00+00:00") + timedelta(days=d)
+        for i in range(slots_per_day):
+            s = (base + timedelta(minutes=15 * i)).isoformat()
+            forecasts.append(_forecast_row(s, p50 * 0.5, p50, p50 * 1.5))
+            raw.append(_raw_row(s, ratio * p50))
+    return forecasts, raw
+
+
+def test_recommend_stable_when_daily_recommendations_all_agree():
+    # Five days of a steady 0.85 ratio -> the daily recomputation is 85% every day -> spread 0.
+    forecasts, raw = _multi_day_daytime([0.85, 0.85, 0.85, 0.85, 0.85])
+    out = recommend_solar_confidence(forecasts, raw, current_pct=95.0)
+    assert out["recommended_pct"] == 85.0
+    assert out["recent_recommendations"] == [85.0, 85.0, 85.0, 85.0, 85.0]
+    assert out["window_days"] == 5
+    assert out["spread_pp"] == 0.0
+    assert out["stable"] is True
+
+
+def test_recommend_unstable_when_daily_recommendations_flip_beyond_tolerance():
+    # 0.9,0.9 then a 0.8 day pulls the cumulative p25 from 90% down to 80% -> spread 10pp > 5.
+    forecasts, raw = _multi_day_daytime([0.9, 0.9, 0.8])
+    out = recommend_solar_confidence(forecasts, raw, current_pct=70.0)
+    assert out["recent_recommendations"] == [90.0, 90.0, 80.0]
+    assert out["spread_pp"] == 10.0
+    assert out["stable"] is False
+
+
+def test_recommend_spread_exactly_5pp_is_stable_inclusive_boundary():
+    # 0.9,0.9 then a 0.85 day moves the cumulative p25 to 85% -> spread exactly 5pp -> stable.
+    forecasts, raw = _multi_day_daytime([0.9, 0.9, 0.85])
+    out = recommend_solar_confidence(forecasts, raw)
+    assert out["recent_recommendations"] == [90.0, 90.0, 85.0]
+    assert out["spread_pp"] == 5.0
+    assert out["stable"] is True
+
+
+def test_recommend_too_few_daily_points_is_unstable_with_null_spread():
+    # A single UTC day carries enough slots for the main recommendation but only ONE daily
+    # recomputation — not enough to judge stability, so hold (stable False, spread None).
+    forecasts, raw = _multi_day_daytime([0.85])
+    out = recommend_solar_confidence(forecasts, raw)
+    assert out["recommended_pct"] == 85.0  # the main read still works
+    assert out["window_days"] == 1
+    assert out["recent_recommendations"] == [85.0]
+    assert out["spread_pp"] is None
+    assert out["stable"] is False
+
+
+def test_recommend_last_daily_recommendation_equals_the_live_recommendation():
+    # The cumulative day-by-day recomputation to the final day-end uses the same slots as the
+    # full-window read, so the last daily value must equal recommended_pct (no drift between them).
+    forecasts, raw = _multi_day_daytime([0.7, 0.75, 0.72, 0.7])
+    out = recommend_solar_confidence(forecasts, raw)
+    assert out["recent_recommendations"][-1] == out["recommended_pct"]
+
+
 # ---- plan_execution_error: deadline-aware target_soc-vs-achieved-SoC scoring ----
 
 def _plan_row(ts: str, *, target: float | None = None, deadline: str | None = None,
-              soc: float | None = None) -> dict:
+              soc: float | None = None, intent: str = "grid_charge_to_target",
+              plan_version: str | None = None, floor: float | None = None) -> dict:
+    # Mirrors a plan_history_between row: `plan_version`/`floor_soc` are None on legacy rows
+    # written before the plan-commitment migration (the scorer then falls back to raw-deadline
+    # grouping and can't score reserve adherence for them).
     return {"ts": ts, "strategy": "winter", "target_soc": target, "deadline": deadline,
-            "soc_pct": soc, "intent": "grid_charge_to_target"}
+            "soc_pct": soc, "intent": intent, "plan_version": plan_version, "floor_soc": floor}
+
+
+def _epoch_rows(plan_version: str, deadline: str, *, intent: str, target: float, floor: float,
+                achieved: float, commit_soc: float = 50.0) -> list[dict]:
+    """One committed plan EPOCH (new-format rows): a commit snapshot 5 min BEFORE `deadline` (so
+    the epoch's last snapshot is fresh -> 'live', not replanned away) carrying the committed
+    (target, deadline, floor, intent) under `plan_version`, plus a plain achieved sample 5 min
+    AFTER the deadline (inside the grace window). `deadline` is an ISO string."""
+    dl = datetime.fromisoformat(deadline)
+    return [
+        _plan_row((dl - timedelta(minutes=5)).isoformat(), target=target, floor=floor,
+                  deadline=deadline, soc=commit_soc, intent=intent, plan_version=plan_version),
+        _plan_row((dl + timedelta(minutes=5)).isoformat(), soc=achieved),  # achieved sample
+    ]
 
 
 def test_plan_execution_error_hand_computed_across_three_deadlines():
@@ -351,6 +440,141 @@ def test_plan_execution_error_ignores_rows_missing_target_or_deadline():
         _plan_row("2026-06-01T18:00:00+00:00", deadline="2026-06-01T18:00:00+00:00", soc=60.0),
     ]
     assert plan_execution_error(rows, tz=UTC) is None
+
+
+# ---- plan_execution_error: INTENT-AWARE scoring + plan-epoch grouping (follow-through fix) ----
+# The naive read scored the overnight discharge trajectory against a horizon charge target and
+# deduped by the raw (rolling) deadline string, reporting a false ~28% hit rate. These turn the
+# two worked examples from the follow-through investigation into regression tests.
+
+def test_overnight_discharge_scored_against_reserve_floor_not_charge_target():
+    # Worked example 1: the house runs on the battery overnight (SoC deliberately FALLS), and each
+    # rolling deadline still carries a horizon charge target of 80%. The old rule scored the ~26-30%
+    # overnight SoC against 80% -> a big "miss"; the plan's real promise for a discharge slot is to
+    # stay above the 10% reserve floor, which it did with a huge margin -> a hit every night.
+    rows: list[dict] = []
+    for d, achieved in enumerate((26.0, 30.0, 28.0)):
+        rows += _epoch_rows(f"night_{d}", f"2026-07-{11 + d:02d}T07:00:00+00:00",
+                            intent="discharge_for_load", target=80.0, floor=10.0,
+                            achieved=achieved)
+    out = plan_execution_error(rows, tz=UTC)
+    assert out is not None
+    # errors vs. the 10% floor: 16, 20, 18 -> mean/mae 18.0, all hits.
+    assert out["reserve"] == {"n_deadlines": 3, "mean_error_pp": 18.0, "mae_pp": 18.0,
+                              "hit_rate_pct": 100.0}
+    assert out["commitments"] is None  # no charge commitment in the window
+    assert out["n_deadlines"] == 3
+    assert out["hit_rate_pct"] == 100.0  # NOT the ~0% the old target-based rule would report
+
+
+def test_epoch_collision_abandoned_day_ahead_target_is_not_scored():
+    # Worked example 2 (07-11 -> 07-12): a plan recorded on the EVENING of 07-11 committed to
+    # charging to 90% by 2026-07-12T21:30 (epoch A), then was abandoned ~24.5h before that slot.
+    # The NEXT evening's rolling plan (epoch B) re-emitted the IDENTICAL deadline string with a
+    # discharge intent. Grouping by raw deadline string scored 07-12's evening SoC (~50%) against
+    # epoch A's abandoned 90% charge target -> a false commitment miss. Grouping by plan epoch drops
+    # the stale epoch A and scores only the live plans.
+    ghost = [  # epoch A — abandoned day-ahead charge commitment (last seen 07-11 21:00, stale ~24h)
+        _plan_row("2026-07-11T20:00:00+00:00", target=90.0, floor=10.0,
+                  deadline="2026-07-12T21:30:00+00:00", soc=70.0,
+                  intent="grid_charge_to_target", plan_version="A_dayahead_0711"),
+        _plan_row("2026-07-11T21:00:00+00:00", target=90.0, floor=10.0,
+                  deadline="2026-07-12T21:30:00+00:00", soc=72.0,
+                  intent="grid_charge_to_target", plan_version="A_dayahead_0711"),
+    ]
+    live: list[dict] = []
+    # live discharge plans, the first re-using epoch A's exact deadline string.
+    for d, achieved in enumerate((50.0, 49.0, 48.0)):
+        live += _epoch_rows(f"live_{d}", f"2026-07-{12 + d:02d}T21:30:00+00:00",
+                           intent="discharge_for_load", target=90.0, floor=45.0, achieved=achieved)
+    out = plan_execution_error(ghost + live, tz=UTC)
+    assert out is not None
+    assert out["commitments"] is None  # the abandoned 90% charge target is NOT scored as a miss
+    # only the three live discharge deadlines score (50/49/48 vs. the 45% floor -> 5/4/3, all hits).
+    assert out["reserve"] == {"n_deadlines": 3, "mean_error_pp": 4.0, "mae_pp": 4.0,
+                              "hit_rate_pct": 100.0}
+    assert out["n_deadlines"] == 3
+
+
+def test_reserve_breach_below_floor_minus_2pp_is_a_miss():
+    # A reserve deadline is a MISS when SoC drops below floor - 2pp: night 1 lands at 6% under a 10%
+    # floor (below the 8% tolerance) -> miss; the other two hold well above -> hits. 2/3 kept.
+    rows: list[dict] = []
+    for d, achieved in enumerate((6.0, 50.0, 48.0)):
+        rows += _epoch_rows(f"night_{d}", f"2026-07-{11 + d:02d}T21:30:00+00:00",
+                            intent="discharge_for_load", target=90.0, floor=10.0, achieved=achieved)
+    out = plan_execution_error(rows, tz=UTC)
+    assert out["reserve"]["n_deadlines"] == 3
+    assert out["reserve"]["hit_rate_pct"] == 66.7
+
+
+def test_per_class_breakdown_separates_commitments_from_reserve():
+    rows: list[dict] = []
+    for d, achieved in enumerate((82.0, 81.0, 83.0)):  # 3 charge commitments, reach the 80% target
+        rows += _epoch_rows(f"chg_{d}", f"2026-05-0{d + 1}T18:00:00+00:00",
+                           intent="grid_charge_to_target", target=80.0, floor=10.0,
+                           achieved=achieved)
+    for d, achieved in enumerate((50.0, 49.0, 48.0)):  # 3 reserve deadlines, above the 45% floor
+        rows += _epoch_rows(f"res_{d}", f"2026-05-0{d + 1}T22:00:00+00:00",
+                           intent="discharge_for_load", target=90.0, floor=45.0, achieved=achieved)
+    out = plan_execution_error(rows, tz=UTC)
+    assert out["commitments"]["n_deadlines"] == 3
+    assert out["commitments"]["hit_rate_pct"] == 100.0
+    assert out["reserve"]["n_deadlines"] == 3
+    assert out["reserve"]["hit_rate_pct"] == 100.0
+    assert out["n_deadlines"] == 6  # combined headline spans both classes
+
+
+def test_commitment_class_below_min_deadlines_is_insufficient_evidence():
+    # One lone charge commitment can't support a rate (report rec 3): commitments -> None, while the
+    # reserve class has enough evidence. The combined read still returns (>= 3 deadlines overall).
+    rows = _epoch_rows("chg", "2026-05-01T18:00:00+00:00", intent="grid_charge_to_target",
+                       target=80.0, floor=10.0, achieved=82.0)
+    for d, achieved in enumerate((50.0, 49.0, 48.0)):
+        rows += _epoch_rows(f"res_{d}", f"2026-05-0{d + 1}T22:00:00+00:00",
+                           intent="discharge_for_load", target=90.0, floor=45.0, achieved=achieved)
+    out = plan_execution_error(rows, tz=UTC)
+    assert out["commitments"] is None
+    assert out["reserve"]["n_deadlines"] == 3
+    assert out["n_deadlines"] == 4
+
+
+def test_legacy_reserve_rows_without_floor_are_not_scored():
+    # Rows predating the floor_soc column (no plan_version, no floor) with a discharge intent can't
+    # be scored for reserve adherence -> they contribute nothing rather than being mis-scored
+    # against the charge target (the old bug). With only such rows there is honestly no evidence.
+    rows = [
+        _plan_row("2026-06-01T17:00:00+00:00", target=80.0,
+                  deadline="2026-06-01T18:00:00+00:00", soc=60.0, intent="discharge_for_load"),
+        _plan_row("2026-06-01T18:05:00+00:00", soc=30.0),
+        _plan_row("2026-06-02T17:00:00+00:00", target=80.0,
+                  deadline="2026-06-02T18:00:00+00:00", soc=60.0, intent="discharge_for_load"),
+        _plan_row("2026-06-02T18:05:00+00:00", soc=28.0),
+        _plan_row("2026-06-03T17:00:00+00:00", target=80.0,
+                  deadline="2026-06-03T18:00:00+00:00", soc=60.0, intent="discharge_for_load"),
+        _plan_row("2026-06-03T18:05:00+00:00", soc=26.0),
+    ]
+    assert plan_execution_error(rows, tz=UTC) is None
+
+
+def test_legacy_charge_rows_still_score_against_target_backward_compatible():
+    # Rows without plan_version/floor (legacy) but a charge intent keep scoring exactly as before:
+    # by deadline string, latest target before the deadline, achieved vs. target - 2pp.
+    rows = [
+        _plan_row("2026-06-01T17:00:00+00:00", target=70.0,
+                  deadline="2026-06-01T18:00:00+00:00", soc=60.0),
+        _plan_row("2026-06-01T18:05:00+00:00", soc=80.0),  # 80 - 70 = +10 hit
+        _plan_row("2026-06-02T17:00:00+00:00", target=80.0,
+                  deadline="2026-06-02T18:00:00+00:00", soc=72.0),
+        _plan_row("2026-06-02T18:05:00+00:00", soc=76.0),  # 76 - 80 = -4 miss
+        _plan_row("2026-06-03T17:00:00+00:00", target=90.0,
+                  deadline="2026-06-03T18:00:00+00:00", soc=82.0),
+        _plan_row("2026-06-03T18:05:00+00:00", soc=90.0),  # 90 - 90 = 0 hit
+    ]
+    out = plan_execution_error(rows, tz=UTC)
+    assert out["commitments"] == {"n_deadlines": 3, "mean_error_pp": 2.0, "mae_pp": 4.7,
+                                  "hit_rate_pct": 66.7}
+    assert out["reserve"] is None
 
 
 # ---- load_baseline_error: household load vs. a trailing day-of-week/hour baseline ----

@@ -1058,6 +1058,12 @@ def test_recorder_wiring_persists_a_plan_history_row_on_startup(tmp_path):
     assert len(rows) == 1
     assert rows[0]["strategy"] in ("summer", "winter")
     assert rows[0]["soc_pct"] == 55.0  # MockSource's steady-state SoC
+    # Epoch identity for the intent-aware follow-through scorer: created_at as ISO. Without it
+    # every row routes to the legacy raw-deadline-string grouping and cross-epoch collisions
+    # (the false-28% bug) come back.
+    assert rows[0]["plan_version"]
+    datetime.fromisoformat(rows[0]["plan_version"])
+    assert "floor_soc" in rows[0]  # present (may be None when the current slot sets no floor)
 
 
 def test_create_app_sets_plan_provider_when_recorder_passed(tmp_path):

@@ -55,16 +55,41 @@ type ModelHealth = {
   plan_execution: HealthStatusValue;
   notes: string[];
 };
-type SolarAdvice = { recommended_pct: number; current_pct: number | null } | null;
+// `stable` (production hardening): the advisor's p25 recommendation can flip day-to-day when the
+// forecast bias is noisy. When the backend reports `stable === false` we hold — same gate the
+// weekly digest applies — and the action line explains it instead of naming a number to chase.
+// Absent (older payload) reads as "not explicitly unstable", so the number is shown as before.
+type SolarAdvice = {
+  recommended_pct: number;
+  current_pct: number | null;
+  stable?: boolean;
+  spread_pp?: number | null;
+  window_days?: number;
+} | null;
 type Accuracy = {
   solar: { bias_w: number | null } | null;
   // The advisor's concrete suggestion — lets the solar action name the numbers instead of
   // sending the user hunting for "a calibrated setting" (production feedback).
   solar_advice?: SolarAdvice;
   load: { mape_pct: number | null } | null;
-  plan_execution: { hit_rate_pct: number | null } | null;
+  plan_execution: PlanExecution;
   health: ModelHealth;
 };
+
+// Intent-aware plan follow-through (follow-through fix). `hit_rate_pct` is the combined headline
+// (backward-compatible); `commitments` / `reserve` are the per-class breakdown — each `null` means
+// "insufficient evidence" (fewer than the per-class minimum of scorable deadlines), rendered
+// gracefully rather than as a misleading blended percentage. Both per-class keys are optional so
+// an older payload (headline only) still renders.
+type PlanClass = { hit_rate_pct: number; n_deadlines: number } | null;
+type PlanExecution =
+  | {
+      hit_rate_pct: number | null;
+      n_deadlines?: number;
+      commitments?: PlanClass;
+      reserve?: PlanClass;
+    }
+  | null;
 
 const HEALTH_ROW_ORDER: (keyof Omit<ModelHealth, "notes">)[] = ["solar", "load", "plan_execution"];
 
@@ -89,8 +114,17 @@ function headlineFor(row: keyof Omit<ModelHealth, "notes">, acc: Accuracy): stri
     const v = acc.load?.mape_pct;
     return v == null ? null : `${v}% MAPE`;
   }
-  const v = acc.plan_execution?.hit_rate_pct;
-  return v == null ? null : `${v}% hit rate`;
+  const pe = acc.plan_execution;
+  if (pe == null) return null;
+  // Prefer the per-class breakdown when the payload carries it: reserve-kept + commitments-kept,
+  // each reading "insufficient evidence" when that class is null (report rec 3). Fall back to the
+  // combined hit rate for an older payload that only has the headline number.
+  if (pe.commitments !== undefined || pe.reserve !== undefined) {
+    const fmt = (c: PlanClass, label: string) =>
+      c == null ? `${label}: insufficient evidence` : `${label} ${c.hit_rate_pct}% kept`;
+    return `${fmt(pe.reserve ?? null, "Reserve")} · ${fmt(pe.commitments ?? null, "Commitments")}`;
+  }
+  return pe.hit_rate_pct == null ? null : `${pe.hit_rate_pct}% hit rate`;
 }
 
 // A plain verdict for the solar row (B-37): replaces the technical diagnosis as the visible
@@ -159,7 +193,14 @@ function HealthActionLine({
   let { before, link, after, target, section } = HEALTH_ACTION[row];
   if (row === "solar") {
     // Name the numbers when the advisor has them; be honest when it doesn't yet.
-    if (solarAdvice?.recommended_pct != null) {
+    if (solarAdvice?.stable === false) {
+      // The recommendation is still moving day-to-day — hold rather than send the user chasing a
+      // number that changes next week (mirrors the weekly digest's stability gate).
+      before =
+        "The advisor's suggestion is still settling (it's been moving day to day), so we're " +
+        "holding off on a number for now — check back via ";
+      after = ".";
+    } else if (solarAdvice?.recommended_pct != null) {
       before =
         `The advisor suggests ${solarAdvice.recommended_pct}% solar confidence` +
         (solarAdvice.current_pct != null ? ` (you're at ${solarAdvice.current_pct}%)` : "") +
