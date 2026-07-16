@@ -356,6 +356,212 @@ def test_switch_cap_window_rolls_at_local_midnight_not_utc():
     assert reset.outcome == "applied"                           # counter reset at local midnight
 
 
+class _StuckDriver(MockBatteryDriver):
+    """A driver whose apply() times out (BatteryWriteUnconfirmed) on demand, and always reports its
+    mode as AUTO so a CHARGE intent never short-circuits as idempotent — lets us drive an intent
+    that stays stuck across cycles and then recovers."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.stuck = True
+
+    def current_mode(self) -> PhysicalMode:
+        return PhysicalMode.AUTO  # never idempotent for a CHARGE/IDLE intent
+
+    def apply(self, mode, *, target_soc=None, power_w=None):
+        if self.stuck:
+            raise BatteryWriteUnconfirmed("device slow")
+        return super().apply(mode, target_soc=target_soc, power_w=power_w)
+
+
+def test_stuck_unconfirmed_episode_audits_once_across_cycles():
+    # One real "charge isn't sticking (device slow)" episode must produce ONE audit-worthy row, not
+    # a row every dwell cycle (the live 13-row inflation). manual=True bypasses dwell so all five
+    # cycles actually re-attempt the write and hit the unconfirmed branch.
+    d = _StuckDriver()
+    ctl = ModeController(d, _controlling_lifecycle(), dry_run=False)
+    audits = 0
+    for i in range(5):
+        dec = ctl.decide(BatteryIntent.GRID_CHARGE_TO_TARGET, T0 + timedelta(seconds=200 + i),
+                         target_soc=90, manual=True)
+        assert dec.outcome == "unconfirmed"  # control behaviour (HOLD) unchanged every cycle
+        audits += int(dec.audit)
+    assert audits == 1  # exactly one incident row for the whole episode
+
+
+def test_recovery_then_restick_audits_a_second_row():
+    d = _StuckDriver()
+    ctl = ModeController(d, _controlling_lifecycle(), dry_run=False)
+    first = ctl.decide(BatteryIntent.GRID_CHARGE_TO_TARGET, T0 + timedelta(seconds=200),
+                       target_soc=90, manual=True)
+    assert first.audit is True
+    again = ctl.decide(BatteryIntent.GRID_CHARGE_TO_TARGET, T0 + timedelta(seconds=201),
+                       target_soc=90, manual=True)
+    assert again.audit is False  # suppressed within the same episode
+    # The device recovers: the write confirms → episode ends.
+    d.stuck = False
+    ok = ctl.decide(BatteryIntent.GRID_CHARGE_TO_TARGET, T0 + timedelta(seconds=202),
+                    target_soc=90, manual=True)
+    assert ok.outcome == "applied"
+    # ...then it re-sticks: a fresh episode → a NEW audit row.
+    d.stuck = True
+    restick = ctl.decide(BatteryIntent.GRID_CHARGE_TO_TARGET, T0 + timedelta(seconds=203),
+                         target_soc=90, manual=True)
+    assert restick.outcome == "unconfirmed"
+    assert restick.audit is True
+
+
+def test_long_outage_relogs_after_61_minutes():
+    # A persistent outage still leaves periodic evidence: re-log once >60 min have passed since the
+    # episode was last logged, so hours of "not sticking" isn't a single stale row.
+    d = _StuckDriver()
+    ctl = ModeController(d, _controlling_lifecycle(), dry_run=False)
+    t1 = T0 + timedelta(seconds=200)
+    first = ctl.decide(BatteryIntent.GRID_CHARGE_TO_TARGET, t1, target_soc=90, manual=True)
+    assert first.audit is True
+    mid = ctl.decide(BatteryIntent.GRID_CHARGE_TO_TARGET, t1 + timedelta(minutes=30),
+                     target_soc=90, manual=True)
+    assert mid.audit is False  # still within the hour since the first log → suppressed
+    later = ctl.decide(BatteryIntent.GRID_CHARGE_TO_TARGET, t1 + timedelta(minutes=61),
+                       target_soc=90, manual=True)
+    assert later.audit is True  # >60 min since the last log → re-logged
+
+
+def test_different_intent_starts_a_new_episode_row():
+    # A different (intent, mode) is a distinct episode and audits afresh — even mid-suppression of
+    # another one.
+    d = _StuckDriver()
+    ctl = ModeController(d, _controlling_lifecycle(), dry_run=False)
+    charge = ctl.decide(BatteryIntent.GRID_CHARGE_TO_TARGET, T0 + timedelta(seconds=200),
+                        target_soc=90, manual=True)
+    assert charge.audit is True
+    # HOLD_RESERVE → IDLE: a different desired mode → a new episode, so it audits.
+    hold = ctl.decide(BatteryIntent.HOLD_RESERVE, T0 + timedelta(seconds=201), manual=True)
+    assert hold.outcome == "unconfirmed"
+    assert hold.audit is True
+
+
+# ==================================================================================================
+# Commitment reserve — split the daily switch cap into routine vs commitment budgets so routine
+# auto<->idle flapping can never starve a committed grid-charge (the 07-12 guardrail-starvation
+# incident: 13 routine flaps burned the 10-switch cap by 09:48, then 5 cap_reached blocks starved a
+# COMMITTED grid-charge, which missed its deadline by 66 min). Routine switches may use at most
+# (cap - commitment_reserve); a committed grid-charge draws from the full cap; the total is always
+# bounded by the cap. In production only GRID_CHARGE_TO_TARGET is flagged commitment=True; these
+# unit tests drive the `commitment` flag directly (alternating IDLE/CHARGE to force real writes) to
+# exercise the ACCOUNTING, which is intent-agnostic by design.
+# ==================================================================================================
+
+
+def _burn_switches(ctl, driver, n, start, *, commitment):
+    """Issue `n` REAL mode switches (alternating IDLE<->CHARGE from wherever we are), each of which
+    must apply. Returns the next timestamp. min_dwell must be 0 so they don't self-block."""
+    t = start
+    for _ in range(n):
+        intent = (BatteryIntent.GRID_CHARGE_TO_TARGET if driver.current_mode() is PhysicalMode.IDLE
+                  else BatteryIntent.HOLD_RESERVE)  # AUTO/CHARGE -> IDLE ; IDLE -> CHARGE
+        dec = ctl.decide(intent, t, target_soc=90, commitment=commitment)
+        assert dec.outcome == "applied", (dec.outcome, dec.reason)
+        t += timedelta(seconds=1)
+    return t
+
+
+def test_commitment_reserve_carves_out_the_routine_budget():
+    d = MockBatteryDriver()  # starts AUTO
+    ctl = ModeController(d, _controlling_lifecycle(), dry_run=False,
+                         max_switches_per_day=10, min_dwell_seconds=0, commitment_reserve=3)
+    t = _burn_switches(ctl, d, 7, T0 + timedelta(seconds=200), commitment=False)  # 7 routine
+    assert ctl.switches_today == 7
+    # The 8th ROUTINE switch is blocked: routine budget (10 - 3 = 7) spent, 3 held for commitments.
+    routine = ctl.decide(BatteryIntent.GRID_CHARGE_TO_TARGET, t, target_soc=90)  # commitment=False
+    assert routine.outcome == "cap_reached"
+    assert routine.applied is False
+    assert "routine switch budget exhausted" in routine.reason
+    assert "7/7 used" in routine.reason and "3 reserved" in routine.reason
+
+
+def test_committed_grid_charge_uses_the_reserve_when_routine_budget_is_spent():
+    d = MockBatteryDriver()
+    ctl = ModeController(d, _controlling_lifecycle(), dry_run=False,
+                         max_switches_per_day=10, min_dwell_seconds=0, commitment_reserve=3)
+    t = _burn_switches(ctl, d, 7, T0 + timedelta(seconds=200), commitment=False)  # routine spent
+    # A COMMITTED grid-charge still goes through — it draws from the reserve (routine leftover + 3).
+    commit = ctl.decide(BatteryIntent.GRID_CHARGE_TO_TARGET, t, target_soc=90, commitment=True)
+    assert commit.outcome == "applied"
+    assert ctl.switches_today == 8 and ctl.commitment_switches_today == 1
+
+
+def test_total_daily_writes_never_exceed_the_cap():
+    # The reserve carves out headroom; it NEVER extends the cap. cap=10 => at most 10 writes total.
+    d = MockBatteryDriver()
+    ctl = ModeController(d, _controlling_lifecycle(), dry_run=False,
+                         max_switches_per_day=10, min_dwell_seconds=0, commitment_reserve=3)
+    t = _burn_switches(ctl, d, 7, T0 + timedelta(seconds=200), commitment=False)  # 7 routine
+    t = _burn_switches(ctl, d, 3, t, commitment=True)                             # +3 commitment
+    assert ctl.switches_today == 10 and ctl.commitment_switches_today == 3
+    # An 11th write of EITHER class is blocked — the daily cap is fully spent.
+    over_commit = ctl.decide(BatteryIntent.HOLD_RESERVE, t, commitment=True)   # IDLE, a real switch
+    assert over_commit.outcome == "cap_reached"
+    over_routine = ctl.decide(BatteryIntent.HOLD_RESERVE, t)                   # commitment=False
+    assert over_routine.outcome == "cap_reached"
+    assert ctl.switches_today == 10  # nothing slipped past the cap
+
+
+def test_commitment_reserve_zero_reproduces_the_plain_cap():
+    # reserve=0 is the ModeController default (backward compatible): routine may use the WHOLE cap.
+    d = MockBatteryDriver()
+    ctl = ModeController(d, _controlling_lifecycle(), dry_run=False,
+                         max_switches_per_day=3, min_dwell_seconds=0)  # reserve defaults to 0
+    _burn_switches(ctl, d, 3, T0 + timedelta(seconds=200), commitment=False)
+    assert ctl.switches_today == 3
+    blocked = ctl.decide(BatteryIntent.GRID_CHARGE_TO_TARGET, T0 + timedelta(seconds=400),
+                         target_soc=90)
+    assert blocked.outcome == "cap_reached"
+
+
+def test_commitment_and_routine_budgets_reset_on_a_new_local_day():
+    ams = ZoneInfo("Europe/Amsterdam")
+    d = MockBatteryDriver()
+    ctl = ModeController(d, _controlling_lifecycle(), dry_run=False, max_switches_per_day=10,
+                         min_dwell_seconds=0, commitment_reserve=3, tz=ams)
+    t = _burn_switches(ctl, d, 7, T0 + timedelta(seconds=200), commitment=False)
+    _burn_switches(ctl, d, 3, t, commitment=True)
+    assert ctl.switches_today == 10 and ctl.commitment_switches_today == 3
+    # New local day => BOTH counters reset; a routine switch is allowed again from a clean budget.
+    nxt = ctl.decide(BatteryIntent.HOLD_RESERVE, T0 + timedelta(days=1, seconds=200))
+    assert nxt.outcome == "applied"
+    assert ctl.switches_today == 1 and ctl.commitment_switches_today == 0
+
+
+def test_priority_and_manual_bypass_both_budgets_when_exhausted():
+    # Hard invariant (production incident e42828e): manual override / the car-guard safety hold /
+    # return-to-AUTO bypass cap+dwell entirely — they must not be routed through EITHER budget nor
+    # touch the commitment accounting.
+    d = MockBatteryDriver()
+    ctl = ModeController(d, _controlling_lifecycle(), dry_run=False, max_switches_per_day=10,
+                         min_dwell_seconds=0, commitment_reserve=3)
+    _burn_switches(ctl, d, 7, T0 + timedelta(seconds=200), commitment=False)  # routine budget spent
+    # A safety hold (priority) applies even though the routine budget is exhausted...
+    hold = ctl.decide(BatteryIntent.GRID_CHARGE_TO_TARGET, T0 + timedelta(seconds=400),
+                      target_soc=90, priority=True)
+    assert hold.outcome == "applied"  # bypassed the budget entirely
+    assert ctl.commitment_switches_today == 0  # a priority write is NOT commitment accounting
+    # A manual override likewise bypasses the exhausted budget (HOLD_RESERVE -> IDLE).
+    manual = ctl.decide(BatteryIntent.HOLD_RESERVE, T0 + timedelta(seconds=500), manual=True)
+    assert manual.outcome == "applied"
+
+
+def test_commitment_switch_count_survives_restart():
+    # SPEC §13.3: the split budget must survive a reboot exactly like switches_today does.
+    ctl = ModeController(MockBatteryDriver(), Lifecycle(dry_run=True), dry_run=True)
+    ctl.switches_today = 8
+    ctl.commitment_switches_today = 3
+    snap = ctl.state_snapshot()
+    other = ModeController(MockBatteryDriver(), Lifecycle(dry_run=True), dry_run=True)
+    other.restore_state(snap)
+    assert other.switches_today == 8 and other.commitment_switches_today == 3
+
+
 def test_persist_failure_is_logged_not_swallowed(caplog):
     # A broken control-state store must never crash a control decision (persistence is best-effort),
     # but it must NOT vanish silently — _persist logs a warning so a broken store is visible.

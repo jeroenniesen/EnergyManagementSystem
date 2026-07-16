@@ -211,6 +211,43 @@ def test_tweak_ignores_advisor_when_delta_is_below_5pp():
     assert d["tweak"] is None  # null case: calm = absence (headline tail says it)
 
 
+def test_tweak_nudges_when_advisor_is_stable():
+    # A settled recommendation (stable True) with a >=5pp delta surfaces the actionable nudge.
+    advice = {"recommended_pct": 75.0, "current_pct": 65.0, "delta_pct": 10.0, "n_slots": 60,
+              "median_ratio_pct": 80.0, "p25_ratio_pct": 75.0, "stable": True,
+              "spread_pp": 0.0, "window_days": 7, "recent_recommendations": [75.0] * 7}
+    d = build_digest(finance_rows=FULL_WEEK, flows=FLOWS, scores=SCORES, audit_rows=[],
+                     advice=advice, week_label=WEEK_LABEL)
+    assert d["tweak"].startswith("Apply the advisor suggestion")
+    assert d["headline"].endswith("One tweak worth a look below.")
+
+
+def test_tweak_holds_and_explains_when_advisor_is_unstable():
+    # Same >=5pp delta, but the recommendation flips day-to-day (stable False) — do NOT nudge; show
+    # the hold/explain line instead, and keep the headline calm (no "one tweak worth a look").
+    advice = {"recommended_pct": 75.0, "current_pct": 65.0, "delta_pct": 10.0, "n_slots": 60,
+              "median_ratio_pct": 80.0, "p25_ratio_pct": 75.0, "stable": False,
+              "spread_pp": 10.0, "window_days": 7,
+              "recent_recommendations": [70.0, 80.0, 70.0, 80.0, 70.0, 80.0, 75.0]}
+    d = build_digest(finance_rows=FULL_WEEK, flows=FLOWS, scores=SCORES, audit_rows=[],
+                     advice=advice, week_label=WEEK_LABEL, export_price_model="spot_minus_tax")
+    assert d["tweak"] == (
+        "Advisor recommendation unstable (spread 10pp over 7 days) — holding until it settles.")
+    assert "75%" not in d["tweak"]  # the number the user must not be sent chasing
+    assert d["headline"].endswith("Steady week — settings look right.")
+
+
+def test_tweak_unstable_below_5pp_delta_needs_no_hold_line():
+    # Nothing to nudge (delta < 5pp), so instability is moot — falls straight through to the null
+    # case, not a spurious "holding until it settles" line.
+    advice = {"recommended_pct": 82.0, "current_pct": 80.0, "delta_pct": 2.0, "n_slots": 60,
+              "median_ratio_pct": 80.0, "p25_ratio_pct": 82.0, "stable": False,
+              "spread_pp": 15.0, "window_days": 7, "recent_recommendations": [70.0, 85.0, 80.0]}
+    d = build_digest(finance_rows=FULL_WEEK, flows=FLOWS, scores=SCORES, audit_rows=[],
+                     advice=advice, week_label=WEEK_LABEL, export_price_model="spot_minus_tax")
+    assert d["tweak"] is None
+
+
 def test_tweak_falls_back_to_export_model_reminder_near_the_2027_boundary():
     d = build_digest(finance_rows=FULL_WEEK, flows=FLOWS, scores=SCORES, audit_rows=[],
                      advice=None, week_label="Week of 2026-10-05",

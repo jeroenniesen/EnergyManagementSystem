@@ -18,6 +18,18 @@ def test_defaults_cover_every_field():
     assert d["control.allow_export_discharge"] is False
 
 
+def test_anti_flap_control_knob_defaults():
+    # The two guardrail-starvation knobs (07-12 incident): intent persistence + commitment reserve.
+    d = defaults()
+    assert d["control.intent_persistence_cycles"] == 2  # observe once, then act
+    assert d["control.commitment_reserve"] == 3         # switches held for committed grid-charge
+    # Both are int fields with sensible bounds (1 = legacy persistence; 0 = no reserve).
+    assert SETTINGS_BY_KEY["control.intent_persistence_cycles"].type == "int"
+    assert SETTINGS_BY_KEY["control.intent_persistence_cycles"].min == 1
+    assert SETTINGS_BY_KEY["control.commitment_reserve"].type == "int"
+    assert SETTINGS_BY_KEY["control.commitment_reserve"].min == 0
+
+
 def test_schema_json_shape():
     rows = schema_json()
     assert {r["key"] for r in rows} == set(SETTINGS_BY_KEY)

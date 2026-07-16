@@ -39,6 +39,13 @@ type SolarConfidenceAdvice = {
   p25_ratio_pct: number;
   current_pct: number | null;
   delta_pct: number | null;
+  // Production hardening: the p25 suggestion flips day-to-day when the forecast bias is noisy.
+  // When the backend reports `stable === false` the hint HOLDS — it explains it's still settling
+  // and offers no Apply, so the user isn't sent chasing a number that changes next week. Absent
+  // (older payload) reads as "not explicitly unstable" and the Apply flow is unchanged.
+  stable?: boolean;
+  spread_pp?: number | null;
+  window_days?: number;
 };
 
 // Two-pane menu: sidebar sections grouped under three intent headers. This order REPLACES the old
@@ -291,6 +298,20 @@ function SolarConfidenceHint({
   disabled: boolean;
   onApply: (pct: number) => void;
 }) {
+  if (advice.stable === false) {
+    // Still moving day-to-day — hold and explain, no Apply (matches the weekly digest gate).
+    const spread =
+      typeof advice.spread_pp === "number"
+        ? `spread ${Math.round(advice.spread_pp)}pp over ${advice.window_days ?? 7} days`
+        : "not enough daily history yet";
+    return (
+      <p className="advisor-hint" data-testid="advisor-solar-confidence">
+        Based on {advice.n_slots} matched daytime slots over the last 14 days, the suggestion is
+        still settling ({spread}) — holding until it settles rather than nudging you toward a number
+        that keeps moving. You never need to act on this.
+      </p>
+    );
+  }
   const matches = Math.abs(currentPct - advice.recommended_pct) < 0.01;
   return (
     <>

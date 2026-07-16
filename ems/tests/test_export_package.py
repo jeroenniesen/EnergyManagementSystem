@@ -1051,13 +1051,24 @@ def test_recorder_wiring_persists_a_plan_history_row_on_startup(tmp_path):
     assert recorder.plan_provider is not None  # wired synchronously inside create_app
 
     with TestClient(app):
-        pass  # triggers lifespan startup, which calls recorder.record_now() once
+        # Epoch identity for the intent-aware follow-through scorer must be STABLE across
+        # cycles while the committed (strategy, target, deadline) is unchanged — the plan object
+        # itself is rebuilt every call, so a created_at-derived version would churn per cycle
+        # and shatter one commitment into one singleton epoch per recorder row.
+        now = datetime.now(UTC)
+        snap1 = recorder.plan_provider(now)
+        snap2 = recorder.plan_provider(now + timedelta(minutes=5))
+        assert snap1 is not None and snap2 is not None
+        assert snap1["plan_version"]
+        assert snap1["plan_version"] == snap2["plan_version"]
 
     rows = asyncio.run(store.plan_history_between(
         "2020-01-01T00:00:00+00:00", "2030-01-01T00:00:00+00:00"))
     assert len(rows) == 1
     assert rows[0]["strategy"] in ("summer", "winter")
     assert rows[0]["soc_pct"] == 55.0  # MockSource's steady-state SoC
+    assert rows[0]["plan_version"]  # every new row carries the epoch key
+    assert "floor_soc" in rows[0]  # present (may be None when the current slot sets no floor)
 
 
 def test_create_app_sets_plan_provider_when_recorder_passed(tmp_path):

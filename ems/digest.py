@@ -120,33 +120,60 @@ def _count_actions(audit_rows: list[dict]) -> dict:
     return {"mode_switches": switches, "negative_soaks": soaks, "overrides": overrides}
 
 
-def _tweak(advice: dict | None, week_label: str, export_price_model: str) -> str | None:
-    """ONE suggestion, in precedence order (roadmap P2 "one suggested tweak"):
+def _unstable_advisor_line(advice: dict) -> str:
+    """The explainability line shown INSTEAD of the advisor nudge when its suggestion would move
+    the setting >= 5pp but the recommendation itself is not yet SETTLED (flips day-to-day). We hold
+    rather than send the user chasing a number that will change next week, and we say why — the
+    "explain why it is NOT acting" side of the explainability-first principle."""
+    spread = advice.get("spread_pp")
+    days = advice.get("window_days")
+    if isinstance(spread, int | float):
+        detail = f"spread {spread:.0f}pp over {days} days"
+    else:
+        detail = "not enough daily history yet"
+    return f"Advisor recommendation unstable ({detail}) — holding until it settles."
+
+
+def _tweak(
+    advice: dict | None, week_label: str, export_price_model: str
+) -> tuple[str | None, bool]:
+    """The digest's one settings line + whether it is an ACTIONABLE tweak, in precedence order
+    (roadmap P2 "one suggested tweak"):
       1. The solar-confidence advisor (`ems.analysis.recommend_solar_confidence`), when its
          suggestion differs from the current setting by >= 5 percentage points either way — a
-         smaller gap is noise, not worth a Sunday nudge.
+         smaller gap is noise, not worth a Sunday nudge. Surfaced as an actionable nudge ONLY when
+         the recommendation is STABLE (`advice["stable"]`); when it would nudge but is unstable, we
+         return the hold/explain line instead — non-actionable, so the headline stays calm.
       2. The export-model reminder, once the reported week reaches October 2026 (a few months of
          runway before net metering is expected to phase out at 2027) AND the household is still
          on `net_metering`.
-      3. Otherwise: nothing actionable this week — said plainly, not left blank."""
+      3. Otherwise: nothing actionable this week — said plainly, not left blank.
+
+    Returns `(line, is_actionable)`. `is_actionable` drives the headline tail ("One tweak worth a
+    look below." vs. the calm "Steady week — settings look right."), so an unstable-advisor HOLD
+    line is shown without the headline pretending there's an action to take."""
     delta = advice.get("delta_pct") if advice else None
-    if delta is not None and abs(delta) >= _DELTA_THRESHOLD_PP:
+    if advice is not None and delta is not None and abs(delta) >= _DELTA_THRESHOLD_PP:
+        # `stable` is absent on legacy/older advice dicts — treat only an EXPLICIT False as
+        # unstable, so pre-stability-gate callers keep nudging exactly as before.
+        if advice.get("stable") is False:
+            return _unstable_advisor_line(advice), False
         running = "low" if delta > 0 else "high"
         return (
             f"Apply the advisor suggestion — your solar confidence setting has been running "
             f"{running} lately; set solar confidence to {advice['recommended_pct']:.0f}% "
             f"(from {advice['current_pct']:.0f}%) to match what the forecast actually delivered."
-        )
+        ), True
     monday = _week_monday(week_label)
     due = export_price_model == "net_metering" and monday is not None
     if due and monday >= _EXPORT_MODEL_CUTOFF:
         return (
             "Review your export model before 2027 — net metering (saldering) is expected to phase "
             "out then, and switching early beats switching in a hurry."
-        )
+        ), True
     # Null case: return None — the headline's "Steady week — settings look right." tail already
     # says it, and rendering BOTH duplicated the sentence in production. Calm = absence.
-    return None
+    return None, False
 
 
 def _headline(
@@ -201,8 +228,10 @@ def build_digest(
     saved_eur = _sum_saved(finance_rows)
     days_measured = sum(1 for r in finance_rows if r.get("saved_eur") is not None)
     days_total = len(finance_rows)
-    tweak = _tweak(advice, week_label, export_price_model)
-    tweak_is_null = tweak is None
+    tweak, tweak_is_actionable = _tweak(advice, week_label, export_price_model)
+    # A held/explain line (unstable advisor) is present but NOT actionable — the headline stays
+    # calm rather than promising "one tweak worth a look" for a hold.
+    tweak_is_null = not tweak_is_actionable
     self_sufficiency_pct = flows.get("self_sufficiency_pct")
     solar_kwh = round(float(flows.get("solar_kwh") or 0.0), 2)
 

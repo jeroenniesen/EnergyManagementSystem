@@ -194,6 +194,92 @@ public struct APIClient: Sendable {
         return try JSONDecoder.ems.decode(CarSocResponse.self, from: data).soc
     }
 
+    // Detected EV charging sessions (GET /api/car/sessions), newest-first, for the Car tab's
+    // history table. Read-only: the server returns an empty list (never an error) when there is no
+    // history or no charging in the window.
+    public func fetchCarSessions(days: Int = 14) async throws -> CarSessionsResponse {
+        try await get("api/car/sessions?days=\(days)", as: CarSessionsResponse.self)
+    }
+
+    // Static car database (GET /api/cars) for the picker — read-only and cacheable.
+    public func fetchCars() async throws -> CarsResponse {
+        try await get("api/cars", as: CarsResponse.self)
+    }
+
+    // The notification-outbox feed (GET /api/notifications, B-20 — the web header bell): most
+    // recent notifications newest-first plus the unread count. Read-only.
+    public func fetchNotifications(limit: Int = 50) async throws -> NotificationsResponse {
+        try await get("api/notifications?limit=\(limit)", as: NotificationsResponse.self)
+    }
+
+    // Mark outbox notifications read (POST /api/notifications/read — the web bell's "Mark all
+    // read"). `ids == nil` marks everything unread ({"all": true}); otherwise exactly those ids.
+    // Returns the server's fresh unread count. Follows the setCarSoc POST pattern; auth (401)
+    // surfaces as APIClientError like every other write.
+    public func markNotificationsRead(ids: [Int]? = nil) async throws -> Int {
+        var request = URLRequest(url: baseURL.appending(path: "api/notifications/read"))
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        if let token, !token.isEmpty {
+            request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        }
+        // JSONSerialization keeps the ids as plain integers (a JSONValue round-trip via Double
+        // could re-encode them as floats), matching the endpoint's `[int(i) for i in raw_ids]`.
+        let payload: [String: Any] = ids.map { ["ids": $0] } ?? ["all": true]
+        request.httpBody = try JSONSerialization.data(withJSONObject: payload)
+        let (data, response) = try await transport.data(for: request)
+        guard (200 ..< 300).contains(response.statusCode) else {
+            throw APIClientError.httpStatus(response.statusCode)
+        }
+        return try JSONDecoder.ems.decode(UnreadResponse.self, from: data).unread
+    }
+
+    // The weekly digest (GET /api/digest, B-58 "the Sunday read"). `week` (YYYY-MM-DD, any date
+    // inside the desired week) anchors a specific week; nil = the server's default, the last
+    // COMPLETED Mon-Sun week. Read-only.
+    public func fetchDigest(week: String? = nil) async throws -> WeekDigest {
+        if let week, !week.isEmpty {
+            return try await get("api/digest?week=\(week)", as: WeekDigest.self)
+        }
+        return try await get("api/digest", as: WeekDigest.self)
+    }
+
+    // Effective settings (GET /api/settings) — the `values` map only (the Car tab renders fixed
+    // native controls, not the schema-driven form). Decoded with a PLAIN decoder (not `.ems`) so
+    // the dotted, snake_case setting keys ("control.car_charging_battery_mode", "ev.schedule") are
+    // preserved verbatim — `.convertFromSnakeCase` would mangle them into camelCase and break
+    // key lookups. Auth (401) surfaces as APIClientError like every other request.
+    public func fetchSettings() async throws -> [String: JSONValue] {
+        var request = URLRequest(url: url("api/settings"))
+        request.httpMethod = "GET"
+        if let token, !token.isEmpty {
+            request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        }
+        let (data, response) = try await transport.data(for: request)
+        guard (200 ..< 300).contains(response.statusCode) else {
+            throw APIClientError.httpStatus(response.statusCode)
+        }
+        return try JSONDecoder().decode(SettingsEnvelope.self, from: data).values
+    }
+
+    // Save only the changed setting keys (POST /api/settings) — the app's first settings write,
+    // following setCarSoc's POST pattern (bearer token rides automatically; audit-logged
+    // server-side). Encoded with a PLAIN encoder so the literal keys are sent verbatim (no
+    // snake-case conversion). Non-2xx (401 unauthorised, 422 rejected) surfaces as APIClientError.
+    public func postSettings(_ changes: [String: JSONValue]) async throws {
+        var request = URLRequest(url: baseURL.appending(path: "api/settings"))
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        if let token, !token.isEmpty {
+            request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        }
+        request.httpBody = try JSONEncoder().encode(changes)
+        let (_, response) = try await transport.data(for: request)
+        guard (200 ..< 300).contains(response.statusCode) else {
+            throw APIClientError.httpStatus(response.statusCode)
+        }
+    }
+
     private func get<T: Decodable>(_ path: String, as type: T.Type) async throws -> T {
         var request = URLRequest(url: url(path))
         request.httpMethod = "GET"
@@ -247,4 +333,15 @@ private struct CarSocRequest: Encodable {
 
 private struct CarSocResponse: Decodable {
     let soc: CarSoc?
+}
+
+// POST /api/notifications/read echoes the fresh unread count back ({"unread": n}).
+private struct UnreadResponse: Decodable {
+    let unread: Int
+}
+
+// GET /api/settings returns {schema, values}; the Car tab only needs `values`. Decoded with a
+// plain decoder so the dictionary keys stay verbatim (see fetchSettings).
+private struct SettingsEnvelope: Decodable {
+    let values: [String: JSONValue]
 }

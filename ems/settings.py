@@ -201,6 +201,24 @@ SETTINGS_SCHEMA: tuple[SettingsField, ...] = (
         min=1, max=20,
     ),
     SettingsField(
+        "control.commitment_reserve", "Switches reserved for charging", "int", 3, "control",
+        help="How many of the daily mode-switch budget above are held back for a committed "
+        "grid-charge, so ordinary idle/auto flapping can't use them all up and leave the battery "
+        "unable to charge before an expensive-price deadline. Ordinary switches may use "
+        "(cap − this); a committed charge may use the full cap. The total is still capped. 0 = no "
+        "reserve (the whole budget is shared).",
+        min=0, max=10, advanced=True,
+    ),
+    SettingsField(
+        "control.intent_persistence_cycles", "Confirm before switching", "int", 2, "control",
+        help="How many control cycles a routine mode change (e.g. idle↔self-consumption) must "
+        "persist before the battery is actually switched — so a brief flip-flop doesn't waste a "
+        "switch from the daily budget. The first cycle observes, the rest confirm. 1 = switch "
+        "immediately (the original behaviour). Charging commitments, manual overrides, the "
+        "car-charging safety hold and returning to the safe automatic mode are never delayed.",
+        min=1, max=6, advanced=True,
+    ),
+    SettingsField(
         "control.min_dwell_seconds", "Min dwell", "number", 600.0, "control",
         help="Minimum seconds to hold a mode before another switch is allowed (floor 60s).",
         min=60.0, max=3600.0, unit="s", advanced=True,

@@ -8,6 +8,8 @@ struct AppShellView: View {
     @State private var chatStore = ChatStore(client: nil)
     @State private var insightsStore = InsightsStore(client: nil)
     @State private var activityStore = ActivityStore(client: nil)
+    @State private var carStore = CarStore(client: nil)
+    @State private var notificationsStore = NotificationsStore(client: nil)
     @State private var selectedTab: AppTab = .dashboard
 
     private var theme: EMSTheme {
@@ -23,12 +25,15 @@ struct AppShellView: View {
                 ConnectionView()
             } else {
                 TabView(selection: $selectedTab) {
-                    DashboardView()
+                    DashboardView(notificationsStore: notificationsStore)
                         .tabItem { Label("Dashboard", systemImage: "bolt.horizontal.circle") }
                         .tag(AppTab.dashboard)
                     InsightsView(store: insightsStore)
                         .tabItem { Label("Insights", systemImage: "chart.xyaxis.line") }
                         .tag(AppTab.insights)
+                    CarView(store: carStore)
+                        .tabItem { Label("Car", systemImage: "car.fill") }
+                        .tag(AppTab.car)
                     ActivityView(store: activityStore)
                         .tabItem { Label("Activity", systemImage: "clock.arrow.circlepath") }
                         .tag(AppTab.activity)
@@ -63,12 +68,21 @@ struct AppShellView: View {
         .task(id: activitySessionKey) {
             await syncActivitySession()
         }
+        .task(id: carSessionKey) {
+            await syncCarSession()
+        }
+        .task(id: notificationsSessionKey) {
+            await syncNotificationsSession()
+        }
         .task(id: selectedTab) {
             if selectedTab == .insights, insightsStore.client != nil, insightsStore.report == nil {
                 await insightsStore.refresh()
             }
             if selectedTab == .activity, activityStore.client != nil, activityStore.entries.isEmpty {
                 await activityStore.refresh()
+            }
+            if selectedTab == .car, carStore.client != nil, !carStore.loaded {
+                await carStore.refresh()
             }
         }
     }
@@ -90,6 +104,16 @@ struct AppShellView: View {
     private var activitySessionKey: String {
         let mode = dashboardStore.snapshot?.isDemo == true ? "demo" : (dashboardStore.client == nil ? "disconnected" : "live")
         return "\(mode)-\(dashboardStore.client?.baseURL.absoluteString ?? "none")-\(dashboardStore.snapshot?.generatedAt.timeIntervalSince1970 ?? 0)"
+    }
+
+    private var carSessionKey: String {
+        let mode = dashboardStore.snapshot?.isDemo == true ? "demo" : (dashboardStore.client == nil ? "disconnected" : "live")
+        return "\(mode)-\(dashboardStore.client?.baseURL.absoluteString ?? "none")"
+    }
+
+    private var notificationsSessionKey: String {
+        let mode = dashboardStore.snapshot?.isDemo == true ? "demo" : (dashboardStore.client == nil ? "disconnected" : "live")
+        return "\(mode)-\(dashboardStore.client?.baseURL.absoluteString ?? "none")"
     }
 
     private func syncChatSession() async {
@@ -123,6 +147,31 @@ struct AppShellView: View {
         }
     }
 
+    private func syncCarSession() async {
+        if dashboardStore.snapshot?.isDemo == true {
+            carStore.setDemo()
+        } else if let client = dashboardStore.client {
+            carStore.setClient(client)
+        } else {
+            carStore.setClient(nil)
+        }
+    }
+
+    private func syncNotificationsSession() async {
+        if dashboardStore.snapshot?.isDemo == true {
+            notificationsStore.setDemo()
+        } else if let client = dashboardStore.client {
+            notificationsStore.setClient(client)
+            // Dashboard-resident content with no tab-select hook: load once per connection here
+            // (pull-to-refresh and opening the list keep it fresh afterwards).
+            if !notificationsStore.loaded {
+                await notificationsStore.refresh()
+            }
+        } else {
+            notificationsStore.setClient(nil)
+        }
+    }
+
     private func runRefreshLoop() async {
         guard scenePhase == .active else { return }
         while !Task.isCancelled {
@@ -137,6 +186,7 @@ struct AppShellView: View {
 private enum AppTab {
     case dashboard
     case insights
+    case car
     case activity
     case chat
 }

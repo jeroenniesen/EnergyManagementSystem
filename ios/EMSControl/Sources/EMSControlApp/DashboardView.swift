@@ -4,6 +4,7 @@ import EMSControlCore
 struct DashboardView: View {
     @Environment(DashboardStore.self) private var dashboardStore
     @Environment(\.colorScheme) private var colorScheme
+    let notificationsStore: NotificationsStore
     @State private var showsDetails = false
 
     private var theme: EMSTheme {
@@ -52,6 +53,16 @@ struct DashboardView: View {
 
                             FinancePanel(finance: snapshot.finance, savings: snapshot.savings, theme: theme)
 
+                            // Weekly digest + notification outbox (web parity: WeekDigest.tsx and
+                            // the header bell). Hidden until the store has loaded, so an older
+                            // backend without these endpoints shows nothing rather than an error.
+                            if notificationsStore.digest != nil {
+                                WeekDigestPanel(store: notificationsStore, theme: theme)
+                            }
+                            if notificationsStore.loaded {
+                                NotificationsLinkRow(store: notificationsStore, theme: theme)
+                            }
+
                             DisclosureGroup(isExpanded: $showsDetails) {
                                 DetailGrid(snapshot: snapshot, theme: theme)
                                     .padding(.top, 10)
@@ -80,7 +91,10 @@ struct DashboardView: View {
                     }
                 }
             }
-            .refreshable { await dashboardStore.refresh() }
+            .refreshable {
+                await dashboardStore.refresh()
+                await notificationsStore.refresh()
+            }
         }
     }
 
@@ -1221,18 +1235,28 @@ private struct BatteryPanel: View {
     }
 }
 
+// Where the shared CarPanel is rendered: the dashboard shows the compact version (windows tucked
+// behind a disclosure); the Car tab uses `.full` as its hero (windows open on arrival).
+enum CarPanelVariant {
+    case dashboard
+    case full
+}
+
 // Advisory car-charging panel (GET /api/car/plan). Progressive: prompt for a SoC anchor, then a
 // weekly schedule, then show the cheapest plug-in windows. Writes the SoC anchor via POST
-// /api/car/soc and refreshes the dashboard on success. Never commands the battery.
-private struct CarPanel: View {
+// /api/car/soc and refreshes the dashboard on success. Never commands the battery. Shared between
+// the Dashboard (compact) and the Car tab (full) via `variant`.
+struct CarPanel: View {
     @Environment(DashboardStore.self) private var dashboardStore
     let carPlan: CarPlanSnapshot
     let theme: EMSTheme
+    var variant: CarPanelVariant = .dashboard
 
     @State private var sliderValue: Double = 50
     @State private var isSubmitting = false
     @State private var errorMessage: String?
     @State private var showReanchor = false
+    @State private var windowsExpanded = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -1259,7 +1283,10 @@ private struct CarPanel: View {
             RoundedRectangle(cornerRadius: 12, style: .continuous)
                 .stroke(themeColor(theme.line), lineWidth: 1)
         }
-        .onAppear { sliderValue = initialSlider }
+        .onAppear {
+            sliderValue = initialSlider
+            if variant == .full { windowsExpanded = true }
+        }
     }
 
     // MARK: sections
@@ -1326,7 +1353,7 @@ private struct CarPanel: View {
             }
 
             if !plan.windows.isEmpty {
-                DisclosureGroup {
+                DisclosureGroup(isExpanded: $windowsExpanded) {
                     VStack(alignment: .leading, spacing: 8) {
                         ForEach(plan.windows) { window in
                             windowRow(window)

@@ -36,19 +36,14 @@ from ems.retrospect import _floor, _mean, _parse
 _DH = 15 / 60.0  # hours per 15-min slot
 
 
-def _matched_slots(
+def _matched_slots_timed(
     forecast_rows: list[dict], raw_rows: list[dict]
-) -> list[tuple[float, float, float, float]]:
-    """Bucket actual solar (raw_rows) into 15-min slots and pair each ledger CANONICAL solar row
-    (`target_start, low_w, expected_w, high_w` — the shape returned by
-    `ems.storage.history.HistoryStore.ledger_canonical_between('solar', ...)`) with its matched
-    actual — the shared bucketing behind both `forecast_error` and `recommend_solar_confidence`,
-    so they score the exact same slots.
-
-    Returns a list of `(actual_w, low_w, expected_w, high_w)` tuples, one per slot where both a
-    forecast and at least one raw sample exist; a forecast slot with no recorded actual is
-    skipped (not fabricated).
-    """
+) -> list[tuple[datetime, float, float, float, float]]:
+    """As `_matched_slots`, but each tuple is prefixed with the slot's `target_start` datetime
+    (`(slot_dt, actual_w, low_w, expected_w, high_w)`) — the timestamp the day-by-day stability
+    recomputation (`_daily_recommendations`) needs to bucket matched slots by day. `_matched_slots`
+    is the thin, timestamp-free wrapper the rest of the module (forecast_error /
+    recommend_solar_confidence's main read) keeps using, so its shape is unchanged."""
     actual_by_slot: dict[object, list[float]] = defaultdict(list)
     for r in raw_rows:
         dt = _parse(r.get("ts"))
@@ -71,7 +66,7 @@ def _matched_slots(
         if existing is None or issued >= str(existing.get("issued_at") or ""):
             latest_by_target[target] = row
 
-    matched: list[tuple[float, float, float, float]] = []
+    matched: list[tuple[datetime, float, float, float, float]] = []
     for row in latest_by_target.values():
         dt = _parse(row.get("target_start"))
         if dt is None:
@@ -83,8 +78,25 @@ def _matched_slots(
         expected = float(row.get("expected_w", 0.0))
         low = float(row.get("low_w", 0.0))
         high = float(row.get("high_w", 0.0))
-        matched.append((actual, low, expected, high))
+        matched.append((dt, actual, low, expected, high))
     return matched
+
+
+def _matched_slots(
+    forecast_rows: list[dict], raw_rows: list[dict]
+) -> list[tuple[float, float, float, float]]:
+    """Bucket actual solar (raw_rows) into 15-min slots and pair each ledger CANONICAL solar row
+    (`target_start, low_w, expected_w, high_w` — the shape returned by
+    `ems.storage.history.HistoryStore.ledger_canonical_between('solar', ...)`) with its matched
+    actual — the shared bucketing behind both `forecast_error` and `recommend_solar_confidence`,
+    so they score the exact same slots.
+
+    Returns a list of `(actual_w, low_w, expected_w, high_w)` tuples, one per slot where both a
+    forecast and at least one raw sample exist; a forecast slot with no recorded actual is
+    skipped (not fabricated).
+    """
+    return [(a, low, e, high) for _dt, a, low, e, high in _matched_slots_timed(
+        forecast_rows, raw_rows)]
 
 
 def _legacy_snapshot_row(row: dict) -> dict:
@@ -171,6 +183,16 @@ def forecast_error(forecast_rows: list[dict], raw_rows: list[dict]) -> dict:
 _MIN_DAYTIME_W = 200.0  # p50 floor for a slot to count as "real daytime" (excludes dawn/dusk noise)
 _MIN_SLOTS = 48  # ~a few days' worth of matched daytime slots before a recommendation is trusted
 
+# Stability gate (production hardening): the p25 recommendation flips sign day-to-day when the
+# forecast bias itself is noisy, so a "chase this number" nudge is only surfaced once the
+# recommendation has SETTLED. We recompute the recommendation as it would have stood at the end of
+# each of the last _STABILITY_WINDOW_DAYS days (cumulative/expanding window per day-end) and require
+# those daily recommendations to span no more than _STABILITY_TOLERANCE_PP; below
+# _MIN_STABILITY_POINTS daily points there simply isn't enough history to call it settled.
+_STABILITY_WINDOW_DAYS = 7
+_STABILITY_TOLERANCE_PP = 5.0
+_MIN_STABILITY_POINTS = 3
+
 
 def _percentile(sorted_vals: list[float], p: float) -> float:
     """The `p`-th percentile (0..1) of an already-sorted list, nearest-rank method: the
@@ -179,6 +201,36 @@ def _percentile(sorted_vals: list[float], p: float) -> float:
     n = len(sorted_vals)
     idx = max(0, min(n - 1, math.ceil(p * n) - 1))
     return sorted_vals[idx]
+
+
+def _recommended_from_ratios(sorted_ratios: list[float]) -> float:
+    """The surfaced recommendation for a sorted ratio list: p25, scaled to a percent, clamped to
+    [30, 100] and rounded to the nearest 5 — the SAME transform `recommend_solar_confidence`
+    applies to the full-window read, factored out so the day-by-day stability recomputation
+    produces byte-identical daily values (the last daily value equals the live recommendation)."""
+    p25 = _percentile(sorted_ratios, 0.25)
+    return round(max(30.0, min(100.0, p25 * 100.0)) / 5.0) * 5.0
+
+
+def _daily_recommendations(forecast_rows: list[dict], raw_rows: list[dict]) -> list[float]:
+    """Recompute the recommendation as it would have stood at the end of each UTC day that carries
+    enough evidence — a CUMULATIVE (expanding) window to each day-end, using the same daytime
+    matching + p25 + clamp + round as the live read. Returns the last _STABILITY_WINDOW_DAYS such
+    daily values, chronological. Used only to judge whether the live recommendation is settled
+    day-to-day; day boundaries are UTC (the ≤2h vs. local offset is immaterial over a week)."""
+    timed = _matched_slots_timed(forecast_rows, raw_rows)
+    daytime = [(dt.date(), actual / expected)
+               for dt, actual, _low, expected, _high in timed
+               if expected >= _MIN_DAYTIME_W]
+    if not daytime:
+        return []
+    recs: list[float] = []
+    for day in sorted({d for d, _r in daytime}):
+        ratios = sorted(r for d, r in daytime if d <= day)
+        if len(ratios) < _MIN_SLOTS:
+            continue  # not enough cumulative evidence by this day-end to trust a recommendation
+        recs.append(_recommended_from_ratios(ratios))
+    return recs[-_STABILITY_WINDOW_DAYS:]
 
 
 def recommend_solar_confidence(
@@ -204,6 +256,17 @@ def recommend_solar_confidence(
             or rounded).
         current_pct: the value passed in, unchanged.
         delta_pct: recommended_pct − current_pct, or None if current_pct is None.
+        stable: whether the recommendation has SETTLED — the last few daily recomputations agree
+            within `_STABILITY_TOLERANCE_PP` (see `_daily_recommendations`). A surface that NUDGES
+            the user (the weekly digest, the System-page action) shows the suggestion only when
+            this is True; when False it holds and explains why, so the user is never sent chasing a
+            number that flips day-to-day. The raw recommendation is still returned for diagnostics.
+        spread_pp: max − min of the daily recommendations (None below `_MIN_STABILITY_POINTS`
+            daily points — not enough history to judge stability).
+        window_days: how many daily recomputations backed the stability judgement (≤
+            `_STABILITY_WINDOW_DAYS`).
+        recent_recommendations: those daily recommendation values, chronological (the last equals
+            `recommended_pct`).
     """
     matched = _matched_slots(forecast_rows, raw_rows)
     ratios = sorted(
@@ -216,12 +279,17 @@ def recommend_solar_confidence(
 
     median_ratio = _percentile(ratios, 0.5)
     p25_ratio = _percentile(ratios, 0.25)
-
-    raw_pct = p25_ratio * 100.0
-    clamped_pct = max(30.0, min(100.0, raw_pct))
-    recommended_pct = round(clamped_pct / 5.0) * 5.0
+    recommended_pct = _recommended_from_ratios(ratios)
 
     delta_pct = None if current_pct is None else round(recommended_pct - current_pct, 1)
+
+    recent = _daily_recommendations(forecast_rows, raw_rows)
+    if len(recent) >= _MIN_STABILITY_POINTS:
+        spread_pp: float | None = round(max(recent) - min(recent), 1)
+        stable = spread_pp <= _STABILITY_TOLERANCE_PP
+    else:
+        spread_pp = None  # too few daily points to call it settled either way
+        stable = False
 
     return {
         "recommended_pct": recommended_pct,
@@ -230,6 +298,10 @@ def recommend_solar_confidence(
         "p25_ratio_pct": round(p25_ratio * 100.0, 1),
         "current_pct": current_pct,
         "delta_pct": delta_pct,
+        "stable": stable,
+        "spread_pp": spread_pp,
+        "window_days": len(recent),
+        "recent_recommendations": recent,
     }
 
 
@@ -250,38 +322,102 @@ def _parse_local(ts: object, tz) -> datetime | None:
 
 
 _DEADLINE_GRACE = timedelta(minutes=30)  # how late a plan_history row may arrive and still count
-_MIN_DEADLINES = 3  # measurable deadlines before a rate is trusted
+_MIN_DEADLINES = 3  # measurable deadlines before a rate is trusted — applied PER intent class
+_EPOCH_MAX_STALENESS = timedelta(minutes=30)  # gap from a plan epoch's last snapshot to its
+# deadline beyond which the plan was replanned AWAY before the slot arrived (an abandoned day-ahead
+# commitment) — not scored, so a later rolling plan's SoC never lands against yesterday's ambition.
+_CHARGE_INTENT = "grid_charge_to_target"  # the ONLY intent whose promise is "reach target_soc"
+
+
+def _is_charge_intent(intent: object) -> bool:
+    """True only for GRID_CHARGE_TO_TARGET — the one intent that commits to REACHING a target SoC
+    by the deadline. Every other intent (discharge/hold/self-consumption, or a missing/unknown
+    value) promises the opposite: serve the load and never cross the reserve floor, so it is scored
+    against `floor_soc`, not `target_soc`."""
+    return str(intent or "").strip().lower() == _CHARGE_INTENT
+
+
+def _achieved_at(deadline_dt: datetime, timed_soc: list[tuple[datetime, float]]) -> float | None:
+    """The SoC actually observed at the deadline: `soc_pct` of the first snapshot at/after
+    `deadline_dt`, but only if it lands within `_DEADLINE_GRACE`; otherwise None (not measurable —
+    skipped, never fabricated). `timed_soc` must be sorted ascending by time."""
+    for ts, soc in timed_soc:
+        if ts < deadline_dt:
+            continue
+        return soc if ts - deadline_dt <= _DEADLINE_GRACE else None
+    return None
+
+
+def _score_deadline(
+    *, intent: object, target_soc: object, floor_soc: object, achieved: float
+) -> tuple[str, float] | None:
+    """Score one deadline BY ITS INTENT'S SEMANTICS, returning `(class, error_pp)` or None when it
+    is not scorable:
+      - charge  (GRID_CHARGE_TO_TARGET): class 'commitments', error = achieved − target_soc; the
+        promise is to REACH the target, so a hit is achieved >= target − 2pp.
+      - reserve (everything else): class 'reserve', error = achieved − floor_soc; the promise is to
+        STAY ABOVE the reserve floor while serving the load, so a hit is achieved >= floor − 2pp.
+        A legacy row with no `floor_soc` cannot be scored this way → None (falls out as
+        insufficient reserve evidence rather than being mis-scored against a charge target)."""
+    if _is_charge_intent(intent):
+        if target_soc is None:
+            return None
+        return "commitments", achieved - float(target_soc)
+    if floor_soc is None:
+        return None
+    return "reserve", achieved - float(floor_soc)
+
+
+def _aggregate(errors: list[float]) -> dict | None:
+    """Per-class rollup, or None below `_MIN_DEADLINES` ("insufficient evidence" — surfaced instead
+    of a percentage built on too few deadlines). `error` is the signed margin vs. the class's own
+    reference (target for commitments, floor for reserve); a hit is `error >= −2pp`."""
+    if len(errors) < _MIN_DEADLINES:
+        return None
+    hits = sum(1 for e in errors if e >= -2.0)
+    return {
+        "n_deadlines": len(errors),
+        "mean_error_pp": round(_mean(errors), 1),
+        "mae_pp": round(_mean([abs(e) for e in errors]), 1),
+        "hit_rate_pct": round(hits / len(errors) * 100.0, 1),
+    }
 
 
 def plan_execution_error(plan_rows: list[dict], *, tz) -> dict | None:
-    """How well the planner's committed target_soc-by-deadline actually panned out — the plan
+    """How well the planner's plan actually panned out, scored BY INTENT SEMANTICS — the plan
     EXECUTION read (as opposed to `forecast_error`'s plan INPUT read). Each `plan_rows` row is one
-    control-cycle snapshot (`ts, strategy, target_soc, deadline, soc_pct, intent`), recorded every
+    control-cycle snapshot (`ts, strategy, target_soc, deadline, soc_pct, intent`, plus — on rows
+    written after the plan-commitment migration — `plan_version` and `floor_soc`), recorded every
     cycle regardless of whether that cycle set a new target.
 
-    Many consecutive cycles share the same `deadline` while a plan is in force, so deadlines are
-    DEDUPED — each unique `deadline` value is scored once, using the LATEST `target_soc` recorded
-    for it before the deadline arrives (a later cycle may have revised the target as conditions
-    changed, and the final commitment is the one that matters).
+    Two fixes over the naive read (see the follow-through investigation):
 
-    "Achieved" is the `soc_pct` of the first plan_history row at/after the deadline, within 30
-    minutes (recorded every cycle, so this is almost always the very next one); a deadline with no
-    row landing in that window is not measurable and is skipped — not fabricated.
+    1. SCORE PER INTENT. `target_soc` is only a deadline COMMITMENT for GRID_CHARGE_TO_TARGET. A
+       discharge/hold/self-consumption slot intends SoC to FALL while serving the load; its promise
+       is to stay above the reserve `floor_soc`, not to reach `target_soc`. So charge deadlines are
+       scored against `target_soc − 2pp` ('commitments'), and every other deadline against
+       `floor_soc − 2pp` ('reserve'). (The old rule scored the overnight discharge trajectory
+       against a horizon charge target and reported a false ~28% miss rate.)
 
-    Returns None below 3 measurable deadlines (too little evidence). Otherwise:
-        n_deadlines: measurable deadline count.
-        mean_error_pp: mean(achieved − target) in percentage points, signed — negative means the
-            plan under-delivered on average.
-        mae_pp: mean(|achieved − target|).
-        hit_rate_pct: % of deadlines where achieved >= target − 2pp (a small tolerance for
-            last-mile SoC noise/rounding, not a strict miss).
+    2. GROUP BY PLAN EPOCH, not the raw `deadline` string. `deadline` (the planner's `last_need`)
+       is a rolling horizon edge that a NEW day's plan can re-emit identically, so an ABANDONED
+       day-ahead target would otherwise be scored against a later plan's SoC. Rows carrying a
+       `plan_version` are grouped by it; an epoch whose last snapshot predates its own deadline by
+       more than `_EPOCH_MAX_STALENESS` was replanned away and is not scored. Rows WITHOUT a
+       `plan_version` (history predating the migration) fall back to the original best-effort
+       grouping by deadline string with the latest target before the deadline.
+
+    "Achieved" is the SoC of the first snapshot at/after the deadline within `_DEADLINE_GRACE`.
+
+    Returns None when FEWER than `_MIN_DEADLINES` deadlines are scorable across both classes
+    combined. Otherwise a dict with the COMBINED headline numbers (backward-compatible keys, now
+    intent-aware) PLUS a per-class breakdown:
+        n_deadlines / mean_error_pp / mae_pp / hit_rate_pct: over all scored deadlines, each vs. its
+            own intent reference; a hit is `error >= −2pp` (small last-mile SoC tolerance).
+        commitments / reserve: `_aggregate`'s per-class dict, or None ("insufficient evidence")
+            below `_MIN_DEADLINES` for that class — so a truthful "reserve kept 100%, commitments
+            insufficient evidence" replaces one misleading blended percentage.
     """
-    by_deadline: dict[str, list[dict]] = defaultdict(list)
-    for row in plan_rows:
-        if row.get("target_soc") is None or row.get("deadline") is None:
-            continue
-        by_deadline[row["deadline"]].append(row)
-
     # Every recorded (ts, soc_pct) pair, sorted ascending — the pool "achieved" is matched from.
     timed_soc: list[tuple[datetime, float]] = []
     for row in plan_rows:
@@ -293,40 +429,91 @@ def plan_execution_error(plan_rows: list[dict], *, tz) -> dict | None:
         timed_soc.append((dt, float(row["soc_pct"])))
     timed_soc.sort(key=lambda pair: pair[0])
 
-    errors: list[float] = []
+    # Partition commitment-bearing rows: epoch-tagged (post-migration) vs. legacy (deadline-string
+    # grouping). A given real deadline's rows are all from one era, so a deadline never straddles
+    # both paths in practice; `scored_deadlines` guards the rare transition-boundary overlap.
+    epochs: dict[str, list[dict]] = defaultdict(list)
+    legacy: list[dict] = []
+    for row in plan_rows:
+        if row.get("deadline") is None:
+            continue
+        version = row.get("plan_version")
+        if version is None or str(version) == "":
+            legacy.append(row)
+        else:
+            epochs[str(version)].append(row)
+
+    commit_errors: list[float] = []
+    reserve_errors: list[float] = []
+    scored_deadlines: set[str] = set()
+
+    def _record(scored: tuple[str, float] | None) -> None:
+        if scored is None:
+            return
+        (commit_errors if scored[0] == "commitments" else reserve_errors).append(scored[1])
+
+    # --- epoch-grouped rows: one committed (target, deadline, floor, intent) per plan_version -----
+    # Two passes: first resolve each epoch's live representative, then collapse epochs that share
+    # a deadline to the FRESHEST one (largest last_seen). One real deadline must yield exactly one
+    # scored sample even when the version churns (a rebuilt plan minting a fresh version per
+    # cycle would otherwise shatter one commitment into a singleton epoch per recorder row,
+    # inflating n_deadlines by cycle count and weighting the rate by horizon time, not deadlines).
+    best_by_deadline: dict[str, tuple[datetime, datetime, dict]] = {}
+    for rows in epochs.values():
+        timed = [(_parse_local(r.get("ts"), tz), r) for r in rows]
+        timed = [(t, r) for t, r in timed if t is not None]
+        if not timed:
+            continue
+        timed.sort(key=lambda pair: pair[0])
+        last_seen, rep = timed[-1]  # committed values are stable within an epoch; take the latest
+        deadline_dt = _parse_local(rep.get("deadline"), tz)
+        if deadline_dt is None:
+            continue
+        if deadline_dt - last_seen > _EPOCH_MAX_STALENESS:
+            continue  # replanned away before the slot arrived — an abandoned commitment
+        key = str(rep.get("deadline"))
+        cur = best_by_deadline.get(key)
+        if cur is None or last_seen > cur[1]:
+            best_by_deadline[key] = (deadline_dt, last_seen, rep)
+    for key, (deadline_dt, _last_seen, rep) in best_by_deadline.items():
+        achieved = _achieved_at(deadline_dt, timed_soc)
+        if achieved is None:
+            continue
+        _record(_score_deadline(intent=rep.get("intent"), target_soc=rep.get("target_soc"),
+                                floor_soc=rep.get("floor_soc"), achieved=achieved))
+        scored_deadlines.add(key)
+
+    # --- legacy rows: original best-effort grouping by raw deadline string ------------------------
+    by_deadline: dict[str, list[dict]] = defaultdict(list)
+    for row in legacy:
+        if row.get("target_soc") is None:
+            continue
+        by_deadline[row["deadline"]].append(row)
     for deadline_str, rows in by_deadline.items():
+        if deadline_str in scored_deadlines:
+            continue  # already scored under an epoch (transition-boundary safety)
         deadline_dt = _parse_local(deadline_str, tz)
         if deadline_dt is None:
             continue
-
-        # Latest target recorded BEFORE the deadline (falls back to the latest overall if every
-        # row sharing this deadline happens to have ts >= deadline).
+        # Latest row recorded BEFORE the deadline (falls back to the latest overall if every row
+        # sharing this deadline happens to have ts >= deadline) — its target/intent/floor commit.
         rows_sorted = sorted(rows, key=lambda r: _parse_local(r.get("ts"), tz) or deadline_dt)
         before = [r for r in rows_sorted
                   if (_parse_local(r.get("ts"), tz) or deadline_dt) < deadline_dt]
-        target = float((before or rows_sorted)[-1]["target_soc"])
-
-        achieved: float | None = None
-        for ts, soc in timed_soc:
-            if ts < deadline_dt:
-                continue
-            if ts - deadline_dt <= _DEADLINE_GRACE:
-                achieved = soc
-            break  # first row at/after the deadline decides, in or out of the grace window
+        rep = (before or rows_sorted)[-1]
+        achieved = _achieved_at(deadline_dt, timed_soc)
         if achieved is None:
             continue
-        errors.append(achieved - target)
+        _record(_score_deadline(intent=rep.get("intent"), target_soc=rep.get("target_soc"),
+                                floor_soc=rep.get("floor_soc"), achieved=achieved))
 
-    n = len(errors)
-    if n < _MIN_DEADLINES:
+    all_errors = commit_errors + reserve_errors
+    combined = _aggregate(all_errors)
+    if combined is None:
         return None
-    hits = sum(1 for e in errors if e >= -2.0)
-    return {
-        "n_deadlines": n,
-        "mean_error_pp": round(_mean(errors), 1),
-        "mae_pp": round(_mean([abs(e) for e in errors]), 1),
-        "hit_rate_pct": round(hits / n * 100.0, 1),
-    }
+    combined["commitments"] = _aggregate(commit_errors)
+    combined["reserve"] = _aggregate(reserve_errors)
+    return combined
 
 
 _MIN_PRIOR_DAYS = 3  # prior same-weekday-hour observations required before a bucket is scored

@@ -13,9 +13,11 @@
 		042F4F18CFE0650AA449CAAC /* InsightsStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = AE96D50A9EC3DC4FEC64185B /* InsightsStore.swift */; };
 		0D0F6681CE829F1EC4356E68 /* EMSControlCore.framework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = 62C0D3FEB8DD96AF4F3CAD8C /* EMSControlCore.framework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 		0D87044D1DD83D7B05AC4069 /* EMSTimelineProvider.swift in Sources */ = {isa = PBXBuildFile; fileRef = 00226AD26ECD7A7800E34475 /* EMSTimelineProvider.swift */; };
+		145FB2DA6CB9ACB0352B4CED /* NotificationsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2B9061823F17E42906990E53 /* NotificationsView.swift */; };
 		15F7E1D2E299E702BCF34E68 /* DemoDataStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3699F1E6706AE136B68AB1C8 /* DemoDataStore.swift */; };
 		1A13A3975BE7484B3E9D2185 /* ISOTimestamp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2DC5EEC3A04E938FD71E41C8 /* ISOTimestamp.swift */; };
 		211D0CD0F3242A3EF71BD8AE /* demo-dashboard.json in Resources */ = {isa = PBXBuildFile; fileRef = 0888EA444AB57461568AD1F4 /* demo-dashboard.json */; };
+		4721E13236179397CD0A8943 /* CarView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 25C474902F0FBA9F9478CE8D /* CarView.swift */; };
 		4E695D73A60245B409F24E62 /* ActivityStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 00F8B1F9E78007B8E6F45047 /* ActivityStore.swift */; };
 		51B466CD33164832C83EA6F1 /* DashboardStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 851FDA73182D3541A3039A9A /* DashboardStore.swift */; };
 		54D20C7D5F03A7096EA28D35 /* ConnectionView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 378862CC33548C4C96596B8A /* ConnectionView.swift */; };
@@ -24,12 +26,14 @@
 		71EE4BF19B1AE73BBF143945 /* WidgetSupport.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3115F953EFDB46663E1E7408 /* WidgetSupport.swift */; };
 		729A10730EAAE407CCC4638B /* EMSControlApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = DFE9CA097DB9BAA988D849E2 /* EMSControlApp.swift */; };
 		76ABF2D1AF12E76FCA0F984E /* SeriesGeometry.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6489F114C4BCA73DEAF39933 /* SeriesGeometry.swift */; };
+		7803F39C51A24A96E54556FB /* NotificationsStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = C44D90E919EBD89422A67BCB /* NotificationsStore.swift */; };
 		787676AAC65CC3EFD9FF0E54 /* ActivityView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3CB11B9536D721D347D9429D /* ActivityView.swift */; };
 		7E7073E900977C467AD6C209 /* ServerDiscovery.swift in Sources */ = {isa = PBXBuildFile; fileRef = 033DDC49ECE87F18564D3288 /* ServerDiscovery.swift */; };
 		7E7EC9CB9EF6D3C23CB1E1FF /* EMSWidgetBundle.swift in Sources */ = {isa = PBXBuildFile; fileRef = 81C65C37F0360A3E36856B3C /* EMSWidgetBundle.swift */; };
 		869F6EB25417A0F2A4D2613A /* Models.swift in Sources */ = {isa = PBXBuildFile; fileRef = 13253B7C77956C58739FA336 /* Models.swift */; };
 		8D0B21A731D261A512DA1AC7 /* EMSWidget.appex in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = 14BCF6378F4A63CC1232715D /* EMSWidget.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
 		9AA655D073E01E5E13F7FFA5 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = C4315BE65439DFDF4D4C0BA1 /* Assets.xcassets */; };
+		A4AC7F65FDFA22E829A9B1EC /* NotificationsModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = BE34CB449C6E2540E29A004B /* NotificationsModels.swift */; };
 		A4C345A7479078FBB7CD3D55 /* DashboardView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 78E410739D2A3710496D0625 /* DashboardView.swift */; };
 		A93F94C222669DFBD1867493 /* demo-explainer.json in Resources */ = {isa = PBXBuildFile; fileRef = A447D414CC4B7CC4F68D91D0 /* demo-explainer.json */; };
 		B1C9A8640321DD1AA1C7D313 /* ServerAddressValidator.swift in Sources */ = {isa = PBXBuildFile; fileRef = C10928FD46649449E9D7A9F3 /* ServerAddressValidator.swift */; };
@@ -37,6 +41,8 @@
 		C32DD176D4AC4B7979994319 /* KeychainCredentialStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = F931E1AEC5676B6174B3A76F /* KeychainCredentialStore.swift */; };
 		C9F13CEE37D770D72BFECADC /* demo-faq.json in Resources */ = {isa = PBXBuildFile; fileRef = E720AFC468AEF7CC68D269FB /* demo-faq.json */; };
 		CE05537D943C4DEF4E95F80E /* demo-chat.json in Resources */ = {isa = PBXBuildFile; fileRef = 994E14FBDEF1C0F89AC9E28C /* demo-chat.json */; };
+		D26583CB40FD4B9525AF4F6A /* CarStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7AE8E5DCF24A00DA770185CB /* CarStore.swift */; };
+		E4324AC3E37934CFA4C5AE74 /* CarTab.swift in Sources */ = {isa = PBXBuildFile; fileRef = 666215802737C6356279F9E7 /* CarTab.swift */; };
 		EEC0E74D439A37CB1C2D9F6C /* APIClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = 720F711D71B00AC0F6976700 /* APIClient.swift */; };
 		EF963FF881BB7743E2130B73 /* AppShellView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 24CB1980979D24B5EA49FBE4 /* AppShellView.swift */; };
 		F9D6B9F8ED1B8F823AE35213 /* EMSWidgetViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = FCEB78668E11698B72193C5B /* EMSWidgetViews.swift */; };
@@ -101,6 +107,8 @@
 		14BCF6378F4A63CC1232715D /* EMSWidget.appex */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = "wrapper.app-extension"; path = EMSWidget.appex; sourceTree = BUILT_PRODUCTS_DIR; };
 		24CB1980979D24B5EA49FBE4 /* AppShellView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppShellView.swift; sourceTree = "<group>"; };
 		257B061EB9A96671DDB32DC5 /* InsightsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = InsightsView.swift; sourceTree = "<group>"; };
+		25C474902F0FBA9F9478CE8D /* CarView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CarView.swift; sourceTree = "<group>"; };
+		2B9061823F17E42906990E53 /* NotificationsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NotificationsView.swift; sourceTree = "<group>"; };
 		2DC5EEC3A04E938FD71E41C8 /* ISOTimestamp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ISOTimestamp.swift; sourceTree = "<group>"; };
 		3115F953EFDB46663E1E7408 /* WidgetSupport.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WidgetSupport.swift; sourceTree = "<group>"; };
 		34964B0AB73A0E2AEB2C4350 /* EMSControl.app */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.application; path = EMSControl.app; sourceTree = BUILT_PRODUCTS_DIR; };
@@ -110,9 +118,11 @@
 		4D90E4C3625F5CBBBB665180 /* Theme.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Theme.swift; sourceTree = "<group>"; };
 		62C0D3FEB8DD96AF4F3CAD8C /* EMSControlCore.framework */ = {isa = PBXFileReference; explicitFileType = wrapper.framework; includeInIndex = 0; path = EMSControlCore.framework; sourceTree = BUILT_PRODUCTS_DIR; };
 		6489F114C4BCA73DEAF39933 /* SeriesGeometry.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SeriesGeometry.swift; sourceTree = "<group>"; };
+		666215802737C6356279F9E7 /* CarTab.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CarTab.swift; sourceTree = "<group>"; };
 		6945AC6CBCB3CA4B93980458 /* EMSWidget.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = EMSWidget.entitlements; sourceTree = "<group>"; };
 		720F711D71B00AC0F6976700 /* APIClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = APIClient.swift; sourceTree = "<group>"; };
 		78E410739D2A3710496D0625 /* DashboardView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DashboardView.swift; sourceTree = "<group>"; };
+		7AE8E5DCF24A00DA770185CB /* CarStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CarStore.swift; sourceTree = "<group>"; };
 		81C65C37F0360A3E36856B3C /* EMSWidgetBundle.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EMSWidgetBundle.swift; sourceTree = "<group>"; };
 		851FDA73182D3541A3039A9A /* DashboardStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DashboardStore.swift; sourceTree = "<group>"; };
 		922974D3E5EFAB723E1B86D9 /* ChatView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatView.swift; sourceTree = "<group>"; };
@@ -122,8 +132,10 @@
 		A516714D923D0B43BA82A7CA /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
 		AE96D50A9EC3DC4FEC64185B /* InsightsStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = InsightsStore.swift; sourceTree = "<group>"; };
 		BC6937650BBFD71CE57B8BF5 /* ChatStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatStore.swift; sourceTree = "<group>"; };
+		BE34CB449C6E2540E29A004B /* NotificationsModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NotificationsModels.swift; sourceTree = "<group>"; };
 		C10928FD46649449E9D7A9F3 /* ServerAddressValidator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ServerAddressValidator.swift; sourceTree = "<group>"; };
 		C4315BE65439DFDF4D4C0BA1 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
+		C44D90E919EBD89422A67BCB /* NotificationsStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NotificationsStore.swift; sourceTree = "<group>"; };
 		DFE9CA097DB9BAA988D849E2 /* EMSControlApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EMSControlApp.swift; sourceTree = "<group>"; };
 		E720AFC468AEF7CC68D269FB /* demo-faq.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = "demo-faq.json"; sourceTree = "<group>"; };
 		F931E1AEC5676B6174B3A76F /* KeychainCredentialStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeychainCredentialStore.swift; sourceTree = "<group>"; };
@@ -187,6 +199,8 @@
 			children = (
 				00F8B1F9E78007B8E6F45047 /* ActivityStore.swift */,
 				720F711D71B00AC0F6976700 /* APIClient.swift */,
+				7AE8E5DCF24A00DA770185CB /* CarStore.swift */,
+				666215802737C6356279F9E7 /* CarTab.swift */,
 				BC6937650BBFD71CE57B8BF5 /* ChatStore.swift */,
 				851FDA73182D3541A3039A9A /* DashboardStore.swift */,
 				3699F1E6706AE136B68AB1C8 /* DemoDataStore.swift */,
@@ -194,6 +208,8 @@
 				2DC5EEC3A04E938FD71E41C8 /* ISOTimestamp.swift */,
 				F931E1AEC5676B6174B3A76F /* KeychainCredentialStore.swift */,
 				13253B7C77956C58739FA336 /* Models.swift */,
+				BE34CB449C6E2540E29A004B /* NotificationsModels.swift */,
+				C44D90E919EBD89422A67BCB /* NotificationsStore.swift */,
 				6489F114C4BCA73DEAF39933 /* SeriesGeometry.swift */,
 				C10928FD46649449E9D7A9F3 /* ServerAddressValidator.swift */,
 				033DDC49ECE87F18564D3288 /* ServerDiscovery.swift */,
@@ -209,6 +225,7 @@
 				3CB11B9536D721D347D9429D /* ActivityView.swift */,
 				24CB1980979D24B5EA49FBE4 /* AppShellView.swift */,
 				C4315BE65439DFDF4D4C0BA1 /* Assets.xcassets */,
+				25C474902F0FBA9F9478CE8D /* CarView.swift */,
 				922974D3E5EFAB723E1B86D9 /* ChatView.swift */,
 				378862CC33548C4C96596B8A /* ConnectionView.swift */,
 				78E410739D2A3710496D0625 /* DashboardView.swift */,
@@ -216,6 +233,7 @@
 				DFE9CA097DB9BAA988D849E2 /* EMSControlApp.swift */,
 				001C06DC7E770182FD4B1DBB /* Info.plist */,
 				257B061EB9A96671DDB32DC5 /* InsightsView.swift */,
+				2B9061823F17E42906990E53 /* NotificationsView.swift */,
 			);
 			path = EMSControlApp;
 			sourceTree = "<group>";
@@ -374,6 +392,8 @@
 			files = (
 				EEC0E74D439A37CB1C2D9F6C /* APIClient.swift in Sources */,
 				4E695D73A60245B409F24E62 /* ActivityStore.swift in Sources */,
+				D26583CB40FD4B9525AF4F6A /* CarStore.swift in Sources */,
+				E4324AC3E37934CFA4C5AE74 /* CarTab.swift in Sources */,
 				B73C5305189929545FF315BF /* ChatStore.swift in Sources */,
 				51B466CD33164832C83EA6F1 /* DashboardStore.swift in Sources */,
 				15F7E1D2E299E702BCF34E68 /* DemoDataStore.swift in Sources */,
@@ -381,6 +401,8 @@
 				042F4F18CFE0650AA449CAAC /* InsightsStore.swift in Sources */,
 				C32DD176D4AC4B7979994319 /* KeychainCredentialStore.swift in Sources */,
 				869F6EB25417A0F2A4D2613A /* Models.swift in Sources */,
+				A4AC7F65FDFA22E829A9B1EC /* NotificationsModels.swift in Sources */,
+				7803F39C51A24A96E54556FB /* NotificationsStore.swift in Sources */,
 				76ABF2D1AF12E76FCA0F984E /* SeriesGeometry.swift in Sources */,
 				B1C9A8640321DD1AA1C7D313 /* ServerAddressValidator.swift in Sources */,
 				7E7073E900977C467AD6C209 /* ServerDiscovery.swift in Sources */,
@@ -395,11 +417,13 @@
 			files = (
 				787676AAC65CC3EFD9FF0E54 /* ActivityView.swift in Sources */,
 				EF963FF881BB7743E2130B73 /* AppShellView.swift in Sources */,
+				4721E13236179397CD0A8943 /* CarView.swift in Sources */,
 				58F3D814DBFE8DE2988FC32A /* ChatView.swift in Sources */,
 				54D20C7D5F03A7096EA28D35 /* ConnectionView.swift in Sources */,
 				A4C345A7479078FBB7CD3D55 /* DashboardView.swift in Sources */,
 				729A10730EAAE407CCC4638B /* EMSControlApp.swift in Sources */,
 				03BCFFC4E5ACF67ED5DA059F /* InsightsView.swift in Sources */,
+				145FB2DA6CB9ACB0352B4CED /* NotificationsView.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

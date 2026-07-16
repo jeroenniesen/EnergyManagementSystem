@@ -695,12 +695,23 @@ class HistoryStore:
             # strategy, the target SoC it's aiming for + deadline, the resolved intent, and the
             # SoC observed at that moment — so a reviewer can later compare `target_soc` against
             # the achieved `soc_pct` in raw_samples. Recorded by the recorder, purged with samples.
+            # `plan_version` + `floor_soc` back the intent-aware follow-through scorer
+            # (ems.analysis.plan_execution_error): plan_version identifies the plan EPOCH a row
+            # belongs to (so a superseded day-ahead commitment isn't scored against a later rolling
+            # plan's SoC), and floor_soc is the reserve floor discharge/hold/self-consumption
+            # deadlines are scored against (they intend SoC to fall, not reach the target).
             await db.execute(
                 "CREATE TABLE IF NOT EXISTS plan_history "
                 "(ts TEXT NOT NULL, strategy TEXT, target_soc REAL, deadline TEXT, "
-                "soc_pct REAL, intent TEXT)"
+                "soc_pct REAL, intent TEXT, plan_version TEXT, floor_soc REAL)"
             )
             await db.execute("CREATE INDEX IF NOT EXISTS idx_plan_ts ON plan_history(ts)")
+            # Idempotent forward-compat for a plan_history built before those two columns existed:
+            # ADD COLUMN only when missing (nullable, no backfill needed — the scorer falls back to
+            # legacy grouping for rows that predate them). Cheaper than a versioned migration for a
+            # pure nullable-column add, and safe on every boot.
+            await self._add_missing_columns(
+                db, "plan_history", {"plan_version": "TEXT", "floor_soc": "REAL"})
             # Cumulative gas meter readings (B-02: gas folds into the CO2 footprint). The recorder
             # inserts one row/cycle when a gas meter is paired to the P1; window consumption is a
             # last-minus-first delta over the readings (see reporting.gas_m3_consumed), so we only
@@ -758,6 +769,20 @@ class HistoryStore:
             if not existing:
                 await db.execute(f"PRAGMA user_version = {int(LATEST_SCHEMA_VERSION)}")
                 await db.commit()
+
+    @staticmethod
+    async def _add_missing_columns(
+        db: aiosqlite.Connection, table: str, columns: dict[str, str]
+    ) -> None:
+        """Idempotently ADD each `name -> sqlite_type` column that `table` doesn't already have —
+        for nullable, no-backfill column additions to a table the baseline `CREATE TABLE IF NOT
+        EXISTS` can't retro-add on an existing DB. Runs inside the init transaction (no commit);
+        a no-op once the columns exist, so it's safe on every boot."""
+        cur = await db.execute(f"PRAGMA table_info({table})")
+        existing = {row[1] for row in await cur.fetchall()}
+        for name, col_type in columns.items():
+            if name not in existing:
+                await db.execute(f"ALTER TABLE {table} ADD COLUMN {name} {col_type}")
 
     async def purge_older_than(self, cutoff_iso: str) -> int:
         """Delete rows older than `cutoff_iso` (UTC-ISO) from BOTH sample tables atomically (one
@@ -1034,25 +1059,31 @@ class HistoryStore:
     async def record_plan(self, ts: str, snapshot: dict) -> None:
         """Append one plan/target history row (observability-data): what the planner intended
         THIS cycle. `snapshot` is the {"strategy","target_soc","deadline","soc_pct","intent"} dict
-        assembled by the API's `_plan_snapshot` — missing keys default to None (a partial snapshot
-        still records something rather than nothing)."""
+        assembled by the API's `_plan_snapshot`, OPTIONALLY carrying "plan_version" + "floor_soc"
+        (the plan-epoch id + reserve floor the intent-aware follow-through scorer needs — see
+        ems.analysis.plan_execution_error). Missing keys default to None (a partial or
+        pre-commitment snapshot still records something rather than nothing; the scorer falls back
+        to legacy grouping for rows without plan_version/floor_soc)."""
         async with self._write_conn() as db:
             await db.execute(
-                "INSERT INTO plan_history (ts, strategy, target_soc, deadline, soc_pct, intent) "
-                "VALUES (?, ?, ?, ?, ?, ?)",
+                "INSERT INTO plan_history "
+                "(ts, strategy, target_soc, deadline, soc_pct, intent, plan_version, floor_soc) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
                 (ts, snapshot.get("strategy"), snapshot.get("target_soc"),
-                 snapshot.get("deadline"), snapshot.get("soc_pct"), snapshot.get("intent")),
+                 snapshot.get("deadline"), snapshot.get("soc_pct"), snapshot.get("intent"),
+                 snapshot.get("plan_version"), snapshot.get("floor_soc")),
             )
             await db.commit()
 
     async def plan_history_between(self, start_iso: str, end_iso: str) -> list[dict]:
         """Plan/target history rows with `ts` in [start, end), oldest-first (UTC-ISO ⇒
-        lexicographic = time) — compare `target_soc` against raw_samples.soc_pct over time."""
+        lexicographic = time) — compare `target_soc` against raw_samples.soc_pct over time.
+        `plan_version`/`floor_soc` are None on rows written before those columns existed."""
         async with self._conn() as db:
             db.row_factory = aiosqlite.Row
             cur = await db.execute(
-                "SELECT ts, strategy, target_soc, deadline, soc_pct, intent FROM plan_history "
-                "WHERE ts >= ? AND ts < ? ORDER BY ts ASC",
+                "SELECT ts, strategy, target_soc, deadline, soc_pct, intent, plan_version, "
+                "floor_soc FROM plan_history WHERE ts >= ? AND ts < ? ORDER BY ts ASC",
                 (start_iso, end_iso))
             return [dict(r) for r in await cur.fetchall()]
 
