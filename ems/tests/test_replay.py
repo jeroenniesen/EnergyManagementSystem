@@ -21,7 +21,14 @@ from zoneinfo import ZoneInfo
 from ems.domain import RawSample
 from ems.load_model import reconstruct
 from ems.planner.strategy import HysteresisState
-from ems.replay import ReplayConfig, _resolve_strategy, main, replay_day, replay_range
+from ems.replay import (
+    ReplayConfig,
+    _aggregate,
+    _resolve_strategy,
+    main,
+    replay_day,
+    replay_range,
+)
 from ems.sources.forecast import ForecastSlot
 from ems.sources.prices import PriceSlot
 from ems.storage.history import HistoryStore
@@ -102,6 +109,19 @@ def _winter_price(i):  # 0.10 night(0-5) · 0.20 midday(6-16) · 0.50 peak(17-20
 
 def _winter_day(soc=0.0):
     return _raw_day(1000.0, lambda i: 0.0, soc=soc), _price_day(_winter_price)
+
+
+def _fc_day(p50_of_slot, *, day=DAY):
+    """96 day-ahead forecast rows (forecast_snapshots shape) with p10=p50=p90=p50_of_slot(i)."""
+    out = []
+    for i in range(96):
+        w = p50_of_slot(i)
+        out.append({
+            "issued_date": (day - timedelta(days=1)).date().isoformat(),
+            "start": (day + timedelta(minutes=15 * i)).isoformat(),
+            "p10_w": w, "p50_w": w, "p90_w": w,
+        })
+    return out
 
 
 # --- 1. no_battery exact cost ---------------------------------------------------------------------
@@ -322,3 +342,34 @@ def test_replay_hysteresis_matches_live_same_day_tick_semantics():
     assert state.count == 1
     _, state = _resolve_strategy(cfg, d, prices, flat, {}, state)  # same-day transient agreement
     assert state.pending == "summer" and state.count == 1
+
+
+# --- oracle scenario (perfect-solar ceiling) ------------------------------------------------------
+def test_oracle_matches_planner_when_the_forecast_is_perfect():
+    # Feed the planner a forecast that EQUALS the actual solar (p10=p50=p90=actual). The oracle
+    # builds with the actual solar too, so both build the identical plan → identical cost. This
+    # pins that the oracle reuses the same plan+simulate machinery, only swapping the forecast.
+    raw, prices = _solar_day()
+    fc = _fc_day(_solar_of_slot)
+    day = replay_day(raw, prices, fc, cfg=_cfg())
+    assert day.data_ok and "oracle" in day.scenarios
+    pl = day.scenarios["planner"].cost_eur
+    orc = day.scenarios["oracle"].cost_eur
+    assert pl is not None and orc is not None
+    assert abs(orc - pl) < 1e-9
+
+
+def test_oracle_headroom_is_wired_into_the_aggregate():
+    # A day whose recorded forecast is WRONG (claims a big all-day solar block that never happens)
+    # → the planner counts on solar it won't get; the oracle sees the truth. The aggregate must
+    # expose oracle_cost_eur and oracle_headroom_eur == planner_cost − oracle_cost.
+    raw, prices = _winter_day()  # 1 kW load, NO actual solar
+    fc = _fc_day(lambda i: 3000.0 if 6 <= _hour(i) < 17 else 0.0)  # phantom midday solar
+    day = replay_day(raw, prices, fc, cfg=_cfg(**{"strategy.mode": "winter"}))
+    agg = _aggregate([day], None)
+    assert "oracle_cost_eur" in agg and "oracle_headroom_eur" in agg
+    pl = day.scenarios["planner"].cost_eur
+    orc = day.scenarios["oracle"].cost_eur
+    assert agg["oracle_headroom_eur"] == round(pl - orc, 4)
+    # Perfect solar can never make the SAME strategy pay MORE here: oracle ≤ planner (headroom ≥ 0).
+    assert orc <= pl + 1e-9
