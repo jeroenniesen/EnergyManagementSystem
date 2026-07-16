@@ -2,9 +2,11 @@
 (config change, manual override) surfaced via /api/audit. (The per-cycle battery-decision loop runs
 in the lifespan; its dedup is covered here at the store level via last_decision_mode.)"""
 import asyncio
+import sqlite3
 from datetime import UTC, datetime
 from zoneinfo import ZoneInfo
 
+import aiosqlite
 from fastapi.testclient import TestClient
 
 from ems.control.mode_controller import ModeController
@@ -40,6 +42,33 @@ def test_audit_store_append_recent_filter_and_last_mode(tmp_path):
     assert allr[0]["detail"]["desired_mode"] == "auto"             # detail decoded to a dict
     assert len(decs) == 2 and all(e["category"] == "battery_decision" for e in decs)
     assert last == "auto"                                          # dedup seed = latest mode
+
+
+def test_last_decision_mode_does_not_nest_the_self_heal_retry(tmp_path, monkeypatch):
+    # F7: last_decision_mode must query through the PRIVATE unwrapped helper, not the wrapped
+    # public `recent`. Otherwise a dead connection triggers the retry wrapper on BOTH methods
+    # (outer last_decision_mode × inner recent = up to 4 attempts). Count the audit_log SELECTs a
+    # persistent dead-connection error provokes: with the fix it is ≤ 2 (one retry total).
+    store = AuditStore(str(tmp_path / "ems.sqlite"))
+    calls = {"n": 0}
+    orig_execute = aiosqlite.Connection.execute
+
+    async def counting_execute(self, sql, *a, **kw):
+        if "FROM audit_log" in sql:
+            calls["n"] += 1
+            raise sqlite3.ProgrammingError("Cannot operate on a closed database.")
+        return await orig_execute(self, sql, *a, **kw)
+
+    async def run():
+        await store.init()
+        monkeypatch.setattr(aiosqlite.Connection, "execute", counting_execute)
+        try:
+            await store.last_decision_mode()
+        except sqlite3.ProgrammingError:
+            pass  # persistent dead connection ⇒ the 2nd attempt also propagates — expected
+
+    asyncio.run(run())
+    assert calls["n"] <= 2  # one retry at ONE level, never the nested 4 the old code caused
 
 
 def test_audit_store_between_windows_by_time_oldest_first(tmp_path):

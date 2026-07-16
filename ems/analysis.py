@@ -56,8 +56,23 @@ def _matched_slots(
             continue
         actual_by_slot[_floor(dt)].append(float(r.get("solar_power_w", 0.0)))
 
-    matched: list[tuple[float, float, float, float]] = []
+    # Dedupe canonical rows before matching (F3): a canonical-write retry can leave more than one
+    # row per `target_start` (each with a fresh `issued_at`), which would otherwise double-count the
+    # slot. Keep the LATEST issued_at per target_start (ISO strings sort chronologically; a row
+    # without issued_at sorts as earliest). Insertion order is preserved for distinct targets, so
+    # the common single-row-per-slot case is unchanged.
+    latest_by_target: dict[str, dict] = {}
     for row in forecast_rows:
+        target = row.get("target_start")
+        if target is None:
+            continue
+        issued = str(row.get("issued_at") or "")
+        existing = latest_by_target.get(target)
+        if existing is None or issued >= str(existing.get("issued_at") or ""):
+            latest_by_target[target] = row
+
+    matched: list[tuple[float, float, float, float]] = []
+    for row in latest_by_target.values():
         dt = _parse(row.get("target_start"))
         if dt is None:
             continue

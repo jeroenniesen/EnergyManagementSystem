@@ -34,6 +34,7 @@ type Flows = {
   car_guard_leak_kwh: number;
   self_sufficiency_pct: number | null;
   solar_self_consumption_pct: number | null;
+  window_note?: string | null; // F2: year view labels the raw-window Sankey ("last N days")
 };
 
 type GasSummary = {
@@ -496,6 +497,12 @@ export function Insights() {
                 <p className="flow-warn" data-testid="leak-warn">
                   ⚠ {kwh(f.car_guard_leak_kwh)} went from the battery into the car — the car-guard
                   should prevent this.
+                </p>
+              )}
+              {f.window_note && (
+                <p className="flow-window-note" data-testid="flow-window-note">
+                  Flows shown for the {f.window_note} (older detail isn’t kept); the scores above
+                  cover the full year.
                 </p>
               )}
             </div>

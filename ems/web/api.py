@@ -30,6 +30,7 @@ from ems.analysis import (
 from ems.cars import by_id as car_by_id
 from ems.confidence import plan_confidence
 from ems.control.car_mode import (
+    _RESERVE_ENTER_PP,
     CarModeAction,
     decide_car_mode_action,
     predict_house_load_w,
@@ -82,6 +83,7 @@ from ems.planner.summer import SummerConfig, sunset_after
 from ems.planner.validator import PlanValidation, validate_plan
 from ems.readiness import Readiness, compute_readiness, home_state
 from ems.reporting import (
+    apply_year_totals,
     build_report,
     build_series,
     build_series_from_daily_energy,
@@ -500,6 +502,32 @@ async def _run_canonical_forecast(
                 return None
         except Exception:
             _log.debug("canonical forecast dedupe read failed (non-fatal)", exc_info=True)
+    # Ledger-level idempotency (F3): the cache dedupe key can be lost even after a successful
+    # ledger write (e.g. an earlier cache `.set` failed), and a naive retry would then append a
+    # SECOND canonical set with a fresh `issued_at` — duplicates the scorer double-counts. So before
+    # building, check whether tomorrow already has canonical solar rows; if so, treat the run as
+    # already-done: (re)set the cache key so future cycles dedupe cheaply, mark state, skip writes.
+    day_start = datetime(tomorrow.year, tomorrow.month, tomorrow.day, tzinfo=tz)
+    tomorrow_start = day_start.astimezone(UTC).isoformat()
+    tomorrow_end = (day_start + timedelta(days=1)).astimezone(UTC).isoformat()
+    try:
+        already = await store.ledger_canonical_between("solar", tomorrow_start, tomorrow_end)
+    except Exception:
+        already = []
+        _log.debug("canonical forecast ledger idempotency check failed (non-fatal)", exc_info=True)
+    if already:
+        if cache_store is not None:
+            try:
+                await asyncio.to_thread(
+                    cache_store.set, dedupe_key, "ledger-present", _CANONICAL_DEDUPE_TTL_SECONDS)
+            except Exception:
+                _log.debug("canonical forecast dedupe write failed (non-fatal)", exc_info=True)
+        if state is not None:
+            state["ok"] = True
+            state["last_success_date"] = tomorrow.isoformat()
+        _log.info("canonical forecast: tomorrow (%s) already has canonical rows — skipping write",
+                  tomorrow.isoformat())
+        return None
     issued_at = now.astimezone(UTC).isoformat()
     rows = _canonical_ledger_rows(
         issued_at=issued_at, tomorrow=tomorrow, tz=tz, solar_slots=solar_slots,
@@ -732,40 +760,72 @@ _CAR_ATTEMPTED_OUTCOMES = frozenset(
     {"applied", "unconfirmed", "failed_recovered", "failed_unrecovered"})
 
 
+_CAR_BAD_OUTCOMES = frozenset({"unconfirmed", "failed_recovered", "failed_unrecovered"})
+
+
 def _decide_car_command(
     session: dict, car_action: CarModeAction, now: datetime, *,
+    observed_mode: PhysicalMode | None = None,
     dwell: timedelta = _CAR_SESSION_DWELL, max_commands: int = _CAR_SESSION_MAX_COMMANDS,
+    reconcile_spacing: timedelta = _CAR_SESSION_DWELL,
 ) -> tuple[bool, dict, str]:
     """PURE. Given the current car-session box, the discharge `CarModeAction` decided this cycle and
     `now`, decide whether to actually (re-)command the battery and compute the NEXT session box.
 
     Returns ``(command, next_session, event)`` where `event` is one of ``"start"`` (first command of
-    a session), ``"recommand"`` (a later command), ``"hold"`` (keep the current setpoint, no write)
-    or ``"cap"`` (a re-command was wanted but the per-session command budget is spent → hold+warn).
+    a session), ``"recommand"`` (a later prediction-driven command), ``"reconcile"`` (a safety
+    re-command because the battery isn't actually discharging — see F1), ``"hold"`` (keep the
+    current setpoint, no write), ``"cap"`` (a prediction re-command was wanted but the per-session
+    command budget is spent → hold+warn) or ``"cap_reconcile"`` (a RECONCILE re-command was wanted
+    but the budget is spent → the caller must fall back to the safe HOLD path, never keep holding a
+    discharge setpoint the battery never adopted).
 
     Layered on top of `car_action.recommand` (car_mode's own bounded re-command rule) are two extra
-    safety gates that live in the wiring, not the pure core: a >= `dwell` gap between car-mode
-    commands, and a hard `max_commands` ceiling per session. This is what keeps a whole charging
-    session to a handful of writes even with a noisy prediction — assert-tested directly."""
+    safety gates in the wiring: a >= `dwell` gap between prediction-driven commands, and a hard
+    `max_commands` ceiling per session. This keeps a whole charging session to a handful of writes
+    even with a noisy prediction.
+
+    F1 (observed-mode reconciliation): a first write that returns 'unconfirmed' advances the box as
+    if it applied, so with a stable prediction the ordinary re-command never fires again and the
+    battery can sit in vendor AUTO draining into the car all session. So, independently of the
+    prediction, if the session is ACTIVE but the battery is OBSERVED to not be DISCHARGE (a known
+    non-DISCHARGE mode), or the last command's outcome was unconfirmed/failed, a re-command is DUE —
+    on a SHORT `reconcile_spacing` (>= 1 control cycle, NOT the 10-min prediction dwell; this is
+    safety reconciliation), still bounded by `max_commands`."""
     active = bool(session.get("active"))
     setpoint = session.get("setpoint_w")
     commands = int(session.get("commands") or 0)
     commanded_at = session.get("commanded_at")
+    last_outcome = session.get("last_outcome")
     first = not active
-    dwell_ok = True
+    elapsed: timedelta | None = None
     if commanded_at:
         try:
-            dwell_ok = (now - datetime.fromisoformat(commanded_at)) >= dwell
+            elapsed = now - datetime.fromisoformat(commanded_at)
         except (TypeError, ValueError):
-            dwell_ok = True  # a corrupt timestamp must never wedge the session
-    want = car_action.recommand and (first or dwell_ok)
+            elapsed = None  # a corrupt timestamp must never wedge the session
+    dwell_ok = elapsed is None or elapsed >= dwell
+    reconcile_ok = elapsed is None or elapsed >= reconcile_spacing
+
+    # F1: is a safety reconciliation re-command due? Only for an ACTIVE session, when we can see the
+    # setpoint didn't take: a KNOWN non-DISCHARGE observed mode (None = unreadable, don't assume
+    # drift), or a bad last outcome. Spaced by reconcile_spacing, not the 10-min prediction dwell.
+    battery_not_discharging = (
+        observed_mode is not None and observed_mode is not PhysicalMode.DISCHARGE)
+    reconcile = active and reconcile_ok and (
+        battery_not_discharging or last_outcome in _CAR_BAD_OUTCOMES)
+
+    ordinary = car_action.recommand and (first or dwell_ok)
+    want = ordinary or reconcile
     if want and commands >= max_commands:
-        # Budget spent: stop chasing the prediction, hold the last setpoint (no write).
-        return False, dict(session, active=True), "cap"
+        # Budget spent. If a reconcile was due, holding a discharge setpoint the battery never
+        # adopted just keeps draining into the car — the caller must fall back to the safe HOLD.
+        return False, dict(session, active=True), ("cap_reconcile" if reconcile else "cap")
     if want:
         nxt = {"active": True, "setpoint_w": car_action.power_w,
                "commanded_at": now.isoformat(), "commands": commands + 1}
-        return True, nxt, ("start" if first else "recommand")
+        event = "start" if first else ("reconcile" if reconcile and not ordinary else "recommand")
+        return True, nxt, event
     # Hold this cycle — keep the session alive at its current setpoint (first cycle seeds it).
     seed = setpoint if setpoint is not None else car_action.power_w
     return False, {"active": True, "setpoint_w": seed,
@@ -797,6 +857,55 @@ def _decide_car_session_end(
     if cycles < max(1, end_cycles):
         return False, cycles
     return True, 0
+
+
+def _decide_grace_action(
+    *, override_active: bool, failsafe: bool, soc_pct: float, min_reserve_soc: float,
+) -> str:
+    """PURE. Within the below-threshold GRACE window (a car session is active and the car dipped
+    below the charging threshold, but the end-hysteresis has not yet elapsed), decide what to do
+    THIS cycle. The grace window's job is to bridge a brief EV-power dip WITHOUT resuming the plan;
+    but three things must still act immediately rather than be swallowed by the grace hold:
+
+      * ``"fall_through"`` — a manual override or a data-quality fail-safe wants the battery NOW;
+        the caller ends the session and lets the ordinary decide() apply the effective intent this
+        cycle (F3: the grace short-circuit must never swallow an override / fail-safe).
+      * ``"reserve_hold"`` — SoC is at/within the reserve floor band; the caller ends the session
+        and holds at the reserve floor now, rather than keep discharging the last setpoint through
+        the grace window on a nearly-drained battery (F5).
+      * ``"hold"`` — a genuine benign EV-power blip; hold the current setpoint through the grace
+        window (unchanged behaviour — the reason the grace window exists).
+
+    An override (deliberate operator action) takes precedence over the reserve floor."""
+    if override_active or failsafe:
+        return "fall_through"
+    if soc_pct <= min_reserve_soc + _RESERVE_ENTER_PP:
+        return "reserve_hold"
+    return "hold"
+
+
+def _commit_hysteresis_state(
+    box: dict, lock: threading.Lock, new_state: HysteresisState,
+    cache_store: object | None, key: str, ttl: float, log: logging.Logger = _log,
+) -> bool:
+    """Thread-safe adopt-and-persist of a seasonal-transition `HysteresisState` (F6).
+
+    `_commit_hysteresis` is reached from THREE unsynchronised threads — the periodic control loop,
+    an override-triggered control cycle, and a synchronous dashboard read that resolves the strategy
+    — each doing a read-modify-write on the shared `box` plus a `cache_store.set`. Without a lock
+    two writers can interleave the box assignment and the persist, losing an update / corrupting the
+    KV write. This serialises the whole RMW+persist under `lock`. Returns whether the state changed
+    (the TTL is refreshed on every call either way, so a quiet season doesn't expire). Best-effort
+    persist: a cache hiccup must never break strategy resolution."""
+    with lock:
+        changed = new_state != box["state"]
+        box["state"] = new_state
+        if cache_store is not None:
+            try:
+                cache_store.set(key, new_state.to_json(), ttl)
+            except Exception:
+                log.debug("hysteresis state persist failed (non-fatal)", exc_info=True)
+        return changed
 
 
 def create_app(
@@ -859,6 +968,9 @@ def create_app(
     _hysteresis_box: dict[str, HysteresisState] = {"state": HysteresisState()}
     _HYSTERESIS_KEY = "strategy:hysteresis"
     _HYSTERESIS_TTL_SECONDS = 90 * 24 * 3600.0  # long enough to bridge shoulder-season gaps
+    # Serialise the hysteresis read-modify-write + persist across the three threads that reach
+    # _commit_hysteresis (periodic loop / override cycle / sync dashboard read) — see F6.
+    _hysteresis_lock = threading.Lock()
     # Serialise control cycles: the periodic loop and an immediate override-triggered cycle must not
     # run decide()/apply() concurrently (two writes racing the battery).
     _control_lock = asyncio.Lock()
@@ -872,10 +984,12 @@ def create_app(
     # simply starts a fresh session and re-commands ONCE next cycle (documented, acceptable — the
     # battery keeps whatever mode it was in until then, and the session re-derives from live input).
     # {active, setpoint_w (last commanded W), commanded_at (iso of last car command), commands,
-    # below_threshold_cycles (the end-hysteresis counter, see _car_session_end_if_active)}.
+    # below_threshold_cycles (the end-hysteresis counter, see _car_session_end_if_active),
+    # reserve_hold (the F2 reserve-floor hysteresis latch), last_outcome (the last car command's
+    # controller outcome, for the F1 observed-mode reconciliation)}.
     _car_session: dict[str, Any] = {
         "active": False, "setpoint_w": None, "commanded_at": None, "commands": 0,
-        "below_threshold_cycles": 0}
+        "below_threshold_cycles": 0, "reserve_hold": False, "last_outcome": None}
     # Per-control-cycle cache of recent observation rows for the non-EV house-load prediction,
     # refreshed by the async control cycle ONLY while the car is charging (a bounded, cheap query).
     # The sync guard/control-tick read it; an empty/stale box just falls back to the load profile.
@@ -1174,6 +1288,9 @@ def create_app(
             static_w=settings_cache["control.car_discharge_w"],
             predicted_house_w=_car_predicted_house_w(now),
             current_setpoint_w=current_setpoint_w,
+            # F2: carry the reserve-floor hold across cycles so the two-threshold hysteresis (enter
+            # +1pp, resume +3pp) actually damps SoC noise around the floor instead of flapping.
+            reserve_holding=bool(_car_session.get("reserve_hold")),
         )
 
     def _car_guard(now: datetime, intent, reason):
@@ -1205,6 +1322,13 @@ def create_app(
                         None)
             return BatteryIntent.DISCHARGE_FOR_LOAD, car_action.reason, car_action
         if car_action.action == "hold":
+            # F2: a RESERVE-floor hold that interrupts an ACTIVE discharge session is surfaced (the
+            # car_action, not None) so the control tick keeps the session alive across the sticky,
+            # hysteretic hold instead of ending+restarting it (which flapped on floor noise). Every
+            # other hold (the master "hold" behaviour, or a reserve hold with no session) returns
+            # None — today's behaviour byte-for-byte, a plain HOLD_RESERVE.
+            if car_action.reserve_hold and _car_session["active"]:
+                return BatteryIntent.HOLD_RESERVE, car_action.reason, car_action
             return BatteryIntent.HOLD_RESERVE, car_action.reason, None
         return intent, reason, None  # "none" — defensive (car_charging was True), unchanged
 
@@ -1254,25 +1378,16 @@ def create_app(
         return surplus, spread
 
     def _commit_hysteresis(new_state: HysteresisState) -> None:
-        """Adopt `new_state` and, only when it actually changed, persist it to the KV cache so the
-        pending-switch counter survives a restart (§8.4 / B-15). Best-effort — a cache hiccup must
-        never break strategy resolution."""
-        if new_state == _hysteresis_box["state"]:
-            # Refresh the TTL during stable seasons too; otherwise a quiet season expires after
-            # 90 days and a restart loses the damping state.  This is intentionally a cheap
-            # idempotent write on each control evaluation.
-            if cache_store is not None:
-                try:
-                    cache_store.set(_HYSTERESIS_KEY, new_state.to_json(), _HYSTERESIS_TTL_SECONDS)
-                except Exception:
-                    _log.debug("hysteresis state TTL refresh failed (non-fatal)", exc_info=True)
-            return
-        _hysteresis_box["state"] = new_state
-        if cache_store is not None:
-            try:
-                cache_store.set(_HYSTERESIS_KEY, new_state.to_json(), _HYSTERESIS_TTL_SECONDS)
-            except Exception:
-                _log.debug("hysteresis state persist failed (non-fatal)", exc_info=True)
+        """Adopt `new_state` and persist it to the KV cache so the pending-switch counter survives a
+        restart (§8.4 / B-15). The TTL is refreshed on every call — even a stable season — so a
+        quiet season can't expire and lose the damping state. Thread-safe (F6): the RMW on
+        `_hysteresis_box` and the persist run under `_hysteresis_lock`, so the periodic loop, an
+        override-triggered cycle and a synchronous dashboard read can't interleave a lost update.
+        Best-effort — a cache hiccup must never break strategy resolution."""
+        _commit_hysteresis_state(
+            _hysteresis_box, _hysteresis_lock, new_state, cache_store,
+            _HYSTERESIS_KEY, _HYSTERESIS_TTL_SECONDS,
+        )
 
     def _resolve_strategy(now: datetime) -> tuple[str, str]:
         """(strategy, reason). Forced modes skip the (cheap-but-unneeded) energy-input computation;
@@ -1414,6 +1529,13 @@ def create_app(
                 cadence = _sample_cadence_seconds()
                 await materialize_observations(store, day_start, day_end, cadence_seconds=cadence)
                 await materialize_daily_energy(store, day_start, day_end, cadence_seconds=cadence)
+                # Finance year-completeness (F5): also cache YESTERDAY's finance rollup now,
+                # mirroring the daily_energy materialization above. daily_finance was previously
+                # written ONLY on a view/export, so a day nobody looked at before the 90-day raw
+                # purge became permanently uncomputable — a silent year-view undercount. This makes
+                # every completed day's finance survive the raw purge. Idempotent: the day's cached
+                # row (under the current calc_v) is returned unchanged, never re-upserted.
+                await _ensure_day_finance(y)
                 obs_cutoff = (datetime.now(UTC)
                               - timedelta(days=OBSERVATION_RETENTION_DAYS)).isoformat()
                 purged = await store.purge_observations_older_than(obs_cutoff)
@@ -1587,6 +1709,20 @@ def create_app(
     # this set: it only opens `replay_range`'s read-only (mode=ro) history DB connection and never
     # touches `settings_store` — there is nothing to protect, so gating it like a write would
     # misrepresent what it does. It stays reachable exactly like any other read.
+    # The mutating-method routes that are verified read-only and so are NOT token-gated. Every
+    # POST/PUT/DELETE route MUST be in `_WRITE_API_PATHS` or here (the write-gating invariant test
+    # `test_every_mutating_route_is_write_gated_or_explicitly_exempt` fails loudly otherwise) —
+    # so a new mutating route can never ship un-triaged past the auth choke point.
+    WRITE_EXEMPT_PATHS = frozenset({
+        # Scenario simulator: opens the read-only history connection only, never `settings_store`.
+        "/api/whatif",
+        # Plan preview: recomputes a plan from the posted knobs in memory; persists nothing.
+        "/api/plan-preview",
+    })
+    # Exposed for the write-gating invariant test (S2) so it checks the LIVE classification, not a
+    # duplicated copy that could drift from what the middleware actually enforces.
+    app.state.write_api_paths = _WRITE_API_PATHS
+    app.state.write_exempt_paths = WRITE_EXEMPT_PATHS
     # Always reachable without a token: auth discovery, so a client can learn a token is required
     # and prompt for it. (Health probes live under /health and are never gated here.)
     _AUTH_EXEMPT_API_PATHS = frozenset({"/api/auth"})
@@ -1622,6 +1758,25 @@ def create_app(
 
     _WRITE_METHODS = frozenset({"POST", "PUT", "PATCH", "DELETE"})
 
+    def _cross_origin_write(request: Request) -> bool:
+        """True when a state-changing /api request carries an Origin whose host does NOT match the
+        request's Host — the cross-site write vector the SPEC §12 'CSRF-checked' claim relies on.
+        Browsers ALWAYS attach Origin to a cross-origin (and, in modern browsers, same-origin)
+        state-changing request, so a present-but-mismatched Origin is a genuine cross-site write;
+        an absent Origin (curl, server-to-server) is trusted and passes, exactly as before.
+        Compares only the host[:port] netloc; no proxy/forwarded headers are trusted."""
+        origin = request.headers.get("origin")
+        if not origin:
+            return False
+        # "scheme://host[:port]" -> "host[:port]"; "null"/opaque/bad -> "" (never same-origin).
+        netloc = origin.split("://", 1)[-1].split("/", 1)[0] if "://" in origin else ""
+        host = request.headers.get("host", "")
+        return netloc.strip().lower() != host.strip().lower()
+
+    def _cross_origin_error() -> JSONResponse:
+        return JSONResponse(
+            {"detail": "cross-origin writes are not allowed"}, status_code=403)
+
     class _AccessMiddleware:
         """One choke point for the whole JSON API (finding 1) — reuses the same `_authorized`
         check the writes always used. Deliberately a PURE-ASGI middleware, not
@@ -1630,7 +1785,12 @@ def create_app(
         The SPA shell + static assets stay open (so the browser can load its Access box); every
         datum it renders comes from a gated /api/* read. No proxy/forwarded headers are trusted —
         auth is the bearer token only (remote access is the LAN over a VPN); see
-        docs/remote-access.md."""
+        docs/remote-access.md.
+
+        Two independent gates, origin FIRST: (1) same-origin enforcement rejects every cross-site
+        state-changing /api write (SPEC §12 CSRF) REGARDLESS of token config — defense in depth, so
+        a browser-planted valid token can't be replayed cross-site; (2) the bearer-token gate for
+        writes (always) and reads (when `web.require_auth`)."""
 
         def __init__(self, app):
             self.app = app
@@ -1638,15 +1798,24 @@ def create_app(
         async def __call__(self, scope, receive, send):
             if scope["type"] == "http":
                 path = scope.get("path", "")
+                is_write_method = scope.get("method", "GET").upper() in _WRITE_METHODS
+                # (1) Same-origin gate — checked BEFORE the token so a cross-site request with a
+                # planted token is still rejected. Covers EVERY /api write (incl. the review's
+                # /api/ai/validate + /api/chat) via this one path; no per-endpoint code.
+                if (
+                    is_write_method
+                    and path.startswith("/api/")
+                    and _cross_origin_write(Request(scope))
+                ):
+                    await _cross_origin_error()(scope, receive, send)
+                    return
+                # (2) Token gate — unchanged.
                 if (
                     path.startswith("/api/")
                     and path not in _AUTH_EXEMPT_API_PATHS
                     and _effective_web_token() is not None
                 ):
-                    is_write = (
-                        scope.get("method", "GET").upper() in _WRITE_METHODS
-                        and path in _WRITE_API_PATHS
-                    )
+                    is_write = is_write_method and path in _WRITE_API_PATHS
                     if (is_write or _read_auth_required()) and not _authorized(Request(scope)):
                         await _auth_error()(scope, receive, send)
                         return
@@ -1990,7 +2159,7 @@ def create_app(
 
     def _car_session_reset() -> None:
         _car_session.update(active=False, setpoint_w=None, commanded_at=None, commands=0,
-                            below_threshold_cycles=0)
+                            below_threshold_cycles=0, reserve_hold=False, last_outcome=None)
 
     def _car_session_end_if_active(now: datetime) -> list[dict] | None:
         """If a car discharge session is active but this cycle is no longer a car discharge (car
@@ -2034,10 +2203,35 @@ def create_app(
         DISCHARGE isn't swallowed by mode-only idempotency), mutates the in-memory session box, and
         returns audit records. A transport timeout during a car command rides the established
         BatteryWriteUnconfirmed HOLD path (decide never raises past its contract; it returns the
-        `unconfirmed` outcome — we hold, we do NOT revert)."""
-        command, nxt, event = _decide_car_command(_car_session, car_action, now)
+        `unconfirmed` outcome — we hold, we do NOT revert).
+
+        F1: the command decision also consults the OBSERVED battery mode (from the shared coalesced
+        read — never a fresh device read) and the last command's outcome, so a discharge that never
+        actually took (unconfirmed first write, or the vendor drifting back to AUTO) is reconciled
+        by re-commanding on a short (>= 1 cycle) spacing — not left silently draining into the car.
+        When the reconciliation budget is spent, it falls back to the safe HOLD (idle) path.
+
+        Car commands pass count_toward_cap=False so they don't spend the planner's daily switch
+        budget (F4) — their cadence is already bounded by the car session's own gates."""
+        command, nxt, event = _decide_car_command(
+            _car_session, car_action, now, observed_mode=observed,
+            reconcile_spacing=timedelta(seconds=control_cycle_seconds))
         power = car_action.power_w
         if not command:
+            if event == "cap_reconcile":
+                # F1: the discharge setpoint never took AND the re-command budget is spent — stop
+                # chasing DISCHARGE and fall back to the guard's safe HOLD (idle), idempotently each
+                # cycle, so the battery can't keep draining into the car. The safe terminal state.
+                dec = controller.decide(
+                    BatteryIntent.HOLD_RESERVE, now, observed_mode=observed,
+                    manual=override_active, priority=True, count_toward_cap=False)
+                _car_session.update(nxt)
+                _car_session["last_outcome"] = dec.outcome
+                return [{"summary": ("car session: command budget spent and the battery never "
+                                     "took the discharge — holding at reserve (idle) so it can't "
+                                     "drain into the car"),
+                         "detail": {"event": "car_session_cap_reconcile", "outcome": dec.outcome,
+                                    "commands": _car_session["commands"]}}]
             _car_session.update(nxt)  # keep the session alive (hold the current setpoint, no write)
             if event == "cap":
                 return [{"summary": ("car session: command budget spent — holding the current "
@@ -2050,7 +2244,7 @@ def create_app(
         dec = controller.decide(
             BatteryIntent.DISCHARGE_FOR_LOAD, now, target_soc=target_soc, power_w=power,
             observed_mode=observed, manual=override_active, priority=True,
-            car_session=True, force=True)
+            car_session=True, force=True, count_toward_cap=False)
         # Any attempted device write advances the session (bounds retries via the cap); dry-run /
         # not-controlling did not touch the device, so the session doesn't advance on those.
         if dec.outcome in _CAR_ATTEMPTED_OUTCOMES:
@@ -2060,6 +2254,8 @@ def create_app(
             # on lc.can_command and dry-run never runs the tick). Seed a coherent box anyway so a
             # later real command has a setpoint to compare against (no every-cycle recommand loop).
             _car_session.update(active=True, setpoint_w=power)
+        # F1: record the outcome so next cycle's reconciliation can tell whether the write took.
+        _car_session["last_outcome"] = dec.outcome
         first = event == "start"
         lead = "car session started" if first else "car session"
         if dec.outcome == "applied":
@@ -2118,14 +2314,54 @@ def create_app(
         # the covered-house setpoint) — handled separately from the ordinary single-write path.
         if car_action is not None and car_action.action == "discharge":
             _car_session["below_threshold_cycles"] = 0  # the car read above threshold this cycle
+            _car_session["reserve_hold"] = False  # F2: discharging → not in the reserve-floor hold
             return _car_session_command(now, car_action, tgt, override_active, observed)
-        # Not a car discharge this cycle: if a session was active (car dipped below threshold /
-        # hold / mode-change) decide whether to end it now (see _car_session_end_if_active) — a
-        # below-threshold dip gets a few cycles' grace, so `None` means "still in the grace window,
-        # hold — skip the ordinary decide() below" rather than resuming the plan on a blip.
+        # F2: a RESERVE-floor hold that interrupts an ACTIVE session (car still charging, SoC in the
+        # floor band). Keep the session ALIVE and idle the battery through the ordinary idempotent
+        # HOLD path; reserve_hold sticks (resume only at +3pp) so floor noise can't flap it. Do NOT
+        # run the end hysteresis — this is not the car stopping, and a reserve hold must not end the
+        # session (it resumes discharging once SoC recovers).
+        if (car_action is not None and car_action.action == "hold"
+                and car_action.reserve_hold and _car_session["active"]):
+            entering = not _car_session.get("reserve_hold")
+            _car_session["reserve_hold"] = True
+            _car_session["below_threshold_cycles"] = 0
+            dec = controller.decide(BatteryIntent.HOLD_RESERVE, now, observed_mode=observed,
+                                    manual=override_active, priority=True, count_toward_cap=False)
+            _car_session["last_outcome"] = dec.outcome
+            if entering:
+                return [{"summary": f"car session held at the reserve floor — {car_action.reason}",
+                         "detail": {"event": "car_session_reserve_hold", "outcome": dec.outcome}}]
+            return []  # steady reserve hold — quiet (idempotent downstream)
+        # Not a car discharge/reserve-hold this cycle: if a session was active (car dipped below
+        # threshold / master off / plan resumed) decide whether to end it now
+        # (see _car_session_end_if_active) — a below-threshold dip gets a few cycles' grace, so
+        # `None` means "still in the grace window".
         records = _car_session_end_if_active(now)
         if records is None:
-            return []
+            # Within the below-threshold GRACE window. The grace hold exists to bridge a benign
+            # EV-power blip WITHOUT resuming the plan — but three things must still act THIS cycle
+            # and never be swallowed by the hold: a manual override or data-quality fail-safe (F3),
+            # and the reserve floor (F5). Only a genuine blip holds the current setpoint.
+            failsafe = _data_quality(now) == "unsafe" or (_v is not None and not _v.ok)
+            grace = _decide_grace_action(
+                override_active=override_active, failsafe=failsafe, soc_pct=_current_soc(now),
+                min_reserve_soc=settings_cache["battery.min_reserve_soc"])
+            if grace == "hold":
+                return []  # benign blip — hold the current setpoint through the grace window
+            _car_session_reset()  # F3/F5: end the session; act THIS cycle
+            if grace == "reserve_hold":
+                dec = controller.decide(BatteryIntent.HOLD_RESERVE, now, observed_mode=observed,
+                                        manual=override_active, priority=True,
+                                        count_toward_cap=False)
+                return [{"summary": "car session ended at the reserve floor — holding (idle) so "
+                                    "the battery can't drain into the car",
+                         "detail": {"event": "car_session_end", "reason": "reserve_floor",
+                                    "outcome": dec.outcome}}]
+            # grace == "fall_through": end + fall through to apply the override/fail-safe via the
+            # ordinary decide() below, so it takes effect THIS cycle (not after the grace elapses).
+            records = [{"summary": "car session ended — override/fail-safe takes precedence",
+                        "detail": {"event": "car_session_end", "reason": "override_or_failsafe"}}]
         # decide() uses `observed` for the idempotency gate; its post-write CONFIRM re-reads the
         # device fresh, so a stale observation only risks a redundant idempotent write. `manual` (an
         # active operator override) and `priority` (a SAFETY action — the car-guard hold while the
@@ -3649,6 +3885,11 @@ def create_app(
             if daily_rows is not None:
                 resp["series"] = build_series_from_daily_energy(
                     daily_rows, start=start, end=end, tz=site_tz)
+                # F2: the year SERIES is already full-year (rollup) but flows/scores were built from
+                # the (retention-bounded) raw window — recompute the totals-derivable scores from
+                # the same full-year rollup and label the raw-window best_price + flows caption.
+                apply_year_totals(resp, daily_rows, grid_factor=grid_factor,
+                                  gas_factor=gas_factor, raw_days=history_retention_days)
             else:
                 resp["series"] = build_series(raw, der, period=period, start=start, end=end,
                                               tz=site_tz)

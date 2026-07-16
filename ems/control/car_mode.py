@@ -35,6 +35,11 @@ _PREDICT_CAP_W = 3000.0    # sanity ceiling on a reconstructed non-EV load predi
 _SETPOINT_STEP_W = 50.0    # setpoint granularity — round predictions so noise doesn't re-command
 _STATIC_FLOOR_W = 100.0    # smallest meaningful static discharge
 _MATCH_FLOOR_W = 150.0     # match-mode never commands below the house floor
+# Reserve-floor hysteresis (F2): enter the hold within 1pp OF the reserve floor; once holding,
+# resume discharge only after recovering 3pp ABOVE it. Two distinct thresholds + carried state, so
+# SoC noise around the floor can't flap the battery on and off (the old single threshold flapped).
+_RESERVE_ENTER_PP = 1.0
+_RESERVE_RESUME_PP = 3.0
 
 # The car-guard wording, kept in lock-step with `ems.web.api._car_guard` so mode "hold" is today's
 # behaviour byte-for-byte.
@@ -60,12 +65,17 @@ class CarModeAction:
     `recommand`— True only when the caller should actually issue the command this cycle (the bounded
                  re-command rule — see the module docstring). Holds carry True (applied every cycle,
                  idempotent downstream); a small discharge delta carries False (hold the setpoint).
+    `reserve_hold`— True only for the hold produced by the RESERVE-FLOOR hysteresis (F2), so the
+                 caller can carry the hold state across cycles (`reserve_holding`) and keep the car
+                 session alive through it rather than ending/restarting it. False for every other
+                 action (an ordinary discharge, the master "hold" behaviour, or the no-op).
     """
 
     action: str
     power_w: float | None
     reason: str
     recommand: bool
+    reserve_hold: bool = False
 
 
 def _clamp(x: float, lo: float, hi: float) -> float:
@@ -150,6 +160,7 @@ def decide_car_mode_action(
     predicted_house_w: float,
     current_setpoint_w: float | None = None,
     rebond_threshold_w: float = 500.0,
+    reserve_holding: bool = False,
 ) -> CarModeAction:
     """Decide the battery's behaviour while the car charges — the heart of the feature.
 
@@ -157,9 +168,13 @@ def decide_car_mode_action(
     (`control.hold_battery_when_car_charging`) and "is the car actually charging?" detection are the
     CALLER's job; here `car_charging=False` is simply a no-op (`action="none"`, planner proceeds).
 
-    The inviolable reserve floor: in either discharge mode, once SoC is within 1pp of
-    `min_reserve_soc` the battery HOLDS instead — a 1pp hysteresis band so it doesn't flap at the
-    boundary; the grid then covers both the car and the house.
+    The inviolable reserve floor, with REAL hysteresis (two thresholds + carried state, F2): in
+    either discharge mode the battery HOLDS once SoC falls to within `_RESERVE_ENTER_PP` (1pp) of
+    `min_reserve_soc`, and — crucially — once holding it keeps holding until SoC has RECOVERED to
+    `min_reserve_soc + _RESERVE_RESUME_PP` (3pp above the floor). The caller carries the hold across
+    cycles via `reserve_holding` (seeded from the previous action's `reserve_hold`), so SoC noise
+    around the floor can't flap the battery on and off. The grid covers both the car and the house
+    while holding. A returned action's `reserve_hold` flags whether this is such a floor hold.
 
     `recommand` gates whether the caller actually (re-)commands the battery this cycle — see the
     module docstring. It is True at session start (`current_setpoint_w is None`) or when the new
@@ -172,9 +187,14 @@ def decide_car_mode_action(
     if mode not in _DISCHARGE_MODES:
         return CarModeAction("hold", None, _HOLD_REASON, recommand=True)
 
-    # Inviolable reserve floor (both discharge modes), with a 1pp hysteresis band.
-    if soc_pct <= min_reserve_soc + 1.0:
-        return CarModeAction("hold", None, _RESERVE_REASON, recommand=True)
+    # Inviolable reserve floor (both discharge modes) with REAL two-threshold hysteresis: enter the
+    # hold within +1pp; once holding, keep holding until recovered to +3pp (see the docstring).
+    if reserve_holding:
+        holding = soc_pct < min_reserve_soc + _RESERVE_RESUME_PP
+    else:
+        holding = soc_pct <= min_reserve_soc + _RESERVE_ENTER_PP
+    if holding:
+        return CarModeAction("hold", None, _RESERVE_REASON, recommand=True, reserve_hold=True)
 
     if mode == "static_discharge":
         power = _clamp(static_w, _STATIC_FLOOR_W, max_discharge_w)

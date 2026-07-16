@@ -4,7 +4,8 @@ GET /api/export (single-table CSV/JSON download) · GET /api/export/package (the
 Both are read-only and open like reads. The package backfills `daily_finance` for the window via
 the shared `ctx.ensure_day_finance` so the export covers days no one ever viewed; the manifest
 carries only the replay-safe settings subset (`ctx.replay_setting_keys`) — no tokens, IPs or
-location (privacy §12).
+coordinates. It does include the timezone and the car's weekly schedule (needed to replay the
+planner); delete manifest.json before sharing if you prefer (privacy §12).
 """
 from __future__ import annotations
 
@@ -87,7 +88,8 @@ def build_router(ctx: AppContext) -> APIRouter:
         """One ZIP: the recorded history as analytics-ready CSVs (energy, prices, daily finance,
         audit trail) plus a manifest for validating production operation. Read-only and privacy-safe
         to share: the manifest carries only the replay-safe settings subset — no tokens, IPs or
-        location."""
+        coordinates. It does include the timezone and the car's weekly schedule (needed to replay
+        the planner); delete manifest.json before sharing if you prefer."""
         now = datetime.now(UTC)
         start = now - timedelta(days=days)
         start_iso, end_iso = start.isoformat(), now.isoformat()
@@ -167,13 +169,15 @@ def build_router(ctx: AppContext) -> APIRouter:
             raw_log = await asyncio.to_thread(_read_text_file, log_path)
             if raw_log is not None:
                 tail = expkg.tail_lines(raw_log, _SERVER_LOG_MAX_LINES)
-                # Mask the CURRENT value of every secret-type setting + the ntfy topic (privacy-
-                # sensitive even though it isn't schema-typed "secret") verbatim, on top of the
-                # pattern-based Bearer/API-key redaction inside redact_log_text.
+                # Mask the CURRENT value of every secret-type setting + the ntfy URL & topic
+                # (privacy-sensitive even though they aren't schema-typed "secret") verbatim, on
+                # top of the pattern-based Bearer/authorization/API-key redaction inside
+                # redact_log_text. The URL as well as the topic: a self-hosted ntfy host is itself
+                # identifying, and an httpx error line echoes the full URL.
                 secret_values = [v for k in SECRET_KEYS if (v := s.get(k))]
-                ntfy_topic = s.get("notify.ntfy_topic")
-                if ntfy_topic:
-                    secret_values.append(ntfy_topic)
+                for extra_key in ("notify.ntfy_url", "notify.ntfy_topic"):
+                    if extra := s.get(extra_key):
+                        secret_values.append(extra)
                 server_log_text = expkg.redact_log_text(tail, secret_values=secret_values)
                 server_log_lines = len(tail.splitlines())
         validation = {

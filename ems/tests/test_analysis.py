@@ -117,6 +117,27 @@ def test_no_overlap_between_forecast_and_raw_windows_is_zero_slots():
     assert out["n_slots"] == 0
 
 
+def test_matched_slots_dedupes_duplicate_canonical_rows_keeping_latest_issued_at():
+    # F3 (scoring hardening): a canonical-write retry can leave MORE THAN ONE canonical row for the
+    # same (kind, target_start) with different issued_at. _matched_slots must dedupe to the LATEST
+    # issued_at so each slot is scored exactly once (never double-counted).
+    start = "2026-06-28T10:00:00+00:00"
+    forecasts = [
+        {"target_start": start, "low_w": 500.0, "expected_w": 1000.0, "high_w": 1500.0,
+         "issued_at": "2026-06-27T18:00:00+00:00"},  # earlier snapshot
+        {"target_start": start, "low_w": 500.0, "expected_w": 2000.0, "high_w": 2500.0,
+         "issued_at": "2026-06-27T19:00:00+00:00"},  # LATER snapshot — the one that must win
+    ]
+    raw = [_raw_row(start, 900.0)]
+    matched = analysis._matched_slots(forecasts, raw)
+    assert len(matched) == 1  # counted ONCE despite two canonical rows for the slot
+    _actual, _low, expected, _high = matched[0]
+    assert expected == 2000.0  # kept the latest issued_at's values
+
+    # …and forecast_error over the duplicated rows scores the single slot, not two.
+    assert forecast_error(forecasts, raw)["n_slots"] == 1
+
+
 def test_legacy_snapshot_row_maps_to_ledger_native_shape():
     # _legacy_snapshot_row exists so a legacy forecast_snapshots-shaped row (retained as a
     # read-only archive/migration-source table, no longer written by the recorder) can still be

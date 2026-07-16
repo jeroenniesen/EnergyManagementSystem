@@ -77,6 +77,57 @@ def test_daily_switch_cap_holds():
     assert dec.applied is False
 
 
+# F4 — a car-session (priority) command must NOT consume the planner's daily switch budget --------
+
+def test_count_toward_cap_false_leaves_the_switch_counter_untouched():
+    # A car-session command is a priority write that bypasses the cap; before F4 it still bumped
+    # switches_today, starving the planner's daily budget. count_toward_cap=False fixes that.
+    d = MockBatteryDriver()  # starts AUTO
+    ctl = ModeController(d, _controlling_lifecycle(), dry_run=False, min_dwell_seconds=0)
+    # An ordinary planner write establishes the counter at 1 (and stamps last_switch_at).
+    ctl.decide(BatteryIntent.GRID_CHARGE_TO_TARGET, T0 + timedelta(seconds=200), target_soc=80.0)
+    assert ctl.switches_today == 1
+    switch_at_after_ordinary = ctl.last_switch_at
+    # Now a car-session command (a real DISCHARGE) — it must NOT spend the planner's budget.
+    dec = ctl.decide(BatteryIntent.DISCHARGE_FOR_LOAD, T0 + timedelta(seconds=400),
+                     target_soc=10.0, power_w=800.0, car_session=True, force=True,
+                     priority=True, count_toward_cap=False)
+    assert dec.outcome == "applied"
+    assert d.current_mode() is PhysicalMode.DISCHARGE
+    assert ctl.switches_today == 1                      # untouched — the planner keeps its budget
+    assert ctl.last_switch_at == switch_at_after_ordinary  # and the dwell timer isn't disturbed
+
+
+def test_count_toward_cap_false_on_unconfirmed_still_leaves_the_counter_untouched():
+    # The same holds when a car command TIMES OUT (unconfirmed) — its retries are spaced by the car
+    # session's own cadence, not the planner's dwell/cap, so it must not touch switches_today.
+    class TimingOut(MockBatteryDriver):
+        def apply(self, mode, *, target_soc=None, power_w=None):
+            raise BatteryWriteUnconfirmed("timed out")
+
+    ctl = ModeController(TimingOut(), _controlling_lifecycle(), dry_run=False)
+    ctl._reset_counter_if_new_day(T0 + timedelta(seconds=200))  # seed the counter date for today
+    ctl.switches_today = 4
+    dec = ctl.decide(BatteryIntent.DISCHARGE_FOR_LOAD, T0 + timedelta(seconds=200),
+                     target_soc=10.0, power_w=800.0, car_session=True, force=True,
+                     priority=True, count_toward_cap=False)
+    assert dec.outcome == "unconfirmed"
+    assert ctl.switches_today == 4
+
+
+def test_ordinary_writes_still_count_and_cap():
+    # Regression pin: an ORDINARY planner write (count_toward_cap defaults True) still increments
+    # the counter and is still capped once the daily budget is spent.
+    d = MockBatteryDriver()  # starts AUTO
+    ctl = ModeController(d, _controlling_lifecycle(), dry_run=False,
+                         max_switches_per_day=1, min_dwell_seconds=0)
+    ctl.decide(BatteryIntent.GRID_CHARGE_TO_TARGET, T0 + timedelta(seconds=200), target_soc=80.0)
+    assert ctl.switches_today == 1
+    dec = ctl.decide(BatteryIntent.HOLD_RESERVE, T0 + timedelta(seconds=400))  # AUTO->CHARGE->IDLE
+    assert dec.outcome == "cap_reached"
+    assert dec.applied is False
+
+
 def test_failed_apply_recovers_to_auto():
     d = FailingMockBatteryDriver(fail_times=1)
     ctl = ModeController(d, _controlling_lifecycle(), dry_run=False)

@@ -21,7 +21,9 @@ from ems.scores import (
     Score,
     best_price_score,
     co2_score,
+    co2_score_from_totals,
     self_consumption_score,
+    self_consumption_score_from_totals,
 )
 
 PERIODS = ("day", "week", "month", "year")
@@ -270,6 +272,59 @@ def build_series_from_daily_energy(
             row[k] = round(row[k], 3)
         out.append(row)
     return out
+
+
+def apply_year_totals(
+    report: dict, daily_rows: list[dict], *, grid_factor: float = DEFAULT_GRID_CO2,
+    gas_factor: float = DEFAULT_GAS_CO2, raw_days: int = 0,
+) -> dict:
+    """Reconcile the YEAR view's internal contradiction (F2), mutating `report` (a `Report.to_dict`)
+    in place and returning it. The `series` already comes from the never-purged daily_energy rollup
+    (full year), but `flows` and the three scores were built from the raw window — which retention
+    keeps for only `raw_days` — so a year view showed a full-year chart beside 90-day scores.
+
+    For the year we recompute the two scores that CAN be derived from aggregate totals — self-
+    consumption and CO₂ — from the full-year `daily_rows` rollup (via `scores.py`'s totals adapters,
+    same math). best_price genuinely needs per-slot prices and flows need per-slot attribution, so
+    both stay raw-window-based but are LABELED: best_price's explanation gains a note, and the flows
+    block gains a `window_note` the UI captions the Sankey with. No-op if `daily_rows` is empty."""
+    if not daily_rows:
+        report.setdefault("flows", {})["window_note"] = None
+        return report
+
+    def _sum(key: str) -> float:
+        return sum(float(r.get(key) or 0.0) for r in daily_rows)
+
+    solar_kwh = _sum("solar_kwh")
+    home_kwh = _sum("non_ev_load_kwh")
+    car_kwh = _sum("ev_kwh")
+    load_kwh = _sum("load_kwh")
+    grid_import_kwh = _sum("grid_import_kwh")
+    grid_export_kwh = _sum("grid_export_kwh")
+
+    sc = self_consumption_score_from_totals(
+        solar_kwh=solar_kwh, load_kwh=load_kwh, grid_import_kwh=grid_import_kwh,
+        grid_export_kwh=grid_export_kwh).to_dict()
+    # Electricity-only for the year (gas has no full-year rollup — see co2_score_from_totals).
+    co2 = co2_score_from_totals(
+        home_kwh=home_kwh, car_kwh=car_kwh, grid_import_kwh=grid_import_kwh,
+        grid_factor=grid_factor, gas_factor=gas_factor).to_dict()
+
+    note = f" (scored over the last {raw_days} days — slot prices needed)" if raw_days > 0 else ""
+    rebuilt = []
+    for s in report.get("scores", []):
+        if s.get("key") == "self_consumption":
+            rebuilt.append(sc)
+        elif s.get("key") == "co2":
+            rebuilt.append(co2)
+        elif s.get("key") == "best_price" and note:
+            rebuilt.append({**s, "explanation": s.get("explanation", "") + note})
+        else:
+            rebuilt.append(s)
+    report["scores"] = rebuilt
+    report.setdefault("flows", {})["window_note"] = (
+        f"last {raw_days} days" if raw_days > 0 else None)
+    return report
 
 
 def build_report(
