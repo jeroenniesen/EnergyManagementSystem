@@ -355,8 +355,8 @@ export function BatteryPlan({
           </span>
           {" · "}
           <span
-            title="Scenario planning (pessimistic/expected/optimistic futures) is built and being
-              validated against real outcomes — it does not steer the plan yet."
+            title="Scenario planning (pessimistic/expected/optimistic futures) is built but not
+              wired into the live path — it does not steer the plan yet."
           >
             scenario intelligence:{" "}
             {INTELLIGENCE_COPY[plan.provenance.intelligence]?.short ?? plan.provenance.intelligence}

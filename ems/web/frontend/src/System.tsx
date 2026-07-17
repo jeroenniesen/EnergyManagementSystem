@@ -496,11 +496,12 @@ export function SystemView({
           </p>
           <ul className="health-rows" data-testid="health-rows">
             {/* Planning intelligence (feat/ux-batch-3, CLAUDE.md honesty ask): the scenario/ML
-                layer (ems/intelligence/planning.py) is built and validating, NOT steering a plan
-                yet — muted, unknown-style dot, links nowhere. This copy is hardcoded here (System
-                doesn't fetch /api/battery-plan to read the live `provenance.intelligence` value),
-                but the STRINGS come from labels.ts's shared INTELLIGENCE_COPY/
-                CURRENT_INTELLIGENCE_MODE — the one place to flip when a mode starts steering. */}
+                layer (ems/intelligence/planning.py) is built but NOT wired into the live path —
+                no evaluation, no validation, no steering. Only unit tests exercise it. Muted,
+                unknown-style dot, links nowhere. This copy is hardcoded here (System doesn't fetch
+                /api/battery-plan to read the live `provenance.intelligence` value), but the STRINGS
+                come from labels.ts's shared INTELLIGENCE_COPY/CURRENT_INTELLIGENCE_MODE — the one
+                place to flip when a mode starts steering. */}
             <li className="health-row health-unknown" data-testid="health-planning-intelligence">
               <span className="check-dot dot-unknown" aria-hidden="true" />
               <span className="health-label">

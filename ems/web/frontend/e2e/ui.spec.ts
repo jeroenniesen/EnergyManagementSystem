@@ -20,7 +20,7 @@ const DEFAULT_PROVENANCE = {
   forecast_source: "Forecast.Solar",
   solar_confidence_pct: 80,
   planner: "rule_based",
-  intelligence: "shadow",
+  intelligence: "not_active",
 };
 
 // B-68: a minimal-but-complete /api/battery-plan payload, so a test can mock just the
@@ -249,7 +249,7 @@ test.describe("EMS dashboard", () => {
   });
 
   // feat/ux-batch-3: the plan-provenance line (CLAUDE.md honesty ask) — what's ACTUALLY planning
-  // today, never overstating the still-shadow scenario/ML intelligence layer.
+  // today, never implying the scenario/ML intelligence layer is active when it isn't.
   test("the plan-provenance line explains what's actually planning today (mocked)", async ({
     page,
   }) => {
@@ -260,7 +260,7 @@ test.describe("EMS dashboard", () => {
           { level: "high", reasons: ["Fresh data, calibrated forecast, battery responding."] },
           {
             forecast_source: "Forecast.Solar", solar_confidence_pct: 80,
-            planner: "rule_based", intelligence: "shadow",
+            planner: "rule_based", intelligence: "not_active",
           },
         )),
       }),
@@ -271,7 +271,7 @@ test.describe("EMS dashboard", () => {
     await expect(line).toContainText("Planned with");
     await expect(line).toContainText("Forecast.Solar at 80% confidence");
     await expect(line).toContainText("rule-based winter planner");
-    await expect(line).toContainText("scenario intelligence: validating, not steering yet");
+    await expect(line).toContainText("scenario intelligence: not active yet");
   });
 
   test("the plan-provenance line reflects the resolved summer/adaptive planner (mocked)", async ({
@@ -284,7 +284,7 @@ test.describe("EMS dashboard", () => {
           { level: "high", reasons: ["ok"] },
           {
             forecast_source: "Built-in model", solar_confidence_pct: 65,
-            planner: "adaptive", intelligence: "shadow",
+            planner: "adaptive", intelligence: "not_active",
           },
         )),
       }),
@@ -1219,8 +1219,8 @@ test.describe("EMS dashboard", () => {
     await expect(authRow).toContainText("open");
   });
 
-  // feat/ux-batch-3: the "Planning intelligence" row — the scenario/ML layer is built and
-  // validating in shadow, not steering a plan yet. Muted/unknown styling, links nowhere.
+  // feat/ux-batch-3: the "Planning intelligence" row — the scenario/ML layer is built but not
+  // wired into the live path. Muted/unknown styling, links nowhere.
   test("Model health panel shows the muted Planning intelligence row (mocked)", async ({ page }) => {
     await page.route("**/api/accuracy", (route) =>
       route.fulfill({
@@ -1234,7 +1234,7 @@ test.describe("EMS dashboard", () => {
     await expect(row).toBeVisible();
     await expect(row).toContainText("Planning intelligence");
     await expect(page.getByTestId("planning-intelligence-note")).toContainText(
-      "validating in shadow; the dependable baseline plans today",
+      "not active; the dependable baseline plans today",
     );
     // Muted, unknown-style dot — the same visual language as "still collecting evidence" rows.
     await expect(row.locator(".dot-unknown")).toBeVisible();

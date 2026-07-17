@@ -42,6 +42,7 @@ observability (B-24); numbered date-less sprints, Issues+Milestones on GitHub.
 | **E-06 · Trust & guidance** | | ⬜ B-31 marker | | B-09 B-12 B-21 |
 | **E-07 · Consumer-ready commercial product** | 🟨 B-55 settings menu | | | B-32 B-33 B-34 B-35 🟨 B-36 B-37 🟨 B-38 B-39 ✅ B-40 B-41 B-56 B-57 B-58 B-59 B-60 B-61 B-62 |
 | **E-08 · Predictive optimization intelligence** | | | | B-63 B-64 B-65 B-66 B-67 B-68 B-69 B-70 B-71 B-72 B-73 B-74 B-75 B-76 B-77 B-78 |
+| **E-09 · ISO 25010 quality engineering** | | | | **P1:** B-79 B-80 B-81 B-82 B-83 · B-84 B-85 |
 | *Big levers (pool)* | | | | B-17 B-18 B-19 B-20 B-23 |
 | *Refactoring (pool)* | | | | B-24 B-25 B-26 B-27 B-28 B-29 |
 | *Architecture & platform (pool)* | | | | **P1:** B-42 B-43 B-44 B-52 · B-45 B-46 B-47 B-48 B-49 B-50 B-51 B-53 B-54 |
@@ -336,6 +337,44 @@ Expose internal model health: solar error, load error, plan execution error, bat
 Replay historical days through the planner to compare rule changes, validate reserve behavior, measure savings, and prevent seasonal regressions.
 **Done when:** CI or a local command can replay representative days and report cost, reserve breaches, confidence, and plan-quality deltas.
 **Track:** ✅ done — [PR #21](https://github.com/jeroenniesen/EnergyManagementSystem/pull/21). make replay: 3-scenario day replay (no-battery/AUTO/plan) + --set A/B; read-only by construction. The engine for B-73/B-69.
+
+## EPIC E-09 · ISO 25010 quality engineering
+*Goal: prove that EMS is functionally suitable, responsive, secure, accessible, reliable, maintainable, flexible, compatible, and safe in real-home conditions.* (Trust/€)
+
+### B-79 · Truthful intelligence capability status — Bug · S · **P1**
+The API exposes the intelligence layer as `shadow`, but the scenario planner is not currently evaluated by the live runtime. Replace the hard-coded status with a real capability state (`not_active`, `shadow_evaluation`, `advisory`, `active`) and show the last evaluation time/result. Never imply that intelligence steers a plan before it actually does.
+**Done when:** `/api/battery-plan` reports a runtime-proven state; UI copy distinguishes available, shadow, advisory, and active; tests prove no false claim is emitted.
+**Track:** Pool · E-09 · ⬜
+
+### B-80 · Control/API performance budgets — Ops + Test · M · **P1**
+Define and measure control-cycle completion time, device-read latency, API p95 latency, SQLite transaction duration, memory ceiling, and replay/reporting budgets on the Raspberry Pi target. Add sustained dashboard-poll and slow-device tests; an over-budget cycle must preserve the safe fallback.
+**Done when:** budgets are documented, measured in CI or a repeatable local command, and regressions fail with actionable output.
+**Track:** Pool · E-09 · ⬜
+
+### B-81 · Fault-injection and recovery qualification — Test/Ops · M · **P1**
+Exercise database loss/reopen, interrupted migrations, battery timeout, failed AUTO recovery, malformed price/forecast responses, process restart during leases, and competing control owners. Verify recovery, audit visibility, and no unsafe write under every failure.
+**Done when:** a deterministic failure matrix runs in CI and each scenario has an explicit expected state, alert, and recovery outcome.
+**Track:** Pool · E-09 · ⬜
+
+### B-82 · Accessibility quality gate — UX + Test · M · **P1**
+Add automated accessibility checks and keyboard/screen-reader coverage for Dashboard, Manage, Car, Chat, alerts, charts, drawers/modals, and settings. Include focus restoration, reduced motion, contrast, labels, and mobile navigation.
+**Done when:** axe (or equivalent) and keyboard smoke tests run in CI; critical WCAG failures block merge; charts have useful text alternatives.
+**Track:** Pool · E-09 · ⬜
+
+### B-83 · Secure deployment posture — Security/Ops · S–M · **P1**
+Make authentication posture explicit at startup and in System diagnostics. Warn when the app is remotely reachable with open read access; document the LAN/VPN boundary; test token redaction, read/write authorization, token rotation, and failure responses. Consider requiring auth by default outside mock mode.
+**Done when:** unsafe exposure is visible and actionable, auth behavior is contract-tested, and no token/secret appears in logs or exports.
+**Track:** Pool · E-09 · ⬜
+
+### B-84 · Safety property and invariant tests — Test · M · P1/P2
+Add property-based or exhaustive invariant tests for reserve-floor preservation, validator authority, recovery break-even limits, single-writer ownership, AUTO fallback, idempotent commands, and no-control-on-unsafe-data. Include representative DST and multi-peak days.
+**Done when:** safety invariants run independently of example fixtures and failures identify the violated invariant.
+**Track:** Pool · E-09 · ⬜
+
+### B-85 · Stale-code and compatibility retirement — Refactor · S–M · P2
+Create a retirement register for legacy `forecast_snapshots` reads, deprecated EV quick-advice settings, test-only simulation modules, stale EV documentation, temporary browser artifacts, and research-only intelligence code. Add usage evidence and removal versions before deleting compatibility paths.
+**Done when:** every retained legacy path has an owner, reason, usage signal, and removal trigger; temporary artifacts are ignored or removed.
+**Track:** Pool · E-09 · ⬜
 
 ---
 
