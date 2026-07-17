@@ -615,14 +615,14 @@ _FORECAST_SOURCE_LABEL: dict[str, str] = {
 }
 
 # The scenario/ML "intelligence" layer's honest status for the plan-provenance line: ems/
-# intelligence/planning.py (pessimistic/expected/optimistic scenario planning, E-08) is BUILT and
-# VALIDATING against real outcomes, but it is NOT wired into live planning — it never steers a plan.
-# "shadow" is the only value this can be today. The frontend's single source of truth for this
-# value is THIS constant via /api/battery-plan's `provenance.intelligence` (BatteryPlan.tsx); where
-# a view can't fetch that (System.tsx's static row), it mirrors the copy from
-# ems/web/frontend/src/labels.ts's `INTELLIGENCE_COPY` — flip both together the day a mode actually
-# starts steering a plan.
-INTELLIGENCE_MODE = "shadow"
+# intelligence/planning.py (pessimistic/expected/optimistic scenario planning, E-08) is BUILT but
+# NOT WIRED INTO THE LIVE PATH — it does not evaluate, validate, or steer. Only unit tests exercise
+# it (test_predictive_optimization.py). Never imply intelligence is active when it isn't.
+# The frontend's single source of truth for this value is THIS constant via /api/battery-plan's
+# `provenance.intelligence` (BatteryPlan.tsx); where a view can't fetch that (System.tsx's static
+# row), it mirrors the copy from ems/web/frontend/src/labels.ts's `INTELLIGENCE_COPY` — flip both
+# together the day a mode actually starts steering a plan.
+INTELLIGENCE_MODE = "not_active"
 
 # The cluster per-tower mode LABEL→PhysicalMode map + the mode-FAMILY helpers (`_tower_family`,
 # `_commanded_family`) moved to ems/control/service.py (B-46, control domain). Imported at the top
@@ -2659,9 +2659,9 @@ def create_app(
     def _plan_provenance(strategy: str) -> dict:
         """The plan-provenance line (CLAUDE.md honesty ask, feat/ux-batch-3): what is ACTUALLY
         steering today's plan — the forecast source, the solar_confidence dial, which planner
-        function ran, and the scenario/ML intelligence layer's real (shadow, non-steering) status.
-        No field here may overstate what's live: ems/intelligence/planning.py is pure and built, but
-        unwired into live planning (see INTELLIGENCE_MODE)."""
+        function ran, and the scenario/ML intelligence layer's real status. No field here may
+        overstate what's live: ems/intelligence/planning.py is built but not wired into the
+        control path (see INTELLIGENCE_MODE)."""
         return {
             "forecast_source": _forecast_source_label(),
             "solar_confidence_pct": settings_cache["planner.solar_confidence"],

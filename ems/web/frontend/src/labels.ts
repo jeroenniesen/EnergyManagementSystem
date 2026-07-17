@@ -175,20 +175,20 @@ export const PLANNER_PROVENANCE_LABEL: Record<string, string> = {
 
 /** Scenario/ML planning-intelligence layer status (CLAUDE.md honesty ask, feat/ux-batch-3):
  * ems/intelligence/planning.py builds pessimistic/expected/optimistic planning scenarios (E-08),
- * but it is NOT wired into live planning — it validates in the background against real outcomes,
- * it never steers a plan. `/api/battery-plan`'s `provenance.intelligence` (backend constant
- * `ems.web.api.INTELLIGENCE_MODE`) is the SOURCE OF TRUTH: BatteryPlan.tsx's inline provenance
- * fragment reads that LIVE value through this map's `short` text. System.tsx's standalone
- * "Planning intelligence" row does not fetch /api/battery-plan, so it reads
- * `CURRENT_INTELLIGENCE_MODE` below (this map's `label`/`detail`) instead of a second hardcoded
- * sentence. Either way there is exactly ONE place to flip when a mode starts actually steering a
- * plan: add its entry here, point `CURRENT_INTELLIGENCE_MODE` at it, and flip
+ * but it is NOT wired into the live path — no evaluation, no validation, no steering. Only unit
+ * tests exercise it (test_predictive_optimization.py). `/api/battery-plan`'s
+ * `provenance.intelligence` (backend constant `ems.web.api.INTELLIGENCE_MODE`) is the SOURCE OF
+ * TRUTH: BatteryPlan.tsx's inline provenance fragment reads that LIVE value through this map's
+ * `short` text. System.tsx's standalone "Planning intelligence" row does not fetch /api/battery-plan,
+ * so it reads `CURRENT_INTELLIGENCE_MODE` below (this map's `label`/`detail`) instead of a second
+ * hardcoded sentence. Either way there is exactly ONE place to flip when a mode starts actually
+ * steering a plan: add its entry here, point `CURRENT_INTELLIGENCE_MODE` at it, and flip
  * `ems.web.api.INTELLIGENCE_MODE` to match. */
 export const INTELLIGENCE_COPY: Record<string, { label: string; detail: string; short: string }> = {
-  shadow: {
+  not_active: {
     label: "Planning intelligence",
-    detail: "validating in shadow; the dependable baseline plans today",
-    short: "validating, not steering yet",
+    detail: "not active; the dependable baseline plans today",
+    short: "not active yet",
   },
 };
-export const CURRENT_INTELLIGENCE_MODE: keyof typeof INTELLIGENCE_COPY = "shadow";
+export const CURRENT_INTELLIGENCE_MODE: keyof typeof INTELLIGENCE_COPY = "not_active";

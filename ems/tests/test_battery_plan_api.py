@@ -201,7 +201,8 @@ def test_battery_plan_read_is_open_on_lan_but_gated_by_require_auth(tmp_path):
 
 
 # --- Plan provenance (feat/ux-batch-3): what's ACTUALLY steering the plan, never overstating the
-# still-shadow scenario/ML intelligence layer (ems/intelligence/planning.py) — CLAUDE.md honesty.
+# scenario/ML intelligence layer (ems/intelligence/planning.py) which is built but not wired in —
+# CLAUDE.md honesty.
 
 
 def test_battery_plan_carries_a_provenance_block_with_the_expected_shape(tmp_path):
@@ -214,8 +215,8 @@ def test_battery_plan_carries_a_provenance_block_with_the_expected_shape(tmp_pat
     assert prov["forecast_source"] == "Built-in model"
     assert prov["solar_confidence_pct"] == 80.0  # planner.solar_confidence default
     assert prov["planner"] in {"rule_based", "adaptive", "summer"}
-    # The scenario/ML intelligence layer never claims to be steering — it is honestly "shadow".
-    assert prov["intelligence"] == "shadow"
+    # The scenario/ML intelligence layer is built but not wired in — never claims to be active.
+    assert prov["intelligence"] == "not_active"
 
 
 def test_battery_plan_provenance_reflects_the_solar_confidence_setting(tmp_path):
@@ -270,4 +271,4 @@ def test_battery_plan_provenance_is_present_even_when_paused_safely(tmp_path):
     assert prov["forecast_source"] == "No forecast source"
     assert prov["solar_confidence_pct"] == 80.0
     assert prov["planner"] in {"rule_based", "adaptive", "summer"}
-    assert prov["intelligence"] == "shadow"
+    assert prov["intelligence"] == "not_active"
