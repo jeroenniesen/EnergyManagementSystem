@@ -122,6 +122,13 @@ from ems.storage.history import (
 )
 from ems.storage.settings import SettingsStore
 from ems.weather import cloud_cover_pct
+from ems.web.authz import (
+    EXEMPT_PATHS,
+    OPERATE_PATHS,
+    required_tier,
+    requires_session,
+    role_satisfies,
+)
 from ems.web.context import AppContext, history_row_cap
 from ems.web.routes.accuracy import build_router as build_accuracy_router
 from ems.web.routes.car import build_router as build_car_router
@@ -776,6 +783,22 @@ def create_app(
 
     def _auth_error() -> JSONResponse:
         return JSONResponse({"detail": "unauthorized — set an access token"}, status_code=401)
+
+    def _forbidden_error() -> JSONResponse:
+        return JSONResponse({"detail": "forbidden"}, status_code=403)
+
+    def _onboarding_required_error() -> JSONResponse:
+        return JSONResponse({"detail": "onboarding_required"}, status_code=409)
+
+    async def _resolve_principal(request: Request):
+        """Resolve the Authorization: Bearer <token> to a Principal, or None when there is no auth
+        store, no bearer token, or the token doesn't resolve. Used by the identity gate below."""
+        if auth_store is None:
+            return None
+        scheme, _, token = request.headers.get("authorization", "").partition(" ")
+        if scheme != "Bearer" or not token:
+            return None
+        return await auth_store.resolve(token)
     # In-memory effective-settings cache (defaults until the store loads in lifespan). Sync
     # endpoints read this; POST /api/settings refreshes it. Mutated in place (never rebound).
     settings_cache: dict[str, Any] = effective_settings({})
@@ -1228,10 +1251,9 @@ def create_app(
     # Writes are ALWAYS gated when a token is configured. Reads are open on the LAN by default so
     # the dashboard degrades to read-only during an HA outage; set `web.require_auth` to gate reads
     # too — do that before reaching the app over a VPN / from outside the home network.
-    _WRITE_API_PATHS = frozenset({
-        "/api/override", "/api/settings", "/api/ai/validate", "/api/chat", "/api/car/soc",
-        "/api/notifications/read",
-    })
+    # The OPERATE-tier writes (authz.OPERATE_PATHS): reused here so this classification stays DRY
+    # with the identity gate's `required_tier` and the write-gating invariant test — one source.
+    _WRITE_API_PATHS = OPERATE_PATHS
     # POST /api/whatif (B-73 scenario simulator, ems/web/routes/whatif.py) is DELIBERATELY not in
     # this set: it only opens `replay_range`'s read-only (mode=ro) history DB connection and never
     # touches `settings_store` — there is nothing to protect, so gating it like a write would
@@ -1250,9 +1272,9 @@ def create_app(
     # duplicated copy that could drift from what the middleware actually enforces.
     app.state.write_api_paths = _WRITE_API_PATHS
     app.state.write_exempt_paths = WRITE_EXEMPT_PATHS
-    # Always reachable without a token: auth discovery, so a client can learn a token is required
-    # and prompt for it. (Health probes live under /health and are never gated here.)
-    _AUTH_EXEMPT_API_PATHS = frozenset({"/api/auth"})
+    # Always reachable without a token: auth discovery / login / onboard / invite-accept, so a
+    # client can learn a token is required and prompt for it — see authz.EXEMPT_PATHS, the one
+    # source the gate below shares. (Health probes live under /health and are never gated here.)
 
     def _read_auth_required() -> bool:
         """Whether reads (not just writes) require the token. UI-editable; read live."""
@@ -1336,16 +1358,37 @@ def create_app(
                 ):
                     await _cross_origin_error()(scope, receive, send)
                     return
-                # (2) Token gate — unchanged.
-                if (
-                    path.startswith("/api/")
-                    and path not in _AUTH_EXEMPT_API_PATHS
-                    and _effective_web_token() is not None
-                ):
-                    is_write = is_write_method and path in _WRITE_API_PATHS
-                    if (is_write or _read_auth_required()) and not _authorized(Request(scope)):
-                        await _auth_error()(scope, receive, send)
-                        return
+                # (2) Identity gate — replaces the shared-token check. Origin gate above stays 1st.
+                if path.startswith("/api/") and path not in EXEMPT_PATHS:
+                    if auth_store is None:
+                        # LEGACY fallback (no user system wired, e.g. old tests / shared-token
+                        # deployments): keep the EXACT pre-existing shared-token behaviour so
+                        # nothing regresses. Writes always gated; reads gated when web.require_auth.
+                        if _effective_web_token() is not None:
+                            is_write = is_write_method and path in _WRITE_API_PATHS
+                            if (is_write or _read_auth_required()) and not _authorized(
+                                Request(scope)
+                            ):
+                                await _auth_error()(scope, receive, send)
+                                return
+                    else:
+                        # IDENTITY gate (a user system is wired). Forced onboarding first: with no
+                        # users yet, every gated /api path answers 409 so the client must onboard.
+                        if not app.state.users_exist:
+                            await _onboarding_required_error()(scope, receive, send)
+                            return
+                        principal = await _resolve_principal(Request(scope))
+                        if principal is None:
+                            await _auth_error()(scope, receive, send)
+                            return
+                        method = scope.get("method", "GET").upper()
+                        if not role_satisfies(principal.role, required_tier(path, method)):
+                            await _forbidden_error()(scope, receive, send)
+                            return
+                        if requires_session(path) and principal.kind != "session":
+                            await _forbidden_error()(scope, receive, send)
+                            return
+                        scope["auth_principal"] = principal
             await self.app(scope, receive, send)
 
     app.add_middleware(_AccessMiddleware)
