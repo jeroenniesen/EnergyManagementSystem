@@ -99,3 +99,32 @@ def test_disabled_user_token_and_sliding_refresh(tmp_path):
         assert await s.resolve(raw) is None
 
     asyncio.run(run())
+
+
+def test_last_used_at_is_best_effort_throttled_not_written_every_resolve(tmp_path):
+    # SPEC §4: last_used_at is best-effort telemetry, not written on every request. resolve() is the
+    # per-request auth hot path; an unconditional write there serializes every authenticated read
+    # into a SQLite commit (the e2e write-lock contention). First resolve records it (was NULL); a
+    # second resolve inside the throttle window must leave it unchanged.
+    s = AuthStore(str(tmp_path / "ems.sqlite"))
+
+    async def run():
+        await s.init()
+        uid = await s.create_user("a", "h", "user")
+        raw = await s.create_token(uid, "access", name="script")
+
+        async def last_used() -> str | None:
+            async with s._conn() as db:
+                cur = await db.execute(
+                    "SELECT last_used_at FROM auth_tokens WHERE user_id=?", (uid,)
+                )
+                return (await cur.fetchone())[0]
+
+        assert await last_used() is None
+        assert await s.resolve(raw) is not None
+        first = await last_used()
+        assert first is not None  # first use records it
+        assert await s.resolve(raw) is not None
+        assert await last_used() == first  # throttled: unchanged on a rapid second resolve
+
+    asyncio.run(run())

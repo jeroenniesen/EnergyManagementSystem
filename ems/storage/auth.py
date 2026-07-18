@@ -22,6 +22,13 @@ from ems.storage.settings import _BUSY_TIMEOUT_MS, _connection_is_dead  # reuse 
 
 _SESSION_TTL = timedelta(days=30)
 _SESSION_REFRESH_WINDOW = timedelta(days=7)
+# `last_used_at` is best-effort telemetry (SPEC §4), NOT auth-critical — so we don't write it on
+# every request. `resolve()` runs on the per-request auth hot path; an unconditional UPDATE+commit
+# there turns every authenticated read into a serialized SQLite write (write-lock + fsync), which
+# under concurrent load (e.g. the parallel e2e suite) queues requests until they time out. Throttle
+# it: only refresh `last_used_at` when it is stale by more than this window, collapsing the common
+# case to a lock-free read.
+_LAST_USED_THROTTLE = timedelta(minutes=5)
 
 _USERS_DDL = """
 CREATE TABLE IF NOT EXISTS users (
@@ -234,7 +241,7 @@ class AuthStore:
         async with self._write_conn() as db:
             db.row_factory = aiosqlite.Row
             cur = await db.execute(
-                "SELECT t.id AS token_id, t.kind, t.expires_at, u.id AS user_id, "
+                "SELECT t.id AS token_id, t.kind, t.expires_at, t.last_used_at, u.id AS user_id, "
                 "u.username, u.role, u.disabled "
                 "FROM auth_tokens t JOIN users u ON u.id = t.user_id WHERE t.token_hash = ?",
                 (th,),
@@ -242,6 +249,9 @@ class AuthStore:
             row = await cur.fetchone()
             if row is None or row["disabled"]:
                 return None
+            # Collect writes and commit at most once — and only when there is something to write —
+            # so the common authenticated read stays a lock-free SELECT (see _LAST_USED_THROTTLE).
+            dirty = False
             if row["expires_at"] is not None:
                 exp = datetime.fromisoformat(row["expires_at"])
                 if exp <= now:
@@ -251,11 +261,17 @@ class AuthStore:
                         "UPDATE auth_tokens SET expires_at=? WHERE id=?",
                         ((now + _SESSION_TTL).isoformat(), row["token_id"]),
                     )
-            await db.execute(
-                "UPDATE auth_tokens SET last_used_at=? WHERE id=?",
-                (now.isoformat(), row["token_id"]),
-            )
-            await db.commit()
+                    dirty = True
+            # Best-effort telemetry, throttled off the hot path (SPEC §4): only when stale.
+            lu = row["last_used_at"]
+            if lu is None or (now - datetime.fromisoformat(lu)) > _LAST_USED_THROTTLE:
+                await db.execute(
+                    "UPDATE auth_tokens SET last_used_at=? WHERE id=?",
+                    (now.isoformat(), row["token_id"]),
+                )
+                dirty = True
+            if dirty:
+                await db.commit()
             return Principal(
                 user_id=row["user_id"], username=row["username"], role=row["role"],
                 token_id=row["token_id"], kind=row["kind"],
