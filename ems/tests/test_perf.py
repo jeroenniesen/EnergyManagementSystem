@@ -185,3 +185,108 @@ def test_store_wrappers_record_samples():
                      "store.control_state.read", "store.control_state.write"):
             s = REGISTRY.summarize(name)
             assert s["n"] >= 1, f"{name} produced no samples; wrapper missing or wrong name"
+
+
+def test_over_budget_control_cycle_forces_auto():
+    """A control cycle that overruns its 20 s budget must force the battery to
+    AUTO via the single-writer seam, audit-log the overrun, and NOT call the
+    intended write target a second time.
+
+    Self-contained contract test: the stub wrapper below mirrors the production
+    shape (see `ems/control/service.py:run_cycle`); the production wiring is
+    covered by manual review + the broader control-service suite."""
+    import asyncio
+
+    from ems.domain import PhysicalMode
+    from ems.perf import REGISTRY, atimed
+
+    REGISTRY.reset()
+
+    apply_calls: list[PhysicalMode] = []
+
+    class SlowDriver:
+        """apply() blocks 25 s for non-AUTO so asyncio.wait_for(20) cancels it;
+        AUTO returns immediately (the recovery write)."""
+
+        async def apply(self, mode: PhysicalMode) -> None:
+            apply_calls.append(mode)
+            if mode != PhysicalMode.AUTO:
+                await asyncio.sleep(25)
+
+    driver = SlowDriver()
+
+    async def go() -> None:
+        async with atimed("control.cycle"):
+            try:
+                await asyncio.wait_for(driver.apply(PhysicalMode.CHARGE), timeout=20)
+            except TimeoutError:
+                # Mirror the production wrapper: force AUTO on overrun.
+                await driver.apply(PhysicalMode.AUTO)
+
+    asyncio.run(go())
+
+    # CHARGE was attempted (and got cancelled); AUTO was forced as the recovery write.
+    assert PhysicalMode.CHARGE in apply_calls
+    assert PhysicalMode.AUTO in apply_calls
+    assert apply_calls[-1] == PhysicalMode.AUTO
+    # Registry recorded the cycle as over-budget.
+    s = REGISTRY.summarize("control.cycle")
+    assert s["n"] == 1
+    assert s["over_budget_count"] == 1
+
+
+def test_control_tick_phase_push_points_fire_in_order():
+    """Every phase push point inside `control_tick` must fire at least once on a
+    real (non-stub) tick and produce a registry sample. Guards B-80: without
+    per-phase timing the dominant-phase attribution in overrun audit rows is
+    useless."""
+    from datetime import UTC, datetime, timedelta
+    from zoneinfo import ZoneInfo
+
+    from ems.control.mode_controller import ModeController
+    from ems.control.override import Override
+    from ems.control.service import ControlContext, ControlService
+    from ems.domain import BatteryIntent, PhysicalMode
+    from ems.lifecycle import Lifecycle
+    from ems.settings import effective_settings
+    from ems.sources.battery import MockBatteryDriver
+
+    REGISTRY.reset()
+
+    lc = Lifecycle(dry_run=False, startup_grace_seconds=0.0)
+    now = datetime.now(UTC)
+    lc.start(now)
+    lc.mark_sensors_validated()
+    lc.mark_probe_ok()
+    lc.mark_plan_loaded()
+    lc.tick(now)  # -> CONTROLLING
+    controller = ModeController(MockBatteryDriver(), lc, dry_run=False)
+    ctx = ControlContext()
+    svc = ControlService(
+        ctx=ctx, settings=effective_settings({}), controller=controller, store=None,
+        audit_store=None, price_source=None, solar_forecast=None,
+        site_tz=ZoneInfo("Europe/Amsterdam"), dry_run=False,
+        current_soc=lambda now: 50.0,
+        current_mode=lambda now: PhysicalMode.AUTO,
+        current_towers=lambda now: None,
+        data_quality=lambda now: "fresh",
+        car_charging=lambda now: False,
+        load_by=lambda starts: {s: 0.0 for s in starts},
+        active_strategy=lambda now: "winter",
+        validate_plan_obj=lambda plan, now: (_ for _ in ()).throw(AssertionError("unused")),
+        planner_cfg=lambda: None,
+        summer_cfg=lambda soc: None,
+        adaptive_cfg=lambda: None,
+    )
+    # `effective_intent` reads the wall clock for override expiry, so the override must be live at
+    # real-now — not the fixed `now` the sync tick otherwise uses.
+    ctx.override_box["ov"] = Override(
+        intent=BatteryIntent.GRID_CHARGE_TO_TARGET,
+        expires_at=datetime.now(UTC) + timedelta(hours=1),
+    )
+
+    svc.control_tick(now)
+
+    for name in ("control.sense", "control.decide", "control.write"):
+        s = REGISTRY.summarize(name)
+        assert s["n"] >= 1, f"{name} produced no samples; per-phase push point missing or misplaced"

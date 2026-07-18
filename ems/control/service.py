@@ -40,6 +40,7 @@ from ems.control.override import NONE as OVERRIDE_NONE
 from ems.control.override import Override
 from ems.domain import BatteryIntent, PhysicalMode
 from ems.lifecycle import OwnershipState
+from ems.perf import PERF_BUDGETS, REGISTRY, atimed, timed
 from ems.planner.adaptive import AdaptiveConfig
 from ems.planner.charge_need import compute_charge_need
 from ems.planner.recovery import recover_if_needed
@@ -934,9 +935,10 @@ class ControlService:
                 # F1: the discharge setpoint never took AND the re-command budget is spent — stop
                 # chasing DISCHARGE and fall back to the guard's safe HOLD (idle), idempotently each
                 # cycle, so the battery can't keep draining into the car. The safe terminal state.
-                dec = self._controller.decide(
-                    BatteryIntent.HOLD_RESERVE, now, observed_mode=observed,
-                    manual=override_active, priority=True, count_toward_cap=False)
+                with timed("control.write"):
+                    dec = self._controller.decide(
+                        BatteryIntent.HOLD_RESERVE, now, observed_mode=observed,
+                        manual=override_active, priority=True, count_toward_cap=False)
                 session.update(nxt)
                 session["last_outcome"] = dec.outcome
                 return [{"summary": ("car session: command budget spent and the battery never "
@@ -953,10 +955,11 @@ class ControlService:
                                     "setpoint_w": session["setpoint_w"],
                                     "commands": session["commands"]}}]
             return []  # quiet hold — the normal steady state of a car session (no audit spam)
-        dec = self._controller.decide(
-            BatteryIntent.DISCHARGE_FOR_LOAD, now, target_soc=target_soc, power_w=power,
-            observed_mode=observed, manual=override_active, priority=True,
-            car_session=True, force=True, count_toward_cap=False)
+        with timed("control.write"):
+            dec = self._controller.decide(
+                BatteryIntent.DISCHARGE_FOR_LOAD, now, target_soc=target_soc, power_w=power,
+                observed_mode=observed, manual=override_active, priority=True,
+                car_session=True, force=True, count_toward_cap=False)
         # Any attempted device write advances the session (bounds retries via the cap); dry-run /
         # not-controlling did not touch the device, so the session doesn't advance on those.
         if dec.outcome in _CAR_ATTEMPTED_OUTCOMES:
@@ -1049,24 +1052,27 @@ class ControlService:
         if lc.state is OwnershipState.INACTIVE:
             lc.start(now)
         # Readiness sequence (SPEC §13.3): validated sensors, a reachable battery, a loaded plan.
-        if self._data_quality(now) != "unsafe":
-            lc.mark_sensors_validated()
-        # Reachability + idempotency reuse the SHARED coalesced cluster read (observed) instead of a
-        # separate per-cycle master mode-read — far gentler on a device shared with HA + the app.
-        # IMPORTANT: "reachable" = the battery RESPONDED this cycle (a tower online), NOT that its
-        # mode decoded to a known label — else an unexpected mode value would stall ALL control
-        # (incl. manual overrides). `observed` may be None; decide() then reads fresh.
-        observed = self._current_mode(now)
-        towers = self._current_towers(now)
-        reachable = any(t.online for t in towers) if towers else observed is not None
-        if reachable:
-            lc.mark_probe_ok()  # battery readable this cycle
-        if self.current_plan() is not None:
-            lc.mark_plan_loaded()
-        lc.tick(now)
-        if not lc.can_command(now):
-            return []
-        intent, _reason, override_active, tgt, pw, _v, car_action = self.effective_intent(now)
+        # Wrapped in `control.sense` for B-80 perf attribution (dominant-phase sample on overrun).
+        with timed("control.sense"):
+            if self._data_quality(now) != "unsafe":
+                lc.mark_sensors_validated()
+            # Reachability + idempotency reuse the SHARED coalesced cluster read (observed) instead
+            # of a separate per-cycle master mode-read — far gentler on a device shared with HA +
+            # the app. IMPORTANT: "reachable" = the battery RESPONDED this cycle (a tower online),
+            # NOT that its mode decoded to a known label — else an unexpected mode value would stall
+            # ALL control (incl. manual overrides). `observed` may be None; decide() reads fresh.
+            observed = self._current_mode(now)
+            towers = self._current_towers(now)
+            reachable = any(t.online for t in towers) if towers else observed is not None
+            if reachable:
+                lc.mark_probe_ok()  # battery readable this cycle
+            if self.current_plan() is not None:
+                lc.mark_plan_loaded()
+            lc.tick(now)
+            if not lc.can_command(now):
+                return []
+        with timed("control.decide"):
+            intent, _reason, override_active, tgt, pw, _v, car_action = self.effective_intent(now)
         if intent is None:
             # End a dangling session, nothing else to do — [] both when already inactive and when
             # the end-hysteresis grace window is still open (nothing to act on either way).
@@ -1087,9 +1093,10 @@ class ControlService:
             entering = not self._ctx.car_session.get("reserve_hold")
             self._ctx.car_session["reserve_hold"] = True
             self._ctx.car_session["below_threshold_cycles"] = 0
-            dec = self._controller.decide(BatteryIntent.HOLD_RESERVE, now, observed_mode=observed,
-                                          manual=override_active, priority=True,
-                                          count_toward_cap=False)
+            with timed("control.write"):
+                dec = self._controller.decide(
+                    BatteryIntent.HOLD_RESERVE, now, observed_mode=observed,
+                    manual=override_active, priority=True, count_toward_cap=False)
             self._ctx.car_session["last_outcome"] = dec.outcome
             if entering:
                 return [{"summary": f"car session held at the reserve floor — {car_action.reason}",
@@ -1141,9 +1148,10 @@ class ControlService:
                 return []  # benign blip — hold the current setpoint through the grace window
             self.car_session_reset()  # F3/F5: end the session; act THIS cycle
             if grace == "reserve_hold":
-                dec = self._controller.decide(BatteryIntent.HOLD_RESERVE, now,
-                                              observed_mode=observed, manual=override_active,
-                                              priority=True, count_toward_cap=False)
+                with timed("control.write"):
+                    dec = self._controller.decide(BatteryIntent.HOLD_RESERVE, now,
+                                                  observed_mode=observed, manual=override_active,
+                                                  priority=True, count_toward_cap=False)
                 return [{"summary": "car session ended at the reserve floor — holding (idle) so "
                                     "the battery can't drain into the car",
                          "detail": {"event": "car_session_end", "reason": "reserve_floor",
@@ -1180,9 +1188,10 @@ class ControlService:
                 return records + hold
         else:  # exempt / idempotent / a switch just confirmed — re-arm the anti-flap counter
             self._ctx.intent_persist_box.update(mode=None, count=0)
-        dec = self._controller.decide(intent, now, target_soc=tgt, power_w=pw,
-                                      observed_mode=observed, manual=override_active,
-                                      priority=priority, commitment=commitment)
+        with timed("control.write"):
+            dec = self._controller.decide(intent, now, target_soc=tgt, power_w=pw,
+                                          observed_mode=observed, manual=override_active,
+                                          priority=priority, commitment=commitment)
         held = self._ctx.held_box
         if dec.outcome in ("applied", "failed_recovered", "failed_unrecovered"):
             # An ACTUAL device write — audit it. `accepted` = the device acknowledged the command
@@ -1261,21 +1270,99 @@ class ControlService:
     async def run_cycle(self) -> None:
         """One operational control cycle: run the (blocking) tick off the event loop, then AUDIT the
         CONFIRMED mode change it reports. Serialised by `ctx.control_lock` so the periodic loop and
-        an immediate override-triggered run can't overlap (two concurrent writes to the battery)."""
+        an immediate override-triggered run can't overlap (two concurrent writes to the battery).
+
+        Wrapped with a hard `asyncio.wait_for(..., timeout=PERF_BUDGETS["control.cycle"])` deadline
+        (B-80): a hung tick (deadlock, infinite loop, blocked device read) cannot stall the loop
+        indefinitely. On overrun we audit-log the event and force the battery to AUTO via the
+        single-writer seam — but ONLY when the lifecycle allows commanding AND we are not in
+        dry-run. See design spec §4.3."""
         if self._controller is None or self._dry_run:
             return
         async with self._ctx.control_lock:
             now = datetime.now(UTC)
             await self.refresh_car_obs(now)  # warm the house-load prediction before the (sync) tick
+            timed_out = False
+            records: list[dict] = []
             try:
-                records = await asyncio.to_thread(self.control_tick, now)
-            except Exception:
-                _log.exception("control tick failed; retry next cycle (fail-safe)")
-                return
-            for rec in records:
-                if self._audit_store is not None:
+                async with atimed("control.cycle"):
                     try:
-                        await self._audit_store.append(now.isoformat(), "battery_decision",
-                                                       rec["summary"], rec["detail"])
+                        records = await asyncio.wait_for(
+                            asyncio.to_thread(self.control_tick, now),
+                            timeout=PERF_BUDGETS["control.cycle"] / 1000.0,  # ms -> s
+                        )
+                    except TimeoutError:
+                        timed_out = True
+                        _log.warning("control.overrun: cycle exceeded %.1fs budget (timeout)",
+                                     PERF_BUDGETS["control.cycle"] / 1000.0)
                     except Exception:
-                        _log.warning("failed to write battery-decision audit", exc_info=True)
+                        _log.exception("control tick failed; retry next cycle (fail-safe)")
+                        return
+            except Exception:
+                # Defensive: atimed itself should never raise, but a registry push failure must not
+                # wedge the control loop.
+                pass
+            recent = REGISTRY.recent("control.cycle")
+            if recent and (recent[-1].over_budget or timed_out):
+                await self._handle_overrun(now, timed_out, recent[-1])
+            async with atimed("control.audit"):
+                for rec in records:
+                    if self._audit_store is not None:
+                        try:
+                            await self._audit_store.append(now.isoformat(), "battery_decision",
+                                                           rec["summary"], rec["detail"])
+                        except Exception:
+                            _log.warning("failed to write battery-decision audit", exc_info=True)
+
+    async def _handle_overrun(self, now: datetime, timed_out: bool, sample) -> None:
+        """Force the battery to AUTO if not dry-run AND the lifecycle allows commanding; otherwise
+        log only. ALWAYS audit-logs the event (a budget breach with no device write is still a
+        budget breach). The three guard layers in order:
+
+        1. dry-run — never write the device, but still audit (operators need to see overruns even
+           when the writer is disarmed);
+        2. lifecycle grace — if we're not yet CONTROLLING (sensors not validated, battery
+           unreachable, plan not loaded) we MUST NOT issue a forced write either — `can_command` is
+           the single gate every other write goes through, and bypassing it here would be a
+           foot-gun;
+        3. the AUTO write itself is wrapped in try/except so an unreachable driver during the
+           recovery is logged-and-swallowed (non-fatal: the next cycle re-attempts via the normal
+           path, and the audit row already records the original overrun)."""
+        if self._audit_store is not None:
+            try:
+                await self._audit_store.append(
+                    now.isoformat(), "control.overrun",
+                    f"control cycle exceeded budget: {sample.duration_ms:.0f} ms",
+                    {
+                        "duration_ms": sample.duration_ms,
+                        "reason": "timeout" if timed_out else "duration",
+                        "phase": _dominant_phase(),
+                    },
+                )
+            except Exception:
+                _log.warning("failed to write control-overrun audit", exc_info=True)
+        if self._dry_run:
+            return
+        lc = self._controller.lifecycle if self._controller is not None else None
+        if lc is None or not lc.can_command(now):
+            return
+        try:
+            await self._controller.driver.apply(PhysicalMode.AUTO)
+            _log.warning("control.overrun: forced battery to AUTO")
+        except Exception:
+            _log.exception("control.overrun: AUTO write failed (non-fatal)")
+
+
+def _dominant_phase() -> str | None:
+    """Name of the slowest `control.<phase>` sample so far in this cycle, or None when no phase
+    samples have been pushed yet (e.g. a tick timed out before reaching any phase). Read by
+    `_handle_overrun` to attribute the overrun to its likely cause on the audit row."""
+    samples: list[tuple[str, float]] = []
+    for name in ("control.sense", "control.decide", "control.write", "control.audit"):
+        recent = REGISTRY.recent(name, n=1)
+        if recent:
+            samples.append((name, recent[-1].duration_ms))
+    if not samples:
+        return None
+    samples.sort(key=lambda x: x[1], reverse=True)
+    return samples[0][0]
