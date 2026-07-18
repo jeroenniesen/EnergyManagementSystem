@@ -37,13 +37,19 @@ test("onboarding then login then logout", async ({ page }) => {
   await page.getByRole("button", { name: "Sign in" }).click();
   await expect(page.getByTestId("login")).toBeHidden();
 
-  // Task 11 regression guard: before the apiFetch retrofit, every dashboard card fetched its
-  // /api/* data WITHOUT the bearer token, so the identity gate 401'd every one of them and the
-  // dashboard rendered empty right after login. `battery-plan-summary` only renders once
-  // GET /api/battery-plan has resolved with real plan data (the loading skeleton keeps the
-  // `battery-plan` testid but never renders `battery-plan-summary`) — so this proves an
-  // authenticated fetch actually succeeded, not just that the shell mounted.
-  await expect(page.getByTestId("battery-plan-summary")).toBeVisible({ timeout: 10000 });
+  // Task 11 regression guard, asserted at the NETWORK layer: before the apiFetch retrofit every
+  // dashboard card fetched its /api/* data WITHOUT the bearer token, so the identity gate 401'd them
+  // all and the dashboard rendered empty. We wait for a GATED dashboard-poll read (`/api/status`) to
+  // return **200** — that can only happen once the token is attached, so it can't false-pass. We
+  // filter on status()===200 (not just the path) because the pre-login mount tick 401s first, and we
+  // assert at the network layer rather than the DOM because a 401'd card degrades silently to its
+  // loading skeleton (a DOM check can't tell "loaded" from "401'd").
+  const okResp = await page.waitForResponse(
+    (r) => new URL(r.url()).pathname === "/api/status" && r.status() === 200,
+    { timeout: 15000 },
+  );
+  expect(okResp.ok()).toBe(true);
+  await expect(page.getByTestId("battery-plan")).toBeVisible();
 
   // Logged in → Manage → Settings: the retired paste-token box is gone, replaced by Logout.
   await page.getByTestId("nav-manage").click();
