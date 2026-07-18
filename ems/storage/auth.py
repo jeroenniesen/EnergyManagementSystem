@@ -173,3 +173,42 @@ class AuthStore:
             await db.execute(_TOKENS_USER_INDEX_DDL)
             await db.execute(_INVITES_DDL)
             await db.commit()
+
+    # --- Users (Task 3) ---
+
+    async def user_count(self) -> int:
+        async with self._conn() as db:
+            cur = await db.execute("SELECT COUNT(*) FROM users")
+            return int((await cur.fetchone())[0])
+
+    async def create_user(self, username: str, password_hash: str, role: str) -> int:
+        async with self._write_conn() as db:
+            cur = await db.execute(
+                "INSERT INTO users (username, password_hash, role, created_at) VALUES (?,?,?,?)",
+                (username, password_hash, role, datetime.now(UTC).isoformat()),
+            )
+            await db.commit()
+            return int(cur.lastrowid)
+
+    async def _get_user(self, where: str, arg) -> dict | None:
+        async with self._conn() as db:
+            db.row_factory = aiosqlite.Row
+            cur = await db.execute(
+                f"SELECT id, username, password_hash, role, disabled FROM users WHERE {where}",
+                (arg,),
+            )
+            row = await cur.fetchone()
+            return dict(row) if row else None
+
+    async def get_user_by_username(self, username: str) -> dict | None:
+        return await self._get_user("username = ? COLLATE NOCASE", username)
+
+    async def get_user_by_id(self, user_id: int) -> dict | None:
+        return await self._get_user("id = ?", user_id)
+
+    async def set_password(self, user_id: int, password_hash: str) -> None:
+        async with self._write_conn() as db:
+            await db.execute(
+                "UPDATE users SET password_hash=? WHERE id=?", (password_hash, user_id)
+            )
+            await db.commit()
