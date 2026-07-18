@@ -290,3 +290,108 @@ def test_control_tick_phase_push_points_fire_in_order():
     for name in ("control.sense", "control.decide", "control.write"):
         s = REGISTRY.summarize(name)
         assert s["n"] >= 1, f"{name} produced no samples; per-phase push point missing or misplaced"
+
+
+def test_overrun_audit_includes_intended_mode():
+    """A control cycle that overruns its budget must capture the value the tick reached
+    (B-80 task 4 review) and surface it on the control.overrun audit row. The captured value
+    is the target_soc the tick had resolved before it hung in the write path — `None` when
+    effective_intent never returned (e.g. tick timed out in the sense phase).
+
+    End-to-end: a real ControlService + a mocked controller whose decide() blocks past the
+    patched 50 ms cycle budget, with a live override so effective_intent resolves to a known
+    target_soc (=100.0 for GRID_CHARGE_TO_TARGET). Reads the audit row from a real
+    AuditStore and asserts detail["intended_mode"] is the captured value, not None.
+    """
+    import asyncio
+    import tempfile
+    import time
+    from pathlib import Path
+
+    REGISTRY.reset()
+
+    with tempfile.TemporaryDirectory() as td:
+        db = str(Path(td) / "t.db")
+
+        async def go() -> None:
+            from datetime import UTC, datetime, timedelta
+            from zoneinfo import ZoneInfo
+
+            from ems.control.mode_controller import ModeController
+            from ems.control.override import Override
+            from ems.control.service import ControlContext, ControlService
+            from ems.domain import BatteryIntent, PhysicalMode
+            from ems.lifecycle import Lifecycle
+            from ems.perf import PERF_BUDGETS
+            from ems.settings import effective_settings
+            from ems.sources.battery import MockBatteryDriver
+            from ems.storage.audit import AuditStore
+
+            audit = AuditStore(db)
+            await audit.init()
+
+            lc = Lifecycle(dry_run=False, startup_grace_seconds=0.0)
+            now = datetime.now(UTC)
+            lc.start(now)
+            lc.mark_sensors_validated()
+            lc.mark_probe_ok()
+            lc.mark_plan_loaded()
+            lc.tick(now)  # -> CONTROLLING
+
+            class BlockingController(ModeController):
+                """decide() sleeps past the patched 50 ms budget so wait_for cancels us and
+                _handle_overrun fires. The original tick keeps running in the worker thread
+                (Python can't kill threads on cancel), but the box is set BEFORE we get here."""
+
+                def decide(self, intent, now, **kwargs):  # type: ignore[override]
+                    time.sleep(2)
+                    return super().decide(intent, now, **kwargs)
+
+            controller = BlockingController(MockBatteryDriver(), lc, dry_run=False)
+            ctx = ControlContext()
+            svc = ControlService(
+                ctx=ctx, settings=effective_settings({}), controller=controller, store=None,
+                audit_store=audit, price_source=None, solar_forecast=None,
+                site_tz=ZoneInfo("Europe/Amsterdam"), dry_run=False,
+                current_soc=lambda now: 50.0,
+                current_mode=lambda now: PhysicalMode.AUTO,
+                current_towers=lambda now: None,
+                data_quality=lambda now: "fresh",
+                car_charging=lambda now: False,
+                load_by=lambda starts: {s: 0.0 for s in starts},
+                active_strategy=lambda now: "winter",
+                validate_plan_obj=lambda plan, now: (_ for _ in ()).throw(AssertionError("unused")),
+                planner_cfg=lambda: None,
+                summer_cfg=lambda soc: None,
+                adaptive_cfg=lambda: None,
+            )
+            # Live override → effective_intent returns target_soc=100.0 for GRID_CHARGE_TO_TARGET.
+            # `effective_intent` reads the wall clock for override expiry, so it must be live at
+            # real-now — same caveat as the other tick test.
+            ctx.override_box["ov"] = Override(
+                intent=BatteryIntent.GRID_CHARGE_TO_TARGET,
+                expires_at=datetime.now(UTC) + timedelta(hours=1),
+            )
+
+            # Shrink the cycle budget so the test runs in <1 s (default is 20 s).
+            original_budget = PERF_BUDGETS["control.cycle"]
+            PERF_BUDGETS["control.cycle"] = 50.0
+            try:
+                await svc.run_cycle()
+            finally:
+                PERF_BUDGETS["control.cycle"] = original_budget
+
+            rows = await audit.recent(limit=10, category="control.overrun")
+            assert rows, "expected a control.overrun audit row"
+            detail = rows[0]["detail"]
+            assert "intended_mode" in detail, (
+                f"control.overrun detail missing intended_mode: {detail!r}")
+            assert detail["intended_mode"] is not None, (
+                f"intended_mode should be captured, got None: {detail!r}")
+            # The live override above resolves target_soc=100.0 for GRID_CHARGE_TO_TARGET.
+            assert detail["intended_mode"] == "100.0", (
+                f"expected intended_mode='100.0' from the live GRID_CHARGE override, "
+                f"got {detail['intended_mode']!r}: {detail!r}")
+            assert detail["reason"] == "timeout"
+
+        asyncio.run(go())

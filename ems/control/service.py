@@ -306,6 +306,11 @@ class ControlContext:
     # write), so a flap costs at most one row per flap, never one per cycle.
     intent_persist_box: dict[str, Any] = field(
         default_factory=lambda: {"mode": None, "count": 0})
+    # Captured by control_tick after effective_intent returns so a control.overrun audit row can
+    # attribute the breach to the value the tick reached (B-80 task 4 review). Read by
+    # _handle_overrun. None when no tick has run yet (or the tick timed out before reaching
+    # effective_intent, e.g. hung in the sense phase).
+    intended_mode_box: dict[str, Any] = field(default_factory=lambda: {"value": None})
     # Car-charging discharge session (feat/car-charge-modes). IN-MEMORY ONLY: a restart mid-session
     # simply starts a fresh session and re-commands ONCE next cycle (documented, acceptable). Keys:
     # {active, setpoint_w (last commanded W), commanded_at (iso of last car command), commands,
@@ -1073,6 +1078,9 @@ class ControlService:
                 return []
         with timed("control.decide"):
             intent, _reason, override_active, tgt, pw, _v, car_action = self.effective_intent(now)
+            # captured for the control.overrun audit detail (B-80 task 4 review)
+            intended_mode = tgt
+            self._ctx.intended_mode_box["value"] = intended_mode
         if intent is None:
             # End a dangling session, nothing else to do — [] both when already inactive and when
             # the end-hysteresis grace window is still open (nothing to act on either way).
@@ -1330,6 +1338,7 @@ class ControlService:
            path, and the audit row already records the original overrun)."""
         if self._audit_store is not None:
             try:
+                intended_mode = self._ctx.intended_mode_box["value"]
                 await self._audit_store.append(
                     now.isoformat(), "control.overrun",
                     f"control cycle exceeded budget: {sample.duration_ms:.0f} ms",
@@ -1337,6 +1346,8 @@ class ControlService:
                         "duration_ms": sample.duration_ms,
                         "reason": "timeout" if timed_out else "duration",
                         "phase": _dominant_phase(),
+                        "intended_mode": (str(intended_mode)
+                                          if intended_mode is not None else None),
                     },
                 )
             except Exception:
