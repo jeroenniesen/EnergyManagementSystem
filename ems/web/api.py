@@ -1342,6 +1342,11 @@ def create_app(
             await self.app(scope, receive, send)
 
     app.add_middleware(_AccessMiddleware)
+    # Perf timing (B-80): pure ASGI; wraps every /api/ request — including
+    # 401s from the auth gate above — so a slow auth path is visible too.
+    # Pure ASGI is required so the override control cycle stays unstarved.
+    from ems.web.perf_middleware import PerfTimingMiddleware
+    app.add_middleware(PerfTimingMiddleware)
 
     # The recovery-integrated plan path (`_recovery_sizing`/`_build_plan_now`/`_plan_with_recovery`/
     # `_current_plan`) + the car-guard + the effective-intent + the control tick/cycle moved into
@@ -2018,9 +2023,16 @@ def create_app(
                         recorder.health()["consecutive_failures"] if recorder is not None else 0),
                     "last_reheal_iso": store.reheal_stats()["last_reheal_iso"],
                 }
-        return {"overall": overall_status(checks), "checks": [c.to_dict() for c in checks],
-                "cache": cache_stats, "readiness": readiness, "storage": storage,
-                "recorder": recorder.health() if recorder is not None else None}
+        from ems.perf import build_perf_block
+        return {
+            "overall": overall_status(checks),
+            "checks": [c.to_dict() for c in checks],
+            "cache": cache_stats,
+            "readiness": readiness,
+            "storage": storage,
+            "recorder": recorder.health() if recorder is not None else None,
+            "perf": build_perf_block(),
+        }
 
     @app.get("/api/charge-need")
     def charge_need_endpoint() -> dict:
