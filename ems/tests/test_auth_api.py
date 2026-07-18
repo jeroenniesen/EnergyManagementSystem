@@ -37,6 +37,24 @@ def _seed_user(db: str, username: str, password: str, role: str):
     asyncio.run(run())
 
 
+def test_auth_discovery_body_for_anonymous_caller_when_user_exists(tmp_path):
+    # Review fix: /api/auth used to be shadowed by a legacy direct handler that reported
+    # required:false / authenticated:true for an anonymous caller once users existed, and never
+    # returned onboarding_needed/user. Assert the actual body, not just the status code, so
+    # shadowing regresses loudly here instead of slipping through a status-only check.
+    db = str(tmp_path / "ems.sqlite")
+    _seed_user(db, "admin", "pw12345678", "admin")
+    with TestClient(_app(db)) as c:
+        body = c.get("/api/auth").json()
+        assert set(body) == {"required", "authenticated", "onboarding_needed", "user"}
+        assert body == {
+            "required": True,
+            "authenticated": False,
+            "onboarding_needed": False,
+            "user": None,
+        }
+
+
 def test_forced_onboarding_blocks_until_admin(tmp_path):
     db = str(tmp_path / "ems.sqlite")  # no users
     with TestClient(_app(db)) as c:
@@ -84,6 +102,31 @@ def test_login_bad_password_401(tmp_path):
         assert bad_pw.status_code == 401
         bad_user = c.post("/api/auth/login", json={"username": "ghost", "password": "x"})
         assert bad_user.status_code == 401
+
+
+def test_login_disabled_user_401(tmp_path):
+    # Review fix: a disabled user must be rejected with the SAME generic 401 as a bad password —
+    # and (per the accompanying timing fix) go through exactly one dummy Argon2 op, not skip
+    # hashing entirely, so a disabled account isn't distinguishable by response latency.
+    db = str(tmp_path / "ems.sqlite")
+    _seed_user(db, "disabled_user", "pw12345678", "admin")
+
+    async def _disable():
+        s = AuthStore(db)
+        await s.init()
+        u = await s.get_user_by_username("disabled_user")
+        async with s._write_conn() as conn:
+            await conn.execute("UPDATE users SET disabled=1 WHERE id=?", (u["id"],))
+            await conn.commit()
+        await s.close()
+
+    asyncio.run(_disable())
+    with TestClient(_app(db)) as c:
+        r = c.post(
+            "/api/auth/login", json={"username": "disabled_user", "password": "pw12345678"}
+        )
+        assert r.status_code == 401
+        assert r.json()["detail"] == "invalid credentials"
 
 
 def test_change_password_requires_session_not_access_token(tmp_path):

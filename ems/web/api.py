@@ -1832,8 +1832,24 @@ def create_app(
                 "dry_run": dry_run, "dev_mode": dev_mode, "readiness": r.to_dict()}
 
     @app.get("/api/auth")
-    def auth_status(request: Request) -> dict:
-        # Lets the UI show a token field only when writes are protected, and reflect auth state.
+    async def auth_status(request: Request) -> dict:
+        # Two independent auth systems share this one discovery endpoint (identity system added in
+        # Task 8; this branch takes priority once wired). `/api/auth` is EXEMPT (authz.EXEMPT_PATHS)
+        # so `_AccessMiddleware` never attaches `scope["auth_principal"]` here — resolve the bearer
+        # token ourselves via the same `_resolve_principal` the identity gate uses, so
+        # `authenticated`/`user` are truthful for an already-logged-in caller.
+        if auth_store is not None:
+            principal = await _resolve_principal(request)
+            return {
+                "required": True,
+                "authenticated": principal is not None,
+                "onboarding_needed": not app.state.users_exist,
+                "user": ({"username": principal.username, "role": principal.role}
+                         if principal is not None else None),
+            }
+        # Legacy shared-token mode (no user system wired): lets the UI show a token field only
+        # when writes are protected, and reflect auth state. UNCHANGED — old tests depend on this
+        # exact 2-key shape.
         return {"required": _effective_web_token() is not None,
                 "authenticated": _authorized(request)}
 

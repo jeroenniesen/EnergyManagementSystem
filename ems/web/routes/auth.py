@@ -1,19 +1,22 @@
-"""Auth endpoints (auth slice 1, Task 8): discovery + login/logout/me/password.
+"""Auth endpoints (auth slice 1, Task 8): login/logout/me/password.
 
-GET /api/auth (discovery) · POST /api/auth/login · POST /api/auth/logout · GET /api/auth/me ·
-POST /api/auth/password.
+POST /api/auth/login · POST /api/auth/logout · GET /api/auth/me · POST /api/auth/password.
 
-AUTH: `/api/auth` and `/api/auth/login` are listed in `ems.web.authz.EXEMPT_PATHS`, so
-`_AccessMiddleware` (api.py) never sets `scope["auth_principal"]` for them — the discovery handler
-below resolves the bearer token itself so `authenticated`/`user` are truthful for an
-already-logged-in caller hitting the exempt path. `/api/auth/logout` and `/api/auth/password` are
+Discovery (GET /api/auth) is NOT served here — it's the extended `auth_status` handler directly
+on `app` in `ems/web/api.py` (review fix: a router route here was shadowed by that pre-existing
+direct route and never reached, so the identity-mode branch was folded into `auth_status` instead
+of duplicated in a second handler; see that handler's comment).
+
+AUTH: `/api/auth/login` is listed in `ems.web.authz.EXEMPT_PATHS`, so `_AccessMiddleware` (api.py)
+never sets `scope["auth_principal"]` for it. `/api/auth/logout` and `/api/auth/password` are
 listed in `requires_session` (authz.py), so the Task 7 identity gate already rejects an `access`
 (non-session) token with 403 before these handlers ever run — they can assume
 `scope["auth_principal"]` is a session Principal.
 
-No username-enumeration oracle: a missing user takes the SAME branch as a wrong password (401,
-generic "invalid credentials"), and calls `dummy_verify()` to burn the same Argon2 work a real
-`verify_password` call would, so there is no timing signal either.
+No username-enumeration oracle: a missing OR disabled user takes the SAME branch as a wrong
+password (401, generic "invalid credentials") and calls `dummy_verify()` to burn the same Argon2
+work a real `verify_password` call would, so exactly one Argon2 op runs on every failure path —
+no timing signal distinguishes missing/disabled/wrong-password.
 """
 from __future__ import annotations
 
@@ -28,33 +31,18 @@ def build_router(ctx: AppContext) -> APIRouter:
     router = APIRouter()
     auth_store = ctx.auth_store
 
-    @router.get("/api/auth")
-    async def auth_discovery(request: Request) -> dict:
-        # /api/auth is EXEMPT (authz.EXEMPT_PATHS), so _AccessMiddleware does NOT resolve/attach
-        # scope["auth_principal"] for it — resolve the bearer token ourselves so `authenticated`
-        # and `user` are truthful instead of always reporting logged-out.
-        principal = None
-        if auth_store is not None:
-            scheme, _, token = request.headers.get("authorization", "").partition(" ")
-            if scheme == "Bearer" and token:
-                principal = await auth_store.resolve(token)
-        return {
-            "required": True,
-            "authenticated": principal is not None,
-            "onboarding_needed": not request.app.state.users_exist,
-            "user": ({"username": principal.username, "role": principal.role}
-                     if principal else None),
-        }
-
     @router.post("/api/auth/login")
     async def login(request: Request, body: dict | None = None) -> JSONResponse:
         body = body or {}
         username = str(body.get("username", ""))
         password = str(body.get("password", ""))
         user = await auth_store.get_user_by_username(username) if username else None
-        if user is None or user["disabled"] or not verify_password(user["password_hash"], password):
-            if user is None:
-                dummy_verify()  # no username enumeration: equalize timing on the missing-user path
+        if user is None or user["disabled"]:
+            # No username enumeration + no disabled-account timing oracle: missing AND disabled
+            # both burn exactly one Argon2 op via dummy_verify() before the SAME generic 401.
+            dummy_verify()
+            return JSONResponse({"detail": "invalid credentials"}, status_code=401)
+        if not verify_password(user["password_hash"], password):
             return JSONResponse({"detail": "invalid credentials"}, status_code=401)
         raw = await auth_store.create_token(user["id"], "session")
         return JSONResponse({
