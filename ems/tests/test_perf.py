@@ -293,15 +293,15 @@ def test_control_tick_phase_push_points_fire_in_order():
 
 
 def test_overrun_audit_includes_intended_mode():
-    """A control cycle that overruns its budget must capture the value the tick reached
+    """A control cycle that overruns its budget must capture the intent the tick reached
     (B-80 task 4 review) and surface it on the control.overrun audit row. The captured value
-    is the target_soc the tick had resolved before it hung in the write path — `None` when
+    is the battery intent the tick had resolved before it hung in the write path — `None` when
     effective_intent never returned (e.g. tick timed out in the sense phase).
 
     End-to-end: a real ControlService + a mocked controller whose decide() blocks past the
     patched 50 ms cycle budget, with a live override so effective_intent resolves to a known
-    target_soc (=100.0 for GRID_CHARGE_TO_TARGET). Reads the audit row from a real
-    AuditStore and asserts detail["intended_mode"] is the captured value, not None.
+    BatteryIntent (GRID_CHARGE_TO_TARGET). Reads the audit row from a real AuditStore and asserts
+    detail["intended_mode"] is the captured mode string, not None.
     """
     import asyncio
     import tempfile
@@ -365,7 +365,7 @@ def test_overrun_audit_includes_intended_mode():
                 summer_cfg=lambda soc: None,
                 adaptive_cfg=lambda: None,
             )
-            # Live override → effective_intent returns target_soc=100.0 for GRID_CHARGE_TO_TARGET.
+            # Live override → effective_intent returns BatteryIntent.GRID_CHARGE_TO_TARGET.
             # `effective_intent` reads the wall clock for override expiry, so it must be live at
             # real-now — same caveat as the other tick test.
             ctx.override_box["ov"] = Override(
@@ -388,10 +388,10 @@ def test_overrun_audit_includes_intended_mode():
                 f"control.overrun detail missing intended_mode: {detail!r}")
             assert detail["intended_mode"] is not None, (
                 f"intended_mode should be captured, got None: {detail!r}")
-            # The live override above resolves target_soc=100.0 for GRID_CHARGE_TO_TARGET.
-            assert detail["intended_mode"] == "100.0", (
-                f"expected intended_mode='100.0' from the live GRID_CHARGE override, "
-                f"got {detail['intended_mode']!r}: {detail!r}")
+            # The live override above resolves to GRID_CHARGE_TO_TARGET.
+            assert detail["intended_mode"] == str(BatteryIntent.GRID_CHARGE_TO_TARGET), (
+                f"expected intended_mode={str(BatteryIntent.GRID_CHARGE_TO_TARGET)!r} from the "
+                f"live GRID_CHARGE_TO_TARGET override, got {detail['intended_mode']!r}: {detail!r}")
             assert detail["reason"] == "timeout"
 
         asyncio.run(go())

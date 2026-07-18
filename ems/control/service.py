@@ -1079,7 +1079,7 @@ class ControlService:
         with timed("control.decide"):
             intent, _reason, override_active, tgt, pw, _v, car_action = self.effective_intent(now)
             # captured for the control.overrun audit detail (B-80 task 4 review)
-            intended_mode = tgt
+            intended_mode = intent
             self._ctx.intended_mode_box["value"] = intended_mode
         if intent is None:
             # End a dangling session, nothing else to do — [] both when already inactive and when
