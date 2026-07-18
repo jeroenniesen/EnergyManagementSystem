@@ -86,7 +86,7 @@ function hm(iso: string): string {
 
 function SessionsTable({ sessions }: { sessions: Session[] | null }) {
   return (
-    <div className="car-sessions" data-testid="car-sessions">
+    <div className="car-sessions" data-testid="car-sessions" data-density-kind="card">
       <span className="metric-label">Recent charging</span>
       <p className="settings-group-hint">
         Charging sessions detected from your meter history over the last 14 days.
@@ -168,7 +168,7 @@ function CarModeSection({
     houseLoadW != null && enteredW > houseLoadW;
 
   return (
-    <div className="car-mode" data-testid="car-battery-mode">
+    <div className="car-mode" data-testid="car-battery-mode" data-density-kind="card">
       <div className="car-mode-head">
         <span className="metric-label">While the car charges</span>
         <label className="switch-row" data-testid="car-mode-hold-row">
@@ -506,7 +506,7 @@ export function CarView({ onOpenSettings }: { onOpenSettings?: () => void }) {
   const showSaveBar = dirty || status === "saved";
 
   return (
-    <section data-testid="car-view">
+    <section data-testid="car-view" data-density-surface="car">
       {/* (a) The full car-charging card (same component as the dashboard, non-compact). Threads
           the same onOpenSettings this view already has (used below by the config-section link) so
           the feature-off empty state can send you to Manage → Settings → Car too. */}
@@ -525,7 +525,7 @@ export function CarView({ onOpenSettings }: { onOpenSettings?: () => void }) {
       />
 
       {/* (c) Config: car picker + weekly schedule, moved here from Settings. */}
-      <div className="car-config" data-testid="car-config">
+      <div className="car-config" data-testid="car-config" data-density-kind="card">
         <span className="metric-label">Your car &amp; weekly schedule</span>
         <p className="settings-group-hint">
           Pick your car (capacity &amp; AC limit) and set the minimum charge to reach each morning.

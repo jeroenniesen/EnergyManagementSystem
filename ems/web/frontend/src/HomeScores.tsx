@@ -6,14 +6,24 @@ import { ScoreCard } from "./ScoreCard";
 import { homeSummary } from "./scoreCopy";
 
 export type Score = { key: string; label: string; value: number | null; explanation: string };
-export type Report = { partial: boolean; flows: { has_data: boolean; home_kwh?: number }; scores: Score[] };
+export type Report = {
+  partial: boolean;
+  flows: {
+    has_data: boolean;
+    home_kwh?: number;
+    grid_import_kwh?: number;
+  };
+  scores: Score[];
+};
 
 export function HomeScores({
   report,
   onOpenDetail,
+  scoreKeys,
 }: {
   report: Report | null;
   onOpenDetail: () => void;
+  scoreKeys?: string[];
 }) {
   if (!report || !report.flows?.has_data) return null;
 
@@ -24,6 +34,11 @@ export function HomeScores({
   const summary = early
     ? { tone: "neutral" as const, text: "The day's just starting" }
     : homeSummary(report.scores);
+
+  const scores = scoreKeys
+    ? report.scores.filter((score) => scoreKeys.includes(score.key))
+    : report.scores;
+  if (scores.length === 0) return null;
 
   return (
     <section className="home-scores" data-testid="home-scores" aria-label="Today's energy scores">
@@ -55,7 +70,7 @@ export function HomeScores({
         </button>
       </div>
       <div className="home-scores-pills">
-        {report.scores.map((s) => (
+        {scores.map((s) => (
           <ScoreCard key={s.key} score={s} onOpen={onOpenDetail} early={early} />
         ))}
       </div>

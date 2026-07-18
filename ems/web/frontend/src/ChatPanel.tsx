@@ -68,7 +68,7 @@ export function ChatPanel() {
   }
 
   return (
-    <section className="chat" data-testid="chat">
+    <section className="chat" data-testid="chat" data-density-surface="chat" data-density-kind="card">
       <div className="override-head">
         <span className="metric-label">Ask the assistant</span>
         {active === false && (
@@ -77,7 +77,7 @@ export function ChatPanel() {
       </div>
 
       {faq.length > 0 && (
-        <div className="faq" data-testid="faq">
+        <div className="faq" data-testid="faq" data-density-kind="subordinate">
           <p className="chat-suggest-lead">
             Quick answers{active === false ? " — these work without AI" : ""}:
           </p>
