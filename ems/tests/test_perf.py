@@ -105,8 +105,68 @@ def test_over_budget_api_logs_warn():
         assert s["n"] == 1
         assert s["over_budget_count"] == 1
         assert s["max_ms"] >= 500
-        # Last overrun must reference the path template.
-        overruns = REGISTRY.last_overruns()
-        assert overruns, "expected at least one overrun entry"
-        assert overruns[-1]["name"] == "api.hot"
-        assert overruns[-1].get("path_template") == "/api/status"
+    # Last overrun must reference the path template.
+    overruns = REGISTRY.last_overruns()
+    assert overruns, "expected at least one overrun entry"
+    assert overruns[-1]["name"] == "api.hot"
+    assert overruns[-1].get("path_template") == "/api/status"
+
+
+def test_store_wrappers_record_samples():
+    """Every store hot-path method must push a sample into the registry under its
+    store.*.read|write name. Guards B-80 per-store timing wrappers — without them
+    the SQLite hot path is invisible on /api/diagnostics.perf."""
+    import asyncio
+    import tempfile
+    from pathlib import Path
+
+    from ems.domain import RawSample
+    from ems.load_model import DerivedSample
+    from ems.storage.audit import AuditStore
+    from ems.storage.cache import CacheStore
+    from ems.storage.control_state import ControlStateStore
+    from ems.storage.history import HistoryStore
+    from ems.storage.settings import SettingsStore
+
+    REGISTRY.reset()
+    with tempfile.TemporaryDirectory() as td:
+        db = str(Path(td) / "t.db")
+
+        async def go() -> None:
+            hs = HistoryStore(db)
+            ss = SettingsStore(db)
+            aus = AuditStore(db)
+            cs = ControlStateStore(db)
+            cache = CacheStore(db)
+
+            await hs.init()
+            await ss.init()
+            await aus.init()
+            cs.init()
+            cache.init()
+
+            # Exercise each store's hot-path method at least once. Method names below are the
+            # ACTUAL public hot-path APIs — `record` (not `record_samples`), `all`/`set_many`
+            # (settings has no `get`/`set`), `load`/`save` (control_state has no `get`/`set`).
+            await hs.table_names()  # store.history.read
+            raw = RawSample(grid_power_w=100.0, solar_power_w=0.0, battery_power_w=0.0,
+                            ev_power_w=0.0, soc_pct=50.0)
+            derived = DerivedSample(house_load_w=100.0, non_ev_load_w=100.0)
+            await hs.record("2026-07-18T10:00:00Z", raw, derived)  # store.history.write
+            await ss.set_many({"x": "1"})  # store.settings.write
+            await ss.all()  # store.settings.read
+            await aus.append("2026-07-18T10:00:00Z", "test", "hello", {"k": 1})  # audit
+            cache.set("k", "v", ttl_seconds=60)  # store.cache.set
+            cache.get("k")  # store.cache.get
+            cs.load()  # store.control_state.read
+            cs.save({"daily_switches": 1})  # store.control_state.write
+
+        asyncio.run(go())
+
+        for name in ("store.history.read", "store.history.write",
+                     "store.settings.read", "store.settings.write",
+                     "store.audit.append",
+                     "store.cache.get", "store.cache.set",
+                     "store.control_state.read", "store.control_state.write"):
+            s = REGISTRY.summarize(name)
+            assert s["n"] >= 1, f"{name} produced no samples; wrapper missing or wrong name"

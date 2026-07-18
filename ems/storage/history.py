@@ -15,6 +15,7 @@ import aiosqlite
 
 from ems.domain import RawSample
 from ems.load_model import DerivedSample
+from ems.perf import atimed
 from ems.storage.migrations import Migration, has_table, run_migrations
 
 _log = logging.getLogger("ems.storage")
@@ -788,27 +789,29 @@ class HistoryStore:
         """Delete rows older than `cutoff_iso` (UTC-ISO) from BOTH sample tables atomically (one
         commit), so retention can never leave raw/derived out of sync. Returns total rows deleted.
         `ts` is UTC-ISO, so the lexicographic `<` is a correct time comparison."""
-        async with self._write_conn() as db:
-            cur = await db.execute("DELETE FROM raw_samples WHERE ts < ?", (cutoff_iso,))
-            deleted = cur.rowcount or 0
-            cur = await db.execute("DELETE FROM derived_samples WHERE ts < ?", (cutoff_iso,))
-            deleted += cur.rowcount or 0
-            cur = await db.execute("DELETE FROM price_slots WHERE start_ts < ?", (cutoff_iso,))
-            deleted += cur.rowcount or 0
-            cur = await db.execute("DELETE FROM forecast_snapshots WHERE start < ?", (cutoff_iso,))
-            deleted += cur.rowcount or 0
-            cur = await db.execute("DELETE FROM plan_history WHERE ts < ?", (cutoff_iso,))
-            deleted += cur.rowcount or 0
-            cur = await db.execute("DELETE FROM gas_readings WHERE ts < ?", (cutoff_iso,))
-            deleted += cur.rowcount or 0
-            cur = await db.execute(
-                "DELETE FROM carbon_intensity WHERE start_ts < ?", (cutoff_iso,))
-            deleted += cur.rowcount or 0
-            cur = await db.execute("DELETE FROM notifications WHERE ts < ?", (cutoff_iso,))
-            deleted += cur.rowcount or 0
-            # daily_finance is intentionally NOT purged (long-horizon record, B-13).
-            await db.commit()
-            return deleted
+        async with atimed("store.history.write"):
+            async with self._write_conn() as db:
+                cur = await db.execute("DELETE FROM raw_samples WHERE ts < ?", (cutoff_iso,))
+                deleted = cur.rowcount or 0
+                cur = await db.execute("DELETE FROM derived_samples WHERE ts < ?", (cutoff_iso,))
+                deleted += cur.rowcount or 0
+                cur = await db.execute("DELETE FROM price_slots WHERE start_ts < ?", (cutoff_iso,))
+                deleted += cur.rowcount or 0
+                cur = await db.execute(
+                    "DELETE FROM forecast_snapshots WHERE start < ?", (cutoff_iso,))
+                deleted += cur.rowcount or 0
+                cur = await db.execute("DELETE FROM plan_history WHERE ts < ?", (cutoff_iso,))
+                deleted += cur.rowcount or 0
+                cur = await db.execute("DELETE FROM gas_readings WHERE ts < ?", (cutoff_iso,))
+                deleted += cur.rowcount or 0
+                cur = await db.execute(
+                    "DELETE FROM carbon_intensity WHERE start_ts < ?", (cutoff_iso,))
+                deleted += cur.rowcount or 0
+                cur = await db.execute("DELETE FROM notifications WHERE ts < ?", (cutoff_iso,))
+                deleted += cur.rowcount or 0
+                # daily_finance is intentionally NOT purged (long-horizon record, B-13).
+                await db.commit()
+                return deleted
 
     async def maintain(self) -> None:
         """Periodic housekeeping for a 24/7 install: truncate the WAL so it can't grow unbounded,
@@ -843,40 +846,43 @@ class HistoryStore:
         two sample row counts; WAL bytes from the -wal sidecar file if present)."""
         import os
 
-        async with self._conn() as db:
-            db.row_factory = aiosqlite.Row
-            cur = await db.execute("PRAGMA page_count")
-            pages = (await cur.fetchone())[0]
-            cur = await db.execute("PRAGMA page_size")
-            page_size = (await cur.fetchone())[0]
-            cur = await db.execute("SELECT COUNT(*) FROM raw_samples")
-            raw_rows = (await cur.fetchone())[0]
-            cur = await db.execute("SELECT COUNT(*) FROM derived_samples")
-            derived_rows = (await cur.fetchone())[0]
-        wal_bytes = 0
-        try:
-            wal_bytes = os.path.getsize(f"{self.db_path}-wal")
-        except OSError:
-            pass
-        return {"db_bytes": pages * page_size, "wal_bytes": wal_bytes,
-                "raw_rows": raw_rows, "derived_rows": derived_rows}
+        async with atimed("store.history.read"):
+            async with self._conn() as db:
+                db.row_factory = aiosqlite.Row
+                cur = await db.execute("PRAGMA page_count")
+                pages = (await cur.fetchone())[0]
+                cur = await db.execute("PRAGMA page_size")
+                page_size = (await cur.fetchone())[0]
+                cur = await db.execute("SELECT COUNT(*) FROM raw_samples")
+                raw_rows = (await cur.fetchone())[0]
+                cur = await db.execute("SELECT COUNT(*) FROM derived_samples")
+                derived_rows = (await cur.fetchone())[0]
+            wal_bytes = 0
+            try:
+                wal_bytes = os.path.getsize(f"{self.db_path}-wal")
+            except OSError:
+                pass
+            return {"db_bytes": pages * page_size, "wal_bytes": wal_bytes,
+                    "raw_rows": raw_rows, "derived_rows": derived_rows}
 
     async def record(self, ts: str, raw: RawSample, derived: DerivedSample) -> None:
-        async with self._write_conn() as db:
-            await db.execute(
-                "INSERT INTO raw_samples "
-                "(ts, grid_power_w, solar_power_w, battery_power_w, ev_power_w, soc_pct) "
-                "VALUES (?, ?, ?, ?, ?, ?)",
-                (ts, raw.grid_power_w, raw.solar_power_w, raw.battery_power_w,
-                 raw.ev_power_w, raw.soc_pct),
-            )
-            await db.execute(
-                "INSERT INTO derived_samples (ts, house_load_w, non_ev_load_w) VALUES (?, ?, ?)",
-                (ts, derived.house_load_w, derived.non_ev_load_w),
-            )
-            # Both INSERTs must share THIS single commit (atomic raw+derived pair).
-            # Do NOT add an intermediate commit between them — it would let the tables drift.
-            await db.commit()
+        async with atimed("store.history.write"):
+            async with self._write_conn() as db:
+                await db.execute(
+                    "INSERT INTO raw_samples "
+                    "(ts, grid_power_w, solar_power_w, battery_power_w, ev_power_w, soc_pct) "
+                    "VALUES (?, ?, ?, ?, ?, ?)",
+                    (ts, raw.grid_power_w, raw.solar_power_w, raw.battery_power_w,
+                     raw.ev_power_w, raw.soc_pct),
+                )
+                await db.execute(
+                    "INSERT INTO derived_samples (ts, house_load_w, non_ev_load_w) "
+                    "VALUES (?, ?, ?)",
+                    (ts, derived.house_load_w, derived.non_ev_load_w),
+                )
+                # Both INSERTs must share THIS single commit (atomic raw+derived pair).
+                # Do NOT add an intermediate commit between them — it would let the tables drift.
+                await db.commit()
 
     async def recent_raw(self, limit: int = 100) -> list[dict]:
         return await self._recent("raw_samples", _RAW_COLS, limit)
@@ -935,20 +941,23 @@ class HistoryStore:
         """Idempotently store (start_ts UTC-ISO, €/kWh) slots — re-fetches simply overwrite."""
         if not slots:
             return
-        async with self._write_conn() as db:
-            await db.executemany(
-                "INSERT OR REPLACE INTO price_slots (start_ts, eur_per_kwh) VALUES (?, ?)", slots)
-            await db.commit()
+        async with atimed("store.history.write"):
+            async with self._write_conn() as db:
+                await db.executemany(
+                    "INSERT OR REPLACE INTO price_slots (start_ts, eur_per_kwh) "
+                    "VALUES (?, ?)", slots)
+                await db.commit()
 
     async def prices_between(self, start_iso: str, end_iso: str) -> list[dict]:
         """Stored price slots in [start, end), oldest-first (UTC-ISO ⇒ lexicographic = time)."""
-        async with self._conn() as db:
-            db.row_factory = aiosqlite.Row
-            cur = await db.execute(
-                "SELECT start_ts, eur_per_kwh FROM price_slots "
-                "WHERE start_ts >= ? AND start_ts < ? ORDER BY start_ts ASC",
-                (start_iso, end_iso))
-            return [dict(r) for r in await cur.fetchall()]
+        async with atimed("store.history.read"):
+            async with self._conn() as db:
+                db.row_factory = aiosqlite.Row
+                cur = await db.execute(
+                    "SELECT start_ts, eur_per_kwh FROM price_slots "
+                    "WHERE start_ts >= ? AND start_ts < ? ORDER BY start_ts ASC",
+                    (start_iso, end_iso))
+                return [dict(r) for r in await cur.fetchall()]
 
     async def upsert_forecast_snapshot(
         self, issued_date: str, slots: list[tuple[str, float, float, float]]
@@ -964,13 +973,14 @@ class HistoryStore:
         want the day-ahead forecast, not a later-cycle nowcast overwriting it for error analysis."""
         if not slots:
             return
-        async with self._write_conn() as db:
-            await db.executemany(
-                "INSERT OR IGNORE INTO forecast_snapshots "
-                "(issued_date, start, p10_w, p50_w, p90_w) VALUES (?, ?, ?, ?, ?)",
-                [(issued_date, start, p10, p50, p90) for start, p10, p50, p90 in slots],
-            )
-            await db.commit()
+        async with atimed("store.history.write"):
+            async with self._write_conn() as db:
+                await db.executemany(
+                    "INSERT OR IGNORE INTO forecast_snapshots "
+                    "(issued_date, start, p10_w, p50_w, p90_w) VALUES (?, ?, ?, ?, ?)",
+                    [(issued_date, start, p10, p50, p90) for start, p10, p50, p90 in slots],
+                )
+                await db.commit()
 
     async def forecasts_between(self, start_iso: str, end_iso: str) -> list[dict]:
         """DEPRECATED (reconciliation iteration, design §3.3): every live solar-accuracy reader now
@@ -981,13 +991,14 @@ class HistoryStore:
 
         Stored forecast snapshots with slot `start` in [start, end), ordered by
         (issued_date, start) (UTC-ISO ⇒ lexicographic = time)."""
-        async with self._conn() as db:
-            db.row_factory = aiosqlite.Row
-            cur = await db.execute(
-                "SELECT issued_date, start, p10_w, p50_w, p90_w FROM forecast_snapshots "
-                "WHERE start >= ? AND start < ? ORDER BY issued_date ASC, start ASC",
-                (start_iso, end_iso))
-            return [dict(r) for r in await cur.fetchall()]
+        async with atimed("store.history.read"):
+            async with self._conn() as db:
+                db.row_factory = aiosqlite.Row
+                cur = await db.execute(
+                    "SELECT issued_date, start, p10_w, p50_w, p90_w FROM forecast_snapshots "
+                    "WHERE start >= ? AND start < ? ORDER BY issued_date ASC, start ASC",
+                    (start_iso, end_iso))
+                return [dict(r) for r in await cur.fetchall()]
 
     async def ledger_append(self, rows: list[tuple]) -> None:
         """Append prediction-ledger rows (design §4.2). Each row is the fixed tuple
@@ -997,13 +1008,14 @@ class HistoryStore:
         and a canonical write can't be clobbered by a nowcast that happened to share an instant."""
         if not rows:
             return
-        async with self._write_conn() as db:
-            await db.executemany(
-                f"INSERT OR IGNORE INTO forecast_ledger ({', '.join(_LEDGER_COLS)}) "
-                f"VALUES ({', '.join('?' for _ in _LEDGER_COLS)})",
-                rows,
-            )
-            await db.commit()
+        async with atimed("store.history.write"):
+            async with self._write_conn() as db:
+                await db.executemany(
+                    f"INSERT OR IGNORE INTO forecast_ledger ({', '.join(_LEDGER_COLS)}) "
+                    f"VALUES ({', '.join('?' for _ in _LEDGER_COLS)})",
+                    rows,
+                )
+                await db.commit()
 
     async def ledger_canonical_between(
         self, kind: str, start_iso: str, end_iso: str
@@ -1011,27 +1023,29 @@ class HistoryStore:
         """Canonical (`canonical=1`) ledger rows of `kind` with `target_start` in [start, end),
         oldest-first — the anti-leakage day-ahead snapshot the forecast scorer grades. Uses the
         (kind, canonical, target_start) index."""
-        async with self._conn() as db:
-            db.row_factory = aiosqlite.Row
-            cur = await db.execute(
-                f"SELECT {', '.join(_LEDGER_COLS)} FROM forecast_ledger "
-                "WHERE kind = ? AND canonical = 1 AND target_start >= ? AND target_start < ? "
-                "ORDER BY target_start ASC",
-                (kind, start_iso, end_iso))
-            return [dict(r) for r in await cur.fetchall()]
+        async with atimed("store.history.read"):
+            async with self._conn() as db:
+                db.row_factory = aiosqlite.Row
+                cur = await db.execute(
+                    f"SELECT {', '.join(_LEDGER_COLS)} FROM forecast_ledger "
+                    "WHERE kind = ? AND canonical = 1 AND target_start >= ? AND target_start < ? "
+                    "ORDER BY target_start ASC",
+                    (kind, start_iso, end_iso))
+                return [dict(r) for r in await cur.fetchall()]
 
     async def ledger_between(self, kind: str, start_iso: str, end_iso: str) -> list[dict]:
         """ALL ledger rows of `kind` with `target_start` in [start, end) — every issue time, not
         just canonical — ordered by (target_start, issued_at) for lead-time/nowcast diagnostics
         (UTC-ISO ⇒ lexicographic = time)."""
-        async with self._conn() as db:
-            db.row_factory = aiosqlite.Row
-            cur = await db.execute(
-                f"SELECT {', '.join(_LEDGER_COLS)} FROM forecast_ledger "
-                "WHERE kind = ? AND target_start >= ? AND target_start < ? "
-                "ORDER BY target_start ASC, issued_at ASC",
-                (kind, start_iso, end_iso))
-            return [dict(r) for r in await cur.fetchall()]
+        async with atimed("store.history.read"):
+            async with self._conn() as db:
+                db.row_factory = aiosqlite.Row
+                cur = await db.execute(
+                    f"SELECT {', '.join(_LEDGER_COLS)} FROM forecast_ledger "
+                    "WHERE kind = ? AND target_start >= ? AND target_start < ? "
+                    "ORDER BY target_start ASC, issued_at ASC",
+                    (kind, start_iso, end_iso))
+                return [dict(r) for r in await cur.fetchall()]
 
     async def purge_ledger_older_than(
         self, cutoff_iso: str, *, nowcast_cutoff_iso: str | None = None
@@ -1044,17 +1058,18 @@ class HistoryStore:
         (~96 nowcasts per slot vs 1 canonical) but only the canonical rows are scored — nowcasts
         exist for lead-time diagnostics, so they get a much shorter horizon (60 days at the call
         site) keeping the ledger ~95% smaller without touching the evidence."""
-        async with self._write_conn() as db:
-            cur = await db.execute(
-                "DELETE FROM forecast_ledger WHERE target_start < ?", (cutoff_iso,))
-            n = cur.rowcount or 0
-            if nowcast_cutoff_iso is not None:
+        async with atimed("store.history.write"):
+            async with self._write_conn() as db:
                 cur = await db.execute(
-                    "DELETE FROM forecast_ledger WHERE canonical = 0 AND target_start < ?",
-                    (nowcast_cutoff_iso,))
-                n += cur.rowcount or 0
-            await db.commit()
-            return n
+                    "DELETE FROM forecast_ledger WHERE target_start < ?", (cutoff_iso,))
+                n = cur.rowcount or 0
+                if nowcast_cutoff_iso is not None:
+                    cur = await db.execute(
+                        "DELETE FROM forecast_ledger WHERE canonical = 0 AND target_start < ?",
+                        (nowcast_cutoff_iso,))
+                    n += cur.rowcount or 0
+                await db.commit()
+                return n
 
     async def record_plan(self, ts: str, snapshot: dict) -> None:
         """Append one plan/target history row (observability-data): what the planner intended
@@ -1064,160 +1079,179 @@ class HistoryStore:
         ems.analysis.plan_execution_error). Missing keys default to None (a partial or
         pre-commitment snapshot still records something rather than nothing; the scorer falls back
         to legacy grouping for rows without plan_version/floor_soc)."""
-        async with self._write_conn() as db:
-            await db.execute(
-                "INSERT INTO plan_history "
-                "(ts, strategy, target_soc, deadline, soc_pct, intent, plan_version, floor_soc) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-                (ts, snapshot.get("strategy"), snapshot.get("target_soc"),
-                 snapshot.get("deadline"), snapshot.get("soc_pct"), snapshot.get("intent"),
-                 snapshot.get("plan_version"), snapshot.get("floor_soc")),
-            )
-            await db.commit()
+        async with atimed("store.history.write"):
+            async with self._write_conn() as db:
+                await db.execute(
+                    "INSERT INTO plan_history "
+                    "(ts, strategy, target_soc, deadline, soc_pct, intent, "
+                    "plan_version, floor_soc) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                    (ts, snapshot.get("strategy"), snapshot.get("target_soc"),
+                     snapshot.get("deadline"), snapshot.get("soc_pct"), snapshot.get("intent"),
+                     snapshot.get("plan_version"), snapshot.get("floor_soc")),
+                )
+                await db.commit()
 
     async def plan_history_between(self, start_iso: str, end_iso: str) -> list[dict]:
         """Plan/target history rows with `ts` in [start, end), oldest-first (UTC-ISO ⇒
         lexicographic = time) — compare `target_soc` against raw_samples.soc_pct over time.
         `plan_version`/`floor_soc` are None on rows written before those columns existed."""
-        async with self._conn() as db:
-            db.row_factory = aiosqlite.Row
-            cur = await db.execute(
-                "SELECT ts, strategy, target_soc, deadline, soc_pct, intent, plan_version, "
-                "floor_soc FROM plan_history WHERE ts >= ? AND ts < ? ORDER BY ts ASC",
-                (start_iso, end_iso))
-            return [dict(r) for r in await cur.fetchall()]
+        async with atimed("store.history.read"):
+            async with self._conn() as db:
+                db.row_factory = aiosqlite.Row
+                cur = await db.execute(
+                    "SELECT ts, strategy, target_soc, deadline, soc_pct, intent, plan_version, "
+                    "floor_soc FROM plan_history WHERE ts >= ? AND ts < ? ORDER BY ts ASC",
+                    (start_iso, end_iso))
+                return [dict(r) for r in await cur.fetchall()]
 
     async def record_gas(self, ts: str, total_gas_m3: float) -> None:
         """Upsert one cumulative gas meter reading (B-02). INSERT OR REPLACE: `ts` is the
         recorder's sense timestamp (one row/cycle in practice), so a re-record at the same `ts`
         (e.g. a retried cycle) simply overwrites rather than duplicating."""
-        async with self._write_conn() as db:
-            await db.execute(
-                "INSERT OR REPLACE INTO gas_readings (ts, total_gas_m3) VALUES (?, ?)",
-                (ts, total_gas_m3))
-            await db.commit()
+        async with atimed("store.history.write"):
+            async with self._write_conn() as db:
+                await db.execute(
+                    "INSERT OR REPLACE INTO gas_readings (ts, total_gas_m3) VALUES (?, ?)",
+                    (ts, total_gas_m3))
+                await db.commit()
 
     async def gas_between(self, start_iso: str, end_iso: str) -> list[dict]:
         """Gas meter readings with `ts` in [start, end), oldest-first (UTC-ISO ⇒
         lexicographic = time) — window consumption is the last reading minus the first."""
-        async with self._conn() as db:
-            db.row_factory = aiosqlite.Row
-            cur = await db.execute(
-                "SELECT ts, total_gas_m3 FROM gas_readings WHERE ts >= ? AND ts < ? "
-                "ORDER BY ts ASC",
-                (start_iso, end_iso))
-            return [dict(r) for r in await cur.fetchall()]
+        async with atimed("store.history.read"):
+            async with self._conn() as db:
+                db.row_factory = aiosqlite.Row
+                cur = await db.execute(
+                    "SELECT ts, total_gas_m3 FROM gas_readings WHERE ts >= ? AND ts < ? "
+                    "ORDER BY ts ASC",
+                    (start_iso, end_iso))
+                return [dict(r) for r in await cur.fetchall()]
 
     async def upsert_daily_finance(self, day: str, data: dict) -> None:
         """Store/replace one local day's finance rollup (day = YYYY-MM-DD, data = JSON-able)."""
-        async with self._write_conn() as db:
-            await db.execute(
-                "INSERT OR REPLACE INTO daily_finance (day, data) VALUES (?, ?)",
-                (day, json.dumps(data)))
-            await db.commit()
+        async with atimed("store.history.write"):
+            async with self._write_conn() as db:
+                await db.execute(
+                    "INSERT OR REPLACE INTO daily_finance (day, data) VALUES (?, ?)",
+                    (day, json.dumps(data)))
+                await db.commit()
 
     async def daily_finance_between(self, start_day: str, end_day: str) -> list[dict]:
         """Finance rollups for days in [start, end) as {day, data}, oldest-first."""
-        async with self._conn() as db:
-            db.row_factory = aiosqlite.Row
-            cur = await db.execute(
-                "SELECT day, data FROM daily_finance WHERE day >= ? AND day < ? "
-                "ORDER BY day ASC", (start_day, end_day))
-            return [{"day": r["day"], "data": json.loads(r["data"])} for r in await cur.fetchall()]
+        async with atimed("store.history.read"):
+            async with self._conn() as db:
+                db.row_factory = aiosqlite.Row
+                cur = await db.execute(
+                    "SELECT day, data FROM daily_finance WHERE day >= ? AND day < ? "
+                    "ORDER BY day ASC", (start_day, end_day))
+                return [
+                    {"day": r["day"], "data": json.loads(r["data"])}
+                    for r in await cur.fetchall()
+                ]
 
     async def schema_version(self) -> int:
         """The DB's PRAGMA user_version (the applied migration level; see storage/migrations.py)."""
-        async with self._conn() as db:
-            cur = await db.execute("PRAGMA user_version")
-            return int((await cur.fetchone())[0])
+        async with atimed("store.history.read"):
+            async with self._conn() as db:
+                cur = await db.execute("PRAGMA user_version")
+                return int((await cur.fetchone())[0])
 
     async def observations_between(self, start_iso: str, end_iso: str) -> list[dict]:
         """Compact 15-min observations with slot_start in [start, end), oldest-first (UTC-ISO ⇒
         lexicographic = time). `flags` is decoded from JSON to a list (a corrupt value ⇒ [])."""
-        async with self._conn() as db:
-            db.row_factory = aiosqlite.Row
-            cur = await db.execute(
-                "SELECT slot_start, mean_load_w, mean_non_ev_load_w, mean_solar_w, samples, "
-                "coverage, flags FROM observations WHERE slot_start >= ? AND slot_start < ? "
-                "ORDER BY slot_start ASC", (start_iso, end_iso))
-            out = []
-            for r in await cur.fetchall():
-                row = dict(r)
-                try:
-                    row["flags"] = json.loads(row["flags"]) if row["flags"] else []
-                except (ValueError, TypeError):
-                    row["flags"] = []
-                out.append(row)
-            return out
+        async with atimed("store.history.read"):
+            async with self._conn() as db:
+                db.row_factory = aiosqlite.Row
+                cur = await db.execute(
+                    "SELECT slot_start, mean_load_w, mean_non_ev_load_w, mean_solar_w, samples, "
+                    "coverage, flags FROM observations WHERE slot_start >= ? AND slot_start < ? "
+                    "ORDER BY slot_start ASC", (start_iso, end_iso))
+                out = []
+                for r in await cur.fetchall():
+                    row = dict(r)
+                    try:
+                        row["flags"] = json.loads(row["flags"]) if row["flags"] else []
+                    except (ValueError, TypeError):
+                        row["flags"] = []
+                    out.append(row)
+                return out
 
     async def purge_observations_older_than(self, cutoff_iso: str) -> int:
         """Delete observations with slot_start < `cutoff_iso` (the 400-day horizon), returning the
         row count. Deliberately SEPARATE from purge_older_than: observations outlive the raw
         samples they were distilled from, and daily_energy is never purged at all."""
-        async with self._write_conn() as db:
-            cur = await db.execute("DELETE FROM observations WHERE slot_start < ?", (cutoff_iso,))
-            await db.commit()
-            return cur.rowcount or 0
+        async with atimed("store.history.write"):
+            async with self._write_conn() as db:
+                cur = await db.execute(
+                    "DELETE FROM observations WHERE slot_start < ?", (cutoff_iso,))
+                await db.commit()
+                return cur.rowcount or 0
 
     async def daily_energy_between(self, start_date: str, end_date: str) -> list[dict]:
         """Daily kWh rollups (B-13) for local dates in [start, end) as dicts, oldest-first. Never
         purged, so this is the year-over-year record that survives the raw retention purge."""
         cols = ("date", "solar_kwh", "load_kwh", "non_ev_load_kwh", "ev_kwh", "grid_import_kwh",
                 "grid_export_kwh", "battery_charge_kwh", "battery_discharge_kwh", "coverage")
-        async with self._conn() as db:
-            db.row_factory = aiosqlite.Row
-            cur = await db.execute(
-                f"SELECT {', '.join(cols)} FROM daily_energy WHERE date >= ? AND date < ? "
-                "ORDER BY date ASC", (start_date, end_date))
-            return [dict(r) for r in await cur.fetchall()]
+        async with atimed("store.history.read"):
+            async with self._conn() as db:
+                db.row_factory = aiosqlite.Row
+                cur = await db.execute(
+                    f"SELECT {', '.join(cols)} FROM daily_energy WHERE date >= ? AND date < ? "
+                    "ORDER BY date ASC", (start_date, end_date))
+                return [dict(r) for r in await cur.fetchall()]
 
     async def upsert_carbon(self, rows: list[tuple[str, float]]) -> None:
         """Idempotently store (start_ts UTC-ISO, kg CO2/kWh) slots — re-fetches simply overwrite
         (roadmap F3, reporting-only)."""
         if not rows:
             return
-        async with self._write_conn() as db:
-            await db.executemany(
-                "INSERT OR REPLACE INTO carbon_intensity (start_ts, kg_per_kwh) VALUES (?, ?)",
-                rows)
-            await db.commit()
+        async with atimed("store.history.write"):
+            async with self._write_conn() as db:
+                await db.executemany(
+                    "INSERT OR REPLACE INTO carbon_intensity (start_ts, kg_per_kwh) VALUES (?, ?)",
+                    rows)
+                await db.commit()
 
     async def carbon_between(self, start_iso: str, end_iso: str) -> list[dict]:
         """Stored carbon-intensity slots in [start, end), oldest-first (UTC-ISO ⇒
         lexicographic = time) — the Insights CO2 score averages these for a live window factor."""
-        async with self._conn() as db:
-            db.row_factory = aiosqlite.Row
-            cur = await db.execute(
-                "SELECT start_ts, kg_per_kwh FROM carbon_intensity "
-                "WHERE start_ts >= ? AND start_ts < ? ORDER BY start_ts ASC",
-                (start_iso, end_iso))
-            return [dict(r) for r in await cur.fetchall()]
+        async with atimed("store.history.read"):
+            async with self._conn() as db:
+                db.row_factory = aiosqlite.Row
+                cur = await db.execute(
+                    "SELECT start_ts, kg_per_kwh FROM carbon_intensity "
+                    "WHERE start_ts >= ? AND start_ts < ? ORDER BY start_ts ASC",
+                    (start_iso, end_iso))
+                return [dict(r) for r in await cur.fetchall()]
 
     async def set_car_soc_anchor(self, pct: float, ts: str) -> None:
         """Store/replace the manual car-SoC anchor: a percent at an ISO timestamp, from which EV
         SoC is estimated. Single-row upsert — a new anchor overwrites the previous one (there is
         only ever one 'last known' anchor)."""
-        async with self._write_conn() as db:
-            await db.execute(
-                "INSERT OR REPLACE INTO car_soc_anchor (key, value) VALUES (?, ?)",
-                (_CAR_SOC_ANCHOR_KEY, json.dumps({"pct": float(pct), "ts": ts})),
-            )
-            await db.commit()
+        async with atimed("store.history.write"):
+            async with self._write_conn() as db:
+                await db.execute(
+                    "INSERT OR REPLACE INTO car_soc_anchor (key, value) VALUES (?, ?)",
+                    (_CAR_SOC_ANCHOR_KEY, json.dumps({"pct": float(pct), "ts": ts})),
+                )
+                await db.commit()
 
     async def get_car_soc_anchor(self) -> tuple[float, str] | None:
         """The stored (pct, ts) anchor, or None if never set / the row is corrupt (never raises)."""
-        async with self._conn() as db:
-            db.row_factory = aiosqlite.Row
-            cur = await db.execute(
-                "SELECT value FROM car_soc_anchor WHERE key = ?", (_CAR_SOC_ANCHOR_KEY,))
-            row = await cur.fetchone()
-        if row is None:
-            return None
-        try:
-            data = json.loads(row["value"])
-            return float(data["pct"]), str(data["ts"])
-        except (ValueError, TypeError, KeyError):
-            return None
+        async with atimed("store.history.read"):
+            async with self._conn() as db:
+                db.row_factory = aiosqlite.Row
+                cur = await db.execute(
+                    "SELECT value FROM car_soc_anchor WHERE key = ?", (_CAR_SOC_ANCHOR_KEY,))
+                row = await cur.fetchone()
+            if row is None:
+                return None
+            try:
+                data = json.loads(row["value"])
+                return float(data["pct"]), str(data["ts"])
+            except (ValueError, TypeError, KeyError):
+                return None
 
     async def add_notification(
         self, ts: str, key: str, title: str, body: str, *,
@@ -1230,30 +1264,32 @@ class HistoryStore:
         suppressed, a NEW day is simply a different key and always gets through. `delivered`
         starts as `["in_app"]` — storing the row IS the in-app delivery; a channel like ntfy is
         added afterwards via `set_notification_delivered` once (if) it actually succeeds."""
-        async with self._write_conn() as db:
-            if dedupe_key is not None:
+        async with atimed("store.history.write"):
+            async with self._write_conn() as db:
+                if dedupe_key is not None:
+                    cur = await db.execute(
+                        "SELECT 1 FROM notifications WHERE dedupe_key = ? LIMIT 1", (dedupe_key,))
+                    if await cur.fetchone() is not None:
+                        return None
                 cur = await db.execute(
-                    "SELECT 1 FROM notifications WHERE dedupe_key = ? LIMIT 1", (dedupe_key,))
-                if await cur.fetchone() is not None:
-                    return None
-            cur = await db.execute(
-                "INSERT INTO notifications "
-                "(ts, key, title, body, confidence, read, delivered, dedupe_key) "
-                "VALUES (?, ?, ?, ?, ?, 0, ?, ?)",
-                (ts, key, title, body, confidence, json.dumps(["in_app"]), dedupe_key),
-            )
-            await db.commit()
-            return cur.lastrowid
+                    "INSERT INTO notifications "
+                    "(ts, key, title, body, confidence, read, delivered, dedupe_key) "
+                    "VALUES (?, ?, ?, ?, ?, 0, ?, ?)",
+                    (ts, key, title, body, confidence, json.dumps(["in_app"]), dedupe_key),
+                )
+                await db.commit()
+                return cur.lastrowid
 
     async def set_notification_delivered(self, notification_id: int, delivered: list[str]) -> None:
         """Overwrite the delivered-channel list for one notification (Notifier calls this after a
         successful ntfy push has actually gone out)."""
-        async with self._write_conn() as db:
-            await db.execute(
-                "UPDATE notifications SET delivered = ? WHERE id = ?",
-                (json.dumps(delivered), notification_id),
-            )
-            await db.commit()
+        async with atimed("store.history.write"):
+            async with self._write_conn() as db:
+                await db.execute(
+                    "UPDATE notifications SET delivered = ? WHERE id = ?",
+                    (json.dumps(delivered), notification_id),
+                )
+                await db.commit()
 
     async def notifications_between(
         self, start_iso: str, end_iso: str, limit: int = 500
@@ -1262,28 +1298,30 @@ class HistoryStore:
         mirrors the other `_between` helpers. Notifications are sparse by construction (dedupe_key
         collapses repeats), so a generous default limit comfortably covers a recency feed. `read`
         is decoded to a bool and `delivered` to a list (a corrupt/empty value degrades to [])."""
-        async with self._conn() as db:
-            db.row_factory = aiosqlite.Row
-            cur = await db.execute(
-                "SELECT id, ts, key, title, body, confidence, read, delivered, dedupe_key "
-                "FROM notifications WHERE ts >= ? AND ts < ? ORDER BY ts ASC LIMIT ?",
-                (start_iso, end_iso, limit))
-            out = []
-            for r in await cur.fetchall():
-                row = dict(r)
-                row["read"] = bool(row["read"])
-                try:
-                    row["delivered"] = json.loads(row["delivered"]) if row["delivered"] else []
-                except (ValueError, TypeError):
-                    row["delivered"] = []
-                out.append(row)
-            return out
+        async with atimed("store.history.read"):
+            async with self._conn() as db:
+                db.row_factory = aiosqlite.Row
+                cur = await db.execute(
+                    "SELECT id, ts, key, title, body, confidence, read, delivered, dedupe_key "
+                    "FROM notifications WHERE ts >= ? AND ts < ? ORDER BY ts ASC LIMIT ?",
+                    (start_iso, end_iso, limit))
+                out = []
+                for r in await cur.fetchall():
+                    row = dict(r)
+                    row["read"] = bool(row["read"])
+                    try:
+                        row["delivered"] = json.loads(row["delivered"]) if row["delivered"] else []
+                    except (ValueError, TypeError):
+                        row["delivered"] = []
+                    out.append(row)
+                return out
 
     async def unread_count(self) -> int:
         """Count of unread notifications (the bell's dot count)."""
-        async with self._conn() as db:
-            cur = await db.execute("SELECT COUNT(*) FROM notifications WHERE read = 0")
-            return (await cur.fetchone())[0]
+        async with atimed("store.history.read"):
+            async with self._conn() as db:
+                cur = await db.execute("SELECT COUNT(*) FROM notifications WHERE read = 0")
+                return (await cur.fetchone())[0]
 
     async def mark_notifications_read(
         self, ids: list[int] | None = None, mark_all: bool = False
@@ -1291,19 +1329,21 @@ class HistoryStore:
         """Mark notifications read: `mark_all=True` marks every currently-unread row; otherwise
         marks exactly the given `ids` (an id that doesn't exist is silently ignored). Returns the
         number of rows actually changed."""
-        async with self._write_conn() as db:
-            if mark_all:
-                cur = await db.execute("UPDATE notifications SET read = 1 WHERE read = 0")
-            elif ids:
-                placeholders = ", ".join("?" for _ in ids)
-                cur = await db.execute(
-                    f"UPDATE notifications SET read = 1 WHERE id IN ({placeholders})", ids)
-            else:
-                return 0
-            await db.commit()
-            return cur.rowcount or 0
+        async with atimed("store.history.write"):
+            async with self._write_conn() as db:
+                if mark_all:
+                    cur = await db.execute("UPDATE notifications SET read = 1 WHERE read = 0")
+                elif ids:
+                    placeholders = ", ".join("?" for _ in ids)
+                    cur = await db.execute(
+                        f"UPDATE notifications SET read = 1 WHERE id IN ({placeholders})", ids)
+                else:
+                    return 0
+                await db.commit()
+                return cur.rowcount or 0
 
     async def table_names(self) -> set[str]:
-        async with self._conn() as db:
-            cur = await db.execute("SELECT name FROM sqlite_master WHERE type='table'")
-            return {r[0] for r in await cur.fetchall()}
+        async with atimed("store.history.read"):
+            async with self._conn() as db:
+                cur = await db.execute("SELECT name FROM sqlite_master WHERE type='table'")
+                return {r[0] for r in await cur.fetchall()}

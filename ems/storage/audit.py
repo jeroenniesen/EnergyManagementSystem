@@ -10,6 +10,7 @@ from datetime import UTC, datetime
 
 import aiosqlite
 
+from ems.perf import atimed
 from ems.storage.history import _connection_is_dead, _log, self_healing
 
 _BUSY_TIMEOUT_MS = 3000
@@ -119,12 +120,13 @@ class AuditStore:
     async def append(
         self, ts: str, category: str, summary: str, detail: dict | None = None
     ) -> None:
-        async with self._write_conn() as db:
-            await db.execute(
-                "INSERT INTO audit_log (ts, category, summary, detail) VALUES (?, ?, ?, ?)",
-                (ts, category, summary, json.dumps(detail or {})),
-            )
-            await db.commit()
+        async with atimed("store.audit.append"):
+            async with self._write_conn() as db:
+                await db.execute(
+                    "INSERT INTO audit_log (ts, category, summary, detail) VALUES (?, ?, ?, ?)",
+                    (ts, category, summary, json.dumps(detail or {})),
+                )
+                await db.commit()
 
     async def recent(self, limit: int = 100, category: str | None = None) -> list[dict]:
         """Newest-first audit entries, optionally filtered by category. `detail` is decoded to a
