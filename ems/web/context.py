@@ -30,6 +30,7 @@ from ems.sources.base import Source
 from ems.sources.forecast import SolarForecastSource
 from ems.sources.prices import PriceSource
 from ems.storage.audit import AuditStore
+from ems.storage.auth import AuthStore
 from ems.storage.cache import CacheStore
 from ems.storage.history import HistoryStore
 
@@ -63,6 +64,7 @@ class AppContext:
     # THE live effective-settings dict — mutated in place, never rebound (pass the reference).
     settings_cache: dict[str, Any]
     audit_store: AuditStore | None
+    auth_store: AuthStore | None
     cache_store: CacheStore | None
     notifier: Notifier | None
     price_source: PriceSource | None

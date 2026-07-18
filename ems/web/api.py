@@ -112,6 +112,7 @@ from ems.sources.forecast import SolarForecastSource, day_kwh_p50
 from ems.sources.indevolt import aggregate_soc
 from ems.sources.prices import PriceSlot, PriceSource, current_price
 from ems.storage.audit import AuditStore
+from ems.storage.auth import AuthStore
 from ems.storage.cache import CacheStore
 from ems.storage.history import (
     OBSERVATION_RETENTION_DAYS,
@@ -744,6 +745,7 @@ def create_app(
     settings_store: SettingsStore | None = None,
     override_store: SettingsStore | None = None,
     audit_store: AuditStore | None = None,
+    auth_store: AuthStore | None = None,
     cache_store: CacheStore | None = None,
     control_cycle_seconds: float = 300.0,
     history_retention_days: int = 90,
@@ -1136,6 +1138,11 @@ def create_app(
             )
         if audit_store is not None:
             await audit_store.init()
+        if auth_store is not None:
+            await auth_store.init()
+            _app.state.users_exist = (await auth_store.user_count()) > 0
+        else:
+            _app.state.users_exist = True  # no auth store → legacy behaviour, nothing to onboard
         if cache_store is not None:
             await asyncio.to_thread(cache_store.init)
             # One-off housekeeping at boot so the cache table can't grow without bound.
@@ -3421,6 +3428,7 @@ def create_app(
         store=store,
         settings_cache=settings_cache,
         audit_store=audit_store,
+        auth_store=auth_store,
         cache_store=cache_store,
         notifier=notifier,
         price_source=price_source,
