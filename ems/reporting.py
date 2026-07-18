@@ -14,6 +14,7 @@ from datetime import date as date_cls
 from zoneinfo import ZoneInfo
 
 from ems.energy_flow import build_flows
+from ems.perf import timed
 from ems.retrospect import _floor, _mean, _parse
 from ems.scores import (
     DEFAULT_GAS_CO2,
@@ -148,6 +149,21 @@ def build_series(
     STABLE axis of buckets — every bucket in the window is present (sampled or not) so charts
     don't shift as data arrives. `day` → 96×15-min slots; `week`/`month` → local days; `year` →
     local months. Same math as the flow report: 15-min slot means → kWh, summed into buckets."""
+    with timed("report.build"):
+        return _build_series_impl(
+            raw_rows, derived_rows, period=period, start=start, end=end, tz=tz,
+        )
+
+
+def _build_series_impl(
+    raw_rows: list[dict],
+    derived_rows: list[dict],
+    *,
+    period: str,
+    start: datetime,
+    end: datetime,
+    tz: ZoneInfo,
+) -> list[dict]:
     start_utc, end_utc = start.astimezone(UTC), end.astimezone(UTC)
     grid_by: dict[datetime, list[float]] = defaultdict(list)
     ev_by: dict[datetime, list[float]] = defaultdict(list)
@@ -349,20 +365,21 @@ def build_report(
     note (e.g. " (live grid signal, avg 0.19 kg/kWh)") that's appended verbatim to the CO₂ score's
     explanation — cosmetic only, `co2_score`'s signature/math are untouched; `grid_factor` itself
     already carries the number that matters."""
-    flows = build_flows(raw_rows, derived_rows, start, end, label=label, partial=partial)
-    co2 = co2_score(flows, grid_factor=grid_factor, gas_factor=gas_factor, gas_m3=gas_m3)
-    if grid_factor_note:
-        co2 = Score(co2.key, co2.label, co2.value, co2.raw, co2.unit,
-                    co2.explanation + grid_factor_note)
-    scores = [
-        self_consumption_score(flows),
-        co2,
-        best_price_score(_import_price_slots(raw_rows, prices, start, end)),
-    ]
-    return Report(
-        period=period,
-        window_start=start.astimezone(UTC).isoformat(),
-        window_end=end.astimezone(UTC).isoformat(),
-        label=label, partial=partial,
-        flows=flows.to_dict(), scores=[s.to_dict() for s in scores],
-    )
+    with timed("report.build"):
+        flows = build_flows(raw_rows, derived_rows, start, end, label=label, partial=partial)
+        co2 = co2_score(flows, grid_factor=grid_factor, gas_factor=gas_factor, gas_m3=gas_m3)
+        if grid_factor_note:
+            co2 = Score(co2.key, co2.label, co2.value, co2.raw, co2.unit,
+                        co2.explanation + grid_factor_note)
+        scores = [
+            self_consumption_score(flows),
+            co2,
+            best_price_score(_import_price_slots(raw_rows, prices, start, end)),
+        ]
+        return Report(
+            period=period,
+            window_start=start.astimezone(UTC).isoformat(),
+            window_end=end.astimezone(UTC).isoformat(),
+            label=label, partial=partial,
+            flows=flows.to_dict(), scores=[s.to_dict() for s in scores],
+        )

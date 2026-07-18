@@ -15,6 +15,7 @@ from typing import Any
 
 import aiosqlite
 
+from ems.perf import atimed
 from ems.storage.history import _connection_is_dead, _log, self_healing
 
 _BUSY_TIMEOUT_MS = 3000
@@ -122,10 +123,11 @@ class SettingsStore:
 
     async def all(self) -> dict[str, Any]:
         """Every stored key → decoded JSON value. A corrupt row is skipped, not fatal."""
-        async with self._conn() as db:
-            db.row_factory = aiosqlite.Row
-            cur = await db.execute(f"SELECT key, value FROM {self.table}")
-            rows = await cur.fetchall()
+        async with atimed("store.settings.read"):
+            async with self._conn() as db:
+                db.row_factory = aiosqlite.Row
+                cur = await db.execute(f"SELECT key, value FROM {self.table}")
+                rows = await cur.fetchall()
         out: dict[str, Any] = {}
         for r in rows:
             try:
@@ -138,21 +140,23 @@ class SettingsStore:
         """Upsert the given key→value pairs in a single transaction. No-op for an empty dict."""
         if not items:
             return
-        async with self._write_conn() as db:
-            for key, value in items.items():
-                await db.execute(
-                    f"INSERT INTO {self.table} (key, value) VALUES (?, ?) "
-                    "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
-                    (key, json.dumps(value)),
-                )
-            await db.commit()
+        async with atimed("store.settings.write"):
+            async with self._write_conn() as db:
+                for key, value in items.items():
+                    await db.execute(
+                        f"INSERT INTO {self.table} (key, value) VALUES (?, ?) "
+                        "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                        (key, json.dumps(value)),
+                    )
+                await db.commit()
 
     async def delete(self, *keys: str) -> None:
         """Remove the given keys (used to clear runtime state such as a manual override)."""
         if not keys:
             return
-        async with self._write_conn() as db:
-            await db.executemany(
-                f"DELETE FROM {self.table} WHERE key = ?", [(k,) for k in keys]
-            )
-            await db.commit()
+        async with atimed("store.settings.write"):
+            async with self._write_conn() as db:
+                await db.executemany(
+                    f"DELETE FROM {self.table} WHERE key = ?", [(k,) for k in keys]
+                )
+                await db.commit()
