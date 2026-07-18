@@ -788,9 +788,9 @@ class HistoryStore:
     async def purge_older_than(self, cutoff_iso: str) -> int:
         """Delete rows older than `cutoff_iso` (UTC-ISO) from BOTH sample tables atomically (one
         commit), so retention can never leave raw/derived out of sync. Returns total rows deleted.
-        `ts` is UTC-ISO, so the lexicographic `<` is a correct time comparison."""
-        async with atimed("store.history.write"):
-            async with self._write_conn() as db:
+        `ts` is UTC-ISO, so the lexicographic `<` is a correct time comparison. Nightly/maintenance
+        path — deliberately NOT wrapped in atimed (not a dashboard hot path)."""
+        async with self._write_conn() as db:
                 cur = await db.execute("DELETE FROM raw_samples WHERE ts < ?", (cutoff_iso,))
                 deleted = cur.rowcount or 0
                 cur = await db.execute("DELETE FROM derived_samples WHERE ts < ?", (cutoff_iso,))
@@ -904,24 +904,26 @@ class HistoryStore:
 
     async def _recent(self, table: str, cols: tuple[str, ...], limit: int) -> list[dict]:
         # table/cols are module constants (never user input) — no injection surface.
-        query = f"SELECT {', '.join(cols)} FROM {table} ORDER BY rowid DESC LIMIT ?"
-        async with self._conn() as db:
-            db.row_factory = aiosqlite.Row
-            cur = await db.execute(query, (limit,))
-            rows = await cur.fetchall()
-            return [dict(r) for r in rows]
+        async with atimed("store.history.read"):
+            query = f"SELECT {', '.join(cols)} FROM {table} ORDER BY rowid DESC LIMIT ?"
+            async with self._conn() as db:
+                db.row_factory = aiosqlite.Row
+                cur = await db.execute(query, (limit,))
+                rows = await cur.fetchall()
+                return [dict(r) for r in rows]
 
     async def _since(
         self, table: str, cols: tuple[str, ...], cutoff_iso: str, limit: int
     ) -> list[dict]:
         # Rows at/after `cutoff_iso` (newest-first, capped). `ts` is UTC-ISO so a lexicographic
         # comparison is a correct time comparison. table/cols are module constants — no injection.
-        query = (f"SELECT {', '.join(cols)} FROM {table} WHERE ts >= ? "
-                 f"ORDER BY rowid DESC LIMIT ?")
-        async with self._conn() as db:
-            db.row_factory = aiosqlite.Row
-            cur = await db.execute(query, (cutoff_iso, limit))
-            return [dict(r) for r in await cur.fetchall()]
+        async with atimed("store.history.read"):
+            query = (f"SELECT {', '.join(cols)} FROM {table} WHERE ts >= ? "
+                     f"ORDER BY rowid DESC LIMIT ?")
+            async with self._conn() as db:
+                db.row_factory = aiosqlite.Row
+                cur = await db.execute(query, (cutoff_iso, limit))
+                return [dict(r) for r in await cur.fetchall()]
 
     async def _between(
         self, table: str, cols: tuple[str, ...], start_iso: str, end_iso: str, limit: int
@@ -930,12 +932,13 @@ class HistoryStore:
         # UTC-ISO so a lexicographic comparison is a correct time comparison. table/cols are
         # module constants — no injection. Bounded so an old day fetches only that day, not all
         # history since (keeps load minimal).
-        query = (f"SELECT {', '.join(cols)} FROM {table} WHERE ts >= ? AND ts < ? "
-                 f"ORDER BY rowid ASC LIMIT ?")
-        async with self._conn() as db:
-            db.row_factory = aiosqlite.Row
-            cur = await db.execute(query, (start_iso, end_iso, limit))
-            return [dict(r) for r in await cur.fetchall()]
+        async with atimed("store.history.read"):
+            query = (f"SELECT {', '.join(cols)} FROM {table} WHERE ts >= ? AND ts < ? "
+                     f"ORDER BY rowid ASC LIMIT ?")
+            async with self._conn() as db:
+                db.row_factory = aiosqlite.Row
+                cur = await db.execute(query, (start_iso, end_iso, limit))
+                return [dict(r) for r in await cur.fetchall()]
 
     async def upsert_price_slots(self, slots: list[tuple[str, float]]) -> None:
         """Idempotently store (start_ts UTC-ISO, €/kWh) slots — re-fetches simply overwrite."""
@@ -1057,19 +1060,19 @@ class HistoryStore:
         `nowcast_cutoff_iso` (differentiated retention): canonical=0 nowcast rows dominate the DB
         (~96 nowcasts per slot vs 1 canonical) but only the canonical rows are scored — nowcasts
         exist for lead-time diagnostics, so they get a much shorter horizon (60 days at the call
-        site) keeping the ledger ~95% smaller without touching the evidence."""
-        async with atimed("store.history.write"):
-            async with self._write_conn() as db:
+        site) keeping the ledger ~95% smaller without touching the evidence.
+        Nightly/maintenance path — deliberately NOT wrapped in atimed (not a dashboard hot path)."""
+        async with self._write_conn() as db:
+            cur = await db.execute(
+                "DELETE FROM forecast_ledger WHERE target_start < ?", (cutoff_iso,))
+            n = cur.rowcount or 0
+            if nowcast_cutoff_iso is not None:
                 cur = await db.execute(
-                    "DELETE FROM forecast_ledger WHERE target_start < ?", (cutoff_iso,))
-                n = cur.rowcount or 0
-                if nowcast_cutoff_iso is not None:
-                    cur = await db.execute(
-                        "DELETE FROM forecast_ledger WHERE canonical = 0 AND target_start < ?",
-                        (nowcast_cutoff_iso,))
-                    n += cur.rowcount or 0
-                await db.commit()
-                return n
+                    "DELETE FROM forecast_ledger WHERE canonical = 0 AND target_start < ?",
+                    (nowcast_cutoff_iso,))
+                n += cur.rowcount or 0
+            await db.commit()
+            return n
 
     async def record_plan(self, ts: str, snapshot: dict) -> None:
         """Append one plan/target history row (observability-data): what the planner intended
@@ -1180,9 +1183,9 @@ class HistoryStore:
     async def purge_observations_older_than(self, cutoff_iso: str) -> int:
         """Delete observations with slot_start < `cutoff_iso` (the 400-day horizon), returning the
         row count. Deliberately SEPARATE from purge_older_than: observations outlive the raw
-        samples they were distilled from, and daily_energy is never purged at all."""
-        async with atimed("store.history.write"):
-            async with self._write_conn() as db:
+        samples they were distilled from, and daily_energy is never purged at all.
+        Nightly/maintenance path — deliberately NOT wrapped in atimed (not a dashboard hot path)."""
+        async with self._write_conn() as db:
                 cur = await db.execute(
                     "DELETE FROM observations WHERE slot_start < ?", (cutoff_iso,))
                 await db.commit()

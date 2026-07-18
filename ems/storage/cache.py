@@ -102,38 +102,38 @@ class CacheStore:
                 con.close()
 
     def purge_expired(self) -> int:
-        """Drop every expired row; returns how many. Cheap housekeeping to bound table growth."""
-        with timed("store.cache.set"):
-            now = self._clock()
-            con = self._conn()
-            try:
-                cur = con.execute("DELETE FROM cache WHERE expires_at <= ?", (now,))
-                con.commit()
-                return cur.rowcount
-            finally:
-                con.close()
+        """Drop every expired row; returns how many. Cheap housekeeping to bound table growth.
+        Not wrapped in timed — housekeeping, not a hot path."""
+        now = self._clock()
+        con = self._conn()
+        try:
+            cur = con.execute("DELETE FROM cache WHERE expires_at <= ?", (now,))
+            con.commit()
+            return cur.rowcount
+        finally:
+            con.close()
 
     def count(self) -> int:
-        with timed("store.cache.get"):
-            con = self._conn()
-            try:
-                return int(con.execute("SELECT COUNT(*) FROM cache").fetchone()[0])
-            finally:
-                con.close()
+        """Total cache row count (live + expired). Diagnostic — not wrapped in timed."""
+        con = self._conn()
+        try:
+            return int(con.execute("SELECT COUNT(*) FROM cache").fetchone()[0])
+        finally:
+            con.close()
 
     def breakdown(self) -> dict[str, int]:
         """{'total': N, '<prefix>': count, ...} over the LIVE (unexpired) rows, grouped by the key
-        prefix before ':'. For observability — showing how much is reused instead of refetched."""
-        with timed("store.cache.get"):
-            now = self._clock()
-            con = self._conn()
-            try:
-                rows = con.execute("SELECT key FROM cache WHERE expires_at > ?", (now,)).fetchall()
-            finally:
-                con.close()
-            out: dict[str, int] = {"total": 0}
-            for (k,) in rows:
-                out["total"] += 1
-                kind = k.split(":", 1)[0] if ":" in k else "other"
-                out[kind] = out.get(kind, 0) + 1
-            return out
+        prefix before ':'. For observability — showing how much is reused instead of refetched.
+        Diagnostic — not wrapped in timed."""
+        now = self._clock()
+        con = self._conn()
+        try:
+            rows = con.execute("SELECT key FROM cache WHERE expires_at > ?", (now,)).fetchall()
+        finally:
+            con.close()
+        out: dict[str, int] = {"total": 0}
+        for (k,) in rows:
+            out["total"] += 1
+            kind = k.split(":", 1)[0] if ":" in k else "other"
+            out[kind] = out.get(kind, 0) + 1
+        return out
