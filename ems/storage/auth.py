@@ -278,3 +278,50 @@ class AuthStore:
                 (user_id,),
             )
             return [dict(r) for r in await cur.fetchall()]
+
+    # --- Onboarding (Task 9) ---
+
+    async def onboard_admin(self, username: str, password_hash: str, *,
+                            migrate_token_hash: str | None) -> tuple[int, str] | None:
+        """Create the first admin + its session (+ migrated access token) atomically.
+
+        TOCTOU guard: the `COUNT(users) == 0` recheck happens INSIDE this single
+        `BEGIN IMMEDIATE` transaction (not read-then-write), so two concurrent onboard calls
+        can never both succeed — `BEGIN IMMEDIATE` takes the write lock up front, forcing the
+        second caller's transaction to serialize behind the first and see the just-inserted row.
+
+        Returns (user_id, session_raw), or None if any user already exists.
+        """
+        now = datetime.now(UTC)
+        session_raw = new_token()
+        async with self._write_conn() as db:
+            await db.execute("BEGIN IMMEDIATE")
+            try:
+                cur = await db.execute("SELECT COUNT(*) FROM users")
+                if int((await cur.fetchone())[0]) != 0:
+                    await db.rollback()
+                    return None
+                cur = await db.execute(
+                    "INSERT INTO users (username, password_hash, role, created_at) "
+                    "VALUES (?,?,?,?)",
+                    (username, password_hash, "admin", now.isoformat()),
+                )
+                uid = int(cur.lastrowid)
+                await db.execute(
+                    "INSERT INTO auth_tokens (user_id, token_hash, kind, created_at, expires_at) "
+                    "VALUES (?,?, 'session', ?, ?)",
+                    (uid, hash_token(session_raw), now.isoformat(),
+                     (now + _SESSION_TTL).isoformat()),
+                )
+                if migrate_token_hash:
+                    await db.execute(
+                        "INSERT OR IGNORE INTO auth_tokens "
+                        "(user_id, token_hash, kind, name, created_at, expires_at) "
+                        "VALUES (?,?, 'access', 'Migrated shared token', ?, NULL)",
+                        (uid, migrate_token_hash, now.isoformat()),
+                    )
+                await db.commit()
+                return uid, session_raw
+            except Exception:
+                await db.rollback()
+                raise

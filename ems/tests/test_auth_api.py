@@ -46,12 +46,17 @@ def test_auth_discovery_body_for_anonymous_caller_when_user_exists(tmp_path):
     _seed_user(db, "admin", "pw12345678", "admin")
     with TestClient(_app(db)) as c:
         body = c.get("/api/auth").json()
-        assert set(body) == {"required", "authenticated", "onboarding_needed", "user"}
+        assert set(body) == {
+            "required", "authenticated", "onboarding_needed", "user", "shared_token_required",
+        }
         assert body == {
             "required": True,
             "authenticated": False,
             "onboarding_needed": False,
             "user": None,
+            # Task 9: onboarding is already closed (a user exists), so the shared-token field
+            # is never needed regardless of whether a shared token is configured.
+            "shared_token_required": False,
         }
 
 

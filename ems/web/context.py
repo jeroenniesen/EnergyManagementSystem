@@ -88,3 +88,4 @@ class AppContext:
     solar_forecast_skill: Callable[[datetime], Awaitable[dict | None]]
     solar_confidence_advice: Callable[[datetime], Awaitable[dict | None]]
     report_for_window: Callable[..., Awaitable[dict]]
+    effective_web_token: Callable[[], str | None]

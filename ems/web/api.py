@@ -1846,6 +1846,11 @@ def create_app(
                 "onboarding_needed": not app.state.users_exist,
                 "user": ({"username": principal.username, "role": principal.role}
                          if principal is not None else None),
+                # Task 9: tells the client whether the onboarding form must show the
+                # shared-token field (anti-seizure — only relevant while onboarding is open
+                # AND a legacy shared token is actually configured).
+                "shared_token_required": (not app.state.users_exist)
+                                         and _effective_web_token() is not None,
             }
         # Legacy shared-token mode (no user system wired): lets the UI show a token field only
         # when writes are protected, and reflect auth state. UNCHANGED — old tests depend on this
@@ -3507,6 +3512,7 @@ def create_app(
         solar_forecast_skill=_solar_forecast_skill,
         solar_confidence_advice=_solar_confidence_advice,
         report_for_window=_report_for_window,
+        effective_web_token=_effective_web_token,
     )
     for build in (build_auth_router, build_car_router, build_digest_router, build_notify_router,
                   build_export_router, build_accuracy_router, build_whatif_router):
