@@ -923,6 +923,10 @@ def create_app(
     # so the §8.11 validator can check requested power vs the battery's rating without a networked
     # probe on every decision. None until first probed (the validator simply skips that warn-check).
     _capability_box: dict[str, Any] = {"cap": None}
+    # RSS sampler (B-80): samples process memory every 60 s so a slow leak is visible in
+    # /api/diagnostics.perf, not just at OOM. Task is created in the lifespan; ref so the
+    # finally block can await its stop().
+    rss_sampler_ref: dict[str, Any] = {"sampler": None}
 
     async def _apply_battery_power_settings() -> None:
         """Keep the live driver's advertised capability aligned with battery.* power settings."""
@@ -1197,6 +1201,14 @@ def create_app(
         if store is not None and notifier is not None:
             notify_task = asyncio.create_task(_notify_loop(stop))
             notify_task.add_done_callback(_task_died("Forecast notifications"))
+        # RSS sampler (B-80): samples process memory every 60 s so a slow leak is visible in
+        # /api/diagnostics.perf, not just at OOM. Cheap (one getrusage call per tick) and
+        # starts even when no store is configured — a 24/7 install with a dead DB still
+        # needs its memory trend to be measurable.
+        from ems.perf import RssSampler
+        rss_sampler = RssSampler(interval_seconds=60.0)
+        await rss_sampler.start()
+        rss_sampler_ref["sampler"] = rss_sampler
         try:
             yield
         finally:
@@ -1208,6 +1220,10 @@ def create_app(
             for t in (task, control_task, audit_task, validate_task, maintenance_task, notify_task):
                 if t is not None:
                     await t
+            # RSS sampler (B-80): the only free-standing background task not driven by the shared
+            # `stop` event — its own stop() event is internal, so we await it directly.
+            if rss_sampler_ref["sampler"] is not None:
+                await rss_sampler_ref["sampler"].stop()
             # Close each store's shared long-lived connection (perf: B-49) now that every
             # background task has stopped touching it — a clean shutdown, not a leaked handle.
             for s in (store, settings_store, override_store, audit_store):

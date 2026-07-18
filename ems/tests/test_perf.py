@@ -395,3 +395,84 @@ def test_overrun_audit_includes_intended_mode():
             assert detail["reason"] == "timeout"
 
         asyncio.run(go())
+
+
+def test_rss_ceiling_sampled():
+    """The RSS sampler must produce samples and expose them via build_perf_block.
+
+    B-80 task 5: drives the sampler directly to verify the sampling loop + shared state, and
+    confirms build_perf_block surfaces current/peak/over_ceiling_count."""
+    import asyncio
+
+    from ems.perf import RssSampler, build_perf_block
+
+    REGISTRY.reset()
+
+    async def go() -> None:
+        sampler = RssSampler(interval_seconds=0.05)  # fast for the test
+        await sampler.start()
+        try:
+            await asyncio.sleep(0.12)  # at least 2 samples
+        finally:
+            await sampler.stop()
+
+        # Sampler has at least 2 samples internally; peak must be > 0.
+        assert sampler.peak_mb() > 0
+
+        # build_perf_block exposes current + peak + over_ceiling_count.
+        block = build_perf_block()
+        assert block["rss_mb"]["peak_mb"] > 0
+        assert block["rss_mb"]["current_mb"] > 0
+        assert isinstance(block["rss_mb"]["over_ceiling_count"], int)
+
+    asyncio.run(go())
+
+
+def test_sustained_dashboard_poll():
+    """Fire 20 rounds of all 11 H-tier routes; assert p95 < 500 ms each AND
+    no round's slowest request grows > 50% vs round 1.
+
+    B-80 task 5: end-to-end check that the dashboard-10s polling pattern stays well under budget
+    in mock mode and does not regress across rounds. Uses the real create_app with MockSource
+    (the project's standard test app pattern, see test_api.py) and the project's standard
+    `TestClient` lifespan context to start/stop background tasks.
+    """
+    import time as _time
+
+    from ems.sources.mock import MockSource
+    from ems.web.api import create_app
+
+    REGISTRY.reset()
+    app = create_app(MockSource(), dry_run=True, dev_mode="mock")
+
+    HOT_PATHS = (
+        "/api/status", "/api/freshness", "/api/energy-story", "/api/battery-plan",
+        "/api/strategy", "/api/battery", "/api/decision", "/api/alerts",
+        "/api/finance?period=day", "/api/charge-need", "/api/car/plan",
+    )
+
+    with TestClient(app) as client:
+        round_maxes: list[float] = []
+        for _round_idx in range(20):
+            round_t0 = _time.perf_counter()
+            for path in HOT_PATHS:
+                client.get(path)
+            round_maxes.append((_time.perf_counter() - round_t0) * 1000)
+
+    # p95 of all 220 H-tier requests must be under the 500 ms budget.
+    all_samples = REGISTRY.recent("api.hot", n=1000)
+    durations = sorted(s.duration_ms for s in all_samples)
+    n = len(durations)
+    k = max(0, min(n - 1, int(round(0.95 * (n - 1)))))
+    p95 = durations[k]
+    assert p95 < 500, f"hot-route p95 = {p95:.1f} ms exceeds 500 ms budget"
+
+    # No round's slowest should grow > 50% vs round 1's slowest.
+    # (round_maxes is wall-clock for the WHOLE round; assert no round
+    # exceeds 1.5x round 1's max.)
+    baseline = round_maxes[0]
+    for i, m in enumerate(round_maxes):
+        assert m < 1.5 * baseline, (
+            f"round {i} slowest={m:.1f}ms vs round 1 slowest={baseline:.1f}ms "
+            f"(degradation > 50%)"
+        )
