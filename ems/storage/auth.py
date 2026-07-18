@@ -3,8 +3,8 @@ tokens, and single-use invites. Sibling to `SettingsStore`/`HistoryStore`/`Audit
 self-healing shared-connection pattern (BACKLOG B-49 follow-up); see `ems/storage/settings.py`
 for the full rationale of the connection scaffolding copied verbatim below.
 
-This module owns ONLY the schema + connection scaffolding + `Principal`. User/token/invite
-CRUD methods are added by later tasks (users: Task 3, tokens: Task 4, onboarding: Task 9) onto
+This module owns the schema + connection scaffolding + `Principal`, plus user CRUD (Task 3) and
+token create/resolve/revoke/list (Task 4). Onboarding/invite methods are added by Task 9 onto
 this same class.
 """
 from __future__ import annotations
@@ -16,7 +16,7 @@ from datetime import UTC, datetime, timedelta
 
 import aiosqlite
 
-from ems.authn import hash_token, new_token  # noqa: F401  (used by later tasks on this class)
+from ems.authn import hash_token, new_token
 from ems.storage.history import _log, self_healing
 from ems.storage.settings import _BUSY_TIMEOUT_MS, _connection_is_dead  # reuse the shared helpers
 
@@ -212,3 +212,69 @@ class AuthStore:
                 "UPDATE users SET password_hash=? WHERE id=?", (password_hash, user_id)
             )
             await db.commit()
+
+    # --- Tokens (Task 4) ---
+
+    async def create_token(self, user_id: int, kind: str, *, name: str | None = None) -> str:
+        raw = new_token()
+        now = datetime.now(UTC)
+        expires = (now + _SESSION_TTL).isoformat() if kind == "session" else None
+        async with self._write_conn() as db:
+            await db.execute(
+                "INSERT INTO auth_tokens (user_id, token_hash, kind, name, created_at, expires_at) "
+                "VALUES (?,?,?,?,?,?)",
+                (user_id, hash_token(raw), kind, name, now.isoformat(), expires),
+            )
+            await db.commit()
+        return raw
+
+    async def resolve(self, raw: str) -> Principal | None:
+        th = hash_token(raw)
+        now = datetime.now(UTC)
+        async with self._write_conn() as db:
+            db.row_factory = aiosqlite.Row
+            cur = await db.execute(
+                "SELECT t.id AS token_id, t.kind, t.expires_at, u.id AS user_id, "
+                "u.username, u.role, u.disabled "
+                "FROM auth_tokens t JOIN users u ON u.id = t.user_id WHERE t.token_hash = ?",
+                (th,),
+            )
+            row = await cur.fetchone()
+            if row is None or row["disabled"]:
+                return None
+            if row["expires_at"] is not None:
+                exp = datetime.fromisoformat(row["expires_at"])
+                if exp <= now:
+                    return None
+                if row["kind"] == "session" and (exp - now) < _SESSION_REFRESH_WINDOW:
+                    await db.execute(
+                        "UPDATE auth_tokens SET expires_at=? WHERE id=?",
+                        ((now + _SESSION_TTL).isoformat(), row["token_id"]),
+                    )
+            await db.execute(
+                "UPDATE auth_tokens SET last_used_at=? WHERE id=?",
+                (now.isoformat(), row["token_id"]),
+            )
+            await db.commit()
+            return Principal(
+                user_id=row["user_id"], username=row["username"], role=row["role"],
+                token_id=row["token_id"], kind=row["kind"],
+            )
+
+    async def revoke_token(self, token_id: int, user_id: int) -> bool:
+        async with self._write_conn() as db:
+            cur = await db.execute(
+                "DELETE FROM auth_tokens WHERE id=? AND user_id=?", (token_id, user_id)
+            )
+            await db.commit()
+            return cur.rowcount > 0
+
+    async def list_tokens(self, user_id: int) -> list[dict]:
+        async with self._conn() as db:
+            db.row_factory = aiosqlite.Row
+            cur = await db.execute(
+                "SELECT id, kind, name, created_at, last_used_at, expires_at "
+                "FROM auth_tokens WHERE user_id=? ORDER BY created_at",
+                (user_id,),
+            )
+            return [dict(r) for r in await cur.fetchall()]
