@@ -361,7 +361,10 @@ export function CarView({ onOpenSettings }: { onOpenSettings?: () => void }) {
     })
       .then(async (r) => {
         if (r.status === 401) {
-          throw new Error("Unauthorized — set an access token in Manage → Settings.");
+          // apiFetch already cleared the (now-invalid) token and triggered the central 401
+          // handler, which bounces to <Login/> — nothing to show here (dead paste-token-box
+          // copy removed).
+          return;
         }
         if (!r.ok) {
           const b = await r.json().catch(() => ({}));
@@ -470,8 +473,10 @@ export function CarView({ onOpenSettings }: { onOpenSettings?: () => void }) {
         body: JSON.stringify(changed),
       });
       if (r.status === 401) {
-        setSaveErr("Unauthorized — set an access token in Manage → Settings.");
-        setStatus("error");
+        // apiFetch already cleared the (now-invalid) token and triggered the central 401
+        // handler, which bounces to <Login/> — nothing to show here (dead paste-token-box
+        // copy removed).
+        setStatus("idle");
         return;
       }
       const b = await r.json().catch(() => ({}));

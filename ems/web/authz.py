@@ -20,7 +20,11 @@ OPERATE_PATHS = frozenset({
     "/api/car/soc",
     "/api/notifications/read",
 })
-# Admin-only surfaces (prefix match).
+# Mutating HTTP verbs — only these can require OPERATE on an OPERATE_PATHS member; reads (GET/
+# HEAD/OPTIONS) of the same path are VIEW (mirrors api.py's own _WRITE_METHODS).
+_MUTATING_METHODS = frozenset({"POST", "PUT", "PATCH", "DELETE"})
+# Admin-only surfaces (prefix match) — ADMIN for every method, reads included (these surfaces are
+# admin-only entirely, unlike OPERATE_PATHS where only mutations are gated).
 _ADMIN_PREFIXES = ("/api/users", "/api/invites")
 # Interactive-session-only surfaces (kind == 'session'); no access/machine token allowed.
 _SESSION_ONLY_PATHS = frozenset({"/api/auth/password", "/api/auth/logout"})
@@ -40,7 +44,7 @@ def role_satisfies(role: str, tier: Tier) -> bool:
 def required_tier(path: str, method: str) -> Tier:
     if path.startswith(_ADMIN_PREFIXES):
         return Tier.ADMIN
-    if path in OPERATE_PATHS:
+    if path in OPERATE_PATHS and method.upper() in _MUTATING_METHODS:
         return Tier.OPERATE
     return Tier.VIEW
 

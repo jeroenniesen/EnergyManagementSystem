@@ -75,6 +75,8 @@ def test_reader_forbidden_on_operate_but_can_view(tmp_path):
         tok = login.json()["token"]
         h = {"Authorization": f"Bearer {tok}"}
         assert c.get("/api/status", headers=h).status_code == 200  # VIEW ok
+        # Review fix: a GET on an OPERATE_PATHS member is a read — a reader must be able to view it.
+        assert c.get("/api/settings", headers=h).status_code == 200
         assert c.post("/api/settings", json={"ui.theme": "dark"}, headers=h).status_code == 403
 
 
@@ -132,6 +134,28 @@ def test_login_disabled_user_401(tmp_path):
         )
         assert r.status_code == 401
         assert r.json()["detail"] == "invalid credentials"
+
+
+def test_resolve_failure_is_503_not_500(tmp_path, monkeypatch):
+    # Review fix: the identity gate must fail safe/deny on a transient DB error resolving the
+    # token — a clean 503, never an uncaught 500 (CLAUDE.md fail-safe).
+    db = str(tmp_path / "ems.sqlite")
+    _seed_user(db, "u", "pw12345678", "user")
+    store = AuthStore(db)
+    app = create_app(
+        MockSource(), dry_run=True, dev_mode="mock",
+        settings_store=SettingsStore(db),
+        auth_store=store,
+    )
+
+    async def _boom(_raw):
+        raise RuntimeError("db unavailable")
+
+    monkeypatch.setattr(store, "resolve", _boom)
+    with TestClient(app) as c:
+        r = c.get("/api/status", headers={"Authorization": "Bearer whatever"})
+        assert r.status_code == 503
+        assert r.json() == {"detail": "auth temporarily unavailable"}
 
 
 def test_change_password_requires_session_not_access_token(tmp_path):

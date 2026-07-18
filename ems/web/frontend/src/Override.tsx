@@ -82,7 +82,8 @@ export function OverrideCard({ dataQuality }: { dataQuality?: string }) {
       });
       const b = await r.json();
       if (r.status === 401) {
-        setErr("Unauthorized — set an access token in Manage → Settings.");
+        // apiFetch already cleared the (now-invalid) token and triggered the central 401 handler,
+        // which bounces to <Login/> — nothing to show here (dead paste-token-box copy removed).
       } else if (r.status === 422) {
         setErr(Object.values(b.errors ?? {}).join("; ") || "invalid override");
       } else if (!r.ok) {

@@ -322,6 +322,9 @@ class AuthStore:
                     )
                 await db.commit()
                 return uid, session_raw
-            except Exception:
+            except BaseException:
+                # BaseException (not just Exception): a cancellation (asyncio.CancelledError)
+                # must still roll back the open BEGIN IMMEDIATE transaction on the shared write
+                # connection, or it leaks into the next caller (review hardening fix).
                 await db.rollback()
                 raise

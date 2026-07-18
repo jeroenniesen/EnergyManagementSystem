@@ -791,6 +791,11 @@ def create_app(
     def _onboarding_required_error() -> JSONResponse:
         return JSONResponse({"detail": "onboarding_required"}, status_code=409)
 
+    def _service_unavailable_error() -> JSONResponse:
+        # Fail safe/deny, never open (CLAUDE.md): a transient DB error resolving the principal
+        # must not become an uncaught 500 — nor silently let the request through.
+        return JSONResponse({"detail": "auth temporarily unavailable"}, status_code=503)
+
     async def _resolve_principal(request: Request):
         """Resolve the Authorization: Bearer <token> to a Principal, or None when there is no auth
         store, no bearer token, or the token doesn't resolve. Used by the identity gate below."""
@@ -1378,7 +1383,14 @@ def create_app(
                         if not app.state.users_exist:
                             await _onboarding_required_error()(scope, receive, send)
                             return
-                        principal = await _resolve_principal(Request(scope))
+                        try:
+                            principal = await _resolve_principal(Request(scope))
+                        except Exception:
+                            # Fail safe/deny (CLAUDE.md): a transient DB error resolving the
+                            # token must not become an uncaught 500, and must never be treated
+                            # as "no auth required" either.
+                            await _service_unavailable_error()(scope, receive, send)
+                            return
                         if principal is None:
                             await _auth_error()(scope, receive, send)
                             return
