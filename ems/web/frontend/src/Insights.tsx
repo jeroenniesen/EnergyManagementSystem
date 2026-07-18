@@ -4,6 +4,7 @@
 // from recorded history server-side). Every score explains itself (the "why").
 import { useEffect, useState } from "react";
 
+import { apiFetch } from "./auth";
 import { EnergyBehavior, type SeriesBucket } from "./EnergyBehavior";
 import { FinanceSection } from "./FinanceSection";
 import { HeatingAdvice } from "./HeatingAdvice";
@@ -281,7 +282,7 @@ export function Insights() {
     let alive = true;
     setLoading(true);
     setError(false);
-    fetch(`/api/report?period=${period}&date=${anchor}`)
+    apiFetch(`/api/report?period=${period}&date=${anchor}`)
       .then((r) => {
         if (!r.ok) throw new Error(`HTTP ${r.status}`);
         return r.json();
@@ -310,7 +311,7 @@ export function Insights() {
   useEffect(() => {
     let alive = true;
     const prevAnchor = shiftAnchor(anchor, period, -1);
-    fetch(`/api/report?period=${period}&date=${prevAnchor}`)
+    apiFetch(`/api/report?period=${period}&date=${prevAnchor}`)
       .then((r) => (r.ok ? r.json() : null))
       .then((v: Report | null) => {
         if (alive) setPrevReport(v);

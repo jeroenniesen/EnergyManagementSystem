@@ -4,6 +4,7 @@
 // is unavailable. Purely decorative (aria-hidden). Re-evaluates the phase each minute.
 import { useEffect, useState } from "react";
 
+import { apiFetch } from "./auth";
 import dayImg from "./assets/sky/day.webp";
 import duskImg from "./assets/sky/dusk.webp";
 import nightImg from "./assets/sky/night.webp";
@@ -40,7 +41,7 @@ export function SkyBackdrop({ compact = false }: { compact?: boolean }) {
 
   useEffect(() => {
     let alive = true;
-    fetch("/api/sky")
+    apiFetch("/api/sky")
       .then((r) => (r.ok ? r.json() : Promise.reject(new Error("sky"))))
       .then((v: Sky) => {
         if (alive) setSky(v);

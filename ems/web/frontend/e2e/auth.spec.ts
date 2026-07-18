@@ -37,6 +37,14 @@ test("onboarding then login then logout", async ({ page }) => {
   await page.getByRole("button", { name: "Sign in" }).click();
   await expect(page.getByTestId("login")).toBeHidden();
 
+  // Task 11 regression guard: before the apiFetch retrofit, every dashboard card fetched its
+  // /api/* data WITHOUT the bearer token, so the identity gate 401'd every one of them and the
+  // dashboard rendered empty right after login. `battery-plan-summary` only renders once
+  // GET /api/battery-plan has resolved with real plan data (the loading skeleton keeps the
+  // `battery-plan` testid but never renders `battery-plan-summary`) — so this proves an
+  // authenticated fetch actually succeeded, not just that the shell mounted.
+  await expect(page.getByTestId("battery-plan-summary")).toBeVisible({ timeout: 10000 });
+
   // Logged in → Manage → Settings: the retired paste-token box is gone, replaced by Logout.
   await page.getByTestId("nav-manage").click();
   await expect(page.getByTestId("access-token")).toHaveCount(0);

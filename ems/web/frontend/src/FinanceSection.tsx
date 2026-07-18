@@ -4,6 +4,7 @@
 // partial-coverage caveat says exactly how much is covered.
 import { useEffect, useState } from "react";
 
+import { apiFetch } from "./auth";
 import { eur } from "./format";
 
 type DayFin = {
@@ -115,7 +116,7 @@ export function FinanceSection({ period, anchor }: { period: string; anchor: str
   useEffect(() => {
     let alive = true;
     setError(false);
-    fetch(`/api/finance?period=${period}&date=${anchor}`)
+    apiFetch(`/api/finance?period=${period}&date=${anchor}`)
       .then((r) => {
         if (!r.ok) throw new Error(`HTTP ${r.status}`);
         return r.json();

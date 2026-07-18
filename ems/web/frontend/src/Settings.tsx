@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 
-import { authHeaders, clearToken } from "./auth";
+import { apiFetch, clearToken } from "./auth";
 import { type CarModel, type CarsResp } from "./ev";
 import { humanize } from "./labels";
 import { SectionIcon } from "./settingsIcons";
@@ -386,7 +386,7 @@ export function Settings({
 
   async function refreshAuth() {
     try {
-      const r = await fetch("/api/auth", { headers: authHeaders() });
+      const r = await apiFetch("/api/auth");
       if (r.ok) setAuth(await r.json());
     } catch {
       /* leave auth as-is */
@@ -397,7 +397,7 @@ export function Settings({
     let alive = true;
     (async () => {
       try {
-        const r = await fetch("/api/settings", { headers: { ...authHeaders() } });
+        const r = await apiFetch("/api/settings");
         if (!r.ok) throw new Error(`HTTP ${r.status}`);
         const b: SettingsResp = await r.json();
         if (!alive) return;
@@ -428,7 +428,7 @@ export function Settings({
     let alive = true;
     (async () => {
       try {
-        const r = await fetch("/api/advisor/solar-confidence");
+        const r = await apiFetch("/api/advisor/solar-confidence");
         if (!r.ok) return;
         const b: { advice: SolarConfidenceAdvice | null } = await r.json();
         if (alive) setSolarAdvice(b.advice ?? null);
@@ -453,7 +453,7 @@ export function Settings({
     let alive = true;
     (async () => {
       try {
-        const r = await fetch("/api/cars");
+        const r = await apiFetch("/api/cars");
         if (!r.ok) return;
         const b: CarsResp = await r.json();
         if (alive) setCars(b.cars);
@@ -494,7 +494,7 @@ export function Settings({
     let alive = true; // ignore a stale/in-flight result if the edit changes or we unmount
     const id = setTimeout(async () => {
       try {
-        const r = await fetch("/api/plan-preview", {
+        const r = await apiFetch("/api/plan-preview", {
           method: "POST",
           headers: { "content-type": "application/json" },
           body: plannerKey,
@@ -571,14 +571,16 @@ export function Settings({
       .filter((f) => f.applies === "restart" && f.key in changed)
       .map((f) => f.group);
     try {
-      const r = await fetch("/api/settings", {
+      const r = await apiFetch("/api/settings", {
         method: "POST",
-        headers: { "content-type": "application/json", ...authHeaders() },
+        headers: { "content-type": "application/json" },
         body: JSON.stringify(changed),
       });
+      // apiFetch already cleared the (now-invalid) token and triggered the central 401 handler on
+      // a 401, which bounces to <Login/> — nothing to show here (Important-1 review fix: this used
+      // to point at a paste-token box that no longer exists).
       if (r.status === 401) {
-        setErrors({ _: "Unauthorized — set a valid access token below." });
-        setStatus("error");
+        setStatus("idle");
         return;
       }
       const b = await r.json();
@@ -717,7 +719,7 @@ export function Settings({
             className="btn-ghost"
             data-testid="logout"
             onClick={async () => {
-              await fetch("/api/auth/logout", { method: "POST", headers: { ...authHeaders() } });
+              await apiFetch("/api/auth/logout", { method: "POST" });
               clearToken();
               location.reload();
             }}

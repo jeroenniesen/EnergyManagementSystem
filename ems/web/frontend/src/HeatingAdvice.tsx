@@ -13,6 +13,8 @@
 // review before saving (see App.tsx's patchStrategy for the same immediate-POST idiom).
 import { useEffect, useState } from "react";
 
+import { apiFetch } from "./auth";
+
 export type GasSummary = { m3: number; kwh_eq: number; eur: number; co2_kg: number };
 export type Period = "day" | "week" | "month" | "year";
 
@@ -202,7 +204,7 @@ export function HeatingAdvice({
 
   useEffect(() => {
     let alive = true;
-    fetch("/api/settings")
+    apiFetch("/api/settings")
       .then((r) => (r.ok ? r.json() : null))
       .then((b: { values?: Record<string, unknown> } | null) => {
         if (!alive || !b) return;
@@ -231,7 +233,7 @@ export function HeatingAdvice({
     setBusyKey(key);
     setErrorKey(null);
     setDoneMap(next);
-    fetch("/api/settings", {
+    apiFetch("/api/settings", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ "heating.done": JSON.stringify(next) }),

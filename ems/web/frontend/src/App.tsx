@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 
-import { authHeaders, clearToken } from "./auth";
+import { apiFetch, setUnauthorizedHandler } from "./auth";
 import { type Battery, BatteryChips } from "./BatteryChips";
 import { EnergyDistribution } from "./EnergyDistribution";
 import { type EnergyStoryData, EnergyStory } from "./EnergyStory";
@@ -289,7 +289,7 @@ export function App() {
   const [auth, setAuth] = useState<AuthState>(null);
   const refreshAuth = useCallback(async () => {
     try {
-      const r = await fetch("/api/auth", { headers: { ...authHeaders() } });
+      const r = await apiFetch("/api/auth");
       setAuth(await r.json());
     } catch {
       /* leave auth as-is; the next poll tick or user action can retry */
@@ -297,6 +297,12 @@ export function App() {
   }, []);
   useEffect(() => {
     refreshAuth();
+  }, [refreshAuth]);
+  // Central 401 handler (Task 11): apiFetch already clears the (now-invalid) token on any 401 —
+  // this just re-resolves auth, which falls back to <Login/> once `auth.authenticated` flips false.
+  useEffect(() => {
+    setUnauthorizedHandler(() => refreshAuth());
+    return () => setUnauthorizedHandler(null);
   }, [refreshAuth]);
 
   const [status, setStatus] = useState<Status | null>(null);
@@ -357,7 +363,7 @@ export function App() {
 
   useEffect(() => {
     let alive = true;
-    fetch("/api/settings", { headers: { ...authHeaders() } })
+    apiFetch("/api/settings")
       .then((r) => (r.ok ? r.json() : null))
       .then((b) => {
         if (alive && b?.values?.["ui.theme"]) setTheme(b.values["ui.theme"] as Theme);
@@ -382,7 +388,7 @@ export function App() {
   // synthesis line read the SAME summary; no second source, no chance of two different verdicts.
   useEffect(() => {
     let alive = true;
-    fetch("/api/report?period=day", { headers: { ...authHeaders() } })
+    apiFetch("/api/report?period=day")
       .then((r) => (r.ok ? r.json() : null))
       .then((v: Report | null) => {
         if (alive && v) setReport(v);
@@ -432,14 +438,9 @@ export function App() {
     if (view !== "dashboard") return;
     let alive = true;
     async function getJson(url: string) {
-      const r = await fetch(url, { headers: { ...authHeaders() } });
-      // Global 401 handler (Task 10): the identity gate requires a valid session/token on every
-      // /api/* read once a user exists, so a 401 here means the stored token is missing/expired/
-      // revoked — drop it and re-resolve auth, which falls back to <Login/>.
-      if (r.status === 401) {
-        clearToken();
-        refreshAuth();
-      }
+      // Global 401 handler (Task 11): apiFetch clears the (now-invalid) token and notifies the
+      // central handler (registered above), which re-resolves auth and falls back to <Login/>.
+      const r = await apiFetch(url);
       if (!r.ok) throw new Error(`HTTP ${r.status}`);
       return r.json();
     }
@@ -498,14 +499,13 @@ export function App() {
     strategyPending.current = true;
     setStrategy((s) => (s ? { ...s, ...optimistic } : s));
     try {
-      const res = await fetch("/api/settings", {
+      const res = await apiFetch("/api/settings", {
         method: "POST",
-        headers: { "Content-Type": "application/json", ...authHeaders() },
+        headers: { "Content-Type": "application/json" },
         body: JSON.stringify(body),
       });
-      if (res.status === 401) { clearToken(); refreshAuth(); }
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const r = await fetch("/api/strategy", { headers: { ...authHeaders() } });
+      const r = await apiFetch("/api/strategy");
       if (r.ok) setStrategy(await r.json());
       else setStrategy(prev);
     } catch {

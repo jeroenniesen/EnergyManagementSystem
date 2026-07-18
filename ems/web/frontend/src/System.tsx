@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 
+import { apiFetch } from "./auth";
 import {
   CURRENT_INTELLIGENCE_MODE,
   HEALTH_ROW_LABEL,
@@ -298,7 +299,7 @@ export function SystemView({
     let alive = true;
     async function load() {
       try {
-        const r = await fetch("/api/diagnostics");
+        const r = await apiFetch("/api/diagnostics");
         if (!r.ok) throw new Error(`HTTP ${r.status}`);
         const b = await r.json();
         if (alive) {
@@ -323,7 +324,7 @@ export function SystemView({
     let alive = true;
     async function load() {
       try {
-        const r = await fetch("/api/incidents");
+        const r = await apiFetch("/api/incidents");
         if (!r.ok) return;
         const b = await r.json();
         if (alive) setIncidents(b.incidents ?? null);
@@ -345,7 +346,7 @@ export function SystemView({
     let alive = true;
     async function load() {
       try {
-        const r = await fetch("/api/accuracy");
+        const r = await apiFetch("/api/accuracy");
         if (!r.ok) return;
         const b = await r.json();
         if (alive) setAccuracy(b);

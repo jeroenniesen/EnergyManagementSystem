@@ -18,7 +18,7 @@
 //       recorded meter history, with an honest empty state.
 import { useEffect, useRef, useState } from "react";
 
-import { authHeaders } from "./auth";
+import { apiFetch } from "./auth";
 import { CarCard } from "./CarCard";
 import {
   CarPicker,
@@ -297,7 +297,7 @@ export function CarView({ onOpenSettings }: { onOpenSettings?: () => void }) {
     let alive = true;
     (async () => {
       try {
-        const r = await fetch("/api/settings");
+        const r = await apiFetch("/api/settings");
         if (!r.ok) return;
         const b: { values?: Values } = await r.json();
         if (!alive || !b.values) return;
@@ -331,7 +331,7 @@ export function CarView({ onOpenSettings }: { onOpenSettings?: () => void }) {
   useEffect(() => {
     let alive = true;
     function load() {
-      fetch("/api/status")
+      apiFetch("/api/status")
         .then((r) => (r.ok ? r.json() : null))
         .then((b: { non_ev_load_w?: number } | null) => {
           if (alive && b && typeof b.non_ev_load_w === "number") setHouseLoadW(b.non_ev_load_w);
@@ -354,9 +354,9 @@ export function CarView({ onOpenSettings }: { onOpenSettings?: () => void }) {
   function postCarMode(body: Record<string, number | boolean | string>, rollback: () => void) {
     setCarModeStatus("saving");
     setCarModeErr(null);
-    fetch("/api/settings", {
+    apiFetch("/api/settings", {
       method: "POST",
-      headers: { "content-type": "application/json", ...authHeaders() },
+      headers: { "content-type": "application/json" },
       body: JSON.stringify(body),
     })
       .then(async (r) => {
@@ -416,7 +416,7 @@ export function CarView({ onOpenSettings }: { onOpenSettings?: () => void }) {
     let alive = true;
     (async () => {
       try {
-        const r = await fetch("/api/cars");
+        const r = await apiFetch("/api/cars");
         if (!r.ok) return;
         const b: CarsResp = await r.json();
         if (alive) setCars(b.cars);
@@ -434,7 +434,7 @@ export function CarView({ onOpenSettings }: { onOpenSettings?: () => void }) {
     let alive = true;
     (async () => {
       try {
-        const r = await fetch("/api/car/sessions?days=14");
+        const r = await apiFetch("/api/car/sessions?days=14");
         if (!r.ok) {
           if (alive) setSessions([]);
           return;
@@ -464,9 +464,9 @@ export function CarView({ onOpenSettings }: { onOpenSettings?: () => void }) {
     setStatus("saving");
     setSaveErr(null);
     try {
-      const r = await fetch("/api/settings", {
+      const r = await apiFetch("/api/settings", {
         method: "POST",
-        headers: { "content-type": "application/json", ...authHeaders() },
+        headers: { "content-type": "application/json" },
         body: JSON.stringify(changed),
       });
       if (r.status === 401) {

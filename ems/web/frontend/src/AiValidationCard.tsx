@@ -2,7 +2,7 @@
 // "Check now" button). Purely advisory: the AI never changes anything. Hidden until AI is on.
 import { useEffect, useState } from "react";
 
-import { authHeaders } from "./auth";
+import { apiFetch } from "./auth";
 
 type Latest = { text: string; ts: string; source: string } | null;
 
@@ -24,7 +24,7 @@ export function AiValidationCard() {
   }
 
   useEffect(() => {
-    fetch("/api/ai/validation")
+    apiFetch("/api/ai/validation")
       .then((r) => (r.ok ? r.json() : null))
       .then((b) => b && apply(b))
       .catch(() => {});
@@ -33,7 +33,7 @@ export function AiValidationCard() {
   async function checkNow() {
     setBusy(true);
     try {
-      const r = await fetch("/api/ai/validate", { method: "POST", headers: { ...authHeaders() } });
+      const r = await apiFetch("/api/ai/validate", { method: "POST" });
       if (r.ok) apply(await r.json());
     } catch {
       /* advisory only — a failed check never disrupts the dashboard */

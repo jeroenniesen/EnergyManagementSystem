@@ -4,6 +4,8 @@
 // it adds no recurring load (the figures are rolled up from recorded history server-side).
 import { useEffect, useState } from "react";
 
+import { apiFetch } from "./auth";
+
 type Flows = {
   date: string;
   has_data: boolean;
@@ -113,7 +115,7 @@ export function EnergyDistribution() {
     let alive = true;
     setLoading(true);
     setError(false);
-    fetch(`/api/energy-distribution?date=${date}`)
+    apiFetch(`/api/energy-distribution?date=${date}`)
       .then((r) => {
         if (!r.ok) throw new Error(`HTTP ${r.status}`);
         return r.json();

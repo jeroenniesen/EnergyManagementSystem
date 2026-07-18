@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 
-import { authHeaders } from "./auth";
+import { apiFetch } from "./auth";
 import { humanize } from "./labels";
 
 type OverrideState = {
@@ -53,7 +53,7 @@ export function OverrideCard({ dataQuality }: { dataQuality?: string }) {
     let alive = true;
     async function load() {
       try {
-        const r = await fetch("/api/override");
+        const r = await apiFetch("/api/override");
         if (!r.ok) throw new Error(`HTTP ${r.status}`);
         const b = await r.json();
         if (alive) setState(b);
@@ -75,9 +75,9 @@ export function OverrideCard({ dataQuality }: { dataQuality?: string }) {
     setErr(null);
     setConfirming(null);
     try {
-      const r = await fetch("/api/override", {
+      const r = await apiFetch("/api/override", {
         method: "POST",
-        headers: { "content-type": "application/json", ...authHeaders() },
+        headers: { "content-type": "application/json" },
         body: JSON.stringify(payload),
       });
       const b = await r.json();
