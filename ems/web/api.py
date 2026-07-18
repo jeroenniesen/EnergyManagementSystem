@@ -131,6 +131,7 @@ from ems.web.authz import (
 )
 from ems.web.context import AppContext, history_row_cap
 from ems.web.routes.accuracy import build_router as build_accuracy_router
+from ems.web.routes.auth import build_router as build_auth_router
 from ems.web.routes.car import build_router as build_car_router
 from ems.web.routes.car import gather_car_plan
 from ems.web.routes.digest import (
@@ -3491,7 +3492,7 @@ def create_app(
         solar_confidence_advice=_solar_confidence_advice,
         report_for_window=_report_for_window,
     )
-    for build in (build_car_router, build_digest_router, build_notify_router,
+    for build in (build_auth_router, build_car_router, build_digest_router, build_notify_router,
                   build_export_router, build_accuracy_router, build_whatif_router):
         app.include_router(build(ctx))
 

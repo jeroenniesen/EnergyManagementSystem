@@ -18,7 +18,7 @@ from fastapi.testclient import TestClient
 
 from ems.sources.mock import MockSource
 from ems.web.api import create_app
-from ems.web.authz import EXEMPT_PATHS, Tier, required_tier
+from ems.web.authz import EXEMPT_PATHS, Tier, required_tier, requires_session
 
 # Routes that STAY defined directly on the app in api.py (plus the health probes and the
 # /api/{rest} JSON-404 catch-all). Snapshot: if this set drifts, the split changed a route.
@@ -197,17 +197,26 @@ def _all_mutating_routes(app) -> set[str]:
 def test_every_mutating_route_is_write_gated_or_explicitly_exempt():
     # Generalized for the identity gate (Task 7): a mutating route is safe iff it is tiered ABOVE
     # VIEW (so it demands OPERATE/ADMIN and a plain reader can never reach it), OR it is an
-    # explicit, reviewed exemption — auth-exempt (authz.EXEMPT_PATHS: login/onboard/discovery) or a
-    # verified read-only POST (app.state.write_exempt_paths, guarded by the sibling test below).
+    # explicit, reviewed exemption — auth-exempt (authz.EXEMPT_PATHS: login/onboard/discovery), a
+    # verified read-only POST (app.state.write_exempt_paths, guarded by the sibling test below), OR
+    # a VIEW-tier self-account route that `authz.requires_session` restricts to an interactive
+    # session token (Task 8: /api/auth/logout, /api/auth/password — any role may act on their OWN
+    # account, but only from a resolved, session-kind principal; an unauthenticated caller still
+    # gets 401 and an access/machine token still gets 403 — this is a deliberate, reviewed
+    # classification, not an ungated route).
     # A new mutating route that is none of these fails LOUDLY here with its path, so it can never
     # ship un-triaged past the auth choke point.
     app = create_app(MockSource(), dry_run=True, dev_mode="mock")
     exempt = EXEMPT_PATHS | app.state.write_exempt_paths
     for path in _all_mutating_routes(app):
-        assert path in exempt or required_tier(path, "POST") != Tier.VIEW, (
+        assert (
+            path in exempt
+            or required_tier(path, "POST") != Tier.VIEW
+            or requires_session(path)
+        ), (
             f"mutating route {path!r} is neither tiered above VIEW (auth-gated for operate/admin) "
-            f"nor an explicit exemption (auth-exempt or verified read-only) — classify it before "
-            f"shipping"
+            f"nor an explicit exemption (auth-exempt, verified read-only, or session-only "
+            f"self-account) — classify it before shipping"
         )
 
 
