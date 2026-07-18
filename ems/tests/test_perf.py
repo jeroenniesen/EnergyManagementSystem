@@ -153,12 +153,21 @@ def test_store_wrappers_record_samples():
                             ev_power_w=0.0, soc_pct=50.0)
             derived = DerivedSample(house_load_w=100.0, non_ev_load_w=100.0)
             await hs.record("2026-07-18T10:00:00Z", raw, derived)  # store.history.write
-            # The 3 helpers _recent/_since/_between back 6 public read methods; call one of each
-            # so the wrappers get exercised and produce a store.history.read sample.
+            # The 3 helpers _recent/_since/_between back 6 public read methods. Capture the
+            # store.history.read sample count NOW (only `table_names` has produced one so far),
+            # then call one method backed by each helper and assert the count grew by exactly 3.
+            # If any of _recent/_since/_between were unwrapped, the count would not grow by 3.
+            history_read_before = REGISTRY.summarize("store.history.read")["n"]
             await hs.recent_raw(limit=10)  # covers _recent
             await hs.recent_raw_since("2026-07-18T00:00:00Z", limit=10)  # covers _since
             await hs.raw_between("2026-07-18T00:00:00Z", "2026-07-19T00:00:00Z",
                                  limit=10)  # covers _between
+            history_read_after = REGISTRY.summarize("store.history.read")["n"]
+            assert history_read_after - history_read_before >= 3, (
+                f"Delegation helpers not all wrapped: store.history.read grew by "
+                f"{history_read_after - history_read_before}, expected >= 3 "
+                f"(_recent + _since + _between)"
+            )
             await ss.set_many({"x": "1"})  # store.settings.write
             await ss.all()  # store.settings.read
             await aus.append("2026-07-18T10:00:00Z", "test", "hello", {"k": 1})  # audit

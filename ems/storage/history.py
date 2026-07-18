@@ -791,27 +791,27 @@ class HistoryStore:
         `ts` is UTC-ISO, so the lexicographic `<` is a correct time comparison. Nightly/maintenance
         path — deliberately NOT wrapped in atimed (not a dashboard hot path)."""
         async with self._write_conn() as db:
-                cur = await db.execute("DELETE FROM raw_samples WHERE ts < ?", (cutoff_iso,))
-                deleted = cur.rowcount or 0
-                cur = await db.execute("DELETE FROM derived_samples WHERE ts < ?", (cutoff_iso,))
-                deleted += cur.rowcount or 0
-                cur = await db.execute("DELETE FROM price_slots WHERE start_ts < ?", (cutoff_iso,))
-                deleted += cur.rowcount or 0
-                cur = await db.execute(
-                    "DELETE FROM forecast_snapshots WHERE start < ?", (cutoff_iso,))
-                deleted += cur.rowcount or 0
-                cur = await db.execute("DELETE FROM plan_history WHERE ts < ?", (cutoff_iso,))
-                deleted += cur.rowcount or 0
-                cur = await db.execute("DELETE FROM gas_readings WHERE ts < ?", (cutoff_iso,))
-                deleted += cur.rowcount or 0
-                cur = await db.execute(
-                    "DELETE FROM carbon_intensity WHERE start_ts < ?", (cutoff_iso,))
-                deleted += cur.rowcount or 0
-                cur = await db.execute("DELETE FROM notifications WHERE ts < ?", (cutoff_iso,))
-                deleted += cur.rowcount or 0
-                # daily_finance is intentionally NOT purged (long-horizon record, B-13).
-                await db.commit()
-                return deleted
+            cur = await db.execute("DELETE FROM raw_samples WHERE ts < ?", (cutoff_iso,))
+            deleted = cur.rowcount or 0
+            cur = await db.execute("DELETE FROM derived_samples WHERE ts < ?", (cutoff_iso,))
+            deleted += cur.rowcount or 0
+            cur = await db.execute("DELETE FROM price_slots WHERE start_ts < ?", (cutoff_iso,))
+            deleted += cur.rowcount or 0
+            cur = await db.execute(
+                "DELETE FROM forecast_snapshots WHERE start < ?", (cutoff_iso,))
+            deleted += cur.rowcount or 0
+            cur = await db.execute("DELETE FROM plan_history WHERE ts < ?", (cutoff_iso,))
+            deleted += cur.rowcount or 0
+            cur = await db.execute("DELETE FROM gas_readings WHERE ts < ?", (cutoff_iso,))
+            deleted += cur.rowcount or 0
+            cur = await db.execute(
+                "DELETE FROM carbon_intensity WHERE start_ts < ?", (cutoff_iso,))
+            deleted += cur.rowcount or 0
+            cur = await db.execute("DELETE FROM notifications WHERE ts < ?", (cutoff_iso,))
+            deleted += cur.rowcount or 0
+            # daily_finance is intentionally NOT purged (long-horizon record, B-13).
+            await db.commit()
+            return deleted
 
     async def maintain(self) -> None:
         """Periodic housekeeping for a 24/7 install: truncate the WAL so it can't grow unbounded,
@@ -1186,10 +1186,10 @@ class HistoryStore:
         samples they were distilled from, and daily_energy is never purged at all.
         Nightly/maintenance path — deliberately NOT wrapped in atimed (not a dashboard hot path)."""
         async with self._write_conn() as db:
-                cur = await db.execute(
-                    "DELETE FROM observations WHERE slot_start < ?", (cutoff_iso,))
-                await db.commit()
-                return cur.rowcount or 0
+            cur = await db.execute(
+                "DELETE FROM observations WHERE slot_start < ?", (cutoff_iso,))
+            await db.commit()
+            return cur.rowcount or 0
 
     async def daily_energy_between(self, start_date: str, end_date: str) -> list[dict]:
         """Daily kWh rollups (B-13) for local dates in [start, end) as dicts, oldest-first. Never
