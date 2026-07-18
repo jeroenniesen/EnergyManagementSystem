@@ -1,5 +1,6 @@
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
+import { authHeaders, clearToken } from "./auth";
 import { type Battery, BatteryChips } from "./BatteryChips";
 import { EnergyDistribution } from "./EnergyDistribution";
 import { type EnergyStoryData, EnergyStory } from "./EnergyStory";
@@ -17,7 +18,9 @@ import {
   RUN_MODE,
   SIGNAL_NAME,
 } from "./labels";
+import { Login } from "./Login";
 import { NotificationBell } from "./Notifications";
+import { Onboarding } from "./Onboarding";
 import { OverrideCard } from "./Override";
 import { CarCard } from "./CarCard";
 import { CarView } from "./Car";
@@ -266,7 +269,36 @@ function ChargeTarget({ n }: { n: ChargeNeed }) {
 }
 
 
+// Discovery payload shape from GET /api/auth (identity mode) — see docs/superpowers/specs/
+// 2026-07-17-auth-users-roles-design.md §5. `null` until the first fetch resolves.
+type AuthState = {
+  required: boolean;
+  authenticated: boolean;
+  onboarding_needed: boolean;
+  shared_token_required: boolean;
+} | null;
+
 export function App() {
+  // Auth gate (Task 10). Kept as plain hooks at the top, unconditionally called on every render —
+  // the gating itself happens ONLY in the final JSX below (never via an early `return` mid-function),
+  // because every other hook in this component is declared further down: an early return here would
+  // make this component call a different NUMBER of hooks between the "gated" renders (auth
+  // unresolved/onboarding/login) and the "app" render (all hooks below reached) — a Rules-of-Hooks
+  // violation ("Rendered more hooks than during the previous render") that would throw exactly when
+  // onboarding/login completes and the app tries to render for the first time.
+  const [auth, setAuth] = useState<AuthState>(null);
+  const refreshAuth = useCallback(async () => {
+    try {
+      const r = await fetch("/api/auth", { headers: { ...authHeaders() } });
+      setAuth(await r.json());
+    } catch {
+      /* leave auth as-is; the next poll tick or user action can retry */
+    }
+  }, []);
+  useEffect(() => {
+    refreshAuth();
+  }, [refreshAuth]);
+
   const [status, setStatus] = useState<Status | null>(null);
   const [freshness, setFreshness] = useState<FreshnessMap | null>(null);
   const [story, setStory] = useState<EnergyStoryData | null>(null);
@@ -325,7 +357,7 @@ export function App() {
 
   useEffect(() => {
     let alive = true;
-    fetch("/api/settings")
+    fetch("/api/settings", { headers: { ...authHeaders() } })
       .then((r) => (r.ok ? r.json() : null))
       .then((b) => {
         if (alive && b?.values?.["ui.theme"]) setTheme(b.values["ui.theme"] as Theme);
@@ -350,7 +382,7 @@ export function App() {
   // synthesis line read the SAME summary; no second source, no chance of two different verdicts.
   useEffect(() => {
     let alive = true;
-    fetch("/api/report?period=day")
+    fetch("/api/report?period=day", { headers: { ...authHeaders() } })
       .then((r) => (r.ok ? r.json() : null))
       .then((v: Report | null) => {
         if (alive && v) setReport(v);
@@ -400,7 +432,14 @@ export function App() {
     if (view !== "dashboard") return;
     let alive = true;
     async function getJson(url: string) {
-      const r = await fetch(url);
+      const r = await fetch(url, { headers: { ...authHeaders() } });
+      // Global 401 handler (Task 10): the identity gate requires a valid session/token on every
+      // /api/* read once a user exists, so a 401 here means the stored token is missing/expired/
+      // revoked — drop it and re-resolve auth, which falls back to <Login/>.
+      if (r.status === 401) {
+        clearToken();
+        refreshAuth();
+      }
       if (!r.ok) throw new Error(`HTTP ${r.status}`);
       return r.json();
     }
@@ -461,11 +500,12 @@ export function App() {
     try {
       const res = await fetch("/api/settings", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: { "Content-Type": "application/json", ...authHeaders() },
         body: JSON.stringify(body),
       });
+      if (res.status === 401) { clearToken(); refreshAuth(); }
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const r = await fetch("/api/strategy");
+      const r = await fetch("/api/strategy", { headers: { ...authHeaders() } });
       if (r.ok) setStrategy(await r.json());
       else setStrategy(prev);
     } catch {
@@ -531,6 +571,17 @@ export function App() {
   // B-57: on demo/mock data, a persistent friendly nudge into real onboarding (Settings opens on
   // the Connection section by default). Dismissible for the session; back on next visit.
   const demoActive = !!home?.simulated && !demoDismissed;
+
+  // Auth gate (Task 10). Placed here — AFTER every hook above has already been called
+  // unconditionally on every render — rather than at the top of the component: an early return
+  // BEFORE the rest of this component's hooks would make React call a different number of hooks
+  // between the gated renders and the first "app" render, which throws (Rules of Hooks). Putting
+  // the branch here, once all hooks are done, is the safe equivalent.
+  if (auth === null) return null; // splash while the first GET /api/auth is in flight
+  if (auth.onboarding_needed) {
+    return <Onboarding sharedTokenRequired={auth.shared_token_required} onDone={refreshAuth} />;
+  }
+  if (!auth.authenticated) return <Login onDone={refreshAuth} />;
 
   return (
     <>

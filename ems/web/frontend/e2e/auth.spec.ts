@@ -1,59 +1,45 @@
 import { expect, test } from "@playwright/test";
 
-const SCHEMA = [
-  {
-    key: "ui.theme", label: "Theme", type: "enum", default: "auto",
-    group: "ui", help: "", min: null, max: null,
-    options: ["auto", "dark", "light"], step: null, unit: "",
-  },
-];
-const BASE: Record<string, string> = { "ui.theme": "auto" };
+// These two tests share the ONE hermetic webServer/DB for this file (see playwright.config.ts —
+// the DB is wiped once per run, not per test) and Playwright runs tests within a file in
+// declaration order, in one worker, by default. So the "fresh DB" contract check below MUST stay
+// first, before the onboarding flow creates the admin — reordering these breaks that assumption.
 
-test.describe("EMS access token", () => {
-  test("real backend reports auth not required in dev", async ({ request }) => {
-    const b = await (await request.get("/api/auth")).json();
-    expect(b).toMatchObject({ required: false, authenticated: true });
+test("discovery reports onboarding needed on a fresh database", async ({ request }) => {
+  // Task 10 supersedes the old "dev mode has no auth" 2-key legacy shape: `ems.main:app` always
+  // wires the identity auth store, so a fresh DB reports the full 5-key discovery payload with
+  // onboarding forced (Task 7/9 — GET /api/auth is EXEMPT, so this is reachable logged-out).
+  const b = await (await request.get("/api/auth")).json();
+  expect(b).toMatchObject({
+    required: true,
+    authenticated: false,
+    onboarding_needed: true,
+    user: null,
+    shared_token_required: false,
   });
+});
 
-  test("Access section appears when protected and the token is sent on writes", async ({
-    page,
-  }) => {
-    let token: string | null = null;
-    let authedHeader: string | undefined;
-    await page.route("**/api/auth", async (route) => {
-      authedHeader = route.request().headers()["authorization"];
-      await route.fulfill({
-        status: 200, contentType: "application/json",
-        body: JSON.stringify({ required: true, authenticated: Boolean(authedHeader) }),
-      });
-    });
-    await page.route("**/api/settings", async (route) => {
-      if (route.request().method() === "POST") {
-        token = route.request().headers()["authorization"] ?? null;
-        await route.fulfill({
-          status: 200, contentType: "application/json",
-          body: JSON.stringify({ values: BASE }),
-        });
-      } else {
-        await route.fulfill({
-          status: 200, contentType: "application/json",
-          body: JSON.stringify({ schema: SCHEMA, values: BASE }),
-        });
-      }
-    });
+test("onboarding then login then logout", async ({ page }) => {
+  // fresh DB (see e2e clean-DB harness). First load → onboarding.
+  await page.goto("/");
+  await expect(page.getByTestId("onboarding")).toBeVisible();
+  await page.getByLabel("Username").fill("admin");
+  await page.getByLabel("Password").fill("pw12345678");
+  await page.getByRole("button", { name: "Create admin" }).click();
+  await expect(page.getByTestId("onboarding")).toBeHidden();
 
-    await page.goto("/");
-    await page.getByTestId("nav-manage").click();
-    // The Access section only shows because /api/auth said required.
-    await expect(page.getByTestId("settings-access")).toBeVisible();
-    await page.getByTestId("access-token").fill("s3cret");
-    await page.getByTestId("access-token-save").click();
+  // reload after clearing the token → login screen
+  await page.evaluate(() => localStorage.removeItem("ems.token"));
+  await page.reload();
+  await expect(page.getByTestId("login")).toBeVisible();
+  await page.getByLabel("Username").fill("admin");
+  await page.getByLabel("Password").fill("pw12345678");
+  await page.getByRole("button", { name: "Sign in" }).click();
+  await expect(page.getByTestId("login")).toBeHidden();
 
-    // Now change a setting and save — the write must carry the Bearer token.
-    await page.getByTestId("group-ui").click();
-    await page.locator("#set-ui\\.theme").selectOption("dark");
-    await page.getByTestId("settings-save").click();
-    await expect(page.getByTestId("settings-saved")).toBeVisible();
-    expect(token).toBe("Bearer s3cret");
-  });
+  // Logged in → Manage → Settings: the retired paste-token box is gone, replaced by Logout.
+  await page.getByTestId("nav-manage").click();
+  await expect(page.getByTestId("access-token")).toHaveCount(0);
+  await page.getByTestId("logout").click();
+  await expect(page.getByTestId("login")).toBeVisible();
 });
