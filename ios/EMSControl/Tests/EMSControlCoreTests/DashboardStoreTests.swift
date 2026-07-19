@@ -132,6 +132,125 @@ final class DashboardStoreTests: XCTestCase {
         XCTAssertNotNil(store.lastError)
         XCTAssertNil(store.client)
     }
+
+    // MARK: - Username/password login + per-device widget token (spec §7)
+
+    func testLoginStoresSessionTokenAndProvisionsWidgetAccessToken() async throws {
+        let credentials = RecordingCredentialStore()
+        let suite = "test.login.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suite)!
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let widgetConfig = AppGroupConfigStore(defaults: defaults)
+        let transport = LoginFlowTransport()
+        let store = DashboardStore(
+            client: nil,
+            credentialStore: credentials,
+            widgetConfig: widgetConfig,
+            transport: transport
+        )
+        let url = URL(string: "http://ems.local:8080")!
+
+        try await store.login(baseURL: url, username: "jeroen", password: "hunter2000", deviceName: "Jeroen's iPhone")
+
+        // Session token rides the interactive client + its own Keychain slot.
+        XCTAssertEqual(store.client?.token, "session-xyz")
+        XCTAssertEqual(credentials.savedTokens[url], "session-xyz")
+        XCTAssertEqual(credentials.savedBaseURL, url)
+        XCTAssertFalse(store.authFailed)
+        XCTAssertNotNil(store.snapshot) // refresh() after login loaded /api/status
+
+        // Access token rides the widget slot + app-group.
+        XCTAssertEqual(credentials.savedWidgetTokens[url], "access-abc")
+        XCTAssertEqual(widgetConfig.load()?.token, "access-abc")
+        XCTAssertEqual(widgetConfig.load()?.baseURL, url)
+
+        // Provisioning was replace:true under the sanitized per-device name.
+        let tokenBody = try XCTUnwrap(transport.body(forPath: "/api/auth/tokens"))
+        let tokenJSON = try JSONSerialization.jsonObject(with: tokenBody) as? [String: Any]
+        XCTAssertEqual(tokenJSON?["replace"] as? Bool, true)
+        XCTAssertEqual(tokenJSON?["name"] as? String, "iOS widget · Jeroen's iPhone")
+
+        let loginBody = try XCTUnwrap(transport.body(forPath: "/api/auth/login"))
+        let loginJSON = try JSONSerialization.jsonObject(with: loginBody) as? [String: Any]
+        XCTAssertEqual(loginJSON?["username"] as? String, "jeroen")
+        XCTAssertEqual(loginJSON?["password"] as? String, "hunter2000")
+    }
+
+    func testWidgetConfigCarriesAccessTokenNotSessionToken() async throws {
+        let suite = "test.login.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suite)!
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let widgetConfig = AppGroupConfigStore(defaults: defaults)
+        let store = DashboardStore(
+            client: nil,
+            credentialStore: RecordingCredentialStore(),
+            widgetConfig: widgetConfig,
+            transport: LoginFlowTransport()
+        )
+
+        try await store.login(
+            baseURL: URL(string: "http://ems.local:8080")!,
+            username: "jeroen",
+            password: "hunter2000",
+            deviceName: "iPhone"
+        )
+
+        XCTAssertEqual(widgetConfig.load()?.token, "access-abc")
+        XCTAssertNotEqual(widgetConfig.load()?.token, "session-xyz")
+    }
+
+    func testLoginFailureThrowsAndStoresNothing() async throws {
+        let credentials = RecordingCredentialStore()
+        let suite = "test.login.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suite)!
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let widgetConfig = AppGroupConfigStore(defaults: defaults)
+        let store = DashboardStore(
+            client: nil,
+            credentialStore: credentials,
+            widgetConfig: widgetConfig,
+            transport: LoginFlowTransport(loginStatus: 401)
+        )
+
+        do {
+            try await store.login(
+                baseURL: URL(string: "http://ems.local:8080")!,
+                username: "jeroen",
+                password: "wrong",
+                deviceName: "iPhone"
+            )
+            XCTFail("Expected login to throw on 401")
+        } catch let error as APIClientError {
+            XCTAssertEqual(error, .httpStatus(401))
+        }
+
+        XCTAssertTrue(credentials.savedTokens.isEmpty)
+        XCTAssertTrue(credentials.savedWidgetTokens.isEmpty)
+        XCTAssertNil(credentials.savedBaseURL)
+        XCTAssertNil(widgetConfig.load())
+        XCTAssertNil(store.client)
+        XCTAssertNil(store.snapshot)
+    }
+
+    func testUnauthorizedRefreshBouncesToLoginAndKeepsSavedServer() async throws {
+        let credentials = RecordingCredentialStore()
+        let url = URL(string: "http://ems.local:8080")!
+        try credentials.saveLastBaseURL(url)
+        let store = DashboardStore(
+            client: APIClient(baseURL: url, token: "stale-session", transport: AllUnauthorizedTransport()),
+            credentialStore: credentials
+        )
+
+        await store.refresh()
+
+        XCTAssertTrue(store.authFailed)
+        XCTAssertNil(store.client)
+        XCTAssertNil(store.snapshot)
+        XCTAssertFalse(store.isStale)
+        // The saved server URL is NOT forgotten, so re-login can prefill it.
+        XCTAssertFalse(credentials.deletedLastBaseURL)
+        XCTAssertEqual(try credentials.lastBaseURL(), url)
+    }
 }
 
 private struct FailingTransport: HTTPTransport {
@@ -184,11 +303,61 @@ private final class RoutingDashboardTransport: HTTPTransport, @unchecked Sendabl
     }
 }
 
+// Routes the login flow: /api/auth/login → session, /api/auth/tokens → access token, /api/status →
+// a valid dashboard core (so the post-login refresh() populates a snapshot); everything else 404s
+// (fetchDashboard tolerates those via its optional fallbacks). Records request bodies per path.
+private final class LoginFlowTransport: HTTPTransport, @unchecked Sendable {
+    private let lock = NSLock()
+    private var bodies: [String: Data] = [:]
+    private let loginStatus: Int
+
+    init(loginStatus: Int = 200) {
+        self.loginStatus = loginStatus
+    }
+
+    func body(forPath path: String) -> Data? {
+        lock.withLock { bodies[path] }
+    }
+
+    func data(for request: URLRequest) async throws -> (Data, HTTPURLResponse) {
+        let path = request.url?.path ?? ""
+        if let body = request.httpBody {
+            lock.withLock { bodies[path] = body }
+        }
+        func respond(_ data: Data, _ status: Int) -> (Data, HTTPURLResponse) {
+            (data, HTTPURLResponse(url: request.url!, statusCode: status, httpVersion: nil, headerFields: nil)!)
+        }
+        switch path {
+        case "/api/auth/login":
+            if loginStatus != 200 {
+                return respond(Data(#"{"detail":"invalid credentials"}"#.utf8), loginStatus)
+            }
+            return respond(#"{"token":"session-xyz","user":{"username":"jeroen","role":"admin"}}"#.data(using: .utf8)!, 200)
+        case "/api/auth/tokens":
+            return respond(#"{"token":"access-abc","name":"iOS widget"}"#.data(using: .utf8)!, 200)
+        case "/api/status":
+            return respond(statusJSON(), 200)
+        default:
+            return respond(#"{"detail":"unused in login flow"}"#.data(using: .utf8)!, 404)
+        }
+    }
+}
+
+// Rejects every request with 401 — models an expired/revoked session token.
+private struct AllUnauthorizedTransport: HTTPTransport {
+    func data(for request: URLRequest) async throws -> (Data, HTTPURLResponse) {
+        (Data(#"{"detail":"unauthorized"}"#.utf8),
+         HTTPURLResponse(url: request.url!, statusCode: 401, httpVersion: nil, headerFields: nil)!)
+    }
+}
+
 private final class RecordingCredentialStore: CredentialStore {
     var deletedURLs: [URL] = []
+    var deletedWidgetURLs: [URL] = []
     var deletedLastBaseURL = false
     var savedBaseURL: URL?
     var savedTokens: [URL: String] = [:]
+    var savedWidgetTokens: [URL: String] = [:]
 
     func saveToken(_ token: String, for baseURL: URL) throws {
         savedTokens[baseURL] = token
@@ -200,6 +369,18 @@ private final class RecordingCredentialStore: CredentialStore {
 
     func deleteToken(for baseURL: URL) throws {
         deletedURLs.append(baseURL)
+    }
+
+    func saveWidgetToken(_ token: String, for baseURL: URL) throws {
+        savedWidgetTokens[baseURL] = token
+    }
+
+    func widgetToken(for baseURL: URL) throws -> String? {
+        savedWidgetTokens[baseURL]
+    }
+
+    func deleteWidgetToken(for baseURL: URL) throws {
+        deletedWidgetURLs.append(baseURL)
     }
 
     func saveLastBaseURL(_ baseURL: URL) throws {

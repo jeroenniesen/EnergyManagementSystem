@@ -73,6 +73,34 @@ public struct AppGroupConfigStore {
     }
 }
 
+// MARK: - Widget access-token name
+
+/// Builds the `name` under which the per-device widget access token is minted/replaced
+/// (`POST /api/auth/tokens {name, replace:true}`, spec §7). The name is the server-side identity of
+/// the token, so it must be **stable per device** — every login re-mints under the same name,
+/// atomically revoking the previous one. Foundation-only + pure so it is unit-testable without
+/// UIKit; the app passes in `UIDevice.current.name`.
+public enum WidgetTokenName {
+    public static let prefix = "iOS widget"
+
+    /// `"iOS widget · <sanitized device name>"`. The device name is trimmed, has control characters
+    /// and interior whitespace collapsed to single spaces, and is capped so a pathological name
+    /// can't bloat the token label. Falls back to "iPhone" when the platform yields nothing usable.
+    public static func make(deviceName: String) -> String {
+        "\(prefix) · \(sanitize(deviceName))"
+    }
+
+    static func sanitize(_ raw: String, maxLength: Int = 40) -> String {
+        let collapsed = raw
+            .components(separatedBy: .whitespacesAndNewlines.union(.controlCharacters))
+            .filter { !$0.isEmpty }
+            .joined(separator: " ")
+        let trimmed = collapsed.isEmpty ? "iPhone" : collapsed
+        guard trimmed.count > maxLength else { return trimmed }
+        return String(trimmed.prefix(maxLength)).trimmingCharacters(in: .whitespaces)
+    }
+}
+
 // MARK: - Render model
 
 /// Verdict shown on the widget: a short homeowner word plus whether the EMS is armed (`live`) or
