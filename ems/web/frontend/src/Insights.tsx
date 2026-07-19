@@ -342,7 +342,7 @@ export function Insights() {
   const { activeId, visible } = useSectionNav(sections);
 
   return (
-    <section className="insights" data-testid="insights" aria-label="Insights and reporting">
+    <section className="insights" data-testid="insights" data-density-surface="insights" aria-label="Insights and reporting">
       {visible && sections.length > 1 && <SectionNav sections={sections} activeId={activeId} />}
       <div id="insights-sec-week">
         <WeekDigest />
@@ -432,6 +432,7 @@ export function Insights() {
               <div
                 key={s.key}
                 className={`score-card score-${scoreBand(value)}`}
+                data-density-kind="card"
                 data-testid={`score-${s.key}`}
                 data-state={early ? "early" : undefined}
                 role="group"

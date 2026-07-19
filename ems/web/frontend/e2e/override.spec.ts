@@ -37,6 +37,7 @@ test.describe("EMS operator override", () => {
       });
     });
     await page.goto("/");
+    await page.getByTestId("home-more-toggle").click();
     const card = page.getByTestId("override");
     await expect(card).toBeVisible();
     await expect(page.getByTestId("override-inactive")).toBeVisible();

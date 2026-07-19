@@ -344,6 +344,41 @@ body {
    without this they sit flush against the energy story above. */
 .status-grid { margin-top: 24px; }
 
+.outcome-tiles {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 12px;
+  margin-bottom: 20px;
+}
+.outcome-tile {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  min-width: 0;
+  padding: 14px 16px;
+  text-align: left;
+  color: var(--text);
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+}
+.outcome-tile-label { color: var(--muted); font-size: 0.78rem; font-weight: 600; }
+.outcome-tile-value {
+  font-size: 1.45rem;
+  font-weight: 650;
+  line-height: 1.15;
+  letter-spacing: -0.02em;
+  font-variant-numeric: tabular-nums;
+}
+.outcome-tile-freshness { display:block; margin-top:0.25rem; color:var(--muted); font-size:0.68rem; }
+.outcome-tile-freshness.is-stale { color:var(--amber-text); font-weight:700; }
+.outcome-tile-action { font: inherit; cursor: pointer; }
+.outcome-tile-action:hover { border-color: var(--accent); }
+.outcome-tile-action:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+@media (max-width: 640px) {
+  .outcome-tiles { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+
 .metric {
   display: flex;
   flex-direction: column;
@@ -515,6 +550,65 @@ body {
 .legend-target { border-top-color: var(--summer); border-top-style: dashed; }
 .legend-deadline { border-top-color: var(--summer); }
 .soc-mini-legend { margin-top: 8px; gap: 14px; }
+
+/* One shared Next-24h plot: plan windows behind solar, price and battery level. */
+.combined-plan {
+  margin: 18px 0 0; padding: 18px; border: 1px solid var(--line); border-radius: var(--radius);
+  background: var(--panel); box-shadow: var(--shadow);
+}
+.combined-plan-heading { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; }
+.combined-plan-heading h2 { margin: 0; font-size: 1rem; }
+.combined-plan-heading span { color: var(--muted); font-size: 0.76rem; }
+.combined-plan svg { display: block; width: 100%; height: auto; margin-top: 8px; }
+.combined-plan-window { stroke: var(--line); stroke-width: 1.5; opacity: 0.13; }
+.combined-plan-window.action-solar_charge { fill: var(--accent); }
+.combined-plan-window.action-grid_charge { fill: var(--winter); }
+.combined-plan-window.action-discharge { fill: var(--amber); }
+.combined-plan-window.action-self_consume { fill: var(--house); }
+.combined-plan-window.action-hold, .combined-plan-window.action-idle { fill: var(--muted); }
+.combined-plan-window-pattern { opacity: 0.09; pointer-events: none; }
+.combined-plan-pattern-line { stroke: var(--text); stroke-width: 2; }
+.combined-plan-window-label { fill: var(--text); font-size: 10px; font-weight: 800; letter-spacing: 0.06em; }
+.combined-plan-soc .combined-plan-target { stroke: var(--accent); stroke-width: 1.5; opacity: 0.72; }
+.combined-plan-axis .combined-plan-deadline { stroke: var(--accent); stroke-width: 1.5; stroke-dasharray: 2 4; opacity: 0.72; }
+.combined-plan-axis .combined-plan-deadline-label { fill: var(--muted); font-size: 10px; text-anchor: end; }
+.combined-plan-solar polygon { fill: var(--summer); stroke: var(--summer); stroke-width: 2; opacity: 0.22; }
+.combined-plan-solar text, .combined-plan-prices text, .combined-plan-soc text,
+.combined-plan-axis text { fill: var(--muted); font-size: 13px; }
+.combined-plan-prices rect { fill: var(--winter); opacity: 0.38; }
+.combined-plan-prices [data-price-zero] { stroke: var(--muted); stroke-width: 1; stroke-dasharray: 3 3; }
+.combined-plan-prices rect.combined-plan-price-negative {
+  fill: var(--amber);
+  stroke: var(--text);
+  stroke-width: 1;
+  stroke-dasharray: 2 2;
+}
+.combined-plan-prices text { text-anchor: end; }
+.combined-plan-soc polyline { fill: none; stroke-width: 3; vector-effect: non-scaling-stroke; }
+.combined-plan-soc-actual { stroke: var(--accent); }
+.combined-plan-soc-forecast { stroke: var(--text); stroke-dasharray: 8 5; }
+.combined-plan-soc line { stroke: var(--muted); stroke-dasharray: 3 5; }
+.combined-plan-axis text { text-anchor: middle; }
+.combined-plan-axis line { stroke: var(--text); stroke-width: 1; opacity: 0.55; }
+.combined-plan-controls rect { fill: transparent; cursor: crosshair; outline: none; }
+.combined-plan-controls rect:focus-visible { stroke: var(--accent); stroke-width: 4; }
+.combined-plan-readout {
+  display: flex; align-items: center; justify-content: space-between; gap: 12px;
+  margin: 8px 0 0; min-height: 2.5em; padding: 9px 12px; border-left: 3px solid var(--accent);
+  border-radius: 6px; background: var(--panel-2); color: var(--text); font-size: 0.84rem;
+  font-variant-numeric: tabular-nums;
+}
+.combined-plan-readout button { flex: none; font: inherit; color: var(--accent-text); background: transparent; border: 0; cursor: pointer; }
+.combined-plan-readout button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.combined-plan-missing { margin: 8px 0 0; color: var(--muted); font-size: 0.78rem; }
+@media (max-width: 520px) {
+  .combined-plan { padding: 12px; }
+  .combined-plan-heading { align-items: flex-start; flex-direction: column; gap: 3px; }
+  .combined-plan-axis text:nth-of-type(even) { display: none; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .combined-plan * { transition: none !important; }
+}
 
 /* Energy story — one timeline, past or next */
 .story {
@@ -2428,3 +2522,20 @@ body {
    look so the two disclosures on the page read as one pattern. */
 .plan-disclosure { margin: 0 0 20px; }
 .plan-disclosure-body { margin-top: 14px; }
+.home-more {
+  margin: 4px 0 20px;
+  border-top: 1px solid var(--line);
+}
+.home-more-toggle {
+  padding: 16px 2px;
+  color: var(--muted);
+  cursor: pointer;
+  font-size: 0.88rem;
+  font-weight: 650;
+  list-style: none;
+}
+.home-more-toggle::-webkit-details-marker { display: none; }
+.home-more-toggle::before { content: "›"; display: inline-block; margin-right: 9px; }
+.home-more[open] > .home-more-toggle::before { transform: rotate(90deg); }
+.home-more-body { display: flex; flex-direction: column; gap: 14px; padding-top: 4px; }
+.home-more-body > :last-child { margin-bottom: 0; }

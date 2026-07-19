@@ -1,8 +1,33 @@
 import { expect, type Page, test } from "@playwright/test";
 
+const DASHBOARD_BUDGET = {
+  hero: 1,
+  tile: 4,
+  chart: 1,
+  badge: 1,
+  number: 4,
+  disclosure: 1,
+} as const;
+
+async function assertDensityBudget(page: Page, budget: typeof DASHBOARD_BUDGET) {
+  for (const [kind, expected] of Object.entries(budget)) {
+    const actual = await page.locator(`[data-density-kind="${kind}"]:visible`).count();
+    expect(actual, `visible ${kind} density: expected ${expected}, found ${actual}`).toBe(expected);
+  }
+}
+
+async function openMore(page: Page) {
+  const more = page.getByTestId("home-more");
+  if ((await more.getAttribute("open")) === null) {
+    await page.getByTestId("home-more-toggle").click();
+  }
+  await expect(page.getByTestId("home-more-body")).toBeVisible();
+}
+
 // The detailed panels (power tiles, Sankey, charge target, controller decision, AI note, data
 // status) now live in a collapsed "Advanced" section — open it before asserting on them.
 async function openAdvanced(page: Page) {
+  await openMore(page);
   await page.getByTestId("advanced-toggle").click();
   await expect(page.getByTestId("advanced-body")).toBeVisible();
 }
@@ -10,6 +35,7 @@ async function openAdvanced(page: Page) {
 // The energy story (past/next toggle + tiles + charts) now lives in the "See the full plan"
 // disclosure, collapsed by default — open it before asserting on the story.
 async function openPlan(page: Page) {
+  await openMore(page);
   await page.getByTestId("plan-disclosure-toggle").click();
   await expect(page.getByTestId("plan-disclosure-body")).toBeVisible();
 }
@@ -115,32 +141,394 @@ function accuracyFixture(health: Record<string, unknown> = {}) {
 }
 
 test.describe("EMS dashboard", () => {
-  test("the calm home surfaces the essentials, with detail behind disclosures", async ({ page }) => {
-    // A first-time viewer sees the hero (one verdict), the score pills, the story card, the
-    // strategy — the full plan and the technical detail are each one tap deeper. No error banner.
+  const combinedStory = (missing: string[] = []) => {
+    // Browser runs in the configured Europe/Amsterdam timezone; this is 08:00 local in July.
+    const base = Date.parse("2026-07-18T06:00:00Z");
+    const values: Array<[number, number, number, string]> = [
+      [54, 0, 0.18, "hold"],
+      [58, 900, 0.24, "solar_charge"],
+      [63, 1650, 0.42, "discharge"],
+      [67, 600, 0.12, "self_consume"],
+    ];
+    const slots = values.map(([soc, solar, price, action], index) => ({
+      start: new Date(base + index * 15 * 60e3).toISOString(),
+      soc_pct: missing.includes("state of charge") ? null : soc,
+      grid_w: 100, solar_w: missing.includes("solar") ? (null as unknown as number) : solar,
+      battery_w: 0, load_w: 500,
+      eur_per_kwh: missing.includes("price") ? null : price,
+      action: missing.includes("actions") ? "" : action,
+    }));
+    return {
+      window: "next", now: new Date(base).toISOString(), current_soc_pct: 54,
+      reserve_soc_pct: 20, target_soc_pct: 70, target_kwh: 7.5,
+      target_deadline: new Date(base + 4 * 15 * 60e3).toISOString(),
+      current_price_eur_per_kwh: 0.18, slots,
+      totals: { import_kwh: 1, export_kwh: 0, solar_kwh: 2, charge_kwh: 1,
+        discharge_kwh: 1, load_kwh: 3, grid_cost_eur: 0.3, self_sufficiency_pct: 70,
+        soc_start_pct: 54, soc_end_pct: 67, soc_min_pct: 54, soc_max_pct: 67 },
+      headline: "Next 24h plan.",
+    };
+  };
+
+  test("combined 24-hour chart replaces separate dashboard charts", async ({ page }) => {
+    await page.route("**/api/energy-story?window=next", (route) => route.fulfill({
+      status: 200, contentType: "application/json", body: JSON.stringify(combinedStory()),
+    }));
     await page.goto("/");
-    for (const id of [
-      "run-mode-badge",
-      "data-quality",
-      "home-state",
-      "home-scores",
-      "battery-plan",
-      "plan-disclosure",
-      "strategy-card",
-      "advanced",
-      "alerts",
-    ]) {
+    const chart = page.getByTestId("combined-plan-chart");
+    await expect(chart).toBeVisible();
+    await expect(chart.locator("svg")).toHaveCount(1);
+    await expect(page.getByTestId("story-soc")).toHaveCount(0);
+    await expect(chart.locator("svg > g").evaluateAll((groups) =>
+      groups.slice(0, 5).map((group) => group.getAttribute("class"))))
+      .resolves.toEqual([
+        "combined-plan-windows", "combined-plan-solar", "combined-plan-prices",
+        "combined-plan-soc", "combined-plan-axis",
+      ]);
+  });
+
+  test("combined chart preserves signed negative prices around a zero baseline", async ({ page }) => {
+    const story = combinedStory();
+    story.slots[1].eur_per_kwh = -0.12;
+    await page.route("**/api/energy-story?window=next", (route) => route.fulfill({
+      status: 200, contentType: "application/json", body: JSON.stringify(story),
+    }));
+    await page.goto("/");
+    const prices = page.locator(".combined-plan-prices");
+    const zeroY = Number(await prices.locator("[data-price-zero]").getAttribute("y1"));
+    const negative = prices.locator("[data-price-negative]");
+    await expect(negative).toHaveCount(1);
+    const negativeY = Number(await negative.getAttribute("y"));
+    const negativeHeight = Number(await negative.getAttribute("height"));
+    expect(negativeY).toBeCloseTo(zeroY, 3);
+    expect(negativeY + negativeHeight).toBeGreaterThan(zeroY);
+  });
+
+  test("action windows use timestamp geometry and retain timeline gaps", async ({ page }) => {
+    const story = combinedStory();
+    story.slots = [story.slots[0], story.slots[1], story.slots[2]].map((slot, index) => ({
+      ...slot,
+      start: new Date(Date.parse(story.slots[0].start) + [0, 15, 60][index] * 60e3).toISOString(),
+      action: "hold",
+    }));
+    await page.route("**/api/energy-story?window=next", (route) => route.fulfill({
+      status: 200, contentType: "application/json", body: JSON.stringify(story),
+    }));
+    await page.goto("/");
+    const windows = page.locator(".combined-plan-windows > g");
+    await expect(windows).toHaveCount(2);
+    const first = windows.nth(0).locator(".combined-plan-window");
+    const second = windows.nth(1).locator(".combined-plan-window");
+    const firstEnd = Number(await first.getAttribute("x")) + Number(await first.getAttribute("width"));
+    expect(Number(await second.getAttribute("x"))).toBeGreaterThan(firstEnd);
+  });
+
+  test("accessible chart summary includes every timed principal action window", async ({ page }) => {
+    const story = combinedStory();
+    story.slots[0].action = "hold";
+    story.slots[1].action = "hold";
+    story.slots[2].action = "discharge";
+    story.slots[3].action = "hold";
+    await page.route("**/api/energy-story?window=next", (route) => route.fulfill({
+      status: 200, contentType: "application/json", body: JSON.stringify(story),
+    }));
+    await page.goto("/");
+    const chart = page.locator('section[data-testid="combined-plan-chart"]');
+    await expect(chart).toHaveAttribute("aria-label", /Principal action windows:/);
+    const summary = await chart.getAttribute("aria-label");
+    expect(summary).toContain("Hold 08:00–08:30");
+    expect(summary).toContain("Power the house 08:30–08:45");
+    expect(summary).toContain("Hold 08:45–09:00");
+    expect(summary).toContain("Target 70% by 09:00");
+    await expect(chart.locator('[data-testid="combined-plan-target-soc"]')).toHaveCount(1);
+    await expect(chart.locator('[data-testid="combined-plan-target-deadline"]')).toHaveCount(1);
+  });
+
+  test("distinct plan actions have distinct non-color cues", async ({ page }) => {
+    await page.route("**/api/energy-story?window=next", (route) => route.fulfill({
+      status: 200, contentType: "application/json", body: JSON.stringify(combinedStory()),
+    }));
+    await page.goto("/");
+    const patterns = page.locator(".combined-plan-window-pattern");
+    await expect(patterns).toHaveCount(4);
+    const cues = await patterns.evaluateAll((nodes) =>
+      nodes.map((node) => node.getAttribute("fill")),
+    );
+    expect(new Set(cues).size).toBeGreaterThan(1);
+    await expect(page.locator(".combined-plan-window-label")).toHaveCount(4);
+  });
+
+  test("combined slot readout follows focus and arrow keys", async ({ page }) => {
+    await page.route("**/api/energy-story?window=next", (route) => route.fulfill({
+      status: 200, contentType: "application/json", body: JSON.stringify(combinedStory()),
+    }));
+    await page.goto("/");
+    const slots = page.getByTestId("combined-plan-slot");
+    await slots.nth(2).focus();
+    const readout = page.getByTestId("combined-plan-readout");
+    await expect(readout).toContainText("08:30");
+    await expect(readout).toContainText("€0.42/kWh");
+    await expect(readout).toContainText("1,650 W solar");
+    await expect(readout).toContainText("63% state of charge");
+    await expect(readout).toContainText("Power the house");
+    await page.keyboard.press("ArrowLeft");
+    await expect(readout).toContainText("08:15");
+  });
+
+  test("combined slot readout follows touch selection and can be dismissed", async ({ browser }) => {
+    const context = await browser.newContext({
+      viewport: { width: 390, height: 844 },
+      hasTouch: true,
+      isMobile: true,
+    });
+    const page = await context.newPage();
+    await page.route("**/api/energy-story?window=next", (route) => route.fulfill({
+      status: 200, contentType: "application/json", body: JSON.stringify(combinedStory()),
+    }));
+    await page.goto("/");
+    await page.getByTestId("combined-plan-slot").nth(3).tap();
+    await expect(page.getByTestId("combined-plan-readout")).toContainText("08:45");
+    await page.getByTestId("combined-plan-readout-close").tap();
+    await expect(page.getByTestId("combined-plan-readout")).toBeHidden();
+    await page.getByTestId("combined-plan-slot").nth(2).tap();
+    await page.keyboard.press("Escape");
+    await expect(page.getByTestId("combined-plan-readout")).toBeHidden();
+    await context.close();
+  });
+
+  test("cached outcome values become stale after a failed refresh", async ({ page }) => {
+    let statusCalls = 0;
+    let financeCalls = 0;
+    await page.route("**/api/status", async (route) => {
+      statusCalls += 1;
+      if (statusCalls === 1) await route.continue();
+      else await route.fulfill({ status: 503, body: "offline" });
+    });
+    await page.route("**/api/finance?**", async (route) => {
+      financeCalls += 1;
+      if (financeCalls === 1) await route.fulfill({
+        status: 200, contentType: "application/json",
+        body: JSON.stringify({ totals: { saved_eur: 2.84 } }),
+      });
+      else await route.fulfill({ status: 503, body: "offline" });
+    });
+    await page.goto("/");
+    await expect(page.getByTestId("outcome-soc")).toContainText("55%");
+    await expect(page.getByTestId("outcome-savings")).toContainText("€2.84");
+    await page.waitForTimeout(10_500);
+    await expect(page.getByTestId("outcome-soc")).toContainText("Stale");
+    await expect(page.getByTestId("outcome-savings")).toContainText("Stale");
+    await expect(page.getByTestId("outcome-soc")).toContainText("Updated");
+  });
+
+  test("battery freshness marks an HTTP-200 state-of-charge value stale", async ({ page }) => {
+    await page.route("**/api/freshness", (route) => route.fulfill({
+      status: 200, contentType: "application/json",
+      body: JSON.stringify({ battery: "stale", prices: "fresh", solar: "fresh" }),
+    }));
+    await page.goto("/");
+    await expect(page.getByTestId("outcome-soc")).toContainText("55%");
+    await expect(page.getByTestId("outcome-soc")).toContainText("Stale");
+  });
+
+  for (const viewport of [
+    { name: "desktop", width: 1280, height: 900 },
+    { name: "phone", width: 390, height: 844 },
+  ]) {
+    test(`${viewport.name} density budget stays calm`, async ({ page }) => {
+      await page.setViewportSize(viewport);
+      await page.route("**/api/battery-plan", (route) => route.fulfill({
+        status: 200, contentType: "application/json",
+        body: JSON.stringify(batteryPlanFixture({ level: "high", reasons: ["Fresh data."] })),
+      }));
+      await page.goto("/");
+      await expect(page.getByTestId("home-state")).toBeVisible();
+      await assertDensityBudget(page, DASHBOARD_BUDGET);
+      if (viewport.name === "phone") {
+        const columns = await page.getByTestId("outcome-tiles").evaluate((node) =>
+          getComputedStyle(node).gridTemplateColumns.split(/\s+/).filter(Boolean).length,
+        );
+        expect(columns, "phone outcome grid should have exactly two columns").toBe(2);
+      }
+    });
+  }
+
+  for (const viewport of [
+    { name: "desktop", width: 1280, height: 900 },
+    { name: "phone", width: 390, height: 844 },
+  ]) {
+    test(`${viewport.name} remaining-surface density inventory is repeatable`, async ({ page }) => {
+      await page.setViewportSize(viewport);
+      const baselines = {
+        insights: { cards: 3, charts: 0, badges: 0, numbers: 19 },
+        manage: { cards: 1, charts: 0, badges: 0, numbers: 0 },
+        car: { cards: 4, charts: 0, badges: 0, numbers: 1 },
+        chat: { cards: 1, charts: 0, badges: 1, numbers: 0 },
+      } as const;
+      const targets = {
+        insights: "≤3 score cards or 1 detailed visualization",
+        manage: "1 selected settings section",
+        car: "1 plan verdict + ≤3 facts + 1 schedule visualization; details subordinate",
+        chat: "1 conversation surface; prompts and diagnostics subordinate",
+      } as const;
+      const inventory = async (surface: string, expected: Record<string, number>) => {
+        const root = page.locator(`[data-density-surface="${surface}"]`);
+        await expect(root, `${surface} density root`).toBeVisible();
+        for (const [kind, budget] of Object.entries(expected)) {
+          const nested = await root.locator(`[data-density-kind="${kind}"]:visible`).count();
+          const actual = nested + ((await root.getAttribute("data-density-kind")) === kind ? 1 : 0);
+          expect(actual, `${surface} ${kind}: actual ${actual}, inventory budget ${budget}`).toBe(budget);
+        }
+        const measured = await root.evaluate((node) => {
+          const visible = (element: Element) => {
+            const style = getComputedStyle(element);
+            const box = element.getBoundingClientRect();
+            return style.display !== "none" && style.visibility !== "hidden" && box.width > 0 && box.height > 0;
+          };
+          const all = Array.from(node.querySelectorAll("*"));
+          return {
+            cards: all.filter((element) => visible(element)
+              && ["card", "selected-section"].includes(element.getAttribute("data-density-kind") ?? "")).length
+              + (node.getAttribute("data-density-kind") === "card" ? 1 : 0),
+            charts: all.filter((element) => visible(element) && element.tagName === "SVG"
+              && !element.classList.contains("icon") && !element.closest("button")).length,
+            badges: all.filter((element) => visible(element) && element.classList.contains("badge")).length,
+            numbers: all.filter((element) => visible(element) && element.children.length === 0
+              && /(?:\d[\d.,]*\s*(?:%|kWh|kW|W|€|m³|kg|h|min)|€\s*\d)/.test(element.textContent ?? "")).length,
+          };
+        });
+        const baseline = baselines[surface as keyof typeof baselines];
+        expect(measured, `${surface} ${viewport.name}: actual ${JSON.stringify(measured)}; `
+          + `non-regression baseline ${JSON.stringify(baseline)}; target ${targets[surface as keyof typeof targets]}`)
+          .toEqual(baseline);
+      };
+
+      await page.goto("/#insights");
+      await expect(page.getByTestId("score-grid")).toBeVisible();
+      await inventory("insights", { card: 3 });
+
+      await page.goto("/#manage");
+      if (viewport.name === "phone") await page.getByTestId("group-ui").click();
+      await inventory("manage", { "selected-section": 1 });
+
+      await page.goto("/#car");
+      await expect(page.locator('[data-testid="car-card"], [data-testid="car-card-disabled"]')).toBeVisible();
+      await inventory("car", { card: 4 });
+
+      await page.goto("/#chat");
+      await inventory("chat", { card: 1, subordinate: 0 });
+    });
+  }
+
+  test("missing chart layer names what remains unavailable", async ({ page }) => {
+    await page.route("**/api/energy-story?window=next", (route) => route.fulfill({
+      status: 200, contentType: "application/json",
+      body: JSON.stringify(combinedStory(["price", "solar", "state of charge", "actions"])),
+    }));
+    await page.goto("/");
+    await expect(page.getByTestId("combined-plan-chart")).toBeVisible();
+    await expect(page.getByTestId("combined-plan-missing")).toContainText("price");
+    await expect(page.getByTestId("combined-plan-missing")).toContainText("solar");
+    await expect(page.getByTestId("combined-plan-missing")).toContainText("state of charge");
+    await expect(page.getByTestId("combined-plan-missing")).toContainText("actions");
+  });
+
+  test("approved dashboard hierarchy keeps four primary surfaces above one disclosure", async ({ page }) => {
+    await page.goto("/");
+    for (const id of ["run-mode-badge", "data-quality", "home-state", "outcome-tiles",
+      "combined-plan-chart", "home-more", "alerts"]) {
       await expect(page.getByTestId(id), `panel ${id} should render`).toBeVisible();
     }
-    // The full plan (the story with its tiles + charts) is collapsed by default — not shouting.
-    await expect(page.getByTestId("energy-story")).toHaveCount(0);
-    // The technical detail is present but tucked behind Advanced.
-    await expect(page.getByTestId("decision")).toHaveCount(0);
-    await expect(page.getByTestId("freshness")).toHaveCount(0);
-    await openAdvanced(page);
-    await expect(page.getByTestId("decision")).toBeVisible();
-    await expect(page.getByTestId("freshness")).toBeVisible();
+    const ordered = await Promise.all(["home-state", "outcome-tiles", "combined-plan-chart", "home-more"]
+      .map((id) => page.getByTestId(id).boundingBox()));
+    expect(ordered.every(Boolean)).toBe(true);
+    expect(ordered[0]!.y).toBeLessThan(ordered[1]!.y);
+    expect(ordered[1]!.y).toBeLessThan(ordered[2]!.y);
+    expect(ordered[2]!.y).toBeLessThan(ordered[3]!.y);
+    const heroBox = ordered[0]!;
+    for (const id of ["run-mode-badge", "data-quality", "alerts"]) {
+      const safetyBox = await page.getByTestId(id).boundingBox();
+      expect(safetyBox, `${id} should have layout geometry`).not.toBeNull();
+      expect(safetyBox!.y, `${id} should remain above the hero`).toBeLessThan(heroBox.y);
+    }
+    for (const id of ["home-scores", "battery-plan", "strategy-card", "car-card", "advanced-body"]) {
+      await expect(page.getByTestId(id), `panel ${id} should be hidden`).not.toBeVisible();
+    }
+    await expect(page.getByTestId("home-more")).not.toHaveAttribute("open", "");
+    await expect(page.getByTestId("home-more-toggle")).toHaveAttribute("aria-expanded", "false");
+    await page.getByTestId("home-more-toggle").click();
+    await expect(page.getByTestId("home-more-body")).toBeVisible();
+    await expect(page.getByTestId("score-card-co2")).toBeVisible();
+    await expect(page.getByTestId("score-card-best_price")).toBeVisible();
+    await expect(page.getByTestId("score-card-self_consumption")).toHaveCount(0);
     await expect(page.getByTestId("error")).toHaveCount(0);
+  });
+
+  test("unavailable outcomes remain em dashes and only available drill-downs are actionable", async ({ page }) => {
+    await page.route("**/api/report**", (route) => route.fulfill({ status: 503, body: "unavailable" }));
+    await page.route("**/api/status", (route) => route.fulfill({ status: 503, body: "unavailable" }));
+    await page.route("**/api/battery", (route) => route.fulfill({
+      status: 200, contentType: "application/json", body: JSON.stringify({
+        current_mode: null, capabilities: null,
+        aggregate: { soc_pct: 49.5, power_w: 0, capacity_kwh: 10.98, online_towers: 2, total_towers: 2 },
+        towers: [],
+      }),
+    }));
+    await page.route("**/api/finance**", (route) => route.fulfill({
+      status: 200, contentType: "application/json",
+      body: JSON.stringify({ period: "day", label: "today", partial: true, days: [], totals: {
+        grid_cost_eur: null, battery_cost_eur: null, saved_eur: null,
+        days_with_prices: 0, days_with_data: 0,
+      } }),
+    }));
+    const batteryResponse = page.waitForResponse((response) => response.url().endsWith("/api/battery"));
+    await page.goto("/");
+    await batteryResponse;
+    for (const id of ["outcome-solar-score", "outcome-soc", "outcome-savings", "outcome-grid-import"]) {
+      await expect(page.getByTestId(id)).toContainText("—");
+      await expect(page.getByTestId(id)).toHaveJSProperty("tagName", "DIV");
+      await expect(page.getByTestId(id)).not.toContainText("Updated");
+    }
+    await expect(page.getByTestId("outcome-savings")).toHaveAttribute("title", /still measuring/);
+  });
+
+  for (const theme of ["light", "dark"] as const) {
+    test(`${theme} theme preserves the primary hierarchy`, async ({ page }) => {
+      await page.route("**/api/settings", (route) => route.fulfill({
+        status: 200, contentType: "application/json",
+        body: JSON.stringify({ values: { "ui.theme": theme } }),
+      }));
+      await page.goto("/");
+      await expect(page.locator("html")).toHaveAttribute("data-theme", theme);
+      await expect(page.getByTestId("home-state")).toBeVisible();
+      await expect(page.getByTestId("combined-plan-chart")).toBeVisible();
+      const boxes = await Promise.all(["home-state", "outcome-tiles", "combined-plan-chart", "home-more"]
+        .map((id) => page.getByTestId(id).boundingBox()));
+      expect(boxes.every(Boolean)).toBe(true);
+      expect(boxes[0]!.y).toBeLessThan(boxes[1]!.y);
+      expect(boxes[1]!.y).toBeLessThan(boxes[2]!.y);
+      expect(boxes[2]!.y).toBeLessThan(boxes[3]!.y);
+    });
+  }
+
+  test("interactive tiles, chart slots, and disclosure stay keyboard reachable in reading order", async ({ page }) => {
+    await page.goto("/");
+    await expect(page.getByTestId("combined-plan-slot").first()).toBeVisible();
+    await expect(page.locator('[data-density-kind="tile"]:is(button)').first()).toBeVisible();
+    const controls = page.locator([
+      '[data-density-kind="tile"]:is(button)',
+      '[data-testid="combined-plan-slot"]',
+      '[data-testid="combined-plan-readout-close"]',
+      '[data-testid="home-more-toggle"]',
+    ].join(", "));
+    expect(await controls.count()).toBeGreaterThan(5);
+    const expected = await controls.all();
+    await expected[0].focus();
+    await expect(expected[0]).toBeFocused();
+    for (const control of expected.slice(1)) {
+      await page.keyboard.press("Tab");
+      await expect(control).toBeFocused();
+    }
   });
 
   test("a time-of-day sky backdrop renders behind the app", async ({ page }) => {
@@ -170,18 +558,24 @@ test.describe("EMS dashboard", () => {
     await expect(sky).toHaveCSS("background-image", /url\(.*day.*\.webp.*\)/);
   });
 
-  test("the hero synthesises one verdict + a calm 'nothing needed' act line", async ({ page }) => {
+  test("merged hero includes truthful current state without a separate Right now card", async ({ page }) => {
+    await page.route("**/api/battery-plan", (route) => route.fulfill({
+      status: 200, contentType: "application/json",
+      body: JSON.stringify(batteryPlanFixture({ level: "high", reasons: ["Fresh data."] })),
+    }));
     await page.goto("/");
     const hero = page.getByTestId("home-state");
     await expect(hero).toBeVisible();
     await expect(hero).toHaveAttribute("data-tone", /good|watching|controlling|attention/);
     // The verdict headline (the old status headline, absorbed into the hero).
     await expect(page.getByTestId("hero-verdict")).toContainText("Watching");
-    // One synthesis line combining the on-track verdict + the day-score summary (reused strings).
+    // One synthesis line combines the truthful live explanation, on-track message, and score copy.
     const synth = page.getByTestId("hero-synthesis");
+    await expect(synth).toContainText("Battery is following the current plan");
     await expect(synth).toContainText("On track");
     await expect(synth).toContainText("brilliant day");
     await expect(synth).toContainText("·"); // the two strings are joined into one line
+    await expect(page.getByTestId("battery-plan")).not.toBeVisible();
     // The explicit answer to "do I need to act?" — calm, because nothing needs attention.
     await expect(page.getByTestId("hero-act")).toHaveText("Nothing needed from you.");
   });
@@ -266,6 +660,7 @@ test.describe("EMS dashboard", () => {
       }),
     );
     await page.goto("/");
+    await openMore(page);
     const line = page.getByTestId("battery-plan-provenance");
     await expect(line).toBeVisible();
     await expect(line).toContainText("Planned with");
@@ -290,6 +685,7 @@ test.describe("EMS dashboard", () => {
       }),
     );
     await page.goto("/");
+    await openMore(page);
     const line = page.getByTestId("battery-plan-provenance");
     await expect(line).toContainText("Built-in model at 65% confidence");
     await expect(line).toContainText("adaptive summer planner");
@@ -307,6 +703,7 @@ test.describe("EMS dashboard", () => {
       }),
     );
     await page.goto("/");
+    await openMore(page);
     await expect(page.getByTestId("battery-plan")).toBeVisible();
     await expect(page.getByTestId("bp-car-windows")).toBeAttached();
     await expect(page.getByTestId("bp-car-window")).toHaveCount(1);
@@ -322,6 +719,7 @@ test.describe("EMS dashboard", () => {
       }),
     );
     await page.goto("/");
+    await openMore(page);
     await expect(page.getByTestId("battery-plan")).toBeVisible();
     await expect(page.getByTestId("bp-car-windows")).toHaveCount(0);
     await expect(page.getByTestId("battery-plan")).not.toContainText("car window");
@@ -337,12 +735,14 @@ test.describe("EMS dashboard", () => {
       }),
     );
     await page.goto("/");
+    await openMore(page);
     await expect(page.getByTestId("battery-plan")).toBeVisible();
     await expect(page.getByTestId("bp-car-windows")).toHaveCount(0);
   });
 
   test("renders the status dashboard with reconstructed load", async ({ page }) => {
     await page.goto("/");
+    await openMore(page);
     await expect(page.getByRole("heading", { name: "Smart Energy Manager" })).toBeVisible();
 
     // Run-mode badge in plain language (dry-run => "Watching only"; M0a is read-only).
@@ -379,6 +779,7 @@ test.describe("EMS dashboard", () => {
       }),
     );
     await page.goto("/");
+    await openMore(page);
     const stat = page.getByTestId("saved-today");
     await expect(stat).toBeVisible();
     await expect(stat).toContainText("€2.34 measured");
@@ -397,6 +798,7 @@ test.describe("EMS dashboard", () => {
       }),
     );
     await page.goto("/");
+    await openMore(page);
     const stat = page.getByTestId("saved-today");
     await expect(stat).toBeVisible();
     await expect(stat).toContainText("measuring");
@@ -405,6 +807,7 @@ test.describe("EMS dashboard", () => {
 
   test("no API error banner when backend is up", async ({ page }) => {
     await page.goto("/");
+    await openMore(page);
     await expect(page.getByTestId("battery-plan")).toBeVisible();
     await expect(page.getByTestId("error")).toHaveCount(0);
   });
@@ -423,12 +826,13 @@ test.describe("EMS dashboard", () => {
     await expect(dec).toContainText("dry-run");
   });
 
-  test("the story card is the single narrative; the plan holds the tracks + stats", async ({ page }) => {
+  test("technical evidence retains the plan tracks and exact stats under More", async ({ page }) => {
     await page.goto("/");
-    // The one narrative sentence lives on the story card (battery-plan) and is visible up front.
-    await expect(page.getByTestId("battery-plan-summary")).toContainText("Next 24h");
-    // The full plan (toggle + tiles + charts) is one tap deeper.
+    // The combined chart is the visible primary plan; the legacy BatteryPlan evidence is under More.
+    await expect(page.getByTestId("combined-plan-chart")).toBeVisible();
+    await expect(page.getByTestId("battery-plan-summary")).not.toBeVisible();
     await openPlan(page);
+    await expect(page.getByTestId("battery-plan-summary")).toContainText("Next 24h");
     const story = page.getByTestId("energy-story");
     await expect(story).toBeVisible();
     await expect(page.getByTestId("story-tag")).toContainText("the plan"); // Next is the default
@@ -443,6 +847,7 @@ test.describe("EMS dashboard", () => {
 
   test("the full-plan disclosure is collapsed by default and opens on demand", async ({ page }) => {
     await page.goto("/");
+    await openMore(page);
     // Collapsed: the whole energy story (and its headline) is absent; the story card's narrative
     // is the only narrative sentence on the page.
     await expect(page.getByTestId("plan-disclosure-toggle")).toContainText("See the full plan");
@@ -713,6 +1118,7 @@ test.describe("EMS dashboard", () => {
 
   test("shows the strategy card with a season picker and explanation", async ({ page }) => {
     await page.goto("/");
+    await openMore(page);
     const card = page.getByTestId("strategy-card");
     await expect(card).toBeVisible();
     await expect(page.getByTestId("strategy-auto")).toBeVisible();
@@ -747,6 +1153,7 @@ test.describe("EMS dashboard", () => {
       }
     });
     await page.goto("/");
+    await openMore(page);
     await expect(page.getByTestId("strategy-summary")).toContainText("Solar-first");
     await page.getByTestId("strategy-winter").click();
     await expect(page.getByTestId("strategy-winter")).toHaveAttribute("aria-checked", "true");
@@ -773,6 +1180,7 @@ test.describe("EMS dashboard", () => {
       }
     });
     await page.goto("/");
+    await openMore(page);
     await page.getByTestId("strategy-auto").focus();
     await page.keyboard.press("ArrowRight"); // Auto -> Summer
     await expect(page.getByTestId("strategy-summer")).toHaveAttribute("aria-checked", "true");
@@ -801,6 +1209,7 @@ test.describe("EMS dashboard", () => {
       }
     });
     await page.goto("/");
+    await openMore(page);
     const sw = page.getByTestId("strategy-grid-topup");
     await expect(sw).toBeVisible();
     await expect(sw).toHaveAttribute("aria-label", "Top up from the grid if the sun falls short");
@@ -811,6 +1220,7 @@ test.describe("EMS dashboard", () => {
 
   test("the strategy card's Advanced link opens Settings", async ({ page }) => {
     await page.goto("/");
+    await openMore(page);
     await page.getByTestId("strategy-more").click();
     await expect(page.getByTestId("settings")).toBeVisible();
     await expect(page.getByTestId("settings")).toContainText("Strategy");
@@ -871,6 +1281,7 @@ test.describe("EMS dashboard", () => {
       }),
     );
     await page.goto("/");
+    await openMore(page);
     // The per-tower breakdown lives behind the battery tile now; it becomes clickable once the
     // cluster data loads (the hint switches to "see each battery").
     const tile = page.getByTestId("battery-tile");
@@ -1670,6 +2081,7 @@ test.describe("EMS dashboard", () => {
 
   test("the AI second-opinion card is hidden when AI is off", async ({ page }) => {
     await page.goto("/");
+    await openMore(page);
     await expect(page.getByTestId("battery-plan")).toBeVisible();
     // Even inside Advanced, the card renders nothing while AI is off.
     await openAdvanced(page);
@@ -1701,6 +2113,7 @@ test.describe("EMS dashboard", () => {
       }),
     );
     await page.goto("/");
+    await openMore(page);
     await expect(page.getByTestId("battery-plan")).toBeVisible();
     await expect(page.getByTestId("car-card")).toHaveCount(0);
   });
@@ -1724,6 +2137,7 @@ test.describe("EMS dashboard", () => {
       }),
     );
     await page.goto("/");
+    await openMore(page);
     const card = page.getByTestId("car-card");
     await expect(card).toBeVisible();
     await expect(card).toContainText("What's the car's charge now?");
@@ -1757,6 +2171,7 @@ test.describe("EMS dashboard", () => {
       }),
     );
     await page.goto("/");
+    await openMore(page);
     await expect(page.getByTestId("car-meter-missing")).toContainText("No EV meter");
     await expect(page.getByTestId("car-meter-missing")).toContainText("after driving or charging");
   });
@@ -1777,6 +2192,7 @@ test.describe("EMS dashboard", () => {
       }),
     );
     await page.goto("/");
+    await openMore(page);
     await expect(page.getByTestId("car-meter-missing")).toContainText("No EV meter");
     await expect(page.getByTestId("car-schedule-link")).toBeVisible();
   });
@@ -1876,6 +2292,45 @@ test.describe("EMS dashboard", () => {
     await expect(page.getByTestId("demo-cta")).toHaveCount(0);
   });
 
+  test("the dashboard shows four outcome tiles for today so far", async ({ page }) => {
+    await page.route("**/api/status", async (route) => {
+      const response = await route.fetch();
+      const status = await response.json();
+      await route.fulfill({ response, json: { ...status, soc_pct: 60 } });
+    });
+    await page.route("**/api/report?period=day", (route) =>
+      route.fulfill({
+        contentType: "application/json",
+        body: JSON.stringify({
+          partial: true,
+          flows: { has_data: true, home_kwh: 5.1, grid_import_kwh: 3.2 },
+          scores: [
+            {
+              key: "self_consumption",
+              label: "Solar score",
+              value: 91,
+              explanation: "Most solar was used at home.",
+            },
+          ],
+        }),
+      }),
+    );
+    await page.route("**/api/finance?period=day&date=*", (route) =>
+      route.fulfill({
+        contentType: "application/json",
+        body: JSON.stringify({ totals: { saved_eur: 2.84 } }),
+      }),
+    );
+
+    await page.goto("/");
+
+    await expect(page.getByTestId("outcome-tiles")).toBeVisible();
+    await expect(page.getByTestId("outcome-solar-score")).toContainText("91");
+    await expect(page.getByTestId("outcome-soc")).toContainText("60%");
+    await expect(page.getByTestId("outcome-savings")).toContainText("€2.84");
+    await expect(page.getByTestId("outcome-grid-import")).toContainText("3.2 kWh");
+  });
+
   test("a barely-started day shows calm dashes, not red zeros (early state)", async ({ page }) => {
     // Production finding: at 00:30 the pills showed red 0s ("Leaning on the grid") — a night
     // reading is not a verdict. partial day + <1 kWh measured → neutral dash state.
@@ -1896,10 +2351,11 @@ test.describe("EMS dashboard", () => {
       }),
     );
     await page.goto("/");
-    const pill = page.getByTestId("score-card-self_consumption");
+    await openMore(page);
+    const pill = page.getByTestId("score-card-co2");
     await expect(pill).toBeVisible();
     await expect(pill).toHaveAttribute("data-state", "early");
-    await expect(pill.getByTestId("ring-self_consumption")).toContainText("—");
+    await expect(pill.getByTestId("ring-co2")).toContainText("—");
     await expect(pill).toContainText("The day's just starting");
     await expect(page.getByTestId("home-scores-summary")).toContainText("day's just starting");
     // Early state nulls EVERY pill (a night reading is no verdict for any score).
@@ -1915,13 +2371,14 @@ test.describe("EMS dashboard", () => {
           period: "day", label: "today", partial: true,
           flows: { has_data: true, home_kwh: 5.0, solar_kwh: 6.0, self_sufficiency_pct: 90 },
           scores: [
-            { key: "self_consumption", label: "Self-consumption", value: 100, raw: null, unit: "%", explanation: "x" },
+            { key: "best_price", label: "Best price", value: 100, raw: null, unit: "%", explanation: "x" },
           ],
         }),
       }),
     );
     await page.goto("/");
-    const pill = page.getByTestId("score-card-self_consumption");
+    await openMore(page);
+    const pill = page.getByTestId("score-card-best_price");
     await expect(pill).toBeVisible();
     await expect(pill.locator(".ring-value")).toHaveClass(/ring-value-3/);
     await expect(pill.locator(".ring-value")).toContainText("100");
@@ -1929,10 +2386,11 @@ test.describe("EMS dashboard", () => {
 
   test("the score pills link through to Insights", async ({ page }) => {
     await page.goto("/");
+    await openMore(page);
     const pills = page.getByTestId("home-scores");
     await expect(pills).toBeVisible();
     // Each pill is a button carrying its score value + copy, opening Insights on tap.
-    const pill = page.getByTestId("score-card-self_consumption");
+    const pill = page.getByTestId("score-card-co2");
     await expect(pill).toBeVisible();
     await pill.click();
     await expect(page.getByTestId("insights")).toBeVisible();
