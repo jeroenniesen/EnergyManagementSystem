@@ -10,7 +10,7 @@ from datetime import UTC, datetime, timedelta
 
 from ems.domain import RawSample
 from ems.freshness import FreshnessTracker
-from ems.load_model import reconstruct, sanitize_sample
+from ems.load_model import assess_reconstruction, sanitize_sample
 from ems.retrospect import _floor
 from ems.sources.base import Source
 from ems.storage.history import HistoryStore
@@ -63,6 +63,8 @@ class Recorder:
         # Counts readings clamped by the plausibility guard (defense-in-depth against a future
         # sensor/comms glitch) — surfaced on /api/diagnostics so an operator can SEE it happening.
         self.clamped_samples = 0
+        self.invalid_reconstructions = 0
+        self.last_reconstruction_flags: tuple[str, ...] = ()
         # In-instance throttle for the prediction-ledger nowcast append (see _LEDGER_MIN_INTERVAL).
         # Not persisted: a restart simply writes one extra ledger row, which is harmless.
         self._last_ledger_write_at: datetime | None = None
@@ -73,6 +75,8 @@ class Recorder:
             "consecutive_failures": self.consecutive_failures,
             "last_error": self.last_error,
             "clamped_samples": self.clamped_samples,
+            "invalid_reconstructions": self.invalid_reconstructions,
+            "last_reconstruction_flags": list(self.last_reconstruction_flags),
         }
 
     async def sense_once(self, now: datetime) -> None:
@@ -92,7 +96,16 @@ class Recorder:
             if self.clamped_samples == 1 or self.clamped_samples % 12 == 0:
                 _log.warning("implausible reading clamped (%d so far): %s",
                              self.clamped_samples, ", ".join(clamped))
-        derived = reconstruct(raw)
+        assessment = assess_reconstruction(raw)
+        derived = assessment.derived
+        self.last_reconstruction_flags = assessment.flags
+        if not assessment.valid_for_learning:
+            self.invalid_reconstructions += 1
+            if self.invalid_reconstructions == 1 or self.invalid_reconstructions % 12 == 0:
+                _log.warning(
+                    "reconstructed load quarantined from learning (%d so far): %s",
+                    self.invalid_reconstructions, ", ".join(assessment.flags),
+                )
         await self.store.record(now.isoformat(), raw, derived)
         for sig in fresh:
             self.freshness.mark(sig, now)

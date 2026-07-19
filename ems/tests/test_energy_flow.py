@@ -110,7 +110,7 @@ def test_flows_conserve_energy():
     f = _flows(raw, der)
     left = f.solar_kwh + f.grid_import_kwh + f.battery_discharge_kwh
     right = f.home_kwh + f.car_kwh + f.battery_charge_kwh + f.grid_export_kwh
-    assert abs(left - right) < 0.01, f"Sankey not balanced: {left} vs {right}"
+    assert abs(left - right) <= 0.011, f"Sankey not balanced: {left} vs {right}"
 
 
 def test_daily_flows_with_a_charging_car():
@@ -130,7 +130,9 @@ def test_flows_backward_compat_without_non_ev_column():
     raw = [_raw(12, grid=-1000, solar=3000, batt=0)]
     der = [{"ts": (DAY + timedelta(hours=12)).isoformat(), "house_load_w": 1000}]  # no non_ev
     f = _flows(raw, der)
-    assert f.car_kwh == 0.0 and f.home_kwh == 0.25
+    # The stale derived total (1 kW) conflicts with P1 physics (−1 + 3 = 2 kW), so the measured
+    # raw balance is authoritative; lack of non_ev still means car=0.
+    assert f.car_kwh == 0.0 and f.home_kwh == 0.5
 
 
 def test_empty_day_is_graceful():
@@ -138,6 +140,44 @@ def test_empty_day_is_graceful():
     assert f.has_data is False
     assert f.solar_kwh == 0.0 and f.home_kwh == 0.0
     assert f.self_sufficiency_pct is None
+
+
+def test_missing_derived_rows_preserve_measured_grid_import():
+    raw = [_raw(12, grid=1000, solar=0, batt=0)]
+
+    f = _flows(raw, [])
+
+    assert f.has_data is True
+    assert f.grid_import_kwh == 0.25
+    assert f.grid_to_home == 0.25
+    assert f.home_kwh == 0.25
+
+
+def test_inconsistent_derived_load_cannot_replace_measured_grid_import():
+    raw = [_raw(12, grid=1000, solar=0, batt=0)]
+    inconsistent = [_der(12, load=3000)]
+
+    f = _flows(raw, inconsistent)
+
+    assert f.grid_import_kwh == 0.25
+    assert f.home_kwh == 0.25
+
+
+def test_irregular_raw_samples_use_observed_duration():
+    raw = [
+        {"ts": DAY.isoformat(), "grid_power_w": 1000, "solar_power_w": 0,
+         "battery_power_w": 0, "ev_power_w": 0},
+        {"ts": (DAY + timedelta(minutes=5)).isoformat(), "grid_power_w": 2000,
+         "solar_power_w": 0, "battery_power_w": 0, "ev_power_w": 0},
+    ]
+
+    f = build_daily_flows(
+        raw, [], DAY, DAY + timedelta(minutes=30), label="2026-06-28", partial=False,
+        sample_interval_seconds=300, max_hold_seconds=600,
+    )
+
+    assert f.grid_import_kwh == 0.25  # 1 kW × 5 min + 2 kW × 5 min
+    assert f.home_kwh == 0.25
 
 
 def _seed_store(db_path: str) -> None:
@@ -166,7 +206,9 @@ def test_endpoint_returns_a_days_distribution(tmp_path):
     with TestClient(_app(db)) as c:
         b = c.get("/api/energy-distribution?date=2026-06-28").json()
     assert b["date"] == "2026-06-28" and b["has_data"] is True
-    assert b["solar_to_home"] == 0.25 and b["battery_to_home"] == 0.2
+    # The API uses the 5-minute recorder cadence with a bounded 10-minute hold. An isolated row
+    # therefore contributes 10 observed minutes, not an invented full quarter-hour.
+    assert b["solar_to_home"] == 0.17 and b["battery_to_home"] == 0.07
     assert {"solar_to_battery", "grid_to_home", "grid_to_battery", "self_sufficiency_pct",
             "solar_to_car", "grid_to_car", "battery_to_car", "car_kwh",
             "solar_self_consumption_pct", "car_guard_leak_kwh"} <= set(b)

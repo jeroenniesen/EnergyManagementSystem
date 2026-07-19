@@ -18,6 +18,7 @@ from ems.domain import BatteryIntent, PhysicalMode
 from ems.lifecycle import Lifecycle
 from ems.settings import effective_settings
 from ems.sources.battery import BatteryWriteUnconfirmed, MockBatteryDriver
+from ems.sources.prices import PriceSlot
 
 NOW = datetime(2026, 6, 28, 12, 0, tzinfo=UTC)
 
@@ -34,7 +35,8 @@ def _controlling_controller(driver=None) -> ModeController:
 
 
 def _service(
-    controller: ModeController, *, audit_store=None, car_charging=None,
+    controller: ModeController, *, audit_store=None, car_charging=None, price_source=None,
+    current_mode=None,
 ) -> tuple[ControlService, ControlContext]:
     """Build a ControlService with mock collaborators + trivial injected callables. `price_source`
     is None so the plan path is a no-op (`current_plan()` returns None) — this test drives the
@@ -44,9 +46,10 @@ def _service(
     settings = effective_settings({})
     svc = ControlService(
         ctx=ctx, settings=settings, controller=controller, store=None, audit_store=audit_store,
-        price_source=None, solar_forecast=None, site_tz=ZoneInfo("Europe/Amsterdam"), dry_run=False,
+        price_source=price_source, solar_forecast=None,
+        site_tz=ZoneInfo("Europe/Amsterdam"), dry_run=False,
         current_soc=lambda now: 50.0,
-        current_mode=lambda now: PhysicalMode.AUTO,
+        current_mode=current_mode or (lambda now: PhysicalMode.AUTO),
         current_towers=lambda now: None,
         data_quality=lambda now: "fresh",
         car_charging=car_charging if car_charging is not None else (lambda now: False),
@@ -58,6 +61,35 @@ def _service(
         adaptive_cfg=lambda: None,
     )
     return svc, ctx
+
+
+def test_incomplete_live_prices_return_a_forced_battery_to_auto():
+    now = datetime.now(UTC)
+    local = now.astimezone(ZoneInfo("Europe/Amsterdam"))
+    midnight = local.replace(hour=0, minute=0, second=0, microsecond=0)
+
+    class _IncompletePrices:
+        def slots(self):
+            # Deliberately omit one slot from today's otherwise complete local-day curve.
+            slots = [PriceSlot(midnight + timedelta(minutes=15 * i), 0.20) for i in range(96)]
+            del slots[20]
+            return slots
+
+    controller = _controlling_controller()
+    controller.driver.apply(PhysicalMode.CHARGE)
+    svc, ctx = _service(
+        controller, price_source=_IncompletePrices(),
+        current_mode=lambda now: controller.driver.current_mode(),
+    )
+    ctx.car_session["active"] = True  # price fail-safe must bypass the EV-stop grace window
+
+    intent, reason, *_ = svc.effective_intent(now)
+    records = svc.control_tick(now)
+
+    assert intent is BatteryIntent.ALLOW_SELF_CONSUMPTION
+    assert "incomplete prices" in reason
+    assert controller.driver.current_mode() is PhysicalMode.AUTO
+    assert records
 
 
 def test_control_service_constructs_and_runs_a_tick_standalone():

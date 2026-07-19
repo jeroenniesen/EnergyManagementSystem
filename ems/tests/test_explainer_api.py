@@ -3,7 +3,6 @@
 Off by default (template → the deterministic reason verbatim). When `explainer.mode=external_llm`
 AND a key are set, the reason is rephrased via an OpenAI-compatible transport — faked here, so no
 network. The phrasing is cached per reason, so polling does not re-hit the LLM."""
-from datetime import UTC, datetime
 from zoneinfo import ZoneInfo
 
 from fastapi.testclient import TestClient
@@ -12,10 +11,9 @@ import ems.web.api as api
 from ems.control.mode_controller import ModeController
 from ems.domain import RawSample
 from ems.lifecycle import Lifecycle
-from ems.planner.schedule import SLOT
 from ems.sources.battery import MockBatteryDriver
 from ems.sources.forecast import MockSolarForecastSource
-from ems.sources.prices import PriceSlot
+from ems.sources.prices import MockPriceSource, PriceSlot
 from ems.storage.cache import CacheStore
 from ems.storage.settings import SettingsStore
 from ems.web.api import create_app
@@ -33,9 +31,7 @@ class _FlatPrices:
     """Flat prices → winter finds no trade → the plan is plain self-consumption (stable reason)."""
 
     def __init__(self) -> None:
-        now = datetime.now(UTC)
-        base = now.replace(minute=(now.minute // 15) * 15, second=0, microsecond=0)
-        self._slots = [PriceSlot(base + i * SLOT, 0.25) for i in range(-2, 96)]
+        self._slots = [PriceSlot(slot.start, 0.25) for slot in MockPriceSource(AMS).slots()]
 
     def slots(self) -> list[PriceSlot]:
         return self._slots

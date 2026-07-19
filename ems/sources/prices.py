@@ -47,7 +47,7 @@ class MockPriceSource:
         self,
         tz: ZoneInfo,
         clock: Callable[[], datetime] = _utcnow,
-        horizon_slots: int = 2 * SLOTS_PER_DAY,  # today + tomorrow
+        horizon_slots: int | None = None,  # None = two complete local days (DST-aware)
     ) -> None:
         self.tz = tz
         self._clock = clock
@@ -56,9 +56,15 @@ class MockPriceSource:
     def slots(self) -> list[PriceSlot]:
         now_local = self._clock().astimezone(self.tz)
         midnight = now_local.replace(hour=0, minute=0, second=0, microsecond=0)
+        start_utc = midnight.astimezone(UTC)
+        if self.horizon_slots is None:
+            end_utc = (midnight + timedelta(days=2)).astimezone(UTC)
+            count = int((end_utc - start_utc) / SLOT)
+        else:
+            count = self.horizon_slots
         out: list[PriceSlot] = []
-        for i in range(self.horizon_slots):
-            start = (midnight + i * SLOT).astimezone(self.tz)
+        for i in range(count):
+            start = (start_utc + i * SLOT).astimezone(self.tz)
             out.append(PriceSlot(start=start, eur_per_kwh=price_for_hour(start.hour)))
         return out
 

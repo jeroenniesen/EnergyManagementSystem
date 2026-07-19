@@ -718,7 +718,7 @@ def _uslot_totals(slots: list[dict]) -> dict:
 # Bump when the finance math changes so completed-day rows cached under the OLD formula are
 # recomputed instead of served stale (finding 4). v2 = same-window wear (dis_priced) + price-gate;
 # v3 = export credited via the configurable feed-in model (B-05), not always the full spot price.
-_FINANCE_CALC_VERSION = 3
+_FINANCE_CALC_VERSION = 4
 
 
 # The car-charging discharge-session constants + the PURE decision helpers (`_decide_car_command`,
@@ -2921,7 +2921,9 @@ def create_app(
         raw = await store.raw_between(s_iso, e_iso)
         der = await store.derived_between(s_iso, e_iso)
         return build_daily_flows(raw, der, day_start, day_end,
-                                 label=d.isoformat(), partial=partial).to_dict()
+                                 label=d.isoformat(), partial=partial,
+                                 sample_interval_seconds=_sample_cadence_seconds(),
+                                 max_hold_seconds=2 * _sample_cadence_seconds()).to_dict()
 
     @app.get("/api/sky")
     async def sky() -> dict:
@@ -2976,7 +2978,11 @@ def create_app(
             resp = build_report([], [], prices, period=period, start=start, end=end, label=label,
                                 partial=partial, grid_factor=grid_factor,
                                 gas_factor=gas_factor, grid_factor_note=grid_factor_note).to_dict()
-            resp["series"] = build_series([], [], period=period, start=start, end=end, tz=site_tz)
+            resp["series"] = build_series(
+                [], [], period=period, start=start, end=end, tz=site_tz,
+                sample_interval_seconds=_sample_cadence_seconds(),
+                max_hold_seconds=2 * _sample_cadence_seconds(),
+            )
             resp["gas"] = None
             return resp
         q_end = min(end, now_local + timedelta(minutes=1))  # never query the future
@@ -3006,7 +3012,9 @@ def create_app(
             resp = build_report(raw, der, prices, period=period, start=start, end=end, label=label,
                                 partial=partial, grid_factor=grid_factor,
                                 gas_factor=gas_factor, gas_m3=gas,
-                                grid_factor_note=grid_factor_note).to_dict()
+                                grid_factor_note=grid_factor_note,
+                                sample_interval_seconds=_sample_cadence_seconds(),
+                                max_hold_seconds=2 * _sample_cadence_seconds()).to_dict()
             if daily_rows is not None:
                 resp["series"] = build_series_from_daily_energy(
                     daily_rows, start=start, end=end, tz=site_tz)
@@ -3016,8 +3024,11 @@ def create_app(
                 apply_year_totals(resp, daily_rows, grid_factor=grid_factor,
                                   gas_factor=gas_factor, raw_days=history_retention_days)
             else:
-                resp["series"] = build_series(raw, der, period=period, start=start, end=end,
-                                              tz=site_tz)
+                resp["series"] = build_series(
+                    raw, der, period=period, start=start, end=end, tz=site_tz,
+                    sample_interval_seconds=_sample_cadence_seconds(),
+                    max_hold_seconds=2 * _sample_cadence_seconds(),
+                )
             # Makes gas VISIBLE (beyond folding into the CO₂ score): m³/kWh-eq/€/CO₂ for the
             # Insights gas panel. None-safe — the panel hides itself with <2 gas readings.
             resp["gas"] = gas_summary(gas_rows, price_eur_per_m3=gas_price, co2_factor=gas_factor)
@@ -3137,7 +3148,10 @@ def create_app(
                         degradation_eur_per_kwh=degradation,
                         export_price_model=export_model,
                         energy_tax_eur_per_kwh=energy_tax,
-                        fixed_feed_in_eur_per_kwh=fixed_feed_in).to_dict()
+                        fixed_feed_in_eur_per_kwh=fixed_feed_in,
+                        window_start=cur, window_end=q_end,
+                        sample_interval_seconds=_sample_cadence_seconds(),
+                        max_hold_seconds=2 * _sample_cadence_seconds()).to_dict()
         f["calc_v"] = _FINANCE_CALC_VERSION
         if completed:
             await store.upsert_daily_finance(day_label, f)
@@ -3186,6 +3200,9 @@ def create_app(
                         day=day_label, degradation_eur_per_kwh=degradation,
                         export_price_model=export_model, energy_tax_eur_per_kwh=energy_tax,
                         fixed_feed_in_eur_per_kwh=fixed_feed_in,
+                        window_start=cur, window_end=min(nxt, q_end),
+                        sample_interval_seconds=_sample_cadence_seconds(),
+                        max_hold_seconds=2 * _sample_cadence_seconds(),
                     ).to_dict()
                     f["calc_v"] = _FINANCE_CALC_VERSION
                     out.append((day_label, f, completed))

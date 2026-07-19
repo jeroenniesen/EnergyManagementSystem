@@ -326,6 +326,19 @@ def test_build_series_day_15min_buckets():
     assert empty["samples"] == 0 and empty["grid_import_kwh"] == 0.0
 
 
+def test_build_series_uses_observed_sample_duration():
+    from ems.reporting import build_series
+
+    day = datetime(2026, 6, 28, tzinfo=UTC)
+    raw = [{"ts": day.isoformat(), "grid_power_w": 1000.0,
+            "solar_power_w": 0.0, "ev_power_w": 0.0}]
+    buckets = build_series(
+        raw, [], period="day", start=day, end=day + timedelta(minutes=30), tz=UTC,
+        sample_interval_seconds=300, max_hold_seconds=600,
+    )
+    assert sum(row["grid_import_kwh"] for row in buckets) == 0.083
+
+
 def test_build_series_week_buckets_respect_local_days():
     from ems.reporting import build_series
 
@@ -429,8 +442,8 @@ def test_report_endpoint_includes_series(tmp_path):
         b = c.get("/api/report?period=day&date=2026-06-28").json()
     assert len(b["series"]) == 96
     noon = next(s for s in b["series"] if s["start"] == PAST.astimezone(UTC).isoformat())
-    assert abs(noon["grid_export_kwh"] - 0.25) < 1e-9  # −1000 W for one 15-min slot
-    assert abs(noon["house_kwh"] - 0.25) < 1e-9
+    assert abs(noon["grid_export_kwh"] - 0.167) < 1e-9  # bounded 10-minute observed hold
+    assert abs(noon["house_kwh"] - 0.167) < 1e-9
 
 
 def _seed_2025_day_with_rollup(db: str) -> None:
@@ -543,17 +556,17 @@ def test_finance_endpoint_computes_and_persists_rollup(tmp_path):
     d = b["days"][0]
     assert d["day"] == "2026-06-28" and d["has_data"] is True
     assert d["price_coverage"] == 1.0
-    # export 0.25 kWh @ .20 → −0.05; import 0.2 kWh @ .40 → +0.08; battery charged (no wear).
-    assert abs(d["grid_cost_eur"] - 0.03) < 1e-9
+    # Isolated recorder rows own a bounded 10 minutes, not a full 15-minute reporting bucket.
+    assert abs(d["grid_cost_eur"] - (-0.01)) < 1e-9
     assert d["battery_cost_eur"] == 0.0
-    assert abs(d["saved_eur"] - (-0.05)) < 1e-9  # honest negative: stored solar it could export
-    assert abs(b["totals"]["saved_eur"] - (-0.05)) < 1e-9
+    assert abs(d["saved_eur"] - (-0.03)) < 1e-9  # honest negative: stored solar it could export
+    assert abs(b["totals"]["saved_eur"] - (-0.03)) < 1e-9
 
     async def rollup():
         store = HistoryStore(db)
         return await store.daily_finance_between("2026-06-28", "2026-06-29")
     rows = asyncio.run(rollup())
-    assert len(rows) == 1 and rows[0]["data"]["saved_eur"] == -0.05  # completed day persisted
+    assert len(rows) == 1 and rows[0]["data"]["saved_eur"] == -0.03  # completed day persisted
 
 
 def test_finance_endpoint_week_totals_and_empty_days(tmp_path):
@@ -565,5 +578,5 @@ def test_finance_endpoint_week_totals_and_empty_days(tmp_path):
     assert len(b["days"]) == 7  # Mon..Sun of that week (all in the past)
     with_data = [d for d in b["days"] if d["has_data"]]
     assert [d["day"] for d in with_data] == ["2026-06-28"]
-    assert abs(b["totals"]["saved_eur"] - (-0.05)) < 1e-9
+    assert abs(b["totals"]["saved_eur"] - (-0.03)) < 1e-9
     assert b["totals"]["days_with_prices"] == 1
