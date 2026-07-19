@@ -739,8 +739,6 @@ export function Settings({
         </div>
       )}
 
-      {isAdmin && <AdminAccess />}
-
       <div className="settings-panes">
         <aside className="settings-sidebar">
           <div className="settings-search-wrap">
@@ -827,6 +825,8 @@ export function Settings({
                   )}
                 </div>
               </header>
+
+              {active === "access" && isAdmin && <AdminAccess />}
 
               <div className="settings-section-fields">
                 {basicFields.map((f) => renderField(f))}

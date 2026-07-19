@@ -9,11 +9,12 @@ test.describe("admin users & invites", () => {
   test("the user list renders the signed-in e2e admin", async ({ page }) => {
     await page.goto("/");
     await page.getByTestId("nav-manage").click();
+    // The admin panel is folded into the "Access & security" nav section's content pane (not a
+    // sibling of Account any more) — open that section first.
+    await page.getByTestId("group-access").click();
     const users = page.getByTestId("admin-users");
     await expect(users).toBeVisible();
     await expect(users).toContainText("e2e-admin");
-    // Non-admin sections must never be gated behind a click here — they're a sibling of Account,
-    // visible as soon as the Settings view mounts for an admin.
     await expect(page.getByTestId("admin-invites")).toBeVisible();
   });
 
@@ -22,6 +23,7 @@ test.describe("admin users & invites", () => {
   }) => {
     await page.goto("/");
     await page.getByTestId("nav-manage").click();
+    await page.getByTestId("group-access").click();
 
     await page.locator("#admin-invite-role").selectOption("user");
     await page.getByRole("button", { name: "Create invite" }).click();

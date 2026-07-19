@@ -1,6 +1,7 @@
 // Admin "Access & security" panel (auth slice 2 web, design §7): user list (role change,
-// disable/remove) + invite create/list/revoke. Rendered by Settings.tsx as a sibling section right
-// below the Account bar, ONLY when the current user's role is admin — non-admins never see this
+// disable/remove) + invite create/list/revoke. Rendered by Settings.tsx INSIDE the "access" nav
+// section's content pane (above the legacy web.auth_token/web.require_auth fields), visible only
+// when that section is selected AND the current user's role is admin — non-admins never see this
 // component at all (Settings gates on `isAdmin` before mounting it), which is what keeps a reader/
 // user from being able to reach it even though the backend would 403 anyway (belt + suspenders,
 // same "mirrors the API" spirit as the rest of the reader read-only work).

@@ -94,6 +94,7 @@ type AdviceCardProps = {
   doneDate?: string;
   busy: boolean;
   saveError: boolean;
+  canOperate: boolean;
   onMarkDone: () => void;
   onUndo: () => void;
 };
@@ -110,6 +111,7 @@ function AdviceCard({
   doneDate,
   busy,
   saveError,
+  canOperate,
   onMarkDone,
   onUndo,
 }: AdviceCardProps) {
@@ -128,7 +130,7 @@ function AdviceCard({
             className="advice-undo"
             data-testid={`${testId}-undo`}
             onClick={onUndo}
-            disabled={busy}
+            disabled={busy || !canOperate}
           >
             Undo
           </button>
@@ -168,11 +170,16 @@ function AdviceCard({
           className="advice-mark-done"
           data-testid={`${testId}-mark-done`}
           onClick={onMarkDone}
-          disabled={busy}
+          disabled={busy || !canOperate}
         >
           {busy ? "Saving…" : "Mark as done"}
         </button>
       </div>
+      {!canOperate && (
+        <p className="advisor-hint" data-testid={`${testId}-readonly-hint`}>
+          Marking this done needs a &quot;user&quot; or &quot;admin&quot; account.
+        </p>
+      )}
     </div>
   );
 }
@@ -183,12 +190,14 @@ export function HeatingAdvice({
   period,
   windowStart,
   windowEnd,
+  canOperate = true,
 }: {
   gas: GasSummary;
   partial: boolean;
   period: Period;
   windowStart?: string;
   windowEnd?: string;
+  canOperate?: boolean;
 }) {
   const days = windowDays(period, windowStart, windowEnd);
   const evidence = `Your gas use ${windowNoun(period, partial)}: ${gas.m3.toFixed(1)} m³ ≈ €${gas.eur.toFixed(2)}.`;
@@ -264,7 +273,7 @@ export function HeatingAdvice({
 
   const items: { key: AdviceKey; props: Omit<
     AdviceCardProps,
-    "doneDate" | "busy" | "saveError" | "onMarkDone" | "onUndo"
+    "doneDate" | "busy" | "saveError" | "canOperate" | "onMarkDone" | "onUndo"
   > }[] = [
     {
       key: "balancing",
@@ -330,6 +339,7 @@ export function HeatingAdvice({
             doneDate={doneMap[item.key]}
             busy={busyKey === item.key}
             saveError={errorKey === item.key}
+            canOperate={canOperate}
             onMarkDone={() => markDone(item.key)}
             onUndo={() => undo(item.key)}
           />

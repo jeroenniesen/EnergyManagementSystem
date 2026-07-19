@@ -865,7 +865,7 @@ export function App() {
         />
       )}
 
-      {view === "insights" && <Insights />}
+      {view === "insights" && <Insights canOperate={canOperate} />}
 
       {view === "chat" && <ChatPanel canOperate={canOperate} />}
 
@@ -1041,7 +1041,7 @@ export function App() {
             </section>
           )}
 
-          <AiValidationCard />
+          <AiValidationCard canOperate={canOperate} />
 
           {freshness && Object.keys(freshness).length > 0 && (
             <section className="freshness" data-testid="freshness">

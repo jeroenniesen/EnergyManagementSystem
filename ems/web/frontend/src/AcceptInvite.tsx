@@ -48,6 +48,8 @@ export function AcceptInvite({ onDone }: { onDone: () => void }) {
       // change is what makes App.tsx stop treating this as the accept-invite route).
       await Promise.resolve(onDone());
       window.location.hash = "dashboard";
+    } catch {
+      setError("Could not reach the server — try again.");
     } finally {
       setBusy(false);
     }
