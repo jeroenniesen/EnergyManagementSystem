@@ -719,6 +719,10 @@ export function App() {
         </nav>
       </header>
 
+      {/* Single <main> landmark wrapping all routed view content (a11y: landmark-one-main + region).
+          Plain block with no box styling, so the calm-dashboard card spacing is unchanged. */}
+      <main className="app-main">
+
       {alertsData && alertsData.alerts.length > 0 && (
         <section className="alerts" data-testid="alerts">
           {/* Sort by severity so a control-blocking issue never sits below a watch-only note. */}
@@ -1037,6 +1041,7 @@ export function App() {
           <BatteryChips battery={battery} metric={batteryDetail} />
         </Modal>
       )}
+      </main>
       </div>
     </>
   );

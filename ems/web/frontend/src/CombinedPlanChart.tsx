@@ -150,7 +150,10 @@ export function CombinedPlanChart({ story }: { story: EnergyStoryData | null }) 
   return (
     <section className="combined-plan" data-testid="combined-plan-chart" data-density-kind="chart" aria-label={describeCombinedPlan(story)}>
       <div className="combined-plan-heading"><h2>Next 24 hours</h2><span>SoC · solar · price · plan</span></div>
-      <svg viewBox={`0 0 ${W} ${H}`} role="img" aria-label={describeCombinedPlan(story)}>
+      {/* role="group" (not "img"): the chart is a labelled container of focusable slot controls.
+          role="img" makes children presentational, which axe (nested-interactive) rightly forbids
+          for the tab-navigable <rect> slots below. The full text description stays as the label. */}
+      <svg viewBox={`0 0 ${W} ${H}`} role="group" aria-label={describeCombinedPlan(story)}>
         <defs>
           {Object.entries(ACTION_CUE).map(([action, cue]) => <pattern key={action}
             id={`combined-plan-pattern-${action}`} width="10" height="10" patternUnits="userSpaceOnUse"

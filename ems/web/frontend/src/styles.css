@@ -42,12 +42,14 @@
   --muted: #5c6675;
   --shadow: 0 1px 2px rgba(15, 23, 42, 0.05), 0 6px 18px rgba(15, 23, 42, 0.07);
   --accent: #1f9e84;
-  --accent-text: #13806a; /* darkened so accent TEXT clears WCAG-AA (4.5:1) on white */
+  --accent-text: #11745f; /* accent TEXT: AA (4.5:1) not just on white but on the tinted surfaces
+                             it lands on — hero summer-tint (#f7efe3), --panel-2 (#f1f4f9), links */
   --amber: #b07410;
   --amber-text: #8a5a0c; /* darker amber for text — AA on white; --amber stays for graphics */
   --error: #c0392b; /* error/critical text — AA on white */
   --green: #1f9e84;
-  --green-text: #0d7a63; /* darker green for text — AA on white; --green stays for graphics */
+  --green-text: #0a6f5a; /* green TEXT: AA on white AND on the dq-complete tint (#d3eaea);
+                            --green stays for graphics */
   --summer: #d98a1f;
   --summer-text: #8a5800; /* darker summer/amber for text — AA on white */
   --winter: #2f7fc4;
@@ -1040,7 +1042,8 @@ body {
 .car-config-field { margin-top: 16px; }
 .car-config-field:first-of-type { margin-top: 14px; }
 .link-inline {
-  font: inherit; color: var(--accent); background: none; border: none; padding: 0;
+  /* --accent-text (not --accent): this is body text, so it needs the AA (4.5:1) text token. */
+  font: inherit; color: var(--accent-text); background: none; border: none; padding: 0;
   cursor: pointer; text-decoration: underline;
 }
 .link-inline:hover { color: var(--text); }
