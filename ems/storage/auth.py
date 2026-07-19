@@ -10,6 +10,7 @@ this same class.
 from __future__ import annotations
 
 import asyncio
+import sqlite3
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
@@ -22,6 +23,9 @@ from ems.storage.settings import _BUSY_TIMEOUT_MS, _connection_is_dead  # reuse 
 
 _SESSION_TTL = timedelta(days=30)
 _SESSION_REFRESH_WINDOW = timedelta(days=7)
+# Invites (Slice 2): single-use, admin-generated; public so routes/users.py can compute the same
+# `expires_at` it displays without re-deriving the TTL in a second place.
+INVITE_TTL = timedelta(days=7)
 # `last_used_at` is best-effort telemetry (SPEC §4), NOT auth-critical — so we don't write it on
 # every request. `resolve()` runs on the per-request auth hot path; an unconditional UPDATE+commit
 # there turns every authenticated read into a serialized SQLite write (write-lock + fsync), which
@@ -79,6 +83,14 @@ class Principal:
     role: str
     token_id: int
     kind: str  # 'session' | 'access'
+
+
+class UsernameTaken(Exception):
+    """Raised by `accept_invite` when the invite itself is valid (unused, unexpired) but the
+    requested username collides with an existing account. Deliberately distinct from the
+    `None` return (invalid/expired/already-used invite) so the route can tell a 409 (pick another
+    username, same invite still usable — the transaction rolls back the `used_at` consume too)
+    apart from a 401 (dead invite code)."""
 
 
 @self_healing
@@ -342,5 +354,176 @@ class AuthStore:
                 # BaseException (not just Exception): a cancellation (asyncio.CancelledError)
                 # must still roll back the open BEGIN IMMEDIATE transaction on the shared write
                 # connection, or it leaks into the next caller (review hardening fix).
+                await db.rollback()
+                raise
+
+    # --- User management + invites (Slice 2) ---
+
+    async def list_users(self) -> list[dict]:
+        """Never includes `password_hash` — this feeds the admin user-management list."""
+        async with self._conn() as db:
+            db.row_factory = aiosqlite.Row
+            cur = await db.execute(
+                "SELECT id, username, role, disabled, created_at, last_login_at "
+                "FROM users ORDER BY id"
+            )
+            return [dict(r) for r in await cur.fetchall()]
+
+    async def _other_enabled_admin_count(self, db, exclude_user_id: int) -> int:
+        cur = await db.execute(
+            "SELECT COUNT(*) FROM users WHERE role='admin' AND disabled=0 AND id != ?",
+            (exclude_user_id,),
+        )
+        return int((await cur.fetchone())[0])
+
+    async def set_role(self, user_id: int, role: str, *, actor_id: int) -> bool:
+        """Change a user's role. The last-admin + self-demote guards are enforced INSIDE one
+        `BEGIN IMMEDIATE` transaction with the condition rechecked in the transaction (never
+        read-then-write — SPEC §6 TOCTOU rule), mirroring `onboard_admin`. Returns False
+        (rolled back, no-op) if the user doesn't exist, if this is a self-demotion out of admin,
+        or if it would leave zero *other* enabled admins. Does not itself validate `role` is one
+        of the known roles — callers validate before calling (the CHECK constraint is the last
+        line of defense and would raise `sqlite3.IntegrityError` for a bogus value)."""
+        async with self._write_conn() as db:
+            await db.execute("BEGIN IMMEDIATE")
+            try:
+                db.row_factory = aiosqlite.Row
+                cur = await db.execute("SELECT role FROM users WHERE id=?", (user_id,))
+                row = await cur.fetchone()
+                if row is None:
+                    await db.rollback()
+                    return False
+                demoting_from_admin = row["role"] == "admin" and role != "admin"
+                if demoting_from_admin:
+                    if actor_id == user_id:
+                        await db.rollback()
+                        return False
+                    if await self._other_enabled_admin_count(db, user_id) < 1:
+                        await db.rollback()
+                        return False
+                await db.execute("UPDATE users SET role=? WHERE id=?", (role, user_id))
+                await db.commit()
+                return True
+            except BaseException:
+                await db.rollback()
+                raise
+
+    async def set_disabled(self, user_id: int, disabled: bool, *, actor_id: int) -> bool:
+        """Enable/disable a user. Same transactional last-admin + self-disable guard as
+        `set_role` (only when actually disabling — re-enabling never needs it). When disabling,
+        the user's `auth_tokens` are deleted in the SAME transaction, so their sessions die
+        immediately rather than lingering until natural expiry. Returns False (rolled back,
+        no-op) for an unknown user or a blocked guard."""
+        async with self._write_conn() as db:
+            await db.execute("BEGIN IMMEDIATE")
+            try:
+                db.row_factory = aiosqlite.Row
+                cur = await db.execute("SELECT role, disabled FROM users WHERE id=?", (user_id,))
+                row = await cur.fetchone()
+                if row is None:
+                    await db.rollback()
+                    return False
+                if disabled:
+                    if actor_id == user_id:
+                        await db.rollback()
+                        return False
+                    already_disabled = bool(row["disabled"])
+                    if row["role"] == "admin" and not already_disabled:
+                        if await self._other_enabled_admin_count(db, user_id) < 1:
+                            await db.rollback()
+                            return False
+                await db.execute(
+                    "UPDATE users SET disabled=? WHERE id=?", (1 if disabled else 0, user_id)
+                )
+                if disabled:
+                    await db.execute("DELETE FROM auth_tokens WHERE user_id=?", (user_id,))
+                await db.commit()
+                return True
+            except BaseException:
+                await db.rollback()
+                raise
+
+    async def create_invite(self, role: str, *, created_by: int) -> str:
+        """Create a single-use invite for `role`, returning the RAW code (only its sha256 is
+        stored — same convention as tokens)."""
+        raw = new_token()
+        now = datetime.now(UTC)
+        async with self._write_conn() as db:
+            await db.execute(
+                "INSERT INTO invites (token_hash, role, created_by, created_at, expires_at) "
+                "VALUES (?,?,?,?,?)",
+                (hash_token(raw), role, created_by, now.isoformat(),
+                 (now + INVITE_TTL).isoformat()),
+            )
+            await db.commit()
+        return raw
+
+    async def list_invites(self) -> list[dict]:
+        """Never includes `token_hash` — only the admin-facing metadata."""
+        async with self._conn() as db:
+            db.row_factory = aiosqlite.Row
+            cur = await db.execute(
+                "SELECT id, role, created_by, created_at, expires_at, used_at "
+                "FROM invites ORDER BY created_at DESC"
+            )
+            return [dict(r) for r in await cur.fetchall()]
+
+    async def revoke_invite(self, invite_id: int) -> bool:
+        async with self._write_conn() as db:
+            cur = await db.execute("DELETE FROM invites WHERE id=?", (invite_id,))
+            await db.commit()
+            return cur.rowcount > 0
+
+    async def accept_invite(
+        self, raw_code: str, username: str, password_hash: str
+    ) -> tuple[int, str] | None:
+        """Atomic single-use consume + user create + session mint, mirroring `onboard_admin`'s
+        structure. The consume is a single `UPDATE ... WHERE token_hash=? AND used_at IS NULL
+        AND expires_at > ?` requiring `rowcount == 1` (never a read-then-write check — the same
+        TOCTOU-safe pattern as onboarding), inside one `BEGIN IMMEDIATE` that also creates the
+        user (with the INVITE's role, not caller-supplied) and their session. Two concurrent
+        `accept_invite` calls for the same code can consume it at most once.
+
+        Returns `(user_id, session_raw)`, or `None` if the code is unknown/expired/already used.
+        Raises `UsernameTaken` (after rolling back — the invite is NOT burned) if the invite is
+        valid but `username` collides with an existing account, so the caller can retry the
+        same invite with a different username."""
+        now = datetime.now(UTC)
+        th = hash_token(raw_code)
+        session_raw = new_token()
+        async with self._write_conn() as db:
+            await db.execute("BEGIN IMMEDIATE")
+            try:
+                cur = await db.execute(
+                    "UPDATE invites SET used_at=? WHERE token_hash=? AND used_at IS NULL "
+                    "AND expires_at > ?",
+                    (now.isoformat(), th, now.isoformat()),
+                )
+                if cur.rowcount != 1:
+                    await db.rollback()
+                    return None
+                db.row_factory = aiosqlite.Row
+                cur = await db.execute("SELECT role FROM invites WHERE token_hash=?", (th,))
+                role = (await cur.fetchone())["role"]
+                cur = await db.execute(
+                    "INSERT INTO users (username, password_hash, role, created_at) "
+                    "VALUES (?,?,?,?)",
+                    (username, password_hash, role, now.isoformat()),
+                )
+                uid = int(cur.lastrowid)
+                await db.execute(
+                    "INSERT INTO auth_tokens (user_id, token_hash, kind, created_at, expires_at) "
+                    "VALUES (?,?, 'session', ?, ?)",
+                    (uid, hash_token(session_raw), now.isoformat(),
+                     (now + _SESSION_TTL).isoformat()),
+                )
+                await db.commit()
+                return uid, session_raw
+            except sqlite3.IntegrityError:
+                # UNIQUE COLLATE NOCASE on users.username — the ONLY constraint this transaction
+                # can hit. Roll back (un-consumes the invite) and let the caller retry.
+                await db.rollback()
+                raise UsernameTaken(username) from None
+            except BaseException:
                 await db.rollback()
                 raise

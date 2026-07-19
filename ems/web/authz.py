@@ -29,11 +29,15 @@ _ADMIN_PREFIXES = ("/api/users", "/api/invites")
 # Interactive-session-only surfaces (kind == 'session'); no access/machine token allowed.
 _SESSION_ONLY_PATHS = frozenset({"/api/auth/password", "/api/auth/logout"})
 _SESSION_ONLY_PREFIXES = ("/api/auth/tokens",)
-# Reachable without any auth (login/onboard/discovery/invite-accept).
+# Reachable without any auth (login/onboard/discovery/invite-accept). NOTE: `/api/invites/accept`
+# would otherwise fall under `_ADMIN_PREFIXES` (it starts with "/api/invites") — but the identity
+# gate in api.py checks `path not in EXEMPT_PATHS` BEFORE consulting `required_tier`, so listing
+# the exact path here is what keeps it reachable logged-out despite the prefix match.
 EXEMPT_PATHS = frozenset({
     "/api/auth",
     "/api/auth/login",
     "/api/auth/onboard",
+    "/api/invites/accept",
 })
 
 

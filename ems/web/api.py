@@ -144,6 +144,7 @@ from ems.web.routes.digest import (
 )
 from ems.web.routes.export import build_router as build_export_router
 from ems.web.routes.notify import build_router as build_notify_router
+from ems.web.routes.users import build_router as build_users_router
 from ems.web.routes.whatif import build_router as build_whatif_router
 
 _log = logging.getLogger("ems.recorder")
@@ -3554,8 +3555,9 @@ def create_app(
         report_for_window=_report_for_window,
         effective_web_token=_effective_web_token,
     )
-    for build in (build_auth_router, build_car_router, build_digest_router, build_notify_router,
-                  build_export_router, build_accuracy_router, build_whatif_router):
+    for build in (build_auth_router, build_users_router, build_car_router, build_digest_router,
+                  build_notify_router, build_export_router, build_accuracy_router,
+                  build_whatif_router):
         app.include_router(build(ctx))
 
     # Unknown /api/* paths must return a JSON 404 — NOT fall through to the SPA catch-all

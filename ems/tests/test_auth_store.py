@@ -128,3 +128,243 @@ def test_last_used_at_is_best_effort_throttled_not_written_every_resolve(tmp_pat
         assert await last_used() == first  # throttled: unchanged on a rapid second resolve
 
     asyncio.run(run())
+
+
+# --- Slice 2: user management + invites ---------------------------------------------------------
+
+
+def test_list_users_excludes_password_hash(tmp_path):
+    s = AuthStore(str(tmp_path / "ems.sqlite"))
+
+    async def run():
+        await s.init()
+        await s.create_user("admin", "secret-hash", "admin")
+        return await s.list_users()
+
+    users = asyncio.run(run())
+    assert len(users) == 1
+    u = users[0]
+    assert u["username"] == "admin" and u["role"] == "admin" and u["disabled"] == 0
+    assert "password_hash" not in u
+    assert set(u) == {"id", "username", "role", "disabled", "created_at", "last_login_at"}
+
+
+def test_invite_roundtrip(tmp_path):
+    s = AuthStore(str(tmp_path / "ems.sqlite"))
+
+    async def run():
+        await s.init()
+        admin_id = await s.create_user("admin", "h", "admin")
+        raw = await s.create_invite("user", created_by=admin_id)
+        invites = await s.list_invites()
+        assert len(invites) == 1
+        assert invites[0]["role"] == "user" and invites[0]["used_at"] is None
+        assert "token_hash" not in invites[0]
+        result = await s.accept_invite(raw, "newbie", "pw-hash")
+        assert result is not None
+        uid, session_raw = result
+        u = await s.get_user_by_id(uid)
+        assert u["username"] == "newbie" and u["role"] == "user"
+        p = await s.resolve(session_raw)
+        assert p is not None and p.user_id == uid and p.kind == "session"
+        invites_after = await s.list_invites()
+        assert invites_after[0]["used_at"] is not None
+        # single-use: the same raw code cannot be accepted again
+        assert await s.accept_invite(raw, "someone-else", "h2") is None
+
+    asyncio.run(run())
+
+
+def test_expired_invite_rejected(tmp_path):
+    from datetime import UTC, datetime, timedelta
+
+    from ems.authn import hash_token, new_token
+
+    s = AuthStore(str(tmp_path / "ems.sqlite"))
+
+    async def run():
+        await s.init()
+        admin_id = await s.create_user("admin", "h", "admin")
+        raw = new_token()
+        past = (datetime.now(UTC) - timedelta(days=1)).isoformat()
+        async with s._write_conn() as db:
+            await db.execute(
+                "INSERT INTO invites (token_hash, role, created_by, created_at, expires_at) "
+                "VALUES (?,?,?,?,?)",
+                (hash_token(raw), "user", admin_id, past, past),
+            )
+            await db.commit()
+        return await s.accept_invite(raw, "someone", "h")
+
+    assert asyncio.run(run()) is None
+
+
+def test_garbage_invite_code_rejected(tmp_path):
+    s = AuthStore(str(tmp_path / "ems.sqlite"))
+
+    async def run():
+        await s.init()
+        return await s.accept_invite("not-a-real-code", "someone", "h")
+
+    assert asyncio.run(run()) is None
+
+
+def test_invite_accept_username_collision_raises_and_invite_stays_usable(tmp_path):
+    from ems.storage.auth import UsernameTaken
+
+    s = AuthStore(str(tmp_path / "ems.sqlite"))
+
+    async def run():
+        await s.init()
+        admin_id = await s.create_user("admin", "h", "admin")
+        await s.create_user("taken", "h2", "user")
+        raw = await s.create_invite("user", created_by=admin_id)
+        raised = False
+        try:
+            await s.accept_invite(raw, "taken", "h3")
+        except UsernameTaken:
+            raised = True
+        assert raised
+        # the invite was NOT burned — the same code still works with a fresh username
+        result = await s.accept_invite(raw, "not-taken", "h3")
+        assert result is not None
+
+    asyncio.run(run())
+
+
+def test_revoke_invite(tmp_path):
+    s = AuthStore(str(tmp_path / "ems.sqlite"))
+
+    async def run():
+        await s.init()
+        admin_id = await s.create_user("admin", "h", "admin")
+        raw = await s.create_invite("user", created_by=admin_id)
+        invite_id = (await s.list_invites())[0]["id"]
+        assert await s.revoke_invite(invite_id) is True
+        assert await s.revoke_invite(invite_id) is False  # already gone
+        assert await s.accept_invite(raw, "x", "h") is None
+
+    asyncio.run(run())
+
+
+def test_double_accept_consumed_exactly_once_under_concurrency(tmp_path):
+    s = AuthStore(str(tmp_path / "ems.sqlite"))
+
+    async def run():
+        await s.init()
+        admin_id = await s.create_user("admin", "h", "admin")
+        raw = await s.create_invite("user", created_by=admin_id)
+        results = await asyncio.gather(
+            s.accept_invite(raw, "racer-a", "ha"),
+            s.accept_invite(raw, "racer-b", "hb"),
+            return_exceptions=True,
+        )
+        return results, await s.user_count()
+
+    results, count = asyncio.run(run())
+    # exactly one admin at start + exactly one new user from the single-use invite
+    assert count == 2
+    successes = [r for r in results if isinstance(r, tuple)]
+    assert len(successes) == 1
+    # the loser is a clean None (invite already consumed), never a raised exception
+    for r in results:
+        assert isinstance(r, tuple) or r is None
+
+
+def test_set_role_last_admin_guard_and_self_demote_refused(tmp_path):
+    s = AuthStore(str(tmp_path / "ems.sqlite"))
+
+    async def run():
+        await s.init()
+        a1 = await s.create_user("a1", "h", "admin")
+        u1 = await s.create_user("u1", "h", "user")
+        # only admin can't demote themselves
+        assert await s.set_role(a1, "user", actor_id=a1) is False
+        assert (await s.get_user_by_id(a1))["role"] == "admin"  # unchanged
+        # a second admin lets the first be demoted by someone else, but not the last one
+        a2 = await s.create_user("a2", "h", "admin")
+        assert await s.set_role(a1, "user", actor_id=a2) is True
+        assert (await s.get_user_by_id(a1))["role"] == "user"
+        # now a2 is the only admin left — demoting them (even by another actor) is blocked
+        assert await s.set_role(a2, "user", actor_id=u1) is False
+        assert (await s.get_user_by_id(a2))["role"] == "admin"
+        # promotions are never guarded
+        assert await s.set_role(u1, "admin", actor_id=a2) is True
+        # unknown user
+        assert await s.set_role(999999, "user", actor_id=a2) is False
+
+    asyncio.run(run())
+
+
+def test_set_role_parallel_demotes_leave_at_least_one_admin(tmp_path):
+    s = AuthStore(str(tmp_path / "ems.sqlite"))
+
+    async def run():
+        await s.init()
+        a1 = await s.create_user("a1", "h", "admin")
+        a2 = await s.create_user("a2", "h", "admin")
+        # each demotes the OTHER concurrently, actor != target so self-demote guard doesn't apply
+        await asyncio.gather(
+            s.set_role(a1, "user", actor_id=a2),
+            s.set_role(a2, "user", actor_id=a1),
+            return_exceptions=True,
+        )
+        async with s._conn() as db:
+            import aiosqlite
+            db.row_factory = aiosqlite.Row
+            cur = await db.execute("SELECT COUNT(*) AS n FROM users WHERE role='admin' AND "
+                                    "disabled=0")
+            return (await cur.fetchone())["n"]
+
+    remaining_admins = asyncio.run(run())
+    assert remaining_admins >= 1
+
+
+def test_set_disabled_last_admin_guard_self_disable_refused_and_revokes_tokens(tmp_path):
+    s = AuthStore(str(tmp_path / "ems.sqlite"))
+
+    async def run():
+        await s.init()
+        a1 = await s.create_user("a1", "h", "admin")
+        raw1 = await s.create_token(a1, "session")
+        # cannot disable yourself
+        assert await s.set_disabled(a1, True, actor_id=a1) is False
+        assert await s.resolve(raw1) is not None
+        # a second admin can disable the first — tokens revoked immediately
+        a2 = await s.create_user("a2", "h", "admin")
+        assert await s.set_disabled(a1, True, actor_id=a2) is True
+        assert await s.resolve(raw1) is None  # session dead immediately, not just user disabled
+        # now a2 is the last enabled admin — nobody else can disable them
+        u1 = await s.create_user("u1", "h", "user")
+        assert await s.set_disabled(a2, True, actor_id=u1) is False
+        assert (await s.get_user_by_id(a2))["disabled"] == 0
+        # re-enabling never needs the guard
+        assert await s.set_disabled(a1, False, actor_id=a2) is True
+        assert (await s.get_user_by_id(a1))["disabled"] == 0
+        # unknown user
+        assert await s.set_disabled(999999, True, actor_id=a2) is False
+
+    asyncio.run(run())
+
+
+def test_set_disabled_parallel_last_admin_attempts_leave_at_least_one_admin(tmp_path):
+    s = AuthStore(str(tmp_path / "ems.sqlite"))
+
+    async def run():
+        await s.init()
+        a1 = await s.create_user("a1", "h", "admin")
+        a2 = await s.create_user("a2", "h", "admin")
+        await asyncio.gather(
+            s.set_disabled(a1, True, actor_id=a2),
+            s.set_disabled(a2, True, actor_id=a1),
+            return_exceptions=True,
+        )
+        async with s._conn() as db:
+            import aiosqlite
+            db.row_factory = aiosqlite.Row
+            cur = await db.execute("SELECT COUNT(*) AS n FROM users WHERE role='admin' AND "
+                                    "disabled=0")
+            return (await cur.fetchone())["n"]
+
+    remaining_admins = asyncio.run(run())
+    assert remaining_admins >= 1

@@ -1,7 +1,12 @@
-"""Auth endpoints (auth slice 1, Tasks 8-9): onboard/login/logout/me/password.
+"""Auth endpoints (auth slice 1, Tasks 8-9; invite-accept added in slice 2): onboard/login/
+logout/me/password/invite-accept.
 
 POST /api/auth/onboard · POST /api/auth/login · POST /api/auth/logout · GET /api/auth/me ·
-POST /api/auth/password.
+POST /api/auth/password · POST /api/invites/accept.
+
+`POST /api/invites/accept` lives HERE (not routes/users.py) even though it is invite-shaped,
+because it must be reachable while logged out — it belongs with the other EXEMPT auth flows
+(login/onboard), not the ADMIN-tier invite-management surface in routes/users.py.
 
 Discovery (GET /api/auth) is NOT served here — it's the extended `auth_status` handler directly
 on `app` in `ems/web/api.py` (review fix: a router route here was shadowed by that pre-existing
@@ -29,6 +34,7 @@ from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
 
 from ems.authn import dummy_verify, hash_password, hash_token, verify_password
+from ems.storage.auth import UsernameTaken
 from ems.web.context import AppContext
 
 
@@ -110,5 +116,28 @@ def build_router(ctx: AppContext) -> APIRouter:
             return JSONResponse({"detail": "password too short (min 8)"}, status_code=422)
         await auth_store.set_password(p.user_id, hash_password(new))
         return JSONResponse({"ok": True})
+
+    @router.post("/api/invites/accept")
+    async def accept_invite(request: Request, body: dict | None = None) -> JSONResponse:
+        """EXEMPT (authz.EXEMPT_PATHS) — reachable logged out, like login/onboard. Generic 401
+        "invalid invite" for unknown/expired/already-used codes (no oracle on which); a 409 for a
+        valid invite whose requested username collides (the invite itself is still usable — see
+        `AuthStore.accept_invite`/`UsernameTaken`)."""
+        body = body or {}
+        code = str(body.get("code", ""))
+        username = str(body.get("username", "")).strip()
+        password = str(body.get("password", ""))
+        if len(username) < 1 or len(password) < 8:
+            return JSONResponse({"detail": "username required; password min 8"}, status_code=422)
+        try:
+            result = await auth_store.accept_invite(code, username, hash_password(password))
+        except UsernameTaken:
+            return JSONResponse({"detail": "username already taken"}, status_code=409)
+        if result is None:
+            return JSONResponse({"detail": "invalid invite"}, status_code=401)
+        uid, raw = result
+        user = await auth_store.get_user_by_id(uid)
+        return JSONResponse({"token": raw, "user": {"username": user["username"],
+                                                     "role": user["role"]}})
 
     return router
