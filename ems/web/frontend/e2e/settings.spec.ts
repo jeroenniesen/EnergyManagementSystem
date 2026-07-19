@@ -29,6 +29,23 @@ test.describe("EMS settings", () => {
     expect(Object.keys(b.values)).toContain("planner.charge_slots");
   });
 
+  // auth slice 3 web: the "app" project is authenticated with a migrated shared-token ACCESS
+  // token (see auth.setup.ts / e2e-auth.ts) — kind "access", not "session". The API tokens panel
+  // must render its quiet sign-in hint here, never the manage UI (design §5: the whole
+  // /api/auth/tokens* surface is interactive-session-only) — this is exactly the scenario the
+  // requirement calls out: a real access-token caller must see the hint, not a 403-driven mess.
+  test("account tokens panel shows the sign-in hint (not the manage UI) for an access-token caller", async ({
+    page,
+  }) => {
+    await page.goto("/");
+    await page.getByTestId("nav-manage").click();
+    const panel = page.getByTestId("account-tokens");
+    await expect(panel).toBeVisible();
+    await expect(page.getByTestId("account-tokens-hint")).toBeVisible();
+    await expect(page.getByTestId("account-tokens-list")).toHaveCount(0);
+    await expect(page.getByLabel("Name", { exact: true })).toHaveCount(0);
+  });
+
   test("the solar-confidence planner setting renders as a drag slider", async ({ page }) => {
     await page.goto("/");
     await page.getByTestId("nav-manage").click();

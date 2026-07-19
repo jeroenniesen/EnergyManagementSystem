@@ -103,3 +103,65 @@ test("invite-accept creates a new account and logs it in", async ({ page, reques
   await page.getByTestId("nav-manage").click();
   await expect(page.getByTestId("admin-users")).toHaveCount(0);
 });
+
+// Runs AFTER the two tests above (same file, same per-file DB, declaration order — see the
+// file-level comment): the "admin" account from the first test still exists, log back in fresh.
+test("account tokens: mint shows the raw once, works as a bearer, revoke kills it", async ({
+  page,
+  request,
+}) => {
+  await page.goto("/");
+  await expect(page.getByTestId("login")).toBeVisible();
+  await page.getByLabel("Username").fill("admin");
+  await page.getByLabel("Password").fill("pw12345678");
+  await page.getByRole("button", { name: "Sign in" }).click();
+  await expect(page.getByTestId("login")).toBeHidden();
+  // Same network-layer proof as the earlier tests: wait for a gated read to actually succeed
+  // before touching the authenticated shell.
+  await page.waitForResponse(
+    (r) => new URL(r.url()).pathname === "/api/status" && r.status() === 200,
+    { timeout: 15000 },
+  );
+
+  await page.getByTestId("nav-manage").click();
+  const panel = page.getByTestId("account-tokens");
+  await expect(panel).toBeVisible();
+  // A session-kind principal (interactive login, not a machine token) gets the manage UI, not the
+  // sign-in hint that gates a machine/access-token caller (see the "app" project test).
+  await expect(page.getByTestId("account-tokens-hint")).toHaveCount(0);
+
+  await page.getByLabel("Name").fill("test-token");
+  await page.getByRole("button", { name: "Create" }).click();
+
+  // The raw is shown exactly once, right after minting.
+  const minted = page.getByTestId("account-token-minted");
+  await expect(minted).toBeVisible();
+  const raw = await page.getByLabel("New API token").inputValue();
+  expect(raw.length).toBeGreaterThan(20);
+
+  // Copy button works (falls back gracefully if clipboard permissions are unavailable in CI —
+  // same convention as admin.spec.ts's invite-link copy test).
+  await page.getByRole("button", { name: "Copy" }).click();
+
+  // It shows up in the list.
+  const list = page.getByTestId("account-tokens-list");
+  await expect(list).toBeVisible();
+  await expect(list).toContainText("test-token");
+
+  // The minted raw actually works as a bearer against the real API.
+  const okResp = await request.get("/api/status", {
+    headers: { Authorization: `Bearer ${raw}` },
+  });
+  expect(okResp.status()).toBe(200);
+
+  // Revoke it — the row disappears (best-effort refetch after the DELETE) — and the raw stops
+  // working immediately.
+  const row = list.locator('[data-testid^="account-token-"]', { hasText: "test-token" });
+  await row.getByRole("button", { name: /Revoke/ }).click();
+  await expect(row).toHaveCount(0);
+
+  const revokedResp = await request.get("/api/status", {
+    headers: { Authorization: `Bearer ${raw}` },
+  });
+  expect(revokedResp.status()).toBe(401);
+});

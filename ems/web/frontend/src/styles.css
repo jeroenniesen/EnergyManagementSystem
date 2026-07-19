@@ -1466,6 +1466,12 @@ body {
 .admin-invite-create {
   display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-top: 10px;
 }
+/* Account tokens' mint form (auth slice 3 web) reuses .admin-invite-create's row layout, adding a
+   name text input alongside the (existing) select/button styling above. */
+.admin-invite-create input[type="text"] {
+  flex: 1 1 180px; min-width: 140px; font: inherit; font-size: 0.85rem; color: var(--text);
+  background: var(--panel); border: 1px solid var(--line); border-radius: 6px; padding: 5px 8px;
+}
 .admin-invite-minted {
   margin-top: 12px; background: var(--panel-2); border: 1px solid var(--line); border-radius: 8px;
   padding: 10px 12px;

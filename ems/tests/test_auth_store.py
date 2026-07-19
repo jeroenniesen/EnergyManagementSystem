@@ -347,6 +347,77 @@ def test_set_disabled_last_admin_guard_self_disable_refused_and_revokes_tokens(t
     asyncio.run(run())
 
 
+# --- Slice 3: long-lived access tokens (mint/list/revoke + atomic replace) ----------------------
+
+
+def test_replace_token_atomic_revoke_and_remint(tmp_path):
+    s = AuthStore(str(tmp_path / "ems.sqlite"))
+
+    async def run():
+        await s.init()
+        uid = await s.create_user("a", "h", "user")
+        raw1 = await s.create_token(uid, "access", name="widget")
+        raw2 = await s.replace_token(uid, "widget")
+        # the old raw is dead, the new one works, exactly one row named "widget" survives.
+        p1 = await s.resolve(raw1)
+        p2 = await s.resolve(raw2)
+        rows = await s.list_tokens(uid)
+        return uid, p1, p2, rows
+
+    uid, p1, p2, rows = asyncio.run(run())
+    assert p1 is None
+    assert p2 is not None and p2.user_id == uid and p2.kind == "access"
+    named_widget = [r for r in rows if r["name"] == "widget"]
+    assert len(named_widget) == 1
+
+
+def test_replace_token_leaves_other_names_and_other_users_untouched(tmp_path):
+    s = AuthStore(str(tmp_path / "ems.sqlite"))
+
+    async def run():
+        await s.init()
+        uid = await s.create_user("a", "h", "user")
+        other = await s.create_user("b", "h", "user")
+        raw_other_name = await s.create_token(uid, "access", name="script")
+        raw_other_user = await s.create_token(other, "access", name="widget")
+        await s.replace_token(uid, "widget")
+        # a differently-named token for the SAME user is untouched.
+        p_other_name = await s.resolve(raw_other_name)
+        # a same-named token for a DIFFERENT user is untouched (replace is scoped to user_id AND
+        # name).
+        p_other_user = await s.resolve(raw_other_user)
+        return p_other_name, p_other_user
+
+    p_other_name, p_other_user = asyncio.run(run())
+    assert p_other_name is not None
+    assert p_other_user is not None
+
+
+def test_replace_token_concurrent_yields_exactly_one_survivor(tmp_path):
+    # Two callers race `replace_token(uid, "widget")` for the SAME (user, name). Semantics
+    # implemented (see AuthStore.replace_token's docstring): "last commit wins" — each caller gets
+    # its own raw back, but only whichever transaction commits LAST resolves; the loser's raw is
+    # silently dead. Deterministic invariant asserted here (order-independent): after both
+    # complete, EXACTLY ONE of the two raws resolves, and exactly one "widget" row exists.
+    s = AuthStore(str(tmp_path / "ems.sqlite"))
+
+    async def run():
+        await s.init()
+        uid = await s.create_user("a", "h", "user")
+        raws = await asyncio.gather(
+            s.replace_token(uid, "widget"), s.replace_token(uid, "widget"),
+        )
+        results = [await s.resolve(r) for r in raws]
+        rows = await s.list_tokens(uid)
+        return results, rows
+
+    results, rows = asyncio.run(run())
+    resolved = [r for r in results if r is not None]
+    assert len(resolved) == 1  # exactly one of the two raws is valid
+    named_widget = [r for r in rows if r["name"] == "widget"]
+    assert len(named_widget) == 1  # exactly one row with that name
+
+
 def test_set_disabled_parallel_last_admin_attempts_leave_at_least_one_admin(tmp_path):
     s = AuthStore(str(tmp_path / "ems.sqlite"))
 

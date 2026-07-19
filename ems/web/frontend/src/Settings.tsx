@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 
+import { AccountTokens } from "./AccountTokens";
 import { AdminAccess } from "./Admin";
 import { apiFetch, clearToken } from "./auth";
 import { type CarModel, type CarsResp } from "./ev";
@@ -738,6 +739,13 @@ export function Settings({
           </button>
         </div>
       )}
+
+      {/* API tokens (auth slice 3 web, design §5/§7): every logged-in role manages its OWN tokens
+          — visible regardless of canOperate/isAdmin (mirrors AdminAccess's admin-only gating
+          above, but the opposite: this one is deliberately role-agnostic). The component itself
+          renders a session-only manage UI or a quiet sign-in hint (fetches its own kind via
+          GET /api/auth/me) — see AccountTokens.tsx. */}
+      {auth?.authenticated && <AccountTokens />}
 
       <div className="settings-panes">
         <aside className="settings-sidebar">

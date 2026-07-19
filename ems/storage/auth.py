@@ -307,6 +307,47 @@ class AuthStore:
             )
             return [dict(r) for r in await cur.fetchall()]
 
+    async def replace_token(self, user_id: int, name: str) -> str:
+        """Atomic revoke-and-remint of `user_id`'s `access` token(s) named `name` — the contract
+        `POST /api/auth/tokens {replace: true}` exposes and the iOS widget relies on (design §5/§7):
+        a per-device token that is safe to re-request on every login without ever accumulating
+        duplicates or leaving a stale/leaked one alive. ONE `BEGIN IMMEDIATE` transaction: DELETE
+        every access token this user owns with this exact name, INSERT the replacement (hash
+        only), commit; on any exception, rollback and re-raise (mirrors `onboard_admin` /
+        `set_role` / `accept_invite`).
+
+        Concurrency semantics (deliberately chosen — see
+        test_replace_token_concurrent_yields_exactly_one_survivor): two callers racing
+        `replace_token(user_id, name)` each get back their OWN raw token, but only the one whose
+        transaction COMMITS LAST resolves. Every transaction's DELETE removes ANY row with that
+        (user_id, name) — including a row a just-committed sibling call inserted — before
+        inserting its own row, so `BEGIN IMMEDIATE`'s serialization (the same guarantee
+        `onboard_admin`/`accept_invite` lean on) guarantees the LAST commit's INSERT is the one
+        still standing once every caller has finished. This is "last write wins", not "first
+        writer wins" and not "both survive": after any number of concurrent replaces, exactly one
+        `auth_tokens` row named `name` exists for this user, and exactly one of the raws handed
+        back is ever valid — never zero, never more than one.
+        """
+        raw = new_token()
+        now = datetime.now(UTC)
+        async with self._write_conn() as db:
+            await db.execute("BEGIN IMMEDIATE")
+            try:
+                await db.execute(
+                    "DELETE FROM auth_tokens WHERE user_id=? AND name=? AND kind='access'",
+                    (user_id, name),
+                )
+                await db.execute(
+                    "INSERT INTO auth_tokens (user_id, token_hash, kind, name, created_at, "
+                    "expires_at) VALUES (?,?, 'access', ?, ?, NULL)",
+                    (user_id, hash_token(raw), name, now.isoformat()),
+                )
+                await db.commit()
+                return raw
+            except BaseException:
+                await db.rollback()
+                raise
+
     # --- Onboarding (Task 9) ---
 
     async def onboard_admin(self, username: str, password_hash: str, *,

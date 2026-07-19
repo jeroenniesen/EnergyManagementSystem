@@ -1,8 +1,19 @@
-"""Auth endpoints (auth slice 1, Tasks 8-9; invite-accept added in slice 2): onboard/login/
-logout/me/password/invite-accept.
+"""Auth endpoints (auth slice 1, Tasks 8-9; invite-accept added in slice 2; long-lived access
+tokens added in slice 3): onboard/login/logout/me/password/invite-accept/tokens.
 
 POST /api/auth/onboard · POST /api/auth/login · POST /api/auth/logout · GET /api/auth/me ·
-POST /api/auth/password · POST /api/invites/accept.
+POST /api/auth/password · POST /api/invites/accept ·
+POST /api/auth/tokens · GET /api/auth/tokens · DELETE /api/auth/tokens/{id}.
+
+Tokens (design §5/§7): every `/api/auth/tokens*` path is BOTH `Tier.VIEW` (any role manages its
+OWN tokens — `authz.required_tier` falls through to VIEW since it matches neither `_ADMIN_PREFIXES`
+nor `OPERATE_PATHS`) AND `requires_session` (`authz._SESSION_ONLY_PREFIXES`), so
+`_AccessMiddleware` already rejects an access/machine-token caller with 403 before any handler
+below runs — every handler here can assume `scope["auth_principal"]` is a resolved, session-kind
+Principal. All three are owner-scoped by construction: `list_tokens`/`revoke_token` take
+`principal.user_id`, never a caller-supplied one, so there is no IDOR to defend against here (a
+foreign token id 404s — see `revoke_token`'s `WHERE id=? AND user_id=?` — never 403, so a caller
+can't use the status code to probe whether an id exists for someone else).
 
 `POST /api/invites/accept` lives HERE (not routes/users.py) even though it is invite-shaped,
 because it must be reachable while logged out — it belongs with the other EXEMPT auth flows
@@ -139,5 +150,38 @@ def build_router(ctx: AppContext) -> APIRouter:
         user = await auth_store.get_user_by_id(uid)
         return JSONResponse({"token": raw, "user": {"username": user["username"],
                                                      "role": user["role"]}})
+
+    @router.post("/api/auth/tokens")
+    async def create_token_endpoint(request: Request, body: dict | None = None) -> JSONResponse:
+        """Mint (or, with `replace: true`, atomically revoke-and-remint by name — see
+        `AuthStore.replace_token`) a long-lived `access` token owned by the caller. The raw value
+        is returned exactly once here; only its hash is ever stored (`GET /api/auth/tokens` below
+        never exposes it again)."""
+        body = body or {}
+        principal = request.scope["auth_principal"]
+        name = str(body.get("name", "")).strip()
+        if not name:
+            return JSONResponse({"detail": "name required"}, status_code=422)
+        if body.get("replace"):
+            raw = await auth_store.replace_token(principal.user_id, name)
+        else:
+            raw = await auth_store.create_token(principal.user_id, "access", name=name)
+        return JSONResponse({"token": raw, "name": name})
+
+    @router.get("/api/auth/tokens")
+    async def list_tokens_endpoint(request: Request) -> dict:
+        """OWN tokens only — never hashes. Includes the caller's current session row too (it's in
+        the same table as machine tokens by design, §3); rendered like any other row, nothing
+        special marked."""
+        principal = request.scope["auth_principal"]
+        return {"tokens": await auth_store.list_tokens(principal.user_id)}
+
+    @router.delete("/api/auth/tokens/{token_id}")
+    async def revoke_token_endpoint(token_id: int, request: Request) -> JSONResponse:
+        principal = request.scope["auth_principal"]
+        ok = await auth_store.revoke_token(token_id, principal.user_id)
+        if not ok:
+            return JSONResponse({"detail": "token not found"}, status_code=404)
+        return JSONResponse({"ok": True})
 
     return router
