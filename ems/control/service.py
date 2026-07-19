@@ -1312,7 +1312,8 @@ class ControlService:
                 pass
             recent = REGISTRY.recent("control.cycle")
             if recent and (recent[-1].over_budget or timed_out):
-                await self._handle_overrun(now, timed_out, recent[-1])
+                with timed("control.overrun_audit"):
+                    await self._handle_overrun(now, timed_out, recent[-1])
             async with atimed("control.audit"):
                 for rec in records:
                     if self._audit_store is not None:
@@ -1358,8 +1359,16 @@ class ControlService:
         if lc is None or not lc.can_command(now):
             return
         try:
-            await self._controller.driver.apply(PhysicalMode.AUTO)
+            await asyncio.wait_for(
+                self._controller.driver.apply(PhysicalMode.AUTO),
+                timeout=PERF_BUDGETS["control.cycle"] / 1000.0,
+            )
             _log.warning("control.overrun: forced battery to AUTO")
+        except TimeoutError:
+            _log.warning(
+                "control.overrun: AUTO recovery write timed out — "
+                "battery may still be in non-AUTO mode"
+            )
         except Exception:
             _log.exception("control.overrun: AUTO write failed (non-fatal)")
 

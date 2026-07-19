@@ -10,6 +10,7 @@
 | api.interactive | I | 1000 ms | on-mount routes (`/api/settings`, `/api/cars`, `/api/forecast`, `/api/auth/me`, etc.) |
 | api.batch | B | 8000 ms | `/api/export/package`, `/api/report?period=year`, `/api/counterfactual`, `/api/digest` |
 | control.cycle | - | 20 s | one `_run_control_cycle()` |
+| control.overrun_audit | - | 20 s | overrun safety recovery audit + AUTO write |
 | store.history.read | - | 100 ms | history-store read transactions |
 | store.history.write | - | 500 ms | history-store write transactions |
 | store.settings.read | - | 50 ms | settings-store read transactions |

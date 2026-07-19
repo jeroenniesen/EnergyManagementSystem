@@ -26,6 +26,7 @@ PERF_BUDGETS: dict[str, float] = {
     "api.batch": 8_000,
     # Control loop
     "control.cycle": 20_000,
+    "control.overrun_audit": 20_000,
     # Per-phase push points inside control_tick (for phase attribution)
     "control.sense": 5_000,
     "control.decide": 5_000,
