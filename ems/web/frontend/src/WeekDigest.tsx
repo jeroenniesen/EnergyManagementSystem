@@ -7,6 +7,7 @@
 // the Advanced disclosure toggle) so it never dominates a repeat visit.
 import { useEffect, useState } from "react";
 
+import { apiFetch } from "./auth";
 import { eur } from "./format";
 
 type BestDay = { date: string; saved_eur: number } | null;
@@ -50,7 +51,7 @@ export function WeekDigest() {
     let alive = true;
     setError(false);
     const url = anchor ? `/api/digest?week=${anchor}` : "/api/digest";
-    fetch(url)
+    apiFetch(url)
       .then((r) => {
         if (!r.ok) throw new Error(`HTTP ${r.status}`);
         return r.json();

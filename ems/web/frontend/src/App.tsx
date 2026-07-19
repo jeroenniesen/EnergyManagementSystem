@@ -1,5 +1,6 @@
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
+import { apiFetch, setUnauthorizedHandler } from "./auth";
 import { type Battery, BatteryChips } from "./BatteryChips";
 import { EnergyDistribution } from "./EnergyDistribution";
 import { type EnergyStoryData, EnergyStory } from "./EnergyStory";
@@ -17,7 +18,9 @@ import {
   RUN_MODE,
   SIGNAL_NAME,
 } from "./labels";
+import { Login } from "./Login";
 import { NotificationBell } from "./Notifications";
+import { Onboarding } from "./Onboarding";
 import { OverrideCard } from "./Override";
 import { CarCard } from "./CarCard";
 import { CarView } from "./Car";
@@ -268,7 +271,42 @@ function ChargeTarget({ n }: { n: ChargeNeed }) {
 }
 
 
+// Discovery payload shape from GET /api/auth (identity mode) — see docs/superpowers/specs/
+// 2026-07-17-auth-users-roles-design.md §5. `null` until the first fetch resolves.
+type AuthState = {
+  required: boolean;
+  authenticated: boolean;
+  onboarding_needed: boolean;
+  shared_token_required: boolean;
+} | null;
+
 export function App() {
+  // Auth gate (Task 10). Kept as plain hooks at the top, unconditionally called on every render —
+  // the gating itself happens ONLY in the final JSX below (never via an early `return` mid-function),
+  // because every other hook in this component is declared further down: an early return here would
+  // make this component call a different NUMBER of hooks between the "gated" renders (auth
+  // unresolved/onboarding/login) and the "app" render (all hooks below reached) — a Rules-of-Hooks
+  // violation ("Rendered more hooks than during the previous render") that would throw exactly when
+  // onboarding/login completes and the app tries to render for the first time.
+  const [auth, setAuth] = useState<AuthState>(null);
+  const refreshAuth = useCallback(async () => {
+    try {
+      const r = await apiFetch("/api/auth");
+      setAuth(await r.json());
+    } catch {
+      /* leave auth as-is; the next poll tick or user action can retry */
+    }
+  }, []);
+  useEffect(() => {
+    refreshAuth();
+  }, [refreshAuth]);
+  // Central 401 handler (Task 11): apiFetch already clears the (now-invalid) token on any 401 —
+  // this just re-resolves auth, which falls back to <Login/> once `auth.authenticated` flips false.
+  useEffect(() => {
+    setUnauthorizedHandler(() => refreshAuth());
+    return () => setUnauthorizedHandler(null);
+  }, [refreshAuth]);
+
   const [status, setStatus] = useState<Status | null>(null);
   const [freshness, setFreshness] = useState<FreshnessMap | null>(null);
   const [story, setStory] = useState<EnergyStoryData | null>(null);
@@ -339,7 +377,7 @@ export function App() {
 
   useEffect(() => {
     let alive = true;
-    fetch("/api/settings")
+    apiFetch("/api/settings")
       .then((r) => (r.ok ? r.json() : null))
       .then((b) => {
         if (alive && b?.values?.["ui.theme"]) setTheme(b.values["ui.theme"] as Theme);
@@ -364,7 +402,9 @@ export function App() {
   // Its last successful value remains useful, while /api/freshness supplies the later stale signal.
   useEffect(() => {
     let alive = true;
-    fetch("/api/report?period=day")
+    // Merge: keep the calm-dashboard's tile-freshness tracking, but route through apiFetch so the
+    // read carries the bearer token / central 401 handling (auth slice 1).
+    apiFetch("/api/report?period=day")
       .then((r) => { if (!r.ok) throw new Error(`HTTP ${r.status}`); return r.json(); })
       .then((v: Report) => { if (alive) {
         setReport(v);
@@ -423,7 +463,9 @@ export function App() {
     if (view !== "dashboard") return;
     let alive = true;
     async function getJson(url: string) {
-      const r = await fetch(url);
+      // Global 401 handler (Task 11): apiFetch clears the (now-invalid) token and notifies the
+      // central handler (registered above), which re-resolves auth and falls back to <Login/>.
+      const r = await apiFetch(url);
       if (!r.ok) throw new Error(`HTTP ${r.status}`);
       return r.json();
     }
@@ -509,13 +551,13 @@ export function App() {
     strategyPending.current = true;
     setStrategy((s) => (s ? { ...s, ...optimistic } : s));
     try {
-      const res = await fetch("/api/settings", {
+      const res = await apiFetch("/api/settings", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(body),
       });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const r = await fetch("/api/strategy");
+      const r = await apiFetch("/api/strategy");
       if (r.ok) setStrategy(await r.json());
       else setStrategy(prev);
     } catch {
@@ -581,6 +623,17 @@ export function App() {
   // B-57: on demo/mock data, a persistent friendly nudge into real onboarding (Settings opens on
   // the Connection section by default). Dismissible for the session; back on next visit.
   const demoActive = !!home?.simulated && !demoDismissed;
+
+  // Auth gate (Task 10). Placed here — AFTER every hook above has already been called
+  // unconditionally on every render — rather than at the top of the component: an early return
+  // BEFORE the rest of this component's hooks would make React call a different number of hooks
+  // between the gated renders and the first "app" render, which throws (Rules of Hooks). Putting
+  // the branch here, once all hooks are done, is the safe equivalent.
+  if (auth === null) return null; // splash while the first GET /api/auth is in flight
+  if (auth.onboarding_needed) {
+    return <Onboarding sharedTokenRequired={auth.shared_token_required} onDone={refreshAuth} />;
+  }
+  if (!auth.authenticated) return <Login onDone={refreshAuth} />;
 
   return (
     <>

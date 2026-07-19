@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 
-import { authHeaders } from "./auth";
+import { apiFetch } from "./auth";
 import { Icon } from "./icons";
 
 // B-20: the header bell — an in-app surface for the notification outbox (GET /api/notifications).
@@ -40,7 +40,7 @@ export function NotificationBell() {
   useEffect(() => {
     let alive = true;
     function poll() {
-      fetch(`/api/notifications?limit=${FEED_LIMIT}`)
+      apiFetch(`/api/notifications?limit=${FEED_LIMIT}`)
         .then((r) => (r.ok ? r.json() : null))
         .then((b: NotificationsResp | null) => {
           if (alive && b) {
@@ -82,9 +82,9 @@ export function NotificationBell() {
     setItems((prev) => prev.map((n) => ({ ...n, read: true })));
     setUnread(0);
     try {
-      await fetch("/api/notifications/read", {
+      await apiFetch("/api/notifications/read", {
         method: "POST",
-        headers: { "content-type": "application/json", ...authHeaders() },
+        headers: { "content-type": "application/json" },
         body: JSON.stringify({ all: true }),
       });
     } catch {

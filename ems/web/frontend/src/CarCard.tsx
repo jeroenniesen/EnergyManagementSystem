@@ -17,7 +17,7 @@
 // 401/422 handling pattern as OverrideCard's `apply()` (see Override.tsx).
 import { useEffect, useState } from "react";
 
-import { authHeaders } from "./auth";
+import { apiFetch } from "./auth";
 import { Icon } from "./icons";
 
 type Soc = {
@@ -253,7 +253,7 @@ export function CarCard({
   useEffect(() => {
     let alive = true;
     function load() {
-      fetch("/api/car/plan")
+      apiFetch("/api/car/plan")
         .then((r) => (r.ok ? r.json() : null))
         .then((b) => {
           if (alive && b) setData(b);
@@ -274,14 +274,15 @@ export function CarCard({
     setBusy(true);
     setErr(null);
     try {
-      const r = await fetch("/api/car/soc", {
+      const r = await apiFetch("/api/car/soc", {
         method: "POST",
-        headers: { "content-type": "application/json", ...authHeaders() },
+        headers: { "content-type": "application/json" },
         body: JSON.stringify({ pct }),
       });
       const b = await r.json().catch(() => ({}));
       if (r.status === 401) {
-        setErr("Unauthorized — set an access token in Manage → Settings.");
+        // apiFetch already cleared the (now-invalid) token and triggered the central 401 handler,
+        // which bounces to <Login/> — nothing to show here (dead paste-token-box copy removed).
       } else if (r.status === 422) {
         setErr(Object.values(b.errors ?? {}).join("; ") || "invalid charge level");
       } else if (!r.ok) {
@@ -289,7 +290,7 @@ export function CarCard({
       } else {
         setEditingAnchor(false);
         // The anchor changed both the SoC AND the plan — re-fetch the whole thing to reconcile.
-        const r2 = await fetch("/api/car/plan");
+        const r2 = await apiFetch("/api/car/plan");
         if (r2.ok) setData(await r2.json());
       }
     } catch (e) {

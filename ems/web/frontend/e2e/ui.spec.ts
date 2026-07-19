@@ -1424,10 +1424,11 @@ test.describe("EMS dashboard", () => {
     await page.getByTestId("manage-tab-system").click();
     await expect(page.getByTestId("system")).toBeVisible();
     await expect(page.getByTestId("checks")).toBeVisible();
-    // Fully wired mock backend -> history store reachable, battery probed, writes open.
+    // Fully wired mock backend -> history store reachable, battery probed, auth token-protected
+    // (the e2e app server runs with a Web access token configured, so writes require it).
     await expect(page.getByTestId("check-history_store")).toContainText("reachable");
     await expect(page.getByTestId("check-battery")).toBeVisible();
-    await expect(page.getByTestId("check-auth")).toContainText("open");
+    await expect(page.getByTestId("check-auth")).toContainText("protected");
     // Per-signal live sensor checks (the "senses"): mock backend reports all signals fresh.
     await expect(page.getByTestId("check-sensor.grid")).toContainText("fresh");
     await expect(page.getByTestId("system-overall")).toBeVisible();

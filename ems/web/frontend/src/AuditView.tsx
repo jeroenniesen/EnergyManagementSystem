@@ -2,6 +2,8 @@
 // change and manual override the app makes — newest first, filterable by type.
 import { useEffect, useState } from "react";
 
+import { apiFetch } from "./auth";
+
 type Entry = {
   id: number;
   ts: string;
@@ -31,7 +33,7 @@ export function AuditView() {
 
   useEffect(() => {
     const url = "/api/audit?limit=200" + (filter ? `&category=${filter}` : "");
-    fetch(url)
+    apiFetch(url)
       .then((r) => (r.ok ? r.json() : Promise.reject(new Error("http"))))
       .then((b) => setEntries(b.entries ?? []))
       .catch(() => setErr("Couldn't load the audit log."));
