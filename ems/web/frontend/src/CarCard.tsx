@@ -308,7 +308,7 @@ export function CarCard({
     // clue why, so give it an honest, actionable card instead.
     if (compact) return null;
     return (
-      <section className="car-card" data-testid="car-card-disabled">
+      <section className="car-card" data-testid="car-card-disabled" data-density-kind="card">
         <CardHead />
         <p className="override-hint">
           The charge planner is off. Turn on &quot;Show best-time-to-charge card&quot; to get
@@ -332,7 +332,7 @@ export function CarCard({
 
   if (data.needs_anchor) {
     return (
-      <section className="car-card" data-testid="car-card">
+      <section className="car-card" data-testid="car-card" data-density-kind="card">
         <CardHead />
         {data.car_meter_configured === false && (
           <p className="advisor-hint" data-testid="car-meter-missing">
@@ -351,7 +351,7 @@ export function CarCard({
 
   if (data.needs_schedule) {
     return (
-      <section className="car-card" data-testid="car-card">
+      <section className="car-card" data-testid="car-card" data-density-kind="card">
         <CardHead />
         {data.car_meter_configured === false && (
           <p className="advisor-hint" data-testid="car-meter-missing">
@@ -401,6 +401,7 @@ export function CarCard({
     <section
       className={`car-card${compact ? " car-card-compact" : ""}`}
       data-testid="car-card"
+      data-density-kind="card"
       data-compact={compact ? "true" : undefined}
     >
       <CardHead />

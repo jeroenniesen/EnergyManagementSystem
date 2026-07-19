@@ -72,9 +72,10 @@ test.describe("Insights", () => {
       route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(REPORT) }),
     );
     await page.goto("/");
+    await page.getByTestId("home-more-toggle").click();
     await expect(page.getByTestId("home-scores")).toBeVisible();
-    const selfCard = page.getByTestId("score-card-self_consumption");
-    await expect(selfCard).toBeVisible();
+    await expect(page.getByTestId("score-card-self_consumption")).toHaveCount(0);
+    const co2Card = page.getByTestId("score-card-co2");
     await expect(page.getByTestId("score-card-co2")).toBeVisible();
     await expect(page.getByTestId("score-card-best_price")).toBeVisible();
     await expect(page.getByTestId("ring-co2")).toContainText("60"); // the score value in the ring
@@ -82,16 +83,14 @@ test.describe("Insights", () => {
     const summary = page.getByTestId("home-scores-summary");
     await expect(summary).toHaveAttribute("data-tone", "good"); // 80/60/75 → solid, not brilliant
     await expect(summary).toContainText("solid energy day");
-    await expect(selfCard).toContainText("You're using the energy you generate.");
-    await expect(selfCard).toContainText("Mostly your own sun");
-    await expect(page.getByTestId("score-card-co2")).toContainText("Cleaner than the grid");
+    await expect(co2Card).toContainText("Cleaner than the grid");
     // The whole card is a button whose accessible name carries the score + copy.
-    await expect(selfCard).toHaveAttribute(
+    await expect(co2Card).toHaveAttribute(
       "aria-label",
-      /80 out of 100\. You're using the energy you generate\. Mostly your own sun/,
+      /60 out of 100.*Cleaner than the grid/,
     );
     // Tapping a card opens the Insights tab.
-    await selfCard.click();
+    await co2Card.click();
     await expect(page.getByTestId("insights")).toBeVisible();
   });
 
@@ -106,11 +105,12 @@ test.describe("Insights", () => {
       }),
     );
     await page.goto("/");
+    await page.getByTestId("home-more-toggle").click();
     const summary = page.getByTestId("home-scores-summary");
     await expect(summary).toHaveAttribute("data-tone", "great");
     await expect(summary).toContainText("brilliant day");
     // Every card reads as a win.
-    await expect(page.getByTestId("score-card-self_consumption")).toContainText("Mostly your own sun");
+    await expect(page.getByTestId("score-card-co2")).toContainText("Barely any fossil power");
     await expect(page.getByTestId("score-card-best_price")).toContainText("Bought at the right times");
   });
 

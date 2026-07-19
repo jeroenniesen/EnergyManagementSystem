@@ -43,6 +43,7 @@ observability (B-24); numbered date-less sprints, Issues+Milestones on GitHub.
 | **E-07 · Consumer-ready commercial product** | 🟨 B-55 settings menu | | | B-32 B-33 B-34 B-35 🟨 B-36 B-37 🟨 B-38 B-39 ✅ B-40 B-41 B-56 B-57 B-58 B-59 B-60 B-61 B-62 |
 | **E-08 · Predictive optimization intelligence** | | | | B-63 B-64 B-65 B-66 B-67 B-68 B-69 B-70 B-71 B-72 B-73 B-74 B-75 B-76 B-77 B-78 |
 | **E-09 · ISO 25010 quality engineering** | | | | **P1:** B-79 B-80 B-81 B-82 B-83 · B-84 B-85 |
+| **E-10 · Web UI redesign: dense → calm** | | | | B-86 B-87 B-88 |
 | *Big levers (pool)* | | | | B-17 B-18 B-19 B-20 B-23 |
 | *Refactoring (pool)* | | | | B-24 B-25 B-26 B-27 B-28 B-29 |
 | *Architecture & platform (pool)* | | | | **P1:** B-42 B-43 B-44 B-52 · B-45 B-46 B-47 B-48 B-49 B-50 B-51 B-53 B-54 |
@@ -377,6 +378,26 @@ Create a retirement register for legacy `forecast_snapshots` reads, deprecated E
 **Track:** Pool · E-09 · ⬜
 
 ---
+
+## EPIC E-10 · Web UI redesign — dense → calm
+*Goal: every screen answers "what's happening, and is it good?" before it shows a single number; each surface has a stated information budget, a clear hero → support → detail hierarchy, and detail on demand — never a wall of graphs and tiles competing for first attention.* (Trust/Motivation)
+
+> **Builds on** E-07's design constitution ([`docs/2026-07-12-apple-of-ems-roadmap.md`](docs/2026-07-12-apple-of-ems-roadmap.md)) — principles 2 (*one glance, one truth*) and 3 (*progressive disclosure everywhere*) — and **completes what B-32 started** on the dashboard, applying the same discipline to *every* surface. Density here is a measurable budget, not taste. Constraints unchanged: ≤300 KB gz, WCAG 2.1 AA, light/dark (`GOAL.md` §2, SPEC §9.1). *Prompted 2026-07-17: the operator finds the current UI too dense — too much information per screen.*
+
+### B-86 · Density audit + hierarchy budget — UX · S *(roadmap P2)*
+The diagnostic and the ruler, before any pixels move. Inventory each surface (Dashboard, Next-24h/plan, Insights, Manage/Settings, Car, Chat): count the numbers, charts, badges, and cards visible per viewport; set a per-screen **information budget** (one hero verdict → supporting facts → detail-on-demand) and a shared type/spacing scale so "calm" is measurable and regressions are catchable — not a matter of taste.
+**Done when:** each screen has a target information budget and a written hierarchy spec; there is a repeatable way to measure per-viewport density (extends the visual-regression harness).
+**Track:** ✅ done — stable desktop/390 px actual-vs-baseline inventories now cover Dashboard/Next-24h, Insights, Manage/Settings, Car, and Chat, with the approved target stated in actionable failures. The audit records Car at four always-visible top-level sections against its calmer one-verdict target; bringing that and other remaining screens into budget belongs to open B-88.
+
+### B-87 · Dashboard + Next-24h "one glance" redesign — UX · M *(extends B-32; roadmap P2)*
+Apply the budget to the two heaviest surfaces. The **Next-24h/plan** screen today stacks a battery-level chart, a price chart, a battery-plan strip, and a solar chart under five stat tiles and two banners — four charts and five numbers before the user has asked a question. Collapse to one primary chart answering one question per viewport; demote the secondary charts and the stat grid behind a fold/tap. The dashboard keeps its hero verdict and sheds the cards still competing with it.
+**Done when:** the plan view shows one primary question per viewport; a first-time user is never shown four charts and five tiles at once; the technical detail is one tap deeper, not gone.
+**Track:** ✅ done — merged hero, four outcome tiles, one combined plan chart, and retained technical disclosure; verified in the 204-test frontend suite.
+
+### B-88 · Insights / Manage / Car density pass + shared primitives — UX + Refactor · M *(pairs B-28/B-51; roadmap P2)*
+Carry the same hierarchy across the remaining surfaces, and extract shared chart / stat-tile / card primitives so the density language stays consistent by construction and the bundle stays within budget.
+**Done when:** every surface shares one density language and stays within its B-86 budget; chart/tile primitives are deduped (pairs with the B-28 frontend consolidation).
+**Track:** Pool · E-10 · ⬜
 
 ## Pool — big levers (each with a trigger)
 

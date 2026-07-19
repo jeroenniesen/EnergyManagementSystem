@@ -707,6 +707,7 @@ export function Settings({
       data-testid="settings"
       className="settings-shell"
       data-mobile={mobileList ? "list" : "section"}
+      data-density-surface="manage"
     >
       {auth?.authenticated && (
         <div className="settings-access-bar" data-testid="settings-access">
@@ -803,7 +804,7 @@ export function Settings({
           </button>
 
           {active && (
-            <div className="settings-content-inner">
+            <div className="settings-content-inner" data-density-kind="selected-section">
               <header className="settings-section-head">
                 <span className="settings-section-icon">
                   <SectionIcon group={active} />

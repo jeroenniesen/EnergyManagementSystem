@@ -251,6 +251,7 @@ test.describe("Car view", () => {
       route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(fullPlanBody()) }));
     await mockCars(page);
     await page.goto("/");
+    await page.getByTestId("home-more-toggle").click();
 
     // Compact: SoC + deadline + advice + "Open Car →" — but NOT the windows or the 48h timeline.
     const card = page.getByTestId("car-card");
