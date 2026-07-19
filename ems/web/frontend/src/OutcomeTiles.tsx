@@ -82,7 +82,7 @@ export function OutcomeTiles({
       <OutcomeTile
         testId="outcome-soc"
         label="Battery level"
-        value={socPct == null ? "—" : `${socPct}%`}
+        value={socPct == null ? "—" : `${Math.round(socPct)}%`}
         title={socPct == null ? "Live battery level not available" : "Live battery level"}
         onOpen={socPct == null ? undefined : onOpenBattery}
         freshness={freshness.status}
