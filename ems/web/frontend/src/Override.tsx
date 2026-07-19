@@ -40,7 +40,16 @@ function endsAt(minutes: number): string {
   return t.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", hour12: false });
 }
 
-export function OverrideCard({ dataQuality }: { dataQuality?: string }) {
+export function OverrideCard({
+  dataQuality,
+  canOperate = true,
+}: {
+  dataQuality?: string;
+  // Reader read-only mode (auth slice 2 web): manual override is an OPERATE-tier action
+  // (design §5) — a reader would get 403 from the API, so the controls are hidden here rather
+  // than left clickable and failing. Defaults true so every other caller is unaffected.
+  canOperate?: boolean;
+}) {
   const [state, setState] = useState<OverrideState | null>(null);
   const [intent, setIntent] = useState("");
   const [minutes, setMinutes] = useState(60);
@@ -130,7 +139,12 @@ export function OverrideCard({ dataQuality }: { dataQuality?: string }) {
         its own and EMS goes back to following the plan.
       </p>
 
-      {confirming ? (
+      {!canOperate ? (
+        <p className="advisor-hint" data-testid="override-readonly-hint">
+          Manual override needs a &quot;user&quot; or &quot;admin&quot; account — ask an admin for
+          access.
+        </p>
+      ) : confirming ? (
         <div className="override-confirm" data-testid="override-confirm-panel">
           <p className="override-confirm-title">
             {intentLabel(confirming.intent)} for {DURATIONS.find((d) => d.minutes ===

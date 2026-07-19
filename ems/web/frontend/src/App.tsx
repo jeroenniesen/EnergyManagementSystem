@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 
+import { AcceptInvite } from "./AcceptInvite";
 import { apiFetch, setUnauthorizedHandler } from "./auth";
 import { type Battery, BatteryChips } from "./BatteryChips";
 import { EnergyDistribution } from "./EnergyDistribution";
@@ -272,13 +273,25 @@ function ChargeTarget({ n }: { n: ChargeNeed }) {
 
 
 // Discovery payload shape from GET /api/auth (identity mode) — see docs/superpowers/specs/
-// 2026-07-17-auth-users-roles-design.md §5. `null` until the first fetch resolves.
+// 2026-07-17-auth-users-roles-design.md §5. `null` until the first fetch resolves. `user` (auth
+// slice 2 web) carries the signed-in principal's role, which drives both the admin panel
+// (Settings → Access & security) and reader read-only mode (`canOperate` below) — `null` when
+// unauthenticated.
 type AuthState = {
   required: boolean;
   authenticated: boolean;
   onboarding_needed: boolean;
   shared_token_required: boolean;
+  user: { username: string; role: string } | null;
 } | null;
+
+// Invite-accept route (auth slice 2 web, design §7): `/#/accept-invite?code=<raw>` must be
+// reachable while logged out. Checked directly against the raw hash rather than through
+// `routeFromHash`/`Route` (below), which only models the five authenticated app views and would
+// otherwise fold an unrecognised hash into the dashboard fallback.
+function isAcceptInviteHash(hash: string): boolean {
+  return /^#\/?accept-invite(\?|$)/.test(hash);
+}
 
 export function App() {
   // Auth gate (Task 10). Kept as plain hooks at the top, unconditionally called on every render —
@@ -633,7 +646,21 @@ export function App() {
   if (auth.onboarding_needed) {
     return <Onboarding sharedTokenRequired={auth.shared_token_required} onDone={refreshAuth} />;
   }
+  // Reachable while logged out (BEFORE the login gate below), like Onboarding — but onboarding
+  // still wins when both are true (a fresh install has no invites to accept yet anyway).
+  if (isAcceptInviteHash(window.location.hash)) {
+    return <AcceptInvite onDone={refreshAuth} />;
+  }
   if (!auth.authenticated) return <Login onDone={refreshAuth} />;
+
+  // Reader read-only mode + admin panel gating (auth slice 2 web, design §7): a reader gets every
+  // OPERATE control hidden/disabled (mirrors the API's 403); an admin additionally sees the
+  // Settings → Access & security panel. An unknown/missing role defaults to `canOperate: true` —
+  // permissive, so a role-less legacy shape can't silently lock everyone out of controls that
+  // worked before this slice.
+  const role = auth.user?.role ?? null;
+  const canOperate = role !== "reader";
+  const isAdmin = role === "admin";
 
   return (
     <>
@@ -671,7 +698,7 @@ export function App() {
             {DATA_QUALITY[alertsData.data_quality]?.label ?? humanize(alertsData.data_quality)}
           </span>
         )}
-        <NotificationBell />
+        <NotificationBell canOperate={canOperate} />
         <nav className="nav" aria-label="Views">
           <button
             className={`nav-btn${view === "dashboard" ? " nav-active" : ""}`}
@@ -833,17 +860,19 @@ export function App() {
           onTab={(t, section) => navigate("manage", t, section)}
           onSettingsSaved={(v) => setTheme((v["ui.theme"] as Theme) ?? "auto")}
           settingsSection={settingsSection}
+          canOperate={canOperate}
+          isAdmin={isAdmin}
         />
       )}
 
       {view === "insights" && <Insights />}
 
-      {view === "chat" && <ChatPanel />}
+      {view === "chat" && <ChatPanel canOperate={canOperate} />}
 
       {view === "car" && (
         // Lands on the Car section of Settings (feat/ux-batch-3's "ev" group) rather than just the
         // Settings tab in general — the schedule/picker used to live there.
-        <CarView onOpenSettings={() => navigate("manage", "settings", "ev")} />
+        <CarView onOpenSettings={() => navigate("manage", "settings", "ev")} canOperate={canOperate} />
       )}
 
       {view === "dashboard" && (
@@ -915,10 +944,15 @@ export function App() {
                 onChange={setStrategyMode}
                 onSetGridTopup={setGridTopup}
                 onTune={() => navigate("manage", "settings")}
+                canOperate={canOperate}
               />
             )}
-            {status && <OverrideCard dataQuality={alertsData?.data_quality} />}
-            {status && <CarCard compact onOpenCar={() => navigate("car")} />}
+            {status && (
+              <OverrideCard dataQuality={alertsData?.data_quality} canOperate={canOperate} />
+            )}
+            {status && (
+              <CarCard compact onOpenCar={() => navigate("car")} canOperate={canOperate} />
+            )}
             {status && (
         <Advanced>
           <section className="grid" data-testid="detail-grid">

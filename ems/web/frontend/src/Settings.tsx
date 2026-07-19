@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 
+import { AdminAccess } from "./Admin";
 import { apiFetch, clearToken } from "./auth";
 import { type CarModel, type CarsResp } from "./ev";
 import { humanize } from "./labels";
@@ -350,6 +351,8 @@ function SolarConfidenceHint({
 export function Settings({
   onSaved,
   initialSection,
+  canOperate = true,
+  isAdmin = false,
 }: {
   onSaved?: (values: Values) => void;
   // Deep-link: open this section on mount (e.g. System's "solar" health action → "planner", or
@@ -357,6 +360,12 @@ export function Settings({
   // machinery a sidebar click uses, so it needs no hash segment of its own (CLAUDE.md: keep the
   // canonical #manage/settings hash simple).
   initialSection?: string;
+  // Reader read-only mode (auth slice 2 web): every field renders disabled and the save bar never
+  // appears — mirrors the API's 403 on writes rather than inventing a new client-side rule.
+  // Defaults true so every other caller (and every existing test) is unaffected.
+  canOperate?: boolean;
+  // Admin-only "Users" + "Invites" panel (design §7 Access & security). Defaults false.
+  isAdmin?: boolean;
 } = {}) {
   const [schema, setSchema] = useState<SettingField[] | null>(null);
   const [values, setValues] = useState<Values>({});
@@ -653,7 +662,7 @@ export function Settings({
           field={f}
           value={edited[f.key]}
           error={errors[f.key]}
-          disabled={status === "saving"}
+          disabled={status === "saving" || !canOperate}
           secretSet={Boolean(values[`${f.key}.__set`])}
           onChange={(v) => {
             set(f.key, v);
@@ -666,7 +675,7 @@ export function Settings({
             advice={solarAdvice}
             currentPct={Number(edited[f.key] ?? f.default)}
             applied={solarAdviceApplied}
-            disabled={status === "saving"}
+            disabled={status === "saving" || !canOperate}
             onApply={(pct) => {
               set(f.key, pct); // same set() the field's own control uses — dirty ⇒ sticky save bar
               setSolarAdviceApplied(true);
@@ -700,7 +709,7 @@ export function Settings({
   const basicFields = sectionFields.filter((f) => !f.advanced);
   const advancedFields = sectionFields.filter((f) => f.advanced);
   const advIsOpen = active ? advancedOpen.has(active) : false;
-  const showSaveBar = dirty || status === "saved";
+  const showSaveBar = canOperate && (dirty || status === "saved");
 
   return (
     <section
@@ -729,6 +738,8 @@ export function Settings({
           </button>
         </div>
       )}
+
+      {isAdmin && <AdminAccess />}
 
       <div className="settings-panes">
         <aside className="settings-sidebar">

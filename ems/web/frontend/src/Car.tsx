@@ -128,6 +128,7 @@ function CarModeSection({
   houseLoadW,
   status,
   error,
+  disabled = false,
 }: {
   carMode: CarModeState;
   onToggleHold: (next: boolean) => void;
@@ -136,6 +137,10 @@ function CarModeSection({
   houseLoadW: number | null;
   status: "idle" | "saving" | "saved" | "error";
   error: string | null;
+  // Reader read-only mode (auth slice 2 web): these three settings save IMMEDIATELY on
+  // interaction (no sticky save bar to gate), so the controls themselves must be disabled.
+  // Defaults false so every other caller is unaffected.
+  disabled?: boolean;
 }) {
   const optionRefs = useRef<(HTMLButtonElement | null)[]>([]);
   const [wattsRaw, setWattsRaw] = useState(String(carMode.dischargeW));
@@ -177,6 +182,7 @@ function CarModeSection({
             role="switch"
             aria-checked={carMode.holdEnabled}
             aria-label="Special battery behaviour while the car charges"
+            disabled={disabled}
             className={`switch${carMode.holdEnabled ? " switch-on" : ""}`}
             data-testid="car-mode-hold-toggle"
             onClick={() => onToggleHold(!carMode.holdEnabled)}
@@ -207,6 +213,7 @@ function CarModeSection({
                 role="radio"
                 aria-checked={selected}
                 tabIndex={selected ? 0 : -1}
+                disabled={disabled}
                 ref={(el) => {
                   optionRefs.current[i] = el;
                 }}
@@ -234,6 +241,7 @@ function CarModeSection({
                       max={CAR_MODE_MAX_W}
                       step={CAR_MODE_STEP_W}
                       value={wattsRaw}
+                      disabled={disabled}
                       data-testid="car-mode-watts-input"
                       onChange={(e) => setWattsRaw(e.target.value)}
                       onBlur={commitWatts}
@@ -269,7 +277,16 @@ function CarModeSection({
   );
 }
 
-export function CarView({ onOpenSettings }: { onOpenSettings?: () => void }) {
+export function CarView({
+  onOpenSettings,
+  canOperate = true,
+}: {
+  onOpenSettings?: () => void;
+  // Reader read-only mode (auth slice 2 web): every mutating control here — the car-mode
+  // toggle/radios/watts, the car picker, the capacity field, the schedule editor, and the sticky
+  // save bar — is disabled/hidden for a reader. Defaults true so every other caller is unaffected.
+  canOperate?: boolean;
+}) {
   const [values, setValues] = useState<Values>({});
   const [edited, setEdited] = useState<Values>({});
   const [cars, setCars] = useState<CarModel[] | null>(null);
@@ -508,14 +525,15 @@ export function CarView({ onOpenSettings }: { onOpenSettings?: () => void }) {
 
   const selectedCar = (cars ?? []).find((c) => c.id === String(edited["ev.car_id"] ?? "")) ?? null;
   const scheduleValue = String(edited["ev.schedule"] ?? JSON.stringify(defaultSchedule()));
-  const showSaveBar = dirty || status === "saved";
+  const showSaveBar = canOperate && (dirty || status === "saved");
+  const fieldsDisabled = status === "saving" || !canOperate;
 
   return (
     <section data-testid="car-view" data-density-surface="car">
       {/* (a) The full car-charging card (same component as the dashboard, non-compact). Threads
           the same onOpenSettings this view already has (used below by the config-section link) so
           the feature-off empty state can send you to Manage → Settings → Car too. */}
-      <CarCard onOpenSettings={onOpenSettings} />
+      <CarCard onOpenSettings={onOpenSettings} canOperate={canOperate} />
 
       {/* (b) The home-battery's behaviour while the car charges (feat/car-charge-modes) — saves
           immediately, independent of this view's own sticky save bar below. */}
@@ -527,6 +545,11 @@ export function CarView({ onOpenSettings }: { onOpenSettings?: () => void }) {
         houseLoadW={houseLoadW}
         status={carModeStatus}
         error={carModeErr}
+        // NOT gated on carModeStatus === "saving" — these controls never disabled during their
+        // own immediate-save round-trip before this slice, and the arrow-key/space keyboard
+        // interaction test depends on that (a disabled button can't hold focus). Reader read-only
+        // mode is the only new reason to disable them.
+        disabled={!canOperate}
       />
 
       {/* (c) Config: car picker + weekly schedule, moved here from Settings. */}
@@ -551,7 +574,7 @@ export function CarView({ onOpenSettings }: { onOpenSettings?: () => void }) {
           <CarPicker
             carId={String(edited["ev.car_id"] ?? "")}
             cars={cars ?? []}
-            disabled={status === "saving"}
+            disabled={fieldsDisabled}
             onPick={(car) => {
               if (car) {
                 set("ev.car_id", car.id);
@@ -581,7 +604,7 @@ export function CarView({ onOpenSettings }: { onOpenSettings?: () => void }) {
             max={150}
             step={0.5}
             value={String(edited["ev.battery_kwh"] ?? 57.5)}
-            disabled={status === "saving"}
+            disabled={fieldsDisabled}
             onChange={(e) => {
               const n = Number(e.target.value);
               set("ev.battery_kwh", Number.isFinite(n) ? n : 57.5);
@@ -596,7 +619,7 @@ export function CarView({ onOpenSettings }: { onOpenSettings?: () => void }) {
           <label className="field-label">Weekly minimum charge</label>
           <EvScheduleEditor
             value={scheduleValue}
-            disabled={status === "saving"}
+            disabled={fieldsDisabled}
             onChange={(v) => set("ev.schedule", v)}
           />
         </div>

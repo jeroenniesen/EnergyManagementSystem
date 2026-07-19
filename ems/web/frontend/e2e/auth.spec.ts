@@ -59,3 +59,47 @@ test("onboarding then login then logout", async ({ page }) => {
   await page.getByTestId("logout").click();
   await expect(page.getByTestId("login")).toBeVisible();
 });
+
+// Runs AFTER the test above (same file, same per-file DB, declaration order — see the file-level
+// comment): the admin account it created is the one used here to mint the invite.
+test("invite-accept creates a new account and logs it in", async ({ page, request }) => {
+  // The previous test ended logged out — mint a fresh admin session token via the API directly
+  // (no browser needed for this part) rather than re-driving the login form.
+  const loginResp = await request.post("/api/auth/login", {
+    data: { username: "admin", password: "pw12345678" },
+  });
+  expect(loginResp.ok()).toBeTruthy();
+  const { token: adminToken } = await loginResp.json();
+
+  const inviteResp = await request.post("/api/invites", {
+    headers: { Authorization: `Bearer ${adminToken}` },
+    data: { role: "user" },
+  });
+  expect(inviteResp.ok()).toBeTruthy();
+  const invite = await inviteResp.json();
+  expect(invite.accept_url).toContain("/#/accept-invite?code=");
+
+  // A clean browser for the invitee: no leftover admin token.
+  await page.goto("/");
+  await page.evaluate(() => localStorage.removeItem("ems.token"));
+  await page.goto(invite.accept_url);
+  await expect(page.getByTestId("accept-invite")).toBeVisible();
+  await page.getByLabel("Username").fill("invited-user");
+  await page.getByLabel("Password").fill("invited-pw-12345");
+  await page.getByRole("button", { name: "Create account" }).click();
+  await expect(page.getByTestId("accept-invite")).toBeHidden();
+
+  // Same gated-read 200 pattern as the onboarding/login test above: a network-layer proof the
+  // bearer token attached and the app is actually rendering the authenticated shell, not a 401'd
+  // skeleton that happens to look empty.
+  const okResp = await page.waitForResponse(
+    (r) => new URL(r.url()).pathname === "/api/status" && r.status() === 200,
+    { timeout: 15000 },
+  );
+  expect(okResp.ok()).toBe(true);
+  await expect(page.getByTestId("nav-manage")).toBeVisible();
+
+  // The invite carried role "user" (not admin) — the admin-only Access & security panel is absent.
+  await page.getByTestId("nav-manage").click();
+  await expect(page.getByTestId("admin-users")).toHaveCount(0);
+});
