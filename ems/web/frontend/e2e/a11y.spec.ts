@@ -20,14 +20,14 @@ test.describe("WCAG 2.1 AA accessibility gate", () => {
   test("Insights page is accessible", async ({ page }) => {
     await page.goto("/");
     await page.getByTestId("nav-insights").click();
-    await page.waitForSelector("[data-testid='score-card']");
+    await page.waitForSelector("[data-testid='score-grid']");
     await checkA11y(page);
   });
 
   test("Manage/Settings page is accessible", async ({ page }) => {
     await page.goto("/");
     await page.getByTestId("nav-manage").click();
-    await page.waitForSelector("[data-testid='settings-content']");
+    await page.waitForSelector("[data-testid='settings']");
     await checkA11y(page);
   });
 
@@ -39,7 +39,7 @@ test.describe("WCAG 2.1 AA accessibility gate", () => {
     if (await systemTab.isVisible().catch(() => false)) {
       await systemTab.click();
     }
-    await page.waitForSelector("[data-testid='readiness-check']");
+    await page.waitForSelector("[data-testid='system']");
     await checkA11y(page);
   });
 
@@ -48,7 +48,11 @@ test.describe("WCAG 2.1 AA accessibility gate", () => {
     const carNav = page.getByTestId("nav-car");
     if (await carNav.isVisible().catch(() => false)) {
       await carNav.click();
-      await page.waitForSelector("[data-testid='car-plan']");
+      // Not "car-card": that testid only appears once /api/car/plan resolves AND the EV advisor
+      // is enabled (ems/web/routes/car.py's `enabled:false` state renders "car-card-disabled"
+      // instead) — the a11y DB run has it off by default, so waiting on "car-card" would hang.
+      // "car-view" is Car.tsx's outer section, rendered unconditionally as soon as the tab mounts.
+      await page.waitForSelector("[data-testid='car-view']");
     }
     await checkA11y(page);
   });
