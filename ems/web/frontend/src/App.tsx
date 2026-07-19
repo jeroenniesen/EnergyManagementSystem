@@ -1,5 +1,6 @@
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
+import { apiFetch, setUnauthorizedHandler } from "./auth";
 import { type Battery, BatteryChips } from "./BatteryChips";
 import { EnergyDistribution } from "./EnergyDistribution";
 import { type EnergyStoryData, EnergyStory } from "./EnergyStory";
@@ -17,7 +18,9 @@ import {
   RUN_MODE,
   SIGNAL_NAME,
 } from "./labels";
+import { Login } from "./Login";
 import { NotificationBell } from "./Notifications";
+import { Onboarding } from "./Onboarding";
 import { OverrideCard } from "./Override";
 import { CarCard } from "./CarCard";
 import { CarView } from "./Car";
@@ -27,6 +30,8 @@ import { AiValidationCard } from "./AiValidationCard";
 import { ChatPanel } from "./ChatPanel";
 import { Insights } from "./Insights";
 import { HomeScores, type Report } from "./HomeScores";
+import { OutcomeTiles, type TileFreshness } from "./OutcomeTiles";
+import { CombinedPlanChart } from "./CombinedPlanChart";
 import { homeSummary } from "./scoreCopy";
 import { SkyBackdrop } from "./SkyBackdrop";
 import { Advanced } from "./Advanced";
@@ -266,10 +271,46 @@ function ChargeTarget({ n }: { n: ChargeNeed }) {
 }
 
 
+// Discovery payload shape from GET /api/auth (identity mode) — see docs/superpowers/specs/
+// 2026-07-17-auth-users-roles-design.md §5. `null` until the first fetch resolves.
+type AuthState = {
+  required: boolean;
+  authenticated: boolean;
+  onboarding_needed: boolean;
+  shared_token_required: boolean;
+} | null;
+
 export function App() {
+  // Auth gate (Task 10). Kept as plain hooks at the top, unconditionally called on every render —
+  // the gating itself happens ONLY in the final JSX below (never via an early `return` mid-function),
+  // because every other hook in this component is declared further down: an early return here would
+  // make this component call a different NUMBER of hooks between the "gated" renders (auth
+  // unresolved/onboarding/login) and the "app" render (all hooks below reached) — a Rules-of-Hooks
+  // violation ("Rendered more hooks than during the previous render") that would throw exactly when
+  // onboarding/login completes and the app tries to render for the first time.
+  const [auth, setAuth] = useState<AuthState>(null);
+  const refreshAuth = useCallback(async () => {
+    try {
+      const r = await apiFetch("/api/auth");
+      setAuth(await r.json());
+    } catch {
+      /* leave auth as-is; the next poll tick or user action can retry */
+    }
+  }, []);
+  useEffect(() => {
+    refreshAuth();
+  }, [refreshAuth]);
+  // Central 401 handler (Task 11): apiFetch already clears the (now-invalid) token on any 401 —
+  // this just re-resolves auth, which falls back to <Login/> once `auth.authenticated` flips false.
+  useEffect(() => {
+    setUnauthorizedHandler(() => refreshAuth());
+    return () => setUnauthorizedHandler(null);
+  }, [refreshAuth]);
+
   const [status, setStatus] = useState<Status | null>(null);
   const [freshness, setFreshness] = useState<FreshnessMap | null>(null);
   const [story, setStory] = useState<EnergyStoryData | null>(null);
+  const [technicalStory, setTechnicalStory] = useState<EnergyStoryData | null>(null);
   const [batteryPlan, setBatteryPlan] = useState<BatteryPlanData | null>(null);
   const [storyWindow, setStoryWindow] = useState<"past" | "next">("next");
   const [strategy, setStrategy] = useState<Strategy | null>(null);
@@ -289,6 +330,11 @@ export function App() {
   // same best-effort convention as the other polled cards below).
   const [savedToday, setSavedToday] = useState<SavedToday | null>(null);
   const [report, setReport] = useState<Report | null>(null);
+  const emptyFreshness = (): TileFreshness => ({ updatedAt: null, stale: true });
+  const [tileFreshness, setTileFreshness] = useState({
+    report: emptyFreshness(), status: emptyFreshness(), finance: emptyFreshness(),
+  });
+  const batteryFreshness = useRef<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [route, setRoute] = useState<Route>(() => routeFromHash(window.location.hash));
   const view = route.view;
@@ -298,8 +344,14 @@ export function App() {
   // canonical hash stays #manage/settings; CLAUDE.md: keep it simple). Reset whenever navigate()
   // is called without one, so a plain nav click never leaves a stale section behind.
   const [settingsSection, setSettingsSection] = useState<string | undefined>(undefined);
-  // "See the full plan" disclosure — collapsed by default, choice remembered across visits so a
-  // homeowner who wants the detail keeps it, and one who doesn't never sees it re-expand.
+  const [homeMoreOpen, setHomeMoreOpen] = useState<boolean>(() => {
+    try {
+      return localStorage.getItem("ems.dash.homeMoreOpen") === "1";
+    } catch {
+      return false;
+    }
+  });
+  // The technical plan nested under More keeps its own remembered disclosure state.
   const [planOpen, setPlanOpen] = useState<boolean>(() => {
     try {
       return localStorage.getItem("ems.dash.planOpen") === "1";
@@ -325,7 +377,7 @@ export function App() {
 
   useEffect(() => {
     let alive = true;
-    fetch("/api/settings")
+    apiFetch("/api/settings")
       .then((r) => (r.ok ? r.json() : null))
       .then((b) => {
         if (alive && b?.values?.["ui.theme"]) setTheme(b.values["ui.theme"] as Theme);
@@ -346,19 +398,22 @@ export function App() {
     return applyTheme(theme);
   }, [theme]);
 
-  // Today's scores — fetched once here (off the fast poll) so BOTH the score pills and the hero's
-  // synthesis line read the SAME summary; no second source, no chance of two different verdicts.
+  // The day report is deliberately low-frequency: calculating it touches historical storage.
+  // Its last successful value remains useful, while /api/freshness supplies the later stale signal.
   useEffect(() => {
     let alive = true;
-    fetch("/api/report?period=day")
-      .then((r) => (r.ok ? r.json() : null))
-      .then((v: Report | null) => {
-        if (alive && v) setReport(v);
-      })
-      .catch(() => {});
-    return () => {
-      alive = false;
-    };
+    // Merge: keep the calm-dashboard's tile-freshness tracking, but route through apiFetch so the
+    // read carries the bearer token / central 401 handling (auth slice 1).
+    apiFetch("/api/report?period=day")
+      .then((r) => { if (!r.ok) throw new Error(`HTTP ${r.status}`); return r.json(); })
+      .then((v: Report) => { if (alive) {
+        setReport(v);
+        setTileFreshness((current) => ({ ...current, report: { updatedAt: Date.now(), stale: false } }));
+      } })
+      .catch(() => { if (alive) setTileFreshness((current) => ({
+        ...current, report: { ...current.report, stale: true },
+      })); });
+    return () => { alive = false; };
   }, []);
 
   // Persist the disclosure choice for next visit.
@@ -369,6 +424,14 @@ export function App() {
       /* private-mode / storage-disabled: the toggle still works in-session */
     }
   }, [planOpen]);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem("ems.dash.homeMoreOpen", homeMoreOpen ? "1" : "0");
+    } catch {
+      /* private-mode / storage-disabled: the toggle still works in-session */
+    }
+  }, [homeMoreOpen]);
 
   function dismissDemoCta() {
     setDemoDismissed(true);
@@ -400,21 +463,45 @@ export function App() {
     if (view !== "dashboard") return;
     let alive = true;
     async function getJson(url: string) {
-      const r = await fetch(url);
+      // Global 401 handler (Task 11): apiFetch clears the (now-invalid) token and notifies the
+      // central handler (registered above), which re-resolves auth and falls back to <Login/>.
+      const r = await apiFetch(url);
       if (!r.ok) throw new Error(`HTTP ${r.status}`);
       return r.json();
     }
     // Each card updates as its own endpoint resolves — a slow/flaky one (e.g. the battery) never
     // blocks or blanks the rest. Liveness hinges on /api/status: only its failure shows the banner.
-    function fill<T>(url: string, apply: (v: T) => void) {
-      getJson(url).then((v) => { if (alive) apply(v); }).catch(() => {});
+    function fill<T>(url: string, apply: (v: T) => void, failed?: () => void) {
+      getJson(url).then((v) => { if (alive) apply(v); }).catch(() => { if (alive) failed?.(); });
     }
     function poll() {
       getJson("/api/status")
-        .then((v) => { if (alive) { setStatus(v); setError(null); } })
-        .catch((e) => { if (alive) setError(String(e)); });
-      fill("/api/freshness", setFreshness);
-      fill(`/api/energy-story?window=${storyWindow}`, setStory);
+        .then((v) => { if (alive) {
+          setStatus(v); setError(null);
+          setTileFreshness((current) => ({
+            ...current,
+            status: { updatedAt: Date.now(), stale: batteryFreshness.current === "stale" },
+          }));
+        } })
+        .catch((e) => { if (alive) {
+          setError(String(e));
+          setTileFreshness((current) => ({ ...current, status: { ...current.status, stale: true } }));
+        } });
+      fill("/api/freshness", (value: FreshnessMap) => {
+        setFreshness(value);
+        batteryFreshness.current = value.battery ?? null;
+        if (value.battery === "stale" || value.battery === "missing") {
+          setTileFreshness((current) => ({
+            ...current, status: { ...current.status, stale: true },
+          }));
+        }
+      }, () => setTileFreshness((current) => ({
+        ...current, report: { ...current.report, stale: true },
+      })));
+      fill("/api/energy-story?window=next", setStory);
+      if (homeMoreOpen && planOpen) {
+        fill(`/api/energy-story?window=${storyWindow}`, setTechnicalStory);
+      }
       fill("/api/battery-plan", setBatteryPlan);
       fill("/api/strategy", (v: Strategy) => { if (!strategyPending.current) setStrategy(v); });
       fill("/api/battery", setBattery);
@@ -428,7 +515,12 @@ export function App() {
         (v: { totals?: { saved_eur: number | null } }) => {
           const eurVal = v?.totals?.saved_eur;
           setSavedToday(eurVal == null ? { status: "measuring" } : { status: "measured", eur: eurVal });
+          setTileFreshness((current) => ({
+            ...current,
+            finance: eurVal == null ? current.finance : { updatedAt: Date.now(), stale: false },
+          }));
         },
+        () => setTileFreshness((current) => ({ ...current, finance: { ...current.finance, stale: true } })),
       );
       fill("/api/charge-need", (v: ChargeNeed) => setChargeNeed(v ?? null));
       // Planned car-charging windows for the chart overlay (feat/ux-batch-3) — `enabled:false`
@@ -449,7 +541,7 @@ export function App() {
       alive = false;
       clearInterval(id);
     };
-  }, [view, storyWindow]);
+  }, [view, storyWindow, homeMoreOpen, planOpen]);
 
   // Save a strategy setting live: apply an optimistic patch (instant, self-consistent card), POST
   // it, then reconcile from the server — reverting if the write fails. The pending guard stops the
@@ -459,13 +551,13 @@ export function App() {
     strategyPending.current = true;
     setStrategy((s) => (s ? { ...s, ...optimistic } : s));
     try {
-      const res = await fetch("/api/settings", {
+      const res = await apiFetch("/api/settings", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(body),
       });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const r = await fetch("/api/strategy");
+      const r = await apiFetch("/api/strategy");
       if (r.ok) setStrategy(await r.json());
       else setStrategy(prev);
     } catch {
@@ -499,7 +591,7 @@ export function App() {
   // into ONE sentence — reusing the exact strings, inventing no number. Trailing punctuation is
   // trimmed so the middot join reads cleanly ("…88% target · A solid energy day — keep it up").
   const trimEnd = (s: string) => s.replace(/[.\s]+$/, "");
-  const synthesis = [story?.on_track?.message, summary?.text]
+  const synthesis = [batteryPlan?.current_reason, story?.on_track?.message, summary?.text]
     .filter((s): s is string => !!s)
     .map(trimEnd)
     .join(" · ");
@@ -531,6 +623,17 @@ export function App() {
   // B-57: on demo/mock data, a persistent friendly nudge into real onboarding (Settings opens on
   // the Connection section by default). Dismissible for the session; back on next visit.
   const demoActive = !!home?.simulated && !demoDismissed;
+
+  // Auth gate (Task 10). Placed here — AFTER every hook above has already been called
+  // unconditionally on every render — rather than at the top of the component: an early return
+  // BEFORE the rest of this component's hooks would make React call a different number of hooks
+  // between the gated renders and the first "app" render, which throws (Rules of Hooks). Putting
+  // the branch here, once all hooks are done, is the safe equivalent.
+  if (auth === null) return null; // splash while the first GET /api/auth is in flight
+  if (auth.onboarding_needed) {
+    return <Onboarding sharedTokenRequired={auth.shared_token_required} onDone={refreshAuth} />;
+  }
+  if (!auth.authenticated) return <Login onDone={refreshAuth} />;
 
   return (
     <>
@@ -657,6 +760,7 @@ export function App() {
         <section
           className={`hero home-${home.tone}`}
           data-testid="home-state"
+          data-density-kind="hero"
           data-tone={home.tone}
         >
           <div className="hero-verdict-row">
@@ -667,6 +771,7 @@ export function App() {
               <span
                 className={`badge confidence-chip confidence-${confidence.level}`}
                 data-testid="confidence-chip"
+                data-density-kind="badge"
                 data-level={confidence.level}
                 title={confidence.reasons.join(" ")}
               >
@@ -738,73 +843,79 @@ export function App() {
       )}
 
       {view === "dashboard" && (
-        <HomeScores report={report} onOpenDetail={() => navigate("insights")} />
+        <>
+          <OutcomeTiles
+            report={report}
+            savedToday={savedToday}
+            socPct={status?.soc_pct ?? null}
+            onOpenInsights={() => navigate("insights")}
+            onOpenFinance={() => navigate("insights")}
+            onOpenBattery={batteryHasDetail ? () => setBatteryDetail("soc") : undefined}
+            freshness={tileFreshness}
+          />
+          <CombinedPlanChart story={story?.window === "next" ? story : null} />
+        </>
       )}
 
-      {/* The ONE today-story: the single narrative + chart. Its footer carries the live snapshot
-          (saved / battery / mode) the old stat-tile row used to. */}
       {view === "dashboard" && (
-        <BatteryPlan
-          plan={batteryPlan}
-          savedToday={savedToday}
-          socPct={status?.soc_pct ?? null}
-          batteryMode={batteryModeLabel}
-          onBatteryClick={batteryHasDetail ? () => setBatteryDetail("soc") : undefined}
-          carWindows={carPlan?.windows ?? []}
-          carWindowsEnabled={carPlan?.enabled ?? false}
-        />
-      )}
-
-      {/* The full plan (the past/next toggle + tiles + charts) lives one tap deeper — collapsed by
-          default so the story card's headline is the only narrative on screen. When opened, the
-          plan renders WITHOUT its own headline sentence (hideHeadline), so the two never duplicate. */}
-      {view === "dashboard" && (
-        <section className="plan-disclosure" data-testid="plan-disclosure">
-          <button
-            type="button"
-            className={`advanced-toggle${planOpen ? " open" : ""}`}
-            data-testid="plan-disclosure-toggle"
-            aria-expanded={planOpen}
-            onClick={() => setPlanOpen((o) => !o)}
-          >
-            <span className="advanced-chevron" aria-hidden="true">›</span>
-            <span>{planOpen ? "Hide the full plan" : "See the full plan"}</span>
-          </button>
-          {planOpen && (
-            <div className="plan-disclosure-body" data-testid="plan-disclosure-body">
-              <EnergyStory
-                story={story}
-                window={storyWindow}
-                onWindow={setStoryWindow}
-                hideHeadline
+        <details
+          className="home-more"
+          data-testid="home-more"
+          data-density-kind="disclosure"
+          open={homeMoreOpen}
+          onToggle={(event) => setHomeMoreOpen(event.currentTarget.open)}
+        >
+          <summary className="home-more-toggle" data-testid="home-more-toggle" aria-expanded={homeMoreOpen}>
+            More from your home
+          </summary>
+          <div className="home-more-body" data-testid="home-more-body">
+            <HomeScores
+              report={report}
+              onOpenDetail={() => navigate("insights")}
+              scoreKeys={["co2", "best_price"]}
+            />
+            <BatteryPlan
+              plan={batteryPlan}
+              savedToday={savedToday}
+              socPct={status?.soc_pct ?? null}
+              batteryMode={batteryModeLabel}
+              onBatteryClick={batteryHasDetail ? () => setBatteryDetail("soc") : undefined}
+              carWindows={carPlan?.windows ?? []}
+              carWindowsEnabled={carPlan?.enabled ?? false}
+            />
+            <section className="plan-disclosure" data-testid="plan-disclosure">
+              <button
+                type="button"
+                className={`advanced-toggle${planOpen ? " open" : ""}`}
+                data-testid="plan-disclosure-toggle"
+                aria-expanded={planOpen}
+                onClick={() => setPlanOpen((o) => !o)}
+              >
+                <span className="advanced-chevron" aria-hidden="true">›</span>
+                <span>{planOpen ? "Hide the full plan" : "See the full plan"}</span>
+              </button>
+              {planOpen && (
+                <div className="plan-disclosure-body" data-testid="plan-disclosure-body">
+                  <EnergyStory
+                    story={technicalStory}
+                    window={storyWindow}
+                    onWindow={setStoryWindow}
+                    hideHeadline
+                  />
+                </div>
+              )}
+            </section>
+            {strategy && (
+              <StrategyCard
+                strategy={strategy}
+                onChange={setStrategyMode}
+                onSetGridTopup={setGridTopup}
+                onTune={() => navigate("manage", "settings")}
               />
-            </div>
-          )}
-        </section>
-      )}
-
-      {view === "dashboard" && strategy && (
-        <StrategyCard
-          strategy={strategy}
-          onChange={setStrategyMode}
-          onSetGridTopup={setGridTopup}
-          onTune={() => navigate("manage", "settings")}
-        />
-      )}
-
-      {/* A manual override sits with the strategy control, above the detail. */}
-      {view === "dashboard" && status && (
-        <OverrideCard dataQuality={alertsData?.data_quality} />
-      )}
-
-      {/* Opt-in, advisory-only car-charging plan — the COMPACT variant here (SoC + next window +
-          advice + "Open Car →"); the full plan lives in the dedicated Car view. */}
-      {view === "dashboard" && status && (
-        <CarCard compact onOpenCar={() => navigate("car")} />
-      )}
-
-      {/* Advanced — the full detail, tucked away by default (opens on demand). */}
-      {view === "dashboard" && status && (
+            )}
+            {status && <OverrideCard dataQuality={alertsData?.data_quality} />}
+            {status && <CarCard compact onOpenCar={() => navigate("car")} />}
+            {status && (
         <Advanced>
           <section className="grid" data-testid="detail-grid">
             <Metric
@@ -912,6 +1023,9 @@ export function App() {
             </section>
           )}
         </Advanced>
+            )}
+          </div>
+        </details>
       )}
 
       {view === "dashboard" && batteryDetail && batteryHasDetail && (

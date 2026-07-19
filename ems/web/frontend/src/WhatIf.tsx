@@ -6,6 +6,7 @@
 // this panel is clearly badged and never offers to "apply" anything.
 import { useEffect, useState } from "react";
 
+import { apiFetch } from "./auth";
 import { eur } from "./format";
 
 type ScenarioTotals = { cost_eur: number | null; import_kwh: number; export_kwh: number };
@@ -86,7 +87,7 @@ export function WhatIf() {
   // header is a bonus fact, never something the rest of the panel waits on or errors over.
   useEffect(() => {
     let alive = true;
-    fetch("/api/counterfactual?days=14")
+    apiFetch("/api/counterfactual?days=14")
       .then((r) => (r.ok ? r.json() : null))
       .then((v: Counterfactual | null) => alive && setCounterfactual(v))
       .catch(() => alive && setCounterfactual(null));
@@ -100,7 +101,7 @@ export function WhatIf() {
     setResult(null);
     setError(false);
     setLoading(true);
-    fetch("/api/whatif", {
+    apiFetch("/api/whatif", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ overrides: preset.overrides, days: runDays }),

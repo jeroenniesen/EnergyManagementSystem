@@ -4,6 +4,7 @@
 // from recorded history server-side). Every score explains itself (the "why").
 import { useEffect, useState } from "react";
 
+import { apiFetch } from "./auth";
 import { EnergyBehavior, type SeriesBucket } from "./EnergyBehavior";
 import { FinanceSection } from "./FinanceSection";
 import { HeatingAdvice } from "./HeatingAdvice";
@@ -281,7 +282,7 @@ export function Insights() {
     let alive = true;
     setLoading(true);
     setError(false);
-    fetch(`/api/report?period=${period}&date=${anchor}`)
+    apiFetch(`/api/report?period=${period}&date=${anchor}`)
       .then((r) => {
         if (!r.ok) throw new Error(`HTTP ${r.status}`);
         return r.json();
@@ -310,7 +311,7 @@ export function Insights() {
   useEffect(() => {
     let alive = true;
     const prevAnchor = shiftAnchor(anchor, period, -1);
-    fetch(`/api/report?period=${period}&date=${prevAnchor}`)
+    apiFetch(`/api/report?period=${period}&date=${prevAnchor}`)
       .then((r) => (r.ok ? r.json() : null))
       .then((v: Report | null) => {
         if (alive) setPrevReport(v);
@@ -342,7 +343,7 @@ export function Insights() {
   const { activeId, visible } = useSectionNav(sections);
 
   return (
-    <section className="insights" data-testid="insights" aria-label="Insights and reporting">
+    <section className="insights" data-testid="insights" data-density-surface="insights" aria-label="Insights and reporting">
       {visible && sections.length > 1 && <SectionNav sections={sections} activeId={activeId} />}
       <div id="insights-sec-week">
         <WeekDigest />
@@ -432,6 +433,7 @@ export function Insights() {
               <div
                 key={s.key}
                 className={`score-card score-${scoreBand(value)}`}
+                data-density-kind="card"
                 data-testid={`score-${s.key}`}
                 data-state={early ? "early" : undefined}
                 role="group"

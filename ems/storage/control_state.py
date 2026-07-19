@@ -13,6 +13,8 @@ from __future__ import annotations
 import json
 import sqlite3
 
+from ems.perf import timed
+
 _BUSY_TIMEOUT_MS = 3000
 _KEY = "controller"
 
@@ -40,26 +42,28 @@ class ControlStateStore:
 
     def load(self) -> dict:
         """The persisted state dict, or {} if none/unparseable (never raises)."""
-        try:
-            con = self._conn()
+        with timed("store.control_state.read"):
             try:
-                row = con.execute(
-                    "SELECT value FROM control_state WHERE key=?", (_KEY,)
-                ).fetchone()
-            finally:
-                con.close()
-            return json.loads(row[0]) if row else {}
-        except (sqlite3.Error, ValueError, TypeError):
-            return {}
+                con = self._conn()
+                try:
+                    row = con.execute(
+                        "SELECT value FROM control_state WHERE key=?", (_KEY,)
+                    ).fetchone()
+                finally:
+                    con.close()
+                return json.loads(row[0]) if row else {}
+            except (sqlite3.Error, ValueError, TypeError):
+                return {}
 
     def save(self, state: dict) -> None:
-        con = self._conn()
-        try:
-            con.execute(
-                "INSERT INTO control_state (key, value) VALUES (?, ?) "
-                "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
-                (_KEY, json.dumps(state)),
-            )
-            con.commit()
-        finally:
-            con.close()
+        with timed("store.control_state.write"):
+            con = self._conn()
+            try:
+                con.execute(
+                    "INSERT INTO control_state (key, value) VALUES (?, ?) "
+                    "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                    (_KEY, json.dumps(state)),
+                )
+                con.commit()
+            finally:
+                con.close()

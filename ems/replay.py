@@ -45,6 +45,7 @@ from datetime import UTC, date, datetime, timedelta
 from zoneinfo import ZoneInfo
 
 from ems.domain import BatteryIntent
+from ems.perf import timed
 from ems.planner.adaptive import AdaptiveConfig
 from ems.planner.economics import export_value
 from ems.planner.rule_based import PlannerConfig
@@ -564,48 +565,52 @@ def replay_range(
     `store` may be a `HistoryStore` (its `.db_path` is used) or a path string. The DB is opened
     READ-ONLY. Returns per-day results + an aggregate (scenario totals, planner-vs-auto delta, and
     — when `cfg_b` is given — the same days under the second config plus its cost delta)."""
-    db_path = getattr(store, "db_path", None) or str(store)
-    conn = _ro_conn(db_path)
-    try:
-        row = conn.execute("SELECT max(ts) FROM raw_samples").fetchone()
-        latest = row[0] if row else None
-        if latest is None:
-            return RangeResult([], _aggregate([], None), None if cfg_b is None else [])
-        last_dt = _parse(latest)
-        last_date = last_dt.astimezone(cfg.tz).date() if last_dt else datetime.now(cfg.tz).date()
-        dates = [last_date - timedelta(days=i) for i in range(max(1, days))][::-1]
+    with timed("replay.run"):
+        db_path = getattr(store, "db_path", None) or str(store)
+        conn = _ro_conn(db_path)
+        try:
+            row = conn.execute("SELECT max(ts) FROM raw_samples").fetchone()
+            latest = row[0] if row else None
+            if latest is None:
+                return RangeResult([], _aggregate([], None), None if cfg_b is None else [])
+            last_dt = _parse(latest)
+            last_date = (
+                last_dt.astimezone(cfg.tz).date() if last_dt else datetime.now(cfg.tz).date()
+            )
+            dates = [last_date - timedelta(days=i) for i in range(max(1, days))][::-1]
 
-        results: list[DayResult] = []
-        results_b: list[DayResult] | None = [] if cfg_b is not None else None
-        # One hysteresis memory per config, carried across the days in order (§8.4 / B-15) so the
-        # replayed `auto` season is dampened just like the live app. A/B get independent counters.
-        hyst_box: dict[str, HysteresisState] = {"state": HysteresisState()}
-        hyst_box_b: dict[str, HysteresisState] = {"state": HysteresisState()}
-        for d in dates:
-            start_iso, end_iso = _day_window(d, cfg.tz)
-            raw = _query(
-                conn,
-                "SELECT ts, grid_power_w, solar_power_w, battery_power_w, ev_power_w, soc_pct "
-                "FROM raw_samples WHERE ts >= ? AND ts < ? ORDER BY rowid ASC",
-                (start_iso, end_iso))
-            prices = _query(
-                conn,
-                "SELECT start_ts, eur_per_kwh FROM price_slots "
-                "WHERE start_ts >= ? AND start_ts < ? ORDER BY start_ts ASC",
-                (start_iso, end_iso))
-            forecast = _query(
-                conn,
-                "SELECT issued_date, start, p10_w, p50_w, p90_w FROM forecast_snapshots "
-                "WHERE start >= ? AND start < ? ORDER BY issued_date ASC, start ASC",
-                (start_iso, end_iso))
-            results.append(replay_day(raw, prices, forecast, cfg=cfg, hysteresis_box=hyst_box))
-            if results_b is not None and cfg_b is not None:
-                results_b.append(
-                    replay_day(raw, prices, forecast, cfg=cfg_b, hysteresis_box=hyst_box_b))
-    finally:
-        conn.close()
+            results: list[DayResult] = []
+            results_b: list[DayResult] | None = [] if cfg_b is not None else None
+            # One hysteresis memory per config, carried across the days in order (§8.4 / B-15) so
+            # the replayed `auto` season is dampened just like the live app. A/B get independent
+            # counters.
+            hyst_box: dict[str, HysteresisState] = {"state": HysteresisState()}
+            hyst_box_b: dict[str, HysteresisState] = {"state": HysteresisState()}
+            for d in dates:
+                start_iso, end_iso = _day_window(d, cfg.tz)
+                raw = _query(
+                    conn,
+                    "SELECT ts, grid_power_w, solar_power_w, battery_power_w, ev_power_w, soc_pct "
+                    "FROM raw_samples WHERE ts >= ? AND ts < ? ORDER BY rowid ASC",
+                    (start_iso, end_iso))
+                prices = _query(
+                    conn,
+                    "SELECT start_ts, eur_per_kwh FROM price_slots "
+                    "WHERE start_ts >= ? AND start_ts < ? ORDER BY start_ts ASC",
+                    (start_iso, end_iso))
+                forecast = _query(
+                    conn,
+                    "SELECT issued_date, start, p10_w, p50_w, p90_w FROM forecast_snapshots "
+                    "WHERE start >= ? AND start < ? ORDER BY issued_date ASC, start ASC",
+                    (start_iso, end_iso))
+                results.append(replay_day(raw, prices, forecast, cfg=cfg, hysteresis_box=hyst_box))
+                if results_b is not None and cfg_b is not None:
+                    results_b.append(
+                        replay_day(raw, prices, forecast, cfg=cfg_b, hysteresis_box=hyst_box_b))
+        finally:
+            conn.close()
 
-    return RangeResult(results, _aggregate(results, results_b), results_b)
+        return RangeResult(results, _aggregate(results, results_b), results_b)
 
 
 def _sum_cost(days: list[DayResult], scenario: str) -> float:

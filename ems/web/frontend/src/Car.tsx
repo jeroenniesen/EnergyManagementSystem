@@ -18,7 +18,7 @@
 //       recorded meter history, with an honest empty state.
 import { useEffect, useRef, useState } from "react";
 
-import { authHeaders } from "./auth";
+import { apiFetch } from "./auth";
 import { CarCard } from "./CarCard";
 import {
   CarPicker,
@@ -86,7 +86,7 @@ function hm(iso: string): string {
 
 function SessionsTable({ sessions }: { sessions: Session[] | null }) {
   return (
-    <div className="car-sessions" data-testid="car-sessions">
+    <div className="car-sessions" data-testid="car-sessions" data-density-kind="card">
       <span className="metric-label">Recent charging</span>
       <p className="settings-group-hint">
         Charging sessions detected from your meter history over the last 14 days.
@@ -168,7 +168,7 @@ function CarModeSection({
     houseLoadW != null && enteredW > houseLoadW;
 
   return (
-    <div className="car-mode" data-testid="car-battery-mode">
+    <div className="car-mode" data-testid="car-battery-mode" data-density-kind="card">
       <div className="car-mode-head">
         <span className="metric-label">While the car charges</span>
         <label className="switch-row" data-testid="car-mode-hold-row">
@@ -297,7 +297,7 @@ export function CarView({ onOpenSettings }: { onOpenSettings?: () => void }) {
     let alive = true;
     (async () => {
       try {
-        const r = await fetch("/api/settings");
+        const r = await apiFetch("/api/settings");
         if (!r.ok) return;
         const b: { values?: Values } = await r.json();
         if (!alive || !b.values) return;
@@ -331,7 +331,7 @@ export function CarView({ onOpenSettings }: { onOpenSettings?: () => void }) {
   useEffect(() => {
     let alive = true;
     function load() {
-      fetch("/api/status")
+      apiFetch("/api/status")
         .then((r) => (r.ok ? r.json() : null))
         .then((b: { non_ev_load_w?: number } | null) => {
           if (alive && b && typeof b.non_ev_load_w === "number") setHouseLoadW(b.non_ev_load_w);
@@ -354,14 +354,17 @@ export function CarView({ onOpenSettings }: { onOpenSettings?: () => void }) {
   function postCarMode(body: Record<string, number | boolean | string>, rollback: () => void) {
     setCarModeStatus("saving");
     setCarModeErr(null);
-    fetch("/api/settings", {
+    apiFetch("/api/settings", {
       method: "POST",
-      headers: { "content-type": "application/json", ...authHeaders() },
+      headers: { "content-type": "application/json" },
       body: JSON.stringify(body),
     })
       .then(async (r) => {
         if (r.status === 401) {
-          throw new Error("Unauthorized — set an access token in Manage → Settings.");
+          // apiFetch already cleared the (now-invalid) token and triggered the central 401
+          // handler, which bounces to <Login/> — nothing to show here (dead paste-token-box
+          // copy removed).
+          return;
         }
         if (!r.ok) {
           const b = await r.json().catch(() => ({}));
@@ -416,7 +419,7 @@ export function CarView({ onOpenSettings }: { onOpenSettings?: () => void }) {
     let alive = true;
     (async () => {
       try {
-        const r = await fetch("/api/cars");
+        const r = await apiFetch("/api/cars");
         if (!r.ok) return;
         const b: CarsResp = await r.json();
         if (alive) setCars(b.cars);
@@ -434,7 +437,7 @@ export function CarView({ onOpenSettings }: { onOpenSettings?: () => void }) {
     let alive = true;
     (async () => {
       try {
-        const r = await fetch("/api/car/sessions?days=14");
+        const r = await apiFetch("/api/car/sessions?days=14");
         if (!r.ok) {
           if (alive) setSessions([]);
           return;
@@ -464,14 +467,16 @@ export function CarView({ onOpenSettings }: { onOpenSettings?: () => void }) {
     setStatus("saving");
     setSaveErr(null);
     try {
-      const r = await fetch("/api/settings", {
+      const r = await apiFetch("/api/settings", {
         method: "POST",
-        headers: { "content-type": "application/json", ...authHeaders() },
+        headers: { "content-type": "application/json" },
         body: JSON.stringify(changed),
       });
       if (r.status === 401) {
-        setSaveErr("Unauthorized — set an access token in Manage → Settings.");
-        setStatus("error");
+        // apiFetch already cleared the (now-invalid) token and triggered the central 401
+        // handler, which bounces to <Login/> — nothing to show here (dead paste-token-box
+        // copy removed).
+        setStatus("idle");
         return;
       }
       const b = await r.json().catch(() => ({}));
@@ -506,7 +511,7 @@ export function CarView({ onOpenSettings }: { onOpenSettings?: () => void }) {
   const showSaveBar = dirty || status === "saved";
 
   return (
-    <section data-testid="car-view">
+    <section data-testid="car-view" data-density-surface="car">
       {/* (a) The full car-charging card (same component as the dashboard, non-compact). Threads
           the same onOpenSettings this view already has (used below by the config-section link) so
           the feature-off empty state can send you to Manage → Settings → Car too. */}
@@ -525,7 +530,7 @@ export function CarView({ onOpenSettings }: { onOpenSettings?: () => void }) {
       />
 
       {/* (c) Config: car picker + weekly schedule, moved here from Settings. */}
-      <div className="car-config" data-testid="car-config">
+      <div className="car-config" data-testid="car-config" data-density-kind="card">
         <span className="metric-label">Your car &amp; weekly schedule</span>
         <p className="settings-group-hint">
           Pick your car (capacity &amp; AC limit) and set the minimum charge to reach each morning.

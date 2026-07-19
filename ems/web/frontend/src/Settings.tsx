@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 
-import { authHeaders, getToken, setToken } from "./auth";
+import { apiFetch, clearToken } from "./auth";
 import { type CarModel, type CarsResp } from "./ev";
 import { humanize } from "./labels";
 import { SectionIcon } from "./settingsIcons";
@@ -365,7 +365,6 @@ export function Settings({
   const [status, setStatus] = useState<"idle" | "saving" | "saved" | "error">("idle");
   const [loadError, setLoadError] = useState<string | null>(null);
   const [auth, setAuth] = useState<{ required: boolean; authenticated: boolean } | null>(null);
-  const [tokenInput, setTokenInput] = useState(getToken());
   const [impact, setImpact] = useState<Impact | null>(null);
   const [solarAdvice, setSolarAdvice] = useState<SolarConfidenceAdvice | null>(null);
   // True right after the solar-confidence hint's "Apply" is tapped, until: the field is edited
@@ -387,7 +386,7 @@ export function Settings({
 
   async function refreshAuth() {
     try {
-      const r = await fetch("/api/auth", { headers: authHeaders() });
+      const r = await apiFetch("/api/auth");
       if (r.ok) setAuth(await r.json());
     } catch {
       /* leave auth as-is */
@@ -398,7 +397,7 @@ export function Settings({
     let alive = true;
     (async () => {
       try {
-        const r = await fetch("/api/settings");
+        const r = await apiFetch("/api/settings");
         if (!r.ok) throw new Error(`HTTP ${r.status}`);
         const b: SettingsResp = await r.json();
         if (!alive) return;
@@ -429,7 +428,7 @@ export function Settings({
     let alive = true;
     (async () => {
       try {
-        const r = await fetch("/api/advisor/solar-confidence");
+        const r = await apiFetch("/api/advisor/solar-confidence");
         if (!r.ok) return;
         const b: { advice: SolarConfidenceAdvice | null } = await r.json();
         if (alive) setSolarAdvice(b.advice ?? null);
@@ -454,7 +453,7 @@ export function Settings({
     let alive = true;
     (async () => {
       try {
-        const r = await fetch("/api/cars");
+        const r = await apiFetch("/api/cars");
         if (!r.ok) return;
         const b: CarsResp = await r.json();
         if (alive) setCars(b.cars);
@@ -495,7 +494,7 @@ export function Settings({
     let alive = true; // ignore a stale/in-flight result if the edit changes or we unmount
     const id = setTimeout(async () => {
       try {
-        const r = await fetch("/api/plan-preview", {
+        const r = await apiFetch("/api/plan-preview", {
           method: "POST",
           headers: { "content-type": "application/json" },
           body: plannerKey,
@@ -572,14 +571,16 @@ export function Settings({
       .filter((f) => f.applies === "restart" && f.key in changed)
       .map((f) => f.group);
     try {
-      const r = await fetch("/api/settings", {
+      const r = await apiFetch("/api/settings", {
         method: "POST",
-        headers: { "content-type": "application/json", ...authHeaders() },
+        headers: { "content-type": "application/json" },
         body: JSON.stringify(changed),
       });
+      // apiFetch already cleared the (now-invalid) token and triggered the central 401 handler on
+      // a 401, which bounces to <Login/> — nothing to show here (Important-1 review fix: this used
+      // to point at a paste-token box that no longer exists).
       if (r.status === 401) {
-        setErrors({ _: "Unauthorized — set a valid access token below." });
-        setStatus("error");
+        setStatus("idle");
         return;
       }
       const b = await r.json();
@@ -706,27 +707,26 @@ export function Settings({
       data-testid="settings"
       className="settings-shell"
       data-mobile={mobileList ? "list" : "section"}
+      data-density-surface="manage"
     >
-      {auth?.required && (
+      {auth?.authenticated && (
         <div className="settings-access-bar" data-testid="settings-access">
-          <h2 className="settings-group-title">Authorise this browser</h2>
+          <h2 className="settings-group-title">Account</h2>
           <p className="settings-group-hint">
-            Saving is protected. Enter the access token to authorise writes from this browser.{" "}
-            {auth.authenticated ? (
-              <span className="settings-msg-ok">authorised</span>
-            ) : (
-              <span className="settings-msg-err">not authorised</span>
-            )}
+            Signed in. Log out to end this browser&apos;s session — machine/access tokens (widgets,
+            scripts) are minted and revoked separately and are unaffected.
           </p>
-          <div className="settings-access-row">
-            <input id="set-access-token" type="password" value={tokenInput}
-              aria-label="Access token"
-              onChange={(e) => setTokenInput(e.target.value)} data-testid="access-token" />
-            <button className="btn-ghost" data-testid="access-token-save"
-              onClick={() => { setToken(tokenInput); refreshAuth(); }}>
-              Save token
-            </button>
-          </div>
+          <button
+            className="btn-ghost"
+            data-testid="logout"
+            onClick={async () => {
+              await apiFetch("/api/auth/logout", { method: "POST" });
+              clearToken();
+              location.reload();
+            }}
+          >
+            Log out
+          </button>
         </div>
       )}
 
@@ -804,7 +804,7 @@ export function Settings({
           </button>
 
           {active && (
-            <div className="settings-content-inner">
+            <div className="settings-content-inner" data-density-kind="selected-section">
               <header className="settings-section-head">
                 <span className="settings-section-icon">
                   <SectionIcon group={active} />

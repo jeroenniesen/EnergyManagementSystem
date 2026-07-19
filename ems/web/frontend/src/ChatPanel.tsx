@@ -2,7 +2,7 @@
 // (the backend grounds every answer + guards against invented numbers). Off unless AI is enabled.
 import { useEffect, useRef, useState } from "react";
 
-import { authHeaders } from "./auth";
+import { apiFetch } from "./auth";
 
 type Msg = { role: "you" | "assistant"; text: string; source?: string };
 type Faq = { key: string; question: string; answer: string };
@@ -24,7 +24,7 @@ export function ChatPanel() {
   const endRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
-    fetch("/api/explainer")
+    apiFetch("/api/explainer")
       .then((r) => (r.ok ? r.json() : null))
       .then((b) => {
         if (b) {
@@ -34,7 +34,7 @@ export function ChatPanel() {
       })
       .catch(() => setActive(false));
     // Grounded FAQ answers come from the deterministic plan/readiness — they work with AI off.
-    fetch("/api/faq")
+    apiFetch("/api/faq")
       .then((r) => (r.ok ? r.json() : null))
       .then((b) => b && setFaq(b.items ?? []))
       .catch(() => {});
@@ -50,9 +50,9 @@ export function ChatPanel() {
     setMsgs((m) => [...m, { role: "you", text: question }]);
     setBusy(true);
     try {
-      const r = await fetch("/api/chat", {
+      const r = await apiFetch("/api/chat", {
         method: "POST",
-        headers: { "content-type": "application/json", ...authHeaders() },
+        headers: { "content-type": "application/json" },
         body: JSON.stringify({ question }),
       });
       const b = await r.json();
@@ -68,7 +68,7 @@ export function ChatPanel() {
   }
 
   return (
-    <section className="chat" data-testid="chat">
+    <section className="chat" data-testid="chat" data-density-surface="chat" data-density-kind="card">
       <div className="override-head">
         <span className="metric-label">Ask the assistant</span>
         {active === false && (
@@ -77,7 +77,7 @@ export function ChatPanel() {
       </div>
 
       {faq.length > 0 && (
-        <div className="faq" data-testid="faq">
+        <div className="faq" data-testid="faq" data-density-kind="subordinate">
           <p className="chat-suggest-lead">
             Quick answers{active === false ? " — these work without AI" : ""}:
           </p>

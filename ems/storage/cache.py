@@ -13,6 +13,8 @@ from __future__ import annotations
 import sqlite3
 from collections.abc import Callable
 
+from ems.perf import timed
+
 _BUSY_TIMEOUT_MS = 3000
 
 
@@ -48,56 +50,60 @@ class CacheStore:
             con.close()
 
     def set(self, key: str, value: str, ttl_seconds: float) -> None:
-        now = self._clock()
-        con = self._conn()
-        try:
-            con.execute(
-                "INSERT INTO cache (key, value, created_at, expires_at) VALUES (?, ?, ?, ?) "
-                "ON CONFLICT(key) DO UPDATE SET value=excluded.value, "
-                "created_at=excluded.created_at, expires_at=excluded.expires_at",
-                (key, value, now, now + float(ttl_seconds)),
-            )
-            con.commit()
-        finally:
-            con.close()
+        with timed("store.cache.set"):
+            now = self._clock()
+            con = self._conn()
+            try:
+                con.execute(
+                    "INSERT INTO cache (key, value, created_at, expires_at) VALUES (?, ?, ?, ?) "
+                    "ON CONFLICT(key) DO UPDATE SET value=excluded.value, "
+                    "created_at=excluded.created_at, expires_at=excluded.expires_at",
+                    (key, value, now, now + float(ttl_seconds)),
+                )
+                con.commit()
+            finally:
+                con.close()
 
     def get(self, key: str) -> str | None:
         """The value if present and unexpired, else None. Expired rows are dropped on read."""
-        now = self._clock()
-        con = self._conn()
-        try:
-            row = con.execute(
-                "SELECT value, expires_at FROM cache WHERE key=?", (key,)
-            ).fetchone()
-            if row is None:
-                return None
-            value, expires_at = row
-            if expires_at <= now:
-                con.execute("DELETE FROM cache WHERE key=?", (key,))
-                con.commit()
-                return None
-            return value
-        finally:
-            con.close()
+        with timed("store.cache.get"):
+            now = self._clock()
+            con = self._conn()
+            try:
+                row = con.execute(
+                    "SELECT value, expires_at FROM cache WHERE key=?", (key,)
+                ).fetchone()
+                if row is None:
+                    return None
+                value, expires_at = row
+                if expires_at <= now:
+                    con.execute("DELETE FROM cache WHERE key=?", (key,))
+                    con.commit()
+                    return None
+                return value
+            finally:
+                con.close()
 
     def get_with_age(self, key: str) -> tuple[str, float] | None:
         """(value, age_seconds) regardless of expiry, or None if absent. For warm-start, where the
         caller (a source with its own TTL) decides whether the snapshot is still usable."""
-        now = self._clock()
-        con = self._conn()
-        try:
-            row = con.execute(
-                "SELECT value, created_at FROM cache WHERE key=?", (key,)
-            ).fetchone()
-            if row is None:
-                return None
-            value, created_at = row
-            return value, max(0.0, now - created_at)
-        finally:
-            con.close()
+        with timed("store.cache.get"):
+            now = self._clock()
+            con = self._conn()
+            try:
+                row = con.execute(
+                    "SELECT value, created_at FROM cache WHERE key=?", (key,)
+                ).fetchone()
+                if row is None:
+                    return None
+                value, created_at = row
+                return value, max(0.0, now - created_at)
+            finally:
+                con.close()
 
     def purge_expired(self) -> int:
-        """Drop every expired row; returns how many. Cheap housekeeping to bound table growth."""
+        """Drop every expired row; returns how many. Cheap housekeeping to bound table growth.
+        Not wrapped in timed — housekeeping, not a hot path."""
         now = self._clock()
         con = self._conn()
         try:
@@ -108,6 +114,7 @@ class CacheStore:
             con.close()
 
     def count(self) -> int:
+        """Total cache row count (live + expired). Diagnostic — not wrapped in timed."""
         con = self._conn()
         try:
             return int(con.execute("SELECT COUNT(*) FROM cache").fetchone()[0])
@@ -116,7 +123,8 @@ class CacheStore:
 
     def breakdown(self) -> dict[str, int]:
         """{'total': N, '<prefix>': count, ...} over the LIVE (unexpired) rows, grouped by the key
-        prefix before ':'. For observability — showing how much is reused instead of refetched."""
+        prefix before ':'. For observability — showing how much is reused instead of refetched.
+        Diagnostic — not wrapped in timed."""
         now = self._clock()
         con = self._conn()
         try:

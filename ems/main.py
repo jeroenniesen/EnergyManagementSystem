@@ -15,6 +15,7 @@ from ems.lifecycle import Lifecycle
 from ems.logging_setup import configure_logging
 from ems.sense import SIGNALS, Recorder
 from ems.storage.audit import AuditStore
+from ems.storage.auth import AuthStore
 from ems.storage.cache import CacheStore
 from ems.storage.control_state import ControlStateStore
 from ems.storage.history import HistoryStore
@@ -41,6 +42,7 @@ def build_app():
     settings_store = SettingsStore(str(db_path))
     override_store = SettingsStore(str(db_path), table="runtime_state")
     audit_store = AuditStore(str(db_path))
+    auth_store = AuthStore(str(db_path))
     cache_store = CacheStore(str(db_path))
     cache_store.init()  # ensure the table exists before sources warm-start from it below
     freshness = FreshnessTracker()
@@ -86,6 +88,7 @@ def build_app():
         settings_store=settings_store,
         override_store=override_store,
         audit_store=audit_store,
+        auth_store=auth_store,
         cache_store=cache_store,
         control_cycle_seconds=cfg.control_cycle_seconds,
         history_retention_days=cfg.retention_days,

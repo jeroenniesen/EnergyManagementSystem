@@ -41,7 +41,7 @@ test.describe("Manage view + hash routing", () => {
   test("an unknown hash falls back to the dashboard", async ({ page }) => {
     await page.goto("/#definitely-not-a-view");
     await expect(page.getByTestId("nav-dashboard")).toHaveClass(/nav-active/);
-    await expect(page.getByTestId("battery-plan")).toBeVisible();
+    await expect(page.getByTestId("combined-plan-chart")).toBeVisible();
   });
 
   test("the sub-nav switches between Settings, System and Audit", async ({ page }) => {
