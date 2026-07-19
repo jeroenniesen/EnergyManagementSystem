@@ -16,13 +16,12 @@ from ems.control.mode_controller import ModeController
 from ems.domain import BatteryIntent, PhysicalMode, RawSample
 from ems.freshness import FreshnessTracker
 from ems.lifecycle import Lifecycle
-from ems.planner.schedule import SLOT
 from ems.planner.strategy import HysteresisState
 from ems.sense import SIGNALS
 from ems.settings import defaults as settings_defaults
 from ems.sources.battery import BatteryWriteUnconfirmed, MockBatteryDriver, intent_to_mode
 from ems.sources.forecast import MockSolarForecastSource
-from ems.sources.prices import PriceSlot
+from ems.sources.prices import MockPriceSource, PriceSlot
 from ems.storage.audit import AuditStore
 from ems.storage.history import HistoryStore
 from ems.storage.settings import SettingsStore
@@ -481,9 +480,7 @@ class _FlatPrices:
     """Flat prices -> no arbitrage trade -> the plan is plain self-consumption."""
 
     def __init__(self) -> None:
-        now = datetime.now(UTC)
-        base = now.replace(minute=(now.minute // 15) * 15, second=0, microsecond=0)
-        self._slots = [PriceSlot(base + i * SLOT, 0.25) for i in range(-2, 96)]
+        self._slots = [PriceSlot(slot.start, 0.25) for slot in MockPriceSource(AMS).slots()]
 
     def slots(self) -> list[PriceSlot]:
         return self._slots

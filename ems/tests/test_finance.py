@@ -110,6 +110,35 @@ def test_no_price_history_is_honest():
     assert abs(f.grid_import_kwh - 1.0) < 1e-9  # energy is still reported
 
 
+def test_irregular_samples_integrate_observed_duration_not_full_quarter_slots():
+    rows = [
+        {"ts": DAY.isoformat(), "grid_power_w": 1000.0, "battery_power_w": 0.0},
+        {"ts": (DAY + timedelta(minutes=5)).isoformat(),
+         "grid_power_w": 2000.0, "battery_power_w": 0.0},
+        {"ts": (DAY + timedelta(minutes=25)).isoformat(),
+         "grid_power_w": 3000.0, "battery_power_w": 0.0},
+    ]
+    prices = [{"start_ts": DAY.isoformat(), "eur_per_kwh": 0.20}]
+
+    f = day_finance(
+        rows,
+        prices,
+        day="2026-06-28",
+        window_start=DAY,
+        window_end=DAY + timedelta(minutes=30),
+        sample_interval_seconds=300,
+        max_hold_seconds=600,
+    )
+
+    # 1 kW × 5 min + 2 kW × 10 min + 3 kW × 5 min = 2/3 kWh. The 10-minute
+    # recorder outage is uncovered, not silently promoted into a full 15-minute sample.
+    assert abs(f.grid_import_kwh - (2 / 3)) < 1e-9
+    assert abs(f.grid_cost_eur - (5 / 60 * 1 + 10 / 60 * 2) * 0.20) < 1e-9
+    # Of 20 observed minutes, 15 have a price; coverage is duration-weighted, not row-counted.
+    assert abs(f.price_coverage - 0.75) < 1e-9
+    assert abs(f.sample_coverage - (20 / 30)) < 1e-9
+
+
 def test_partial_price_coverage_reports_partial_window_money():
     # With ≥1 priced slot the € figures ARE reported (over the priced window), with price_coverage
     # signalling how much of the day they cover. Here 1 of 2 import hours is priced.

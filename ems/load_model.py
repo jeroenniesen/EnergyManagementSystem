@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import dataclasses
+import math
 from dataclasses import dataclass
 
 from .domain import RawSample
@@ -12,6 +13,8 @@ from .domain import RawSample
 # on 3-phase.
 MAX_BATTERY_W = 20000.0
 MAX_SOLAR_W = 20000.0
+MAX_LEARNABLE_LOAD_W = 50000.0
+NEGATIVE_NOISE_TOLERANCE_W = 50.0
 
 
 @dataclass(frozen=True)
@@ -20,11 +23,49 @@ class DerivedSample:
     non_ev_load_w: float  # house load excluding EV charging (what the planner learns)
 
 
+@dataclass(frozen=True)
+class ReconstructionAssessment:
+    derived: DerivedSample
+    valid_for_learning: bool
+    flags: tuple[str, ...]
+
+
 def reconstruct(raw: RawSample, ev_charging_threshold_w: float = 200.0) -> DerivedSample:
     """house_load = grid + solar + battery; subtract EV only while it is charging (§4.5)."""
     house_load = raw.grid_power_w + raw.solar_power_w + raw.battery_power_w
     ev = raw.ev_power_w if raw.ev_power_w > ev_charging_threshold_w else 0.0
     return DerivedSample(house_load_w=house_load, non_ev_load_w=house_load - ev)
+
+
+def assess_reconstruction(
+    raw: RawSample,
+    ev_charging_threshold_w: float = 200.0,
+    *,
+    negative_noise_tolerance_w: float = NEGATIVE_NOISE_TOLERANCE_W,
+    max_learnable_load_w: float = MAX_LEARNABLE_LOAD_W,
+) -> ReconstructionAssessment:
+    """Classify reconstructed load without mutating its raw evidence.
+
+    Small negative meter noise is safe to clamp to zero. Material negative, non-finite, or
+    implausibly large loads stay visible in raw/derived history but are quarantined from learning.
+    """
+    derived = reconstruct(raw, ev_charging_threshold_w)
+    flags: list[str] = []
+    house, non_ev = derived.house_load_w, derived.non_ev_load_w
+    if not math.isfinite(house) or not math.isfinite(non_ev):
+        return ReconstructionAssessment(derived, False, ("non_finite_load",))
+    if house < -negative_noise_tolerance_w:
+        flags.append("negative_house_load")
+    if non_ev < -negative_noise_tolerance_w:
+        flags.append("negative_non_ev_load")
+    if house > max_learnable_load_w or non_ev > max_learnable_load_w:
+        flags.append("implausible_load")
+    if flags:
+        return ReconstructionAssessment(derived, False, tuple(flags))
+    if house < 0.0 or non_ev < 0.0:
+        derived = DerivedSample(max(0.0, house), max(0.0, non_ev))
+        flags.append("clamped_noise")
+    return ReconstructionAssessment(derived, True, tuple(flags))
 
 
 def normalise_solar(raw_solar_w: float) -> float:

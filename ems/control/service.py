@@ -48,6 +48,7 @@ from ems.planner.rule_based import PlannerConfig
 from ems.planner.strategy import HysteresisState, build_plan, resolve_strategy_hysteretic
 from ems.planner.summer import SummerConfig
 from ems.planner.validator import PlanValidation
+from ems.price_quality import PriceHorizonStatus, validate_price_horizon
 from ems.sources.battery import intent_to_mode
 
 _log = logging.getLogger("ems.recorder")
@@ -387,6 +388,7 @@ class ControlService:
         self._control_cycle_seconds = control_cycle_seconds
         self._source = source
         self._cache_store = cache_store
+        self._price_horizon_status: PriceHorizonStatus | None = None
         self._data_quality = data_quality
         self._validate_plan_obj = validate_plan_obj
         # Resolve each moved dependency to the injected stand-in when given (tests), else this
@@ -629,6 +631,10 @@ class ControlService:
             return None
         now = datetime.now(UTC)
         prices = self._price_source.slots()
+        self._price_horizon_status = validate_price_horizon(
+            prices, now=now, site_tz=self._site_tz)
+        if not self._price_horizon_status.ok:
+            return None
         strategy = self._active_strategy(now)
         # BOTH seasons now use the adaptive (demand-aware) charger, so both need the live SoC, the
         # solar forecast and the expected-load profile — winter sizes the top-up to the evening
@@ -780,6 +786,13 @@ class ControlService:
         else:
             pp = self.current_plan()
             if pp is None:
+                status = self._price_horizon_status
+                if self._price_source is not None and status is not None and not status.ok:
+                    return (
+                        BatteryIntent.ALLOW_SELF_CONSUMPTION,
+                        f"holding self-consumption — incomplete prices: {status.reason}",
+                        False, None, None, None, None,
+                    )
                 return None, None, False, None, None, None, None
             cur = pp[2].intent_at(now)
             if cur is None:
@@ -1148,7 +1161,14 @@ class ControlService:
             # EV-power blip WITHOUT resuming the plan — but three things must still act THIS cycle
             # and never be swallowed by the hold: a manual override or data-quality fail-safe (F3),
             # and the reserve floor (F5). Only a genuine blip holds the current setpoint.
-            failsafe = self._data_quality(now) == "unsafe" or (_v is not None and not _v.ok)
+            price_failsafe = (
+                self._price_horizon_status is not None and not self._price_horizon_status.ok
+            )
+            failsafe = (
+                self._data_quality(now) == "unsafe"
+                or (_v is not None and not _v.ok)
+                or price_failsafe
+            )
             grace = _decide_grace_action(
                 override_active=override_active, failsafe=failsafe, soc_pct=self._current_soc(now),
                 min_reserve_soc=self._settings["battery.min_reserve_soc"])

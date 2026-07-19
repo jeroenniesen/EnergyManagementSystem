@@ -50,10 +50,11 @@ def test_diagnostics_fully_wired_app_is_healthy(tmp_path):
         store=HistoryStore(str(tmp_path / "ems.sqlite")),
         settings_store=SettingsStore(str(tmp_path / "ems.sqlite")),
         freshness=fr,
-        price_source=MockPriceSource(ams),
-        solar_forecast=MockSolarForecastSource(ams),
-        battery=MockBatteryDriver(),
-    )
+            price_source=MockPriceSource(ams),
+            solar_forecast=MockSolarForecastSource(ams),
+            battery=MockBatteryDriver(),
+            tz=ams,
+        )
     with TestClient(app) as c:
         b = c.get("/api/diagnostics").json()
     assert b["overall"] == "ok"

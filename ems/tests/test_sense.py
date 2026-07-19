@@ -28,6 +28,11 @@ class _ImplausibleBatterySource:
         )
 
 
+class _NegativeReconstructionSource:
+    def read(self):
+        return RawSample(-2000.0, 500.0, 0.0, 0.0, 55.0)
+
+
 class _BoomStore:
     async def record(self, *_a, **_k):
         raise RuntimeError("disk full")
@@ -82,6 +87,23 @@ def test_sense_once_normal_reading_does_not_clamp(tmp_path):
 
     asyncio.run(run())
     assert rec.health()["clamped_samples"] == 0
+
+
+def test_invalid_reconstruction_is_counted_while_raw_evidence_is_preserved(tmp_path):
+    store = HistoryStore(str(tmp_path / "ems.sqlite"))
+    fresh = FreshnessTracker(stale_after_s=600)
+    fresh.register(*SIGNALS)
+    rec = Recorder(_NegativeReconstructionSource(), store, fresh)
+
+    async def run():
+        await store.init()
+        await rec.sense_once(NOW)
+        return await store.recent_raw(1)
+
+    rows = asyncio.run(run())
+    assert rows[0]["grid_power_w"] == -2000.0
+    assert rec.health()["invalid_reconstructions"] == 1
+    assert "negative_house_load" in rec.health()["last_reconstruction_flags"]
 
 
 def test_record_now_writes_a_sample(tmp_path):
