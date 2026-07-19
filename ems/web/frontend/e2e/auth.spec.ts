@@ -49,7 +49,9 @@ test("onboarding then login then logout", async ({ page }) => {
     { timeout: 15000 },
   );
   expect(okResp.ok()).toBe(true);
-  await expect(page.getByTestId("battery-plan")).toBeVisible();
+  // The authenticated app shell rendered (not the login screen). Assert the always-visible nav
+  // rather than a specific card — the calm-dashboard keeps the plan behind a collapsed disclosure.
+  await expect(page.getByTestId("nav-manage")).toBeVisible();
 
   // Logged in → Manage → Settings: the retired paste-token box is gone, replaced by Logout.
   await page.getByTestId("nav-manage").click();
