@@ -510,11 +510,13 @@ from zoneinfo import ZoneInfo  # noqa: E402
 
 from fastapi.testclient import TestClient  # noqa: E402
 
+from ems.authn import hash_password  # noqa: E402
 from ems.domain import RawSample  # noqa: E402
 from ems.load_model import reconstruct  # noqa: E402
 from ems.sources.mock import MockSource  # noqa: E402
 from ems.sources.prices import MockPriceSource  # noqa: E402
 from ems.storage.audit import AuditStore  # noqa: E402
+from ems.storage.auth import AuthStore  # noqa: E402
 from ems.storage.history import (  # noqa: E402
     HistoryStore,
     materialize_daily_energy,
@@ -1056,6 +1058,59 @@ def test_export_package_omits_server_log_tail_when_no_log_file_exists(tmp_path):
     assert "server_log_tail.txt" not in zip_names(r.content)
     manifest = json.loads(read_member(r.content, "manifest.json"))
     assert manifest["counts"]["server_log_lines"] == 0
+
+
+# ---- P2 security review: /api/export/package is ADMIN-only (it bundles the FULL, unfiltered ----
+# ---- audit trail + the server-log tail — the same material a reader must never see via /api/audit)
+
+def _app_with_auth(db: str):
+    return create_app(
+        MockSource(), dry_run=True, dev_mode="mock",
+        store=HistoryStore(db), settings_store=SettingsStore(db), audit_store=AuditStore(db),
+        price_source=MockPriceSource(AMS), auth_store=AuthStore(db),
+    )
+
+
+def _seed_user(db: str, username: str, password: str, role: str) -> None:
+    s = AuthStore(db)
+
+    async def run():
+        await s.init()
+        await s.create_user(username, hash_password(password), role)
+        await s.close()
+
+    asyncio.run(run())
+
+
+def _login(c: TestClient, username: str, password: str) -> str:
+    r = c.post("/api/auth/login", json={"username": username, "password": password})
+    assert r.status_code == 200, r.text
+    return r.json()["token"]
+
+
+def test_export_package_403s_for_reader_and_user_roles(tmp_path):
+    db = str(tmp_path / "ems.sqlite")
+    _seed(db)
+    _seed_user(db, "admin", "pw12345678", "admin")
+    _seed_user(db, "rdr", "pw12345678", "reader")
+    _seed_user(db, "usr", "pw12345678", "user")
+    with TestClient(_app_with_auth(db)) as c:
+        for username in ("rdr", "usr"):
+            tok = _login(c, username, "pw12345678")
+            h = {"Authorization": f"Bearer {tok}"}
+            assert c.get("/api/export/package", headers=h).status_code == 403
+            assert c.get("/api/export/package?days=30", headers=h).status_code == 403
+
+
+def test_export_package_still_200s_for_admin(tmp_path):
+    db = str(tmp_path / "ems.sqlite")
+    _seed(db)
+    _seed_user(db, "admin", "pw12345678", "admin")
+    with TestClient(_app_with_auth(db)) as c:
+        tok = _login(c, "admin", "pw12345678")
+        r = c.get("/api/export/package", headers={"Authorization": f"Bearer {tok}"})
+    assert r.status_code == 200
+    assert r.headers["content-type"] == "application/zip"
 
 
 def test_export_package_server_log_tail_redacts_bearer_token_and_configured_ntfy_topic(tmp_path):

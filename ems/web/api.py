@@ -126,6 +126,7 @@ from ems.weather import cloud_cover_pct
 from ems.web.authz import (
     EXEMPT_PATHS,
     OPERATE_PATHS,
+    Tier,
     required_tier,
     requires_session,
     role_satisfies,
@@ -768,14 +769,26 @@ CONTENT_SECURITY_POLICY = (
     "frame-ancestors 'none'"
 )
 _CSP_HEADER = (b"content-security-policy", CONTENT_SECURITY_POLICY.encode("latin-1"))
+# P2 security review, folded in alongside the CSP: two more cheap, no-downside hardening headers
+# on the same SPA-shell/static responses. `X-Content-Type-Options: nosniff` stops a browser from
+# MIME-sniffing a response into something more executable than its declared Content-Type (defense
+# in depth alongside the CSP's script-src 'self'). `Referrer-Policy: same-origin` keeps the full
+# URL (which can carry no secrets today, but may carry query params later) off third-party
+# `img-src`/link targets — only the OSM tile fetches on /setup are cross-origin, and they get no
+# referrer at all under this policy rather than the default browser referrer.
+_EXTRA_SECURITY_HEADERS = (
+    (b"x-content-type-options", b"nosniff"),
+    (b"referrer-policy", b"same-origin"),
+)
 
 
 class _SecurityHeadersMiddleware:
-    """Pure-ASGI CSP header injector for the SPA shell + static assets — the only responses a
-    browser renders/executes (see `CONTENT_SECURITY_POLICY`). JSON responses under `/api/` are
-    deliberately skipped: a CSP on a JSON body is meaningless and the API has no HTML/script/style
-    execution surface. Pure-ASGI (NOT `@app.middleware`/`BaseHTTPMiddleware` — auth-slice invariant
-    #1) so the override endpoint's control cycle is never starved."""
+    """Pure-ASGI CSP + hardening-header injector for the SPA shell + static assets — the only
+    responses a browser renders/executes (see `CONTENT_SECURITY_POLICY`). JSON responses under
+    `/api/` are deliberately skipped: a CSP (and the nosniff/referrer headers alongside it) is
+    meaningless on a JSON body and the API has no HTML/script/style execution surface. Pure-ASGI
+    (NOT `@app.middleware`/`BaseHTTPMiddleware` — auth-slice invariant #1) so the override
+    endpoint's control cycle is never starved."""
 
     def __init__(self, app) -> None:
         self.app = app
@@ -787,9 +800,11 @@ class _SecurityHeadersMiddleware:
 
         async def send_wrapper(message):
             if message["type"] == "http.response.start":
-                # Append rather than replace: static responses never set CSP themselves and /api is
-                # excluded above, so there is no existing header to duplicate.
-                message["headers"] = [*message.get("headers", []), _CSP_HEADER]
+                # Append rather than replace: static responses never set these headers themselves
+                # and /api is excluded above, so there is no existing header to duplicate.
+                message["headers"] = [
+                    *message.get("headers", []), _CSP_HEADER, *_EXTRA_SECURITY_HEADERS,
+                ]
             await send(message)
 
         await self.app(scope, receive, send_wrapper)
@@ -3494,13 +3509,32 @@ def create_app(
 
     @app.get("/api/audit")
     async def audit_endpoint(
+        request: Request,
         limit: int = Query(default=100, ge=1, le=500), category: str | None = None,
     ) -> dict:
         """The audit trail: every plan/battery-mode decision, config change and manual override —
-        newest first. Read-only. Empty when no audit store is configured."""
+        newest first. Read-only. Empty when no audit store is configured.
+
+        P2 security review: this endpoint is VIEW-tier (reader/user roles legitimately use the
+        Manage → Audit view for transparency into decisions/config changes/overrides), but the
+        "auth" category — usernames, roles, login successes/failures, lockouts, role changes,
+        invites, token mint/revoke — is ADMIN-only. A non-admin explicitly requesting
+        `category=auth` gets a 403 rather than an empty/misleading 200; an unfiltered ("all
+        categories") request from a non-admin has any "auth" rows stripped before the response is
+        built, rather than gating the whole endpoint (see authz.ADMIN_PATHS' docstring for why
+        `/api/export/package` — which bundles the FULL audit unfiltered — is gated the other way,
+        at the middleware). Legacy/no-identity-system deployments (`auth_store is None`, so
+        `scope["auth_principal"]` is never set) are unaffected — there is no role to gate on."""
+        principal = request.scope.get("auth_principal")
+        is_admin = principal is None or role_satisfies(principal.role, Tier.ADMIN)
+        if category == "auth" and not is_admin:
+            return _forbidden_error()
         if audit_store is None:
             return {"entries": []}
-        return {"entries": await audit_store.recent(limit, category)}
+        entries = await audit_store.recent(limit, category)
+        if not is_admin:
+            entries = [e for e in entries if e.get("category") != "auth"]
+        return {"entries": entries}
 
     @app.get("/api/incidents")
     async def incidents_endpoint() -> dict:

@@ -19,6 +19,17 @@ def test_required_tier():
     assert required_tier("/api/users", "GET") == Tier.ADMIN
     assert required_tier("/api/users/5", "DELETE") == Tier.ADMIN
     assert required_tier("/api/invites", "POST") == Tier.ADMIN
+    # P2 security review: the support/diagnostics bundle bundles the FULL, unfiltered audit trail
+    # (every "auth"-category row) + the server-log tail — ADMIN for every method, reads included,
+    # via the exact-path ADMIN_PATHS set (it isn't under an _ADMIN_PREFIXES prefix). `/api/export`
+    # (the plain single-table CSV/JSON download, a DIFFERENT endpoint) stays VIEW — only the
+    # `/package` bundle is gated.
+    assert required_tier("/api/export/package", "GET") == Tier.ADMIN
+    assert required_tier("/api/export", "GET") == Tier.VIEW
+    # /api/audit itself stays VIEW — reader/user roles legitimately use it for transparency into
+    # decisions/config/overrides; the "auth"-category filtering is enforced in the handler, not
+    # via the tier (see ems.web.api.audit_endpoint).
+    assert required_tier("/api/audit", "GET") == Tier.VIEW
 
 
 def test_requires_session():

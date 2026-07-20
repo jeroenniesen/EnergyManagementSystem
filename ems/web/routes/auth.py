@@ -49,6 +49,15 @@ from ems.storage.auth import UsernameTaken
 from ems.web.context import AppContext
 from ems.web.ratelimit import LoginRateLimiter
 
+# P2 security review: cap what a login-failure/lockout audit event stores. Login itself accepts
+# (and rate-limits/looks up) the submitted username at whatever length it arrives — this cap only
+# bounds the COPY written to the audit store, so a spray of long/arbitrary strings can't pad it out.
+_AUDITED_USERNAME_MAX = 64
+
+
+def _capped_for_audit(username: str) -> str:
+    return username[:_AUDITED_USERNAME_MAX]
+
 
 def _validate_new_account(username: str, password: str) -> tuple[str, JSONResponse | None]:
     """Shared new-account validation for onboard + accept_invite: strip the username FIRST (a
@@ -76,15 +85,18 @@ def build_router(ctx: AppContext) -> APIRouter:
         # Record the failed attempt and audit it — plus a distinct lockout event exactly once, on
         # the attempt that trips the limit (register_failure returns True only then). The audit row
         # for a missing vs. real user is identical (submitted username only, no user_id), so the
-        # audit log itself carries no enumeration oracle.
+        # audit log itself carries no enumeration oracle. The rate limiter keys off the FULL
+        # submitted string (unchanged); only the copy written to the audit store is length-capped
+        # (`_capped_for_audit`) so a spray of long/arbitrary usernames can't pad it out.
         tripped = limiter.register_failure(username)
-        await ctx.audit_auth("login_failure", f"Failed login: {username or '<blank>'}",
-                             username=username)
+        audited_username = _capped_for_audit(username)
+        await ctx.audit_auth("login_failure", f"Failed login: {audited_username or '<blank>'}",
+                             username=audited_username)
         if tripped:
             await ctx.audit_auth(
                 "login_lockout",
-                f"Account locked after repeated failed logins: {username or '<blank>'}",
-                username=username)
+                f"Account locked after repeated failed logins: {audited_username or '<blank>'}",
+                username=audited_username)
 
     @router.post("/api/auth/login")
     async def login(request: Request, body: dict | None = None) -> JSONResponse:

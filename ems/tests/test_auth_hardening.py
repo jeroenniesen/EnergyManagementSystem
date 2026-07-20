@@ -99,6 +99,25 @@ def test_successful_login_still_works_and_is_independent_per_user(tmp_path):
                       json={"username": "bob", "password": "pw12345678"}).status_code == 200
 
 
+def test_login_failure_audit_caps_a_long_submitted_username(tmp_path):
+    # P2 security review: an attacker spraying long/arbitrary strings as the username must not be
+    # able to pad the audit store — the AUDITED copy is capped at 64 chars, though login itself
+    # still accepts (and rate-limits) the full submitted string unchanged.
+    db = str(tmp_path / "ems.sqlite")
+    _seed_user(db, "admin", "pw12345678", "admin")
+    long_username = "x" * 5000
+    with TestClient(_app(db, audit=True)) as c:
+        r = c.post("/api/auth/login", json={"username": long_username, "password": "nope"})
+        assert r.status_code == 401
+    rows = _auth_rows(db)
+    failure = next(r for r in rows if r["detail"]["event"] == "login_failure")
+    assert failure["detail"]["username"] == "x" * 64
+    assert len(failure["detail"]["username"]) == 64
+    # The oversized string itself never reaches the audit store, in the detail OR the summary text.
+    blob = json.dumps(rows)
+    assert long_username not in blob
+
+
 # --- C. Audit wiring ----------------------------------------------------------------------------
 
 def test_login_success_and_failure_are_audited_without_secrets(tmp_path):

@@ -19,21 +19,28 @@ test.describe("EMS API", () => {
     expect(r.headers()["content-type"]).toContain("svg");
   });
 
-  test("strict CSP header is present on the SPA shell and static assets, absent on /api", async ({
+  test("strict CSP + hardening headers are present on the SPA shell and static assets, absent on /api", async ({
     request,
   }) => {
     const shell = await request.get("/");
     expect(shell.ok()).toBeTruthy();
     expect(shell.headers()["content-security-policy"]).toBe(CSP);
+    expect(shell.headers()["x-content-type-options"]).toBe("nosniff");
+    expect(shell.headers()["referrer-policy"]).toBe("same-origin");
 
     const asset = await request.get("/favicon.svg");
     expect(asset.ok()).toBeTruthy();
     expect(asset.headers()["content-security-policy"]).toBe(CSP);
+    expect(asset.headers()["x-content-type-options"]).toBe("nosniff");
+    expect(asset.headers()["referrer-policy"]).toBe("same-origin");
 
-    // JSON API responses are deliberately NOT given a CSP (nothing renders/executes there).
+    // JSON API responses are deliberately NOT given any of these headers (nothing renders/executes
+    // there).
     const api = await request.get("/api/status");
     expect(api.ok()).toBeTruthy();
     expect(api.headers()["content-security-policy"]).toBeUndefined();
+    expect(api.headers()["x-content-type-options"]).toBeUndefined();
+    expect(api.headers()["referrer-policy"]).toBeUndefined();
   });
 
   test("health endpoints", async ({ request }) => {
