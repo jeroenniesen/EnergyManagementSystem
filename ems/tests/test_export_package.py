@@ -5,6 +5,7 @@ from ems.export_package import (
     AUDIT_COLUMNS,
     DAILY_ENERGY_COLUMNS,
     EV_SESSION_COLUMNS,
+    NEVER_EXPORT_TABLES,
     NOTIFICATION_COLUMNS,
     OBSERVATION_COLUMNS,
     RAW_COLUMNS,
@@ -1012,8 +1013,10 @@ def test_package_never_leaks_the_auth_tables(tmp_path):
     with TestClient(_app(db)) as c:
         data = c.get("/api/export/package?days=400").content
     names = set(zip_names(data))
-    # No auth table ever becomes a member of the ZIP.
-    for table in ("users", "auth_tokens", "invites"):
+    # No auth table ever becomes a member of the ZIP. Iterate the denylist itself (the single
+    # source of truth) so a future 4th credential table added to NEVER_EXPORT_TABLES is covered
+    # here automatically, with no edit to this test.
+    for table in NEVER_EXPORT_TABLES:
         assert f"{table}.csv" not in names
     # Nothing credential-shaped escapes into ANY member: the stored hashes, the marker username, the
     # raw token/invite codes, or even the bare column names `password_hash`/`token_hash`.

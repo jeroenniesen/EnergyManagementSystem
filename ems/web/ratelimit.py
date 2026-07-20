@@ -65,10 +65,33 @@ class LoginRateLimiter:
             b = _Bucket()
             self._buckets[key] = b
         self._buckets.move_to_end(key)  # mark most-recently-used
-        # Cap the map so a distinct-username spray can't grow memory unbounded (evict oldest).
+        # Cap the map so a distinct-username spray can't grow memory unbounded.
         while len(self._buckets) > self.max_tracked:
-            self._buckets.popitem(last=False)
+            self._evict_one(protect=key)
         return b
+
+    def _evict_one(self, *, protect: str) -> None:
+        """Evict exactly ONE bucket to keep the map under `max_tracked`.
+
+        Prefer the OLDEST bucket whose lockout is NOT still active — so a spray of fresh usernames
+        can never push a genuinely locked-out victim out of the map early (evicting a locked bucket
+        would silently unlock it before its cooldown, which is the whole point of the lock). A lock
+        whose cooldown has already elapsed counts as inactive and is fair game. The just-touched key
+        (`protect`) is never evicted — it is the attempt in flight. If EVERY other bucket is still
+        actively locked (a pathological all-locked map), evicting the oldest of them is accepted:
+        bounding memory wins, and the attacker still pays the full failure budget to re-lock it."""
+        now = self._clock()
+        oldest_other: str | None = None
+        for k, bkt in self._buckets.items():  # OrderedDict iterates oldest-first (LRU order)
+            if k == protect:
+                continue
+            if oldest_other is None:
+                oldest_other = k  # remember the oldest fallback candidate
+            if bkt.locked_until is None or bkt.locked_until <= now:
+                del self._buckets[k]
+                return
+        if oldest_other is not None:  # all others actively locked → drop the oldest of them
+            del self._buckets[oldest_other]
 
     def retry_after(self, username: str) -> int | None:
         """Seconds the caller must wait if `username` is currently locked, else `None`.
