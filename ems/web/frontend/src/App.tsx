@@ -862,6 +862,7 @@ export function App() {
           settingsSection={settingsSection}
           canOperate={canOperate}
           isAdmin={isAdmin}
+          identityAuth={role !== null}
         />
       )}
 

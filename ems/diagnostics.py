@@ -57,6 +57,7 @@ def build_diagnostics(
     store_ok: bool,
     settings_store_ok: bool,
     auth_required: bool,
+    identity_auth: bool = False,
     freshness: dict[str, str] | None = None,
     ev_guard_blind: bool = False,
 ) -> list[Check]:
@@ -80,8 +81,14 @@ def build_diagnostics(
         Check("data_quality", "Data quality", dq_status, data_quality),
         Check("planner", "Planner", "ok" if plan_ok else "warn",
               "producing a plan" if plan_ok else "no plan (missing prices?)"),
+        # Identity auth (users/roles) supersedes the legacy shared-token gate: once the identity
+        # store is wired (always, in production) EVERY request needs a signed-in user or an access
+        # token, so the row reports that truthful state at ok. The legacy branch (auth_store is
+        # None — old tests / shared-token-only deployments) keeps the pre-identity copy.
         Check("auth", "Write protection", "ok",
-              "protected by a token" if auth_required
+              "identity auth active — every request requires a signed-in user or access token"
+              if identity_auth
+              else "protected by a token" if auth_required
               else "open — set a Web access token in Settings to require one for writes"),
     ]
     # The car-charging guard (hold the battery to standby so it won't feed the car) can only fire if

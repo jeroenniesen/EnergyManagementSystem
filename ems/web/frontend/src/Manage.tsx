@@ -26,6 +26,7 @@ export function Manage({
   settingsSection,
   canOperate = true,
   isAdmin = false,
+  identityAuth = false,
 }: {
   tab: ManageTab;
   // `section` is an optional second argument so this same callback can also carry a Settings
@@ -39,6 +40,8 @@ export function Manage({
   // the only sub-tab with mutating controls or an admin-only surface (System/Audit are read-only).
   canOperate?: boolean;
   isAdmin?: boolean;
+  // Identity auth active → hide the deprecated legacy shared-token knobs in Settings (design §8).
+  identityAuth?: boolean;
 }) {
   const refs = useRef<(HTMLButtonElement | null)[]>([]);
   const idx = Math.max(0, TABS.findIndex((t) => t.key === tab));
@@ -100,6 +103,7 @@ export function Manage({
             initialSection={settingsSection}
             canOperate={canOperate}
             isAdmin={isAdmin}
+            identityAuth={identityAuth}
           />
         )}
         {tab === "system" && <SystemView onNavigate={onTab} />}

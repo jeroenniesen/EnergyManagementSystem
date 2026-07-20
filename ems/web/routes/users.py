@@ -19,6 +19,7 @@ read-then-write TOCTOU here).
 """
 from __future__ import annotations
 
+import logging
 from datetime import UTC, datetime
 
 from fastapi import APIRouter, Request
@@ -27,6 +28,7 @@ from fastapi.responses import JSONResponse
 from ems.storage.auth import INVITE_TTL
 from ems.web.context import AppContext
 
+_log = logging.getLogger("ems.web.users")
 _ROLES = ("reader", "user", "admin")
 _GUARD_DETAIL = "cannot remove or demote the last admin, or act on your own admin account"
 
@@ -34,6 +36,18 @@ _GUARD_DETAIL = "cannot remove or demote the last admin, or act on your own admi
 def build_router(ctx: AppContext) -> APIRouter:
     router = APIRouter()
     auth_store = ctx.auth_store
+
+    async def _audit(event: str, summary: str, **detail: object) -> None:
+        """Best-effort admin audit (design §6). Category `auth`; usernames / ids / roles / invite
+        ids only — never secrets. Fail-safe: a failed audit write must not break the action."""
+        store = ctx.audit_store
+        if store is None:
+            return
+        try:
+            await store.append(datetime.now(UTC).isoformat(), "auth", summary,
+                               {"event": event, **detail})
+        except Exception:
+            _log.warning("users audit append failed (non-fatal): %s", event, exc_info=True)
 
     @router.get("/api/users")
     async def list_users_endpoint() -> dict:
@@ -54,12 +68,20 @@ def build_router(ctx: AppContext) -> APIRouter:
             ok = await auth_store.set_role(user_id, body["role"], actor_id=principal.user_id)
             if not ok:
                 return JSONResponse({"detail": _GUARD_DETAIL}, status_code=409)
+            await _audit("role_changed",
+                         f"Role changed: {user['username']} → {body['role']}",
+                         username=user["username"], user_id=user_id, role=body["role"],
+                         actor_id=principal.user_id)
         if "disabled" in body:
+            disabled = bool(body["disabled"])
             ok = await auth_store.set_disabled(
-                user_id, bool(body["disabled"]), actor_id=principal.user_id
+                user_id, disabled, actor_id=principal.user_id
             )
             if not ok:
                 return JSONResponse({"detail": _GUARD_DETAIL}, status_code=409)
+            await _audit("user_disabled" if disabled else "user_enabled",
+                         f"User {'disabled' if disabled else 're-enabled'}: {user['username']}",
+                         username=user["username"], user_id=user_id, actor_id=principal.user_id)
         return JSONResponse({"ok": True})
 
     @router.delete("/api/users/{user_id}")
@@ -71,6 +93,8 @@ def build_router(ctx: AppContext) -> APIRouter:
         ok = await auth_store.set_disabled(user_id, True, actor_id=principal.user_id)
         if not ok:
             return JSONResponse({"detail": _GUARD_DETAIL}, status_code=409)
+        await _audit("user_deleted", f"User removed (soft-disabled): {user['username']}",
+                     username=user["username"], user_id=user_id, actor_id=principal.user_id)
         return JSONResponse({"ok": True})
 
     @router.post("/api/invites")
@@ -82,6 +106,9 @@ def build_router(ctx: AppContext) -> APIRouter:
         principal = request.scope["auth_principal"]
         raw = await auth_store.create_invite(role, created_by=principal.user_id)
         expires_at = (datetime.now(UTC) + INVITE_TTL).isoformat()
+        # Audit the invite ISSUANCE (role + creator), never the raw code — that is the credential.
+        await _audit("invite_created", f"Invite created for role: {role}",
+                     role=role, created_by=principal.user_id)
         return JSONResponse({
             "accept_url": f"/#/accept-invite?code={raw}",
             "code": raw,
@@ -97,6 +124,7 @@ def build_router(ctx: AppContext) -> APIRouter:
         ok = await auth_store.revoke_invite(invite_id)
         if not ok:
             return JSONResponse({"detail": "invite not found"}, status_code=404)
+        await _audit("invite_revoked", f"Invite revoked (#{invite_id})", invite_id=invite_id)
         return JSONResponse({"ok": True})
 
     return router

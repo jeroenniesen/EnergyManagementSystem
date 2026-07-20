@@ -108,6 +108,13 @@ const CAR_TAB_KEYS = new Set([
   "control.car_discharge_w",
 ]);
 
+// Legacy shared-token knobs, DEPRECATED once identity auth (users/roles) is active: require_auth is
+// implicitly always-on and the shared token is migrated into an access token at onboarding (design
+// §8). They stay in the backend schema for compat, but the UI hides them from the "access" section
+// so they aren't mistaken for live controls. They are filtered at RENDER (not out of `schema`), so
+// the "access" section itself stays in the nav (its admin Users/Invites panel + logout live there).
+const LEGACY_SHARED_TOKEN_KEYS = new Set(["web.auth_token", "web.require_auth"]);
+
 // First sentence of the help (always shown) + the remainder (behind a "More" disclosure). Splits
 // on the FIRST sentence-ending punctuation that is followed by whitespace, so mid-word dots
 // (developer.tibber.com, MiniMax-M2.7) never split the text.
@@ -354,6 +361,7 @@ export function Settings({
   initialSection,
   canOperate = true,
   isAdmin = false,
+  identityAuth = false,
 }: {
   onSaved?: (values: Values) => void;
   // Deep-link: open this section on mount (e.g. System's "solar" health action → "planner", or
@@ -367,6 +375,12 @@ export function Settings({
   canOperate?: boolean;
   // Admin-only "Users" + "Invites" panel (design §7 Access & security). Defaults false.
   isAdmin?: boolean;
+  // When identity auth (users/roles) is active, the legacy shared-token knobs (`web.auth_token`,
+  // `web.require_auth`) are DEAD — require_auth is implicitly always-on and the shared token is
+  // migrated away (design §8, deprecated). Hide them from the "access" section so they aren't
+  // mistaken for live controls; the backend schema keeps them for compat. Defaults false (legacy
+  // shared-token deployments and existing tests still show them).
+  identityAuth?: boolean;
 } = {}) {
   const [schema, setSchema] = useState<SettingField[] | null>(null);
   const [values, setValues] = useState<Values>({});
@@ -393,6 +407,12 @@ export function Settings({
   const [lastSaveRestart, setLastSaveRestart] = useState(false);
   // Mobile drill-in (≤700px): start on the section list, then drill into one section.
   const [mobileList, setMobileList] = useState(true);
+
+  // Keys never rendered as editable fields: the car-tab knobs (owned by Car.tsx) always, plus the
+  // deprecated legacy shared-token knobs when identity auth is active (design §8).
+  const hiddenFieldKeys = identityAuth
+    ? new Set([...CAR_TAB_KEYS, ...LEGACY_SHARED_TOKEN_KEYS])
+    : CAR_TAB_KEYS;
 
   async function refreshAuth() {
     try {
@@ -548,7 +568,7 @@ export function Settings({
     const q = search.trim().toLowerCase();
     if (!q) return [];
     return (schema ?? [])
-      .filter((f) => f.group === group && !CAR_TAB_KEYS.has(f.key))
+      .filter((f) => f.group === group && !hiddenFieldKeys.has(f.key))
       .filter(
         (f) =>
           f.label.toLowerCase().includes(q) ||
@@ -705,7 +725,7 @@ export function Settings({
   }
 
   const sectionFields = active
-    ? schema.filter((f) => f.group === active && !CAR_TAB_KEYS.has(f.key))
+    ? schema.filter((f) => f.group === active && !hiddenFieldKeys.has(f.key))
     : [];
   const basicFields = sectionFields.filter((f) => !f.advanced);
   const advancedFields = sectionFields.filter((f) => f.advanced);
@@ -828,9 +848,16 @@ export function Settings({
                 </span>
                 <div className="settings-section-headtext">
                   <h2 className="settings-section-title">{GROUP_TITLE[active] ?? active}</h2>
-                  {GROUP_HINT[active] && (
-                    <p className="settings-section-hint">{GROUP_HINT[active]}</p>
-                  )}
+                  {/* The legacy "access" hint talks about a shared token + the retired Access box;
+                      under identity auth that's dead advice, so show the truthful blurb instead. */}
+                  {(() => {
+                    const hint =
+                      active === "access" && identityAuth
+                        ? "Manage who can sign in and the access tokens for widgets and scripts. "
+                          + "Every request already requires a signed-in user or an access token."
+                        : GROUP_HINT[active];
+                    return hint ? <p className="settings-section-hint">{hint}</p> : null;
+                  })()}
                 </div>
               </header>
 

@@ -738,6 +738,61 @@ _FINANCE_CALC_VERSION = 3
 # `ems.web.api` import path.
 
 
+# Strict Content-Security-Policy (design §9): the primary mitigation for the localStorage-held
+# bearer token, and cheap because everything is bundled with NO runtime CDN. Each directive earns
+# its place:
+#   default-src 'self'          — scripts / connect (fetch to same-origin /api) / fonts / workers
+#                                 are all same-origin & bundled. No 'unsafe-eval', no inline
+#                                 scripts, no external script/connect/font hosts.
+#   img-src 'self' data: <osm>  — 'self' for the bundled webp backdrops + favicon, data: for
+#                                 inline image URIs, and *.tile.openstreetmap.org for the /setup
+#                                 Leaflet map — CLAUDE.md's ONE permitted online resource (OSM tiles
+#                                 load as <img>). Nothing else off-origin.
+#   style-src 'self' 'unsafe-inline' — the external bundle stylesheet is 'self'; React applies
+#                                 inline style ATTRIBUTES at runtime, which style-src-attr blocks
+#                                 without 'unsafe-inline'. Style injection is low-risk once
+#                                 script-src is locked to 'self' (no script vector), so it's the one
+#                                 pragmatic relaxation. (Verified empirically: the full e2e suite
+#                                 renders every page under this enforced policy.)
+#   object-src 'none' · base-uri 'self' · frame-ancestors 'none' — pure hardening the app never
+#                                 needs (no plugins, no <base>, never framed): blocks plugin embeds,
+#                                 <base> hijack, and clickjacking.
+CONTENT_SECURITY_POLICY = (
+    "default-src 'self'; "
+    "img-src 'self' data: https://*.tile.openstreetmap.org; "
+    "style-src 'self' 'unsafe-inline'; "
+    "object-src 'none'; "
+    "base-uri 'self'; "
+    "frame-ancestors 'none'"
+)
+_CSP_HEADER = (b"content-security-policy", CONTENT_SECURITY_POLICY.encode("latin-1"))
+
+
+class _SecurityHeadersMiddleware:
+    """Pure-ASGI CSP header injector for the SPA shell + static assets — the only responses a
+    browser renders/executes (see `CONTENT_SECURITY_POLICY`). JSON responses under `/api/` are
+    deliberately skipped: a CSP on a JSON body is meaningless and the API has no HTML/script/style
+    execution surface. Pure-ASGI (NOT `@app.middleware`/`BaseHTTPMiddleware` — auth-slice invariant
+    #1) so the override endpoint's control cycle is never starved."""
+
+    def __init__(self, app) -> None:
+        self.app = app
+
+    async def __call__(self, scope, receive, send) -> None:
+        if scope["type"] != "http" or scope.get("path", "").startswith("/api/"):
+            await self.app(scope, receive, send)
+            return
+
+        async def send_wrapper(message):
+            if message["type"] == "http.response.start":
+                # Append rather than replace: static responses never set CSP themselves and /api is
+                # excluded above, so there is no existing header to duplicate.
+                message["headers"] = [*message.get("headers", []), _CSP_HEADER]
+            await send(message)
+
+        await self.app(scope, receive, send_wrapper)
+
+
 def create_app(
     source: Source,
     *,
@@ -1427,6 +1482,9 @@ def create_app(
     # Pure ASGI is required so the override control cycle stays unstarved.
     from ems.web.perf_middleware import PerfTimingMiddleware
     app.add_middleware(PerfTimingMiddleware)
+    # Strict CSP (design §9) on the SPA shell + static assets. Added LAST → outermost, so it wraps
+    # the final static/SPA response on the way out. Pure-ASGI (auth-slice invariant #1).
+    app.add_middleware(_SecurityHeadersMiddleware)
 
     # The recovery-integrated plan path (`_recovery_sizing`/`_build_plan_now`/`_plan_with_recovery`/
     # `_current_plan`) + the car-guard + the effective-intent + the control tick/cycle moved into
@@ -2089,6 +2147,7 @@ def create_app(
             plan_ok=plan_ok,
             store_ok=store_ok, settings_store_ok=settings_ok,
             auth_required=_effective_web_token() is not None,
+            identity_auth=auth_store is not None,
             freshness=freshness.snapshot(now) if freshness is not None else None,
             ev_guard_blind=ev_guard_blind,
         )

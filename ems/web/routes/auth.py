@@ -39,7 +39,9 @@ no timing signal distinguishes missing/disabled/wrong-password.
 """
 from __future__ import annotations
 
+import logging
 import secrets
+from datetime import UTC, datetime
 
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
@@ -47,26 +49,74 @@ from fastapi.responses import JSONResponse
 from ems.authn import dummy_verify, hash_password, hash_token, verify_password
 from ems.storage.auth import UsernameTaken
 from ems.web.context import AppContext
+from ems.web.ratelimit import LoginRateLimiter
+
+_log = logging.getLogger("ems.web.auth")
 
 
 def build_router(ctx: AppContext) -> APIRouter:
     router = APIRouter()
     auth_store = ctx.auth_store
+    # One in-process login limiter per app (design §9). Single-process is sufficient at single-home
+    # scale; only login is rate-limited (invite codes are 256-bit, onboarding is one-shot — neither
+    # is brute-forceable, so neither needs this).
+    limiter = LoginRateLimiter()
+
+    async def _audit(event: str, summary: str, **detail: object) -> None:
+        """Best-effort auth audit (design §6). Category `auth`; payload carries usernames / ids /
+        roles / token NAMES only — NEVER passwords, raw tokens, or hashes. Fail-safe: a transient
+        audit-store error must never break the auth flow it is recording."""
+        store = ctx.audit_store
+        if store is None:
+            return
+        try:
+            await store.append(datetime.now(UTC).isoformat(), "auth", summary,
+                               {"event": event, **detail})
+        except Exception:
+            _log.warning("auth audit append failed (non-fatal): %s", event, exc_info=True)
+
+    async def _record_failure(username: str) -> None:
+        # Record the failed attempt and audit it — plus a distinct lockout event exactly once, on
+        # the attempt that trips the limit (register_failure returns True only then). The audit row
+        # for a missing vs. real user is identical (submitted username only, no user_id), so the
+        # audit log itself carries no enumeration oracle.
+        tripped = limiter.register_failure(username)
+        await _audit("login_failure", f"Failed login: {username or '<blank>'}", username=username)
+        if tripped:
+            await _audit("login_lockout",
+                         f"Account locked after repeated failed logins: {username or '<blank>'}",
+                         username=username)
 
     @router.post("/api/auth/login")
     async def login(request: Request, body: dict | None = None) -> JSONResponse:
         body = body or {}
         username = str(body.get("username", ""))
         password = str(body.get("password", ""))
+        # Anti-abuse (design §9): a locked username short-circuits to 429 + Retry-After BEFORE any
+        # DB/Argon2 work. Generic detail; tracking keys off the SUBMITTED string, so a missing user
+        # locks exactly like a real one — no enumeration and no timing signal from the lockout.
+        # We do NOT audit each blocked attempt (the lockout was already recorded once when it
+        # tripped — see `_record_failure`); auditing every retry would let an attacker flood it.
+        retry = limiter.retry_after(username)
+        if retry is not None:
+            return JSONResponse(
+                {"detail": "too many failed attempts; try again later"},
+                status_code=429, headers={"Retry-After": str(retry)},
+            )
         user = await auth_store.get_user_by_username(username) if username else None
         if user is None or user["disabled"]:
             # No username enumeration + no disabled-account timing oracle: missing AND disabled
             # both burn exactly one Argon2 op via dummy_verify() before the SAME generic 401.
             dummy_verify()
+            await _record_failure(username)
             return JSONResponse({"detail": "invalid credentials"}, status_code=401)
         if not verify_password(user["password_hash"], password):
+            await _record_failure(username)
             return JSONResponse({"detail": "invalid credentials"}, status_code=401)
+        limiter.reset(username)
         raw = await auth_store.create_token(user["id"], "session")
+        await _audit("login_success", f"Login: {user['username']} ({user['role']})",
+                     username=user["username"], user_id=user["id"], role=user["role"])
         return JSONResponse({
             "token": raw,
             "user": {"username": user["username"], "role": user["role"]},
@@ -101,6 +151,9 @@ def build_router(ctx: AppContext) -> APIRouter:
             return JSONResponse({"detail": "already onboarded"}, status_code=409)
         _uid, raw = result
         request.app.state.users_exist = True
+        await _audit("onboard", f"Onboarded first admin: {username}",
+                     username=username, user_id=_uid, role="admin",
+                     shared_token_migrated=migrate_hash is not None)
         return JSONResponse({"token": raw, "user": {"username": username, "role": "admin"}})
 
     @router.post("/api/auth/logout")
@@ -108,6 +161,8 @@ def build_router(ctx: AppContext) -> APIRouter:
         principal = request.scope.get("auth_principal")
         if principal is not None:
             await auth_store.revoke_token(principal.token_id, principal.user_id)
+            await _audit("logout", f"Logout: {principal.username}",
+                         username=principal.username, user_id=principal.user_id)
         return JSONResponse({"ok": True})
 
     @router.get("/api/auth/me")
@@ -126,6 +181,8 @@ def build_router(ctx: AppContext) -> APIRouter:
         if len(new) < 8:
             return JSONResponse({"detail": "password too short (min 8)"}, status_code=422)
         await auth_store.set_password(p.user_id, hash_password(new))
+        await _audit("password_change", f"Password changed: {p.username}",
+                     username=p.username, user_id=p.user_id)
         return JSONResponse({"ok": True})
 
     @router.post("/api/invites/accept")
@@ -148,6 +205,9 @@ def build_router(ctx: AppContext) -> APIRouter:
             return JSONResponse({"detail": "invalid invite"}, status_code=401)
         uid, raw = result
         user = await auth_store.get_user_by_id(uid)
+        await _audit("invite_accepted",
+                     f"Account created via invite: {user['username']} ({user['role']})",
+                     username=user["username"], user_id=uid, role=user["role"])
         return JSONResponse({"token": raw, "user": {"username": user["username"],
                                                      "role": user["role"]}})
 
@@ -164,8 +224,12 @@ def build_router(ctx: AppContext) -> APIRouter:
             return JSONResponse({"detail": "name required"}, status_code=422)
         if body.get("replace"):
             raw = await auth_store.replace_token(principal.user_id, name)
+            await _audit("token_replaced", f"Access token replaced: {name}",
+                         username=principal.username, user_id=principal.user_id, token_name=name)
         else:
             raw = await auth_store.create_token(principal.user_id, "access", name=name)
+            await _audit("token_minted", f"Access token minted: {name}",
+                         username=principal.username, user_id=principal.user_id, token_name=name)
         return JSONResponse({"token": raw, "name": name})
 
     @router.get("/api/auth/tokens")
@@ -182,6 +246,8 @@ def build_router(ctx: AppContext) -> APIRouter:
         ok = await auth_store.revoke_token(token_id, principal.user_id)
         if not ok:
             return JSONResponse({"detail": "token not found"}, status_code=404)
+        await _audit("token_revoked", f"Access token revoked (#{token_id})",
+                     username=principal.username, user_id=principal.user_id, token_id=token_id)
         return JSONResponse({"ok": True})
 
     return router

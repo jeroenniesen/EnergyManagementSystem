@@ -978,6 +978,55 @@ def test_package_never_leaks_a_stored_secret_value(tmp_path):
     assert manifest["counts"]["notifications"] == 1
 
 
+def test_package_never_leaks_the_auth_tables(tmp_path):
+    # Design §9/§10: users / auth_tokens / invites are CREDENTIAL tables (Argon2id password hashes,
+    # sha256 token & invite-code hashes) — they must NEVER appear in the export. The package is an
+    # allow-list (ems.export_package.NEVER_EXPORT_TABLES documents the invariant), so seed all three
+    # with recognisable material and assert none of it — nor the column names themselves — escapes
+    # into any ZIP member.
+    from ems.authn import hash_password, hash_token
+    from ems.storage.auth import AuthStore
+
+    db = str(tmp_path / "ems.sqlite")
+    _seed(db)  # the usual history/audit content, so the ZIP has real, non-empty members to scan
+    marker_user = "leaky_admin_do_not_export"
+    captured: dict[str, str] = {}
+
+    async def seed_auth():
+        import aiosqlite
+        auth = AuthStore(db)
+        await auth.init()
+        uid = await auth.create_user(marker_user, hash_password("pw12345678"), "admin")
+        captured["raw_token"] = await auth.create_token(uid, "access", name="leaky-widget-token")
+        captured["tok_hash"] = hash_token(captured["raw_token"])
+        captured["raw_invite"] = await auth.create_invite("user", created_by=uid)
+        captured["invite_hash"] = hash_token(captured["raw_invite"])
+        # Argon2id salts each call, so the stored password hash must be read back, not recomputed.
+        async with auth._conn() as conn:
+            conn.row_factory = aiosqlite.Row
+            cur = await conn.execute("SELECT password_hash FROM users WHERE id=?", (uid,))
+            captured["pw_hash"] = (await cur.fetchone())["password_hash"]
+        await auth.close()
+    asyncio.run(seed_auth())
+
+    with TestClient(_app(db)) as c:
+        data = c.get("/api/export/package?days=400").content
+    names = set(zip_names(data))
+    # No auth table ever becomes a member of the ZIP.
+    for table in ("users", "auth_tokens", "invites"):
+        assert f"{table}.csv" not in names
+    # Nothing credential-shaped escapes into ANY member: the stored hashes, the marker username, the
+    # raw token/invite codes, or even the bare column names `password_hash`/`token_hash`.
+    needles = [
+        marker_user, captured["pw_hash"], captured["tok_hash"], captured["invite_hash"],
+        captured["raw_token"], captured["raw_invite"], "password_hash", "token_hash",
+    ]
+    for name in names:
+        member = read_member(data, name)
+        for needle in needles:
+            assert needle not in member, f"auth material leaked into {name}: {needle!r}"
+
+
 # ---- server_log_tail.txt endpoint wiring: present/omitted + redaction (B-40's diagnosis gap) ----
 
 def test_export_package_includes_server_log_tail_when_a_log_file_is_present(tmp_path):

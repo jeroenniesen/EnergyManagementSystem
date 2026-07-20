@@ -1,10 +1,39 @@
 import { expect, test } from "@playwright/test";
 
+// Exact strict-CSP policy string served on the SPA shell + static assets (design §9). Kept in
+// lockstep with ems.web.api.CONTENT_SECURITY_POLICY — the whole e2e suite rendering every page under
+// this ENFORCED header is the empirical proof it doesn't brick the UI; this test pins the exact
+// value and its scope (present on HTML/static, absent on /api JSON).
+const CSP =
+  "default-src 'self'; " +
+  "img-src 'self' data: https://*.tile.openstreetmap.org; " +
+  "style-src 'self' 'unsafe-inline'; " +
+  "object-src 'none'; " +
+  "base-uri 'self'; " +
+  "frame-ancestors 'none'";
+
 test.describe("EMS API", () => {
   test("favicon is served (no console 404)", async ({ request }) => {
     const r = await request.get("/favicon.svg");
     expect(r.ok()).toBeTruthy();
     expect(r.headers()["content-type"]).toContain("svg");
+  });
+
+  test("strict CSP header is present on the SPA shell and static assets, absent on /api", async ({
+    request,
+  }) => {
+    const shell = await request.get("/");
+    expect(shell.ok()).toBeTruthy();
+    expect(shell.headers()["content-security-policy"]).toBe(CSP);
+
+    const asset = await request.get("/favicon.svg");
+    expect(asset.ok()).toBeTruthy();
+    expect(asset.headers()["content-security-policy"]).toBe(CSP);
+
+    // JSON API responses are deliberately NOT given a CSP (nothing renders/executes there).
+    const api = await request.get("/api/status");
+    expect(api.ok()).toBeTruthy();
+    expect(api.headers()["content-security-policy"]).toBeUndefined();
   });
 
   test("health endpoints", async ({ request }) => {

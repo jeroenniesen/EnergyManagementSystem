@@ -319,11 +319,14 @@ class AuthStore:
         Concurrency semantics (deliberately chosen — see
         test_replace_token_concurrent_yields_exactly_one_survivor): two callers racing
         `replace_token(user_id, name)` each get back their OWN raw token, but only the one whose
-        transaction COMMITS LAST resolves. Every transaction's DELETE removes ANY row with that
-        (user_id, name) — including a row a just-committed sibling call inserted — before
-        inserting its own row, so `BEGIN IMMEDIATE`'s serialization (the same guarantee
-        `onboard_admin`/`accept_invite` lean on) guarantees the LAST commit's INSERT is the one
-        still standing once every caller has finished. This is "last write wins", not "first
+        transaction COMMITS LAST resolves. Serialization is enforced at TWO layers that agree: the
+        store's `_write_lock` (`_write_conn`) serializes DELETE→INSERT→commit within THIS process so
+        the two transactions never interleave on the shared connection, and `BEGIN IMMEDIATE` takes
+        SQLite's write lock so a separate process/connection can't slip between them either. Every
+        transaction's DELETE removes ANY row with that (user_id, name) — including a row a
+        just-committed sibling call inserted — before inserting its own row, so that ordering (the
+        same guarantee `onboard_admin`/`accept_invite` lean on) makes the LAST commit's INSERT the
+        one still standing once every caller has finished. This is "last write wins", not "first
         writer wins" and not "both survive": after any number of concurrent replaces, exactly one
         `auth_tokens` row named `name` exists for this user, and exactly one of the raws handed
         back is ever valid — never zero, never more than one.

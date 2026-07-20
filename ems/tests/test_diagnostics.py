@@ -45,10 +45,22 @@ def test_unsafe_data_quality_fails():
 
 
 def test_auth_check_reflects_protection():
+    # Legacy shared-token mode (identity_auth defaults False): open vs. token-protected copy.
     open_checks = build_diagnostics(**_facts(auth_required=False))
     assert "open" in next(c for c in open_checks if c.key == "auth").detail
     prot = build_diagnostics(**_facts(auth_required=True))
     assert "protected" in next(c for c in prot if c.key == "auth").detail
+
+
+def test_auth_check_is_identity_aware_when_identity_store_wired():
+    # Once the identity store is wired (production always) the row reports the truthful state at ok,
+    # regardless of whether a legacy shared token happens to be set (auth_required is ignored).
+    for auth_required in (False, True):
+        checks = build_diagnostics(**_facts(auth_required=auth_required, identity_auth=True))
+        auth = next(c for c in checks if c.key == "auth")
+        assert auth.status == "ok"
+        assert "identity auth active" in auth.detail
+        assert "open" not in auth.detail  # never the stale "open — set a token" copy
 
 
 def test_overall_status_empty_is_ok():
