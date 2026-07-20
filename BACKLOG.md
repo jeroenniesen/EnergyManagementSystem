@@ -3,7 +3,7 @@
 *Product-owner backlog, 2026-07-02; multi-level since 2026-07-03 (see
 [`docs/superpowers/specs/2026-07-03-backlog-sync-design.md`](./docs/superpowers/specs/2026-07-03-backlog-sync-design.md)).
 Owner: Jeroen. Groom by editing this file, then run `/backlog-sync` to mirror to GitHub.
-**Status verified against `main` + merged PRs on 2026-07-12** — PRs #1–#17 all merged; several items marked ✅ below.*
+**Status verified against `main` + merged PRs on 2026-07-20** — PRs through #42 merged (E-09 quality pass + auth slices 1–4); several items marked ✅ below.*
 
 **Product goals every item must serve at least one of:**
 **€** lower energy bill · **CO₂** lower footprint · **Motivation** the household sees progress and is nudged to improve · **Trust** the system is honest, safe, and explains itself.
@@ -40,13 +40,13 @@ observability (B-24); numbered date-less sprints, Issues+Milestones on GitHub.
 | **E-04 · 2027-ready planner** | ✅ B-30 valley fix | | ✅ B-05 economics | B-15 B-16 B-22 |
 | **E-05 · Quiet motivation** | ⬜ B-06 trends | | ⬜ B-08 markers | B-07 |
 | **E-06 · Trust & guidance** | | ⬜ B-31 marker | | B-09 B-12 B-21 |
-| **E-07 · Consumer-ready commercial product** | 🟨 B-55 settings menu | | | B-32 B-33 B-34 B-35 🟨 B-36 B-37 🟨 B-38 B-39 ✅ B-40 B-41 B-56 B-57 B-58 B-59 B-60 B-61 B-62 |
+| **E-07 · Consumer-ready commercial product** | 🟨 B-55 settings menu | | | B-32 B-33 B-34 B-35 🟨 B-36 B-37 🟨 B-38 B-39 ✅ B-40 B-41 B-56 B-57 B-58 B-59 B-60 B-61 B-62 ✅ B-89 |
 | **E-08 · Predictive optimization intelligence** | | | | B-63 B-64 B-65 B-66 B-67 B-68 B-69 B-70 B-71 B-72 B-73 B-74 B-75 B-76 B-77 B-78 |
-| **E-09 · ISO 25010 quality engineering** | | | | **P1:** B-79 B-80 B-81 B-82 B-83 · B-84 B-85 |
-| **E-10 · Web UI redesign: dense → calm** | | | | B-86 B-87 B-88 |
+| **E-09 · ISO 25010 quality engineering** | | | | **P1:** 🟨 B-79 ✅ B-80 ✅ B-81 ✅ B-82 ✅ B-83 · ✅ B-84 B-85 |
+| **E-10 · Web UI redesign: dense → calm** | | | | ✅ B-86 ✅ B-87 B-88 |
 | *Big levers (pool)* | | | | B-17 B-18 B-19 B-20 B-23 |
 | *Refactoring (pool)* | | | | B-24 B-25 B-26 B-27 B-28 B-29 |
-| *Architecture & platform (pool)* | | | | **P1:** B-42 B-43 B-44 B-52 · B-45 B-46 B-47 B-48 B-49 B-50 B-51 B-53 B-54 |
+| *Architecture & platform (pool)* | | | | **P1:** B-42 B-43 B-44 B-52 · B-45 🟨 B-46 B-47 B-48 B-49 B-50 B-51 B-53 B-54 |
 
 ---
 
@@ -195,7 +195,7 @@ Show live connection status, last update time, forecast age, price-data status, 
 **Track:** Pool · E-07 · 🟨 foundations shipped (`ems/freshness.py` + `/api/freshness` per-signal badges; data-quality badge; iOS "last updated / couldn't refresh" stale banners); remaining = the consumer-framed device-health view + demo/degraded labelling.
 
 ### B-39 · Secure remote access path — Feature · L
-Design and ship a secure cloud relay/proxy option so the iOS app works away from home without exposing the home network directly. Include auth, TLS, device pairing, rate limits, and privacy boundaries.
+Design and ship a secure cloud relay/proxy option so the iOS app works away from home without exposing the home network directly. Include auth, TLS, device pairing, rate limits, and privacy boundaries. Also owns the "warn when the app is remotely reachable with open read access" surface deferred here from B-83 — the LAN/VPN boundary is this item's concern, not identity auth's.
 **Done when:** the phone can reach the home EMS from outside the LAN through a documented, secure path with clear failure states.
 **Track:** Pool · E-07 · ⬜
 
@@ -248,6 +248,12 @@ Auto-calibrated load baseline from history, auto-season verification, car-sessio
 A shareable annual review (savings, sunniest day, best arbitrage catch) plus milestone moments (first €100 saved, first full solar night). Earned delight — never gratuitous.
 **Done when:** at least one screen someone shows to a friend unprompted.
 **Track:** Pool · E-07 · ⬜
+
+### B-89 · Username/password auth — slices 1–4 — Feature + Security · L *(roadmap P1)*
+Turn the single shared web token into real accounts: username/password login (Argon2id), an admin/reader role model with last-admin guards, one-time invite codes, per-device access tokens (mint/list/revoke with atomic replace), iOS username/password login + a per-device widget access token, and a slice-4 hardening pass (per-username login rate-limit/lockout, strict CSP, auth audit wiring, export redaction of credential tables). Identity auth is always-on: every non-exempt `/api/*` request needs a bearer token, readers get a read-only UI, and the auth middleware is pure-ASGI so it never starves the control cycle.
+**Done when:** a household can invite members, sign in per device, and revoke a lost device; readers cannot operate; no credential material reaches logs or exports.
+**Track:** ✅ done — slices 1–4 across [PR #40](https://github.com/jeroenniesen/EnergyManagementSystem/pull/40) + this batch's PR. Backs B-83 (secure deployment posture) and the family-reach iOS work.
+**Later:** per-device *current session* marker in the account UI; session revocation on password change; a friendlier iOS onboarding surface (first-run invite/login flow).
 
 ---
 
@@ -343,34 +349,34 @@ Replay historical days through the planner to compare rule changes, validate res
 *Goal: prove that EMS is functionally suitable, responsive, secure, accessible, reliable, maintainable, flexible, compatible, and safe in real-home conditions.* (Trust/€)
 
 ### B-79 · Truthful intelligence capability status — Bug · S · **P1**
-The API exposes the intelligence layer as `shadow`, but the scenario planner is not currently evaluated by the live runtime. Replace the hard-coded status with a real capability state (`not_active`, `shadow_evaluation`, `advisory`, `active`) and show the last evaluation time/result. Never imply that intelligence steers a plan before it actually does.
+The API now exposes the intelligence layer as `not_active` (the misleading hard-coded `shadow` label was corrected in [PR #38](https://github.com/jeroenniesen/EnergyManagementSystem/pull/38)); the scenario planner is still not evaluated by the live runtime. The remaining work is to replace the static label with a real, runtime-proven capability state (`not_active`, `shadow_evaluation`, `advisory`, `active`) and show the last evaluation time/result. Never imply that intelligence steers a plan before it actually does.
 **Done when:** `/api/battery-plan` reports a runtime-proven state; UI copy distinguishes available, shadow, advisory, and active; tests prove no false claim is emitted.
-**Track:** Pool · E-09 · ⬜
+**Track:** Pool · E-09 · 🟨 — misleading `shadow` label fixed ([PR #38](https://github.com/jeroenniesen/EnergyManagementSystem/pull/38)); a runtime-proven capability state is still unbuilt.
 
 ### B-80 · Control/API performance budgets — Ops + Test · M · **P1**
 Define and measure control-cycle completion time, device-read latency, API p95 latency, SQLite transaction duration, memory ceiling, and replay/reporting budgets on the Raspberry Pi target. Add sustained dashboard-poll and slow-device tests; an over-budget cycle must preserve the safe fallback.
 **Done when:** budgets are documented, measured in CI or a repeatable local command, and regressions fail with actionable output.
-**Track:** Pool · E-09 · ⬜
+**Track:** ✅ done — [PR #41](https://github.com/jeroenniesen/EnergyManagementSystem/pull/41). Per-tier perf budgets (hot/interactive/batch) with a pure-ASGI `PerfTimingMiddleware`, a perf `Registry`, and a repeatable `python -m ems.tools.perf_check`; over-budget requests log `perf.over_budget` without being cancelled (measurement, not rate-limiting).
 
 ### B-81 · Fault-injection and recovery qualification — Test/Ops · M · **P1**
 Exercise database loss/reopen, interrupted migrations, battery timeout, failed AUTO recovery, malformed price/forecast responses, process restart during leases, and competing control owners. Verify recovery, audit visibility, and no unsafe write under every failure.
 **Done when:** a deterministic failure matrix runs in CI and each scenario has an explicit expected state, alert, and recovery outcome.
-**Track:** Pool · E-09 · ⬜
+**Track:** ✅ done — [PR #41](https://github.com/jeroenniesen/EnergyManagementSystem/pull/41). A `fault_injection`-marked suite exercises database loss/reopen (the self-healing shared connection), battery write timeout → HOLD-not-revert, malformed price/forecast fallback, and process restart/lease recovery, each asserting a safe state + audit visibility. *Not every named scenario has a dedicated test yet (e.g. competing control owners, interrupted migration mid-backfill) — the matrix is real but not exhaustive.*
 
 ### B-82 · Accessibility quality gate — UX + Test · M · **P1**
 Add automated accessibility checks and keyboard/screen-reader coverage for Dashboard, Manage, Car, Chat, alerts, charts, drawers/modals, and settings. Include focus restoration, reduced motion, contrast, labels, and mobile navigation.
 **Done when:** axe (or equivalent) and keyboard smoke tests run in CI; critical WCAG failures block merge; charts have useful text alternatives.
-**Track:** Pool · E-09 · ⬜
+**Track:** ✅ done — [PR #41](https://github.com/jeroenniesen/EnergyManagementSystem/pull/41)/[#42](https://github.com/jeroenniesen/EnergyManagementSystem/pull/42). A Playwright `a11y.spec.ts` WCAG 2.1 AA gate runs axe across the main views and blocks merge on critical failures; charts carry text-alternative `aria-label` summaries (e.g. the combined-plan chart's "Principal action windows:").
 
 ### B-83 · Secure deployment posture — Security/Ops · S–M · **P1**
 Make authentication posture explicit at startup and in System diagnostics. Warn when the app is remotely reachable with open read access; document the LAN/VPN boundary; test token redaction, read/write authorization, token rotation, and failure responses. Consider requiring auth by default outside mock mode.
 **Done when:** unsafe exposure is visible and actionable, auth behavior is contract-tested, and no token/secret appears in logs or exports.
-**Track:** Pool · E-09 · ⬜
+**Track:** ✅ done — auth slices 1–4 ([PR #40](https://github.com/jeroenniesen/EnergyManagementSystem/pull/40) + this branch). Identity auth is always-on (every non-exempt `/api/*` needs a bearer token), plus per-username login rate-limiting/lockout, a strict Content-Security-Policy, auth audit wiring, and export redaction (`NEVER_EXPORT_TABLES` keeps credential tables out of the support ZIP, verified by a denylist-driven leak test). The residual "warn when the app is remotely reachable with open read access" idea is deferred to **B-39** (secure remote access path), where the LAN/VPN boundary lives.
 
 ### B-84 · Safety property and invariant tests — Test · M · P1/P2
 Add property-based or exhaustive invariant tests for reserve-floor preservation, validator authority, recovery break-even limits, single-writer ownership, AUTO fallback, idempotent commands, and no-control-on-unsafe-data. Include representative DST and multi-peak days.
 **Done when:** safety invariants run independently of example fixtures and failures identify the violated invariant.
-**Track:** Pool · E-09 · ⬜
+**Track:** ✅ done — [PR #41](https://github.com/jeroenniesen/EnergyManagementSystem/pull/41). Invariant/property tests cover reserve-floor preservation, validator authority (`unsafe` ⇒ stay AUTO), single-writer ownership, AUTO fallback, idempotent commands, and no-control-on-unsafe-data, with DST and multi-peak fixtures; a failure names the violated invariant.
 
 ### B-85 · Stale-code and compatibility retirement — Refactor · S–M · P2
 Create a retirement register for legacy `forecast_snapshots` reads, deprecated EV quick-advice settings, test-only simulation modules, stale EV documentation, temporary browser artifacts, and research-only intelligence code. Add usage evidence and removal versions before deleting compatibility paths.
@@ -514,7 +520,7 @@ purpose-built `ems/control/loop.py::ControlLoop` sits **unused**. `create_app` t
 because there's no object to hang collaborators on. Extract an `EmsRuntime`/`ControlService` + a single
 injected `AppContext`, adopt `ControlLoop`, and unify the two divergent "readiness" computations
 (`lifecycle` vs `readiness.py`). Makes the brain testable outside FastAPI and unblocks B-25.
-**Track:** Pool · ⬜
+**Track:** Pool · 🟨 — stages 1–2 done via [PR #37](https://github.com/jeroenniesen/EnergyManagementSystem/pull/37): a `ControlService` is extracted and testable outside FastAPI. Remaining: adopt the purpose-built `ControlLoop`, and unify the divergent readiness computations behind a single injected `AppContext`.
 
 ### B-47 · Planner port + registry — Refactor/Feature · M · P2
 There is no `Planner` Protocol (strategy selection is an `if/elif` in `planner/strategy.py`), `PlannerMode`
