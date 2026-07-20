@@ -120,6 +120,11 @@ export function StrategyCard({
           Advanced settings →
         </button>
       </div>
+      {!canOperate && (
+        <p className="advisor-hint" data-testid="strategy-readonly-hint">
+          Changing the strategy needs a &quot;user&quot; or &quot;admin&quot; account.
+        </p>
+      )}
     </section>
   );
 }

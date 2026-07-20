@@ -13,6 +13,7 @@
 import { useEffect, useState } from "react";
 
 import { apiFetch } from "./auth";
+import { useCopyToClipboard } from "./useCopyToClipboard";
 
 type AdminUser = {
   id: number;
@@ -54,7 +55,7 @@ export function AdminAccess() {
   const [creating, setCreating] = useState(false);
   const [createErr, setCreateErr] = useState<string | null>(null);
   const [minted, setMinted] = useState<{ url: string; expires_at: string } | null>(null);
-  const [copied, setCopied] = useState(false);
+  const { copied, copy: copyToClipboard } = useCopyToClipboard();
   const [revokeBusy, setRevokeBusy] = useState<Record<number, boolean>>({});
 
   async function loadUsers() {
@@ -127,7 +128,6 @@ export function AdminAccess() {
     setCreating(true);
     setCreateErr(null);
     setMinted(null);
-    setCopied(false);
     try {
       const r = await apiFetch("/api/invites", {
         method: "POST",
@@ -150,13 +150,7 @@ export function AdminAccess() {
 
   async function copyMintedUrl() {
     if (!minted) return;
-    try {
-      await navigator.clipboard.writeText(minted.url);
-      setCopied(true);
-    } catch {
-      /* clipboard unavailable (permissions/insecure context) — the selectable input is the
-         fallback; the admin can still select-all + copy manually. */
-    }
+    await copyToClipboard(minted.url);
   }
 
   async function revokeInvite(id: number) {
@@ -183,7 +177,7 @@ export function AdminAccess() {
         </p>
         {usersErr && (
           <p className="field-err" role="alert">
-            Could not load users: {usersErr}
+            Couldn&apos;t load users: {usersErr}
           </p>
         )}
         {users === null && !usersErr ? (
@@ -203,9 +197,11 @@ export function AdminAccess() {
                     </span>
                   </div>
                   <div className="admin-row-controls">
-                    <span className="admin-row-field-label" aria-hidden="true">Role</span>
+                    <label className="admin-row-field-label" htmlFor={`admin-role-${u.id}`}>
+                      Role
+                    </label>
                     <select
-                      aria-label={`Role for ${u.username}`}
+                      id={`admin-role-${u.id}`}
                       value={u.role}
                       disabled={busy}
                       onChange={(e) => patchUser(u, { role: e.target.value })}
@@ -276,7 +272,11 @@ export function AdminAccess() {
           </p>
         )}
         {minted && (
-          <div className="admin-invite-minted" data-testid="admin-invite-minted">
+          <div
+            className="admin-invite-minted"
+            data-testid="admin-invite-minted"
+            role="status"
+          >
             <p className="advisor-hint">
               Share this link — it&apos;s shown only once and works until it expires or is used.
               Expires {fmtDate(minted.expires_at)}.

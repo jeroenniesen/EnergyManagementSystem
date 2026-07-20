@@ -252,8 +252,7 @@ A shareable annual review (savings, sunniest day, best arbitrage catch) plus mil
 ### B-89 · Username/password auth — slices 1–4 — Feature + Security · L *(roadmap P1)*
 Turn the single shared web token into real accounts: username/password login (Argon2id), an admin/reader role model with last-admin guards, one-time invite codes, per-device access tokens (mint/list/revoke with atomic replace), iOS username/password login + a per-device widget access token, and a slice-4 hardening pass (per-username login rate-limit/lockout, strict CSP, auth audit wiring, export redaction of credential tables). Identity auth is always-on: every non-exempt `/api/*` request needs a bearer token, readers get a read-only UI, and the auth middleware is pure-ASGI so it never starves the control cycle.
 **Done when:** a household can invite members, sign in per device, and revoke a lost device; readers cannot operate; no credential material reaches logs or exports.
-**Track:** ✅ done — slices 1–4 across [PR #40](https://github.com/jeroenniesen/EnergyManagementSystem/pull/40) + this batch's PR. Backs B-83 (secure deployment posture) and the family-reach iOS work.
-**Later:** per-device *current session* marker in the account UI; session revocation on password change; a friendlier iOS onboarding surface (first-run invite/login flow).
+**Track:** ✅ done — slices 1–4 across [PR #40](https://github.com/jeroenniesen/EnergyManagementSystem/pull/40) + this batch's PR. Backs B-83 (secure deployment posture) and the family-reach iOS work. *(Later: a per-device current-session marker in the account UI, session revocation on password change, and a friendlier iOS onboarding surface — first-run invite/login flow.)*
 
 ---
 

@@ -48,4 +48,39 @@ test.describe("admin users & invites", () => {
     await row.getByRole("button", { name: /Revoke/ }).click();
     await expect(row).toHaveCount(0);
   });
+
+  test("changing a user's role through the admin UI persists", async ({ page, request }) => {
+    // Seed a second user via a real invite+accept round-trip (API, not the UI — that flow is
+    // already covered by the test above; this test's focus is the role-change PATCH itself).
+    const invite = await (await request.post("/api/invites", { data: { role: "user" } })).json();
+    const username = `role-change-${Date.now()}`;
+    const accepted = await request.post("/api/invites/accept", {
+      data: { code: invite.code, username, password: "pw12345678" },
+    });
+    expect(accepted.ok()).toBeTruthy();
+
+    await page.goto("/");
+    await page.getByTestId("nav-manage").click();
+    await page.getByTestId("group-access").click();
+
+    const users = page.getByTestId("admin-users-list");
+    await expect(users).toContainText(username);
+    const row = users.locator('[data-testid^="admin-user-"]', { hasText: username });
+    const select = row.locator("select");
+    await expect(select).toHaveValue("user");
+
+    // Change the role via the SAME select a real admin would use — no direct API call here.
+    await select.selectOption("admin");
+    // The PATCH landed: the row re-renders from the server's response, not just an optimistic flip.
+    await expect(select).toHaveValue("admin");
+
+    // Reload and re-navigate to confirm the change actually persisted server-side.
+    await page.reload();
+    await page.getByTestId("nav-manage").click();
+    await page.getByTestId("group-access").click();
+    const rowAfterReload = page
+      .getByTestId("admin-users-list")
+      .locator('[data-testid^="admin-user-"]', { hasText: username });
+    await expect(rowAfterReload.locator("select")).toHaveValue("admin");
+  });
 });

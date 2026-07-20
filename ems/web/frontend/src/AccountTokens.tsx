@@ -13,6 +13,7 @@
 import { useEffect, useState } from "react";
 
 import { apiFetch } from "./auth";
+import { useCopyToClipboard } from "./useCopyToClipboard";
 
 type ApiToken = {
   id: number;
@@ -41,7 +42,7 @@ export function AccountTokens() {
   const [minting, setMinting] = useState(false);
   const [mintErr, setMintErr] = useState<string | null>(null);
   const [minted, setMinted] = useState<string | null>(null);
-  const [copied, setCopied] = useState(false);
+  const { copied, copy: copyToClipboard } = useCopyToClipboard();
   const [revokeBusy, setRevokeBusy] = useState<Record<number, boolean>>({});
 
   async function loadKind() {
@@ -81,7 +82,6 @@ export function AccountTokens() {
     setMinting(true);
     setMintErr(null);
     setMinted(null);
-    setCopied(false);
     try {
       const r = await apiFetch("/api/auth/tokens", {
         method: "POST",
@@ -102,13 +102,7 @@ export function AccountTokens() {
 
   async function copyMinted() {
     if (!minted) return;
-    try {
-      await navigator.clipboard.writeText(minted);
-      setCopied(true);
-    } catch {
-      /* clipboard unavailable (permissions/insecure context) — the selectable input is the
-         fallback; copy manually via select-all. */
-    }
+    await copyToClipboard(minted);
   }
 
   async function revoke(id: number) {
@@ -173,7 +167,7 @@ export function AccountTokens() {
         </p>
       )}
       {minted && (
-        <div className="admin-invite-minted" data-testid="account-token-minted">
+        <div className="admin-invite-minted" data-testid="account-token-minted" role="status">
           <p className="advisor-hint">
             Copy it now — it&apos;s shown only once and can&apos;t be retrieved again.
           </p>
@@ -194,7 +188,7 @@ export function AccountTokens() {
 
       {listErr && (
         <p className="field-err" role="alert">
-          Could not load tokens: {listErr}
+          Couldn&apos;t load tokens: {listErr}
         </p>
       )}
       {tokens === null && !listErr ? (

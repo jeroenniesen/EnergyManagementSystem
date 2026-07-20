@@ -149,6 +149,7 @@ from ems.web.routes.users import build_router as build_users_router
 from ems.web.routes.whatif import build_router as build_whatif_router
 
 _log = logging.getLogger("ems.recorder")
+_audit_log = logging.getLogger("ems.web.audit")
 
 
 def _task_died(name: str):
@@ -825,6 +826,20 @@ def create_app(
         just-saved token takes effect without a restart."""
         ui_tok = (settings_cache.get("web.auth_token") or "").strip()
         return ui_tok or web_auth_token
+
+    async def _audit_auth(event: str, summary: str, **detail: object) -> None:
+        """Best-effort "auth"-category audit (design §6), shared by routes/auth.py and
+        routes/users.py through `AppContext.audit_auth` (both were near-verbatim closures before
+        this hoist). Payload carries usernames / ids / roles / token NAMES only — NEVER passwords,
+        raw tokens, or hashes. Fail-safe: a transient audit-store error must never break the auth
+        flow it is recording."""
+        if audit_store is None:
+            return
+        try:
+            await audit_store.append(datetime.now(UTC).isoformat(), "auth", summary,
+                                     {"event": event, **detail})
+        except Exception:
+            _audit_log.warning("auth audit append failed (non-fatal): %s", event, exc_info=True)
 
     def _authorized(request: Request) -> bool:
         """True if the request may mutate. When no token is configured, writes are open (dev/LAN
@@ -3632,6 +3647,7 @@ def create_app(
         solar_confidence_advice=_solar_confidence_advice,
         report_for_window=_report_for_window,
         effective_web_token=_effective_web_token,
+        audit_auth=_audit_auth,
     )
     for build in (build_auth_router, build_users_router, build_car_router, build_digest_router,
                   build_notify_router, build_export_router, build_accuracy_router,

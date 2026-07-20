@@ -3,9 +3,13 @@ tokens, and single-use invites. Sibling to `SettingsStore`/`HistoryStore`/`Audit
 self-healing shared-connection pattern (BACKLOG B-49 follow-up); see `ems/storage/settings.py`
 for the full rationale of the connection scaffolding copied verbatim below.
 
-This module owns the schema + connection scaffolding + `Principal`, plus user CRUD (Task 3) and
-token create/resolve/revoke/list (Task 4). Onboarding/invite methods are added by Task 9 onto
-this same class.
+This module owns the schema + connection scaffolding + `Principal`, plus: user CRUD and role/
+disabled management with last-admin/self-demote guards (`create_user`/`list_users`/`set_role`/
+`set_disabled`); session/access token lifecycle (`create_token`/`resolve`/`revoke_token`/
+`list_tokens`/`replace_token`); first-admin onboarding with shared-token migration
+(`onboard_admin`); and single-use, admin-issued invites (`create_invite`/`list_invites`/
+`revoke_invite`/`accept_invite`). Routers (`ems/web/routes/{auth,users}.py`) translate this
+class's return values into HTTP status codes; they never re-implement its guard logic.
 """
 from __future__ import annotations
 

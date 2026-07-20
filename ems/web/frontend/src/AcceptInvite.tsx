@@ -37,7 +37,7 @@ export function AcceptInvite({ onDone }: { onDone: () => void }) {
           setError("This invite is invalid or has expired.");
         } else {
           const b = await r.json().catch(() => ({}));
-          setError(b.detail ?? "Could not accept the invite");
+          setError(b.detail ?? "Couldn't accept the invite");
         }
         return;
       }
@@ -49,7 +49,7 @@ export function AcceptInvite({ onDone }: { onDone: () => void }) {
       await Promise.resolve(onDone());
       window.location.hash = "dashboard";
     } catch {
-      setError("Could not reach the server — try again.");
+      setError("Couldn't reach the server — try again.");
     } finally {
       setBusy(false);
     }

@@ -121,6 +121,30 @@ def test_login_success_and_failure_are_audited_without_secrets(tmp_path):
     assert "password_hash" not in blob and "token_hash" not in blob
 
 
+def test_password_change_is_audited_as_password_changed(tmp_path):
+    # Pins the event name (object_pastparticiple scheme, matching login_success/invite_accepted/
+    # token_minted/etc.) — not the older "password_change".
+    db = str(tmp_path / "ems.sqlite")
+    _seed_user(db, "admin", "pw12345678", "admin")
+    with TestClient(_app(db, audit=True)) as c:
+        session = c.post(
+            "/api/auth/login", json={"username": "admin", "password": "pw12345678"}
+        ).json()["token"]
+        h = {"Authorization": f"Bearer {session}"}
+        r = c.post("/api/auth/password", json={"old": "pw12345678", "new": "newpass123"},
+                   headers=h)
+        assert r.status_code == 200
+    rows = _auth_rows(db)
+    events = [r["detail"]["event"] for r in rows]
+    assert "password_changed" in events
+    assert "password_change" not in events
+    changed = next(r for r in rows if r["detail"]["event"] == "password_changed")
+    assert changed["detail"]["username"] == "admin"
+    # No secret material anywhere in the serialized auth log.
+    blob = json.dumps(rows)
+    assert "pw12345678" not in blob and "newpass123" not in blob
+
+
 def test_token_mint_and_invite_accept_are_audited_without_secrets(tmp_path):
     db = str(tmp_path / "ems.sqlite")
     _seed_user(db, "admin", "pw12345678", "admin")

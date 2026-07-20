@@ -57,10 +57,11 @@ test.describe("reader read-only mode", () => {
     await expect(page.getByTestId("override-readonly-hint")).toBeVisible();
 
     // Strategy: season switch + grid-topup toggle are disabled (not removed — the current choice
-    // stays visible, it just can't be changed).
+    // stays visible, it just can't be changed), with a hint explaining why.
     const summerBtn = page.getByTestId("strategy-summer");
     await expect(summerBtn).toBeVisible();
     await expect(summerBtn).toBeDisabled();
+    await expect(page.getByTestId("strategy-readonly-hint")).toBeVisible();
 
     // AI second opinion (dashboard, inside "All the details"): "Check now" is an OPERATE write
     // (POST /api/ai/validate) — visible (the review itself is still readable) but disabled, with a
@@ -83,6 +84,14 @@ test.describe("reader read-only mode", () => {
     // Chat: input + send disabled, with a hint explaining why (the FAQ quick-answers still work).
     await page.getByTestId("nav-chat").click();
     await expect(page.getByTestId("chat-input")).toBeDisabled();
+
+    // Car: the "while the car charges" mode section and the picker/capacity/schedule config
+    // section are each disabled as a whole, with ONE hint per section (not per input).
+    await page.getByTestId("nav-car").click();
+    await expect(page.getByTestId("car-mode-hold-toggle")).toBeDisabled();
+    await expect(page.getByTestId("car-mode-readonly-hint")).toBeVisible();
+    await expect(page.locator("#set-ev\\.battery_kwh")).toBeDisabled();
+    await expect(page.getByTestId("car-config-readonly-hint")).toBeVisible();
   });
 
   test("Insights heating-advice mark-done/undo are disabled for a reader", async ({ page }) => {

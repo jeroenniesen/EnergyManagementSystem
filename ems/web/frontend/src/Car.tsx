@@ -273,6 +273,12 @@ function CarModeSection({
           {error ?? "Couldn't save — try again."}
         </p>
       )}
+      {disabled && (
+        <p className="advisor-hint" data-testid="car-mode-readonly-hint">
+          Changing how the battery behaves while the car charges needs a &quot;user&quot; or
+          &quot;admin&quot; account.
+        </p>
+      )}
     </div>
   );
 }
@@ -623,6 +629,12 @@ export function CarView({
             onChange={(v) => set("ev.schedule", v)}
           />
         </div>
+        {!canOperate && (
+          <p className="advisor-hint" data-testid="car-config-readonly-hint">
+            Changing your car or weekly schedule needs a &quot;user&quot; or &quot;admin&quot;
+            account.
+          </p>
+        )}
       </div>
 
       {/* (d) Charging-sessions history. */}

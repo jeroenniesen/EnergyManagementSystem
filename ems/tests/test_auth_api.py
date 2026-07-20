@@ -80,6 +80,19 @@ def test_reader_forbidden_on_operate_but_can_view(tmp_path):
         assert c.post("/api/settings", json={"ui.theme": "dark"}, headers=h).status_code == 403
 
 
+def test_user_role_can_operate(tmp_path):
+    # Positive counterpart to test_reader_forbidden_on_operate_but_can_view (spec §10: the 'user'
+    # role may VIEW and OPERATE, only 'admin'-only surfaces are out of reach).
+    db = str(tmp_path / "ems.sqlite")
+    _seed_user(db, "op", "pw12345678", "user")
+    with TestClient(_app(db)) as c:
+        login = c.post("/api/auth/login", json={"username": "op", "password": "pw12345678"})
+        tok = login.json()["token"]
+        h = {"Authorization": f"Bearer {tok}"}
+        assert c.get("/api/settings", headers=h).status_code == 200  # VIEW ok
+        assert c.post("/api/settings", json={"ui.theme": "dark"}, headers=h).status_code == 200
+
+
 def test_unauthenticated_is_401_when_users_exist(tmp_path):
     db = str(tmp_path / "ems.sqlite")
     _seed_user(db, "u", "pw12345678", "user")
@@ -134,6 +147,43 @@ def test_login_disabled_user_401(tmp_path):
         )
         assert r.status_code == 401
         assert r.json()["detail"] == "invalid credentials"
+
+
+def test_dummy_verify_called_exactly_once_on_missing_and_disabled_user(tmp_path, monkeypatch):
+    # Pins the timing-equalization invariant (module docstring) against a future short-circuit:
+    # dummy_verify() must run EXACTLY once per failed request whether the username is missing or
+    # disabled — never zero (that reopens a timing oracle) and never twice. Patched on
+    # ems.web.routes.auth (where `from ems.authn import dummy_verify` bound the name at import
+    # time) rather than on ems.authn itself, since that's the reference login() actually calls.
+    import ems.web.routes.auth as auth_routes
+
+    db = str(tmp_path / "ems.sqlite")
+    _seed_user(db, "disabled_user", "pw12345678", "admin")
+
+    async def _disable():
+        s = AuthStore(db)
+        await s.init()
+        u = await s.get_user_by_username("disabled_user")
+        async with s._write_conn() as conn:
+            await conn.execute("UPDATE users SET disabled=1 WHERE id=?", (u["id"],))
+            await conn.commit()
+        await s.close()
+
+    asyncio.run(_disable())
+
+    calls = []
+    monkeypatch.setattr(auth_routes, "dummy_verify", lambda: calls.append(1))
+
+    with TestClient(_app(db)) as c:
+        r1 = c.post("/api/auth/login", json={"username": "ghost", "password": "x"})
+        assert r1.status_code == 401
+        assert len(calls) == 1  # (a) nonexistent user — exactly one call so far
+
+        r2 = c.post(
+            "/api/auth/login", json={"username": "disabled_user", "password": "pw12345678"}
+        )
+        assert r2.status_code == 401
+        assert len(calls) == 2  # (b) disabled user — exactly one MORE call, not two
 
 
 def test_resolve_failure_is_503_not_500(tmp_path, monkeypatch):

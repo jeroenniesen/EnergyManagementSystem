@@ -28,6 +28,19 @@ def test_onboard_creates_admin_then_gates_reopen(tmp_path):
         assert r3.status_code == 409
 
 
+def test_onboard_rejects_whitespace_only_username(tmp_path):
+    # Review fix: onboard() used to check len(username) BEFORE stripping, so a whitespace-only
+    # username slipped past the length check (accept_invite already stripped first). Both now go
+    # through the shared `_validate_new_account` helper.
+    db = str(tmp_path / "ems.sqlite")
+    with TestClient(_app(db)) as c:
+        r = c.post("/api/auth/onboard", json={"username": "   ", "password": "pw12345678"})
+        assert r.status_code == 422
+        assert r.json()["detail"] == "username required; password min 8"
+        # onboarding must still be OPEN — the rejected attempt must not have consumed it.
+        assert c.get("/api/status").status_code == 409
+
+
 def test_onboard_requires_shared_token_and_migrates_it(tmp_path):
     db = str(tmp_path / "ems.sqlite")
     with TestClient(_app(db, token="legacy-shared")) as c:
