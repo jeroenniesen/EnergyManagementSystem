@@ -51,8 +51,11 @@ public final class DashboardStore {
             // The session/token is no longer valid. Bounce back to the login screen rather than
             // showing stale data behind a dead token. Keep the saved server URL (do NOT forget it)
             // so re-login can prefill it; drop the live client + snapshot so AppShellView shows
-            // ConnectionView with the expiry prompt.
+            // ConnectionView with the expiry prompt. Also clear the now-dead interactive-slot token:
+            // it's expired anyway, and leaving it there is exactly the fuel the token-paste fallback
+            // (ConnectionView.connectWithToken) could otherwise read and mis-treat as an access token.
             authFailed = true
+            try? credentialStore.deleteToken(for: client.baseURL)
             self.client = nil
             snapshot = nil
             nextRefreshAt = nil
@@ -114,20 +117,32 @@ public final class DashboardStore {
     }
 
     /// Fallback connect path for a MANUALLY-PASTED access token (machine-token users), not the
-    /// primary password login. Here the pasted token IS a long-lived access token, so it is
-    /// legitimately mirrored to the widget. The password-login path uses `login(...)` instead,
-    /// which provisions a dedicated widget access token and never leaks the session token to the
-    /// widget (spec §7).
-    public func saveConnectedServer(_ client: APIClient) throws {
+    /// primary password login. `client` carries whatever token the app itself should ride to
+    /// connect (this may be a fallback token read from the interactive/session Keychain slot when
+    /// the paste field was empty — see `ConnectionView.connectWithToken`). `widgetAccessToken` is
+    /// SEPARATE and must be a token the caller can prove is a dedicated access token — in practice
+    /// only the literal, trimmed contents of the paste field, never anything read from the
+    /// interactive/session slot. The signature enforces the spec §7 invariant at the call site
+    /// rather than assuming it: pass `nil` and the widget's Keychain slot + app-group config are
+    /// left completely untouched (no mirroring, no clearing); only a non-nil `widgetAccessToken` is
+    /// written there. The password-login path uses `login(...)` instead, which provisions a
+    /// dedicated widget access token itself and never leaks the session token to the widget.
+    public func saveConnectedServer(client: APIClient, widgetAccessToken: String?) throws {
         authFailed = false
         try credentialStore.saveLastBaseURL(client.baseURL)
         if let token = client.token, !token.isEmpty {
             try credentialStore.saveToken(token, for: client.baseURL)
-            try? credentialStore.saveWidgetToken(token, for: client.baseURL)
         }
+        guard let widgetAccessToken, !widgetAccessToken.isEmpty else {
+            // No token here is known to be a dedicated access token — never mirror an
+            // interactive/session token to the widget. Leave its Keychain slot and the app-group
+            // config exactly as they were.
+            return
+        }
+        try? credentialStore.saveWidgetToken(widgetAccessToken, for: client.baseURL)
         // Mirror {baseURL, token} into the shared app group so the home-screen widget can reach the
         // same server without its own onboarding (B-59). Best-effort: never fail a connect over it.
-        widgetConfig.save(WidgetServerConfig(baseURL: client.baseURL, token: client.token))
+        widgetConfig.save(WidgetServerConfig(baseURL: client.baseURL, token: widgetAccessToken))
     }
 
     public func restoreSavedServer() {

@@ -207,15 +207,21 @@ struct ConnectionView: View {
         }
     }
 
-    // Fallback flow for machine-token users: paste a long-lived access token (also fed to the
-    // widget, since a pasted machine token IS an access token — see DashboardStore.saveConnectedServer).
+    // Fallback flow for machine-token users: paste a long-lived access token. Only the LITERAL
+    // paste-field contents are ever treated as an access token and fed to the widget — see
+    // DashboardStore.saveConnectedServer. When the paste field is empty this falls back to
+    // whatever token is already saved for this server (typically the interactive/SESSION token
+    // from a password login) so the app can still connect, but that fallback token must NEVER be
+    // mirrored to the widget (spec §7 invariant — the widget only ever carries a dedicated access
+    // token).
     private func connectWithToken() async {
         isConnecting = true
         defer { isConnecting = false }
         do {
             let url = try discovery.normalizedManualURL(baseURL)
+            let pastedToken = trimmedToken.nilIfEmpty
             let savedToken = (try? credentialStore.token(for: url)) ?? ""
-            let token = trimmedToken.nilIfEmpty ?? savedToken.nilIfEmpty
+            let token = pastedToken ?? savedToken.nilIfEmpty
             let client = APIClient(baseURL: url, token: token)
 
             _ = try await client.fetchLiveHealth()
@@ -232,7 +238,9 @@ struct ConnectionView: View {
             }
             validationError = nil
             dashboardStore.client = client
-            try? dashboardStore.saveConnectedServer(client)
+            // widgetAccessToken is the pasted token ONLY — if the field was empty, `token` may be a
+            // fallback session-slot token, which must never reach the widget.
+            try? dashboardStore.saveConnectedServer(client: client, widgetAccessToken: pastedToken)
             await dashboardStore.refresh()
         } catch let error as APIClientError {
             validationError = loginErrorMessage(error)

@@ -79,7 +79,9 @@ final class DashboardStoreTests: XCTestCase {
         let client = APIClient(baseURL: url, token: "secret")
         let store = DashboardStore(client: client, credentialStore: credentials)
 
-        try store.saveConnectedServer(client)
+        // "secret" here stands in for a literally-pasted token, so it is legitimately mirrored to
+        // the widget too.
+        try store.saveConnectedServer(client: client, widgetAccessToken: "secret")
         store.forgetServer()
         credentials.deletedURLs.removeAll()
         credentials.deletedLastBaseURL = false
@@ -87,8 +89,48 @@ final class DashboardStoreTests: XCTestCase {
 
         XCTAssertEqual(credentials.savedBaseURL, url)
         XCTAssertEqual(credentials.savedTokens[url], "secret")
+        XCTAssertEqual(credentials.savedWidgetTokens[url], "secret")
         XCTAssertEqual(store.client?.baseURL, url)
         XCTAssertEqual(store.client?.token, "secret")
+    }
+
+    // MARK: - CRITICAL fix: never mirror a session token to the widget via the token-paste fallback
+
+    // Pins ConnectionView.connectWithToken's fallback path: the paste field is empty, so the app
+    // connects using whatever is already saved in the interactive/SESSION Keychain slot for this
+    // server — but that resolved token must NEVER be treated as an access token. The caller (mirrors
+    // ConnectionView) passes `widgetAccessToken: nil`, and both the widget Keychain slot and the
+    // app-group config must come out untouched (a pre-existing widget access token, from an earlier
+    // successful password login, must be preserved exactly — not overwritten with the session token,
+    // and not wiped either).
+    func testSaveConnectedServerFallbackNeverMirrorsSessionTokenToWidget() throws {
+        let credentials = RecordingCredentialStore()
+        let url = URL(string: "http://ems.local:8080")!
+        try credentials.saveToken("session-xyz", for: url) // interactive slot, e.g. from password login
+        try credentials.saveWidgetToken("previous-access-token", for: url) // earlier widget provision
+
+        let suite = "test.fallback.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suite)!
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let widgetConfig = AppGroupConfigStore(defaults: defaults)
+        widgetConfig.save(WidgetServerConfig(baseURL: url, token: "previous-access-token"))
+
+        let store = DashboardStore(client: nil, credentialStore: credentials, widgetConfig: widgetConfig)
+
+        // Mirrors ConnectionView.connectWithToken: paste field empty → fall back to the saved
+        // (session) token to connect the app.
+        let fallbackToken = try credentials.token(for: url)
+        let client = APIClient(baseURL: url, token: fallbackToken)
+
+        try store.saveConnectedServer(client: client, widgetAccessToken: nil)
+
+        // The app connects with the session token...
+        XCTAssertEqual(credentials.savedTokens[url], "session-xyz")
+        // ...but the widget Keychain slot and app-group config are untouched: still the OLD access
+        // token, never the session token.
+        XCTAssertEqual(credentials.savedWidgetTokens[url], "previous-access-token")
+        XCTAssertEqual(widgetConfig.load()?.token, "previous-access-token")
+        XCTAssertNotEqual(widgetConfig.load()?.token, "session-xyz")
     }
 
     func testRefreshWhenDueSkipsBeforeDeadlineAndRefreshesAfter() async throws {
@@ -199,6 +241,42 @@ final class DashboardStoreTests: XCTestCase {
         XCTAssertNotEqual(widgetConfig.load()?.token, "session-xyz")
     }
 
+    // IMPORTANT fix pin: widget-token provisioning (`/api/auth/tokens`) fails, but login itself must
+    // still succeed (session stored, app connected) — and, per the review's Minor, a pre-existing
+    // app-group/widget access token must be PRESERVED rather than wiped or replaced with the session
+    // token.
+    func testLoginSucceedsWhenProvisioningFailsAndPreservesExistingWidgetToken() async throws {
+        let credentials = RecordingCredentialStore()
+        let url = URL(string: "http://ems.local:8080")!
+        try credentials.saveWidgetToken("previous-access-token", for: url) // earlier successful provision
+
+        let suite = "test.login.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suite)!
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let widgetConfig = AppGroupConfigStore(defaults: defaults)
+        widgetConfig.save(WidgetServerConfig(baseURL: url, token: "previous-access-token"))
+
+        let store = DashboardStore(
+            client: nil,
+            credentialStore: credentials,
+            widgetConfig: widgetConfig,
+            transport: LoginFlowTransport(tokenStatus: 500)
+        )
+
+        try await store.login(baseURL: url, username: "jeroen", password: "hunter2000", deviceName: "iPhone")
+
+        // Login still succeeds even though provisioning the widget token failed.
+        XCTAssertEqual(store.client?.token, "session-xyz")
+        XCTAssertEqual(credentials.savedTokens[url], "session-xyz")
+        XCTAssertFalse(store.authFailed)
+
+        // The app-group token is NOT the session token...
+        XCTAssertNotEqual(widgetConfig.load()?.token, "session-xyz")
+        // ...and the pre-existing widget access token is preserved rather than removed.
+        XCTAssertEqual(widgetConfig.load()?.token, "previous-access-token")
+        XCTAssertEqual(credentials.savedWidgetTokens[url], "previous-access-token")
+    }
+
     func testLoginFailureThrowsAndStoresNothing() async throws {
         let credentials = RecordingCredentialStore()
         let suite = "test.login.\(UUID().uuidString)"
@@ -236,6 +314,7 @@ final class DashboardStoreTests: XCTestCase {
         let credentials = RecordingCredentialStore()
         let url = URL(string: "http://ems.local:8080")!
         try credentials.saveLastBaseURL(url)
+        try credentials.saveToken("stale-session", for: url)
         let store = DashboardStore(
             client: APIClient(baseURL: url, token: "stale-session", transport: AllUnauthorizedTransport()),
             credentialStore: credentials
@@ -250,6 +329,10 @@ final class DashboardStoreTests: XCTestCase {
         // The saved server URL is NOT forgotten, so re-login can prefill it.
         XCTAssertFalse(credentials.deletedLastBaseURL)
         XCTAssertEqual(try credentials.lastBaseURL(), url)
+        // Minor hardening: the now-dead interactive-slot token is cleared on the 401 bounce (it's
+        // dead anyway), so it can't later be picked up by the token-paste fallback and
+        // mis-mirrored to the widget.
+        XCTAssertEqual(credentials.deletedURLs, [url])
     }
 }
 
@@ -310,9 +393,11 @@ private final class LoginFlowTransport: HTTPTransport, @unchecked Sendable {
     private let lock = NSLock()
     private var bodies: [String: Data] = [:]
     private let loginStatus: Int
+    private let tokenStatus: Int
 
-    init(loginStatus: Int = 200) {
+    init(loginStatus: Int = 200, tokenStatus: Int = 200) {
         self.loginStatus = loginStatus
+        self.tokenStatus = tokenStatus
     }
 
     func body(forPath path: String) -> Data? {
@@ -334,6 +419,9 @@ private final class LoginFlowTransport: HTTPTransport, @unchecked Sendable {
             }
             return respond(#"{"token":"session-xyz","user":{"username":"jeroen","role":"admin"}}"#.data(using: .utf8)!, 200)
         case "/api/auth/tokens":
+            if tokenStatus != 200 {
+                return respond(Data(#"{"detail":"provisioning failed"}"#.utf8), tokenStatus)
+            }
             return respond(#"{"token":"access-abc","name":"iOS widget"}"#.data(using: .utf8)!, 200)
         case "/api/status":
             return respond(statusJSON(), 200)
