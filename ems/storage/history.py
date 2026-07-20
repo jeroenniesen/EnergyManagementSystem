@@ -25,7 +25,16 @@ _DERIVED_COLS = ("ts", "house_load_w", "non_ev_load_w")
 # Public column order for CSV export (header is stable even when there are no rows yet).
 RAW_COLUMNS = _RAW_COLS
 DERIVED_COLUMNS = _DERIVED_COLS
-_BUSY_TIMEOUT_MS = 3000
+# How long a connection blocks for the SQLite write lock before raising "database is locked".
+# The DB already runs in WAL, but WAL still allows only ONE writer at a time; every store holds
+# its OWN aiosqlite connection (history/audit/settings/auth) plus the per-call cache/control_state
+# connections, so a writer routinely waits behind a sibling's in-flight commit. Under the e2e
+# suite's DEFAULT (≈half-the-cores) Playwright parallelism, write-on-read paths — `/api/finance`,
+# `/api/digest`, `/api/export` all upsert `daily_finance` — collide with the background recorder and
+# the audit/settings writers while the event loop is saturated, and the previous 3 s ceiling was
+# exceeded (see `upsert_daily_finance` in the e2e server log). 5 s absorbs that contention and stays
+# well under the 15 s Playwright per-test timeout, so a genuinely stuck write still surfaces.
+_BUSY_TIMEOUT_MS = 5000
 _CAR_SOC_ANCHOR_KEY = "anchor"  # single-row key for the manual car-SoC anchor (see set/get below)
 
 # --- Compact long-horizon observation store (design §4.1) + daily kWh rollups (B-13) ----------
@@ -544,6 +553,12 @@ class HistoryStore:
                     conn._thread.daemon = True
                     db = await conn
                     await db.execute(f"PRAGMA busy_timeout={_BUSY_TIMEOUT_MS}")
+                    # WAL + synchronous=NORMAL is SQLite's recommended concurrency pairing: still
+                    # crash-safe (only a power/OS crash can drop the LAST commit — acceptable for
+                    # this best-effort telemetry store), but it drops the per-commit fsync that,
+                    # under WAL, stretched the write-lock hold and starved sibling-store writers
+                    # under parallel load. Per-connection PRAGMA, so it is set on every open here.
+                    await db.execute("PRAGMA synchronous=NORMAL")
                     self._db = db
         return self._db
 

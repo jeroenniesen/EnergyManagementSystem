@@ -13,7 +13,7 @@ import aiosqlite
 from ems.perf import atimed
 from ems.storage.history import _connection_is_dead, _log, self_healing
 
-_BUSY_TIMEOUT_MS = 3000
+_BUSY_TIMEOUT_MS = 5000  # see ems/storage/history.py for the WAL/synchronous/timeout rationale
 
 
 @self_healing
@@ -41,6 +41,7 @@ class AuditStore:
                     conn._thread.daemon = True  # see HistoryStore._connection() for rationale
                     db = await conn
                     await db.execute(f"PRAGMA busy_timeout={_BUSY_TIMEOUT_MS}")
+                    await db.execute("PRAGMA synchronous=NORMAL")  # WAL-safe; see HistoryStore
                     self._db = db
         return self._db
 

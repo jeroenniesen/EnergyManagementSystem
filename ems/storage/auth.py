@@ -117,6 +117,7 @@ class AuthStore:
                     conn._thread.daemon = True  # see HistoryStore._connection() for rationale
                     db = await conn
                     await db.execute(f"PRAGMA busy_timeout={_BUSY_TIMEOUT_MS}")
+                    await db.execute("PRAGMA synchronous=NORMAL")  # WAL-safe; see HistoryStore
                     self._db = db
         return self._db
 

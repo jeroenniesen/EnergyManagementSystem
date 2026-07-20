@@ -9,6 +9,7 @@ import logging
 import os
 import re
 import secrets
+import sqlite3
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
 from datetime import date as date_cls
@@ -3248,6 +3249,24 @@ def create_app(
         )
         return {"advice": advice}
 
+    async def _persist_daily_finance(day_label: str, data: dict) -> None:
+        """Best-effort write-through of one day's finance rollup to the `daily_finance` MEMO cache.
+
+        The value in `data` is already computed and about to be returned to the caller, so this
+        persist is pure memoization (a future read skips the recompute). A TRANSIENT lock — SQLite
+        contention while the recorder / a sibling store holds the single WAL writer under the e2e
+        suite's parallel load — must therefore NOT turn a successful read into a 500: swallow it
+        (logged), leave the day uncached, and let the next request recompute + re-upsert. Anything
+        that is NOT transient contention (a real schema/IO error) still propagates. This mirrors the
+        best-effort persist philosophy used elsewhere (notification store, recorder)."""
+        try:
+            await store.upsert_daily_finance(day_label, data)
+        except sqlite3.OperationalError as exc:
+            msg = str(exc).lower()
+            if "locked" not in msg and "busy" not in msg:
+                raise
+            _log.warning("daily_finance memo write skipped (transient DB contention): %s", exc)
+
     async def _ensure_day_finance(day_local: date_cls) -> dict:
         """Compute (or return the current-version cached) finance rollup for one LOCAL day,
         persisting it once the day is completed. Shared by `/api/finance` (called per day of the
@@ -3284,7 +3303,7 @@ def create_app(
                         fixed_feed_in_eur_per_kwh=fixed_feed_in).to_dict()
         f["calc_v"] = _FINANCE_CALC_VERSION
         if completed:
-            await store.upsert_daily_finance(day_label, f)
+            await _persist_daily_finance(day_label, f)
         return f
 
     async def _finance_window(start: datetime, end: datetime, now_local: datetime) -> list[dict]:
@@ -3340,7 +3359,7 @@ def create_app(
         days: list[dict] = []
         for day_label, data, needs_upsert in computed:
             if needs_upsert:
-                await store.upsert_daily_finance(day_label, data)
+                await _persist_daily_finance(day_label, data)
             days.append(data)
         return days
 
