@@ -15,7 +15,7 @@ from zoneinfo import ZoneInfo
 
 from ems.energy_flow import build_flows
 from ems.perf import timed
-from ems.retrospect import _floor, _mean, _parse
+from ems.retrospect import _floor, _parse
 from ems.scores import (
     DEFAULT_GAS_CO2,
     DEFAULT_GRID_CO2,
@@ -26,9 +26,9 @@ from ems.scores import (
     self_consumption_score,
     self_consumption_score_from_totals,
 )
+from ems.timeseries import observed_segments
 
 PERIODS = ("day", "week", "month", "year")
-_DH = 15 / 60.0  # hours per 15-min slot
 
 
 @dataclass(frozen=True)
@@ -79,25 +79,27 @@ def resolve_window(
 
 
 def _import_price_slots(
-    raw_rows: list[dict], prices: list, start: datetime, end: datetime
+    raw_rows: list[dict], prices: list, start: datetime, end: datetime,
+    *, sample_interval_seconds: float = 900.0, max_hold_seconds: float | None = None,
 ) -> list[tuple[float, float | None]]:
     """Per 15-min slot in the window: (grid-import kWh, €/kWh active then). Import = positive net
     grid only; price = the slot whose interval contains the slot start (bisect on sorted starts)."""
     start_utc, end_utc = start.astimezone(UTC), end.astimezone(UTC)
-    grid_by: dict[datetime, list[float]] = defaultdict(list)
-    for r in raw_rows:
-        dt = _parse(r.get("ts"))
-        if dt is None or dt < start_utc or dt >= end_utc:
-            continue
-        grid_by[_floor(dt)].append(float(r.get("grid_power_w", 0.0)))
+    segments = observed_segments(
+        raw_rows, start=start_utc, end=end_utc, fields=("grid_power_w",),
+        nominal_interval_seconds=sample_interval_seconds, max_hold_seconds=max_hold_seconds,
+    )
 
     price_pts = sorted((p.start.astimezone(UTC), p.eur_per_kwh) for p in prices)
     starts = [s for s, _ in price_pts]
 
     out: list[tuple[float, float | None]] = []
-    for slot in sorted(grid_by):
-        import_kwh = max(0.0, _mean(grid_by[slot])) * _DH / 1000.0
-        i = bisect.bisect_right(starts, slot) - 1
+    for segment in segments:
+        import_kwh = (
+            max(0.0, segment.values["grid_power_w"])
+            * segment.duration_seconds / 3_600_000.0
+        )
+        i = bisect.bisect_right(starts, segment.start) - 1
         price = price_pts[i][1] if i >= 0 else None
         out.append((import_kwh, price))
     return out
@@ -144,6 +146,8 @@ def build_series(
     start: datetime,
     end: datetime,
     tz: ZoneInfo,
+    sample_interval_seconds: float = 900.0,
+    max_hold_seconds: float | None = None,
 ) -> list[dict]:
     """How P1 (grid ±), house, car and solar behaved over the window (spec 2026-07-03 A), as a
     STABLE axis of buckets — every bucket in the window is present (sampled or not) so charts
@@ -152,6 +156,7 @@ def build_series(
     with timed("report.build"):
         return _build_series_impl(
             raw_rows, derived_rows, period=period, start=start, end=end, tz=tz,
+            sample_interval_seconds=sample_interval_seconds, max_hold_seconds=max_hold_seconds,
         )
 
 
@@ -163,25 +168,37 @@ def _build_series_impl(
     start: datetime,
     end: datetime,
     tz: ZoneInfo,
+    sample_interval_seconds: float,
+    max_hold_seconds: float | None,
 ) -> list[dict]:
     start_utc, end_utc = start.astimezone(UTC), end.astimezone(UTC)
     grid_by: dict[datetime, list[float]] = defaultdict(list)
-    ev_by: dict[datetime, list[float]] = defaultdict(list)
-    solar_by: dict[datetime, list[float]] = defaultdict(list)
-    house_by: dict[datetime, list[float]] = defaultdict(list)
     for r in raw_rows:
         dt = _parse(r.get("ts"))
         if dt is None or dt < start_utc or dt >= end_utc:
             continue
         slot = _floor(dt)
         grid_by[slot].append(float(r.get("grid_power_w", 0.0)))
-        ev_by[slot].append(float(r.get("ev_power_w", 0.0)))
-        solar_by[slot].append(float(r.get("solar_power_w", 0.0)))
-    for d in derived_rows:
-        dt = _parse(d.get("ts"))
-        if dt is None or dt < start_utc or dt >= end_utc:
-            continue
-        house_by[_floor(dt)].append(float(d.get("non_ev_load_w", 0.0)))
+
+    normalized_raw = [
+        {**r, "grid_power_w": r.get("grid_power_w", 0.0),
+         "ev_power_w": r.get("ev_power_w", 0.0),
+         "solar_power_w": r.get("solar_power_w", 0.0)}
+        for r in raw_rows
+    ]
+    raw_segments = observed_segments(
+        normalized_raw, start=start_utc, end=end_utc,
+        fields=("grid_power_w", "ev_power_w", "solar_power_w"),
+        nominal_interval_seconds=sample_interval_seconds, max_hold_seconds=max_hold_seconds,
+    )
+    normalized_derived = [
+        {**row, "non_ev_load_w": row.get("non_ev_load_w", row.get("house_load_w", 0.0))}
+        for row in derived_rows
+    ]
+    house_segments = observed_segments(
+        normalized_derived, start=start_utc, end=end_utc, fields=("non_ev_load_w",),
+        nominal_interval_seconds=sample_interval_seconds, max_hold_seconds=max_hold_seconds,
+    )
 
     def _bucket_starts() -> list[datetime]:
         if period == "day":
@@ -208,17 +225,27 @@ def _build_series_impl(
                 "grid_import_kwh": 0.0, "grid_export_kwh": 0.0, "house_kwh": 0.0,
                 "car_kwh": 0.0, "solar_kwh": 0.0, "samples": 0}
                for b in axis}
-    for slot in set(grid_by) | set(house_by):
-        b = buckets.get(_key(slot))
+    for segment in raw_segments:
+        b = buckets.get(_key(segment.start))
         if b is None:
             continue
-        grid_w = _mean(grid_by[slot]) if slot in grid_by else 0.0
-        b["grid_import_kwh"] += max(0.0, grid_w) * _DH / 1000.0
-        b["grid_export_kwh"] += max(0.0, -grid_w) * _DH / 1000.0
-        b["house_kwh"] += (_mean(house_by[slot]) if slot in house_by else 0.0) * _DH / 1000.0
-        b["car_kwh"] += (_mean(ev_by[slot]) if slot in ev_by else 0.0) * _DH / 1000.0
-        b["solar_kwh"] += (_mean(solar_by[slot]) if slot in solar_by else 0.0) * _DH / 1000.0
-        b["samples"] += len(grid_by.get(slot, ()))
+        hours = segment.duration_seconds / 3600.0
+        grid_w = segment.values["grid_power_w"]
+        b["grid_import_kwh"] += max(0.0, grid_w) * hours / 1000.0
+        b["grid_export_kwh"] += max(0.0, -grid_w) * hours / 1000.0
+        b["car_kwh"] += max(0.0, segment.values["ev_power_w"]) * hours / 1000.0
+        b["solar_kwh"] += max(0.0, segment.values["solar_power_w"]) * hours / 1000.0
+    for segment in house_segments:
+        b = buckets.get(_key(segment.start))
+        if b is not None:
+            b["house_kwh"] += (
+                max(0.0, segment.values["non_ev_load_w"])
+                * segment.duration_seconds / 3_600_000.0
+            )
+    for slot, samples in grid_by.items():
+        b = buckets.get(_key(slot))
+        if b is not None:
+            b["samples"] += len(samples)
     out = []
     for bstart in axis:
         key = _key(bstart) if period == "day" else (
@@ -357,6 +384,8 @@ def build_report(
     gas_factor: float = DEFAULT_GAS_CO2,
     gas_m3: float = 0.0,
     grid_factor_note: str | None = None,
+    sample_interval_seconds: float = 900.0,
+    max_hold_seconds: float | None = None,
 ) -> Report:
     """Assemble the report for a resolved window from stored rows + price slots + CO₂ factors.
 
@@ -366,7 +395,10 @@ def build_report(
     explanation — cosmetic only, `co2_score`'s signature/math are untouched; `grid_factor` itself
     already carries the number that matters."""
     with timed("report.build"):
-        flows = build_flows(raw_rows, derived_rows, start, end, label=label, partial=partial)
+        flows = build_flows(
+            raw_rows, derived_rows, start, end, label=label, partial=partial,
+            sample_interval_seconds=sample_interval_seconds, max_hold_seconds=max_hold_seconds,
+        )
         co2 = co2_score(flows, grid_factor=grid_factor, gas_factor=gas_factor, gas_m3=gas_m3)
         if grid_factor_note:
             co2 = Score(co2.key, co2.label, co2.value, co2.raw, co2.unit,
@@ -374,7 +406,11 @@ def build_report(
         scores = [
             self_consumption_score(flows),
             co2,
-            best_price_score(_import_price_slots(raw_rows, prices, start, end)),
+            best_price_score(_import_price_slots(
+                raw_rows, prices, start, end,
+                sample_interval_seconds=sample_interval_seconds,
+                max_hold_seconds=max_hold_seconds,
+            )),
         ]
         return Report(
             period=period,

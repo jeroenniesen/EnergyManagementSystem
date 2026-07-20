@@ -8,10 +8,13 @@ constant. Pure + unit-tested — the API passes in recorded rows.
 """
 from __future__ import annotations
 
+import math
 from collections import defaultdict
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from zoneinfo import ZoneInfo
+
+from ems.load_model import MAX_LEARNABLE_LOAD_W
 
 
 @dataclass(frozen=True)
@@ -66,6 +69,8 @@ def build_load_profile(
             dt = datetime.fromisoformat(ts)
             value = float(load)
         except (ValueError, TypeError):
+            continue
+        if not math.isfinite(value) or value < 0.0 or value > MAX_LEARNABLE_LOAD_W:
             continue
         if dt.tzinfo is None:  # naive timestamps are UTC (the recorder writes aware-UTC)
             dt = dt.replace(tzinfo=UTC)

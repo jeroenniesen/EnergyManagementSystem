@@ -87,3 +87,13 @@ def test_naive_timestamps_are_treated_as_utc():
     prof = build_load_profile(rows, AMS, fallback_w=0.0, min_samples=3)
     # 18:00 naive == 18:00Z == 20:00 local -> bucketed at local hour 20.
     assert prof.expected_w(datetime(2026, 6, 28, 18, 0, tzinfo=UTC)) == 700.0
+
+
+def test_invalid_loads_are_quarantined_from_learning():
+    rows = [
+        _row("2026-06-20T18:00:00+00:00", -500.0),
+        _row("2026-06-20T18:10:00+00:00", float("nan")),
+        _row("2026-06-20T18:20:00+00:00", 100_000.0),
+    ]
+    prof = build_load_profile(rows, AMS, min_samples=3)
+    assert prof.by_hour == {}

@@ -553,7 +553,7 @@ body {
 .legend-deadline { border-top-color: var(--summer); }
 .soc-mini-legend { margin-top: 8px; gap: 14px; }
 
-/* One shared Next-24h plot: plan windows behind solar, price and battery level. */
+/* One shared Next-24h plot: state of charge leads; solar, price and plan stay subordinate. */
 .combined-plan {
   margin: 18px 0 0; padding: 18px; border: 1px solid var(--line); border-radius: var(--radius);
   background: var(--panel); box-shadow: var(--shadow);
@@ -562,15 +562,13 @@ body {
 .combined-plan-heading h2 { margin: 0; font-size: 1rem; }
 .combined-plan-heading span { color: var(--muted); font-size: 0.76rem; }
 .combined-plan svg { display: block; width: 100%; height: auto; margin-top: 8px; }
-.combined-plan-window { stroke: var(--line); stroke-width: 1.5; opacity: 0.13; }
-.combined-plan-window.action-solar_charge { fill: var(--accent); }
-.combined-plan-window.action-grid_charge { fill: var(--winter); }
-.combined-plan-window.action-discharge { fill: var(--amber); }
-.combined-plan-window.action-self_consume { fill: var(--house); }
-.combined-plan-window.action-hold, .combined-plan-window.action-idle { fill: var(--muted); }
-.combined-plan-window-pattern { opacity: 0.09; pointer-events: none; }
-.combined-plan-pattern-line { stroke: var(--text); stroke-width: 2; }
-.combined-plan-window-label { fill: var(--text); font-size: 10px; font-weight: 800; letter-spacing: 0.06em; }
+.combined-plan-action-ribbon { opacity: 0.88; stroke: var(--panel); stroke-width: 1; }
+.combined-plan-ribbon-base.action-solar_charge { fill: var(--accent); }
+.combined-plan-ribbon-base.action-grid_charge { fill: var(--winter); }
+.combined-plan-ribbon-base.action-discharge { fill: var(--amber); }
+.combined-plan-ribbon-base.action-self_consume { fill: var(--house); }
+.combined-plan-ribbon-base.action-hold, .combined-plan-ribbon-base.action-idle { fill: var(--muted); }
+.combined-plan-ribbon-line { stroke: var(--panel); stroke-width: 2; opacity: 0.75; }
 .combined-plan-soc .combined-plan-target { stroke: var(--accent); stroke-width: 1.5; opacity: 0.72; }
 .combined-plan-axis .combined-plan-deadline { stroke: var(--accent); stroke-width: 1.5; stroke-dasharray: 2 4; opacity: 0.72; }
 .combined-plan-axis .combined-plan-deadline-label { fill: var(--muted); font-size: 10px; text-anchor: end; }
@@ -586,7 +584,7 @@ body {
   stroke-dasharray: 2 2;
 }
 .combined-plan-prices text { text-anchor: end; }
-.combined-plan-soc polyline { fill: none; stroke-width: 3; vector-effect: non-scaling-stroke; }
+.combined-plan-soc polyline { fill: none; stroke-width: 3.5; vector-effect: non-scaling-stroke; }
 .combined-plan-soc-actual { stroke: var(--accent); }
 .combined-plan-soc-forecast { stroke: var(--text); stroke-dasharray: 8 5; }
 .combined-plan-soc line { stroke: var(--muted); stroke-dasharray: 3 5; }
@@ -594,6 +592,25 @@ body {
 .combined-plan-axis line { stroke: var(--text); stroke-width: 1; opacity: 0.55; }
 .combined-plan-controls rect { fill: transparent; cursor: crosshair; outline: none; }
 .combined-plan-controls rect:focus-visible { stroke: var(--accent); stroke-width: 4; }
+.combined-plan-legend {
+  display: flex; flex-wrap: wrap; gap: 7px 14px; margin-top: 8px;
+  color: var(--muted); font-size: 12px;
+}
+.combined-plan-legend span { display: inline-flex; align-items: center; gap: 6px; }
+.combined-plan-legend i { display: inline-block; width: 18px; height: 3px; border-radius: 999px; }
+.combined-plan-legend-actual { background: var(--accent); }
+.combined-plan-legend-forecast { background: repeating-linear-gradient(90deg, var(--text) 0 6px, transparent 6px 10px); }
+.combined-plan-legend-solar { height: 8px !important; background: color-mix(in srgb, var(--summer) 42%, transparent); }
+.combined-plan-legend-price { height: 8px !important; background: color-mix(in srgb, var(--winter) 42%, transparent); }
+.combined-plan-legend-target { background: var(--accent); opacity: 0.72; }
+.combined-plan-legend-reserve { background: repeating-linear-gradient(90deg, var(--muted) 0 3px, transparent 3px 7px); }
+.combined-plan-legend-action { height: 8px !important; background-color: var(--muted); }
+.combined-plan-legend-action.action-hold { background-image: repeating-linear-gradient(90deg, transparent 0 4px, var(--panel) 4px 6px); }
+.combined-plan-legend-action.action-solar_charge { background-color: var(--accent); background-image: repeating-linear-gradient(30deg, transparent 0 4px, var(--panel) 4px 6px); }
+.combined-plan-legend-action.action-grid_charge { background-color: var(--winter); background-image: repeating-linear-gradient(60deg, transparent 0 4px, var(--panel) 4px 6px); }
+.combined-plan-legend-action.action-discharge { background-color: var(--amber); background-image: repeating-linear-gradient(90deg, transparent 0 4px, var(--panel) 4px 6px); }
+.combined-plan-legend-action.action-self_consume { background-color: var(--house); background-image: repeating-linear-gradient(120deg, transparent 0 4px, var(--panel) 4px 6px); }
+.combined-plan-legend-action.action-idle { background-image: repeating-linear-gradient(150deg, transparent 0 4px, var(--panel) 4px 6px); }
 .combined-plan-readout {
   display: flex; align-items: center; justify-content: space-between; gap: 12px;
   margin: 8px 0 0; min-height: 2.5em; padding: 9px 12px; border-left: 3px solid var(--accent);
@@ -606,6 +623,9 @@ body {
 @media (max-width: 520px) {
   .combined-plan { padding: 12px; }
   .combined-plan-heading { align-items: flex-start; flex-direction: column; gap: 3px; }
+  .combined-plan-solar text, .combined-plan-prices text, .combined-plan-soc text,
+  .combined-plan-axis text { font-size: 28px; }
+  .combined-plan-axis .combined-plan-deadline-label { font-size: 24px; }
   .combined-plan-axis text:nth-of-type(even) { display: none; }
 }
 @media (prefers-reduced-motion: reduce) {

@@ -21,15 +21,13 @@ otherwise `price_coverage` (0..1) signals how much of the day the money figures 
 """
 from __future__ import annotations
 
-from collections import defaultdict
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
 from ems.planner.economics import export_value
-from ems.retrospect import _floor, _mean, _parse
-
-_DH = 15 / 60.0  # hours per 15-min slot
+from ems.retrospect import _floor, _parse
+from ems.timeseries import observed_segments
 
 
 @dataclass(frozen=True)
@@ -37,6 +35,7 @@ class DayFinance:
     day: str  # local YYYY-MM-DD
     has_data: bool
     price_coverage: float  # 0..1 — share of sampled slots with a stored price
+    sample_coverage: float  # 0..1 — share of the requested window with observed samples
     grid_cost_eur: float | None
     battery_cost_eur: float | None
     baseline_cost_eur: float | None
@@ -53,6 +52,7 @@ class DayFinance:
         return {
             "day": self.day, "has_data": self.has_data,
             "price_coverage": round(self.price_coverage, 3),
+            "sample_coverage": round(self.sample_coverage, 3),
             "grid_cost_eur": r2(self.grid_cost_eur),
             "battery_cost_eur": r2(self.battery_cost_eur),
             "baseline_cost_eur": r2(self.baseline_cost_eur),
@@ -73,6 +73,10 @@ def day_finance(
     export_price_model: str = "net_metering",
     energy_tax_eur_per_kwh: float = 0.13,
     fixed_feed_in_eur_per_kwh: float = 0.01,
+    window_start: datetime | None = None,
+    window_end: datetime | None = None,
+    sample_interval_seconds: float = 900.0,
+    max_hold_seconds: float | None = None,
 ) -> DayFinance:
     """One day's finance from raw samples (`ts`, `grid_power_w`, `battery_power_w`; the caller
     windows the rows to the local day) and stored price slots (`start_ts`, `eur_per_kwh`).
@@ -80,15 +84,21 @@ def day_finance(
     `export_price_model` (+ `energy_tax_eur_per_kwh` / `fixed_feed_in_eur_per_kwh`) picks how
     exported energy is valued (see module docstring / `economics.export_value`); the default
     `net_metering` credits export at the full spot price — today's saldering behaviour."""
-    grid_by: dict[datetime, list[float]] = defaultdict(list)
-    batt_by: dict[datetime, list[float]] = defaultdict(list)
-    for r in raw_rows:
-        dt = _parse(r.get("ts"))
-        if dt is None:
-            continue
-        slot = _floor(dt)
-        grid_by[slot].append(float(r.get("grid_power_w", 0.0)))
-        batt_by[slot].append(float(r.get("battery_power_w", 0.0)))
+    timestamps = [dt for row in raw_rows if (dt := _parse(row.get("ts"))) is not None]
+    if window_start is None and timestamps:
+        window_start = _floor(min(timestamps))
+    if window_end is None and timestamps:
+        window_end = _floor(max(timestamps)) + timedelta(minutes=15)
+    if window_start is None or window_end is None:
+        return DayFinance(day, False, 0.0, 0.0, None, None, None, None,
+                          0.0, 0.0, 0.0, 0.0)
+
+    segments = observed_segments(
+        raw_rows, start=window_start, end=window_end,
+        fields=("grid_power_w", "battery_power_w"),
+        nominal_interval_seconds=sample_interval_seconds,
+        max_hold_seconds=max_hold_seconds,
+    )
 
     price_by: dict[datetime, float] = {}
     for p in price_rows:
@@ -99,42 +109,49 @@ def day_finance(
     imp = exp = chg = dis = 0.0  # full-day physical energy (always reported)
     dis_priced = 0.0             # discharge over PRICED slots only → wear inside `saved`
     cost = base_cost = 0.0
-    priced = 0
-    for slot in sorted(grid_by):
-        grid_w = _mean(grid_by[slot])
-        batt_w = _mean(batt_by[slot])  # + discharge / − charge
-        imp += max(0.0, grid_w) * _DH / 1000.0
-        exp += max(0.0, -grid_w) * _DH / 1000.0
-        dis += max(0.0, batt_w) * _DH / 1000.0
-        chg += max(0.0, -batt_w) * _DH / 1000.0
-        price = price_by.get(slot)
+    priced_seconds = 0.0
+    observed_seconds = 0.0
+    for segment in segments:
+        grid_w = segment.values["grid_power_w"]
+        batt_w = segment.values["battery_power_w"]  # + discharge / − charge
+        hours = segment.duration_seconds / 3600.0
+        observed_seconds += segment.duration_seconds
+        imp += max(0.0, grid_w) * hours / 1000.0
+        exp += max(0.0, -grid_w) * hours / 1000.0
+        dis += max(0.0, batt_w) * hours / 1000.0
+        chg += max(0.0, -batt_w) * hours / 1000.0
+        price = price_by.get(_floor(segment.start))
         if price is None:
             continue
-        priced += 1
+        priced_seconds += segment.duration_seconds
         # Import costs the full price; export earns the feed-in VALUE (full price under saldering,
         # less post-2027 — may even be negative). Same credit in both worlds so `saved` stays fair.
         credit = export_value(price, model=export_price_model,
                               energy_tax_eur_per_kwh=energy_tax_eur_per_kwh,
                               fixed_feed_in_eur_per_kwh=fixed_feed_in_eur_per_kwh)
-        cost += (max(0.0, grid_w) * price - max(0.0, -grid_w) * credit) * _DH / 1000.0
+        cost += (max(0.0, grid_w) * price - max(0.0, -grid_w) * credit) * hours / 1000.0
         baseline_w = grid_w + batt_w  # the meter with the battery removed
         base_cost += (max(0.0, baseline_w) * price
-                      - max(0.0, -baseline_w) * credit) * _DH / 1000.0
-        dis_priced += max(0.0, batt_w) * _DH / 1000.0
+                      - max(0.0, -baseline_w) * credit) * hours / 1000.0
+        dis_priced += max(0.0, batt_w) * hours / 1000.0
 
-    n_slots = len(grid_by)
-    coverage = priced / n_slots if n_slots else 0.0
+    coverage = priced_seconds / observed_seconds if observed_seconds else 0.0
+    window_seconds = max(0.0, (window_end - window_start).total_seconds())
+    sample_coverage = observed_seconds / window_seconds if window_seconds else 0.0
     # Give € figures whenever ANY slot is priced. Charging wear only over PRICED-slot discharge
     # (`dis_priced`) keeps cost, baseline and wear on the SAME window, so a partial-price day yields
     # a correct partial-window saving (never full-day wear against priced-only revenue). Confidence
     # is signalled by `price_coverage`, not by blanking the numbers.
-    if priced:
+    if priced_seconds:
         battery_cost = dis_priced * degradation_eur_per_kwh
         saved = base_cost - cost - battery_cost
-        return DayFinance(day, True, coverage, cost, battery_cost, base_cost, saved,
-                          imp, exp, chg, dis)
+        return DayFinance(
+            day, True, coverage, sample_coverage, cost, battery_cost, base_cost, saved,
+            imp, exp, chg, dis,
+        )
     # No priced slots at all → can't compute money figures; report energy only.
-    return DayFinance(day, n_slots > 0, coverage, None, None, None, None, imp, exp, chg, dis)
+    return DayFinance(day, bool(segments), coverage, sample_coverage,
+                      None, None, None, None, imp, exp, chg, dis)
 
 
 def _rows_by_local_day(

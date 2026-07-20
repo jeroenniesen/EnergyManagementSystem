@@ -5,6 +5,7 @@ from ems.load_model import (
     MAX_BATTERY_W,
     MAX_SOLAR_W,
     DerivedSample,
+    assess_reconstruction,
     is_soc_jump_implausible,
     normalise_solar,
     reconstruct,
@@ -42,6 +43,31 @@ def test_ev_not_subtracted_below_threshold():
     d = reconstruct(_raw(300, 0, 0, ev=100), ev_charging_threshold_w=200.0)
     assert d.house_load_w == 300
     assert d.non_ev_load_w == 300
+
+
+def test_materially_negative_reconstruction_is_not_valid_for_learning():
+    assessment = assess_reconstruction(_raw(-2000, 500, 0))
+    assert assessment.valid_for_learning is False
+    assert "negative_house_load" in assessment.flags
+
+
+def test_small_negative_noise_is_clamped_to_zero_for_learning():
+    assessment = assess_reconstruction(_raw(-20, 0, 0))
+    assert assessment.valid_for_learning is True
+    assert assessment.derived.house_load_w == 0.0
+    assert "clamped_noise" in assessment.flags
+
+
+def test_valid_solar_export_is_not_quarantined():
+    assessment = assess_reconstruction(_raw(-1000, 1500, 0))
+    assert assessment.valid_for_learning is True
+    assert assessment.derived.house_load_w == 500.0
+
+
+def test_ev_larger_than_reconstructed_load_is_not_valid_for_learning():
+    assessment = assess_reconstruction(_raw(500, 0, 0, ev=1000))
+    assert assessment.valid_for_learning is False
+    assert "negative_non_ev_load" in assessment.flags
 
 
 def test_normalise_solar_clamps_negative():

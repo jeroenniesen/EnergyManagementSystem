@@ -42,20 +42,23 @@ def test_current_price_none_outside_horizon():
     assert current_price(src.slots(), far_future) is None
 
 
-def _assert_192_strictly_increasing(slots):
-    # Strong DST guard: 192 slots, each a strictly-later instant than the previous
+def _assert_complete_days_strictly_increasing(slots, expected):
+    # Strong DST guard: two complete local days, each instant strictly later than the previous
     # (no duplicates, no backwards jumps across a transition).
-    assert len(slots) == 2 * SLOTS_PER_DAY
-    assert all(slots[i + 1].start > slots[i].start for i in range(len(slots) - 1))
+    assert len(slots) == expected
+    assert all(
+        slots[i + 1].start.astimezone(UTC) > slots[i].start.astimezone(UTC)
+        for i in range(len(slots) - 1)
+    )
 
 
 def test_slots_spring_forward_day_strictly_increasing():
     # 2026-03-29 (EU spring forward, 23-hour day).
     src = MockPriceSource(AMS, clock=_clock_at(datetime(2026, 3, 29, 0, 30, tzinfo=AMS)))
-    _assert_192_strictly_increasing(src.slots())
+    _assert_complete_days_strictly_increasing(src.slots(), 92 + 96)
 
 
 def test_slots_fall_back_day_strictly_increasing():
     # 2026-10-25 (EU fall back, 25-hour day).
     src = MockPriceSource(AMS, clock=_clock_at(datetime(2026, 10, 25, 0, 30, tzinfo=AMS)))
-    _assert_192_strictly_increasing(src.slots())
+    _assert_complete_days_strictly_increasing(src.slots(), 100 + 96)

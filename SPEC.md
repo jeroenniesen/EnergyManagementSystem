@@ -127,6 +127,16 @@ Quality is tracked **per signal, not as one global stale flag** ([`docs/control-
 - **Per-signal staleness:** each of `grid`/`solar`/`ev`/`soc`/`price`/`forecast` has its **own** freshness state and age, surfaced individually in the UI (§9.1) and feeding the per-plan data-quality badge (§8.11).
 - **Source priority per metric:** **HA sensor → direct device API → cached value** — and a *cached* value is for **display only, never for control**.
 - **Plausibility checks:** reject/flag implausible readings — SoC can't jump more than `soc_max_jump_pct_per_5min` (e.g. 20%/5 min), `solar_power_w` can't be negative, prices must be **chronological** and within sane bounds.
+- **Learning quarantine (implemented):** the established plausibility-clamped ingest values remain
+  stored separately from derived data; an invalid reconstruction is not discarded. Materially
+  negative, non-finite, or implausibly large reconstructed house/non-EV loads are excluded from
+  learned load profiles. Small negative meter noise (≤50 W) is clamped to zero and counted in
+  recorder health. Preserving pre-clamp device payloads would require a separate forensic store and
+  is not claimed by this contract.
+- **Observed-time accounting (implemented):** finance and energy-flow reports integrate bounded
+  zero-order-hold intervals from actual sample timestamps. Long recorder gaps are uncovered time,
+  not silently promoted into complete 15-minute buckets; financial price coverage is weighted by
+  observed seconds and the API also exposes sample coverage.
 - **Timestamp hygiene:** dedupe 15-min slots by `startsAt`; fill or flag missing slots; **never silently shift slots** (DST-correct). All slot math uses **tz-aware** datetimes (§13.1).
 
 ---
@@ -207,7 +217,11 @@ Quality is tracked **per signal, not as one global stale flag** ([`docs/control-
 - **Store both resolutions, normalise to 15-min slots.** Cache `today`/`tomorrow` (hourly) **and** the quarter-hourly range when available; the planner's internal unit is the **15-min slot**.
   - **Fallback expansion (hourly → quarter-hourly):** if quarter-hourly is unavailable, **expand each hourly price into four identical 15-min slots**. Mark these slots `resolution=hourly` so the UI can show they're coarse.
 - **Caching (prices don't change retroactively).** Tibber states historical prices are immutable, so once fetched, **persist each slot to SQLite and never re-fetch a past slot.** Only fetch forward (today's remainder + tomorrow). This makes the planner robust to Tibber outages and cuts API load.
-- **Completeness validation before planning.** Before a winter replan, assert tomorrow's array is **complete** (expected slot count for the date, accounting for DST — 96/92/100 quarter-hours on a normal/spring-forward/fall-back day). A partial array → **do not plan on it**; keep the prior plan or fall safe (§16 freshness rules).
+- **Completeness validation before planning (implemented).** Every live plan build requires aware,
+  finite, strictly ordered, gap-free quarter-hours and complete represented local days. Expected
+  counts come from local-midnight UTC boundaries, so normal/spring-forward/fall-back days contain
+  96/92/100 slots. A partial, duplicate, off-grid, or expired horizon does not reach the planner;
+  the control path explicitly returns the battery to `AUTO` with an incomplete-price reason.
 - **Tomorrow's** prices appear around **13:00 CET**, tied to the EPEX day-ahead auction — the trigger to (re)build the next-day plan. The endpoint is congested at 13:00; **poll with a few minutes of random jitter** (retry 13:00–14:00).
 - **Freshness rules (explicit):** a price set is *fresh* if its slots cover **now → end-of-known-horizon** with no gaps; *stale* if tomorrow hasn't arrived by a configurable cutoff (e.g. 15:00) **and** today's remaining slots are exhausted. Fallback priority: cached Tibber slots → live Tibber → EnergyZero/ENTSO-E cross-check → `AUTO`. Partial arrays are **not** silently accepted.
 - **Negative prices & export tariffs.** Handle explicitly: negative `total` is valid and changes strategy (charging may be *paid*, exporting may *cost*). The economics model (§8.3) uses signed prices and a configurable **export tariff/feed-in policy** rather than assuming export is always free or always valued at spot.

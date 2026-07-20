@@ -49,6 +49,21 @@ Pointer hover, keyboard focus, and touch reveal a time-slot readout containing t
 
 The old individual charts, exact totals, plan table, provenance, validation messages, and diagnostic evidence remain reachable under one technical-details disclosure. The redesign removes duplication from the initial viewport, not information from the product.
 
+### Readability follow-up
+
+The combined chart uses the visual hierarchy already proven by the existing battery-plan chart. “Combined” means one shared time axis, not four full-height overlays:
+
+- State of charge is the only full-height data series and remains the dominant line.
+- Actual state of charge is solid teal; forecast state of charge is visually distinct and remains the strongest forecast mark.
+- Solar is a low-opacity background area that supports the state-of-charge story without obscuring it.
+- Price bars are confined to a shallow lower band, including a signed zero baseline for negative prices.
+- Planned actions render as an 8–10 px ribbon along the bottom, not full-height shaded or patterned windows.
+- Action names move to the legend and interactive readout; no abbreviations are drawn over the plot.
+- Target, reserve, deadline, and “now” remain subdued reference lines.
+- The slot readout is absent on initial render and appears only after pointer, keyboard, or touch interaction.
+
+This follow-up removes full-height action backgrounds, action patterns, and default slot selection because their cumulative visual weight made the four data layers unreadable.
+
 ## Components and data flow
 
 The frontend will introduce two reusable presentation boundaries:
@@ -64,6 +79,8 @@ The Dashboard composition owns ordering and disclosure state. It does not recomp
 - Price, solar forecast, estimated state of charge, and plan actions come from the existing Energy Story payload.
 
 No missing series is fabricated. When one chart layer is unavailable, the remaining layers render with a concise explanation naming the missing evidence.
+
+The state-of-charge outcome tile displays a whole percentage using the same rounding convention as the existing battery UI (`Math.round` semantics). Raw floating-point precision must never leak into the tile; for example, `27.489981785063` renders as `27%`.
 
 ## Information budgets
 

@@ -187,6 +187,29 @@ test.describe("EMS dashboard", () => {
       ]);
   });
 
+  test("combined chart has a readable visual hierarchy", async ({ page }) => {
+    await page.route("**/api/energy-story?window=next", (route) => route.fulfill({
+      status: 200, contentType: "application/json", body: JSON.stringify(combinedStory()),
+    }));
+    await page.goto("/");
+    const chart = page.getByTestId("combined-plan-chart");
+    await expect(chart).toHaveAttribute("aria-label", /Next 24 hours energy plan/);
+    await expect(chart.locator(".combined-plan-window")).toHaveCount(0);
+    await expect(chart.locator(".combined-plan-action-ribbon")).toHaveCount(4);
+    await expect(page.getByTestId("combined-plan-readout")).toHaveCount(0);
+    const priceBars = chart.locator(".combined-plan-price");
+    await expect(priceBars).toHaveCount(4);
+    for (let index = 0; index < await priceBars.count(); index += 1) {
+      const bar = priceBars.nth(index);
+      const y = Number(await bar.getAttribute("y"));
+      const height = Number(await bar.getAttribute("height"));
+      expect(y).toBeGreaterThanOrEqual(229);
+      expect(y + height).toBeLessThanOrEqual(293);
+    }
+    await expect(chart.locator(".combined-plan-legend")).toContainText("Actual state of charge");
+    await expect(chart.locator(".combined-plan-legend")).toContainText("Plan actions");
+  });
+
   test("combined chart preserves signed negative prices around a zero baseline", async ({ page }) => {
     const story = combinedStory();
     story.slots[1].eur_per_kwh = -0.12;
@@ -215,10 +238,10 @@ test.describe("EMS dashboard", () => {
       status: 200, contentType: "application/json", body: JSON.stringify(story),
     }));
     await page.goto("/");
-    const windows = page.locator(".combined-plan-windows > g");
+    const windows = page.locator(".combined-plan-action-ribbon");
     await expect(windows).toHaveCount(2);
-    const first = windows.nth(0).locator(".combined-plan-window");
-    const second = windows.nth(1).locator(".combined-plan-window");
+    const first = windows.nth(0);
+    const second = windows.nth(1);
     const firstEnd = Number(await first.getAttribute("x")) + Number(await first.getAttribute("width"));
     expect(Number(await second.getAttribute("x"))).toBeGreaterThan(firstEnd);
   });
@@ -244,18 +267,74 @@ test.describe("EMS dashboard", () => {
     await expect(chart.locator('[data-testid="combined-plan-target-deadline"]')).toHaveCount(1);
   });
 
-  test("distinct plan actions have distinct non-color cues", async ({ page }) => {
+  test("plan action ribbon has full text non-color cues", async ({ page }) => {
+    const story = combinedStory();
+    const last = story.slots.at(-1)!;
+    story.slots.push(
+      { ...last, start: new Date(Date.parse(last.start) + 15 * 60e3).toISOString(), action: "grid_charge" },
+      { ...last, start: new Date(Date.parse(last.start) + 30 * 60e3).toISOString(), action: "idle" },
+    );
+    await page.route("**/api/energy-story?window=next", (route) => route.fulfill({
+      status: 200, contentType: "application/json", body: JSON.stringify(story),
+    }));
+    await page.goto("/");
+    const legend = page.locator(".combined-plan-legend");
+    await expect(legend).toContainText("Hold");
+    await expect(legend).toContainText("Charge from solar");
+    await expect(legend).toContainText("Power the house");
+    await expect(legend).toContainText("Use solar first");
+    const ribbonCues = await page.locator(".combined-plan-action-ribbon").evaluateAll((nodes) =>
+      nodes.map((node) => node.getAttribute("fill")),
+    );
+    expect(new Set(ribbonCues).size).toBe(6);
+    const hatchTransforms = await page.locator("svg defs pattern").evaluateAll((nodes) =>
+      nodes.map((node) => node.getAttribute("patternTransform")),
+    );
+    expect(new Set(hatchTransforms).size).toBe(6);
+    const legendCues = legend.locator("[data-action-cue]");
+    await expect(legendCues).toHaveCount(6);
+    await expect(legendCues.nth(0)).toContainText("Hold");
+    await expect(legendCues.nth(1)).toContainText("Charge from solar");
+    await expect(legendCues.nth(2)).toContainText("Power the house");
+    await expect(legendCues.nth(3)).toContainText("Use solar first");
+    await expect(legend).toContainText("Charge from grid");
+    await expect(legend).toContainText("Idle");
+  });
+
+  test("chart annotations remain legible at phone width", async ({ page }) => {
+    await page.setViewportSize({ width: 390, height: 844 });
     await page.route("**/api/energy-story?window=next", (route) => route.fulfill({
       status: 200, contentType: "application/json", body: JSON.stringify(combinedStory()),
     }));
     await page.goto("/");
-    const patterns = page.locator(".combined-plan-window-pattern");
-    await expect(patterns).toHaveCount(4);
-    const cues = await patterns.evaluateAll((nodes) =>
-      nodes.map((node) => node.getAttribute("fill")),
-    );
-    expect(new Set(cues).size).toBeGreaterThan(1);
-    await expect(page.locator(".combined-plan-window-label")).toHaveCount(4);
+    const target = page.getByTestId("combined-plan-target-label");
+    await expect(target).toBeVisible();
+    const fontSize = await target.evaluate((node) => Number.parseFloat(getComputedStyle(node).fontSize));
+    expect(fontSize).toBeGreaterThanOrEqual(26);
+  });
+
+  test("target reserve and deadline labels stay inside calm chart regions", async ({ page }) => {
+    const story = combinedStory();
+    story.target_soc_pct = 88;
+    story.reserve_soc_pct = 10;
+    await page.route("**/api/energy-story?window=next", (route) => route.fulfill({
+      status: 200, contentType: "application/json", body: JSON.stringify(story),
+    }));
+    await page.goto("/");
+    for (const [id, text] of [["combined-plan-target-label", "target 88%"],
+      ["combined-plan-reserve-label", "reserve 10%"]] as const) {
+      const label = page.getByTestId(id);
+      await expect(label).toHaveText(text);
+      const box = await label.evaluate((node) => {
+        const bounds = (node as SVGGraphicsElement).getBBox();
+        return { x: bounds.x, width: bounds.width };
+      });
+      expect(box.x).toBeGreaterThanOrEqual(0);
+      expect(box.x + box.width).toBeLessThanOrEqual(1000);
+    }
+    const deadline = page.getByTestId("combined-plan-deadline-label");
+    await expect(deadline).toHaveText("target 09:00");
+    expect(Number(await deadline.getAttribute("y"))).toBeLessThan(100);
   });
 
   test("combined slot readout follows focus and arrow keys", async ({ page }) => {
@@ -329,6 +408,18 @@ test.describe("EMS dashboard", () => {
     await page.goto("/");
     await expect(page.getByTestId("outcome-soc")).toContainText("55%");
     await expect(page.getByTestId("outcome-soc")).toContainText("Stale");
+  });
+
+  test("state-of-charge outcome renders a whole percentage", async ({ page }) => {
+    await page.route("**/api/status", async (route) => {
+      const response = await route.fetch();
+      const status = await response.json();
+      await route.fulfill({ response, json: { ...status, soc_pct: 27.489981785063 } });
+    });
+    await page.goto("/");
+    const tile = page.getByTestId("outcome-soc");
+    await expect(tile).toContainText("27%");
+    await expect(tile).not.toContainText("27.489");
   });
 
   for (const viewport of [

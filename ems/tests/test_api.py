@@ -95,11 +95,13 @@ def test_prices_endpoint_returns_slots_and_current():
 
     from ems.sources.prices import MockPriceSource
 
+    tz = ZoneInfo("Europe/Amsterdam")
     app = create_app(
         MockSource(),
         dry_run=True,
         dev_mode="mock",
-        price_source=MockPriceSource(ZoneInfo("Europe/Amsterdam")),
+        price_source=MockPriceSource(tz),
+        tz=tz,
     )
     b = TestClient(app).get("/api/prices").json()
     assert b["resolution"] == "quarter_hourly"
@@ -142,11 +144,13 @@ def test_plan_endpoint_returns_slots_and_current_intent():
 
     from ems.sources.prices import MockPriceSource
 
+    tz = ZoneInfo("Europe/Amsterdam")
     app = create_app(
         MockSource(),
         dry_run=True,
         dev_mode="mock",
-        price_source=MockPriceSource(ZoneInfo("Europe/Amsterdam")),
+        price_source=MockPriceSource(tz),
+        tz=tz,
     )
     b = TestClient(app).get("/api/plan").json()
     assert len(b["slots"]) > 0
@@ -246,9 +250,10 @@ def test_savings_endpoint():
 
     from ems.sources.prices import MockPriceSource
 
+    tz = ZoneInfo("Europe/Amsterdam")
     app = create_app(
         MockSource(), dry_run=True, dev_mode="mock",
-        price_source=MockPriceSource(ZoneInfo("Europe/Amsterdam")),
+        price_source=MockPriceSource(tz), tz=tz,
     )
     assert TestClient(app).get("/api/savings").json()["today_eur"] >= 0
     assert _client().get("/api/savings").json()["today_eur"] is None  # no source
@@ -263,4 +268,3 @@ def test_unknown_api_path_returns_json_404(tmp_path):
     r = TestClient(app).get("/api/nonexistent")
     assert r.status_code == 404
     assert r.headers["content-type"].startswith("application/json")
-
