@@ -460,6 +460,66 @@ def test_replace_token_concurrent_yields_exactly_one_survivor(tmp_path):
     assert len(named_widget) == 1  # exactly one row with that name
 
 
+def test_create_token_persists_tier_and_resolve_returns_it(tmp_path):
+    s = AuthStore(str(tmp_path / "ems.sqlite"))
+
+    async def run():
+        await s.init()
+        uid = await s.create_user("a", "h", "admin")
+        # session: tier ignored / NULL
+        sess = await s.create_token(uid, "session")
+        assert (await s.resolve(sess)).token_tier is None
+        # access: default None (caller may omit), explicit view/operate persisted
+        acc = await s.create_token(uid, "access", name="w", tier="view")
+        assert (await s.resolve(acc)).token_tier == "view"
+        op = await s.create_token(uid, "access", name="o", tier="operate")
+        assert (await s.resolve(op)).token_tier == "operate"
+
+    asyncio.run(run())
+
+
+def test_create_token_rejects_invalid_tier(tmp_path):
+    s = AuthStore(str(tmp_path / "ems.sqlite"))
+
+    async def run():
+        await s.init()
+        uid = await s.create_user("a", "h", "admin")
+        raised = False
+        try:
+            await s.create_token(uid, "access", name="bad", tier="root")
+        except ValueError:
+            raised = True
+        assert raised
+
+    asyncio.run(run())
+
+
+def test_replace_token_defaults_to_view_tier(tmp_path):
+    s = AuthStore(str(tmp_path / "ems.sqlite"))
+
+    async def run():
+        await s.init()
+        uid = await s.create_user("a", "h", "admin")
+        raw = await s.replace_token(uid, "iOS widget")
+        assert (await s.resolve(raw)).token_tier == "view"
+
+    asyncio.run(run())
+
+
+def test_onboard_migrated_token_is_operate_tier(tmp_path):
+    from ems.authn import hash_token
+    s = AuthStore(str(tmp_path / "ems.sqlite"))
+
+    async def run():
+        await s.init()
+        migrated_raw = "shared-secret-xyz"
+        await s.onboard_admin("admin", "h", migrate_token_hash=hash_token(migrated_raw))
+        p = await s.resolve(migrated_raw)
+        assert p is not None and p.kind == "access" and p.token_tier == "operate"
+
+    asyncio.run(run())
+
+
 def test_set_disabled_parallel_last_admin_attempts_leave_at_least_one_admin(tmp_path):
     s = AuthStore(str(tmp_path / "ems.sqlite"))
 

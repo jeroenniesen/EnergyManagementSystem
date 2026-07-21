@@ -21,7 +21,7 @@ from datetime import UTC, datetime, timedelta
 
 import aiosqlite
 
-from ems.authn import hash_token, new_token
+from ems.authn import VALID_TOKEN_TIERS, hash_token, new_token
 from ems.storage.history import _log, self_healing
 from ems.storage.settings import _BUSY_TIMEOUT_MS, _connection_is_dead  # reuse the shared helpers
 
@@ -88,6 +88,8 @@ class Principal:
     role: str
     token_id: int
     kind: str  # 'session' | 'access'
+    token_tier: str | None = None  # slice 5: access-token scope ('view'|'operate'|'admin'); None
+    #                                for sessions and legacy pre-slice access tokens
 
 
 class UsernameTaken(Exception):
@@ -251,15 +253,19 @@ class AuthStore:
 
     # --- Tokens (Task 4) ---
 
-    async def create_token(self, user_id: int, kind: str, *, name: str | None = None) -> str:
+    async def create_token(self, user_id: int, kind: str, *, name: str | None = None,
+                           tier: str | None = None) -> str:
+        if tier is not None and tier not in VALID_TOKEN_TIERS:
+            raise ValueError(f"invalid token tier: {tier!r}")
         raw = new_token()
         now = datetime.now(UTC)
         expires = (now + _SESSION_TTL).isoformat() if kind == "session" else None
+        stored_tier = tier if kind == "access" else None  # tier is meaningless for sessions
         async with self._write_conn() as db:
             await db.execute(
-                "INSERT INTO auth_tokens (user_id, token_hash, kind, name, created_at, expires_at) "
-                "VALUES (?,?,?,?,?,?)",
-                (user_id, hash_token(raw), kind, name, now.isoformat(), expires),
+                "INSERT INTO auth_tokens (user_id, token_hash, kind, name, created_at, "
+                "expires_at, tier) VALUES (?,?,?,?,?,?,?)",
+                (user_id, hash_token(raw), kind, name, now.isoformat(), expires, stored_tier),
             )
             await db.commit()
         return raw
@@ -270,8 +276,8 @@ class AuthStore:
         async with self._write_conn() as db:
             db.row_factory = aiosqlite.Row
             cur = await db.execute(
-                "SELECT t.id AS token_id, t.kind, t.expires_at, t.last_used_at, u.id AS user_id, "
-                "u.username, u.role, u.disabled "
+                "SELECT t.id AS token_id, t.kind, t.expires_at, t.last_used_at, t.tier, "
+                "u.id AS user_id, u.username, u.role, u.disabled "
                 "FROM auth_tokens t JOIN users u ON u.id = t.user_id WHERE t.token_hash = ?",
                 (th,),
             )
@@ -303,7 +309,7 @@ class AuthStore:
                 await db.commit()
             return Principal(
                 user_id=row["user_id"], username=row["username"], role=row["role"],
-                token_id=row["token_id"], kind=row["kind"],
+                token_id=row["token_id"], kind=row["kind"], token_tier=row["tier"],
             )
 
     async def revoke_token(self, token_id: int, user_id: int) -> bool:
@@ -324,7 +330,7 @@ class AuthStore:
             )
             return [dict(r) for r in await cur.fetchall()]
 
-    async def replace_token(self, user_id: int, name: str) -> str:
+    async def replace_token(self, user_id: int, name: str, *, tier: str = "view") -> str:
         """Atomic revoke-and-remint of `user_id`'s `access` token(s) named `name` — the contract
         `POST /api/auth/tokens {replace: true}` exposes and the iOS widget relies on (design §5/§7):
         a per-device token that is safe to re-request on every login without ever accumulating
@@ -348,6 +354,8 @@ class AuthStore:
         `auth_tokens` row named `name` exists for this user, and exactly one of the raws handed
         back is ever valid — never zero, never more than one.
         """
+        if tier not in VALID_TOKEN_TIERS:
+            raise ValueError(f"invalid token tier: {tier!r}")
         raw = new_token()
         now = datetime.now(UTC)
         async with self._write_conn() as db:
@@ -359,8 +367,8 @@ class AuthStore:
                 )
                 await db.execute(
                     "INSERT INTO auth_tokens (user_id, token_hash, kind, name, created_at, "
-                    "expires_at) VALUES (?,?, 'access', ?, ?, NULL)",
-                    (user_id, hash_token(raw), name, now.isoformat()),
+                    "expires_at, tier) VALUES (?,?, 'access', ?, ?, NULL, ?)",
+                    (user_id, hash_token(raw), name, now.isoformat(), tier),
                 )
                 await db.commit()
                 return raw
@@ -405,8 +413,8 @@ class AuthStore:
                 if migrate_token_hash:
                     await db.execute(
                         "INSERT OR IGNORE INTO auth_tokens "
-                        "(user_id, token_hash, kind, name, created_at, expires_at) "
-                        "VALUES (?,?, 'access', 'Migrated shared token', ?, NULL)",
+                        "(user_id, token_hash, kind, name, created_at, expires_at, tier) "
+                        "VALUES (?,?, 'access', 'Migrated shared token', ?, NULL, 'operate')",
                         (uid, migrate_token_hash, now.isoformat()),
                     )
                 await db.commit()
