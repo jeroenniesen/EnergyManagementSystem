@@ -165,3 +165,32 @@ test("account tokens: mint shows the raw once, works as a bearer, revoke kills i
   });
   expect(revokedResp.status()).toBe(401);
 });
+
+test("account tokens: tier selector defaults to read-only and minted tokens show a tier badge",
+  async ({ page }) => {
+    await page.goto("/");
+    await expect(page.getByTestId("login")).toBeVisible();
+    await page.getByLabel("Username").fill("admin");
+    await page.getByLabel("Password").fill("pw12345678");
+    await page.getByRole("button", { name: "Sign in" }).click();
+    await expect(page.getByTestId("login")).toBeHidden();
+    await page.waitForResponse(
+      (r) => new URL(r.url()).pathname === "/api/status" && r.status() === 200,
+      { timeout: 15000 },
+    );
+
+    await page.getByTestId("nav-manage").click();
+    await expect(page.getByTestId("account-tokens")).toBeVisible();
+
+    const tier = page.getByTestId("account-token-tier");
+    await expect(tier).toBeVisible();
+    await expect(tier).toHaveValue("view"); // default read-only
+
+    await page.getByLabel("Name").fill("e2e read-only token");
+    await page.getByRole("button", { name: "Create" }).click();
+    await expect(page.getByTestId("account-token-minted")).toBeVisible();
+
+    // the new row carries a Read-only badge
+    const badge = page.getByTestId("account-token-tier-badge").filter({ hasText: "Read-only" });
+    await expect(badge.first()).toBeVisible();
+  });

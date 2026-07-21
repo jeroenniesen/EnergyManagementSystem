@@ -22,6 +22,7 @@ type ApiToken = {
   created_at: string;
   last_used_at: string | null;
   expires_at: string | null;
+  tier: string | null;
 };
 type TokensResp = { tokens: ApiToken[] };
 
@@ -44,6 +45,23 @@ export function AccountTokens() {
   const [minted, setMinted] = useState<string | null>(null);
   const { copied, copy: copyToClipboard } = useCopyToClipboard();
   const [revokeBusy, setRevokeBusy] = useState<Record<number, boolean>>({});
+  const [role, setRole] = useState<string | null>(null);
+  const [tier, setTier] = useState("view");
+
+  // Offer only tiers <= the user's own role (server enforces this too, 400).
+  const TIERS_FOR_ROLE: Record<string, { value: string; label: string }[]> = {
+    reader: [{ value: "view", label: "Read-only" }],
+    user: [
+      { value: "view", label: "Read-only" },
+      { value: "operate", label: "Operate" },
+    ],
+    admin: [
+      { value: "view", label: "Read-only" },
+      { value: "operate", label: "Operate" },
+      { value: "admin", label: "Admin" },
+    ],
+  };
+  const tierOptions = TIERS_FOR_ROLE[role ?? "reader"] ?? TIERS_FOR_ROLE.reader;
 
   async function loadKind() {
     try {
@@ -51,6 +69,7 @@ export function AccountTokens() {
       if (!r.ok) return;
       const b = await r.json();
       setKind(typeof b.kind === "string" ? b.kind : "unknown");
+      setRole(typeof b.role === "string" ? b.role : "reader");
     } catch {
       setKind("unknown"); // fail toward the hint, never toward exposing the manage UI
     }
@@ -86,7 +105,7 @@ export function AccountTokens() {
       const r = await apiFetch("/api/auth/tokens", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ name: trimmed }),
+        body: JSON.stringify({ name: trimmed, tier }),
       });
       const b = await r.json().catch(() => ({}));
       if (!r.ok) throw new Error(b.detail ?? `HTTP ${r.status}`);
@@ -114,6 +133,16 @@ export function AccountTokens() {
       /* best-effort — a failed revoke just leaves the row for a retry */
     } finally {
       setRevokeBusy((p) => ({ ...p, [id]: false }));
+    }
+  }
+
+  function tierBadge(t: ApiToken): string {
+    if (t.kind === "session") return "Session (full account role)";
+    switch (t.tier) {
+      case "view": return "Read-only";
+      case "operate": return "Operate";
+      case "admin": return "Admin";
+      default: return "Operate (legacy)"; // access token, tier IS NULL (pre-slice-5)
     }
   }
 
@@ -152,6 +181,18 @@ export function AccountTokens() {
             if (e.key === "Enter") mint();
           }}
         />
+        <label className="admin-row-field-label" htmlFor="account-token-tier">Access</label>
+        <select
+          id="account-token-tier"
+          data-testid="account-token-tier"
+          value={tier}
+          disabled={minting}
+          onChange={(e) => setTier(e.target.value)}
+        >
+          {tierOptions.map((o) => (
+            <option key={o.value} value={o.value}>{o.label}</option>
+          ))}
+        </select>
         <button
           type="button"
           className="btn-primary"
@@ -201,6 +242,9 @@ export function AccountTokens() {
             <li key={t.id} className="admin-row" data-testid={`account-token-${t.id}`}>
               <div className="admin-row-main">
                 <span className="admin-row-name">{t.name ?? "session"}</span>
+                <span className="admin-row-badge" data-testid="account-token-tier-badge">
+                  {tierBadge(t)}
+                </span>
                 <span className="admin-row-meta">created {fmtDate(t.created_at)}</span>
                 <span className="admin-row-meta">last used {fmtDate(t.last_used_at)}</span>
               </div>
