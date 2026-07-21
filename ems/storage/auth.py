@@ -58,7 +58,8 @@ CREATE TABLE IF NOT EXISTS auth_tokens (
   name         TEXT,
   created_at   TEXT NOT NULL,
   last_used_at TEXT,
-  expires_at   TEXT
+  expires_at   TEXT,
+  tier         TEXT CHECK(tier IS NULL OR tier IN ('view','operate','admin'))
 )
 """
 _TOKENS_HASH_INDEX_DDL = (
@@ -196,6 +197,17 @@ class AuthStore:
             await db.execute(_TOKENS_HASH_INDEX_DDL)
             await db.execute(_TOKENS_USER_INDEX_DDL)
             await db.execute(_INVITES_DDL)
+            # Slice 5: add auth_tokens.tier to pre-slice-5 DBs. The store only does CREATE TABLE
+            # IF NOT EXISTS, so an existing table needs an explicit ALTER. Idempotent: skip when
+            # the column is already there (fresh DBs get it from _TOKENS_DDL above). SQLite allows
+            # a CHECK on ADD COLUMN; existing NULL-tier rows satisfy it.
+            cur = await db.execute("PRAGMA table_info(auth_tokens)")
+            cols = {row[1] for row in await cur.fetchall()}
+            if "tier" not in cols:
+                await db.execute(
+                    "ALTER TABLE auth_tokens ADD COLUMN tier TEXT "
+                    "CHECK(tier IS NULL OR tier IN ('view','operate','admin'))"
+                )
             await db.commit()
 
     # --- Users (Task 3) ---

@@ -13,6 +13,48 @@ def _tables(db_path: str) -> set[str]:
     return {r[0] for r in rows}
 
 
+async def _init_and_close(store: AuthStore) -> None:
+    await store.init()
+    await store.close()
+
+
+def _token_columns(db_path: str) -> set[str]:
+    con = sqlite3.connect(db_path)
+    try:
+        return {r[1] for r in con.execute("PRAGMA table_info(auth_tokens)").fetchall()}
+    finally:
+        con.close()
+
+
+def test_fresh_db_has_tier_column(tmp_path):
+    db = str(tmp_path / "ems.sqlite")
+    s = AuthStore(db)
+    asyncio.run(_init_and_close(s))
+    assert "tier" in _token_columns(db)
+
+
+def test_tier_column_migration_is_idempotent(tmp_path):
+    db = str(tmp_path / "ems.sqlite")
+    # Simulate a pre-slice-5 DB: auth_tokens WITHOUT the tier column.
+    con = sqlite3.connect(db)
+    con.execute(
+        "CREATE TABLE auth_tokens (id INTEGER PRIMARY KEY, user_id INTEGER NOT NULL, "
+        "token_hash TEXT NOT NULL UNIQUE, kind TEXT NOT NULL, name TEXT, "
+        "created_at TEXT NOT NULL, last_used_at TEXT, expires_at TEXT)"
+    )
+    con.commit()
+    con.close()
+    s = AuthStore(db)
+
+    async def run():
+        await s.init()  # adds tier
+        await s.init()  # must not fail on the second pass
+        await s.close()
+
+    asyncio.run(run())
+    assert "tier" in _token_columns(db)
+
+
 def test_init_creates_tables_idempotently(tmp_path):
     db = str(tmp_path / "ems.sqlite")
     store = AuthStore(db)
