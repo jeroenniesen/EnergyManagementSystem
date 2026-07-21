@@ -1,6 +1,11 @@
 from ems.web.authz import (
-    Tier, required_tier, requires_session, role_satisfies,
-    effective_rank, role_rank, tier_rank,
+    Tier,
+    effective_rank,
+    required_tier,
+    requires_session,
+    role_rank,
+    role_satisfies,
+    tier_rank,
 )
 
 
