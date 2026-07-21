@@ -1475,6 +1475,13 @@ body {
 }
 .admin-row-main { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; font-size: 0.88rem; }
 .admin-row-name { font-weight: 600; }
+/* Token tier pill (auth slice 5) — sits on .admin-row's --panel-2 fill, so it borrows --panel as
+   the contrasting surface (same alternating-surface trick as .tower-chip-mode) rather than a new
+   color; muted text keeps it quiet next to the name/meta text it sits beside. */
+.admin-row-badge {
+  font-size: 0.7rem; font-weight: 600; color: var(--muted); background: var(--panel);
+  border-radius: 999px; padding: 2px 9px; white-space: nowrap;
+}
 .admin-row-meta { color: var(--muted); font-size: 0.78rem; }
 .admin-row-controls { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .admin-row-field-label { color: var(--muted); font-size: 0.78rem; }

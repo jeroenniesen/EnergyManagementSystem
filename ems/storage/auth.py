@@ -21,7 +21,7 @@ from datetime import UTC, datetime, timedelta
 
 import aiosqlite
 
-from ems.authn import hash_token, new_token
+from ems.authn import VALID_TOKEN_TIERS, hash_token, new_token
 from ems.storage.history import _log, self_healing
 from ems.storage.settings import _BUSY_TIMEOUT_MS, _connection_is_dead  # reuse the shared helpers
 
@@ -58,7 +58,8 @@ CREATE TABLE IF NOT EXISTS auth_tokens (
   name         TEXT,
   created_at   TEXT NOT NULL,
   last_used_at TEXT,
-  expires_at   TEXT
+  expires_at   TEXT,
+  tier         TEXT CHECK(tier IS NULL OR tier IN ('view','operate','admin'))
 )
 """
 _TOKENS_HASH_INDEX_DDL = (
@@ -87,6 +88,8 @@ class Principal:
     role: str
     token_id: int
     kind: str  # 'session' | 'access'
+    token_tier: str | None = None  # slice 5: access-token scope ('view'|'operate'|'admin'); None
+    #                                for sessions and legacy pre-slice access tokens
 
 
 class UsernameTaken(Exception):
@@ -99,12 +102,17 @@ class UsernameTaken(Exception):
 
 @self_healing
 class AuthStore:
-    def __init__(self, db_path: str) -> None:
+    def __init__(self, db_path: str, *, access_token_idle_days: int = 90) -> None:
         self.db_path = db_path
         self._db: aiosqlite.Connection | None = None
         self._connect_lock = asyncio.Lock()
         self._write_lock = asyncio.Lock()
         self._last_reheal_at: datetime | None = None
+        # Slice 5: access tokens unused beyond this stop resolving. <= 0 DISABLES the check
+        # (never "expire everything"); a positive value is the idle window.
+        self._access_idle_ttl = (
+            timedelta(days=access_token_idle_days) if access_token_idle_days > 0 else None
+        )
 
     # --- Connection scaffolding (copied verbatim from ems/storage/settings.py — sibling-store
     # pattern; see that module for the self-heal rationale). Do not change this logic here; if it
@@ -196,6 +204,17 @@ class AuthStore:
             await db.execute(_TOKENS_HASH_INDEX_DDL)
             await db.execute(_TOKENS_USER_INDEX_DDL)
             await db.execute(_INVITES_DDL)
+            # Slice 5: add auth_tokens.tier to pre-slice-5 DBs. The store only does CREATE TABLE
+            # IF NOT EXISTS, so an existing table needs an explicit ALTER. Idempotent: skip when
+            # the column is already there (fresh DBs get it from _TOKENS_DDL above). SQLite allows
+            # a CHECK on ADD COLUMN; existing NULL-tier rows satisfy it.
+            cur = await db.execute("PRAGMA table_info(auth_tokens)")
+            cols = {row[1] for row in await cur.fetchall()}
+            if "tier" not in cols:
+                await db.execute(
+                    "ALTER TABLE auth_tokens ADD COLUMN tier TEXT "
+                    "CHECK(tier IS NULL OR tier IN ('view','operate','admin'))"
+                )
             await db.commit()
 
     # --- Users (Task 3) ---
@@ -239,15 +258,19 @@ class AuthStore:
 
     # --- Tokens (Task 4) ---
 
-    async def create_token(self, user_id: int, kind: str, *, name: str | None = None) -> str:
+    async def create_token(self, user_id: int, kind: str, *, name: str | None = None,
+                           tier: str | None = None) -> str:
+        if tier is not None and tier not in VALID_TOKEN_TIERS:
+            raise ValueError(f"invalid token tier: {tier!r}")
         raw = new_token()
         now = datetime.now(UTC)
         expires = (now + _SESSION_TTL).isoformat() if kind == "session" else None
+        stored_tier = tier if kind == "access" else None  # tier is meaningless for sessions
         async with self._write_conn() as db:
             await db.execute(
-                "INSERT INTO auth_tokens (user_id, token_hash, kind, name, created_at, expires_at) "
-                "VALUES (?,?,?,?,?,?)",
-                (user_id, hash_token(raw), kind, name, now.isoformat(), expires),
+                "INSERT INTO auth_tokens (user_id, token_hash, kind, name, created_at, "
+                "expires_at, tier) VALUES (?,?,?,?,?,?,?)",
+                (user_id, hash_token(raw), kind, name, now.isoformat(), expires, stored_tier),
             )
             await db.commit()
         return raw
@@ -258,14 +281,21 @@ class AuthStore:
         async with self._write_conn() as db:
             db.row_factory = aiosqlite.Row
             cur = await db.execute(
-                "SELECT t.id AS token_id, t.kind, t.expires_at, t.last_used_at, u.id AS user_id, "
-                "u.username, u.role, u.disabled "
+                "SELECT t.id AS token_id, t.kind, t.expires_at, t.last_used_at, t.tier, "
+                "t.created_at, u.id AS user_id, u.username, u.role, u.disabled "
                 "FROM auth_tokens t JOIN users u ON u.id = t.user_id WHERE t.token_hash = ?",
                 (th,),
             )
             row = await cur.fetchone()
             if row is None or row["disabled"]:
                 return None
+            # Slice 5: idle auto-revoke for access tokens (sessions have their own expiry below).
+            # last_used_at is throttled telemetry, but day-grained idle is unaffected; fall back
+            # to created_at for a token that has never been used since mint.
+            if row["kind"] == "access" and self._access_idle_ttl is not None:
+                ref = row["last_used_at"] or row["created_at"]
+                if (now - datetime.fromisoformat(ref)) > self._access_idle_ttl:
+                    return None
             # Collect writes and commit at most once — and only when there is something to write —
             # so the common authenticated read stays a lock-free SELECT (see _LAST_USED_THROTTLE).
             dirty = False
@@ -291,7 +321,7 @@ class AuthStore:
                 await db.commit()
             return Principal(
                 user_id=row["user_id"], username=row["username"], role=row["role"],
-                token_id=row["token_id"], kind=row["kind"],
+                token_id=row["token_id"], kind=row["kind"], token_tier=row["tier"],
             )
 
     async def revoke_token(self, token_id: int, user_id: int) -> bool:
@@ -302,17 +332,36 @@ class AuthStore:
             await db.commit()
             return cur.rowcount > 0
 
+    async def purge_idle_access_tokens(self) -> int:
+        """Best-effort hygiene: delete access tokens idle past the TTL. Lazy rejection in
+        resolve() is the authoritative security mechanism; this just reclaims dead rows. No-op
+        when idle expiry is disabled. Wire into existing periodic maintenance if present — do NOT
+        add a new background loop for it. Intentionally NOT wired into any background loop today
+        (design §9 non-goal) — lazy rejection in resolve() is the enforcing mechanism; this method
+        exists for callers/tests that want to reclaim dead rows explicitly."""
+        if self._access_idle_ttl is None:
+            return 0
+        cutoff = (datetime.now(UTC) - self._access_idle_ttl).isoformat()
+        async with self._write_conn() as db:
+            cur = await db.execute(
+                "DELETE FROM auth_tokens WHERE kind='access' "
+                "AND COALESCE(last_used_at, created_at) < ?",
+                (cutoff,),
+            )
+            await db.commit()
+            return cur.rowcount
+
     async def list_tokens(self, user_id: int) -> list[dict]:
         async with self._conn() as db:
             db.row_factory = aiosqlite.Row
             cur = await db.execute(
-                "SELECT id, kind, name, created_at, last_used_at, expires_at "
+                "SELECT id, kind, name, created_at, last_used_at, expires_at, tier "
                 "FROM auth_tokens WHERE user_id=? ORDER BY created_at",
                 (user_id,),
             )
             return [dict(r) for r in await cur.fetchall()]
 
-    async def replace_token(self, user_id: int, name: str) -> str:
+    async def replace_token(self, user_id: int, name: str, *, tier: str = "view") -> str:
         """Atomic revoke-and-remint of `user_id`'s `access` token(s) named `name` — the contract
         `POST /api/auth/tokens {replace: true}` exposes and the iOS widget relies on (design §5/§7):
         a per-device token that is safe to re-request on every login without ever accumulating
@@ -336,6 +385,8 @@ class AuthStore:
         `auth_tokens` row named `name` exists for this user, and exactly one of the raws handed
         back is ever valid — never zero, never more than one.
         """
+        if tier not in VALID_TOKEN_TIERS:
+            raise ValueError(f"invalid token tier: {tier!r}")
         raw = new_token()
         now = datetime.now(UTC)
         async with self._write_conn() as db:
@@ -347,8 +398,8 @@ class AuthStore:
                 )
                 await db.execute(
                     "INSERT INTO auth_tokens (user_id, token_hash, kind, name, created_at, "
-                    "expires_at) VALUES (?,?, 'access', ?, ?, NULL)",
-                    (user_id, hash_token(raw), name, now.isoformat()),
+                    "expires_at, tier) VALUES (?,?, 'access', ?, ?, NULL, ?)",
+                    (user_id, hash_token(raw), name, now.isoformat(), tier),
                 )
                 await db.commit()
                 return raw
@@ -393,8 +444,8 @@ class AuthStore:
                 if migrate_token_hash:
                     await db.execute(
                         "INSERT OR IGNORE INTO auth_tokens "
-                        "(user_id, token_hash, kind, name, created_at, expires_at) "
-                        "VALUES (?,?, 'access', 'Migrated shared token', ?, NULL)",
+                        "(user_id, token_hash, kind, name, created_at, expires_at, tier) "
+                        "VALUES (?,?, 'access', 'Migrated shared token', ?, NULL, 'operate')",
                         (uid, migrate_token_hash, now.isoformat()),
                     )
                 await db.commit()

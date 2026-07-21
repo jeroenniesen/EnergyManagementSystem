@@ -33,6 +33,9 @@ class Config:
     # (slower) recorder cadence so safety reactions like the car-charging guard engage promptly,
     # without forcing a high history-write rate. Only matters in operational mode.
     control_cycle_seconds: float = 60.0
+    # Slice 5: an access token unused for this many days stops resolving (idle auto-revoke).
+    # 0 disables the check (tokens never idle-expire); clamped >= 0 on load.
+    access_token_idle_days: int = 90
 
 
 def load_config(path: str | Path) -> Config:
@@ -45,6 +48,7 @@ def load_config(path: str | Path) -> Config:
     sources = data.get("sources", {}) or {}
     prices = data.get("prices", {}) or {}
     devices = data.get("devices", {}) or {}
+    auth = data.get("auth", {}) or {}
 
     dev_mode = dev.get("mode", "mock")
     dry_run = bool(control.get("dry_run", True))
@@ -84,4 +88,5 @@ def load_config(path: str | Path) -> Config:
         indevolt_ip=str(devices.get("indevolt_ip", "")),
         indevolt_ips_extra=str(devices.get("indevolt_ips_extra", "")),
         indevolt_port=int(devices.get("indevolt_port", 8080)),
+        access_token_idle_days=max(0, int(auth.get("access_token_idle_days", 90))),
     )
