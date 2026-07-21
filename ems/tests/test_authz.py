@@ -1,4 +1,7 @@
-from ems.web.authz import Tier, required_tier, requires_session, role_satisfies
+from ems.web.authz import (
+    Tier, required_tier, requires_session, role_satisfies,
+    effective_rank, role_rank, tier_rank,
+)
 
 
 def test_role_satisfies():
@@ -38,3 +41,44 @@ def test_requires_session():
     assert requires_session("/api/auth/tokens")
     assert requires_session("/api/auth/tokens/3")
     assert not requires_session("/api/settings")
+
+
+def test_tier_rank_and_role_rank():
+    assert tier_rank("view") == 0 and tier_rank("operate") == 1 and tier_rank("admin") == 2
+    assert tier_rank(None) == -1 and tier_rank("bogus") == -1
+    assert role_rank("reader") == 0 and role_rank("user") == 1 and role_rank("admin") == 2
+    assert role_rank("bogus") == -1
+
+
+def test_effective_rank_session_is_owner_role():
+    assert effective_rank("admin", "session", None) == int(Tier.ADMIN)
+    assert effective_rank("user", "session", None) == int(Tier.OPERATE)
+
+
+def test_effective_rank_access_is_min_of_owner_and_scope():
+    # admin owner, read-only scope -> VIEW
+    assert effective_rank("admin", "access", "view") == int(Tier.VIEW)
+    # admin owner, operate scope -> OPERATE
+    assert effective_rank("admin", "access", "operate") == int(Tier.OPERATE)
+    # user owner, admin scope -> capped at owner (OPERATE)
+    assert effective_rank("user", "access", "admin") == int(Tier.OPERATE)
+
+
+def test_effective_rank_legacy_null_access_caps_at_operate():
+    assert effective_rank("admin", "access", None) == int(Tier.OPERATE)
+    assert effective_rank("user", "access", None) == int(Tier.OPERATE)
+
+
+def test_effective_rank_fails_closed_on_garbage_tier():
+    # Unknown non-null tier -> rank -1 -> below VIEW -> denies everything. Never KeyError.
+    assert effective_rank("admin", "access", "root") == -1
+
+
+def test_user_and_invite_management_is_session_only():
+    assert requires_session("/api/users")
+    assert requires_session("/api/users/5")
+    assert requires_session("/api/invites")
+    assert requires_session("/api/invites/9")
+    # accept stays reachable unauthenticated — it's exempt, checked before requires_session.
+    from ems.web.authz import EXEMPT_PATHS
+    assert "/api/invites/accept" in EXEMPT_PATHS
