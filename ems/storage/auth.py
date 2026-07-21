@@ -102,12 +102,17 @@ class UsernameTaken(Exception):
 
 @self_healing
 class AuthStore:
-    def __init__(self, db_path: str) -> None:
+    def __init__(self, db_path: str, *, access_token_idle_days: int = 90) -> None:
         self.db_path = db_path
         self._db: aiosqlite.Connection | None = None
         self._connect_lock = asyncio.Lock()
         self._write_lock = asyncio.Lock()
         self._last_reheal_at: datetime | None = None
+        # Slice 5: access tokens unused beyond this stop resolving. <= 0 DISABLES the check
+        # (never "expire everything"); a positive value is the idle window.
+        self._access_idle_ttl = (
+            timedelta(days=access_token_idle_days) if access_token_idle_days > 0 else None
+        )
 
     # --- Connection scaffolding (copied verbatim from ems/storage/settings.py — sibling-store
     # pattern; see that module for the self-heal rationale). Do not change this logic here; if it
@@ -277,13 +282,20 @@ class AuthStore:
             db.row_factory = aiosqlite.Row
             cur = await db.execute(
                 "SELECT t.id AS token_id, t.kind, t.expires_at, t.last_used_at, t.tier, "
-                "u.id AS user_id, u.username, u.role, u.disabled "
+                "t.created_at, u.id AS user_id, u.username, u.role, u.disabled "
                 "FROM auth_tokens t JOIN users u ON u.id = t.user_id WHERE t.token_hash = ?",
                 (th,),
             )
             row = await cur.fetchone()
             if row is None or row["disabled"]:
                 return None
+            # Slice 5: idle auto-revoke for access tokens (sessions have their own expiry below).
+            # last_used_at is throttled telemetry, but day-grained idle is unaffected; fall back
+            # to created_at for a token that has never been used since mint.
+            if row["kind"] == "access" and self._access_idle_ttl is not None:
+                ref = row["last_used_at"] or row["created_at"]
+                if (now - datetime.fromisoformat(ref)) > self._access_idle_ttl:
+                    return None
             # Collect writes and commit at most once — and only when there is something to write —
             # so the common authenticated read stays a lock-free SELECT (see _LAST_USED_THROTTLE).
             dirty = False
@@ -319,6 +331,23 @@ class AuthStore:
             )
             await db.commit()
             return cur.rowcount > 0
+
+    async def purge_idle_access_tokens(self) -> int:
+        """Best-effort hygiene: delete access tokens idle past the TTL. Lazy rejection in
+        resolve() is the authoritative security mechanism; this just reclaims dead rows. No-op
+        when idle expiry is disabled. Wire into existing periodic maintenance if present — do NOT
+        add a new background loop for it."""
+        if self._access_idle_ttl is None:
+            return 0
+        cutoff = (datetime.now(UTC) - self._access_idle_ttl).isoformat()
+        async with self._write_conn() as db:
+            cur = await db.execute(
+                "DELETE FROM auth_tokens WHERE kind='access' "
+                "AND COALESCE(last_used_at, created_at) < ?",
+                (cutoff,),
+            )
+            await db.commit()
+            return cur.rowcount
 
     async def list_tokens(self, user_id: int) -> list[dict]:
         async with self._conn() as db:

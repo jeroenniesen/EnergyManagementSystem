@@ -42,7 +42,7 @@ def build_app():
     settings_store = SettingsStore(str(db_path))
     override_store = SettingsStore(str(db_path), table="runtime_state")
     audit_store = AuditStore(str(db_path))
-    auth_store = AuthStore(str(db_path))
+    auth_store = AuthStore(str(db_path), access_token_idle_days=cfg.access_token_idle_days)
     cache_store = CacheStore(str(db_path))
     cache_store.init()  # ensure the table exists before sources warm-start from it below
     freshness = FreshnessTracker()

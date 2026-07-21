@@ -541,3 +541,108 @@ def test_set_disabled_parallel_last_admin_attempts_leave_at_least_one_admin(tmp_
 
     remaining_admins = asyncio.run(run())
     assert remaining_admins >= 1
+
+
+# --- Slice 5: idle auto-revoke for access tokens ------------------------------------------------
+
+
+def _backdate_token(db_path: str, token_id: int, iso: str) -> None:
+    con = sqlite3.connect(db_path)
+    con.execute("UPDATE auth_tokens SET last_used_at=?, created_at=? WHERE id=?",
+                (iso, iso, token_id))
+    con.commit()
+    con.close()
+
+
+def test_idle_access_token_stops_resolving(tmp_path):
+    db = str(tmp_path / "ems.sqlite")
+    s = AuthStore(db, access_token_idle_days=30)
+
+    async def run():
+        await s.init()
+        uid = await s.create_user("a", "h", "admin")
+        raw = await s.create_token(uid, "access", name="w", tier="view")
+        p = await s.resolve(raw)  # fresh -> resolves
+        assert p is not None
+        return raw, p.token_id
+
+    raw, tid = asyncio.run(run())
+    # backdate activity 60 days -> idle beyond the 30-day TTL
+    from datetime import UTC, datetime, timedelta
+    old = (datetime.now(UTC) - timedelta(days=60)).isoformat()
+    _backdate_token(db, tid, old)
+    assert asyncio.run(_resolve_once(db, raw, idle_days=30)) is None
+
+
+async def _resolve_once(db: str, raw: str, *, idle_days: int):
+    store = AuthStore(db, access_token_idle_days=idle_days)
+    p = await store.resolve(raw)
+    await store.close()
+    return p
+
+
+def test_idle_expiry_disabled_when_zero(tmp_path):
+    db = str(tmp_path / "ems.sqlite")
+
+    async def seed():
+        s = AuthStore(db, access_token_idle_days=0)
+        await s.init()
+        uid = await s.create_user("a", "h", "admin")
+        raw = await s.create_token(uid, "access", name="w", tier="view")
+        p = await s.resolve(raw)
+        await s.close()
+        return raw, p.token_id
+
+    raw, tid = asyncio.run(seed())
+    from datetime import UTC, datetime, timedelta
+    _backdate_token(db, tid, (datetime.now(UTC) - timedelta(days=9999)).isoformat())
+    # idle disabled (0) -> an ancient token still resolves
+    assert asyncio.run(_resolve_once(db, raw, idle_days=0)) is not None
+
+
+def test_session_unaffected_by_access_idle_rule(tmp_path):
+    db = str(tmp_path / "ems.sqlite")
+
+    async def run():
+        s = AuthStore(db, access_token_idle_days=1)
+        await s.init()
+        uid = await s.create_user("a", "h", "admin")
+        raw = await s.create_token(uid, "session")
+        p = await s.resolve(raw)
+        await s.close()
+        return raw, p.token_id
+
+    raw, tid = asyncio.run(run())
+    from datetime import UTC, datetime, timedelta
+    _backdate_token(db, tid, (datetime.now(UTC) - timedelta(days=5)).isoformat())
+    # a session past the access idle window still resolves (its own 30-day expiry governs it)
+    assert asyncio.run(_resolve_once(db, raw, idle_days=1)) is not None
+
+
+def test_purge_idle_access_tokens_removes_only_idle_access(tmp_path):
+    db = str(tmp_path / "ems.sqlite")
+
+    async def run():
+        s = AuthStore(db, access_token_idle_days=30)
+        await s.init()
+        uid = await s.create_user("a", "h", "admin")
+        live = await s.create_token(uid, "access", name="live", tier="view")
+        dead = await s.create_token(uid, "access", name="dead", tier="view")
+        live_id = (await s.resolve(live)).token_id
+        dead_id = (await s.resolve(dead)).token_id
+        await s.close()
+        return live, live_id, dead_id
+
+    live, live_id, dead_id = asyncio.run(run())
+    from datetime import UTC, datetime, timedelta
+    _backdate_token(db, dead_id, (datetime.now(UTC) - timedelta(days=60)).isoformat())
+
+    async def purge():
+        s = AuthStore(db, access_token_idle_days=30)
+        n = await s.purge_idle_access_tokens()
+        alive = await s.resolve(live)
+        await s.close()
+        return n, alive
+
+    n, alive = asyncio.run(purge())
+    assert n == 1 and alive is not None
