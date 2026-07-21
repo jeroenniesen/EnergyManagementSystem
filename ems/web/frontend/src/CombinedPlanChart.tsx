@@ -14,10 +14,8 @@ const ACTION_LABEL: Record<string, string> = {
   hold: "Hold",
   idle: "Idle",
 };
-const ACTION_CUE: Record<string, { short: string; angle: number }> = {
-  solar_charge: { short: "SOL", angle: 45 }, grid_charge: { short: "GRID", angle: -45 },
-  discharge: { short: "USE", angle: 90 }, self_consume: { short: "SELF", angle: 0 },
-  hold: { short: "HOLD", angle: 30 }, idle: { short: "IDLE", angle: 60 },
+const ACTION_PATTERN_ANGLE: Record<string, number> = {
+  hold: 0, solar_charge: 30, grid_charge: 60, discharge: 90, self_consume: 120, idle: 150,
 };
 
 const finiteNumber = (value: unknown): value is number =>
@@ -95,7 +93,7 @@ function lineSegments(
 export function CombinedPlanChart({ story }: { story: EnergyStoryData | null }) {
   const slots = story?.slots ?? [];
   const recent = story?.recent ?? [];
-  const [selectedIndex, setSelectedIndex] = useState<number | null>(0);
+  const [selectedIndex, setSelectedIndex] = useState<number | null>(null);
   const controls = useRef<(SVGRectElement | null)[]>([]);
   useEffect(() => setSelectedIndex((index) => index == null ? null : Math.min(index, Math.max(0, slots.length - 1))), [slots.length]);
   useEffect(() => {
@@ -113,6 +111,10 @@ export function CombinedPlanChart({ story }: { story: EnergyStoryData | null }) 
   const span = Math.max(1, t1 - t0);
   const plotW = W - PAD.l - PAD.r;
   const plotH = H - PAD.t - PAD.b;
+  const PRICE_BAND_HEIGHT = 0.24 * plotH;
+  const ACTION_RIBBON_HEIGHT = 9;
+  const priceBandTop = PAD.t + plotH - PRICE_BAND_HEIGHT;
+  const actionRibbonY = PAD.t + plotH + 3;
   const x = (time: number) => PAD.l + ((time - t0) / span) * plotW;
   const slotWidth = (slot: StorySlot) =>
     x(Date.parse(slot.start) + SLOT_MS) - x(Date.parse(slot.start));
@@ -123,8 +125,8 @@ export function CombinedPlanChart({ story }: { story: EnergyStoryData | null }) 
   const maxPrice = prices.length ? Math.max(0, ...prices) : 1;
   const priceSpan = Math.max(0.01, maxPrice - minPrice);
   const maxSolar = solar.length ? Math.max(...solar, 1) : 1;
-  const priceY = (value: number) => PAD.t + ((maxPrice - value) / priceSpan) * plotH;
-  const solarY = (value: number) => PAD.t + (1 - Math.max(0, value) / maxSolar) * plotH;
+  const priceY = (value: number) => priceBandTop + ((maxPrice - value) / priceSpan) * PRICE_BAND_HEIGHT;
+  const solarY = (value: number) => PAD.t + plotH - (Math.max(0, value) / maxSolar) * plotH * 0.42;
   const windows = actionWindows(slots);
   const plannedSoc = lineSegments(slots, (slot) => slot.soc_pct,
     (slot, value) => `${x(Date.parse(slot.start) + SLOT_MS / 2)},${socY(value)}`);
@@ -150,24 +152,25 @@ export function CombinedPlanChart({ story }: { story: EnergyStoryData | null }) 
   return (
     <section className="combined-plan" data-testid="combined-plan-chart" data-density-kind="chart" aria-label={describeCombinedPlan(story)}>
       <div className="combined-plan-heading"><h2>Next 24 hours</h2><span>SoC · solar · price · plan</span></div>
-      <svg viewBox={`0 0 ${W} ${H}`} role="img" aria-label={describeCombinedPlan(story)}>
+      {/* role="group" (not "img"): the chart is a labelled container of focusable slot controls.
+          role="img" makes children presentational, which axe (nested-interactive) rightly forbids
+          for the tab-navigable <rect> slots below. The full text description stays as the label. */}
+      <svg viewBox={`0 0 ${W} ${H}`} role="group" aria-label={describeCombinedPlan(story)}>
         <defs>
-          {Object.entries(ACTION_CUE).map(([action, cue]) => <pattern key={action}
-            id={`combined-plan-pattern-${action}`} width="10" height="10" patternUnits="userSpaceOnUse"
-            patternTransform={`rotate(${cue.angle})`}><line x1="0" y1="0" x2="0" y2="10"
-              className="combined-plan-pattern-line" /></pattern>)}
+          {Object.entries(ACTION_PATTERN_ANGLE).map(([action, angle]) => <pattern
+            key={action} id={`combined-plan-ribbon-${action}`} width="6" height="6"
+            patternUnits="userSpaceOnUse" patternTransform={`rotate(${angle})`}>
+            <rect width="6" height="6" className={`combined-plan-ribbon-base action-${action}`} />
+            <line x1="0" y1="0" x2="0" y2="6" className="combined-plan-ribbon-line" />
+          </pattern>)}
         </defs>
         <g className="combined-plan-windows">
-          {windows.map((window) => <g key={`${window.start}-${window.action}`}>
-            <rect x={x(window.start)} y={PAD.t} width={x(window.end) - x(window.start)}
-              height={plotH} className={`combined-plan-window action-${window.action}`} />
-            <rect x={x(window.start)} y={PAD.t} width={x(window.end) - x(window.start)}
-              height={plotH} fill={`url(#combined-plan-pattern-${ACTION_CUE[window.action] ? window.action : "idle"})`}
-              className="combined-plan-window-pattern" />
-            <text className="combined-plan-window-label" x={x(window.start) + 4} y={PAD.t + 14}>
-              {(ACTION_CUE[window.action] ?? { short: actionLabel(window.action).slice(0, 4) }).short}
-            </text>
-          </g>)}
+          {windows.map((window) =>
+            <rect x={x(window.start)} width={x(window.end) - x(window.start)}
+              key={`${window.start}-${window.action}`} height={ACTION_RIBBON_HEIGHT}
+              aria-label={`${actionLabel(window.action)} ${clock(new Date(window.start).toISOString())}–${clock(new Date(window.end).toISOString())}`}
+              fill={`url(#combined-plan-ribbon-${ACTION_PATTERN_ANGLE[window.action] == null ? "idle" : window.action})`}
+              className={`combined-plan-action-ribbon action-${window.action}`} y={actionRibbonY} />)}
         </g>
         <g className="combined-plan-solar">
           {solarSegments.map((points, index) => {
@@ -182,7 +185,7 @@ export function CombinedPlanChart({ story }: { story: EnergyStoryData | null }) 
           <line data-price-zero x1={PAD.l} x2={W - PAD.r} y1={priceY(0)} y2={priceY(0)} />
           {slots.map((slot) => finiteNumber(slot.eur_per_kwh) && <rect key={slot.start}
             data-price-negative={slot.eur_per_kwh < 0 ? "true" : undefined}
-            className={slot.eur_per_kwh < 0 ? "combined-plan-price-negative" : undefined}
+            className={`combined-plan-price${slot.eur_per_kwh < 0 ? " combined-plan-price-negative" : ""}`}
             x={x(Date.parse(slot.start)) + slotWidth(slot) * 0.23}
             y={Math.min(priceY(slot.eur_per_kwh), priceY(0))}
             width={Math.max(2, slotWidth(slot) * 0.54)}
@@ -193,11 +196,13 @@ export function CombinedPlanChart({ story }: { story: EnergyStoryData | null }) 
           {actualSoc.map((points, index) => <polyline key={`actual-${index}`} className="combined-plan-soc-actual" points={points} />)}
           {plannedSoc.map((points, index) => <polyline key={`plan-${index}`} className="combined-plan-soc-forecast" points={points} />)}
           <line x1={PAD.l} x2={W - PAD.r} y1={socY(story.reserve_soc_pct)} y2={socY(story.reserve_soc_pct)} />
-          <text x={W - PAD.r + 5} y={socY(story.reserve_soc_pct) + 4}>reserve {Math.round(story.reserve_soc_pct)}%</text>
+          <text data-testid="combined-plan-reserve-label" x={W - PAD.r - 6} textAnchor="end"
+            y={socY(story.reserve_soc_pct) + 4}>reserve {Math.round(story.reserve_soc_pct)}%</text>
           {finiteNumber(story.target_soc_pct) && <><line data-testid="combined-plan-target-soc"
             className="combined-plan-target" x1={PAD.l} x2={W - PAD.r}
             y1={socY(story.target_soc_pct)} y2={socY(story.target_soc_pct)} />
-            <text x={W - PAD.r + 5} y={socY(story.target_soc_pct) + 4}>target {Math.round(story.target_soc_pct)}%</text></>}
+            <text data-testid="combined-plan-target-label" x={W - PAD.r - 6} textAnchor="end"
+              y={socY(story.target_soc_pct) + 4}>target {Math.round(story.target_soc_pct)}%</text></>}
         </g>
         <g className="combined-plan-axis">
           {slots.map((slot, index) => index % everyN === 0 && <text key={slot.start}
@@ -211,8 +216,8 @@ export function CombinedPlanChart({ story }: { story: EnergyStoryData | null }) 
             <line data-testid="combined-plan-target-deadline" className="combined-plan-deadline"
               x1={x(Date.parse(story.target_deadline))} x2={x(Date.parse(story.target_deadline))}
               y1={PAD.t} y2={PAD.t + plotH} />
-            <text className="combined-plan-deadline-label" x={x(Date.parse(story.target_deadline)) - 4}
-              y={PAD.t + plotH - 7}>target {clock(story.target_deadline)}</text>
+            <text data-testid="combined-plan-deadline-label" className="combined-plan-deadline-label"
+              x={x(Date.parse(story.target_deadline)) - 4} y={PAD.t + 14}>target {clock(story.target_deadline)}</text>
           </>}
         </g>
         <g className="combined-plan-controls">
@@ -226,6 +231,19 @@ export function CombinedPlanChart({ story }: { story: EnergyStoryData | null }) 
             }} />)}
         </g>
       </svg>
+      <div className="combined-plan-legend">
+        <span><i className="combined-plan-legend-actual" />Actual state of charge</span>
+        <span><i className="combined-plan-legend-forecast" />Forecast state of charge</span>
+        <span><i className="combined-plan-legend-solar" />Solar forecast</span>
+        <span><i className="combined-plan-legend-price" />Signed price</span>
+        <span><i className="combined-plan-legend-target" />Target</span>
+        <span><i className="combined-plan-legend-reserve" />Reserve</span>
+        <span className="combined-plan-legend-actions-title">Plan actions:</span>
+        {windows.filter((window, index) => windows.findIndex((candidate) => candidate.action === window.action) === index)
+          .map((window) => <span key={window.action} data-action-cue={window.action}>
+            <i className={`combined-plan-legend-action action-${window.action}`} />{actionLabel(window.action)}
+          </span>)}
+      </div>
       {selected && <div className="combined-plan-readout" data-testid="combined-plan-readout" aria-live="polite">
         <span>{slotLabel(selected)}</span>
         <button type="button" data-testid="combined-plan-readout-close" aria-label="Close selected chart point"

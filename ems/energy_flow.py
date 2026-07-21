@@ -17,12 +17,12 @@ honest over a window. Pure + unit-tested — the API passes in stored rows; no I
 """
 from __future__ import annotations
 
-from collections import defaultdict
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
 from typing import NamedTuple
 
-from ems.retrospect import _floor, _mean, _parse
+from ems.retrospect import _parse
+from ems.timeseries import observed_segments
 
 _SLOT_MIN = 15
 _DH = _SLOT_MIN / 60.0  # hours per slot, for energy = power × time
@@ -79,16 +79,17 @@ class EnergyFlows:
 
 
 def _allocate_slot(
-    solar_w: float, grid_w: float, battery_w: float, home_w: float, car_w: float = 0.0
+    solar_w: float, grid_w: float, battery_w: float, home_w: float, car_w: float = 0.0,
+    *, duration_hours: float = _DH,
 ) -> SlotBands:
     """Attribute ONE slot's energy (kWh) solar-first, home-before-car. `home_w` is the non-EV house
     load; `car_w` is the EV load. `grid_w` (± net) is not read directly — the grid is whatever solar
     and the battery did not cover, which is energy-equivalent."""
-    solar = max(0.0, solar_w) * _DH / 1000.0
-    charge = max(0.0, -battery_w) * _DH / 1000.0  # energy INTO the battery
-    discharge = max(0.0, battery_w) * _DH / 1000.0  # energy OUT of the battery
-    home = max(0.0, home_w) * _DH / 1000.0
-    car = max(0.0, car_w) * _DH / 1000.0
+    solar = max(0.0, solar_w) * duration_hours / 1000.0
+    charge = max(0.0, -battery_w) * duration_hours / 1000.0  # energy INTO the battery
+    discharge = max(0.0, battery_w) * duration_hours / 1000.0  # energy OUT of the battery
+    home = max(0.0, home_w) * duration_hours / 1000.0
+    car = max(0.0, car_w) * duration_hours / 1000.0
 
     # Solar: home → car → battery → export.
     solar_home = min(solar, home)
@@ -127,26 +128,29 @@ def build_flows(
     *,
     label: str,
     partial: bool,
+    sample_interval_seconds: float = 900.0,
+    max_hold_seconds: float | None = None,
 ) -> EnergyFlows:
     """Resample recorded rows into 15-min slots within [start, end) and sum the solar-first
     allocation into a window's flows. Home load = derived `non_ev_load_w`; car load =
     `house_load_w − non_ev_load_w` (0 with no EV / old rows). Zero-order hold per slot."""
     start_utc, end_utc = start.astimezone(UTC), end.astimezone(UTC)
 
-    raw_by: dict[datetime, dict[str, list[float]]] = defaultdict(
-        lambda: {"grid": [], "solar": [], "batt": []}
+    normalized_raw = [
+        {**r, "grid_power_w": r.get("grid_power_w", 0.0),
+         "solar_power_w": r.get("solar_power_w", 0.0),
+         "battery_power_w": r.get("battery_power_w", 0.0),
+         "ev_power_w": r.get("ev_power_w", 0.0)}
+        for r in raw_rows
+    ]
+    raw_segments = observed_segments(
+        normalized_raw, start=start_utc, end=end_utc,
+        fields=("grid_power_w", "solar_power_w", "battery_power_w", "ev_power_w"),
+        nominal_interval_seconds=sample_interval_seconds,
+        max_hold_seconds=max_hold_seconds,
     )
-    for r in raw_rows:
-        dt = _parse(r.get("ts"))
-        if dt is None or dt < start_utc or dt >= end_utc:
-            continue
-        slot = _floor(dt)
-        raw_by[slot]["grid"].append(float(r.get("grid_power_w", 0.0)))
-        raw_by[slot]["solar"].append(float(r.get("solar_power_w", 0.0)))
-        raw_by[slot]["batt"].append(float(r.get("battery_power_w", 0.0)))
 
-    home_by: dict[datetime, list[float]] = defaultdict(list)
-    car_by: dict[datetime, list[float]] = defaultdict(list)
+    derived_by: dict[datetime, tuple[float, float, float]] = {}
     for r in derived_rows:
         dt = _parse(r.get("ts"))
         if dt is None or dt < start_utc or dt >= end_utc:
@@ -157,17 +161,25 @@ def build_flows(
         total = float(total)
         non_ev = r.get("non_ev_load_w")
         home = float(non_ev) if non_ev is not None else total
-        slot = _floor(dt)
-        home_by[slot].append(home)
-        car_by[slot].append(max(0.0, total - home))
+        derived_by[dt] = (total, home, max(0.0, total - home))
 
     tot = [0.0] * 10  # the ten SlotBands, accumulated
-    for slot in sorted(raw_by):
-        b = raw_by[slot]
+    for segment in raw_segments:
+        values = segment.values
+        measured_total = max(
+            0.0,
+            values["grid_power_w"] + values["solar_power_w"] + values["battery_power_w"],
+        )
+        derived = derived_by.get(segment.observed_at)
+        tolerance_w = max(100.0, measured_total * 0.05)
+        if derived is None or abs(derived[0] - measured_total) > tolerance_w:
+            car = min(measured_total, max(0.0, values["ev_power_w"]))
+            loads = (measured_total - car, car)
+        else:
+            loads = (derived[1], derived[2])
         bands = _allocate_slot(
-            _mean(b["solar"]), _mean(b["grid"]), _mean(b["batt"]),
-            _mean(home_by[slot]) if home_by.get(slot) else 0.0,
-            _mean(car_by[slot]) if car_by.get(slot) else 0.0,
+            values["solar_power_w"], values["grid_power_w"], values["battery_power_w"],
+            loads[0], loads[1], duration_hours=segment.duration_seconds / 3600.0,
         )
         tot = [acc + band for acc, band in zip(tot, bands, strict=True)]
     (s_home, s_car, s_batt, s_grid, g_home, g_car, g_batt, b_home, b_car, b_grid) = tot
@@ -186,7 +198,7 @@ def build_flows(
 
     return EnergyFlows(
         date=label,
-        has_data=bool(raw_by),
+        has_data=bool(raw_segments),
         partial=partial,
         solar_to_home=r2(s_home), solar_to_car=r2(s_car), solar_to_battery=r2(s_batt),
         solar_to_grid=r2(s_grid),
@@ -211,6 +223,11 @@ def build_daily_flows(
     *,
     label: str,
     partial: bool,
+    sample_interval_seconds: float = 900.0,
+    max_hold_seconds: float | None = None,
 ) -> EnergyFlows:
     """Backward-compatible single-day wrapper around build_flows (for /api/energy-distribution)."""
-    return build_flows(raw_rows, derived_rows, day_start, day_end, label=label, partial=partial)
+    return build_flows(
+        raw_rows, derived_rows, day_start, day_end, label=label, partial=partial,
+        sample_interval_seconds=sample_interval_seconds, max_hold_seconds=max_hold_seconds,
+    )

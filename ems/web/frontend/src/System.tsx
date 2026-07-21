@@ -418,7 +418,7 @@ export function SystemView({
       <div data-testid="checks">
       {groups.map((g) => (
         <div key={g.title} className="check-group" data-testid={`check-group-${g.title}`}>
-          <h3 className="check-group-title">{g.title}</h3>
+          <h2 className="check-group-title">{g.title}</h2>
           <ul className="checks">
             {g.checks.map((c) => (
               <li key={c.key} className={`check check-${c.status}`} data-testid={`check-${c.key}`}>

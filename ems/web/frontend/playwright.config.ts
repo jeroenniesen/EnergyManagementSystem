@@ -30,7 +30,11 @@ const baseEnv = {
 export default defineConfig({
   testDir: "./e2e",
   timeout: 15000,
-  use: { trace: "on-first-retry" },
+  // CI runners are UTC; local dev machines are often Europe/Amsterdam. src/CombinedPlanChart.tsx
+  // renders slot times via `toLocaleTimeString` in the browser's timezone, and ui.spec.ts asserts
+  // hardcoded local-time strings (e.g. "Hold 08:00–08:30") — pin the timezone here so those
+  // assertions are deterministic regardless of the host running the suite.
+  use: { trace: "on-first-retry", timezoneId: "Europe/Amsterdam" },
   reporter: [["list"]],
   projects: [
     // Onboards the first admin on the app server (migrates EMS_WEB_TOKEN into an admin access token).
