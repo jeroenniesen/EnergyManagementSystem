@@ -343,3 +343,88 @@ def test_token_owner_scoping_user_b_cannot_list_or_revoke_user_a_token(tmp_path)
         # it's still alice's and still valid.
         listed_alice_after = c.get("/api/auth/tokens", headers=h_alice).json()["tokens"]
         assert any(t["name"] == "alices-script" for t in listed_alice_after)
+
+
+def _seed_user_and_token(db: str, username: str, password: str, role: str,
+                         *, kind: str, tier: str | None = None) -> str:
+    from ems.authn import hash_password
+    s = AuthStore(db)
+
+    async def run():
+        await s.init()
+        uid = await s.create_user(username, hash_password(password), role)
+        raw = (await s.create_token(uid, "session")) if kind == "session" \
+            else (await s.create_token(uid, "access", name="t", tier=tier))
+        await s.close()
+        return raw
+
+    return asyncio.run(run())
+
+
+def _hdr(tok: str) -> dict:
+    return {"Authorization": f"Bearer {tok}"}
+
+
+def test_view_scoped_access_token_is_forbidden_on_operate_write(tmp_path):
+    db = str(tmp_path / "ems.sqlite")
+    tok = _seed_user_and_token(db, "admin", "pw12345678", "admin", kind="access", tier="view")
+    with TestClient(_app(db)) as c:
+        # a VIEW read is allowed
+        assert c.get("/api/status", headers=_hdr(tok)).status_code == 200
+        # an OPERATE write is denied for a read-only token even though the OWNER is admin
+        r = c.post("/api/settings", headers=_hdr(tok), json={})
+        assert r.status_code == 403
+
+
+def test_operate_scoped_access_token_forbidden_on_admin_surface(tmp_path):
+    db = str(tmp_path / "ems.sqlite")
+    tok = _seed_user_and_token(db, "admin", "pw12345678", "admin", kind="access", tier="operate")
+    with TestClient(_app(db)) as c:
+        assert c.get("/api/users", headers=_hdr(tok)).status_code == 403  # admin surface
+
+
+def test_user_and_invite_management_requires_session(tmp_path):
+    db = str(tmp_path / "ems.sqlite")
+    # admin-owned ACCESS token (even admin-scoped) must be rejected on account management
+    atok = _seed_user_and_token(db, "admin", "pw12345678", "admin", kind="access", tier="admin")
+    with TestClient(_app(db)) as c:
+        assert c.get("/api/users", headers=_hdr(atok)).status_code == 403
+        assert c.post("/api/invites", headers=_hdr(atok), json={"role": "user"}).status_code == 403
+    # an admin SESSION succeeds on the same routes
+    stok = _seed_user_and_token(db, "boss", "pw12345678", "admin", kind="session")
+    with TestClient(_app(db)) as c:
+        assert c.get("/api/users", headers=_hdr(stok)).status_code == 200
+        assert c.post("/api/invites", headers=_hdr(stok),
+                      json={"role": "user"}).status_code == 200
+
+
+def test_malformed_tier_row_fails_closed_not_500(tmp_path):
+    import sqlite3
+    from datetime import UTC, datetime
+
+    from ems.authn import hash_token, new_token
+    db = str(tmp_path / "ems.sqlite")
+    _seed_user(db, "admin", "pw12345678", "admin")
+    raw = new_token()
+    # Bind created_at/last_used_at as tz-aware ISO, exactly as real tokens store them — a naive
+    # SQLite datetime('now') would make the new idle-check subtraction (aware now - naive) raise.
+    now_iso = datetime.now(UTC).isoformat()
+    con = sqlite3.connect(db)
+    # auth_tokens.tier carries a DB-level CHECK(tier IS NULL OR tier IN (...)) (added in an
+    # earlier task in this slice). That CHECK is a real, separate defense — but this test is
+    # specifically exercising the application-layer fail-closed path (effective_rank) for a row
+    # that is malformed *despite* the DB constraint (e.g. a pre-constraint legacy row, or direct
+    # tooling that writes around it). Bypass the CHECK for this one INSERT to simulate that row.
+    con.execute("PRAGMA ignore_check_constraints = 1")
+    con.execute(
+        "INSERT INTO auth_tokens (user_id, token_hash, kind, name, created_at, "
+        "last_used_at, expires_at, tier) VALUES "
+        "((SELECT id FROM users WHERE username='admin'), ?, 'access', 'x', ?, ?, NULL, 'garbage')",
+        (hash_token(raw), now_iso, now_iso),
+    )
+    con.commit()
+    con.close()
+    with TestClient(_app(db)) as c:
+        # a garbage tier denies even a VIEW read — effective_rank returns -1 (fail closed) -> 403,
+        # never a 500/KeyError.
+        assert c.get("/api/status", headers=_hdr(raw)).status_code == 403
