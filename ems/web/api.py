@@ -2887,8 +2887,7 @@ def create_app(
         no evaluation; a recorded evaluation -> its state/timestamp/result. The value is DERIVED
         from `intelligence_box`, never a constant, so it cannot claim a capability the runtime did
         not record. Populating the record (shadow/advisory/active) is E-08 work."""
-        latest = intelligence_box["latest"]
-        if latest is None:
+        def _not_active() -> dict:
             state = IntelligenceState.NOT_ACTIVE.value
             return {
                 "state": state,
@@ -2896,12 +2895,18 @@ def create_app(
                 "last_result": None,
                 "reason": _INTELLIGENCE_REASONS[state],
             }
-        state = latest["state"]
+
+        latest = intelligence_box["latest"]
+        if latest is None:
+            return _not_active()
+        state = latest.get("state")
+        if state not in _INTELLIGENCE_REASONS:  # missing / None / unknown -> fail safe
+            return _not_active()
         return {
             "state": state,
             "last_evaluated_at": latest.get("ts"),
             "last_result": latest.get("result"),
-            "reason": _INTELLIGENCE_REASONS.get(state, ""),
+            "reason": _INTELLIGENCE_REASONS[state],  # guaranteed present -> non-empty
         }
 
     def _plan_provenance(strategy: str) -> dict:

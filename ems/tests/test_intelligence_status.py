@@ -87,3 +87,24 @@ def test_no_false_capability_claim_when_unrecorded(tmp_path):
     with TestClient(_app(tmp_path)) as c:
         ep = c.get("/api/intelligence").json()
         assert ep["state"] not in {"shadow_evaluation", "advisory", "active"}
+
+
+def test_malformed_record_fails_safe_to_not_active(tmp_path):
+    # A malformed record (missing or unrecognized `state`) must never crash the endpoint or emit
+    # a contradictory/empty status -- it falls back to the same not_active default as no record.
+    with TestClient(_app(tmp_path)) as c:
+        c.app.state.intelligence_box["latest"] = {
+            "ts": "2026-07-22T00:00:00+00:00",
+            "result": "x",
+        }  # no "state"
+        body = c.get("/api/intelligence").json()
+        assert body["state"] == "not_active"
+        assert body["last_evaluated_at"] is None and body["last_result"] is None
+        assert isinstance(body["reason"], str) and body["reason"]
+
+        # and an unrecognized state also fails safe:
+        c.app.state.intelligence_box["latest"] = {
+            "state": "bogus",
+            "ts": "2026-07-22T00:00:00+00:00",
+        }
+        assert c.get("/api/intelligence").json()["state"] == "not_active"
