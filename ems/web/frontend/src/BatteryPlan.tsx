@@ -23,7 +23,12 @@ export type PlanProvenance = {
   forecast_source: string;
   solar_confidence_pct: number;
   planner: "rule_based" | "adaptive" | "summer";
-  intelligence: string;
+  intelligence: {
+    state: string;
+    last_evaluated_at: string | null;
+    last_result: string | null;
+    reason: string;
+  };
 };
 
 // B-03b: the footer's "Saved today" figure is MEASURED (from /api/finance, recorded samples +
@@ -354,12 +359,10 @@ export function BatteryPlan({
             {PLANNER_PROVENANCE_LABEL[plan.provenance.planner] ?? plan.provenance.planner}
           </span>
           {" · "}
-          <span
-            title="Scenario planning (pessimistic/expected/optimistic futures) is built but not
-              wired into the live path — it does not steer the plan yet."
-          >
+          <span title={plan.provenance.intelligence.reason}>
             scenario intelligence:{" "}
-            {INTELLIGENCE_COPY[plan.provenance.intelligence]?.short ?? plan.provenance.intelligence}
+            {INTELLIGENCE_COPY[plan.provenance.intelligence.state]?.short ??
+              plan.provenance.intelligence.state}
           </span>
         </p>
       )}

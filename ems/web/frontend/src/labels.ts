@@ -173,22 +173,34 @@ export const PLANNER_PROVENANCE_LABEL: Record<string, string> = {
   summer: "solar-first summer planner",
 };
 
-/** Scenario/ML planning-intelligence layer status (CLAUDE.md honesty ask, feat/ux-batch-3):
- * ems/intelligence/planning.py builds pessimistic/expected/optimistic planning scenarios (E-08),
- * but it is NOT wired into the live path — no evaluation, no validation, no steering. Only unit
- * tests exercise it (test_predictive_optimization.py). `/api/battery-plan`'s
- * `provenance.intelligence` (backend constant `ems.web.api.INTELLIGENCE_MODE`) is the SOURCE OF
- * TRUTH: BatteryPlan.tsx's inline provenance fragment reads that LIVE value through this map's
- * `short` text. System.tsx's standalone "Planning intelligence" row does not fetch /api/battery-plan,
- * so it reads `CURRENT_INTELLIGENCE_MODE` below (this map's `label`/`detail`) instead of a second
- * hardcoded sentence. Either way there is exactly ONE place to flip when a mode starts actually
- * steering a plan: add its entry here, point `CURRENT_INTELLIGENCE_MODE` at it, and flip
- * `ems.web.api.INTELLIGENCE_MODE` to match. */
+/** Scenario/ML planning-intelligence layer status (CLAUDE.md honesty ask, feat/ux-batch-3; B-79
+ * made this runtime-derived): ems/intelligence/planning.py builds pessimistic/expected/optimistic
+ * planning scenarios (E-08); whether it's actually evaluating/steering is now tracked at runtime,
+ * not assumed. `/api/battery-plan`'s `provenance.intelligence` and `GET /api/intelligence` both
+ * return the SAME object — `{state, last_evaluated_at, last_result, reason}` — computed by the
+ * backend's `_intelligence_status()` from its `intelligence_box` evaluation record. There is no
+ * "current mode" constant here anymore: BatteryPlan.tsx reads `provenance.intelligence.state` off
+ * the live plan; System.tsx fetches `/api/intelligence` itself and reads its `.state`. This map
+ * only supplies the plain-language copy for each of the four states the backend can report. */
 export const INTELLIGENCE_COPY: Record<string, { label: string; detail: string; short: string }> = {
   not_active: {
     label: "Planning intelligence",
     detail: "not active; the dependable baseline plans today",
     short: "not active yet",
   },
+  shadow_evaluation: {
+    label: "Planning intelligence",
+    detail: "evaluating in shadow — comparing against the baseline, not steering",
+    short: "shadow (not steering)",
+  },
+  advisory: {
+    label: "Planning intelligence",
+    detail: "advisory — surfacing suggestions; the baseline still steers",
+    short: "advisory",
+  },
+  active: {
+    label: "Planning intelligence",
+    detail: "active — steering the plan",
+    short: "active",
+  },
 };
-export const CURRENT_INTELLIGENCE_MODE: keyof typeof INTELLIGENCE_COPY = "not_active";
