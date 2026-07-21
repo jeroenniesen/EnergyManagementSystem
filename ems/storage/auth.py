@@ -353,7 +353,7 @@ class AuthStore:
         async with self._conn() as db:
             db.row_factory = aiosqlite.Row
             cur = await db.execute(
-                "SELECT id, kind, name, created_at, last_used_at, expires_at "
+                "SELECT id, kind, name, created_at, last_used_at, expires_at, tier "
                 "FROM auth_tokens WHERE user_id=? ORDER BY created_at",
                 (user_id,),
             )

@@ -428,3 +428,49 @@ def test_malformed_tier_row_fails_closed_not_500(tmp_path):
         # a garbage tier denies even a VIEW read — effective_rank returns -1 (fail closed) -> 403,
         # never a 500/KeyError.
         assert c.get("/api/status", headers=_hdr(raw)).status_code == 403
+
+
+def _login(c, username, password):
+    r = c.post("/api/auth/login", json={"username": username, "password": password})
+    assert r.status_code == 200, r.text
+    return r.json()["token"]
+
+
+def test_mint_defaults_to_view_and_lists_tier(tmp_path):
+    db = str(tmp_path / "ems.sqlite")
+    _seed_user(db, "u", "pw12345678", "user")
+    with TestClient(_app(db)) as c:
+        sess = _login(c, "u", "pw12345678")
+        r = c.post("/api/auth/tokens", headers=_hdr(sess), json={"name": "script"})
+        assert r.status_code == 200, r.text
+        lst = c.get("/api/auth/tokens", headers=_hdr(sess)).json()["tokens"]
+        minted = [t for t in lst if t["name"] == "script"][0]
+        assert minted["tier"] == "view"
+
+
+def test_mint_rejects_unknown_tier(tmp_path):
+    db = str(tmp_path / "ems.sqlite")
+    _seed_user(db, "u", "pw12345678", "user")
+    with TestClient(_app(db)) as c:
+        sess = _login(c, "u", "pw12345678")
+        r = c.post("/api/auth/tokens", headers=_hdr(sess), json={"name": "x", "tier": "root"})
+        assert r.status_code == 400
+
+
+def test_mint_rejects_tier_above_own_role(tmp_path):
+    db = str(tmp_path / "ems.sqlite")
+    _seed_user(db, "u", "pw12345678", "user")  # 'user' == OPERATE
+    with TestClient(_app(db)) as c:
+        sess = _login(c, "u", "pw12345678")
+        r = c.post("/api/auth/tokens", headers=_hdr(sess), json={"name": "x", "tier": "admin"})
+        assert r.status_code == 400
+
+
+def test_mint_operate_tier_allowed_for_user(tmp_path):
+    db = str(tmp_path / "ems.sqlite")
+    _seed_user(db, "u", "pw12345678", "user")
+    with TestClient(_app(db)) as c:
+        sess = _login(c, "u", "pw12345678")
+        r = c.post("/api/auth/tokens", headers=_hdr(sess),
+                   json={"name": "x", "tier": "operate"})
+        assert r.status_code == 200
