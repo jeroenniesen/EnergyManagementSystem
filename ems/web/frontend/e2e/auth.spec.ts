@@ -191,6 +191,8 @@ test("account tokens: tier selector defaults to read-only and minted tokens show
     await expect(page.getByTestId("account-token-minted")).toBeVisible();
 
     // the new row carries a Read-only badge
-    const badge = page.getByTestId("account-token-tier-badge").filter({ hasText: "Read-only" });
-    await expect(badge.first()).toBeVisible();
+    const list = page.getByTestId("account-tokens-list");
+    const row = list.locator('[data-testid^="account-token-"]', { hasText: "e2e read-only token" });
+    const badge = row.getByTestId("account-token-tier-badge");
+    await expect(badge).toHaveText("Read-only");
   });

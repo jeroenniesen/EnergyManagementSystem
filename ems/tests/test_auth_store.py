@@ -1,6 +1,8 @@
 import asyncio
 import sqlite3
 
+import pytest
+
 from ems.storage.auth import AuthStore
 
 
@@ -494,6 +496,18 @@ def test_create_token_rejects_invalid_tier(tmp_path):
     asyncio.run(run())
 
 
+def test_replace_token_rejects_invalid_tier(tmp_path):
+    s = AuthStore(str(tmp_path / "ems.sqlite"))
+
+    async def run():
+        await s.init()
+        uid = await s.create_user("a", "h", "admin")
+        with pytest.raises(ValueError):
+            await s.replace_token(uid, "widget", tier="root")
+
+    asyncio.run(run())
+
+
 def test_replace_token_defaults_to_view_tier(tmp_path):
     s = AuthStore(str(tmp_path / "ems.sqlite"))
 
@@ -564,6 +578,7 @@ def test_idle_access_token_stops_resolving(tmp_path):
         raw = await s.create_token(uid, "access", name="w", tier="view")
         p = await s.resolve(raw)  # fresh -> resolves
         assert p is not None
+        await s.close()
         return raw, p.token_id
 
     raw, tid = asyncio.run(run())

@@ -130,8 +130,6 @@ from ems.web.authz import (
     effective_rank,
     required_tier,
     requires_session,
-    role_satisfies,  # noqa: F401 — no call site left in this file after the effective_rank
-    # gate/audit wiring (this task); kept imported per auth-slice-5 task-4 brief instruction.
 )
 from ems.web.context import AppContext, history_row_cap
 from ems.web.routes.accuracy import build_router as build_accuracy_router

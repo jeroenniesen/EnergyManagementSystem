@@ -336,7 +336,9 @@ class AuthStore:
         """Best-effort hygiene: delete access tokens idle past the TTL. Lazy rejection in
         resolve() is the authoritative security mechanism; this just reclaims dead rows. No-op
         when idle expiry is disabled. Wire into existing periodic maintenance if present — do NOT
-        add a new background loop for it."""
+        add a new background loop for it. Intentionally NOT wired into any background loop today
+        (design §9 non-goal) — lazy rejection in resolve() is the enforcing mechanism; this method
+        exists for callers/tests that want to reclaim dead rows explicitly."""
         if self._access_idle_ttl is None:
             return 0
         cutoff = (datetime.now(UTC) - self._access_idle_ttl).isoformat()
