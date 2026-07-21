@@ -208,6 +208,18 @@ final class APIClientTests: XCTestCase {
         XCTAssertEqual(json?["replace"] as? Bool, true)
     }
 
+    func testProvisionWidgetTokenSendsViewTier() async throws {
+        let transport = RecordingTransport(data: tokenJSON(name: "iOS widget"))
+        let client = APIClient(baseURL: URL(string: "http://ems.local:8080")!, token: "session-xyz", transport: transport)
+
+        _ = try await client.provisionWidgetToken(name: "iOS widget")
+
+        let body = try XCTUnwrap(transport.lastRequest?.httpBody)
+        let json = try JSONSerialization.jsonObject(with: body) as? [String: Any]
+        XCTAssertEqual(json?["tier"] as? String, "view")
+        XCTAssertEqual(json?["replace"] as? Bool, true)
+    }
+
     func testFetchExplainerUsesExpectedPathAndAuthorizationHeader() async throws {
         let transport = RecordingTransport(data: explainerJSON())
         let client = APIClient(baseURL: URL(string: "http://ems.local:8080")!, token: "abc123", transport: transport)
