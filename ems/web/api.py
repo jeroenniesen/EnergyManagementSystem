@@ -127,9 +127,9 @@ from ems.web.authz import (
     EXEMPT_PATHS,
     OPERATE_PATHS,
     Tier,
+    effective_rank,
     required_tier,
     requires_session,
-    role_satisfies,
 )
 from ems.web.context import AppContext, history_row_cap
 from ems.web.routes.accuracy import build_router as build_accuracy_router
@@ -1498,7 +1498,9 @@ def create_app(
                             await _auth_error()(scope, receive, send)
                             return
                         method = scope.get("method", "GET").upper()
-                        if not role_satisfies(principal.role, required_tier(path, method)):
+                        if effective_rank(
+                            principal.role, principal.kind, principal.token_tier
+                        ) < int(required_tier(path, method)):
                             await _forbidden_error()(scope, receive, send)
                             return
                         if requires_session(path) and principal.kind != "session":
@@ -3543,7 +3545,8 @@ def create_app(
         at the middleware). Legacy/no-identity-system deployments (`auth_store is None`, so
         `scope["auth_principal"]` is never set) are unaffected — there is no role to gate on."""
         principal = request.scope.get("auth_principal")
-        is_admin = principal is None or role_satisfies(principal.role, Tier.ADMIN)
+        is_admin = principal is None or effective_rank(
+            principal.role, principal.kind, principal.token_tier) >= int(Tier.ADMIN)
         if category == "auth" and not is_admin:
             return _forbidden_error()
         if audit_store is None:

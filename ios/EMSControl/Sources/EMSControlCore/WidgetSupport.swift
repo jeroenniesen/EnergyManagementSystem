@@ -13,11 +13,12 @@ import Foundation
 
 /// The minimal server config the widget needs to reach the EMS: base URL + optional bearer token.
 ///
-/// The token is mirrored into app-group `UserDefaults` (not the Keychain). Keychain *sharing*
-/// across a separate extension target requires a shared keychain access group + matching
-/// entitlements on both targets, which is fussy to keep in sync; for a LAN-only home app whose
-/// token already rides plain `http://` on a trusted network, an app-group default is an acceptable
-/// tradeoff. The app writes it on a successful connect; the widget only ever reads it.
+/// The token is mirrored into app-group UserDefaults (not the Keychain). The app writes it on a
+/// successful connect; the widget only ever reads it. As of auth slice 5 the widget token is
+/// minted READ-ONLY (tier "view"), so an app-group default — on a trusted LAN, over plain
+/// http:// — is an acceptable tradeoff; a shared keychain-access-group entitlement is
+/// deliberately not required. (Keychain *sharing* would need that entitlement on both targets;
+/// scoping the token to read-only removes the reason to add it.)
 public struct WidgetServerConfig: Codable, Equatable, Sendable {
     public let baseURL: URL
     public let token: String?

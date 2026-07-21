@@ -175,14 +175,15 @@ public struct APIClient: Sendable {
     // SESSION bearer (this APIClient's token). The raw value is returned exactly once — persist it
     // immediately; a lost copy is recovered by re-minting on the next login (that is why the widget
     // token is provisioned with replace:true). See spec §7.
-    public func provisionWidgetToken(name: String) async throws -> TokenProvisionResponse {
+    public func provisionWidgetToken(name: String, tier: String = "view") async throws -> TokenProvisionResponse {
         var request = URLRequest(url: baseURL.appending(path: "api/auth/tokens"))
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         if let token, !token.isEmpty {
             request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         }
-        request.httpBody = try JSONEncoder.ems.encode(TokenProvisionRequest(name: name, replace: true))
+        request.httpBody = try JSONEncoder.ems.encode(
+            TokenProvisionRequest(name: name, replace: true, tier: tier))
         let (data, response) = try await transport.data(for: request)
         guard (200 ..< 300).contains(response.statusCode) else {
             throw APIClientError.httpStatus(response.statusCode)
@@ -371,6 +372,7 @@ private struct LoginRequest: Encodable {
 private struct TokenProvisionRequest: Encodable {
     let name: String
     let replace: Bool
+    let tier: String
 }
 
 private struct CarSocRequest: Encodable {

@@ -46,6 +46,7 @@ from fastapi.responses import JSONResponse
 
 from ems.authn import dummy_verify, hash_password, hash_token, verify_password
 from ems.storage.auth import UsernameTaken
+from ems.web.authz import role_rank, tier_rank
 from ems.web.context import AppContext
 from ems.web.ratelimit import LoginRateLimiter
 
@@ -236,17 +237,25 @@ def build_router(ctx: AppContext) -> APIRouter:
         name = str(body.get("name", "")).strip()
         if not name:
             return JSONResponse({"detail": "name required"}, status_code=422)
+        tier = str(body.get("tier", "view"))
+        # Fail closed: unknown tier -> 400 (never reaches the store's ValueError).
+        req = tier_rank(tier)
+        if req < 0:
+            return JSONResponse({"detail": "invalid tier"}, status_code=400)
+        # No privilege escalation: a token can't out-rank the account minting it.
+        if req > role_rank(principal.role):
+            return JSONResponse({"detail": "tier exceeds your role"}, status_code=400)
         if body.get("replace"):
-            raw = await auth_store.replace_token(principal.user_id, name)
-            await ctx.audit_auth("token_replaced", f"Access token replaced: {name}",
+            raw = await auth_store.replace_token(principal.user_id, name, tier=tier)
+            await ctx.audit_auth("token_replaced", f"Access token replaced: {name} ({tier})",
                                  username=principal.username, user_id=principal.user_id,
                                  token_name=name)
         else:
-            raw = await auth_store.create_token(principal.user_id, "access", name=name)
-            await ctx.audit_auth("token_minted", f"Access token minted: {name}",
+            raw = await auth_store.create_token(principal.user_id, "access", name=name, tier=tier)
+            await ctx.audit_auth("token_minted", f"Access token minted: {name} ({tier})",
                                  username=principal.username, user_id=principal.user_id,
                                  token_name=name)
-        return JSONResponse({"token": raw, "name": name})
+        return JSONResponse({"token": raw, "name": name, "tier": tier})
 
     @router.get("/api/auth/tokens")
     async def list_tokens_endpoint(request: Request) -> dict:

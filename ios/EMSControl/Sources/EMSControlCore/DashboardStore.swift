@@ -84,7 +84,7 @@ public final class DashboardStore {
         var accessToken: String?
         do {
             let name = WidgetTokenName.make(deviceName: deviceName)
-            accessToken = try await liveClient.provisionWidgetToken(name: name).token
+            accessToken = try await liveClient.provisionWidgetToken(name: name, tier: "view").token
         } catch {
             // Non-fatal: keep whatever widget token we already had (never the session token).
             accessToken = nil

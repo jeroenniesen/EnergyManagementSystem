@@ -94,3 +94,21 @@ def test_sources_default_to_mock(tmp_path: Path, monkeypatch):
     p.write_text("site:\n  timezone: Europe/Amsterdam\n")
     cfg = load_config(p)
     assert cfg.sources_mode == "mock" and cfg.prices_provider == "mock"
+
+
+def test_access_token_idle_days_default_is_90(tmp_path):
+    p = tmp_path / "config.yaml"
+    p.write_text("site:\n  timezone: Europe/Amsterdam\n")
+    assert load_config(p).access_token_idle_days == 90
+
+
+def test_access_token_idle_days_parsed(tmp_path):
+    p = tmp_path / "config.yaml"
+    p.write_text("auth:\n  access_token_idle_days: 45\n")
+    assert load_config(p).access_token_idle_days == 45
+
+
+def test_access_token_idle_days_negative_clamps_to_zero(tmp_path):
+    p = tmp_path / "config.yaml"
+    p.write_text("auth:\n  access_token_idle_days: -5\n")
+    assert load_config(p).access_token_idle_days == 0
