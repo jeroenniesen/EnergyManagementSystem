@@ -565,21 +565,26 @@ def test_user_and_invite_management_requires_session(tmp_path):
 
 def test_malformed_tier_row_fails_closed_not_500(tmp_path):
     import sqlite3
-    from ems.authn import hash_password, hash_token, new_token
+    from datetime import UTC, datetime
+    from ems.authn import hash_token, new_token
     db = str(tmp_path / "ems.sqlite")
     _seed_user(db, "admin", "pw12345678", "admin")
     raw = new_token()
+    # Bind created_at/last_used_at as tz-aware ISO, exactly as real tokens store them — a naive
+    # SQLite datetime('now') would make the new idle-check subtraction (aware now - naive) raise.
+    now_iso = datetime.now(UTC).isoformat()
     con = sqlite3.connect(db)
     con.execute(
-        "INSERT INTO auth_tokens (user_id, token_hash, kind, name, created_at, expires_at, tier) "
-        "VALUES ((SELECT id FROM users WHERE username='admin'), ?, 'access', 'x', "
-        "datetime('now'), NULL, 'garbage')",
-        (hash_token(raw),),
+        "INSERT INTO auth_tokens (user_id, token_hash, kind, name, created_at, "
+        "last_used_at, expires_at, tier) VALUES "
+        "((SELECT id FROM users WHERE username='admin'), ?, 'access', 'x', ?, ?, NULL, 'garbage')",
+        (hash_token(raw), now_iso, now_iso),
     )
     con.commit()
     con.close()
     with TestClient(_app(db)) as c:
-        # a garbage tier denies even a VIEW read — 403, never 500
+        # a garbage tier denies even a VIEW read — effective_rank returns -1 (fail closed) -> 403,
+        # never a 500/KeyError.
         assert c.get("/api/status", headers=_hdr(raw)).status_code == 403
 ```
 
@@ -1034,7 +1039,9 @@ git commit -m "feat(auth): mint route validates tier (<=owner, default view); li
 
 **Files:**
 - Modify: `ems/web/frontend/src/AccountTokens.tsx`
-- Test: `ems/web/frontend/e2e/tokens.spec.ts` (new)
+- Test: `ems/web/frontend/e2e/auth.spec.ts` (ADD a session-based test — see note below)
+
+> **Why auth.spec.ts, not the `app` project:** the tokens manage UI renders only for a `kind==='session'` principal (`AccountTokens` shows the sign-in hint otherwise). The auth-aware `app` Playwright project rides an ACCESS token, so it would see the hint, not the mint form. The tokens UI is exercised against a real interactive session in `auth.spec.ts` (tokenless server, real login) — that file already has an "account tokens: mint shows the raw once…" test to model on. Add the new test there.
 
 **Interfaces:**
 - Consumes: `GET /api/auth/me` (`role`), `POST /api/auth/tokens {name, tier}`, `GET /api/auth/tokens` (rows carry `tier`).
@@ -1042,37 +1049,43 @@ git commit -m "feat(auth): mint route validates tier (<=owner, default view); li
 
 - [ ] **Step 1: Write the failing e2e test**
 
-Create `ems/web/frontend/e2e/tokens.spec.ts` (the auth-aware `app` project is signed in as admin; follow the navigation pattern in `admin.spec.ts` / `manage.spec.ts`):
+Add a new test to `ems/web/frontend/e2e/auth.spec.ts`, AFTER the existing "account tokens: mint shows the raw once…" test. Session-based, mirroring that test's login + `nav-manage` flow (each test gets a fresh browser context; the admin already exists from the earlier onboarding test, so just log in):
 
 ```ts
-import { expect, test } from "@playwright/test";
+test("account tokens: tier selector defaults to read-only and minted tokens show a tier badge",
+  async ({ page }) => {
+    await page.goto("/");
+    await expect(page.getByTestId("login")).toBeVisible();
+    await page.getByLabel("Username").fill("admin");
+    await page.getByLabel("Password").fill("pw12345678");
+    await page.getByRole("button", { name: "Sign in" }).click();
+    await expect(page.getByTestId("login")).toBeHidden();
+    await page.waitForResponse(
+      (r) => new URL(r.url()).pathname === "/api/status" && r.status() === 200,
+      { timeout: 15000 },
+    );
 
-test.describe("API token tiers", () => {
-  test("mint form has a read-only-default tier selector and minted tokens show a tier badge",
-    async ({ page }) => {
-      await page.goto("/#/settings");
-      const panel = page.getByTestId("account-tokens");
-      await expect(panel).toBeVisible();
+    await page.getByTestId("nav-manage").click();
+    await expect(page.getByTestId("account-tokens")).toBeVisible();
 
-      const tier = page.getByTestId("account-token-tier");
-      await expect(tier).toBeVisible();
-      await expect(tier).toHaveValue("view"); // default read-only
+    const tier = page.getByTestId("account-token-tier");
+    await expect(tier).toBeVisible();
+    await expect(tier).toHaveValue("view"); // default read-only
 
-      await page.getByLabel("Name").fill("e2e read-only token");
-      await page.getByRole("button", { name: "Create" }).click();
+    await page.getByLabel("Name").fill("e2e read-only token");
+    await page.getByRole("button", { name: "Create" }).click();
+    await expect(page.getByTestId("account-token-minted")).toBeVisible();
 
-      await expect(page.getByTestId("account-token-minted")).toBeVisible();
-      // the new row shows a Read-only badge
-      const badge = page.getByTestId("account-token-tier-badge").filter({ hasText: "Read-only" });
-      await expect(badge.first()).toBeVisible();
-    });
-});
+    // the new row carries a Read-only badge
+    const badge = page.getByTestId("account-token-tier-badge").filter({ hasText: "Read-only" });
+    await expect(badge.first()).toBeVisible();
+  });
 ```
 
 - [ ] **Step 2: Run the test to verify it fails**
 
-Run: `cd ems/web/frontend && npx playwright test e2e/tokens.spec.ts --project=app`
-Expected: FAIL — no `account-token-tier` selector / no tier badge.
+Run: `cd ems/web/frontend && npx playwright test e2e/auth.spec.ts`
+Expected: FAIL — no `account-token-tier` selector / no tier badge on the minted row.
 
 - [ ] **Step 3: Implement the selector + badge**
 
@@ -1170,13 +1183,13 @@ Render the badge in each list row's `admin-row-main` (after the name span):
 
 - [ ] **Step 4: Verify build + test**
 
-Run: `cd ems/web/frontend && npx tsc --noEmit && npm run build && npx playwright test e2e/tokens.spec.ts --project=app`
+Run: `cd ems/web/frontend && npx tsc --noEmit && npm run build && npx playwright test e2e/auth.spec.ts`
 Expected: tsc clean; build under budget; e2e PASS.
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add ems/web/frontend/src/AccountTokens.tsx ems/web/frontend/e2e/tokens.spec.ts
+git add ems/web/frontend/src/AccountTokens.tsx ems/web/frontend/e2e/auth.spec.ts
 git commit -m "feat(auth-web): tier selector (default read-only) + tier badge in token list"
 ```
 
