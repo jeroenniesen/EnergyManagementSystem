@@ -71,6 +71,26 @@ final class WidgetSupportTests: XCTestCase {
         XCTAssertNil(cache.load())
     }
 
+    // MARK: - Widget access-token name
+
+    func testWidgetTokenNamePrefixesAndKeepsDeviceName() {
+        XCTAssertEqual(WidgetTokenName.make(deviceName: "Jeroen's iPhone"), "iOS widget · Jeroen's iPhone")
+    }
+
+    func testWidgetTokenNameCollapsesWhitespaceAndControlChars() {
+        XCTAssertEqual(WidgetTokenName.sanitize("  Jeroen's\tiPhone \n"), "Jeroen's iPhone")
+    }
+
+    func testWidgetTokenNameFallsBackWhenEmpty() {
+        XCTAssertEqual(WidgetTokenName.sanitize("   "), "iPhone")
+        XCTAssertEqual(WidgetTokenName.make(deviceName: ""), "iOS widget · iPhone")
+    }
+
+    func testWidgetTokenNameCapsLength() {
+        let long = String(repeating: "A", count: 100)
+        XCTAssertEqual(WidgetTokenName.sanitize(long).count, 40)
+    }
+
     // MARK: - Verdict
 
     func testVerdictWordMapping() {

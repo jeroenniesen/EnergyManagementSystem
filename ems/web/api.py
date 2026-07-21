@@ -9,6 +9,7 @@ import logging
 import os
 import re
 import secrets
+import sqlite3
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
 from datetime import date as date_cls
@@ -125,9 +126,10 @@ from ems.weather import cloud_cover_pct
 from ems.web.authz import (
     EXEMPT_PATHS,
     OPERATE_PATHS,
+    Tier,
+    effective_rank,
     required_tier,
     requires_session,
-    role_satisfies,
 )
 from ems.web.context import AppContext, history_row_cap
 from ems.web.routes.accuracy import build_router as build_accuracy_router
@@ -144,9 +146,11 @@ from ems.web.routes.digest import (
 )
 from ems.web.routes.export import build_router as build_export_router
 from ems.web.routes.notify import build_router as build_notify_router
+from ems.web.routes.users import build_router as build_users_router
 from ems.web.routes.whatif import build_router as build_whatif_router
 
 _log = logging.getLogger("ems.recorder")
+_audit_log = logging.getLogger("ems.web.audit")
 
 
 def _task_died(name: str):
@@ -737,6 +741,75 @@ _FINANCE_CALC_VERSION = 4
 # `ems.web.api` import path.
 
 
+# Strict Content-Security-Policy (design §9): the primary mitigation for the localStorage-held
+# bearer token, and cheap because everything is bundled with NO runtime CDN. Each directive earns
+# its place:
+#   default-src 'self'          — scripts / connect (fetch to same-origin /api) / fonts / workers
+#                                 are all same-origin & bundled. No 'unsafe-eval', no inline
+#                                 scripts, no external script/connect/font hosts.
+#   img-src 'self' data: <osm>  — 'self' for the bundled webp backdrops + favicon, data: for
+#                                 inline image URIs, and *.tile.openstreetmap.org for the /setup
+#                                 Leaflet map — CLAUDE.md's ONE permitted online resource (OSM tiles
+#                                 load as <img>). Nothing else off-origin.
+#   style-src 'self' 'unsafe-inline' — the external bundle stylesheet is 'self'; React applies
+#                                 inline style ATTRIBUTES at runtime, which style-src-attr blocks
+#                                 without 'unsafe-inline'. Style injection is low-risk once
+#                                 script-src is locked to 'self' (no script vector), so it's the one
+#                                 pragmatic relaxation. (Verified empirically: the full e2e suite
+#                                 renders every page under this enforced policy.)
+#   object-src 'none' · base-uri 'self' · frame-ancestors 'none' — pure hardening the app never
+#                                 needs (no plugins, no <base>, never framed): blocks plugin embeds,
+#                                 <base> hijack, and clickjacking.
+CONTENT_SECURITY_POLICY = (
+    "default-src 'self'; "
+    "img-src 'self' data: https://*.tile.openstreetmap.org; "
+    "style-src 'self' 'unsafe-inline'; "
+    "object-src 'none'; "
+    "base-uri 'self'; "
+    "frame-ancestors 'none'"
+)
+_CSP_HEADER = (b"content-security-policy", CONTENT_SECURITY_POLICY.encode("latin-1"))
+# P2 security review, folded in alongside the CSP: two more cheap, no-downside hardening headers
+# on the same SPA-shell/static responses. `X-Content-Type-Options: nosniff` stops a browser from
+# MIME-sniffing a response into something more executable than its declared Content-Type (defense
+# in depth alongside the CSP's script-src 'self'). `Referrer-Policy: same-origin` keeps the full
+# URL (which can carry no secrets today, but may carry query params later) off third-party
+# `img-src`/link targets — only the OSM tile fetches on /setup are cross-origin, and they get no
+# referrer at all under this policy rather than the default browser referrer.
+_EXTRA_SECURITY_HEADERS = (
+    (b"x-content-type-options", b"nosniff"),
+    (b"referrer-policy", b"same-origin"),
+)
+
+
+class _SecurityHeadersMiddleware:
+    """Pure-ASGI CSP + hardening-header injector for the SPA shell + static assets — the only
+    responses a browser renders/executes (see `CONTENT_SECURITY_POLICY`). JSON responses under
+    `/api/` are deliberately skipped: a CSP (and the nosniff/referrer headers alongside it) is
+    meaningless on a JSON body and the API has no HTML/script/style execution surface. Pure-ASGI
+    (NOT `@app.middleware`/`BaseHTTPMiddleware` — auth-slice invariant #1) so the override
+    endpoint's control cycle is never starved."""
+
+    def __init__(self, app) -> None:
+        self.app = app
+
+    async def __call__(self, scope, receive, send) -> None:
+        if scope["type"] != "http" or scope.get("path", "").startswith("/api/"):
+            await self.app(scope, receive, send)
+            return
+
+        async def send_wrapper(message):
+            if message["type"] == "http.response.start":
+                # Append rather than replace: static responses never set these headers themselves
+                # and /api is excluded above, so there is no existing header to duplicate.
+                message["headers"] = [
+                    *message.get("headers", []), _CSP_HEADER, *_EXTRA_SECURITY_HEADERS,
+                ]
+            await send(message)
+
+        await self.app(scope, receive, send_wrapper)
+
+
 def create_app(
     source: Source,
     *,
@@ -768,6 +841,20 @@ def create_app(
         just-saved token takes effect without a restart."""
         ui_tok = (settings_cache.get("web.auth_token") or "").strip()
         return ui_tok or web_auth_token
+
+    async def _audit_auth(event: str, summary: str, **detail: object) -> None:
+        """Best-effort "auth"-category audit (design §6), shared by routes/auth.py and
+        routes/users.py through `AppContext.audit_auth` (both were near-verbatim closures before
+        this hoist). Payload carries usernames / ids / roles / token NAMES only — NEVER passwords,
+        raw tokens, or hashes. Fail-safe: a transient audit-store error must never break the auth
+        flow it is recording."""
+        if audit_store is None:
+            return
+        try:
+            await audit_store.append(datetime.now(UTC).isoformat(), "auth", summary,
+                                     {"event": event, **detail})
+        except Exception:
+            _audit_log.warning("auth audit append failed (non-fatal): %s", event, exc_info=True)
 
     def _authorized(request: Request) -> bool:
         """True if the request may mutate. When no token is configured, writes are open (dev/LAN
@@ -1411,7 +1498,9 @@ def create_app(
                             await _auth_error()(scope, receive, send)
                             return
                         method = scope.get("method", "GET").upper()
-                        if not role_satisfies(principal.role, required_tier(path, method)):
+                        if effective_rank(
+                            principal.role, principal.kind, principal.token_tier
+                        ) < int(required_tier(path, method)):
                             await _forbidden_error()(scope, receive, send)
                             return
                         if requires_session(path) and principal.kind != "session":
@@ -1426,6 +1515,9 @@ def create_app(
     # Pure ASGI is required so the override control cycle stays unstarved.
     from ems.web.perf_middleware import PerfTimingMiddleware
     app.add_middleware(PerfTimingMiddleware)
+    # Strict CSP (design §9) on the SPA shell + static assets. Added LAST → outermost, so it wraps
+    # the final static/SPA response on the way out. Pure-ASGI (auth-slice invariant #1).
+    app.add_middleware(_SecurityHeadersMiddleware)
 
     # The recovery-integrated plan path (`_recovery_sizing`/`_build_plan_now`/`_plan_with_recovery`/
     # `_current_plan`) + the car-guard + the effective-intent + the control tick/cycle moved into
@@ -2088,6 +2180,7 @@ def create_app(
             plan_ok=plan_ok,
             store_ok=store_ok, settings_store_ok=settings_ok,
             auth_required=_effective_web_token() is not None,
+            identity_auth=auth_store is not None,
             freshness=freshness.snapshot(now) if freshness is not None else None,
             ev_guard_blind=ev_guard_blind,
         )
@@ -3199,6 +3292,24 @@ def create_app(
         )
         return {"advice": advice}
 
+    async def _persist_daily_finance(day_label: str, data: dict) -> None:
+        """Best-effort write-through of one day's finance rollup to the `daily_finance` MEMO cache.
+
+        The value in `data` is already computed and about to be returned to the caller, so this
+        persist is pure memoization (a future read skips the recompute). A TRANSIENT lock — SQLite
+        contention while the recorder / a sibling store holds the single WAL writer under the e2e
+        suite's parallel load — must therefore NOT turn a successful read into a 500: swallow it
+        (logged), leave the day uncached, and let the next request recompute + re-upsert. Anything
+        that is NOT transient contention (a real schema/IO error) still propagates. This mirrors the
+        best-effort persist philosophy used elsewhere (notification store, recorder)."""
+        try:
+            await store.upsert_daily_finance(day_label, data)
+        except sqlite3.OperationalError as exc:
+            msg = str(exc).lower()
+            if "locked" not in msg and "busy" not in msg:
+                raise
+            _log.warning("daily_finance memo write skipped (transient DB contention): %s", exc)
+
     async def _ensure_day_finance(day_local: date_cls) -> dict:
         """Compute (or return the current-version cached) finance rollup for one LOCAL day,
         persisting it once the day is completed. Shared by `/api/finance` (called per day of the
@@ -3238,7 +3349,7 @@ def create_app(
                         max_hold_seconds=2 * _sample_cadence_seconds()).to_dict()
         f["calc_v"] = _FINANCE_CALC_VERSION
         if completed:
-            await store.upsert_daily_finance(day_label, f)
+            await _persist_daily_finance(day_label, f)
         return f
 
     async def _finance_window(start: datetime, end: datetime, now_local: datetime) -> list[dict]:
@@ -3297,7 +3408,7 @@ def create_app(
         days: list[dict] = []
         for day_label, data, needs_upsert in computed:
             if needs_upsert:
-                await store.upsert_daily_finance(day_label, data)
+                await _persist_daily_finance(day_label, data)
             days.append(data)
         return days
 
@@ -3417,13 +3528,33 @@ def create_app(
 
     @app.get("/api/audit")
     async def audit_endpoint(
+        request: Request,
         limit: int = Query(default=100, ge=1, le=500), category: str | None = None,
     ) -> dict:
         """The audit trail: every plan/battery-mode decision, config change and manual override —
-        newest first. Read-only. Empty when no audit store is configured."""
+        newest first. Read-only. Empty when no audit store is configured.
+
+        P2 security review: this endpoint is VIEW-tier (reader/user roles legitimately use the
+        Manage → Audit view for transparency into decisions/config changes/overrides), but the
+        "auth" category — usernames, roles, login successes/failures, lockouts, role changes,
+        invites, token mint/revoke — is ADMIN-only. A non-admin explicitly requesting
+        `category=auth` gets a 403 rather than an empty/misleading 200; an unfiltered ("all
+        categories") request from a non-admin has any "auth" rows stripped before the response is
+        built, rather than gating the whole endpoint (see authz.ADMIN_PATHS' docstring for why
+        `/api/export/package` — which bundles the FULL audit unfiltered — is gated the other way,
+        at the middleware). Legacy/no-identity-system deployments (`auth_store is None`, so
+        `scope["auth_principal"]` is never set) are unaffected — there is no role to gate on."""
+        principal = request.scope.get("auth_principal")
+        is_admin = principal is None or effective_rank(
+            principal.role, principal.kind, principal.token_tier) >= int(Tier.ADMIN)
+        if category == "auth" and not is_admin:
+            return _forbidden_error()
         if audit_store is None:
             return {"entries": []}
-        return {"entries": await audit_store.recent(limit, category)}
+        entries = await audit_store.recent(limit, category)
+        if not is_admin:
+            entries = [e for e in entries if e.get("category") != "auth"]
+        return {"entries": entries}
 
     @app.get("/api/incidents")
     async def incidents_endpoint() -> dict:
@@ -3570,9 +3701,11 @@ def create_app(
         solar_confidence_advice=_solar_confidence_advice,
         report_for_window=_report_for_window,
         effective_web_token=_effective_web_token,
+        audit_auth=_audit_auth,
     )
-    for build in (build_auth_router, build_car_router, build_digest_router, build_notify_router,
-                  build_export_router, build_accuracy_router, build_whatif_router):
+    for build in (build_auth_router, build_users_router, build_car_router, build_digest_router,
+                  build_notify_router, build_export_router, build_accuracy_router,
+                  build_whatif_router):
         app.include_router(build(ctx))
 
     # Unknown /api/* paths must return a JSON 404 — NOT fall through to the SPA catch-all

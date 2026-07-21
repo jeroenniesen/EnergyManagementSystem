@@ -13,11 +13,12 @@ import Foundation
 
 /// The minimal server config the widget needs to reach the EMS: base URL + optional bearer token.
 ///
-/// The token is mirrored into app-group `UserDefaults` (not the Keychain). Keychain *sharing*
-/// across a separate extension target requires a shared keychain access group + matching
-/// entitlements on both targets, which is fussy to keep in sync; for a LAN-only home app whose
-/// token already rides plain `http://` on a trusted network, an app-group default is an acceptable
-/// tradeoff. The app writes it on a successful connect; the widget only ever reads it.
+/// The token is mirrored into app-group UserDefaults (not the Keychain). The app writes it on a
+/// successful connect; the widget only ever reads it. As of auth slice 5 the widget token is
+/// minted READ-ONLY (tier "view"), so an app-group default — on a trusted LAN, over plain
+/// http:// — is an acceptable tradeoff; a shared keychain-access-group entitlement is
+/// deliberately not required. (Keychain *sharing* would need that entitlement on both targets;
+/// scoping the token to read-only removes the reason to add it.)
 public struct WidgetServerConfig: Codable, Equatable, Sendable {
     public let baseURL: URL
     public let token: String?
@@ -70,6 +71,34 @@ public struct AppGroupConfigStore {
     public func clear() {
         defaults.removeObject(forKey: Self.baseURLKey)
         defaults.removeObject(forKey: Self.tokenKey)
+    }
+}
+
+// MARK: - Widget access-token name
+
+/// Builds the `name` under which the per-device widget access token is minted/replaced
+/// (`POST /api/auth/tokens {name, replace:true}`, spec §7). The name is the server-side identity of
+/// the token, so it must be **stable per device** — every login re-mints under the same name,
+/// atomically revoking the previous one. Foundation-only + pure so it is unit-testable without
+/// UIKit; the app passes in `UIDevice.current.name`.
+public enum WidgetTokenName {
+    public static let prefix = "iOS widget"
+
+    /// `"iOS widget · <sanitized device name>"`. The device name is trimmed, has control characters
+    /// and interior whitespace collapsed to single spaces, and is capped so a pathological name
+    /// can't bloat the token label. Falls back to "iPhone" when the platform yields nothing usable.
+    public static func make(deviceName: String) -> String {
+        "\(prefix) · \(sanitize(deviceName))"
+    }
+
+    static func sanitize(_ raw: String, maxLength: Int = 40) -> String {
+        let collapsed = raw
+            .components(separatedBy: .whitespacesAndNewlines.union(.controlCharacters))
+            .filter { !$0.isEmpty }
+            .joined(separator: " ")
+        let trimmed = collapsed.isEmpty ? "iPhone" : collapsed
+        guard trimmed.count > maxLength else { return trimmed }
+        return String(trimmed.prefix(maxLength)).trimmingCharacters(in: .whitespaces)
     }
 }
 

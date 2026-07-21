@@ -31,7 +31,7 @@ function relativeTime(iso: string): string {
   return `${Math.round(diffHr / 24)}d ago`;
 }
 
-export function NotificationBell() {
+export function NotificationBell({ canOperate = true }: { canOperate?: boolean } = {}) {
   const [items, setItems] = useState<NotificationItem[]>([]);
   const [unread, setUnread] = useState(0);
   const [open, setOpen] = useState(false);
@@ -114,15 +114,17 @@ export function NotificationBell() {
         >
           <div className="notif-panel-head">
             <span className="metric-label">Notifications</span>
-            <button
-              type="button"
-              className="btn-ghost notif-mark-all"
-              data-testid="notif-mark-all-read"
-              disabled={unread === 0}
-              onClick={markAllRead}
-            >
-              Mark all read
-            </button>
+            {canOperate && (
+              <button
+                type="button"
+                className="btn-ghost notif-mark-all"
+                data-testid="notif-mark-all-read"
+                disabled={unread === 0}
+                onClick={markAllRead}
+              >
+                Mark all read
+              </button>
+            )}
           </div>
           {items.length === 0 ? (
             <p className="notif-empty" data-testid="notif-empty">No notifications yet.</p>

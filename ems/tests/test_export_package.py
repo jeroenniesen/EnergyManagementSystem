@@ -5,6 +5,7 @@ from ems.export_package import (
     AUDIT_COLUMNS,
     DAILY_ENERGY_COLUMNS,
     EV_SESSION_COLUMNS,
+    NEVER_EXPORT_TABLES,
     NOTIFICATION_COLUMNS,
     OBSERVATION_COLUMNS,
     RAW_COLUMNS,
@@ -509,11 +510,13 @@ from zoneinfo import ZoneInfo  # noqa: E402
 
 from fastapi.testclient import TestClient  # noqa: E402
 
+from ems.authn import hash_password  # noqa: E402
 from ems.domain import RawSample  # noqa: E402
 from ems.load_model import reconstruct  # noqa: E402
 from ems.sources.mock import MockSource  # noqa: E402
 from ems.sources.prices import MockPriceSource  # noqa: E402
 from ems.storage.audit import AuditStore  # noqa: E402
+from ems.storage.auth import AuthStore  # noqa: E402
 from ems.storage.history import (  # noqa: E402
     HistoryStore,
     materialize_daily_energy,
@@ -978,6 +981,57 @@ def test_package_never_leaks_a_stored_secret_value(tmp_path):
     assert manifest["counts"]["notifications"] == 1
 
 
+def test_package_never_leaks_the_auth_tables(tmp_path):
+    # Design §9/§10: users / auth_tokens / invites are CREDENTIAL tables (Argon2id password hashes,
+    # sha256 token & invite-code hashes) — they must NEVER appear in the export. The package is an
+    # allow-list (ems.export_package.NEVER_EXPORT_TABLES documents the invariant), so seed all three
+    # with recognisable material and assert none of it — nor the column names themselves — escapes
+    # into any ZIP member.
+    from ems.authn import hash_password, hash_token
+    from ems.storage.auth import AuthStore
+
+    db = str(tmp_path / "ems.sqlite")
+    _seed(db)  # the usual history/audit content, so the ZIP has real, non-empty members to scan
+    marker_user = "leaky_admin_do_not_export"
+    captured: dict[str, str] = {}
+
+    async def seed_auth():
+        import aiosqlite
+        auth = AuthStore(db)
+        await auth.init()
+        uid = await auth.create_user(marker_user, hash_password("pw12345678"), "admin")
+        captured["raw_token"] = await auth.create_token(uid, "access", name="leaky-widget-token")
+        captured["tok_hash"] = hash_token(captured["raw_token"])
+        captured["raw_invite"] = await auth.create_invite("user", created_by=uid)
+        captured["invite_hash"] = hash_token(captured["raw_invite"])
+        # Argon2id salts each call, so the stored password hash must be read back, not recomputed.
+        async with auth._conn() as conn:
+            conn.row_factory = aiosqlite.Row
+            cur = await conn.execute("SELECT password_hash FROM users WHERE id=?", (uid,))
+            captured["pw_hash"] = (await cur.fetchone())["password_hash"]
+        await auth.close()
+    asyncio.run(seed_auth())
+
+    with TestClient(_app(db)) as c:
+        data = c.get("/api/export/package?days=400").content
+    names = set(zip_names(data))
+    # No auth table ever becomes a member of the ZIP. Iterate the denylist itself (the single
+    # source of truth) so a future 4th credential table added to NEVER_EXPORT_TABLES is covered
+    # here automatically, with no edit to this test.
+    for table in NEVER_EXPORT_TABLES:
+        assert f"{table}.csv" not in names
+    # Nothing credential-shaped escapes into ANY member: the stored hashes, the marker username, the
+    # raw token/invite codes, or even the bare column names `password_hash`/`token_hash`.
+    needles = [
+        marker_user, captured["pw_hash"], captured["tok_hash"], captured["invite_hash"],
+        captured["raw_token"], captured["raw_invite"], "password_hash", "token_hash",
+    ]
+    for name in names:
+        member = read_member(data, name)
+        for needle in needles:
+            assert needle not in member, f"auth material leaked into {name}: {needle!r}"
+
+
 # ---- server_log_tail.txt endpoint wiring: present/omitted + redaction (B-40's diagnosis gap) ----
 
 def test_export_package_includes_server_log_tail_when_a_log_file_is_present(tmp_path):
@@ -1004,6 +1058,59 @@ def test_export_package_omits_server_log_tail_when_no_log_file_exists(tmp_path):
     assert "server_log_tail.txt" not in zip_names(r.content)
     manifest = json.loads(read_member(r.content, "manifest.json"))
     assert manifest["counts"]["server_log_lines"] == 0
+
+
+# ---- P2 security review: /api/export/package is ADMIN-only (it bundles the FULL, unfiltered ----
+# ---- audit trail + the server-log tail — the same material a reader must never see via /api/audit)
+
+def _app_with_auth(db: str):
+    return create_app(
+        MockSource(), dry_run=True, dev_mode="mock",
+        store=HistoryStore(db), settings_store=SettingsStore(db), audit_store=AuditStore(db),
+        price_source=MockPriceSource(AMS), auth_store=AuthStore(db),
+    )
+
+
+def _seed_user(db: str, username: str, password: str, role: str) -> None:
+    s = AuthStore(db)
+
+    async def run():
+        await s.init()
+        await s.create_user(username, hash_password(password), role)
+        await s.close()
+
+    asyncio.run(run())
+
+
+def _login(c: TestClient, username: str, password: str) -> str:
+    r = c.post("/api/auth/login", json={"username": username, "password": password})
+    assert r.status_code == 200, r.text
+    return r.json()["token"]
+
+
+def test_export_package_403s_for_reader_and_user_roles(tmp_path):
+    db = str(tmp_path / "ems.sqlite")
+    _seed(db)
+    _seed_user(db, "admin", "pw12345678", "admin")
+    _seed_user(db, "rdr", "pw12345678", "reader")
+    _seed_user(db, "usr", "pw12345678", "user")
+    with TestClient(_app_with_auth(db)) as c:
+        for username in ("rdr", "usr"):
+            tok = _login(c, username, "pw12345678")
+            h = {"Authorization": f"Bearer {tok}"}
+            assert c.get("/api/export/package", headers=h).status_code == 403
+            assert c.get("/api/export/package?days=30", headers=h).status_code == 403
+
+
+def test_export_package_still_200s_for_admin(tmp_path):
+    db = str(tmp_path / "ems.sqlite")
+    _seed(db)
+    _seed_user(db, "admin", "pw12345678", "admin")
+    with TestClient(_app_with_auth(db)) as c:
+        tok = _login(c, "admin", "pw12345678")
+        r = c.get("/api/export/package", headers={"Authorization": f"Bearer {tok}"})
+    assert r.status_code == 200
+    assert r.headers["content-type"] == "application/zip"
 
 
 def test_export_package_server_log_tail_redacts_bearer_token_and_configured_ntfy_topic(tmp_path):

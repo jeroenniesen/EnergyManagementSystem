@@ -157,6 +157,69 @@ final class APIClientTests: XCTestCase {
         XCTAssertEqual(readyTransport.lastRequest?.url?.path, "/health/ready")
     }
 
+    func testLoginPostsCredentialsWithoutAuthHeaderAndDecodesResponse() async throws {
+        let transport = RecordingTransport(data: loginJSON())
+        let client = APIClient(baseURL: URL(string: "http://ems.local:8080")!, transport: transport)
+
+        let response = try await client.login(username: "jeroen", password: "hunter2000")
+
+        XCTAssertEqual(response.token, "session-xyz")
+        XCTAssertEqual(response.user, AuthUser(username: "jeroen", role: "admin"))
+        XCTAssertEqual(transport.lastRequest?.url?.path, "/api/auth/login")
+        XCTAssertEqual(transport.lastRequest?.httpMethod, "POST")
+        XCTAssertEqual(transport.lastRequest?.value(forHTTPHeaderField: "Content-Type"), "application/json")
+        // Login is auth-exempt: it must NOT carry a leftover/stale bearer.
+        XCTAssertNil(transport.lastRequest?.value(forHTTPHeaderField: "Authorization"))
+
+        let body = try XCTUnwrap(transport.lastRequest?.httpBody)
+        let json = try JSONSerialization.jsonObject(with: body) as? [String: Any]
+        XCTAssertEqual(json?["username"] as? String, "jeroen")
+        XCTAssertEqual(json?["password"] as? String, "hunter2000")
+    }
+
+    func testLoginSurfacesUnauthorizedAsHTTPStatus() async throws {
+        let transport = StatusCodeTransport(data: Data(#"{"detail":"invalid credentials"}"#.utf8), statusCode: 401)
+        let client = APIClient(baseURL: URL(string: "http://ems.local:8080")!, transport: transport)
+
+        do {
+            _ = try await client.login(username: "jeroen", password: "wrong")
+            XCTFail("Expected login to throw on 401")
+        } catch let error as APIClientError {
+            XCTAssertEqual(error, .httpStatus(401))
+        }
+    }
+
+    func testProvisionWidgetTokenSendsReplaceAndNameWithBearer() async throws {
+        let transport = RecordingTransport(data: tokenJSON(name: "iOS widget · Jeroen's iPhone"))
+        let client = APIClient(baseURL: URL(string: "http://ems.local:8080")!, token: "session-xyz", transport: transport)
+
+        let response = try await client.provisionWidgetToken(name: "iOS widget · Jeroen's iPhone")
+
+        XCTAssertEqual(response.token, "access-abc")
+        XCTAssertEqual(response.name, "iOS widget · Jeroen's iPhone")
+        XCTAssertEqual(transport.lastRequest?.url?.path, "/api/auth/tokens")
+        XCTAssertEqual(transport.lastRequest?.httpMethod, "POST")
+        // Provisioning REQUIRES the session bearer.
+        XCTAssertEqual(transport.lastRequest?.value(forHTTPHeaderField: "Authorization"), "Bearer session-xyz")
+
+        let body = try XCTUnwrap(transport.lastRequest?.httpBody)
+        let json = try JSONSerialization.jsonObject(with: body) as? [String: Any]
+        XCTAssertEqual(json?["name"] as? String, "iOS widget · Jeroen's iPhone")
+        XCTAssertEqual(json?["replace"] as? Bool, true)
+    }
+
+    func testProvisionWidgetTokenSendsViewTier() async throws {
+        let transport = RecordingTransport(data: tokenJSON(name: "iOS widget"))
+        let client = APIClient(baseURL: URL(string: "http://ems.local:8080")!, token: "session-xyz", transport: transport)
+
+        _ = try await client.provisionWidgetToken(name: "iOS widget")
+
+        let body = try XCTUnwrap(transport.lastRequest?.httpBody)
+        let json = try JSONSerialization.jsonObject(with: body) as? [String: Any]
+        XCTAssertEqual(json?["tier"] as? String, "view")
+        XCTAssertEqual(json?["replace"] as? Bool, true)
+    }
+
     func testFetchExplainerUsesExpectedPathAndAuthorizationHeader() async throws {
         let transport = RecordingTransport(data: explainerJSON())
         let client = APIClient(baseURL: URL(string: "http://ems.local:8080")!, token: "abc123", transport: transport)
@@ -576,6 +639,19 @@ private func chatJSON() -> Data {
       "source": "faq"
     }
     """.data(using: .utf8)!
+}
+
+private func loginJSON() -> Data {
+    """
+    {
+      "token": "session-xyz",
+      "user": { "username": "jeroen", "role": "admin" }
+    }
+    """.data(using: .utf8)!
+}
+
+private func tokenJSON(name: String) -> Data {
+    try! JSONSerialization.data(withJSONObject: ["token": "access-abc", "name": name])
 }
 
 private func authJSON(required: Bool, authenticated: Bool) -> Data {

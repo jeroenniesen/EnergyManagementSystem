@@ -54,6 +54,15 @@ DAILY_ENERGY_COLUMNS = (
 # with live figures) into a file meant to stay small and privacy-safe. See README.md.
 NOTIFICATION_COLUMNS = ("ts", "key", "title", "read")
 
+# Auth tables that must NEVER ride along in an export (design §9/§10). The package is an ALLOW-LIST
+# — it only ever serialises the members named above — so these tables are already excluded by
+# construction. This constant makes the invariant EXPLICIT and importable: the leak-prevention test
+# asserts none of these tables' rows (password_hash / token_hash / invite codes / usernames) reach
+# any ZIP member, and any future "dump every table" convenience must consult this denylist first.
+# `users` holds Argon2id password hashes, `auth_tokens`/`invites` hold sha256 token/code hashes —
+# all credential material, none of it analytics data.
+NEVER_EXPORT_TABLES = frozenset({"users", "auth_tokens", "invites"})
+
 
 def rows_to_csv(rows: list[dict], columns: tuple[str, ...]) -> str:
     """Serialise dict rows to CSV with a fixed header. Unknown keys are ignored; missing keys are

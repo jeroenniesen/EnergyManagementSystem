@@ -270,7 +270,7 @@ function GasPanel({ gas, partial }: { gas: GasSummary; partial: boolean }) {
   );
 }
 
-export function Insights() {
+export function Insights({ canOperate = true }: { canOperate?: boolean } = {}) {
   const [period, setPeriod] = useState<Period>("day");
   const [anchor, setAnchor] = useState<string>(todayStr());
   const [report, setReport] = useState<Report | null>(null);
@@ -522,6 +522,7 @@ export function Insights() {
                 period={period}
                 windowStart={report.window_start}
                 windowEnd={report.window_end}
+                canOperate={canOperate}
               />
             </div>
           )}

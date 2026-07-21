@@ -13,7 +13,7 @@ const SUGGESTIONS = [
   "How much am I saving today?",
 ];
 
-export function ChatPanel() {
+export function ChatPanel({ canOperate = true }: { canOperate?: boolean } = {}) {
   const [active, setActive] = useState<boolean | null>(null);
   const [language, setLanguage] = useState("English");
   const [msgs, setMsgs] = useState<Msg[]>([]);
@@ -119,7 +119,13 @@ export function ChatPanel() {
                 <p className="chat-suggest-lead">Try asking…</p>
                 <div className="chat-suggest">
                   {SUGGESTIONS.map((s) => (
-                    <button key={s} type="button" className="chat-chip" onClick={() => send(s)}>
+                    <button
+                      key={s}
+                      type="button"
+                      className="chat-chip"
+                      disabled={!canOperate}
+                      onClick={() => send(s)}
+                    >
                       {s}
                     </button>
                   ))}
@@ -155,18 +161,24 @@ export function ChatPanel() {
               value={input}
               onChange={(e) => setInput(e.target.value)}
               placeholder="Ask a question…"
-              disabled={busy}
+              disabled={busy || !canOperate}
               aria-label="Your question"
             />
             <button
               className="btn-primary"
               type="submit"
-              disabled={busy || !input.trim()}
+              disabled={busy || !input.trim() || !canOperate}
               data-testid="chat-send"
             >
               Send
             </button>
           </form>
+          {!canOperate && (
+            <p className="advisor-hint" data-testid="chat-readonly-hint">
+              Sending questions needs a &quot;user&quot; or &quot;admin&quot; account — the quick
+              answers above still work.
+            </p>
+          )}
         </>
       )}
     </section>

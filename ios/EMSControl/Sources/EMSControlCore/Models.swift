@@ -1530,13 +1530,66 @@ public struct ExplainerStatus: Codable, Equatable, Sendable {
     }
 }
 
+/// The current principal as reported by `/api/auth` and `/api/auth/login`.
+public struct AuthUser: Codable, Equatable, Sendable {
+    public let username: String
+    public let role: String
+
+    public init(username: String, role: String) {
+        self.username = username
+        self.role = role
+    }
+}
+
 public struct AuthStatus: Codable, Equatable, Sendable {
     public let required: Bool
     public let authenticated: Bool
+    /// Set by the identity-auth server (`GET /api/auth`) when zero users exist: the operator must
+    /// create the first admin in the web UI before the app can log in. Absent on legacy servers.
+    public let onboardingNeeded: Bool?
+    /// The server still has a shared token configured that onboarding must prove control of.
+    public let sharedTokenRequired: Bool?
+    /// The authenticated principal, when the presented token is valid.
+    public let user: AuthUser?
 
-    public init(required: Bool, authenticated: Bool) {
+    public init(
+        required: Bool,
+        authenticated: Bool,
+        onboardingNeeded: Bool? = nil,
+        sharedTokenRequired: Bool? = nil,
+        user: AuthUser? = nil
+    ) {
         self.required = required
         self.authenticated = authenticated
+        self.onboardingNeeded = onboardingNeeded
+        self.sharedTokenRequired = sharedTokenRequired
+        self.user = user
+    }
+}
+
+/// `POST /api/auth/login` → `{token, user:{username, role}}`. The raw `token` is a SESSION bearer;
+/// the interactive app rides it, the widget must NOT (it gets a dedicated access token — see
+/// `WidgetTokenName` / `DashboardStore.login`).
+public struct LoginResponse: Codable, Equatable, Sendable {
+    public let token: String
+    public let user: AuthUser
+
+    public init(token: String, user: AuthUser) {
+        self.token = token
+        self.user = user
+    }
+}
+
+/// `POST /api/auth/tokens {name, replace:true}` → `{token, name}`. The `token` is a long-lived
+/// `access` bearer minted for (and shown only once to) the caller. Deliberately has no `id` — the
+/// contract is replace-by-name, so the client never needs to track ids.
+public struct TokenProvisionResponse: Codable, Equatable, Sendable {
+    public let token: String
+    public let name: String
+
+    public init(token: String, name: String) {
+        self.token = token
+        self.name = name
     }
 }
 

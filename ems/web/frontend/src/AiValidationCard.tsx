@@ -13,7 +13,7 @@ function when(ts: string): string {
     : d.toLocaleString([], { dateStyle: "medium", timeStyle: "short" });
 }
 
-export function AiValidationCard() {
+export function AiValidationCard({ canOperate = true }: { canOperate?: boolean } = {}) {
   const [latest, setLatest] = useState<Latest>(null);
   const [active, setActive] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -51,7 +51,7 @@ export function AiValidationCard() {
           <button
             className="btn-ghost ai-check-btn"
             onClick={checkNow}
-            disabled={busy}
+            disabled={busy || !canOperate}
             data-testid="ai-check"
           >
             {busy ? "Checking…" : "Check now"}
@@ -67,6 +67,12 @@ export function AiValidationCard() {
         </>
       ) : (
         <p className="plan-reason">No review yet — runs on a schedule, or press “Check now”.</p>
+      )}
+      {active && !canOperate && (
+        <p className="advisor-hint" data-testid="ai-check-readonly-hint">
+          Running a check now needs a &quot;user&quot; or &quot;admin&quot; account — reviews still
+          run on schedule.
+        </p>
       )}
     </section>
   );

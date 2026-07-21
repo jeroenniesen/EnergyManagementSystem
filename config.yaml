@@ -33,3 +33,8 @@ devices:               # local LAN addresses — leave blank; enter them in the 
   indevolt_ip: ""
   indevolt_ips_extra: ""
   indevolt_port: 8080
+
+auth:
+  # Access (machine) tokens unused for this many days stop working (idle auto-revoke).
+  # 0 disables idle expiry. Sessions have their own 30-day sliding expiry regardless.
+  access_token_idle_days: 90

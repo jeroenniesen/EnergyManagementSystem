@@ -89,3 +89,7 @@ class AppContext:
     solar_confidence_advice: Callable[[datetime], Awaitable[dict | None]]
     report_for_window: Callable[..., Awaitable[dict]]
     effective_web_token: Callable[[], str | None]
+    # Best-effort "auth" category audit shared by routes/auth.py and routes/users.py (near-verbatim
+    # closures there were hoisted here — see create_app's `_audit_auth`): (event, summary, **detail)
+    # -> None, never raises.
+    audit_auth: Callable[..., Awaitable[None]]

@@ -24,6 +24,9 @@ export function Manage({
   onTab,
   onSettingsSaved,
   settingsSection,
+  canOperate = true,
+  isAdmin = false,
+  identityAuth = false,
 }: {
   tab: ManageTab;
   // `section` is an optional second argument so this same callback can also carry a Settings
@@ -33,6 +36,12 @@ export function Manage({
   onSettingsSaved?: (values: Record<string, number | boolean | string>) => void;
   // Which Settings section to open on mount — threaded straight to Settings' `initialSection`.
   settingsSection?: string;
+  // Reader read-only mode + admin panel gating (auth slice 2 web) — threaded straight to Settings,
+  // the only sub-tab with mutating controls or an admin-only surface (System/Audit are read-only).
+  canOperate?: boolean;
+  isAdmin?: boolean;
+  // Identity auth active → hide the deprecated legacy shared-token knobs in Settings (design §8).
+  identityAuth?: boolean;
 }) {
   const refs = useRef<(HTMLButtonElement | null)[]>([]);
   const idx = Math.max(0, TABS.findIndex((t) => t.key === tab));
@@ -89,7 +98,13 @@ export function Manage({
         data-testid="manage-panel"
       >
         {tab === "settings" && (
-          <Settings onSaved={onSettingsSaved} initialSection={settingsSection} />
+          <Settings
+            onSaved={onSettingsSaved}
+            initialSection={settingsSection}
+            canOperate={canOperate}
+            isAdmin={isAdmin}
+            identityAuth={identityAuth}
+          />
         )}
         {tab === "system" && <SystemView onNavigate={onTab} />}
         {tab === "audit" && <AuditView />}

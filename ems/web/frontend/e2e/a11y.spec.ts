@@ -71,6 +71,17 @@ test.describe("WCAG 2.1 AA accessibility gate", () => {
     await checkA11y(page);
   });
 
+  test("Manage/Settings Access & security section is accessible", async ({ page }) => {
+    // This project runs authenticated as the e2e admin, so opening "access" here also mounts the
+    // admin users+invites panel (folded into this nav section's content pane) — the scan below
+    // covers it, not just the legacy web.auth_token/web.require_auth fields.
+    await page.goto("/");
+    await page.getByTestId("nav-manage").click();
+    await page.getByTestId("group-access").click();
+    await page.waitForSelector("[data-testid='admin-users']");
+    await checkA11y(page);
+  });
+
   test("Manage/System page is accessible", async ({ page }) => {
     await page.goto("/");
     await page.getByTestId("nav-manage").click();
