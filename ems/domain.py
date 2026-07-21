@@ -18,6 +18,15 @@ class PlannerMode(StrEnum):
     ADVISORY = "advisory"
 
 
+class IntelligenceState(StrEnum):
+    """Runtime capability state of the scenario/ML intelligence layer (B-79). Derived from a
+    real evaluation record, never asserted — see ems.web.api._intelligence_status."""
+    NOT_ACTIVE = "not_active"                # not wired / never evaluated
+    SHADOW_EVALUATION = "shadow_evaluation"  # evaluated alongside the plan, never steering
+    ADVISORY = "advisory"                    # surfaced as advice, still not steering
+    ACTIVE = "active"                        # actually steering the plan
+
+
 class PhysicalMode(StrEnum):
     """What the controller actually commands the battery into (SPEC §7.2)."""
 

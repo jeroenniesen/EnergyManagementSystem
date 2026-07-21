@@ -44,6 +44,7 @@ EXPECTED_DIRECT_ROUTES = frozenset({
     ("GET", "/api/forecast"),
     ("GET", "/api/freshness"),
     ("GET", "/api/incidents"),
+    ("GET", "/api/intelligence"),
     ("GET", "/api/override"),
     ("GET", "/api/plan"),
     ("GET", "/api/plan-detail"),

@@ -62,7 +62,7 @@ from ems.detectors import (
     typical_daily_solar_kwh,
 )
 from ems.diagnostics import build_diagnostics, overall_status
-from ems.domain import BatteryIntent, PhysicalMode
+from ems.domain import BatteryIntent, IntelligenceState, PhysicalMode
 from ems.energy_flow import build_daily_flows
 from ems.ev_advisor import advise_charge_window
 from ems.finance import day_finance, price_rows_by_local_day, raw_rows_by_local_day
@@ -627,15 +627,29 @@ _FORECAST_SOURCE_LABEL: dict[str, str] = {
     "MockSolarForecastSource": "Built-in model",
 }
 
-# The scenario/ML "intelligence" layer's honest status for the plan-provenance line: ems/
+# The scenario/ML "intelligence" layer's honest status for the plan-provenance line (B-79): ems/
 # intelligence/planning.py (pessimistic/expected/optimistic scenario planning, E-08) is BUILT but
-# NOT WIRED INTO THE LIVE PATH — it does not evaluate, validate, or steer. Only unit tests exercise
-# it (test_predictive_optimization.py). Never imply intelligence is active when it isn't.
-# The frontend's single source of truth for this value is THIS constant via /api/battery-plan's
-# `provenance.intelligence` (BatteryPlan.tsx); where a view can't fetch that (System.tsx's static
-# row), it mirrors the copy from ems/web/frontend/src/labels.ts's `INTELLIGENCE_COPY` — flip both
-# together the day a mode actually starts steering a plan.
-INTELLIGENCE_MODE = "not_active"
+# NOT WIRED INTO THE LIVE PATH — it does not evaluate, validate, or steer. The status below is
+# DERIVED at runtime from an evaluation record (see `_intelligence_status` / `intelligence_box`
+# inside create_app), never asserted as a constant, so it can never claim a capability the runtime
+# hasn't actually recorded.
+_INTELLIGENCE_REASONS = {
+    IntelligenceState.NOT_ACTIVE.value: (
+        "The scenario/ML intelligence layer is built but not wired into the live path; "
+        "the dependable deterministic planner produced this plan."
+    ),
+    IntelligenceState.SHADOW_EVALUATION.value: (
+        "The intelligence layer evaluated this cycle for comparison only — "
+        "it did not steer the plan."
+    ),
+    IntelligenceState.ADVISORY.value: (
+        "The intelligence layer produced advice this cycle — "
+        "the deterministic planner still steers."
+    ),
+    IntelligenceState.ACTIVE.value: (
+        "The intelligence layer is steering the plan."
+    ),
+}
 
 # The cluster per-tower mode LABEL→PhysicalMode map + the mode-FAMILY helpers (`_tower_family`,
 # `_commanded_family`) moved to ems/control/service.py (B-46, control domain). Imported at the top
@@ -968,6 +982,10 @@ def create_app(
     explainer_box: dict[str, Any] = {"ex": TemplateExplainer(), "cache": {}}
     # Latest AI second-opinion (advisory review of the plan), surfaced read-only in the UI.
     validation_box: dict[str, Any] = {"latest": None}
+    # Latest scenario/ML intelligence-layer evaluation record (B-79) — the runtime seam for
+    # _intelligence_status. Empty until something actually records an evaluation (E-08 work);
+    # exposed on app.state (once `app` exists, below) so both the runtime and tests can populate it.
+    intelligence_box: dict[str, Any] = {"latest": None}
 
     def _apply_explainer_settings() -> None:
         """(Re)build the explainer from the settings cache. external_llm needs a key; otherwise we
@@ -1354,6 +1372,9 @@ def create_app(
                     await s.close()
 
     app = FastAPI(title="Smart Energy Manager", version="0.0.1", lifespan=lifespan)
+    # Expose the intelligence evaluation-record seam (B-79) for the runtime to record into and for
+    # tests to inject — same dict object `_intelligence_status` closes over.
+    app.state.intelligence_box = intelligence_box
 
     # --- Access control (SPEC §12) --------------------------------------------------------------
     # One choke point for the whole JSON API (finding 1) instead of a guard sprinkled on each write.
@@ -2861,17 +2882,44 @@ def create_app(
         endpoint's live wiring never takes that path."""
         return "adaptive" if strategy == "summer" else "rule_based"
 
+    def _intelligence_status() -> dict:
+        """Runtime-derived intelligence capability status (B-79). Empty record -> not_active with
+        no evaluation; a recorded evaluation -> its state/timestamp/result. The value is DERIVED
+        from `intelligence_box`, never a constant, so it cannot claim a capability the runtime did
+        not record. Populating the record (shadow/advisory/active) is E-08 work."""
+        def _not_active() -> dict:
+            state = IntelligenceState.NOT_ACTIVE.value
+            return {
+                "state": state,
+                "last_evaluated_at": None,
+                "last_result": None,
+                "reason": _INTELLIGENCE_REASONS[state],
+            }
+
+        latest = intelligence_box["latest"]
+        if latest is None:
+            return _not_active()
+        state = latest.get("state")
+        if state not in _INTELLIGENCE_REASONS:  # missing / None / unknown -> fail safe
+            return _not_active()
+        return {
+            "state": state,
+            "last_evaluated_at": latest.get("ts"),
+            "last_result": latest.get("result"),
+            "reason": _INTELLIGENCE_REASONS[state],  # guaranteed present -> non-empty
+        }
+
     def _plan_provenance(strategy: str) -> dict:
         """The plan-provenance line (CLAUDE.md honesty ask, feat/ux-batch-3): what is ACTUALLY
         steering today's plan — the forecast source, the solar_confidence dial, which planner
         function ran, and the scenario/ML intelligence layer's real status. No field here may
         overstate what's live: ems/intelligence/planning.py is built but not wired into the
-        control path (see INTELLIGENCE_MODE)."""
+        control path (see _intelligence_status, B-79)."""
         return {
             "forecast_source": _forecast_source_label(),
             "solar_confidence_pct": settings_cache["planner.solar_confidence"],
             "planner": _resolved_planner_name(strategy),
-            "intelligence": INTELLIGENCE_MODE,
+            "intelligence": _intelligence_status(),
         }
 
     @app.get("/api/battery-plan")
@@ -3589,6 +3637,12 @@ def create_app(
             "active": _explainer_active(),
             "language": settings_cache.get("explainer.language", "English"),
         }
+
+    @app.get("/api/intelligence")
+    async def intelligence_status_endpoint() -> dict:
+        """B-79: runtime-proven capability state of the scenario/ML layer (state + last-eval
+        time/result + reason). Never claims a capability the runtime hasn't recorded."""
+        return _intelligence_status()
 
     @app.get("/api/faq")
     def faq_endpoint() -> dict:
