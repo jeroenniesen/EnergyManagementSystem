@@ -1462,6 +1462,46 @@ body {
 .settings-access-row input:focus { outline: none; border-color: var(--accent); }
 .settings-access-row input:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
 
+/* Admin "Access & security" panel (auth slice 2 web) — Users + Invites, admin-only, rendered as a
+   sibling of the Account bar above. Reuses .settings-access-bar's box recipe and the
+   .car-session-row list-row pattern so it never invents a new visual language. */
+.admin-access { display: flex; flex-direction: column; gap: 16px; margin-bottom: 16px; }
+.admin-list {
+  list-style: none; margin: 12px 0 0; padding: 0; display: flex; flex-direction: column; gap: 8px;
+}
+.admin-row {
+  display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 10px;
+  background: var(--panel-2); border-radius: 8px; padding: 10px 12px;
+}
+.admin-row-main { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; font-size: 0.88rem; }
+.admin-row-name { font-weight: 600; }
+.admin-row-meta { color: var(--muted); font-size: 0.78rem; }
+.admin-row-controls { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.admin-row-field-label { color: var(--muted); font-size: 0.78rem; }
+.admin-row-controls select,
+.admin-invite-create select {
+  font: inherit; font-size: 0.85rem; color: var(--text); background: var(--panel);
+  border: 1px solid var(--line); border-radius: 6px; padding: 5px 8px;
+}
+.admin-invite-create {
+  display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-top: 10px;
+}
+/* Account tokens' mint form (auth slice 3 web) reuses .admin-invite-create's row layout, adding a
+   name text input alongside the (existing) select/button styling above. */
+.admin-invite-create input[type="text"] {
+  flex: 1 1 180px; min-width: 140px; font: inherit; font-size: 0.85rem; color: var(--text);
+  background: var(--panel); border: 1px solid var(--line); border-radius: 6px; padding: 5px 8px;
+}
+.admin-invite-minted {
+  margin-top: 12px; background: var(--panel-2); border: 1px solid var(--line); border-radius: 8px;
+  padding: 10px 12px;
+}
+.admin-invite-url-row { display: flex; gap: 8px; margin-top: 6px; }
+.admin-invite-url-row input {
+  flex: 1 1 auto; min-width: 0; font: inherit; font-size: 0.8rem; color: var(--text);
+  background: var(--panel); border: 1px solid var(--line); border-radius: 6px; padding: 6px 8px;
+}
+
 .settings-panes {
   display: grid; grid-template-columns: 240px minmax(0, 1fr); gap: 22px; align-items: start;
 }

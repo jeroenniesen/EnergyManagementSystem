@@ -17,6 +17,7 @@ from ems.sources.battery import MockBatteryDriver
 from ems.sources.forecast import MockSolarForecastSource
 from ems.sources.prices import PriceSlot
 from ems.storage.audit import AuditStore
+from ems.storage.auth import AuthStore
 from ems.storage.settings import SettingsStore
 from ems.web.api import create_app
 
@@ -138,3 +139,71 @@ def test_manual_override_set_and_clear_are_audited(tmp_path):
     assert len(entries) == 2
     assert entries[0]["detail"]["action"] == "clear"               # newest-first
     assert entries[1]["detail"]["intent"] == "grid_charge_to_target"
+
+
+# --- P2 security review: "auth"-category rows (usernames, roles, login events, lockouts, role ---
+# --- changes, invites, token mint/revoke) are ADMIN-only; every other category stays reachable ---
+# --- by any authenticated role (the Manage -> Audit view is a general transparency surface). -----
+
+def _app_with_auth(tmp_path):
+    db = str(tmp_path / "ems.sqlite")
+    return create_app(
+        _Source(), dry_run=True, dev_mode="mock", tz=AMS,
+        price_source=_FlatPrices(), solar_forecast=MockSolarForecastSource(AMS),
+        controller=ModeController(MockBatteryDriver(), Lifecycle(dry_run=True), dry_run=True),
+        settings_store=SettingsStore(db),
+        override_store=SettingsStore(db, table="runtime_state"),
+        audit_store=AuditStore(db),
+        auth_store=AuthStore(db),
+    )
+
+
+def _seed_user(db: str, username: str, password: str, role: str) -> None:
+    from ems.authn import hash_password
+    s = AuthStore(db)
+
+    async def run():
+        await s.init()
+        await s.create_user(username, hash_password(password), role)
+        await s.close()
+
+    asyncio.run(run())
+
+
+def _login(c: TestClient, username: str, password: str) -> str:
+    r = c.post("/api/auth/login", json={"username": username, "password": password})
+    assert r.status_code == 200, r.text
+    return r.json()["token"]
+
+
+def test_reader_gets_403_on_explicit_auth_category(tmp_path):
+    db = str(tmp_path / "ems.sqlite")
+    _seed_user(db, "admin", "pw12345678", "admin")
+    _seed_user(db, "rdr", "pw12345678", "reader")
+    with TestClient(_app_with_auth(tmp_path)) as c:
+        tok = _login(c, "rdr", "pw12345678")
+        h = {"Authorization": f"Bearer {tok}"}
+        assert c.get("/api/audit", params={"category": "auth"}, headers=h).status_code == 403
+
+
+def test_reader_sees_non_auth_categories_but_no_auth_rows_leak_through_unfiltered(tmp_path):
+    db = str(tmp_path / "ems.sqlite")
+    _seed_user(db, "admin", "pw12345678", "admin")
+    _seed_user(db, "rdr", "pw12345678", "reader")
+    with TestClient(_app_with_auth(tmp_path)) as c:
+        admin_tok = _login(c, "admin", "pw12345678")
+        h_admin = {"Authorization": f"Bearer {admin_tok}"}
+        # A real manual_override write, so there is a non-"auth" row a reader should still see.
+        c.post("/api/override", json={"intent": "grid_charge_to_target", "minutes": 60},
+               headers=h_admin)
+        rdr_tok = _login(c, "rdr", "pw12345678")  # itself writes a "login_success" auth row
+        h_rdr = {"Authorization": f"Bearer {rdr_tok}"}
+
+        unfiltered = c.get("/api/audit", headers=h_rdr).json()["entries"]
+        assert any(e["category"] == "manual_override" for e in unfiltered)
+        assert all(e["category"] != "auth" for e in unfiltered)
+
+        # The admin, unfiltered AND filtered, still sees the auth-category rows (logins included).
+        admin_auth_rows = c.get(
+            "/api/audit", params={"category": "auth"}, headers=h_admin).json()["entries"]
+        assert any(e["detail"]["event"] == "login_success" for e in admin_auth_rows)

@@ -26,14 +26,26 @@ _MUTATING_METHODS = frozenset({"POST", "PUT", "PATCH", "DELETE"})
 # Admin-only surfaces (prefix match) — ADMIN for every method, reads included (these surfaces are
 # admin-only entirely, unlike OPERATE_PATHS where only mutations are gated).
 _ADMIN_PREFIXES = ("/api/users", "/api/invites")
+# Admin-only EXACT paths (not prefix) — P2 security review: the support/diagnostics bundle bundles
+# the FULL audit trail (every "auth"-category row: usernames, roles, login failures, lockouts,
+# role changes, invites, token mint/revoke) plus the server-log tail, so it must never be reachable
+# below ADMIN even though it doesn't live under `_ADMIN_PREFIXES`. `/api/audit` deliberately stays
+# OUT of this set — reader/user roles legitimately use the Manage → Audit view for transparency
+# into decisions/config/overrides; that endpoint instead strips "auth"-category rows for non-admins
+# in the handler itself (ems/web/api.py's `audit_endpoint`) rather than losing the whole surface.
+ADMIN_PATHS = frozenset({"/api/export/package"})
 # Interactive-session-only surfaces (kind == 'session'); no access/machine token allowed.
 _SESSION_ONLY_PATHS = frozenset({"/api/auth/password", "/api/auth/logout"})
 _SESSION_ONLY_PREFIXES = ("/api/auth/tokens",)
-# Reachable without any auth (login/onboard/discovery/invite-accept).
+# Reachable without any auth (login/onboard/discovery/invite-accept). NOTE: `/api/invites/accept`
+# would otherwise fall under `_ADMIN_PREFIXES` (it starts with "/api/invites") — but the identity
+# gate in api.py checks `path not in EXEMPT_PATHS` BEFORE consulting `required_tier`, so listing
+# the exact path here is what keeps it reachable logged-out despite the prefix match.
 EXEMPT_PATHS = frozenset({
     "/api/auth",
     "/api/auth/login",
     "/api/auth/onboard",
+    "/api/invites/accept",
 })
 
 
@@ -42,7 +54,7 @@ def role_satisfies(role: str, tier: Tier) -> bool:
 
 
 def required_tier(path: str, method: str) -> Tier:
-    if path.startswith(_ADMIN_PREFIXES):
+    if path.startswith(_ADMIN_PREFIXES) or path in ADMIN_PATHS:
         return Tier.ADMIN
     if path in OPERATE_PATHS and method.upper() in _MUTATING_METHODS:
         return Tier.OPERATE

@@ -236,6 +236,7 @@ export function CarCard({
   compact = false,
   onOpenCar,
   onOpenSettings,
+  canOperate = true,
 }: {
   compact?: boolean;
   onOpenCar?: () => void;
@@ -243,6 +244,9 @@ export function CarCard({
   // branch below) — sends the user to Manage → Settings → Car to turn it on. The compact dashboard
   // card never renders anything in that state, so it never needs this.
   onOpenSettings?: () => void;
+  // Reader read-only mode (auth slice 2 web): the manual SoC anchor is an OPERATE-tier write
+  // (POST /api/car/soc) — disabled for a reader. Defaults true so every other caller is unaffected.
+  canOperate?: boolean;
 }) {
   const [data, setData] = useState<CarPlanResp | null>(null);
   const [pctInput, setPctInput] = useState(50);
@@ -339,7 +343,13 @@ export function CarCard({
             No EV meter is configured, so update this after driving or charging.
           </p>
         )}
-        <SocSetForm pct={pctInput} onChange={setPctInput} onSubmit={() => setSoc(pctInput)} busy={busy} />
+        {canOperate ? (
+          <SocSetForm pct={pctInput} onChange={setPctInput} onSubmit={() => setSoc(pctInput)} busy={busy} />
+        ) : (
+          <p className="advisor-hint" data-testid="car-anchor-readonly">
+            Setting the car&apos;s charge level needs a &quot;user&quot; or &quot;admin&quot; account.
+          </p>
+        )}
         {err && (
           <p className="field-err" data-testid="car-error">
             {err}
@@ -417,8 +427,9 @@ export function CarCard({
           </span>
         )}
         {/* Re-anchoring is a full-view action — the compact dashboard card sends you to the Car
-            tab instead (the ✎ + inline form would crowd the one-glance summary). */}
-        {!compact && (
+            tab instead (the ✎ + inline form would crowd the one-glance summary). Reader read-only
+            mode (auth slice 2 web) additionally hides this — POST /api/car/soc is OPERATE-tier. */}
+        {!compact && canOperate && (
           <button
             type="button"
             className="car-edit-btn"
@@ -434,7 +445,7 @@ export function CarCard({
           </button>
         )}
       </div>
-      {!compact && editingAnchor && (
+      {!compact && canOperate && editingAnchor && (
         <SocSetForm
           pct={pctInput}
           onChange={setPctInput}

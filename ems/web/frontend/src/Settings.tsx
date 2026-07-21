@@ -1,5 +1,7 @@
 import { useEffect, useState } from "react";
 
+import { AccountTokens } from "./AccountTokens";
+import { AdminAccess } from "./Admin";
 import { apiFetch, clearToken } from "./auth";
 import { type CarModel, type CarsResp } from "./ev";
 import { humanize } from "./labels";
@@ -105,6 +107,13 @@ const CAR_TAB_KEYS = new Set([
   "control.hold_battery_when_car_charging", "control.car_charging_battery_mode",
   "control.car_discharge_w",
 ]);
+
+// Legacy shared-token knobs, DEPRECATED once identity auth (users/roles) is active: require_auth is
+// implicitly always-on and the shared token is migrated into an access token at onboarding (design
+// §8). They stay in the backend schema for compat, but the UI hides them from the "access" section
+// so they aren't mistaken for live controls. They are filtered at RENDER (not out of `schema`), so
+// the "access" section itself stays in the nav (its admin Users/Invites panel + logout live there).
+const LEGACY_SHARED_TOKEN_KEYS = new Set(["web.auth_token", "web.require_auth"]);
 
 // First sentence of the help (always shown) + the remainder (behind a "More" disclosure). Splits
 // on the FIRST sentence-ending punctuation that is followed by whitespace, so mid-word dots
@@ -350,6 +359,9 @@ function SolarConfidenceHint({
 export function Settings({
   onSaved,
   initialSection,
+  canOperate = true,
+  isAdmin = false,
+  identityAuth = false,
 }: {
   onSaved?: (values: Values) => void;
   // Deep-link: open this section on mount (e.g. System's "solar" health action → "planner", or
@@ -357,6 +369,18 @@ export function Settings({
   // machinery a sidebar click uses, so it needs no hash segment of its own (CLAUDE.md: keep the
   // canonical #manage/settings hash simple).
   initialSection?: string;
+  // Reader read-only mode (auth slice 2 web): every field renders disabled and the save bar never
+  // appears — mirrors the API's 403 on writes rather than inventing a new client-side rule.
+  // Defaults true so every other caller (and every existing test) is unaffected.
+  canOperate?: boolean;
+  // Admin-only "Users" + "Invites" panel (design §7 Access & security). Defaults false.
+  isAdmin?: boolean;
+  // When identity auth (users/roles) is active, the legacy shared-token knobs (`web.auth_token`,
+  // `web.require_auth`) are DEAD — require_auth is implicitly always-on and the shared token is
+  // migrated away (design §8, deprecated). Hide them from the "access" section so they aren't
+  // mistaken for live controls; the backend schema keeps them for compat. Defaults false (legacy
+  // shared-token deployments and existing tests still show them).
+  identityAuth?: boolean;
 } = {}) {
   const [schema, setSchema] = useState<SettingField[] | null>(null);
   const [values, setValues] = useState<Values>({});
@@ -383,6 +407,12 @@ export function Settings({
   const [lastSaveRestart, setLastSaveRestart] = useState(false);
   // Mobile drill-in (≤700px): start on the section list, then drill into one section.
   const [mobileList, setMobileList] = useState(true);
+
+  // Keys never rendered as editable fields: the car-tab knobs (owned by Car.tsx) always, plus the
+  // deprecated legacy shared-token knobs when identity auth is active (design §8).
+  const hiddenFieldKeys = identityAuth
+    ? new Set([...CAR_TAB_KEYS, ...LEGACY_SHARED_TOKEN_KEYS])
+    : CAR_TAB_KEYS;
 
   async function refreshAuth() {
     try {
@@ -538,7 +568,7 @@ export function Settings({
     const q = search.trim().toLowerCase();
     if (!q) return [];
     return (schema ?? [])
-      .filter((f) => f.group === group && !CAR_TAB_KEYS.has(f.key))
+      .filter((f) => f.group === group && !hiddenFieldKeys.has(f.key))
       .filter(
         (f) =>
           f.label.toLowerCase().includes(q) ||
@@ -653,7 +683,7 @@ export function Settings({
           field={f}
           value={edited[f.key]}
           error={errors[f.key]}
-          disabled={status === "saving"}
+          disabled={status === "saving" || !canOperate}
           secretSet={Boolean(values[`${f.key}.__set`])}
           onChange={(v) => {
             set(f.key, v);
@@ -666,7 +696,7 @@ export function Settings({
             advice={solarAdvice}
             currentPct={Number(edited[f.key] ?? f.default)}
             applied={solarAdviceApplied}
-            disabled={status === "saving"}
+            disabled={status === "saving" || !canOperate}
             onApply={(pct) => {
               set(f.key, pct); // same set() the field's own control uses — dirty ⇒ sticky save bar
               setSolarAdviceApplied(true);
@@ -695,12 +725,12 @@ export function Settings({
   }
 
   const sectionFields = active
-    ? schema.filter((f) => f.group === active && !CAR_TAB_KEYS.has(f.key))
+    ? schema.filter((f) => f.group === active && !hiddenFieldKeys.has(f.key))
     : [];
   const basicFields = sectionFields.filter((f) => !f.advanced);
   const advancedFields = sectionFields.filter((f) => f.advanced);
   const advIsOpen = active ? advancedOpen.has(active) : false;
-  const showSaveBar = dirty || status === "saved";
+  const showSaveBar = canOperate && (dirty || status === "saved");
 
   return (
     <section
@@ -729,6 +759,13 @@ export function Settings({
           </button>
         </div>
       )}
+
+      {/* API tokens (auth slice 3 web, design §5/§7): every logged-in role manages its OWN tokens
+          — visible regardless of canOperate/isAdmin (mirrors AdminAccess's admin-only gating
+          above, but the opposite: this one is deliberately role-agnostic). The component itself
+          renders a session-only manage UI or a quiet sign-in hint (fetches its own kind via
+          GET /api/auth/me) — see AccountTokens.tsx. */}
+      {auth?.authenticated && <AccountTokens />}
 
       <div className="settings-panes">
         <aside className="settings-sidebar">
@@ -811,11 +848,20 @@ export function Settings({
                 </span>
                 <div className="settings-section-headtext">
                   <h2 className="settings-section-title">{GROUP_TITLE[active] ?? active}</h2>
-                  {GROUP_HINT[active] && (
-                    <p className="settings-section-hint">{GROUP_HINT[active]}</p>
-                  )}
+                  {/* The legacy "access" hint talks about a shared token + the retired Access box;
+                      under identity auth that's dead advice, so show the truthful blurb instead. */}
+                  {(() => {
+                    const hint =
+                      active === "access" && identityAuth
+                        ? "Manage who can sign in and the access tokens for widgets and scripts. "
+                          + "Every request already requires a signed-in user or an access token."
+                        : GROUP_HINT[active];
+                    return hint ? <p className="settings-section-hint">{hint}</p> : null;
+                  })()}
                 </div>
               </header>
+
+              {active === "access" && isAdmin && <AdminAccess />}
 
               <div className="settings-section-fields">
                 {basicFields.map((f) => renderField(f))}

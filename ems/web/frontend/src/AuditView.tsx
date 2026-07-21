@@ -17,6 +17,7 @@ const CAT_LABEL: Record<string, string> = {
   config_change: "Setting",
   manual_override: "Override",
   ai_validation: "AI check",
+  auth: "Access",
 };
 
 function when(ts: string): string {
@@ -56,6 +57,7 @@ export function AuditView() {
           <option value="config_change">Setting changes</option>
           <option value="manual_override">Manual overrides</option>
           <option value="ai_validation">AI checks</option>
+          <option value="auth">Access &amp; accounts</option>
         </select>
       </div>
       <p className="settings-group-hint">

@@ -15,7 +15,7 @@ from collections.abc import Callable
 
 from ems.perf import timed
 
-_BUSY_TIMEOUT_MS = 3000
+_BUSY_TIMEOUT_MS = 5000  # see ems/storage/history.py for the WAL/synchronous/timeout rationale
 
 
 class CacheStore:
@@ -34,6 +34,7 @@ class CacheStore:
     def _conn(self) -> sqlite3.Connection:
         con = sqlite3.connect(self.db_path, timeout=_BUSY_TIMEOUT_MS / 1000)
         con.execute(f"PRAGMA busy_timeout={_BUSY_TIMEOUT_MS}")
+        con.execute("PRAGMA synchronous=NORMAL")  # WAL-safe; see HistoryStore
         return con
 
     def init(self) -> None:

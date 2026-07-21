@@ -154,6 +154,42 @@ public struct APIClient: Sendable {
         try await get("api/explainer", as: ExplainerStatus.self)
     }
 
+    // Username/password login (POST /api/auth/login). This endpoint is auth-exempt, so the request
+    // carries NO Authorization header — a leftover/expired token must not interfere. A 401 (generic
+    // "invalid credentials") surfaces as APIClientError.httpStatus(401); a transport failure throws
+    // the underlying URLError so the caller can tell "wrong password" from "server unreachable".
+    public func login(username: String, password: String) async throws -> LoginResponse {
+        var request = URLRequest(url: baseURL.appending(path: "api/auth/login"))
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = try JSONEncoder.ems.encode(LoginRequest(username: username, password: password))
+        let (data, response) = try await transport.data(for: request)
+        guard (200 ..< 300).contains(response.statusCode) else {
+            throw APIClientError.httpStatus(response.statusCode)
+        }
+        return try JSONDecoder.ems.decode(LoginResponse.self, from: data)
+    }
+
+    // Mint (or, with replace:true, atomically revoke-and-remint by name) the dedicated per-device
+    // ACCESS token the home-screen widget rides (POST /api/auth/tokens). MUST be called with a
+    // SESSION bearer (this APIClient's token). The raw value is returned exactly once — persist it
+    // immediately; a lost copy is recovered by re-minting on the next login (that is why the widget
+    // token is provisioned with replace:true). See spec §7.
+    public func provisionWidgetToken(name: String) async throws -> TokenProvisionResponse {
+        var request = URLRequest(url: baseURL.appending(path: "api/auth/tokens"))
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        if let token, !token.isEmpty {
+            request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        }
+        request.httpBody = try JSONEncoder.ems.encode(TokenProvisionRequest(name: name, replace: true))
+        let (data, response) = try await transport.data(for: request)
+        guard (200 ..< 300).contains(response.statusCode) else {
+            throw APIClientError.httpStatus(response.statusCode)
+        }
+        return try JSONDecoder.ems.decode(TokenProvisionResponse.self, from: data)
+    }
+
     public func fetchFAQ() async throws -> FAQResponse {
         try await get("api/faq", as: FAQResponse.self)
     }
@@ -325,6 +361,16 @@ private extension Result {
         if case let .success(value) = self { return value }
         return nil
     }
+}
+
+private struct LoginRequest: Encodable {
+    let username: String
+    let password: String
+}
+
+private struct TokenProvisionRequest: Encodable {
+    let name: String
+    let replace: Bool
 }
 
 private struct CarSocRequest: Encodable {

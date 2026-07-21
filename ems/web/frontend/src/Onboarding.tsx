@@ -18,23 +18,31 @@ export function Onboarding({
   const [password, setPassword] = useState("");
   const [shared, setShared] = useState("");
   const [error, setError] = useState("");
+  const [busy, setBusy] = useState(false);
 
   async function submit(e: React.FormEvent) {
     e.preventDefault();
     setError("");
-    const body: Record<string, string> = { username, password };
-    if (sharedTokenRequired) body.shared_token = shared;
-    const r = await fetch("/api/auth/onboard", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(body),
-    });
-    if (!r.ok) {
-      setError((await r.json().catch(() => ({}))).detail ?? "Onboarding failed");
-      return;
+    setBusy(true);
+    try {
+      const body: Record<string, string> = { username, password };
+      if (sharedTokenRequired) body.shared_token = shared;
+      const r = await fetch("/api/auth/onboard", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      if (!r.ok) {
+        setError((await r.json().catch(() => ({}))).detail ?? "Onboarding failed");
+        return;
+      }
+      setToken((await r.json()).token);
+      onDone();
+    } catch {
+      setError("Couldn't reach the server — try again.");
+    } finally {
+      setBusy(false);
     }
-    setToken((await r.json()).token);
-    onDone();
   }
 
   return (
@@ -44,21 +52,24 @@ export function Onboarding({
         aria-label="Username"
         value={username}
         onChange={(e) => setUsername(e.target.value)}
+        autoComplete="username"
       />
       <input
         aria-label="Password"
         type="password"
         value={password}
         onChange={(e) => setPassword(e.target.value)}
+        autoComplete="new-password"
       />
       {sharedTokenRequired && (
         <input
           aria-label="Existing access token"
           value={shared}
           onChange={(e) => setShared(e.target.value)}
+          autoComplete="off"
         />
       )}
-      <button type="submit" className="btn-primary">Create admin</button>
+      <button type="submit" className="btn-primary" disabled={busy}>Create admin</button>
       {error && <p role="alert">{error}</p>}
     </form>
   );
