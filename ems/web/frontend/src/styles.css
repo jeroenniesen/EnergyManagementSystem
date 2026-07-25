@@ -2614,12 +2614,12 @@ body {
    These render BEFORE the styled app shell (App.tsx's early auth-gate returns, above the final
    <SkyBackdrop/> + <div className="app">), so they never inherit .app's layout/stacking context.
    AuthLayout gives them their own minimal, theme-aware treatment here, reusing the same
-   panel/field/button tokens as the rest of the UI — no new visual language. */
+   panel/field/button tokens as the rest of the UI — no new visual language. No SkyBackdrop is
+   rendered on these screens (see AuthLayout.tsx), so no stacking-context positioning is needed. */
 .auth-screen {
   position: fixed;
   inset: 0;
   display: flex;
-  align-items: center;
   justify-content: center;
   min-height: 100dvh;
   padding: 24px;
@@ -2627,11 +2627,10 @@ body {
   background: var(--bg);
 }
 .auth-card {
-  /* Positioned + z-indexed above the SkyBackdrop the same way .app is (see the .app rule above):
-     SkyBackdrop is position:absolute with z-index:0, so a non-positioned sibling would otherwise
-     paint UNDER it per stacking-context paint order. */
-  position: relative;
-  z-index: 1;
+  /* margin:auto (not align-items:center on the parent) centers the card when it fits and keeps it
+     fully scrollable when it's taller than the viewport — align-items:center would center it with
+     its top pushed above the scroll container's reachable start edge, clipping the heading. */
+  margin: auto;
   background: var(--panel);
   border: 1px solid var(--line);
   border-radius: var(--radius);
