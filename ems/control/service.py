@@ -1332,7 +1332,10 @@ class ControlService:
 
     def release_writer(self, token: object) -> None:
         """Release a slot reserved by `reserve_writer` — call ONLY from the worker's real completion
-        (the blocking function's `finally`), so a timed-out `wait_for` never frees a live writer."""
+        (the blocking function's `finally`), so a timed-out `wait_for` never frees a live writer.
+        IDEMPOTENT: `discard` is a no-op on an already-released token, and keyed by token identity
+        it can never free a DIFFERENT writer's slot — so the override leak-safety done-callback
+        (`spawn_override_cycle`) can release unconditionally without risking a double-free."""
         with self._ctx.writer_lock:
             self._ctx.writer_registry.discard(token)
 
@@ -1353,14 +1356,16 @@ class ControlService:
         return task
 
     def _admit_cycle(self) -> object | None:
-        """Admission gate for a control cycle: reserve a slot IFF the outstanding-write registry is
-        EMPTY and we are not draining. Returns a token (release with `_release_cycle`), or None to
-        refuse. Requiring an empty registry (not merely "no other cycle") enforces the single-writer
-        rule against BOTH a still-outstanding prior tick AND a lingering overrun-AUTO recovery token
-        (which can outlive its own timeout after the original tick finished) — never two concurrent
-        writers. Refusing on `draining` closes the race where a restart passes the gate during
-        run_cycle's `refresh_car_obs` await, sets draining, and returns 202: the resumed cycle must
-        not then start a battery writer that could outlive shutdown."""
+        """Admission gate for the PERIODIC control tick: reserve a slot IFF the outstanding-write
+        registry is EMPTY and we are not draining. Returns a token (release with `_release_cycle`),
+        or None to refuse. This is the SINGLE-ADMISSION rule and it is for the periodic tick ONLY —
+        an override never goes through here (it reserve-but-never-refuses via `reserve_writer`; see
+        `reserve_override_cycle`). Requiring an empty registry (not just "no other cycle") enforces
+        the single-writer rule against BOTH a still-outstanding prior tick AND a lingering
+        overrun-AUTO recovery token (which can outlive its own timeout after the original tick
+        finished) — never two concurrent writers. Refusing on `draining` closes the race where a
+        restart passes the gate during run_cycle's `refresh_car_obs` await, sets draining, and
+        returns 202: the resumed cycle must not start a battery writer that outlives shutdown."""
         with self._ctx.writer_lock:
             if self._ctx.draining or self._ctx.writer_registry:
                 return None
@@ -1375,14 +1380,73 @@ class ControlService:
         """Reserve the cycle slot for an OVERRIDE-triggered run SYNCHRONOUSLY at submission — called
         on the event loop from the override endpoint BEFORE the asyncio.Task is created — so the
         refuse-when-busy restart gate observes the override through the outstanding-write registry
-        ALONE (subsuming the override_tasks set; see `idle_for_restart`). Returns a token to pass to
-        `run_cycle(cycle_token=…)`, or None when there is nothing to run (dry-run / no controller)
-        or the cycle coalesces (a control cycle is already outstanding, or we are draining for a
-        restart). The reserved slot is released on the worker's REAL completion inside run_cycle,
-        never here — identical release discipline to the periodic tick and the overrun-AUTO path."""
+        (`idle_for_restart` reads it as `outstanding_write` while the override write is in flight).
+
+        RESERVE-BUT-NEVER-REFUSE. Overrides are user/safety actions (manual override,
+        clear/return-to-AUTO, car-guard priority) that must APPLY PROMPTLY: the slot is reserved via
+        `reserve_writer` (which ALWAYS succeeds unless draining) — deliberately NOT `_admit_cycle` —
+        so an override is never refused/dropped or deferred to the next periodic tick just because a
+        control cycle is already outstanding. It reserves its OWN slot and then queues behind the
+        current writer via `control_lock` inside run_cycle, applying once that writer finishes.
+        Single-admission (refuse-second-concurrent) is for the PERIODIC TICK ONLY (`_admit_cycle`);
+        an override MUST NOT coalesce, or it would silently delay clear/return-to-AUTO and car-guard
+        re-evaluation by a full control cadence.
+
+        Returns a token to pass to `run_cycle(cycle_token=…)`, or None only when there is nothing to
+        run (dry-run / no controller) or we are DRAINING for a restart (a restart is imminent and
+        the new process re-reads the override on boot). The reserved slot is released on the
+        worker's REAL completion inside run_cycle — or, if the task is cancelled before run_cycle
+        starts, by the submitting endpoint's done-callback (`spawn_override_cycle`) — never here."""
         if self._controller is None or self._dry_run:
             return None
-        return self._admit_cycle()
+        return self.reserve_writer()
+
+    def spawn_override_cycle(
+        self, spawn: Callable[[Any], asyncio.Task]
+    ) -> asyncio.Task | None:
+        """Reserve an override slot AT SUBMISSION (reserve-but-never-refuse; see
+        `reserve_override_cycle`) and spawn `run_cycle` via `spawn` (the app's `_spawn_tracked`,
+        which keeps a strong ref + crash logging), wiring a LEAK-SAFE release so the pre-reserved
+        slot can never be orphaned. Returns the spawned task, or None when there is nothing to run.
+
+        Why the extra release wiring: the slot is reserved OUTSIDE the run_cycle coroutine (so the
+        restart gate sees it the instant it is submitted). If that task is cancelled before
+        its first turn (pre-start cancellation) — or task creation raises — run_cycle never reaches
+        its slot-releasing `try/finally`, so the token would leak FOREVER and wedge
+        `idle_for_restart` at `outstanding_write` (a restart could never succeed again). Two guards
+        close that:
+          (a) a synchronous spawn failure releases the token immediately;
+          (b) a task done-callback releases the token IFF run_cycle never started to own it
+              (`run_cycle_started` stays False on a pre-start cancel). Once run_cycle has started it
+              owns the release — on the worker's REAL completion, even after a `wait_for` timeout —
+              so the callback must NOT release then (that would free a still-live writer's slot).
+        `release_writer` is idempotent (discards by token identity): the callback can never
+        double-free, nor free a DIFFERENT override's slot."""
+        token = self.reserve_override_cycle()
+        if token is None:
+            return None
+        run_cycle_started = False
+
+        async def _run() -> None:
+            nonlocal run_cycle_started
+            # Set before run_cycle's first await, so if this coroutine runs at all its try/finally
+            # is entered and owns the token's release. A pre-start cancel never reaches this line.
+            run_cycle_started = True
+            await self.run_cycle(cycle_token=token)
+
+        def _release_if_orphaned(_task: asyncio.Task) -> None:
+            if not run_cycle_started:
+                self.release_writer(token)
+
+        coro = _run()
+        try:
+            task = spawn(coro)
+        except Exception:
+            coro.close()  # suppress "coroutine was never awaited"; the coroutine never ran
+            self.release_writer(token)  # synchronous spawn failure → free the pre-reserved slot
+            raise
+        task.add_done_callback(_release_if_orphaned)
+        return task
 
     def _tick_worker(self, now: datetime, token: object) -> list[dict]:
         """Runs the blocking control tick and releases the cycle slot on REAL completion — this

@@ -2305,18 +2305,18 @@ def create_app(
         ).to_dict()
 
     def _spawn_override_cycle() -> None:
-        """Apply a just-saved override on the battery NOW (don't wait a full control cycle). Reserve
-        the cycle slot in the outstanding-write registry SYNCHRONOUSLY at submission — BEFORE the
+        """Apply a just-saved override on the battery NOW (don't wait a full control cycle). The
+        slot is reserved in the outstanding-write registry SYNCHRONOUSLY at submission — BEFORE the
         asyncio.Task is created — so the refuse-when-busy restart gate sees this override via the
-        registry alone (subsuming the override_tasks set; spec §B.0.2). The slot is released on the
-        worker's REAL completion inside run_cycle. Coalesces (no task) when a control cycle is
-        already outstanding or we're draining for a restart — the override then applies on the next
-        periodic cycle, exactly as before."""
-        token = control.reserve_override_cycle()
-        if token is None:
-            return
-        _spawn_tracked(
-            control.run_cycle(cycle_token=token), "Override control cycle", _override_tasks)
+        registry alone (spec §B.0.2). RESERVE-BUT-NEVER-REFUSE: the override queues behind the
+        current writer via run_cycle's `control_lock` and applies as soon as that writer completes —
+        it is NOT coalesced/deferred to the periodic tick just because a cycle is outstanding (that
+        would silently delay clear/return-to-AUTO and car-guard re-evaluation). The reserve +
+        leak-safe release wiring lives in `ControlService.spawn_override_cycle` (a pre-start-cancel
+        or spawn-failure can't orphan the slot); we inject `_spawn_tracked` as the task spawner
+        (strong ref + crash logging). No-op when there's nothing to run (dry-run / draining)."""
+        control.spawn_override_cycle(
+            lambda coro: _spawn_tracked(coro, "Override control cycle", _override_tasks))
 
     @app.get("/api/override")
     def get_override() -> dict:

@@ -15,6 +15,7 @@ Plus a `_is_supervised()` truthy-parsing table and the `restart_pending` boot fi
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import threading
 import time
 from datetime import UTC, datetime, timedelta
@@ -33,7 +34,17 @@ from ems.sources.mock import MockSource
 from ems.storage.audit import AuditStore
 from ems.storage.auth import AuthStore
 from ems.storage.settings import SettingsStore
-from ems.web.api import _is_supervised, create_app
+from ems.web.api import _is_supervised, _spawn_tracked, create_app
+
+
+def _drain(loop: asyncio.AbstractEventLoop) -> None:
+    """Let still-pending (shielded to_thread) worker tasks finish before `loop.close()`, so asyncio
+    doesn't log 'Task was destroyed but it is pending' at teardown. The tests below poll registry
+    state with blocking `time.sleep`, which never gives the loop a turn to observe a worker's
+    to_thread future resolving — this drives one final drain."""
+    pending = [t for t in asyncio.all_tasks(loop) if not t.done()]
+    if pending:
+        loop.run_until_complete(asyncio.gather(*pending, return_exceptions=True))
 
 NOW = datetime(2026, 6, 28, 12, 0, tzinfo=UTC)
 
@@ -246,7 +257,109 @@ def test_override_run_cycle_reuses_presubmitted_slot_and_releases_on_real_comple
         assert svc.idle_for_restart()[0] is True
     finally:
         gate.set()
+        _drain(loop)  # drain the shielded worker → no "Task was destroyed but pending" warning
         loop.close()
+
+
+def test_override_reservation_never_refuses_while_a_control_cycle_is_outstanding():
+    # Fix 1 (SAFETY): single-admission (refuse-a-second-concurrent) is for the PERIODIC TICK ONLY.
+    # An override submitted while an ordinary control cycle is outstanding must STILL reserve its
+    # own slot (reserve-but-never-refuse) — it may never be dropped/coalesced, which previously
+    # delayed clear/return-to-AUTO and car-guard priority by up to a full control cadence.
+    controller = _controlling_controller()
+    svc, ctx = _service(controller)
+    cycle_token = svc._admit_cycle()  # a periodic tick is outstanding
+    assert cycle_token is not None
+    assert svc._admit_cycle() is None  # a SECOND periodic tick is (correctly) refused
+    override_token = svc.reserve_override_cycle()  # but an OVERRIDE is not
+    assert override_token is not None
+    assert len(ctx.writer_registry) == 2  # both slots held → restart 409s until both complete
+    assert svc.idle_for_restart() == (False, "outstanding_write")
+    svc._release_cycle(cycle_token)
+    svc._release_cycle(override_token)
+    # The ONLY thing that refuses an override is draining (a restart is imminent; the persisted
+    # override is re-read on boot) — never a mere outstanding cycle.
+    svc.mark_draining()
+    assert svc.reserve_override_cycle() is None
+    svc.clear_draining()
+    assert svc.reserve_override_cycle() is not None
+
+
+def test_override_applies_promptly_after_current_writer_not_next_periodic_tick(monkeypatch):
+    # Fix 1 (SAFETY regression): an override submitted WHILE an ordinary control cycle holds the
+    # writer must apply as soon as that writer completes — queued behind it via control_lock — NOT
+    # be deferred to the next periodic tick (~control_cycle_seconds later). This is what makes
+    # clear/return-to-AUTO and car-guard priority act at once.
+    controller = _controlling_controller()
+    svc, ctx = _service(controller)
+
+    tick_calls: list = []
+
+    def _record_tick(now):
+        tick_calls.append(now)
+        return []
+
+    monkeypatch.setattr(svc, "control_tick", _record_tick)
+
+    async def scenario():
+        # Simulate the CURRENT writer (a periodic cycle) holding the control lock.
+        await ctx.control_lock.acquire()
+        tasks: set = set()
+        override_task = svc.spawn_override_cycle(
+            lambda coro: _spawn_tracked(coro, "Override control cycle", tasks))
+        assert override_task is not None
+        assert len(ctx.writer_registry) == 1  # slot reserved AT SUBMISSION (before spawn)
+        assert svc.idle_for_restart() == (False, "outstanding_write")
+        await asyncio.sleep(0.02)  # give the override a turn — it must STILL be blocked on the lock
+        assert tick_calls == []  # NOT applied: queued behind the current writer, not on a tick
+        assert svc.idle_for_restart() == (False, "outstanding_write")  # still held while queued
+        ctx.control_lock.release()  # the current writer completes → releases the lock
+        await asyncio.wait_for(override_task, 3.0)  # the override now runs PROMPTLY
+        assert len(tick_calls) == 1  # applied right after the writer — not deferred to the tick
+        assert svc.writer_registry_empty() is True  # slot released on the worker's real completion
+        assert svc.idle_for_restart()[0] is True
+
+    asyncio.run(scenario())
+
+
+def test_override_pre_start_cancel_releases_slot_no_leak():
+    # Fix 2 (leak → permanent-busy deadlock): the override slot is reserved AT SUBMISSION, OUTSIDE
+    # the run_cycle coroutine. If that task is cancelled before its first turn, run_cycle never
+    # reaches its slot-releasing finally — the token leaks FOREVER and wedges idle_for_restart at
+    # "outstanding_write" (a restart could never succeed again). Sol reproduced registry_size==1
+    # after a pre-start cancel; the done-callback releases the orphaned slot so the gate recovers.
+    controller = _controlling_controller()
+    svc, ctx = _service(controller)
+
+    async def scenario():
+        tasks: set = set()
+        task = svc.spawn_override_cycle(
+            lambda coro: _spawn_tracked(coro, "Override control cycle", tasks))
+        assert task is not None
+        assert len(ctx.writer_registry) == 1  # reserved at submission
+        assert svc.idle_for_restart() == (False, "outstanding_write")
+        task.cancel()  # cancel BEFORE the loop steps it → run_cycle never starts
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
+        await asyncio.sleep(0)  # let the done-callback (_release_if_orphaned) run
+        assert svc.writer_registry_empty() is True  # orphaned slot released → no leak
+        assert svc.idle_for_restart()[0] is True  # gate recovers
+
+    asyncio.run(scenario())
+
+
+def test_override_synchronous_spawn_failure_releases_slot_no_leak():
+    # Fix 2 guard (a): if task creation itself raises, run_cycle never runs — the pre-reserved slot
+    # must be released synchronously so it can't leak.
+    controller = _controlling_controller()
+    svc, _ctx = _service(controller)
+
+    def _boom_spawn(coro):
+        raise RuntimeError("cannot create task")
+
+    with pytest.raises(RuntimeError):
+        svc.spawn_override_cycle(_boom_spawn)
+    assert svc.writer_registry_empty() is True  # slot released despite the spawn failure
 
 
 def test_idle_for_restart_clears_unconfirmed_flag_on_confirmed_auto():
@@ -323,6 +436,7 @@ def test_slot_reserved_at_submission_and_released_only_on_real_completion(monkey
         assert svc.writer_registry_empty() is True
     finally:
         gate.set()
+        _drain(loop)  # drain the shielded worker → no "Task was destroyed but pending" warning
         loop.close()
 
 
@@ -369,6 +483,7 @@ def test_queued_writer_survives_timeout_cancellation_and_releases_slot(monkeypat
     finally:
         occupy_release.set()
         ex.shutdown(wait=True)
+        _drain(loop)  # drain the shielded worker → no "Task was destroyed but pending" warning
         loop.close()
 
 
