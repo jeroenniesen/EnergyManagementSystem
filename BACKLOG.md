@@ -42,7 +42,7 @@ observability (B-24); numbered date-less sprints, Issues+Milestones on GitHub.
 | **E-06 · Trust & guidance** | | ⬜ B-31 marker | | B-09 B-12 B-21 |
 | **E-07 · Consumer-ready commercial product** | 🟨 B-55 settings menu | | | B-32 B-33 B-34 B-35 🟨 B-36 B-37 🟨 B-38 B-39 ✅ B-40 B-41 B-56 B-57 B-58 B-59 B-60 B-61 B-62 ✅ B-89 |
 | **E-08 · Predictive optimization intelligence** | | | | B-63 B-64 B-65 B-66 B-67 B-68 B-69 B-70 B-71 B-72 B-73 B-74 B-75 B-76 B-77 B-78 |
-| **E-09 · ISO 25010 quality engineering** | | | | **P1:** 🟨 B-79 ✅ B-80 ✅ B-81 ✅ B-82 ✅ B-83 · ✅ B-84 B-85 |
+| **E-09 · ISO 25010 quality engineering** | | | | **P1:** ✅ B-79 ✅ B-80 ✅ B-81 ✅ B-82 ✅ B-83 · ✅ B-84 B-85 |
 | **E-10 · Web UI redesign: dense → calm** | | | | ✅ B-86 ✅ B-87 B-88 |
 | *Big levers (pool)* | | | | B-17 B-18 B-19 B-20 B-23 |
 | *Refactoring (pool)* | | | | B-24 B-25 B-26 B-27 B-28 B-29 |
@@ -350,7 +350,7 @@ Replay historical days through the planner to compare rule changes, validate res
 ### B-79 · Truthful intelligence capability status — Bug · S · **P1**
 The API now exposes the intelligence layer as `not_active` (the misleading hard-coded `shadow` label was corrected in [PR #38](https://github.com/jeroenniesen/EnergyManagementSystem/pull/38)); the scenario planner is still not evaluated by the live runtime. The remaining work is to replace the static label with a real, runtime-proven capability state (`not_active`, `shadow_evaluation`, `advisory`, `active`) and show the last evaluation time/result. Never imply that intelligence steers a plan before it actually does.
 **Done when:** `/api/battery-plan` reports a runtime-proven state; UI copy distinguishes available, shadow, advisory, and active; tests prove no false claim is emitted.
-**Track:** Pool · E-09 · 🟨 — misleading `shadow` label fixed ([PR #38](https://github.com/jeroenniesen/EnergyManagementSystem/pull/38)); a runtime-proven capability state is still unbuilt.
+**Track:** ✅ done — E-09 · label fix ([PR #38](https://github.com/jeroenniesen/EnergyManagementSystem/pull/38)) + the runtime-proven capability state in this PR. The status is now derived each request from a single evaluation-record seam (`app.state.intelligence_box`) via `_intelligence_status()`, exposed as an object on `/api/battery-plan` provenance + a new `GET /api/intelligence` (state / last-eval time / result / reason); it fails safe to `not_active` and can never claim a capability the runtime didn't record. Actually running shadow/advisory/active evaluation stays E-08 (this shipped only the honesty mechanism).
 
 ### B-80 · Control/API performance budgets — Ops + Test · M · **P1**
 Define and measure control-cycle completion time, device-read latency, API p95 latency, SQLite transaction duration, memory ceiling, and replay/reporting budgets on the Raspberry Pi target. Add sustained dashboard-poll and slow-device tests; an over-budget cycle must preserve the safe fallback.

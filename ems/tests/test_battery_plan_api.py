@@ -216,7 +216,9 @@ def test_battery_plan_carries_a_provenance_block_with_the_expected_shape(tmp_pat
     assert prov["solar_confidence_pct"] == 80.0  # planner.solar_confidence default
     assert prov["planner"] in {"rule_based", "adaptive", "summer"}
     # The scenario/ML intelligence layer is built but not wired in — never claims to be active.
-    assert prov["intelligence"] == "not_active"
+    # (B-79) Runtime-derived status object, not a bare string — see _intelligence_status.
+    assert prov["intelligence"]["state"] == "not_active"
+    assert prov["intelligence"]["last_evaluated_at"] is None
 
 
 def test_battery_plan_provenance_reflects_the_solar_confidence_setting(tmp_path):
@@ -271,4 +273,4 @@ def test_battery_plan_provenance_is_present_even_when_paused_safely(tmp_path):
     assert prov["forecast_source"] == "No forecast source"
     assert prov["solar_confidence_pct"] == 80.0
     assert prov["planner"] in {"rule_based", "adaptive", "summer"}
-    assert prov["intelligence"] == "not_active"
+    assert prov["intelligence"]["state"] == "not_active"

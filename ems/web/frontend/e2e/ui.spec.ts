@@ -46,7 +46,14 @@ const DEFAULT_PROVENANCE = {
   forecast_source: "Forecast.Solar",
   solar_confidence_pct: 80,
   planner: "rule_based",
-  intelligence: "not_active",
+  intelligence: {
+    state: "not_active",
+    last_evaluated_at: null,
+    last_result: null,
+    reason:
+      "The scenario/ML intelligence layer is built but not wired into the live path; the " +
+      "dependable deterministic planner produced this plan.",
+  },
 };
 
 // B-68: a minimal-but-complete /api/battery-plan payload, so a test can mock just the
@@ -745,7 +752,11 @@ test.describe("EMS dashboard", () => {
           { level: "high", reasons: ["Fresh data, calibrated forecast, battery responding."] },
           {
             forecast_source: "Forecast.Solar", solar_confidence_pct: 80,
-            planner: "rule_based", intelligence: "not_active",
+            planner: "rule_based",
+            intelligence: {
+              state: "not_active", last_evaluated_at: null, last_result: null,
+              reason: "not wired into the live path",
+            },
           },
         )),
       }),
@@ -770,7 +781,11 @@ test.describe("EMS dashboard", () => {
           { level: "high", reasons: ["ok"] },
           {
             forecast_source: "Built-in model", solar_confidence_pct: 65,
-            planner: "adaptive", intelligence: "not_active",
+            planner: "adaptive",
+            intelligence: {
+              state: "not_active", last_evaluated_at: null, last_result: null,
+              reason: "not wired into the live path",
+            },
           },
         )),
       }),
@@ -1729,6 +1744,17 @@ test.describe("EMS dashboard", () => {
     await page.route("**/api/accuracy", (route) =>
       route.fulfill({
         status: 200, contentType: "application/json", body: JSON.stringify(accuracyFixture()),
+      }),
+    );
+    await page.route("**/api/intelligence", (route) =>
+      route.fulfill({
+        status: 200, contentType: "application/json",
+        body: JSON.stringify({
+          state: "not_active", last_evaluated_at: null, last_result: null,
+          reason:
+            "The scenario/ML intelligence layer is built but not wired into the live path; the " +
+            "dependable deterministic planner produced this plan.",
+        }),
       }),
     );
     await page.goto("/");

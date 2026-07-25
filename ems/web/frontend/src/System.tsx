@@ -2,7 +2,6 @@ import { useEffect, useState } from "react";
 
 import { apiFetch } from "./auth";
 import {
-  CURRENT_INTELLIGENCE_MODE,
   HEALTH_ROW_LABEL,
   HEALTH_STATUS,
   INCIDENT_TYPE_ACTION,
@@ -294,6 +293,9 @@ export function SystemView({
   const [err, setErr] = useState<string | null>(null);
   const [incidents, setIncidents] = useState<IncidentRollup | null>(null);
   const [accuracy, setAccuracy] = useState<Accuracy | null>(null);
+  const [intelligence, setIntelligence] = useState<
+    { state: string; last_evaluated_at: string | null; last_result: string | null; reason: string } | null
+  >(null);
 
   useEffect(() => {
     let alive = true;
@@ -359,6 +361,27 @@ export function SystemView({
     return () => {
       alive = false;
       clearInterval(id);
+    };
+  }, []);
+
+  // Planning-intelligence status (B-79): the runtime-derived scenario/ML evaluation state, one
+  // more best-effort fetch (same pattern as incidents/accuracy above) — a hiccup here just leaves
+  // the health row muted/unknown rather than blocking the readiness checks.
+  useEffect(() => {
+    let alive = true;
+    async function load() {
+      try {
+        const r = await apiFetch("/api/intelligence");
+        if (!r.ok) return;
+        const b = await r.json();
+        if (alive) setIntelligence(b);
+      } catch {
+        /* health row degrades to muted/unknown if this read fails */
+      }
+    }
+    load();
+    return () => {
+      alive = false;
     };
   }, []);
 
@@ -496,24 +519,36 @@ export function SystemView({
             {healthSummary(accuracy.health)}
           </p>
           <ul className="health-rows" data-testid="health-rows">
-            {/* Planning intelligence (feat/ux-batch-3, CLAUDE.md honesty ask): the scenario/ML
-                layer (ems/intelligence/planning.py) is built but NOT wired into the live path —
-                no evaluation, no validation, no steering. Only unit tests exercise it. Muted,
-                unknown-style dot, links nowhere. This copy is hardcoded here (System doesn't fetch
-                /api/battery-plan to read the live `provenance.intelligence` value), but the STRINGS
-                come from labels.ts's shared INTELLIGENCE_COPY/CURRENT_INTELLIGENCE_MODE — the one
-                place to flip when a mode starts steering. */}
-            <li className="health-row health-unknown" data-testid="health-planning-intelligence">
-              <span className="check-dot dot-unknown" aria-hidden="true" />
+            {/* Planning intelligence (feat/ux-batch-3, CLAUDE.md honesty ask; B-79 made this
+                runtime-derived): the scenario/ML layer (ems/intelligence/planning.py) is built —
+                whether it's evaluating/steering is now read live from GET /api/intelligence
+                (`intelligence` state above), not assumed. Muted/unknown dot + "—" value while
+                `not_active` (or before the fetch resolves); the label/value/detail strings come
+                from labels.ts's shared INTELLIGENCE_COPY, keyed by the runtime state. */}
+            <li
+              className={`health-row ${
+                intelligence && intelligence.state !== "not_active" ? "health-ok" : "health-unknown"
+              }`}
+              data-testid="health-planning-intelligence"
+            >
+              <span
+                className={`check-dot ${
+                  intelligence && intelligence.state !== "not_active" ? "dot-ok" : "dot-unknown"
+                }`}
+                aria-hidden="true"
+              />
               <span className="health-label">
-                {INTELLIGENCE_COPY[CURRENT_INTELLIGENCE_MODE].label}
+                {INTELLIGENCE_COPY[intelligence?.state ?? "not_active"]?.label ??
+                  "Planning intelligence"}
               </span>
-              <span className="health-value">—</span>
+              <span className="health-value">
+                {INTELLIGENCE_COPY[intelligence?.state ?? "not_active"]?.short ?? "—"}
+              </span>
               <span
                 className="health-note planning-intelligence-note"
                 data-testid="planning-intelligence-note"
               >
-                {INTELLIGENCE_COPY[CURRENT_INTELLIGENCE_MODE].detail}
+                {INTELLIGENCE_COPY[intelligence?.state ?? "not_active"]?.detail}
               </span>
             </li>
             {HEALTH_ROW_ORDER.map((row) => {
