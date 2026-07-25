@@ -1,73 +1,82 @@
 # Batch — "Apply & restart" + auth-screen styling
 
-**Status:** design (fork approved 2026-07-25: self-restart button) · **Author:** Fable 5 · **Cross-family spec review:** Sol (pending) · **Base:** `main` @ `f6791ae` · **Branch:** `feat/apply-restart-auth-styling`
+**Status:** design v2 (fork approved 2026-07-25: self-restart button) · **Author:** Fable 5 · **Cross-family spec review:** Sol — v1 CHANGES-REQUIRED (safety races found), v2 pending · **Base:** `main` @ `f6791ae` · **Branch:** `feat/apply-restart-auth-styling`
 
-Two independent homeowner-facing fixes surfaced by the app audit, batched because both are small, frontend-heavy, and touch the Settings/first-run surfaces. Built in 3 iterations + 3 polishing rounds under the multi-model working rules (every artifact: author self-review → Sol cross-family review that runs the tests).
+Two homeowner-facing fixes from the audit, batched (both small, frontend-heavy, touch Settings/first-run). Built in 3 iterations + 3 polishing rounds under the multi-model rules (author self-review → Sol cross-family review that runs the tests).
+
+**v2 note:** Sol's v1 review found that a naive self-SIGTERM is *not* safe — an in-flight control/override battery write (worker thread) can land after the shutdown-time AUTO restore, and unconfirmed/timed-out writes aren't restored at all. v2 makes the restart perform an explicit **quiescence + serialized safe write** *before* it exits, and reuses that mechanism to harden the normal shutdown path too.
 
 ## Item A — Style the auth screens
 
-**Problem.** `Login`, `Onboarding`, and `AcceptInvite` render *before* the app's styled shell (`App.tsx:645-664`: they return above the final `<SkyBackdrop/> + <div className="app">` return), and `styles.css` has **zero** selectors for them (no `.login`/`.onboarding`/`.accept-invite`, no bare `form`/`input`/`h1`). So the very first thing a homeowner sees — creating the admin account, and every later sign-in — is a plain top-left stack of unstyled browser inputs. Only `.btn-primary` picks up styling.
+**Problem.** `Login`/`Onboarding`/`AcceptInvite` render *before* the styled shell (`App.tsx:640-664`, above the final `<SkyBackdrop/> + <div className="app">`), and `styles.css` has zero selectors for them — the first thing a homeowner sees is unstyled browser inputs.
 
-**Design.** A single shared **`AuthLayout`** component wraps all three screens in a centered card that mirrors the existing design system — no new visual language, just applying the tokens already in `styles.css`.
+**Design.** A shared **`AuthLayout`** centers a card that reuses the existing tokens (`--panel/--line/--radius/--shadow/--accent`, light+dark), the panel recipe (`styles.css:421-431`/`691-698`), and the `.field` form pattern (`styles.css:1259-1303`). No new visual language.
+- `AuthLayout.tsx`: `<AuthLayout title=… testid?>{children}</AuthLayout>` — **AuthLayout owns the heading** (renders the product/screen title `<h1>`; the three screens drop their bare `<h1>` and pass a `title` prop). Full-viewport centered container behind the `<SkyBackdrop/>`.
+- CSS (appended, theme-aware): `.auth-screen` (fixed, flex-center, `min-height: 100dvh`, `padding`, **`overflow-y: auto`** so small/landscape screens and an open mobile keyboard never clip), `.auth-card` (panel recipe, `width:100%; max-width:420px; padding: clamp(20px,5vw,32px)`), `.auth-card h1`, full-width submit (`.auth-card .btn-primary{width:100%}`), error via existing `.field-err`.
+- **All text inputs must be explicit `type="text"`** (Username, Existing-access-token) — the existing `.field input` CSS only matches `input[type="text"]`/`[type="password"]` (`styles.css:1266`); an implicit-type input would render unstyled.
+- **Preserve (e2e contract, do NOT change):** outer `data-testid` (`login`/`onboarding`/`accept-invite`), field `aria-label`s (`Username`/`Password`/`Existing access token`), submit button text (`Sign in`/`Create admin`/`Create account`). Add `data-testid="auth-card"` for a visibility assertion.
 
-- **New component** `ems/web/frontend/src/AuthLayout.tsx`: `<AuthLayout title testid>{children}</AuthLayout>` renders a full-viewport centered backdrop + a `max-width: 420px` card. The three screens keep their own `<form data-testid=…>`, fields, error `<p role="alert">`, and submit button, but drop their bare `<h1>` in favor of the layout's title (or keep it, styled). The `<SkyBackdrop/>` renders behind the card so the auth screens share the app's atmosphere.
-- **New CSS** (append to `styles.css`, theme-aware via the existing `:root` / `:root[data-theme="light"]` tokens — no hard-coded colors):
-  - `.auth-screen` — fixed full-viewport flex-center container (mirrors `.modal-backdrop` at `styles.css:421-426`), `padding` so it never clips on mobile, `min-height: 100dvh`.
-  - `.auth-card` — the panel recipe used app-wide (`background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); box-shadow: var(--shadow); padding: clamp(20px, 5vw, 32px)`), `width: 100%; max-width: 420px`.
-  - `.auth-card h1` — the product title/heading (size ~1.4rem, `color: var(--text)`), plus an optional muted subtitle (`color: var(--muted)`).
-  - Reuse the **existing** `.field` form pattern (`styles.css:1259-1303`) for label+input+help+error rather than inventing new field CSS: the screens' inputs get wrapped so they pick up `.field input` styling (`background: var(--panel-2); border: 1px solid var(--line); border-radius: 8px; padding: 7px 10px` + focus ring). Error `<p role="alert">` gets the existing `.field-err` (or `.error`) class.
-  - Submit button spans full width on these screens (`.auth-card .btn-primary { width: 100%; }`).
-- **Contract to preserve (e2e-critical, do NOT change):** the outer `data-testid` on each form (`login` / `onboarding` / `accept-invite`), the field `aria-label`s (`Username`, `Password`, `Existing access token`), and the submit button visible text (`Sign in` / `Create admin` / `Create account`). `auth.spec.ts` keys only off these. Styling is additive.
+**Files:** create `AuthLayout.tsx`; modify `Login.tsx`/`Onboarding.tsx`/`AcceptInvite.tsx`/`styles.css`. Bundle ≤ 300 KB gz.
 
-**Files:** create `AuthLayout.tsx`; modify `Login.tsx`, `Onboarding.tsx`, `AcceptInvite.tsx` (wrap in `AuthLayout`, apply `.field` structure), `styles.css` (append auth section). Bundle stays ≤ 300 KB gz.
+## Item B — Make "restart to apply" real (safe, quiesced self-restart)
 
-## Item B — Make "restart to apply" real (self-restart button)
+**Problem (no-op, confirmed).** 12 `applies="restart"` settings are read once at boot (`main.py:34-57` → `build_wiring`); saving them updates `settings_cache`/DB + a UI flag but the live source/battery objects keep old values until the process restarts, and nothing restarts it.
 
-**Problem (confirmed no-op).** 12 of 76 settings are `applies="restart"` (device IPs, `prices.tibber_token`, `battery.indevolt_*`, `control.operational`, `reporting.carbon_signal`/`electricitymaps_api_key`). These are read **once** at boot in `build_app()` via `effective_connection()`+`build_wiring()` (`main.py:54-57`). Saving one updates `settings_cache`/DB and flips a UI `restart_required` flag, but the live source/battery-driver objects keep the **old** values until the OS process restarts — and nothing restarts it. `POST /api/settings` (`api.py:3517-3556`) computes `restart_required` only to echo it back.
+### B.0 The safety core — quiescence + serialized safe write (NEW in v2)
+The restart (and, reusing the same helper, the normal ASGI shutdown) must guarantee the battery ends in a **known safe state (AUTO)** with **no writer able to run after it**. Add to `ControlService` a `quiesce_for_shutdown(*, deadline_s)` coroutine:
+1. **Stop admission.** Set a `draining` flag checked at the top of `run_cycle()` and of every override-triggered write path (`api.py:2266/2292` detached override cycles) — once set, these return WITHOUT starting a new battery write.
+2. **Drain in-flight writers.** Acquire the existing `control_lock` (serializes control cycles) so the current cycle's worker-thread write has completed; and `await` the tracked override-cycle tasks (they are already tracked — `api.py:2266/2292`). Override writes must go through the same `control_lock`/drain so nothing writes outside this serialization (route them through it if they don't today).
+3. **Serialized final safe write.** Still holding `control_lock` with `draining` set (no new writers possible), command **AUTO** and confirm it — UNLESS the controller can prove the battery is already confirmed-AUTO. The predicate covers **requested / unconfirmed / unknown**: if any non-AUTO mode was ever commanded or *attempted* (including a timed-out/`BatteryWriteUnconfirmed` write where `last_confirmed_action` was NOT updated — `mode_controller.py:339-341`), issue AUTO. Retry within `deadline_s`.
+4. **Honest bound.** The underlying HTTP write thread cannot be force-killed (`wait_for` only times out the await — `api.py:1221`). The real bound is drain+lock (wait for the *current* write to finish) plus the driver's own per-request timeouts/retries (`indevolt_driver.py:202/269`). If AUTO cannot be confirmed within `deadline_s`, **audit a loud alert** (`battery may remain in a forced mode`) and proceed to exit anyway (never hang). This replaces the false "bounded 8s" claim with an honest, cooperative contract.
 
-**Design — an admin-gated self-restart that the supervisor relaunches.**
+`_shutdown_restore()` (`api.py:1221`) is refactored to call `quiesce_for_shutdown()` (or becomes a thin idempotent backstop after it), so the **normal SIGTERM/deploy/stop path is hardened too**, not just the button.
 
-### B.1 Backend: `POST /api/system/restart`
-- **New route** (e.g. `ems/web/routes/system.py` or fold into an existing admin router). **Gating: ADMIN + session-only.** Add `/api/system/restart` to `authz.ADMIN_PATHS` (exact path) AND to `_SESSION_ONLY_PATHS` (so no machine/access token can restart the service — same posture as user-management). The handler assumes a resolved ADMIN session principal (middleware enforces).
-- **Supervised guard.** Self-restart only makes sense where a supervisor relaunches the process. Introduce `EMS_SUPERVISED` (set to `1` by `scripts/install.sh` in the launchd plist `EnvironmentVariables`, and by `docker-compose*.yml` env). If `EMS_SUPERVISED` is not truthy → the endpoint returns **409** `{"detail": "not running under a supervisor; restart manually (scripts/restart.sh)"}` and does NOT exit. This keeps a bare-uvicorn dev run from being killed with no relaunch.
-- **The restart itself (safety-critical path).** The handler:
-  1. audits `system_restart` (actor, ts) via `ctx.audit_auth`/audit;
-  2. returns **202** `{"restarting": true}` to the client immediately;
-  3. schedules a **clean** shutdown *after the response is sent* — send the process its own `SIGTERM` (`os.kill(os.getpid(), signal.SIGTERM)`) from a short `asyncio` delay / background task. Uvicorn's SIGTERM handler runs the normal graceful ASGI shutdown, so the FastAPI **lifespan `finally` still executes `_shutdown_restore()`** (battery best-effort restored to safe/AUTO, bounded 8s, audited) before the process exits. The supervisor (launchd `KeepAlive`, Docker `restart:unless-stopped`) then relaunches, and boot runs the normal **observe→validate→plan→act startup grace** (`Lifecycle`).
-  - **MUST NOT** use `os._exit()`/hard-kill — that would bypass `_shutdown_restore` and leave the battery in a commanded non-AUTO mode. This is the single most important correctness constraint of the item.
-- **Testability.** Do not let the test actually SIGTERM the pytest process. Inject the shutdown trigger as a small override — e.g. the handler calls `app.state.request_restart()` (default = the SIGTERM-after-delay function; tests replace it with a spy). Tests then assert: 403 for non-admin / non-session, 409 when unsupervised, 202 + `request_restart` invoked + `system_restart` audited when admin+session+supervised.
+### B.1 Backend endpoint `POST /api/system/restart`
+- **Only registered when the identity system is wired** (`auth_store` is not None). In legacy `create_app(auth_store=None)` mode the route is **not registered** (the legacy middleware branch doesn't consult `required_tier`/`requires_session` — `api.py:1471` — so it must never be reachable there). The handler additionally asserts `request.scope.get("auth_principal")` is a resolved principal and **fails closed** (403) otherwise — belt and suspenders.
+- **Gating: ADMIN + session-only.** Add `/api/system/restart` to `authz.ADMIN_PATHS` (exact path → ADMIN) AND `_SESSION_ONLY_PATHS` (→ `requires_session`), so no machine/access token can restart (verified path: `authz.py:86/94` + middleware `api.py:1500`).
+- **Supervised guard, strict parsing.** A shared helper `_is_supervised()` reads `EMS_SUPERVISED` with an explicit truthy allow-list `{"1","true","yes","on"}` (case-insensitive) — NOT `bool(os.getenv(...))`. Set `EMS_SUPERVISED=1` in the launchd plist `EnvironmentVariables` (`scripts/install.sh`) and `docker-compose*.yml` env. If not supervised → **409** `{"detail":"not supervised; restart manually via scripts/restart.sh"}`, no exit.
+- **Single-flight, response-first trigger.** A module/`app.state` `_restart_requested` flag makes a second concurrent request return **409** (`already restarting`). On the first valid request: (1) audit `system_restart` (actor username/id, ts) — via the audit store with an explicit event; note `ctx.audit_auth` writes a category=`auth` row with `detail.event` (`api.py:845`), so the spec's audit shape is "auth-category row, `event="system_restart"`, actor fields" (implementer confirms the exact call). (2) return **202** `{"restarting":true,"boot_id":<current>}`. (3) AFTER the response is delivered, run the restart action via an injectable `app.state.request_restart` (default: `await quiesce_for_shutdown(deadline_s=…)` then `os.kill(os.getpid(), signal.SIGTERM)`), scheduled as a response-attached background task / post-send hook — NOT a bare sleep. It must schedule successfully before the 202 is committed.
+- **MUST NOT `os._exit()`** — SIGTERM routes through uvicorn's graceful shutdown (verified: uvicorn 0.49.0 SIGTERM sets `should_exit`, runs lifespan shutdown — `server.py:299/341`) so the lifespan `finally` (already-quiesced) runs. Hard-kill would bypass safety.
 
-### B.2 Frontend: honest pending-state + "Apply & restart"
-- The pending plumbing already exists (`restart_required` from `POST /api/settings`, `restartPending: Set<string>`, the `restart` badges + `settings-nav-restart` pill + `"· some apply on restart"` save-bar hint). Extend it:
-  - When there are restart-pending changes (or on demand), show an **"Apply & restart"** button in the Settings save-bar / a small banner. Visible only to admins on a session (mirrors the existing admin-gated controls); hidden/disabled when `EMS_SUPERVISED` is not set (surface the manual-restart hint instead — the app already knows via a small `GET` field, see B.3).
-  - Clicking → a **confirmation** step (reuse the existing guided-confirm pattern used for risky overrides) that states plainly: *"This restarts the EMS to apply the changes. The battery briefly returns to its safe mode for a few seconds, then the app comes back on its own."* → on confirm, `POST /api/system/restart`.
-  - After 202: show a **"Restarting…"** state, then **poll `GET /health/live`** until it returns healthy again (with a timeout + "still restarting / reload manually" fallback), then reload the page. Never leave the user on a dead screen with no feedback.
-- Copy stays honest (project voice): the button doesn't promise zero-downtime; it says what actually happens.
+### B.2 Boot identity (restart proof)
+- At startup set `app.state.boot_id = uuid4().hex`. Expose it on **`/health/live`** (already exists, `api.py:1921`, returns `{"status":"alive"}`) → add `"boot_id"`. The client records the pre-restart `boot_id` (from the 202) and polls `/health/live` until it returns a **different** `boot_id`, then reloads — proving the NEW process answered (a plain "healthy" poll can be answered by the still-running old process).
 
-### B.3 Supervised flag to the client
-- Surface whether a supervised restart is available so the UI shows the button vs. the manual-restart hint. Add `supervised: bool` (from `EMS_SUPERVISED`) to an existing read the Settings page already makes (e.g. the `/api/auth` discovery payload, or `/api/diagnostics`, or the settings GET) — pick the one Settings already consumes to avoid a new fetch. (Implementer picks the least-invasive existing endpoint; the middleware tiering for that endpoint is unchanged.)
+### B.3 Server-computed capability (no client inference)
+- Expose a server-derived `restart_available: {available: bool, reason: str}` and `restart_pending: bool`, computed on the server:
+  - `available` = supervised AND caller is an ADMIN **session** (server knows both; the client must NOT infer from `supervised` alone).
+  - `restart_pending` = derived from a **boot-time fingerprint**: capture the values of the 12 restart-tagged settings at `build_app()` boot into `app.state.boot_restart_fingerprint`; `restart_pending` = current `settings_cache` values of those keys differ from the fingerprint. This is robust across Settings unmount / page reload / discard (unlike the component-local `restartPending` set at `Settings.tsx:405`).
+  - Surface both on an endpoint Settings already consumes — extend **`/api/auth/me`** (already returns `kind` — `routes/auth.py:182`) or the settings/diagnostics read the page makes; implementer picks the least-invasive one and documents it. (The current `/api/auth` discovery payload exposes `role` but not `kind` — `api.py:1966` — so it is NOT sufficient alone.)
+
+### B.4 Frontend UX
+- Show an **"Apply & restart"** control (Settings save-bar/banner) only when `restart_available.available && restart_pending`; when supervised is false but changes are pending, show the **manual-restart hint** (`scripts/restart.sh`) instead. Admin-session only (server also enforces).
+- Click → **confirmation** (reuse the guided-confirm pattern) stating plainly: *"This restarts the EMS to apply the changes. The battery is first returned to its safe AUTO mode, then the app restarts and comes back on its own in a few seconds."* → `POST /api/system/restart`.
+- On 202: **"Restarting…"** → poll `/health/live` for a **changed `boot_id`** (timeout + "still restarting / reload manually" fallback) → reload. Never a dead screen.
 
 ## Testing
+Backend:
+- **Gating:** 403 non-admin session; 403 admin **access token** (session-only); 409 unsupervised; 409 second concurrent request; 202 + `request_restart` spy invoked + audit row when admin+session+supervised. Route **absent** in `auth_store=None` mode.
+- **Quiescence (the safety core):** with a mock driver, prove `quiesce_for_shutdown` (a) sets `draining` so a subsequent `run_cycle`/override does NOT write; (b) with a simulated in-flight non-AUTO write, the FINAL battery command observed is AUTO (no write lands after it); (c) restores AUTO when the last action is unconfirmed/unknown (not just when `last_confirmed_action != AUTO`); (d) on a driver that never confirms, returns within `deadline_s` and audits the loud alert.
+- **`_is_supervised()`:** `"1"/"true"/"yes"/"on"` (any case) → True; `"0"/"false"/""/unset/"maybe"` → False.
+- **Real shutdown integration test (Sol blocking #7):** launch a harmless instrumented app under the pinned uvicorn (subprocess), hit `/api/system/restart`, assert the 202 is delivered, the lifespan cleanup/quiesce ran, and the process exits — i.e. response-before-exit ordering and lifespan execution, not just that `os.kill` was requested.
+- Regression: `POST /api/settings` still returns `restart_required`; settings-apply hooks unchanged.
 
-Backend (`ems/tests/`):
-- `/api/system/restart`: 403 for a non-admin session; 403 for an admin **access token** (session-only); 409 when `EMS_SUPERVISED` unset; 202 + `request_restart` spy called + `system_restart` audit row when admin+session+supervised. The shutdown function itself (SIGTERM-after-delay) is unit-tested in isolation to confirm it does **not** call `os._exit` and goes through SIGTERM (assert the signal, mock `os.kill`).
-- Regression: `POST /api/settings` still returns `restart_required` correctly; no change to the settings-apply hooks.
-
-Frontend (Playwright, `auth.spec.ts` + `manage`/settings specs):
-- Auth screens: after styling, the existing onboarding→login→logout, invite-accept, and account-token specs stay green (testids/labels/button-text unchanged); add a light assertion that the auth card is centered/visible (e.g. `account-tokens`-style testid on the card, `data-testid="auth-card"`).
-- Apply & restart: with a mocked `/api/system/restart` (202) and a mocked `supervised:true`, saving a restart-tagged field surfaces the "Apply & restart" button; confirm → posts → shows "Restarting…" → (mock `/health/live` healthy) → reload. With `supervised:false`, the manual-restart hint shows instead of the button.
+Frontend (Playwright): auth-screen specs stay green (testids/labels/button-text unchanged) + `auth-card` visible/centered; Apply & restart flow with mocked `restart_available`/`restart_pending`/202/boot_id + `/health/live` boot_id change → shows button → confirm → "Restarting…" → reload; unsupervised → manual hint, no button.
 
 ## Iteration plan (3 + 3)
-- **I1 — Auth styling** (Sonnet author → Sol review): `AuthLayout` + CSS + wire the 3 screens + e2e stays green + card assertion.
-- **I2 — Restart backend** (Opus author → Sol review): the endpoint, session+ADMIN gating, `EMS_SUPERVISED` guard, safe SIGTERM shutdown via injectable `request_restart`, `supervised` surfaced to the client, install.sh/compose env, tests. *(Safety-critical — Opus, not Sonnet.)*
-- **I3 — Restart frontend UX** (Sonnet author → Sol review): pending-state + "Apply & restart" button + confirm + poll `/health/live` + reload + e2e.
+- **I1 — Auth styling** (Sonnet → Sol): `AuthLayout` + CSS + wire 3 screens + explicit `type="text"` + e2e + `auth-card` assertion.
+- **I2 — Restart safety core + backend** (**Opus** → Sol; safety-critical): `quiesce_for_shutdown` + drain flag + override-write serialization + AUTO-guaranteed restore covering unconfirmed/unknown + refactor `_shutdown_restore` to use it; the endpoint (register-only-with-auth, ADMIN+session, strict `_is_supervised`, single-flight, response-first injectable trigger, SIGTERM-not-`os._exit`); `boot_id`; server `restart_available`/`restart_pending` (boot fingerprint); install.sh/compose env; all backend tests incl. the uvicorn subprocess test.
+- **I3 — Restart frontend UX** (Sonnet → Sol): capability-driven button + manual hint + confirm + boot_id poll + reload + e2e.
 - **P1** — cross-cutting review sweep (Sol) + fix wave.
-- **P2** — adversarial **safety** review of the restart path (Fable deep-check + Sol): prove `_shutdown_restore` always runs (no `os._exit`), the supervised-guard can't be bypassed, no non-admin/machine-token can restart, and the battery-safe posture across the restart window holds.
-- **P3** — final whole-branch review (`panel` pre-merge) + verify + PR.
+- **P2** — adversarial **safety** review of the quiesce/restart path (Fable deep-check + Sol via `/panel` senior-software-engineer + qa-lead): prove no writer runs after AUTO, unconfirmed states are restored, no `os._exit`, gating can't be bypassed (incl. legacy mode), supervised-guard sound, boot_id proof correct.
+- **P3** — final whole-branch review (`/panel` pre-merge) + full verify + PR.
 
-## Non-goals / out of scope
-- **Hot-reload** of the affected subsystems (no-downtime live re-wire) — explicitly deferred as its own larger/riskier follow-up (touches the live control loop; `control.operational` arming needs the Lifecycle observe-before-act safeguards).
-- Redesigning the auth screens' *content* or the Settings information architecture — this is styling + one action, not a rework.
+## Non-goals
+- Hot-reload / no-downtime live re-wire (deferred, larger/riskier).
+- Redesigning auth-screen content or Settings IA.
+- A general controller-write-lock/threading rewrite beyond what `quiesce_for_shutdown` needs (the drain+serialize is scoped to the shutdown boundary).
 
 ## Rollout
-Additive. The restart endpoint is inert unless `EMS_SUPERVISED` is set (so dev/bare-uvicorn is unaffected). Auth styling is CSS + a wrapper component — no API/contract change. Ships on `feat/apply-restart-auth-styling`; PR into `main`.
+Additive. Restart endpoint inert unless `EMS_SUPERVISED` truthy (dev/bare-uvicorn unaffected) and absent in legacy no-auth mode. The quiesce hardening also improves every normal SIGTERM/deploy stop. Auth styling is CSS + a wrapper — no contract change. Ships on `feat/apply-restart-auth-styling`; PR into `main`.
+
+## Discovered pre-existing issue (recorded, human owns)
+Sol's review revealed the *current* shutdown restore (any SIGTERM today) has the same writer-quiescence race and unconfirmed-write gap. v2 fixes it in-scope by routing shutdown through `quiesce_for_shutdown`. If the user prefers to NOT expand scope, the fallback is to make the restart endpoint **refuse (409) unless the controller is idle** (no in-flight write, confirmed-AUTO) — lighter, but leaves the general shutdown race for a separate hardening item. Decision recorded at approval.
