@@ -183,17 +183,70 @@ def test_idle_for_restart_409_when_last_action_not_auto():
     assert idle is False and reason == "last_action_not_auto"
 
 
-def test_idle_for_restart_409_for_a_pending_override_task():
+def test_override_reserves_registry_slot_at_submission_independent_of_override_tasks():
+    # Fix 1 (spec §B.0.2): an override reserves its cycle slot in the UNIFIED registry SYNCHRONOUSLY
+    # at submission — BEFORE its asyncio.Task is created — so the restart gate refuses via the
+    # registry ALONE, with NO reliance on the override_tasks set. This is the window the old
+    # separate override_tasks check used to cover; the registry now subsumes it.
+    controller = _controlling_controller()
+    svc, ctx = _service(controller)
+    token = svc.reserve_override_cycle()  # exactly what the override endpoint calls at submission
+    assert token is not None
+    # The override worker has NOT run yet, and override_tasks is EMPTY — but the registry already
+    # reflects the override the instant it is admitted, so the gate refuses.
+    assert not ctx.override_tasks
+    assert svc.writer_registry_empty() is False
+    idle, reason = svc.idle_for_restart()
+    assert idle is False and reason == "outstanding_write"  # visible via the registry alone
+    # Released on the worker's real completion (here, directly) → the gate reopens.
+    svc._release_cycle(token)
+    assert svc.writer_registry_empty() is True
+    assert svc.idle_for_restart()[0] is True
+
+
+def test_override_run_cycle_reuses_presubmitted_slot_and_releases_on_real_completion(monkeypatch):
+    # The pre-reserved override slot is USED by run_cycle (NOT a second admission) and released only
+    # when the tick worker really completes. The restart gate stays 409 the whole time, via the
+    # registry — override_tasks is never consulted.
+    import ems.perf as perf
+    monkeypatch.setitem(perf.PERF_BUDGETS, "control.cycle", 40)  # 40 ms deadline
+
     controller = _controlling_controller()
     svc, ctx = _service(controller)
 
-    class _PendingTask:
-        def done(self):
-            return False
+    gate = threading.Event()
 
-    ctx.override_tasks.add(_PendingTask())
-    idle, reason = svc.idle_for_restart()
-    assert idle is False and reason == "override_pending"
+    def _blocking_tick(now):
+        gate.wait(5.0)  # outlive the wait_for deadline
+        return []
+
+    async def _noop_overrun(*a, **k):
+        return None
+
+    monkeypatch.setattr(svc, "control_tick", _blocking_tick)
+    monkeypatch.setattr(svc, "_handle_overrun", _noop_overrun)
+
+    token = svc.reserve_override_cycle()  # SUBMISSION: slot reserved before any task/worker exists
+    assert token is not None
+    assert len(ctx.writer_registry) == 1
+    assert svc.idle_for_restart() == (False, "outstanding_write")  # refused at submission already
+
+    loop = asyncio.new_event_loop()
+    try:
+        # run_cycle uses the PRE-RESERVED token (does not admit a second slot) and returns after the
+        # deadline while the blocked worker keeps holding the slot.
+        loop.run_until_complete(svc.run_cycle(cycle_token=token))
+        assert len(ctx.writer_registry) == 1  # still exactly ONE slot — token reused, not doubled
+        assert svc.idle_for_restart()[0] is False  # worker still running → gate refuses
+        gate.set()  # let the worker complete → its `finally` releases the slot on REAL completion
+        deadline = time.time() + 3.0
+        while not svc.writer_registry_empty() and time.time() < deadline:
+            time.sleep(0.01)
+        assert svc.writer_registry_empty() is True
+        assert svc.idle_for_restart()[0] is True
+    finally:
+        gate.set()
+        loop.close()
 
 
 def test_idle_for_restart_clears_unconfirmed_flag_on_confirmed_auto():

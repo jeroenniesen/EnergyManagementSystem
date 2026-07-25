@@ -2304,6 +2304,20 @@ def create_app(
             round_trip_efficiency=s["planner.round_trip_efficiency"],
         ).to_dict()
 
+    def _spawn_override_cycle() -> None:
+        """Apply a just-saved override on the battery NOW (don't wait a full control cycle). Reserve
+        the cycle slot in the outstanding-write registry SYNCHRONOUSLY at submission — BEFORE the
+        asyncio.Task is created — so the refuse-when-busy restart gate sees this override via the
+        registry alone (subsuming the override_tasks set; spec §B.0.2). The slot is released on the
+        worker's REAL completion inside run_cycle. Coalesces (no task) when a control cycle is
+        already outstanding or we're draining for a restart — the override then applies on the next
+        periodic cycle, exactly as before."""
+        token = control.reserve_override_cycle()
+        if token is None:
+            return
+        _spawn_tracked(
+            control.run_cycle(cycle_token=token), "Override control cycle", _override_tasks)
+
     @app.get("/api/override")
     def get_override() -> dict:
         now = datetime.now(UTC)
@@ -2327,8 +2341,8 @@ def create_app(
                     "Manual override cleared — back to the automatic plan", {"action": "clear"},
                 )
             if not dry_run:
-                # apply now, don't wait a full cycle (tracked so it can't be GC'd mid-run)
-                _spawn_tracked(_run_control_cycle(), "Override control cycle", _override_tasks)
+                # apply now, not next cycle — slot reserved AT SUBMISSION so the registry sees it
+                _spawn_override_cycle()
             return JSONResponse(get_override())
         errors: dict[str, str] = {}
         try:
@@ -2353,9 +2367,10 @@ def create_app(
                  "expires_at": expires.isoformat()},
             )
         # Apply the override on the battery NOW (and audit the confirmed result) instead of waiting
-        # up to a full control cycle — what the operator expects when they press "charge".
+        # up to a full control cycle — what the operator expects when they press "charge". The cycle
+        # slot is reserved at SUBMISSION so the restart gate observes it via the registry alone.
         if not dry_run:
-            _spawn_tracked(_run_control_cycle(), "Override control cycle", _override_tasks)
+            _spawn_override_cycle()
         return JSONResponse(get_override())
 
     # --- I2 refuse-when-busy self-restart --------------------------------------------------------
