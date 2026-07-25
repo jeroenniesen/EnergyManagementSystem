@@ -9,17 +9,20 @@ import logging
 import os
 import re
 import secrets
+import signal
 import sqlite3
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
 from datetime import date as date_cls
 from pathlib import Path
 from typing import Any
+from uuid import uuid4
 from zoneinfo import ZoneInfo
 
 from fastapi import FastAPI, Query, Request
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
+from starlette.background import BackgroundTask
 
 from ems import export_package as expkg
 from ems.alerts import data_quality, derive_alerts
@@ -810,6 +813,33 @@ class _SecurityHeadersMiddleware:
         await self.app(scope, receive, send_wrapper)
 
 
+# --- I2 refuse-when-busy self-restart: process-supervisor guard + boot fingerprint ---------------
+# Strict truthy allow-list (case-insensitive) — NOT bool(os.getenv(...)), which would treat "0" /
+# "false" as supervised. Only under a supervisor (launchd KeepAlive / Docker restart:unless-stopped)
+# does a self-SIGTERM come back up; unsupervised, the restart endpoint refuses so we never take the
+# process down with nothing to relaunch it.
+_SUPERVISED_TRUTHY = frozenset({"1", "true", "yes", "on"})
+
+
+def _is_supervised() -> bool:
+    return os.getenv("EMS_SUPERVISED", "").strip().lower() in _SUPERVISED_TRUTHY
+
+
+# The 12 restart-tagged settings (connection / meters / battery IPs / operational mode / carbon):
+# read once at boot, so saving one is a no-op until the process restarts. Sorted for a stable
+# fingerprint. `restart_pending` compares the live values against a fingerprint captured AFTER the
+# persisted settings load (not the default cache), so it is true exactly when a restart would apply
+# a pending change.
+_RESTART_TAGGED_KEYS: tuple[str, ...] = tuple(
+    sorted(k for k, f in SETTINGS_BY_KEY.items() if f.applies == "restart"))
+
+
+def _restart_settings_fingerprint(cache: dict[str, Any]) -> str:
+    payload = {k: cache.get(k) for k in _RESTART_TAGGED_KEYS}
+    return hashlib.sha256(
+        json.dumps(payload, sort_keys=True, default=str).encode()).hexdigest()
+
+
 def create_app(
     source: Source,
     *,
@@ -1223,6 +1253,15 @@ def create_app(
             )
         except Exception as exc:
             _log.warning("shutdown restore failed (%s: %s)", type(exc).__name__, exc)
+        if ok and target is PhysicalMode.AUTO:
+            # Reconcile the persisted control state so the NEXT process boots with
+            # last_confirmed_action=AUTO — otherwise the refuse-when-busy restart gate (I2) would
+            # sit at 409 forever after this external/deploy restart even though the battery is
+            # confirmed-safe (an AUTO-desired cycle is idempotent and never rewrites the field).
+            try:
+                controller.note_confirmed_auto()
+            except Exception:
+                _log.debug("shutdown-restore state reconcile failed (non-fatal)", exc_info=True)
         if audit_store is not None:
             try:
                 await audit_store.append(
@@ -1250,6 +1289,10 @@ def create_app(
             _apply_site_settings()
             _apply_explainer_settings()
             await _apply_battery_power_settings()
+        # I2: capture the restart-tagged fingerprint AFTER persisted settings are loaded (not the
+        # default cache), so `restart_pending` is true exactly when a saved-but-not-yet-applied
+        # restart-tagged setting differs from what this process booted with.
+        _app.state.restart_fingerprint = _restart_settings_fingerprint(settings_cache)
         if override_store is not None:
             await override_store.init()
             stored = await override_store.all()
@@ -1354,6 +1397,21 @@ def create_app(
                     await s.close()
 
     app = FastAPI(title="Smart Energy Manager", version="0.0.1", lifespan=lifespan)
+
+    # --- I2 refuse-when-busy self-restart: boot identity + restart state ------------------------
+    # boot_id proves a restart actually happened: the client records the 202's boot_id and polls
+    # /health/live until a DIFFERENT one answers (a plain "alive" can be the OLD process). Fresh per
+    # process, so a relaunch always differs. `_restart_requested` is the single-flight latch.
+    app.state.boot_id = uuid4().hex
+    app.state._restart_requested = False
+    # Injectable so tests replace it with a spy; default = self-SIGTERM (NEVER os._exit — SIGTERM
+    # lets uvicorn run the lifespan shutdown / battery-safe AUTO restore). Set to the real trigger
+    # below once `control` exists (it clears the flags if the trigger raises, so no wedge).
+    app.state.request_restart = lambda: os.kill(os.getpid(), signal.SIGTERM)
+    # Boot fingerprint of the 12 restart-tagged settings — recomputed AFTER the persisted settings
+    # load in lifespan; this create_app-time value (over defaults) is the fallback if lifespan never
+    # runs (e.g. a test that doesn't enter the TestClient context manager).
+    app.state.restart_fingerprint = _restart_settings_fingerprint(settings_cache)
 
     # --- Access control (SPEC §12) --------------------------------------------------------------
     # One choke point for the whole JSON API (finding 1) instead of a guard sprinkled on each write.
@@ -1587,6 +1645,9 @@ def create_app(
         source=source, cache_store=cache_store,
         data_quality=_data_quality, validate_plan_obj=_validate_plan_obj,
     )
+    # I2: the restart handler + tests reach the control brain's outstanding-write registry and the
+    # idle-and-safe read through here (the single owner of `ctx.writer_registry`).
+    app.state.control_service = control
     _effective_intent = control.effective_intent
     _current_plan = control.current_plan
     _plan_with_recovery = control.plan_with_recovery
@@ -1920,7 +1981,9 @@ def create_app(
 
     @app.get("/health/live")
     def live() -> dict:
-        return {"status": "alive"}
+        # boot_id (I2): the client polls this after a 202 restart until a DIFFERENT boot_id answers,
+        # proving the NEW process is up (a plain "alive" could be the old one mid-shutdown).
+        return {"status": "alive", "boot_id": app.state.boot_id}
 
     def _readiness(now: datetime) -> Readiness:
         """Layered readiness for a control system (energy review #7): alive / dashboard / sensing /
@@ -2294,6 +2357,75 @@ def create_app(
         if not dry_run:
             _spawn_tracked(_run_control_cycle(), "Override control cycle", _override_tasks)
         return JSONResponse(get_override())
+
+    # --- I2 refuse-when-busy self-restart --------------------------------------------------------
+    def _restart_pending() -> bool:
+        """True when the live restart-tagged settings differ from the post-load boot fingerprint —
+        i.e. a restart would apply a saved-but-not-yet-live change. Server-computed; surfaced on
+        /api/auth/me (see ctx below)."""
+        baseline = getattr(app.state, "restart_fingerprint", None)
+        if baseline is None:
+            return False
+        return _restart_settings_fingerprint(settings_cache) != baseline
+
+    async def _do_restart_trigger() -> None:
+        """Response-attached background task: Starlette sends the 202 body, THEN awaits this. Runs
+        the injectable `request_restart` (default self-SIGTERM). If it RAISES, clear the
+        single-flight + draining flags and audit the failure so the process stays alive rather than
+        wedged at 409 forever (belt-and-suspenders — the default trigger cannot fail)."""
+        try:
+            result = app.state.request_restart()
+            if asyncio.iscoroutine(result):
+                await result
+        except Exception:
+            app.state._restart_requested = False
+            control.clear_draining()
+            _log.exception("system restart trigger failed; cleared restart flags (no wedge)")
+            await _audit_auth("system_restart_failed", "System restart trigger failed")
+
+    # Registered ONLY when the identity system is wired: the legacy no-auth middleware branch
+    # bypasses required_tier/requires_session, so exposing a restart route there would be ungated.
+    if auth_store is not None:
+        @app.post("/api/system/restart")
+        async def system_restart(request: Request) -> JSONResponse:
+            # ADMIN + interactive session is enforced at the gate (authz.ADMIN_PATHS +
+            # _SESSION_ONLY_PATHS); this fail-closed check is defense in depth for a resolved actor.
+            principal = request.scope.get("auth_principal")
+            if principal is None:
+                return _forbidden_error()
+            # Fail cheap first: a self-SIGTERM with no supervisor just takes the process down for
+            # good — refuse (no exit) and tell the operator to use the manual script.
+            if not _is_supervised():
+                return JSONResponse(
+                    {"detail": "not supervised; restart manually via scripts/restart.sh"},
+                    status_code=409,
+                )
+            # Single-flight check-and-set, then the idle-and-safe read, then set draining — ALL
+            # synchronous with NO `await` between them, so the snapshot cannot change underfoot
+            # and a second concurrent request can never also pass — it 409s on the latch.
+            if app.state._restart_requested:
+                return JSONResponse(
+                    {"detail": "restart already in progress"}, status_code=409)
+            app.state._restart_requested = True
+            idle, reason = control.idle_for_restart()
+            if not idle:
+                app.state._restart_requested = False  # release: nothing is restarting
+                return JSONResponse(
+                    {"detail": "controller is mid-operation — try again in a few seconds",
+                     "reason": reason},
+                    status_code=409,
+                )
+            control.mark_draining()  # belt-and-suspenders: block any new write in the exit window
+            # Battery is confirmed-AUTO with no writer outstanding, so the ensuing SIGTERM shutdown
+            # is safe with the EXISTING _shutdown_restore untouched (it sees AUTO and no-ops).
+            await _audit_auth(
+                "system_restart", f"System restart requested by {principal.username}",
+                actor=principal.username, actor_id=principal.user_id)
+            return JSONResponse(
+                {"restarting": True, "boot_id": app.state.boot_id},
+                status_code=202,
+                background=BackgroundTask(_do_restart_trigger),  # runs AFTER the body is sent
+            )
 
     def _battery_cluster(now: datetime) -> tuple[list[dict], dict | None]:
         """Per-tower readings + the cluster aggregate, via the COALESCED tower read (so polling
@@ -3702,6 +3834,8 @@ def create_app(
         report_for_window=_report_for_window,
         effective_web_token=_effective_web_token,
         audit_auth=_audit_auth,
+        is_supervised=_is_supervised,
+        restart_pending=_restart_pending,
     )
     for build in (build_auth_router, build_users_router, build_car_router, build_digest_router,
                   build_notify_router, build_export_router, build_accuracy_router,

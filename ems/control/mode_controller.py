@@ -90,6 +90,14 @@ class ModeController:
         self.last_requested_action: PhysicalMode | None = None
         self.last_confirmed_action: PhysicalMode | None = None
         self.original_vendor_mode: PhysicalMode | None = None
+        # "Last battery command is unconfirmed / device state unknown" (I2 refuse-when-busy
+        # restart). Set when a write returns `BatteryWriteUnconfirmed` (timed out — the device
+        # likely received it but we never confirmed) or when a rejection's AUTO recovery itself
+        # can't be confirmed; cleared ONLY on a confirmed SetData acceptance (incl. a confirmed
+        # AUTO recovery). `last_confirmed_action` can read AUTO/None while this is True (that's the
+        # exact gap the naive "action in {AUTO,None}" predicate missed), so the restart gate must
+        # honour BOTH. Persisted via state_snapshot()/restore_state() so it survives a restart.
+        self.last_command_unconfirmed: bool = False
         # F3 incident de-dupe: the currently-open "unconfirmed" episode, so a stuck intent audits
         # once per episode rather than every dwell cycle (one live episode inflated to 13 rows).
         # Keyed by (intent, desired-mode); `_at` is when the episode was first (or last re-)logged.
@@ -112,6 +120,7 @@ class ModeController:
             if self.last_confirmed_action else None,
             "original_vendor_mode": self.original_vendor_mode.value
             if self.original_vendor_mode else None,
+            "last_command_unconfirmed": self.last_command_unconfirmed,
         }
 
     def restore_state(self, state: dict | None) -> None:
@@ -128,6 +137,9 @@ class ModeController:
             self.last_requested_action = _mode_or_none(state.get("last_requested_action"))
             self.last_confirmed_action = _mode_or_none(state.get("last_confirmed_action"))
             self.original_vendor_mode = _mode_or_none(state.get("original_vendor_mode"))
+            # Default True-on-garbage would be safer, but a missing key means "no prior write" →
+            # False; an explicit stored value is honoured. bool() tolerates any JSON scalar.
+            self.last_command_unconfirmed = bool(state.get("last_command_unconfirmed", False))
         except (ValueError, TypeError):
             pass  # a corrupt blob must not crash startup — start from a clean in-memory state
 
@@ -346,6 +358,10 @@ class ModeController:
             # Count it + start the dwell timer so automatic retries are spaced (a manual override
             # bypasses dwell and may retry sooner — what the operator wants).
             _record_switch()
+            # I2: the write is UNCONFIRMED — the device likely received it (it switches with
+            # latency) but we never confirmed, so the last command's true device state is unknown.
+            # Block a refuse-when-busy restart even though last_confirmed_action is left stale.
+            self.last_command_unconfirmed = True
             # F3: audit the FIRST unconfirmed of a stuck episode (and re-log after ~60 min);
             # suppress the duplicate rows in between. HOLD/retry behaviour above is untouched — only
             # the audit noise: one "charge isn't sticking because the device is slow" is one row.
@@ -367,6 +383,9 @@ class ModeController:
                 else f"{desired} unconfirmed AND AUTO recovery unconfirmed — ALERT"
             )
             self.last_confirmed_action = PhysicalMode.AUTO if recovered else None
+            # I2: a CONFIRMED AUTO recovery clears the unknown-state flag (the battery is provably
+            # back in safe self-consumption); an unconfirmed AUTO recovery leaves it set (ALERT).
+            self.last_command_unconfirmed = not recovered
             # A failed/unconfirmed write still hit the device with SetData POSTs, so it MUST count
             # like a switch: start the dwell timer and the daily cap. Without this, a write that
             # never confirms (e.g. a flaky/half-offline tower) was retried every single control
@@ -378,9 +397,33 @@ class ModeController:
             return ActionDecision(intent, PhysicalMode.AUTO, recovered, outcome, reason)
         _record_switch()
         self.last_confirmed_action = desired
+        # I2: a confirmed SetData acceptance (incl. a confirmed AUTO) clears the unknown-state flag.
+        self.last_command_unconfirmed = False
         self._clear_unconfirmed_episode()  # F3: a confirmed write ends the episode → re-audit later
         self._persist()
         return ActionDecision(intent, desired, True, "applied", f"set {desired}")
+
+    def note_confirmed_auto(self) -> None:
+        """Record that the battery is CONFIRMED in safe AUTO out-of-band — e.g. the graceful
+        shutdown-restore forced AUTO without going through decide(). Persist it so the NEXT process
+        restores `last_confirmed_action=AUTO` instead of a stale non-AUTO value that would keep the
+        refuse-when-busy restart gate at 409 forever (an AUTO-desired planner cycle is idempotent,
+        never rewriting the field). Only call after a CONFIRMED AUTO write."""
+        self.last_confirmed_action = PhysicalMode.AUTO
+        self.last_command_unconfirmed = False
+        self._persist()
+
+    def note_overrun_recovery(self) -> None:
+        """The control-overrun forced-AUTO recovery ran — the control cycle exceeded its budget (a
+        serious anomaly, possibly with a concurrent still-running tick that could apply a DIFFERENT
+        mode after this AUTO write). This path writes AUTO straight through the driver, bypassing
+        decide(), so it must reconcile the refuse-when-busy restart gate's state itself — but it
+        must NEVER open the gate: it can't know the final physical command order vs a racing tick.
+        So it unconditionally marks the last command UNCONFIRMED, blocking a restart until a NORMAL
+        confirmed cycle re-establishes safe AUTO. Fail-safe (over-refuse), persisted, and never
+        touches dwell/switch counters (this is an emergency recovery, not a planner switch)."""
+        self.last_command_unconfirmed = True
+        self._persist()
 
     def _reset_counter_if_new_day(self, now: datetime) -> None:
         today = now.astimezone(self.tz).date()

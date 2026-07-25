@@ -5,4 +5,8 @@ services:
     ports: ["8080:8080"]
     volumes:
       - ./ems/data:/app/ems/data   # SQLite history persists (matches history.db_path)
+    environment:
+      # `restart: unless-stopped` (below) is the supervisor, so a self-SIGTERM comes back up. This
+      # arms the in-app "Apply & restart" endpoint; without it the endpoint refuses (fail-safe).
+      EMS_SUPERVISED: "1"
     restart: unless-stopped

@@ -35,6 +35,8 @@ playwright-report/
 
 # e2e throwaway DB (hermetic test isolation)
 ems/web/frontend/.e2e-data/
+# root-level e2e runtime state (SQLite + server logs) written by an e2e harness run
+/.e2e-data/
 
 # Installer's repo-local toolchain (Node fetched by scripts/install.sh)
 .tools/
