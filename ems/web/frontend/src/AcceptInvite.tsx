@@ -1,5 +1,6 @@
 import { useState } from "react";
 
+import { AuthLayout } from "./AuthLayout";
 import { setToken } from "./auth";
 
 // Invite-accept flow (auth slice 2 web, design §7): `/#/accept-invite?code=<raw>` must be
@@ -56,26 +57,36 @@ export function AcceptInvite({ onDone }: { onDone: () => void }) {
   }
 
   return (
-    <form onSubmit={submit} data-testid="accept-invite">
-      <h1>Join your home&apos;s EMS</h1>
+    <AuthLayout title="Join your home&apos;s EMS">
       <p>Set a username and password to finish creating your account.</p>
-      <input
-        aria-label="Username"
-        value={username}
-        onChange={(e) => setUsername(e.target.value)}
-        autoComplete="username"
-      />
-      <input
-        aria-label="Password"
-        type="password"
-        value={password}
-        onChange={(e) => setPassword(e.target.value)}
-        autoComplete="new-password"
-      />
-      <button type="submit" className="btn-primary" disabled={busy}>
-        Create account
-      </button>
-      {error && <p role="alert">{error}</p>}
-    </form>
+      <form onSubmit={submit} data-testid="accept-invite">
+        <div className="field">
+          <label className="field-label" htmlFor="accept-invite-username">Username</label>
+          <input
+            id="accept-invite-username"
+            type="text"
+            aria-label="Username"
+            value={username}
+            onChange={(e) => setUsername(e.target.value)}
+            autoComplete="username"
+          />
+        </div>
+        <div className="field">
+          <label className="field-label" htmlFor="accept-invite-password">Password</label>
+          <input
+            id="accept-invite-password"
+            aria-label="Password"
+            type="password"
+            value={password}
+            onChange={(e) => setPassword(e.target.value)}
+            autoComplete="new-password"
+          />
+        </div>
+        <button type="submit" className="btn-primary" disabled={busy}>
+          Create account
+        </button>
+        {error && <p role="alert" className="field-err">{error}</p>}
+      </form>
+    </AuthLayout>
   );
 }

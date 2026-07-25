@@ -1,5 +1,6 @@
 import { useState } from "react";
 
+import { AuthLayout } from "./AuthLayout";
 import { setToken } from "./auth";
 
 // Forced onboarding (auth slice 1, Task 10): the identity gate serves ONLY this screen until the
@@ -46,31 +47,46 @@ export function Onboarding({
   }
 
   return (
-    <form onSubmit={submit} data-testid="onboarding">
-      <h1>Create your admin account</h1>
-      <input
-        aria-label="Username"
-        value={username}
-        onChange={(e) => setUsername(e.target.value)}
-        autoComplete="username"
-      />
-      <input
-        aria-label="Password"
-        type="password"
-        value={password}
-        onChange={(e) => setPassword(e.target.value)}
-        autoComplete="new-password"
-      />
-      {sharedTokenRequired && (
-        <input
-          aria-label="Existing access token"
-          value={shared}
-          onChange={(e) => setShared(e.target.value)}
-          autoComplete="off"
-        />
-      )}
-      <button type="submit" className="btn-primary" disabled={busy}>Create admin</button>
-      {error && <p role="alert">{error}</p>}
-    </form>
+    <AuthLayout title="Create your admin account">
+      <form onSubmit={submit} data-testid="onboarding">
+        <div className="field">
+          <label className="field-label" htmlFor="onboarding-username">Username</label>
+          <input
+            id="onboarding-username"
+            type="text"
+            aria-label="Username"
+            value={username}
+            onChange={(e) => setUsername(e.target.value)}
+            autoComplete="username"
+          />
+        </div>
+        <div className="field">
+          <label className="field-label" htmlFor="onboarding-password">Password</label>
+          <input
+            id="onboarding-password"
+            aria-label="Password"
+            type="password"
+            value={password}
+            onChange={(e) => setPassword(e.target.value)}
+            autoComplete="new-password"
+          />
+        </div>
+        {sharedTokenRequired && (
+          <div className="field">
+            <label className="field-label" htmlFor="onboarding-shared-token">Existing access token</label>
+            <input
+              id="onboarding-shared-token"
+              type="text"
+              aria-label="Existing access token"
+              value={shared}
+              onChange={(e) => setShared(e.target.value)}
+              autoComplete="off"
+            />
+          </div>
+        )}
+        <button type="submit" className="btn-primary" disabled={busy}>Create admin</button>
+        {error && <p role="alert" className="field-err">{error}</p>}
+      </form>
+    </AuthLayout>
   );
 }

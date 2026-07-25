@@ -23,6 +23,8 @@ test("onboarding then login then logout", async ({ page }) => {
   // fresh DB (see e2e clean-DB harness). First load → onboarding.
   await page.goto("/");
   await expect(page.getByTestId("onboarding")).toBeVisible();
+  // Auth-screen styling (Item A): the shared AuthLayout card wraps every auth form.
+  await expect(page.getByTestId("auth-card")).toBeVisible();
   await page.getByLabel("Username").fill("admin");
   await page.getByLabel("Password").fill("pw12345678");
   await page.getByRole("button", { name: "Create admin" }).click();
