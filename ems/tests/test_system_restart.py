@@ -475,6 +475,49 @@ def test_corrupt_persisted_row_fails_safe_through_the_real_store(tmp_path):
     assert svc.idle_for_restart() == (False, "last_command_unconfirmed")
 
 
+@pytest.mark.parametrize("raw_value", ["null", "false", "[]", "{}", "123", '"str"'])
+def test_present_but_malformed_row_fails_safe_and_gate_refuses(tmp_path, raw_value):
+    # Completion of the load-boundary fail-safe (cross-family review): a row that EXISTS but is
+    # valid JSON of the WRONG shape (null/false/[]/{}/number/string) is corrupt, NOT fresh — save()
+    # only ever writes a non-empty dict. load() now returns CONTROL_STATE_CORRUPT (not a permissive
+    # value collapsed to {}); restore_state fails safe and the refuse-when-busy gate refuses.
+    db = str(tmp_path / "ems.sqlite")
+    store = ControlStateStore(db)
+    store.init()
+    con = sqlite3.connect(db)
+    con.execute("INSERT INTO control_state (key, value) VALUES (?, ?)", ("controller", raw_value))
+    con.commit()
+    con.close()
+
+    assert store.load() is CONTROL_STATE_CORRUPT
+    controller = _controlling_controller()
+    controller.restore_state(store.load())
+    assert controller.last_command_unconfirmed is True
+    svc, _ctx = _service(controller)
+    assert svc.idle_for_restart() == (False, "last_command_unconfirmed")
+
+
+def test_present_dict_with_non_bool_unconfirmed_gate_refuses(tmp_path):
+    # A non-empty dict ROW is correctly kept by load() (not corrupt), but a non-bool
+    # last_command_unconfirmed (`null`) must still fail safe → the gate refuses.
+    db = str(tmp_path / "ems.sqlite")
+    store = ControlStateStore(db)
+    store.init()
+    con = sqlite3.connect(db)
+    con.execute("INSERT INTO control_state (key, value) VALUES (?, ?)",
+                ("controller", '{"switches_today": 1, "last_command_unconfirmed": null}'))
+    con.commit()
+    con.close()
+
+    loaded = store.load()
+    assert loaded == {"switches_today": 1, "last_command_unconfirmed": None}  # non-empty dict, kept
+    controller = _controlling_controller()
+    controller.restore_state(loaded)
+    assert controller.last_command_unconfirmed is True
+    svc, _ctx = _service(controller)
+    assert svc.idle_for_restart() == (False, "last_command_unconfirmed")
+
+
 def test_absent_persisted_store_is_fresh_and_restart_not_regressed(tmp_path):
     # The COMPANION non-regression: a genuinely-absent store (table exists, NO row) stays fresh →
     # last_command_unconfirmed=False, so a fresh-boot restart is STILL permitted (an armed

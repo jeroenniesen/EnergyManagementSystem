@@ -27,14 +27,19 @@ if TYPE_CHECKING:
 log = logging.getLogger(__name__)
 
 
-def _mode_or_none(value: object) -> PhysicalMode | None:
-    """A PhysicalMode from its stored value, or None for empty/unknown (tolerant of bad blobs)."""
+def _mode_or_unknown(value: object) -> tuple[PhysicalMode | None, bool]:
+    """`(mode, unknown)` from a stored value, tolerant of bad blobs:
+    - empty/absent (`None`/"") → `(None, False)`: genuinely nothing stored — fine, a fresh field.
+    - a KNOWN mode string → `(PhysicalMode, False)`.
+    - a present-but-UNRECOGNIZED value (a stale/foreign mode name, or a non-string) →
+      `(None, True)`: the snapshot is malformed/foreign, so the caller must treat the device state
+      as unknown and fail safe rather than silently coercing it to `None` (which read as "safe")."""
     if not value:
-        return None
+        return None, False
     try:
-        return PhysicalMode(value)
-    except ValueError:
-        return None
+        return PhysicalMode(value), False
+    except (ValueError, TypeError):
+        return None, True
 
 
 @dataclass(frozen=True)
@@ -133,13 +138,17 @@ class ModeController:
 
         FAIL-SAFE on the refuse-when-busy restart flag (3-reviewer consensus): the last battery
         command's device state must read as UNKNOWN — i.e. `last_command_unconfirmed=True`, which
-        BLOCKS a restart — whenever we cannot prove it was confirmed. So a present blob MISSING the
-        `last_command_unconfirmed` key (e.g. a pre-I2 persisted state), OR a corrupt/unparseable
-        blob (any field fails to parse), OR the store's `CONTROL_STATE_CORRUPT` sentinel (a row
-        EXISTS but `load()` could not read it — corrupt JSON or a read failure), all yield True;
-        only a well-formed explicit value is honoured (a stored False reads False). An entirely
-        absent state (`None`/empty `{}`) is genuinely "no persisted state at all" — a fresh boot
-        with no prior write — and keeps the clean in-memory default (False).
+        BLOCKS a restart — whenever we cannot prove it was confirmed. So ALL of these yield True: a
+        present blob MISSING the `last_command_unconfirmed` key (e.g. a pre-I2 persisted state); a
+        present key whose value is NOT a real JSON bool (`null`/`0`/a string — no longer silently
+        `bool()`-coerced); a present but UNRECOGNIZED persisted mode string (stale/foreign name,
+        previously coerced to a "safe"-looking None); a corrupt/unparseable blob (any field fails
+        to parse); and the store's `CONTROL_STATE_CORRUPT` sentinel (a row EXISTS but `load()` could
+        not read it — unparseable JSON, wrong-shape JSON, or a read failure). Only a fully
+        well-formed snapshot is honoured: a real `True`/`False` alongside known modes restores its
+        stored value exactly as before. An entirely absent state (`None`/empty `{}`) is genuinely
+        "no persisted state at all" — a fresh boot with no prior write — and keeps the clean
+        in-memory default (False).
 
         The sentinel is the LOAD-BOUNDARY half of the fail-safe: `load()` used to collapse both
         "no row" and "corrupt row" to `{}`, so a corrupt persisted blob reached here as `{}` and
@@ -150,7 +159,9 @@ class ModeController:
             # until a normal confirmed cycle (or note_confirmed_auto) re-establishes safe AUTO.
             self.last_command_unconfirmed = True
             return
-        if not state:
+        if not isinstance(state, dict) or not state:
+            # None / empty {} / (defensively) a non-dict that slipped past load() → nothing to
+            # restore; keep the clean in-memory default (a genuine fresh boot).
             return
         try:
             self.switches_today = int(state.get("switches_today") or 0)
@@ -159,14 +170,24 @@ class ModeController:
             self.last_switch_at = datetime.fromisoformat(lsa) if lsa else None
             cd = state.get("counter_date")
             self._counter_date = date.fromisoformat(cd) if cd else None
-            self.last_requested_action = _mode_or_none(state.get("last_requested_action"))
-            self.last_confirmed_action = _mode_or_none(state.get("last_confirmed_action"))
-            self.original_vendor_mode = _mode_or_none(state.get("original_vendor_mode"))
-            # FAIL-SAFE: a present blob that lacks this key can't prove the last command confirmed,
-            # so treat the device state as unknown ⇒ True (block the restart). An explicit stored
-            # value is honoured; bool() tolerates any JSON scalar.
-            if "last_command_unconfirmed" in state:
-                self.last_command_unconfirmed = bool(state["last_command_unconfirmed"])
+            # A present-but-UNRECOGNIZED persisted mode (stale/foreign name, or a non-string) means
+            # the snapshot is malformed — the device state it describes can't be trusted, so fail
+            # safe below rather than silently coercing the bad mode to None (which read as "safe").
+            self.last_requested_action, req_unknown = _mode_or_unknown(
+                state.get("last_requested_action"))
+            self.last_confirmed_action, conf_unknown = _mode_or_unknown(
+                state.get("last_confirmed_action"))
+            self.original_vendor_mode, vendor_unknown = _mode_or_unknown(
+                state.get("original_vendor_mode"))
+            mode_unknown = req_unknown or conf_unknown or vendor_unknown
+            # FAIL-SAFE on the refuse-when-busy flag: honour a stored value ONLY when it is a real
+            # JSON bool AND no persisted mode string was unrecognized. A present-but-non-bool value
+            # (`null`/`0`/...), a MISSING key (e.g. a pre-I2 blob), or any unrecognized mode all
+            # leave the last command's device state UNPROVABLE ⇒ True (block the restart). A fully
+            # well-formed snapshot (real True/False + known modes) restores exactly as before.
+            raw_unconfirmed = state.get("last_command_unconfirmed")
+            if isinstance(raw_unconfirmed, bool) and not mode_unknown:
+                self.last_command_unconfirmed = raw_unconfirmed
             else:
                 self.last_command_unconfirmed = True
         except (ValueError, TypeError, AttributeError):

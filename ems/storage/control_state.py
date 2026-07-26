@@ -63,10 +63,16 @@ class ControlStateStore:
         gate depends on:
         - `{}`  — genuinely NO persisted state: no row, or the table doesn't exist yet (a fresh
           boot that never wrote). The caller keeps the clean default (restart permitted).
-        - `CONTROL_STATE_CORRUPT` — a row EXISTS but its JSON is corrupt/unparseable, OR the read
-          itself fails (I/O, malformed DB). We CANNOT prove the last command confirmed, so the
-          caller must fail SAFE (block the restart). This must NOT collapse to `{}`.
-        - a `dict` — a well-formed persisted snapshot, restored as-is.
+        - `CONTROL_STATE_CORRUPT` — a row EXISTS but its stored value is not a well-formed snapshot:
+          unparseable JSON, OR valid JSON of the wrong shape (`null`/`false`/`[]`/`{}`/a number/a
+          string — save() only ever writes a NON-EMPTY dict, so anything else is malformed/foreign),
+          OR the read itself fails (I/O, malformed DB). We CANNOT prove the last command confirmed,
+          so the caller must fail SAFE (block the restart). This must NOT collapse to `{}`.
+        - a non-empty `dict` — a well-formed persisted snapshot, restored as-is.
+
+        The ABSENT (fresh → restart permitted) vs PRESENT-but-malformed (corrupt → fail safe)
+        distinction rides on "does a row exist": no row / no table is genuinely fresh; a row whose
+        decoded value isn't a non-empty dict is corrupt (save() never persists an empty snapshot).
         """
         with timed("store.control_state.read"):
             try:
@@ -90,11 +96,20 @@ class ControlStateStore:
             if not row:
                 return {}  # table exists but no row → genuinely fresh, nothing persisted
             try:
-                return json.loads(row[0])
-            except (ValueError, TypeError):
-                # A row EXISTS but its stored value is corrupt/unparseable JSON: persisted state is
-                # present but unreadable, so corrupt/unknown — NOT a fresh {} (the old fail-open).
+                decoded = json.loads(row[0])
+            except Exception:
+                # A row EXISTS but its stored value is unparseable JSON: persisted state is present
+                # but unreadable, so corrupt/unknown — NOT a fresh {} (the old fail-open). Broadened
+                # to ANY decode error (incl. RecursionError on pathologically nested JSON) so the
+                # "load never raises" contract holds and every unreadable row fails safe.
                 return CONTROL_STATE_CORRUPT
+            if not isinstance(decoded, dict) or not decoded:
+                # A row EXISTS but its decoded value is valid JSON of the WRONG shape: `null`,
+                # `false`, `[]`, an empty `{}`, a number, a string, ... save() only ever writes a
+                # non-empty snapshot dict, so this is malformed/foreign persisted state — corrupt,
+                # not a permissive value. (An empty `{}` ROW is corrupt; an ABSENT row is fresh.)
+                return CONTROL_STATE_CORRUPT
+            return decoded
 
     def save(self, state: dict) -> None:
         with timed("store.control_state.write"):
