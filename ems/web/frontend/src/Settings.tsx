@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 import { AccountTokens } from "./AccountTokens";
 import { AdminAccess } from "./Admin";
@@ -49,6 +49,36 @@ type SolarConfidenceAdvice = {
   spread_pp?: number | null;
   window_days?: number;
 };
+
+// I3 "Apply & restart": server-computed capability, surfaced on GET /api/auth/me (I2) alongside
+// `restart_pending` — never inferred client-side. `available` = the process is supervised AND this
+// caller is an interactive ADMIN session (an access token can never restart, even an admin one).
+type RestartAvailability = { available: boolean; reason: string };
+// Phase of an in-progress restart request, driving the banner's body:
+//   idle        — nothing in flight (button, or the confirm panel, or a 409 busy message)
+//   requesting  — POST /api/system/restart awaiting a response
+//   restarting  — 202 received; polling /health/live for a changed boot_id before reload
+//   timeout     — polling exceeded the ~60s budget; offer a manual reload
+type RestartPhase = "idle" | "requesting" | "restarting" | "timeout";
+// Poll cadence + overall budget for the post-restart /health/live boot_id check (spec §B.4: a
+// timeout + "reload manually" fallback so a slow/failed restart never leaves a dead screen).
+const RESTART_POLL_MS = 1500;
+const RESTART_POLL_TIMEOUT_MS = 60000;
+// Injectable so tests don't need to wait the full production budget: if
+// `window.__EMS_RESTART_POLL__ = {intervalMs, timeoutMs}` is present (set by an e2e init script),
+// its numeric fields override the defaults; otherwise the production values are used.
+function restartPollConfig(): { intervalMs: number; timeoutMs: number } {
+  const inj =
+    typeof window !== "undefined"
+      ? (window as unknown as {
+          __EMS_RESTART_POLL__?: { intervalMs?: number; timeoutMs?: number };
+        }).__EMS_RESTART_POLL__
+      : undefined;
+  return {
+    intervalMs: typeof inj?.intervalMs === "number" ? inj.intervalMs : RESTART_POLL_MS,
+    timeoutMs: typeof inj?.timeoutMs === "number" ? inj.timeoutMs : RESTART_POLL_TIMEOUT_MS,
+  };
+}
 
 // Two-pane menu: sidebar sections grouped under three intent headers. This order REPLACES the old
 // flat GROUP_ORDER for navigation; any unknown/future group appends under "App" (see below).
@@ -408,6 +438,109 @@ export function Settings({
   // Mobile drill-in (≤700px): start on the section list, then drill into one section.
   const [mobileList, setMobileList] = useState(true);
 
+  // --- I3 "Apply & restart" (spec §B.4) ---
+  // Server-computed capability + pending flag (GET /api/auth/me — I2). Independent of the
+  // client-tracked `restartPending`/`lastSaveRestart` above (this-session UI hints): these mirror
+  // the SERVER's boot-fingerprint comparison, so a restart still marked pending from an earlier
+  // session (page reload, different browser) surfaces correctly on load, not only right after a
+  // save in this tab.
+  const [restartAvailable, setRestartAvailable] = useState<RestartAvailability | null>(null);
+  const [restartPendingLive, setRestartPendingLive] = useState(false);
+  const [restartConfirming, setRestartConfirming] = useState(false);
+  const [restartPhase, setRestartPhase] = useState<RestartPhase>("idle");
+  // 409-busy (or any other failed-request) message — the button/banner stays, per spec.
+  const [restartBusyMsg, setRestartBusyMsg] = useState<string | null>(null);
+  // Guards the /health/live poll's setState calls against firing after unmount (the poll is a
+  // plain async loop, not itself inside an effect, so it needs its own liveness flag).
+  const restartAliveRef = useRef(true);
+  useEffect(() => {
+    // Reset to true on setup (not just false on cleanup): under React.StrictMode dev runs
+    // setup→cleanup→setup, so without this the ref would stay false after the first cleanup and
+    // pollForRestart would skip its timeout/manual-reload branch, stranding the UI on "Restarting…".
+    restartAliveRef.current = true;
+    return () => {
+      restartAliveRef.current = false;
+    };
+  }, []);
+
+  async function refreshRestartCapability() {
+    try {
+      const r = await apiFetch("/api/auth/me");
+      if (!r.ok) return; // fail toward hiding the control, never toward a stale/wrong capability
+      const b = await r.json();
+      if (b.restart_available) setRestartAvailable(b.restart_available);
+      if (typeof b.restart_pending === "boolean") setRestartPendingLive(b.restart_pending);
+    } catch {
+      /* best-effort — leave the last-known capability (matches AccountTokens' fail-quiet style) */
+    }
+  }
+
+  useEffect(() => {
+    refreshRestartCapability();
+  }, []);
+
+  // Poll /health/live until it answers with a DIFFERENT boot_id than the one the 202 carried —
+  // proof the NEW process is up (a plain "alive" could still be the old one mid-shutdown) — then
+  // reload. Bounded by RESTART_POLL_TIMEOUT_MS so a stalled/failed restart never leaves a dead
+  // "Restarting…" screen; falls back to a manual-reload prompt instead.
+  async function pollForRestart(initialBootId: string) {
+    const { intervalMs, timeoutMs } = restartPollConfig();
+    const start = Date.now();
+    while (Date.now() - start < timeoutMs) {
+      await new Promise((resolve) => setTimeout(resolve, intervalMs));
+      try {
+        const r = await fetch("/health/live");
+        if (r.ok) {
+          const b = await r.json();
+          if (typeof b.boot_id === "string" && b.boot_id !== initialBootId) {
+            window.location.reload();
+            return;
+          }
+        }
+      } catch {
+        /* the process is mid-restart (connection refused) — keep polling, it'll come back */
+      }
+    }
+    if (restartAliveRef.current) setRestartPhase("timeout");
+  }
+
+  async function requestRestart() {
+    setRestartPhase("requesting");
+    setRestartBusyMsg(null);
+    try {
+      const r = await apiFetch("/api/system/restart", { method: "POST" });
+      const b = await r.json().catch(() => ({}));
+      if (r.status === 202 && typeof b.boot_id === "string") {
+        setRestartConfirming(false);
+        setRestartPhase("restarting");
+        pollForRestart(b.boot_id);
+        return;
+      }
+      if (r.status === 409) {
+        setRestartConfirming(false);
+        setRestartPhase("idle");
+        // Discriminate on an EXPLICIT reason, not the mere PRESENCE of one. Every BUSY 409 carries
+        // a reason (single-flight `in_progress`, or an idle-and-safe `outstanding_write` /
+        // `last_command_unconfirmed` / `last_action_not_auto` / `draining`) and must keep the
+        // button + show the retry toast. ONLY an explicit `not_supervised` falls back to the
+        // manual-restart hint (a race — the button is normally hidden when unsupervised).
+        if (b.reason === "not_supervised") {
+          setRestartAvailable({ available: false, reason: "not_supervised" });
+        } else {
+          // Busy (controller mid-operation / a restart already in flight) — friendly retry copy,
+          // button stays for another try.
+          setRestartBusyMsg("The system is mid-adjustment — try again in a few seconds.");
+        }
+        return;
+      }
+      throw new Error(b.detail ?? `HTTP ${r.status}`);
+    } catch (e) {
+      setRestartConfirming(false);
+      setRestartPhase("idle");
+      setRestartBusyMsg(e instanceof Error ? e.message : String(e));
+    }
+  }
+
   // Keys never rendered as editable fields: the car-tab knobs (owned by Car.tsx) always, plus the
   // deprecated legacy shared-token knobs when identity auth is active (design §8).
   const hiddenFieldKeys = identityAuth
@@ -627,6 +760,9 @@ export function Settings({
       if (restartGroups.length) {
         setRestartPending((prev) => new Set([...prev, ...restartGroups]));
         setLastSaveRestart(true);
+        // Re-derive the SERVER's restart_pending against the fresh boot fingerprint — a
+        // restart-tagged save is exactly when the "Apply & restart" control can newly appear.
+        await refreshRestartCapability();
       } else {
         setLastSaveRestart(false);
       }
@@ -766,6 +902,99 @@ export function Settings({
           renders a session-only manage UI or a quiet sign-in hint (fetches its own kind via
           GET /api/auth/me) — see AccountTokens.tsx. */}
       {auth?.authenticated && <AccountTokens />}
+
+      {/* I3 "Apply & restart" (spec §B.4): server-computed capability + pending flag — never
+          client-inferred. Shown only when BOTH are true; an unsupervised-but-pending instance gets
+          a manual hint instead (no button, since a self-restart with no supervisor would just take
+          the process down for good). Sits above the section panes so it's visible regardless of
+          which section is open or the mobile drill-in state. */}
+      {restartAvailable?.available && restartPendingLive && (
+        <div className="settings-access-bar" data-testid="restart-banner">
+          <h2 className="settings-group-title">Apply changes</h2>
+          {restartPhase === "restarting" ? (
+            <p className="settings-group-hint" data-testid="restart-restarting">
+              Restarting… the app comes back on its own in a few seconds.
+            </p>
+          ) : restartPhase === "timeout" ? (
+            <>
+              <p className="settings-group-hint" data-testid="restart-timeout">
+                Still restarting — this is taking longer than expected.
+              </p>
+              <button
+                type="button"
+                className="btn-ghost"
+                data-testid="restart-reload-manual"
+                onClick={() => window.location.reload()}
+              >
+                Reload now
+              </button>
+            </>
+          ) : restartConfirming ? (
+            <div className="override-confirm" data-testid="restart-confirm-panel">
+              <p className="override-confirm-title">Restart to apply your changes?</p>
+              <p className="override-consequence" data-testid="restart-consequence">
+                This restarts the EMS to apply the changes. It only restarts when the battery is
+                already in its safe AUTO mode; if the system is mid-adjustment it&apos;ll ask you
+                to try again in a moment.
+              </p>
+              <p className="override-reassure">
+                The app comes back on its own in a few seconds.
+              </p>
+              <div className="override-controls">
+                <button
+                  type="button"
+                  className="btn-primary"
+                  data-testid="restart-confirm"
+                  disabled={restartPhase === "requesting"}
+                  onClick={requestRestart}
+                >
+                  {restartPhase === "requesting" ? "Restarting…" : "Confirm"}
+                </button>
+                <button
+                  type="button"
+                  className="btn-ghost"
+                  data-testid="restart-cancel"
+                  disabled={restartPhase === "requesting"}
+                  onClick={() => setRestartConfirming(false)}
+                >
+                  Cancel
+                </button>
+              </div>
+            </div>
+          ) : (
+            <>
+              <p className="settings-group-hint">
+                Some saved changes need a restart to take effect.
+              </p>
+              <button
+                type="button"
+                className="btn-primary"
+                data-testid="restart-apply-button"
+                onClick={() => setRestartConfirming(true)}
+              >
+                Apply &amp; restart
+              </button>
+            </>
+          )}
+          {restartBusyMsg && (
+            <p className="settings-msg-err" data-testid="restart-busy-toast" role="alert">
+              {restartBusyMsg}
+            </p>
+          )}
+        </div>
+      )}
+      {!restartAvailable?.available
+        && restartAvailable?.reason === "not_supervised"
+        && restartPendingLive && (
+        <div className="settings-access-bar" data-testid="restart-manual-hint">
+          <h2 className="settings-group-title">Apply changes</h2>
+          <p className="settings-group-hint">
+            Some saved changes need a restart to take effect, but this instance isn&apos;t
+            supervised for a safe automatic restart. Restart it manually:{" "}
+            <code>scripts/restart.sh</code>.
+          </p>
+        </div>
+      )}
 
       <div className="settings-panes">
         <aside className="settings-sidebar">

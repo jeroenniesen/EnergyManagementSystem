@@ -41,9 +41,13 @@ _ADMIN_PREFIXES = ("/api/users", "/api/invites")
 # OUT of this set — reader/user roles legitimately use the Manage → Audit view for transparency
 # into decisions/config/overrides; that endpoint instead strips "auth"-category rows for non-admins
 # in the handler itself (ems/web/api.py's `audit_endpoint`) rather than losing the whole surface.
-ADMIN_PATHS = frozenset({"/api/export/package"})
+# `/api/system/restart` (I2 refuse-when-busy self-restart) is ADMIN — a supervisor-relaunch of the
+# whole process is the most privileged mutation there is — AND session-only (below): no machine or
+# access token may ever trigger a restart, only an interactive admin.
+ADMIN_PATHS = frozenset({"/api/export/package", "/api/system/restart"})
 # Interactive-session-only surfaces (kind == 'session'); no access/machine token allowed.
-_SESSION_ONLY_PATHS = frozenset({"/api/auth/password", "/api/auth/logout"})
+_SESSION_ONLY_PATHS = frozenset(
+    {"/api/auth/password", "/api/auth/logout", "/api/system/restart"})
 _SESSION_ONLY_PREFIXES = ("/api/auth/tokens", "/api/users", "/api/invites")
 # Reachable without any auth (login/onboard/discovery/invite-accept). NOTE: `/api/invites/accept`
 # would otherwise fall under `_ADMIN_PREFIXES` (it starts with "/api/invites") — but the identity

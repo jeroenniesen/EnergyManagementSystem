@@ -2609,3 +2609,46 @@ body {
 .home-more[open] > .home-more-toggle::before { transform: rotate(90deg); }
 .home-more-body { display: flex; flex-direction: column; gap: 14px; padding-top: 4px; }
 .home-more-body > :last-child { margin-bottom: 0; }
+
+/* --- Auth screens (Login/Onboarding/AcceptInvite) — Item A ------------------------------------
+   These render BEFORE the styled app shell (App.tsx's early auth-gate returns, above the final
+   <SkyBackdrop/> + <div className="app">), so they never inherit .app's layout/stacking context.
+   AuthLayout gives them their own minimal, theme-aware treatment here, reusing the same
+   panel/field/button tokens as the rest of the UI — no new visual language. No SkyBackdrop is
+   rendered on these screens (see AuthLayout.tsx), so no stacking-context positioning is needed. */
+.auth-screen {
+  position: fixed;
+  inset: 0;
+  display: flex;
+  justify-content: center;
+  min-height: 100dvh;
+  padding: 24px;
+  overflow-y: auto; /* landscape orientation / an open mobile keyboard must never clip the card */
+  background: var(--bg);
+}
+.auth-card {
+  /* margin:auto (not align-items:center on the parent) centers the card when it fits and keeps it
+     fully scrollable when it's taller than the viewport — align-items:center would center it with
+     its top pushed above the scroll container's reachable start edge, clipping the heading. */
+  margin: auto;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+  width: 100%;
+  max-width: 420px;
+  padding: clamp(20px, 5vw, 32px);
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+.auth-card h1 {
+  margin: 0;
+  font-size: 1.3rem;
+  font-weight: 650;
+  letter-spacing: -0.01em;
+  color: var(--text);
+}
+.auth-card p { margin: 0; color: var(--muted); font-size: 0.88rem; line-height: 1.5; }
+.auth-card form { display: flex; flex-direction: column; gap: 14px; }
+.auth-card .btn-primary { width: 100%; margin-top: 4px; }

@@ -1,5 +1,6 @@
 import { useState } from "react";
 
+import { AuthLayout } from "./AuthLayout";
 import { setToken } from "./auth";
 
 // Login gate (auth slice 1, Task 10): shown once onboarding is done but the caller has no valid
@@ -34,23 +35,33 @@ export function Login({ onDone }: { onDone: () => void }) {
   }
 
   return (
-    <form onSubmit={submit} data-testid="login">
-      <h1>Sign in</h1>
-      <input
-        aria-label="Username"
-        value={username}
-        onChange={(e) => setUsername(e.target.value)}
-        autoComplete="username"
-      />
-      <input
-        aria-label="Password"
-        type="password"
-        value={password}
-        onChange={(e) => setPassword(e.target.value)}
-        autoComplete="current-password"
-      />
-      <button type="submit" className="btn-primary" disabled={busy}>Sign in</button>
-      {error && <p role="alert">{error}</p>}
-    </form>
+    <AuthLayout title="Sign in">
+      <form onSubmit={submit} data-testid="login">
+        <div className="field">
+          <label className="field-label" htmlFor="login-username">Username</label>
+          <input
+            id="login-username"
+            type="text"
+            aria-label="Username"
+            value={username}
+            onChange={(e) => setUsername(e.target.value)}
+            autoComplete="username"
+          />
+        </div>
+        <div className="field">
+          <label className="field-label" htmlFor="login-password">Password</label>
+          <input
+            id="login-password"
+            aria-label="Password"
+            type="password"
+            value={password}
+            onChange={(e) => setPassword(e.target.value)}
+            autoComplete="current-password"
+          />
+        </div>
+        <button type="submit" className="btn-primary" disabled={busy}>Sign in</button>
+        {error && <p role="alert" className="field-err">{error}</p>}
+      </form>
+    </AuthLayout>
   );
 }

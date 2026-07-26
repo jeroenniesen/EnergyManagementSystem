@@ -182,7 +182,27 @@ def build_router(ctx: AppContext) -> APIRouter:
     @router.get("/api/auth/me")
     async def me(request: Request) -> dict:
         p = request.scope.get("auth_principal")
-        return {"username": p.username, "role": p.role, "kind": p.kind}
+        # I2: server-computed restart capability (no client privilege inference). `available` needs
+        # a supervised process AND an interactive ADMIN session (an access token can never restart —
+        # it's blocked at the gate too). `pending` = a restart-tagged setting differs from the boot
+        # fingerprint. Surfaced HERE (the least-invasive existing endpoint that already carries
+        # `kind`) so the Settings page can decide whether to show "Apply & restart".
+        supervised = ctx.is_supervised()
+        admin_session = p.role == "admin" and p.kind == "session"
+        available = supervised and admin_session
+        if available:
+            reason = "ok"
+        elif not supervised:
+            reason = "not_supervised"
+        elif p.role != "admin":
+            reason = "not_admin"
+        else:
+            reason = "not_session"
+        return {
+            "username": p.username, "role": p.role, "kind": p.kind,
+            "restart_available": {"available": available, "reason": reason},
+            "restart_pending": ctx.restart_pending(),
+        }
 
     @router.post("/api/auth/password")
     async def change_password(request: Request, body: dict | None = None) -> JSONResponse:

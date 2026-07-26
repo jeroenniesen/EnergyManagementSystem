@@ -101,6 +101,9 @@ cat > "$PLIST" <<PLIST
   <dict>
     <key>PATH</key><string>${NODE_PATH_ENTRY}$HOME/.local/bin:$HOME/.cargo/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
     <key>EMS_LOG_FILE</key><string>$REPO/ems/data/server.log</string>
+    <!-- Under launchd KeepAlive (below), a self-SIGTERM relaunches. This flag arms the in-app
+         "Apply & restart" endpoint; without it the endpoint refuses (no supervisor to relaunch). -->
+    <key>EMS_SUPERVISED</key><string>1</string>
   </dict>
   <key>RunAtLoad</key><true/>
   <key>KeepAlive</key><true/>

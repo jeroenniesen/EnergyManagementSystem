@@ -93,3 +93,9 @@ class AppContext:
     # closures there were hoisted here — see create_app's `_audit_auth`): (event, summary, **detail)
     # -> None, never raises.
     audit_auth: Callable[..., Awaitable[None]]
+    # I2 refuse-when-busy restart, server-computed capability surfaced on GET /api/auth/me:
+    # whether the process is under a supervisor (EMS_SUPERVISED truthy) and whether any of the 12
+    # restart-tagged settings differ from the post-load boot fingerprint (a restart would apply
+    # them). Both never raise; `restart_available` is derived from is_supervised + the principal.
+    is_supervised: Callable[[], bool]
+    restart_pending: Callable[[], bool]

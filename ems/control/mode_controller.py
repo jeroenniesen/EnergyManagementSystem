@@ -13,23 +13,33 @@ import logging
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
+from typing import TYPE_CHECKING
 from zoneinfo import ZoneInfo
 
 from ems.domain import BatteryIntent, PhysicalMode
 from ems.lifecycle import Lifecycle
 from ems.sources.battery import BatteryDriver, BatteryWriteUnconfirmed, intent_to_mode
+from ems.storage.control_state import CONTROL_STATE_CORRUPT
+
+if TYPE_CHECKING:
+    from ems.storage.control_state import _CorruptControlState
 
 log = logging.getLogger(__name__)
 
 
-def _mode_or_none(value: object) -> PhysicalMode | None:
-    """A PhysicalMode from its stored value, or None for empty/unknown (tolerant of bad blobs)."""
+def _mode_or_unknown(value: object) -> tuple[PhysicalMode | None, bool]:
+    """`(mode, unknown)` from a stored value, tolerant of bad blobs:
+    - empty/absent (`None`/"") → `(None, False)`: genuinely nothing stored — fine, a fresh field.
+    - a KNOWN mode string → `(PhysicalMode, False)`.
+    - a present-but-UNRECOGNIZED value (a stale/foreign mode name, or a non-string) →
+      `(None, True)`: the snapshot is malformed/foreign, so the caller must treat the device state
+      as unknown and fail safe rather than silently coercing it to `None` (which read as "safe")."""
     if not value:
-        return None
+        return None, False
     try:
-        return PhysicalMode(value)
-    except ValueError:
-        return None
+        return PhysicalMode(value), False
+    except (ValueError, TypeError):
+        return None, True
 
 
 @dataclass(frozen=True)
@@ -90,6 +100,14 @@ class ModeController:
         self.last_requested_action: PhysicalMode | None = None
         self.last_confirmed_action: PhysicalMode | None = None
         self.original_vendor_mode: PhysicalMode | None = None
+        # "Last battery command is unconfirmed / device state unknown" (I2 refuse-when-busy
+        # restart). Set when a write returns `BatteryWriteUnconfirmed` (timed out — the device
+        # likely received it but we never confirmed) or when a rejection's AUTO recovery itself
+        # can't be confirmed; cleared ONLY on a confirmed SetData acceptance (incl. a confirmed
+        # AUTO recovery). `last_confirmed_action` can read AUTO/None while this is True (that's the
+        # exact gap the naive "action in {AUTO,None}" predicate missed), so the restart gate must
+        # honour BOTH. Persisted via state_snapshot()/restore_state() so it survives a restart.
+        self.last_command_unconfirmed: bool = False
         # F3 incident de-dupe: the currently-open "unconfirmed" episode, so a stuck intent audits
         # once per episode rather than every dwell cycle (one live episode inflated to 13 rows).
         # Keyed by (intent, desired-mode); `_at` is when the episode was first (or last re-)logged.
@@ -112,11 +130,38 @@ class ModeController:
             if self.last_confirmed_action else None,
             "original_vendor_mode": self.original_vendor_mode.value
             if self.original_vendor_mode else None,
+            "last_command_unconfirmed": self.last_command_unconfirmed,
         }
 
-    def restore_state(self, state: dict | None) -> None:
-        """Load a state_snapshot() (e.g. at startup) — tolerant of missing/garbage fields."""
-        if not state:
+    def restore_state(self, state: dict | None | _CorruptControlState) -> None:
+        """Load a state_snapshot() (e.g. at startup) — tolerant of missing/garbage fields.
+
+        FAIL-SAFE on the refuse-when-busy restart flag (3-reviewer consensus): the last battery
+        command's device state must read as UNKNOWN — i.e. `last_command_unconfirmed=True`, which
+        BLOCKS a restart — whenever we cannot prove it was confirmed. So ALL of these yield True: a
+        present blob MISSING the `last_command_unconfirmed` key (e.g. a pre-I2 persisted state); a
+        present key whose value is NOT a real JSON bool (`null`/`0`/a string — no longer silently
+        `bool()`-coerced); a present but UNRECOGNIZED persisted mode string (stale/foreign name,
+        previously coerced to a "safe"-looking None); a corrupt/unparseable blob (any field fails
+        to parse); and the store's `CONTROL_STATE_CORRUPT` sentinel (a row EXISTS but `load()` could
+        not read it — unparseable JSON, wrong-shape JSON, or a read failure). Only a fully
+        well-formed snapshot is honoured: a real `True`/`False` alongside known modes restores its
+        stored value exactly as before. An entirely absent state (`None`/empty `{}`) is genuinely
+        "no persisted state at all" — a fresh boot with no prior write — and keeps the clean
+        in-memory default (False).
+
+        The sentinel is the LOAD-BOUNDARY half of the fail-safe: `load()` used to collapse both
+        "no row" and "corrupt row" to `{}`, so a corrupt persisted blob reached here as `{}` and
+        failed OPEN. `load()` now signals corruption distinctly and this maps it to fail-safe."""
+        if state is CONTROL_STATE_CORRUPT:
+            # A row EXISTS but the store could not read it (corrupt JSON / read failure). We cannot
+            # prove the last command confirmed → fail SAFE: unknown device state blocks a restart
+            # until a normal confirmed cycle (or note_confirmed_auto) re-establishes safe AUTO.
+            self.last_command_unconfirmed = True
+            return
+        if not isinstance(state, dict) or not state:
+            # None / empty {} / (defensively) a non-dict that slipped past load() → nothing to
+            # restore; keep the clean in-memory default (a genuine fresh boot).
             return
         try:
             self.switches_today = int(state.get("switches_today") or 0)
@@ -125,11 +170,31 @@ class ModeController:
             self.last_switch_at = datetime.fromisoformat(lsa) if lsa else None
             cd = state.get("counter_date")
             self._counter_date = date.fromisoformat(cd) if cd else None
-            self.last_requested_action = _mode_or_none(state.get("last_requested_action"))
-            self.last_confirmed_action = _mode_or_none(state.get("last_confirmed_action"))
-            self.original_vendor_mode = _mode_or_none(state.get("original_vendor_mode"))
-        except (ValueError, TypeError):
-            pass  # a corrupt blob must not crash startup — start from a clean in-memory state
+            # A present-but-UNRECOGNIZED persisted mode (stale/foreign name, or a non-string) means
+            # the snapshot is malformed — the device state it describes can't be trusted, so fail
+            # safe below rather than silently coercing the bad mode to None (which read as "safe").
+            self.last_requested_action, req_unknown = _mode_or_unknown(
+                state.get("last_requested_action"))
+            self.last_confirmed_action, conf_unknown = _mode_or_unknown(
+                state.get("last_confirmed_action"))
+            self.original_vendor_mode, vendor_unknown = _mode_or_unknown(
+                state.get("original_vendor_mode"))
+            mode_unknown = req_unknown or conf_unknown or vendor_unknown
+            # FAIL-SAFE on the refuse-when-busy flag: honour a stored value ONLY when it is a real
+            # JSON bool AND no persisted mode string was unrecognized. A present-but-non-bool value
+            # (`null`/`0`/...), a MISSING key (e.g. a pre-I2 blob), or any unrecognized mode all
+            # leave the last command's device state UNPROVABLE ⇒ True (block the restart). A fully
+            # well-formed snapshot (real True/False + known modes) restores exactly as before.
+            raw_unconfirmed = state.get("last_command_unconfirmed")
+            if isinstance(raw_unconfirmed, bool) and not mode_unknown:
+                self.last_command_unconfirmed = raw_unconfirmed
+            else:
+                self.last_command_unconfirmed = True
+        except (ValueError, TypeError, AttributeError):
+            # A corrupt/unparseable blob must not crash startup — but it must FAIL SAFE, not fail
+            # open: an unknown device state blocks a refuse-when-busy restart until a normal
+            # confirmed cycle (or the shutdown-restore's note_confirmed_auto) re-establishes AUTO.
+            self.last_command_unconfirmed = True
 
     def _persist(self) -> None:
         if self._on_state_change is not None:
@@ -346,6 +411,10 @@ class ModeController:
             # Count it + start the dwell timer so automatic retries are spaced (a manual override
             # bypasses dwell and may retry sooner — what the operator wants).
             _record_switch()
+            # I2: the write is UNCONFIRMED — the device likely received it (it switches with
+            # latency) but we never confirmed, so the last command's true device state is unknown.
+            # Block a refuse-when-busy restart even though last_confirmed_action is left stale.
+            self.last_command_unconfirmed = True
             # F3: audit the FIRST unconfirmed of a stuck episode (and re-log after ~60 min);
             # suppress the duplicate rows in between. HOLD/retry behaviour above is untouched — only
             # the audit noise: one "charge isn't sticking because the device is slow" is one row.
@@ -367,6 +436,9 @@ class ModeController:
                 else f"{desired} unconfirmed AND AUTO recovery unconfirmed — ALERT"
             )
             self.last_confirmed_action = PhysicalMode.AUTO if recovered else None
+            # I2: a CONFIRMED AUTO recovery clears the unknown-state flag (the battery is provably
+            # back in safe self-consumption); an unconfirmed AUTO recovery leaves it set (ALERT).
+            self.last_command_unconfirmed = not recovered
             # A failed/unconfirmed write still hit the device with SetData POSTs, so it MUST count
             # like a switch: start the dwell timer and the daily cap. Without this, a write that
             # never confirms (e.g. a flaky/half-offline tower) was retried every single control
@@ -378,9 +450,33 @@ class ModeController:
             return ActionDecision(intent, PhysicalMode.AUTO, recovered, outcome, reason)
         _record_switch()
         self.last_confirmed_action = desired
+        # I2: a confirmed SetData acceptance (incl. a confirmed AUTO) clears the unknown-state flag.
+        self.last_command_unconfirmed = False
         self._clear_unconfirmed_episode()  # F3: a confirmed write ends the episode → re-audit later
         self._persist()
         return ActionDecision(intent, desired, True, "applied", f"set {desired}")
+
+    def note_confirmed_auto(self) -> None:
+        """Record that the battery is CONFIRMED in safe AUTO out-of-band — e.g. the graceful
+        shutdown-restore forced AUTO without going through decide(). Persist it so the NEXT process
+        restores `last_confirmed_action=AUTO` instead of a stale non-AUTO value that would keep the
+        refuse-when-busy restart gate at 409 forever (an AUTO-desired planner cycle is idempotent,
+        never rewriting the field). Only call after a CONFIRMED AUTO write."""
+        self.last_confirmed_action = PhysicalMode.AUTO
+        self.last_command_unconfirmed = False
+        self._persist()
+
+    def note_overrun_recovery(self) -> None:
+        """The control-overrun forced-AUTO recovery ran — the control cycle exceeded its budget (a
+        serious anomaly, possibly with a concurrent still-running tick that could apply a DIFFERENT
+        mode after this AUTO write). This path writes AUTO straight through the driver, bypassing
+        decide(), so it must reconcile the refuse-when-busy restart gate's state itself — but it
+        must NEVER open the gate: it can't know the final physical command order vs a racing tick.
+        So it unconditionally marks the last command UNCONFIRMED, blocking a restart until a NORMAL
+        confirmed cycle re-establishes safe AUTO. Fail-safe (over-refuse), persisted, and never
+        touches dwell/switch counters (this is an emergency recovery, not a planner switch)."""
+        self.last_command_unconfirmed = True
+        self._persist()
 
     def _reset_counter_if_new_day(self, now: datetime) -> None:
         today = now.astimezone(self.tz).date()

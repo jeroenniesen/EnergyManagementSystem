@@ -330,6 +330,24 @@ class ControlContext:
     # Cached expected-load profile (learned async in _forward_projection) so the sync plan path can
     # feed the adaptive charger without its own DB read. None until the first projection runs.
     load_profile_box: dict[str, Any] = field(default_factory=lambda: {"profile": None})
+    # --- Outstanding-battery-work registry (I2 refuse-when-busy restart) ------------------------
+    # ONE thread-safe set of tokens for every in-flight battery-write operation (periodic tick,
+    # override cycle, overrun-AUTO recovery). A slot is reserved SYNCHRONOUSLY at submission (before
+    # the to_thread/task is spawned) and released ONLY on the worker's real completion (the blocking
+    # function's `finally`), NEVER on a `wait_for` timeout — so "registry empty" is a true
+    # no-live-writer guarantee even for a timed-out worker still running on. Guarded by writer_lock
+    # (a threading.Lock, NOT asyncio: releases fire from to_thread worker threads). This one
+    # mechanism subsumes the old control_lock/per-task/write_in_flight tracking for the restart.
+    writer_registry: set = field(default_factory=set)
+    writer_lock: threading.Lock = field(default_factory=threading.Lock)
+    # Strong refs to the shielded to_thread writer tasks so a timed-out (shield-protected) worker
+    # can't be GC'd before it runs its slot-releasing `finally` — the event loop keeps only a weak
+    # ref (cf. override_tasks / _spawn_tracked). Discarded on the task's done-callback.
+    writer_tasks: set = field(default_factory=set)
+    # Belt-and-suspenders restart gate: set the instant a restart passes idle-and-safe so no new
+    # write starts in the sub-second window before the process actually exits (checked atomically
+    # with every writer reservation, under writer_lock). A pure "stop starting work" flag.
+    draining: bool = False
 
 
 class ControlService:
@@ -1295,7 +1313,212 @@ class ControlService:
             _log.debug("car-mode observation read failed; keeping last good (non-fatal)",
                        exc_info=True)
 
-    async def run_cycle(self) -> None:
+    # --- Outstanding-battery-work registry (I2 refuse-when-busy restart) ------------------------
+    # Reserve a slot SYNCHRONOUSLY at submission (before spawning the to_thread worker) and release
+    # it ONLY from the worker's real completion — never on a wait_for timeout. All three write paths
+    # (periodic tick, override cycle — both via run_cycle — and overrun-AUTO) go through these.
+
+    def reserve_writer(self) -> object | None:
+        """Reserve a generic outstanding-write slot; returns a token to release on real completion,
+        or None when we are DRAINING for a restart (checked atomically with the reservation under
+        writer_lock — so a restart that set `draining` while this path was mid-await can't be raced
+        into starting a new writer during the shutdown window). Used by the overrun-AUTO path."""
+        with self._ctx.writer_lock:
+            if self._ctx.draining:
+                return None
+            token = object()
+            self._ctx.writer_registry.add(token)
+            return token
+
+    def release_writer(self, token: object) -> None:
+        """Release a slot reserved by `reserve_writer` — call ONLY from the worker's real completion
+        (the blocking function's `finally`), so a timed-out `wait_for` never frees a live writer.
+        IDEMPOTENT: `discard` is a no-op on an already-released token, and keyed by token identity
+        it can never free a DIFFERENT writer's slot — so the override leak-safety done-callback
+        (`spawn_override_cycle`) can release unconditionally without risking a double-free."""
+        with self._ctx.writer_lock:
+            self._ctx.writer_registry.discard(token)
+
+    def writer_registry_empty(self) -> bool:
+        with self._ctx.writer_lock:
+            return not self._ctx.writer_registry
+
+    def _spawn_writer(self, coro) -> asyncio.Task:
+        """Wrap a `to_thread` writer coroutine in a TRACKED task so `asyncio.shield` can protect it
+        from a `wait_for` timeout. Without shield, a timeout cancels the awaiter AND the underlying
+        task; if the default executor is saturated and the worker is still QUEUED (not started), the
+        cancellation drops it from the queue so its slot-releasing `finally` never runs — the slot
+        leaks forever and coalesces every future cycle. Shielding keeps the task alive until the
+        thread really runs; the strong ref here stops it being GC'd while pending."""
+        task = asyncio.ensure_future(coro)
+        self._ctx.writer_tasks.add(task)
+        task.add_done_callback(self._ctx.writer_tasks.discard)
+        return task
+
+    def _admit_cycle(self) -> object | None:
+        """Admission gate for the PERIODIC control tick: reserve a slot IFF the outstanding-write
+        registry is EMPTY and we are not draining. Returns a token (release with `_release_cycle`),
+        or None to refuse. This is the SINGLE-ADMISSION rule and it is for the periodic tick ONLY —
+        an override never goes through here (it reserve-but-never-refuses via `reserve_writer`; see
+        `reserve_override_cycle`). Requiring an empty registry (not just "no other cycle") enforces
+        the single-writer rule against BOTH a still-outstanding prior tick AND a lingering
+        overrun-AUTO recovery token (which can outlive its own timeout after the original tick
+        finished) — never two concurrent writers. Refusing on `draining` closes the race where a
+        restart passes the gate during run_cycle's `refresh_car_obs` await, sets draining, and
+        returns 202: the resumed cycle must not start a battery writer that outlives shutdown."""
+        with self._ctx.writer_lock:
+            if self._ctx.draining or self._ctx.writer_registry:
+                return None
+            token = object()
+            self._ctx.writer_registry.add(token)
+            return token
+
+    def _release_cycle(self, token: object) -> None:
+        self.release_writer(token)
+
+    def reserve_override_cycle(self) -> object | None:
+        """Reserve the cycle slot for an OVERRIDE-triggered run SYNCHRONOUSLY at submission — called
+        on the event loop from the override endpoint BEFORE the asyncio.Task is created — so the
+        refuse-when-busy restart gate observes the override through the outstanding-write registry
+        (`idle_for_restart` reads it as `outstanding_write` while the override write is in flight).
+
+        RESERVE-BUT-NEVER-REFUSE. Overrides are user/safety actions (manual override,
+        clear/return-to-AUTO, car-guard priority) that must APPLY PROMPTLY: the slot is reserved via
+        `reserve_writer` (which ALWAYS succeeds unless draining) — deliberately NOT `_admit_cycle` —
+        so an override is never refused/dropped or deferred to the next periodic tick just because a
+        control cycle is already outstanding. It reserves its OWN slot and then queues behind the
+        current writer via `control_lock` inside run_cycle, applying once that writer finishes.
+        Single-admission (refuse-second-concurrent) is for the PERIODIC TICK ONLY (`_admit_cycle`);
+        an override MUST NOT coalesce, or it would silently delay clear/return-to-AUTO and car-guard
+        re-evaluation by a full control cadence.
+
+        Returns a token to pass to `run_cycle(cycle_token=…)`, or None only when there is nothing to
+        run (dry-run / no controller) or we are DRAINING for a restart (a restart is imminent and
+        the new process re-reads the override on boot). The reserved slot is released on the
+        worker's REAL completion inside run_cycle — or, if the task is cancelled before run_cycle
+        starts, by the submitting endpoint's done-callback (`spawn_override_cycle`) — never here."""
+        if self._controller is None or self._dry_run:
+            return None
+        return self.reserve_writer()
+
+    def spawn_override_cycle(
+        self, spawn: Callable[[Any], asyncio.Task]
+    ) -> asyncio.Task | None:
+        """Reserve an override slot AT SUBMISSION (reserve-but-never-refuse; see
+        `reserve_override_cycle`) and spawn `run_cycle` via `spawn` (the app's `_spawn_tracked`,
+        which keeps a strong ref + crash logging), wiring a LEAK-SAFE release so the pre-reserved
+        slot can never be orphaned. Returns the spawned task, or None when there is nothing to run.
+
+        Why the extra release wiring: the slot is reserved OUTSIDE the run_cycle coroutine (so the
+        restart gate sees it the instant it is submitted). If that task is cancelled before
+        its first turn (pre-start cancellation) — or task creation raises — run_cycle never reaches
+        its slot-releasing `try/finally`, so the token would leak FOREVER and wedge
+        `idle_for_restart` at `outstanding_write` (a restart could never succeed again). Two guards
+        close that:
+          (a) a synchronous spawn failure releases the token immediately;
+          (b) a task done-callback releases the token IFF run_cycle never started to own it
+              (`run_cycle_started` stays False on a pre-start cancel). Once run_cycle has started it
+              owns the release — on the worker's REAL completion, even after a `wait_for` timeout —
+              so the callback must NOT release then (that would free a still-live writer's slot).
+        `release_writer` is idempotent (discards by token identity): the callback can never
+        double-free, nor free a DIFFERENT override's slot."""
+        token = self.reserve_override_cycle()
+        if token is None:
+            return None
+        run_cycle_started = False
+
+        async def _run() -> None:
+            nonlocal run_cycle_started
+            # Set before run_cycle's first await, so if this coroutine runs at all its try/finally
+            # is entered and owns the token's release. A pre-start cancel never reaches this line.
+            run_cycle_started = True
+            await self.run_cycle(cycle_token=token)
+
+        def _release_if_orphaned(_task: asyncio.Task) -> None:
+            if not run_cycle_started:
+                self.release_writer(token)
+
+        coro = _run()
+        try:
+            task = spawn(coro)
+        except Exception:
+            coro.close()  # suppress "coroutine was never awaited"; the coroutine never ran
+            self.release_writer(token)  # synchronous spawn failure → free the pre-reserved slot
+            raise
+        task.add_done_callback(_release_if_orphaned)
+        return task
+
+    def _tick_worker(self, now: datetime, token: object) -> list[dict]:
+        """Runs the blocking control tick and releases the cycle slot on REAL completion — this
+        `finally` fires when the thread actually finishes, NOT when a wait_for timeout cancels the
+        awaiting coroutine (which would free a still-live writer)."""
+        try:
+            return self.control_tick(now)
+        finally:
+            self._release_cycle(token)
+
+    def _overrun_auto_worker(self, token: object) -> bool:
+        """Force the battery to AUTO off the event loop; returns whether the write was CONFIRMED (so
+        the caller reports success honestly — a rejected/unconfirmed AUTO must NOT be logged as
+        'forced to AUTO'). Releases the slot on real completion AND marks the controller's
+        restart-gate state UNCONFIRMED (this bypasses decide(), and an overrun can race a
+        still-running tick, so the gate must be re-confirmed by a normal cycle before a restart is
+        allowed — see `note_overrun_recovery`). The state note is in a `finally` so it holds even if
+        the AUTO write itself raises `BatteryWriteUnconfirmed`."""
+        try:
+            try:
+                return bool(self._controller.driver.apply(PhysicalMode.AUTO))
+            finally:
+                self._controller.note_overrun_recovery()
+        finally:
+            self.release_writer(token)
+
+    def mark_draining(self) -> None:
+        # Under writer_lock so it orders against every writer reservation (_admit_cycle /
+        # reserve_writer): once set, no new writer can be admitted concurrently.
+        with self._ctx.writer_lock:
+            self._ctx.draining = True
+
+    def clear_draining(self) -> None:
+        with self._ctx.writer_lock:
+            self._ctx.draining = False
+
+    def idle_for_restart(self) -> tuple[bool, str]:
+        """SYNCHRONOUS, no-`await` snapshot for the refuse-when-busy restart gate. Idle-and-safe iff
+        we are NOT already draining, the outstanding-write registry is EMPTY, the last command is
+        NOT unconfirmed, AND `last_confirmed_action ∈ {AUTO, None}`. Returns (idle, reason). The
+        caller sets `_restart_requested`/`draining` immediately after with NO yield in between, so
+        nothing changes between the read and the decision. Dry-run / no controller is always safe
+        (driver never armed).
+
+        Consulting `draining` here is defense-in-depth: the invariant `draining implies a restart is
+        already requested` is only implicit (the endpoint sets both together), so refusing directly
+        on `draining` means a stuck/leftover drain can NEVER read as idle and let a restart proceed.
+
+        The registry ALONE is the outstanding-work guarantee. Every battery-affecting path — the
+        periodic tick, override cycles (`reserve_override_cycle`, reserved SYNCHRONOUSLY at
+        submission BEFORE the asyncio.Task is spawned), and the overrun-AUTO recovery — reserves its
+        slot at submission and releases it only on real completion. There is deliberately NO
+        separate override-task fallback check: per spec §B.0.2 the unified registry subsumes
+        per-task tracking, so an admitted-but-not-yet-running override is already visible here as a
+        non-empty registry (`outstanding_write`) — nobody can remove an auxiliary check and
+        reintroduce a race, because there is no auxiliary check to remove."""
+        with self._ctx.writer_lock:
+            if self._ctx.draining:
+                return False, "draining"
+            if self._ctx.writer_registry:
+                return False, "outstanding_write"
+        controller = self._controller
+        if self._dry_run or controller is None:
+            return True, "idle"  # driver never armed
+        if getattr(controller, "last_command_unconfirmed", False):
+            return False, "last_command_unconfirmed"
+        last = controller.last_confirmed_action
+        if last is not None and last is not PhysicalMode.AUTO:
+            return False, "last_action_not_auto"
+        return True, "idle"
+
+    async def run_cycle(self, cycle_token: object | None = None) -> None:
         """One operational control cycle: run the (blocking) tick off the event loop, then AUDIT the
         CONFIRMED mode change it reports. Serialised by `ctx.control_lock` so the periodic loop and
         an immediate override-triggered run can't overlap (two concurrent writes to the battery).
@@ -1304,44 +1527,86 @@ class ControlService:
         (B-80): a hung tick (deadlock, infinite loop, blocked device read) cannot stall the loop
         indefinitely. On overrun we audit-log the event and force the battery to AUTO via the
         single-writer seam — but ONLY when the lifecycle allows commanding AND we are not in
-        dry-run. See design spec §4.3."""
-        if self._controller is None or self._dry_run:
-            return
-        async with self._ctx.control_lock:
-            now = datetime.now(UTC)
-            await self.refresh_car_obs(now)  # warm the house-load prediction before the (sync) tick
-            timed_out = False
-            records: list[dict] = []
-            try:
-                async with atimed("control.cycle"):
-                    try:
-                        records = await asyncio.wait_for(
-                            asyncio.to_thread(self.control_tick, now),
-                            timeout=PERF_BUDGETS["control.cycle"] / 1000.0,  # ms -> s
-                        )
-                    except TimeoutError:
-                        timed_out = True
-                        _log.warning("control.overrun: cycle exceeded %.1fs budget (timeout)",
-                                     PERF_BUDGETS["control.cycle"] / 1000.0)
-                    except Exception:
-                        _log.exception("control tick failed; retry next cycle (fail-safe)")
+        dry-run. See design spec §4.3.
+
+        `cycle_token`: an OVERRIDE-triggered run reserves its cycle slot SYNCHRONOUSLY at submission
+        (BEFORE its asyncio.Task exists — `reserve_override_cycle`) and passes the token here, so
+        the refuse-when-busy restart gate already sees the override via the outstanding-write
+        registry while the task is merely queued. This method uses that slot instead of admitting a
+        fresh one. The periodic loop passes None and admits its own slot. Either way the slot is
+        handed to the tick worker and released on the worker's REAL completion; if the worker is
+        never spawned (dry-run / draining / an early error before the write) the `finally` releases
+        the pre-reserved slot so the registry can't leak."""
+        spawned = False  # True once the tick worker OWNS the token (releases it on real completion)
+        try:
+            if self._controller is None or self._dry_run:
+                return
+            # Belt-and-suspenders: a restart just passed idle-and-safe and is about to exit — do not
+            # start a new write in the sub-second window before the process goes down. (A
+            # pre-reserved override holds a registry slot, so a restart can't have set draining
+            # underneath it; this guard still matters for the periodic path.)
+            if self._ctx.draining:
+                _log.info("control.cycle: draining for restart; not starting a new tick")
+                return
+            async with self._ctx.control_lock:
+                now = datetime.now(UTC)
+                await self.refresh_car_obs(now)  # warm house-load prediction before the (sync) tick
+                if cycle_token is None:
+                    # Single-admission: reserve the cycle slot SYNCHRONOUSLY before spawning the
+                    # worker. If a prior tick worker is still outstanding (e.g. it timed out and
+                    # runs on), refuse rather than start a second concurrent writer to the battery.
+                    cycle_token = self._admit_cycle()
+                    if cycle_token is None:
+                        _log.warning("control.cycle: prior write worker still outstanding; "
+                                     "coalescing")
                         return
-            except Exception:
-                # Defensive: atimed itself should never raise, but a registry push failure must not
-                # wedge the control loop.
-                pass
-            recent = REGISTRY.recent("control.cycle")
-            if recent and (recent[-1].over_budget or timed_out):
-                with timed("control.overrun_audit"):
-                    await self._handle_overrun(now, timed_out, recent[-1])
-            async with atimed("control.audit"):
-                for rec in records:
-                    if self._audit_store is not None:
+                timed_out = False
+                records: list[dict] = []
+                try:
+                    async with atimed("control.cycle"):
                         try:
-                            await self._audit_store.append(now.isoformat(), "battery_decision",
-                                                           rec["summary"], rec["detail"])
+                            # The worker releases the slot from its own `finally` on REAL
+                            # completion; a wait_for timeout cancels only the shield, never the
+                            # (tracked) worker task, so the thread still runs and releases even
+                            # under executor saturation.
+                            worker = self._spawn_writer(
+                                asyncio.to_thread(self._tick_worker, now, cycle_token))
+                            spawned = True  # worker now OWNS the token (releases on completion)
+                            records = await asyncio.wait_for(
+                                asyncio.shield(worker),
+                                timeout=PERF_BUDGETS["control.cycle"] / 1000.0,  # ms -> s
+                            )
+                        except TimeoutError:
+                            timed_out = True
+                            _log.warning("control.overrun: cycle exceeded %.1fs budget (timeout)",
+                                         PERF_BUDGETS["control.cycle"] / 1000.0)
                         except Exception:
-                            _log.warning("failed to write battery-decision audit", exc_info=True)
+                            _log.exception("control tick failed; retry next cycle (fail-safe)")
+                            return  # the worker's `finally` already released the slot
+                except Exception:
+                    # Defensive: atimed itself should never raise, but a registry push failure must
+                    # not wedge the control loop.
+                    pass
+                recent = REGISTRY.recent("control.cycle")
+                if recent and (recent[-1].over_budget or timed_out):
+                    with timed("control.overrun_audit"):
+                        await self._handle_overrun(now, timed_out, recent[-1])
+                async with atimed("control.audit"):
+                    for rec in records:
+                        if self._audit_store is not None:
+                            try:
+                                await self._audit_store.append(now.isoformat(), "battery_decision",
+                                                               rec["summary"], rec["detail"])
+                            except Exception:
+                                _log.warning("battery-decision audit write failed", exc_info=True)
+        finally:
+            # A cycle slot we hold (whether pre-reserved by an override at submission, or admitted
+            # here for the periodic tick) that NEVER reached a worker — dry-run / no-controller /
+            # draining / an early error before the spawn — must be released here so the registry
+            # slot can't leak. Once the worker is spawned it OWNS the token and releases it on REAL
+            # completion (never here); the `spawned` guard prevents a double-release.
+            if cycle_token is not None and not spawned:
+                self._release_cycle(cycle_token)
 
     async def _handle_overrun(self, now: datetime, timed_out: bool, sample) -> None:
         """Force the battery to AUTO if not dry-run AND the lifecycle allows commanding; otherwise
@@ -1378,19 +1643,49 @@ class ControlService:
         lc = self._controller.lifecycle if self._controller is not None else None
         if lc is None or not lc.can_command(now):
             return
+        # The overrun-AUTO recovery is a battery write too: reserve a slot SYNCHRONOUSLY at
+        # submission and move it onto a worker whose `finally` releases on real completion, so a
+        # wait_for timeout here never frees a still-running AUTO write. Reserving before spawn means
+        # a restart requested in this window sees the registry non-empty and refuses.
+        token = self.reserve_writer()
+        if token is None:
+            # A restart passed the gate while this over-budget cycle was awaiting its audit write:
+            # do NOT start a forced-AUTO writer during the shutdown window (the lifespan
+            # `_shutdown_restore` will set AUTO on the way out anyway).
+            _log.info("control.overrun: draining for restart; skipping forced-AUTO recovery")
+            return
+        spawned = False  # True once the AUTO worker OWNS the token (releases it on real completion)
         try:
-            await asyncio.wait_for(
-                self._controller.driver.apply(PhysicalMode.AUTO),
-                timeout=PERF_BUDGETS["control.cycle"] / 1000.0,
-            )
-            _log.warning("control.overrun: forced battery to AUTO")
-        except TimeoutError:
-            _log.warning(
-                "control.overrun: AUTO recovery write timed out — "
-                "battery may still be in non-AUTO mode"
-            )
-        except Exception:
-            _log.exception("control.overrun: AUTO write failed (non-fatal)")
+            try:
+                # Shielded + tracked, same as the tick worker: a timeout must not cancel a queued
+                # AUTO write before it runs (its `finally` releases the slot + reconciles safety).
+                worker = self._spawn_writer(asyncio.to_thread(self._overrun_auto_worker, token))
+                spawned = True  # worker now OWNS the token (releases it on REAL completion)
+                confirmed = await asyncio.wait_for(
+                    asyncio.shield(worker),
+                    timeout=PERF_BUDGETS["control.cycle"] / 1000.0,
+                )
+                if confirmed:
+                    _log.warning("control.overrun: forced battery to AUTO")
+                else:
+                    _log.warning("control.overrun: AUTO recovery REJECTED/unconfirmed — "
+                                 "battery may still be in a forced mode")
+            except TimeoutError:
+                _log.warning(
+                    "control.overrun: AUTO recovery write timed out — "
+                    "battery may still be in non-AUTO mode"
+                )
+            except Exception:
+                _log.exception("control.overrun: AUTO write failed (non-fatal)")
+        finally:
+            # Leak-safety, mirroring run_cycle's `not spawned` guard: if the worker was NEVER
+            # spawned — a synchronous `_spawn_writer`/`ensure_future` failure before the to_thread
+            # task exists — its slot-releasing `finally` never runs, so release the pre-reserved
+            # token here or it leaks FOREVER and `_admit_cycle` then refuses EVERY future tick.
+            # Once spawned, the worker owns the release (on REAL completion, even after a wait_for
+            # timeout); the `spawned` guard prevents a double-release of a still-live writer's slot.
+            if not spawned:
+                self.release_writer(token)
 
 
 def _dominant_phase() -> str | None:
