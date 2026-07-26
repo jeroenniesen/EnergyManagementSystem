@@ -52,10 +52,20 @@ public struct APIClient: Sendable {
     }
 
     public func fetchDashboard() async throws -> MobileDashboardSnapshot {
-        async let statusResult = capture { try await fetchStatus() }
-        async let freshnessResult = capture { try await fetchFreshness() }
+        let atomic = try? await get("api/dashboard", as: DashboardEnvelope.self)
+        async let statusResult = capture {
+            if let status = atomic?.status { return status }
+            return try await fetchStatus()
+        }
+        async let freshnessResult = capture {
+            if let freshness = atomic?.freshness { return freshness }
+            return try await fetchFreshness()
+        }
         async let decisionResult = capture { try await fetchDecision() }
-        async let alertsResult = capture { try await fetchAlerts() }
+        async let alertsResult = capture {
+            if let alerts = atomic?.alerts { return alerts }
+            return try await fetchAlerts()
+        }
         async let batteryResult = capture { try await fetchBattery() }
         async let chargeNeedResult = capture { try await fetchChargeNeed() }
         async let savingsResult = capture { try await fetchSavings() }
@@ -355,6 +365,12 @@ public struct APIClient: Sendable {
             return .failure(error)
         }
     }
+}
+
+private struct DashboardEnvelope: Decodable, Sendable {
+    let status: StatusSnapshot
+    let freshness: FreshnessSnapshot
+    let alerts: AlertsSnapshot
 }
 
 private extension Result {
