@@ -3,7 +3,7 @@
 *Product-owner backlog, 2026-07-02; multi-level since 2026-07-03 (see
 [`docs/superpowers/specs/2026-07-03-backlog-sync-design.md`](./docs/superpowers/specs/2026-07-03-backlog-sync-design.md)).
 Owner: Jeroen. Groom by editing this file, then run `/backlog-sync` to mirror to GitHub.
-**Status verified against `main` + merged PRs on 2026-07-20** — PRs through #42 merged (E-09 quality pass + auth slices 1–4); several items marked ✅ below.*
+**Status verified against `main` + merged PRs on 2026-07-26** — PRs through #51 merged; several items marked ✅ below.*
 
 **Product goals every item must serve at least one of:**
 **€** lower energy bill · **CO₂** lower footprint · **Motivation** the household sees progress and is nudged to improve · **Trust** the system is honest, safe, and explains itself.
@@ -46,7 +46,7 @@ observability (B-24); numbered date-less sprints, Issues+Milestones on GitHub.
 | **E-10 · Web UI redesign: dense → calm** | | | | ✅ B-86 ✅ B-87 B-88 |
 | *Big levers (pool)* | | | | B-17 B-18 B-19 B-20 B-23 |
 | *Refactoring (pool)* | | | | B-24 B-25 B-26 B-27 B-28 B-29 |
-| *Architecture & platform (pool)* | | | | **P1:** B-42 B-43 B-44 B-52 · B-45 🟨 B-46 B-47 B-48 B-49 B-50 B-51 B-53 B-54 |
+| *Architecture & platform (pool)* | | | | **P1:** 🔄 SAF-01 B-42 B-43 B-44 B-52 · B-45 🟨 B-46 B-47 B-48 B-49 B-50 B-51 B-53 B-54 |
 
 ---
 
@@ -476,6 +476,23 @@ P1 = schedule soon · P2 = when the area is touched · P3 = opportunistic. The s
 (single battery writer, fail-safe-to-AUTO, source-port discipline, coalesced device reads,
 hermetic tests) reviewed as sound — these items scale the patterns that work and finish the
 seams that were started, without touching the parts that are right.*
+
+### SAF-01 · Fence timed-out battery commands and make safe recovery final — Bug · S · **P1**
+The control-cycle timeout cancels only its async waiter: its blocking battery worker can continue
+and previously overlap a manual override, timeout recovery, or graceful-shutdown restore. That lets
+an older CHARGE/DISCHARGE command complete after a newer AUTO safety action. Add one generation-ordered
+physical-command fence spanning routine cycles, overrides, overrun recovery, and shutdown; supersede
+stale pre-write work; preserve newer operator intent; and keep sensor/planning reads outside the
+physical command boundary so a hung read cannot own the writer lane. Dry-run exercises the same
+admission path with zero device writes.
+**Done when:** no two physical battery commands overlap; a timed-out stale command cannot land after
+confirmed recovery AUTO; newer overrides are never overwritten by older recovery; shutdown freezes
+admission and queues a bounded final safe restore even while a prior command is unconfirmed; ticket
+ownership survives cancellation and is released only on real worker completion; deterministic race,
+shutdown, dry-run, and persistence regressions pass.
+**Track:** 🔄 PR open — [PR #52](https://github.com/jeroenniesen/EnergyManagementSystem/pull/52).
+Implementation and verification complete. Design:
+[`docs/superpowers/specs/2026-07-26-saf01-writer-fencing-design.md`](docs/superpowers/specs/2026-07-26-saf01-writer-fencing-design.md).
 
 ### B-42 · Control-path stability fixes — Bug · S · **P1**
 Three small, independently-shippable correctness bugs found in the review: (1) `ModeController.tz`

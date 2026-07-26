@@ -26,6 +26,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from ems.control.mode_controller import ModeController
+from ems.control.override import Override
 from ems.control.service import ControlContext, ControlService
 from ems.domain import BatteryIntent, PhysicalMode
 from ems.lifecycle import Lifecycle
@@ -103,6 +104,95 @@ class _RecordingDriver(MockBatteryDriver):
     def apply(self, mode, *, target_soc=None, power_w=None):
         self.applied.append(mode)
         return super().apply(mode, target_soc=target_soc, power_w=power_w)
+
+
+class _BlockedChargeDriver(MockBatteryDriver):
+    """Stateful race fixture: CHARGE enters the device and blocks before completing."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.charge_entered = threading.Event()
+        self.release_charge = threading.Event()
+        self.completed: list[PhysicalMode] = []
+
+    def apply(self, mode, *, target_soc=None, power_w=None):
+        if mode is PhysicalMode.CHARGE:
+            self.charge_entered.set()
+            assert self.release_charge.wait(3.0), "test did not release blocked CHARGE"
+        result = super().apply(mode, target_soc=target_soc, power_w=power_w)
+        self.completed.append(mode)
+        return result
+
+
+def test_stale_charge_cannot_complete_after_auto_recovery():
+    """Regression for SAF-01: removing physical serialization lets stale CHARGE finish last."""
+    driver = _BlockedChargeDriver()
+    controller = _controlling_controller(driver)
+    svc, ctx = _service(controller)
+    ctx.override_box["ov"] = Override(
+        intent=BatteryIntent.GRID_CHARGE_TO_TARGET,
+        expires_at=NOW + timedelta(hours=1),
+    )
+    stale_token = svc.reserve_writer()
+    assert stale_token is not None
+    stale = threading.Thread(target=svc._tick_worker, args=(NOW, stale_token), daemon=True)
+    stale.start()
+    assert driver.charge_entered.wait(1.0)
+
+    recovery_token = svc.reserve_writer()
+    assert recovery_token is not None
+    recovery_result: list[bool] = []
+    recovery = threading.Thread(
+        target=lambda: recovery_result.append(svc._overrun_auto_worker(recovery_token)),
+        daemon=True,
+    )
+    recovery.start()
+    # AUTO must wait behind the unkillable in-driver CHARGE call.
+    assert recovery_result == []
+    driver.release_charge.set()
+    stale.join(2.0)
+    recovery.join(2.0)
+
+    assert not stale.is_alive() and not recovery.is_alive()
+    assert recovery_result == [True]
+    assert driver.completed == [PhysicalMode.CHARGE, PhysicalMode.AUTO]
+    assert driver.current_mode() is PhysicalMode.AUTO
+
+
+def test_cycle_timeout_queues_auto_behind_blocked_charge_and_auto_is_final(monkeypatch):
+    import ems.perf as perf
+
+    monkeypatch.setitem(perf.PERF_BUDGETS, "control.cycle", 40)
+    driver = _BlockedChargeDriver()
+    controller = _controlling_controller(driver)
+    svc, ctx = _service(controller)
+    ctx.override_box["ov"] = Override(
+        intent=BatteryIntent.GRID_CHARGE_TO_TARGET,
+        expires_at=datetime.now(UTC) + timedelta(hours=1),
+    )
+
+    loop = asyncio.new_event_loop()
+    try:
+        # Both the cycle waiter and its recovery waiter time out while the real CHARGE call remains
+        # blocked. Their worker tickets must stay live and ordered after this coroutine returns.
+        loop.run_until_complete(svc.run_cycle())
+        assert driver.charge_entered.is_set()
+        assert svc.writer_snapshot().outstanding == 2
+        assert svc.writer_snapshot().recovery_pending is True
+
+        driver.release_charge.set()
+        deadline = time.time() + 3.0
+        while not svc.writer_registry_empty() and time.time() < deadline:
+            time.sleep(0.01)
+        _drain(loop)
+
+        assert driver.completed == [PhysicalMode.CHARGE, PhysicalMode.AUTO]
+        assert driver.current_mode() is PhysicalMode.AUTO
+        assert svc.writer_registry_empty() is True
+    finally:
+        driver.release_charge.set()
+        _drain(loop)
+        loop.close()
 
 
 # --------------------------------------------------------------------------------------------
@@ -245,15 +335,16 @@ def test_override_run_cycle_reuses_presubmitted_slot_and_releases_on_real_comple
         gate.wait(5.0)  # outlive the wait_for deadline
         return []
 
-    async def _noop_overrun(*a, **k):
-        return None
+    async def _noop_overrun(*a, recovery_token=None, **k):
+        if recovery_token is not None:
+            svc.release_writer(recovery_token)
 
     monkeypatch.setattr(svc, "control_tick", _blocking_tick)
     monkeypatch.setattr(svc, "_handle_overrun", _noop_overrun)
 
     token = svc.reserve_override_cycle()  # SUBMISSION: slot reserved before any task/worker exists
     assert token is not None
-    assert len(ctx.writer_registry) == 1
+    assert svc.writer_snapshot().outstanding == 1
     assert svc.idle_for_restart() == (False, "outstanding_write")  # refused at submission already
 
     loop = asyncio.new_event_loop()
@@ -261,7 +352,7 @@ def test_override_run_cycle_reuses_presubmitted_slot_and_releases_on_real_comple
         # run_cycle uses the PRE-RESERVED token (does not admit a second slot) and returns after the
         # deadline while the blocked worker keeps holding the slot.
         loop.run_until_complete(svc.run_cycle(cycle_token=token))
-        assert len(ctx.writer_registry) == 1  # still exactly ONE slot — token reused, not doubled
+        assert svc.writer_snapshot().outstanding == 1  # token reused, not doubled
         assert svc.idle_for_restart()[0] is False  # worker still running → gate refuses
         gate.set()  # let the worker complete → its `finally` releases the slot on REAL completion
         deadline = time.time() + 3.0
@@ -287,7 +378,7 @@ def test_override_reservation_never_refuses_while_a_control_cycle_is_outstanding
     assert svc._admit_cycle() is None  # a SECOND periodic tick is (correctly) refused
     override_token = svc.reserve_override_cycle()  # but an OVERRIDE is not
     assert override_token is not None
-    assert len(ctx.writer_registry) == 2  # both slots held → restart 409s until both complete
+    assert svc.writer_snapshot().outstanding == 2  # both held → restart 409s until completion
     assert svc.idle_for_restart() == (False, "outstanding_write")
     svc._release_cycle(cycle_token)
     svc._release_cycle(override_token)
@@ -322,7 +413,7 @@ def test_override_applies_promptly_after_current_writer_not_next_periodic_tick(m
         override_task = svc.spawn_override_cycle(
             lambda coro: _spawn_tracked(coro, "Override control cycle", tasks))
         assert override_task is not None
-        assert len(ctx.writer_registry) == 1  # slot reserved AT SUBMISSION (before spawn)
+        assert svc.writer_snapshot().outstanding == 1  # reserved AT SUBMISSION (before spawn)
         assert svc.idle_for_restart() == (False, "outstanding_write")
         await asyncio.sleep(0.02)  # give the override a turn — it must STILL be blocked on the lock
         assert tick_calls == []  # NOT applied: queued behind the current writer, not on a tick
@@ -350,7 +441,7 @@ def test_override_pre_start_cancel_releases_slot_no_leak():
         task = svc.spawn_override_cycle(
             lambda coro: _spawn_tracked(coro, "Override control cycle", tasks))
         assert task is not None
-        assert len(ctx.writer_registry) == 1  # reserved at submission
+        assert svc.writer_snapshot().outstanding == 1  # reserved at submission
         assert svc.idle_for_restart() == (False, "outstanding_write")
         task.cancel()  # cancel BEFORE the loop steps it → run_cycle never starts
         with contextlib.suppress(asyncio.CancelledError):
@@ -411,6 +502,9 @@ def test_dry_run_service_is_always_safe():
     controller.last_confirmed_action = PhysicalMode.CHARGE  # would block if armed
     svc, _ctx = _service(controller, dry_run=True)
     assert svc.idle_for_restart()[0] is True
+    ticket = svc.reserve_override_cycle()
+    assert ticket is not None  # dry-run exercises admission/fencing; ModeController suppresses I/O
+    svc.release_writer(ticket)
 
 
 def test_idle_for_restart_409_while_draining():
@@ -555,8 +649,9 @@ def test_slot_reserved_at_submission_and_released_only_on_real_completion(monkey
         gate.wait(5.0)  # outlive the wait_for deadline
         return []
 
-    async def _noop_overrun(*a, **k):
-        return None
+    async def _noop_overrun(*a, recovery_token=None, **k):
+        if recovery_token is not None:
+            svc.release_writer(recovery_token)
 
     monkeypatch.setattr(svc, "control_tick", _blocking_tick)
     monkeypatch.setattr(svc, "_handle_overrun", _noop_overrun)
@@ -593,8 +688,9 @@ def test_queued_writer_survives_timeout_cancellation_and_releases_slot(monkeypat
     controller = _controlling_controller()
     svc, _ctx = _service(controller)
 
-    async def _noop_overrun(*a, **k):
-        return None
+    async def _noop_overrun(*a, recovery_token=None, **k):
+        if recovery_token is not None:
+            svc.release_writer(recovery_token)
 
     started = threading.Event()
 
@@ -618,7 +714,9 @@ def test_queued_writer_survives_timeout_cancellation_and_releases_slot(monkeypat
         deadline = time.time() + 3.0
         while not svc.writer_registry_empty() and time.time() < deadline:
             time.sleep(0.01)
-        assert started.is_set() is True  # it DID run — cancellation didn't drop it from the queue
+        # The stale worker may still finish non-command reads, but its superseded ticket prevents
+        # it from crossing the physical command boundary.
+        assert started.is_set() is True
         assert svc.writer_registry_empty() is True  # and released its slot on real completion
     finally:
         occupy_release.set()
@@ -642,11 +740,64 @@ def test_overrun_auto_recovery_reserves_at_submission_and_releases_on_completion
     asyncio.run(svc._handle_overrun(datetime.now(UTC), True, _Sample()))
     assert controller.driver.current_mode() is PhysicalMode.AUTO  # forced to AUTO off the loop
     assert svc.writer_registry_empty() is True  # slot released on real completion
-    # P1 (Sol, pass 2): the overrun path must NEVER open the gate — a racing timed-out tick could
-    # apply a different mode after this AUTO. It marks the last command unconfirmed unconditionally,
-    # so a restart is blocked until a normal confirmed cycle re-establishes safe AUTO.
-    assert controller.last_command_unconfirmed is True
-    assert svc.idle_for_restart()[0] is False
+    # The fence makes a confirmed recovery final, so the persisted restart state is provably safe.
+    assert controller.last_command_unconfirmed is False
+    assert svc.idle_for_restart()[0] is True
+
+
+def test_pre_reserved_recovery_releases_when_lifecycle_no_longer_allows_command():
+    controller = _controlling_controller()
+    svc, _ctx = _service(controller)
+    stale = svc._admit_cycle()
+    assert stale is not None
+    recovery = svc._ctx.command_fence.begin_recovery(stale)
+    assert recovery is not None
+    controller.lifecycle.return_to_default()  # readiness changed after reservation, before recovery
+
+    class _Sample:
+        duration_ms = 99_999.0
+
+    asyncio.run(
+        svc._handle_overrun(
+            datetime.now(UTC), True, _Sample(), recovery_token=recovery))
+    svc.release_writer(stale)
+
+    assert svc.writer_registry_empty() is True
+
+
+def test_cancellation_during_overrun_audit_releases_pre_reserved_recovery():
+    class _BlockingAudit:
+        def __init__(self):
+            self.started = asyncio.Event()
+            self.release = asyncio.Event()
+
+        async def append(self, *args):
+            self.started.set()
+            await self.release.wait()
+
+    async def scenario() -> None:
+        controller = _controlling_controller()
+        svc, _ctx = _service(controller)
+        audit = _BlockingAudit()
+        svc._audit_store = audit
+        stale = svc._admit_cycle()
+        assert stale is not None
+        recovery = svc._ctx.command_fence.begin_recovery(stale)
+        assert recovery is not None
+
+        class _Sample:
+            duration_ms = 99_999.0
+
+        task = asyncio.create_task(svc._handle_overrun(
+            datetime.now(UTC), True, _Sample(), recovery_token=recovery))
+        await audit.started.wait()
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        svc.release_writer(stale)
+        assert svc.writer_registry_empty() is True
+
+    asyncio.run(scenario())
 
 
 def test_overrun_unconfirmed_recovery_sets_the_unconfirmed_flag():

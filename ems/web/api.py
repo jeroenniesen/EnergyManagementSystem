@@ -1255,20 +1255,24 @@ def create_app(
         device can never hang shutdown — and the outcome is audited."""
         if dry_run or controller is None or not getattr(controller.driver, "armed", False):
             return
-        # Nothing to undo unless EMS actually commanded a non-AUTO mode this run.
+        # Freeze admission before inspecting state: an outstanding write may still be transitioning
+        # away from AUTO even though last_confirmed_action has not changed yet.
+        control.mark_draining()
         last = controller.last_confirmed_action
-        if last is None or last is PhysicalMode.AUTO:
+        if (last is None or last is PhysicalMode.AUTO) and control.writer_registry_empty():
             return
         # Prefer the mode the battery had before EMS took control, but NEVER restore into a forced
         # energy flow — fall back to AUTO (vendor self-consumption / P1-zeroing), the safe default.
         target = controller.original_vendor_mode or PhysicalMode.AUTO
         if target in (PhysicalMode.CHARGE, PhysicalMode.DISCHARGE):
             target = PhysicalMode.AUTO
+        # B-89: stop routine admission and supersede not-yet-entered routine work before restoring.
+        # An already-running driver call cannot be killed; restore_for_shutdown waits behind it and
+        # writes last through the same physical command fence.
         ok = False
         try:
             ok = await asyncio.wait_for(
-                asyncio.to_thread(controller.driver.apply, target), timeout=8.0
-            )
+                asyncio.to_thread(control.restore_for_shutdown, target, 120.0), timeout=125.0)
         except Exception as exc:
             _log.warning("shutdown restore failed (%s: %s)", type(exc).__name__, exc)
         if ok and target is PhysicalMode.AUTO:
@@ -1681,7 +1685,7 @@ def create_app(
         data_quality=_data_quality, validate_plan_obj=_validate_plan_obj,
     )
     # I2: the restart handler + tests reach the control brain's outstanding-write registry and the
-    # idle-and-safe read through here (the single owner of `ctx.writer_registry`).
+    # idle-and-safe read through here (the single owner of the command-fence snapshot).
     app.state.control_service = control
     _effective_intent = control.effective_intent
     _current_plan = control.current_plan

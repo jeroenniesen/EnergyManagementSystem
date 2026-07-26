@@ -14,6 +14,7 @@
 | **Mapped entity missing/renamed** | startup validation fails | start **degraded/`AUTO`**; refuse to mis-read | `meter_missing` | fix `entity_map`; re-probe |
 | **Battery unreachable** | command times out / state unread | retry once w/ backoff → command `AUTO` → if still failing, leave safe | `battery_write_failed` | resume when reachable |
 | **Battery rejects/ignores command** | post-write confirmation poll mismatch | same as above (retry→`AUTO`→alert) | `battery_write_failed` | re-probe capability surface |
+| **Control cycle times out during a battery write** | async cycle deadline expires while its worker ticket remains outstanding | supersede work that has not entered; if the device call is already running, serialize recovery behind it and command `AUTO` last; refuse new routine work until both finish | `control.overrun` audit | worker and recovery release their generation tickets on real completion; next cycle resumes only after the fence is empty |
 | **Manual change outside EMS** | observed mode ≠ EMS intent, not EMS-issued | respect for `manual_override_respect_minutes` (or reassert, per policy) | (info badge) | resume planning after window |
 | **P1 / grid meter stale** | freshness age exceeded | reconstruction unreliable → `AUTO` | `meter_missing` | resume on fresh read |
 | **Solar meter stale** | freshness age exceeded | use forecast for `solar_power_w`; flag | `meter_missing` | resume on fresh read |
