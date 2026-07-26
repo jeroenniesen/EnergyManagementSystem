@@ -37,6 +37,24 @@ def test_status_reconstructs_house_load():
     assert body["dry_run"] is True
 
 
+def test_dashboard_snapshot_has_coherent_core_sections():
+    r = _client().get("/api/dashboard")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["api_version"] == 1
+    assert body["generated_at"].endswith("+00:00")
+    assert body["degraded_sections"] == []
+    assert body["status"]["soc_pct"] == 55
+    assert "freshness" in body
+    assert "slots" in body["prices"]
+    assert isinstance(body["alerts"]["alerts"], list)
+
+
+def test_dashboard_snapshot_rejects_unknown_version():
+    r = _client().get("/api/dashboard?api_version=2")
+    assert r.status_code == 406
+
+
 def test_series_empty_without_store():
     r = _client().get("/api/series")
     assert r.status_code == 200

@@ -19,7 +19,7 @@ from typing import Any
 from uuid import uuid4
 from zoneinfo import ZoneInfo
 
-from fastapi import FastAPI, Query, Request
+from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.background import BackgroundTask
@@ -2096,6 +2096,31 @@ def create_app(
         if freshness is None:
             return {}
         return freshness.snapshot(datetime.now(UTC))
+
+    @app.get("/api/dashboard")
+    def dashboard_snapshot(api_version: int = Query(default=1, ge=1)) -> dict:
+        """Return one timestamped dashboard snapshot for clients that need a coherent read."""
+        if api_version != 1:
+            raise HTTPException(status_code=406, detail="unsupported dashboard api version")
+        generated_at = datetime.now(UTC).isoformat()
+        sections: dict[str, object] = {
+            "status": status(),
+            "freshness": freshness_snapshot(),
+        }
+        degraded_sections: list[str] = []
+        for name, producer in (("prices", prices), ("alerts", alerts_endpoint)):
+            try:
+                sections[name] = producer()
+            except Exception:
+                _log.warning("dashboard snapshot section failed: %s", name, exc_info=True)
+                sections[name] = None
+                degraded_sections.append(name)
+        return {
+            "api_version": 1,
+            "generated_at": generated_at,
+            "degraded_sections": degraded_sections,
+            **sections,
+        }
 
     @app.get("/api/prices")
     def prices() -> dict:
