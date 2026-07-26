@@ -2466,15 +2466,19 @@ def create_app(
             # good — refuse (no exit) and tell the operator to use the manual script.
             if not _is_supervised():
                 return JSONResponse(
-                    {"detail": "not supervised; restart manually via scripts/restart.sh"},
+                    {"detail": "not supervised; restart manually via scripts/restart.sh",
+                     "reason": "not_supervised"},
                     status_code=409,
                 )
             # Single-flight check-and-set, then the idle-and-safe read, then set draining — ALL
             # synchronous with NO `await` between them, so the snapshot cannot change underfoot
             # and a second concurrent request can never also pass — it 409s on the latch.
             if app.state._restart_requested:
+                # Busy (single-flight): an explicit `reason` so the client treats it as
+                # "keep the button + retry", NOT as the unsupervised→manual-hint case.
                 return JSONResponse(
-                    {"detail": "restart already in progress"}, status_code=409)
+                    {"detail": "restart already in progress", "reason": "in_progress"},
+                    status_code=409)
             app.state._restart_requested = True
             idle, reason = control.idle_for_restart()
             if not idle:

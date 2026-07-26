@@ -91,6 +91,18 @@ class _UnconfirmedDriver(MockBatteryDriver):
         raise BatteryWriteUnconfirmed("device slow")
 
 
+class _RecordingDriver(MockBatteryDriver):
+    """Records every apply() so a test can assert whether a battery write actually happened."""
+
+    def __init__(self):
+        super().__init__()
+        self.applied: list = []
+
+    def apply(self, mode, *, target_soc=None, power_w=None):
+        self.applied.append(mode)
+        return super().apply(mode, target_soc=target_soc, power_w=power_w)
+
+
 # --------------------------------------------------------------------------------------------
 # 1. Writer registry + idle_for_restart (the safety core)
 # --------------------------------------------------------------------------------------------
@@ -399,6 +411,45 @@ def test_dry_run_service_is_always_safe():
     assert svc.idle_for_restart()[0] is True
 
 
+def test_idle_for_restart_409_while_draining():
+    # Fix 2 (defense-in-depth): idle_for_restart consults `draining` directly, so a stuck/leftover
+    # drain can NEVER read as idle and let a fresh restart proceed on top of it. The implicit
+    # invariant (draining ⇒ _restart_requested) is no longer the only thing standing in the way.
+    controller = _controlling_controller()
+    svc, _ctx = _service(controller)
+    assert svc.idle_for_restart()[0] is True  # clean baseline
+    svc.mark_draining()
+    idle, reason = svc.idle_for_restart()
+    assert idle is False and reason == "draining"
+    svc.clear_draining()
+    assert svc.idle_for_restart()[0] is True
+
+
+def test_restore_corrupt_blob_fails_safe_and_idle_refuses():
+    # Fix 1 (3-reviewer consensus, FAIL-SAFE): a corrupt/unparseable persisted blob must leave
+    # last_command_unconfirmed=True (unknown device state ⇒ block the restart) — NOT the old
+    # fail-OPEN False. Even an explicit `False` in the blob is overridden when another field is
+    # garbage, because the parse never reaches it and the except fails safe.
+    controller = _controlling_controller()
+    controller.restore_state(
+        {"switches_today": "not-an-int", "last_command_unconfirmed": False})
+    assert controller.last_command_unconfirmed is True
+    svc, _ctx = _service(controller)
+    idle, reason = svc.idle_for_restart()
+    assert idle is False and reason == "last_command_unconfirmed"
+
+
+def test_restore_missing_unconfirmed_key_fails_safe():
+    # Fix 1: a present blob that LACKS the key (e.g. a pre-I2 persisted state) can't prove the last
+    # command confirmed → fail safe to True; a well-formed explicit False still reads False.
+    missing = _controlling_controller()
+    missing.restore_state({"switches_today": 2})  # no last_command_unconfirmed key
+    assert missing.last_command_unconfirmed is True
+    present = _controlling_controller()
+    present.restore_state({"switches_today": 2, "last_command_unconfirmed": False})
+    assert present.last_command_unconfirmed is False
+
+
 # --------------------------------------------------------------------------------------------
 # Slot lifecycle through run_cycle: reserved at submission, released ONLY on real completion
 # --------------------------------------------------------------------------------------------
@@ -530,6 +581,58 @@ def test_overrun_unconfirmed_recovery_sets_the_unconfirmed_flag():
     assert idle is False and reason == "last_command_unconfirmed"
 
 
+def test_handle_overrun_synchronous_spawn_failure_releases_slot_no_leak(monkeypatch):
+    # Fix 3 (leak → permanent-busy deadlock): the overrun-AUTO slot is reserved BEFORE the worker is
+    # spawned. If _spawn_writer/ensure_future raises SYNCHRONOUSLY (before the to_thread task exists
+    # to own the release), the worker's slot-releasing `finally` never runs — without a leak guard
+    # the token would leak forever and `_admit_cycle` would then refuse EVERY future tick. The
+    # `not spawned` finally (mirroring run_cycle) must release the pre-reserved token.
+    import ems.perf as perf
+
+    controller = _controlling_controller()
+    controller.driver.apply(PhysicalMode.CHARGE)  # non-AUTO so the recovery would be a real write
+    svc, _ctx = _service(controller)
+
+    def _boom_spawn(coro):
+        coro.close()  # suppress "coroutine was never awaited" — the test's mock, not the SUT
+        raise RuntimeError("cannot create task")
+
+    monkeypatch.setattr(svc, "_spawn_writer", _boom_spawn)
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setitem(perf.PERF_BUDGETS, "control.cycle", 20_000)
+
+        class _Sample:
+            duration_ms = 99_999.0
+
+        # The synchronous spawn failure is swallowed (non-fatal) by _handle_overrun's except.
+        asyncio.run(svc._handle_overrun(datetime.now(UTC), True, _Sample()))
+    assert svc.writer_registry_empty() is True  # pre-reserved slot released → no leak
+    assert svc._admit_cycle() is not None  # and a future tick can still be admitted
+
+
+def test_handle_overrun_while_draining_starts_no_battery_write():
+    # Fix 7 (shutdown-window safety): once `draining` is set for a restart, an over-budget cycle's
+    # forced-AUTO recovery must NOT start a new battery write — reserve_writer refuses while
+    # draining, so no apply() reaches the device in the exit window (the lifespan _shutdown_restore
+    # sets AUTO on the way out anyway).
+    import ems.perf as perf
+
+    driver = _RecordingDriver()
+    controller = _controlling_controller(driver)
+    driver.applied.clear()  # ignore the probe/setup path — only care about the overrun write
+    svc, _ctx = _service(controller)
+    svc.mark_draining()
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setitem(perf.PERF_BUDGETS, "control.cycle", 20_000)
+
+        class _Sample:
+            duration_ms = 99_999.0
+
+        asyncio.run(svc._handle_overrun(datetime.now(UTC), True, _Sample()))
+    assert driver.applied == []  # no new battery write started during the shutdown window
+    assert svc.writer_registry_empty() is True  # and nothing was left reserved in the registry
+
+
 # --------------------------------------------------------------------------------------------
 # 2. _is_supervised() strict truthy allow-list
 # --------------------------------------------------------------------------------------------
@@ -589,6 +692,17 @@ class _Spy:
         self.calls += 1
         if self._raises:
             raise RuntimeError("trigger blew up")
+
+
+def _read_auth_audit(db: str) -> list[dict]:
+    """The recent category='auth' audit rows (where the restart lifecycle events are written)."""
+    async def run():
+        s = AuditStore(db)
+        rows = await s.recent(limit=50, category="auth")
+        await s.close()
+        return rows
+
+    return asyncio.run(run())
 
 
 def test_route_absent_without_auth_store():
@@ -707,9 +821,13 @@ def test_failing_trigger_clears_flags_no_wedge(tmp_path, monkeypatch):
     with TestClient(app) as c:
         h = _login(c, "admin", "pw12345678")
         # 202 is still returned (body sent before the trigger runs); the trigger then raises and
-        # the flags are cleared so a retry is NOT wedged at 409.
+        # BOTH wedge flags are cleared so a retry is NOT wedged at 409.
         assert c.post("/api/system/restart", json={}, headers=h).status_code == 202
         assert app.state._restart_requested is False
+        assert app.state.control_service._ctx.draining is False  # draining cleared too (no wedge)
+        # The trigger failure is audited so an operator can see it blew up.
+        rows = _read_auth_audit(db)
+        assert any(r.get("detail", {}).get("event") == "system_restart_failed" for r in rows)
         app.state.request_restart = _Spy()  # a working trigger this time
         assert c.post("/api/system/restart", json={}, headers=h).status_code == 202
 
@@ -748,6 +866,9 @@ def test_watchdog_clears_flags_when_trigger_never_runs_no_wedge(tmp_path, monkey
             time.sleep(0.02)
         assert app.state._restart_requested is False  # watchdog cleared the single-flight latch
         assert ctx.draining is False  # and cleared draining → control cycles resume
+        # The abort is audited so the un-wedge is visible to an operator.
+        rows = _read_auth_audit(db)
+        assert any(r.get("detail", {}).get("event") == "system_restart_aborted" for r in rows)
 
         # And a subsequent restart is NOT permanently 409 — the controller recovered. Restore the
         # real trigger (with a spy for the actual SIGTERM) and prove a fresh request is accepted.

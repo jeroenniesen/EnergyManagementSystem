@@ -64,6 +64,21 @@ type RestartPhase = "idle" | "requesting" | "restarting" | "timeout";
 // timeout + "reload manually" fallback so a slow/failed restart never leaves a dead screen).
 const RESTART_POLL_MS = 1500;
 const RESTART_POLL_TIMEOUT_MS = 60000;
+// Injectable so tests don't need to wait the full production budget: if
+// `window.__EMS_RESTART_POLL__ = {intervalMs, timeoutMs}` is present (set by an e2e init script),
+// its numeric fields override the defaults; otherwise the production values are used.
+function restartPollConfig(): { intervalMs: number; timeoutMs: number } {
+  const inj =
+    typeof window !== "undefined"
+      ? (window as unknown as {
+          __EMS_RESTART_POLL__?: { intervalMs?: number; timeoutMs?: number };
+        }).__EMS_RESTART_POLL__
+      : undefined;
+  return {
+    intervalMs: typeof inj?.intervalMs === "number" ? inj.intervalMs : RESTART_POLL_MS,
+    timeoutMs: typeof inj?.timeoutMs === "number" ? inj.timeoutMs : RESTART_POLL_TIMEOUT_MS,
+  };
+}
 
 // Two-pane menu: sidebar sections grouped under three intent headers. This order REPLACES the old
 // flat GROUP_ORDER for navigation; any unknown/future group appends under "App" (see below).
@@ -469,9 +484,10 @@ export function Settings({
   // reload. Bounded by RESTART_POLL_TIMEOUT_MS so a stalled/failed restart never leaves a dead
   // "Restarting…" screen; falls back to a manual-reload prompt instead.
   async function pollForRestart(initialBootId: string) {
+    const { intervalMs, timeoutMs } = restartPollConfig();
     const start = Date.now();
-    while (Date.now() - start < RESTART_POLL_TIMEOUT_MS) {
-      await new Promise((resolve) => setTimeout(resolve, RESTART_POLL_MS));
+    while (Date.now() - start < timeoutMs) {
+      await new Promise((resolve) => setTimeout(resolve, intervalMs));
       try {
         const r = await fetch("/health/live");
         if (r.ok) {
@@ -503,13 +519,17 @@ export function Settings({
       if (r.status === 409) {
         setRestartConfirming(false);
         setRestartPhase("idle");
-        if (typeof b.reason === "string") {
-          // Busy (controller mid-operation) — friendly retry copy, button stays for another try.
-          setRestartBusyMsg("The system is mid-adjustment — try again in a few seconds.");
-        } else {
-          // Unsupervised (shouldn't occur — the button is hidden then — but handle the race):
-          // fall back to the same manual-restart guidance as the unsupervised hint.
+        // Discriminate on an EXPLICIT reason, not the mere PRESENCE of one. Every BUSY 409 carries
+        // a reason (single-flight `in_progress`, or an idle-and-safe `outstanding_write` /
+        // `last_command_unconfirmed` / `last_action_not_auto` / `draining`) and must keep the
+        // button + show the retry toast. ONLY an explicit `not_supervised` falls back to the
+        // manual-restart hint (a race — the button is normally hidden when unsupervised).
+        if (b.reason === "not_supervised") {
           setRestartAvailable({ available: false, reason: "not_supervised" });
+        } else {
+          // Busy (controller mid-operation / a restart already in flight) — friendly retry copy,
+          // button stays for another try.
+          setRestartBusyMsg("The system is mid-adjustment — try again in a few seconds.");
         }
         return;
       }

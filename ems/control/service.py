@@ -1485,11 +1485,15 @@ class ControlService:
 
     def idle_for_restart(self) -> tuple[bool, str]:
         """SYNCHRONOUS, no-`await` snapshot for the refuse-when-busy restart gate. Idle-and-safe iff
-        the outstanding-write registry is EMPTY, the last command is NOT unconfirmed, AND
-        `last_confirmed_action ∈ {AUTO, None}`. Returns (idle, reason). The caller sets
-        `_restart_requested`/`draining` immediately after with NO yield in between, so nothing
-        changes between the read and the decision. Dry-run / no controller is always safe (driver
-        never armed).
+        we are NOT already draining, the outstanding-write registry is EMPTY, the last command is
+        NOT unconfirmed, AND `last_confirmed_action ∈ {AUTO, None}`. Returns (idle, reason). The
+        caller sets `_restart_requested`/`draining` immediately after with NO yield in between, so
+        nothing changes between the read and the decision. Dry-run / no controller is always safe
+        (driver never armed).
+
+        Consulting `draining` here is defense-in-depth: the invariant `draining implies a restart is
+        already requested` is only implicit (the endpoint sets both together), so refusing directly
+        on `draining` means a stuck/leftover drain can NEVER read as idle and let a restart proceed.
 
         The registry ALONE is the outstanding-work guarantee. Every battery-affecting path — the
         periodic tick, override cycles (`reserve_override_cycle`, reserved SYNCHRONOUSLY at
@@ -1500,6 +1504,8 @@ class ControlService:
         non-empty registry (`outstanding_write`) — nobody can remove an auxiliary check and
         reintroduce a race, because there is no auxiliary check to remove."""
         with self._ctx.writer_lock:
+            if self._ctx.draining:
+                return False, "draining"
             if self._ctx.writer_registry:
                 return False, "outstanding_write"
         controller = self._controller
@@ -1648,26 +1654,38 @@ class ControlService:
             # `_shutdown_restore` will set AUTO on the way out anyway).
             _log.info("control.overrun: draining for restart; skipping forced-AUTO recovery")
             return
+        spawned = False  # True once the AUTO worker OWNS the token (releases it on real completion)
         try:
-            # Shielded + tracked, same as the tick worker: a timeout must not cancel a queued AUTO
-            # write before it runs (its `finally` releases the slot + reconciles the safety state).
-            worker = self._spawn_writer(asyncio.to_thread(self._overrun_auto_worker, token))
-            confirmed = await asyncio.wait_for(
-                asyncio.shield(worker),
-                timeout=PERF_BUDGETS["control.cycle"] / 1000.0,
-            )
-            if confirmed:
-                _log.warning("control.overrun: forced battery to AUTO")
-            else:
-                _log.warning("control.overrun: AUTO recovery REJECTED/unconfirmed — "
-                             "battery may still be in a forced mode")
-        except TimeoutError:
-            _log.warning(
-                "control.overrun: AUTO recovery write timed out — "
-                "battery may still be in non-AUTO mode"
-            )
-        except Exception:
-            _log.exception("control.overrun: AUTO write failed (non-fatal)")
+            try:
+                # Shielded + tracked, same as the tick worker: a timeout must not cancel a queued
+                # AUTO write before it runs (its `finally` releases the slot + reconciles safety).
+                worker = self._spawn_writer(asyncio.to_thread(self._overrun_auto_worker, token))
+                spawned = True  # worker now OWNS the token (releases it on REAL completion)
+                confirmed = await asyncio.wait_for(
+                    asyncio.shield(worker),
+                    timeout=PERF_BUDGETS["control.cycle"] / 1000.0,
+                )
+                if confirmed:
+                    _log.warning("control.overrun: forced battery to AUTO")
+                else:
+                    _log.warning("control.overrun: AUTO recovery REJECTED/unconfirmed — "
+                                 "battery may still be in a forced mode")
+            except TimeoutError:
+                _log.warning(
+                    "control.overrun: AUTO recovery write timed out — "
+                    "battery may still be in non-AUTO mode"
+                )
+            except Exception:
+                _log.exception("control.overrun: AUTO write failed (non-fatal)")
+        finally:
+            # Leak-safety, mirroring run_cycle's `not spawned` guard: if the worker was NEVER
+            # spawned — a synchronous `_spawn_writer`/`ensure_future` failure before the to_thread
+            # task exists — its slot-releasing `finally` never runs, so release the pre-reserved
+            # token here or it leaks FOREVER and `_admit_cycle` then refuses EVERY future tick.
+            # Once spawned, the worker owns the release (on REAL completion, even after a wait_for
+            # timeout); the `spawned` guard prevents a double-release of a still-live writer's slot.
+            if not spawned:
+                self.release_writer(token)
 
 
 def _dominant_phase() -> str | None:

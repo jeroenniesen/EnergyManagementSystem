@@ -125,15 +125,19 @@ test.describe("Apply & restart", () => {
     await expect(page.getByTestId("restart-confirm-panel")).toHaveCount(0);
   });
 
-  test("409 busy: retry toast, button stays", async ({ page }) => {
+  test("409 single-flight busy: retry toast, button stays (not the manual hint)", async ({ page }) => {
     await mockAuthMe(page, { available: true, reason: "ok", pending: true });
     await mockSettingsSave(page);
+    // A single-flight 409 (a restart already in progress) carries the REAL `in_progress` reason the
+    // backend returns — the client must treat it as busy (retry toast, button stays), NOT fall back
+    // to the unsupervised manual hint. (Previously this mock invented `writer_registry_busy`, a
+    // value the backend never emits.)
     await page.route("**/api/system/restart", async (route) => {
       await route.fulfill({
         status: 409, contentType: "application/json",
         body: JSON.stringify({
-          detail: "controller is mid-operation — try again in a few seconds",
-          reason: "writer_registry_busy",
+          detail: "restart already in progress",
+          reason: "in_progress",
         }),
       });
     });
@@ -153,5 +157,102 @@ test.describe("Apply & restart", () => {
     // The button stays available for another try (the confirm panel closes back to it, not stuck).
     await expect(page.getByTestId("restart-apply-button")).toBeVisible();
     await expect(page.getByTestId("restart-confirm-panel")).toHaveCount(0);
+    // A single-flight/busy 409 must NOT be misread as unsupervised.
+    await expect(page.getByTestId("restart-manual-hint")).toHaveCount(0);
+  });
+
+  // Fix 8: the poll interval/timeout are injectable via `window.__EMS_RESTART_POLL__` so these
+  // specs run in well under a second instead of the 60s production budget.
+  function injectFastPoll(page: Page, intervalMs: number, timeoutMs: number) {
+    return page.addInitScript(
+      ([i, t]) => {
+        (window as unknown as {
+          __EMS_RESTART_POLL__?: { intervalMs: number; timeoutMs: number };
+        }).__EMS_RESTART_POLL__ = { intervalMs: i, timeoutMs: t };
+      },
+      [intervalMs, timeoutMs] as const,
+    );
+  }
+
+  test("boot_id-sensitive: stays 'Restarting…' while boot_id is unchanged, reloads only when it "
+    + "changes", async ({ page }) => {
+    await injectFastPoll(page, 40, 10_000);
+    await mockAuthMe(page, { available: true, reason: "ok", pending: true });
+    await mockSettingsSave(page);
+    await page.route("**/api/system/restart", async (route) => {
+      await route.fulfill({
+        status: 202, contentType: "application/json",
+        body: JSON.stringify({ restarting: true, boot_id: "OLD" }),
+      });
+    });
+    // /health/live keeps answering with the SAME boot_id ("OLD" — the old process still up
+    // mid-shutdown) until the test flips it. A plain "alive" on the OLD boot_id must NOT reload.
+    let flip = false;
+    let healthCalls = 0;
+    await page.route("**/health/live", async (route) => {
+      healthCalls += 1;
+      await route.fulfill({
+        status: 200, contentType: "application/json",
+        body: JSON.stringify({ status: "alive", boot_id: flip ? "NEW" : "OLD" }),
+      });
+    });
+
+    await page.goto("/");
+    await page.getByTestId("nav-manage").click();
+    await page.getByTestId("group-meters").click();
+
+    const applyBtn = page.getByTestId("restart-apply-button");
+    await expect(applyBtn).toBeVisible();
+    await applyBtn.click();
+    await page.getByTestId("restart-confirm").click();
+    await expect(page.getByTestId("restart-restarting")).toBeVisible();
+
+    // Several polls happen while boot_id is UNCHANGED — the UI must stay "Restarting…", no reload.
+    await expect.poll(() => healthCalls).toBeGreaterThanOrEqual(3);
+    await expect(page.getByTestId("restart-restarting")).toBeVisible();
+
+    // Flip to a DIFFERENT boot_id → the next poll proves the NEW process is up and reloads.
+    const loadPromise = page.waitForEvent("load");
+    flip = true;
+    await loadPromise;
+  });
+
+  test("timeout fallback: boot_id never changes past the timeout → manual-reload prompt",
+    async ({ page }) => {
+    await injectFastPoll(page, 40, 250);
+    await mockAuthMe(page, { available: true, reason: "ok", pending: true });
+    await mockSettingsSave(page);
+    await page.route("**/api/system/restart", async (route) => {
+      await route.fulfill({
+        status: 202, contentType: "application/json",
+        body: JSON.stringify({ restarting: true, boot_id: "STUCK" }),
+      });
+    });
+    // The boot_id NEVER changes → the poll can never confirm a new process and must fall back to
+    // the manual-reload prompt after the (injected, tiny) timeout.
+    await page.route("**/health/live", async (route) => {
+      await route.fulfill({
+        status: 200, contentType: "application/json",
+        body: JSON.stringify({ status: "alive", boot_id: "STUCK" }),
+      });
+    });
+
+    await page.goto("/");
+    await page.getByTestId("nav-manage").click();
+    await page.getByTestId("group-meters").click();
+
+    const applyBtn = page.getByTestId("restart-apply-button");
+    await expect(applyBtn).toBeVisible();
+    await applyBtn.click();
+    await page.getByTestId("restart-confirm").click();
+    await expect(page.getByTestId("restart-restarting")).toBeVisible();
+
+    // Past the timeout with no boot_id change → timeout copy + a working "Reload now" button.
+    await expect(page.getByTestId("restart-timeout")).toBeVisible();
+    const reloadBtn = page.getByTestId("restart-reload-manual");
+    await expect(reloadBtn).toBeVisible();
+    const loadPromise = page.waitForEvent("load");
+    await reloadBtn.click();
+    await loadPromise; // "Reload now" triggers a real reload
   });
 });

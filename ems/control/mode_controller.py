@@ -124,7 +124,16 @@ class ModeController:
         }
 
     def restore_state(self, state: dict | None) -> None:
-        """Load a state_snapshot() (e.g. at startup) — tolerant of missing/garbage fields."""
+        """Load a state_snapshot() (e.g. at startup) — tolerant of missing/garbage fields.
+
+        FAIL-SAFE on the refuse-when-busy restart flag (3-reviewer consensus): the last battery
+        command's device state must read as UNKNOWN — i.e. `last_command_unconfirmed=True`, which
+        BLOCKS a restart — whenever we cannot prove it was confirmed. So a present blob MISSING the
+        `last_command_unconfirmed` key (e.g. a pre-I2 persisted state), OR a corrupt/unparseable
+        blob (any field fails to parse), both yield True; only a well-formed explicit value is
+        honoured (a stored False reads False). An entirely absent state (`None`/empty) is genuinely
+        "no persisted state at all" — a fresh boot with no prior write — and keeps the clean
+        in-memory default (False)."""
         if not state:
             return
         try:
@@ -137,11 +146,18 @@ class ModeController:
             self.last_requested_action = _mode_or_none(state.get("last_requested_action"))
             self.last_confirmed_action = _mode_or_none(state.get("last_confirmed_action"))
             self.original_vendor_mode = _mode_or_none(state.get("original_vendor_mode"))
-            # Default True-on-garbage would be safer, but a missing key means "no prior write" →
-            # False; an explicit stored value is honoured. bool() tolerates any JSON scalar.
-            self.last_command_unconfirmed = bool(state.get("last_command_unconfirmed", False))
-        except (ValueError, TypeError):
-            pass  # a corrupt blob must not crash startup — start from a clean in-memory state
+            # FAIL-SAFE: a present blob that lacks this key can't prove the last command confirmed,
+            # so treat the device state as unknown ⇒ True (block the restart). An explicit stored
+            # value is honoured; bool() tolerates any JSON scalar.
+            if "last_command_unconfirmed" in state:
+                self.last_command_unconfirmed = bool(state["last_command_unconfirmed"])
+            else:
+                self.last_command_unconfirmed = True
+        except (ValueError, TypeError, AttributeError):
+            # A corrupt/unparseable blob must not crash startup — but it must FAIL SAFE, not fail
+            # open: an unknown device state blocks a refuse-when-busy restart until a normal
+            # confirmed cycle (or the shutdown-restore's note_confirmed_auto) re-establishes AUTO.
+            self.last_command_unconfirmed = True
 
     def _persist(self) -> None:
         if self._on_state_change is not None:
