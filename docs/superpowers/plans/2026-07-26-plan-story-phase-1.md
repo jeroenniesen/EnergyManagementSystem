@@ -12,7 +12,7 @@
 
 No backend work in this phase.
 
-The x-axis is a true time scale, not a slot index.
+Lift the existing working timestamp scale from `CombinedPlanChart.tsx` before deleting that file, then complete it for the merged story; the x-axis remains a true time scale, not a slot index.
 
 Per-slot marks (price shading, action bands) span `[x(start), x(start + SLOT_MS)]`.
 
@@ -30,7 +30,7 @@ Do not reintroduce per-segment labels.
 
 The accessible summary must convey the action sequence itself, not merely the chart's title or its totals.
 
-Colours, opacities and the `action` → colour/label mapping are taken verbatim from the existing `EnergyStory` implementation and the app's entity tokens (`--house`, `--car`, `--summer`, `--winter`, `--line`, `--muted`).
+Colours, opacities and the `action` → colour/label mapping are taken verbatim from the existing `EnergyStory` implementation and the app's entity tokens (`--house`, `--car`, `--summer`, `--winter`, `--line`, `--muted`). Action bands and action legend dots use the existing `.seg-<action>` classes from `styles.css`; they do not duplicate band colours in TSX.
 
 This change is a consolidation, not a re-skin: nothing should acquire a new hue.
 
@@ -65,7 +65,7 @@ History lives on Insights; the dashboard graph stays forward-looking.
 - Modify `ems/web/frontend/e2e/ui.spec.ts` — replace removed-component assertions with the phase-1 chart, hover, accessibility, footer, hierarchy, and absence contract.
 - Modify `ems/web/frontend/e2e/manage.spec.ts` — update the unknown-hash dashboard assertion to `plan-story`.
 - Modify `ems/web/frontend/playwright.config.ts` — update the timezone-determinism comment to name `PlanStory.tsx`.
-- Delete `ems/web/frontend/src/CombinedPlanChart.tsx` — only after its `actionWindows` and `describeCombinedPlan` behavior exists in `planStoryModel.ts`.
+- Delete `ems/web/frontend/src/CombinedPlanChart.tsx` — only after its timestamp-scale model, `actionWindows`, and `describeCombinedPlan` behavior exists in `planStoryModel.ts`.
 - Delete `ems/web/frontend/src/BatteryPlan.tsx` — only after all externally consumed types exist in `EnergyStory.tsx`.
 
 ### Task 1: Add Vitest, move shared types, and normalize slots
@@ -82,7 +82,7 @@ History lives on Insights; the dashboard graph stays forward-looking.
 
 **Interfaces:**
 - Consumes: `StorySlot = { start: string; soc_pct: number | null; grid_w: number; solar_w: number; battery_w: number; load_w: number; eur_per_kwh: number | null; action: string }`; `StoryTotals = { import_kwh: number; export_kwh: number; solar_kwh: number; charge_kwh: number; discharge_kwh: number; load_kwh: number; grid_cost_eur: number | null; self_sufficiency_pct: number | null; soc_start_pct: number | null; soc_end_pct: number | null; soc_min_pct: number | null; soc_max_pct: number | null }`; `EnergyStoryData = { window: "past" | "next"; now: string; current_soc_pct: number | null; reserve_soc_pct: number; target_soc_pct: number | null; target_kwh: number | null; target_deadline: string | null; current_price_eur_per_kwh: number | null; slots: StorySlot[]; totals: StoryTotals; headline: string; trust_markers?: string[]; recent?: StorySlot[]; recent_hours?: number; on_track?: { status: "ahead" | "on_track" | "behind" | "unknown"; actual_soc_pct: number; target_soc_pct: number; deficit_kwh: number; message: string }; recent_review?: { message: string; solar_actual_kwh: number; solar_forecast_kwh: number | null; solar_pct_of_forecast: number | null } }`.
-- Produces: `SLOT_MS: 900000`; `TimedStorySlot = StorySlot & { startMs: number }`; `normaliseSlots(recent: readonly StorySlot[], planned: readonly StorySlot[]): TimedStorySlot[]`; `PlanConfidence = { level: "high" | "medium" | "low"; reasons: string[] }`; `PlanProvenance = { forecast_source: string; solar_confidence_pct: number; planner: "rule_based" | "adaptive" | "summer"; intelligence: { state: string; last_evaluated_at: string | null; last_result: string | null; reason: string } }`; `SavedToday = { status: "measured"; eur: number } | { status: "measuring" }`; `BatteryPlanData = { status: "on_track" | "needs_topup" | "behind_target" | "paused_safely" | "data_stale"; summary: string; current_action: "grid_charge" | "solar_charge" | "hold" | "discharge" | "self_consume" | "paused"; current_reason: string; window_start: string; window_end: string; current_soc_pct: number | null; reserve_soc_pct: number; target_soc_pct: number | null; target_deadline: string | null; planned_grid_topup_kwh?: number; deviation: { status: "ok" | "behind_forecast" | "missing"; message: string }; warnings: string[]; graph: { forecast_soc: Array<{ ts: string; soc_pct: number | null }>; actual_soc: Array<{ ts: string; soc_pct: number | null }>; reserve_line: Array<{ ts: string; soc_pct: number | null }>; target_line: Array<{ ts: string; soc_pct: number | null }>; planned_actions: Array<{ start: string; end: string; action: string }>; price_windows: Array<{ start: string; end: string; min_eur_per_kwh: number; max_eur_per_kwh: number }>; solar: Array<{ ts: string; forecast_w: number; actual_w: number | null }> }; confidence?: PlanConfidence; provenance?: PlanProvenance }`, all exported from `./EnergyStory`.
+- Produces: `StorySlot = { start: string; soc_pct: number | null; grid_w: number; solar_w: number; battery_w: number; load_w: number; eur_per_kwh: number | null; action: string }`; `StoryTotals = { import_kwh: number; export_kwh: number; solar_kwh: number; charge_kwh: number; discharge_kwh: number; load_kwh: number; grid_cost_eur: number | null; self_sufficiency_pct: number | null; soc_start_pct: number | null; soc_end_pct: number | null; soc_min_pct: number | null; soc_max_pct: number | null }`; `EnergyStoryData = { window: "past" | "next"; now: string; current_soc_pct: number | null; reserve_soc_pct: number; target_soc_pct: number | null; target_kwh: number | null; target_deadline: string | null; current_price_eur_per_kwh: number | null; slots: StorySlot[]; totals: StoryTotals; headline: string; trust_markers?: string[]; recent?: StorySlot[]; recent_hours?: number; on_track?: { status: "ahead" | "on_track" | "behind" | "unknown"; actual_soc_pct: number; target_soc_pct: number; deficit_kwh: number; message: string }; recent_review?: { message: string; solar_actual_kwh: number; solar_forecast_kwh: number | null; solar_pct_of_forecast: number | null } }`; `SLOT_MS: 900000`; `TimedStorySlot = StorySlot & { startMs: number }`; `normaliseSlots(recent: readonly StorySlot[], planned: readonly StorySlot[]): TimedStorySlot[]`; `PlanConfidence = { level: "high" | "medium" | "low"; reasons: string[] }`; `PlanProvenance = { forecast_source: string; solar_confidence_pct: number; planner: "rule_based" | "adaptive" | "summer"; intelligence: { state: string; last_evaluated_at: string | null; last_result: string | null; reason: string } }`; `SavedToday = { status: "measured"; eur: number } | { status: "measuring" }`; `BatteryPlanData = { status: "on_track" | "needs_topup" | "behind_target" | "paused_safely" | "data_stale"; summary: string; current_action: "grid_charge" | "solar_charge" | "hold" | "discharge" | "self_consume" | "paused"; current_reason: string; window_start: string; window_end: string; current_soc_pct: number | null; reserve_soc_pct: number; target_soc_pct: number | null; target_deadline: string | null; planned_grid_topup_kwh?: number; deviation: { status: "ok" | "behind_forecast" | "missing"; message: string }; warnings: string[]; graph: { forecast_soc: Array<{ ts: string; soc_pct: number | null }>; actual_soc: Array<{ ts: string; soc_pct: number | null }>; reserve_line: Array<{ ts: string; soc_pct: number | null }>; target_line: Array<{ ts: string; soc_pct: number | null }>; planned_actions: Array<{ start: string; end: string; action: string }>; price_windows: Array<{ start: string; end: string; min_eur_per_kwh: number; max_eur_per_kwh: number }>; solar: Array<{ ts: string; forecast_w: number; actual_w: number | null }> }; confidence?: PlanConfidence; provenance?: PlanProvenance }`, all exported from `./EnergyStory`.
 
 - [ ] **Step 1: Install the test runner and add the test script**
 
@@ -361,7 +361,7 @@ git add ems/web/frontend/package.json ems/web/frontend/package-lock.json \
 git commit -m "test: add PlanStory model seam"
 ```
 
-### Task 2: Encode the timestamp scale and every slot-geometry invariant
+### Task 2: Lift and complete the timestamp scale and every slot-geometry invariant
 
 **Files:**
 - Modify: `ems/web/frontend/src/planStoryModel.ts`
@@ -471,7 +471,9 @@ npm test -- src/planStoryModel.test.ts
 
 Expected: FAIL with `createTimeScale is not exported by src/planStoryModel.ts`.
 
-- [ ] **Step 3: Implement the true time scale and hit testing**
+- [ ] **Step 3: Salvage the existing time scale, then complete its four defects**
+
+Before deleting `CombinedPlanChart.tsx`, lift its working `Date.parse`-based `t0`/`t1`, `x(time)`, and `x(start + SLOT_MS) - x(start)` mark-width model into `planStoryModel.ts`. Preserve that geometry in the implementation below, then complete the four defects the old component leaves behind: operate on the normalized merge of `recent` and `slots`, keep the recorded-wins boundary collision from Task 1, let Task 3 split SoC runs across timestamp gaps, and select ticks by timestamp spacing rather than slot index.
 
 Append to `planStoryModel.ts`:
 
@@ -598,7 +600,7 @@ git commit -m "test: lock PlanStory time geometry"
 
 **Interfaces:**
 - Consumes: `StorySlot = { start: string; soc_pct: number | null; grid_w: number; solar_w: number; battery_w: number; load_w: number; eur_per_kwh: number | null; action: string }`; `StoryTotals = { import_kwh: number; export_kwh: number; solar_kwh: number; charge_kwh: number; discharge_kwh: number; load_kwh: number; grid_cost_eur: number | null; self_sufficiency_pct: number | null; soc_start_pct: number | null; soc_end_pct: number | null; soc_min_pct: number | null; soc_max_pct: number | null }`; `EnergyStoryData = { window: "past" | "next"; now: string; current_soc_pct: number | null; reserve_soc_pct: number; target_soc_pct: number | null; target_kwh: number | null; target_deadline: string | null; current_price_eur_per_kwh: number | null; slots: StorySlot[]; totals: StoryTotals; headline: string; trust_markers?: string[]; recent?: StorySlot[]; recent_hours?: number; on_track?: { status: "ahead" | "on_track" | "behind" | "unknown"; actual_soc_pct: number; target_soc_pct: number; deficit_kwh: number; message: string }; recent_review?: { message: string; solar_actual_kwh: number; solar_forecast_kwh: number | null; solar_pct_of_forecast: number | null } }`; `TimedStorySlot = StorySlot & { startMs: number }`; `TimeScale = { t0: number; t1: number; padLeft: number; plotWidth: number; x: (timeMs: number) => number; invert: (px: number) => number }`; `SlotSpan = { index: number; startMs: number; endMs: number; x: number; width: number }`; `normaliseSlots(recent: readonly StorySlot[], planned: readonly StorySlot[]): TimedStorySlot[]`; `createTimeScale(slots: readonly TimedStorySlot[], padLeft: number, plotWidth: number): TimeScale | null`; `slotSpans(scale: TimeScale, slots: readonly TimedStorySlot[]): SlotSpan[]`; `nowX(scale: TimeScale, now: string): number | null`; `tickTimes(slots: readonly TimedStorySlot[], minimumGapMs?: number): number[]`.
-- Produces: `PlanAction = "solar_charge" | "grid_charge" | "discharge" | "self_consume" | "hold"`; `ACTION_META: Record<PlanAction, { label: string; phrase: string; color: string }>`; `GapWindow = { start: number; end: number; kind: "recorded" | "forecast" }`; `SocPoint = { timeMs: number; socPct: number }`; `SocRun = { kind: "recorded" | "forecast"; points: SocPoint[] }`; `ActionWindow = { action: PlanAction; start: number; end: number; startSocPct: number | null; endSocPct: number | null }`; `SlotTipRow = { label: string; value: string; color: string }`; `PlanStoryModel = { slots: TimedStorySlot[]; scale: TimeScale; spans: SlotSpan[]; gaps: GapWindow[]; soc: SocRun[]; solar: TimedStorySlot[][]; actions: ActionWindow[]; ticks: number[]; nowMs: number; nowX: number | null; minPrice: number; maxPrice: number; maxSolar: number; summary: string; label: string }`; `canonicalAction(action: string): PlanAction`; `gapWindows(slots: readonly TimedStorySlot[], nowMs: number): GapWindow[]`; `socRuns(slots: readonly TimedStorySlot[], nowMs: number): SocRun[]`; `solarRuns(slots: readonly TimedStorySlot[]): TimedStorySlot[][]`; `actionWindows(slots: readonly TimedStorySlot[]): ActionWindow[]`; `slotTipRows(slot: StorySlot): SlotTipRow[]`; `describeCombinedPlan(story: EnergyStoryData | null): string`; `describeCombinedPlanLabel(story: EnergyStoryData | null): string`; `buildPlanStoryModel(story: EnergyStoryData | null, padLeft: number, plotWidth: number): PlanStoryModel | null`; `formatClock(timeMs: number): string`.
+- Produces: `PlanAction = "solar_charge" | "grid_charge" | "discharge" | "self_consume" | "hold" | "idle"`; `ACTION_META: Record<PlanAction, { label: string; phrase: string; className: string }>`; `GapWindow = { start: number; end: number; kind: "recorded" | "forecast" }`; `SocPoint = { timeMs: number; socPct: number }`; `SocRun = { kind: "recorded" | "forecast"; points: SocPoint[] }`; `ActionWindow = { action: PlanAction; start: number; end: number; startSocPct: number | null; endSocPct: number | null }`; `SlotTipRow = { label: string; value: string; color?: string; className?: string }`; `PlanStoryModel = { slots: TimedStorySlot[]; scale: TimeScale; spans: SlotSpan[]; gaps: GapWindow[]; soc: SocRun[]; solar: TimedStorySlot[][]; actions: ActionWindow[]; ticks: number[]; nowMs: number; nowX: number | null; minPrice: number; maxPrice: number; maxSolar: number; summary: string; label: string }`; `canonicalAction(action: string): PlanAction`; `gapWindows(slots: readonly TimedStorySlot[], nowMs: number): GapWindow[]`; `socRuns(slots: readonly TimedStorySlot[], nowMs: number): SocRun[]`; `solarRuns(slots: readonly TimedStorySlot[]): TimedStorySlot[][]`; `actionWindows(slots: readonly TimedStorySlot[]): ActionWindow[]`; `slotTipRows(slot: StorySlot): SlotTipRow[]`; `describeCombinedPlan(story: EnergyStoryData | null): string`; `describeCombinedPlanLabel(story: EnergyStoryData | null): string`; `buildPlanStoryModel(story: EnergyStoryData | null, padLeft: number, plotWidth: number): PlanStoryModel | null`; `formatClock(timeMs: number): string`.
 
 - [ ] **Step 1: Write failing tests for gaps, timestamp-based line styles, action runs, and spoken output**
 
@@ -684,8 +686,15 @@ describe("gaps and story semantics", () => {
       {
         action: "hold",
         start: BASE,
-        end: BASE + 30 * 60_000,
+        end: BASE + 15 * 60_000,
         startSocPct: 50,
+        endSocPct: 51,
+      },
+      {
+        action: "idle",
+        start: BASE + 15 * 60_000,
+        end: BASE + 30 * 60_000,
+        startSocPct: 51,
         endSocPct: 51,
       },
       {
@@ -777,43 +786,53 @@ export type PlanAction =
   | "grid_charge"
   | "discharge"
   | "self_consume"
-  | "hold";
+  | "hold"
+  | "idle";
 
 export const ACTION_META: Record<
   PlanAction,
-  { label: string; phrase: string; color: string }
+  { label: string; phrase: string; className: string }
 > = {
   solar_charge: {
     label: "Charge from solar",
     phrase: "Charges from solar",
-    color: "var(--accent)",
+    className: "seg-solar_charge",
   },
   grid_charge: {
     label: "Charge from grid",
     phrase: "Charges from grid",
-    color: "var(--winter)",
+    className: "seg-grid_charge",
   },
   discharge: {
     label: "Power the house",
     phrase: "Powers the house",
-    color: "var(--amber)",
+    className: "seg-discharge",
   },
   self_consume: {
     label: "Use solar first",
     phrase: "Uses solar first",
-    color: "#2a313c",
+    className: "seg-self_consume",
   },
   hold: {
     label: "Hold",
     phrase: "Holds",
-    color: "#5b6473",
+    className: "seg-hold",
+  },
+  idle: {
+    label: "Idle",
+    phrase: "Idles",
+    className: "seg-idle",
   },
 };
 
 export function canonicalAction(action: string): PlanAction {
-  if (action === "idle") return "hold";
   if (action in ACTION_META) return action as PlanAction;
-  return "hold";
+  // Unknown values fall back to "idle", never "hold". `action` is typed `string`
+  // server-side, so an unrecognised value is possible. "Hold" is a deliberate
+  // planned intent; claiming it for a value we failed to understand invents intent
+  // from ignorance — the same error as folding `idle` into `hold`. "Idle" asserts
+  // nothing, which is the honest reading of "we do not recognise this".
+  return "idle";
 }
 
 export type GapWindow = {
@@ -839,7 +858,8 @@ export type ActionWindow = {
 export type SlotTipRow = {
   label: string;
   value: string;
-  color: string;
+  color?: string;
+  className?: string;
 };
 
 export type PlanStoryModel = {
@@ -994,7 +1014,11 @@ export function slotTipRows(slot: StorySlot): SlotTipRow[] {
     rows.push({ label: "Solar", value: watts(slot.solar_w), color: "var(--summer)" });
   }
   const action = canonicalAction(slot.action);
-  rows.push({ label: "Action", value: ACTION_META[action].label, color: ACTION_META[action].color });
+  rows.push({
+    label: "Action",
+    value: ACTION_META[action].label,
+    className: ACTION_META[action].className,
+  });
   if (finiteNumber(slot.grid_w)) {
     rows.push({
       label: "Grid flow",
@@ -1101,7 +1125,7 @@ export function buildPlanStoryModel(
 }
 ```
 
-The `idle` payload value is a compatibility alias for the phase-1 `hold` label, leaving exactly the five required labels while preserving the backend’s current unrestricted `action: string` type.
+`idle` and `hold` are deliberately separate. `_action_from_battery` assigns `idle` to a recorded slot when battery power lies in the ±50 W measured dead-band, while `hold` represents a deliberate planned intent. They are not interchangeable: folding recorded `idle` quarters into `hold` would invent intent the EMS never issued. The defensive fallback to `hold` remains only for genuinely unknown action strings.
 
 - [ ] **Step 6: Run the model suite and build**
 
@@ -1132,7 +1156,7 @@ git commit -m "feat: model PlanStory gaps and actions"
 - Test: `ems/web/frontend/src/PlanStory.test.ts`
 
 **Interfaces:**
-- Consumes: `StorySlot = { start: string; soc_pct: number | null; grid_w: number; solar_w: number; battery_w: number; load_w: number; eur_per_kwh: number | null; action: string }`; `TimedStorySlot = StorySlot & { startMs: number }`; `EnergyStoryData = { window: "past" | "next"; now: string; current_soc_pct: number | null; reserve_soc_pct: number; target_soc_pct: number | null; target_kwh: number | null; target_deadline: string | null; current_price_eur_per_kwh: number | null; slots: StorySlot[]; totals: StoryTotals; headline: string; trust_markers?: string[]; recent?: StorySlot[]; recent_hours?: number; on_track?: { status: "ahead" | "on_track" | "behind" | "unknown"; actual_soc_pct: number; target_soc_pct: number; deficit_kwh: number; message: string }; recent_review?: { message: string; solar_actual_kwh: number; solar_forecast_kwh: number | null; solar_pct_of_forecast: number | null } }`, where `StoryTotals = { import_kwh: number; export_kwh: number; solar_kwh: number; charge_kwh: number; discharge_kwh: number; load_kwh: number; grid_cost_eur: number | null; self_sufficiency_pct: number | null; soc_start_pct: number | null; soc_end_pct: number | null; soc_min_pct: number | null; soc_max_pct: number | null }`; `SavedToday = { status: "measured"; eur: number } | { status: "measuring" }`; `TimeScale = { t0: number; t1: number; padLeft: number; plotWidth: number; x: (timeMs: number) => number; invert: (px: number) => number }`; `SlotSpan = { index: number; startMs: number; endMs: number; x: number; width: number }`; `PlanAction = "solar_charge" | "grid_charge" | "discharge" | "self_consume" | "hold"`; `ACTION_META: Record<PlanAction, { label: string; phrase: string; color: string }>`; `GapWindow = { start: number; end: number; kind: "recorded" | "forecast" }`; `SocPoint = { timeMs: number; socPct: number }`; `SocRun = { kind: "recorded" | "forecast"; points: SocPoint[] }`; `ActionWindow = { action: PlanAction; start: number; end: number; startSocPct: number | null; endSocPct: number | null }`; `SlotTipRow = { label: string; value: string; color: string }`; `PlanStoryModel = { slots: TimedStorySlot[]; scale: TimeScale; spans: SlotSpan[]; gaps: GapWindow[]; soc: SocRun[]; solar: TimedStorySlot[][]; actions: ActionWindow[]; ticks: number[]; nowMs: number; nowX: number | null; minPrice: number; maxPrice: number; maxSolar: number; summary: string; label: string }`; `buildPlanStoryModel(story: EnergyStoryData | null, padLeft: number, plotWidth: number): PlanStoryModel | null`; `canonicalAction(action: string): PlanAction`; `formatClock(timeMs: number): string`; `hoverIndexAtX(scale: TimeScale, slots: readonly TimedStorySlot[], px: number): number | null`; `slotTipRows(slot: StorySlot): SlotTipRow[]`.
+- Consumes: `StorySlot = { start: string; soc_pct: number | null; grid_w: number; solar_w: number; battery_w: number; load_w: number; eur_per_kwh: number | null; action: string }`; `TimedStorySlot = StorySlot & { startMs: number }`; `EnergyStoryData = { window: "past" | "next"; now: string; current_soc_pct: number | null; reserve_soc_pct: number; target_soc_pct: number | null; target_kwh: number | null; target_deadline: string | null; current_price_eur_per_kwh: number | null; slots: StorySlot[]; totals: StoryTotals; headline: string; trust_markers?: string[]; recent?: StorySlot[]; recent_hours?: number; on_track?: { status: "ahead" | "on_track" | "behind" | "unknown"; actual_soc_pct: number; target_soc_pct: number; deficit_kwh: number; message: string }; recent_review?: { message: string; solar_actual_kwh: number; solar_forecast_kwh: number | null; solar_pct_of_forecast: number | null } }`, where `StoryTotals = { import_kwh: number; export_kwh: number; solar_kwh: number; charge_kwh: number; discharge_kwh: number; load_kwh: number; grid_cost_eur: number | null; self_sufficiency_pct: number | null; soc_start_pct: number | null; soc_end_pct: number | null; soc_min_pct: number | null; soc_max_pct: number | null }`; `SavedToday = { status: "measured"; eur: number } | { status: "measuring" }`; `TimeScale = { t0: number; t1: number; padLeft: number; plotWidth: number; x: (timeMs: number) => number; invert: (px: number) => number }`; `SlotSpan = { index: number; startMs: number; endMs: number; x: number; width: number }`; `PlanAction = "solar_charge" | "grid_charge" | "discharge" | "self_consume" | "hold" | "idle"`; `ACTION_META: Record<PlanAction, { label: string; phrase: string; className: string }>`; `GapWindow = { start: number; end: number; kind: "recorded" | "forecast" }`; `SocPoint = { timeMs: number; socPct: number }`; `SocRun = { kind: "recorded" | "forecast"; points: SocPoint[] }`; `ActionWindow = { action: PlanAction; start: number; end: number; startSocPct: number | null; endSocPct: number | null }`; `SlotTipRow = { label: string; value: string; color?: string; className?: string }`; `PlanStoryModel = { slots: TimedStorySlot[]; scale: TimeScale; spans: SlotSpan[]; gaps: GapWindow[]; soc: SocRun[]; solar: TimedStorySlot[][]; actions: ActionWindow[]; ticks: number[]; nowMs: number; nowX: number | null; minPrice: number; maxPrice: number; maxSolar: number; summary: string; label: string }`; `buildPlanStoryModel(story: EnergyStoryData | null, padLeft: number, plotWidth: number): PlanStoryModel | null`; `canonicalAction(action: string): PlanAction`; `formatClock(timeMs: number): string`; `hoverIndexAtX(scale: TimeScale, slots: readonly TimedStorySlot[], px: number): number | null`; `slotTipRows(slot: StorySlot): SlotTipRow[]`.
 - Produces: `PlanStoryProps = { story: EnergyStoryData | null; savedToday?: SavedToday | null; socPct?: number | null; onBatteryClick?: () => void }`; `PlanStory(props: PlanStoryProps): JSX.Element`.
 
 - [ ] **Step 1: Write the failing server-rendered component tests**
@@ -1246,6 +1270,17 @@ describe("PlanStory rendering", () => {
     expect(html).toContain("55%");
     expect(html).toContain("see each battery →");
     expect(html).not.toContain(">Mode<");
+  });
+
+  test("renders a recorded idle action as Idle and never as Hold", () => {
+    const html = renderToStaticMarkup(createElement(PlanStory, {
+      story: storyData([storySlot(0, { action: "idle" })], [], 15),
+    }));
+
+    expect(html).toContain(">Idle<");
+    expect(html).toContain("Idles");
+    expect(html).not.toContain(">Hold<");
+    expect(html).not.toContain("Holds");
   });
 });
 ```
@@ -1497,7 +1532,7 @@ export function PlanStory({
             {model.spans.map((span) => {
               const action = canonicalAction(model.slots[span.index].action);
               return (
-                <rect
+                <foreignObject
                   key={span.startMs}
                   data-testid="plan-story-action-segment"
                   data-action={action}
@@ -1507,8 +1542,9 @@ export function PlanStory({
                   y={ACTION_Y}
                   width={span.width}
                   height={ACTION_H}
-                  fill={ACTION_META[action].color}
-                />
+                >
+                  <div className={`plan-story-action-segment ${ACTION_META[action].className}`} />
+                </foreignObject>
               );
             })}
           </g>
@@ -1546,7 +1582,10 @@ export function PlanStory({
             </div>
             {slotTipRows(hovered).map((row) => (
               <div key={row.label} className="chart-tip-row">
-                <span className="legend-dot" style={{ background: row.color }} />
+                <span
+                  className={`legend-dot${row.className ? ` ${row.className}` : ""}`}
+                  style={row.color ? { background: row.color } : undefined}
+                />
                 {row.label}
                 <span className="chart-tip-val">{row.value}</span>
               </div>
@@ -1560,7 +1599,7 @@ export function PlanStory({
         <span className="legend-item"><span className="legend-line plan-story-forecast-key" />Forecast battery</span>
         {presentActions.map((action) => (
           <span className="legend-item" key={action}>
-            <span className="legend-dot" style={{ background: ACTION_META[action].color }} />
+            <span className={`legend-dot ${ACTION_META[action].className}`} />
             {ACTION_META[action].label}
           </span>
         ))}
@@ -1625,7 +1664,13 @@ Insert beside the existing combined-chart block in `styles.css`:
   stroke-dasharray: 6 4;
 }
 .plan-story-now line { stroke: var(--text); stroke-width: 1; opacity: 0.6; }
-.plan-story-actions rect { stroke: var(--panel); stroke-width: 1; opacity: 0.9; }
+.plan-story-actions foreignObject { overflow: visible; }
+.plan-story-action-segment {
+  width: 100%;
+  height: 100%;
+  border: 1px solid var(--panel);
+  opacity: 0.9;
+}
 .plan-story-actual-key { border-top-color: var(--accent); }
 .plan-story-forecast-key { border-top-color: var(--text); border-top-style: dashed; }
 @media (max-width: 520px) {
@@ -1641,7 +1686,7 @@ Insert beside the existing combined-chart block in `styles.css`:
 }
 ```
 
-Do not add or change `.chart-tip`, `.chart-tip-title`, `.chart-tip-row`, `.chart-tip-val`, or `.legend-dot`.
+Do not add or change `.chart-tip`, `.chart-tip-title`, `.chart-tip-row`, `.chart-tip-val`, `.legend-dot`, or any `.seg-<action>` rule. The existing `seg-solar_charge`, `seg-grid_charge`, `seg-discharge`, `seg-self_consume`, `seg-hold`, and `seg-idle` classes already provide all six fills and must remain when obsolete component-only styles are removed in Task 5.
 
 - [ ] **Step 5: Run component tests, all model tests, and the build**
 
@@ -1653,7 +1698,7 @@ npm test -- src/planStoryModel.test.ts src/PlanStory.test.ts
 npm run build
 ```
 
-Expected: Vitest reports `22 passed`; the build exits 0.
+Expected: Vitest reports `23 passed`; the build exits 0.
 
 - [ ] **Step 6: Commit the unmounted rendering layer**
 
@@ -1681,7 +1726,7 @@ git commit -m "feat: render unified PlanStory chart"
 - Test: `ems/web/frontend/e2e/manage.spec.ts`
 
 **Interfaces:**
-- Consumes: `StorySlot = { start: string; soc_pct: number | null; grid_w: number; solar_w: number; battery_w: number; load_w: number; eur_per_kwh: number | null; action: string }`; `StoryTotals = { import_kwh: number; export_kwh: number; solar_kwh: number; charge_kwh: number; discharge_kwh: number; load_kwh: number; grid_cost_eur: number | null; self_sufficiency_pct: number | null; soc_start_pct: number | null; soc_end_pct: number | null; soc_min_pct: number | null; soc_max_pct: number | null }`; `EnergyStoryData = { window: "past" | "next"; now: string; current_soc_pct: number | null; reserve_soc_pct: number; target_soc_pct: number | null; target_kwh: number | null; target_deadline: string | null; current_price_eur_per_kwh: number | null; slots: StorySlot[]; totals: StoryTotals; headline: string; trust_markers?: string[]; recent?: StorySlot[]; recent_hours?: number; on_track?: { status: "ahead" | "on_track" | "behind" | "unknown"; actual_soc_pct: number; target_soc_pct: number; deficit_kwh: number; message: string }; recent_review?: { message: string; solar_actual_kwh: number; solar_forecast_kwh: number | null; solar_pct_of_forecast: number | null } }`; `PlanStory({ story, savedToday, socPct, onBatteryClick }: PlanStoryProps): JSX.Element`; `PlanStoryProps = { story: EnergyStoryData | null; savedToday?: SavedToday | null; socPct?: number | null; onBatteryClick?: () => void }`; `SavedToday = { status: "measured"; eur: number } | { status: "measuring" }`; `PlanConfidence = { level: "high" | "medium" | "low"; reasons: string[] }`; `PlanProvenance = { forecast_source: string; solar_confidence_pct: number; planner: "rule_based" | "adaptive" | "summer"; intelligence: { state: string; last_evaluated_at: string | null; last_result: string | null; reason: string } }`; `BatteryPlanData = { status: "on_track" | "needs_topup" | "behind_target" | "paused_safely" | "data_stale"; summary: string; current_action: "grid_charge" | "solar_charge" | "hold" | "discharge" | "self_consume" | "paused"; current_reason: string; window_start: string; window_end: string; current_soc_pct: number | null; reserve_soc_pct: number; target_soc_pct: number | null; target_deadline: string | null; planned_grid_topup_kwh?: number; deviation: { status: "ok" | "behind_forecast" | "missing"; message: string }; warnings: string[]; graph: { forecast_soc: Array<{ ts: string; soc_pct: number | null }>; actual_soc: Array<{ ts: string; soc_pct: number | null }>; reserve_line: Array<{ ts: string; soc_pct: number | null }>; target_line: Array<{ ts: string; soc_pct: number | null }>; planned_actions: Array<{ start: string; end: string; action: string }>; price_windows: Array<{ start: string; end: string; min_eur_per_kwh: number; max_eur_per_kwh: number }>; solar: Array<{ ts: string; forecast_w: number; actual_w: number | null }> }; confidence?: PlanConfidence; provenance?: PlanProvenance }`.
+- Consumes: `StorySlot = { start: string; soc_pct: number | null; grid_w: number; solar_w: number; battery_w: number; load_w: number; eur_per_kwh: number | null; action: string }`; `StoryTotals = { import_kwh: number; export_kwh: number; solar_kwh: number; charge_kwh: number; discharge_kwh: number; load_kwh: number; grid_cost_eur: number | null; self_sufficiency_pct: number | null; soc_start_pct: number | null; soc_end_pct: number | null; soc_min_pct: number | null; soc_max_pct: number | null }`; `EnergyStoryData = { window: "past" | "next"; now: string; current_soc_pct: number | null; reserve_soc_pct: number; target_soc_pct: number | null; target_kwh: number | null; target_deadline: string | null; current_price_eur_per_kwh: number | null; slots: StorySlot[]; totals: StoryTotals; headline: string; trust_markers?: string[]; recent?: StorySlot[]; recent_hours?: number; on_track?: { status: "ahead" | "on_track" | "behind" | "unknown"; actual_soc_pct: number; target_soc_pct: number; deficit_kwh: number; message: string }; recent_review?: { message: string; solar_actual_kwh: number; solar_forecast_kwh: number | null; solar_pct_of_forecast: number | null } }`; `PlanStory(props: PlanStoryProps): JSX.Element`; `PlanStoryProps = { story: EnergyStoryData | null; savedToday?: SavedToday | null; socPct?: number | null; onBatteryClick?: () => void }`; `SavedToday = { status: "measured"; eur: number } | { status: "measuring" }`; `PlanConfidence = { level: "high" | "medium" | "low"; reasons: string[] }`; `PlanProvenance = { forecast_source: string; solar_confidence_pct: number; planner: "rule_based" | "adaptive" | "summer"; intelligence: { state: string; last_evaluated_at: string | null; last_result: string | null; reason: string } }`; `BatteryPlanData = { status: "on_track" | "needs_topup" | "behind_target" | "paused_safely" | "data_stale"; summary: string; current_action: "grid_charge" | "solar_charge" | "hold" | "discharge" | "self_consume" | "paused"; current_reason: string; window_start: string; window_end: string; current_soc_pct: number | null; reserve_soc_pct: number; target_soc_pct: number | null; target_deadline: string | null; planned_grid_topup_kwh?: number; deviation: { status: "ok" | "behind_forecast" | "missing"; message: string }; warnings: string[]; graph: { forecast_soc: Array<{ ts: string; soc_pct: number | null }>; actual_soc: Array<{ ts: string; soc_pct: number | null }>; reserve_line: Array<{ ts: string; soc_pct: number | null }>; target_line: Array<{ ts: string; soc_pct: number | null }>; planned_actions: Array<{ start: string; end: string; action: string }>; price_windows: Array<{ start: string; end: string; min_eur_per_kwh: number; max_eur_per_kwh: number }>; solar: Array<{ ts: string; forecast_w: number; actual_w: number | null }> }; confidence?: PlanConfidence; provenance?: PlanProvenance }`.
 - Produces: dashboard order `OutcomeTiles` then `PlanStory` then `home-more`; exactly one visible `[data-density-kind="chart"]`; only `GET /api/energy-story?window=next`; retained `GET /api/battery-plan`; test IDs `plan-story`, `plan-story-plot`, `plan-story-tip`, `plan-story-now`, `plan-story-target-label`, `plan-story-reserve-label`, `plan-story-actions`, `plan-story-action-segment`, `plan-story-summary`, `story-footer`.
 
 - [ ] **Step 1: Replace the old chart fixture and add the failing phase-1 E2E contract**
@@ -1748,9 +1793,9 @@ const planStoryFixture = () => {
     recent_hours: 3,
     recent: [
       slot(0, 52, "discharge"),
-      slot(15, 51, "hold"),
-      slot(45, 56, "hold"),
-      slot(60, 58, "hold"),
+      slot(15, 51, "idle"),
+      slot(45, 56, "idle"),
+      slot(60, 58, "idle"),
     ],
     slots: [
       slot(60, 99, "grid_charge"),
@@ -1815,14 +1860,16 @@ test("PlanStory renders mixed time-based layers, references, actions, and honest
   await expect(page.getByTestId("plan-story-action-segment").first()).toHaveAttribute("aria-hidden", "true");
   await expect(page.getByTestId("plan-story-action-segment").first()).not.toHaveAttribute("aria-label");
   await expect(page.getByTestId("plan-story-legend")).toContainText("Power the house");
-  await expect(page.getByTestId("plan-story-legend")).toContainText("Hold");
+  await expect(page.getByTestId("plan-story-legend")).toContainText("Idle");
+  await expect(page.getByTestId("plan-story-legend")).not.toContainText("Hold");
   await expect(page.getByTestId("plan-story-legend")).toContainText("Charge from solar");
   await expect(page.getByTestId("plan-story-legend")).toContainText("Charge from grid");
   await expect(chart).not.toContainText("The hero owns the only headline");
 
   const spoken = page.getByTestId("plan-story-summary");
   await expect(spoken).toContainText("Powers the house 08:00–08:15");
-  await expect(spoken).toContainText("Holds 08:15–08:30");
+  await expect(spoken).toContainText("Idles 08:15–08:30");
+  await expect(spoken).not.toContainText("Holds");
   await expect(spoken).toContainText("No recorded data 08:30–08:45");
   await expect(spoken).toContainText("Charges from solar 09:15–09:30");
   await expect(spoken).toContainText("Night target 88%");
@@ -1928,7 +1975,7 @@ const trustMarkers = (story?.trust_markers ?? []).filter(
 )}
 ```
 
-Place these two blocks inside `data-testid="home-state"` immediately after `hero-synthesis`. This preserves the existing B-31 single-voice filter, makes `on_track`, `recent_review`, and `trust_markers` hero inputs as the data contract requires, and keeps all three out of the chart.
+Place these two blocks inside `data-testid="home-state"` immediately after `hero-synthesis`. This preserves the existing B-31 single-voice filter: specifically, `on_track.status === "behind"` suppresses only the exact "No grid top-up needed" chip while other trust markers continue to render. It also makes `on_track`, `recent_review`, and `trust_markers` hero inputs as the data contract requires and keeps all three out of the chart.
 
 Reduce the dashboard polling effect dependencies to:
 
@@ -2187,7 +2234,7 @@ Append to the same dashboard `describe` block in `ui.spec.ts`:
 
 ```ts
 
-test("next-story verdict, review, and honest trust markers stay in the hero", async ({ page }) => {
+test("a behind verdict suppresses only No grid top-up needed while other hero evidence remains", async ({ page }) => {
   const story = planStoryFixture();
   Object.assign(story, {
     on_track: {
@@ -2354,7 +2401,7 @@ git commit -m "feat: replace dashboard plans with PlanStory"
 | Recorded value wins a boundary collision | Task 1 recorded-wins unit test |
 | Domain `t0`/`t1` from timestamps | Task 2 domain tests |
 | Final slot receives nominal width | Task 2 domain-end and slot-width tests |
-| True time scale, never slot index | Task 2 numeric scale tests |
+| Existing `CombinedPlanChart` timestamp scale salvaged and its four defects completed | Task 2 explicit salvage step and numeric scale tests; Tasks 1 and 3 merge/collision/gap tests |
 | Slot width uses `SLOT_MS`, not count or next delta | Task 2 two separate width tests |
 | Missing price/action quarters draw no mark | Task 2 missing-span test; Task 4 maps only `model.spans` |
 | SoC line breaks after `1.5 × SLOT_MS` and null | Task 3 separate unit tests |
@@ -2367,9 +2414,9 @@ git commit -m "feat: replace dashboard plans with PlanStory"
 | Price full-height per-slot shading | Task 4 price layer |
 | Solar soft filled context area | Task 3 `solarRuns`; Task 4 solar layer |
 | Six-layer back-to-front order | Task 4 server-rendered order assertion |
-| One action band per slot and five displayed labels | Task 3 canonical five-action contract; Task 4 action spans and legend |
+| One action band per slot and six displayed labels, with `idle` distinct from `hold` | Task 3 canonical six-action contract; Task 4 action spans, Idle regression test, and legend |
 | Action segments `aria-hidden`, no per-segment label | Task 4 markup; Task 5 E2E assertions |
-| Existing palette only | Global Constraints; Tasks 3–4 use existing CSS variables |
+| Existing palette only, with band fills sourced from shared `.seg-<action>` classes | Global Constraints; Tasks 3–4 class mapping and stylesheet-preservation instruction |
 | Solar and price captions preserve ranges | Task 4 `Solar 0–… W` and `Price €…–€…` text |
 | Hover state is an index into merged slots | Task 4 `hover: number | null` |
 | Mouse x maps through the SVG bounding box and inverted time scale | Tasks 2 and 4 |
@@ -2384,7 +2431,7 @@ git commit -m "feat: replace dashboard plans with PlanStory"
 | No chart headline, status pill, or warning | Task 4 server-rendered assertion |
 | Footer saved amount, battery percentage, per-tower link only | Task 4 footer test; Task 5 E2E |
 | `EnergyStory` removed from dashboard; past window state/fetch removed | Task 5 App migration and request test |
-| `on_track`, `recent_review`, and `trust_markers` remain hero inputs, never chart inputs | Task 5 hero migration and two B-31 E2E rewrites |
+| `on_track`, `recent_review`, and `trust_markers` remain hero inputs, never chart inputs; `behind` suppresses only "No grid top-up needed" | Task 5 hero migration and two B-31 E2E rewrites |
 | `SavedToday`, `PlanConfidence`, `BatteryPlanData` moved before deletion | Task 1 move and compatibility re-export; Task 5 delete |
 | `/api/battery-plan` remains for hero confidence and reason | Task 5 retained fetch and hero E2E |
 | `actionWindows` and `describeCombinedPlan` salvaged before deletion | Task 3 model exports; Task 5 delete |
@@ -2395,9 +2442,9 @@ git commit -m "feat: replace dashboard plans with PlanStory"
 
 ### Author verification record
 
-- Spec coverage review: every paragraph from Phase 1 through Testing maps to the table above. The initial draft omitted the local timestamp tick rule, the contiguous recorded/forecast join at the interpolated `now` point, the migration of `recent_review` and filtered `trust_markers` into the hero, and the removal of the BatteryPlan-only car overlay poll; those gaps are now explicit in Tasks 2, 3, and 5.
+- Spec coverage review: every paragraph from Phase 1 through Testing maps to the table above. The local timestamp tick rule, the contiguous recorded/forecast join at the interpolated `now` point, the migration of `recent_review` and B-31-filtered `trust_markers` into the hero, and the removal of the BatteryPlan-only car overlay poll are explicit in Tasks 2, 3, and 5.
 - Placeholder scan: zero matches for every forbidden placeholder stem named in the authoring request.
 - Type consistency: `normaliseSlots`, `createTimeScale`, `slotSpan`, `slotSpans`, `findSlotAtTime`, `hoverIndexAtX`, `nowX`, `tickTimes`, `canonicalAction`, `gapWindows`, `socRuns`, `solarRuns`, `actionWindows`, `slotTipRows`, `describeCombinedPlan`, `describeCombinedPlanLabel`, `buildPlanStoryModel`, `formatClock`, `PlanStoryProps`, and `PlanStory` have one spelling and one signature across all producer/consumer blocks.
 - Repository verification: every listed path exists at authoring time. `App.tsx` contains the two dashboard blocks and all named state/fetch symbols; tooltip classes exist in `styles.css`; shared types exist in the source components; `ui.spec.ts` contains every removed-selector family; `manage.spec.ts` and `playwright.config.ts` each contain one stale combined-chart reference.
-- Spec/code differences recorded: the design says both old charts position by index, but `CombinedPlanChart.tsx` already uses a timestamp scale for marks and `now`; its remaining defects are separate arrays, no collision handling, no timestamp-gap SoC break, and index-selected ticks. The design names five action labels, while `EnergyStory.tsx` also declares `Idle`; this plan treats `idle` as the existing hold behavior so the replacement exposes exactly the five specified labels. The design says `on_track`, `recent_review`, and `trust_markers` are hero inputs, but `App.tsx` currently uses only `on_track.message`; Task 5 moves the review and filtered trust markers into the hero before deleting their old renderer. The design says the old E2E comment names `CombinedPlanChart`, while the source comment says “The combined chart is the visible primary plan.” The user’s explicit model split supersedes the design’s instruction to place salvaged pure helpers in `PlanStory.tsx`.
+- Resolved source/spec outcomes: Task 2 explicitly lifts the working `Date.parse` timestamp scale and nominal-width formula from `CombinedPlanChart.tsx`, then completes its separate-array, boundary-collision, timestamp-gap SoC, and index-tick defects. Task 3 models all six actions and keeps measured dead-band `idle` distinct from planned `hold`, with unknown strings alone falling back defensively. Tasks 3–4 map action bands and legend dots to the six existing `.seg-<action>` classes instead of embedding stylesheet colours in TSX. Task 5 moves `recent_review` and `trust_markers` into the hero and retains the B-31 suppression of "No grid top-up needed" for a `behind` verdict while preserving other markers. The old E2E comment still says “The combined chart is the visible primary plan,” and the user’s explicit model split still supersedes the design’s instruction to place salvaged pure helpers in `PlanStory.tsx`.
 - Scope check: every task is frontend-only, uses the existing unparameterized `next` endpoint, and excludes all work outside the approved dashboard phase.
