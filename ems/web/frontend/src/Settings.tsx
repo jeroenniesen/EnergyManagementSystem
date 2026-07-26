@@ -439,6 +439,10 @@ export function Settings({
   // plain async loop, not itself inside an effect, so it needs its own liveness flag).
   const restartAliveRef = useRef(true);
   useEffect(() => {
+    // Reset to true on setup (not just false on cleanup): under React.StrictMode dev runs
+    // setup→cleanup→setup, so without this the ref would stay false after the first cleanup and
+    // pollForRestart would skip its timeout/manual-reload branch, stranding the UI on "Restarting…".
+    restartAliveRef.current = true;
     return () => {
       restartAliveRef.current = false;
     };

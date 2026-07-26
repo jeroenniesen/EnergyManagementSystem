@@ -11,7 +11,7 @@ import re
 import secrets
 import signal
 import sqlite3
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, suppress
 from datetime import UTC, datetime, timedelta
 from datetime import date as date_cls
 from pathlib import Path
@@ -1390,6 +1390,13 @@ def create_app(
             # `stop` event — its own stop() event is internal, so we await it directly.
             if rss_sampler_ref["sampler"] is not None:
                 await rss_sampler_ref["sampler"].stop()
+            # Restart abort-watchdog (P1): cancel it if one is still armed, so a mid-sleep guard
+            # can't linger as a pending task past shutdown (and can't audit after stores close).
+            wd = getattr(app.state, "_restart_watchdog", None)
+            if wd is not None and not wd.done():
+                wd.cancel()
+                with suppress(asyncio.CancelledError):
+                    await wd
             # Close each store's shared long-lived connection (perf: B-49) now that every
             # background task has stopped touching it — a clean shutdown, not a leaked handle.
             for s in (store, settings_store, override_store, audit_store):
@@ -1404,6 +1411,13 @@ def create_app(
     # process, so a relaunch always differs. `_restart_requested` is the single-flight latch.
     app.state.boot_id = uuid4().hex
     app.state._restart_requested = False
+    # Abort-watchdog state (P1): `_restart_committed` is set SYNCHRONOUSLY by the restart trigger
+    # the instant it runs (before any await), so the watchdog can tell "trigger fired" from "trigger
+    # never ran". `_restart_watchdog` holds the independent guard task while a restart is armed;
+    # `_restart_watchdog_seconds` is the bounded wait before it un-wedges (overridable in tests).
+    app.state._restart_committed = False
+    app.state._restart_watchdog = None
+    app.state._restart_watchdog_seconds = 2.0
     # Injectable so tests replace it with a spy; default = self-SIGTERM (NEVER os._exit — SIGTERM
     # lets uvicorn run the lifespan shutdown / battery-safe AUTO restore). Set to the real trigger
     # below once `control` exists (it clears the flags if the trigger raises, so no wedge).
@@ -2387,7 +2401,17 @@ def create_app(
         """Response-attached background task: Starlette sends the 202 body, THEN awaits this. Runs
         the injectable `request_restart` (default self-SIGTERM). If it RAISES, clear the
         single-flight + draining flags and audit the failure so the process stays alive rather than
-        wedged at 409 forever (belt-and-suspenders — the default trigger cannot fail)."""
+        wedged at 409 forever (belt-and-suspenders — the default trigger cannot fail).
+
+        FIRST THING (synchronously, before any await): mark the restart COMMITTED and cancel the
+        abort-watchdog. Setting the flag before yielding is what makes the trigger/watchdog handoff
+        race-free — the single-threaded loop can't interleave this synchronous set with the
+        watchdog's committed-check — so the watchdog never clears a genuinely-in-progress restart
+        even if `request_restart` is an awaitable (it observes `committed` set before the await)."""
+        app.state._restart_committed = True
+        wd = app.state._restart_watchdog
+        if wd is not None:
+            wd.cancel()  # success path: trigger fired, so the un-wedge guard is no longer needed
         try:
             result = app.state.request_restart()
             if asyncio.iscoroutine(result):
@@ -2397,6 +2421,36 @@ def create_app(
             control.clear_draining()
             _log.exception("system restart trigger failed; cleared restart flags (no wedge)")
             await _audit_auth("system_restart_failed", "System restart trigger failed")
+
+    # Injectable so a test can drop/replace the trigger to simulate it never firing (the endpoint
+    # reads this at request time and hands it to the response-attached BackgroundTask).
+    app.state._restart_trigger = _do_restart_trigger
+
+    async def _restart_watchdog() -> None:
+        """Un-wedge guard (P1). The SIGTERM trigger is a response-attached BackgroundTask, so
+        Starlette runs it ONLY on a successful response send. If the request is cancelled / the
+        client disconnects AFTER `mark_draining()` but before that task fires (mid-audit or
+        mid-body-send), the trigger never runs — and nothing would ever clear `_restart_requested`
+        or `draining`, wedging the controller FOREVER (control cycles suppressed, every restart
+        retry 409) until an external restart. This INDEPENDENT task (not tied to the request, so
+        request cancellation can't cancel it) waits a bounded time; if the trigger has NOT committed
+        by then, it clears both flags and audits the abort so the controller recovers to normal
+        operation. On the success path the trigger sets `_restart_committed` synchronously and
+        cancels this task (and the SIGTERM takes the process down well within the window), so a
+        genuine restart is never un-wedged."""
+        try:
+            await asyncio.sleep(app.state._restart_watchdog_seconds)
+        except asyncio.CancelledError:
+            return  # trigger fired and cancelled us — nothing to recover
+        if app.state._restart_committed:
+            return  # trigger ran (restart genuinely in progress) — leave the flags set
+        app.state._restart_requested = False
+        control.clear_draining()
+        _log.warning(
+            "restart trigger never ran (request aborted?); cleared restart flags (no wedge)")
+        await _audit_auth(
+            "system_restart_aborted",
+            "System restart aborted before the trigger ran; restart flags cleared")
 
     # Registered ONLY when the identity system is wired: the legacy no-auth middleware branch
     # bypasses required_tier/requires_session, so exposing a restart route there would be ungated.
@@ -2431,6 +2485,14 @@ def create_app(
                     status_code=409,
                 )
             control.mark_draining()  # belt-and-suspenders: block any new write in the exit window
+            # Arm the abort-watchdog SYNCHRONOUSLY here (still before any await), as an INDEPENDENT
+            # task: if this request is cancelled during the audit await / body send and the
+            # response-attached trigger below never fires, the watchdog un-wedges the flags. Reset
+            # `_restart_committed` first so a prior (aborted) attempt can't make the watchdog think
+            # this one already committed.
+            app.state._restart_committed = False
+            app.state._restart_watchdog = asyncio.get_running_loop().create_task(
+                _restart_watchdog())
             # Battery is confirmed-AUTO with no writer outstanding, so the ensuing SIGTERM shutdown
             # is safe with the EXISTING _shutdown_restore untouched (it sees AUTO and no-ops).
             await _audit_auth(
@@ -2439,7 +2501,8 @@ def create_app(
             return JSONResponse(
                 {"restarting": True, "boot_id": app.state.boot_id},
                 status_code=202,
-                background=BackgroundTask(_do_restart_trigger),  # runs AFTER the body is sent
+                # runs AFTER the body is sent; read at request time so a test can drop/replace it.
+                background=BackgroundTask(app.state._restart_trigger),
             )
 
     def _battery_cluster(now: datetime) -> tuple[list[dict], dict | None]:

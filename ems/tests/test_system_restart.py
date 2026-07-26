@@ -714,6 +714,48 @@ def test_failing_trigger_clears_flags_no_wedge(tmp_path, monkeypatch):
         assert c.post("/api/system/restart", json={}, headers=h).status_code == 202
 
 
+def test_watchdog_clears_flags_when_trigger_never_runs_no_wedge(tmp_path, monkeypatch):
+    # P1 (the WEDGE): the SIGTERM trigger is a response-attached BackgroundTask that Starlette runs
+    # ONLY on a successful send. If the request is cancelled after mark_draining() but before that
+    # task fires, the trigger NEVER runs — so nothing clears `_restart_requested`/`draining` and the
+    # controller is wedged FOREVER (cycles suppressed, every retry 409). Simulate the trigger never
+    # firing by dropping it (an async no-op that does NOT set `_restart_committed`, exactly the
+    # state a never-run trigger leaves). The independent watchdog must un-wedge both flags.
+    monkeypatch.setenv("EMS_SUPERVISED", "1")
+    db = str(tmp_path / "ems.sqlite")
+    _seed_user(db, "admin", "pw12345678", "admin")
+    app = _full_app(db)
+    app.state._restart_watchdog_seconds = 0.05  # keep the test fast
+
+    async def _dropped_trigger():
+        return None  # the response-attached task effectively never ran (no commit, no SIGTERM)
+
+    real_trigger = app.state._restart_trigger  # the production trigger, to restore after the abort
+    app.state._restart_trigger = _dropped_trigger
+    ctx = app.state.control_service._ctx
+    with TestClient(app) as c:
+        h = _login(c, "admin", "pw12345678")
+        assert c.post("/api/system/restart", json={}, headers=h).status_code == 202
+        # The watchdog is armed but hasn't fired yet: both wedge flags are set (single-flight latch
+        # + draining, which suppresses control cycles), and a retry is (transiently) 409.
+        assert app.state._restart_requested is True
+        assert ctx.draining is True
+        assert c.post("/api/system/restart", json={}, headers=h).status_code == 409
+
+        # Wait for the watchdog to un-wedge (bounded — do NOT hang).
+        deadline = time.time() + 3.0
+        while app.state._restart_requested and time.time() < deadline:
+            time.sleep(0.02)
+        assert app.state._restart_requested is False  # watchdog cleared the single-flight latch
+        assert ctx.draining is False  # and cleared draining → control cycles resume
+
+        # And a subsequent restart is NOT permanently 409 — the controller recovered. Restore the
+        # real trigger (with a spy for the actual SIGTERM) and prove a fresh request is accepted.
+        app.state._restart_trigger = real_trigger
+        app.state.request_restart = _Spy()
+        assert c.post("/api/system/restart", json={}, headers=h).status_code == 202
+
+
 # --------------------------------------------------------------------------------------------
 # 4. restart_available / restart_pending surfaced on /api/auth/me + boot fingerprint
 # --------------------------------------------------------------------------------------------
