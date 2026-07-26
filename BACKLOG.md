@@ -490,7 +490,8 @@ confirmed recovery AUTO; newer overrides are never overwritten by older recovery
 admission and queues a bounded final safe restore even while a prior command is unconfirmed; ticket
 ownership survives cancellation and is released only on real worker completion; deterministic race,
 shutdown, dry-run, and persistence regressions pass.
-**Track:** 🔄 in progress — implementation and verification complete; PR being prepared. Design:
+**Track:** 🔄 PR open — [PR #52](https://github.com/jeroenniesen/EnergyManagementSystem/pull/52).
+Implementation and verification complete. Design:
 [`docs/superpowers/specs/2026-07-26-saf01-writer-fencing-design.md`](docs/superpowers/specs/2026-07-26-saf01-writer-fencing-design.md).
 
 ### B-42 · Control-path stability fixes — Bug · S · **P1**

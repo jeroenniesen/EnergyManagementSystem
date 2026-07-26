@@ -1,6 +1,6 @@
 # SAF-01 — Fence timed-out control work and make AUTO recovery final
 
-**Status:** implemented; PR preparation · **Audit:** SAF-01 · **Base:** `main` after PR #51
+**Status:** implemented; [PR #52](https://github.com/jeroenniesen/EnergyManagementSystem/pull/52) open · **Audit:** SAF-01 · **Base:** `main` after PR #51
 
 ## Problem
 
