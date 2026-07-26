@@ -1,4 +1,4 @@
-import type { SavedToday } from "./BatteryPlan";
+import type { SavedToday } from "./EnergyStory";
 import type { Report } from "./HomeScores";
 
 function OutcomeTile({

@@ -4,8 +4,12 @@ import { AcceptInvite } from "./AcceptInvite";
 import { apiFetch, setUnauthorizedHandler } from "./auth";
 import { type Battery, BatteryChips } from "./BatteryChips";
 import { EnergyDistribution } from "./EnergyDistribution";
-import { type EnergyStoryData, EnergyStory } from "./EnergyStory";
-import { BatteryPlan, type BatteryPlanData, type PlanConfidence, type SavedToday } from "./BatteryPlan";
+import type {
+  BatteryPlanData,
+  EnergyStoryData,
+  PlanConfidence,
+  SavedToday,
+} from "./EnergyStory";
 import { Icon, type IconName } from "./icons";
 import {
   CAR_BADGE_SUFFIX,
@@ -15,7 +19,6 @@ import {
   FRESHNESS_STATE,
   humanize,
   OUTCOME_LABEL,
-  PHYSICAL_MODE,
   RUN_MODE,
   SIGNAL_NAME,
 } from "./labels";
@@ -32,7 +35,7 @@ import { ChatPanel } from "./ChatPanel";
 import { Insights } from "./Insights";
 import { HomeScores, type Report } from "./HomeScores";
 import { OutcomeTiles, type TileFreshness } from "./OutcomeTiles";
-import { CombinedPlanChart } from "./CombinedPlanChart";
+import { PlanStory } from "./PlanStory";
 import { homeSummary } from "./scoreCopy";
 import { SkyBackdrop } from "./SkyBackdrop";
 import { Advanced } from "./Advanced";
@@ -73,12 +76,6 @@ type ChargeNeed = {
   on_track: boolean;
   reason: string;
 };
-
-// Just enough of GET /api/car/plan (CarCard.tsx owns the full shape) to overlay the car's PLANNED
-// charging windows on the main battery-plan chart (feat/ux-batch-3) — "when should the car
-// charge" answered right on the dashboard, not only inside the Car tab/compact card.
-type CarPlanWindow = { start: string; end: string };
-type CarPlanSummary = { enabled: boolean; windows: CarPlanWindow[] };
 
 // `safe` and `action` are optional, structured sub-lines (B-37): "is my home safe" + "what can I
 // do". The backend adds them incrementally; the UI renders them only when present, else falls back
@@ -323,9 +320,9 @@ export function App() {
   const [status, setStatus] = useState<Status | null>(null);
   const [freshness, setFreshness] = useState<FreshnessMap | null>(null);
   const [story, setStory] = useState<EnergyStoryData | null>(null);
-  const [technicalStory, setTechnicalStory] = useState<EnergyStoryData | null>(null);
-  const [batteryPlan, setBatteryPlan] = useState<BatteryPlanData | null>(null);
-  const [storyWindow, setStoryWindow] = useState<"past" | "next">("next");
+  const [batteryPlan, setBatteryPlan] = useState<
+    BatteryPlanData | null
+  >(null);
   const [strategy, setStrategy] = useState<Strategy | null>(null);
   const [battery, setBattery] = useState<Battery | null>(null);
   // Which per-tower breakdown is open (if any): "soc" from the Battery level tile, "power" from the
@@ -334,10 +331,6 @@ export function App() {
   const [decision, setDecision] = useState<Decision | null>(null);
   const [alertsData, setAlertsData] = useState<AlertsResp | null>(null);
   const [chargeNeed, setChargeNeed] = useState<ChargeNeed | null>(null);
-  // The car's planned charging windows, threaded down to BatteryPlan's chart overlay (see
-  // CarPlanSummary above) — null until the first fetch resolves, same best-effort convention as
-  // the other polled cards below.
-  const [carPlan, setCarPlan] = useState<CarPlanSummary | null>(null);
   // B-03b: MEASURED (from /api/finance), not a plan estimate — null until the first successful
   // fetch (then the footer stat stays hidden; a later failure just keeps the last-known value,
   // same best-effort convention as the other polled cards below).
@@ -360,14 +353,6 @@ export function App() {
   const [homeMoreOpen, setHomeMoreOpen] = useState<boolean>(() => {
     try {
       return localStorage.getItem("ems.dash.homeMoreOpen") === "1";
-    } catch {
-      return false;
-    }
-  });
-  // The technical plan nested under More keeps its own remembered disclosure state.
-  const [planOpen, setPlanOpen] = useState<boolean>(() => {
-    try {
-      return localStorage.getItem("ems.dash.planOpen") === "1";
     } catch {
       return false;
     }
@@ -428,15 +413,6 @@ export function App() {
       })); });
     return () => { alive = false; };
   }, []);
-
-  // Persist the disclosure choice for next visit.
-  useEffect(() => {
-    try {
-      localStorage.setItem("ems.dash.planOpen", planOpen ? "1" : "0");
-    } catch {
-      /* private-mode / storage-disabled: the toggle still works in-session */
-    }
-  }, [planOpen]);
 
   useEffect(() => {
     try {
@@ -521,9 +497,6 @@ export function App() {
           fill("/api/alerts", setAlertsData);
         });
       fill("/api/energy-story?window=next", setStory);
-      if (homeMoreOpen && planOpen) {
-        fill(`/api/energy-story?window=${storyWindow}`, setTechnicalStory);
-      }
       fill("/api/battery-plan", setBatteryPlan);
       fill("/api/strategy", (v: Strategy) => { if (!strategyPending.current) setStrategy(v); });
       fill("/api/battery", setBattery);
@@ -544,17 +517,6 @@ export function App() {
         () => setTileFreshness((current) => ({ ...current, finance: { ...current.finance, stale: true } })),
       );
       fill("/api/charge-need", (v: ChargeNeed) => setChargeNeed(v ?? null));
-      // Planned car-charging windows for the chart overlay (feat/ux-batch-3) — `enabled:false`
-      // (feature off) carries no `plan`, so windows are only ever read when the feature is on.
-      fill(
-        "/api/car/plan",
-        (v: { enabled?: boolean; plan?: { windows?: CarPlanWindow[] } | null }) => {
-          setCarPlan({
-            enabled: Boolean(v?.enabled),
-            windows: v?.enabled ? v.plan?.windows ?? [] : [],
-          });
-        },
-      );
     }
     poll();
     const id = setInterval(poll, POLL_MS);
@@ -562,7 +524,7 @@ export function App() {
       alive = false;
       clearInterval(id);
     };
-  }, [view, storyWindow, homeMoreOpen, planOpen]);
+  }, [view]);
 
   // Save a strategy setting live: apply an optimistic patch (instant, self-consistent card), POST
   // it, then reconcile from the server — reverting if the write fails. The pending guard stops the
@@ -616,6 +578,10 @@ export function App() {
     .filter((s): s is string => !!s)
     .map(trimEnd)
     .join(" · ");
+  const trustMarkers = (story?.trust_markers ?? []).filter(
+    (marker) =>
+      !(story?.on_track?.status === "behind" && marker === "No grid top-up needed"),
+  );
 
   // "Do I need to act?" — answered explicitly. Nothing to do unless an override is running, the
   // system has fallen back to safe mode (unsafe data), or a warning/critical alert is live. Info
@@ -636,10 +602,6 @@ export function App() {
       : topActionable
         ? { text: topActionable.action || topActionable.message, calm: false }
         : { text: "Nothing needed from you.", calm: true };
-
-  const batteryModeLabel = battery?.current_mode
-    ? PHYSICAL_MODE[battery.current_mode] ?? humanize(battery.current_mode)
-    : null;
 
   // B-57: on demo/mock data, a persistent friendly nudge into real onboarding (Settings opens on
   // the Connection section by default). Dismissible for the session; back on next visit.
@@ -828,6 +790,20 @@ export function App() {
               {synthesis}
             </p>
           )}
+          {story?.recent_review?.message && (
+            <p className="story-review" data-testid="recent-review">
+              {story.recent_review.message}
+            </p>
+          )}
+          {trustMarkers.length > 0 && (
+            <div className="trust-markers" data-testid="trust-markers">
+              {trustMarkers.map((marker) => (
+                <span key={marker} className="trust-marker">
+                  <Icon name="check" /> {marker}
+                </span>
+              ))}
+            </div>
+          )}
           <p
             className={`hero-act ${actLine.calm ? "hero-act-calm" : "hero-act-attention"}`}
             data-testid="hero-act"
@@ -895,7 +871,12 @@ export function App() {
             onOpenBattery={batteryHasDetail ? () => setBatteryDetail("soc") : undefined}
             freshness={tileFreshness}
           />
-          <CombinedPlanChart story={story?.window === "next" ? story : null} />
+          <PlanStory
+            story={story?.window === "next" ? story : null}
+            savedToday={savedToday}
+            socPct={status?.soc_pct ?? null}
+            onBatteryClick={batteryHasDetail ? () => setBatteryDetail("soc") : undefined}
+          />
         </>
       )}
 
@@ -916,37 +897,6 @@ export function App() {
               onOpenDetail={() => navigate("insights")}
               scoreKeys={["co2", "best_price"]}
             />
-            <BatteryPlan
-              plan={batteryPlan}
-              savedToday={savedToday}
-              socPct={status?.soc_pct ?? null}
-              batteryMode={batteryModeLabel}
-              onBatteryClick={batteryHasDetail ? () => setBatteryDetail("soc") : undefined}
-              carWindows={carPlan?.windows ?? []}
-              carWindowsEnabled={carPlan?.enabled ?? false}
-            />
-            <section className="plan-disclosure" data-testid="plan-disclosure">
-              <button
-                type="button"
-                className={`advanced-toggle${planOpen ? " open" : ""}`}
-                data-testid="plan-disclosure-toggle"
-                aria-expanded={planOpen}
-                onClick={() => setPlanOpen((o) => !o)}
-              >
-                <span className="advanced-chevron" aria-hidden="true">›</span>
-                <span>{planOpen ? "Hide the full plan" : "See the full plan"}</span>
-              </button>
-              {planOpen && (
-                <div className="plan-disclosure-body" data-testid="plan-disclosure-body">
-                  <EnergyStory
-                    story={technicalStory}
-                    window={storyWindow}
-                    onWindow={setStoryWindow}
-                    hideHeadline
-                  />
-                </div>
-              )}
-            </section>
             {strategy && (
               <StrategyCard
                 strategy={strategy}

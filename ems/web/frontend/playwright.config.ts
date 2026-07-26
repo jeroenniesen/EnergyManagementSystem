@@ -30,10 +30,9 @@ const baseEnv = {
 export default defineConfig({
   testDir: "./e2e",
   timeout: 15000,
-  // CI runners are UTC; local dev machines are often Europe/Amsterdam. src/CombinedPlanChart.tsx
-  // renders slot times via `toLocaleTimeString` in the browser's timezone, and ui.spec.ts asserts
-  // hardcoded local-time strings (e.g. "Hold 08:00–08:30") — pin the timezone here so those
-  // assertions are deterministic regardless of the host running the suite.
+  // CI runners are UTC; local machines may differ. PlanStory.tsx formats timestamp-derived labels in
+  // the browser's local zone, and ui.spec.ts asserts deterministic local-time action windows.
+  // Pin the browser zone so those assertions describe the same instants on every host.
   use: { trace: "on-first-retry", timezoneId: "Europe/Amsterdam" },
   reporter: [["list"]],
   projects: [
