@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import sqlite3
 import threading
 import time
 from datetime import UTC, datetime, timedelta
@@ -33,6 +34,7 @@ from ems.sources.battery import BatteryWriteUnconfirmed, MockBatteryDriver
 from ems.sources.mock import MockSource
 from ems.storage.audit import AuditStore
 from ems.storage.auth import AuthStore
+from ems.storage.control_state import CONTROL_STATE_CORRUPT, ControlStateStore
 from ems.storage.settings import SettingsStore
 from ems.web.api import _is_supervised, _spawn_tracked, create_app
 
@@ -448,6 +450,50 @@ def test_restore_missing_unconfirmed_key_fails_safe():
     present = _controlling_controller()
     present.restore_state({"switches_today": 2, "last_command_unconfirmed": False})
     assert present.last_command_unconfirmed is False
+
+
+def test_corrupt_persisted_row_fails_safe_through_the_real_store(tmp_path):
+    # INTEGRATION (the missing coverage): exercise the REAL store→restore boundary, NOT a direct
+    # malformed-field call. load() used to collapse a corrupt row to a fresh {} — so restore_state
+    # left last_command_unconfirmed=False and the gate opened (fail OPEN with an UNKNOWN device
+    # state). Now a corrupt row surfaces as CONTROL_STATE_CORRUPT, restore_state fails SAFE, and the
+    # refuse-when-busy gate refuses with the unconfirmed reason.
+    db = str(tmp_path / "ems.sqlite")
+    store = ControlStateStore(db)
+    store.init()
+    con = sqlite3.connect(db)  # write invalid JSON straight into the backing row
+    con.execute("INSERT INTO control_state (key, value) VALUES (?, ?)", ("controller", "{corrupt"))
+    con.commit()
+    con.close()
+
+    loaded = store.load()
+    assert loaded is CONTROL_STATE_CORRUPT  # the load boundary now DISTINGUISHES corrupt from {}
+    controller = _controlling_controller()
+    controller.restore_state(loaded)
+    assert controller.last_command_unconfirmed is True
+    svc, _ctx = _service(controller)
+    assert svc.idle_for_restart() == (False, "last_command_unconfirmed")
+
+
+def test_absent_persisted_store_is_fresh_and_restart_not_regressed(tmp_path):
+    # The COMPANION non-regression: a genuinely-absent store (table exists, NO row) stays fresh →
+    # last_command_unconfirmed=False, so a fresh-boot restart is STILL permitted (an armed
+    # controlling service reads idle). Proves the fix did not turn "nothing persisted" into a block.
+    db = str(tmp_path / "ems.sqlite")
+    store = ControlStateStore(db)
+    store.init()  # table exists, no row → genuinely fresh
+    loaded = store.load()
+    assert loaded == {}
+
+    armed = _controlling_controller()  # dry_run=False, armed
+    armed.restore_state(loaded)
+    assert armed.last_command_unconfirmed is False  # fresh, NOT fail-safe
+    assert _service(armed)[0].idle_for_restart()[0] is True  # armed fresh boot may restart
+
+    # And the dry-run short-circuit is untouched: a dry-run service is always safe regardless.
+    dry = _controlling_controller()
+    dry.restore_state(loaded)
+    assert _service(dry, dry_run=True)[0].idle_for_restart()[0] is True
 
 
 # --------------------------------------------------------------------------------------------

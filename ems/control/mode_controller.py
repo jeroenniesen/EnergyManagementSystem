@@ -13,11 +13,16 @@ import logging
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
+from typing import TYPE_CHECKING
 from zoneinfo import ZoneInfo
 
 from ems.domain import BatteryIntent, PhysicalMode
 from ems.lifecycle import Lifecycle
 from ems.sources.battery import BatteryDriver, BatteryWriteUnconfirmed, intent_to_mode
+from ems.storage.control_state import CONTROL_STATE_CORRUPT
+
+if TYPE_CHECKING:
+    from ems.storage.control_state import _CorruptControlState
 
 log = logging.getLogger(__name__)
 
@@ -123,17 +128,28 @@ class ModeController:
             "last_command_unconfirmed": self.last_command_unconfirmed,
         }
 
-    def restore_state(self, state: dict | None) -> None:
+    def restore_state(self, state: dict | None | _CorruptControlState) -> None:
         """Load a state_snapshot() (e.g. at startup) — tolerant of missing/garbage fields.
 
         FAIL-SAFE on the refuse-when-busy restart flag (3-reviewer consensus): the last battery
         command's device state must read as UNKNOWN — i.e. `last_command_unconfirmed=True`, which
         BLOCKS a restart — whenever we cannot prove it was confirmed. So a present blob MISSING the
         `last_command_unconfirmed` key (e.g. a pre-I2 persisted state), OR a corrupt/unparseable
-        blob (any field fails to parse), both yield True; only a well-formed explicit value is
-        honoured (a stored False reads False). An entirely absent state (`None`/empty) is genuinely
-        "no persisted state at all" — a fresh boot with no prior write — and keeps the clean
-        in-memory default (False)."""
+        blob (any field fails to parse), OR the store's `CONTROL_STATE_CORRUPT` sentinel (a row
+        EXISTS but `load()` could not read it — corrupt JSON or a read failure), all yield True;
+        only a well-formed explicit value is honoured (a stored False reads False). An entirely
+        absent state (`None`/empty `{}`) is genuinely "no persisted state at all" — a fresh boot
+        with no prior write — and keeps the clean in-memory default (False).
+
+        The sentinel is the LOAD-BOUNDARY half of the fail-safe: `load()` used to collapse both
+        "no row" and "corrupt row" to `{}`, so a corrupt persisted blob reached here as `{}` and
+        failed OPEN. `load()` now signals corruption distinctly and this maps it to fail-safe."""
+        if state is CONTROL_STATE_CORRUPT:
+            # A row EXISTS but the store could not read it (corrupt JSON / read failure). We cannot
+            # prove the last command confirmed → fail SAFE: unknown device state blocks a restart
+            # until a normal confirmed cycle (or note_confirmed_auto) re-establishes safe AUTO.
+            self.last_command_unconfirmed = True
+            return
         if not state:
             return
         try:

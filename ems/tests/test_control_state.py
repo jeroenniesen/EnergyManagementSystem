@@ -1,12 +1,13 @@
 """Runtime control state persists across restarts (SPEC §13.3): a reboot must not reset the daily
 switch cap, min-dwell timer, or the original vendor mode."""
+import sqlite3
 from datetime import UTC, datetime, timedelta
 
 from ems.control.mode_controller import ModeController
 from ems.domain import BatteryIntent, PhysicalMode
 from ems.lifecycle import Lifecycle
 from ems.sources.battery import MockBatteryDriver
-from ems.storage.control_state import ControlStateStore
+from ems.storage.control_state import CONTROL_STATE_CORRUPT, ControlStateStore
 
 NOW = datetime(2026, 6, 28, 12, 0, tzinfo=UTC)
 
@@ -68,6 +69,40 @@ def test_restore_state_ignores_garbage():
     ctl = ModeController(MockBatteryDriver(), Lifecycle(dry_run=True), dry_run=True)
     ctl.restore_state({"switches_today": "not-an-int", "last_switch_at": "garbage"})
     assert ctl.switches_today == 0  # tolerant: bad blob → clean in-memory state
+
+
+def test_load_signals_corrupt_row_distinct_from_absent(tmp_path):
+    """The REAL store→restore boundary (the coverage the old direct-field test missed): load() must
+    tell "a row EXISTS but its JSON is corrupt" apart from "genuinely nothing persisted". The former
+    fails SAFE (last_command_unconfirmed=True → block restart); the latter stays fresh (False)."""
+    db = str(tmp_path / "ems.sqlite")
+    s = ControlStateStore(db)
+    s.init()
+
+    # Genuinely CORRUPT: a row EXISTS under the controller key but its value is not valid JSON.
+    con = sqlite3.connect(db)
+    con.execute("INSERT INTO control_state (key, value) VALUES (?, ?)", ("controller", "{not json"))
+    con.commit()
+    con.close()
+
+    loaded = s.load()
+    assert loaded is CONTROL_STATE_CORRUPT  # NOT collapsed to {} (the fail-open bug)
+    ctl = ModeController(MockBatteryDriver(), _controlling_lifecycle(), dry_run=False)
+    ctl.restore_state(loaded)
+    assert ctl.last_command_unconfirmed is True  # fail SAFE on a corrupt persisted blob
+
+
+def test_load_absent_row_is_fresh_not_corrupt(tmp_path):
+    """A genuinely-ABSENT store (table exists, NO row) stays {} → fresh (last_command_unconfirmed
+    False). Proves the corrupt-detection did NOT turn "nothing persisted yet" into a fail-safe
+    block — a fresh boot must still be able to restart."""
+    s = ControlStateStore(str(tmp_path / "ems.sqlite"))
+    s.init()  # table exists, no row
+    loaded = s.load()
+    assert loaded == {}
+    ctl = ModeController(MockBatteryDriver(), _controlling_lifecycle(), dry_run=False)
+    ctl.restore_state(loaded)
+    assert ctl.last_command_unconfirmed is False  # fresh, NOT fail-safe
 
 
 def test_snapshot_roundtrips_through_restore():
