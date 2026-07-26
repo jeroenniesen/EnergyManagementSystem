@@ -1,10 +1,12 @@
 """Graceful-shutdown safe restore (SPEC §6.5 / operator runbook): in operational mode, stopping
 the service must hand the battery back to its safe vendor mode so an upgrade/reboot/launchd restart
 can't leave it in a forced charge/hold/discharge. Validated against a mock armed driver."""
+import threading
 from zoneinfo import ZoneInfo
 
 from fastapi.testclient import TestClient
 
+from ems.control.command_fence import CommandClass
 from ems.control.mode_controller import ModeController
 from ems.domain import PhysicalMode
 from ems.lifecycle import Lifecycle
@@ -89,3 +91,49 @@ def test_restore_falls_back_to_auto_not_a_forced_original():
     with TestClient(app):
         pass
     assert driver.applied and driver.applied[-1] is PhysicalMode.AUTO
+
+
+def test_shutdown_auto_waits_for_existing_write_and_is_final():
+    class _BlockedDriver(_ArmedRecordingDriver):
+        def __init__(self):
+            super().__init__(PhysicalMode.AUTO)
+            self.charge_entered = threading.Event()
+            self.release_charge = threading.Event()
+
+        def apply(self, mode, *, target_soc=None, power_w=None):
+            if mode is PhysicalMode.CHARGE:
+                self.charge_entered.set()
+                assert self.release_charge.wait(3.0)
+            return super().apply(mode, target_soc=target_soc, power_w=power_w)
+
+    driver = _BlockedDriver()
+    # The blocked write has not confirmed yet, so persisted state still looks safely AUTO.
+    app, _ctl = _operational_app(driver, dry_run=False, last_action=PhysicalMode.AUTO)
+    svc = app.state.control_service
+    stale = svc.reserve_writer(CommandClass.ROUTINE)
+    assert stale is not None
+
+    def old_write() -> None:
+        assert svc._ctx.command_fence.enter(stale) is True
+        try:
+            driver.apply(PhysicalMode.CHARGE)
+        finally:
+            svc._ctx.command_fence.leave(stale)
+            svc.release_writer(stale)
+
+    old = threading.Thread(target=old_write, daemon=True)
+    old.start()
+    assert driver.charge_entered.wait(1.0)
+
+    restored: list[bool] = []
+    shutdown = threading.Thread(
+        target=lambda: restored.append(svc.restore_for_shutdown(PhysicalMode.AUTO)), daemon=True)
+    shutdown.start()
+    assert restored == []
+    driver.release_charge.set()
+    old.join(2.0)
+    shutdown.join(2.0)
+
+    assert restored == [True]
+    assert driver.applied == [PhysicalMode.CHARGE, PhysicalMode.AUTO]
+    assert driver.current_mode() is PhysicalMode.AUTO
