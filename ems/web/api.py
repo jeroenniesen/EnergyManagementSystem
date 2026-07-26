@@ -2042,8 +2042,14 @@ def create_app(
         except Exception:
             _log.debug("readiness: plan validation probe failed (non-fatal)", exc_info=True)
             plan_ok, plan_valid = False, False
+        storage_ok = False
+        if store is not None:
+            try:
+                storage_ok = store.integrity_probe()
+            except Exception:
+                _log.debug("readiness: storage integrity probe failed", exc_info=True)
         return compute_readiness(
-            store_ok=store is not None,
+            store_ok=storage_ok,
             sensing_ok=dq != "unsafe",
             plan_ok=plan_ok,
             data_quality=dq,

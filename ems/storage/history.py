@@ -856,6 +856,16 @@ class HistoryStore:
             await db.execute("VACUUM INTO ?", (dest_path,))
         return os.path.getsize(dest_path)
 
+    def integrity_probe(self) -> bool:
+        """Return whether the on-disk SQLite database passes a read-only integrity check."""
+        try:
+            with sqlite3.connect(f"file:{self.db_path}?mode=ro", uri=True, timeout=2.0) as db:
+                row = db.execute("PRAGMA integrity_check").fetchone()
+            return bool(row and row[0] == "ok")
+        except (OSError, sqlite3.DatabaseError):
+            _log.warning("history integrity probe failed", exc_info=True)
+            return False
+
     async def db_stats(self) -> dict:
         """Cheap size/row diagnostics for the System page (page_count×page_size = DB bytes; the
         two sample row counts; WAL bytes from the -wal sidecar file if present)."""
