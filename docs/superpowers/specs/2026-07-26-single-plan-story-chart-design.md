@@ -73,8 +73,23 @@ returns everything required:
 - `slots: StorySlot[]` — the forward plan
 - `now: string`, `current_soc_pct`, `reserve_soc_pct`, `target_soc_pct`,
   `target_deadline`, `current_price_eur_per_kwh`
-- `on_track`, `recent_review`, `trust_markers` — consumed by the hero, **not**
-  by the chart
+- `on_track`, `recent_review`, `trust_markers` — narrative evidence, **not** chart
+  geometry. **Correction to an earlier draft:** it asserted the hero already
+  consumes all three. It does not — `App.tsx` consumes only `on_track.message`,
+  and `recent_review.message` plus the `trust_markers` chips are rendered
+  *solely* inside `EnergyStory`. Deleting `EnergyStory` from the dashboard would
+  therefore silently destroy them: the "Last 3h: 1.4 kWh solar (94% of forecast)"
+  line and the "Reserve respected" / "Battery covers the evening peak" chips would
+  simply vanish. They are genuinely non-duplicated evidence, and this project's
+  explainability-first rule means they must be **moved into the hero**, not
+  dropped, before their old renderer is deleted.
+
+  When moving `trust_markers`, carry the **B-31 filter** with it
+  (`EnergyStory.tsx` ~line 150): the "No grid top-up needed" chip is suppressed
+  while `on_track.status === "behind"`, because the caution banner already owns
+  that fact. Dropping that filter would put a reassuring chip next to a
+  contradicting warning — reintroducing exactly the self-contradiction this whole
+  change exists to remove.
 
 Each `StorySlot` carries `start`, `soc_pct`, `grid_w`, `solar_w`, `battery_w`,
 `load_w`, `eur_per_kwh`, `action`.
@@ -93,13 +108,27 @@ reuses it on Insights.
 
 ### Geometry
 
-**The x-axis is a true time scale, not a slot index.** This is a deliberate
-divergence from `CombinedPlanChart` and `EnergyBehavior`, which both position by
-index. Index positioning is only correct while the slot array is complete and
-evenly spaced; the moment history has a missing sample, an irregular cadence or a
-forecast gap, an index axis compresses the gap to nothing, misreports elapsed
-time, and places `now` at the wrong place. A chart whose whole purpose is "when
-does this happen" cannot lie about *when*.
+**The x-axis is a true time scale, not a slot index.** Index positioning is only
+correct while the slot array is complete and evenly spaced; the moment history has
+a missing sample, an irregular cadence or a forecast gap, an index axis compresses
+the gap to nothing, misreports elapsed time, and places `now` at the wrong place.
+A chart whose whole purpose is "when does this happen" cannot lie about *when*.
+
+**Correction to an earlier draft of this spec:** it claimed both existing charts
+position by index and that a time scale would be a new divergence. That is wrong.
+`EnergyBehavior` is index-based, but `CombinedPlanChart` **already** derives
+`t0`/`t1` from `Date.parse` and sizes marks as
+`x(start + SLOT_MS) - x(start)` — the exact model specified here. So this is not a
+new invention to be designed from scratch; it is an existing, working model to be
+lifted from that file before it is deleted, and then completed. Its four remaining
+defects are what the rules below add:
+
+1. it keeps `recent` and `slots` as separate arrays instead of one merged series,
+2. it has no boundary-collision handling,
+3. it does not break the SoC path across a timestamp gap,
+4. its x tick labels are still index-selected.
+
+Treat the geometry work as "finish `CombinedPlanChart`'s model", not "replace it".
 
 Build the model in three steps:
 
@@ -159,8 +188,29 @@ Remaining axes:
 4. **Target and reserve** reference lines with inline right-edge labels.
 5. **`now`** vertical marker.
 6. **Action band strip** below the plot: one band per slot coloured by `action`,
-   using the five labels already in use — charge from solar, charge from grid,
-   power the house, use solar first, hold.
+   using the **six** labels `EnergyStory.tsx` already declares — charge from
+   solar, charge from grid, power the house, use solar first, hold, **idle**.
+
+**`idle` is a distinct label and must never be folded into `hold`.** An earlier
+draft of this spec said "five labels", which is wrong and actively dangerous to
+implement literally. `_action_from_battery` in `ems/web/api.py` classifies
+*recorded* slots and returns exactly one of `solar_charge`, `grid_charge`,
+`discharge`, or `idle` — where `idle` is the ±50 W dead-band. It never returns
+`hold` or `self_consume`; those arise on the planned side. So:
+
+- `idle` is not a rare edge case. It is the **dominant recorded action** for every
+  quarter in which the battery is simply quiet, which overnight is most of them.
+- `hold` is a deliberate planned intent; `idle` is a measured "nothing much
+  happened". Collapsing them would relabel a large share of the recorded timeline
+  as an intentional hold the EMS never decided on — inventing intent from a dead
+  band, in a chart whose entire job is explaining intent.
+
+Note the existing code is itself inconsistent here — `CombinedPlanChart` carries
+`idle` in its pattern map but omits it from its label map, so `idle` slots
+currently render a band with no legend entry. The new component fixes that by
+labelling all six. Reuse the existing `.seg-<action>` CSS classes from
+`styles.css` rather than duplicating their hex values in TSX, so band colours
+cannot drift from the stylesheet.
 
 Individual band segments carry `aria-hidden="true"` and no `aria-label`. This is
 not an oversight: PR #57 ("Fix chart SVG accessibility semantics") deliberately
