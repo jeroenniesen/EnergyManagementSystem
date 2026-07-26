@@ -168,7 +168,7 @@ export function CombinedPlanChart({ story }: { story: EnergyStoryData | null }) 
           {windows.map((window) =>
             <rect x={x(window.start)} width={x(window.end) - x(window.start)}
               key={`${window.start}-${window.action}`} height={ACTION_RIBBON_HEIGHT}
-              aria-label={`${actionLabel(window.action)} ${clock(new Date(window.start).toISOString())}–${clock(new Date(window.end).toISOString())}`}
+              aria-hidden="true"
               fill={`url(#combined-plan-ribbon-${ACTION_PATTERN_ANGLE[window.action] == null ? "idle" : window.action})`}
               className={`combined-plan-action-ribbon action-${window.action}`} y={actionRibbonY} />)}
         </g>
