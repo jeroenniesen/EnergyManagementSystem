@@ -488,29 +488,38 @@ export function App() {
       getJson(url).then((v) => { if (alive) apply(v); }).catch(() => { if (alive) failed?.(); });
     }
     function poll() {
-      getJson("/api/status")
-        .then((v) => { if (alive) {
-          setStatus(v); setError(null);
-          setTileFreshness((current) => ({
-            ...current,
-            status: { updatedAt: Date.now(), stale: batteryFreshness.current === "stale" },
-          }));
-        } })
-        .catch((e) => { if (alive) {
-          setError(String(e));
+      const applyCore = (value: { status: Status; freshness: FreshnessMap; alerts: AlertsResp }) => {
+        setStatus(value.status);
+        setFreshness(value.freshness);
+        batteryFreshness.current = value.freshness.battery ?? null;
+        setAlertsData(value.alerts);
+        setError(null);
+        setTileFreshness((current) => ({
+          ...current,
+          status: { updatedAt: Date.now(), stale: batteryFreshness.current === "stale" },
+        }));
+        if (value.freshness.battery === "stale" || value.freshness.battery === "missing") {
           setTileFreshness((current) => ({ ...current, status: { ...current.status, stale: true } }));
-        } });
-      fill("/api/freshness", (value: FreshnessMap) => {
-        setFreshness(value);
-        batteryFreshness.current = value.battery ?? null;
-        if (value.battery === "stale" || value.battery === "missing") {
-          setTileFreshness((current) => ({
-            ...current, status: { ...current.status, stale: true },
-          }));
         }
-      }, () => setTileFreshness((current) => ({
-        ...current, report: { ...current.report, stale: true },
-      })));
+      };
+      getJson("/api/dashboard")
+        .then((value: { status: Status; freshness: FreshnessMap; alerts: AlertsResp }) => {
+          if (alive) applyCore(value);
+        })
+        .catch((snapshotError) => {
+          // Older EMS servers do not expose the snapshot yet; retain the proven fan-out path.
+          getJson("/api/status")
+            .then((v) => { if (alive) { setStatus(v); setError(null); } })
+            .catch((e) => { if (alive) {
+              setError(String(e ?? snapshotError));
+              setTileFreshness((current) => ({ ...current, status: { ...current.status, stale: true } }));
+            } });
+          fill("/api/freshness", (value: FreshnessMap) => {
+            setFreshness(value);
+            batteryFreshness.current = value.battery ?? null;
+          });
+          fill("/api/alerts", setAlertsData);
+        });
       fill("/api/energy-story?window=next", setStory);
       if (homeMoreOpen && planOpen) {
         fill(`/api/energy-story?window=${storyWindow}`, setTechnicalStory);
@@ -519,7 +528,6 @@ export function App() {
       fill("/api/strategy", (v: Strategy) => { if (!strategyPending.current) setStrategy(v); });
       fill("/api/battery", setBattery);
       fill("/api/decision", setDecision);
-      fill("/api/alerts", setAlertsData);
       // B-03b: the measured figure, not the old plan-estimate tile — never a fake €0.00. finance's
       // totals.saved_eur is null until a day of prices has been recorded, in which case the footer
       // shows "measuring" instead of inventing a number.
