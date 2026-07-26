@@ -3,6 +3,25 @@ import type { StorySlot } from "./EnergyStory";
 export const SLOT_MS = 15 * 60 * 1000;
 
 export type TimedStorySlot = StorySlot & { startMs: number };
+export type SlotPointMetric = "soc" | "solar";
+
+/**
+ * Anchor point values where their measurements apply, not at the slot start.
+ * `ems/planner/projection.py` defines forecast SoC as the END-of-slot state, while
+ * `ems/retrospect.py` defines recorded SoC and power as slot means. Solar power is
+ * a slot mean in both windows. Those backend definitions are the sources of truth:
+ * means use the midpoint, while forecast SoC uses the end.
+ */
+export function slotValueAnchorMs(
+  startMs: number,
+  nowMs: number,
+  metric: SlotPointMetric,
+): number {
+  const isForecast = startMs >= nowMs;
+  return metric === "soc" && isForecast
+    ? startMs + SLOT_MS
+    : startMs + SLOT_MS / 2;
+}
 
 export function normaliseSlots(
   recent: readonly StorySlot[],
@@ -183,6 +202,11 @@ export type SocRun = {
   kind: "recorded" | "forecast";
   points: SocPoint[];
 };
+export type SolarPoint = {
+  startMs: number;
+  timeMs: number;
+  solarW: number;
+};
 
 export type ActionWindow = {
   action: PlanAction;
@@ -205,7 +229,7 @@ export type PlanStoryModel = {
   spans: SlotSpan[];
   gaps: GapWindow[];
   soc: SocRun[];
-  solar: TimedStorySlot[][];
+  solar: SolarPoint[][];
   actions: ActionWindow[];
   ticks: number[];
   nowMs: number;
@@ -264,18 +288,22 @@ export function socRuns(
     const kind = slot.startMs < nowMs ? "recorded" : "forecast";
     const separated =
       previousStart != null && slot.startMs - previousStart > GAP_LIMIT_MS;
-    const point = { timeMs: slot.startMs, socPct: slot.soc_pct };
+    const point = {
+      timeMs: slotValueAnchorMs(slot.startMs, nowMs, "soc"),
+      socPct: slot.soc_pct,
+    };
     if (!current || separated) {
       current = { kind, points: [point] };
       runs.push(current);
     } else if (current.kind !== kind) {
       const previous: SocPoint = current.points[current.points.length - 1];
-      const ratio = (nowMs - previous.timeMs) / (point.timeMs - previous.timeMs);
+      const joinTimeMs = Math.max(previous.timeMs, Math.min(nowMs, point.timeMs));
+      const ratio = (joinTimeMs - previous.timeMs) / (point.timeMs - previous.timeMs);
       const join: SocPoint = {
-        timeMs: nowMs,
+        timeMs: joinTimeMs,
         socPct: previous.socPct + (point.socPct - previous.socPct) * ratio,
       };
-      current.points.push(join);
+      if (join.timeMs !== previous.timeMs) current.points.push(join);
       current = { kind, points: [join, point] };
       runs.push(current);
     } else {
@@ -288,13 +316,19 @@ export function socRuns(
 
 export function solarRuns(
   slots: readonly TimedStorySlot[],
-): TimedStorySlot[][] {
-  const runs: TimedStorySlot[][] = [];
+  nowMs: number,
+): SolarPoint[][] {
+  const runs: SolarPoint[][] = [];
   for (const slot of slots) {
     if (!finiteNumber(slot.solar_w)) continue;
+    const point = {
+      startMs: slot.startMs,
+      timeMs: slotValueAnchorMs(slot.startMs, nowMs, "solar"),
+      solarW: slot.solar_w,
+    };
     const previous = runs.at(-1)?.at(-1);
-    if (!previous || slot.startMs - previous.startMs > GAP_LIMIT_MS) runs.push([slot]);
-    else runs[runs.length - 1].push(slot);
+    if (!previous || slot.startMs - previous.startMs > GAP_LIMIT_MS) runs.push([point]);
+    else runs[runs.length - 1].push(point);
   }
   return runs;
 }
@@ -434,7 +468,7 @@ export function buildPlanStoryModel(
     spans: slotSpans(scale, slots),
     gaps: gapWindows(slots, nowMs),
     soc: socRuns(slots, nowMs),
-    solar: solarRuns(slots),
+    solar: solarRuns(slots, nowMs),
     actions: actionWindows(slots),
     ticks: tickTimes(slots),
     nowMs,

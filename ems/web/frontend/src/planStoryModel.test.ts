@@ -135,6 +135,8 @@ describe("timestamp geometry", () => {
     const scale = createTimeScale(geometrySlots(), 50, 750)!;
     const spans = slotSpans(scale, geometrySlots());
     expect(spans).toHaveLength(3);
+    expect(spans[0].startMs).toBe(BASE);
+    expect(spans[0].x).toBe(scale.x(BASE));
     expect(spans.some((span) => span.startMs === BASE + 30 * 60_000)).toBe(false);
     expect(spans.some((span) => span.startMs === BASE + 45 * 60_000)).toBe(false);
   });
@@ -184,12 +186,12 @@ describe("gaps and story semantics", () => {
     ]);
   });
 
-  test("SoC runs break when timestamp delta exceeds one and a half slots", () => {
+  test("recorded SoC points use slot midpoints and break across a gap", () => {
     const slots = normaliseSlots([], [storySlot(0), storySlot(15), storySlot(60)]);
     const runs = socRuns(slots, BASE + 90 * 60_000);
     expect(runs.map((run) => run.points.map((point) => point.timeMs))).toEqual([
-      [BASE, BASE + 15 * 60_000],
-      [BASE + 60 * 60_000],
+      [BASE + SLOT_MS / 2, BASE + 15 * 60_000 + SLOT_MS / 2],
+      [BASE + 60 * 60_000 + SLOT_MS / 2],
     ]);
   });
 
@@ -213,7 +215,7 @@ describe("gaps and story semantics", () => {
     ]);
   });
 
-  test("contiguous recorded and forecast paths share a join point at now", () => {
+  test("forecast SoC points use slot ends while the recorded-to-forecast join stays continuous and monotonic", () => {
     const slots = normaliseSlots([], [
       storySlot(0, { soc_pct: 50 }),
       storySlot(15, { soc_pct: 60 }),
@@ -222,12 +224,40 @@ describe("gaps and story semantics", () => {
     expect(runs).toHaveLength(2);
     expect(runs[0].points.at(-1)?.timeMs).toBe(BASE + 15 * 60_000);
     expect(runs[1].points[0].timeMs).toBe(BASE + 15 * 60_000);
+    expect(runs[1].points.at(-1)?.timeMs).toBe(BASE + 15 * 60_000 + SLOT_MS);
     expect(runs[0].points.at(-1)?.socPct).toBe(runs[1].points[0].socPct);
+    const joinedTimes = runs.flatMap((run, index) =>
+      run.points.slice(index === 0 ? 0 : 1).map((point) => point.timeMs),
+    );
+    expect(joinedTimes.every((timeMs, index) =>
+      index === 0 || timeMs >= joinedTimes[index - 1],
+    )).toBe(true);
   });
 
-  test("solar context also splits instead of filling a missing interval", () => {
+  test("a partial recorded slot cannot make the join at now run backward in time", () => {
+    const slots = normaliseSlots([], [
+      storySlot(0, { soc_pct: 50 }),
+      storySlot(15, { soc_pct: 60 }),
+    ]);
+    const runs = socRuns(slots, BASE + 5 * 60_000);
+    const joinedTimes = runs.flatMap((run, index) =>
+      run.points.slice(index === 0 ? 0 : 1).map((point) => point.timeMs),
+    );
+
+    expect(runs[0].points.at(-1)).toEqual(runs[1].points[0]);
+    expect(joinedTimes.every((timeMs, index) =>
+      index === 0 || timeMs >= joinedTimes[index - 1],
+    )).toBe(true);
+  });
+
+  test("solar points use slot midpoints and split instead of filling a missing interval", () => {
     const slots = normaliseSlots([], [storySlot(0), storySlot(15), storySlot(60)]);
-    expect(solarRuns(slots).map((run) => run.length)).toEqual([2, 1]);
+    const runs = solarRuns(slots, BASE + 30 * 60_000);
+    expect(runs.map((run) => run.length)).toEqual([2, 1]);
+    expect(runs.map((run) => run.map((point) => point.timeMs))).toEqual([
+      [BASE + SLOT_MS / 2, BASE + 15 * 60_000 + SLOT_MS / 2],
+      [BASE + 60 * 60_000 + SLOT_MS / 2],
+    ]);
   });
 
   test("action windows run-length encode contiguous equal actions and stop at a gap", () => {

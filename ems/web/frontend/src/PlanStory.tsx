@@ -143,8 +143,8 @@ export function PlanStory({
 
           <g className="plan-story-solar" data-testid="plan-story-solar">
             {model.solar.map((run, index) => {
-              const points = run.map((slot) =>
-                `${model.scale.x(slot.startMs + SLOT_MS / 2)},${solarY(slot.solar_w)}`,
+              const points = run.map((point) =>
+                `${model.scale.x(point.timeMs)},${solarY(point.solarW)}`,
               );
               if (points.length === 0) return null;
               const firstX = model.scale.x(run[0].startMs);

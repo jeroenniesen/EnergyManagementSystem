@@ -116,4 +116,38 @@ describe("PlanStory rendering", () => {
     expect(html).not.toContain(">Hold<");
     expect(html).not.toContain("Holds");
   });
+
+  test("renders point values at semantic anchors while action bands stay at slot starts", () => {
+    const html = renderToStaticMarkup(createElement(PlanStory, {
+      story: storyData(
+        [storySlot(0, { soc_pct: 50, solar_w: 400 })],
+        [storySlot(15, { soc_pct: 60, solar_w: 800 })],
+        15,
+      ),
+    }));
+    const recordedPoints = html.match(
+      /data-testid="plan-story-soc-recorded"[^>]*points="([^"]+)"/,
+    )?.[1];
+    const forecastPoints = html.match(
+      /data-testid="plan-story-soc-forecast"[^>]*points="([^"]+)"/,
+    )?.[1];
+    const solarPoints = html.match(
+      /<polygon[^>]*points="([^"]+)"/,
+    )?.[1];
+
+    expect(recordedPoints?.split(" ").map((point) => Number(point.split(",")[0]))).toEqual([
+      278,
+      498,
+    ]);
+    expect(forecastPoints?.split(" ").map((point) => Number(point.split(",")[0]))).toEqual([
+      498,
+      938,
+    ]);
+    expect(solarPoints?.split(" ").slice(1, -1).map((point) => Number(point.split(",")[0]))).toEqual([
+      278,
+      718,
+    ]);
+    expect(html).toContain(`data-start-ms="${BASE}"`);
+    expect(html).toContain(`data-start-ms="${BASE + 15 * 60_000}"`);
+  });
 });
