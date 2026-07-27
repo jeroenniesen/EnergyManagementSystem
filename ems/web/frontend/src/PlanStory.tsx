@@ -167,14 +167,14 @@ export function PlanStory({
               return run.points.length > 1 ? (
                 <polyline
                   key={`${run.kind}-${index}`}
-                  data-testid={`plan-story-soc-${run.kind}`}
+                  data-testid={`plan-story-soc-${run.kind}-${index}`}
                   className={`plan-story-soc-line plan-story-soc-${run.kind}`}
                   points={points}
                 />
               ) : (
                 <circle
                   key={`${run.kind}-${index}`}
-                  data-testid={`plan-story-soc-${run.kind}`}
+                  data-testid={`plan-story-soc-dot-${run.kind}-${index}`}
                   className={`plan-story-soc-dot plan-story-soc-${run.kind}`}
                   cx={model.scale.x(run.points[0].timeMs)}
                   cy={socY(run.points[0].socPct)}

@@ -79,8 +79,8 @@ describe("PlanStory rendering", () => {
     expect(html.indexOf("plan-story-soc")).toBeLessThan(html.indexOf("plan-story-references"));
     expect(html.indexOf("plan-story-references")).toBeLessThan(html.indexOf("plan-story-now"));
     expect(html.indexOf("plan-story-now")).toBeLessThan(html.indexOf("plan-story-actions"));
-    expect(html).toContain('data-testid="plan-story-soc-recorded"');
-    expect(html).toContain('data-testid="plan-story-soc-forecast"');
+    expect(html).toContain('data-testid="plan-story-soc-recorded-0"');
+    expect(html).toContain('data-testid="plan-story-soc-forecast-1"');
     expect(html).toContain('data-testid="plan-story-target-label"');
     expect(html).toContain('data-testid="plan-story-reserve-label"');
     expect(html).toContain('data-testid="plan-story-action-segment"');
@@ -89,6 +89,28 @@ describe("PlanStory rendering", () => {
     expect(html).toContain("No recorded data");
     expect(html).not.toContain("<h2");
     expect(html).not.toContain("warning");
+  });
+
+  test("gives singleton SoC dots distinct test IDs from their polylines", () => {
+    const recorded = renderToStaticMarkup(createElement(PlanStory, {
+      story: storyData(
+        [storySlot(0), storySlot(15), storySlot(45)],
+        [],
+        120,
+      ),
+    }));
+    const forecast = renderToStaticMarkup(createElement(PlanStory, {
+      story: storyData(
+        [],
+        [storySlot(0), storySlot(15), storySlot(45)],
+        -15,
+      ),
+    }));
+
+    expect(recorded).toContain('data-testid="plan-story-soc-recorded-0"');
+    expect(recorded).toContain('data-testid="plan-story-soc-dot-recorded-1"');
+    expect(forecast).toContain('data-testid="plan-story-soc-forecast-0"');
+    expect(forecast).toContain('data-testid="plan-story-soc-dot-forecast-1"');
   });
 
   test("footer keeps saved today, battery percentage, and the per-tower link only", () => {
@@ -126,10 +148,10 @@ describe("PlanStory rendering", () => {
       ),
     }));
     const recordedPoints = html.match(
-      /data-testid="plan-story-soc-recorded"[^>]*points="([^"]+)"/,
+      /data-testid="plan-story-soc-recorded-\d+"[^>]*points="([^"]+)"/,
     )?.[1];
     const forecastPoints = html.match(
-      /data-testid="plan-story-soc-forecast"[^>]*points="([^"]+)"/,
+      /data-testid="plan-story-soc-forecast-\d+"[^>]*points="([^"]+)"/,
     )?.[1];
     const solarPoints = html.match(
       /<polygon[^>]*points="([^"]+)"/,

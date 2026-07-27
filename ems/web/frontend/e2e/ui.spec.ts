@@ -167,8 +167,31 @@ test.describe("EMS dashboard", () => {
     }));
   }
 
+  async function routeDashboardStatus(page: Page) {
+    await page.route("**/api/dashboard", (route) => route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        status: {
+          dry_run: true,
+          dev_mode: "mock",
+          soc_pct: 55,
+          grid_power_w: 1000,
+          solar_power_w: 0,
+          battery_power_w: 0,
+          house_load_w: 1000,
+          non_ev_load_w: 1000,
+        },
+        freshness: { battery: "fresh" },
+        alerts: { data_quality: "complete", alerts: [] },
+      }),
+    }));
+  }
+
   async function moveToViewBoxX(page: Page, x: number) {
-    const box = await page.getByTestId("plan-story-plot").boundingBox();
+    const plot = page.getByTestId("plan-story-plot");
+    await plot.scrollIntoViewIfNeeded();
+    const box = await plot.boundingBox();
     expect(box).not.toBeNull();
     await page.mouse.move(box!.x + (x / 1000) * box!.width, box!.y + box!.height * 0.45);
   }
@@ -190,18 +213,17 @@ test.describe("EMS dashboard", () => {
     await page.goto("/");
     const chart = page.getByTestId("plan-story");
 
-    await expect(page.getByTestId("plan-story-soc-recorded")).toBeAttached();
-    await expect(page.getByTestId("plan-story-soc-forecast")).toBeAttached();
+    const recordedSoc = page.locator(".plan-story-soc-line.plan-story-soc-recorded");
+    const forecastSoc = page.locator(".plan-story-soc-line.plan-story-soc-forecast");
+    await expect(recordedSoc).toHaveCount(2);
+    await expect(forecastSoc).toHaveCount(1);
     // The SoC polylines must never carry a paint fill. The kind classes are shared with the SoC
     // dot, which DOES need one; when that fill leaked onto the polyline it beat
     // .plan-story-soc-line's `fill: none` on source order and SVG flooded the area between the
     // curve and the chord joining its endpoints, rendering the whole plot as one solid block.
     // Geometry unit tests cannot see this — it is pure cascade — so it is asserted on computed style.
-    for (const kind of ["recorded", "forecast"]) {
-      await expect(page.getByTestId(`plan-story-soc-${kind}`).locator("nth=0")).toHaveCSS(
-        "fill",
-        "none",
-      );
+    for (const line of await page.locator(".plan-story-soc-line").all()) {
+      await expect(line).toHaveCSS("fill", "none");
     }
     await expect(page.getByTestId("plan-story-now")).toContainText("now");
     await expect(page.getByTestId("plan-story-target-label")).toHaveText("target 88%");
@@ -245,6 +267,40 @@ test.describe("EMS dashboard", () => {
 
   test("PlanStory footer keeps savings, battery percentage, and the tower detail link", async ({ page }) => {
     await routePlanStory(page);
+    await routeDashboardStatus(page);
+    await page.route("**/api/battery", (route) => route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        current_mode: null,
+        capabilities: null,
+        aggregate: {
+          soc_pct: 49.5,
+          power_w: -490,
+          capacity_kwh: 10.98,
+          online_towers: 2,
+          total_towers: 2,
+        },
+        towers: [
+          {
+            ip: "192.0.2.53",
+            role: "master",
+            soc_pct: 50,
+            power_w: -250,
+            capacity_kwh: 5.38,
+            online: true,
+          },
+          {
+            ip: "192.0.2.22",
+            role: "slave",
+            soc_pct: 49,
+            power_w: -240,
+            capacity_kwh: 5.6,
+            online: true,
+          },
+        ],
+      }),
+    }));
     await page.route("**/api/finance**", (route) => route.fulfill({
       status: 200,
       contentType: "application/json",
@@ -255,7 +311,7 @@ test.describe("EMS dashboard", () => {
     const footer = page.getByTestId("story-footer");
     await expect(footer).toContainText("Saved today");
     await expect(footer).toContainText("€2.84 measured");
-    await expect(footer).toContainText(/\d+%/);
+    await expect(footer).toContainText("55%");
     await expect(footer).toContainText("see each battery →");
     await expect(footer).not.toContainText("Mode");
   });
@@ -622,9 +678,25 @@ test.describe("EMS dashboard", () => {
         reasons: ["Still learning your roof."],
       })),
     }));
+    await page.route("**/api/decision", (route) => route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        intent: null,
+        desired_mode: null,
+        applied: false,
+        outcome: "dry_run",
+        reason: "Watching the current plan.",
+        home_state: {
+          headline: "Watching your home",
+          tone: "watching",
+          simulated: true,
+        },
+      }),
+    }));
     await page.goto("/");
     await expect(page.getByTestId("hero-synthesis")).toContainText(
-      "Battery is following the current plan.",
+      "Battery is following the current plan",
     );
     await expect(page.getByTestId("confidence-chip")).toHaveText("Medium confidence");
     await expect(page.getByTestId("battery-plan")).toHaveCount(0);
@@ -632,10 +704,51 @@ test.describe("EMS dashboard", () => {
 
   test("car advice stays in its own card instead of adding a sixth chart layer", async ({ page }) => {
     await routePlanStory(page);
+    await routeDashboardStatus(page);
+    const readyBy = new Date(Date.now() + 20 * 3600_000).toISOString();
+    await page.route("**/api/car/plan", (route) => route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        enabled: true,
+        car_meter_configured: true,
+        soc: {
+          soc_pct: 50,
+          anchor_pct: 50,
+          anchor_ts: new Date().toISOString(),
+          added_kwh: 0,
+          sessions_since_anchor: 0,
+          age_hours: 1,
+          stale: false,
+        },
+        plan: {
+          soc: 50,
+          deadlines: [
+            {
+              ready_by: readyBy,
+              min_pct: 80,
+              required_kwh: 3.33,
+              planned_kwh: 3.33,
+              pending_kwh: 0,
+              shortfall_kwh: 0,
+              already_met: false,
+              feasible: true,
+            },
+          ],
+          slots: [],
+          windows: [],
+          advice: "Plug in later.",
+          negative_price_hint: null,
+          total_est_cost_eur: 0.42,
+          total_planned_kwh: 3.33,
+        },
+      }),
+    }));
     await page.goto("/");
     await openMore(page);
     await expect(page.getByTestId("plan-story").locator('[data-testid="bp-car-window"]')).toHaveCount(0);
-    await expect(page.locator('[data-testid="car-card"], [data-testid="car-card-disabled"]')).toBeVisible();
+    await expect(page.getByTestId("car-card")).toBeVisible();
+    await expect(page.getByTestId("car-advice")).toHaveText("Plug in later.");
   });
 
   test("renders the status dashboard with reconstructed load", async ({ page }) => {
@@ -778,8 +891,8 @@ test.describe("EMS dashboard", () => {
     await expect(hero.getByTestId("trust-markers")).toContainText("Reserve respected");
     await expect(hero.getByTestId("trust-markers")).not.toContainText("No grid top-up needed");
     await expect(page.getByText("No grid top-up needed")).toHaveCount(0);
-    await expect(page.getByTestId("plan-story-soc-recorded")).toBeAttached();
-    await expect(page.getByTestId("plan-story-soc-forecast")).toBeAttached();
+    await expect(page.locator(".plan-story-soc-line.plan-story-soc-recorded")).toHaveCount(2);
+    await expect(page.locator(".plan-story-soc-line.plan-story-soc-forecast")).toHaveCount(1);
   });
 
   test("an on-track story keeps its non-redundant comfort marker in the hero", async ({ page }) => {
