@@ -343,4 +343,38 @@ describe("gaps and story semantics", () => {
     expect(model.summary).toContain("No forecast data");
     expect(model.label).toContain("Hold");
   });
+
+  test("keeps observed price extrema while anchoring one-sided display domains at zero", () => {
+    const positive = buildPlanStoryModel(
+      storyData([], [
+        storySlot(0, { eur_per_kwh: 0.08 }),
+        storySlot(15, { eur_per_kwh: 0.24 }),
+      ]),
+      58,
+      880,
+    )!;
+    const negative = buildPlanStoryModel(
+      storyData([], [
+        storySlot(0, { eur_per_kwh: -0.12 }),
+        storySlot(15, { eur_per_kwh: -0.04 }),
+      ]),
+      58,
+      880,
+    )!;
+
+    expect({
+      observed: [positive.minPrice, positive.maxPrice],
+      display: [positive.priceScaleMin, positive.priceScaleMax],
+    }).toEqual({
+      observed: [0.08, 0.24],
+      display: [0, 0.24],
+    });
+    expect({
+      observed: [negative.minPrice, negative.maxPrice],
+      display: [negative.priceScaleMin, negative.priceScaleMax],
+    }).toEqual({
+      observed: [-0.12, -0.04],
+      display: [-0.12, 0],
+    });
+  });
 });

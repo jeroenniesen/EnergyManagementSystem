@@ -236,6 +236,8 @@ export type PlanStoryModel = {
   nowX: number | null;
   minPrice: number;
   maxPrice: number;
+  priceScaleMin: number;
+  priceScaleMax: number;
   maxSolar: number;
   summary: string;
   label: string;
@@ -475,6 +477,8 @@ export function buildPlanStoryModel(
     nowX: nowX(scale, story.now),
     minPrice: prices.length ? Math.min(...prices) : 0,
     maxPrice: prices.length ? Math.max(...prices) : 0,
+    priceScaleMin: prices.length ? Math.min(0, ...prices) : 0,
+    priceScaleMax: prices.length ? Math.max(0, ...prices) : 0,
     maxSolar: solar.length ? Math.max(1, ...solar) : 1,
     summary: describeCombinedPlan(story),
     label: describeCombinedPlanLabel(story),

@@ -620,7 +620,7 @@ body {
   .plan-story-solar text,
   .plan-story-references text,
   .plan-story-now text,
-  .plan-story-axis text { font-size: 24px; }
+  .plan-story-axis text { font-size: 28px; }
 }
 @media (prefers-reduced-motion: reduce) {
   .plan-story * { transition: none !important; }
@@ -673,13 +673,44 @@ body {
 .story-stat-value { font-size: 1.25rem; font-weight: 600; font-variant-numeric: tabular-nums; }
 .story-stat-label { font-size: 0.7rem; color: var(--muted); text-transform: uppercase; letter-spacing: 0.03em; }
 
-/* battery action colours (shared by the band + legend swatches) */
-.seg-solar_charge { background: var(--accent); } /* green = filled by the roof (free) */
-.seg-grid_charge { background: var(--winter); } /* blue = topped up from the grid (bought) */
-.seg-discharge { background: var(--amber); }
-.seg-self_consume { background: #2a313c; }
-.seg-hold { background: #5b6473; }
-.seg-idle { background: var(--line); }
+/* Battery action colours + static hatches (shared by the band and legend swatches). The 2px
+   text-colour stroke repeats every 7px, so it remains distinct across the strip's 10px height. */
+.seg-hold {
+  background: #5b6473;
+  background-image: repeating-linear-gradient(
+    0deg, transparent 0 2px, var(--text) 2px 3.5px, transparent 3.5px 5px
+  );
+}
+.seg-solar_charge {
+  background: var(--accent); /* green = filled by the roof (free) */
+  background-image: repeating-linear-gradient(
+    30deg, transparent 0 2px, var(--text) 2px 3.5px, transparent 3.5px 5px
+  );
+}
+.seg-grid_charge {
+  background: var(--winter); /* blue = topped up from the grid (bought) */
+  background-image: repeating-linear-gradient(
+    60deg, transparent 0 2px, var(--text) 2px 3.5px, transparent 3.5px 5px
+  );
+}
+.seg-discharge {
+  background: var(--amber);
+  background-image: repeating-linear-gradient(
+    90deg, transparent 0 2px, var(--text) 2px 3.5px, transparent 3.5px 5px
+  );
+}
+.seg-self_consume {
+  background: #2a313c;
+  background-image: repeating-linear-gradient(
+    120deg, transparent 0 2px, var(--text) 2px 3.5px, transparent 3.5px 5px
+  );
+}
+.seg-idle {
+  background: var(--line);
+  background-image: repeating-linear-gradient(
+    150deg, transparent 0 2px, var(--text) 2px 3.5px, transparent 3.5px 5px
+  );
+}
 
 /* Strategy card — the headline control */
 .strategy-card {
@@ -2427,6 +2458,12 @@ body {
 
 /* The live snapshot folded onto the story card (B-32): saved / battery / mode as one quiet row of
    label·value triplets, separated by a hairline from the plan above it. */
+.battery-plan-provenance {
+  margin: 8px 0 0;
+  font-size: 0.76rem;
+  line-height: 1.5;
+  color: var(--muted);
+}
 .battery-plan-footer {
   display: flex; flex-wrap: wrap; gap: 8px 28px;
   margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--line);

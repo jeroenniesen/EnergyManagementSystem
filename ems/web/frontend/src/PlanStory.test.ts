@@ -2,7 +2,12 @@ import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, test } from "vitest";
 
-import type { EnergyStoryData, StorySlot, StoryTotals } from "./EnergyStory";
+import type {
+  EnergyStoryData,
+  PlanProvenance,
+  StorySlot,
+  StoryTotals,
+} from "./EnergyStory";
 import { PlanStory } from "./PlanStory";
 
 const BASE = Date.parse("2026-07-18T06:00:00Z");
@@ -171,5 +176,71 @@ describe("PlanStory rendering", () => {
     ]);
     expect(html).toContain(`data-start-ms="${BASE}"`);
     expect(html).toContain(`data-start-ms="${BASE + 15 * 60_000}"`);
+  });
+
+  test("renders available plan provenance clauses between the legend and footer", () => {
+    const provenance: PlanProvenance = {
+      forecast_source: "Forecast.Solar",
+      solar_confidence_pct: 100,
+      planner: "rule_based",
+      intelligence: {
+        state: "not_active",
+        last_evaluated_at: null,
+        last_result: null,
+        reason: "not wired into the live path",
+      },
+    };
+    const full = renderToStaticMarkup(createElement(PlanStory, {
+      story: storyData([], [storySlot(0)], 0),
+      provenance,
+      socPct: 55,
+    }));
+    const partial = renderToStaticMarkup(createElement(PlanStory, {
+      story: storyData([], [storySlot(0)], 0),
+      provenance: { planner: "adaptive" },
+    }));
+
+    expect(full).toContain(
+      "Planned with <span title=\"The live solar forecast source feeding today&#x27;s plan.\">" +
+      "Forecast.Solar at 100% confidence</span> · ",
+    );
+    expect(full).toContain("rule-based winter planner");
+    expect(full).toContain("scenario intelligence: not active yet");
+    expect(full.indexOf("battery-plan-provenance")).toBeGreaterThan(
+      full.indexOf("plan-story-legend"),
+    );
+    expect(full.indexOf("battery-plan-provenance")).toBeLessThan(
+      full.indexOf("story-footer"),
+    );
+    expect(partial).toContain("Planned with <span");
+    expect(partial).toContain("adaptive summer planner");
+    expect(partial).not.toContain("% confidence");
+    expect(partial).not.toContain("scenario intelligence:");
+  });
+
+  test("keeps provenance visible while the energy story has no plottable slots", () => {
+    const html = renderToStaticMarkup(createElement(PlanStory, {
+      story: storyData([], [], 0),
+      provenance: { planner: "rule_based" },
+    }));
+
+    expect(html).toContain("Battery plan is unavailable.");
+    expect(html).toContain("Planned with");
+    expect(html).toContain("rule-based winter planner");
+  });
+
+  test("zero-anchors negative-price opacity while captioning the observed range", () => {
+    const html = renderToStaticMarkup(createElement(PlanStory, {
+      story: storyData([], [
+        storySlot(0, { eur_per_kwh: -0.2 }),
+        storySlot(15, { eur_per_kwh: -0.1 }),
+      ], 0),
+    }));
+    const opacities = [...html.matchAll(/data-testid="plan-story-price"[^>]*opacity="([^"]+)"/g)]
+      .map((match) => Number(match[1]));
+
+    expect(opacities).toEqual([0.08, 0.18]);
+    expect(html).toContain("Price €-0.20–€-0.10");
+    expect(html).not.toContain("Price €-0.20–€0.00");
   });
 });

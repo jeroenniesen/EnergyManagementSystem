@@ -32,9 +32,24 @@ async function openAdvanced(page: Page) {
   await expect(page.getByTestId("advanced-body")).toBeVisible();
 }
 
+const DEFAULT_PROVENANCE = {
+  forecast_source: "Forecast.Solar",
+  solar_confidence_pct: 80,
+  planner: "rule_based",
+  intelligence: {
+    state: "not_active",
+    last_evaluated_at: null,
+    last_result: null,
+    reason: "The dependable deterministic planner produced this plan.",
+  },
+};
+
 // B-68: a minimal-but-complete /api/battery-plan payload, so a test can mock just the
-// `confidence` block without hand-building the rest of the (large) contract every time.
-function batteryPlanFixture(confidence: { level: string; reasons: string[] }) {
+// `confidence` or `provenance` block without hand-building the rest of the contract.
+function batteryPlanFixture(
+  confidence: { level: string; reasons: string[] },
+  provenance: Record<string, unknown> = DEFAULT_PROVENANCE,
+) {
   const now = new Date();
   return {
     status: "on_track",
@@ -60,6 +75,7 @@ function batteryPlanFixture(confidence: { level: string; reasons: string[] }) {
       solar: [],
     },
     confidence,
+    provenance,
   };
 }
 
@@ -245,6 +261,65 @@ test.describe("EMS dashboard", () => {
     await expect(spoken).toContainText("No recorded data 08:30–08:45");
     await expect(spoken).toContainText("Charges from solar 09:15–09:30");
     await expect(spoken).toContainText("Night target 88%");
+  });
+
+  test("PlanStory action cues use six discernible hatch angles without changing band accessibility", async ({
+    page,
+  }) => {
+    const story = planStoryFixture();
+    const actions = ["hold", "solar_charge", "grid_charge", "discharge", "self_consume", "idle"];
+    const firstStart = Date.parse(story.slots[0].start);
+    story.recent = [];
+    story.now = new Date(firstStart).toISOString();
+    story.slots = actions.map((action, index) => ({
+      ...story.slots[0],
+      start: new Date(firstStart + index * 15 * 60_000).toISOString(),
+      action,
+    }));
+    await page.route("**/api/energy-story?window=next", (route) => route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify(story),
+    }));
+    await page.goto("/");
+
+    const segments = page.getByTestId("plan-story-action-segment");
+    await expect(segments).toHaveCount(6);
+    const cues = await segments.evaluateAll((nodes) => nodes.map((node) => ({
+      action: node.getAttribute("data-action"),
+      backgroundImage: getComputedStyle(node.firstElementChild as Element).backgroundImage,
+      height: (node.firstElementChild as Element).getBoundingClientRect().height,
+    })));
+    const expectedAngles: Record<string, string> = {
+      hold: "0deg",
+      solar_charge: "30deg",
+      grid_charge: "60deg",
+      discharge: "90deg",
+      self_consume: "120deg",
+      idle: "150deg",
+    };
+    for (const cue of cues) {
+      expect(cue.backgroundImage).toContain(
+        `repeating-linear-gradient(${expectedAngles[cue.action!]}`,
+      );
+      expect(cue.height).toBeGreaterThanOrEqual(10);
+    }
+    expect(new Set(cues.map((cue) => cue.backgroundImage)).size).toBe(6);
+    await expect(segments.first()).toHaveAttribute("aria-hidden", "true");
+    await expect(segments.first()).not.toHaveAttribute("aria-label");
+  });
+
+  test("PlanStory annotations remain legible at phone width", async ({ page }) => {
+    await page.setViewportSize({ width: 390, height: 844 });
+    await routePlanStory(page);
+    await page.goto("/");
+
+    const target = page.getByTestId("plan-story-target-label");
+    await expect(target).toBeVisible();
+    const fontSize = await target.evaluate((node) =>
+      Number.parseFloat(getComputedStyle(node).fontSize),
+    );
+    expect(fontSize).toBeGreaterThanOrEqual(26);
   });
 
   test("mouse hover uses time inversion and clears over a hole or on leave", async ({ page }) => {
@@ -700,6 +775,38 @@ test.describe("EMS dashboard", () => {
     );
     await expect(page.getByTestId("confidence-chip")).toHaveText("Medium confidence");
     await expect(page.getByTestId("battery-plan")).toHaveCount(0);
+  });
+
+  test("battery-plan provenance is rendered inside PlanStory", async ({ page }) => {
+    await routePlanStory(page);
+    await routeDashboardStatus(page);
+    await page.route("**/api/battery-plan", (route) => route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify(batteryPlanFixture(
+        { level: "high", reasons: ["Fresh data."] },
+        {
+          forecast_source: "Forecast.Solar",
+          solar_confidence_pct: 100,
+          planner: "rule_based",
+          intelligence: {
+            state: "not_active",
+            last_evaluated_at: null,
+            last_result: null,
+            reason: "not wired into the live path",
+          },
+        },
+      )),
+    }));
+    await page.goto("/");
+
+    const line = page.getByTestId("battery-plan-provenance");
+    await expect(line).toBeVisible();
+    await expect(line).toContainText("Forecast.Solar at 100% confidence");
+    await expect(line).toContainText("rule-based winter planner");
+    await expect(line).toContainText("scenario intelligence: not active yet");
+    await expect(page.getByTestId("plan-story-legend")).toBeVisible();
+    await expect(page.getByTestId("story-footer")).toBeVisible();
   });
 
   test("car advice stays in its own card instead of adding a sixth chart layer", async ({ page }) => {

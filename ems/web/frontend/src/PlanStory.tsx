@@ -1,6 +1,7 @@
-import { useState } from "react";
+import { Fragment, useState } from "react";
 
-import type { EnergyStoryData, SavedToday } from "./EnergyStory";
+import type { EnergyStoryData, PlanProvenance, SavedToday } from "./EnergyStory";
+import { INTELLIGENCE_COPY, PLANNER_PROVENANCE_LABEL } from "./labels";
 import {
   ACTION_META,
   buildPlanStoryModel,
@@ -17,14 +18,77 @@ const PAD = { l: 58, r: 62, t: 30, b: 56 };
 const PLOT_W = W - PAD.l - PAD.r;
 const PLOT_H = H - PAD.t - PAD.b;
 const ACTION_Y = PAD.t + PLOT_H + 10;
-const ACTION_H = 10;
+// viewBox units, NOT CSS pixels: the SVG scales to the card width (viewBox W=1000 renders ~880px),
+// so this lands ~12% smaller on screen. At the old value of 10 the strip rendered ~8.4 CSS px, and a
+// 1px border left ~6.4px of interior — under one full cycle of the non-colour hatch, which made the
+// WCAG 1.4.1 cue effectively invisible. Keep enough height for at least two hatch cycles.
+const ACTION_H = 16;
+
+type PlanStoryProvenance =
+  Partial<Omit<PlanProvenance, "intelligence">> & {
+    intelligence?: Partial<PlanProvenance["intelligence"]>;
+  };
 
 export type PlanStoryProps = {
   story: EnergyStoryData | null;
+  provenance?: PlanStoryProvenance | null;
   savedToday?: SavedToday | null;
   socPct?: number | null;
   onBatteryClick?: () => void;
 };
+
+function ProvenanceCaption({
+  provenance,
+}: {
+  provenance: PlanStoryProvenance | null;
+}) {
+  const clauses: Array<{ key: string; text: string; title?: string }> = [];
+  if (
+    provenance?.forecast_source &&
+    typeof provenance.solar_confidence_pct === "number" &&
+    Number.isFinite(provenance.solar_confidence_pct)
+  ) {
+    clauses.push({
+      key: "forecast",
+      text: `${provenance.forecast_source} at ${provenance.solar_confidence_pct}% confidence`,
+      title: "The live solar forecast source feeding today's plan.",
+    });
+  }
+  if (provenance?.planner) {
+    clauses.push({
+      key: "planner",
+      text: PLANNER_PROVENANCE_LABEL[provenance.planner] ?? provenance.planner,
+      title:
+        "Which planner actually produced this plan — the dependable rule-based/adaptive " +
+        "baseline, not a black box.",
+    });
+  }
+  if (provenance?.intelligence?.state) {
+    clauses.push({
+      key: "intelligence",
+      text:
+        "scenario intelligence: " +
+        (INTELLIGENCE_COPY[provenance.intelligence.state]?.short ??
+          provenance.intelligence.state),
+      title:
+        provenance.intelligence.reason ??
+        INTELLIGENCE_COPY[provenance.intelligence.state]?.detail,
+    });
+  }
+  if (clauses.length === 0) return null;
+
+  return (
+    <p className="battery-plan-provenance" data-testid="battery-plan-provenance">
+      Planned with{" "}
+      {clauses.map((clause, index) => (
+        <Fragment key={clause.key}>
+          {index > 0 && " · "}
+          <span title={clause.title}>{clause.text}</span>
+        </Fragment>
+      ))}
+    </p>
+  );
+}
 
 function Footer({
   savedToday,
@@ -68,6 +132,7 @@ function Footer({
 
 export function PlanStory({
   story,
+  provenance = null,
   savedToday = null,
   socPct = null,
   onBatteryClick,
@@ -79,6 +144,7 @@ export function PlanStory({
     return (
       <section className="plan-story" data-testid="plan-story" data-density-kind="chart">
         <p>Battery plan is unavailable.</p>
+        <ProvenanceCaption provenance={provenance} />
         <Footer savedToday={savedToday} socPct={socPct} onBatteryClick={onBatteryClick} />
       </section>
     );
@@ -88,9 +154,9 @@ export function PlanStory({
     PAD.t + (1 - Math.max(0, Math.min(100, value)) / 100) * PLOT_H;
   const solarY = (value: number) =>
     PAD.t + PLOT_H - (Math.max(0, value) / model.maxSolar) * PLOT_H * 0.38;
-  const priceRange = Math.max(0.01, model.maxPrice - model.minPrice);
+  const priceRange = Math.max(0.01, model.priceScaleMax - model.priceScaleMin);
   const priceOpacity = (value: number) =>
-    0.08 + ((value - model.minPrice) / priceRange) * 0.2;
+    0.08 + ((value - model.priceScaleMin) / priceRange) * 0.2;
   const hovered = hover == null ? null : model.slots[hover] ?? null;
   const hoveredX = hovered
     ? model.scale.x(hovered.startMs + SLOT_MS / 2)
@@ -301,6 +367,8 @@ export function PlanStory({
           </span>
         ))}
       </div>
+
+      <ProvenanceCaption provenance={provenance} />
 
       <Footer savedToday={savedToday} socPct={socPct} onBatteryClick={onBatteryClick} />
     </section>

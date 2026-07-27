@@ -873,6 +873,7 @@ export function App() {
           />
           <PlanStory
             story={story?.window === "next" ? story : null}
+            provenance={batteryPlan?.provenance}
             savedToday={savedToday}
             socPct={status?.soc_pct ?? null}
             onBatteryClick={batteryHasDetail ? () => setBatteryDetail("soc") : undefined}
