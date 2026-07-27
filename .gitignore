@@ -27,6 +27,7 @@ ems/web/static/dist/
 test-results/
 playwright-report/
 .playwright/
+.playwright-mcp/
 
 # OS / editor
 .DS_Store
@@ -43,6 +44,9 @@ ems/web/frontend/.e2e-data/
 
 # Local git worktrees for isolated feature work
 .worktrees/
+# Same, for worktrees created under .claude/. Must stay ignored: a nested git
+# worktree in a non-ignored path breaks tooling that copies untracked files.
+.claude/worktrees/
 
 # local disarmed demo instance (never commit)
 .demo-data/

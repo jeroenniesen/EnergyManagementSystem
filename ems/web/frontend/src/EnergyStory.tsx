@@ -1,9 +1,3 @@
-// The story dashboard: one timeline told two ways. "Next 24h" proves the strategy is sensible;
-// "Last 24h" proves it worked. Same layers both ways — SoC line, electricity price, battery action,
-// solar — plus a plain-language headline and the numbers that matter (€, kWh, self-sufficiency).
-
-import { Icon } from "./icons";
-
 export type StorySlot = {
   start: string;
   soc_pct: number | null;
@@ -14,6 +8,7 @@ export type StorySlot = {
   eur_per_kwh: number | null;
   action: string;
 };
+
 export type StoryTotals = {
   import_kwh: number;
   export_kwh: number;
@@ -28,6 +23,7 @@ export type StoryTotals = {
   soc_min_pct: number | null;
   soc_max_pct: number | null;
 };
+
 export type EnergyStoryData = {
   window: "past" | "next";
   now: string;
@@ -41,7 +37,6 @@ export type EnergyStoryData = {
   totals: StoryTotals;
   headline: string;
   trust_markers?: string[];
-  // "Am I on track?" — recent recorded actuals (next window only) + a verdict.
   recent?: StorySlot[];
   recent_hours?: number;
   on_track?: {
@@ -59,543 +54,64 @@ export type EnergyStoryData = {
   };
 };
 
-const ON_TRACK_TONE: Record<string, string> = {
-  ahead: "on-track-good",
-  on_track: "on-track-good",
-  behind: "on-track-warn",
-  unknown: "on-track-muted",
+export type PlanConfidence = {
+  level: "high" | "medium" | "low";
+  reasons: string[];
 };
 
-const ACTION_LEGEND = [
-  { key: "solar_charge", label: "Charge from solar" },
-  { key: "grid_charge", label: "Charge from grid" },
-  { key: "discharge", label: "Power the house" },
-  { key: "self_consume", label: "Use solar first" },
-  { key: "hold", label: "Hold" },
-  { key: "idle", label: "Idle" },
-];
-const ACTION_LABEL: Record<string, string> = Object.fromEntries(
-  ACTION_LEGEND.map((a) => [a.key, a.label]),
-);
+export type PlanProvenance = {
+  forecast_source: string;
+  solar_confidence_pct: number;
+  planner: "rule_based" | "adaptive" | "summer";
+  intelligence: {
+    state: string;
+    last_evaluated_at: string | null;
+    last_result: string | null;
+    reason: string;
+  };
+};
 
-const W = 1000;
-const H = 190;
-const PAD = { l: 30, r: 12, t: 12, b: 4 };
-const SLOT_MS = 15 * 60 * 1000;
+export type SavedToday =
+  | { status: "measured"; eur: number }
+  | { status: "measuring" };
 
-function clock(ms: number): string {
-  return new Date(ms).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", hour12: false });
-}
-
-function Stat({
-  label,
-  value,
-  accent,
-  title,
-}: {
-  label: string;
-  value: string;
-  accent?: string;
-  title?: string;
-}) {
-  return (
-    <div className="story-stat" title={title}>
-      <span className="story-stat-value" style={accent ? { color: accent } : undefined}>
-        {value}
-      </span>
-      <span className="story-stat-label">{label}</span>
-    </div>
-  );
-}
-
-export function EnergyStory({
-  story: rawStory,
-  window,
-  onWindow,
-  hideHeadline = false,
-}: {
-  story: EnergyStoryData | null;
-  window: "past" | "next";
-  onWindow: (w: "past" | "next") => void;
-  // When this card lives inside the "See the full plan" disclosure, the story card above already
-  // owns the one-and-only narrative sentence. Suppress the duplicate headline here so the two
-  // (independently-sourced, slightly-divergent) narratives can never both show. The verdict,
-  // stats and charts still render — only the narrative sentence is dropped.
-  hideHeadline?: boolean;
-}) {
-  // The toggle flips `window` instantly, but the matching data arrives one fetch later. Until it
-  // does, the previously-loaded story is for the OTHER window — ignore it so we never render "Next"
-  // with last-24h content (or vice-versa). `switching` lets us show a neutral "Loading…" rather
-  // than the cold-start empty message. (Also makes out-of-order responses self-correct.)
-  const switching = rawStory != null && rawStory.window !== window;
-  const story = switching ? null : rawStory;
-  const isPast = window === "past";
-  const slots = story?.slots ?? [];
-  // "Am I on track?" (next only): the recorded actuals from the last few hours, drawn on the same
-  // timeline immediately before "now" — so the chart reads actual → now → planned.
-  const recent = !isPast ? story?.recent ?? [] : [];
-  const onTrack = !isPast ? story?.on_track : undefined;
-  // The full timeline the bar tracks + axis span: recent actuals followed by the slots (the plan for
-  // "next", the measured day for "past"). `recent` is always empty for past, so past is unchanged.
-  const chartSlots = recent.length ? [...recent, ...slots] : slots;
-  const recentCount = recent.length;
-  const t = story?.totals;
-
-  // B-31: "No grid top-up needed" (server trust_markers) and the on-track banner's "...with no
-  // grid top-up planned" caution are the SAME fact — no BatteryIntent.GRID_CHARGE_TO_TARGET slot
-  // in the plan — computed independently server-side (api.py _trust_markers / _on_track), so both
-  // can be true at once (BACKLOG B-31). Single-voice it here instead: the comfort chip only holds
-  // while the plan is genuinely on track; once the verdict is "behind" the caution above already
-  // owns this fact, so suppress the duplicate comfort chip.
-  const trustMarkers = (story?.trust_markers ?? []).filter(
-    (m) => !(onTrack?.status === "behind" && m === "No grid top-up needed"),
-  );
-
-  // B-08: two "quiet success" claims computed client-side from fields already in this payload
-  // (never invented, never from a forecast) — each renders ONLY when honestly provable. Both are
-  // PAST-window only: they are stated in the past tense ("ran"/"bought"), so a forecast promise
-  // must never masquerade as one of them.
-  //   - "ran the night on battery": night = slots with ~zero solar (solar_w < 5W) — a signal read
-  //     straight off the payload, not a guess about local clock hours/timezone. Requires a real
-  //     stretch of night (>= 2h of 15-min slots) that actually carried load, with zero grid import
-  //     (grid_w <= 5W) across every one of those slots. Per the load = grid + solar + battery
-  //     balance (CLAUDE.md energy model), if grid and solar both sat at ~0 while load was flowing,
-  //     the battery must have supplied it.
-  //   - "bought only in the cheap window": every slot with meaningful grid import (grid_w > 5W)
-  //     carries action "grid_charge" — the same per-slot field BatteryPlan's chart legends as the
-  //     "cheap window" (a deliberate, planned grid-charge, never incidental import). Requires at
-  //     least one such slot — nothing bought means nothing to honestly claim.
-  const nightSlots = isPast ? slots.filter((s) => s.solar_w < 5) : [];
-  const ranNightOnBattery =
-    isPast &&
-    nightSlots.length >= 8 &&
-    nightSlots.some((s) => s.load_w > 50) &&
-    nightSlots.every((s) => s.grid_w <= 5);
-  const importSlots = isPast ? slots.filter((s) => s.grid_w > 5) : [];
-  const boughtOnlyInCheapWindow =
-    isPast && importSlots.length > 0 && importSlots.every((s) => s.action === "grid_charge");
-
-  // Two SoC series: the MEASURED line (solid) and, for "next", the FORECAST line (dashed) bridged
-  // from the last measured point so they join cleanly at "now". For "past" the slots ARE measured.
-  const toPt = (s: StorySlot) => ({ t: Date.parse(s.start), soc: s.soc_pct as number });
-  const finite = (p: { t: number }) => Number.isFinite(p.t);
-  const actualPts = (isPast ? slots : recent).filter((s) => s.soc_pct != null).map(toPt).filter(finite);
-  const planPtsRaw = (isPast ? [] : slots).filter((s) => s.soc_pct != null).map(toPt).filter(finite);
-  const planPts =
-    !isPast && actualPts.length && planPtsRaw.length
-      ? [actualPts[actualPts.length - 1], ...planPtsRaw] // bridge measured → forecast
-      : planPtsRaw;
-  const allPts = [...actualPts, ...planPtsRaw];
-
-  const t0 = chartSlots.length ? Date.parse(chartSlots[0].start) : 0;
-  const t1 = chartSlots.length ? Date.parse(chartSlots[chartSlots.length - 1].start) + SLOT_MS : 1;
-  const span = Math.max(1, t1 - t0);
-  const x = (ms: number) => PAD.l + ((ms - t0) / span) * (W - PAD.l - PAD.r);
-  const y = (soc: number) => PAD.t + (1 - soc / 100) * (H - PAD.t - PAD.b);
-  const toLine = (ps: { t: number; soc: number }[]) =>
-    ps.map((p) => `${x(p.t).toFixed(1)},${y(p.soc).toFixed(1)}`).join(" ");
-  const actualLine = toLine(actualPts);
-  const planLine = toLine(planPts);
-  // Filled area under the whole SoC curve (measured + forecast) — reads as "energy in the battery".
-  const baseY = (H - PAD.b).toFixed(1);
-  const socArea =
-    allPts.length >= 2
-      ? `${toLine(allPts)} ${x(allPts[allPts.length - 1].t).toFixed(1)},${baseY} ` +
-        `${x(allPts[0].t).toFixed(1)},${baseY}`
-      : "";
-
-  const maxPrice = Math.max(0.01, ...chartSlots.map((s) => s.eur_per_kwh ?? 0));
-  const maxSolar = Math.max(1, ...chartSlots.map((s) => s.solar_w));
-  const everyN = Math.max(1, Math.round(chartSlots.length / 6));
-  // Domain insight a dynamic-tariff user cares about most: did the battery cover the day's most
-  // expensive hour instead of buying it? Show it only when it's a win (don't nag otherwise).
-  const priced = slots.filter((s) => s.eur_per_kwh != null);
-  const peak = priced.length
-    ? priced.reduce((a, b) => ((b.eur_per_kwh as number) > (a.eur_per_kwh as number) ? b : a))
-    : null;
-  const peakInsight =
-    peak && (peak.eur_per_kwh as number) > 0 && peak.battery_w > 50
-      ? `${isPast ? "Covered" : "Covers"} the day's €${(peak.eur_per_kwh as number).toFixed(2)}/kWh ` +
-        "peak from the battery — not the grid."
-      : null;
-
-  const nowMs = story ? Date.parse(story.now) : NaN;
-  const dl = story?.target_deadline ? Date.parse(story.target_deadline) : NaN;
-  const showDeadline = Number.isFinite(dl) && dl >= t0 && dl <= t1;
-
-  // A spoken-word description of the chart for screen readers — the SVG line alone is invisible
-  // to them, so spell out the start, low point, target and reserve floor.
-  const socChartLabel = (() => {
-    if (!story || !t || allPts.length === 0) return "Battery level over time";
-    const span24 = isPast ? "the last 24 hours" : "the next 24 hours";
-    const parts = [`Battery level over ${span24}.`];
-    // For the "next" view, lead with the actual-so-far + on-track verdict (the new value).
-    if (!isPast && recentCount > 0) {
-      parts.unshift(`Last ${story.recent_hours ?? 3} hours measured, then the plan.`);
-    }
-    if (onTrack) parts.push(onTrack.message);
-    if (t.soc_start_pct != null) parts.push(`Starts at ${Math.round(t.soc_start_pct)}%.`);
-    if (t.soc_min_pct != null) parts.push(`Lowest ${Math.round(t.soc_min_pct)}%.`);
-    if (story.target_soc_pct != null) {
-      parts.push(`Target ${Math.round(story.target_soc_pct)}%.`);
-    }
-    parts.push(`Reserve floor ${Math.round(story.reserve_soc_pct)}%.`);
-    return parts.join(" ");
-  })();
-
-  return (
-    <section className="story" data-testid="energy-story">
-      <div className="story-head">
-        <div className="story-toggle" role="radiogroup" aria-label="Story timeframe">
-          <button
-            type="button"
-            role="radio"
-            aria-checked={isPast}
-            className={`story-tab${isPast ? " story-tab-on" : ""}`}
-            data-testid="story-past"
-            onClick={() => onWindow("past")}
-          >
-            ← Last 24 hours
-          </button>
-          <button
-            type="button"
-            role="radio"
-            aria-checked={!isPast}
-            className={`story-tab${!isPast ? " story-tab-on" : ""}`}
-            data-testid="story-next"
-            onClick={() => onWindow("next")}
-          >
-            Next 24 hours →
-          </button>
-        </div>
-        <div className="story-head-right">
-          {story?.current_price_eur_per_kwh != null && (
-            <span className="story-price" data-testid="story-price">
-              €{story.current_price_eur_per_kwh.toFixed(2)}/kWh {isPast ? "latest" : "now"}
-            </span>
-          )}
-          <span className="badge badge-muted" data-testid="story-tag">
-            {isPast ? "what happened" : "the plan"}
-          </span>
-        </div>
-      </div>
-
-      {!hideHeadline && (
-        <p className="story-headline" data-testid="story-headline">
-          {story?.headline ?? "…"}
-        </p>
-      )}
-
-      {onTrack && (
-        <p
-          className={`on-track ${ON_TRACK_TONE[onTrack.status] ?? "on-track-muted"}`}
-          data-testid="on-track"
-          data-status={onTrack.status}
-        >
-          <Icon name={onTrack.status === "behind" ? "alert" : "check"} /> {onTrack.message}
-        </p>
-      )}
-
-      {!isPast && story?.recent_review?.message && (
-        <p className="story-review" data-testid="recent-review">
-          {story.recent_review.message}
-        </p>
-      )}
-
-      {(trustMarkers.length > 0 || ranNightOnBattery || boughtOnlyInCheapWindow) && (
-        <div className="trust-markers" data-testid="trust-markers">
-          {trustMarkers.map((m) => (
-            <span key={m} className="trust-marker">
-              <Icon name="check" /> {m}
-            </span>
-          ))}
-          {ranNightOnBattery && (
-            <span className="trust-marker" data-testid="quiet-marker-night">
-              ☀︎ ran the night on battery
-            </span>
-          )}
-          {boughtOnlyInCheapWindow && (
-            <span className="trust-marker" data-testid="quiet-marker-cheap">
-              ✓ bought only in the cheap window
-            </span>
-          )}
-        </div>
-      )}
-
-      {peakInsight && (
-        <p className="story-insight" data-testid="story-insight">
-          <Icon name="bolt" /> {peakInsight}
-        </p>
-      )}
-
-      {isPast && t && t.soc_min_pct != null && story && (() => {
-        const ok = (t.soc_min_pct as number) >= story.reserve_soc_pct - 0.5;
-        const msg = ok
-          ? `The battery stayed above its ${story.reserve_soc_pct.toFixed(0)}% reserve all day` +
-            (story.target_soc_pct != null && (t.soc_max_pct ?? 0) >= story.target_soc_pct - 1
-              ? ` and reached the ${story.target_soc_pct.toFixed(0)}% night target.`
-              : ".")
-          : `The battery dipped to ${(t.soc_min_pct as number).toFixed(0)}% — below the ` +
-            `${story.reserve_soc_pct.toFixed(0)}% reserve floor.`;
-        return (
-          <p
-            className={`story-check ${ok ? "story-check-ok" : "story-check-warn"}`}
-            data-testid="story-validation"
-          >
-            <Icon name={ok ? "check" : "alert"} /> {msg}
-          </p>
-        );
-      })()}
-
-      {isPast && slots.length > 0 && (t1 - t0) / 3_600_000 < 6 && (
-        <p className="plan-reason" data-testid="story-thin">
-          Only ~{Math.max(1, Math.round((t1 - t0) / 3_600_000))}h of history so far — the full 24h
-          builds as the system keeps running.
-        </p>
-      )}
-
-      {slots.length === 0 ? (
-        <p className="plan-reason" data-testid="story-empty">
-          {switching
-            ? "Building the story…"
-            : isPast
-            ? "No history yet — leave the system running and the last-24h story fills in."
-            : "No plan yet — prices/forecast are still loading."}
-        </p>
-      ) : (
-        <>
-          {t && (
-            <div className="story-stats" data-testid="story-stats">
-              {t.grid_cost_eur != null && (
-                <Stat
-                  label={isPast ? "grid cost" : "projected grid cost"}
-                  value={`€${t.grid_cost_eur.toFixed(2)}`}
-                />
-              )}
-              {t.self_sufficiency_pct != null && (
-                <Stat
-                  label="powered by you"
-                  value={`${t.self_sufficiency_pct.toFixed(0)}%`}
-                  accent="var(--accent-text)"
-                  title="Share of your electricity that came from your own solar and battery instead of the grid."
-                />
-              )}
-              <Stat
-                label="from the grid"
-                value={`${t.import_kwh.toFixed(1)} kWh`}
-                title="Energy bought from the grid over this period."
-              />
-              {t.export_kwh > 0.05 && (
-                <Stat
-                  label="back to grid"
-                  value={`${t.export_kwh.toFixed(1)} kWh`}
-                  title="Surplus solar sent back to the grid."
-                />
-              )}
-              <Stat label="solar" value={`${t.solar_kwh.toFixed(1)} kWh`} accent="var(--summer-text)" />
-              <Stat
-                label={isPast ? "battery used" : "battery in / out"}
-                value={
-                  isPast
-                    ? `${t.discharge_kwh.toFixed(1)} kWh`
-                    : `${t.charge_kwh.toFixed(1)}/${t.discharge_kwh.toFixed(1)} kWh`
-                }
-                title={
-                  isPast
-                    ? "Energy the battery delivered to the home."
-                    : "Energy charged into the battery / delivered from it over the plan."
-                }
-              />
-            </div>
-          )}
-
-          <div className="track-label">
-            Battery level {isPast ? "(measured)" : "(forecast)"}
-          </div>
-          <svg
-            className="soc-svg"
-            viewBox={`0 0 ${W} ${H}`}
-            preserveAspectRatio="xMidYMid meet"
-            role="img"
-            aria-label={socChartLabel}
-            data-testid="story-soc"
-          >
-            <defs>
-              <linearGradient
-                id="socGradPast"
-                x1="0"
-                y1={PAD.t}
-                x2="0"
-                y2={H - PAD.b}
-                gradientUnits="userSpaceOnUse"
-              >
-                <stop offset="0%" style={{ stopColor: "var(--accent)", stopOpacity: 0.3 }} />
-                <stop offset="100%" style={{ stopColor: "var(--accent)", stopOpacity: 0 }} />
-              </linearGradient>
-              <linearGradient
-                id="socGradNext"
-                x1="0"
-                y1={PAD.t}
-                x2="0"
-                y2={H - PAD.b}
-                gradientUnits="userSpaceOnUse"
-              >
-                <stop offset="0%" style={{ stopColor: "var(--amber)", stopOpacity: 0.26 }} />
-                <stop offset="100%" style={{ stopColor: "var(--amber)", stopOpacity: 0 }} />
-              </linearGradient>
-            </defs>
-            {[0, 50, 100].map((g) => (
-              <g key={g}>
-                <line className="soc-grid" x1={PAD.l} y1={y(g)} x2={W - PAD.r} y2={y(g)} />
-                <text className="soc-axis" x={2} y={y(g) + 3}>
-                  {g}
-                </text>
-              </g>
-            ))}
-            <line
-              className="soc-reserve"
-              x1={PAD.l}
-              y1={y(story?.reserve_soc_pct ?? 10)}
-              x2={W - PAD.r}
-              y2={y(story?.reserve_soc_pct ?? 10)}
-              data-testid="story-reserve"
-            />
-            {story?.target_soc_pct != null && (
-              <>
-                <line
-                  className="soc-target"
-                  x1={PAD.l}
-                  y1={y(story.target_soc_pct)}
-                  x2={W - PAD.r}
-                  y2={y(story.target_soc_pct)}
-                  data-testid="story-target"
-                />
-                <text
-                  className="soc-axis soc-target-label"
-                  x={W - PAD.r}
-                  y={y(story.target_soc_pct) - 5}
-                  textAnchor="end"
-                >
-                  {Math.round(story.target_soc_pct)}% night target
-                </text>
-              </>
-            )}
-            {showDeadline && (
-              <line className="soc-deadline" x1={x(dl)} y1={PAD.t} x2={x(dl)} y2={H - PAD.b} />
-            )}
-            {Number.isFinite(nowMs) && nowMs >= t0 && nowMs <= t1 && (
-              <>
-                <line className="soc-now" x1={x(nowMs)} y1={PAD.t} x2={x(nowMs)} y2={H - PAD.b} />
-                {/* Label the divider when actuals sit before it, so the actual|plan split is clear. */}
-                {!isPast && recentCount > 0 && (
-                  <text className="soc-now-label" x={x(nowMs)} y={PAD.t + 9} textAnchor="middle">
-                    now
-                  </text>
-                )}
-              </>
-            )}
-            {allPts.length >= 2 && (
-              <polygon fill={isPast ? "url(#socGradPast)" : "url(#socGradNext)"} points={socArea} />
-            )}
-            {/* Measured line (solid). For "past" this is the day; for "next" it's the last 3h. */}
-            {actualPts.length >= 2 && (
-              <polyline
-                className="soc-actual"
-                points={actualLine}
-                data-testid={isPast ? "story-soc-line" : "story-soc-actual"}
-              />
-            )}
-            {/* Forecast line (dashed), only for "next" — the planned SoC after now. */}
-            {!isPast && planPts.length >= 2 && (
-              <polyline className="soc-predicted" points={planLine} data-testid="story-soc-line" />
-            )}
-          </svg>
-
-          <div className="legend soc-mini-legend">
-            <span className="legend-item">
-              <span className={`legend-line ${isPast ? "legend-actual" : "legend-predicted"}`} />
-              {isPast ? "Battery level (measured)" : "Battery level (forecast)"}
-            </span>
-            {story?.target_soc_pct != null && (
-              <span className="legend-item">
-                <span className="legend-line legend-target" /> Night target
-              </span>
-            )}
-            <span className="legend-item">
-              <span className="legend-line legend-reserve" /> Minimum reserve
-            </span>
-            {showDeadline && (
-              <span className="legend-item">
-                <span className="legend-line legend-deadline" /> Sunset
-              </span>
-            )}
-          </div>
-
-          <div className="track-label">Electricity price (cheap = short)</div>
-          <div className="track track-price" role="img" aria-label="Electricity price">
-            {chartSlots.map((s, i) => (
-              <span
-                key={i}
-                className={`tbar tbar-price${i < recentCount ? " is-actual" : ""}`}
-                style={{ height: `${((s.eur_per_kwh ?? 0) / maxPrice) * 100}%` }}
-                title={`${clock(Date.parse(s.start))} · €${(s.eur_per_kwh ?? 0).toFixed(2)}/kWh`}
-              />
-            ))}
-          </div>
-
-          <div className="track-label">
-            Battery {isPast ? "(what it did)" : recentCount ? "(did → plans)" : "(planned)"}
-          </div>
-          <div className="track track-plan" role="img" aria-label="Battery action">
-            {chartSlots.map((s, i) => (
-              <span
-                key={i}
-                className={`pseg seg-${s.action}${i < recentCount ? " is-actual" : ""}`}
-                title={`${clock(Date.parse(s.start))} — ${i < recentCount ? "did: " : ""}${
-                  ACTION_LABEL[s.action] ?? s.action
-                }`}
-              />
-            ))}
-          </div>
-
-          <div className="track-label">
-            Solar {isPast ? "(produced)" : recentCount ? "(produced → forecast)" : "(forecast)"}
-          </div>
-          <div className="track track-solar" role="img" aria-label="Solar">
-            {chartSlots.map((s, i) => (
-              <span
-                key={i}
-                className={`tbar tbar-solar${i < recentCount ? " is-actual" : ""}`}
-                style={{ height: `${(s.solar_w / maxSolar) * 100}%` }}
-                title={`${clock(Date.parse(s.start))} · ${Math.round(s.solar_w)} W${
-                  i < recentCount ? " (measured)" : ""
-                }`}
-              />
-            ))}
-          </div>
-
-          <div className="time-axis" aria-hidden="true">
-            {chartSlots.map((s, i) => (
-              <span key={i} className={`tick${i === recentCount && recentCount > 0 ? " tick-now" : ""}`}>
-                {i === recentCount && recentCount > 0
-                  ? "now"
-                  : i % everyN === 0
-                  ? clock(Date.parse(s.start))
-                  : ""}
-              </span>
-            ))}
-          </div>
-
-          <div className="legend" data-testid="story-legend">
-            {ACTION_LEGEND.filter((a) => chartSlots.some((s) => s.action === a.key)).map((a) => (
-              <span key={a.key} className="legend-item">
-                <span className={`legend-swatch seg-${a.key}`} />
-                {a.label}
-              </span>
-            ))}
-          </div>
-        </>
-      )}
-    </section>
-  );
-}
+export type BatteryPlanData = {
+  status: "on_track" | "needs_topup" | "behind_target" | "paused_safely" | "data_stale";
+  summary: string;
+  current_action:
+    | "grid_charge"
+    | "solar_charge"
+    | "hold"
+    | "discharge"
+    | "self_consume"
+    | "paused";
+  current_reason: string;
+  window_start: string;
+  window_end: string;
+  current_soc_pct: number | null;
+  reserve_soc_pct: number;
+  target_soc_pct: number | null;
+  target_deadline: string | null;
+  planned_grid_topup_kwh?: number;
+  deviation: {
+    status: "ok" | "behind_forecast" | "missing";
+    message: string;
+  };
+  warnings: string[];
+  graph: {
+    forecast_soc: Array<{ ts: string; soc_pct: number | null }>;
+    actual_soc: Array<{ ts: string; soc_pct: number | null }>;
+    reserve_line: Array<{ ts: string; soc_pct: number | null }>;
+    target_line: Array<{ ts: string; soc_pct: number | null }>;
+    planned_actions: Array<{ start: string; end: string; action: string }>;
+    price_windows: Array<{
+      start: string;
+      end: string;
+      min_eur_per_kwh: number;
+      max_eur_per_kwh: number;
+    }>;
+    solar: Array<{ ts: string; forecast_w: number; actual_w: number | null }>;
+  };
+  confidence?: PlanConfidence;
+  provenance?: PlanProvenance;
+};

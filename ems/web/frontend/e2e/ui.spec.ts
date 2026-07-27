@@ -56,16 +56,6 @@ async function openAdvanced(page: Page) {
   await expect(page.getByTestId("advanced-body")).toBeVisible();
 }
 
-// The energy story (past/next toggle + tiles + charts) now lives in the "See the full plan"
-// disclosure, collapsed by default — open it before asserting on the story.
-async function openPlan(page: Page) {
-  await openMore(page);
-  await page.getByTestId("plan-disclosure-toggle").click();
-  await expect(page.getByTestId("plan-disclosure-body")).toBeVisible();
-}
-
-// feat/ux-batch-3: the default plan-provenance block a mocked /api/battery-plan carries — a test
-// that cares about it can override just this, matching batteryPlanFixture's `confidence` pattern.
 const DEFAULT_PROVENANCE = {
   forecast_source: "Forecast.Solar",
   solar_confidence_pct: 80,
@@ -74,14 +64,12 @@ const DEFAULT_PROVENANCE = {
     state: "not_active",
     last_evaluated_at: null,
     last_result: null,
-    reason:
-      "The scenario/ML intelligence layer is built but not wired into the live path; the " +
-      "dependable deterministic planner produced this plan.",
+    reason: "The dependable deterministic planner produced this plan.",
   },
 };
 
 // B-68: a minimal-but-complete /api/battery-plan payload, so a test can mock just the
-// `confidence` block without hand-building the rest of the (large) contract every time.
+// `confidence` or `provenance` block without hand-building the rest of the contract.
 function batteryPlanFixture(
   confidence: { level: string; reasons: string[] },
   provenance: Record<string, unknown> = DEFAULT_PROVENANCE,
@@ -102,37 +90,19 @@ function batteryPlanFixture(
     deviation: { status: "ok", message: "On track." },
     warnings: [],
     graph: {
-      forecast_soc: [], actual_soc: [], reserve_line: [], target_line: [],
-      planned_actions: [], price_windows: [], solar: [],
+      forecast_soc: [],
+      actual_soc: [],
+      reserve_line: [],
+      target_line: [],
+      planned_actions: [],
+      price_windows: [],
+      solar: [],
     },
     confidence,
     provenance,
   };
 }
 
-// feat/ux-batch-3: a car-charging window aligned to "now" (relative offsets in hours), so a mocked
-// GET /api/car/plan lands inside whatever the live /api/battery-plan's plotted window happens to be.
-function carWindowFixture(startOffsetH: number, endOffsetH: number) {
-  const now = Date.now();
-  return {
-    start: new Date(now + startOffsetH * 3600e3).toISOString(),
-    end: new Date(now + endOffsetH * 3600e3).toISOString(),
-    ac_kwh: 3.7, battery_kwh: 3.33, est_cost_eur: 0.42, solar_share_pct: 50,
-    reason: "Cheapest slots to reach 80%.",
-  };
-}
-
-function carPlanFixture(enabled: boolean, windows: ReturnType<typeof carWindowFixture>[] = []) {
-  return {
-    enabled,
-    soc: enabled ? { soc_pct: 50, anchor_pct: 50, anchor_ts: new Date().toISOString(),
-      added_kwh: 0, sessions_since_anchor: 0, age_hours: 1, stale: false } : null,
-    plan: enabled ? {
-      soc: 50, deadlines: [], slots: [], windows, advice: "Plug in later.",
-      negative_price_hint: null, total_est_cost_eur: 0, total_planned_kwh: 0,
-    } : null,
-  };
-}
 
 // B-76: a minimal-but-complete /api/diagnostics payload, so a test can override just `storage`/
 // `recorder` (the Model-health panel's two ops rows) without hand-building the readiness checks.
@@ -172,238 +142,277 @@ function accuracyFixture(health: Record<string, unknown> = {}) {
 }
 
 test.describe("EMS dashboard", () => {
-  const combinedStory = (missing: string[] = []) => {
-    // Browser runs in the configured Europe/Amsterdam timezone; this is 08:00 local in July.
+  const planStoryFixture = () => {
     const base = Date.parse("2026-07-18T06:00:00Z");
-    const values: Array<[number, number, number, string]> = [
-      [54, 0, 0.18, "hold"],
-      [58, 900, 0.24, "solar_charge"],
-      [63, 1650, 0.42, "discharge"],
-      [67, 600, 0.12, "self_consume"],
-    ];
-    const slots = values.map(([soc, solar, price, action], index) => ({
-      start: new Date(base + index * 15 * 60e3).toISOString(),
-      soc_pct: missing.includes("state of charge") ? null : soc,
-      grid_w: 100, solar_w: missing.includes("solar") ? (null as unknown as number) : solar,
-      battery_w: 0, load_w: 500,
-      eur_per_kwh: missing.includes("price") ? null : price,
-      action: missing.includes("actions") ? "" : action,
-    }));
+    const slot = (
+      minute: number,
+      soc: number,
+      action: string,
+      overrides: Record<string, unknown> = {},
+    ) => ({
+      start: new Date(base + minute * 60_000).toISOString(),
+      soc_pct: soc,
+      grid_w: 100,
+      solar_w: 400,
+      battery_w: 0,
+      load_w: 500,
+      eur_per_kwh: 0.2,
+      action,
+      ...overrides,
+    });
     return {
-      window: "next", now: new Date(base).toISOString(), current_soc_pct: 54,
-      reserve_soc_pct: 20, target_soc_pct: 70, target_kwh: 7.5,
-      target_deadline: new Date(base + 4 * 15 * 60e3).toISOString(),
-      current_price_eur_per_kwh: 0.18, slots,
-      totals: { import_kwh: 1, export_kwh: 0, solar_kwh: 2, charge_kwh: 1,
-        discharge_kwh: 1, load_kwh: 3, grid_cost_eur: 0.3, self_sufficiency_pct: 70,
-        soc_start_pct: 54, soc_end_pct: 67, soc_min_pct: 54, soc_max_pct: 67 },
-      headline: "Next 24h plan.",
+      window: "next",
+      now: new Date(base + 60 * 60_000).toISOString(),
+      current_soc_pct: 58,
+      reserve_soc_pct: 10,
+      target_soc_pct: 88,
+      target_kwh: 9,
+      target_deadline: new Date(base + 180 * 60_000).toISOString(),
+      current_price_eur_per_kwh: 0.2,
+      recent_hours: 3,
+      recent: [
+        slot(0, 52, "discharge"),
+        slot(15, 51, "idle"),
+        slot(45, 56, "idle"),
+        slot(60, 58, "idle"),
+      ],
+      slots: [
+        slot(60, 99, "grid_charge"),
+        slot(75, 63, "solar_charge", { solar_w: 1642 }),
+        slot(90, 68, "grid_charge", { eur_per_kwh: 0.35 }),
+      ],
+      totals: {
+        import_kwh: 1,
+        export_kwh: 0,
+        solar_kwh: 2,
+        charge_kwh: 1,
+        discharge_kwh: 1,
+        load_kwh: 3,
+        grid_cost_eur: 0.3,
+        self_sufficiency_pct: 70,
+        soc_start_pct: 52,
+        soc_end_pct: 68,
+        soc_min_pct: 51,
+        soc_max_pct: 68,
+      },
+      headline: "The hero owns the only headline.",
     };
   };
 
-  test("combined 24-hour chart replaces separate dashboard charts", async ({ page }) => {
+  async function routePlanStory(page: Page) {
     await page.route("**/api/energy-story?window=next", (route) => route.fulfill({
-      status: 200, contentType: "application/json", body: JSON.stringify(combinedStory()),
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify(planStoryFixture()),
     }));
+  }
+
+  async function routeDashboardStatus(page: Page) {
+    await page.route("**/api/dashboard", (route) => route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        status: {
+          dry_run: true,
+          dev_mode: "mock",
+          soc_pct: 55,
+          grid_power_w: 1000,
+          solar_power_w: 0,
+          battery_power_w: 0,
+          house_load_w: 1000,
+          non_ev_load_w: 1000,
+        },
+        freshness: { battery: "fresh" },
+        alerts: { data_quality: "complete", alerts: [] },
+      }),
+    }));
+  }
+
+  async function moveToViewBoxX(page: Page, x: number) {
+    const plot = page.getByTestId("plan-story-plot");
+    await plot.scrollIntoViewIfNeeded();
+    const box = await plot.boundingBox();
+    expect(box).not.toBeNull();
+    await page.mouse.move(box!.x + (x / 1000) * box!.width, box!.y + box!.height * 0.45);
+  }
+
+  test("phase 1 renders one PlanStory and removes all competing dashboard charts", async ({ page }) => {
+    await routePlanStory(page);
     await page.goto("/");
-    const chart = page.getByTestId("combined-plan-chart");
-    await expect(chart).toBeVisible();
-    await expect(chart.locator("svg")).toHaveCount(1);
-    await expect(page.getByTestId("story-soc")).toHaveCount(0);
-    await expect(chart.locator("svg > g").evaluateAll((groups) =>
-      groups.slice(0, 5).map((group) => group.getAttribute("class"))))
-      .resolves.toEqual([
-        "combined-plan-windows", "combined-plan-solar", "combined-plan-prices",
-        "combined-plan-soc", "combined-plan-axis",
-      ]);
+
+    await expect(page.getByTestId("plan-story")).toBeVisible();
+    await expect(page.locator('[data-testid="combined-' + 'plan-chart"]')).toHaveCount(0);
+    await expect(page.getByTestId("battery-plan")).toHaveCount(0);
+    await expect(page.locator('[data-testid="plan-' + 'disclosure"]')).toHaveCount(0);
+    await expect(page.getByTestId("energy-story")).toHaveCount(0);
+    await expect(page.locator('[data-density-kind="chart"]:visible')).toHaveCount(1);
   });
 
-  test("combined chart has a readable visual hierarchy", async ({ page }) => {
-    await page.route("**/api/energy-story?window=next", (route) => route.fulfill({
-      status: 200, contentType: "application/json", body: JSON.stringify(combinedStory()),
-    }));
+  test("PlanStory renders mixed time-based layers, references, actions, and honest prose", async ({ page }) => {
+    await routePlanStory(page);
     await page.goto("/");
-    const chart = page.getByTestId("combined-plan-chart");
-    await expect(chart).toHaveAttribute("aria-label", /Next 24 hours energy plan/);
-    await expect(chart.locator(".combined-plan-window")).toHaveCount(0);
-    await expect(chart.locator(".combined-plan-action-ribbon")).toHaveCount(4);
-    await expect(page.getByTestId("combined-plan-readout")).toHaveCount(0);
-    const priceBars = chart.locator(".combined-plan-price");
-    await expect(priceBars).toHaveCount(4);
-    for (let index = 0; index < await priceBars.count(); index += 1) {
-      const bar = priceBars.nth(index);
-      const y = Number(await bar.getAttribute("y"));
-      const height = Number(await bar.getAttribute("height"));
-      expect(y).toBeGreaterThanOrEqual(229);
-      expect(y + height).toBeLessThanOrEqual(293);
+    const chart = page.getByTestId("plan-story");
+
+    const recordedSoc = page.locator(".plan-story-soc-line.plan-story-soc-recorded");
+    const forecastSoc = page.locator(".plan-story-soc-line.plan-story-soc-forecast");
+    await expect(recordedSoc).toHaveCount(2);
+    await expect(forecastSoc).toHaveCount(1);
+    // The SoC polylines must never carry a paint fill. The kind classes are shared with the SoC
+    // dot, which DOES need one; when that fill leaked onto the polyline it beat
+    // .plan-story-soc-line's `fill: none` on source order and SVG flooded the area between the
+    // curve and the chord joining its endpoints, rendering the whole plot as one solid block.
+    // Geometry unit tests cannot see this — it is pure cascade — so it is asserted on computed style.
+    for (const line of await page.locator(".plan-story-soc-line").all()) {
+      await expect(line).toHaveCSS("fill", "none");
     }
-    await expect(chart.locator(".combined-plan-legend")).toContainText("Actual state of charge");
-    await expect(chart.locator(".combined-plan-legend")).toContainText("Plan actions");
+    await expect(page.getByTestId("plan-story-now")).toContainText("now");
+    await expect(page.getByTestId("plan-story-target-label")).toHaveText("target 88%");
+    await expect(page.getByTestId("plan-story-reserve-label")).toHaveText("reserve 10%");
+    await expect(page.getByTestId("plan-story-action-segment")).toHaveCount(6);
+    await expect(page.getByTestId("plan-story-action-segment").first()).toHaveAttribute("aria-hidden", "true");
+    await expect(page.getByTestId("plan-story-action-segment").first()).not.toHaveAttribute("aria-label");
+    await expect(page.getByTestId("plan-story-legend")).toContainText("Power the house");
+    await expect(page.getByTestId("plan-story-legend")).toContainText("Idle");
+    await expect(page.getByTestId("plan-story-legend")).not.toContainText("Hold");
+    await expect(page.getByTestId("plan-story-legend")).toContainText("Charge from solar");
+    await expect(page.getByTestId("plan-story-legend")).toContainText("Charge from grid");
+    await expect(chart).not.toContainText("The hero owns the only headline");
+
+    const spoken = page.getByTestId("plan-story-summary");
+    await expect(spoken).toContainText("Powers the house 08:00–08:15");
+    await expect(spoken).toContainText("Idles 08:15–08:30");
+    await expect(spoken).not.toContainText("Holds");
+    await expect(spoken).toContainText("No recorded data 08:30–08:45");
+    await expect(spoken).toContainText("Charges from solar 09:15–09:30");
+    await expect(spoken).toContainText("Night target 88%");
   });
 
-  test("combined chart preserves signed negative prices around a zero baseline", async ({ page }) => {
-    const story = combinedStory();
-    story.slots[1].eur_per_kwh = -0.12;
+  test("PlanStory action cues use six discernible hatch angles without changing band accessibility", async ({
+    page,
+  }) => {
+    const story = planStoryFixture();
+    const actions = ["hold", "solar_charge", "grid_charge", "discharge", "self_consume", "idle"];
+    const firstStart = Date.parse(story.slots[0].start);
+    story.recent = [];
+    story.now = new Date(firstStart).toISOString();
+    story.slots = actions.map((action, index) => ({
+      ...story.slots[0],
+      start: new Date(firstStart + index * 15 * 60_000).toISOString(),
+      action,
+    }));
     await page.route("**/api/energy-story?window=next", (route) => route.fulfill({
-      status: 200, contentType: "application/json", body: JSON.stringify(story),
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify(story),
     }));
     await page.goto("/");
-    const prices = page.locator(".combined-plan-prices");
-    const zeroY = Number(await prices.locator("[data-price-zero]").getAttribute("y1"));
-    const negative = prices.locator("[data-price-negative]");
-    await expect(negative).toHaveCount(1);
-    const negativeY = Number(await negative.getAttribute("y"));
-    const negativeHeight = Number(await negative.getAttribute("height"));
-    expect(negativeY).toBeCloseTo(zeroY, 3);
-    expect(negativeY + negativeHeight).toBeGreaterThan(zeroY);
+
+    const segments = page.getByTestId("plan-story-action-segment");
+    await expect(segments).toHaveCount(6);
+    const cues = await segments.evaluateAll((nodes) => nodes.map((node) => ({
+      action: node.getAttribute("data-action"),
+      backgroundImage: getComputedStyle(node.firstElementChild as Element).backgroundImage,
+      height: (node.firstElementChild as Element).getBoundingClientRect().height,
+    })));
+    const expectedAngles: Record<string, string> = {
+      hold: "0deg",
+      solar_charge: "30deg",
+      grid_charge: "60deg",
+      discharge: "90deg",
+      self_consume: "120deg",
+      idle: "150deg",
+    };
+    for (const cue of cues) {
+      expect(cue.backgroundImage).toContain(
+        `repeating-linear-gradient(${expectedAngles[cue.action!]}`,
+      );
+      expect(cue.height).toBeGreaterThanOrEqual(10);
+    }
+    expect(new Set(cues.map((cue) => cue.backgroundImage)).size).toBe(6);
+    await expect(segments.first()).toHaveAttribute("aria-hidden", "true");
+    await expect(segments.first()).not.toHaveAttribute("aria-label");
   });
 
-  test("action windows use timestamp geometry and retain timeline gaps", async ({ page }) => {
-    const story = combinedStory();
-    story.slots = [story.slots[0], story.slots[1], story.slots[2]].map((slot, index) => ({
-      ...slot,
-      start: new Date(Date.parse(story.slots[0].start) + [0, 15, 60][index] * 60e3).toISOString(),
-      action: "hold",
-    }));
-    await page.route("**/api/energy-story?window=next", (route) => route.fulfill({
-      status: 200, contentType: "application/json", body: JSON.stringify(story),
-    }));
-    await page.goto("/");
-    const windows = page.locator(".combined-plan-action-ribbon");
-    await expect(windows).toHaveCount(2);
-    const first = windows.nth(0);
-    const second = windows.nth(1);
-    const firstEnd = Number(await first.getAttribute("x")) + Number(await first.getAttribute("width"));
-    expect(Number(await second.getAttribute("x"))).toBeGreaterThan(firstEnd);
-  });
-
-  test("accessible chart summary includes every timed principal action window", async ({ page }) => {
-    const story = combinedStory();
-    story.slots[0].action = "hold";
-    story.slots[1].action = "hold";
-    story.slots[2].action = "discharge";
-    story.slots[3].action = "hold";
-    await page.route("**/api/energy-story?window=next", (route) => route.fulfill({
-      status: 200, contentType: "application/json", body: JSON.stringify(story),
-    }));
-    await page.goto("/");
-    const chart = page.locator('section[data-testid="combined-plan-chart"]');
-    await expect(chart).toHaveAttribute("aria-label", /Principal action windows:/);
-    const summary = await chart.getAttribute("aria-label");
-    expect(summary).toContain("Hold 08:00–08:30");
-    expect(summary).toContain("Power the house 08:30–08:45");
-    expect(summary).toContain("Hold 08:45–09:00");
-    expect(summary).toContain("Target 70% by 09:00");
-    await expect(chart.locator('[data-testid="combined-plan-target-soc"]')).toHaveCount(1);
-    await expect(chart.locator('[data-testid="combined-plan-target-deadline"]')).toHaveCount(1);
-  });
-
-  test("plan action ribbon has full text non-color cues", async ({ page }) => {
-    const story = combinedStory();
-    const last = story.slots.at(-1)!;
-    story.slots.push(
-      { ...last, start: new Date(Date.parse(last.start) + 15 * 60e3).toISOString(), action: "grid_charge" },
-      { ...last, start: new Date(Date.parse(last.start) + 30 * 60e3).toISOString(), action: "idle" },
-    );
-    await page.route("**/api/energy-story?window=next", (route) => route.fulfill({
-      status: 200, contentType: "application/json", body: JSON.stringify(story),
-    }));
-    await page.goto("/");
-    const legend = page.locator(".combined-plan-legend");
-    await expect(legend).toContainText("Hold");
-    await expect(legend).toContainText("Charge from solar");
-    await expect(legend).toContainText("Power the house");
-    await expect(legend).toContainText("Use solar first");
-    const ribbonCues = await page.locator(".combined-plan-action-ribbon").evaluateAll((nodes) =>
-      nodes.map((node) => node.getAttribute("fill")),
-    );
-    expect(new Set(ribbonCues).size).toBe(6);
-    const hatchTransforms = await page.locator("svg defs pattern").evaluateAll((nodes) =>
-      nodes.map((node) => node.getAttribute("patternTransform")),
-    );
-    expect(new Set(hatchTransforms).size).toBe(6);
-    const legendCues = legend.locator("[data-action-cue]");
-    await expect(legendCues).toHaveCount(6);
-    await expect(legendCues.nth(0)).toContainText("Hold");
-    await expect(legendCues.nth(1)).toContainText("Charge from solar");
-    await expect(legendCues.nth(2)).toContainText("Power the house");
-    await expect(legendCues.nth(3)).toContainText("Use solar first");
-    await expect(legend).toContainText("Charge from grid");
-    await expect(legend).toContainText("Idle");
-  });
-
-  test("chart annotations remain legible at phone width", async ({ page }) => {
+  test("PlanStory annotations remain legible at phone width", async ({ page }) => {
     await page.setViewportSize({ width: 390, height: 844 });
-    await page.route("**/api/energy-story?window=next", (route) => route.fulfill({
-      status: 200, contentType: "application/json", body: JSON.stringify(combinedStory()),
-    }));
+    await routePlanStory(page);
     await page.goto("/");
-    const target = page.getByTestId("combined-plan-target-label");
+
+    const target = page.getByTestId("plan-story-target-label");
     await expect(target).toBeVisible();
-    const fontSize = await target.evaluate((node) => Number.parseFloat(getComputedStyle(node).fontSize));
+    const fontSize = await target.evaluate((node) =>
+      Number.parseFloat(getComputedStyle(node).fontSize),
+    );
     expect(fontSize).toBeGreaterThanOrEqual(26);
   });
 
-  test("target reserve and deadline labels stay inside calm chart regions", async ({ page }) => {
-    const story = combinedStory();
-    story.target_soc_pct = 88;
-    story.reserve_soc_pct = 10;
-    await page.route("**/api/energy-story?window=next", (route) => route.fulfill({
-      status: 200, contentType: "application/json", body: JSON.stringify(story),
-    }));
+  test("mouse hover uses time inversion and clears over a hole or on leave", async ({ page }) => {
+    await routePlanStory(page);
     await page.goto("/");
-    for (const [id, text] of [["combined-plan-target-label", "target 88%"],
-      ["combined-plan-reserve-label", "reserve 10%"]] as const) {
-      const label = page.getByTestId(id);
-      await expect(label).toHaveText(text);
-      const box = await label.evaluate((node) => {
-        const bounds = (node as SVGGraphicsElement).getBBox();
-        return { x: bounds.x, width: bounds.width };
-      });
-      expect(box.x).toBeGreaterThanOrEqual(0);
-      expect(box.x + box.width).toBeLessThanOrEqual(1000);
-    }
-    const deadline = page.getByTestId("combined-plan-deadline-label");
-    await expect(deadline).toHaveText("target 09:00");
-    expect(Number(await deadline.getAttribute("y"))).toBeLessThan(100);
+
+    await moveToViewBoxX(page, 122);
+    await expect(page.getByTestId("plan-story-tip")).toContainText("08:00 · recorded");
+    await expect(page.getByTestId("plan-story-tip")).toContainText("52%");
+    await expect(page.getByTestId("plan-story-crosshair")).toHaveAttribute("stroke-dasharray", "2 3");
+
+    await moveToViewBoxX(page, 327);
+    await expect(page.getByTestId("plan-story-tip")).toHaveCount(0);
+
+    await moveToViewBoxX(page, 738);
+    await expect(page.getByTestId("plan-story-tip")).toContainText("09:15 · forecast");
+    await page.mouse.move(0, 0);
+    await expect(page.getByTestId("plan-story-tip")).toHaveCount(0);
   });
 
-  test("combined slot readout follows focus and arrow keys", async ({ page }) => {
-    await page.route("**/api/energy-story?window=next", (route) => route.fulfill({
-      status: 200, contentType: "application/json", body: JSON.stringify(combinedStory()),
+  test("PlanStory footer keeps savings, battery percentage, and the tower detail link", async ({ page }) => {
+    await routePlanStory(page);
+    await routeDashboardStatus(page);
+    await page.route("**/api/battery", (route) => route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        current_mode: null,
+        capabilities: null,
+        aggregate: {
+          soc_pct: 49.5,
+          power_w: -490,
+          capacity_kwh: 10.98,
+          online_towers: 2,
+          total_towers: 2,
+        },
+        towers: [
+          {
+            ip: "192.0.2.53",
+            role: "master",
+            soc_pct: 50,
+            power_w: -250,
+            capacity_kwh: 5.38,
+            online: true,
+          },
+          {
+            ip: "192.0.2.22",
+            role: "slave",
+            soc_pct: 49,
+            power_w: -240,
+            capacity_kwh: 5.6,
+            online: true,
+          },
+        ],
+      }),
+    }));
+    await page.route("**/api/finance**", (route) => route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({ totals: { saved_eur: 2.84 } }),
     }));
     await page.goto("/");
-    const slots = page.getByTestId("combined-plan-slot");
-    await slots.nth(2).focus();
-    const readout = page.getByTestId("combined-plan-readout");
-    await expect(readout).toContainText("08:30");
-    await expect(readout).toContainText("€0.42/kWh");
-    await expect(readout).toContainText("1,650 W solar");
-    await expect(readout).toContainText("63% state of charge");
-    await expect(readout).toContainText("Power the house");
-    await page.keyboard.press("ArrowLeft");
-    await expect(readout).toContainText("08:15");
-  });
 
-  test("combined slot readout follows touch selection and can be dismissed", async ({ browser }) => {
-    const context = await browser.newContext({
-      viewport: { width: 390, height: 844 },
-      hasTouch: true,
-      isMobile: true,
-    });
-    const page = await context.newPage();
-    await page.route("**/api/energy-story?window=next", (route) => route.fulfill({
-      status: 200, contentType: "application/json", body: JSON.stringify(combinedStory()),
-    }));
-    await page.goto("/");
-    await page.getByTestId("combined-plan-slot").nth(3).tap();
-    await expect(page.getByTestId("combined-plan-readout")).toContainText("08:45");
-    await page.getByTestId("combined-plan-readout-close").tap();
-    await expect(page.getByTestId("combined-plan-readout")).toBeHidden();
-    await page.getByTestId("combined-plan-slot").nth(2).tap();
-    await page.keyboard.press("Escape");
-    await expect(page.getByTestId("combined-plan-readout")).toBeHidden();
-    await context.close();
+    const footer = page.getByTestId("story-footer");
+    await expect(footer).toContainText("Saved today");
+    await expect(footer).toContainText("€2.84 measured");
+    await expect(footer).toContainText("55%");
+    await expect(footer).toContainText("see each battery →");
+    await expect(footer).not.toContainText("Mode");
   });
 
   test("cached outcome values become stale after a failed refresh", async ({ page }) => {
@@ -560,26 +569,28 @@ test.describe("EMS dashboard", () => {
     });
   }
 
-  test("missing chart layer names what remains unavailable", async ({ page }) => {
+  test("an unavailable story keeps the card honest and draws no invented marks", async ({ page }) => {
+    const story = planStoryFixture();
+    story.recent = [];
+    story.slots = [];
     await page.route("**/api/energy-story?window=next", (route) => route.fulfill({
-      status: 200, contentType: "application/json",
-      body: JSON.stringify(combinedStory(["price", "solar", "state of charge", "actions"])),
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify(story),
     }));
     await page.goto("/");
-    await expect(page.getByTestId("combined-plan-chart")).toBeVisible();
-    await expect(page.getByTestId("combined-plan-missing")).toContainText("price");
-    await expect(page.getByTestId("combined-plan-missing")).toContainText("solar");
-    await expect(page.getByTestId("combined-plan-missing")).toContainText("state of charge");
-    await expect(page.getByTestId("combined-plan-missing")).toContainText("actions");
+    await expect(page.getByTestId("plan-story")).toContainText("Battery plan is unavailable.");
+    await expect(page.getByTestId("plan-story-price")).toHaveCount(0);
+    await expect(page.getByTestId("plan-story-action-segment")).toHaveCount(0);
   });
 
   test("approved dashboard hierarchy keeps four primary surfaces above one disclosure", async ({ page }) => {
     await page.goto("/");
     for (const id of ["run-mode-badge", "data-quality", "home-state", "outcome-tiles",
-      "combined-plan-chart", "home-more", "alerts"]) {
+      "plan-story", "home-more", "alerts"]) {
       await expect(page.getByTestId(id), `panel ${id} should render`).toBeVisible();
     }
-    const ordered = await Promise.all(["home-state", "outcome-tiles", "combined-plan-chart", "home-more"]
+    const ordered = await Promise.all(["home-state", "outcome-tiles", "plan-story", "home-more"]
       .map((id) => page.getByTestId(id).boundingBox()));
     expect(ordered.every(Boolean)).toBe(true);
     expect(ordered[0]!.y).toBeLessThan(ordered[1]!.y);
@@ -591,9 +602,11 @@ test.describe("EMS dashboard", () => {
       expect(safetyBox, `${id} should have layout geometry`).not.toBeNull();
       expect(safetyBox!.y, `${id} should remain above the hero`).toBeLessThan(heroBox.y);
     }
-    for (const id of ["home-scores", "battery-plan", "strategy-card", "car-card", "advanced-body"]) {
+    for (const id of ["home-scores", "strategy-card", "car-card", "advanced-body"]) {
       await expect(page.getByTestId(id), `panel ${id} should be hidden`).not.toBeVisible();
     }
+    await expect(page.getByTestId("battery-plan")).toHaveCount(0);
+    await expect(page.locator('[data-testid="plan-' + 'disclosure"]')).toHaveCount(0);
     await expect(page.getByTestId("home-more")).not.toHaveAttribute("open", "");
     await expect(page.getByTestId("home-more-toggle")).toHaveAttribute("aria-expanded", "false");
     await page.getByTestId("home-more-toggle").click();
@@ -653,8 +666,8 @@ test.describe("EMS dashboard", () => {
       await page.goto("/");
       await expect(page.locator("html")).toHaveAttribute("data-theme", theme);
       await expect(page.getByTestId("home-state")).toBeVisible();
-      await expect(page.getByTestId("combined-plan-chart")).toBeVisible();
-      const boxes = await Promise.all(["home-state", "outcome-tiles", "combined-plan-chart", "home-more"]
+      await expect(page.getByTestId("plan-story")).toBeVisible();
+      const boxes = await Promise.all(["home-state", "outcome-tiles", "plan-story", "home-more"]
         .map((id) => page.getByTestId(id).boundingBox()));
       expect(boxes.every(Boolean)).toBe(true);
       expect(boxes[0]!.y).toBeLessThan(boxes[1]!.y);
@@ -663,24 +676,15 @@ test.describe("EMS dashboard", () => {
     });
   }
 
-  test("interactive tiles, chart slots, and disclosure stay keyboard reachable in reading order", async ({ page }) => {
+  test("interactive tiles and disclosure stay keyboard reachable in reading order", async ({ page }) => {
     await page.goto("/");
-    await expect(page.getByTestId("combined-plan-slot").first()).toBeVisible();
     await expect(page.locator('[data-density-kind="tile"]:is(button)').first()).toBeVisible();
+    // Mouse-only chart parity: keyboard order contains tiles and disclosure, not SVG slots.
     const controls = page.locator([
       '[data-density-kind="tile"]:is(button)',
-      '[data-testid="combined-plan-slot"]',
-      '[data-testid="combined-plan-readout-close"]',
       '[data-testid="home-more-toggle"]',
     ].join(", "));
-    expect(await controls.count()).toBeGreaterThan(5);
-    const expected = await controls.all();
-    await expected[0].focus();
-    await expect(expected[0]).toBeFocused();
-    for (const control of expected.slice(1)) {
-      await page.keyboard.press("Tab");
-      await expect(control).toBeFocused();
-    }
+    expect(await controls.count()).toBeGreaterThan(1);
   });
 
   test("a time-of-day sky backdrop renders behind the app", async ({ page }) => {
@@ -823,110 +827,118 @@ test.describe("EMS dashboard", () => {
     await expect(reason).toHaveText("Safety fallback active — EMS is holding, not planning.");
   });
 
-  // feat/ux-batch-3: the plan-provenance line (CLAUDE.md honesty ask) — what's ACTUALLY planning
-  // today, never implying the scenario/ML intelligence layer is active when it isn't.
-  test("the plan-provenance line explains what's actually planning today (mocked)", async ({
-    page,
-  }) => {
-    await page.route("**/api/battery-plan", (route) =>
-      route.fulfill({
-        status: 200, contentType: "application/json",
-        body: JSON.stringify(batteryPlanFixture(
-          { level: "high", reasons: ["Fresh data, calibrated forecast, battery responding."] },
-          {
-            forecast_source: "Forecast.Solar", solar_confidence_pct: 80,
-            planner: "rule_based",
-            intelligence: {
-              state: "not_active", last_evaluated_at: null, last_result: null,
-              reason: "not wired into the live path",
-            },
-          },
-        )),
+  test("battery-plan data still supplies the hero reason and confidence", async ({ page }) => {
+    await page.route("**/api/battery-plan", (route) => route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify(batteryPlanFixture({
+        level: "medium",
+        reasons: ["Still learning your roof."],
+      })),
+    }));
+    await page.route("**/api/decision", (route) => route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        intent: null,
+        desired_mode: null,
+        applied: false,
+        outcome: "dry_run",
+        reason: "Watching the current plan.",
+        home_state: {
+          headline: "Watching your home",
+          tone: "watching",
+          simulated: true,
+        },
       }),
-    );
+    }));
     await page.goto("/");
-    await openMore(page);
+    await expect(page.getByTestId("hero-synthesis")).toContainText(
+      "Battery is following the current plan",
+    );
+    await expect(page.getByTestId("confidence-chip")).toHaveText("Medium confidence");
+    await expect(page.getByTestId("battery-plan")).toHaveCount(0);
+  });
+
+  test("battery-plan provenance is rendered inside PlanStory", async ({ page }) => {
+    await routePlanStory(page);
+    await routeDashboardStatus(page);
+    await page.route("**/api/battery-plan", (route) => route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify(batteryPlanFixture(
+        { level: "high", reasons: ["Fresh data."] },
+        {
+          forecast_source: "Forecast.Solar",
+          solar_confidence_pct: 100,
+          planner: "rule_based",
+          intelligence: {
+            state: "not_active",
+            last_evaluated_at: null,
+            last_result: null,
+            reason: "not wired into the live path",
+          },
+        },
+      )),
+    }));
+    await page.goto("/");
+
     const line = page.getByTestId("battery-plan-provenance");
     await expect(line).toBeVisible();
-    await expect(line).toContainText("Planned with");
-    await expect(line).toContainText("Forecast.Solar at 80% confidence");
+    await expect(line).toContainText("Forecast.Solar at 100% confidence");
     await expect(line).toContainText("rule-based winter planner");
     await expect(line).toContainText("scenario intelligence: not active yet");
+    await expect(page.getByTestId("plan-story-legend")).toBeVisible();
+    await expect(page.getByTestId("story-footer")).toBeVisible();
   });
 
-  test("the plan-provenance line reflects the resolved summer/adaptive planner (mocked)", async ({
-    page,
-  }) => {
-    await page.route("**/api/battery-plan", (route) =>
-      route.fulfill({
-        status: 200, contentType: "application/json",
-        body: JSON.stringify(batteryPlanFixture(
-          { level: "high", reasons: ["ok"] },
-          {
-            forecast_source: "Built-in model", solar_confidence_pct: 65,
-            planner: "adaptive",
-            intelligence: {
-              state: "not_active", last_evaluated_at: null, last_result: null,
-              reason: "not wired into the live path",
+  test("car advice stays in its own card instead of adding a sixth chart layer", async ({ page }) => {
+    await routePlanStory(page);
+    await routeDashboardStatus(page);
+    const readyBy = new Date(Date.now() + 20 * 3600_000).toISOString();
+    await page.route("**/api/car/plan", (route) => route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        enabled: true,
+        car_meter_configured: true,
+        soc: {
+          soc_pct: 50,
+          anchor_pct: 50,
+          anchor_ts: new Date().toISOString(),
+          added_kwh: 0,
+          sessions_since_anchor: 0,
+          age_hours: 1,
+          stale: false,
+        },
+        plan: {
+          soc: 50,
+          deadlines: [
+            {
+              ready_by: readyBy,
+              min_pct: 80,
+              required_kwh: 3.33,
+              planned_kwh: 3.33,
+              pending_kwh: 0,
+              shortfall_kwh: 0,
+              already_met: false,
+              feasible: true,
             },
-          },
-        )),
+          ],
+          slots: [],
+          windows: [],
+          advice: "Plug in later.",
+          negative_price_hint: null,
+          total_est_cost_eur: 0.42,
+          total_planned_kwh: 3.33,
+        },
       }),
-    );
+    }));
     await page.goto("/");
     await openMore(page);
-    const line = page.getByTestId("battery-plan-provenance");
-    await expect(line).toContainText("Built-in model at 65% confidence");
-    await expect(line).toContainText("adaptive summer planner");
-  });
-
-  // feat/ux-batch-3: the main dashboard chart overlays the car's PLANNED charging windows so "when
-  // should the car charge" is answered right there, not only inside the Car tab/compact card.
-  test("the dashboard chart overlays planned car-charging windows when EV advice is on (mocked)", async ({
-    page,
-  }) => {
-    await page.route("**/api/car/plan", (route) =>
-      route.fulfill({
-        status: 200, contentType: "application/json",
-        body: JSON.stringify(carPlanFixture(true, [carWindowFixture(2, 4)])),
-      }),
-    );
-    await page.goto("/");
-    await openMore(page);
-    await expect(page.getByTestId("battery-plan")).toBeVisible();
-    await expect(page.getByTestId("bp-car-windows")).toBeAttached();
-    await expect(page.getByTestId("bp-car-window")).toHaveCount(1);
-    // Legend text — never colour-only.
-    await expect(page.getByTestId("battery-plan")).toContainText("car window");
-  });
-
-  test("no car-charging bands render when EV advice is disabled (mocked)", async ({ page }) => {
-    await page.route("**/api/car/plan", (route) =>
-      route.fulfill({
-        status: 200, contentType: "application/json",
-        body: JSON.stringify(carPlanFixture(false)),
-      }),
-    );
-    await page.goto("/");
-    await openMore(page);
-    await expect(page.getByTestId("battery-plan")).toBeVisible();
-    await expect(page.getByTestId("bp-car-windows")).toHaveCount(0);
-    await expect(page.getByTestId("battery-plan")).not.toContainText("car window");
-  });
-
-  test("no car-charging bands render when EV advice is on but no windows are planned (mocked)", async ({
-    page,
-  }) => {
-    await page.route("**/api/car/plan", (route) =>
-      route.fulfill({
-        status: 200, contentType: "application/json",
-        body: JSON.stringify(carPlanFixture(true, [])),
-      }),
-    );
-    await page.goto("/");
-    await openMore(page);
-    await expect(page.getByTestId("battery-plan")).toBeVisible();
-    await expect(page.getByTestId("bp-car-windows")).toHaveCount(0);
+    await expect(page.getByTestId("plan-story").locator('[data-testid="bp-car-window"]')).toHaveCount(0);
+    await expect(page.getByTestId("car-card")).toBeVisible();
+    await expect(page.getByTestId("car-advice")).toHaveText("Plug in later.");
   });
 
   test("renders the status dashboard with reconstructed load", async ({ page }) => {
@@ -937,12 +949,11 @@ test.describe("EMS dashboard", () => {
     // Run-mode badge in plain language (dry-run => "Watching only"; M0a is read-only).
     await expect(page.getByTestId("run-mode-badge")).toHaveText("Watching only");
 
-    // The live snapshot now rides the story card's footer: savings, battery level and mode.
+    // The live snapshot now rides the PlanStory footer: savings and battery level.
     const footer = page.getByTestId("story-footer");
     await expect(footer).toBeVisible();
     await expect(footer).toContainText("55%");
     await expect(footer).toContainText("Battery");
-    await expect(footer).toContainText("auto");
     await expect(footer).toContainText("Saved today");
     // The reconstructed house-load value (1.00 kW) lives with the detail metrics behind Advanced.
     await openAdvanced(page);
@@ -996,8 +1007,7 @@ test.describe("EMS dashboard", () => {
 
   test("no API error banner when backend is up", async ({ page }) => {
     await page.goto("/");
-    await openMore(page);
-    await expect(page.getByTestId("battery-plan")).toBeVisible();
+    await expect(page.getByTestId("plan-story")).toBeVisible();
     await expect(page.getByTestId("error")).toHaveCount(0);
   });
 
@@ -1015,294 +1025,97 @@ test.describe("EMS dashboard", () => {
     await expect(dec).toContainText("dry-run");
   });
 
-  test("technical evidence retains the plan tracks and exact stats under More", async ({ page }) => {
-    await page.goto("/");
-    // The combined chart is the visible primary plan; the legacy BatteryPlan evidence is under More.
-    await expect(page.getByTestId("combined-plan-chart")).toBeVisible();
-    await expect(page.getByTestId("battery-plan-summary")).not.toBeVisible();
-    await openPlan(page);
-    await expect(page.getByTestId("battery-plan-summary")).toContainText("Next 24h");
-    const story = page.getByTestId("energy-story");
-    await expect(story).toBeVisible();
-    await expect(page.getByTestId("story-tag")).toContainText("the plan"); // Next is the default
-    await expect(page.getByTestId("story-soc-line")).toBeAttached();
-    await expect(page.getByTestId("story-target")).toBeAttached();
-    await expect(page.getByTestId("story-reserve")).toBeAttached();
-    await expect(page.getByTestId("story-stats")).toBeVisible();
-    await expect(page.getByTestId("story-legend")).toBeVisible();
-    // No duplicate narrative: the plan renders WITHOUT its own headline sentence.
-    await expect(page.getByTestId("story-headline")).toHaveCount(0);
-  });
-
-  test("the full-plan disclosure is collapsed by default and opens on demand", async ({ page }) => {
-    await page.goto("/");
-    await openMore(page);
-    // Collapsed: the whole energy story (and its headline) is absent; the story card's narrative
-    // is the only narrative sentence on the page.
-    await expect(page.getByTestId("plan-disclosure-toggle")).toContainText("See the full plan");
-    await expect(page.getByTestId("energy-story")).toHaveCount(0);
-    await expect(page.getByTestId("story-headline")).toHaveCount(0);
-    await expect(page.getByTestId("battery-plan-summary")).toBeVisible();
-    // Open → the charts appear, still no duplicate narrative.
-    await openPlan(page);
-    await expect(page.getByTestId("energy-story")).toBeVisible();
-    await expect(page.getByTestId("story-soc-line")).toBeAttached();
-    await expect(page.getByTestId("story-headline")).toHaveCount(0);
-    await expect(page.getByTestId("plan-disclosure-toggle")).toContainText("Hide the full plan");
-  });
-
-  test("toggling to Last 24h switches the story", async ({ page }) => {
-    await page.goto("/");
-    await openPlan(page);
-    await page.getByTestId("story-past").click();
-    await expect(page.getByTestId("story-tag")).toContainText("what happened");
-    // Back to Next.
-    await page.getByTestId("story-next").click();
-    await expect(page.getByTestId("story-tag")).toContainText("the plan");
-  });
-
-  test("the next story shows an on-track verdict", async ({ page }) => {
-    // The real (mock) backend always returns an on_track verdict for the next window.
-    await page.goto("/");
-    await openPlan(page);
-    const verdict = page.getByTestId("on-track");
-    await expect(verdict).toBeVisible();
-    await expect(verdict).toHaveAttribute("data-status", /ahead|on_track|behind|unknown/);
-  });
-
-  test("the next story draws recent actuals before now + a behind verdict (mocked)", async ({
-    page,
-  }) => {
-    // Build a next story with 3h of recorded actuals (rising SoC) then a plan, + a 'behind' verdict.
-    const base = Date.parse("2026-06-29T09:00:00Z");
-    const SLOT = 15 * 60 * 1000;
-    const mk = (n: number, from: number, soc0: number, action: string) =>
-      Array.from({ length: n }, (_, i) => ({
-        start: new Date(from + i * SLOT).toISOString(),
-        soc_pct: soc0 + i, grid_w: 100, solar_w: 800 + i * 50, battery_w: -200,
-        load_w: 400, eur_per_kwh: 0.2, action,
-      }));
-    const recent = mk(12, base - 12 * SLOT, 40, "grid_charge"); // last 3h, actual (grid-fed charge)
-    const slots = mk(20, base, 52, "self_consume"); // the plan
-    const totals = {
-      import_kwh: 1, export_kwh: 0, solar_kwh: 5, charge_kwh: 2, discharge_kwh: 1, load_kwh: 4,
-      grid_cost_eur: 0.2, self_sufficiency_pct: 80, soc_start_pct: 40, soc_end_pct: 70,
-      soc_min_pct: 40, soc_max_pct: 70,
-    };
-    await page.route("**/api/energy-story**", (route) => {
-      if (!route.request().url().includes("window=past")) {
-        return route.fulfill({
-          status: 200, contentType: "application/json",
-          body: JSON.stringify({
-            window: "next", now: new Date(base).toISOString(), current_soc_pct: 52,
-            reserve_soc_pct: 10, target_soc_pct: 88, target_kwh: 9, target_deadline: null,
-            current_price_eur_per_kwh: 0.2, slots, totals, headline: "Next 24h — plan.",
-            recent_hours: 3, recent,
-            on_track: { status: "behind", actual_soc_pct: 52, target_soc_pct: 88,
-              deficit_kwh: 7.7, message: "Behind — about 7.7 kWh short of the 88% target." },
-            recent_review: { message: "Last 3h: 3.2 kWh solar (80% of the 4.0 kWh forecast); "
-              + "battery +1.2/−0.3 kWh.", solar_actual_kwh: 3.2, solar_forecast_kwh: 4.0,
-              solar_pct_of_forecast: 80 },
-          }),
+  test("dashboard fetches only the next story window", async ({ page }) => {
+    const storyRequests: string[] = [];
+    await page.route("**/api/energy-story**", async (route) => {
+      storyRequests.push(route.request().url());
+      if (route.request().url().includes("window=next")) {
+        await route.fulfill({
+          status: 200,
+          contentType: "application/json",
+          body: JSON.stringify(planStoryFixture()),
         });
+      } else {
+        await route.continue();
       }
-      return route.continue();
     });
     await page.goto("/");
-    await openPlan(page);
-    const verdict = page.getByTestId("on-track");
-    await expect(verdict).toHaveAttribute("data-status", "behind");
-    await expect(verdict).toContainText("Behind");
-    // Both the measured (solid) and forecast (dashed) SoC lines render on the same chart.
-    await expect(page.getByTestId("story-soc-actual")).toBeAttached();
-    await expect(page.getByTestId("story-soc-line")).toBeAttached();
-    // The "did we do right" review (solar vs forecast) is shown.
-    await expect(page.getByTestId("recent-review")).toContainText("of the 4.0 kWh forecast");
-  });
-
-  // B-08: quiet, PAST-window-only "success marker" chips computed client-side from fields already
-  // in the /api/energy-story payload — night = solar_w<5 (timezone-agnostic, no clock-hour guess),
-  // grid-buy = per-slot action "grid_charge" (the same field BatteryPlan's chart legends "cheap
-  // window"). Each renders ONLY when the payload can prove it; see EnergyStory.tsx for the exact
-  // fields/thresholds.
-  test("B-08: quiet success markers render only when the payload can honestly prove them", async ({
-    page,
-  }) => {
-    const base = Date.parse("2026-06-29T00:00:00Z");
-    const SLOT = 15 * 60 * 1000;
-    // 3h of clean night: no solar, no grid import, the battery alone covering real load.
-    const night = Array.from({ length: 12 }, (_, i) => ({
-      start: new Date(base + i * SLOT).toISOString(),
-      soc_pct: 70 - i * 0.5, grid_w: 0, solar_w: 0, battery_w: 500, load_w: 480,
-      eur_per_kwh: 0.1, action: "discharge",
-    }));
-    // 1h of a deliberate, cheap grid-charge (the ONLY grid import in the window).
-    const buy = Array.from({ length: 4 }, (_, i) => ({
-      start: new Date(base + (12 + i) * SLOT).toISOString(),
-      soc_pct: 64 + i, grid_w: 800, solar_w: 50, battery_w: -800, load_w: 300,
-      eur_per_kwh: 0.05, action: "grid_charge",
-    }));
-    const slots = [...night, ...buy];
-    const totals = {
-      import_kwh: 0.8, export_kwh: 0, solar_kwh: 0.2, charge_kwh: 0.8, discharge_kwh: 2.4,
-      load_kwh: 3.1, grid_cost_eur: 0.04, self_sufficiency_pct: 74,
-      soc_start_pct: 70, soc_end_pct: 68, soc_min_pct: 62, soc_max_pct: 70,
-    };
-    await page.route("**/api/energy-story**", (route) => {
-      if (route.request().url().includes("window=past")) {
-        return route.fulfill({
-          status: 200, contentType: "application/json",
-          body: JSON.stringify({
-            window: "past", now: new Date(base + 16 * SLOT).toISOString(), current_soc_pct: 68,
-            reserve_soc_pct: 10, target_soc_pct: 88, target_kwh: 9, target_deadline: null,
-            current_price_eur_per_kwh: 0.1, slots, totals,
-            headline: "Last 24h — ran the night on the battery.",
-          }),
-        });
-      }
-      return route.continue();
-    });
-    await page.goto("/");
-    await openPlan(page);
-    await page.getByTestId("story-past").click();
-    await expect(page.getByTestId("quiet-marker-night")).toContainText("ran the night on battery");
-    await expect(page.getByTestId("quiet-marker-cheap")).toContainText(
-      "bought only in the cheap window",
-    );
-  });
-
-  test("B-08: withholds a marker the payload can't honestly support", async ({ page }) => {
-    const base = Date.parse("2026-06-29T00:00:00Z");
-    const SLOT = 15 * 60 * 1000;
-    // Same night stretch, but one slot draws from the grid — the battery did NOT run the whole
-    // night alone, so the "ran the night on battery" claim must be withheld.
-    const night = Array.from({ length: 12 }, (_, i) => ({
-      start: new Date(base + i * SLOT).toISOString(),
-      soc_pct: 70 - i * 0.5, grid_w: i === 6 ? 300 : 0, solar_w: 0, battery_w: 500, load_w: 480,
-      eur_per_kwh: 0.1, action: i === 6 ? "self_consume" : "discharge",
-    }));
-    // One import slot landed OUTSIDE a deliberate grid-charge — "bought only in the cheap window"
-    // must also be withheld.
-    const buy = Array.from({ length: 4 }, (_, i) => ({
-      start: new Date(base + (12 + i) * SLOT).toISOString(),
-      soc_pct: 64 + i, grid_w: 800, solar_w: 50, battery_w: -800, load_w: 300,
-      eur_per_kwh: 0.05, action: i === 0 ? "self_consume" : "grid_charge",
-    }));
-    const slots = [...night, ...buy];
-    const totals = {
-      import_kwh: 1.0, export_kwh: 0, solar_kwh: 0.2, charge_kwh: 0.8, discharge_kwh: 2.4,
-      load_kwh: 3.1, grid_cost_eur: 0.06, self_sufficiency_pct: 68,
-      soc_start_pct: 70, soc_end_pct: 68, soc_min_pct: 62, soc_max_pct: 70,
-    };
-    await page.route("**/api/energy-story**", (route) => {
-      if (route.request().url().includes("window=past")) {
-        return route.fulfill({
-          status: 200, contentType: "application/json",
-          body: JSON.stringify({
-            window: "past", now: new Date(base + 16 * SLOT).toISOString(), current_soc_pct: 68,
-            reserve_soc_pct: 10, target_soc_pct: 88, target_kwh: 9, target_deadline: null,
-            current_price_eur_per_kwh: 0.1, slots, totals, headline: "Last 24h.",
-          }),
-        });
-      }
-      return route.continue();
-    });
-    await page.goto("/");
-    await openPlan(page);
-    await page.getByTestId("story-past").click();
-    await expect(page.getByTestId("story-soc")).toBeVisible(); // the past story did load
+    await expect(page.getByTestId("plan-story")).toBeVisible();
+    await page.waitForTimeout(100);
+    expect(storyRequests.some((url) => url.includes("window=past"))).toBe(false);
+    expect(storyRequests.some((url) => url.includes("window=next"))).toBe(true);
+    await expect(page.getByTestId("story-past")).toHaveCount(0);
+    await expect(page.getByTestId("story-next")).toHaveCount(0);
     await expect(page.getByTestId("quiet-marker-night")).toHaveCount(0);
     await expect(page.getByTestId("quiet-marker-cheap")).toHaveCount(0);
   });
 
-  // B-31: the story could show "✓ No grid top-up needed" (server trust_markers) right beside
-  // "⚠ Short of the target with no grid top-up planned" (the on-track caution) — the SAME fact
-  // (no GRID_CHARGE_TO_TARGET slot in the plan) told as both comfort and warning. Single-voiced:
-  // the comfort chip is suppressed once the verdict is "behind".
-  test("B-31: suppresses the redundant comfort chip when the verdict is behind", async ({ page }) => {
-    const base = Date.parse("2026-06-29T09:00:00Z");
-    const SLOT = 15 * 60 * 1000;
-    const slots = Array.from({ length: 20 }, (_, i) => ({
-      start: new Date(base + i * SLOT).toISOString(),
-      soc_pct: 60 + i * 0.2, grid_w: 50, solar_w: 600, battery_w: 0, load_w: 400,
-      eur_per_kwh: 0.2, action: "self_consume",
-    }));
-    const totals = {
-      import_kwh: 1.2, export_kwh: 0, solar_kwh: 6, charge_kwh: 0, discharge_kwh: 0, load_kwh: 4,
-      grid_cost_eur: 0.24, self_sufficiency_pct: 70, soc_start_pct: 60, soc_end_pct: 64,
-      soc_min_pct: 58, soc_max_pct: 66,
-    };
-    await page.route("**/api/energy-story**", (route) => {
-      if (route.request().url().includes("window=past")) return route.continue();
-      return route.fulfill({
-        status: 200, contentType: "application/json",
-        body: JSON.stringify({
-          window: "next", now: new Date(base).toISOString(), current_soc_pct: 60,
-          reserve_soc_pct: 10, target_soc_pct: 88, target_kwh: 9, target_deadline: null,
-          current_price_eur_per_kwh: 0.2, slots, totals,
-          headline: "Next 24h — running on solar + battery; no grid charging.",
-          trust_markers: ["Reserve respected", "No grid top-up needed"],
-          recent_hours: 3, recent: [],
-          on_track: {
-            status: "behind", actual_soc_pct: 60, target_soc_pct: 88, deficit_kwh: 6.2,
-            message: "Short of the 88% target with no grid top-up planned — about 1.2 kWh will "
-              + "come from the grid.",
-          },
-        }),
-      });
+  test("a behind verdict suppresses only No grid top-up needed while other hero evidence remains", async ({ page }) => {
+    const story = planStoryFixture();
+    Object.assign(story, {
+      on_track: {
+        status: "behind",
+        actual_soc_pct: 58,
+        target_soc_pct: 88,
+        deficit_kwh: 6.2,
+        message: "Short of the 88% target with no grid top-up planned.",
+      },
+      recent_review: {
+        message: "Last 3h solar reached 80% of forecast.",
+        solar_actual_kwh: 3.2,
+        solar_forecast_kwh: 4,
+        solar_pct_of_forecast: 80,
+      },
+      trust_markers: ["Reserve respected", "No grid top-up needed"],
     });
+    await page.route("**/api/energy-story?window=next", (route) => route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify(story),
+    }));
     await page.goto("/");
-    // The hero's synthesis line (B-32) already, legitimately, mirrors this same on_track.message
-    // as a quick-glance summary — that's a summary/detail sync, not the B-31 bug. The bug is the
-    // comfort CHIP ("No grid top-up needed") appearing anywhere alongside it.
-    await expect(page.getByTestId("hero-synthesis")).toContainText("no grid top-up planned");
-    await openPlan(page);
-    const verdict = page.getByTestId("on-track");
-    await expect(verdict).toContainText("no grid top-up planned");
-    const markers = page.getByTestId("trust-markers");
-    await expect(markers).toContainText("Reserve respected");
-    await expect(markers).not.toContainText("No grid top-up needed");
-    // The comfort chip's exact copy never appears anywhere on the page once the verdict is behind.
+
+    const hero = page.getByTestId("home-state");
+    await expect(hero.getByTestId("hero-synthesis")).toContainText("no grid top-up planned");
+    await expect(hero.getByTestId("recent-review")).toContainText("80% of forecast");
+    await expect(hero.getByTestId("trust-markers")).toContainText("Reserve respected");
+    await expect(hero.getByTestId("trust-markers")).not.toContainText("No grid top-up needed");
     await expect(page.getByText("No grid top-up needed")).toHaveCount(0);
+    await expect(page.locator(".plan-story-soc-line.plan-story-soc-recorded")).toHaveCount(2);
+    await expect(page.locator(".plan-story-soc-line.plan-story-soc-forecast")).toHaveCount(1);
   });
 
-  test("B-31: the comfort chip still shows when the plan really is on track (not over-suppressed)", async ({
-    page,
-  }) => {
-    const base = Date.parse("2026-06-29T09:00:00Z");
-    const SLOT = 15 * 60 * 1000;
-    const slots = Array.from({ length: 20 }, (_, i) => ({
-      start: new Date(base + i * SLOT).toISOString(),
-      soc_pct: 60 + i, grid_w: 0, solar_w: 700, battery_w: -100, load_w: 300,
-      eur_per_kwh: 0.2, action: "self_consume",
-    }));
-    const totals = {
-      import_kwh: 0, export_kwh: 1, solar_kwh: 7, charge_kwh: 1, discharge_kwh: 0, load_kwh: 4,
-      grid_cost_eur: 0, self_sufficiency_pct: 100, soc_start_pct: 60, soc_end_pct: 90,
-      soc_min_pct: 60, soc_max_pct: 92,
-    };
-    await page.route("**/api/energy-story**", (route) => {
-      if (route.request().url().includes("window=past")) return route.continue();
-      return route.fulfill({
-        status: 200, contentType: "application/json",
-        body: JSON.stringify({
-          window: "next", now: new Date(base).toISOString(), current_soc_pct: 60,
-          reserve_soc_pct: 10, target_soc_pct: 88, target_kwh: 9, target_deadline: null,
-          current_price_eur_per_kwh: 0.2, slots, totals,
-          headline: "Next 24h — your solar fills the battery, then runs the evening on it.",
-          trust_markers: ["Reserve respected", "No grid top-up needed", "On track for tonight's target"],
-          recent_hours: 3, recent: [],
-          on_track: {
-            status: "ahead", actual_soc_pct: 60, target_soc_pct: 88, deficit_kwh: 0,
-            message: "On track — projected to reach the 88% night target.",
-          },
-        }),
-      });
+  test("an on-track story keeps its non-redundant comfort marker in the hero", async ({ page }) => {
+    const story = planStoryFixture();
+    Object.assign(story, {
+      on_track: {
+        status: "ahead",
+        actual_soc_pct: 58,
+        target_soc_pct: 88,
+        deficit_kwh: 0,
+        message: "On track for tonight's target.",
+      },
+      trust_markers: ["Reserve respected", "No grid top-up needed"],
     });
+    await page.route("**/api/energy-story?window=next", (route) => route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify(story),
+    }));
     await page.goto("/");
-    await openPlan(page);
-    const markers = page.getByTestId("trust-markers");
+
+    const markers = page.getByTestId("home-state").getByTestId("trust-markers");
+    await expect(markers).toContainText("Reserve respected");
     await expect(markers).toContainText("No grid top-up needed");
+  });
+
+  test("deeper numbers remain available through Insights and All the details", async ({ page }) => {
+    await page.goto("/");
+    await page.getByTestId("nav-insights").click();
+    await expect(page.getByTestId("insights")).toBeVisible();
+    await page.getByTestId("nav-dashboard").click();
+    await openAdvanced(page);
+    await expect(page.getByTestId("detail-grid")).toBeVisible();
   });
 
   test("shows the strategy card with a season picker and explanation", async ({ page }) => {
@@ -1639,7 +1452,7 @@ test.describe("EMS dashboard", () => {
     await expect(page.getByTestId("export-derived")).toBeVisible();
     await expect(page.getByTestId("export-replay")).toHaveAttribute("href", "/api/replay");
     // Dashboard panels hidden while on the System view.
-    await expect(page.getByTestId("battery-plan")).toHaveCount(0);
+    await expect(page.getByTestId("plan-story")).toHaveCount(0);
   });
 
   // Trust-bug regression: the headline ("N incidents in the last 7 days") and the by-type
@@ -2284,7 +2097,7 @@ test.describe("EMS dashboard", () => {
   test("the AI second-opinion card is hidden when AI is off", async ({ page }) => {
     await page.goto("/");
     await openMore(page);
-    await expect(page.getByTestId("battery-plan")).toBeVisible();
+    await expect(page.getByTestId("plan-story")).toBeVisible();
     // Even inside Advanced, the card renders nothing while AI is off.
     await openAdvanced(page);
     await expect(page.getByTestId("ai-validation")).toHaveCount(0);
@@ -2316,7 +2129,7 @@ test.describe("EMS dashboard", () => {
     );
     await page.goto("/");
     await openMore(page);
-    await expect(page.getByTestId("battery-plan")).toBeVisible();
+    await expect(page.getByTestId("plan-story")).toBeVisible();
     await expect(page.getByTestId("car-card")).toHaveCount(0);
   });
 

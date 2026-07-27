@@ -120,7 +120,6 @@ body {
 /* Elevation: lift the primary surfaces off the background so the layout reads as stacked cards. */
 .metric,
 .strategy-card,
-.battery-plan,
 .story,
 .prices,
 .plandetail,
@@ -553,83 +552,78 @@ body {
 .legend-deadline { border-top-color: var(--summer); }
 .soc-mini-legend { margin-top: 8px; gap: 14px; }
 
-/* One shared Next-24h plot: state of charge leads; solar, price and plan stay subordinate. */
-.combined-plan {
-  margin: 18px 0 0; padding: 18px; border: 1px solid var(--line); border-radius: var(--radius);
-  background: var(--panel); box-shadow: var(--shadow);
+/* One continuous recorded → now → forecast story. */
+.plan-story {
+  margin: 18px 0 0;
+  padding: 18px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--panel);
+  box-shadow: var(--shadow);
 }
-.combined-plan-heading { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; }
-.combined-plan-heading h2 { margin: 0; font-size: 1rem; }
-.combined-plan-heading span { color: var(--muted); font-size: 0.76rem; }
-.combined-plan svg { display: block; width: 100%; height: auto; margin-top: 8px; }
-.combined-plan-action-ribbon { opacity: 0.88; stroke: var(--panel); stroke-width: 1; }
-.combined-plan-ribbon-base.action-solar_charge { fill: var(--accent); }
-.combined-plan-ribbon-base.action-grid_charge { fill: var(--winter); }
-.combined-plan-ribbon-base.action-discharge { fill: var(--amber); }
-.combined-plan-ribbon-base.action-self_consume { fill: var(--house); }
-.combined-plan-ribbon-base.action-hold, .combined-plan-ribbon-base.action-idle { fill: var(--muted); }
-.combined-plan-ribbon-line { stroke: var(--panel); stroke-width: 2; opacity: 0.75; }
-.combined-plan-soc .combined-plan-target { stroke: var(--accent); stroke-width: 1.5; opacity: 0.72; }
-.combined-plan-axis .combined-plan-deadline { stroke: var(--accent); stroke-width: 1.5; stroke-dasharray: 2 4; opacity: 0.72; }
-.combined-plan-axis .combined-plan-deadline-label { fill: var(--muted); font-size: 10px; text-anchor: end; }
-.combined-plan-solar polygon { fill: var(--summer); stroke: var(--summer); stroke-width: 2; opacity: 0.22; }
-.combined-plan-solar text, .combined-plan-prices text, .combined-plan-soc text,
-.combined-plan-axis text { fill: var(--muted); font-size: 13px; }
-.combined-plan-prices rect { fill: var(--winter); opacity: 0.38; }
-.combined-plan-prices [data-price-zero] { stroke: var(--muted); stroke-width: 1; stroke-dasharray: 3 3; }
-.combined-plan-prices rect.combined-plan-price-negative {
-  fill: var(--amber);
+.plan-story-chart-wrap { position: relative; }
+.plan-story-svg { display: block; width: 100%; height: auto; }
+.plan-story-prices text,
+.plan-story-solar text,
+.plan-story-references text,
+.plan-story-now text,
+.plan-story-axis text {
+  fill: var(--muted);
+  font-size: 12px;
+}
+.plan-story-solar polygon {
+  fill: var(--summer);
+  stroke: var(--summer);
+  stroke-width: 1.5;
+  opacity: 0.2;
+}
+.plan-story-soc-line {
+  fill: none;
+  stroke-width: 3.5;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  vector-effect: non-scaling-stroke;
+}
+/* Kind classes set STROKE only. They are shared by the SoC polyline and the SoC dot, and a `fill`
+   here would land on the polyline too — where, at equal specificity but later in the sheet, it beats
+   .plan-story-soc-line's `fill: none` and SVG floods the region between the curve and the chord
+   joining its endpoints. That rendered the whole plot as a solid block. Fill belongs on the dot. */
+.plan-story-soc-recorded { stroke: var(--accent); }
+.plan-story-soc-forecast {
   stroke: var(--text);
-  stroke-width: 1;
-  stroke-dasharray: 2 2;
+  stroke-dasharray: 8 5;
 }
-.combined-plan-prices text { text-anchor: end; }
-.combined-plan-soc polyline { fill: none; stroke-width: 3.5; vector-effect: non-scaling-stroke; }
-.combined-plan-soc-actual { stroke: var(--accent); }
-.combined-plan-soc-forecast { stroke: var(--text); stroke-dasharray: 8 5; }
-.combined-plan-soc line { stroke: var(--muted); stroke-dasharray: 3 5; }
-.combined-plan-axis text { text-anchor: middle; }
-.combined-plan-axis line { stroke: var(--text); stroke-width: 1; opacity: 0.55; }
-.combined-plan-controls rect { fill: transparent; cursor: crosshair; outline: none; }
-.combined-plan-controls rect:focus-visible { stroke: var(--accent); stroke-width: 4; }
-.combined-plan-legend {
-  display: flex; flex-wrap: wrap; gap: 7px 14px; margin-top: 8px;
-  color: var(--muted); font-size: 12px;
+.plan-story-soc-dot.plan-story-soc-recorded { fill: var(--accent); }
+.plan-story-soc-dot.plan-story-soc-forecast { fill: var(--text); }
+.plan-story-references line {
+  stroke: var(--muted);
+  stroke-width: 1.4;
+  stroke-dasharray: 3 5;
 }
-.combined-plan-legend span { display: inline-flex; align-items: center; gap: 6px; }
-.combined-plan-legend i { display: inline-block; width: 18px; height: 3px; border-radius: 999px; }
-.combined-plan-legend-actual { background: var(--accent); }
-.combined-plan-legend-forecast { background: repeating-linear-gradient(90deg, var(--text) 0 6px, transparent 6px 10px); }
-.combined-plan-legend-solar { height: 8px !important; background: color-mix(in srgb, var(--summer) 42%, transparent); }
-.combined-plan-legend-price { height: 8px !important; background: color-mix(in srgb, var(--winter) 42%, transparent); }
-.combined-plan-legend-target { background: var(--accent); opacity: 0.72; }
-.combined-plan-legend-reserve { background: repeating-linear-gradient(90deg, var(--muted) 0 3px, transparent 3px 7px); }
-.combined-plan-legend-action { height: 8px !important; background-color: var(--muted); }
-.combined-plan-legend-action.action-hold { background-image: repeating-linear-gradient(90deg, transparent 0 4px, var(--panel) 4px 6px); }
-.combined-plan-legend-action.action-solar_charge { background-color: var(--accent); background-image: repeating-linear-gradient(30deg, transparent 0 4px, var(--panel) 4px 6px); }
-.combined-plan-legend-action.action-grid_charge { background-color: var(--winter); background-image: repeating-linear-gradient(60deg, transparent 0 4px, var(--panel) 4px 6px); }
-.combined-plan-legend-action.action-discharge { background-color: var(--amber); background-image: repeating-linear-gradient(90deg, transparent 0 4px, var(--panel) 4px 6px); }
-.combined-plan-legend-action.action-self_consume { background-color: var(--house); background-image: repeating-linear-gradient(120deg, transparent 0 4px, var(--panel) 4px 6px); }
-.combined-plan-legend-action.action-idle { background-image: repeating-linear-gradient(150deg, transparent 0 4px, var(--panel) 4px 6px); }
-.combined-plan-readout {
-  display: flex; align-items: center; justify-content: space-between; gap: 12px;
-  margin: 8px 0 0; min-height: 2.5em; padding: 9px 12px; border-left: 3px solid var(--accent);
-  border-radius: 6px; background: var(--panel-2); color: var(--text); font-size: 0.84rem;
-  font-variant-numeric: tabular-nums;
+.plan-story-references .plan-story-target {
+  stroke: var(--amber);
+  stroke-dasharray: 6 4;
 }
-.combined-plan-readout button { flex: none; font: inherit; color: var(--accent-text); background: transparent; border: 0; cursor: pointer; }
-.combined-plan-readout button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
-.combined-plan-missing { margin: 8px 0 0; color: var(--muted); font-size: 0.78rem; }
+.plan-story-now line { stroke: var(--text); stroke-width: 1; opacity: 0.6; }
+.plan-story-actions foreignObject { overflow: visible; }
+.plan-story-action-segment {
+  width: 100%;
+  height: 100%;
+  border: 1px solid var(--panel);
+  opacity: 0.9;
+}
+.plan-story-actual-key { border-top-color: var(--accent); }
+.plan-story-forecast-key { border-top-color: var(--text); border-top-style: dashed; }
 @media (max-width: 520px) {
-  .combined-plan { padding: 12px; }
-  .combined-plan-heading { align-items: flex-start; flex-direction: column; gap: 3px; }
-  .combined-plan-solar text, .combined-plan-prices text, .combined-plan-soc text,
-  .combined-plan-axis text { font-size: 28px; }
-  .combined-plan-axis .combined-plan-deadline-label { font-size: 24px; }
-  .combined-plan-axis text:nth-of-type(even) { display: none; }
+  .plan-story { padding: 12px; }
+  .plan-story-prices text,
+  .plan-story-solar text,
+  .plan-story-references text,
+  .plan-story-now text,
+  .plan-story-axis text { font-size: 28px; }
 }
 @media (prefers-reduced-motion: reduce) {
-  .combined-plan * { transition: none !important; }
+  .plan-story * { transition: none !important; }
 }
 
 /* Energy story — one timeline, past or next */
@@ -679,13 +673,44 @@ body {
 .story-stat-value { font-size: 1.25rem; font-weight: 600; font-variant-numeric: tabular-nums; }
 .story-stat-label { font-size: 0.7rem; color: var(--muted); text-transform: uppercase; letter-spacing: 0.03em; }
 
-/* battery action colours (shared by the band + legend swatches) */
-.seg-solar_charge { background: var(--accent); } /* green = filled by the roof (free) */
-.seg-grid_charge { background: var(--winter); } /* blue = topped up from the grid (bought) */
-.seg-discharge { background: var(--amber); }
-.seg-self_consume { background: #2a313c; }
-.seg-hold { background: #5b6473; }
-.seg-idle { background: var(--line); }
+/* Battery action colours + static hatches (shared by the band and legend swatches). The 2px
+   text-colour stroke repeats every 7px, so it remains distinct across the strip's 10px height. */
+.seg-hold {
+  background: #5b6473;
+  background-image: repeating-linear-gradient(
+    0deg, transparent 0 2px, var(--text) 2px 3.5px, transparent 3.5px 5px
+  );
+}
+.seg-solar_charge {
+  background: var(--accent); /* green = filled by the roof (free) */
+  background-image: repeating-linear-gradient(
+    30deg, transparent 0 2px, var(--text) 2px 3.5px, transparent 3.5px 5px
+  );
+}
+.seg-grid_charge {
+  background: var(--winter); /* blue = topped up from the grid (bought) */
+  background-image: repeating-linear-gradient(
+    60deg, transparent 0 2px, var(--text) 2px 3.5px, transparent 3.5px 5px
+  );
+}
+.seg-discharge {
+  background: var(--amber);
+  background-image: repeating-linear-gradient(
+    90deg, transparent 0 2px, var(--text) 2px 3.5px, transparent 3.5px 5px
+  );
+}
+.seg-self_consume {
+  background: #2a313c;
+  background-image: repeating-linear-gradient(
+    120deg, transparent 0 2px, var(--text) 2px 3.5px, transparent 3.5px 5px
+  );
+}
+.seg-idle {
+  background: var(--line);
+  background-image: repeating-linear-gradient(
+    150deg, transparent 0 2px, var(--text) 2px 3.5px, transparent 3.5px 5px
+  );
+}
 
 /* Strategy card — the headline control */
 .strategy-card {
@@ -2431,144 +2456,14 @@ body {
   text-transform: uppercase; letter-spacing: 0.04em;
 }
 
-/* ---- Battery Plan confidence view ---- */
-.battery-plan {
-  background: var(--panel);
-  border: 1px solid var(--line);
-  border-radius: 14px;
-  padding: 16px;
-  margin: 0 0 18px;
-}
-.battery-plan-top {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 10px;
-  margin-bottom: 8px;
-}
-.battery-plan-status,
-.battery-plan-action {
-  display: inline-flex;
-  align-items: center;
-  border-radius: 999px;
-  padding: 4px 10px;
-  font-size: 12px;
-  font-weight: 700;
-}
-.battery-plan-status-good { background: rgba(70, 200, 168, 0.16); color: var(--green-text); }
-.battery-plan-status-warn { background: rgba(224, 162, 58, 0.16); color: var(--amber-text); }
-.battery-plan-status-bad { background: rgba(244, 176, 176, 0.15); color: var(--error); }
-.battery-plan-status-muted { background: var(--panel-2); color: var(--muted); }
-.battery-plan-action {
-  background: var(--panel-2);
-  color: var(--muted);
-  text-transform: uppercase;
-  letter-spacing: 0.05em;
-}
-.battery-plan-summary {
-  margin: 0;
-  font-size: clamp(1rem, 2.8vw, 1.45rem);
-  font-weight: 700;
-  line-height: 1.25;
-}
-.battery-plan-reason {
-  margin: 8px 0 0;
-  color: var(--muted);
-  line-height: 1.45;
-}
-.battery-plan-warning {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  margin-top: 12px;
-  color: var(--amber-text);
-  background: rgba(224, 162, 58, 0.12);
-  border: 1px solid rgba(224, 162, 58, 0.28);
-  border-radius: 10px;
-  padding: 10px 12px;
-  font-size: 14px;
-}
-.battery-plan-chart {
-  display: block;
-  width: 100%;
-  height: auto;
-  margin-top: 14px;
-}
-.bp-bg { fill: var(--panel-2); }
-.bp-price-window { fill: var(--accent); opacity: 0.13; }
-/* Planned car-charging windows (feat/ux-batch-3): a subtle --car-tinted band + tiny glyph,
-   deliberately quieter than the price-window band so it reads as advisory, not a control signal. */
-.bp-car-window { fill: var(--car); opacity: 0.16; }
-.bp-car-glyph { font-size: 9px; opacity: 0.85; pointer-events: none; }
-.bp-solar { fill: var(--summer); opacity: 0.38; }
-.bp-reserve {
-  stroke: var(--muted);
-  stroke-width: 1.5;
-  stroke-dasharray: 4 5;
-}
-.bp-target {
-  stroke: var(--amber);
-  stroke-width: 1.7;
-  stroke-dasharray: 7 5;
-}
-.bp-forecast {
-  fill: none;
-  stroke: var(--amber);
-  stroke-width: 3;
-  stroke-linecap: round;
-  stroke-linejoin: round;
-}
-.bp-actual {
-  fill: none;
-  stroke: var(--accent);
-  stroke-width: 3.2;
-  stroke-linecap: round;
-  stroke-linejoin: round;
-}
-/* Lone plotted points between gaps (a single sampled bucket) — drawn as dots, not a line. */
-.bp-forecast-dot { fill: var(--amber); }
-.bp-actual-dot { fill: var(--accent); }
-.bp-action { opacity: 0.9; }
-.bp-action-grid_charge { fill: var(--winter); }
-.bp-action-solar_charge { fill: var(--green); }
-.bp-action-discharge { fill: var(--amber); }
-.bp-action-hold { fill: var(--muted); }
-.bp-action-self_consume,
-.bp-action-idle { fill: var(--line); }
-.battery-plan-legend {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px 14px;
-  margin-top: 8px;
-  color: var(--muted);
-  font-size: 12px;
-}
-.battery-plan-legend span { display: inline-flex; align-items: center; gap: 6px; }
-.leg { width: 18px; height: 3px; border-radius: 999px; display: inline-block; }
-.leg.actual { background: var(--accent); }
-.leg.forecast { background: var(--amber); }
-.leg.cheap { height: 9px; background: color-mix(in srgb, var(--accent) 35%, transparent); }
-.leg.car { height: 9px; background: color-mix(in srgb, var(--car) 45%, transparent); }
-.leg.target {
-  background: repeating-linear-gradient(90deg, var(--amber) 0 6px, transparent 6px 10px);
-}
-.leg.reserve {
-  background: repeating-linear-gradient(90deg, var(--muted) 0 4px, transparent 4px 8px);
-}
-
-/* The plan-provenance line (feat/ux-batch-3, CLAUDE.md honesty ask): what's ACTUALLY planning
-   today — forecast source, the solar-confidence dial, which planner ran, and the scenario/ML
-   intelligence layer's honest (shadow, non-steering) status. Quiet by design — a footnote, not a
-   claim. Each segment carries its own tooltip (see BatteryPlan.tsx), so a hover explains that part. */
+/* The live snapshot folded onto the story card (B-32): saved / battery / mode as one quiet row of
+   label·value triplets, separated by a hairline from the plan above it. */
 .battery-plan-provenance {
   margin: 8px 0 0;
   font-size: 0.76rem;
   line-height: 1.5;
   color: var(--muted);
 }
-
-/* The live snapshot folded onto the story card (B-32): saved / battery / mode as one quiet row of
-   label·value triplets, separated by a hairline from the plan above it. */
 .battery-plan-footer {
   display: flex; flex-wrap: wrap; gap: 8px 28px;
   margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--line);
@@ -2588,10 +2483,6 @@ body {
 .bp-foot-btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; border-radius: 6px; }
 .bp-foot-more { font-size: 0.72rem; color: var(--accent-text); font-weight: 600; }
 
-/* "See the full plan" — the toggle + tiles + charts one tap deeper, reusing the Advanced divider
-   look so the two disclosures on the page read as one pattern. */
-.plan-disclosure { margin: 0 0 20px; }
-.plan-disclosure-body { margin-top: 14px; }
 .home-more {
   margin: 4px 0 20px;
   border-top: 1px solid var(--line);
