@@ -1,11 +1,24 @@
 import { expect, test } from "@playwright/test";
 
 // Admin panel (auth slice 2 web, design §7 "Access & security"). Runs in the "app" project, which
-// is authenticated as the e2e admin (see auth.setup.ts) against the REAL backend on the shared
-// e2e DB for this project — so these tests exercise the actual /api/users + /api/invites
-// endpoints, not mocks (unlike settings.spec.ts's route-mocked tests).
+// has an e2e admin (see auth.setup.ts) against the REAL backend on the shared e2e DB for this
+// project. User/invite administration is deliberately interactive-session-only, so each test
+// logs that admin in and uses the returned session rather than the app project's access token.
+// These tests still exercise the actual /api/users + /api/invites endpoints, not mocks.
 
 test.describe("admin users & invites", () => {
+  let adminSessionToken = "";
+
+  test.beforeEach(async ({ page, request }) => {
+    const login = await request.post("/api/auth/login", {
+      data: { username: "e2e-admin", password: "e2e-password-1234" },
+    });
+    expect(login.ok()).toBeTruthy();
+    ({ token: adminSessionToken } = await login.json());
+    await page.context().setExtraHTTPHeaders({});
+    await page.addInitScript((token) => localStorage.setItem("ems.token", token), adminSessionToken);
+  });
+
   test("the user list renders the signed-in e2e admin", async ({ page }) => {
     await page.goto("/");
     await page.getByTestId("nav-manage").click();
@@ -52,7 +65,12 @@ test.describe("admin users & invites", () => {
   test("changing a user's role through the admin UI persists", async ({ page, request }) => {
     // Seed a second user via a real invite+accept round-trip (API, not the UI — that flow is
     // already covered by the test above; this test's focus is the role-change PATCH itself).
-    const invite = await (await request.post("/api/invites", { data: { role: "user" } })).json();
+    const inviteResponse = await request.post("/api/invites", {
+      headers: { Authorization: `Bearer ${adminSessionToken}` },
+      data: { role: "user" },
+    });
+    expect(inviteResponse.ok()).toBeTruthy();
+    const invite = await inviteResponse.json();
     const username = `role-change-${Date.now()}`;
     const accepted = await request.post("/api/invites/accept", {
       data: { code: invite.code, username, password: "pw12345678" },
