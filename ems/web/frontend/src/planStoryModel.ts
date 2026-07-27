@@ -152,32 +152,32 @@ export const ACTION_META: Record<
   solar_charge: {
     label: "Charge from solar",
     phrase: "Charges from solar",
-    className: "seg-solar_charge",
+    className: "plan-story-legend-action action-solar_charge",
   },
   grid_charge: {
     label: "Charge from grid",
     phrase: "Charges from grid",
-    className: "seg-grid_charge",
+    className: "plan-story-legend-action action-grid_charge",
   },
   discharge: {
     label: "Power the house",
     phrase: "Powers the house",
-    className: "seg-discharge",
+    className: "plan-story-legend-action action-discharge",
   },
   self_consume: {
     label: "Use solar first",
     phrase: "Uses solar first",
-    className: "seg-self_consume",
+    className: "plan-story-legend-action action-self_consume",
   },
   hold: {
     label: "Hold",
     phrase: "Holds",
-    className: "seg-hold",
+    className: "plan-story-legend-action action-hold",
   },
   idle: {
     label: "Idle",
     phrase: "Idles",
-    className: "seg-idle",
+    className: "plan-story-legend-action action-idle",
   },
 };
 

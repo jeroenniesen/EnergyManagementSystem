@@ -574,8 +574,23 @@ body {
 .plan-story-solar polygon {
   fill: var(--summer);
   stroke: var(--summer);
-  stroke-width: 1.5;
-  opacity: 0.2;
+  stroke-width: 2;
+  opacity: 0.22;
+}
+.plan-story-prices rect {
+  fill: var(--winter);
+  opacity: 0.38;
+}
+.plan-story-prices [data-price-zero] {
+  stroke: var(--muted);
+  stroke-width: 1;
+  stroke-dasharray: 3 3;
+}
+.plan-story-prices rect.plan-story-price-negative {
+  fill: var(--amber);
+  stroke: var(--text);
+  stroke-width: 1;
+  stroke-dasharray: 2 2;
 }
 .plan-story-soc-line {
   fill: none;
@@ -601,19 +616,62 @@ body {
   stroke-dasharray: 3 5;
 }
 .plan-story-references .plan-story-target {
-  stroke: var(--amber);
-  stroke-dasharray: 6 4;
+  stroke: var(--accent);
+  stroke-width: 1.5;
+  opacity: 0.72;
 }
-.plan-story-now line { stroke: var(--text); stroke-width: 1; opacity: 0.6; }
-.plan-story-actions foreignObject { overflow: hidden; }
-.plan-story-action-segment {
-  width: 100%;
-  height: 100%;
-  border: 1px solid var(--panel);
-  opacity: 0.9;
-}
+.plan-story-now line { stroke: var(--text); stroke-width: 1; opacity: 0.55; }
+.plan-story-action-ribbon { opacity: 0.88; stroke: var(--panel); stroke-width: 1; }
+.plan-story-ribbon-base.action-solar_charge { fill: var(--accent); }
+.plan-story-ribbon-base.action-grid_charge { fill: var(--winter); }
+.plan-story-ribbon-base.action-discharge { fill: var(--amber); }
+.plan-story-ribbon-base.action-self_consume { fill: var(--house); }
+.plan-story-ribbon-base.action-hold,
+.plan-story-ribbon-base.action-idle { fill: var(--muted); }
+.plan-story-ribbon-line { stroke: var(--panel); stroke-width: 2; opacity: 0.75; }
 .plan-story-actual-key { border-top-color: var(--accent); }
 .plan-story-forecast-key { border-top-color: var(--text); border-top-style: dashed; }
+.legend-dot.plan-story-legend-action {
+  width: 18px;
+  height: 8px;
+  border-radius: 3px;
+}
+.plan-story-legend-action.action-hold {
+  background-color: var(--muted);
+  background-image: repeating-linear-gradient(
+    90deg, transparent 0 4px, var(--panel) 4px 6px
+  );
+}
+.plan-story-legend-action.action-solar_charge {
+  background-color: var(--accent);
+  background-image: repeating-linear-gradient(
+    30deg, transparent 0 4px, var(--panel) 4px 6px
+  );
+}
+.plan-story-legend-action.action-grid_charge {
+  background-color: var(--winter);
+  background-image: repeating-linear-gradient(
+    60deg, transparent 0 4px, var(--panel) 4px 6px
+  );
+}
+.plan-story-legend-action.action-discharge {
+  background-color: var(--amber);
+  background-image: repeating-linear-gradient(
+    90deg, transparent 0 4px, var(--panel) 4px 6px
+  );
+}
+.plan-story-legend-action.action-self_consume {
+  background-color: var(--house);
+  background-image: repeating-linear-gradient(
+    120deg, transparent 0 4px, var(--panel) 4px 6px
+  );
+}
+.plan-story-legend-action.action-idle {
+  background-color: var(--muted);
+  background-image: repeating-linear-gradient(
+    150deg, transparent 0 4px, var(--panel) 4px 6px
+  );
+}
 @media (max-width: 520px) {
   .plan-story { padding: 12px; }
   .plan-story-prices text,

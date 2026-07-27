@@ -63,6 +63,10 @@ function storyData(
   };
 }
 
+function svgAttr(markup: string, name: string): string | null {
+  return markup.match(new RegExp(`${name}="([^"]+)"`))?.[1] ?? null;
+}
+
 describe("PlanStory rendering", () => {
   test("renders the six ordered layers and the text alternative without a second headline", () => {
     const story = storyData(
@@ -175,7 +179,60 @@ describe("PlanStory rendering", () => {
       718,
     ]);
     expect(html).toContain(`data-start-ms="${BASE}"`);
-    expect(html).toContain(`data-start-ms="${BASE + 15 * 60_000}"`);
+    expect(html).toContain(`data-end-ms="${BASE + 30 * 60_000}"`);
+  });
+
+  test("renders one native SVG action ribbon per merged window", () => {
+    const html = renderToStaticMarkup(createElement(PlanStory, {
+      story: storyData([], [
+        storySlot(0, { action: "hold" }),
+        storySlot(15, { action: "hold" }),
+        storySlot(30, { action: "hold" }),
+        storySlot(45, { action: "idle" }),
+        storySlot(60, { action: "idle" }),
+      ], 0),
+    }));
+    const ribbons = [...html.matchAll(
+      /<rect[^>]*data-testid="plan-story-action-segment"[^>]*>/g,
+    )].map((match) => match[0]);
+
+    expect(ribbons).toHaveLength(2);
+    expect(ribbons.map((ribbon) => svgAttr(ribbon, "data-action"))).toEqual([
+      "hold",
+      "idle",
+    ]);
+    expect(ribbons.map((ribbon) => Number(svgAttr(ribbon, "width")))).toEqual([
+      528,
+      352,
+    ]);
+    expect(ribbons.map((ribbon) => svgAttr(ribbon, "fill"))).toEqual([
+      "url(#plan-story-ribbon-hold)",
+      "url(#plan-story-ribbon-idle)",
+    ]);
+    expect(html).not.toContain("<foreignObject");
+  });
+
+  test("defines all six action textures as user-space SVG patterns with distinct angles", () => {
+    const html = renderToStaticMarkup(createElement(PlanStory, {
+      story: storyData([], [storySlot(0)], 0),
+    }));
+    const expectedAngles = {
+      hold: 0,
+      solar_charge: 30,
+      grid_charge: 60,
+      discharge: 90,
+      self_consume: 120,
+      idle: 150,
+    };
+
+    for (const [action, angle] of Object.entries(expectedAngles)) {
+      expect(html).toContain(
+        `id="plan-story-ribbon-${action}" width="6" height="6" ` +
+        `patternUnits="userSpaceOnUse" patternTransform="rotate(${angle})"`,
+      );
+      expect(html).toContain(`class="plan-story-ribbon-base action-${action}"`);
+    }
+    expect(html.match(/class="plan-story-ribbon-line"/g)).toHaveLength(6);
   });
 
   test("renders available plan provenance clauses between the legend and footer", () => {
@@ -229,17 +286,34 @@ describe("PlanStory rendering", () => {
     expect(html).toContain("rule-based winter planner");
   });
 
-  test("zero-anchors negative-price opacity while captioning the observed range", () => {
+  test("draws negative prices below a zero baseline while captioning the observed range", () => {
     const html = renderToStaticMarkup(createElement(PlanStory, {
       story: storyData([], [
         storySlot(0, { eur_per_kwh: -0.2 }),
         storySlot(15, { eur_per_kwh: -0.1 }),
       ], 0),
     }));
-    const opacities = [...html.matchAll(/data-testid="plan-story-price"[^>]*opacity="([^"]+)"/g)]
-      .map((match) => Number(match[1]));
+    const zeroLine = html.match(/<line[^>]*data-price-zero="true"[^>]*>/)?.[0] ?? "";
+    const bars = [...html.matchAll(
+      /<rect[^>]*data-testid="plan-story-price"[^>]*>/g,
+    )].map((match) => match[0]);
+    const zeroY = Number(svgAttr(zeroLine, "y1"));
 
-    expect(opacities).toEqual([0.08, 0.18]);
+    expect(zeroY).toBeCloseTo(238.24);
+    expect(svgAttr(zeroLine, "y2")).toBe(String(zeroY));
+    expect(bars).toHaveLength(2);
+    expect(bars.map((bar) => svgAttr(bar, "data-price-negative"))).toEqual([
+      "true",
+      "true",
+    ]);
+    expect(bars.map((bar) => Number(svgAttr(bar, "y")))).toEqual([zeroY, zeroY]);
+    const heights = bars.map((bar) => Number(svgAttr(bar, "height")));
+    expect(heights[0]).toBeCloseTo(65.76);
+    expect(heights[1]).toBeCloseTo(32.88);
+    for (const width of bars.map((bar) => Number(svgAttr(bar, "width")))) {
+      expect(width).toBeCloseTo(237.6);
+    }
+    expect(bars.every((bar) => svgAttr(bar, "opacity") == null)).toBe(true);
     expect(html).toContain("Price €-0.20–€-0.10");
     expect(html).not.toContain("Price €-0.20–€0.00");
   });

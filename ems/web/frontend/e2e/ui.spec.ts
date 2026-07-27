@@ -40,6 +40,26 @@ async function assertDensityBudget(page: Page, budget: typeof DASHBOARD_BUDGET) 
   }
 }
 
+async function resolvedSvgPalette(
+  page: Page,
+  tokenNames: readonly string[],
+): Promise<Record<string, string>> {
+  return page.locator(".plan-story").evaluate((node, tokens) => {
+    const probeSvg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+    const colors: Record<string, string> = {};
+    node.appendChild(probeSvg);
+    for (const token of tokens) {
+      const probe = document.createElementNS("http://www.w3.org/2000/svg", "rect");
+      probe.style.fill = `var(${token})`;
+      probeSvg.appendChild(probe);
+      colors[token] = getComputedStyle(probe).fill;
+      probe.remove();
+    }
+    probeSvg.remove();
+    return colors;
+  }, tokenNames);
+}
+
 async function openMore(page: Page) {
   const more = page.getByTestId("home-more");
   if ((await more.getAttribute("open")) === null) {
@@ -268,7 +288,7 @@ test.describe("EMS dashboard", () => {
     await expect(page.getByTestId("plan-story-now")).toContainText("now");
     await expect(page.getByTestId("plan-story-target-label")).toHaveText("target 88%");
     await expect(page.getByTestId("plan-story-reserve-label")).toHaveText("reserve 10%");
-    await expect(page.getByTestId("plan-story-action-segment")).toHaveCount(6);
+    await expect(page.getByTestId("plan-story-action-segment")).toHaveCount(5);
     await expect(page.getByTestId("plan-story-action-segment").first()).toHaveAttribute("aria-hidden", "true");
     await expect(page.getByTestId("plan-story-action-segment").first()).not.toHaveAttribute("aria-label");
     await expect(page.getByTestId("plan-story-legend")).toContainText("Power the house");
@@ -285,6 +305,115 @@ test.describe("EMS dashboard", () => {
     await expect(spoken).toContainText("No recorded data 08:30–08:45");
     await expect(spoken).toContainText("Charges from solar 09:15–09:30");
     await expect(spoken).toContainText("Night target 88%");
+  });
+
+  test("PlanStory keeps signed price bars and solar paint in their subordinate channels", async ({
+    page,
+  }) => {
+    const story = planStoryFixture();
+    const firstStart = Date.parse(story.slots[0].start);
+    story.recent = [];
+    story.now = new Date(firstStart).toISOString();
+    story.slots = [
+      {
+        ...story.slots[0],
+        start: new Date(firstStart).toISOString(),
+        eur_per_kwh: -0.2,
+        solar_w: 800,
+        action: "hold",
+      },
+      {
+        ...story.slots[0],
+        start: new Date(firstStart + 15 * 60_000).toISOString(),
+        eur_per_kwh: 0.2,
+        solar_w: 1642,
+        action: "idle",
+      },
+    ];
+    await page.route("**/api/energy-story?window=next", (route) => route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify(story),
+    }));
+    await page.goto("/");
+
+    const bars = page.getByTestId("plan-story-price");
+    const zeroLine = page.locator(".plan-story-prices [data-price-zero]");
+    await expect(bars).toHaveCount(2);
+    await expect(zeroLine).toHaveCount(1);
+    const zeroY = Number(await zeroLine.getAttribute("y1"));
+    const geometry = await bars.evaluateAll((nodes) => nodes.map((node) => {
+      const y = Number(node.getAttribute("y"));
+      const height = Number(node.getAttribute("height"));
+      return {
+        y,
+        height,
+        bottom: y + height,
+        width: Number(node.getAttribute("width")),
+        negative: node.getAttribute("data-price-negative"),
+      };
+    }));
+
+    expect(zeroY).toBeCloseTo(271.12);
+    expect(geometry[0].negative).toBe("true");
+    expect(geometry[0].y).toBeCloseTo(zeroY);
+    expect(geometry[0].bottom).toBeCloseTo(304);
+    expect(geometry[1].negative).toBeNull();
+    expect(geometry[1].y).toBeCloseTo(238.24);
+    expect(geometry[1].bottom).toBeCloseTo(zeroY);
+    for (const bar of geometry) {
+      expect(bar.y).toBeGreaterThanOrEqual(238.24);
+      expect(bar.bottom).toBeLessThanOrEqual(304);
+      expect(bar.width).toBeCloseTo(237.6);
+    }
+
+    const palette = await resolvedSvgPalette(page, [
+      "--accent",
+      "--amber",
+      "--muted",
+      "--summer",
+      "--text",
+      "--winter",
+    ]);
+    const negative = page.locator(
+      '[data-testid="plan-story-price"][data-price-negative="true"]',
+    );
+    const positive = page.locator(
+      '[data-testid="plan-story-price"]:not([data-price-negative])',
+    );
+    await expect(negative).toHaveCSS("fill", palette["--amber"]);
+    await expect(negative).toHaveCSS("stroke", palette["--text"]);
+    await expect(negative).toHaveCSS("opacity", "0.38");
+    await expect(positive).toHaveCSS("fill", palette["--winter"]);
+    await expect(positive).toHaveCSS("opacity", "0.38");
+    const negativeDash = await negative.evaluate((node) =>
+      getComputedStyle(node).strokeDasharray.match(/[\d.]+/g)?.map(Number),
+    );
+    expect(negativeDash).toEqual([2, 2]);
+
+    const zeroStyle = await zeroLine.evaluate((node) => {
+      const style = getComputedStyle(node);
+      return {
+        stroke: style.stroke,
+        width: Number.parseFloat(style.strokeWidth),
+        dash: style.strokeDasharray.match(/[\d.]+/g)?.map(Number),
+      };
+    });
+    expect(zeroStyle).toEqual({
+      stroke: palette["--muted"],
+      width: 1,
+      dash: [3, 3],
+    });
+
+    const solar = page.locator(".plan-story-solar polygon");
+    await expect(solar).toHaveCSS("fill", palette["--summer"]);
+    await expect(solar).toHaveCSS("stroke", palette["--summer"]);
+    await expect(solar).toHaveCSS("stroke-width", "2px");
+    await expect(solar).toHaveCSS("opacity", "0.22");
+    await expect(page.locator(".plan-story-target")).toHaveCSS("stroke", palette["--accent"]);
+    await expect(page.locator(".plan-story-target")).toHaveCSS("opacity", "0.72");
+    await expect(page.locator(".plan-story-now line")).toHaveCSS("stroke", palette["--text"]);
+    await expect(page.locator(".plan-story-now line")).toHaveCSS("opacity", "0.55");
   });
 
   test("PlanStory action cues use six discernible hatch angles without changing band accessibility", async ({
@@ -309,28 +438,74 @@ test.describe("EMS dashboard", () => {
 
     const segments = page.getByTestId("plan-story-action-segment");
     await expect(segments).toHaveCount(6);
+    const expectedAngles: Record<string, string> = {
+      hold: "rotate(0)",
+      solar_charge: "rotate(30)",
+      grid_charge: "rotate(60)",
+      discharge: "rotate(90)",
+      self_consume: "rotate(120)",
+      idle: "rotate(150)",
+    };
     const cues = await segments.evaluateAll((nodes) => nodes.map((node) => ({
       action: node.getAttribute("data-action"),
-      backgroundImage: getComputedStyle(node.firstElementChild as Element).backgroundImage,
-      height: (node.firstElementChild as Element).getBoundingClientRect().height,
+      tagName: node.tagName,
+      fill: node.getAttribute("fill"),
+      height: Number(node.getAttribute("height")),
+      ariaHidden: node.getAttribute("aria-hidden"),
+      ariaLabel: node.getAttribute("aria-label"),
+      opacity: getComputedStyle(node).opacity,
+      stroke: getComputedStyle(node).stroke,
     })));
-    const expectedAngles: Record<string, string> = {
-      hold: "0deg",
-      solar_charge: "30deg",
-      grid_charge: "60deg",
-      discharge: "90deg",
-      self_consume: "120deg",
-      idle: "150deg",
-    };
+    const palette = await resolvedSvgPalette(
+      page,
+      ["--panel", "--accent", "--winter", "--amber", "--house", "--muted"],
+    );
+    const panel = palette["--panel"];
     for (const cue of cues) {
-      expect(cue.backgroundImage).toContain(
-        `repeating-linear-gradient(${expectedAngles[cue.action!]}`,
-      );
-      expect(cue.height).toBeGreaterThanOrEqual(10);
+      expect(cue.tagName).toBe("rect");
+      expect(cue.fill).toBe(`url(#plan-story-ribbon-${cue.action})`);
+      expect(cue.height).toBe(9);
+      expect(cue.ariaHidden).toBe("true");
+      expect(cue.ariaLabel).toBeNull();
+      expect(cue.opacity).toBe("0.88");
+      expect(cue.stroke).toBe(panel);
     }
-    expect(new Set(cues.map((cue) => cue.backgroundImage)).size).toBe(6);
-    await expect(segments.first()).toHaveAttribute("aria-hidden", "true");
-    await expect(segments.first()).not.toHaveAttribute("aria-label");
+    expect(new Set(cues.map((cue) => cue.fill)).size).toBe(6);
+
+    const patterns = page.locator('pattern[id^="plan-story-ribbon-"]');
+    await expect(patterns).toHaveCount(6);
+    const definitions = await patterns.evaluateAll((nodes) => nodes.map((node) => ({
+      action: node.id.replace("plan-story-ribbon-", ""),
+      units: node.getAttribute("patternUnits"),
+      transform: node.getAttribute("patternTransform"),
+      baseClass: node.querySelector("rect")?.getAttribute("class"),
+      baseFill: getComputedStyle(node.querySelector("rect")!).fill,
+      lineStroke: getComputedStyle(node.querySelector("line")!).stroke,
+    })));
+    const expectedColorToken: Record<string, string> = {
+      hold: "--muted",
+      solar_charge: "--accent",
+      grid_charge: "--winter",
+      discharge: "--amber",
+      self_consume: "--house",
+      idle: "--muted",
+    };
+    for (const definition of definitions) {
+      expect(definition.units).toBe("userSpaceOnUse");
+      expect(definition.transform).toBe(expectedAngles[definition.action]);
+      expect(definition.baseClass).toBe(`plan-story-ribbon-base action-${definition.action}`);
+      expect(definition.baseFill).toBe(palette[expectedColorToken[definition.action]]);
+      expect(definition.lineStroke).toBe(panel);
+    }
+
+    const legendCues = page.locator("[data-action-cue]");
+    await expect(legendCues).toHaveCount(6);
+    for (const cue of await legendCues.all()) {
+      const action = await cue.getAttribute("data-action-cue");
+      const swatch = cue.locator(".plan-story-legend-action");
+      await expect(swatch).toHaveCSS("background-color", palette[expectedColorToken[action!]]);
+      await expect(swatch).not.toHaveCSS("background-image", "none");
+    }
   });
 
   test("PlanStory annotations remain legible at phone width", async ({ page }) => {
