@@ -41,13 +41,13 @@ test("onboarding then login then logout", async ({ page }) => {
 
   // Task 11 regression guard, asserted at the NETWORK layer: before the apiFetch retrofit every
   // dashboard card fetched its /api/* data WITHOUT the bearer token, so the identity gate 401'd them
-  // all and the dashboard rendered empty. We wait for a GATED dashboard-poll read (`/api/status`) to
+  // all and the dashboard rendered empty. We wait for a GATED dashboard-poll read (`/api/dashboard`) to
   // return **200** — that can only happen once the token is attached, so it can't false-pass. We
   // filter on status()===200 (not just the path) because the pre-login mount tick 401s first, and we
   // assert at the network layer rather than the DOM because a 401'd card degrades silently to its
   // loading skeleton (a DOM check can't tell "loaded" from "401'd").
   const okResp = await page.waitForResponse(
-    (r) => new URL(r.url()).pathname === "/api/status" && r.status() === 200,
+    (r) => new URL(r.url()).pathname === "/api/dashboard" && r.status() === 200,
     { timeout: 15000 },
   );
   expect(okResp.ok()).toBe(true);
@@ -95,7 +95,7 @@ test("invite-accept creates a new account and logs it in", async ({ page, reques
   // bearer token attached and the app is actually rendering the authenticated shell, not a 401'd
   // skeleton that happens to look empty.
   const okResp = await page.waitForResponse(
-    (r) => new URL(r.url()).pathname === "/api/status" && r.status() === 200,
+    (r) => new URL(r.url()).pathname === "/api/dashboard" && r.status() === 200,
     { timeout: 15000 },
   );
   expect(okResp.ok()).toBe(true);
@@ -121,7 +121,7 @@ test("account tokens: mint shows the raw once, works as a bearer, revoke kills i
   // Same network-layer proof as the earlier tests: wait for a gated read to actually succeed
   // before touching the authenticated shell.
   await page.waitForResponse(
-    (r) => new URL(r.url()).pathname === "/api/status" && r.status() === 200,
+    (r) => new URL(r.url()).pathname === "/api/dashboard" && r.status() === 200,
     { timeout: 15000 },
   );
 
@@ -177,7 +177,7 @@ test("account tokens: tier selector defaults to read-only and minted tokens show
     await page.getByRole("button", { name: "Sign in" }).click();
     await expect(page.getByTestId("login")).toBeHidden();
     await page.waitForResponse(
-      (r) => new URL(r.url()).pathname === "/api/status" && r.status() === 200,
+      (r) => new URL(r.url()).pathname === "/api/dashboard" && r.status() === 200,
       { timeout: 15000 },
     );
 
