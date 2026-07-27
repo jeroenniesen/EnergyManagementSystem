@@ -357,6 +357,48 @@ Per the project's e2e note, Playwright boots against the live SQLite database �
 repoint `db_path` for the run, and use an isolated port so concurrent worktree
 runs do not collide on 8099.
 
+## What the deleted components did that this does not rebuild
+
+This section exists because of a mistake in how this spec was written. It
+enumerated what to *build* and never audited what the three deleted components
+*did*. Behaviour they had deliberately was therefore dropped by omission, not by
+decision — and because the e2e tests guarding it were deleted along with the
+components, CI could not see the loss. Auditing the 26 removed `ui.spec.ts` tests
+against the 12 added ones surfaced it.
+
+**Rebuilt after the audit** (each had a deliberate implementation in
+`CombinedPlanChart` and no replacement here until it was flagged):
+
+1. **Non-colour cues on the action strip.** The old chart carried
+   `ACTION_PATTERN_ANGLE` — six distinct hatch angles, one per action including
+   `idle` — rendered via SVG `<pattern>`. The rebuilt strip initially used a bare
+   coloured div, making colour the only channel and failing WCAG 1.4.1, which this
+   project requires at AA. Restored as a per-action pattern.
+2. **A zero-anchored price domain.** The old chart used
+   `Math.min(0, ...prices)` / `Math.max(0, ...prices)` on purpose. The rebuilt model
+   used a purely relative `Math.min(...prices)`, so on a negative-price day the
+   shading could not distinguish "paid to consume" from "cheapest hour today". NL
+   day-ahead genuinely goes negative. Restored.
+3. **The plan-provenance line.** "Planned with Forecast.Solar at 100% confidence ·
+   rule-based winter planner · …" — the line stating what actually planned today.
+   `PlanProvenance` survived as a type with no render site. Explainability is a
+   first-order project rule; restored to the chart card.
+
+**Deliberately deferred, not lost:**
+
+- **B-08 "quiet success" markers** ("ran the night on battery", "bought at the
+  cheapest hours"). These were computed client-side in `EnergyStory` and were
+  **past-window only** — stated in the past tense so a forecast could never
+  masquerade as one. The dashboard no longer renders a past window, so they have no
+  honest home here. They belong with the Insights history view in phase 2, and
+  phase 2 must reinstate them rather than treat their absence as settled.
+
+**Lesson for the next spec of this shape:** when a change deletes a component and
+rebuilds its function, the spec must include an explicit inventory of the old
+component's behaviour and, for each item, say *rebuilt*, *deliberately dropped*, or
+*deferred*. Deleting a component deletes its tests, so "CI is green" proves nothing
+about what went missing with it.
+
 ## Phase 2 — the same graph on Insights
 
 Ships after phase 1 is reviewed. The dashboard answers "what happens next";
@@ -457,6 +499,10 @@ Two further consequences:
   now.
 
 ### Frontend
+
+Phase 2 must also reinstate the **B-08 quiet-success markers** deferred from phase 1
+(see the audit section above). They are past-tense claims and the Insights history
+view is the first surface since this change where they can be stated honestly.
 
 `PlanStory` gains no new rendering modes — the timestamp-driven solid/dashed rule
 already covers an actuals-only window. Insights mounts it inside its own section
