@@ -1,5 +1,7 @@
 import { expect, type Page, test } from "@playwright/test";
 
+import { mockRoute } from "./route-mock";
+
 const DASHBOARD_BUDGET = {
   hero: 1,
   tile: 4,
@@ -8,6 +10,28 @@ const DASHBOARD_BUDGET = {
   number: 4,
   disclosure: 1,
 } as const;
+
+const STRUCTURED_ALERTS = {
+  data_quality: "degraded",
+  alerts: [
+    {
+      key: "solar_stale",
+      severity: "warning",
+      message: "Solar reading delayed — solar accounting is less precise.",
+      safe: "Yes — this only affects solar accounting, not battery safety or control.",
+      action: "Nothing needed — EMS keeps controlling the battery normally.",
+    },
+    {
+      // Info-level: stays ONE calm line even when safe/action exist — reassurance
+      // sub-lines are reserved for warning/critical (calm states stay calm).
+      key: "bare_note",
+      severity: "info",
+      message: "A plain note with no extra fields.",
+      safe: "Should never render for info.",
+      action: "Should never render for info.",
+    },
+  ],
+};
 
 async function assertDensityBudget(page: Page, budget: typeof DASHBOARD_BUDGET) {
   for (const [kind, expected] of Object.entries(budget)) {
@@ -392,14 +416,17 @@ test.describe("EMS dashboard", () => {
   });
 
   test("cached outcome values become stale after a failed refresh", async ({ page }) => {
-    let statusCalls = 0;
+    let dashboardCalls = 0;
     let financeCalls = 0;
-    await page.route("**/api/status", async (route) => {
-      statusCalls += 1;
-      if (statusCalls === 1) await route.continue();
+    const dashboardMock = await mockRoute(page, "**/api/dashboard", async (route) => {
+      dashboardCalls += 1;
+      if (dashboardCalls === 1) await route.continue();
       else await route.fulfill({ status: 503, body: "offline" });
     });
-    await page.route("**/api/finance?**", async (route) => {
+    const fallbackStatusMock = await mockRoute(page, "**/api/status", (route) =>
+      route.fulfill({ status: 503, body: "offline" }),
+    );
+    const financeMock = await mockRoute(page, "**/api/finance?**", async (route) => {
       financeCalls += 1;
       if (financeCalls === 1) await route.fulfill({
         status: 200, contentType: "application/json",
@@ -414,28 +441,43 @@ test.describe("EMS dashboard", () => {
     await expect(page.getByTestId("outcome-soc")).toContainText("Stale");
     await expect(page.getByTestId("outcome-savings")).toContainText("Stale");
     await expect(page.getByTestId("outcome-soc")).toContainText("Updated");
+    dashboardMock.assertRequested();
+    fallbackStatusMock.assertRequested();
+    financeMock.assertRequested();
   });
 
   test("battery freshness marks an HTTP-200 state-of-charge value stale", async ({ page }) => {
-    await page.route("**/api/freshness", (route) => route.fulfill({
-      status: 200, contentType: "application/json",
-      body: JSON.stringify({ battery: "stale", prices: "fresh", solar: "fresh" }),
-    }));
+    const dashboardMock = await mockRoute(page, "**/api/dashboard", async (route) => {
+      const response = await route.fetch();
+      const dashboard = await response.json();
+      await route.fulfill({
+        response,
+        json: { ...dashboard, freshness: { ...dashboard.freshness, battery: "stale" } },
+      });
+    });
     await page.goto("/");
     await expect(page.getByTestId("outcome-soc")).toContainText("55%");
     await expect(page.getByTestId("outcome-soc")).toContainText("Stale");
+    dashboardMock.assertRequested();
   });
 
   test("state-of-charge outcome renders a whole percentage", async ({ page }) => {
-    await page.route("**/api/status", async (route) => {
+    const dashboardMock = await mockRoute(page, "**/api/dashboard", async (route) => {
       const response = await route.fetch();
-      const status = await response.json();
-      await route.fulfill({ response, json: { ...status, soc_pct: 27.489981785063 } });
+      const dashboard = await response.json();
+      await route.fulfill({
+        response,
+        json: {
+          ...dashboard,
+          status: { ...dashboard.status, soc_pct: 27.489981785063 },
+        },
+      });
     });
     await page.goto("/");
     const tile = page.getByTestId("outcome-soc");
     await expect(tile).toContainText("27%");
     await expect(tile).not.toContainText("27.489");
+    dashboardMock.assertRequested();
   });
 
   for (const viewport of [
@@ -576,16 +618,23 @@ test.describe("EMS dashboard", () => {
   });
 
   test("unavailable outcomes remain em dashes and only available drill-downs are actionable", async ({ page }) => {
-    await page.route("**/api/report**", (route) => route.fulfill({ status: 503, body: "unavailable" }));
-    await page.route("**/api/status", (route) => route.fulfill({ status: 503, body: "unavailable" }));
-    await page.route("**/api/battery", (route) => route.fulfill({
+    const reportMock = await mockRoute(page, "**/api/report**", (route) =>
+      route.fulfill({ status: 503, body: "unavailable" }),
+    );
+    const dashboardMock = await mockRoute(page, "**/api/dashboard", (route) =>
+      route.fulfill({ status: 503, body: "unavailable" }),
+    );
+    const fallbackStatusMock = await mockRoute(page, "**/api/status", (route) =>
+      route.fulfill({ status: 503, body: "unavailable" }),
+    );
+    const batteryMock = await mockRoute(page, "**/api/battery", (route) => route.fulfill({
       status: 200, contentType: "application/json", body: JSON.stringify({
         current_mode: null, capabilities: null,
         aggregate: { soc_pct: 49.5, power_w: 0, capacity_kwh: 10.98, online_towers: 2, total_towers: 2 },
         towers: [],
       }),
     }));
-    await page.route("**/api/finance**", (route) => route.fulfill({
+    const financeMock = await mockRoute(page, "**/api/finance**", (route) => route.fulfill({
       status: 200, contentType: "application/json",
       body: JSON.stringify({ period: "day", label: "today", partial: true, days: [], totals: {
         grid_cost_eur: null, battery_cost_eur: null, saved_eur: null,
@@ -601,6 +650,11 @@ test.describe("EMS dashboard", () => {
       await expect(page.getByTestId(id)).not.toContainText("Updated");
     }
     await expect(page.getByTestId("outcome-savings")).toHaveAttribute("title", /still measuring/);
+    reportMock.assertRequested();
+    dashboardMock.assertRequested();
+    fallbackStatusMock.assertRequested();
+    batteryMock.assertRequested();
+    financeMock.assertRequested();
   });
 
   for (const theme of ["light", "dark"] as const) {
@@ -661,10 +715,36 @@ test.describe("EMS dashboard", () => {
   });
 
   test("merged hero includes truthful current state without a separate Right now card", async ({ page }) => {
-    await page.route("**/api/battery-plan", (route) => route.fulfill({
+    const dashboardMock = await mockRoute(page, "**/api/dashboard", async (route) => {
+      const response = await route.fetch();
+      const dashboard = await response.json();
+      await route.fulfill({
+        response,
+        json: { ...dashboard, alerts: { data_quality: "good", alerts: [] } },
+      });
+    });
+    const batteryPlanMock = await mockRoute(page, "**/api/battery-plan", (route) => route.fulfill({
       status: 200, contentType: "application/json",
       body: JSON.stringify(batteryPlanFixture({ level: "high", reasons: ["Fresh data."] })),
     }));
+    // The score copy asserted below ("brilliant day") is homeSummary()'s top band, which needs EVERY
+    // score >= 80 (see src/scoreCopy.ts). Live mock scores do not reliably clear that, so this test
+    // was non-hermetic in a second way: it read real /api/report values. Keep the real payload and
+    // raise only the score values, so the band is deterministic without inventing a whole report.
+    const reportMock = await mockRoute(page, "**/api/report**", async (route) => {
+      const response = await route.fetch();
+      const report = await response.json();
+      await route.fulfill({
+        response,
+        json: {
+          ...report,
+          scores: (report.scores ?? []).map((score: { value: number | null }) => ({
+            ...score,
+            value: score.value == null ? null : Math.max(score.value, 88),
+          })),
+        },
+      });
+    });
     await page.goto("/");
     const hero = page.getByTestId("home-state");
     await expect(hero).toBeVisible();
@@ -680,6 +760,9 @@ test.describe("EMS dashboard", () => {
     await expect(page.getByTestId("battery-plan")).not.toBeVisible();
     // The explicit answer to "do I need to act?" — calm, because nothing needs attention.
     await expect(page.getByTestId("hero-act")).toHaveText("Nothing needed from you.");
+    dashboardMock.assertRequested();
+    batteryPlanMock.assertRequested();
+    reportMock.assertRequested();
   });
 
   test("B-68: a high-confidence plan shows a calm chip with no reason sub-line", async ({ page }) => {
@@ -2225,12 +2308,15 @@ test.describe("EMS dashboard", () => {
   });
 
   test("the dashboard shows four outcome tiles for today so far", async ({ page }) => {
-    await page.route("**/api/status", async (route) => {
+    const dashboardMock = await mockRoute(page, "**/api/dashboard", async (route) => {
       const response = await route.fetch();
-      const status = await response.json();
-      await route.fulfill({ response, json: { ...status, soc_pct: 60 } });
+      const dashboard = await response.json();
+      await route.fulfill({
+        response,
+        json: { ...dashboard, status: { ...dashboard.status, soc_pct: 60 } },
+      });
     });
-    await page.route("**/api/report?period=day", (route) =>
+    const reportMock = await mockRoute(page, "**/api/report?period=day", (route) =>
       route.fulfill({
         contentType: "application/json",
         body: JSON.stringify({
@@ -2247,7 +2333,7 @@ test.describe("EMS dashboard", () => {
         }),
       }),
     );
-    await page.route("**/api/finance?period=day&date=*", (route) =>
+    const financeMock = await mockRoute(page, "**/api/finance?period=day&date=*", (route) =>
       route.fulfill({
         contentType: "application/json",
         body: JSON.stringify({ totals: { saved_eur: 2.84 } }),
@@ -2261,6 +2347,9 @@ test.describe("EMS dashboard", () => {
     await expect(page.getByTestId("outcome-soc")).toContainText("60%");
     await expect(page.getByTestId("outcome-savings")).toContainText("€2.84");
     await expect(page.getByTestId("outcome-grid-import")).toContainText("3.2 kWh");
+    dashboardMock.assertRequested();
+    reportMock.assertRequested();
+    financeMock.assertRequested();
   });
 
   test("a barely-started day shows calm dashes, not red zeros (early state)", async ({ page }) => {
@@ -2332,33 +2421,14 @@ test.describe("EMS dashboard", () => {
   test("an alert with safe + action fields renders structured sub-lines", async ({ page }) => {
     // B-37 contract: alerts may carry optional `safe` (is-my-home-safe) and `action` (what-I-can-do)
     // fields; when present the UI renders them as sub-lines, defensively skipping either if absent.
-    await page.route("**/api/alerts", (route) =>
-      route.fulfill({
-        status: 200,
-        contentType: "application/json",
-        body: JSON.stringify({
-          data_quality: "degraded",
-          alerts: [
-            {
-              key: "solar_stale",
-              severity: "warning",
-              message: "Solar reading delayed — solar accounting is less precise.",
-              safe: "Yes — this only affects solar accounting, not battery safety or control.",
-              action: "Nothing needed — EMS keeps controlling the battery normally.",
-            },
-            {
-              // Info-level: stays ONE calm line even when safe/action exist — reassurance
-              // sub-lines are reserved for warning/critical (calm states stay calm).
-              key: "bare_note",
-              severity: "info",
-              message: "A plain note with no extra fields.",
-              safe: "Should never render for info.",
-              action: "Should never render for info.",
-            },
-          ],
-        }),
-      }),
-    );
+    const dashboardMock = await mockRoute(page, "**/api/dashboard", async (route) => {
+      const response = await route.fetch();
+      const dashboard = await response.json();
+      await route.fulfill({
+        response,
+        json: { ...dashboard, alerts: STRUCTURED_ALERTS },
+      });
+    });
     await page.goto("/");
     const alert = page.getByTestId("alert-solar_stale");
     await expect(alert).toContainText("Solar reading delayed");
@@ -2371,16 +2441,57 @@ test.describe("EMS dashboard", () => {
     await expect(bare).toContainText("A plain note with no extra fields.");
     await expect(bare.getByTestId("alert-safe")).toHaveCount(0);
     await expect(bare.getByTestId("alert-action")).toHaveCount(0);
+    dashboardMock.assertRequested();
   });
 
-  test("shows the error banner when the status API returns 500", async ({ page }) => {
-    await page.route("**/api/status", (route) =>
-      route.fulfill({ status: 500, contentType: "application/json", body: '{"detail":"boom"}' }),
+  test("fallback fan-out renders structured alerts when the dashboard snapshot is unavailable",
+    async ({ page }) => {
+      const dashboardMock = await mockRoute(page, "**/api/dashboard", (route) =>
+        route.fulfill({ status: 404, body: "snapshot unavailable" }),
+      );
+      const alertsMock = await mockRoute(page, "**/api/alerts", (route) =>
+        route.fulfill({
+          status: 200,
+          contentType: "application/json",
+          body: JSON.stringify(STRUCTURED_ALERTS),
+        }),
+      );
+      await page.goto("/");
+      const alert = page.getByTestId("alert-solar_stale");
+      await expect(alert).toContainText("Solar reading delayed");
+      await expect(alert.getByTestId("alert-safe")).toContainText(
+        "only affects solar accounting",
+      );
+      await expect(alert.getByTestId("alert-action")).toContainText("Nothing needed");
+      const bare = page.getByTestId("alert-bare_note");
+      await expect(bare).toContainText("A plain note with no extra fields.");
+      await expect(bare.getByTestId("alert-safe")).toHaveCount(0);
+      await expect(bare.getByTestId("alert-action")).toHaveCount(0);
+      dashboardMock.assertRequested();
+      alertsMock.assertRequested();
+    });
+
+  test("shows the error banner when the snapshot and fallback status APIs fail", async ({ page }) => {
+    const dashboardMock = await mockRoute(page, "**/api/dashboard", (route) =>
+      route.fulfill({
+        status: 500,
+        contentType: "application/json",
+        body: '{"detail":"snapshot boom"}',
+      }),
+    );
+    const fallbackStatusMock = await mockRoute(page, "**/api/status", (route) =>
+      route.fulfill({
+        status: 500,
+        contentType: "application/json",
+        body: '{"detail":"status boom"}',
+      }),
     );
     await page.goto("/");
     await expect(page.getByTestId("error")).toBeVisible();
     // The live-status-dependent detail (Advanced + its tiles) stays hidden when status can't load.
     await expect(page.getByTestId("advanced")).toHaveCount(0);
+    dashboardMock.assertRequested();
+    fallbackStatusMock.assertRequested();
   });
 
   // B-20: the header bell — an in-app surface for the notification outbox.
