@@ -192,6 +192,17 @@ test.describe("EMS dashboard", () => {
 
     await expect(page.getByTestId("plan-story-soc-recorded")).toBeAttached();
     await expect(page.getByTestId("plan-story-soc-forecast")).toBeAttached();
+    // The SoC polylines must never carry a paint fill. The kind classes are shared with the SoC
+    // dot, which DOES need one; when that fill leaked onto the polyline it beat
+    // .plan-story-soc-line's `fill: none` on source order and SVG flooded the area between the
+    // curve and the chord joining its endpoints, rendering the whole plot as one solid block.
+    // Geometry unit tests cannot see this — it is pure cascade — so it is asserted on computed style.
+    for (const kind of ["recorded", "forecast"]) {
+      await expect(page.getByTestId(`plan-story-soc-${kind}`).locator("nth=0")).toHaveCSS(
+        "fill",
+        "none",
+      );
+    }
     await expect(page.getByTestId("plan-story-now")).toContainText("now");
     await expect(page.getByTestId("plan-story-target-label")).toHaveText("target 88%");
     await expect(page.getByTestId("plan-story-reserve-label")).toHaveText("reserve 10%");

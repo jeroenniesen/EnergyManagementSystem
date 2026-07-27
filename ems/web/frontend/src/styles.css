@@ -584,12 +584,17 @@ body {
   stroke-linejoin: round;
   vector-effect: non-scaling-stroke;
 }
-.plan-story-soc-recorded { stroke: var(--accent); fill: var(--accent); }
+/* Kind classes set STROKE only. They are shared by the SoC polyline and the SoC dot, and a `fill`
+   here would land on the polyline too — where, at equal specificity but later in the sheet, it beats
+   .plan-story-soc-line's `fill: none` and SVG floods the region between the curve and the chord
+   joining its endpoints. That rendered the whole plot as a solid block. Fill belongs on the dot. */
+.plan-story-soc-recorded { stroke: var(--accent); }
 .plan-story-soc-forecast {
   stroke: var(--text);
-  fill: var(--text);
   stroke-dasharray: 8 5;
 }
+.plan-story-soc-dot.plan-story-soc-recorded { fill: var(--accent); }
+.plan-story-soc-dot.plan-story-soc-forecast { fill: var(--text); }
 .plan-story-references line {
   stroke: var(--muted);
   stroke-width: 1.4;
