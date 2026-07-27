@@ -17,12 +17,18 @@ const H = 360;
 const PAD = { l: 58, r: 62, t: 30, b: 56 };
 const PLOT_W = W - PAD.l - PAD.r;
 const PLOT_H = H - PAD.t - PAD.b;
+const PRICE_BAND_HEIGHT = PLOT_H * 0.24;
+const PRICE_BAND_TOP = PAD.t + PLOT_H - PRICE_BAND_HEIGHT;
 const ACTION_Y = PAD.t + PLOT_H + 10;
-// viewBox units, NOT CSS pixels: the SVG scales to the card width (viewBox W=1000 renders ~880px),
-// so this lands ~12% smaller on screen. At the old value of 10 the strip rendered ~8.4 CSS px, and a
-// 1px border left ~6.4px of interior — under one full cycle of the non-colour hatch, which made the
-// WCAG 1.4.1 cue effectively invisible. Keep enough height for at least two hatch cycles.
-const ACTION_H = 16;
+const ACTION_H = 9;
+const ACTION_PATTERN_ANGLE = {
+  hold: 0,
+  solar_charge: 30,
+  grid_charge: 60,
+  discharge: 90,
+  self_consume: 120,
+  idle: 150,
+} as const;
 
 type PlanStoryProvenance =
   Partial<Omit<PlanProvenance, "intelligence">> & {
@@ -155,8 +161,9 @@ export function PlanStory({
   const solarY = (value: number) =>
     PAD.t + PLOT_H - (Math.max(0, value) / model.maxSolar) * PLOT_H * 0.38;
   const priceRange = Math.max(0.01, model.priceScaleMax - model.priceScaleMin);
-  const priceOpacity = (value: number) =>
-    0.08 + ((value - model.priceScaleMin) / priceRange) * 0.2;
+  const priceY = (value: number) =>
+    PRICE_BAND_TOP +
+    ((model.priceScaleMax - value) / priceRange) * PRICE_BAND_HEIGHT;
   const hovered = hover == null ? null : model.slots[hover] ?? null;
   const hoveredX = hovered
     ? model.scale.x(hovered.startMs + SLOT_MS / 2)
@@ -186,19 +193,54 @@ export function PlanStory({
           onMouseMove={onMove}
           onMouseLeave={() => setHover(null)}
         >
+          <defs>
+            {Object.entries(ACTION_PATTERN_ANGLE).map(([action, angle]) => (
+              <pattern
+                key={action}
+                id={`plan-story-ribbon-${action}`}
+                width="6"
+                height="6"
+                patternUnits="userSpaceOnUse"
+                patternTransform={`rotate(${angle})`}
+              >
+                <rect
+                  width="6"
+                  height="6"
+                  className={`plan-story-ribbon-base action-${action}`}
+                />
+                <line
+                  x1="0"
+                  y1="0"
+                  x2="0"
+                  y2="6"
+                  className="plan-story-ribbon-line"
+                />
+              </pattern>
+            ))}
+          </defs>
+
           <g className="plan-story-prices" data-testid="plan-story-prices">
+            <line
+              data-price-zero
+              x1={PAD.l}
+              x2={W - PAD.r}
+              y1={priceY(0)}
+              y2={priceY(0)}
+            />
             {model.spans.map((span) => {
               const price = model.slots[span.index].eur_per_kwh;
               return typeof price === "number" && Number.isFinite(price) ? (
                 <rect
                   key={span.startMs}
                   data-testid="plan-story-price"
-                  x={span.x}
-                  y={PAD.t}
-                  width={span.width}
-                  height={PLOT_H}
-                  fill="var(--winter)"
-                  opacity={priceOpacity(price)}
+                  data-price-negative={price < 0 ? "true" : undefined}
+                  className={`plan-story-price${
+                    price < 0 ? " plan-story-price-negative" : ""
+                  }`}
+                  x={span.x + span.width * 0.23}
+                  y={Math.min(priceY(price), priceY(0))}
+                  width={Math.max(2, span.width * 0.54)}
+                  height={Math.abs(priceY(price) - priceY(0))}
                 />
               ) : null;
             })}
@@ -292,22 +334,23 @@ export function PlanStory({
             className="plan-story-actions"
             data-testid="plan-story-actions"
           >
-            {model.spans.map((span) => {
-              const action = canonicalAction(model.slots[span.index].action);
+            {model.actions.map((window) => {
+              const x = model.scale.x(window.start);
               return (
-                <foreignObject
-                  key={span.startMs}
+                <rect
+                  key={`${window.start}-${window.action}`}
                   data-testid="plan-story-action-segment"
-                  data-action={action}
-                  data-start-ms={span.startMs}
+                  data-action={window.action}
+                  data-start-ms={window.start}
+                  data-end-ms={window.end}
                   aria-hidden="true"
-                  x={span.x}
+                  x={x}
                   y={ACTION_Y}
-                  width={span.width}
+                  width={model.scale.x(window.end) - x}
                   height={ACTION_H}
-                >
-                  <div className={`plan-story-action-segment ${ACTION_META[action].className}`} />
-                </foreignObject>
+                  fill={`url(#plan-story-ribbon-${window.action})`}
+                  className={`plan-story-action-ribbon action-${window.action}`}
+                />
               );
             })}
           </g>
@@ -361,8 +404,8 @@ export function PlanStory({
         <span className="legend-item"><span className="legend-line plan-story-actual-key" />Recorded battery</span>
         <span className="legend-item"><span className="legend-line plan-story-forecast-key" />Forecast battery</span>
         {presentActions.map((action) => (
-          <span className="legend-item" key={action}>
-            <span className={`legend-dot ${ACTION_META[action].className}`} />
+          <span className="legend-item" key={action} data-action-cue={action}>
+            <span className={`legend-dot plan-story-legend-action action-${action}`} />
             {ACTION_META[action].label}
           </span>
         ))}

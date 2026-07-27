@@ -331,6 +331,7 @@ describe("gaps and story semantics", () => {
     );
     expect(rows.map((row) => row.label)).toEqual(["Solar", "Action", "Grid flow"]);
     expect(rows).toHaveLength(3);
+    expect(rows[1].className).toBe("plan-story-legend-action action-hold");
     expect(rows[2].value).toContain("export");
   });
 
@@ -344,7 +345,7 @@ describe("gaps and story semantics", () => {
     expect(model.label).toContain("Hold");
   });
 
-  test("keeps observed price extrema while anchoring one-sided display domains at zero", () => {
+  test("keeps observed price extrema while anchoring one-sided bar domains at zero", () => {
     const positive = buildPlanStoryModel(
       storyData([], [
         storySlot(0, { eur_per_kwh: 0.08 }),

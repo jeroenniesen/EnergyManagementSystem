@@ -30,6 +30,16 @@ const baseEnv = {
 export default defineConfig({
   testDir: "./e2e",
   timeout: 15000,
+  // Serial, deliberately. Every spec drives ONE shared uvicorn + SQLite (see webServer below), and
+  // several mutate real server state — onboarding users, minting and revoking invites, applying
+  // overrides, saving restart-tagged settings. Run in parallel and those races surface as a rotating
+  // handful of unrelated failures: measured repeatedly here as 9-10 failures per run, a different
+  // set each time (a11y, car, insights, override, restart…), all green when re-run in isolation.
+  // That noise is indistinguishable from a real regression, which is worse than a slow suite.
+  // It also costs nothing: the specs are network-mocked and fast, so serialised the full run takes
+  // the SAME ~1.6 min as the parallel run — and is 229/229 green instead of intermittently red.
+  // Before raising this, give each spec its own server/DB or isolate the state each one mutates.
+  workers: 1,
   // CI runners are UTC; local machines may differ. PlanStory.tsx formats timestamp-derived labels in
   // the browser's local zone, and ui.spec.ts asserts deterministic local-time action windows.
   // Pin the browser zone so those assertions describe the same instants on every host.
