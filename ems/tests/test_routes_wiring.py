@@ -35,25 +35,19 @@ EXPECTED_DIRECT_ROUTES = frozenset({
     ("GET", "/api/charge-need"),
     ("GET", "/api/dashboard"),
     ("GET", "/api/decision"),
-    ("GET", "/api/diagnostics"),
     ("GET", "/api/energy-distribution"),
     ("GET", "/api/energy-forecast"),
     ("GET", "/api/energy-story"),
     ("GET", "/api/explainer"),
     ("GET", "/api/faq"),
-    ("GET", "/api/finance"),
     ("GET", "/api/forecast"),
     ("GET", "/api/freshness"),
     ("GET", "/api/incidents"),
     ("GET", "/api/intelligence"),
     ("GET", "/api/override"),
-    ("GET", "/api/plan"),
     ("GET", "/api/plan-detail"),
-    ("GET", "/api/plan-verification"),
     ("GET", "/api/prices"),
     ("GET", "/api/replay"),
-    ("GET", "/api/report"),
-    ("GET", "/api/savings"),
     ("GET", "/api/series"),
     ("GET", "/api/settings"),
     ("GET", "/api/sky"),
@@ -74,6 +68,12 @@ EXPECTED_DIRECT_ROUTES = frozenset({
 
 # The routes the six extracted domains OWN — reachable via their included sub-routers.
 EXTRACTED_GET_ROUTES = [
+    "/api/plan",                    # plan
+    "/api/plan-verification",       # verification
+    "/api/diagnostics",             # diagnostics
+    "/api/report",                  # report
+    "/api/finance",                 # report
+    "/api/savings",                 # report
     "/api/cars",                       # car
     "/api/car/plan",                   # car
     "/api/digest",                     # digest

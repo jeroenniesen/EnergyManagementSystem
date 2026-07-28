@@ -1,7 +1,7 @@
 from __future__ import annotations
 
+import inspect
 from datetime import UTC, datetime
-from typing import Any
 
 from ems.application.context import ApplicationContext
 
@@ -20,7 +20,8 @@ class ReportService:
 
     async def finance(self, start: datetime, end: datetime, now_local: datetime,
                       period: str, label: str, partial: bool) -> dict[str, object]:
-        days = await self.context.runtime_state["finance_window"](start, end, now_local)
+        result = self.context.runtime_state["finance_window"](start, end, now_local)
+        days = await result if inspect.isawaitable(result) else result
 
         def total(key: str) -> float | None:
             vals = [d[key] for d in days if d.get(key) is not None]

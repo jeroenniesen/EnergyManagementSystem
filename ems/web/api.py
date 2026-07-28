@@ -31,8 +31,12 @@ from ems.analysis import (
     recommend_solar_confidence,
 )
 from ems.application.context import ApplicationContext
-from ems.application.services import (DiagnosticsService, PlanService, ReportService,
-                                      VerificationService)
+from ems.application.services import (
+    DiagnosticsService,
+    PlanService,
+    ReportService,
+    VerificationService,
+)
 from ems.battery_profile import BatteryTopology, normalize_tower_ips
 from ems.cars import by_id as car_by_id
 from ems.confidence import plan_confidence
@@ -146,6 +150,7 @@ from ems.web.routes.accuracy import build_router as build_accuracy_router
 from ems.web.routes.auth import build_router as build_auth_router
 from ems.web.routes.car import build_router as build_car_router
 from ems.web.routes.car import gather_car_plan
+from ems.web.routes.diagnostics import build_router as build_diagnostics_router
 from ems.web.routes.digest import (
     _last_completed_week_monday,  # noqa: F401 — re-exported for tests (test_digest_api)
     _run_weekly_digest,
@@ -156,7 +161,10 @@ from ems.web.routes.digest import (
 )
 from ems.web.routes.export import build_router as build_export_router
 from ems.web.routes.notify import build_router as build_notify_router
+from ems.web.routes.plan import build_router as build_plan_router
+from ems.web.routes.report import build_router as build_report_router
 from ems.web.routes.users import build_router as build_users_router
+from ems.web.routes.verification import build_router as build_verification_router
 from ems.web.routes.whatif import build_router as build_whatif_router
 
 _log = logging.getLogger("ems.recorder")
@@ -2366,10 +2374,6 @@ def create_app(
             "perf": build_perf_block(),
         }
 
-    @app.get("/api/diagnostics")
-    async def diagnostics_endpoint() -> dict:
-        return await diagnostics_service.get_snapshot()
-
     @app.get("/api/charge-need")
     def charge_need_endpoint() -> dict:
         # Advisory: how much the battery should hold by tonight, from current SoC + battery config.
@@ -2655,10 +2659,6 @@ def create_app(
             )],
         }
 
-    @app.get("/api/savings")
-    def savings_endpoint() -> dict:
-        return savings_service.savings()
-
     # Planning knobs that shape the plan — the ONLY settings included in a replay bundle. Explicit
     # allow-list, so no meter IP, token, key or location can ever leak into an export (privacy §12).
     _REPLAY_SETTING_KEYS = (
@@ -2722,10 +2722,6 @@ def create_app(
                          "override_active": override_active, "target_soc": tgt},
         }
 
-    @app.get("/api/plan")
-    def plan_endpoint() -> dict:
-        return plan_service.get_plan(settings=settings_cache)
-
     @app.post("/api/plan-preview")
     def plan_preview(body: dict | None = None) -> dict:
         # What-if: recompute the plan with PROPOSED (unsaved) settings so the UI can show the impact
@@ -2753,14 +2749,6 @@ def create_app(
         now, prices_, plan = pp
         fc = solar_forecast.slots() if solar_forecast is not None else None
         return {**build_plan_detail(now, prices_, plan, fc), "strategy": _active_strategy(now)}
-
-    @app.get("/api/plan-verification")
-    def plan_verification() -> dict:
-        """Compare the current planned intent with the latest measured battery outcome.
-
-        This is deliberately observational: it never changes a plan or commands hardware.
-        """
-        return verification_service.verify()
 
     _STRATEGY_DESC = {
         "summer": "Solar-first — fill the battery from your panels and run the night on it; "
@@ -3552,7 +3540,6 @@ def create_app(
 
         return await asyncio.to_thread(_assemble)
 
-    @app.get("/api/report")
     async def report(
         period: str = Query(default="day", pattern="^(day|week|month|year)$"),
         date: str | None = None,
@@ -3763,7 +3750,6 @@ def create_app(
             days.append(data)
         return days
 
-    @app.get("/api/finance")
     async def finance(
         period: str = Query(default="day", pattern="^(day|week|month|year)$"),
         date: str | None = None,
@@ -4083,12 +4069,15 @@ def create_app(
     plan_service = PlanService(app.state.application_context)
     verification_service = VerificationService(app.state.application_context)
     report_service = ReportService(app.state.application_context)
-    savings_service = report_service
     diagnostics_service = DiagnosticsService(app.state.application_context)
     for build in (build_auth_router, build_users_router, build_car_router, build_digest_router,
                   build_notify_router, build_export_router, build_accuracy_router,
                   build_whatif_router):
         app.include_router(build(ctx))
+    app.include_router(build_plan_router(ctx, plan_service))
+    app.include_router(build_report_router(ctx, report_service))
+    app.include_router(build_verification_router(ctx, verification_service))
+    app.include_router(build_diagnostics_router(ctx, diagnostics_service))
 
     # Unknown /api/* paths must return a JSON 404 — NOT fall through to the SPA catch-all
     # below (which would serve index.html with a 200, silently breaking API clients).
