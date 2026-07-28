@@ -25,8 +25,9 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
-from ems.planner.economics import export_value
+from ems.economics import EconomicSnapshot
 from ems.retrospect import _floor, _parse
+from ems.tariffs import TariffPolicy
 from ems.timeseries import observed_segments
 
 
@@ -114,6 +115,12 @@ def day_finance(
     cost = base_cost = 0.0
     priced_seconds = 0.0
     observed_seconds = 0.0
+    # Keep all measured cost calculations on the same normalized economic boundary used by
+    # planning and savings.  Tibber totals already include the import fee, so suppress it here.
+    tariff_policy = TariffPolicy(
+        import_fee_eur_per_kwh=0.0 if tibber_total_includes_all else import_fee_eur_per_kwh,
+        export_fee_eur_per_kwh=export_fee_eur_per_kwh,
+    )
     for segment in segments:
         grid_w = segment.values["grid_power_w"]
         batt_w = segment.values["battery_power_w"]  # + discharge / − charge
@@ -127,13 +134,18 @@ def day_finance(
         if price is None:
             continue
         priced_seconds += segment.duration_seconds
-        import_price = price if tibber_total_includes_all else price + import_fee_eur_per_kwh
+        snapshot = EconomicSnapshot.from_tariff_policy(
+            tariff_policy,
+            raw_price_eur_per_kwh=price,
+            degradation_eur_per_kwh=degradation_eur_per_kwh,
+            export_model=export_price_model,
+            energy_tax_eur_per_kwh=energy_tax_eur_per_kwh,
+            fixed_feed_in_eur_per_kwh=fixed_feed_in_eur_per_kwh,
+        )
+        import_price = snapshot.import_price_eur_per_kwh
         # Import costs the full price; export earns the feed-in VALUE (full price under saldering,
         # less post-2027 — may even be negative). Same credit in both worlds so `saved` stays fair.
-        credit = export_value(price, model=export_price_model,
-                              energy_tax_eur_per_kwh=energy_tax_eur_per_kwh,
-                              fixed_feed_in_eur_per_kwh=fixed_feed_in_eur_per_kwh)
-        credit -= export_fee_eur_per_kwh
+        credit = snapshot.export_credit(price)
         cost += (max(0.0, grid_w) * import_price - max(0.0, -grid_w) * credit) * hours / 1000.0
         baseline_w = grid_w + batt_w  # the meter with the battery removed
         base_cost += (max(0.0, baseline_w) * import_price

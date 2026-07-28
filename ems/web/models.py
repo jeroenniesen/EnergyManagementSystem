@@ -51,6 +51,7 @@ class ReportResponse(APIResponseModel):
     gas: Any | None = None
     tariff_policy: dict[str, Any] | None = None
     tariff_warnings: list[dict[str, Any]] | None = None
+    economic_snapshot: dict[str, Any] | None = None
 
 
 class FinanceResponse(APIResponseModel):
@@ -66,6 +67,7 @@ class FinanceResponse(APIResponseModel):
 class SavingsResponse(APIResponseModel):
     today_eur: Any | None = None
     tariff_warnings: list[dict[str, Any]] | None = None
+    economic_snapshot: dict[str, Any] | None = None
 
 
 class DiagnosticsResponse(APIResponseModel):

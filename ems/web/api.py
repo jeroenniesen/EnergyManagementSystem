@@ -74,6 +74,7 @@ from ems.detectors import (
 )
 from ems.diagnostics import build_diagnostics, overall_status
 from ems.domain import BatteryIntent, IntelligenceState, PhysicalMode
+from ems.economics import EconomicSnapshot
 from ems.energy_flow import build_daily_flows
 from ems.ev_advisor import advise_charge_window
 from ems.finance import day_finance, price_rows_by_local_day, raw_rows_by_local_day
@@ -2637,11 +2638,24 @@ def create_app(
         return out
 
     def _savings_snapshot() -> dict:
+        policy = policy_from_settings(settings_cache)
+        export_model = str(settings_cache.get("prices.export_price_model", "net_metering"))
+        snapshot_metadata = EconomicSnapshot.from_tariff_policy(
+            policy, export_model=export_model,
+            round_trip_efficiency=float(settings_cache.get("planner.round_trip_efficiency", 0.90)),
+            degradation_eur_per_kwh=float(
+                settings_cache.get("planner.degradation_eur_per_kwh", 0.05)),
+            risk_margin_eur_per_kwh=float(
+                settings_cache.get("planner.risk_margin_eur_per_kwh", 0.02)),
+            energy_tax_eur_per_kwh=float(settings_cache.get("prices.energy_tax_eur_per_kwh", 0.13)),
+            fixed_feed_in_eur_per_kwh=float(
+                settings_cache.get("prices.fixed_feed_in_eur_per_kwh", 0.01)),
+        ).metadata()
         pp = _current_plan()
         if pp is None:
-            policy = policy_from_settings(settings_cache)
             return {
                 "today_eur": None,
+                "economic_snapshot": snapshot_metadata,
                 "tariff_warnings": [w.to_dict() for w in validate_tariff_policy(
                     policy,
                     export_model=str(settings_cache.get(
@@ -2650,9 +2664,9 @@ def create_app(
             }
         _now, prices, plan = pp
         by_start = {p.start: p.eur_per_kwh for p in prices}
-        policy = policy_from_settings(settings_cache)
         return {
             "today_eur": estimate_daily_savings_eur(plan, by_start, tariff_policy=policy),
+            "economic_snapshot": snapshot_metadata,
             "tariff_warnings": [w.to_dict() for w in validate_tariff_policy(
                 policy,
                 export_model=str(settings_cache.get("prices.export_price_model", "net_metering")),
@@ -3461,6 +3475,18 @@ def create_app(
         prices = await _window_price_slots(start.astimezone(UTC).isoformat(),
                                            end.astimezone(UTC).isoformat())
         tariff_policy = policy_from_settings(settings_cache)
+        economic_snapshot_metadata = EconomicSnapshot.from_tariff_policy(
+            tariff_policy,
+            export_model=str(settings_cache.get("prices.export_price_model", "net_metering")),
+            round_trip_efficiency=float(settings_cache.get("planner.round_trip_efficiency", 0.90)),
+            degradation_eur_per_kwh=float(
+                settings_cache.get("planner.degradation_eur_per_kwh", 0.05)),
+            risk_margin_eur_per_kwh=float(
+                settings_cache.get("planner.risk_margin_eur_per_kwh", 0.02)),
+            energy_tax_eur_per_kwh=float(settings_cache.get("prices.energy_tax_eur_per_kwh", 0.13)),
+            fixed_feed_in_eur_per_kwh=float(
+                settings_cache.get("prices.fixed_feed_in_eur_per_kwh", 0.01)),
+        ).metadata()
         economic_prices = [
             PriceSlot(p.start, tariff_policy.normalize(p.eur_per_kwh).import_eur_per_kwh)
             for p in prices
@@ -3478,6 +3504,7 @@ def create_app(
             )
             resp["gas"] = None
             resp["tariff_policy"] = policy_to_dict(tariff_policy)
+            resp["economic_snapshot"] = economic_snapshot_metadata
             resp["tariff_warnings"] = [w.to_dict() for w in validate_tariff_policy(
                 tariff_policy,
                 export_model=str(settings_cache.get("prices.export_price_model", "net_metering")),
@@ -3532,6 +3559,7 @@ def create_app(
             # Insights gas panel. None-safe — the panel hides itself with <2 gas readings.
             resp["gas"] = gas_summary(gas_rows, price_eur_per_m3=gas_price, co2_factor=gas_factor)
             resp["tariff_policy"] = policy_to_dict(tariff_policy)
+            resp["economic_snapshot"] = economic_snapshot_metadata
             resp["tariff_warnings"] = [w.to_dict() for w in validate_tariff_policy(
                 tariff_policy,
                 export_model=str(settings_cache.get("prices.export_price_model", "net_metering")),
