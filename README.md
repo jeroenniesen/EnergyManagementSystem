@@ -11,32 +11,39 @@ solar forecast and dynamic (Tibber) electricity prices.
 - **Fail-safe by design:** ships in simulation, and **never writes to the battery** until you
   deliberately turn on operational mode — sensing is read-only.
 
-## Install on a Mac (one command)
+## Install on macOS or Linux (one command)
 
-On a Mac (Apple Silicon — e.g. a Mac Mini M5), run this single command:
+On macOS (including Apple Silicon) or Linux, run:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/jeroenniesen/EnergyManagementSystem/main/scripts/bootstrap.sh | bash
 ```
 
-That's it. It downloads the app to `~/EnergyManagementSystem` and bootstraps everything (no sudo, no
-Homebrew required): installs `uv` if you don't have it, fetches a local Node only if needed, builds
-the dashboard, sets up the Python environment, installs a small auto-start service (it comes back
-after a reboot), starts the app, and prints the URL. Then open **http://localhost:8080**.
+That's it. It downloads the app to `~/EnergyManagementSystem` and bootstraps everything (no sudo,
+Homebrew, or system-wide package changes): installs `uv` if needed, fetches a repo-local Node only
+if needed, builds the dashboard, syncs the Python environment, starts the app, and prints the URL.
+On macOS it installs a LaunchAgent; on Linux it installs a `systemd --user` service. Then open
+**http://localhost:8080**.
+
+Linux auto-start requires a user `systemd` session. For a headless machine, enable user lingering
+for your account (`loginctl enable-linger "$USER"`, subject to your administrator's policy), or use
+`./scripts/install.sh --foreground` under your existing supervisor. The installer never uses sudo.
 
 <details><summary>Prefer to clone first?</summary>
 
 ```bash
 git clone https://github.com/jeroenniesen/EnergyManagementSystem.git
 cd EnergyManagementSystem
-./scripts/install.sh        # or: make install
+./scripts/install.sh        # auto-start for macOS/Linux
+./scripts/install.sh --foreground  # run in this terminal, no service
+# or: make install / make dev
 ```
 </details>
 
 ### Upgrading
 
 To update a running install to the latest version (rebuilds + restarts; **your data and settings are
-kept**), run this one command on the Mac:
+kept**), run:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/jeroenniesen/EnergyManagementSystem/main/scripts/upgrade.sh | bash
@@ -54,8 +61,8 @@ make dev          # run in this terminal instead of as a service (./scripts/inst
 
 Most settings (strategy, planner, AI, theme) apply instantly. **Device/connection changes** — meter
 IPs, the Tibber token, the live-devices toggle — take effect on the next restart; the UI flags those
-fields. Restart from anywhere on the Mac with: `launchctl kickstart -k gui/$(id -u)/com.jeroenniesen.ems`.
-Logs are at `ems/data/server.log`.
+fields. Restart with `make restart` (or `./scripts/restart.sh`); the script uses LaunchAgent on
+macOS and the systemd user service on Linux. Logs are at `ems/data/server.log`.
 
 ## Everything is configured in the web UI
 

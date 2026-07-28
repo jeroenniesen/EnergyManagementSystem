@@ -2,7 +2,7 @@
 # (or run ./scripts/install.sh directly). Everything is configured afterwards in the web UI.
 .PHONY: install upgrade uninstall restart dev build test e2e lint replay perf-check
 
-install:        ## One-command install + auto-start (macOS / Apple Silicon)
+install:        ## One-command install + auto-start (macOS LaunchAgent or Linux systemd user service)
 	./scripts/install.sh
 
 upgrade:        ## Pull the latest version, rebuild, and restart (keeps your data)
