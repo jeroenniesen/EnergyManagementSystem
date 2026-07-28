@@ -776,7 +776,12 @@ def _seed_ev_charging_block(db: str) -> None:
     async def go():
         store = HistoryStore(db)
         await store.init()
-        base = datetime(2026, 6, 28, 9, 0, 0, tzinfo=UTC)
+        # Keep the fixture inside the requested calendar-day window regardless of when the suite
+        # runs; the endpoint intentionally uses calendar-day semantics rather than fixed dates.
+        base = (
+            datetime.now(UTC).replace(hour=9, minute=0, second=0, microsecond=0)
+            - timedelta(days=1)
+        )
         for i in range(3):
             ts = (base + timedelta(minutes=5 * i)).isoformat()
             raw = RawSample(grid_power_w=200.0, solar_power_w=0.0, battery_power_w=0.0,

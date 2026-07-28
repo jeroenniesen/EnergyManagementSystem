@@ -534,6 +534,9 @@ class ControlService:
             charge_slots=s["planner.charge_slots"],
             discharge_slots=s["planner.discharge_slots"],
             negative_price_soak=s["planner.negative_price_soak"],
+            import_fee_eur_per_kwh=s.get("grid_fees.import_fee_eur_per_kwh", 0.0)
+            if not s.get("grid_fees.tibber_total_includes_all", False) else 0.0,
+            tibber_total_includes_all=s.get("grid_fees.tibber_total_includes_all", False),
         )
 
     def planner_cfg(self) -> PlannerConfig:

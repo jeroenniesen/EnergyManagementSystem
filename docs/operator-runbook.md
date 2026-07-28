@@ -14,6 +14,8 @@
 | **Check data freshness** | UI per-source freshness indicators, or `GET /api/freshness`. |
 | **Download plan / measurements** | UI export buttons, or `GET /api/export/plan` / `GET /api/export/measurements`. |
 | **Export the full history (for analysis or a health check)** | System page → **"Download export package (ZIP)"**, or `GET /api/export/package?days=N`. One ZIP: all history CSVs (raw, derived, prices, forecast vs. actual, plan history, daily finance, gas, audit) + `manifest.json` + `validation_summary.txt`. **Redacted** — allowlisted config keys only, no tokens/IPs/location — so it's safe to share. Read the **"Solar forecast skill"** section (bias/MAE/band-coverage) and the **incident rollup** in the summary; missing finance days are backfilled into the window on export. |
+| **Check whether the current plan matches measured battery behaviour** | `GET /api/plan-verification` — read-only comparison of planned intent, target SoC, and latest measured SoC/power. |
+| **Interpret tariff warnings** | Review `tariff_warnings` in `/api/plan`, `/api/report`, or `/api/savings`; they identify missing or contradictory import/export fee assumptions. |
 | **Check control-health incidents** | System page → *Control health* panel, or `GET /api/incidents` (rollup of command failures, cluster mismatches, fallbacks, reverts over the window). |
 | **Enter/exit dry-run** | `control.dry_run: true` in `config.yaml` (logs decisions, no writes) → restart `ems`. The UI shows a large `DRY-RUN`/`LIVE` badge. |
 | **Run the capability probe again** | Restart `ems` (probe runs at startup) or hit the probe endpoint; review the logged service/entity surface. |

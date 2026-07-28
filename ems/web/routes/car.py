@@ -119,6 +119,16 @@ async def gather_car_plan(ctx: AppContext, now: datetime) -> dict:
         "effective_kw": effective_kw,
         "car": car_to_dict(car) if car is not None else None,
         "car_meter_configured": car_meter_configured,
+        "battery_hold_recommendation": {
+            "enabled": bool(s.get("control.hold_battery_when_car_charging", True)),
+            "mode": str(s.get("control.car_charging_battery_mode", "hold")),
+            "message": (
+                "Hold the home battery while the car charges so solar and grid cover the car."
+                if s.get("control.hold_battery_when_car_charging", True)
+                else "Battery hold is disabled; the normal battery planner remains active "
+                "during car charging."
+            ),
+        },
     }
 
 

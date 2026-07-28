@@ -164,3 +164,9 @@ The AC balance `grid = load − solar − battery` holds exactly every slot.
   never discharges but soaks solar surplus; `ALLOW_SELF_CONSUMPTION` tracks net load both ways;
   `DISCHARGE_FOR_LOAD` covers the deficit (and **exports** any solar surplus rather than charging).
   If the battery can't fully cover a peak, the slot honestly shows residual **grid import**.
+# Tariff economics
+
+Planning and reporting normalize raw electricity prices with the `grid_fees.*` policy. Import
+fees are added only when the provider total does not include all fees; export fees are deducted
+from export value. Negative prices remain negative. This valuation is used for economics and
+explanations only—the battery still receives high-level intent, target SoC, and deadline commands.

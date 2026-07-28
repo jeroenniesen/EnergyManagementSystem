@@ -11,6 +11,7 @@ from datetime import datetime
 
 from ems.domain import BatteryIntent
 from ems.planner.schedule import Plan
+from ems.tariffs import TariffPolicy
 
 _SLOT_HOURS = 0.25
 
@@ -23,11 +24,13 @@ def estimate_daily_savings_eur(
     discharge_kw: float = 1.5,
     degradation_eur_per_kwh: float = 0.05,
     risk_margin_eur_per_kwh: float = 0.02,
+    tariff_policy: TariffPolicy | None = None,
 ) -> float:
     """Net €: sum over discharge slots of (discharge_price − delivered_cost) × per-slot energy,
     where delivered_cost = max_charge_price/efficiency + degradation + risk. 0.0 on no-trade."""
+    policy = tariff_policy or TariffPolicy()
     charge_prices = [
-        price_by_start[s.start]
+        policy.normalize(price_by_start[s.start]).import_eur_per_kwh
         for s in plan.slots
         if s.intent is BatteryIntent.GRID_CHARGE_TO_TARGET and s.start in price_by_start
     ]
@@ -40,7 +43,7 @@ def estimate_daily_savings_eur(
     total = 0.0
     for s in plan.slots:
         if s.intent is BatteryIntent.DISCHARGE_FOR_LOAD and s.start in price_by_start:
-            margin = price_by_start[s.start] - delivered_cost
+            margin = policy.normalize(price_by_start[s.start]).import_eur_per_kwh - delivered_cost
             if margin > 0:
                 total += margin * energy
     return round(total, 2)

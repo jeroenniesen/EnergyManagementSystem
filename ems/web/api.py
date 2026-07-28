@@ -126,6 +126,8 @@ from ems.storage.history import (
     materialize_observations,
 )
 from ems.storage.settings import SettingsStore
+from ems.tariff_validation import validate_tariff_policy
+from ems.tariffs import policy_from_settings, policy_to_dict
 from ems.weather import cloud_cover_pct
 from ems.web.authz import (
     EXEMPT_PATHS,
@@ -749,7 +751,7 @@ def _uslot_totals(slots: list[dict]) -> dict:
 # Bump when the finance math changes so completed-day rows cached under the OLD formula are
 # recomputed instead of served stale (finding 4). v2 = same-window wear (dis_priced) + price-gate;
 # v3 = export credited via the configurable feed-in model (B-05), not always the full spot price.
-_FINANCE_CALC_VERSION = 4
+_FINANCE_CALC_VERSION = 5  # includes grid-fee-aware import/export valuation
 
 
 # The car-charging discharge-session constants + the PURE decision helpers (`_decide_car_command`,
@@ -2627,10 +2629,25 @@ def create_app(
     def savings_endpoint() -> dict:
         pp = _current_plan()
         if pp is None:
-            return {"today_eur": None}
+            policy = policy_from_settings(settings_cache)
+            return {
+                "today_eur": None,
+                "tariff_warnings": [w.to_dict() for w in validate_tariff_policy(
+                    policy,
+                    export_model=str(settings_cache.get(
+                        "prices.export_price_model", "net_metering")),
+                )],
+            }
         _now, prices, plan = pp
         by_start = {p.start: p.eur_per_kwh for p in prices}
-        return {"today_eur": estimate_daily_savings_eur(plan, by_start)}
+        policy = policy_from_settings(settings_cache)
+        return {
+            "today_eur": estimate_daily_savings_eur(plan, by_start, tariff_policy=policy),
+            "tariff_warnings": [w.to_dict() for w in validate_tariff_policy(
+                policy,
+                export_model=str(settings_cache.get("prices.export_price_model", "net_metering")),
+            )],
+        }
 
     # Planning knobs that shape the plan — the ONLY settings included in a replay bundle. Explicit
     # allow-list, so no meter IP, token, key or location can ever leak into an export (privacy §12).
@@ -2686,6 +2703,11 @@ def create_app(
             "projection": [{"start": p.start.isoformat(), "soc_pct": round(p.soc_pct, 2),
                             "intent": p.intent.value} for p in proj],
             "validation": val.to_dict(),
+            "tariff_policy": policy_to_dict(policy_from_settings(settings_cache)),
+            "tariff_warnings": [w.to_dict() for w in validate_tariff_policy(
+                policy_from_settings(settings_cache),
+                export_model=str(settings_cache.get("prices.export_price_model", "net_metering")),
+            )],
             "decision": {"intent": str(intent) if intent else None, "reason": dreason,
                          "override_active": override_active, "target_soc": tgt},
         }
@@ -2708,6 +2730,11 @@ def create_app(
             "current_reason": cur.reason if cur else None,
             # The §8.11 verdict so the UI can show "control held — why".
             "validation": val.to_dict(),
+            "tariff_policy": policy_to_dict(policy_from_settings(settings_cache)),
+            "tariff_warnings": [w.to_dict() for w in validate_tariff_policy(
+                policy_from_settings(settings_cache),
+                export_model=str(settings_cache.get("prices.export_price_model", "net_metering")),
+            )],
             "slots": [
                 # The energy contract travels with the mode (energy review P2.4): the UI shows
                 # "charge to X% (Y kWh) at Z W by <deadline>", not just a mode label.
@@ -2746,6 +2773,43 @@ def create_app(
         now, prices_, plan = pp
         fc = solar_forecast.slots() if solar_forecast is not None else None
         return {**build_plan_detail(now, prices_, plan, fc), "strategy": _active_strategy(now)}
+
+    @app.get("/api/plan-verification")
+    def plan_verification() -> dict:
+        """Compare the current planned intent with the latest measured battery outcome.
+
+        This is deliberately observational: it never changes a plan or commands hardware.
+        """
+        now = datetime.now(UTC)
+        pp = _current_plan()
+        sample = _current_sample(now)
+        if pp is None:
+            return {"status": "no_plan", "planned": None, "actual": None}
+        _plan_now, _prices, plan = pp
+        slot = plan.intent_at(now)
+        actual = None if sample is None else {
+            "soc_pct": sample.soc_pct,
+            "battery_power_w": sample.battery_power_w,
+            "grid_power_w": sample.grid_power_w,
+            "observed_at": sample.ts.isoformat() if hasattr(sample, "ts") else now.isoformat(),
+        }
+        planned = None if slot is None else {
+            "intent": slot.intent.value,
+            "target_soc": slot.target_soc,
+            "deadline": slot.deadline.isoformat() if slot.deadline else None,
+            "reason": slot.reason,
+        }
+        status = "awaiting_measurement"
+        if actual is not None:
+            status = "observed"
+            if (planned and planned["intent"] == "grid_charge_to_target"
+                    and actual["battery_power_w"] > 50):
+                status = "unexpected_discharge"
+            elif (planned and planned["intent"] == "discharge_for_load"
+                  and actual["battery_power_w"] < -50):
+                status = "unexpected_charge"
+        return {"status": status, "planned": planned, "actual": actual,
+                "checked_at": now.isoformat()}
 
     _STRATEGY_DESC = {
         "summer": "Solar-first — fill the battery from your panels and run the night on it; "
@@ -3457,9 +3521,15 @@ def create_app(
         # whatever the live feed still carries.
         prices = await _window_price_slots(start.astimezone(UTC).isoformat(),
                                            end.astimezone(UTC).isoformat())
+        tariff_policy = policy_from_settings(settings_cache)
+        economic_prices = [
+            PriceSlot(p.start, tariff_policy.normalize(p.eur_per_kwh).import_eur_per_kwh)
+            for p in prices
+        ]
         # Future / no store → an honest empty report (has_data False), never an error.
         if store is None or start > now_local:
-            resp = build_report([], [], prices, period=period, start=start, end=end, label=label,
+            resp = build_report(
+                [], [], economic_prices, period=period, start=start, end=end, label=label,
                                 partial=partial, grid_factor=grid_factor,
                                 gas_factor=gas_factor, grid_factor_note=grid_factor_note).to_dict()
             resp["series"] = build_series(
@@ -3468,6 +3538,11 @@ def create_app(
                 max_hold_seconds=2 * _sample_cadence_seconds(),
             )
             resp["gas"] = None
+            resp["tariff_policy"] = policy_to_dict(tariff_policy)
+            resp["tariff_warnings"] = [w.to_dict() for w in validate_tariff_policy(
+                tariff_policy,
+                export_model=str(settings_cache.get("prices.export_price_model", "net_metering")),
+            )]
             return resp
         q_end = min(end, now_local + timedelta(minutes=1))  # never query the future
         # Size the row cap to the window AND the recorder cadence (finding 10) so week/month/year
@@ -3493,7 +3568,8 @@ def create_app(
             # CPU assembly (up to ~200k rows for a year) off the event loop (item 3), mirroring
             # _forward_projection's to_thread pattern — build_report/build_series/gas_summary are
             # all pure functions over plain data, safe to run in a worker thread.
-            resp = build_report(raw, der, prices, period=period, start=start, end=end, label=label,
+            resp = build_report(
+                raw, der, economic_prices, period=period, start=start, end=end, label=label,
                                 partial=partial, grid_factor=grid_factor,
                                 gas_factor=gas_factor, gas_m3=gas,
                                 grid_factor_note=grid_factor_note,
@@ -3516,6 +3592,11 @@ def create_app(
             # Makes gas VISIBLE (beyond folding into the CO₂ score): m³/kWh-eq/€/CO₂ for the
             # Insights gas panel. None-safe — the panel hides itself with <2 gas readings.
             resp["gas"] = gas_summary(gas_rows, price_eur_per_m3=gas_price, co2_factor=gas_factor)
+            resp["tariff_policy"] = policy_to_dict(tariff_policy)
+            resp["tariff_warnings"] = [w.to_dict() for w in validate_tariff_policy(
+                tariff_policy,
+                export_model=str(settings_cache.get("prices.export_price_model", "net_metering")),
+            )]
             return resp
 
         return await asyncio.to_thread(_assemble)
@@ -3638,6 +3719,9 @@ def create_app(
         export_model = str(settings_cache.get("prices.export_price_model", "net_metering"))
         energy_tax = float(settings_cache.get("prices.energy_tax_eur_per_kwh", 0.13))
         fixed_feed_in = float(settings_cache.get("prices.fixed_feed_in_eur_per_kwh", 0.01))
+        includes_all = bool(settings_cache.get("grid_fees.tibber_total_includes_all", False))
+        import_fee = float(settings_cache.get("grid_fees.import_fee_eur_per_kwh", 0.0))
+        export_fee = float(settings_cache.get("grid_fees.export_fee_eur_per_kwh", 0.0))
         q_end = min(nxt, now_local + timedelta(minutes=1))
         # Cadence-aware per-day cap (finding 10): sized to the recorder frequency, not a fixed
         # 3000 that would truncate a finer sampling rate.
@@ -3651,6 +3735,9 @@ def create_app(
                         export_price_model=export_model,
                         energy_tax_eur_per_kwh=energy_tax,
                         fixed_feed_in_eur_per_kwh=fixed_feed_in,
+                        tibber_total_includes_all=includes_all,
+                        import_fee_eur_per_kwh=import_fee,
+                        export_fee_eur_per_kwh=export_fee,
                         window_start=cur, window_end=q_end,
                         sample_interval_seconds=_sample_cadence_seconds(),
                         max_hold_seconds=2 * _sample_cadence_seconds()).to_dict()
@@ -3684,6 +3771,9 @@ def create_app(
         export_model = str(settings_cache.get("prices.export_price_model", "net_metering"))
         energy_tax = float(settings_cache.get("prices.energy_tax_eur_per_kwh", 0.13))
         fixed_feed_in = float(settings_cache.get("prices.fixed_feed_in_eur_per_kwh", 0.01))
+        includes_all = bool(settings_cache.get("grid_fees.tibber_total_includes_all", False))
+        import_fee = float(settings_cache.get("grid_fees.import_fee_eur_per_kwh", 0.0))
+        export_fee = float(settings_cache.get("grid_fees.export_fee_eur_per_kwh", 0.0))
 
         def _compute() -> list[tuple[str, dict, bool]]:
             out: list[tuple[str, dict, bool]] = []
@@ -3702,6 +3792,9 @@ def create_app(
                         day=day_label, degradation_eur_per_kwh=degradation,
                         export_price_model=export_model, energy_tax_eur_per_kwh=energy_tax,
                         fixed_feed_in_eur_per_kwh=fixed_feed_in,
+                        tibber_total_includes_all=includes_all,
+                        import_fee_eur_per_kwh=import_fee,
+                        export_fee_eur_per_kwh=export_fee,
                         window_start=cur, window_end=min(nxt, q_end),
                         sample_interval_seconds=_sample_cadence_seconds(),
                         max_hold_seconds=2 * _sample_cadence_seconds(),

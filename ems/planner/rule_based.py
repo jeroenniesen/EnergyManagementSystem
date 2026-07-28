@@ -31,6 +31,8 @@ class PlannerConfig:
     discharge_slots: int = 24  # up to ~6h of the most expensive slots
     horizon_slots: int = 96  # next ~24h
     negative_price_soak: bool = False  # opt-in: charge on sub-zero slots (paid to consume)
+    import_fee_eur_per_kwh: float = 0.0
+    tibber_total_includes_all: bool = False
 
 
 def _all_auto(prices: list[PriceSlot], now: datetime, note: str) -> Plan:
@@ -43,6 +45,12 @@ def _all_auto(prices: list[PriceSlot], now: datetime, note: str) -> Plan:
         for p in prices
     )
     return Plan(created_at=now, slots=slots, strategy="winter")
+
+
+def _effective_import_price(p: PriceSlot, cfg: PlannerConfig) -> float:
+    if cfg.tibber_total_includes_all:
+        return p.eur_per_kwh
+    return p.eur_per_kwh + cfg.import_fee_eur_per_kwh
 
 
 def plan_rule_based(
@@ -91,9 +99,9 @@ def _plan_winter(
     if not horizon:
         return Plan(created_at=now, slots=(), strategy="winter")
 
-    by_price = sorted(horizon, key=lambda p: p.eur_per_kwh)
+    by_price = sorted(horizon, key=lambda p: _effective_import_price(p, cfg))
     charge_candidates = by_price[: cfg.charge_slots]
-    charge_price = max((p.eur_per_kwh for p in charge_candidates), default=0.0)
+    charge_price = max((_effective_import_price(p, cfg) for p in charge_candidates), default=0.0)
     # A discharge slot only pays if it beats the cost of the energy we'd store to serve it.
     breakeven = economics.breakeven(
         charge_price,
@@ -102,9 +110,10 @@ def _plan_winter(
         risk_margin_eur_per_kwh=cfg.risk_margin_eur_per_kwh,
     )
 
-    by_price_desc = sorted(horizon, key=lambda p: -p.eur_per_kwh)
+    by_price_desc = sorted(horizon, key=lambda p: -_effective_import_price(p, cfg))
     discharge_set = {
-        p.start for p in by_price_desc[: cfg.discharge_slots] if p.eur_per_kwh > breakeven
+        p.start for p in by_price_desc[: cfg.discharge_slots]
+        if _effective_import_price(p, cfg) > breakeven
     }
     if not discharge_set:
         # No profitable peak -> no-trade: never cycle the battery for nothing (SPEC §8.3).
@@ -136,14 +145,15 @@ def _plan_winter(
         # midday, cover the €0.30 evening) would be skipped entirely (B-30, seen live 2026-07-02).
         # n_charge caps the result; cheapest-first keeps the buys in the valley floor.
         last_need = max(discharge_set)
-        peak_min = min(p.eur_per_kwh for p in horizon if p.start in discharge_set)
+        peak_min = min(_effective_import_price(p, cfg) for p in horizon if p.start in discharge_set)
         # Inverse of economics.breakeven: solved for the highest charge price that still undercuts
         # `peak_min` after losses + wear + risk. Kept local — it's the reverse direction (sizing the
         # buy pool), not the forward break-even gate above.
         max_buy = (peak_min - cfg.degradation_eur_per_kwh
                    - cfg.risk_margin_eur_per_kwh) * cfg.round_trip_efficiency
-        pool = sorted((p for p in horizon if p.start < last_need and p.eur_per_kwh <= max_buy),
-                      key=lambda p: (p.eur_per_kwh, p.start))
+        pool = sorted((p for p in horizon if p.start < last_need
+                       and _effective_import_price(p, cfg) <= max_buy),
+                      key=lambda p: (_effective_import_price(p, cfg), p.start))
         charge_set = {p.start for p in pool[:n_charge]}
         if len(pool) < n_charge:  # not enough cheap room before the last peak → will under-charge
             _log.warning("winter planner under-charge: need %d cheap pre-peak slots, only %d "

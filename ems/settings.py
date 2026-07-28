@@ -115,6 +115,21 @@ SETTINGS_SCHEMA: tuple[SettingsField, ...] = (
         help="Flat price paid per exported kWh when the export value is set to fixed.",
         min=0.0, max=0.5, step=0.005, unit="€/kWh", advanced=True,
     ),
+    SettingsField(
+        "grid_fees.tibber_total_includes_all", "Price includes all grid fees", "bool", False,
+        "prices", help="Enable when the provider's price already includes every import fee. "
+        "When off, the configured import fee is added for planning and reporting.", advanced=True,
+    ),
+    SettingsField(
+        "grid_fees.import_fee_eur_per_kwh", "Import grid fee", "number", 0.0, "prices",
+        help="Additional cost per imported kWh when the provider total excludes grid fees.",
+        min=0.0, max=1.0, step=0.005, unit="€/kWh", advanced=True,
+    ),
+    SettingsField(
+        "grid_fees.export_fee_eur_per_kwh", "Export grid fee", "number", 0.0, "prices",
+        help="Fee deducted from the value of each exported kWh after saldering ends.",
+        min=0.0, max=1.0, step=0.005, unit="€/kWh", advanced=True,
+    ),
     # --- Battery (Indevolt) — connection + capacity/reserve ---
     SettingsField(
         "battery.indevolt_ip", "Indevolt main tower IP", "text", "", "battery",

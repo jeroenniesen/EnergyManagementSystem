@@ -6,6 +6,7 @@ from ems.planner.rule_based import plan_rule_based
 from ems.planner.schedule import Plan, PlanSlot
 from ems.savings import estimate_daily_savings_eur
 from ems.sources.prices import MockPriceSource, PriceSlot
+from ems.tariffs import TariffPolicy
 
 AMS = ZoneInfo("Europe/Amsterdam")
 MIDNIGHT = datetime(2026, 6, 27, 0, 0, tzinfo=AMS)
@@ -37,3 +38,13 @@ def test_thin_spread_killed_by_efficiency_and_wear_is_zero():
     )
     by_start = {s0: 0.20, s1: 0.21}  # 0.21 < 0.20/0.9 + 0.05 + 0.02 = 0.292
     assert estimate_daily_savings_eur(plan, by_start) == 0.0
+
+
+def test_savings_uses_effective_import_fee():
+    prices = MockPriceSource(AMS, clock=lambda: MIDNIGHT).slots()
+    plan = plan_rule_based(prices, MIDNIGHT)
+    raw = {p.start: p.eur_per_kwh for p in prices}
+    base = estimate_daily_savings_eur(plan, raw)
+    with_fee = estimate_daily_savings_eur(
+        plan, raw, tariff_policy=TariffPolicy(import_fee_eur_per_kwh=0.10))
+    assert with_fee <= base

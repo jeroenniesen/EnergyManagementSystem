@@ -43,7 +43,15 @@ type GasSummary = {
   kwh_eq: number;
   eur: number;
   co2_kg: number;
+  daily_m3?: number;
+  annualized_eur?: number;
 };
+type TariffPolicy = {
+  import_fee_eur_per_kwh: number;
+  export_fee_eur_per_kwh: number;
+  tibber_total_includes_all: boolean;
+};
+type TariffWarning = { code: string; severity: string; message: string };
 
 type Report = {
   period: string;
@@ -55,6 +63,8 @@ type Report = {
   scores: Score[];
   series?: SeriesBucket[];
   gas?: GasSummary | null;
+  tariff_policy?: TariffPolicy;
+  tariff_warnings?: TariffWarning[];
 };
 
 type Period = "day" | "week" | "month" | "year";
@@ -265,6 +275,8 @@ function GasPanel({ gas, partial }: { gas: GasSummary; partial: boolean }) {
       </div>
       <p className="gas-hint">
         Heating is typically the biggest energy cost left — see the CO₂ score.
+        {gas.daily_m3 != null && gas.annualized_eur != null &&
+          ` At ${gas.daily_m3.toFixed(1)} m³/day, that is roughly €${gas.annualized_eur}/year.`}
       </p>
     </div>
   );
@@ -412,6 +424,19 @@ export function Insights({ canOperate = true }: { canOperate?: boolean } = {}) {
               {headline(report, f, isEarlyDay(period, report, f))}
             </p>
           )}
+          {report.tariff_policy && (
+            <p className="insights-tariff-note" data-testid="tariff-policy-note">
+              2027 tariff assumptions: import fees {report.tariff_policy.tibber_total_includes_all
+                ? "included in the provider total"
+                : `+€${report.tariff_policy.import_fee_eur_per_kwh.toFixed(3)}/kWh`}; export fees
+              {` −€${report.tariff_policy.export_fee_eur_per_kwh.toFixed(3)}/kWh`}.
+            </p>
+          )}
+          {report.tariff_warnings?.map((warning) => (
+            <p className="insights-warning" data-testid={`tariff-warning-${warning.code}`} key={warning.code}>
+              {warning.message}
+            </p>
+          ))}
           {/* One consistent anatomy per card (B-37-style): ring | headline word | trend chip |
               ONE detail line. The full explanation lives behind the ring's own hover tooltip AND
               a "More" disclosure on the detail line (Settings' field-help idiom) — never as a

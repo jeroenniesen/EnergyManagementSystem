@@ -163,7 +163,16 @@ def test_gas_summary_math():
     rows = [{"ts": "2026-06-28T00:00:00+00:00", "total_gas_m3": 1000.0},
             {"ts": "2026-06-28T23:00:00+00:00", "total_gas_m3": 1010.0}]
     g = gas_summary(rows, price_eur_per_m3=1.40, co2_factor=1.78)
-    assert g == {"m3": 10.0, "kwh_eq": 97.7, "eur": 14.0, "co2_kg": 17.8}
+    assert g == {"m3": 10.0, "kwh_eq": 97.7, "eur": 14.0, "co2_kg": 17.8,
+                 "daily_m3": 10.43, "annualized_eur": 5332.0}
+
+
+def test_gas_summary_malformed_timestamp_falls_back_without_crashing():
+    rows = [{"ts": "not-a-date", "total_gas_m3": 1000.0},
+            {"ts": "also-not-a-date", "total_gas_m3": 1010.0}]
+    result = gas_summary(rows, price_eur_per_m3=1.40, co2_factor=1.78)
+    assert result["m3"] == 10.0
+    assert result["daily_m3"] == 10.0
 
 
 def test_gas_summary_none_with_fewer_than_two_rows():
@@ -272,7 +281,8 @@ def test_report_endpoint_gas_panel_present_with_two_or_more_readings(tmp_path):
 
     with TestClient(_app(db)) as c:
         b = c.get("/api/report?period=day&date=2026-06-28").json()
-    assert b["gas"] == {"m3": 10.0, "kwh_eq": 97.7, "eur": 14.0, "co2_kg": 17.8}
+    assert b["gas"] == {"m3": 10.0, "kwh_eq": 97.7, "eur": 14.0, "co2_kg": 17.8,
+                         "daily_m3": 40.0, "annualized_eur": 20440.0}
 
 
 def test_report_endpoint_gas_panel_none_without_two_readings(tmp_path):

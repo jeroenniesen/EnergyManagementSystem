@@ -48,8 +48,8 @@ Legend: **UI** = also editable from the web UI (overlays the file). **CONFIRM** 
 | `cache_immutable_slots` | bool | true | never re-fetch past slots |
 | `tomorrow_required_by` | HH:MM | 15:00 | after this, missing tomorrow ⇒ stale |
 | `grid_fees.tibber_total_includes_all` | bool | false · **CONFIRM** | whether to add extra fees |
-| `grid_fees.import_fee_eur_per_kwh` | €/kWh | 0.0 | added to import price if above false |
-| `grid_fees.export_fee_eur_per_kwh` | €/kWh | 0.0 | export cost |
+| `grid_fees.import_fee_eur_per_kwh` | €/kWh | 0.0 | added to import price when the provider total excludes it |
+| `grid_fees.export_fee_eur_per_kwh` | €/kWh | 0.0 | deducted from export value in reporting/planning diagnostics |
 | `export_price_model` | enum | `net_metering`\|`spot_minus_tax`\|`fixed` = net_metering | how each exported kWh is valued (`economics.export_value`, §8.3): `net_metering`=full price (today's saldering); `spot_minus_tax`=post-2027 (may go negative, unclamped); `fixed`=flat feed-in. **UI** |
 | `energy_tax_eur_per_kwh` | €/kWh | 0.13 | subtracted from spot when export = `spot_minus_tax`. **UI** |
 | `fixed_feed_in_eur_per_kwh` | €/kWh | 0.01 | flat export value when export = `fixed`. **UI** |

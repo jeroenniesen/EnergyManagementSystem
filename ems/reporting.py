@@ -130,11 +130,23 @@ def gas_summary(
     if len(gas_rows) < 2:
         return None
     m3 = gas_m3_consumed(gas_rows)
+    try:
+        first_ts = _parse(gas_rows[0].get("ts"))
+        last_ts = _parse(gas_rows[-1].get("ts"))
+        days = (
+            max(1 / 24, (last_ts - first_ts).total_seconds() / 86400)
+            if first_ts and last_ts else 1.0
+        )
+    except (AttributeError, TypeError, ValueError, OverflowError):
+        days = 1.0
+    daily_m3 = m3 / days
     return {
         "m3": round(m3, 2),
         "kwh_eq": round(m3 * GAS_KWH_PER_M3, 2),
         "eur": round(m3 * price_eur_per_m3, 2),
         "co2_kg": round(m3 * co2_factor, 2),
+        "daily_m3": round(daily_m3, 2),
+        "annualized_eur": round(daily_m3 * 365 * price_eur_per_m3, 0),
     }
 
 
