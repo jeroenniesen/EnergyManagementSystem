@@ -20,6 +20,7 @@ export type Battery = {
   capabilities: { services: string[]; p1_paired: boolean } | null;
   towers: Tower[];
   aggregate: BatteryAggregate;
+  topology?: { tower_count: number; label: string; configured: boolean };
 };
 
 /** Which metric the breakdown emphasises (the big number on each chip). "soc" = how full,
@@ -65,7 +66,7 @@ export function BatteryChips({
             {metric === "power" ? powerLabel(agg.power_w) : `${agg.soc_pct.toFixed(0)}%`}
           </span>
           <span className="tower-chip-meta">
-            cluster avg · {agg.online_towers}/{agg.total_towers} online
+            {battery.topology?.tower_count === 1 ? "battery" : "cluster avg"} · {agg.online_towers}/{agg.total_towers} online
             {metric === "power"
               ? ` · ${agg.soc_pct.toFixed(0)}%`
               : ` · ${powerLabel(agg.power_w)}`}

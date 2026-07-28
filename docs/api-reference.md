@@ -6,7 +6,8 @@ Quick, concrete cheat-sheet for every integration. Details and rationale are in 
 
 ## Indevolt battery — OpenData API (local)
 
-- **Model:** SolidFlex 2000, Gen-2, 2-tower cluster. Control the cluster as **one** device.
+- **Model:** SolidFlex 2000, Gen-2. One tower and multi-tower clusters are supported and controlled
+  as one logical device. `/api/battery` reports the configured topology and per-tower status.
 - **Implemented reality (BACKLOG B-26):** only the **direct RPC** path below ships (`ems/sources/indevolt.py` / `indevolt_driver.py`). There is no HA client in the codebase, so the "Primary control path = Home Assistant" bullet and the whole "Home Assistant (the EMS talks to HA)" section at the bottom of this file are **planned, not yet implemented** (BACKLOG B-18, pool). The device also needs **no auth in practice** — plain HTTP POST, IP-only — contrary to the Digest-auth line below.
 - **Primary control path (target design) = Home Assistant** (official integration, repo `github.com/INDEVOLT/homeassistant-indevolt`). **Resolve the exact surface with the M1a capability probe** (`../SPEC.md` §6.5) — the integration exposes **fewer services than you might assume**:
   - **Services (the only two):** `indevolt.charge` and `indevolt.discharge` — each runs *until a target SoC*. Treat `{power: W, target_soc: %}` as **candidate** params and **confirm the schema at the probe**.

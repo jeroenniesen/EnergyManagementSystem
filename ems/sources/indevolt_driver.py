@@ -192,8 +192,10 @@ class IndevoltBatteryDriver:
             has_standby=True,
             has_grid_charge_switch=True,
             p1_paired=data.get(str(K_METER_CONN)) == 1000,
-            max_charge_w=float(self.charge_power_w),
-            max_discharge_w=float(self.discharge_power_w),
+            # The driver is the final safety boundary: a tower cannot receive more than the
+            # conservative 2.4 kW per-tower limit, regardless of a legacy cluster setting.
+            max_charge_w=float(min(self.charge_power_w, len(self.ips) * _MAX_POWER_W)),
+            max_discharge_w=float(min(self.discharge_power_w, len(self.ips) * _MAX_POWER_W)),
         )
 
     def current_mode(self) -> PhysicalMode:

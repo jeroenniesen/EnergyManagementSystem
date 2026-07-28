@@ -22,7 +22,8 @@ devices:
   p1_ip: 192.168.1.10         # HomeWizard P1 (net grid)
   solar_ip: 192.168.1.11      # HomeWizard kWh (solar)
   car_ip: 192.168.1.12        # HomeWizard kWh (EV)
-  indevolt_ip: 192.168.1.20   # Indevolt main tower (cluster = one logical device)
+  indevolt_ip: 192.168.1.20   # Indevolt main tower; also works as a single tower
+  indevolt_ips_extra: ""       # Optional comma-separated additional towers
 ```
 
 Secrets are env-only, never committed: `TIBBER_TOKEN`, `INDEVOLT_KEY`, `EMS_WEB_TOKEN`.

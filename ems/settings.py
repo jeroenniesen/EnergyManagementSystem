@@ -133,7 +133,8 @@ SETTINGS_SCHEMA: tuple[SettingsField, ...] = (
     ),
     SettingsField(
         "battery.usable_kwh", "Usable capacity", "number", 10.8, "battery",
-        help="Usable energy of the battery cluster (SolidFlex 2000 ×2 ≈ 10.8 kWh).",
+        help="Usable energy. A single SolidFlex 2000 defaults to ≈5.4 kWh; multiple towers are "
+        "summed.",
         min=1.0, max=50.0, step=0.1, unit="kWh",
     ),
     SettingsField(
@@ -144,12 +145,12 @@ SETTINGS_SCHEMA: tuple[SettingsField, ...] = (
     ),
     SettingsField(
         "battery.max_charge_w", "Max charge power", "number", 4000.0, "battery",
-        help="Peak charge power of the cluster — used to project how fast it fills.",
+        help="Peak charge power. Defaults to 2.4 kW per tower and scales for multiple towers.",
         min=200.0, max=20000.0, step=100.0, unit="W", advanced=True,
     ),
     SettingsField(
         "battery.max_discharge_w", "Max discharge power", "number", 4000.0, "battery",
-        help="Peak discharge power of the cluster — used to project how fast it drains.",
+        help="Peak discharge power. Defaults to 2.4 kW per tower and scales for multiple towers.",
         min=200.0, max=20000.0, step=100.0, unit="W", advanced=True,
     ),
     SettingsField(
@@ -597,7 +598,8 @@ def effective_settings(stored: Any) -> dict[str, Any]:
     eff = defaults()
     clean, _errors = validate_settings(stored if isinstance(stored, dict) else {})
     eff.update(clean)
-    return eff
+    from ems.battery_profile import apply_topology_defaults
+    return apply_topology_defaults(eff)
 
 
 def public_values(values: dict[str, Any]) -> dict[str, Any]:

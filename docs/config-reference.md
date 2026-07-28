@@ -15,7 +15,7 @@ Legend: **UI** = also editable from the web UI (overlays the file). **CONFIRM** 
 |---|---|---|---|
 | `model` | str | `solidflex_2000` | informational |
 | `usable_kwh` | float | 9.7 · **CONFIRM** | energy budget for planning |
-| `max_charge_w` / `max_discharge_w` | int W | 4000 · **CONFIRM** | charge-time sizing; discharge cap |
+| `max_charge_w` / `max_discharge_w` | int W | 2,400 per tower (4,000 legacy two-tower default) | charge-time sizing; discharge cap |
 | `min_reserve_soc` | % | 10 | never discharge below |
 | `round_trip_efficiency` | 0–1 | 0.90 | arbitrage economics + SoC projection |
 | `min_mode_dwell_seconds` | int | 600 | min time in a mode (anti-flap) |

@@ -30,6 +30,7 @@ from ems.analysis import (
     forecast_error,
     recommend_solar_confidence,
 )
+from ems.battery_profile import BatteryTopology, normalize_tower_ips
 from ems.cars import by_id as car_by_id
 from ems.confidence import plan_confidence
 from ems.control.mode_controller import ModeController
@@ -2597,6 +2598,15 @@ def create_app(
         out: dict[str, Any] = {
             "current_mode": None, "capabilities": None,
             "towers": towers, "aggregate": aggregate,
+        }
+        topology = BatteryTopology(normalize_tower_ips(
+            settings_cache.get("battery.indevolt_ip"),
+            settings_cache.get("battery.indevolt_ips_extra"),
+        ))
+        out["topology"] = {
+            "tower_count": topology.tower_count,
+            "label": topology.label,
+            "configured": topology.is_configured,
         }
         if battery is None:
             return out
