@@ -131,6 +131,33 @@ def test_solar_share_pct_is_the_percentage_of_surplus_slots_in_the_window():
     assert advice["solar_share_pct"] == 75
 
 
+def test_surplus_export_models_and_fees_match_economic_snapshot():
+    slots = _slots([0.20, 0.20])
+    p50 = {slots[0].start: 2000.0}
+    common = dict(
+        price_slots=slots, p50_by_slot=p50, departure=BASE + timedelta(hours=1),
+        kwh_needed=1.0, charger_kw=4.0, now=BASE,
+    )
+    # fixed feed-in is independent of the spot price and subtracts the configured export fee.
+    fixed = advise_charge_window(
+        **common, export_model="fixed", fixed_feed_in_eur_per_kwh=0.04,
+        export_fee_eur_per_kwh=0.01,
+    )
+    assert fixed is not None
+    assert fixed["est_cost_eur"] == 0.03  # (0.04 - 0.01) * 1 kWh
+
+    # Negative spot prices remain negative under spot-minus-tax; missing forecast entries are
+    # treated as non-surplus and therefore retain the retail price.
+    negative_slots = _slots([-0.05, 0.20])
+    negative = advise_charge_window(
+        price_slots=negative_slots, p50_by_slot={}, departure=BASE + timedelta(hours=1),
+        kwh_needed=0.5, charger_kw=4.0, now=BASE,
+        export_model="spot_minus_tax", energy_tax_eur_per_kwh=0.13,
+    )
+    assert negative is not None
+    assert negative["est_cost_eur"] == -0.03
+
+
 # ---- GET /api/advisor/ev-charge ----
 
 def _app(tmp_path):

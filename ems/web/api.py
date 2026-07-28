@@ -3642,6 +3642,8 @@ def create_app(
             energy_tax_eur_per_kwh=float(settings_cache.get("prices.energy_tax_eur_per_kwh", 0.13)),
             fixed_feed_in_eur_per_kwh=float(
                 settings_cache.get("prices.fixed_feed_in_eur_per_kwh", 0.01)),
+            export_fee_eur_per_kwh=float(
+                settings_cache.get("grid_fees.export_fee_eur_per_kwh", 0.0)),
             now=now,
         )
         return {"advice": advice}
