@@ -31,6 +31,7 @@ from ems.analysis import (
     recommend_solar_confidence,
 )
 from ems.application.context import ApplicationContext
+from ems.application.services import PlanService, VerificationService
 from ems.battery_profile import BatteryTopology, normalize_tower_ips
 from ems.cars import by_id as car_by_id
 from ems.confidence import plan_confidence
@@ -2716,37 +2717,7 @@ def create_app(
 
     @app.get("/api/plan")
     def plan_endpoint() -> dict:
-        pp = _current_plan()
-        if pp is None:
-            return {"created_at": None, "current_intent": None,
-                    "current_reason": None, "slots": []}
-        now, _prices, plan = pp
-        cur = plan.intent_at(now)
-        val = _validate_plan_obj(plan, now)
-        return {
-            "created_at": plan.created_at.isoformat(),
-            "strategy": plan.strategy,
-            "target_soc": plan.target_soc,
-            "deadline": plan.deadline.isoformat() if plan.deadline else None,
-            "current_intent": cur.intent if cur else None,
-            "current_reason": cur.reason if cur else None,
-            # The §8.11 verdict so the UI can show "control held — why".
-            "validation": val.to_dict(),
-            "tariff_policy": policy_to_dict(policy_from_settings(settings_cache)),
-            "tariff_warnings": [w.to_dict() for w in validate_tariff_policy(
-                policy_from_settings(settings_cache),
-                export_model=str(settings_cache.get("prices.export_price_model", "net_metering")),
-            )],
-            "slots": [
-                # The energy contract travels with the mode (energy review P2.4): the UI shows
-                # "charge to X% (Y kWh) at Z W by <deadline>", not just a mode label.
-                {"start": s.start.isoformat(), "intent": s.intent, "reason": s.reason,
-                 "target_soc": s.target_soc, "target_kwh": s.target_kwh, "power_w": s.power_w,
-                 "floor_soc": s.floor_soc,
-                 "deadline": s.deadline.isoformat() if s.deadline else None}
-                for s in plan.slots
-            ],
-        }
+        return plan_service.get_plan(settings=settings_cache)
 
     @app.post("/api/plan-preview")
     def plan_preview(body: dict | None = None) -> dict:
@@ -2782,36 +2753,7 @@ def create_app(
 
         This is deliberately observational: it never changes a plan or commands hardware.
         """
-        now = datetime.now(UTC)
-        pp = _current_plan()
-        sample = _current_sample(now)
-        if pp is None:
-            return {"status": "no_plan", "planned": None, "actual": None}
-        _plan_now, _prices, plan = pp
-        slot = plan.intent_at(now)
-        actual = None if sample is None else {
-            "soc_pct": sample.soc_pct,
-            "battery_power_w": sample.battery_power_w,
-            "grid_power_w": sample.grid_power_w,
-            "observed_at": sample.ts.isoformat() if hasattr(sample, "ts") else now.isoformat(),
-        }
-        planned = None if slot is None else {
-            "intent": slot.intent.value,
-            "target_soc": slot.target_soc,
-            "deadline": slot.deadline.isoformat() if slot.deadline else None,
-            "reason": slot.reason,
-        }
-        status = "awaiting_measurement"
-        if actual is not None:
-            status = "observed"
-            if (planned and planned["intent"] == "grid_charge_to_target"
-                    and actual["battery_power_w"] > 50):
-                status = "unexpected_discharge"
-            elif (planned and planned["intent"] == "discharge_for_load"
-                  and actual["battery_power_w"] < -50):
-                status = "unexpected_charge"
-        return {"status": status, "planned": planned, "actual": actual,
-                "checked_at": now.isoformat()}
+        return verification_service.verify()
 
     _STRATEGY_DESC = {
         "summer": "Solar-first — fill the battery from your panels and run the night on it; "
@@ -4133,6 +4075,18 @@ def create_app(
         runtime_state={"dry_run": dry_run, "dev_mode": dev_mode},
         control_state=ctx.__dict__,
     )
+    app.state.application_context.runtime_state.update({
+        "current_plan": _current_plan,
+        "current_sample": _current_sample,
+        "validate_plan": _validate_plan_obj,
+        "policy": lambda s: policy_to_dict(policy_from_settings(s)),
+        "tariff_warnings": lambda s: [w.to_dict() for w in validate_tariff_policy(
+            policy_from_settings(s),
+            export_model=str(s.get("prices.export_price_model", "net_metering")),
+        )],
+    })
+    plan_service = PlanService(app.state.application_context)
+    verification_service = VerificationService(app.state.application_context)
     for build in (build_auth_router, build_users_router, build_car_router, build_digest_router,
                   build_notify_router, build_export_router, build_accuracy_router,
                   build_whatif_router):
