@@ -43,6 +43,8 @@ type GasSummary = {
   kwh_eq: number;
   eur: number;
   co2_kg: number;
+  daily_m3?: number;
+  annualized_eur?: number;
 };
 type TariffPolicy = {
   import_fee_eur_per_kwh: number;
@@ -271,6 +273,8 @@ function GasPanel({ gas, partial }: { gas: GasSummary; partial: boolean }) {
       </div>
       <p className="gas-hint">
         Heating is typically the biggest energy cost left — see the CO₂ score.
+        {gas.daily_m3 != null && gas.annualized_eur != null &&
+          ` At ${gas.daily_m3.toFixed(1)} m³/day, that is roughly €${gas.annualized_eur}/year.`}
       </p>
     </div>
   );

@@ -80,6 +80,7 @@ type CarPlanResp = {
   needs_anchor?: boolean;
   needs_schedule?: boolean;
   car_meter_configured?: boolean;
+  battery_hold_recommendation?: { enabled: boolean; mode: string; message: string };
 };
 
 // A best-effort background refresh — the plan barely moves within a couple of minutes.
@@ -463,6 +464,11 @@ export function CarCard({
       {!compact && data.car_meter_configured === false && (
         <p className="advisor-hint" data-testid="car-meter-missing">
           No EV meter is configured, so this estimate only changes when you update it manually.
+        </p>
+      )}
+      {data.battery_hold_recommendation && (
+        <p className="advisor-hint" data-testid="car-battery-hold-advice">
+          {data.battery_hold_recommendation.message}
         </p>
       )}
 

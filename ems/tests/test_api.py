@@ -185,6 +185,11 @@ def test_plan_endpoint_without_source():
     assert b["current_intent"] is None
 
 
+def test_plan_verification_without_plan_is_explicit():
+    b = _client().get("/api/plan-verification").json()
+    assert b == {"status": "no_plan", "planned": None, "actual": None}
+
+
 def test_battery_endpoint_returns_mode_and_capabilities():
     from ems.sources.battery import MockBatteryDriver
 

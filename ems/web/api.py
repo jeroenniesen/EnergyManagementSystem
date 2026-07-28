@@ -126,6 +126,7 @@ from ems.storage.history import (
     materialize_observations,
 )
 from ems.storage.settings import SettingsStore
+from ems.tariff_validation import validate_tariff_policy
 from ems.tariffs import policy_from_settings, policy_to_dict
 from ems.weather import cloud_cover_pct
 from ems.web.authz import (
@@ -2631,8 +2632,14 @@ def create_app(
             return {"today_eur": None}
         _now, prices, plan = pp
         by_start = {p.start: p.eur_per_kwh for p in prices}
-        return {"today_eur": estimate_daily_savings_eur(
-            plan, by_start, tariff_policy=policy_from_settings(settings_cache))}
+        policy = policy_from_settings(settings_cache)
+        return {
+            "today_eur": estimate_daily_savings_eur(plan, by_start, tariff_policy=policy),
+            "tariff_warnings": [w.to_dict() for w in validate_tariff_policy(
+                policy,
+                export_model=str(settings_cache.get("prices.export_price_model", "net_metering")),
+            )],
+        }
 
     # Planning knobs that shape the plan — the ONLY settings included in a replay bundle. Explicit
     # allow-list, so no meter IP, token, key or location can ever leak into an export (privacy §12).
@@ -2689,6 +2696,10 @@ def create_app(
                             "intent": p.intent.value} for p in proj],
             "validation": val.to_dict(),
             "tariff_policy": policy_to_dict(policy_from_settings(settings_cache)),
+            "tariff_warnings": [w.to_dict() for w in validate_tariff_policy(
+                policy_from_settings(settings_cache),
+                export_model=str(settings_cache.get("prices.export_price_model", "net_metering")),
+            )],
             "decision": {"intent": str(intent) if intent else None, "reason": dreason,
                          "override_active": override_active, "target_soc": tgt},
         }
@@ -2712,6 +2723,10 @@ def create_app(
             # The §8.11 verdict so the UI can show "control held — why".
             "validation": val.to_dict(),
             "tariff_policy": policy_to_dict(policy_from_settings(settings_cache)),
+            "tariff_warnings": [w.to_dict() for w in validate_tariff_policy(
+                policy_from_settings(settings_cache),
+                export_model=str(settings_cache.get("prices.export_price_model", "net_metering")),
+            )],
             "slots": [
                 # The energy contract travels with the mode (energy review P2.4): the UI shows
                 # "charge to X% (Y kWh) at Z W by <deadline>", not just a mode label.
@@ -2750,6 +2765,35 @@ def create_app(
         now, prices_, plan = pp
         fc = solar_forecast.slots() if solar_forecast is not None else None
         return {**build_plan_detail(now, prices_, plan, fc), "strategy": _active_strategy(now)}
+
+    @app.get("/api/plan-verification")
+    def plan_verification() -> dict:
+        """Compare the current planned intent with the latest measured battery outcome.
+
+        This is deliberately observational: it never changes a plan or commands hardware.
+        """
+        now = datetime.now(UTC)
+        pp = _current_plan()
+        sample = _current_sample(now)
+        if pp is None:
+            return {"status": "no_plan", "planned": None, "actual": None}
+        _plan_now, _prices, plan = pp
+        slot = plan.intent_at(now)
+        actual = None if sample is None else {
+            "soc_pct": sample.soc_pct,
+            "battery_power_w": sample.battery_power_w,
+            "grid_power_w": sample.grid_power_w,
+            "observed_at": sample.ts.isoformat() if hasattr(sample, "ts") else now.isoformat(),
+        }
+        planned = None if slot is None else {
+            "intent": slot.intent.value,
+            "target_soc": slot.target_soc,
+            "deadline": slot.deadline.isoformat() if slot.deadline else None,
+            "reason": slot.reason,
+        }
+        status = "awaiting_measurement" if actual is None else "observed"
+        return {"status": status, "planned": planned, "actual": actual,
+                "checked_at": now.isoformat()}
 
     _STRATEGY_DESC = {
         "summer": "Solar-first — fill the battery from your panels and run the night on it; "
