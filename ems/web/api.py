@@ -31,7 +31,8 @@ from ems.analysis import (
     recommend_solar_confidence,
 )
 from ems.application.context import ApplicationContext
-from ems.application.services import PlanService, VerificationService
+from ems.application.services import (DiagnosticsService, PlanService, ReportService,
+                                      VerificationService)
 from ems.battery_profile import BatteryTopology, normalize_tower_ips
 from ems.cars import by_id as car_by_id
 from ems.confidence import plan_confidence
@@ -2267,8 +2268,7 @@ def create_app(
             "home_state": home,
         }
 
-    @app.get("/api/diagnostics")
-    async def diagnostics_endpoint() -> dict:
+    async def _diagnostics_snapshot() -> dict:
         now = datetime.now(UTC)
         prices_ok = price_source is not None
         forecast_ok = solar_forecast is not None
@@ -2365,6 +2365,10 @@ def create_app(
             "recorder": recorder.health() if recorder is not None else None,
             "perf": build_perf_block(),
         }
+
+    @app.get("/api/diagnostics")
+    async def diagnostics_endpoint() -> dict:
+        return await diagnostics_service.get_snapshot()
 
     @app.get("/api/charge-need")
     def charge_need_endpoint() -> dict:
@@ -2628,8 +2632,7 @@ def create_app(
         }
         return out
 
-    @app.get("/api/savings")
-    def savings_endpoint() -> dict:
+    def _savings_snapshot() -> dict:
         pp = _current_plan()
         if pp is None:
             policy = policy_from_settings(settings_cache)
@@ -2651,6 +2654,10 @@ def create_app(
                 export_model=str(settings_cache.get("prices.export_price_model", "net_metering")),
             )],
         }
+
+    @app.get("/api/savings")
+    def savings_endpoint() -> dict:
+        return savings_service.savings()
 
     # Planning knobs that shape the plan — the ONLY settings included in a replay bundle. Explicit
     # allow-list, so no meter IP, token, key or location can ever leak into an export (privacy §12).
@@ -3564,7 +3571,7 @@ def create_app(
         else:
             anchor = now_local.date()
         start, end, label, partial = resolve_window(period, anchor, site_tz, now_local)
-        return await _report_for_window(period, start, end, label, partial, now_local)
+        return await report_service.report(period, start, end, label, partial, now_local)
 
     async def _solar_confidence_advice(now: datetime) -> dict | None:
         """Advisory-only recommendation for `planner.solar_confidence`, derived from how the
@@ -3775,25 +3782,7 @@ def create_app(
         else:
             anchor = now_local.date()
         start, end, label, partial = resolve_window(period, anchor, site_tz, now_local)
-        days = await _finance_window(start, end, now_local) if store is not None else []
-
-        def _sum(key: str) -> float | None:
-            vals = [d[key] for d in days if d.get(key) is not None]
-            return round(sum(vals), 2) if vals else None
-
-        totals = {
-            "grid_cost_eur": _sum("grid_cost_eur"),
-            "battery_cost_eur": _sum("battery_cost_eur"),
-            "saved_eur": _sum("saved_eur"),
-            "grid_import_kwh": _sum("grid_import_kwh") or 0.0,
-            "grid_export_kwh": _sum("grid_export_kwh") or 0.0,
-            "days_with_prices": sum(1 for d in days if d.get("price_coverage", 0) > 0),
-            "days_with_data": sum(1 for d in days if d.get("has_data")),
-        }
-        return {"period": period, "label": label,
-                "window_start": start.astimezone(UTC).isoformat(),
-                "window_end": end.astimezone(UTC).isoformat(),
-                "partial": partial, "days": days, "totals": totals}
+        return await report_service.finance(start, end, now_local, period, label, partial)
 
     @app.get("/api/series")
     async def series(limit: int = Query(default=100, ge=1, le=2000)) -> dict:
@@ -4084,9 +4073,18 @@ def create_app(
             policy_from_settings(s),
             export_model=str(s.get("prices.export_price_model", "net_metering")),
         )],
+        "report_for_window": _report_for_window,
+        "finance_window": lambda start, end, now_local: (
+            _finance_window(start, end, now_local) if store is not None else []
+        ),
+        "savings": _savings_snapshot,
+        "diagnostics_snapshot": _diagnostics_snapshot,
     })
     plan_service = PlanService(app.state.application_context)
     verification_service = VerificationService(app.state.application_context)
+    report_service = ReportService(app.state.application_context)
+    savings_service = report_service
+    diagnostics_service = DiagnosticsService(app.state.application_context)
     for build in (build_auth_router, build_users_router, build_car_router, build_digest_router,
                   build_notify_router, build_export_router, build_accuracy_router,
                   build_whatif_router):
