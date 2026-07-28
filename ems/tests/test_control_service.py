@@ -109,6 +109,25 @@ def test_control_service_constructs_and_runs_a_tick_standalone():
     assert controller.driver.current_mode() is PhysicalMode.CHARGE
 
 
+def test_forced_discharge_sizing_requires_export_capability():
+    """The extracted decision engine must retain the export-discharge safety gate."""
+    controller = _controlling_controller()
+    svc, ctx = _service(controller)
+    ctx.override_box["ov"] = Override(
+        intent=BatteryIntent.DISCHARGE_FOR_LOAD, expires_at=NOW + timedelta(hours=1)
+    )
+
+    intent, _, _, target, power, _, _ = svc.effective_intent(NOW)
+    assert intent is BatteryIntent.DISCHARGE_FOR_LOAD
+    assert target is None and power is None
+
+    controller.allow_export_discharge = True
+    intent, _, _, target, power, _, _ = svc.effective_intent(NOW)
+    assert intent is BatteryIntent.DISCHARGE_FOR_LOAD
+    assert target == svc._settings["battery.min_reserve_soc"]
+    assert power == svc._settings["battery.max_discharge_w"]
+
+
 def test_control_service_run_cycle_audits_the_write():
     # The async wrapper (run_cycle) serialises on ctx.control_lock, runs the tick off the loop, and
     # writes the tick's records to the injected audit store — proven with a tiny fake store.

@@ -40,6 +40,7 @@ from ems.control.command_fence import (
     CommandClass,
     CommandTicket,
 )
+from ems.control.decision import ControlDecisionEngine
 from ems.control.failsafe import failsafe_intent
 from ems.control.override import NONE as OVERRIDE_NONE
 from ems.control.override import Override
@@ -425,6 +426,16 @@ class ControlService:
         self._planner_cfg = planner_cfg if planner_cfg is not None else self.planner_cfg
         self._summer_cfg = summer_cfg if summer_cfg is not None else self.summer_cfg
         self._adaptive_cfg = adaptive_cfg if adaptive_cfg is not None else self.adaptive_cfg
+        self._decision_engine = ControlDecisionEngine(
+            data_quality=self._data_quality,
+            car_mode_action=self._car_mode_action,
+            car_session_active=lambda: bool(self._ctx.car_session["active"]),
+            settings=self._settings,
+            site_tz=self._site_tz,
+            allow_export_discharge=lambda: bool(
+                self._controller is not None and self._controller.allow_export_discharge
+            ),
+        )
 
     # --- coalesced live reads / config builders / strategy resolution (B-46 stage 2) -------------
     # Moved verbatim from api.py's create_app closures. Kept here because their primary caller is
@@ -772,7 +783,7 @@ class ControlService:
         return intent, reason, None  # "none" — defensive (car_charging was True), unchanged
 
     # --- effective intent ------------------------------------------------------------------------
-    def effective_intent(self, now: datetime):
+    def _effective_intent_legacy(self, now: datetime):
         """The intent the controller should act on now + its energy sizing, honouring an active
         manual override and the data-quality fail-safe. Returns (intent|None, reason|None,
         override_active, target_soc|None, power_w|None, validation|None, car_action|None).
@@ -867,6 +878,16 @@ class ControlService:
                   and self._controller.allow_export_discharge):
                 target_soc, power_w = cur.floor_soc, cur.power_w  # forced discharge → reserve floor
         return intent, reason, override_active, target_soc, power_w, val, car_action
+
+    def effective_intent(self, now: datetime):
+        """Resolve intent through the pure decision engine."""
+        return self._decision_engine.effective_intent(
+            now,
+            override=self._ctx.override_box["ov"],
+            current_plan=self.current_plan,
+            price_horizon_status=lambda: self._price_horizon_status,
+            validate_plan=self._validate_plan_obj,
+        )
 
     # --- cluster-drift audit ---------------------------------------------------------------------
     def cluster_drift_record(self, desired: PhysicalMode, towers) -> dict | None:
