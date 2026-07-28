@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from datetime import UTC, datetime
 from datetime import date as date_cls
 
 from fastapi import APIRouter, Query
@@ -19,7 +18,7 @@ def build_router(ctx: AppContext, service: ReportService) -> APIRouter:
         period: str = Query(default="day", pattern="^(day|week|month|year)$"),
         date: str | None = None,
     ) -> dict:
-        now_local = datetime.now(UTC).astimezone(ctx.site_tz)
+        now_local = service.context.clock.now_local(ctx.site_tz)
         if date:
             try:
                 anchor = date_cls.fromisoformat(date)
@@ -35,7 +34,7 @@ def build_router(ctx: AppContext, service: ReportService) -> APIRouter:
         period: str = Query(default="day", pattern="^(day|week|month|year)$"),
         date: str | None = None,
     ) -> dict:
-        now_local = datetime.now(UTC).astimezone(ctx.site_tz)
+        now_local = service.context.clock.now_local(ctx.site_tz)
         if date:
             try:
                 anchor = date_cls.fromisoformat(date)

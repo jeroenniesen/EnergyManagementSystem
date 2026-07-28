@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import datetime
 
 from ems.application.context import ApplicationContext
 
@@ -13,7 +13,7 @@ class VerificationService:
 
     def verify(self, now: datetime | None = None) -> dict[str, object]:
         state = self.context.runtime_state
-        now = now or datetime.now(UTC)
+        now = now or self.context.clock.now_utc()
         pp = state["current_plan"]()
         sample = state["current_sample"](now)
         if pp is None:
