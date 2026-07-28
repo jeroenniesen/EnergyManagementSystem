@@ -30,6 +30,7 @@ from ems.analysis import (
     forecast_error,
     recommend_solar_confidence,
 )
+from ems.application.context import ApplicationContext
 from ems.battery_profile import BatteryTopology, normalize_tower_ips
 from ems.cars import by_id as car_by_id
 from ems.confidence import plan_confidence
@@ -119,6 +120,7 @@ from ems.sources.prices import PriceSlot, PriceSource, current_price
 from ems.storage.audit import AuditStore
 from ems.storage.auth import AuthStore
 from ems.storage.cache import CacheStore
+from ems.storage.context import StorageContext
 from ems.storage.history import (
     OBSERVATION_RETENTION_DAYS,
     HistoryStore,
@@ -4110,6 +4112,26 @@ def create_app(
         audit_auth=_audit_auth,
         is_supervised=_is_supervised,
         restart_pending=_restart_pending,
+    )
+    # Typed application/storage seams for application services.  Existing aliases and routers
+    # continue to use the same object instances; this is construction-only during the first
+    # extraction slice, so endpoint and control behavior remain unchanged.
+    app.state.application_context = ApplicationContext(
+        source=source,
+        controller=controller,
+        recorder=recorder,
+        freshness=freshness,
+        settings=settings_cache,
+        storage=StorageContext.from_existing(
+            history=store,
+            settings=settings_store,
+            override=override_store,
+            audit=audit_store,
+            auth=auth_store,
+            cache=cache_store,
+        ),
+        runtime_state={"dry_run": dry_run, "dev_mode": dev_mode},
+        control_state=ctx.__dict__,
     )
     for build in (build_auth_router, build_users_router, build_car_router, build_digest_router,
                   build_notify_router, build_export_router, build_accuracy_router,
