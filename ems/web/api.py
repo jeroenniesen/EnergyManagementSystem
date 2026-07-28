@@ -128,6 +128,7 @@ from ems.storage.audit import AuditStore
 from ems.storage.auth import AuthStore
 from ems.storage.cache import CacheStore
 from ems.storage.context import StorageContext
+from ems.storage.control_state import ControlStateStore
 from ems.storage.history import (
     OBSERVATION_RETENTION_DAYS,
     HistoryStore,
@@ -883,6 +884,7 @@ def create_app(
     solar_forecast: SolarForecastSource | None = None,
     battery: BatteryDriver | None = None,
     controller: ModeController | None = None,
+    control_state_store: ControlStateStore | None = None,
     settings_store: SettingsStore | None = None,
     override_store: SettingsStore | None = None,
     audit_store: AuditStore | None = None,
@@ -1435,11 +1437,10 @@ def create_app(
                 wd.cancel()
                 with suppress(asyncio.CancelledError):
                     await wd
-            # Close each store's shared long-lived connection (perf: B-49) now that every
-            # background task has stopped touching it — a clean shutdown, not a leaked handle.
-            for s in (store, settings_store, override_store, audit_store):
-                if s is not None:
-                    await s.close()
+            # Close every repository through the shared boundary, after all tasks (including
+            # audit work) and the battery AUTO restore have completed.  The boundary also covers
+            # synchronous cache/control-state stores and isolates/idempotently retries failures.
+            await app.state.application_context.storage.close()
 
     app = FastAPI(title="Smart Energy Manager", version="0.0.1", lifespan=lifespan)
     # Expose the intelligence evaluation-record seam (B-79) for the runtime to record into and for
@@ -4076,6 +4077,7 @@ def create_app(
             audit=audit_store,
             auth=auth_store,
             cache=cache_store,
+            control_state=control_state_store,
         ),
         runtime_state={"dry_run": dry_run, "dev_mode": dev_mode},
         control_state=ctx.__dict__,
