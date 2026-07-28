@@ -73,6 +73,9 @@ def day_finance(
     export_price_model: str = "net_metering",
     energy_tax_eur_per_kwh: float = 0.13,
     fixed_feed_in_eur_per_kwh: float = 0.01,
+    tibber_total_includes_all: bool = False,
+    import_fee_eur_per_kwh: float = 0.0,
+    export_fee_eur_per_kwh: float = 0.0,
     window_start: datetime | None = None,
     window_end: datetime | None = None,
     sample_interval_seconds: float = 900.0,
@@ -124,14 +127,16 @@ def day_finance(
         if price is None:
             continue
         priced_seconds += segment.duration_seconds
+        import_price = price if tibber_total_includes_all else price + import_fee_eur_per_kwh
         # Import costs the full price; export earns the feed-in VALUE (full price under saldering,
         # less post-2027 — may even be negative). Same credit in both worlds so `saved` stays fair.
         credit = export_value(price, model=export_price_model,
                               energy_tax_eur_per_kwh=energy_tax_eur_per_kwh,
                               fixed_feed_in_eur_per_kwh=fixed_feed_in_eur_per_kwh)
-        cost += (max(0.0, grid_w) * price - max(0.0, -grid_w) * credit) * hours / 1000.0
+        credit -= export_fee_eur_per_kwh
+        cost += (max(0.0, grid_w) * import_price - max(0.0, -grid_w) * credit) * hours / 1000.0
         baseline_w = grid_w + batt_w  # the meter with the battery removed
-        base_cost += (max(0.0, baseline_w) * price
+        base_cost += (max(0.0, baseline_w) * import_price
                       - max(0.0, -baseline_w) * credit) * hours / 1000.0
         dis_priced += max(0.0, batt_w) * hours / 1000.0
 

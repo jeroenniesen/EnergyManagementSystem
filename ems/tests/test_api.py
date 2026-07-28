@@ -176,6 +176,7 @@ def test_plan_endpoint_returns_slots_and_current_intent():
         "allow_self_consumption", "grid_charge_to_target", "hold_reserve", "discharge_for_load",
     }
     assert b["slots"][0]["reason"]
+    assert b["tariff_policy"]["import_fee_eur_per_kwh"] == 0.0
 
 
 def test_plan_endpoint_without_source():

@@ -101,3 +101,23 @@ def test_no_charge_after_last_discharge():
     assert by_start[MIDNIGHT] is BatteryIntent.GRID_CHARGE_TO_TARGET
     assert by_start[MIDNIGHT + timedelta(minutes=30)] is BatteryIntent.DISCHARGE_FOR_LOAD
     assert by_start[MIDNIGHT + timedelta(minutes=45)] is BatteryIntent.ALLOW_SELF_CONSUMPTION
+
+
+def test_import_fee_changes_planner_break_even_without_changing_raw_slots():
+    prices = _arbitrage_prices()
+    baseline = plan_rule_based(prices, MIDNIGHT, PlannerConfig(charge_slots=3, discharge_slots=1))
+    fee = plan_rule_based(
+        prices, MIDNIGHT,
+        PlannerConfig(charge_slots=3, discharge_slots=1, import_fee_eur_per_kwh=0.20),
+    )
+    assert baseline.slots != fee.slots
+
+
+def test_negative_raw_price_stays_charge_eligible_with_import_fee():
+    prices = [PriceSlot(MIDNIGHT + timedelta(minutes=15 * i), -0.02) for i in range(4)]
+    plan = plan_rule_based(
+        prices, MIDNIGHT,
+        PlannerConfig(charge_slots=2, discharge_slots=1, negative_price_soak=True,
+                      import_fee_eur_per_kwh=0.01),
+    )
+    assert any(s.intent is BatteryIntent.GRID_CHARGE_TO_TARGET for s in plan.slots)

@@ -44,6 +44,11 @@ type GasSummary = {
   eur: number;
   co2_kg: number;
 };
+type TariffPolicy = {
+  import_fee_eur_per_kwh: number;
+  export_fee_eur_per_kwh: number;
+  tibber_total_includes_all: boolean;
+};
 
 type Report = {
   period: string;
@@ -55,6 +60,7 @@ type Report = {
   scores: Score[];
   series?: SeriesBucket[];
   gas?: GasSummary | null;
+  tariff_policy?: TariffPolicy;
 };
 
 type Period = "day" | "week" | "month" | "year";
@@ -410,6 +416,14 @@ export function Insights({ canOperate = true }: { canOperate?: boolean } = {}) {
           {headline(report, f, isEarlyDay(period, report, f)) && (
             <p className="insights-headline" data-testid="insights-headline">
               {headline(report, f, isEarlyDay(period, report, f))}
+            </p>
+          )}
+          {report.tariff_policy && (
+            <p className="insights-tariff-note" data-testid="tariff-policy-note">
+              2027 tariff assumptions: import fees {report.tariff_policy.tibber_total_includes_all
+                ? "included in the provider total"
+                : `+€${report.tariff_policy.import_fee_eur_per_kwh.toFixed(3)}/kWh`}; export fees
+              {` −€${report.tariff_policy.export_fee_eur_per_kwh.toFixed(3)}/kWh`}.
             </p>
           )}
           {/* One consistent anatomy per card (B-37-style): ring | headline word | trend chip |
