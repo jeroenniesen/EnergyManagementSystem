@@ -1,5 +1,5 @@
 import asyncio
-from datetime import datetime, UTC
+from datetime import UTC, datetime
 from zoneinfo import ZoneInfo
 
 from ems.application.context import ApplicationContext
