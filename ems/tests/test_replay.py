@@ -12,13 +12,17 @@ beyond 1e-9). Two synthetic days are used:
 Battery model for the exact tests: usable 10 kWh, ±4 kW, reserve 0%, round-trip η = 1.0 (lossless
 → clean arithmetic), start SoC 0%. All timestamps UTC so a local day = a UTC day = 96 slots.
 """
+
 import asyncio
 import json
 import os
 from datetime import UTC, datetime, timedelta
 from zoneinfo import ZoneInfo
 
+import pytest
+
 from ems.domain import RawSample
+from ems.economics import EconomicSnapshot
 from ems.load_model import reconstruct
 from ems.planner.strategy import HysteresisState
 from ems.replay import (
@@ -61,17 +65,22 @@ def _raw_day(load_w, solar_of_slot, *, soc=0.0, day=DAY):
     for i in range(96):
         ts = (day + timedelta(minutes=15 * i)).isoformat()
         s = solar_of_slot(i)
-        rows.append({
-            "ts": ts, "grid_power_w": load_w - s, "solar_power_w": s,
-            "battery_power_w": 0.0, "ev_power_w": 0.0, "soc_pct": soc,
-        })
+        rows.append(
+            {
+                "ts": ts,
+                "grid_power_w": load_w - s,
+                "solar_power_w": s,
+                "battery_power_w": 0.0,
+                "ev_power_w": 0.0,
+                "soc_pct": soc,
+            }
+        )
     return rows
 
 
 def _price_day(price_of_slot, *, day=DAY):
     return [
-        {"start_ts": (day + timedelta(minutes=15 * i)).isoformat(),
-         "eur_per_kwh": price_of_slot(i)}
+        {"start_ts": (day + timedelta(minutes=15 * i)).isoformat(), "eur_per_kwh": price_of_slot(i)}
         for i in range(96)
     ]
 
@@ -116,11 +125,15 @@ def _fc_day(p50_of_slot, *, day=DAY):
     out = []
     for i in range(96):
         w = p50_of_slot(i)
-        out.append({
-            "issued_date": (day - timedelta(days=1)).date().isoformat(),
-            "start": (day + timedelta(minutes=15 * i)).isoformat(),
-            "p10_w": w, "p50_w": w, "p90_w": w,
-        })
+        out.append(
+            {
+                "issued_date": (day - timedelta(days=1)).date().isoformat(),
+                "start": (day + timedelta(minutes=15 * i)).isoformat(),
+                "p10_w": w,
+                "p50_w": w,
+                "p90_w": w,
+            }
+        )
     return out
 
 
@@ -205,8 +218,9 @@ def test_low_price_coverage_day_skipped():
 # --- 6. export credited via export_value under spot_minus_tax (numeric identity) ------------------
 def test_export_credited_under_spot_minus_tax():
     raw, prices = _solar_day()
-    cfg = _cfg(**{"prices.export_price_model": "spot_minus_tax",
-                  "prices.energy_tax_eur_per_kwh": 0.13})
+    cfg = _cfg(
+        **{"prices.export_price_model": "spot_minus_tax", "prices.energy_tax_eur_per_kwh": 0.13}
+    )
     nb = replay_day(raw, prices, [], cfg=cfg).scenarios["no_battery"]
     # Same 2.05 import cost. Export credit now (price − tax) = 0.20 − 0.13 = 0.07 per kWh:
     #   6.0 kWh × 0.07 = 0.42  →  cost 2.05 − 0.42 = 1.63  (vs 0.85 under net_metering).
@@ -215,6 +229,57 @@ def test_export_credited_under_spot_minus_tax():
     # It differs deterministically from the default net_metering credit.
     nb_net = replay_day(raw, prices, [], cfg=_cfg()).scenarios["no_battery"]
     assert nb.cost_eur > nb_net.cost_eur
+
+
+@pytest.mark.parametrize(
+    ("model", "price", "tax", "fixed", "fee"),
+    [
+        ("net_metering", 0.20, 0.13, 0.01, 0.00),
+        ("net_metering", -0.05, 0.13, 0.01, 0.03),
+        ("spot_minus_tax", 0.20, 0.13, 0.01, 0.02),
+        ("spot_minus_tax", -0.05, 0.13, 0.01, 0.00),
+        ("fixed", 0.20, 0.13, 0.01, 0.03),
+        ("fixed", -0.05, 0.13, 0.04, 0.00),
+    ],
+)
+def test_replay_export_valuation_matches_economic_snapshot(model, price, tax, fixed, fee):
+    cfg = _cfg(
+        **{
+            "prices.export_price_model": model,
+            "prices.energy_tax_eur_per_kwh": tax,
+            "prices.fixed_feed_in_eur_per_kwh": fixed,
+            "grid_fees.export_fee_eur_per_kwh": fee,
+        }
+    )
+    expected = EconomicSnapshot.from_replay_config(cfg, raw_price_eur_per_kwh=price).export_credit()
+    # The replay's configured valuation and the shared snapshot must remain identical for
+    # every supported model, including negative prices and export fees.
+    assert expected == pytest.approx(
+        EconomicSnapshot(
+            import_price_eur_per_kwh=price,
+            export_price_eur_per_kwh=price - fee,
+            raw_price_eur_per_kwh=price,
+            export_model=model,
+            energy_tax_eur_per_kwh=tax,
+            fixed_feed_in_eur_per_kwh=fixed,
+            export_fee_eur_per_kwh=fee,
+        ).export_credit()
+    )
+
+
+def test_replay_cost_includes_export_fee_end_to_end():
+    raw, prices = _solar_day()
+    cfg = _cfg(
+        **{
+            "prices.export_price_model": "spot_minus_tax",
+            "prices.energy_tax_eur_per_kwh": 0.13,
+            "grid_fees.export_fee_eur_per_kwh": 0.02,
+        }
+    )
+    result = replay_day(raw, prices, [], cfg=cfg).scenarios["no_battery"]
+    # Baseline spot-minus-tax cost is 1.63; six exported kWh incur an additional
+    # 0.02 €/kWh export fee, so the replay total must be 1.75.
+    assert result.cost_eur == pytest.approx(1.75)
 
 
 # --- 7. A/B override changes the result deterministically -----------------------------------------
@@ -227,9 +292,12 @@ def test_ab_override_changes_planner_cost(tmp_path):
         raw, prices = _winter_day()
         for r in raw:
             sample = RawSample(
-                grid_power_w=r["grid_power_w"], solar_power_w=r["solar_power_w"],
-                battery_power_w=r["battery_power_w"], ev_power_w=r["ev_power_w"],
-                soc_pct=r["soc_pct"])
+                grid_power_w=r["grid_power_w"],
+                solar_power_w=r["solar_power_w"],
+                battery_power_w=r["battery_power_w"],
+                ev_power_w=r["ev_power_w"],
+                soc_pct=r["soc_pct"],
+            )
             await store.record(r["ts"], sample, reconstruct(sample))
         await store.upsert_price_slots([(p["start_ts"], p["eur_per_kwh"]) for p in prices])
 
@@ -263,9 +331,12 @@ def test_cli_table_and_json_against_seeded_db(tmp_path, capsys):
         raw, prices = _winter_day()
         for r in raw:
             sample = RawSample(
-                grid_power_w=r["grid_power_w"], solar_power_w=r["solar_power_w"],
-                battery_power_w=r["battery_power_w"], ev_power_w=r["ev_power_w"],
-                soc_pct=r["soc_pct"])
+                grid_power_w=r["grid_power_w"],
+                solar_power_w=r["solar_power_w"],
+                battery_power_w=r["battery_power_w"],
+                ev_power_w=r["ev_power_w"],
+                soc_pct=r["soc_pct"],
+            )
             await store.record(r["ts"], sample, reconstruct(sample))
         await store.upsert_price_slots([(p["start_ts"], p["eur_per_kwh"]) for p in prices])
 
@@ -296,9 +367,12 @@ def test_replay_never_writes_db(tmp_path):
         raw, prices = _winter_day()
         for r in raw:
             sample = RawSample(
-                grid_power_w=r["grid_power_w"], solar_power_w=r["solar_power_w"],
-                battery_power_w=r["battery_power_w"], ev_power_w=r["ev_power_w"],
-                soc_pct=r["soc_pct"])
+                grid_power_w=r["grid_power_w"],
+                solar_power_w=r["solar_power_w"],
+                battery_power_w=r["battery_power_w"],
+                ev_power_w=r["ev_power_w"],
+                soc_pct=r["soc_pct"],
+            )
             await store.record(r["ts"], sample, reconstruct(sample))
         await store.upsert_price_slots([(p["start_ts"], p["eur_per_kwh"]) for p in prices])
 
@@ -321,8 +395,9 @@ def test_resolve_strategy_threads_hysteresis_across_days():
     for day_offset in range(3):
         d = datetime(2026, 3, 1 + day_offset, 12, tzinfo=UTC)
         # Sunny forecast (high surplus) + a tiny price spread → the raw pick leans summer.
-        fc = [ForecastSlot(d + i * timedelta(minutes=15), 3000.0, 3000.0, 3000.0)
-              for i in range(96)]
+        fc = [
+            ForecastSlot(d + i * timedelta(minutes=15), 3000.0, 3000.0, 3000.0) for i in range(96)
+        ]
         prices = [PriceSlot(d + i * timedelta(minutes=15), 0.20) for i in range(96)]
         strat, state = _resolve_strategy(cfg, d, prices, fc, {}, state)
         seen.append(strat)
@@ -334,8 +409,7 @@ def test_replay_hysteresis_matches_live_same_day_tick_semantics():
     cfg = _cfg()
     d = datetime(2026, 3, 1, 12, tzinfo=UTC)
     state = HysteresisState(committed="winter", last_day="2026-02-28")
-    sunny = [ForecastSlot(d + i * timedelta(minutes=15), 3000.0, 3000.0, 3000.0)
-             for i in range(96)]
+    sunny = [ForecastSlot(d + i * timedelta(minutes=15), 3000.0, 3000.0, 3000.0) for i in range(96)]
     flat = [ForecastSlot(d + i * timedelta(minutes=15), 0.0, 0.0, 0.0) for i in range(96)]
     prices = [PriceSlot(d + i * timedelta(minutes=15), 0.20) for i in range(96)]
     _, state = _resolve_strategy(cfg, d, prices, sunny, {}, state)

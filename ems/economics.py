@@ -9,9 +9,12 @@ from __future__ import annotations
 
 import math
 from dataclasses import asdict, dataclass
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from ems.tariffs import TariffPolicy
+
+if TYPE_CHECKING:
+    from ems.replay import ReplayConfig
 
 
 @dataclass(frozen=True)
@@ -84,6 +87,30 @@ class EconomicSnapshot:
 
         return cls.from_tariff_policy(
             policy_from_settings(settings), raw_price_eur_per_kwh=raw_price_eur_per_kwh, **kwargs
+        )
+
+    @classmethod
+    def from_replay_config(
+        cls, config: ReplayConfig, *, raw_price_eur_per_kwh: float = 0.0
+    ) -> EconomicSnapshot:
+        """Build the shared economics view from replay's typed configuration.
+
+        The local import keeps the economics module independent of replay at runtime while
+        retaining a single export valuation implementation for historical simulations.
+        """
+        return cls(
+            import_price_eur_per_kwh=float(raw_price_eur_per_kwh),
+            export_price_eur_per_kwh=(
+                float(raw_price_eur_per_kwh) - float(getattr(config, "export_fee_eur_per_kwh", 0.0))
+            ),
+            round_trip_efficiency=config.round_trip_efficiency,
+            degradation_eur_per_kwh=config.degradation_eur_per_kwh,
+            risk_margin_eur_per_kwh=config.risk_margin_eur_per_kwh,
+            export_model=config.export_price_model,
+            energy_tax_eur_per_kwh=config.energy_tax_eur_per_kwh,
+            fixed_feed_in_eur_per_kwh=config.fixed_feed_in_eur_per_kwh,
+            raw_price_eur_per_kwh=float(raw_price_eur_per_kwh),
+            export_fee_eur_per_kwh=getattr(config, "export_fee_eur_per_kwh", 0.0),
         )
 
     def delivered_energy_cost(self, charge_price_eur_per_kwh: float | None = None) -> float:
