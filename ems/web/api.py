@@ -2629,7 +2629,15 @@ def create_app(
     def savings_endpoint() -> dict:
         pp = _current_plan()
         if pp is None:
-            return {"today_eur": None}
+            policy = policy_from_settings(settings_cache)
+            return {
+                "today_eur": None,
+                "tariff_warnings": [w.to_dict() for w in validate_tariff_policy(
+                    policy,
+                    export_model=str(settings_cache.get(
+                        "prices.export_price_model", "net_metering")),
+                )],
+            }
         _now, prices, plan = pp
         by_start = {p.start: p.eur_per_kwh for p in prices}
         policy = policy_from_settings(settings_cache)
