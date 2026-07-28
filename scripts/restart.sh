@@ -7,19 +7,28 @@ REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 LABEL="com.jeroenniesen.ems"
 PLIST="$HOME/Library/LaunchAgents/$LABEL.plist"
 DOMAIN="gui/$(id -u)"
+OS="$(uname -s)"
 PORT="$(grep -E '^[[:space:]]*port:' "$REPO/config.yaml" | head -1 | grep -oE '[0-9]+' || echo 8080)"
 
-if [ ! -f "$PLIST" ]; then
+if [ "$OS" = "Darwin" ] && [ ! -f "$PLIST" ]; then
   echo "No auto-start service is installed."
   echo "  • If you started it with 'make dev' / --foreground: just Ctrl-C in that terminal and re-run it."
   echo "  • Otherwise run ./scripts/install.sh to set it up."
   exit 1
 fi
 
-# Modern macOS: kickstart -k restarts the service in place. Fall back to unload/load if unavailable.
-if ! launchctl kickstart -k "$DOMAIN/$LABEL" 2>/dev/null; then
-  launchctl unload "$PLIST" 2>/dev/null || true
-  launchctl load "$PLIST"
+if [ "$OS" = "Linux" ]; then
+  SERVICE_NAME="smart-energy-manager.service"
+  if ! systemctl --user restart "$SERVICE_NAME"; then
+    echo "No systemd user service is installed. Run ./scripts/install.sh to set it up." >&2
+    exit 1
+  fi
+else
+  # Modern macOS: kickstart -k restarts the service in place. Fall back to unload/load if unavailable.
+  if ! launchctl kickstart -k "$DOMAIN/$LABEL" 2>/dev/null; then
+    launchctl unload "$PLIST" 2>/dev/null || true
+    launchctl load "$PLIST"
+  fi
 fi
 
 # Confirm it came back up.

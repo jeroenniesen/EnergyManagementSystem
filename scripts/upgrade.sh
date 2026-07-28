@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# Upgrade a RUNNING install to the latest version. One line on your Mac:
+# Upgrade a RUNNING install to the latest version. One line on macOS or Linux:
 #
 #   curl -fsSL https://raw.githubusercontent.com/jeroenniesen/EnergyManagementSystem/main/scripts/upgrade.sh | bash
 #

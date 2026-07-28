@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# One-command installer for the Smart Energy Manager on a Mac (Apple Silicon, e.g. Mac Mini M5).
+# One-command installer for the Smart Energy Manager on macOS or Linux.
 #
 #   git clone https://github.com/jeroenniesen/EnergyManagementSystem.git
 #   cd EnergyManagementSystem
@@ -13,10 +13,10 @@
 #   1. installs `uv` (user-local) if missing — manages Python 3.12 for you
 #   2. uses your Node if present (>=18), else downloads a repo-local Node just for the build
 #   3. builds the React dashboard and syncs the Python environment
-#   4. installs a LaunchAgent so the app starts on login and restarts if it crashes
+#   4. installs LaunchAgent (macOS) or a systemd user service (Linux)
 #   5. starts it now and prints the URL
 #
-# Flags: --foreground (run in this terminal, skip the LaunchAgent)   --no-start (set up only)
+# Flags: --foreground (run in this terminal, skip auto-start)   --no-start (set up only)
 set -euo pipefail
 
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -31,7 +31,11 @@ for a in "$@"; do case "$a" in --foreground) FOREGROUND=1;; --no-start) START=0;
 say() { printf '\033[1;36m▸ %s\033[0m\n' "$*"; }
 die() { printf '\033[1;31m✗ %s\033[0m\n' "$*" >&2; exit 1; }
 
-[ "$(uname -s)" = "Darwin" ] || say "Note: this installer is tuned for macOS; continuing anyway."
+OS="$(uname -s)"
+case "$OS" in
+  Darwin|Linux) ;;
+  *) die "Unsupported operating system: $OS (use --foreground on a supported macOS or Linux host)" ;;
+esac
 
 # 1. uv (Python toolchain) -----------------------------------------------------------------------
 if ! command -v uv >/dev/null 2>&1; then
@@ -79,11 +83,12 @@ if [ "$FOREGROUND" = "1" ]; then
   exec "${START_CMD[@]}"
 fi
 
-# 4. LaunchAgent — auto-start on login, restart on crash -----------------------------------------
-say "Installing the auto-start service (LaunchAgent)…"
-mkdir -p "$HOME/Library/LaunchAgents" "$REPO/ems/data"
-NODE_PATH_ENTRY=""; case ":$PATH:" in *":$REPO/.tools/"*) NODE_PATH_ENTRY="$(dirname "$(command -v node)"):";; esac
-cat > "$PLIST" <<PLIST
+# 4. Auto-start service --------------------------------------------------------------------------
+if [ "$OS" = "Darwin" ]; then
+  say "Installing the auto-start service (LaunchAgent)…"
+  mkdir -p "$HOME/Library/LaunchAgents" "$REPO/ems/data"
+  NODE_PATH_ENTRY=""; case ":$PATH:" in *":$REPO/.tools/"*) NODE_PATH_ENTRY="$(dirname "$(command -v node)"):";; esac
+  cat > "$PLIST" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict>
@@ -113,16 +118,51 @@ cat > "$PLIST" <<PLIST
   <key>StandardErrorPath</key><string>$REPO/ems/data/server-crash.log</string>
 </dict></plist>
 PLIST
-launchctl unload "$PLIST" 2>/dev/null || true
-launchctl load "$PLIST"
+  launchctl unload "$PLIST" 2>/dev/null || true
+  launchctl load "$PLIST"
+else
+  command -v systemctl >/dev/null 2>&1 || die "systemctl is required for Linux auto-start; use --foreground instead"
+  say "Installing the auto-start service (systemd user service)…"
+  SYSTEMD_USER_DIR="$HOME/.config/systemd/user"
+  SERVICE_NAME="smart-energy-manager.service"
+  SERVICE_FILE="$SYSTEMD_USER_DIR/$SERVICE_NAME"
+  mkdir -p "$SYSTEMD_USER_DIR" "$REPO/ems/data"
+  cat > "$SERVICE_FILE" <<SERVICE
+[Unit]
+Description=Smart Energy Manager
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=$REPO
+Environment=PATH=$(dirname "$UV"):$HOME/.local/bin:$HOME/.cargo/bin:/usr/local/bin:/usr/bin:/bin
+Environment=EMS_LOG_FILE=$REPO/ems/data/server.log
+Environment=EMS_SUPERVISED=1
+ExecStart=$UV run uvicorn ems.main:app --host 0.0.0.0 --port $PORT --no-access-log
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=default.target
+SERVICE
+  systemctl --user daemon-reload
+  systemctl --user enable --now "$SERVICE_NAME"
+fi
 
 # 5. Wait for health + report --------------------------------------------------------------------
 say "Waiting for the app to come up…"
 for _ in $(seq 1 40); do
   if curl -fsS "http://127.0.0.1:$PORT/health/live" >/dev/null 2>&1; then
-    LAN_IP="$(ipconfig getifaddr en0 2>/dev/null || echo "")"
+    if [ "$OS" = "Darwin" ]; then
+      LAN_IP="$(ipconfig getifaddr en0 2>/dev/null || echo "")"
+      LOCAL_LABEL="On this Mac"
+    else
+      LAN_IP="$(hostname -I 2>/dev/null | awk '{print $1}')"
+      LOCAL_LABEL="On this Linux machine"
+    fi
     printf '\n\033[1;32m✅ Smart Energy Manager is running.\033[0m\n'
-    printf '   On this Mac:  http://localhost:%s\n' "$PORT"
+    printf '   %s:  http://localhost:%s\n' "$LOCAL_LABEL" "$PORT"
     [ -n "$LAN_IP" ] && printf '   On your LAN:  http://%s:%s\n' "$LAN_IP" "$PORT"
     printf '   Next: open it and set up your devices, prices and location in the UI.\n'
     printf '   Logs: %s/ems/data/server.log    Stop/remove: ./scripts/uninstall.sh\n\n' "$REPO"

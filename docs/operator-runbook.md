@@ -37,7 +37,8 @@ schedule, plus:
 - a note of **where** each secret lives (env/secret file path) — **not** the secret values
 
 **Restore:**
-1. Stop the app (`docker compose stop ems`, or `make uninstall` / `launchctl` on a Mac install).
+1. Stop the app (`docker compose stop ems` or `./scripts/uninstall.sh`). The scripts use LaunchAgent
+   on macOS and a systemd user service on Linux.
 2. Copy a snapshot from `backups/ems-YYYYMMDD.sqlite` over `ems.sqlite` (remove any leftover
    `ems.sqlite-wal`/`-shm` files); restore `config.yaml`.
 3. Ensure secrets are present in their env/secret source.
