@@ -17,32 +17,34 @@ class APIResponseModel(BaseModel):
 
 
 class PlanSlot(APIResponseModel):
-    start: Any | None = None
-    end: Any | None = None
-    mode: Any | None = None
-    target_soc_pct: Any | None = None
-    reason: Any | None = None
+    start: str | None = None
+    end: str | None = None
+    intent: str | None = None
+    target_soc: float | None = None
+    target_kwh: float | None = None
+    power_w: float | None = None
+    floor_soc: float | None = None
 
 
 class PlanResponse(APIResponseModel):
-    created_at: Any | None = None
-    current_intent: Any | None = None
-    current_reason: Any | None = None
+    created_at: str | None = None
+    current_intent: str | None = None
+    current_reason: str | None = None
     slots: list[PlanSlot] | None = None
 
 
 class VerificationResponse(APIResponseModel):
-    status: Any | None = None
+    status: str | None = None
     planned: Any | None = None
     actual: Any | None = None
 
 
 class ReportResponse(APIResponseModel):
-    period: Any | None = None
+    period: str | None = None
     window_start: Any | None = None
     window_end: Any | None = None
-    label: Any | None = None
-    partial: Any | None = None
+    label: str | None = None
+    partial: bool | None = None
     flows: dict[str, Any] | None = None
     scores: list[dict[str, Any]] | None = None
     series: list[dict[str, Any]] | None = None
