@@ -214,13 +214,13 @@ def test_probe_reports_capabilities_else_unavailable():
         empty.probe()
 
 
-def test_probe_reports_configured_cluster_power_limits():
+def test_probe_caps_configured_power_to_single_tower_limit():
     drv = IndevoltBatteryDriver(
         "x", reader=FakeIndevolt(), charge_power_w=4800, discharge_power_w=3600
     )
     cap = drv.probe()
-    assert cap.max_charge_w == 4800.0
-    assert cap.max_discharge_w == 3600.0
+    assert cap.max_charge_w == 2400.0
+    assert cap.max_discharge_w == 2400.0
 
 
 def test_full_control_chain_commands_driver_when_controlling():

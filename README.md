@@ -121,7 +121,7 @@ Project conventions are in [`CLAUDE.md`](./CLAUDE.md); the north-star vision in 
 
 | Component | Choice |
 |---|---|
-| Battery | Indevolt **SolidFlex 2000 (Gen-2)** cluster — **mode-switching only**, one logical device |
+| Battery | Indevolt **SolidFlex 2000 (Gen-2)** — one tower or a multi-tower cluster, controlled as one logical device |
 | Prices | **Tibber** day-ahead (15-min) |
 | Solar forecast | **Forecast.Solar** (keyless) with a built-in model fallback |
 | Live power | **HomeWizard** P1 + kWh meters (solar, car) — local, read-only |

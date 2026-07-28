@@ -16,6 +16,7 @@ import os
 import sqlite3
 from zoneinfo import ZoneInfo
 
+from ems.battery_profile import normalize_tower_ips
 from ems.settings import effective_settings
 
 _log = logging.getLogger("ems.connection")
@@ -81,12 +82,7 @@ def _seed_store(db_path: str, seed: dict) -> None:
 def _battery_ips(main_ip: str, extra: object) -> list[str]:
     """Ordered, de-duplicated tower IPs: the master first, then any comma-separated extras.
     Blanks are dropped; the master is never listed twice."""
-    ips: list[str] = []
-    for candidate in [main_ip, *str(extra or "").split(",")]:
-        a = candidate.strip()
-        if a and a not in ips:
-            ips.append(a)
-    return ips
+    return list(normalize_tower_ips(main_ip, extra))
 
 
 def effective_connection(db_path: str, cfg) -> dict:

@@ -193,6 +193,8 @@ def test_battery_endpoint_returns_mode_and_capabilities():
     assert "charge" in b["capabilities"]["services"]
     assert b["capabilities"]["p1_paired"] is True
     assert b["capabilities"]["max_charge_w"] == 4000.0
+    assert b["topology"]["tower_count"] == 0
+    assert b["topology"]["configured"] is False
 
 
 def test_battery_endpoint_without_driver():
