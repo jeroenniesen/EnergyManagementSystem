@@ -137,7 +137,7 @@ def gas_summary(
             max(1 / 24, (last_ts - first_ts).total_seconds() / 86400)
             if first_ts and last_ts else 1.0
         )
-    except (AttributeError, TypeError):
+    except (AttributeError, TypeError, ValueError, OverflowError):
         days = 1.0
     daily_m3 = m3 / days
     return {

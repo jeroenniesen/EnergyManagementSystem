@@ -167,6 +167,14 @@ def test_gas_summary_math():
                  "daily_m3": 10.43, "annualized_eur": 5332.0}
 
 
+def test_gas_summary_malformed_timestamp_falls_back_without_crashing():
+    rows = [{"ts": "not-a-date", "total_gas_m3": 1000.0},
+            {"ts": "also-not-a-date", "total_gas_m3": 1010.0}]
+    result = gas_summary(rows, price_eur_per_m3=1.40, co2_factor=1.78)
+    assert result["m3"] == 10.0
+    assert result["daily_m3"] == 10.0
+
+
 def test_gas_summary_none_with_fewer_than_two_rows():
     assert gas_summary([], price_eur_per_m3=1.40, co2_factor=1.78) is None
     one = [{"ts": "2026-06-28T00:00:00+00:00", "total_gas_m3": 1000.0}]
