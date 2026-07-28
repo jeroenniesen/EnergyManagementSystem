@@ -1,6 +1,8 @@
 """Shared persistence boundary for the application's SQLite repositories."""
 from __future__ import annotations
 
+import inspect
+import logging
 from dataclasses import dataclass
 from typing import Any
 
@@ -10,6 +12,8 @@ from ems.storage.cache import CacheStore
 from ems.storage.control_state import ControlStateStore
 from ems.storage.history import HistoryStore
 from ems.storage.settings import SettingsStore
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -29,6 +33,8 @@ class StorageContext:
     cache: CacheStore | None = None
     control_state: ControlStateStore | None = None
     _closed: bool = False
+    _closed_stores: set[str] | None = None
+    close_errors: tuple[str, ...] = ()
 
     @classmethod
     def from_existing(cls, **stores: Any) -> StorageContext:
@@ -53,10 +59,43 @@ class StorageContext:
         )
 
     async def close(self) -> None:
-        """Close every present store once; repeated calls are harmless."""
+        """Close every present store, isolating failures and allowing retries.
+
+        Repositories may expose either synchronous or asynchronous ``close`` hooks.  A failed
+        hook is logged and retained for a subsequent call; successful stores are never closed
+        twice.  Shutdown therefore remains best-effort while still giving callers a chance to
+        retry transient failures.
+        """
         if self._closed:
             return
-        self._closed = True
-        for store in (self.history, self.settings, self.override, self.audit, self.auth):
-            if store is not None:
-                await store.close()
+        if self._closed_stores is None:
+            self._closed_stores = set()
+        errors: list[str] = []
+        stores = (
+            ("history", self.history),
+            ("settings", self.settings),
+            ("override", self.override),
+            ("audit", self.audit),
+            ("auth", self.auth),
+            ("cache", self.cache),
+            ("control_state", self.control_state),
+        )
+        for name, store in stores:
+            if store is None or name in self._closed_stores:
+                continue
+            hook = getattr(store, "close", None)
+            if hook is None:
+                self._closed_stores.add(name)
+                continue
+            try:
+                result = hook()
+                if inspect.isawaitable(result):
+                    await result
+                self._closed_stores.add(name)
+            except Exception as exc:  # shutdown must not strand later repositories
+                detail = f"{name}: {exc!r}"
+                errors.append(detail)
+                logger.warning("failed to close storage repository %s", name, exc_info=True)
+        self.close_errors = tuple(errors)
+        if all(store is None or name in self._closed_stores for name, store in stores):
+            self._closed = True
