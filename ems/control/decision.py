@@ -11,7 +11,7 @@ from datetime import datetime
 from typing import Any
 
 from ems.control.car_mode import CarModeAction
-from ems.control.failsafe import failsafe_intent
+from ems.control.safety import SafetyValidator
 from ems.domain import BatteryIntent
 
 
@@ -27,6 +27,8 @@ class ControlDecisionEngine:
         settings: dict[str, Any],
         site_tz=None,
         allow_export_discharge: Callable[[], bool] | None = None,
+        validate_plan: Callable[[Any, datetime], Any] | None = None,
+        safety: SafetyValidator | None = None,
     ):
         self._data_quality = data_quality
         self._car_mode_action = car_mode_action
@@ -34,6 +36,9 @@ class ControlDecisionEngine:
         self._settings = settings
         self._site_tz = site_tz
         self._allow_export_discharge = allow_export_discharge or (lambda: False)
+        self._safety = safety or SafetyValidator(
+            data_quality=data_quality, validate_plan=validate_plan or (lambda plan, now: plan)
+        )
 
     def _car_guard(
         self,
@@ -115,7 +120,7 @@ class ControlDecisionEngine:
             cur = pp[2].intent_at(now)
             if cur is None:
                 return None, None, False, None, None, None, None
-            val = validate_plan(pp[2], now)
+            val = self._safety.validate(pp[2], now)
             if not val.ok:
                 top = next((f for f in val.findings if f.severity == "unsafe"), None)
                 note = top.message if top is not None else "plan failed validation"
@@ -126,7 +131,7 @@ class ControlDecisionEngine:
                     False,
                 )
             else:
-                safe, fs_reason = failsafe_intent(cur.intent, self._data_quality(now))
+                safe, fs_reason = self._safety.failsafe(cur.intent, now)
                 intent, reason = (
                     (safe, fs_reason) if fs_reason is not None else (cur.intent, cur.reason)
                 )

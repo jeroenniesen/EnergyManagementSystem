@@ -44,6 +44,7 @@ from ems.control.decision import ControlDecisionEngine
 from ems.control.failsafe import failsafe_intent
 from ems.control.override import NONE as OVERRIDE_NONE
 from ems.control.override import Override
+from ems.control.safety import SafetyValidator
 from ems.domain import BatteryIntent, PhysicalMode
 from ems.lifecycle import OwnershipState
 from ems.perf import PERF_BUDGETS, REGISTRY, atimed, timed
@@ -413,6 +414,9 @@ class ControlService:
         self._price_horizon_status: PriceHorizonStatus | None = None
         self._data_quality = data_quality
         self._validate_plan_obj = validate_plan_obj
+        self._safety = SafetyValidator(
+            data_quality=self._data_quality, validate_plan=self._validate_plan_obj
+        )
         # Resolve each moved dependency to the injected stand-in when given (tests), else this
         # service's own method (production). Internals call `self._<name>` throughout, unchanged.
         self._current_soc = current_soc if current_soc is not None else self.current_soc
@@ -435,6 +439,8 @@ class ControlService:
             allow_export_discharge=lambda: bool(
                 self._controller is not None and self._controller.allow_export_discharge
             ),
+            safety=self._safety,
+            validate_plan=self._validate_plan_obj,
         )
 
     # --- coalesced live reads / config builders / strategy resolution (B-46 stage 2) -------------
