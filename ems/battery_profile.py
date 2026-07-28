@@ -55,13 +55,13 @@ def apply_topology_defaults(settings: dict[str, object]) -> dict[str, object]:
     """
     topology = BatteryTopology(normalize_tower_ips(settings.get("battery.indevolt_ip"),
                                                     settings.get("battery.indevolt_ips_extra")))
-    if topology.tower_count != 1:
+    if topology.tower_count < 1:
         return settings
     adjusted = dict(settings)
     if adjusted.get("battery.usable_kwh") == 10.8:
-        adjusted["battery.usable_kwh"] = 5.4
+        adjusted["battery.usable_kwh"] = round(5.4 * topology.tower_count, 1)
     if adjusted.get("battery.max_charge_w") == 4000.0:
-        adjusted["battery.max_charge_w"] = 2400.0
+        adjusted["battery.max_charge_w"] = 2400.0 * topology.tower_count
     if adjusted.get("battery.max_discharge_w") == 4000.0:
-        adjusted["battery.max_discharge_w"] = 2400.0
+        adjusted["battery.max_discharge_w"] = 2400.0 * topology.tower_count
     return adjusted

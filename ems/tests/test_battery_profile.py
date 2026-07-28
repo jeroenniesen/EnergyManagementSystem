@@ -33,3 +33,23 @@ def test_explicit_single_tower_overrides_are_preserved():
                 "battery.usable_kwh": 7.2, "battery.max_charge_w": 1800.0,
                 "battery.max_discharge_w": 2200.0}
     assert apply_topology_defaults(settings) == settings
+
+
+def test_legacy_defaults_scale_for_three_towers():
+    settings = {"battery.indevolt_ip": "a", "battery.indevolt_ips_extra": "b,c",
+                "battery.usable_kwh": 10.8, "battery.max_charge_w": 4000.0,
+                "battery.max_discharge_w": 4000.0}
+    result = apply_topology_defaults(settings)
+    assert result["battery.usable_kwh"] == 16.2
+    assert result["battery.max_charge_w"] == 7200.0
+    assert result["battery.max_discharge_w"] == 7200.0
+
+
+def test_legacy_two_tower_defaults_remain_compatible():
+    settings = {"battery.indevolt_ip": "a", "battery.indevolt_ips_extra": "b",
+                "battery.usable_kwh": 10.8, "battery.max_charge_w": 4000.0,
+                "battery.max_discharge_w": 4000.0}
+    result = apply_topology_defaults(settings)
+    assert result["battery.usable_kwh"] == 10.8
+    assert result["battery.max_charge_w"] == 4800.0
+    assert result["battery.max_discharge_w"] == 4800.0
