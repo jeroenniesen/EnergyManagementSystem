@@ -415,7 +415,8 @@ class ControlService:
         self._data_quality = data_quality
         self._validate_plan_obj = validate_plan_obj
         self._safety = SafetyValidator(
-            data_quality=self._data_quality, validate_plan=self._validate_plan_obj
+            data_quality=self._data_quality,
+            validate_plan=lambda plan, now: self._validate_plan_obj(plan, now),
         )
         # Resolve each moved dependency to the injected stand-in when given (tests), else this
         # service's own method (production). Internals call `self._<name>` throughout, unchanged.
