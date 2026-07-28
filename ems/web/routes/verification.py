@@ -4,13 +4,14 @@ from fastapi import APIRouter
 
 from ems.application.services import VerificationService
 from ems.web.context import AppContext
+from ems.web.models import VerificationResponse
 
 
 def build_router(ctx: AppContext, service: VerificationService) -> APIRouter:
     router = APIRouter()
 
-    @router.get("/api/plan-verification")
-    def plan_verification() -> dict:
+    @router.get("/api/plan-verification", response_model=VerificationResponse)
+    def plan_verification() -> VerificationResponse:
         return service.verify()
 
     return router
