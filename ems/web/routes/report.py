@@ -14,7 +14,7 @@ from ems.web.models import FinanceResponse, ReportResponse, SavingsResponse
 def build_router(ctx: AppContext, service: ReportService) -> APIRouter:
     router = APIRouter()
 
-    @router.get("/api/report", response_model=ReportResponse)
+    @router.get("/api/report", response_model=ReportResponse, response_model_exclude_unset=True)
     async def report(
         period: str = Query(default="day", pattern="^(day|week|month|year)$"),
         date: str | None = None,
@@ -30,7 +30,7 @@ def build_router(ctx: AppContext, service: ReportService) -> APIRouter:
         start, end, label, partial = resolve_window(period, anchor, ctx.site_tz, now_local)
         return await service.report(period, start, end, label, partial, now_local)
 
-    @router.get("/api/finance", response_model=FinanceResponse)
+    @router.get("/api/finance", response_model=FinanceResponse, response_model_exclude_unset=True)
     async def finance(
         period: str = Query(default="day", pattern="^(day|week|month|year)$"),
         date: str | None = None,
@@ -46,7 +46,7 @@ def build_router(ctx: AppContext, service: ReportService) -> APIRouter:
         start, end, label, partial = resolve_window(period, anchor, ctx.site_tz, now_local)
         return await service.finance(start, end, now_local, period, label, partial)
 
-    @router.get("/api/savings", response_model=SavingsResponse)
+    @router.get("/api/savings", response_model=SavingsResponse, response_model_exclude_unset=True)
     def savings_endpoint() -> SavingsResponse:
         return service.savings()
 
