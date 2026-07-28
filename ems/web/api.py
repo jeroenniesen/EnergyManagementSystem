@@ -751,7 +751,7 @@ def _uslot_totals(slots: list[dict]) -> dict:
 # Bump when the finance math changes so completed-day rows cached under the OLD formula are
 # recomputed instead of served stale (finding 4). v2 = same-window wear (dis_priced) + price-gate;
 # v3 = export credited via the configurable feed-in model (B-05), not always the full spot price.
-_FINANCE_CALC_VERSION = 4
+_FINANCE_CALC_VERSION = 5  # includes grid-fee-aware import/export valuation
 
 
 # The car-charging discharge-session constants + the PURE decision helpers (`_decide_car_command`,
@@ -2791,7 +2791,15 @@ def create_app(
             "deadline": slot.deadline.isoformat() if slot.deadline else None,
             "reason": slot.reason,
         }
-        status = "awaiting_measurement" if actual is None else "observed"
+        status = "awaiting_measurement"
+        if actual is not None:
+            status = "observed"
+            if (planned and planned["intent"] == "grid_charge_to_target"
+                    and actual["battery_power_w"] > 50):
+                status = "unexpected_discharge"
+            elif (planned and planned["intent"] == "discharge_for_load"
+                  and actual["battery_power_w"] < -50):
+                status = "unexpected_charge"
         return {"status": status, "planned": planned, "actual": actual,
                 "checked_at": now.isoformat()}
 
@@ -3523,6 +3531,10 @@ def create_app(
             )
             resp["gas"] = None
             resp["tariff_policy"] = policy_to_dict(tariff_policy)
+            resp["tariff_warnings"] = [w.to_dict() for w in validate_tariff_policy(
+                tariff_policy,
+                export_model=str(settings_cache.get("prices.export_price_model", "net_metering")),
+            )]
             return resp
         q_end = min(end, now_local + timedelta(minutes=1))  # never query the future
         # Size the row cap to the window AND the recorder cadence (finding 10) so week/month/year
@@ -3573,6 +3585,10 @@ def create_app(
             # Insights gas panel. None-safe — the panel hides itself with <2 gas readings.
             resp["gas"] = gas_summary(gas_rows, price_eur_per_m3=gas_price, co2_factor=gas_factor)
             resp["tariff_policy"] = policy_to_dict(tariff_policy)
+            resp["tariff_warnings"] = [w.to_dict() for w in validate_tariff_policy(
+                tariff_policy,
+                export_model=str(settings_cache.get("prices.export_price_model", "net_metering")),
+            )]
             return resp
 
         return await asyncio.to_thread(_assemble)

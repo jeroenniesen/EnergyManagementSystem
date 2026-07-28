@@ -91,7 +91,14 @@ def build_router(ctx: AppContext) -> APIRouter:
         coordinates. It does include the timezone and the car's weekly schedule (needed to replay
         the planner); delete manifest.json before sharing if you prefer."""
         now = datetime.now(UTC)
-        start = now - timedelta(days=days)
+        # `days` is a calendar-day window, not a rolling 24-hour count: include the current local
+        # day and the preceding `days - 1` local dates. This makes exports stable around midnight
+        # and includes all readings from the first requested day.
+        now_local = now.astimezone(ctx.site_tz)
+        first_local = (now_local.date() - timedelta(days=days - 1))
+        start = datetime.combine(
+            first_local, datetime.min.time(), tzinfo=ctx.site_tz
+        ).astimezone(UTC)
         start_iso, end_iso = start.isoformat(), now.isoformat()
         raw: list[dict] = []
         derived: list[dict] = []

@@ -51,6 +51,7 @@ type TariffPolicy = {
   export_fee_eur_per_kwh: number;
   tibber_total_includes_all: boolean;
 };
+type TariffWarning = { code: string; severity: string; message: string };
 
 type Report = {
   period: string;
@@ -63,6 +64,7 @@ type Report = {
   series?: SeriesBucket[];
   gas?: GasSummary | null;
   tariff_policy?: TariffPolicy;
+  tariff_warnings?: TariffWarning[];
 };
 
 type Period = "day" | "week" | "month" | "year";
@@ -430,6 +432,11 @@ export function Insights({ canOperate = true }: { canOperate?: boolean } = {}) {
               {` −€${report.tariff_policy.export_fee_eur_per_kwh.toFixed(3)}/kWh`}.
             </p>
           )}
+          {report.tariff_warnings?.map((warning) => (
+            <p className="insights-warning" data-testid={`tariff-warning-${warning.code}`} key={warning.code}>
+              {warning.message}
+            </p>
+          ))}
           {/* One consistent anatomy per card (B-37-style): ring | headline word | trend chip |
               ONE detail line. The full explanation lives behind the ring's own hover tooltip AND
               a "More" disclosure on the detail line (Settings' field-help idiom) — never as a

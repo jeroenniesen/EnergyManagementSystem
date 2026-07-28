@@ -12,7 +12,8 @@ Quick, concrete cheat-sheet for every integration. Details and rationale are in 
   export fee assumptions applied to economics. This affects planning and reporting only; it never
   becomes a direct battery power command.
 - **Verification:** `GET /api/plan-verification` compares the current planned intent with the latest
-  measured SoC and battery/grid power. It is observational and never commands hardware.
+  measured SoC and battery/grid power. It returns `awaiting_measurement`, `observed`,
+  `unexpected_charge`, or `unexpected_discharge`; it is observational and never commands hardware.
 - **Implemented reality (BACKLOG B-26):** only the **direct RPC** path below ships (`ems/sources/indevolt.py` / `indevolt_driver.py`). There is no HA client in the codebase, so the "Primary control path = Home Assistant" bullet and the whole "Home Assistant (the EMS talks to HA)" section at the bottom of this file are **planned, not yet implemented** (BACKLOG B-18, pool). The device also needs **no auth in practice** — plain HTTP POST, IP-only — contrary to the Digest-auth line below.
 - **Primary control path (target design) = Home Assistant** (official integration, repo `github.com/INDEVOLT/homeassistant-indevolt`). **Resolve the exact surface with the M1a capability probe** (`../SPEC.md` §6.5) — the integration exposes **fewer services than you might assume**:
   - **Services (the only two):** `indevolt.charge` and `indevolt.discharge` — each runs *until a target SoC*. Treat `{power: W, target_soc: %}` as **candidate** params and **confirm the schema at the probe**.

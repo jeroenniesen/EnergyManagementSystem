@@ -24,6 +24,9 @@ build-backend = "hatchling.build"
 [tool.pytest.ini_options]
 testpaths = ["ems/tests"]
 addopts = "-q"
+markers = [
+    "fault_injection: tests that exercise deliberate source/control failures",
+]
 
 [tool.hatch.build.targets.wheel]
 packages = ["ems"]
