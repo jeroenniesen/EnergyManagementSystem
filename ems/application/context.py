@@ -9,6 +9,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
+from ems.clock import Clock, SystemClock
+
 
 @dataclass
 class ApplicationContext:
@@ -26,4 +28,4 @@ class ApplicationContext:
     runtime_state: dict[str, Any] = field(default_factory=dict)
     control_state: dict[str, Any] = field(default_factory=dict)
     background_tasks: dict[str, Any] = field(default_factory=dict)
-
+    clock: Clock = field(default_factory=SystemClock)
