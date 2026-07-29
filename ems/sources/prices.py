@@ -8,21 +8,23 @@ from __future__ import annotations
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
-from typing import Protocol
 from zoneinfo import ZoneInfo
+
+from .ports import PriceSource
 
 SLOT = timedelta(minutes=15)
 SLOTS_PER_DAY = 96
+
+__all__ = [
+    "PriceSlot", "PriceSource", "MockPriceSource", "current_price", "price_for_hour", "SLOT",
+    "SLOTS_PER_DAY",
+]
 
 
 @dataclass(frozen=True)
 class PriceSlot:
     start: datetime  # tz-aware, start of the 15-min slot
     eur_per_kwh: float
-
-
-class PriceSource(Protocol):
-    def slots(self) -> list[PriceSlot]: ...
 
 
 def _utcnow() -> datetime:
