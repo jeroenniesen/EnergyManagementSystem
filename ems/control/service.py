@@ -41,6 +41,8 @@ from ems.control.command_fence import (
     CommandTicket,
 )
 from ems.control.decision import ControlDecisionEngine
+from ems.control.execution import CommandExecutionBoundary
+from ems.control.reconciliation import CommandReconciliation
 from ems.control.failsafe import failsafe_intent
 from ems.control.override import NONE as OVERRIDE_NONE
 from ems.control.override import Override
@@ -411,6 +413,9 @@ class ControlService:
         self._source = source
         self._cache_store = cache_store
         self._writer_local = threading.local()
+        self._execution = (CommandExecutionBoundary(controller, ctx.command_fence)
+                           if controller is not None else None)
+        self._reconciliation = CommandReconciliation(ctx.command_fence)
         self._price_horizon_status: PriceHorizonStatus | None = None
         self._data_quality = data_quality
         self._validate_plan_obj = validate_plan_obj
@@ -1367,7 +1372,7 @@ class ControlService:
         IDEMPOTENT: `discard` is a no-op on an already-released token, and keyed by token identity
         it can never free a DIFFERENT writer's slot — so the override leak-safety done-callback
         (`spawn_override_cycle`) can release unconditionally without risking a double-free."""
-        self._ctx.command_fence.release(token)
+        self._reconciliation.release(token)
 
     def writer_registry_empty(self) -> bool:
         return self._ctx.command_fence.empty()
@@ -1402,12 +1407,10 @@ class ControlService:
 
     def _decide(self, *args, **kwargs):
         """Enter the fence only when the tick can reach its physical write seam."""
-        ticket = getattr(self._writer_local, "ticket", None)
-        if ticket is not None and not getattr(self._writer_local, "entered", False):
-            if not self._ctx.command_fence.enter(ticket):
-                raise _CommandSuperseded
-            self._writer_local.entered = True
-        return self._controller.decide(*args, **kwargs)
+        if self._execution is None:
+            return self._controller.decide(*args, **kwargs)
+        self._execution.writer_local = self._writer_local
+        return self._execution.decide(*args, **kwargs)
 
     def _release_cycle(self, token: CommandTicket) -> None:
         self.release_writer(token)
@@ -1518,7 +1521,7 @@ class ControlService:
             if not entered:
                 return False
             try:
-                confirmed = bool(self._controller.driver.apply(PhysicalMode.AUTO))
+                confirmed = self._execution.apply(PhysicalMode.AUTO)
             except Exception:
                 self._controller.note_overrun_recovery()
                 raise
@@ -1595,7 +1598,7 @@ class ControlService:
             entered = self._ctx.command_fence.enter(ticket, timeout_seconds=timeout_seconds)
             if not entered:
                 return False
-            return bool(self._controller.driver.apply(target))
+            return self._execution.apply(target)
         finally:
             if entered:
                 self._ctx.command_fence.leave(ticket)
