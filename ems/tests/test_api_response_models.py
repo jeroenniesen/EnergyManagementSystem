@@ -55,3 +55,28 @@ def test_models_allow_empty_and_unavailable_payloads():
         DiagnosticsResponse,
     ):
         assert model.model_validate({}).model_dump(exclude_unset=True) == {}
+
+
+def test_nested_report_contract_covers_empty_stale_and_unavailable_values():
+    payload = {
+        "period": "day",
+        "partial": True,
+        "flows": {"has_data": False, "grid_import_kwh": 0.0},
+        "scores": [{"key": "co2", "value": None, "explanation": "No energy recorded yet."}],
+        "series": [{"start": "2026-07-29T00:00:00+00:00", "samples": 0}],
+        "gas": None,
+        "tariff_policy": {"basis": "provider total plus configured import fee"},
+        "tariff_warnings": [{"code": "missing_import_fee", "severity": "info"}],
+        "economic_snapshot": {"import_price_eur_per_kwh": 0.0},
+    }
+    parsed = ReportResponse.model_validate(payload)
+    assert parsed.flows is not None and parsed.flows.has_data is False
+    assert parsed.scores and parsed.scores[0].value is None
+
+
+def test_verification_failure_states_keep_nullable_nested_payloads():
+    for status in ("no_plan", "awaiting_measurement", "unexpected_charge"):
+        parsed = VerificationResponse.model_validate(
+            {"status": status, "planned": None, "actual": None}
+        )
+        assert parsed.status == status
