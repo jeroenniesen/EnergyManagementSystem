@@ -42,10 +42,10 @@ from ems.control.command_fence import (
 )
 from ems.control.decision import ControlDecisionEngine
 from ems.control.execution import CommandExecutionBoundary
-from ems.control.reconciliation import CommandReconciliation
 from ems.control.failsafe import failsafe_intent
 from ems.control.override import NONE as OVERRIDE_NONE
 from ems.control.override import Override
+from ems.control.reconciliation import CommandReconciliation
 from ems.control.safety import SafetyValidator
 from ems.domain import BatteryIntent, PhysicalMode
 from ems.lifecycle import OwnershipState
