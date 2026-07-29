@@ -4,10 +4,9 @@ These tests exercise the lifecycle, mode controller, and shutdown seam together 
 driver.  No network or real battery adapter is involved.
 """
 
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 
 from ems.control.mode_controller import ModeController
-from ems.control.service import ControlService
 from ems.domain import BatteryIntent, PhysicalMode
 from ems.lifecycle import Lifecycle
 from ems.sources.battery import FailingMockBatteryDriver, MockBatteryDriver
@@ -73,7 +72,7 @@ def test_rejected_write_falls_back_to_auto() -> None:
 
 def test_shutdown_restoration_places_battery_in_auto() -> None:
     """The service's shutdown seam restores AUTO after an earlier live command."""
-    from ems.tests.test_control_service import _service, _controlling_controller
+    from ems.tests.test_control_service import _controlling_controller, _service
 
     driver = RecordingDriver()
     controller = _controlling_controller(driver)

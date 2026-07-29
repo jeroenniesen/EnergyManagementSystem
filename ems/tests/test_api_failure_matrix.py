@@ -7,10 +7,9 @@ from fastapi.testclient import TestClient
 from ems.freshness import FreshnessTracker
 from ems.sense import SIGNALS
 from ems.sources.mock import MockSource
+from ems.storage.settings import SettingsStore
 from ems.web.api import create_app
 from ems.web.models import DiagnosticsResponse, PlanResponse, ReportResponse
-from ems.storage.settings import SettingsStore
-
 
 READS = (
     ("/api/plan", PlanResponse),
@@ -37,7 +36,8 @@ def test_stale_inputs_fail_safe_without_control_writes():
     old = datetime.now(UTC) - timedelta(hours=2)
     for signal in SIGNALS:
         freshness.mark(signal, old)
-    with TestClient(create_app(MockSource(), dry_run=True, dev_mode="mock", freshness=freshness)) as client:
+    app = create_app(MockSource(), dry_run=True, dev_mode="mock", freshness=freshness)
+    with TestClient(app) as client:
         plan = client.get("/api/plan")
         assert plan.status_code == 200
         PlanResponse.model_validate(plan.json())
@@ -53,12 +53,14 @@ def test_unavailable_sources_are_reported_not_raised():
         def probe(self):
             raise RuntimeError("source unavailable")
 
-    with TestClient(create_app(MockSource(), dry_run=True, dev_mode="mock", battery=BrokenBattery())) as client:
+    app = create_app(MockSource(), dry_run=True, dev_mode="mock", battery=BrokenBattery())
+    with TestClient(app) as client:
         response = client.get("/api/diagnostics")
         assert response.status_code == 200
         body = DiagnosticsResponse.model_validate(response.json())
         assert body.overall in {"warn", "degraded", "error", "fail", None}
-        assert next(check for check in body.checks or [] if check["key"] == "battery")["status"] == "warn"
+        battery_check = next(check for check in body.checks or [] if check["key"] == "battery")
+        assert battery_check["status"] == "warn"
 
 
 def test_reads_require_auth_when_enabled(tmp_path):
@@ -69,7 +71,10 @@ def test_reads_require_auth_when_enabled(tmp_path):
     )
     auth = {"Authorization": f"Bearer {token}"}
     with TestClient(app) as client:
-        assert client.post("/api/settings", json={"web.require_auth": True}, headers=auth).status_code == 200
+        settings_response = client.post(
+            "/api/settings", json={"web.require_auth": True}, headers=auth
+        )
+        assert settings_response.status_code == 200
         for path, _model in READS:
             assert client.get(path).status_code == 401
             assert client.get(path, headers=auth).status_code == 200

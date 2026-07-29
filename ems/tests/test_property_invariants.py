@@ -50,7 +50,10 @@ def test_generated_plans_have_bounded_targets_and_nonnegative_energy(seed: int) 
             assert slot.floor_soc is None or slot.floor_soc >= 0.0
 
 
-@pytest.mark.parametrize("soc,reserve,margin", [(s, r, m) for s in (0, 10, 50, 100) for r in (0, 10, 50) for m in (0, 1.5)])
+@pytest.mark.parametrize(
+    "soc,reserve,margin",
+    [(s, r, m) for s in (0, 10, 50, 100) for r in (0, 10, 50) for m in (0, 1.5)],
+)
 def test_reserve_floor_predicate_is_monotonic(soc: float, reserve: float, margin: float) -> None:
     reached = SafetyValidator.reserve_reached(soc, reserve, margin_pp=margin)
     assert reached == (soc <= reserve + margin)
