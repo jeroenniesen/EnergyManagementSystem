@@ -1,10 +1,9 @@
 """Pure safety checks for the control decision path."""
 from __future__ import annotations
 
-from collections.abc import Callable
 from datetime import datetime, timedelta
-from typing import Any
 
+from ems.application.protocols import DataQuality, Plan, PlanValidation, PlanValidator
 from ems.control.failsafe import failsafe_intent
 from ems.domain import BatteryIntent
 
@@ -14,14 +13,14 @@ class SafetyValidator:
     def __init__(
         self,
         *,
-        data_quality: Callable[[datetime], str],
-        validate_plan: Callable[[Any, datetime], Any],
+        data_quality: DataQuality,
+        validate_plan: PlanValidator,
     ):
         self._data_quality = data_quality
         self._validate_plan = validate_plan
     def data_is_safe(self, now: datetime) -> bool:
         return self._data_quality(now) != "unsafe"
-    def validate(self, plan: Any, now: datetime) -> Any:
+    def validate(self, plan: Plan, now: datetime) -> PlanValidation:
         return self._validate_plan(plan, now)
     def failsafe(self, intent: BatteryIntent, now: datetime) -> tuple[BatteryIntent, str | None]:
         return failsafe_intent(intent, self._data_quality(now))

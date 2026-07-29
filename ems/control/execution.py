@@ -8,14 +8,15 @@ from __future__ import annotations
 import threading
 from typing import Any
 
-from ems.control.command_fence import BatteryCommandFence, CommandTicket
+from ems.application.protocols import BatteryController
+from ems.control.command_fence import BatteryCommandFence
 from ems.domain import PhysicalMode
 
 
 class CommandExecutionBoundary:
     """Fence-aware adapter around the controller's physical command methods."""
 
-    def __init__(self, controller: Any, fence: BatteryCommandFence) -> None:
+    def __init__(self, controller: BatteryController, fence: BatteryCommandFence) -> None:
         self.controller = controller
         self.fence = fence
         self.writer_local = threading.local()

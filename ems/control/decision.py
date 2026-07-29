@@ -10,7 +10,12 @@ from collections.abc import Callable
 from datetime import datetime
 from typing import Any
 
-from ems.control.car_mode import CarModeAction
+from ems.application.protocols import (
+    CarModeActionProvider,
+    DataQuality,
+    PlanProvider,
+    PlanValidator,
+)
 from ems.control.safety import SafetyValidator
 from ems.domain import BatteryIntent
 
@@ -21,13 +26,13 @@ class ControlDecisionEngine:
     def __init__(
         self,
         *,
-        data_quality: Callable[[datetime], str],
-        car_mode_action: Callable[..., CarModeAction | None],
+        data_quality: DataQuality,
+        car_mode_action: CarModeActionProvider,
         car_session_active: Callable[[], bool],
         settings: dict[str, Any],
         site_tz=None,
         allow_export_discharge: Callable[[], bool] | None = None,
-        validate_plan: Callable[[Any, datetime], Any] | None = None,
+        validate_plan: PlanValidator | None = None,
         safety: SafetyValidator | None = None,
     ):
         self._data_quality = data_quality
@@ -76,9 +81,9 @@ class ControlDecisionEngine:
         now: datetime,
         *,
         override,
-        current_plan: Callable[[], Any],
+        current_plan: PlanProvider,
         price_horizon_status,
-        validate_plan: Callable[[Any, datetime], Any],
+        validate_plan: PlanValidator,
     ):
         """Return the legacy seven-element effective-intent tuple."""
         cur = None
