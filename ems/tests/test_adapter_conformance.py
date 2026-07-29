@@ -6,19 +6,74 @@ allowed here.
 """
 
 from datetime import UTC, datetime
+from inspect import Parameter, signature
 from zoneinfo import ZoneInfo
 
 import pytest
 
 from ems.domain import PhysicalMode
+from ems.sources.battery import MockBatteryDriver
 from ems.sources.forecast import MockSolarForecastSource
 from ems.sources.forecast_solar import ForecastSolarSource
 from ems.sources.indevolt import BatteryUnavailable, IndevoltReadClient
 from ems.sources.indevolt_driver import IndevoltBatteryDriver
-from ems.sources.live import HomeWizardMeter, ev_w, grid_w, solar_w
+from ems.sources.live import HomeWizardMeter, LiveSource, ev_w, grid_w, solar_w
 from ems.sources.mock import MockSource
 from ems.sources.ports import BatteryDriver, PriceSource, SolarForecastSource, Source
+from ems.sources.prices import MockPriceSource
 from ems.sources.tibber import TibberPriceSource
+
+
+def _method_shape(method: object) -> tuple[tuple[str, object, object], ...]:
+    """Return the callable shape without the implementation's ``self`` parameter."""
+    params = list(signature(method).parameters.values())
+    if params and params[0].name in {"self", "cls"}:
+        params = params[1:]
+    return tuple((p.name, p.kind, p.default) for p in params)
+
+
+def _assert_port_method(
+    adapter: type, port: type, name: str, expected: tuple[tuple[str, object], ...] = (),
+) -> None:
+    implementation = getattr(adapter, name)
+    contract = getattr(port, name)
+    impl_sig = signature(implementation)
+    port_sig = signature(contract)
+    actual = _method_shape(implementation)
+    assert tuple((name, kind) for name, kind, _default in actual) == expected, (
+        f"{adapter.__name__}.{name} does not match {port.__name__}.{name}: "
+        f"{impl_sig} != {port_sig}"
+    )
+    assert impl_sig.return_annotation is not impl_sig.empty, (
+        f"{adapter.__name__}.{name} must declare a return annotation"
+    )
+
+
+def test_all_current_adapters_match_port_signatures() -> None:
+    """Keep structural ports honest even when an adapter does not inherit the protocol."""
+    source_adapters = (MockSource, LiveSource)
+    for adapter in source_adapters:
+        _assert_port_method(adapter, Source, "read")
+
+    battery_adapters = (IndevoltBatteryDriver, MockBatteryDriver)
+    for adapter in battery_adapters:
+        for method in ("probe", "current_mode", "apply"):
+            expected = (
+                (
+                    ("mode", Parameter.POSITIONAL_OR_KEYWORD),
+                    ("target_soc", Parameter.KEYWORD_ONLY),
+                    ("power_w", Parameter.KEYWORD_ONLY),
+                )
+                if method == "apply"
+                else ()
+            )
+            _assert_port_method(adapter, BatteryDriver, method, expected)
+
+    for adapter in (TibberPriceSource, MockPriceSource):
+        _assert_port_method(adapter, PriceSource, "slots")
+
+    for adapter in (MockSolarForecastSource, ForecastSolarSource):
+        _assert_port_method(adapter, SolarForecastSource, "slots")
 
 
 def test_mock_source_conforms_and_returns_normalized_sample() -> None:
