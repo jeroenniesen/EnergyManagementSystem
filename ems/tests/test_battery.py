@@ -6,6 +6,25 @@ from ems.sources.battery import (
 )
 
 
+def test_discharge_mapping_is_fail_safe_across_control_contexts():
+    """The only contexts that may request forced export are explicit and enumerable."""
+    cases = (
+        (False, False, PhysicalMode.AUTO),
+        (True, False, PhysicalMode.DISCHARGE),
+        (False, True, PhysicalMode.DISCHARGE),
+        (True, True, PhysicalMode.DISCHARGE),
+    )
+    for allow_export, car_session, expected in cases:
+        assert (
+            intent_to_mode(
+                BatteryIntent.DISCHARGE_FOR_LOAD,
+                allow_export_discharge=allow_export,
+                car_session=car_session,
+            )
+            is expected
+        )
+
+
 def test_intent_to_mode_covers_all_intents():
     assert intent_to_mode(BatteryIntent.ALLOW_SELF_CONSUMPTION) is PhysicalMode.AUTO
     assert intent_to_mode(BatteryIntent.GRID_CHARGE_TO_TARGET) is PhysicalMode.CHARGE
