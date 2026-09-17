@@ -84,6 +84,7 @@ class ControlDecisionEngine:
         current_plan: PlanProvider,
         price_horizon_status,
         validate_plan: PlanValidator,
+        current_setpoint_w: float | None = None,
     ):
         """Return the legacy seven-element effective-intent tuple."""
         cur = None
@@ -106,7 +107,7 @@ class ControlDecisionEngine:
             else:
                 reason = f"manual override: {override.intent.value} until {until}"
         else:
-            pp = current_plan()
+            pp = current_plan(now)
             if pp is None:
                 if callable(price_horizon_status):
                     price_horizon_status = price_horizon_status()
@@ -141,7 +142,8 @@ class ControlDecisionEngine:
                     (safe, fs_reason) if fs_reason is not None else (cur.intent, cur.reason)
                 )
                 override_active = False
-        intent, reason, car_action = self._car_guard(now, intent, reason)
+        intent, reason, car_action = self._car_guard(
+            now, intent, reason, current_setpoint_w=current_setpoint_w)
         target_soc = power_w = None
         if car_action is not None and car_action.action == "discharge":
             power_w = car_action.power_w

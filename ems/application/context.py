@@ -1,31 +1,55 @@
-"""Typed boundary for application dependencies and runtime state.
-
-The context is deliberately a passive dataclass: it owns no lifecycle and does not alter
-control decisions.  ``create_app`` remains the composition root while services can depend on a
-single explicit object instead of a growing list of closure variables.
-"""
+"""Explicit typed collaborators shared by application services and HTTP adapters."""
 from __future__ import annotations
 
+from asyncio import Task
 from dataclasses import dataclass, field
-from typing import Any
 
+from ems.application.protocols import (
+    DiagnosticsProvider,
+    FinanceProvider,
+    PlanProvider,
+    PlanValidator,
+    ReportProvider,
+    SampleProvider,
+    SavingsProvider,
+    TariffPolicyProvider,
+    TariffWarningsProvider,
+)
 from ems.clock import Clock, SystemClock
+from ems.control.mode_controller import ModeController
+from ems.freshness import FreshnessTracker
+from ems.sense import Recorder
+from ems.sources.ports import Source
+from ems.storage.context import StorageContext
+
+
+def require_collaborator[T](collaborator: T | None, name: str) -> T:
+    if collaborator is None:
+        raise ValueError(f"Application collaborator {name} is not configured")
+    return collaborator
 
 
 @dataclass
 class ApplicationContext:
-    """Dependencies shared by application services and HTTP adapters."""
+    """Passive dependencies; create_app owns construction and lifecycle."""
 
-    source: Any
-    controller: Any = None
-    recorder: Any = None
-    freshness: Any = None
-    settings: dict[str, Any] = field(default_factory=dict)
-    repositories: Any = None
-    storage: Any = None
-    # Named mutable holders make lifecycle/runtime state explicit without imposing a new model on
-    # the existing control loop.  They are shared by reference and are safe for tests to replace.
-    runtime_state: dict[str, Any] = field(default_factory=dict)
-    control_state: dict[str, Any] = field(default_factory=dict)
-    background_tasks: dict[str, Any] = field(default_factory=dict)
+    source: Source | None
+    controller: ModeController | None = None
+    recorder: Recorder | None = None
+    freshness: FreshnessTracker | None = None
+    settings: dict[str, object] = field(default_factory=dict)
+    repositories: StorageContext | None = None
+    storage: StorageContext | None = None
+    runtime_state: dict[str, object] = field(default_factory=dict)
+    control_state: dict[str, object] = field(default_factory=dict)
+    background_tasks: dict[str, Task[object]] = field(default_factory=dict)
     clock: Clock = field(default_factory=SystemClock)
+    current_plan: PlanProvider | None = None
+    current_sample: SampleProvider | None = None
+    validate_plan: PlanValidator | None = None
+    policy: TariffPolicyProvider | None = None
+    tariff_warnings: TariffWarningsProvider | None = None
+    report_for_window: ReportProvider | None = None
+    finance_window: FinanceProvider | None = None
+    savings_snapshot: SavingsProvider | None = None
+    diagnostics_snapshot: DiagnosticsProvider | None = None

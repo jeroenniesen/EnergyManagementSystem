@@ -1,9 +1,8 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Any
 
-from ems.application.context import ApplicationContext
+from ems.application.context import ApplicationContext, require_collaborator
 
 
 class PlanService:
@@ -13,20 +12,20 @@ class PlanService:
         self.context = context
 
     def get_plan(
-        self, requested_window: Any = None, settings: dict[str, Any] | None = None,
+        self, requested_window: tuple[datetime, datetime] | None = None,
+        settings: dict[str, object] | None = None,
         now: datetime | None = None,
     ) -> dict[str, object]:
-        state = self.context.runtime_state
-        current_plan = state["current_plan"]
-        validate = state["validate_plan"]
-        policy = state["policy"]
-        warnings = state["tariff_warnings"]
-        pp = current_plan()
+        effective_now = now or self.context.clock.now_utc()
+        current_plan = require_collaborator(self.context.current_plan, "current_plan")
+        validate = require_collaborator(self.context.validate_plan, "validate_plan")
+        policy = require_collaborator(self.context.policy, "policy")
+        warnings = require_collaborator(self.context.tariff_warnings, "tariff_warnings")
+        pp = current_plan(effective_now)
         cfg = settings if settings is not None else self.context.settings
         if pp is None:
             return {"created_at": None, "current_intent": None, "current_reason": None, "slots": []}
         _plan_now, _prices, plan = pp
-        effective_now = now or self.context.clock.now_utc()
         cur = plan.intent_at(effective_now)
         return {
             "created_at": plan.created_at.isoformat(),

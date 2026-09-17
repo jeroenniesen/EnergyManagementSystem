@@ -39,6 +39,7 @@ from ems.application.services import (
 )
 from ems.battery_profile import BatteryTopology, normalize_tower_ips
 from ems.cars import by_id as car_by_id
+from ems.clock import Clock, SystemClock
 from ems.confidence import plan_confidence
 from ems.control.mode_controller import ModeController
 from ems.control.override import (
@@ -898,7 +899,9 @@ def create_app(
     history_backup_keep: int = 7,
     web_auth_token: str | None = None,
     static_dir: str | Path | None = None,
+    clock: Clock | None = None,
 ) -> FastAPI:
+    application_clock = clock or SystemClock()
     def _effective_web_token() -> str | None:
         """The access token that must be presented for writes, or None if writes are open. The
         UI-set token (settings store, web.auth_token) takes precedence over the EMS_WEB_TOKEN env
@@ -1705,6 +1708,7 @@ def create_app(
         site_tz=site_tz, dry_run=dry_run, control_cycle_seconds=control_cycle_seconds,
         source=source, cache_store=cache_store,
         data_quality=_data_quality, validate_plan_obj=_validate_plan_obj,
+        clock=application_clock,
     )
     # I2: the restart handler + tests reach the control brain's outstanding-write registry and the
     # idle-and-safe read through here (the single owner of the command-fence snapshot).
@@ -2060,7 +2064,7 @@ def create_app(
         plan_valid = True
         plan_ok = False
         try:
-            pp = _current_plan()
+            pp = _current_plan(now)
             plan_ok = pp is not None and bool(pp[2].slots)
             if pp is not None:
                 plan_valid = _validate_plan_obj(pp[2], now).ok
@@ -2286,8 +2290,7 @@ def create_app(
             "home_state": home,
         }
 
-    async def _diagnostics_snapshot() -> dict:
-        now = datetime.now(UTC)
+    async def _diagnostics_snapshot(now: datetime) -> dict:
         prices_ok = price_source is not None
         forecast_ok = solar_forecast is not None
         # Actually probe the stores so a broken DB shows as a failed check, not a silent pass.
@@ -2320,7 +2323,7 @@ def create_app(
         # data-quality / plan / readiness all run sync helpers that touch cached source/price/
         # forecast reads — compute them off the event loop so a slow device can't stall /api/health.
         def _core():
-            return (_data_quality(now), _current_plan() is not None, _readiness(now).to_dict())
+            return (_data_quality(now), _current_plan(now) is not None, _readiness(now).to_dict())
 
         dq, plan_ok, readiness = await asyncio.to_thread(_core)
         # The car-charging guard needs the EV meter to see the car; on + live + no EV meter = blind.
@@ -2646,10 +2649,10 @@ def create_app(
         }
         return out
 
-    def _savings_snapshot() -> dict:
+    def _savings_snapshot(now: datetime) -> dict:
         policy = policy_from_settings(settings_cache)
         export_model = str(settings_cache.get("prices.export_price_model", "net_metering"))
-        snapshot_metadata = EconomicSnapshot.from_tariff_policy(
+        snapshot = EconomicSnapshot.from_tariff_policy(
             policy, export_model=export_model,
             round_trip_efficiency=float(settings_cache.get("planner.round_trip_efficiency", 0.90)),
             degradation_eur_per_kwh=float(
@@ -2659,8 +2662,9 @@ def create_app(
             energy_tax_eur_per_kwh=float(settings_cache.get("prices.energy_tax_eur_per_kwh", 0.13)),
             fixed_feed_in_eur_per_kwh=float(
                 settings_cache.get("prices.fixed_feed_in_eur_per_kwh", 0.01)),
-        ).metadata()
-        pp = _current_plan()
+        )
+        snapshot_metadata = snapshot.metadata()
+        pp = _current_plan(now)
         if pp is None:
             return {
                 "today_eur": None,
@@ -2674,7 +2678,12 @@ def create_app(
         _now, prices, plan = pp
         by_start = {p.start: p.eur_per_kwh for p in prices}
         return {
-            "today_eur": estimate_daily_savings_eur(plan, by_start, tariff_policy=policy),
+            "today_eur": estimate_daily_savings_eur(
+                plan, by_start, tariff_policy=policy,
+                efficiency=snapshot.round_trip_efficiency,
+                degradation_eur_per_kwh=snapshot.degradation_eur_per_kwh,
+                risk_margin_eur_per_kwh=snapshot.risk_margin_eur_per_kwh,
+            ),
             "economic_snapshot": snapshot_metadata,
             "tariff_warnings": [w.to_dict() for w in validate_tariff_policy(
                 policy,
@@ -4093,9 +4102,9 @@ def create_app(
         is_supervised=_is_supervised,
         restart_pending=_restart_pending,
     )
-    # Typed application/storage seams for application services.  Existing aliases and routers
-    # continue to use the same object instances; this is construction-only during the first
-    # extraction slice, so endpoint and control behavior remain unchanged.
+    async def _application_finance_window(start, end, now_local):
+        return await _finance_window(start, end, now_local) if store is not None else []
+
     app.state.application_context = ApplicationContext(
         source=source,
         controller=controller,
@@ -4111,25 +4120,22 @@ def create_app(
             cache=cache_store,
             control_state=control_state_store,
         ),
+        clock=application_clock,
         runtime_state={"dry_run": dry_run, "dev_mode": dev_mode},
         control_state=ctx.__dict__,
-    )
-    app.state.application_context.runtime_state.update({
-        "current_plan": _current_plan,
-        "current_sample": _current_sample,
-        "validate_plan": _validate_plan_obj,
-        "policy": lambda s: policy_to_dict(policy_from_settings(s)),
-        "tariff_warnings": lambda s: [w.to_dict() for w in validate_tariff_policy(
+        current_plan=_current_plan,
+        current_sample=_current_sample,
+        validate_plan=_validate_plan_obj,
+        policy=lambda s: policy_to_dict(policy_from_settings(s)),
+        tariff_warnings=lambda s: [w.to_dict() for w in validate_tariff_policy(
             policy_from_settings(s),
             export_model=str(s.get("prices.export_price_model", "net_metering")),
         )],
-        "report_for_window": _report_for_window,
-        "finance_window": lambda start, end, now_local: (
-            _finance_window(start, end, now_local) if store is not None else []
-        ),
-        "savings": _savings_snapshot,
-        "diagnostics_snapshot": _diagnostics_snapshot,
-    })
+        report_for_window=_report_for_window,
+        finance_window=_application_finance_window,
+        savings_snapshot=_savings_snapshot,
+        diagnostics_snapshot=_diagnostics_snapshot,
+    )
     plan_service = PlanService(app.state.application_context)
     verification_service = VerificationService(app.state.application_context)
     report_service = ReportService(app.state.application_context)

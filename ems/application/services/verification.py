@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from ems.application.context import ApplicationContext
+from ems.application.context import ApplicationContext, require_collaborator
 
 
 class VerificationService:
@@ -12,10 +12,11 @@ class VerificationService:
         self.context = context
 
     def verify(self, now: datetime | None = None) -> dict[str, object]:
-        state = self.context.runtime_state
         now = now or self.context.clock.now_utc()
-        pp = state["current_plan"]()
-        sample = state["current_sample"](now)
+        current_plan = require_collaborator(self.context.current_plan, "current_plan")
+        current_sample = require_collaborator(self.context.current_sample, "current_sample")
+        pp = current_plan(now)
+        sample = current_sample(now)
         if pp is None:
             return {"status": "no_plan", "planned": None, "actual": None}
         _plan_now, _prices, plan = pp

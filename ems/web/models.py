@@ -7,36 +7,77 @@ planner and diagnostic versions.
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Literal
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, with_config
+from typing_extensions import TypedDict
 
 
 class APIResponseModel(BaseModel):
-    model_config = ConfigDict(extra="allow", populate_by_name=True)
+    model_config = ConfigDict(
+        extra="allow", populate_by_name=True, strict=True, allow_inf_nan=False
+    )
+
+
+Intent = Literal[
+    "allow_self_consumption", "grid_charge_to_target", "hold_reserve", "discharge_for_load"
+]
+Period = Literal["day", "week", "month", "year"]
+CheckStatus = Literal["ok", "warn", "fail"]
+
+
+class ValidationFinding(APIResponseModel):
+    severity: Literal["warn", "unsafe"] | None = None
+    code: str | None = None
+    message: str | None = None
+
+
+class PlanValidation(APIResponseModel):
+    status: Literal["valid", "warn", "unsafe"] | None = None
+    ok: bool | None = None
+    findings: list[ValidationFinding] | None = None
 
 
 class PlanSlot(APIResponseModel):
     start: str | None = None
     end: str | None = None
-    intent: str | None = None
+    intent: Intent | None = None
+    reason: str | None = None
     target_soc: float | None = None
     target_kwh: float | None = None
     power_w: float | None = None
     floor_soc: float | None = None
+    deadline: str | None = None
 
 
-class PlanResponse(APIResponseModel):
-    created_at: str | None = None
-    current_intent: str | None = None
-    current_reason: str | None = None
-    slots: list[PlanSlot] | None = None
+class PlannedOutcome(APIResponseModel):
+    intent: Intent | None = None
+    target_soc: float | None = None
+    deadline: str | None = None
+    reason: str | None = None
+
+
+class ActualOutcome(APIResponseModel):
+    soc_pct: float | None = None
+    battery_power_w: float | None = None
+    grid_power_w: float | None = None
+    observed_at: str | None = None
 
 
 class VerificationResponse(APIResponseModel):
-    status: str | None = None
-    planned: dict[str, Any] | None = None
-    actual: dict[str, Any] | None = None
+    status: (
+        Literal[
+            "no_plan",
+            "awaiting_measurement",
+            "observed",
+            "unexpected_discharge",
+            "unexpected_charge",
+        ]
+        | None
+    ) = None
+    planned: PlannedOutcome | None = None
+    actual: ActualOutcome | None = None
+    checked_at: str | None = None
 
 
 class FlowSummary(APIResponseModel):
@@ -47,6 +88,12 @@ class FlowSummary(APIResponseModel):
     solar_to_car: float | None = None
     solar_to_battery: float | None = None
     solar_to_grid: float | None = None
+    grid_to_home: float | None = None
+    grid_to_car: float | None = None
+    grid_to_battery: float | None = None
+    battery_to_home: float | None = None
+    battery_to_car: float | None = None
+    battery_to_grid: float | None = None
     grid_import_kwh: float | None = None
     grid_export_kwh: float | None = None
     battery_charge_kwh: float | None = None
@@ -79,6 +126,10 @@ class ReportSeriesPoint(APIResponseModel):
 
 
 class GasSummary(APIResponseModel):
+    m3: float | None = None
+    kwh_eq: float | None = None
+    eur: float | None = None
+    co2_kg: float | None = None
     daily_m3: float | None = None
     annualized_eur: float | None = None
 
@@ -106,14 +157,27 @@ class TariffPolicyModel(APIResponseModel):
 
 class TariffWarning(APIResponseModel):
     code: str | None = None
-    severity: str | None = None
+    severity: Literal["info", "warning"] | None = None
     message: str | None = None
 
 
+class PlanResponse(APIResponseModel):
+    created_at: str | None = None
+    strategy: Literal["summer", "winter"] | None = None
+    target_soc: float | None = None
+    deadline: str | None = None
+    current_intent: Intent | None = None
+    current_reason: str | None = None
+    slots: list[PlanSlot] | None = None
+    validation: PlanValidation | None = None
+    tariff_policy: TariffPolicyModel | None = None
+    tariff_warnings: list[TariffWarning] | None = None
+
+
 class ReportResponse(APIResponseModel):
-    period: str | None = None
-    window_start: Any | None = None
-    window_end: Any | None = None
+    period: Period | None = None
+    window_start: str | None = None
+    window_end: str | None = None
     label: str | None = None
     partial: bool | None = None
     flows: FlowSummary | None = None
@@ -125,27 +189,137 @@ class ReportResponse(APIResponseModel):
     economic_snapshot: EconomicSnapshotModel | None = None
 
 
+class FinanceDay(APIResponseModel):
+    day: str | None = None
+    has_data: bool | None = None
+    price_coverage: float | None = None
+    sample_coverage: float | None = None
+    grid_cost_eur: float | None = None
+    battery_cost_eur: float | None = None
+    baseline_cost_eur: float | None = None
+    saved_eur: float | None = None
+    grid_import_kwh: float | None = None
+    grid_export_kwh: float | None = None
+    battery_charge_kwh: float | None = None
+    battery_discharge_kwh: float | None = None
+    calc_v: int | None = None
+
+
+class FinanceTotals(APIResponseModel):
+    grid_cost_eur: float | None = None
+    battery_cost_eur: float | None = None
+    saved_eur: float | None = None
+    grid_import_kwh: float | None = None
+    grid_export_kwh: float | None = None
+    days_with_prices: int | None = None
+    days_with_data: int | None = None
+
+
 class FinanceResponse(APIResponseModel):
-    period: str | None = None
+    period: Period | None = None
     label: str | None = None
     window_start: str | None = None
     window_end: str | None = None
     partial: bool | None = None
-    days: list[dict[str, Any]] | None = None
-    totals: dict[str, Any] | None = None
+    days: list[FinanceDay] | None = None
+    totals: FinanceTotals | None = None
 
 
 class SavingsResponse(APIResponseModel):
-    today_eur: Any | None = None
-    tariff_warnings: list[dict[str, Any]] | None = None
-    economic_snapshot: dict[str, Any] | None = None
+    today_eur: float | None = None
+    tariff_warnings: list[TariffWarning] | None = None
+    economic_snapshot: EconomicSnapshotModel | None = None
+
+
+@with_config(ConfigDict(extra="allow", strict=True))
+class DiagnosticCheck(TypedDict, total=False):
+    key: str
+    label: str
+    status: CheckStatus
+    detail: str
+
+
+class Readiness(APIResponseModel):
+    alive: bool | None = None
+    dashboard_ready: bool | None = None
+    sensing_ready: bool | None = None
+    planning_ready: bool | None = None
+    control_ready: bool | None = None
+    summary: str | None = None
+
+
+class RecorderHealth(APIResponseModel):
+    last_success_at: str | None = None
+    consecutive_failures: int | None = None
+    last_error: str | None = None
+    clamped_samples: int | None = None
+    invalid_reconstructions: int | None = None
+    last_reconstruction_flags: list[str] | None = None
+
+
+class BackupHealth(APIResponseModel):
+    last_backup_ts: str | None = None
+    last_backup_ok: bool | None = None
+    last_backup_size: int | None = None
+    backups_kept: int | None = None
+
+
+class ForecastJobHealth(APIResponseModel):
+    last_success_date: str | None = None
+    last_attempt_iso: str | None = None
+    ok: bool | None = None
+
+
+class HistoryStoreHealth(APIResponseModel):
+    consecutive_persist_failures: int | None = None
+    last_reheal_iso: str | None = None
+
+
+class StorageHealth(APIResponseModel):
+    db_bytes: int | None = None
+    wal_bytes: int | None = None
+    raw_rows: int | None = None
+    derived_rows: int | None = None
+    backup: BackupHealth | None = None
+    canonical_forecast: ForecastJobHealth | None = None
+    history_store: HistoryStoreHealth | None = None
+
+
+class TimingSummary(APIResponseModel):
+    p50_ms: float | None = None
+    p95_ms: float | None = None
+    p99_ms: float | None = None
+    max_ms: float | None = None
+    n: int | None = None
+    over_budget_count: int | None = None
+    last_overrun_at: float | None = None
+
+
+class MemoryUsage(APIResponseModel):
+    current_mb: float | None = None
+    peak_mb: float | None = None
+    over_ceiling_count: int | None = None
+
+
+class BudgetOverrun(APIResponseModel):
+    ts: float | None = None
+    name: str | None = None
+    duration_ms: float | None = None
+
+
+class PerformanceMetrics(APIResponseModel):
+    budgets: dict[str, float] | None = None
+    tiers: dict[str, TimingSummary] | None = None
+    control_cycle: TimingSummary | None = None
+    rss_mb: MemoryUsage | None = None
+    last_overruns: list[BudgetOverrun] | None = None
 
 
 class DiagnosticsResponse(APIResponseModel):
-    overall: str | None = None
-    checks: list[dict[str, Any]] | None = None
-    cache: dict[str, Any] | None = None
-    readiness: dict[str, Any] | None = None
-    storage: dict[str, Any] | None = None
-    recorder: dict[str, Any] | None = None
-    perf: dict[str, Any] | None = None
+    overall: CheckStatus | None = None
+    checks: list[DiagnosticCheck] | None = None
+    cache: dict[str, int] | None = None
+    readiness: Readiness | None = None
+    storage: StorageHealth | None = None
+    recorder: RecorderHealth | None = None
+    perf: PerformanceMetrics | None = None

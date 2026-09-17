@@ -15,10 +15,8 @@ def test_report_service_delegates_report_and_finance():
                  "grid_import_kwh": 3, "grid_export_kwh": 1, "price_coverage": 1,
                  "has_data": True}]
 
-    ctx = ApplicationContext(source=None, runtime_state={
-        "report_for_window": report, "finance_window": finance,
-        "savings": lambda: {"today_eur": None},
-    })
+    ctx = ApplicationContext(source=None, report_for_window=report, finance_window=finance,
+                             savings_snapshot=lambda now: {"today_eur": None})
     svc = ReportService(ctx)
     now = datetime.now(UTC)
     assert asyncio.run(svc.report("day", now, now, "x", False, now)) == {"ok": True}
