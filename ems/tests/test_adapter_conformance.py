@@ -7,20 +7,21 @@ allowed here.
 
 from datetime import UTC, datetime
 from inspect import Parameter, signature
+from typing import get_type_hints
 from zoneinfo import ZoneInfo
 
 import pytest
 
 from ems.domain import PhysicalMode
 from ems.sources.battery import MockBatteryDriver
-from ems.sources.forecast import MockSolarForecastSource
+from ems.sources.forecast import ForecastSlot, MockSolarForecastSource
 from ems.sources.forecast_solar import ForecastSolarSource
 from ems.sources.indevolt import BatteryUnavailable, IndevoltReadClient
 from ems.sources.indevolt_driver import IndevoltBatteryDriver
 from ems.sources.live import HomeWizardMeter, LiveSource, ev_w, grid_w, solar_w
 from ems.sources.mock import MockSource
 from ems.sources.ports import BatteryDriver, PriceSource, SolarForecastSource, Source
-from ems.sources.prices import MockPriceSource
+from ems.sources.prices import MockPriceSource, PriceSlot
 from ems.sources.tibber import TibberPriceSource
 
 
@@ -44,9 +45,19 @@ def _assert_port_method(
         f"{adapter.__name__}.{name} does not match {port.__name__}.{name}: "
         f"{impl_sig} != {port_sig}"
     )
-    assert impl_sig.return_annotation is not impl_sig.empty, (
-        f"{adapter.__name__}.{name} must declare a return annotation"
+    assert actual == _method_shape(contract), (
+        f"{adapter.__name__}.{name} changes required arguments or defaults"
     )
+    # Resolve the ports' forward references without importing adapters into production ports.
+    port_hints = get_type_hints(
+        contract, localns={"PriceSlot": PriceSlot, "ForecastSlot": ForecastSlot}
+    )
+    implementation_hints = get_type_hints(implementation)
+    assert implementation_hints == port_hints, (
+        f"{adapter.__name__}.{name} annotations differ from the port: "
+        f"{implementation_hints} != {port_hints}"
+    )
+
 
 
 def test_all_current_adapters_match_port_signatures() -> None:
@@ -155,3 +166,28 @@ def test_indevolt_driver_conforms_but_unarmed_apply_never_writes() -> None:
     assert isinstance(driver, BatteryDriver)
     assert driver.apply(PhysicalMode.AUTO) is False
     assert calls == []
+
+
+@pytest.mark.parametrize('broken', ['required_argument', 'argument_type', 'return_type'])
+def test_port_check_rejects_incompatible_battery_adapters(broken):
+    class RequiredArgument:
+        def apply(self, mode: PhysicalMode, *, target_soc: float | None,
+                  power_w: float | None = None) -> bool:
+            return True
+
+    class ArgumentType:
+        def apply(self, mode: str, *, target_soc: float | None = None,
+                  power_w: float | None = None) -> bool:
+            return True
+
+    class ReturnType:
+        def apply(self, mode: PhysicalMode, *, target_soc: float | None = None,
+                  power_w: float | None = None) -> str:
+            return 'unconfirmed'
+
+    adapter = {'required_argument': RequiredArgument, 'argument_type': ArgumentType,
+               'return_type': ReturnType}[broken]
+    expected = (("mode", Parameter.POSITIONAL_OR_KEYWORD),
+                ("target_soc", Parameter.KEYWORD_ONLY), ("power_w", Parameter.KEYWORD_ONLY))
+    with pytest.raises(AssertionError):
+        _assert_port_method(adapter, BatteryDriver, 'apply', expected)

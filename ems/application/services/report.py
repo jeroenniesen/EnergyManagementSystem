@@ -1,9 +1,9 @@
 from __future__ import annotations
 
-import inspect
 from datetime import UTC, datetime
+from typing import Literal
 
-from ems.application.context import ApplicationContext
+from ems.application.context import ApplicationContext, require_collaborator
 
 
 class ReportService:
@@ -14,17 +14,19 @@ class ReportService:
 
     async def report(self, period: str, start: datetime, end: datetime, label: str,
                      partial: bool, now_local: datetime) -> dict[str, object]:
-        return await self.context.runtime_state["report_for_window"](
+        report = require_collaborator(self.context.report_for_window, "report_for_window")
+        return await report(
             period, start, end, label, partial, now_local
         )
 
     async def finance(self, start: datetime, end: datetime, now_local: datetime,
                       period: str, label: str, partial: bool) -> dict[str, object]:
-        result = self.context.runtime_state["finance_window"](start, end, now_local)
-        days = await result if inspect.isawaitable(result) else result
+        finance = require_collaborator(self.context.finance_window, "finance_window")
+        days = await finance(start, end, now_local)
 
-        def total(key: str) -> float | None:
-            vals = [d[key] for d in days if d.get(key) is not None]
+        def total(key: Literal["grid_cost_eur", "battery_cost_eur", "saved_eur",
+                               "grid_import_kwh", "grid_export_kwh"]) -> float | None:
+            vals = [value for d in days if (value := d.get(key)) is not None]
             return round(sum(vals), 2) if vals else None
 
         totals = {
@@ -42,4 +44,5 @@ class ReportService:
                 "partial": partial, "days": days, "totals": totals}
 
     def savings(self) -> dict[str, object]:
-        return self.context.runtime_state["savings"]()
+        savings = require_collaborator(self.context.savings_snapshot, "savings_snapshot")
+        return savings(self.context.clock.now_utc())

@@ -26,9 +26,10 @@ import logging
 import threading
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta
 from typing import Any
 
+from ems.clock import Clock, SystemClock
 from ems.control.car_mode import (
     _RESERVE_ENTER_PP,
     CarModeAction,
@@ -376,6 +377,7 @@ class ControlService:
         site_tz: Any,
         dry_run: bool,
         control_cycle_seconds: float = 300.0,
+        clock: Clock | None = None,
         # B-46 stage 2: the coalesced live reads need the meter/battery `source` and the seasonal
         # strategy resolution needs the KV `cache_store`; both are OPTIONAL so a unit test can build
         # the service with only the injected callables below (no hardware, no cache).
@@ -401,6 +403,7 @@ class ControlService:
         adaptive_cfg: Callable[[], Any] | None = None,
     ) -> None:
         self._ctx = ctx
+        self._clock = clock if clock is not None else SystemClock()
         self._settings = settings  # the live shared dict — never copied (see module docstring)
         self._controller = controller
         self._store = store
@@ -670,13 +673,13 @@ class ControlService:
             "round_trip_efficiency": s["planner.round_trip_efficiency"],
         }
 
-    def build_plan_now(self):
+    def build_plan_now(self, now: datetime | None = None):
         """The fresh plan the active strategy builds THIS instant, BEFORE any missed-window
         recovery. Dispatches to the active strategy (summer solar-first / winter arbitrage).
         Returns (now, prices, plan) or None. Used by `plan_with_recovery` and the recovery cycle."""
         if self._price_source is None:
             return None
-        now = datetime.now(UTC)
+        now = self._clock.now_utc() if now is None else now
         prices = self._price_source.slots()
         self._price_horizon_status = validate_price_horizon(
             prices, now=now, site_tz=self._site_tz)
@@ -696,7 +699,7 @@ class ControlService:
         )
         return now, prices, plan
 
-    def plan_with_recovery(self):
+    def plan_with_recovery(self, now: datetime | None = None):
         """Single source of the plan to ACT on (DRY) so /api/plan, /api/savings, /api/decision, the
         control loop and the validator all reflect the SAME computation: the fresh strategy plan
         with SPEC §8.12 missed-window recovery folded in (BACKLOG B-16). Recovery is a PURE,
@@ -705,7 +708,7 @@ class ControlService:
         otherwise it returns the plan untouched. Because it runs here, the recovered plan still
         passes through `validate_plan_obj` (§8.11 incl. the B-22 projection gate) and the control
         caps/dwell before any write — recovery bypasses nothing. Returns (now, prices, plan)."""
-        pp = self.build_plan_now()
+        pp = self.build_plan_now(now)
         if pp is None:
             return None
         now, prices, plan = pp
@@ -715,8 +718,8 @@ class ControlService:
         )
         return now, prices, recovered, status, catch
 
-    def current_plan(self):
-        pp = self.plan_with_recovery()
+    def current_plan(self, now: datetime | None = None):
+        pp = self.plan_with_recovery(now)
         return None if pp is None else pp[:3]
 
     # --- car-charging guard ----------------------------------------------------------------------
@@ -831,7 +834,7 @@ class ControlService:
             else:
                 reason = f"manual override: {ov.intent.value} until {until}"
         else:
-            pp = self.current_plan()
+            pp = self.current_plan(now)
             if pp is None:
                 status = self._price_horizon_status
                 if self._price_source is not None and status is not None and not status.ok:
@@ -899,6 +902,7 @@ class ControlService:
             current_plan=self.current_plan,
             price_horizon_status=lambda: self._price_horizon_status,
             validate_plan=self._validate_plan_obj,
+            current_setpoint_w=self._ctx.car_session["setpoint_w"],
         )
 
     # --- cluster-drift audit ---------------------------------------------------------------------
@@ -1141,7 +1145,7 @@ class ControlService:
             reachable = any(t.online for t in towers) if towers else observed is not None
             if reachable:
                 lc.mark_probe_ok()  # battery readable this cycle
-            if self.current_plan() is not None:
+            if self.current_plan(now) is not None:
                 lc.mark_plan_loaded()
             lc.tick(now)
             if not lc.can_command(now):
@@ -1635,7 +1639,7 @@ class ControlService:
                 _log.info("control.cycle: draining for restart; not starting a new tick")
                 return
             async with self._ctx.control_lock:
-                now = datetime.now(UTC)
+                now = self._clock.now_utc()
                 await self.refresh_car_obs(now)  # warm house-load prediction before the (sync) tick
                 if cycle_token is None:
                     # Single-admission: reserve the cycle slot SYNCHRONOUSLY before spawning the

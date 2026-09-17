@@ -16,7 +16,7 @@ def test_verification_uses_context_clock_when_now_omitted():
     ctx = ApplicationContext(
         source=None,
         clock=FrozenClock(frozen),
-        runtime_state={"current_plan": lambda: None, "current_sample": sample},
+        current_plan=lambda now=None: None, current_sample=sample,
     )
 
     result = VerificationService(ctx).verify()

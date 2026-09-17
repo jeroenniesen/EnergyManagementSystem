@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from ems.application.context import ApplicationContext
+from ems.application.context import ApplicationContext, require_collaborator
 
 
 class DiagnosticsService:
@@ -10,4 +10,5 @@ class DiagnosticsService:
         self.context = context
 
     async def get_snapshot(self) -> dict[str, object]:
-        return await self.context.runtime_state["diagnostics_snapshot"]()
+        snapshot = require_collaborator(self.context.diagnostics_snapshot, "diagnostics_snapshot")
+        return await snapshot(self.context.clock.now_utc())
