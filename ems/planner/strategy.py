@@ -209,6 +209,7 @@ def build_plan(
     summer_cfg: SummerConfig,
     load_w_by: dict[datetime, float] | None = None,
     adaptive_cfg: AdaptiveConfig | None = None,
+    export_price_by: dict[datetime, float] | None = None,
 ) -> Plan:
     """Dispatch to the chosen strategy's planner. `strategy` is already resolved (not 'auto').
 
@@ -221,7 +222,8 @@ def build_plan(
     if strategy == "summer":
         if adaptive_cfg is not None and load_w_by is not None:
             plan = plan_adaptive(prices, forecast or [], now, soc_pct=soc_pct,
-                                 load_w_by=load_w_by, cfg=adaptive_cfg)
+                                 load_w_by=load_w_by, cfg=adaptive_cfg,
+                                 export_price_by=export_price_by)
         else:
             plan = plan_summer(prices, forecast or [], now, soc_pct=soc_pct, cfg=summer_cfg)
     elif load_w_by is not None and adaptive_cfg is not None:
@@ -229,6 +231,8 @@ def build_plan(
             prices, now, winter_cfg, soc_pct=soc_pct, load_w_by=load_w_by,
             usable_kwh=adaptive_cfg.usable_kwh, reserve_soc_pct=adaptive_cfg.reserve_soc_pct,
             max_charge_w=adaptive_cfg.max_charge_w,
+            forecast=forecast, solar_confidence=adaptive_cfg.solar_confidence,
+            export_price_by=export_price_by,
         )
     else:
         plan = plan_rule_based(prices, now, winter_cfg)

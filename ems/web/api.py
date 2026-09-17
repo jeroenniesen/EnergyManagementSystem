@@ -136,6 +136,7 @@ from ems.storage.history import (
     materialize_observations,
 )
 from ems.storage.settings import SettingsStore
+from ems.tariff_history import finance_basis, finance_tariff_kwargs
 from ems.tariff_validation import validate_tariff_policy
 from ems.tariffs import policy_from_settings, policy_to_dict
 from ems.weather import cloud_cover_pct
@@ -150,6 +151,7 @@ from ems.web.authz import (
 from ems.web.context import AppContext, history_row_cap
 from ems.web.routes.accuracy import build_router as build_accuracy_router
 from ems.web.routes.auth import build_router as build_auth_router
+from ems.web.routes.bill_advice import build_router as build_bill_advice_router
 from ems.web.routes.car import build_router as build_car_router
 from ems.web.routes.car import gather_car_plan
 from ems.web.routes.diagnostics import build_router as build_diagnostics_router
@@ -165,6 +167,7 @@ from ems.web.routes.export import build_router as build_export_router
 from ems.web.routes.notify import build_router as build_notify_router
 from ems.web.routes.plan import build_router as build_plan_router
 from ems.web.routes.report import build_router as build_report_router
+from ems.web.routes.tariffs import build_router as build_tariff_router
 from ems.web.routes.users import build_router as build_users_router
 from ems.web.routes.verification import build_router as build_verification_router
 from ems.web.routes.whatif import build_router as build_whatif_router
@@ -765,7 +768,7 @@ def _uslot_totals(slots: list[dict]) -> dict:
 # Bump when the finance math changes so completed-day rows cached under the OLD formula are
 # recomputed instead of served stale (finding 4). v2 = same-window wear (dis_priced) + price-gate;
 # v3 = export credited via the configurable feed-in model (B-05), not always the full spot price.
-_FINANCE_CALC_VERSION = 5  # includes grid-fee-aware import/export valuation
+_FINANCE_CALC_VERSION = 6  # includes grid-fee-aware import/export valuation
 
 
 # The car-charging discharge-session constants + the PURE decision helpers (`_decide_car_command`,
@@ -1488,6 +1491,8 @@ def create_app(
     WRITE_EXEMPT_PATHS = frozenset({
         # Scenario simulator: opens the read-only history connection only, never `settings_store`.
         "/api/whatif",
+        "/api/advisor/appliance",
+        "/api/invoice-reconciliation",
         # Plan preview: recomputes a plan from the posted knobs in memory; persists nothing.
         "/api/plan-preview",
     })
@@ -1669,7 +1674,7 @@ def create_app(
             # re-cap the projection at the night target (that would undo demand-aware sizing).
             return project_energy(
                 plan.slots, start_soc_pct=soc, solar_w_by=solar_by, load_w_by=load_by,
-                model=_battery_model(), charge_target_soc_pct=None,
+                model=_battery_model(), charge_target_soc_pct=None, start_at=now,
             )
         except Exception:
             _log.debug("plan projection failed; skipping SoC checks (non-fatal)", exc_info=True)
@@ -1988,9 +1993,12 @@ def create_app(
                     return
             except Exception:
                 _log.debug("canonical forecast dedupe pre-check failed (non-fatal)", exc_info=True)
-        drows = await store.recent_derived(2016)  # ~7 days of derived history for the profile
+        drows = await store.recent_derived(12096 if dry_run and settings_cache.get(
+            "planner.bill_optimization_enabled", False) else 2016)
         fallback_w = settings_cache["battery.overnight_load_kwh"] * 1000.0 / 12.0
-        profile = build_load_profile(drows, site_tz, fallback_w=fallback_w)
+        profile = build_load_profile(drows, site_tz, fallback_w=fallback_w, as_of=now,
+                                         enhanced=dry_run and settings_cache.get(
+                                             "planner.bill_optimization_enabled", False))
         solar_slots = (await asyncio.to_thread(solar_forecast.slots)
                        if solar_forecast is not None else [])
         source_name = type(solar_forecast).__name__ if solar_forecast is not None else "none"
@@ -2806,7 +2814,8 @@ def create_app(
         thread so this never stalls the event loop (a slow meter/Tibber/Forecast.Solar must not
         freeze unrelated requests)."""
         # Learn the expected load from ~7 days of derived history (async DB read off the loop).
-        drows = await store.recent_derived(2016) if store is not None else []
+        drows = await store.recent_derived(12096 if dry_run and settings_cache.get(
+            "planner.bill_optimization_enabled", False) else 2016) if store is not None else []
 
         def _compute():
             pp = _current_plan()  # touches price_source/solar_forecast/source.read (all cached)
@@ -2819,7 +2828,9 @@ def create_app(
             fc_slots = solar_forecast.slots()
             solar_by = {f.start: f.p50_w for f in fc_slots}
             fallback_w = settings_cache["battery.overnight_load_kwh"] * 1000.0 / 12.0
-            profile = build_load_profile(drows, site_tz, fallback_w=fallback_w)
+            profile = build_load_profile(drows, site_tz, fallback_w=fallback_w, as_of=now,
+                                         enhanced=dry_run and settings_cache.get(
+                                             "planner.bill_optimization_enabled", False))
             _load_profile_box["profile"] = profile  # share with the sync _current_plan (adaptive)
             load_by = {s.start: profile.expected_w(s.start) for s in plan.slots}
             need = compute_charge_need(
@@ -2834,7 +2845,7 @@ def create_app(
             projected = project_energy(
                 plan.slots, start_soc_pct=soc, solar_w_by=solar_by,
                 load_w_by=load_by, model=_battery_model(),
-                charge_target_soc_pct=None,
+                charge_target_soc_pct=None, start_at=now,
             )
             return {"now": now, "current_soc": soc, "projected": projected, "need": need,
                     "deadline": sunset_after(fc_slots, now),
@@ -3667,6 +3678,22 @@ def create_app(
                 raise
             _log.warning("daily_finance memo write skipped (transient DB contention): %s", exc)
 
+    def _finance_basis() -> str:
+        return finance_basis(settings_cache)
+
+    def _retain_finance_archive(cached: dict | None, computed: dict) -> dict | None:
+        if not cached or not cached.get("has_data"):
+            return None
+        lost_coverage = any(
+            computed.get(key, 0) + .001 < cached.get(key, 0)
+            for key in ("sample_coverage", "price_coverage")
+        )
+        if lost_coverage:
+            return {**cached, "calculation_note":
+                    "Historical rollup retained under its previous tariff assumptions; "
+                    "less source detail remains than when it was calculated."}
+        return None
+
     async def _ensure_day_finance(day_local: date_cls) -> dict:
         """Compute (or return the current-version cached) finance rollup for one LOCAL day,
         persisting it once the day is completed. Shared by `/api/finance` (called per day of the
@@ -3682,35 +3709,34 @@ def create_app(
             cached = await store.daily_finance_between(day_label, nxt.date().isoformat())
             # Only trust a cache entry written by the CURRENT finance formula; a day cached
             # under an older version is recomputed (re-upserted) so a math fix reaches history.
-            if cached and cached[0]["data"].get("calc_v") == _FINANCE_CALC_VERSION:
+            if cached and cached[0]["data"].get("calc_v") == _FINANCE_CALC_VERSION \
+                    and cached[0]["data"].get("tariff_basis") == _finance_basis():
                 return cached[0]["data"]
         degradation = float(settings_cache.get("planner.degradation_eur_per_kwh", 0.05))
-        export_model = str(settings_cache.get("prices.export_price_model", "net_metering"))
-        energy_tax = float(settings_cache.get("prices.energy_tax_eur_per_kwh", 0.13))
-        fixed_feed_in = float(settings_cache.get("prices.fixed_feed_in_eur_per_kwh", 0.01))
-        includes_all = bool(settings_cache.get("grid_fees.tibber_total_includes_all", False))
-        import_fee = float(settings_cache.get("grid_fees.import_fee_eur_per_kwh", 0.0))
-        export_fee = float(settings_cache.get("grid_fees.export_fee_eur_per_kwh", 0.0))
+        tariff_kwargs = finance_tariff_kwargs(settings_cache)
         q_end = min(nxt, now_local + timedelta(minutes=1))
         # Cadence-aware per-day cap (finding 10): sized to the recorder frequency, not a fixed
         # 3000 that would truncate a finer sampling rate.
         day_limit = history_row_cap((nxt - cur).total_seconds(), _sample_cadence_seconds())
         raw = await store.raw_between(cur.astimezone(UTC).isoformat(),
                                       q_end.astimezone(UTC).isoformat(), limit=day_limit)
+        if not raw and completed and cached and cached[0]["data"].get("has_data"):
+            return {**cached[0]["data"], "calculation_note":
+                    "Historical rollup retained; raw detail is unavailable "
+                    "for tariff recalculation."}
         price_rows = await store.prices_between(cur.astimezone(UTC).isoformat(),
                                                 nxt.astimezone(UTC).isoformat())
         f = day_finance(raw, price_rows, day=day_label,
                         degradation_eur_per_kwh=degradation,
-                        export_price_model=export_model,
-                        energy_tax_eur_per_kwh=energy_tax,
-                        fixed_feed_in_eur_per_kwh=fixed_feed_in,
-                        tibber_total_includes_all=includes_all,
-                        import_fee_eur_per_kwh=import_fee,
-                        export_fee_eur_per_kwh=export_fee,
+                        **tariff_kwargs, tariff_timezone=str(site_tz),
                         window_start=cur, window_end=q_end,
                         sample_interval_seconds=_sample_cadence_seconds(),
                         max_hold_seconds=2 * _sample_cadence_seconds()).to_dict()
+        retained = _retain_finance_archive(cached[0]["data"] if completed and cached else None, f)
+        if retained is not None:
+            return retained
         f["calc_v"] = _FINANCE_CALC_VERSION
+        f["tariff_basis"] = _finance_basis()
         if completed:
             await _persist_daily_finance(day_label, f)
         return f
@@ -3737,12 +3763,8 @@ def create_app(
         price_by_day = price_rows_by_local_day(price_rows, start, end, site_tz)
 
         degradation = float(settings_cache.get("planner.degradation_eur_per_kwh", 0.05))
-        export_model = str(settings_cache.get("prices.export_price_model", "net_metering"))
-        energy_tax = float(settings_cache.get("prices.energy_tax_eur_per_kwh", 0.13))
-        fixed_feed_in = float(settings_cache.get("prices.fixed_feed_in_eur_per_kwh", 0.01))
-        includes_all = bool(settings_cache.get("grid_fees.tibber_total_includes_all", False))
-        import_fee = float(settings_cache.get("grid_fees.import_fee_eur_per_kwh", 0.0))
-        export_fee = float(settings_cache.get("grid_fees.export_fee_eur_per_kwh", 0.0))
+        tariff_kwargs = finance_tariff_kwargs(settings_cache)
+        basis = _finance_basis()
 
         def _compute() -> list[tuple[str, dict, bool]]:
             out: list[tuple[str, dict, bool]] = []
@@ -3752,23 +3774,33 @@ def create_app(
                 nxt = cur + timedelta(days=1)
                 completed = nxt <= now_local
                 cached_data = cached_by_day.get(day_label)
+                if completed and cached_data and cached_data.get("has_data") \
+                        and not raw_by_day.get(day_label):
+                    out.append((day_label, {**cached_data, "calculation_note":
+                        "Historical rollup retained; raw detail is unavailable for "
+                        "tariff recalculation."}, False))
+                    cur = nxt
+                    continue
                 if completed and cached_data is not None \
-                        and cached_data.get("calc_v") == _FINANCE_CALC_VERSION:
+                        and cached_data.get("calc_v") == _FINANCE_CALC_VERSION \
+                        and cached_data.get("tariff_basis") == basis:
                     out.append((day_label, cached_data, False))
                 else:
                     f = day_finance(
                         raw_by_day.get(day_label, []), price_by_day.get(day_label, []),
                         day=day_label, degradation_eur_per_kwh=degradation,
-                        export_price_model=export_model, energy_tax_eur_per_kwh=energy_tax,
-                        fixed_feed_in_eur_per_kwh=fixed_feed_in,
-                        tibber_total_includes_all=includes_all,
-                        import_fee_eur_per_kwh=import_fee,
-                        export_fee_eur_per_kwh=export_fee,
+                        **tariff_kwargs, tariff_timezone=str(site_tz),
                         window_start=cur, window_end=min(nxt, q_end),
                         sample_interval_seconds=_sample_cadence_seconds(),
                         max_hold_seconds=2 * _sample_cadence_seconds(),
                     ).to_dict()
+                    retained = _retain_finance_archive(cached_data, f) if completed else None
+                    if retained is not None:
+                        out.append((day_label, retained, False))
+                        cur = nxt
+                        continue
                     f["calc_v"] = _FINANCE_CALC_VERSION
+                    f["tariff_basis"] = basis
                     out.append((day_label, f, completed))
                 cur = nxt
             return out
@@ -4104,8 +4136,9 @@ def create_app(
     diagnostics_service = DiagnosticsService(app.state.application_context)
     for build in (build_auth_router, build_users_router, build_car_router, build_digest_router,
                   build_notify_router, build_export_router, build_accuracy_router,
-                  build_whatif_router):
+                  build_whatif_router, build_bill_advice_router):
         app.include_router(build(ctx))
+    app.include_router(build_tariff_router(ctx, settings_store))
     app.include_router(build_plan_router(ctx, plan_service))
     app.include_router(build_report_router(ctx, report_service))
     app.include_router(build_verification_router(ctx, verification_service))

@@ -36,7 +36,7 @@ def _controlling_controller(driver=None) -> ModeController:
 
 def _service(
     controller: ModeController, *, audit_store=None, car_charging=None, price_source=None,
-    current_mode=None,
+    current_mode=None, dry_run=False,
 ) -> tuple[ControlService, ControlContext]:
     """Build a ControlService with mock collaborators + trivial injected callables. `price_source`
     is None so the plan path is a no-op (`current_plan()` returns None) — this test drives the
@@ -47,7 +47,7 @@ def _service(
     svc = ControlService(
         ctx=ctx, settings=settings, controller=controller, store=None, audit_store=audit_store,
         price_source=price_source, solar_forecast=None,
-        site_tz=ZoneInfo("Europe/Amsterdam"), dry_run=False,
+        site_tz=ZoneInfo("Europe/Amsterdam"), dry_run=dry_run,
         current_soc=lambda now: 50.0,
         current_mode=current_mode or (lambda now: PhysicalMode.AUTO),
         current_towers=lambda now: None,
@@ -399,3 +399,81 @@ def test_persistence_hold_is_audited_once_across_the_hold():
     assert len(pend1) == 1  # explained once...
     assert pend2 == []      # ...deduped on the second observe cycle
     assert controller.driver.current_mode() is PhysicalMode.IDLE  # acted on the third
+
+
+def test_bill_optimization_requires_both_opt_in_and_dry_run():
+    for dry_run in (False, True):
+        for enabled in (False, True):
+            svc, _ = _service(_controlling_controller(), dry_run=dry_run)
+            svc._settings["planner.bill_optimization_enabled"] = enabled
+            expected = dry_run and enabled
+            assert svc.planner_cfg().bill_optimization_enabled is expected
+            assert svc.adaptive_cfg().bill_optimization_enabled is expected
+
+
+def _declared_period(start, end, surcharge=.3):
+    return {"start_date": start, "end_date": end,
+            "raw_includes_import_components": False, "import_tax_eur_per_kwh": 0.0,
+            "import_surcharge_eur_per_kwh": surcharge, "export_tax_eur_per_kwh": 0.0,
+            "export_surcharge_eur_per_kwh": 0.0, "export_fee_eur_per_kwh": .02}
+
+
+def test_planner_tariff_prices_apply_period_components_once():
+    svc, _ = _service(_controlling_controller(), dry_run=True)
+    svc._settings["tariffs.periods"] = [_declared_period("2026-06-28", "2026-06-29")]
+    svc._settings["grid_fees.import_fee_eur_per_kwh"] = 1.0
+    prices, exports = svc.economic_plan_inputs([PriceSlot(NOW, .1)], NOW)
+    assert prices[0].eur_per_kwh == .4
+    assert abs(exports[NOW] - .08) < 1e-9
+
+
+def test_planner_tariff_gap_fails_closed_but_prior_dates_use_legacy():
+    svc, _ = _service(_controlling_controller(), dry_run=True)
+    svc._settings["tariffs.periods"] = [_declared_period("2026-06-27", "2026-06-28")]
+    assert svc.economic_plan_inputs([PriceSlot(NOW, .1)], NOW) is None
+    previous = NOW - timedelta(days=2)
+    svc._settings["grid_fees.import_fee_eur_per_kwh"] = .01
+    svc._settings["grid_fees.tibber_total_includes_all"] = False
+    svc._settings["tariffs.legacy"] = {"import_fee_eur_per_kwh": .01}
+    prices, _ = svc.economic_plan_inputs([PriceSlot(previous, .1)], previous)
+    assert abs(prices[0].eur_per_kwh - .11) < 1e-9
+
+
+def test_opt_in_service_builds_normalized_plan_and_fails_closed_on_tariff_gap(monkeypatch):
+    import ems.control.service as service_module
+
+    class Clock(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return NOW
+
+    midnight = NOW.astimezone(ZoneInfo("Europe/Amsterdam")).replace(hour=0, minute=0)
+
+    class Prices:
+        def slots(self):
+            return [PriceSlot(midnight + timedelta(minutes=15 * i),
+                              .1 if midnight + timedelta(minutes=15 * i) < NOW else .5)
+                    for i in range(192)]
+
+    # Include the current slot as a cheap pre-peak opportunity.
+    class WithCheapCurrent(Prices):
+        def slots(self):
+            return [PriceSlot(p.start, .1 if p.start == NOW else p.eur_per_kwh)
+                    for p in super().slots()]
+
+    monkeypatch.setattr(service_module, "datetime", Clock)
+    svc, _ = _service(_controlling_controller(), dry_run=True, price_source=WithCheapCurrent())
+    svc._settings["planner.bill_optimization_enabled"] = True
+    svc._settings["tariffs.periods"] = [_declared_period("2026-06-28", "2026-06-30", .01)]
+    svc._settings["grid_fees.import_fee_eur_per_kwh"] = 5.0
+    svc._planner_cfg = svc.planner_cfg
+    svc._adaptive_cfg = svc.adaptive_cfg
+    svc._summer_cfg = svc.summer_cfg
+    svc._load_by = lambda starts: {start: 1000.0 for start in starts}
+    svc._current_soc = lambda now: 10.0
+    _, _, plan = svc.build_plan_now()
+    assert any(s.intent is BatteryIntent.GRID_CHARGE_TO_TARGET for s in plan.slots)
+    svc._settings["tariffs.periods"] = [_declared_period("2026-06-27", "2026-06-28")]
+    _, _, plan = svc.build_plan_now()
+    assert all(s.intent is BatteryIntent.ALLOW_SELF_CONSUMPTION for s in plan.slots)
+    assert all("tariff coverage" in s.reason for s in plan.slots)

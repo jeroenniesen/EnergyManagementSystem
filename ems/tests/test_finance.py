@@ -273,9 +273,11 @@ def test_calc_version_bump_invalidates_stored_finance_row(tmp_path):
         await store.record(ts, raw, reconstruct(raw))
         await store.upsert_price_slots([(ts, 0.30)])
         # A completed day pre-cached with a SENTINEL saving no honest recompute would ever produce.
+        existing = await store.daily_finance_between("2026-06-28", "2026-06-29")
         await store.upsert_daily_finance("2026-06-28", {
             "day": "2026-06-28", "has_data": True, "saved_eur": 999.0,
             "price_coverage": 1.0, "calc_v": stored_calc_v,
+            "tariff_basis": existing[0]["data"].get("tariff_basis") if existing else None,
         })
 
     def fetch() -> dict:

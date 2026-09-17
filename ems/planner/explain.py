@@ -15,7 +15,7 @@ from datetime import datetime
 from typing import Protocol
 
 from ems.domain import BatteryIntent
-from ems.planner.projection import SLOT_HOURS, ProjectedSlot
+from ems.planner.projection import ProjectedSlot
 from ems.planner.schedule import Plan
 from ems.savings import estimate_daily_savings_eur
 from ems.sources.forecast import ForecastSlot
@@ -116,7 +116,7 @@ def plan_metrics(plan: Plan, prices: list[PriceSlot]) -> dict:
 def summarize_projection(projected: list[ProjectedSlot]) -> dict:
     """Headline numbers + a plain-English narrative of the projected next-24h energy behaviour.
     Clock times are left to the UI (the timestamps are returned); the text stays tz-agnostic.
-    `*_kwh` integrate power over the 15-min slots (energy = W × 0.25 h ÷ 1000)."""
+    `*_kwh` integrate power over each modeled duration, including a partial current slot."""
     if not projected:
         return {"summary": "No projection yet.", "soc_end_pct": None, "soc_min_pct": None,
                 "soc_max_pct": None, "soc_min_at": None, "soc_max_at": None,
@@ -124,10 +124,10 @@ def summarize_projection(projected: list[ProjectedSlot]) -> dict:
     lo = min(projected, key=lambda p: p.soc_pct)
     hi = max(projected, key=lambda p: p.soc_pct)
     end = projected[-1].soc_pct
-    imp = sum(p.grid_w for p in projected if p.grid_w > 0) * SLOT_HOURS / 1000.0
-    exp = sum(-p.grid_w for p in projected if p.grid_w < 0) * SLOT_HOURS / 1000.0
-    solar = sum(p.solar_w for p in projected) * SLOT_HOURS / 1000.0
-    load = sum(p.load_w for p in projected) * SLOT_HOURS / 1000.0
+    imp = sum(p.grid_w * p.duration_hours for p in projected if p.grid_w > 0) / 1000.0
+    exp = sum(-p.grid_w * p.duration_hours for p in projected if p.grid_w < 0) / 1000.0
+    solar = sum(p.solar_w * p.duration_hours for p in projected) / 1000.0
+    load = sum(p.load_w * p.duration_hours for p in projected) / 1000.0
     # Honest, shape-agnostic phrasing: report peak / end / lowest as facts (the "lowest" is often
     # just the starting slot, so never imply a mid-window "dip" that doesn't happen). "Planned
     # window" not "24h" — the horizon is only as long as prices are published (≈11h until tomorrow).

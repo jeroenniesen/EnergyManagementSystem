@@ -16,6 +16,7 @@ from ems.domain import BatteryIntent
 from ems.planner import economics
 from ems.planner.charge_need import stored_kwh_per_slot
 from ems.planner.schedule import SLOT, Plan, PlanSlot
+from ems.sources.forecast import ForecastSlot
 from ems.sources.prices import PriceSlot
 
 _log = logging.getLogger("ems.planner.rule_based")
@@ -33,6 +34,8 @@ class PlannerConfig:
     negative_price_soak: bool = False  # opt-in: charge on sub-zero slots (paid to consume)
     import_fee_eur_per_kwh: float = 0.0
     tibber_total_includes_all: bool = False
+    bill_optimization_enabled: bool = False
+    max_discharge_w: float = 4000.0
 
 
 def _all_auto(prices: list[PriceSlot], now: datetime, note: str) -> Plan:
@@ -63,6 +66,9 @@ def plan_rule_based(
     usable_kwh: float = 10.0,
     reserve_soc_pct: float = 10.0,
     max_charge_w: float = 4000.0,
+    forecast: list[ForecastSlot] | None = None,
+    solar_confidence: float = 0.8,
+    export_price_by: dict[datetime, float] | None = None,
 ) -> Plan:
     """Winter arbitrage: charge the cheap window, discharge the profitable peaks. When a load
     profile + battery sizing are supplied it is **demand-sized** (energy review P1.2): the cheap-
@@ -74,6 +80,13 @@ def plan_rule_based(
     turned into a charge slot afterwards — you are *paid* to consume — even outside a normal cheap
     window and even on a no-trade day (`_soak_negative`)."""
     cfg = cfg or PlannerConfig()
+    if cfg.bill_optimization_enabled and load_w_by is not None:
+        return _plan_economic(
+            prices, forecast or [], now, cfg, soc_pct=soc_pct, load_w_by=load_w_by,
+            usable_kwh=usable_kwh, reserve_soc_pct=reserve_soc_pct,
+            max_charge_w=max_charge_w, solar_confidence=solar_confidence,
+            export_price_by=export_price_by,
+        )
     plan = _plan_winter(
         prices, now, cfg, soc_pct=soc_pct, load_w_by=load_w_by, usable_kwh=usable_kwh,
         reserve_soc_pct=reserve_soc_pct, max_charge_w=max_charge_w,
@@ -219,3 +232,141 @@ def _soak_negative(
     )
     return Plan(created_at=plan.created_at, slots=out, strategy=plan.strategy,
                 target_soc=plan.target_soc, deadline=plan.deadline)
+
+
+def _plan_economic(
+    prices: list[PriceSlot], forecast: list[ForecastSlot], now: datetime, cfg: PlannerConfig,
+    *, soc_pct: float, load_w_by: dict[datetime, float], usable_kwh: float,
+    reserve_soc_pct: float, max_charge_w: float, solar_confidence: float,
+    export_price_by: dict[datetime, float] | None,
+) -> Plan:
+    """Buy only energy that increases chronologically achievable, profitable peak coverage.
+
+    Re-simulating each purchase accounts for solar displaced by grid energy, capacity limits,
+    and intervening peaks. All energy balances are DC; prices and house demand are AC.
+    """
+    horizon = sorted((p for p in prices if p.start + SLOT > now), key=lambda p: p.start)
+    horizon = horizon[:cfg.horizon_slots]
+    if not horizon or usable_kwh <= 0:
+        return _all_auto(horizon, now, "no-trade: no usable planning horizon")
+    eta = math.sqrt(max(1e-6, min(1.0, cfg.round_trip_efficiency)))
+    floor = max(0.0, min(100.0, reserve_soc_pct))
+    reserve = usable_kwh * floor / 100
+    initial = max(0.0, min(usable_kwh, usable_kwh * soc_pct / 100))
+    confidence = max(0.0, min(1.0, solar_confidence))
+    solar = {f.start: max(0.0, f.p50_w * confidence) for f in forecast}
+    duration = {p.start: max(0.0, min(_DH, (p.start + SLOT - now).total_seconds() / 3600))
+                for p in horizon}
+    surplus = {p.start: max(0.0, solar.get(p.start, 0) - load_w_by.get(p.start, 0))
+               * duration[p.start] / 1000 * eta for p in horizon}
+    deficit = {p.start: min(max(0.0, cfg.max_discharge_w),
+                           max(0.0, load_w_by.get(p.start, 0) - solar.get(p.start, 0)))
+               * duration[p.start] / 1000 / eta for p in horizon}
+    limit = {p.start: max(0.0, max_charge_w) * duration[p.start] / 1000 * eta
+             for p in horizon}
+    effective = {p.start: _effective_import_price(p, cfg) for p in horizon}
+
+    def delivered(price):
+        return economics.breakeven(price, round_trip_efficiency=cfg.round_trip_efficiency,
+            degradation_eur_per_kwh=cfg.degradation_eur_per_kwh,
+            risk_margin_eur_per_kwh=cfg.risk_margin_eur_per_kwh)
+
+    cheapest = min(effective.values())
+    peaks = {p.start for p in sorted(horizon, key=lambda p: -effective[p.start])
+             [:cfg.discharge_slots] if deficit[p.start] > 0
+             and effective[p.start] > delivered(cheapest)}
+    # The existing intents cannot explicitly export surplus instead of storing it. Decline
+    # economic intervention when that limitation would require unprofitable solar storage.
+    for p in horizon:
+        later = [effective[t] for t in peaks if t > p.start]
+        export = (export_price_by or {}).get(p.start, effective[p.start])
+        if surplus[p.start] > 0 and later and delivered(export) >= min(later):
+            return _all_auto(horizon, now,
+                "no-trade: solar export credit outweighs storage; export-only control unavailable")
+    purchases: dict[datetime, float] = {}
+
+    def simulate(buys):
+        stored = initial
+        unmet = 0.0
+        levels = {}
+        for p in horizon:
+            t = p.start
+            stored = min(usable_kwh, stored + min(limit[t], surplus[t]))
+            stored = min(usable_kwh, stored + buys.get(t, 0.0))
+            levels[t] = stored
+            if t in peaks:
+                served = min(deficit[t], max(0.0, stored - reserve))
+                stored -= served
+                unmet += deficit[t] - served
+        return unmet, levels
+
+    if peaks:
+        peak_min = min(effective[t] for t in peaks)
+        candidates = sorted((p for p in horizon if p.start < max(peaks)
+                             and p.start not in peaks and surplus[p.start] <= 0
+                             and delivered(effective[p.start]) < peak_min),
+                            key=lambda p: (effective[p.start], p.start))
+        for p in candidates:
+            t = p.start
+            before, _ = simulate(purchases)
+            available = max(0.0, limit[t] - surplus[t])
+            after, _ = simulate({**purchases, t: available})
+            if before - after <= 1e-9:
+                continue
+            # Smallest purchase giving this coverage, avoiding excess charge displaced by solar.
+            lo, hi = 0.0, available
+            for _ in range(40):
+                mid = (lo + hi) / 2
+                remaining, _ = simulate({**purchases, t: mid})
+                if remaining > after + 1e-10:
+                    lo = mid
+                else:
+                    hi = mid
+            purchases[t] = hi
+
+    _, levels = simulate(purchases)
+    windows: list[list[datetime]] = []
+    for p in horizon:
+        if p.start not in purchases:
+            continue
+        if windows and windows[-1][-1] + SLOT == p.start:
+            windows[-1].append(p.start)
+        else:
+            windows.append([p.start])
+    targets = {}
+    for window in windows:
+        # A continuous mode has one target: the controller deliberately never rewrites it.
+        # With no solar surplus in these slots, front-loading to that target cannot replace PV.
+        target = levels[window[-1]]
+        stored = levels[window[0]] - purchases[window[0]]
+        for t in window:
+            purchases[t] = min(limit[t], max(0.0, target - stored))
+            stored += purchases[t]
+            targets[t] = target / usable_kwh * 100
+    _, levels = simulate(purchases)
+    out = []
+    for p in horizon:
+        t = p.start
+        later = [peak for peak in peaks if peak > t]
+        deadline = min(later) if later else None
+        if t in purchases:
+            out.append(PlanSlot(t, BatteryIntent.GRID_CHARGE_TO_TARGET,
+                f"charge: €{effective[t]:.2f}/kWh remains profitable after losses, wear and risk",
+                target_soc=targets[t], target_kwh=purchases[t],
+                power_w=max_charge_w, floor_soc=floor, deadline=deadline))
+        elif t in peaks and levels[t] > reserve + 1e-9:
+            out.append(PlanSlot(t, BatteryIntent.DISCHARGE_FOR_LOAD,
+                "serve profitable peak from stored energy", floor_soc=floor))
+        elif later and surplus[t] <= 0:
+            out.append(PlanSlot(t, BatteryIntent.HOLD_RESERVE,
+                "hold stored energy for a profitable peak", floor_soc=floor))
+        else:
+            reason = "solar-first self-consumption; no profitable grid purchase needed"
+            if cfg.negative_price_soak and effective[t] < 0:
+                reason = ("no negative-price soak: bill optimization only purchases energy "
+                          "for profitable future load")
+            out.append(PlanSlot(t, BatteryIntent.ALLOW_SELF_CONSUMPTION,
+                reason, floor_soc=floor))
+    target = max((s.target_soc for s in out if s.target_soc is not None), default=None)
+    return Plan(created_at=now, slots=tuple(out), strategy="winter", target_soc=target,
+                deadline=min(peaks) if peaks else None)

@@ -38,6 +38,10 @@ class AdaptiveConfig:
     solar_confidence: float = 0.8
     horizon_slots: int = 96
     negative_price_soak: bool = False  # opt-in: charge on sub-zero slots (paid to consume)
+    import_fee_eur_per_kwh: float = 0.0
+    tibber_total_includes_all: bool = False
+    bill_optimization_enabled: bool = False
+    max_discharge_w: float = 4000.0
 
 
 def plan_adaptive(
@@ -48,10 +52,32 @@ def plan_adaptive(
     soc_pct: float,
     load_w_by: dict[datetime, float],
     cfg: AdaptiveConfig,
+    export_price_by: dict[datetime, float] | None = None,
 ) -> Plan:
     """Demand-aware charge plan (see the module docstring). With `cfg.negative_price_soak` (opt-in,
     default OFF) every sub-zero-priced slot is additionally turned into a charge slot afterwards —
     you are *paid* to consume — even outside a normal cheap window (`_soak_negative`)."""
+    if cfg.bill_optimization_enabled:
+        from dataclasses import replace
+
+        from ems.planner.rule_based import PlannerConfig, plan_rule_based
+
+        winter_cfg = PlannerConfig(
+            round_trip_efficiency=cfg.round_trip_efficiency,
+            degradation_eur_per_kwh=cfg.degradation_eur_per_kwh,
+            risk_margin_eur_per_kwh=cfg.risk_margin_eur_per_kwh,
+            horizon_slots=cfg.horizon_slots, discharge_slots=cfg.horizon_slots,
+            import_fee_eur_per_kwh=cfg.import_fee_eur_per_kwh,
+            tibber_total_includes_all=cfg.tibber_total_includes_all,
+            bill_optimization_enabled=True, max_discharge_w=cfg.max_discharge_w,
+            negative_price_soak=cfg.negative_price_soak,
+        )
+        plan = plan_rule_based(prices, now, winter_cfg, soc_pct=soc_pct,
+            load_w_by=load_w_by, usable_kwh=cfg.usable_kwh,
+            reserve_soc_pct=cfg.reserve_soc_pct, max_charge_w=cfg.max_charge_w,
+            forecast=forecast, solar_confidence=cfg.solar_confidence,
+            export_price_by=export_price_by)
+        return replace(plan, strategy=None)
     plan = _plan_adaptive(prices, forecast, now, soc_pct=soc_pct, load_w_by=load_w_by, cfg=cfg)
     if cfg.negative_price_soak:
         plan = _soak_negative(plan, prices, cfg)

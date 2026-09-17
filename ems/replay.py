@@ -1,36 +1,9 @@
-"""Historical replay optimization suite (backlog B-77): the engine that makes every future
-planner change measurable.
+"""Read-only historical simulation of no battery, AUTO, planner and a solar-foresight oracle.
 
-Replay recorded days through FOUR scenarios on the SAME actual weather + prices and compares
-what each would have cost:
-
-  a. **no_battery**    — the counterfactual meter with no storage at all (grid = load − solar).
-  b. **auto_selfuse**  — the vendor's self-consumption behaviour (soak solar surplus, discharge
-                         to residual load), the "no EMS" floor the system must never be worse than.
-  c. **planner**       — the app's OWN plan (`strategy.build_plan`, exactly as the control loop
-                         builds it) applied slot by slot: grid-charge toward the target, hold idle,
-                         self-consume otherwise.
-  d. **oracle**        — the SAME planner + strategy, but handed a PERFECT solar forecast (the day's
-                         ACTUAL solar fed in as the forecast). The planner→oracle cost gap is the €
-                         headroom a perfect SOLAR forecast would unlock — the ceiling for solar
-                         forecast / ML work. NOTE the planner scenario already feeds the planner the
-                         day's ACTUAL load (a faithful profile proxy), so load foresight is already
-                         perfect in BOTH — this gap isolates SOLAR-forecast value, not load-model
-                         value (that needs a separate learned-profile-vs-actual variant).
-
-The plan (b/c) is built at day-start from that day's STORED prices + STORED (day-ahead) solar
-forecast — what the planner actually knew — while the simulation runs against the day's ACTUAL
-reconstructed load + ACTUAL solar. That asymmetry is deliberate for the planner: a faithful replay
-(plan against forecast, reality happens). The oracle (d) removes only the solar-forecast error, so
-`planner_cost − oracle_cost` is an honest per-day ceiling on solar-forecast improvement.
-
-The battery model is shared across scenarios and mirrors `planner.projection` exactly: round-trip
-efficiency split as √η per side, a hard reserve floor discharge never crosses, and per-slot power
-bounded by both the inverter limit and the SoC head/available room. Cost mirrors `finance.py`:
-Σ import×price − export×export_value(price) over priced slots, under the configured feed-in model.
-
-Everything here is PURE except the DB reader, which opens the SQLite file **read-only** (`mode=ro`
-URI) — this module must never write history. Run it: `uv run python -m ems.replay --days 14`.
+Plans roll every quarter hour using trailing load and forecasts issued before the decision.
+Scenario-specific stored energy continues across complete contiguous days; gaps are skipped and
+restart from observed storage. Grid bill, estimated wear and an explicitly valued change in
+stored energy are reported separately. These are model comparisons, never measured savings.
 """
 
 from __future__ import annotations
@@ -49,6 +22,7 @@ from ems.domain import BatteryIntent
 from ems.economics import EconomicSnapshot
 from ems.perf import timed
 from ems.planner.adaptive import AdaptiveConfig
+from ems.planner.load_profile import build_load_profile
 from ems.planner.rule_based import PlannerConfig
 from ems.planner.strategy import HysteresisState, build_plan, resolve_strategy_hysteretic
 from ems.planner.summer import SummerConfig
@@ -56,10 +30,12 @@ from ems.retrospect import _floor, _mean, _parse
 from ems.settings import SETTINGS_BY_KEY, effective_settings, validate_settings
 from ems.sources.forecast import ForecastSlot
 from ems.sources.prices import PriceSlot
+from ems.tariff_history import finance_tariff_kwargs
+from ems.tariffs import TariffPeriod
 from ems.timeutil import day_slot_count
 
 _DH = 0.25  # hours per 15-min slot (energy = power × this)
-_COVERAGE_MIN = 0.80  # a day needs ≥80% slot coverage of BOTH load and prices to be replayable
+_COVERAGE_MIN = 1.0  # incomplete days cannot be simulated without inventing battery state
 SCENARIOS = ("no_battery", "auto_selfuse", "planner", "oracle")
 # Matches every writer connection's own busy_timeout (storage/history.py, storage/settings.py):
 # without it, a `mode=ro` connection has SQLite's default (fail-instantly) timeout, so a replay
@@ -108,6 +84,11 @@ class ReplayConfig:
     energy_tax_eur_per_kwh: float
     fixed_feed_in_eur_per_kwh: float
     export_fee_eur_per_kwh: float = 0.0
+    import_fee_eur_per_kwh: float = 0.0
+    tibber_total_includes_all: bool = False
+    tariff_periods: tuple[TariffPeriod, ...] = ()
+    legacy_before: str | None = None
+    bill_optimization_enabled: bool = False
     # Locale (season choice + local-day bucketing). Default = the site tz.
     tz: ZoneInfo = ZoneInfo("Europe/Amsterdam")
 
@@ -118,6 +99,7 @@ class ReplayConfig:
         """Effective settings (defaults overlaid by `overrides`, validated) mapped to typed knobs.
         `overrides` uses the same dotted `settings.py` keys as the UI/CLI."""
         s = effective_settings(overrides or {})
+        tariffs = finance_tariff_kwargs({**s, **(overrides or {})})
         return cls(
             usable_kwh=s["battery.usable_kwh"],
             max_charge_w=s["battery.max_charge_w"],
@@ -135,10 +117,15 @@ class ReplayConfig:
             summer_max_topup_price=s["strategy.summer_max_topup_price"],
             hysteresis_days=int(s["strategy.hysteresis_days"]),
             overnight_load_kwh=s["battery.overnight_load_kwh"],
-            export_price_model=s["prices.export_price_model"],
-            energy_tax_eur_per_kwh=s["prices.energy_tax_eur_per_kwh"],
-            fixed_feed_in_eur_per_kwh=s["prices.fixed_feed_in_eur_per_kwh"],
-            export_fee_eur_per_kwh=s.get("grid_fees.export_fee_eur_per_kwh", 0.0),
+            export_price_model=tariffs["export_price_model"],
+            energy_tax_eur_per_kwh=tariffs["energy_tax_eur_per_kwh"],
+            fixed_feed_in_eur_per_kwh=tariffs["fixed_feed_in_eur_per_kwh"],
+            export_fee_eur_per_kwh=tariffs["export_fee_eur_per_kwh"],
+            import_fee_eur_per_kwh=tariffs["import_fee_eur_per_kwh"],
+            tibber_total_includes_all=tariffs["tibber_total_includes_all"],
+            tariff_periods=tuple(tariffs["tariff_periods"]),
+            legacy_before=tariffs["legacy_before"],
+            bill_optimization_enabled=s.get("planner.bill_optimization_enabled", False),
             tz=tz or ZoneInfo("Europe/Amsterdam"),
         )
 
@@ -151,6 +138,8 @@ def _winter_cfg(cfg: ReplayConfig) -> PlannerConfig:
         charge_slots=cfg.charge_slots,
         discharge_slots=cfg.discharge_slots,
         negative_price_soak=cfg.negative_price_soak,
+        bill_optimization_enabled=cfg.bill_optimization_enabled,
+        max_discharge_w=cfg.max_discharge_w,
     )
 
 
@@ -164,6 +153,8 @@ def _adaptive_cfg(cfg: ReplayConfig) -> AdaptiveConfig:
         risk_margin_eur_per_kwh=cfg.risk_margin_eur_per_kwh,
         solar_confidence=cfg.solar_confidence,
         negative_price_soak=cfg.negative_price_soak,
+        bill_optimization_enabled=cfg.bill_optimization_enabled,
+        max_discharge_w=cfg.max_discharge_w,
     )
 
 
@@ -192,7 +183,7 @@ def _summer_cfg(cfg: ReplayConfig) -> SummerConfig:
 @dataclass(frozen=True)
 class ScenarioResult:
     """One scenario's outcome over a day. `cost_eur` is None only if no slot had a price (a
-    replayable day always has ≥80% price coverage, so in practice it's a number)."""
+    replayable day always has complete price coverage, so in practice it's a number)."""
 
     cost_eur: float | None
     import_kwh: float
@@ -200,6 +191,16 @@ class ScenarioResult:
     cycles_kwh: float  # kWh the battery DISCHARGED (throughput on the wear basis; 0 for no_battery)
     reserve_breaches: int  # slots whose end-of-slot SoC is below the reserve floor
     switches: int  # planner intent changes across the day (0 for no_battery / auto)
+    initial_stored_kwh: float = 0.0
+    final_stored_kwh: float = 0.0
+    estimated_wear_eur: float = 0.0
+    inventory_adjustment_eur: float = 0.0
+
+    @property
+    def net_cost_eur(self) -> float | None:
+        if self.cost_eur is None:
+            return None
+        return self.cost_eur + self.estimated_wear_eur + self.inventory_adjustment_eur
 
     def to_dict(self) -> dict:
         def r(x: float | None, n: int) -> float | None:
@@ -212,6 +213,12 @@ class ScenarioResult:
             "cycles_kwh": r(self.cycles_kwh, 3),
             "reserve_breaches": self.reserve_breaches,
             "switches": self.switches,
+            "grid_cost_eur": r(self.cost_eur, 4),
+            "estimated_wear_eur": r(self.estimated_wear_eur, 4),
+            "inventory_adjustment_eur": r(self.inventory_adjustment_eur, 4),
+            "net_cost_eur": r(self.net_cost_eur, 4),
+            "initial_stored_kwh": r(self.initial_stored_kwh, 4),
+            "final_stored_kwh": r(self.final_stored_kwh, 4),
         }
 
 
@@ -223,6 +230,7 @@ class DayResult:
     skip_reason: str | None
     strategy: str | None  # resolved summer/winter used for the planner scenario (None if skipped)
     scenarios: dict[str, ScenarioResult]  # {} when skipped
+    continuity: str = "initialized"
 
     def to_dict(self) -> dict:
         return {
@@ -231,6 +239,7 @@ class DayResult:
             "data_ok": self.data_ok,
             "skip_reason": self.skip_reason,
             "strategy": self.strategy,
+            "continuity": self.continuity,
             "scenarios": {k: v.to_dict() for k, v in self.scenarios.items()},
         }
 
@@ -254,6 +263,21 @@ class RangeResult:
 # --------------------------------------------------------------------------------------------------
 # Pure core
 # --------------------------------------------------------------------------------------------------
+def _slot_tariff(cfg: ReplayConfig, slot: datetime, raw_price: float) -> tuple[float, float] | None:
+    for period in cfg.tariff_periods:
+        if period.contains(slot, timezone=cfg.tz.key):
+            value = period.normalize(raw_price)
+            return value.import_eur_per_kwh, value.export_eur_per_kwh
+    if cfg.tariff_periods and not (
+        cfg.legacy_before and slot.astimezone(cfg.tz).date().isoformat() < cfg.legacy_before
+    ):
+        return None
+    price = raw_price if cfg.tibber_total_includes_all else raw_price + cfg.import_fee_eur_per_kwh
+    return price, EconomicSnapshot.from_replay_config(
+        cfg, raw_price_eur_per_kwh=raw_price
+    ).export_credit()
+
+
 def _simulate(
     slots: list[datetime],
     load_by: dict[datetime, float],
@@ -265,6 +289,7 @@ def _simulate(
     battery_enabled: bool,
     intents: dict[datetime, BatteryIntent] | None,
     target_soc: float | None,
+    inventory_value_eur_per_kwh: float = 0.0,
 ) -> ScenarioResult:
     """Forward-simulate one scenario over the ordered `slots`.
 
@@ -329,11 +354,11 @@ def _simulate(
         exp += max(0.0, -grid_w) * _DH / 1000.0
         price = price_by.get(slot)
         if price is not None:
-            credit = EconomicSnapshot.from_replay_config(
-                cfg, raw_price_eur_per_kwh=price
-            ).export_credit()
-            cost += (max(0.0, grid_w) * price - max(0.0, -grid_w) * credit) * _DH / 1000.0
-            priced += 1
+            tariff = _slot_tariff(cfg, slot, price)
+            if tariff is not None:
+                imported, credit = tariff
+                cost += (max(0.0, grid_w) * imported - max(0.0, -grid_w) * credit) * _DH / 1000.0
+                priced += 1
 
     return ScenarioResult(
         cost_eur=(cost if priced else None),
@@ -342,6 +367,13 @@ def _simulate(
         cycles_kwh=discharge,
         reserve_breaches=breaches,
         switches=0,
+        initial_stored_kwh=start_soc / 100.0 * usable if battery_enabled else 0.0,
+        final_stored_kwh=soc_kwh if battery_enabled else 0.0,
+        estimated_wear_eur=discharge * cfg.degradation_eur_per_kwh,
+        inventory_adjustment_eur=(start_soc / 100.0 * usable - soc_kwh)
+        * inventory_value_eur_per_kwh
+        if battery_enabled
+        else 0.0,
     )
 
 
@@ -385,6 +417,60 @@ def _resolve_strategy(
     return strat, new_state
 
 
+def _eligible_forecast(rows: list[dict], now: datetime) -> list[ForecastSlot]:
+    """Use issue-eligible forecasts; legacy date-only issues become available the next day."""
+    latest: dict[datetime, tuple[datetime, dict]] = {}
+    for row in rows:
+        target = _parse(row.get("start", row.get("target_start")))
+        issued = _parse(row.get("issued_at"))
+        if row.get("source") == "legacy_snapshot":
+            issued = issued + timedelta(days=1) if issued else None
+        if issued is None:
+            day = _parse(row.get("issued_date"))
+            issued = day + timedelta(days=1) if day is not None else None
+        if target is None or issued is None or issued > now or target < now:
+            continue
+        values = [
+            row.get(new, row.get(old))
+            for new, old in (("p10_w", "low_w"), ("p50_w", "expected_w"), ("p90_w", "high_w"))
+        ]
+        if any(not isinstance(v, (int, float)) or not math.isfinite(v) or v < 0 for v in values):
+            continue
+        if target not in latest or issued > latest[target][0]:
+            latest[target] = (issued, row)
+    return [
+        ForecastSlot(
+            start=target,
+            p10_w=float(row.get("p10_w", row.get("low_w", 0))),
+            p50_w=float(row.get("p50_w", row.get("expected_w", 0))),
+            p90_w=float(row.get("p90_w", row.get("high_w", 0))),
+        )
+        for target, (_, row) in sorted(latest.items())
+    ]
+
+
+def _load_history(rows: list[dict], before: datetime) -> list[dict]:
+    out = []
+    for row in rows:
+        ts = _parse(row.get("ts"))
+        if ts is None or not before - timedelta(days=14) <= ts < before:
+            continue
+        if row.get("non_ev_load_w") is not None:
+            load = row["non_ev_load_w"]
+        else:
+            try:
+                load = (
+                    float(row["grid_power_w"])
+                    + float(row["solar_power_w"])
+                    + float(row["battery_power_w"])
+                    - max(0.0, float(row.get("ev_power_w") or 0.0))
+                )
+            except (KeyError, ValueError, TypeError):
+                continue
+        out.append({"ts": ts.isoformat(), "non_ev_load_w": load})
+    return out
+
+
 def replay_day(
     raw_rows: list[dict],
     price_rows: list[dict],
@@ -392,218 +478,185 @@ def replay_day(
     *,
     cfg: ReplayConfig,
     hysteresis_box: dict[str, HysteresisState] | None = None,
+    history_rows: list[dict] | None = None,
+    state_box: dict | None = None,
 ) -> DayResult:
-    """Replay ONE day (rows already windowed to the local day) through all three scenarios.
+    """Roll plans forward using only preceding load and issue-eligible solar forecasts.
 
-    Reconstructs load = grid + solar + battery per 15-min slot (SPEC §4 / `load_model`), reads the
-    stored price + day-ahead forecast, then simulates no_battery / auto_selfuse / planner sharing
-    one battery model. A day with <80% slot coverage of load OR prices is not replayed — it returns
-    `data_ok=False` with a `skip_reason` and empty scenarios (never a fabricated number).
-
-    `hysteresis_box` (optional `{"state": HysteresisState}`) carries the seasonal-transition counter
-    across the days of a range replay so `auto` is dampened exactly like the live app (§8.4 / B-15);
-    updated in place. Omit it (a one-off day replay) and each day resolves independently, which for
-    the counter means today's instantaneous per-day pick."""
-    tz = cfg.tz
-
-    # --- per-slot series from raw samples (mean power per 15-min slot) ---
-    grid_by: dict[datetime, list[float]] = defaultdict(list)
-    solar_l: dict[datetime, list[float]] = defaultdict(list)
-    batt_by: dict[datetime, list[float]] = defaultdict(list)
-    soc_by: dict[datetime, list[float]] = defaultdict(list)
-    for r in raw_rows:
-        dt = _parse(r.get("ts"))
+    Complete load, solar and price slots are required; unknown intervals cannot silently stop the
+    battery clock. Each scenario carries its own energy across contiguous days via ``state_box``.
+    Historical price publication timestamps are unavailable: today's prices are assumed known;
+    next-day prices are admitted only after 15:00 local, explicitly a publication assumption.
+    """
+    samples: dict[datetime, list[tuple[float, float]]] = defaultdict(list)
+    observed_soc_by: dict[datetime, float] = {}
+    for row in raw_rows:
+        dt = _parse(row.get("ts"))
         if dt is None:
             continue
-        s = _floor(dt)
-        grid_by[s].append(float(r.get("grid_power_w", 0.0)))
-        solar_l[s].append(float(r.get("solar_power_w", 0.0)))
-        batt_by[s].append(float(r.get("battery_power_w", 0.0)))
-        if r.get("soc_pct") is not None:
-            soc_by[s].append(float(r["soc_pct"]))
-
-    load_by: dict[datetime, float] = {}
-    solar_by: dict[datetime, float] = {}
-    for s in grid_by:
-        solar = _mean(solar_l[s])
-        # house_load = grid + solar + battery (SPEC §4.2 / load_model.reconstruct). The RECORDED
-        # battery only reconstructs the historical load; the replay then simulates a fresh battery.
-        load_by[s] = _mean(grid_by[s]) + solar + _mean(batt_by[s])
-        solar_by[s] = solar
-
-    price_by: dict[datetime, float] = {}
-    for p in price_rows:
-        dt = _parse(p.get("start_ts"))
-        if dt is not None:
-            price_by[_floor(dt)] = float(p.get("eur_per_kwh", 0.0))
-
-    # Day-ahead forecast: keep the FIRST snapshot per slot (forecast rows arrive issued_date-ASC,
-    # so the earliest issue — the day-ahead — wins over a later same-day nowcast).
-    fc_slots: list[ForecastSlot] = []
-    seen: set[datetime] = set()
-    for f in forecast_rows:
-        dt = _parse(f.get("start"))
-        if dt is None or dt in seen:
-            continue
-        seen.add(dt)
-        fc_slots.append(
-            ForecastSlot(
-                start=dt,
-                p10_w=float(f.get("p10_w", 0.0)),
-                p50_w=float(f.get("p50_w", 0.0)),
-                p90_w=float(f.get("p90_w", 0.0)),
+        try:
+            grid, solar, battery = (
+                float(row[k]) for k in ("grid_power_w", "solar_power_w", "battery_power_w")
             )
-        )
-    fc_slots.sort(key=lambda f: f.start)
-
-    all_keys = set(load_by) | set(price_by) | {f.start for f in fc_slots}
-    if not all_keys:
+        except (KeyError, TypeError, ValueError):
+            continue
+        if not all(math.isfinite(v) for v in (grid, solar, battery)):
+            continue
+        slot = _floor(dt)
+        samples[slot].append((max(0.0, grid + solar + battery), max(0.0, solar)))
+        soc = row.get("soc_pct")
+        if isinstance(soc, (int, float)) and math.isfinite(soc) and 0 <= soc <= 100:
+            observed_soc_by[dt] = float(soc)
+    price_by = {}
+    for row in price_rows:
+        dt = _parse(row.get("start_ts"))
+        price = row.get("eur_per_kwh")
+        if dt is not None and isinstance(price, (float, int)) and math.isfinite(price):
+            price_by[_floor(dt)] = float(price)
+    keys = set(samples) or set(price_by)
+    if not keys:
         return DayResult("unknown", 0, False, "no data", None, {})
-
-    first_slot = min(all_keys)
-    day_date = first_slot.astimezone(tz).date()
-    date_str = day_date.isoformat()
-    expected = day_slot_count(day_date, tz) or 96  # DST-aware slot count (96/92/100)
-    load_cov = len(load_by) / expected
-    price_cov = len(price_by) / expected
-    if load_cov < _COVERAGE_MIN:
+    day = min(keys).astimezone(cfg.tz).date()
+    date_str = day.isoformat()
+    begin, end = (_parse(v) for v in _day_window(day, cfg.tz))
+    slots = [begin + timedelta(minutes=15 * i) for i in range(day_slot_count(day, cfg.tz))]
+    for name, values in (("load", samples), ("price", price_by)):
+        coverage = sum(slot in values for slot in slots) / len(slots)
+        if coverage < _COVERAGE_MIN:
+            return DayResult(
+                date_str,
+                len(samples),
+                False,
+                f"{name} coverage {coverage:.0%} < 100%; incomplete day skipped",
+                None,
+                {},
+                "gap",
+            )
+    if any(_slot_tariff(cfg, slot, price_by[slot]) is None for slot in slots):
         return DayResult(
-            date_str,
-            len(load_by),
-            False,
-            f"load coverage {load_cov:.0%} < {_COVERAGE_MIN:.0%}",
-            None,
-            {},
+            date_str, len(slots), False, "tariff period coverage incomplete", None, {}, "gap"
         )
-    if price_cov < _COVERAGE_MIN:
+    state = state_box if state_box is not None else {}
+    continuous = state.get("end") == begin.isoformat()
+    continuity = "continued" if continuous else ("reset_after_gap" if state else "initialized")
+    observations = [ts for ts in observed_soc_by if ts < begin + timedelta(minutes=15)]
+    if not continuous and not observations:
         return DayResult(
-            date_str,
-            len(load_by),
-            False,
-            f"price coverage {price_cov:.0%} < {_COVERAGE_MIN:.0%}",
-            None,
-            {},
+            date_str, len(slots), False, "initial battery state unavailable", None, {}, "gap"
         )
-
-    slots = sorted(load_by)
-    start_soc = _mean(soc_by[min(soc_by)]) if soc_by else 0.0  # first recorded SoC of the day
-
-    # (a) no_battery: grid = load − solar every slot.
-    no_battery = _simulate(
-        slots,
-        load_by,
-        solar_by,
-        price_by,
-        cfg=cfg,
-        start_soc=start_soc,
-        battery_enabled=False,
-        intents=None,
-        target_soc=None,
+    observed_soc = observed_soc_by[min(observations)] if observations else 0.0
+    load_by = {slot: _mean([pair[0] for pair in samples[slot]]) for slot in slots}
+    solar_by = {slot: _mean([pair[1] for pair in samples[slot]]) for slot in slots}
+    starts = state.get("soc", {}) if continuous else {}
+    eta = math.sqrt(cfg.round_trip_efficiency)
+    # One fixed DC-energy valuation across the comparison makes daily adjustments telescope.
+    value = state.setdefault(
+        "inventory_value",
+        max(0.0, _mean([_slot_tariff(cfg, t, price_by[t])[0] for t in slots])) * eta,
     )
-
-    # (b) auto_selfuse: vendor self-consumption (soak surplus / discharge deficit).
-    auto = _simulate(
-        slots,
-        load_by,
-        solar_by,
-        price_by,
-        cfg=cfg,
-        start_soc=start_soc,
-        battery_enabled=True,
-        intents=None,
-        target_soc=None,
-    )
-
-    # (c) planner: build the app's plan at day-start from stored prices + day-ahead forecast, then
-    # simulate it against the ACTUAL load + solar. Load fed to the planner is the day's actual
-    # reconstructed load (a faithful proxy for the learned profile it would have used).
-    now = first_slot
-    prices = [PriceSlot(start=s, eur_per_kwh=price_by[s]) for s in sorted(price_by)]
-    _hyst_in = hysteresis_box["state"] if hysteresis_box is not None else None
-    strategy, _hyst_out = _resolve_strategy(cfg, now, prices, fc_slots, load_by, _hyst_in)
+    result = {}
+    for scenario in ("no_battery", "auto_selfuse"):
+        result[scenario] = _simulate(
+            slots,
+            load_by,
+            solar_by,
+            price_by,
+            cfg=cfg,
+            start_soc=starts.get(scenario, observed_soc),
+            battery_enabled=scenario != "no_battery",
+            intents=None,
+            target_soc=None,
+            inventory_value_eur_per_kwh=value,
+        )
+    pieces = {name: [] for name in ("planner", "oracle")}
+    scenario_soc = {name: starts.get(name, observed_soc) for name in pieces}
+    previous_intent = {}
+    switches = dict.fromkeys(pieces, 0)
+    hyst = hysteresis_box.get("state") if hysteresis_box is not None else None
+    strategy = None
+    history = history_rows or []
+    for now in slots:
+        local = now.astimezone(cfg.tz)
+        last_known_day = local.date() + timedelta(days=int(local.hour >= 15))
+        prices = [
+            PriceSlot(start=t, eur_per_kwh=_slot_tariff(cfg, t, price_by[t])[0])
+            for t in sorted(price_by)
+            if _slot_tariff(cfg, t, price_by[t]) is not None
+            if now <= t < now + timedelta(hours=24)
+            and t.astimezone(cfg.tz).date() <= last_known_day
+        ]
+        profile = build_load_profile(
+            _load_history(history + raw_rows, now),
+            cfg.tz,
+            enhanced=cfg.bill_optimization_enabled,
+            as_of=now,
+        )
+        predicted = {p.start: profile.expected_w(p.start) for p in prices}
+        forecast = _eligible_forecast(forecast_rows, now)
+        strategy, hyst = _resolve_strategy(cfg, now, prices, forecast, predicted, hyst)
+        for name in pieces:
+            solar_fc = (
+                forecast
+                if name == "planner"
+                else [
+                    ForecastSlot(start=t, p10_w=w, p50_w=w, p90_w=w)
+                    for t, w in solar_by.items()
+                    if t >= now
+                ]
+            )
+            plan = build_plan(
+                strategy,
+                prices=prices,
+                forecast=solar_fc,
+                now=now,
+                soc_pct=scenario_soc[name],
+                winter_cfg=_winter_cfg(cfg),
+                summer_cfg=_summer_cfg(cfg),
+                load_w_by=predicted,
+                adaptive_cfg=_adaptive_cfg(cfg),
+                export_price_by={
+                    p.start: _slot_tariff(cfg, p.start, price_by[p.start])[1] for p in prices
+                },
+            )
+            current = plan.intent_at(now)
+            intent = current.intent if current else BatteryIntent.ALLOW_SELF_CONSUMPTION
+            if name in previous_intent and previous_intent[name] != intent:
+                switches[name] += 1
+            previous_intent[name] = intent
+            step = _simulate(
+                [now],
+                load_by,
+                solar_by,
+                price_by,
+                cfg=cfg,
+                start_soc=scenario_soc[name],
+                battery_enabled=True,
+                intents={now: intent},
+                target_soc=current.target_soc if current else None,
+                inventory_value_eur_per_kwh=value,
+            )
+            pieces[name].append(step)
+            scenario_soc[name] = step.final_stored_kwh / cfg.usable_kwh * 100
+    for name, steps in pieces.items():
+        result[name] = ScenarioResult(
+            cost_eur=sum(s.cost_eur for s in steps),
+            import_kwh=sum(s.import_kwh for s in steps),
+            export_kwh=sum(s.export_kwh for s in steps),
+            cycles_kwh=sum(s.cycles_kwh for s in steps),
+            reserve_breaches=sum(s.reserve_breaches for s in steps),
+            switches=switches[name],
+            initial_stored_kwh=steps[0].initial_stored_kwh,
+            final_stored_kwh=steps[-1].final_stored_kwh,
+            estimated_wear_eur=sum(s.estimated_wear_eur for s in steps),
+            inventory_adjustment_eur=sum(s.inventory_adjustment_eur for s in steps),
+        )
     if hysteresis_box is not None:
-        hysteresis_box["state"] = _hyst_out
-    plan = build_plan(
-        strategy,
-        prices=prices,
-        forecast=fc_slots,
-        now=now,
-        soc_pct=start_soc,
-        winter_cfg=_winter_cfg(cfg),
-        summer_cfg=_summer_cfg(cfg),
-        load_w_by=load_by,
-        adaptive_cfg=_adaptive_cfg(cfg),
+        hysteresis_box["state"] = hyst
+    state.update(
+        end=end.isoformat(),
+        soc={name: r.final_stored_kwh / cfg.usable_kwh * 100 for name, r in result.items()},
     )
-    intents: dict[datetime, BatteryIntent] = {}
-    for s in slots:
-        ps = plan.intent_at(s)
-        intents[s] = ps.intent if ps is not None else BatteryIntent.ALLOW_SELF_CONSUMPTION
-    seq = [intents[s] for s in slots]
-    switches = sum(1 for a, b in zip(seq, seq[1:], strict=False) if a != b)
-    planner = _simulate(
-        slots,
-        load_by,
-        solar_by,
-        price_by,
-        cfg=cfg,
-        start_soc=start_soc,
-        battery_enabled=True,
-        intents=intents,
-        target_soc=plan.target_soc,
-    )
-    planner = ScenarioResult(
-        planner.cost_eur,
-        planner.import_kwh,
-        planner.export_kwh,
-        planner.cycles_kwh,
-        planner.reserve_breaches,
-        switches,
-    )
-
-    # (d) oracle: the SAME strategy + actual load, but a PERFECT solar forecast (actual solar fed in
-    # as p10=p50=p90). Simulated against the same actual reality. planner→oracle cost = the € a
-    # perfect solar forecast would save (the solar-forecast/ML ceiling). We reuse the planner's
-    # resolved `strategy` so the ONLY changed variable is the solar forecast, and we do NOT touch
-    # the hysteresis box (oracle is a hypothetical, not part of the season-transition memory).
-    oracle_fc = [
-        ForecastSlot(start=s, p10_w=solar_by[s], p50_w=solar_by[s], p90_w=solar_by[s])
-        for s in slots
-    ]
-    oracle_plan = build_plan(
-        strategy,
-        prices=prices,
-        forecast=oracle_fc,
-        now=now,
-        soc_pct=start_soc,
-        winter_cfg=_winter_cfg(cfg),
-        summer_cfg=_summer_cfg(cfg),
-        load_w_by=load_by,
-        adaptive_cfg=_adaptive_cfg(cfg),
-    )
-    oracle_intents: dict[datetime, BatteryIntent] = {}
-    for s in slots:
-        ps = oracle_plan.intent_at(s)
-        oracle_intents[s] = ps.intent if ps is not None else BatteryIntent.ALLOW_SELF_CONSUMPTION
-    oracle = _simulate(
-        slots,
-        load_by,
-        solar_by,
-        price_by,
-        cfg=cfg,
-        start_soc=start_soc,
-        battery_enabled=True,
-        intents=oracle_intents,
-        target_soc=oracle_plan.target_soc,
-    )
-
-    return DayResult(
-        date_str,
-        len(slots),
-        True,
-        None,
-        strategy,
-        {"no_battery": no_battery, "auto_selfuse": auto, "planner": planner, "oracle": oracle},
-    )
+    return DayResult(date_str, len(slots), True, None, strategy, result, continuity)
 
 
 # --------------------------------------------------------------------------------------------------
@@ -667,8 +720,18 @@ def replay_range(
             # counters.
             hyst_box: dict[str, HysteresisState] = {"state": HysteresisState()}
             hyst_box_b: dict[str, HysteresisState] = {"state": HysteresisState()}
+            state_box: dict = {}
+            state_box_b: dict = {}
             for d in dates:
                 start_iso, end_iso = _day_window(d, cfg.tz)
+                _, horizon_end = _day_window(d + timedelta(days=1), cfg.tz)
+                history_start, _ = _day_window(d - timedelta(days=14), cfg.tz)
+                history = _query(
+                    conn,
+                    "SELECT ts, non_ev_load_w FROM derived_samples "
+                    "WHERE ts >= ? AND ts < ? ORDER BY ts",
+                    (history_start, start_iso),
+                )
                 raw = _query(
                     conn,
                     "SELECT ts, grid_power_w, solar_power_w, battery_power_w, ev_power_w, soc_pct "
@@ -679,7 +742,7 @@ def replay_range(
                     conn,
                     "SELECT start_ts, eur_per_kwh FROM price_slots "
                     "WHERE start_ts >= ? AND start_ts < ? ORDER BY start_ts ASC",
-                    (start_iso, end_iso),
+                    (start_iso, horizon_end),
                 )
                 forecast = _query(
                     conn,
@@ -687,10 +750,36 @@ def replay_range(
                     "WHERE start >= ? AND start < ? ORDER BY issued_date ASC, start ASC",
                     (start_iso, end_iso),
                 )
-                results.append(replay_day(raw, prices, forecast, cfg=cfg, hysteresis_box=hyst_box))
+                ledger = _query(
+                    conn,
+                    "SELECT issued_at, target_start, low_w, expected_w, high_w, quality, source "
+                    "FROM forecast_ledger WHERE kind = 'solar' AND target_start >= ? "
+                    "AND target_start < ? ORDER BY issued_at",
+                    (start_iso, horizon_end),
+                )
+                forecast.extend(ledger)
+                results.append(
+                    replay_day(
+                        raw,
+                        prices,
+                        forecast,
+                        cfg=cfg,
+                        hysteresis_box=hyst_box,
+                        history_rows=history,
+                        state_box=state_box,
+                    )
+                )
                 if results_b is not None and cfg_b is not None:
                     results_b.append(
-                        replay_day(raw, prices, forecast, cfg=cfg_b, hysteresis_box=hyst_box_b)
+                        replay_day(
+                            raw,
+                            prices,
+                            forecast,
+                            cfg=cfg_b,
+                            hysteresis_box=hyst_box_b,
+                            history_rows=history,
+                            state_box=state_box_b,
+                        )
                     )
         finally:
             conn.close()
@@ -730,13 +819,52 @@ def _aggregate(days: list[DayResult], days_b: list[DayResult] | None) -> dict:
         ),
         "switches": sum(d.scenarios["planner"].switches for d in ok if "planner" in d.scenarios),
     }
+    for name, prefix in (
+        ("no_battery", "no_battery"),
+        ("auto_selfuse", "auto"),
+        ("planner", "planner"),
+        ("oracle", "oracle"),
+    ):
+        outcomes = [d.scenarios[name] for d in ok if name in d.scenarios]
+        for field in ("estimated_wear_eur", "inventory_adjustment_eur", "net_cost_eur"):
+            agg[f"{prefix}_{field}"] = round(sum(getattr(r, field) or 0 for r in outcomes), 4)
+    agg["planner_vs_auto_net_eur"] = round(
+        agg["auto_net_cost_eur"] - agg["planner_net_cost_eur"], 4
+    )
+    agg["planner_vs_no_battery_net_eur"] = round(nb - agg["planner_net_cost_eur"], 4)
+    agg["continuity_resets"] = sum(d.continuity == "reset_after_gap" for d in ok)
+    agg["simulation"] = True
+    agg["limitations"] = [
+        "Simulated results, not measured savings; quarter-hour mode execution omits live dwell "
+        "and write caps.",
+        "Price issuance timestamps are unavailable: next-day prices assumed available "
+        "after 15:00 local.",
+        "Date-only legacy forecasts become eligible the following day; "
+        "missing forecasts remain absent.",
+        "Stored DC energy valued at the first replayed day's nonnegative mean import price "
+        "times one-way efficiency.",
+        "Oracle changes only solar foresight; its observed advantage is not a guaranteed "
+        "upper bound.",
+    ]
     if days_b is not None:
         planner_b = _sum_cost([d for d in days_b if d.data_ok], "planner")
         agg["cfg_b"] = {
             "planner_cost_eur": round(planner_b, 4),
             # + = config B's planner is CHEAPER than config A's.
             "delta_vs_a_eur": round(planner - planner_b, 4),
+            "planner_net_cost_eur": round(
+                sum(d.scenarios["planner"].net_cost_eur or 0 for d in days_b if d.data_ok), 4
+            ),
+            "planner_estimated_wear_eur": round(
+                sum(d.scenarios["planner"].estimated_wear_eur for d in days_b if d.data_ok), 4
+            ),
+            "planner_inventory_adjustment_eur": round(
+                sum(d.scenarios["planner"].inventory_adjustment_eur for d in days_b if d.data_ok), 4
+            ),
         }
+        agg["cfg_b"]["net_delta_vs_a_eur"] = round(
+            agg["planner_net_cost_eur"] - agg["cfg_b"]["planner_net_cost_eur"], 4
+        )
     return agg
 
 
@@ -819,19 +947,15 @@ def format_table(result: RangeResult) -> str:
             f"config B planner € {b['planner_cost_eur']:.3f}  "
             f"(Δ vs A {b['delta_vs_a_eur']:+.3f}; + = B cheaper)"
         )
-    n = a["days_replayed"]
-    if n:
-        scale = 365.0 / n
+    if a["days_replayed"]:
         lines += [
             "",
-            f"value gap over {n} replayed day(s) → annualized €/yr (×{scale:.1f}):",
-            f"  battery vs no battery  : {a['planner_vs_no_battery_eur'] * scale:+8.0f} €/yr"
-            "   (what the battery+EMS saves at all)",
-            f"  planner vs vendor-auto : {a['planner_vs_auto_eur'] * scale:+8.0f} €/yr"
-            "   (value of the app's own planning)",
-            f"  solar-forecast ceiling : {a['oracle_headroom_eur'] * scale:+8.0f} €/yr"
-            "   (MOST a perfect solar forecast / ML could add on top)",
+            "Simulated comparison over recorded days (not measured savings):",
+            f"  net benefit versus AUTO: €{a['planner_vs_auto_net_eur']:+.3f}",
+            "  Includes estimated wear and the change in stored-energy value.",
+            "  Solar oracle is a foresight sensitivity, not a guaranteed savings ceiling.",
         ]
+    lines.extend(f"  Assumption: {note}" for note in a.get("limitations", []))
     return "\n".join(lines)
 
 

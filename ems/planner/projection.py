@@ -43,6 +43,7 @@ class ProjectedSlot:
     grid_w: float  # + import / − export
     solar_w: float
     load_w: float
+    duration_hours: float = SLOT_HOURS
 
 
 def _clamp(value: float, low: float, high: float) -> float:
@@ -58,12 +59,14 @@ def project_energy(
     model: BatteryModel,
     charge_target_soc_pct: float | None = None,
     slot: timedelta = SLOT,
+    start_at: datetime | None = None,
 ) -> list[ProjectedSlot]:
     """Simulate SoC + grid flow over `plan_slots` (each needs `.start` and `.intent`).
 
-    `charge_target_soc_pct` caps `GRID_CHARGE_TO_TARGET`: the battery buys from the grid only up to
-    this SoC (the energy needed to carry the night — SPEC §8: a target SoC derived from required
-    kWh), instead of force-charging to full. None = charge to capacity (legacy behaviour).
+    Each charge slot's `target_soc` caps its charging, matching the executed intent. Slots without
+    a target use `charge_target_soc_pct`; when neither target exists they charge to capacity
+    (legacy behaviour). `start_at` limits the current slot to its remaining duration and excludes
+    elapsed slots; each result retains the original price-slot start and its modeled duration.
 
     Contract: `load_w_by` MUST cover every slot start — a missing load silently reads 0 W and
     under-predicts the drain (the API builds it for every plan slot). `solar_w_by` may be sparse;
@@ -71,14 +74,13 @@ def project_energy(
     usable = model.usable_kwh
     reserve_kwh = model.reserve_soc_pct / 100.0 * usable
     eta = math.sqrt(_clamp(model.round_trip_efficiency, 1e-6, 1.0))
-    dh = slot.total_seconds() / 3600.0
     soc_kwh = _clamp(start_soc_pct, 0.0, 100.0) / 100.0 * usable
-    # Grid-charge ceiling in kWh (enough for the night, no more). None -> full usable capacity.
-    target_kwh = (usable if charge_target_soc_pct is None
-                  else _clamp(charge_target_soc_pct, 0.0, 100.0) / 100.0 * usable)
-
     out: list[ProjectedSlot] = []
     for ps in plan_slots:
+        begins = max(ps.start, start_at) if start_at is not None else ps.start
+        dh = (ps.start + slot - begins).total_seconds() / 3600.0
+        if dh <= 0:
+            continue
         solar = solar_w_by.get(ps.start, 0.0)
         load = load_w_by.get(ps.start, 0.0)
         net = load - solar  # + deficit (need power) / − surplus (excess solar)
@@ -90,7 +92,11 @@ def project_energy(
         max_discharge_ac = min(model.max_discharge_w, avail_kwh * eta / dh * 1000.0)
 
         if ps.intent is BatteryIntent.GRID_CHARGE_TO_TARGET:
-            # Charge at full power, but only up to the night-carry target (don't over-buy).
+            target_soc = getattr(ps, "target_soc", None)
+            if target_soc is None:
+                target_soc = charge_target_soc_pct
+            target_kwh = (usable if target_soc is None
+                          else _clamp(target_soc, 0.0, 100.0) / 100.0 * usable)
             room_to_target_ac = max(0.0, target_kwh - soc_kwh) / eta / dh * 1000.0
             battery_w = -min(max_charge_ac, room_to_target_ac)
         elif ps.intent is BatteryIntent.HOLD_RESERVE:
@@ -116,6 +122,6 @@ def project_energy(
             start=ps.start, intent=ps.intent,
             soc_pct=soc_kwh / usable * 100.0 if usable > 0 else 0.0,
             battery_w=battery_w, grid_w=load - solar - battery_w,
-            solar_w=solar, load_w=load,
+            solar_w=solar, load_w=load, duration_hours=dh,
         ))
     return out

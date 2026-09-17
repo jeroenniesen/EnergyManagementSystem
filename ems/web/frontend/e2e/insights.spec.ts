@@ -753,7 +753,7 @@ const COUNTERFACTUAL = {
     auto_selfuse: { cost_eur: 31.5, import_kwh: 150, export_kwh: 10 },
     planner: { cost_eur: 24.2, import_kwh: 120, export_kwh: 8 },
   },
-  deltas: { planner_vs_no_battery: 17.9, planner_vs_auto: 7.3 },
+  deltas: { planner_vs_no_battery: 17.9, planner_vs_auto: 7.3, planner_vs_auto_net_eur: 5.1 },
   note: "Your setup beat doing nothing by €17.90 over 14 measured days.",
 };
 
@@ -789,8 +789,10 @@ test.describe("Insights: what-if scenario simulator (B-73) + counterfactual (B-6
     const panel = page.getByTestId("whatif-panel");
     await expect(panel).toBeVisible();
     await expect(page.getByTestId("whatif-badge")).toContainText("simulation — nothing is changed");
-    await expect(page.getByTestId("whatif-counterfactual")).toContainText("beat no-battery by €17.90");
-    await expect(page.getByTestId("whatif-counterfactual")).toContainText("vendor-auto by €7.30");
+    await expect(page.getByTestId("whatif-counterfactual")).toContainText("€17.90 versus no battery");
+    await expect(page.getByTestId("whatif-counterfactual")).toContainText("€7.30 versus vendor AUTO");
+    await expect(page.getByTestId("whatif-net-benefit")).toContainText("€5.10");
+    await expect(page.getByTestId("whatif-net-benefit")).toContainText("not measured EMS savings");
   });
 
   test("stays useful when the counterfactual header can't load (best-effort)", async ({ page }) => {
@@ -821,7 +823,7 @@ test.describe("Insights: what-if scenario simulator (B-73) + counterfactual (B-6
     const verdict = page.getByTestId("whatif-verdict");
     await expect(verdict).toContainText("Charge on negative prices");
     await expect(verdict).toContainText("saved ≈ €0.84");
-    await expect(verdict).toContainText("14 measured days");
+    await expect(verdict).toContainText("in simulation over 14 recorded days");
     await expect(page.getByTestId("whatif-baseline")).toContainText("€24.20");
     await expect(page.getByTestId("whatif-variant")).toContainText("€23.36");
     expect(requestBody).toEqual({ overrides: { "planner.negative_price_soak": true }, days: 14 });
@@ -896,7 +898,7 @@ test.describe("Insights: what-if scenario simulator (B-73) + counterfactual (B-6
     await expect(page.getByTestId("whatif-verdict")).toBeVisible();
     await page.getByTestId("whatif-days-30").click();
     await expect.poll(() => seenDays).toEqual([14, 30]);
-    await expect(page.getByTestId("whatif-verdict")).toContainText("30 measured days");
+    await expect(page.getByTestId("whatif-verdict")).toContainText("in simulation over 30 recorded days");
   });
 });
 

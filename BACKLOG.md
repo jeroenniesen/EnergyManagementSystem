@@ -32,6 +32,25 @@ observability (B-24); numbered date-less sprints, Issues+Milestones on GitHub.
 
 ## Sprint board
 
+**Bill-minimization implementation (2026-09-17):** the six approved electricity-only priorities
+are implemented in the `feat/bill-minimization` worktree, pending integration. New planning
+behavior is default-off and dry-run-only; household invoice reconciliation and multi-day
+acceptance remain operational checks, not claims of proven savings.
+
+- **Planner economics:** strict net-profit purchases, chronological solar-aware winter sizing,
+  executable common-target charge windows and per-window projection; follow-up to B-05/B-30.
+- **B-05 follow-up:** immutable date-effective tariff periods, explicit import/export components,
+  historical tariff fingerprints and coverage-aware invoice comparison.
+- **B-69/B-77 follow-up:** rolling replay without future-load knowledge, carried stored energy,
+  independent AUTO baseline, bill/wear/inventory/net results and disclosed assumptions.
+- **B-61/B-63/B-64 slice:** advisory capacity/efficiency estimates, weekday/weekend demand,
+  empirical uncertainty and held-out error evaluation. Weather features, calibrated probability
+  bands and automatic adoption remain future work; no car-related calibration included.
+- **B-67:** recommendation-only operating targets and marginal buffer cost above the hard floor.
+  **B-78 remains deferred**, requiring production evidence before automatic reserve adoption.
+- **B-70 household slice:** sustained night-baseload and consumption increases, solar evidence,
+  plus read-only contiguous appliance timing. No device or charger integration.
+
 | Epic | Sprint 1 (current) | Sprint 2 | Sprint 3 | Pool |
 |---|---|---|---|---|
 | **E-01 · Honest CO₂ picture** | ✅ B-02 gas | | | ✅ B-10 |
