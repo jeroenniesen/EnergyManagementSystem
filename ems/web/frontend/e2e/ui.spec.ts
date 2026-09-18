@@ -1,5 +1,6 @@
 import { expect, type Page, test } from "@playwright/test";
 
+import { mockInsightsDensity, waitForInsightsDensity } from "./density-fixtures";
 import { mockRoute } from "./route-mock";
 
 const DASHBOARD_BUDGET = {
@@ -705,9 +706,8 @@ test.describe("EMS dashboard", () => {
         }
         const measured = await root.evaluate((node) => {
           const visible = (element: Element) => {
-            const style = getComputedStyle(element);
             const box = element.getBoundingClientRect();
-            return style.display !== "none" && style.visibility !== "hidden" && box.width > 0 && box.height > 0;
+            return element.checkVisibility({ visibilityProperty: true }) && box.width > 0 && box.height > 0;
           };
           const all = Array.from(node.querySelectorAll("*"));
           return {
@@ -727,8 +727,9 @@ test.describe("EMS dashboard", () => {
           .toEqual(baseline);
       };
 
+      await mockInsightsDensity(page);
       await page.goto("/#insights");
-      await expect(page.getByTestId("score-grid")).toBeVisible();
+      await waitForInsightsDensity(page);
       await inventory("insights", { card: 3 });
 
       await page.goto("/#manage");
