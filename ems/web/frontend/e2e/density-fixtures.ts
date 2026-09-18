@@ -44,10 +44,27 @@ export async function mockInsightsDensity(page: Page) {
     window: null, days_used: 0, days_skipped: 0, scenarios: {},
     deltas: { planner_vs_no_battery: null, planner_vs_auto: null }, note: "No measured days yet.",
   } }));
+  await page.route("**/api/bill-advice", route => route.fulfill({ json: {
+    reserve: { available: false, reason: "A complete price horizon is needed." },
+    calibration: { available: false,
+      reason: "Need three charge and discharge segments across overlapping 15% SoC ranges at comparable power.",
+      standby_reason: "Standby consumption is not identifiable from these meter readings." },
+    load_accuracy: { available: false, hours_scored: 0, reason: "More household history is needed." },
+    consumption: [], solar: null,
+  } }));
+  await page.route("**/api/tariffs", route => route.fulfill({ json: {
+    timezone: "Europe/Amsterdam", periods: [{ start_date: "2090-01-01", end_date: "2091-01-01",
+      raw_includes_import_components: true, import_tax_eur_per_kwh: .1,
+      import_surcharge_eur_per_kwh: .01, export_tax_eur_per_kwh: 0,
+      export_surcharge_eur_per_kwh: 0, export_fee_eur_per_kwh: .02,
+      fixed_export_eur_per_kwh: null }],
+  } }));
 }
 
 export async function waitForInsightsDensity(page: Page) {
   await expect(page.getByTestId("score-grid")).toBeVisible();
+  await expect(page.getByTestId("battery-calibration")).toContainText("Need three");
+  await expect(page.getByTestId("tariff-period-list")).toContainText("2090-01-01");
   await expect(page.getByTestId("fin-saved")).toContainText("€1.20");
   await expect(page.getByTestId("week-digest-headline")).toHaveText("A steady energy week.");
 }
