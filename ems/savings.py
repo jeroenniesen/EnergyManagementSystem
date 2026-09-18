@@ -10,6 +10,7 @@ from __future__ import annotations
 from datetime import datetime
 
 from ems.domain import BatteryIntent
+from ems.economics import EconomicSnapshot
 from ems.planner.schedule import Plan
 from ems.tariffs import TariffPolicy
 
@@ -36,9 +37,13 @@ def estimate_daily_savings_eur(
     ]
     if not charge_prices:
         return 0.0
-    delivered_cost = (
-        max(charge_prices) / efficiency + degradation_eur_per_kwh + risk_margin_eur_per_kwh
-    )
+    delivered_cost = EconomicSnapshot(
+        import_price_eur_per_kwh=max(charge_prices),
+        export_price_eur_per_kwh=max(charge_prices),
+        round_trip_efficiency=efficiency,
+        degradation_eur_per_kwh=degradation_eur_per_kwh,
+        risk_margin_eur_per_kwh=risk_margin_eur_per_kwh,
+    ).delivered_energy_cost()
     energy = discharge_kw * _SLOT_HOURS
     total = 0.0
     for s in plan.slots:

@@ -10,11 +10,17 @@ import math
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
-from typing import Protocol
 from zoneinfo import ZoneInfo
+
+from .ports import SolarForecastSource
 
 SLOT = timedelta(minutes=15)
 SLOTS_PER_DAY = 96
+
+__all__ = [
+    "ForecastSlot", "SolarForecastSource", "MockSolarForecastSource", "day_kwh_p50",
+    "p50_watts", "orientation_factor", "SLOT", "SLOTS_PER_DAY",
+]
 
 
 @dataclass(frozen=True)
@@ -23,10 +29,6 @@ class ForecastSlot:
     p10_w: float
     p50_w: float
     p90_w: float
-
-
-class SolarForecastSource(Protocol):
-    def slots(self) -> list[ForecastSlot]: ...
 
 
 def _utcnow() -> datetime:

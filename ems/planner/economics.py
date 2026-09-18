@@ -8,6 +8,8 @@ a contract may pay a FLAT feed-in tariff. Exporting can therefore cost money on 
 """
 from __future__ import annotations
 
+from ems.economics import EconomicSnapshot
+
 EXPORT_MODELS = ("net_metering", "spot_minus_tax", "fixed")
 
 
@@ -21,11 +23,14 @@ def breakeven(
     """The sell price a stored kWh must beat to be worth cycling: the charge price grossed up for
     round-trip losses, plus per-kWh wear and a risk margin. Single source of truth for the
     arbitrage gate in `rule_based.py` / `adaptive.py`."""
-    return (
-        charge_price_eur_per_kwh / round_trip_efficiency
-        + degradation_eur_per_kwh
-        + risk_margin_eur_per_kwh
+    snapshot = EconomicSnapshot(
+        import_price_eur_per_kwh=charge_price_eur_per_kwh,
+        export_price_eur_per_kwh=charge_price_eur_per_kwh,
+        round_trip_efficiency=round_trip_efficiency,
+        degradation_eur_per_kwh=degradation_eur_per_kwh,
+        risk_margin_eur_per_kwh=risk_margin_eur_per_kwh,
     )
+    return snapshot.delivered_energy_cost()
 
 
 def export_value(
@@ -43,8 +48,12 @@ def export_value(
     - fixed          → a flat feed-in tariff, independent of spot.
 
     An unknown model falls back to net_metering (fail-safe — never raise in the hot path)."""
-    if model == "spot_minus_tax":
-        return price_eur_per_kwh - energy_tax_eur_per_kwh
-    if model == "fixed":
-        return fixed_feed_in_eur_per_kwh
-    return price_eur_per_kwh  # net_metering, and any unknown model (fail-safe)
+    snapshot = EconomicSnapshot(
+        import_price_eur_per_kwh=price_eur_per_kwh,
+        export_price_eur_per_kwh=price_eur_per_kwh,
+        raw_price_eur_per_kwh=price_eur_per_kwh,
+        export_model=model,
+        energy_tax_eur_per_kwh=energy_tax_eur_per_kwh,
+        fixed_feed_in_eur_per_kwh=fixed_feed_in_eur_per_kwh,
+    )
+    return snapshot.export_credit()

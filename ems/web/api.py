@@ -30,8 +30,16 @@ from ems.analysis import (
     forecast_error,
     recommend_solar_confidence,
 )
+from ems.application.context import ApplicationContext
+from ems.application.services import (
+    DiagnosticsService,
+    PlanService,
+    ReportService,
+    VerificationService,
+)
 from ems.battery_profile import BatteryTopology, normalize_tower_ips
 from ems.cars import by_id as car_by_id
+from ems.clock import Clock, SystemClock
 from ems.confidence import plan_confidence
 from ems.control.mode_controller import ModeController
 from ems.control.override import (
@@ -67,6 +75,7 @@ from ems.detectors import (
 )
 from ems.diagnostics import build_diagnostics, overall_status
 from ems.domain import BatteryIntent, IntelligenceState, PhysicalMode
+from ems.economics import EconomicSnapshot
 from ems.energy_flow import build_daily_flows
 from ems.ev_advisor import advise_charge_window
 from ems.finance import day_finance, price_rows_by_local_day, raw_rows_by_local_day
@@ -119,6 +128,8 @@ from ems.sources.prices import PriceSlot, PriceSource, current_price
 from ems.storage.audit import AuditStore
 from ems.storage.auth import AuthStore
 from ems.storage.cache import CacheStore
+from ems.storage.context import StorageContext
+from ems.storage.control_state import ControlStateStore
 from ems.storage.history import (
     OBSERVATION_RETENTION_DAYS,
     HistoryStore,
@@ -142,6 +153,7 @@ from ems.web.routes.accuracy import build_router as build_accuracy_router
 from ems.web.routes.auth import build_router as build_auth_router
 from ems.web.routes.car import build_router as build_car_router
 from ems.web.routes.car import gather_car_plan
+from ems.web.routes.diagnostics import build_router as build_diagnostics_router
 from ems.web.routes.digest import (
     _last_completed_week_monday,  # noqa: F401 — re-exported for tests (test_digest_api)
     _run_weekly_digest,
@@ -152,7 +164,10 @@ from ems.web.routes.digest import (
 )
 from ems.web.routes.export import build_router as build_export_router
 from ems.web.routes.notify import build_router as build_notify_router
+from ems.web.routes.plan import build_router as build_plan_router
+from ems.web.routes.report import build_router as build_report_router
 from ems.web.routes.users import build_router as build_users_router
+from ems.web.routes.verification import build_router as build_verification_router
 from ems.web.routes.whatif import build_router as build_whatif_router
 
 _log = logging.getLogger("ems.recorder")
@@ -870,6 +885,7 @@ def create_app(
     solar_forecast: SolarForecastSource | None = None,
     battery: BatteryDriver | None = None,
     controller: ModeController | None = None,
+    control_state_store: ControlStateStore | None = None,
     settings_store: SettingsStore | None = None,
     override_store: SettingsStore | None = None,
     audit_store: AuditStore | None = None,
@@ -880,7 +896,9 @@ def create_app(
     history_backup_keep: int = 7,
     web_auth_token: str | None = None,
     static_dir: str | Path | None = None,
+    clock: Clock | None = None,
 ) -> FastAPI:
+    application_clock = clock or SystemClock()
     def _effective_web_token() -> str | None:
         """The access token that must be presented for writes, or None if writes are open. The
         UI-set token (settings store, web.auth_token) takes precedence over the EMS_WEB_TOKEN env
@@ -1422,11 +1440,10 @@ def create_app(
                 wd.cancel()
                 with suppress(asyncio.CancelledError):
                     await wd
-            # Close each store's shared long-lived connection (perf: B-49) now that every
-            # background task has stopped touching it — a clean shutdown, not a leaked handle.
-            for s in (store, settings_store, override_store, audit_store):
-                if s is not None:
-                    await s.close()
+            # Close every repository through the shared boundary, after all tasks (including
+            # audit work) and the battery AUTO restore have completed.  The boundary also covers
+            # synchronous cache/control-state stores and isolates/idempotently retries failures.
+            await app.state.application_context.storage.close()
 
     app = FastAPI(title="Smart Energy Manager", version="0.0.1", lifespan=lifespan)
     # Expose the intelligence evaluation-record seam (B-79) for the runtime to record into and for
@@ -1686,6 +1703,7 @@ def create_app(
         site_tz=site_tz, dry_run=dry_run, control_cycle_seconds=control_cycle_seconds,
         source=source, cache_store=cache_store,
         data_quality=_data_quality, validate_plan_obj=_validate_plan_obj,
+        clock=application_clock,
     )
     # I2: the restart handler + tests reach the control brain's outstanding-write registry and the
     # idle-and-safe read through here (the single owner of the command-fence snapshot).
@@ -2038,7 +2056,7 @@ def create_app(
         plan_valid = True
         plan_ok = False
         try:
-            pp = _current_plan()
+            pp = _current_plan(now)
             plan_ok = pp is not None and bool(pp[2].slots)
             if pp is not None:
                 plan_valid = _validate_plan_obj(pp[2], now).ok
@@ -2264,9 +2282,7 @@ def create_app(
             "home_state": home,
         }
 
-    @app.get("/api/diagnostics")
-    async def diagnostics_endpoint() -> dict:
-        now = datetime.now(UTC)
+    async def _diagnostics_snapshot(now: datetime) -> dict:
         prices_ok = price_source is not None
         forecast_ok = solar_forecast is not None
         # Actually probe the stores so a broken DB shows as a failed check, not a silent pass.
@@ -2299,7 +2315,7 @@ def create_app(
         # data-quality / plan / readiness all run sync helpers that touch cached source/price/
         # forecast reads — compute them off the event loop so a slow device can't stall /api/health.
         def _core():
-            return (_data_quality(now), _current_plan() is not None, _readiness(now).to_dict())
+            return (_data_quality(now), _current_plan(now) is not None, _readiness(now).to_dict())
 
         dq, plan_ok, readiness = await asyncio.to_thread(_core)
         # The car-charging guard needs the EV meter to see the car; on + live + no EV meter = blind.
@@ -2625,13 +2641,26 @@ def create_app(
         }
         return out
 
-    @app.get("/api/savings")
-    def savings_endpoint() -> dict:
-        pp = _current_plan()
+    def _savings_snapshot(now: datetime) -> dict:
+        policy = policy_from_settings(settings_cache)
+        export_model = str(settings_cache.get("prices.export_price_model", "net_metering"))
+        snapshot = EconomicSnapshot.from_tariff_policy(
+            policy, export_model=export_model,
+            round_trip_efficiency=float(settings_cache.get("planner.round_trip_efficiency", 0.90)),
+            degradation_eur_per_kwh=float(
+                settings_cache.get("planner.degradation_eur_per_kwh", 0.05)),
+            risk_margin_eur_per_kwh=float(
+                settings_cache.get("planner.risk_margin_eur_per_kwh", 0.02)),
+            energy_tax_eur_per_kwh=float(settings_cache.get("prices.energy_tax_eur_per_kwh", 0.13)),
+            fixed_feed_in_eur_per_kwh=float(
+                settings_cache.get("prices.fixed_feed_in_eur_per_kwh", 0.01)),
+        )
+        snapshot_metadata = snapshot.metadata()
+        pp = _current_plan(now)
         if pp is None:
-            policy = policy_from_settings(settings_cache)
             return {
                 "today_eur": None,
+                "economic_snapshot": snapshot_metadata,
                 "tariff_warnings": [w.to_dict() for w in validate_tariff_policy(
                     policy,
                     export_model=str(settings_cache.get(
@@ -2640,9 +2669,14 @@ def create_app(
             }
         _now, prices, plan = pp
         by_start = {p.start: p.eur_per_kwh for p in prices}
-        policy = policy_from_settings(settings_cache)
         return {
-            "today_eur": estimate_daily_savings_eur(plan, by_start, tariff_policy=policy),
+            "today_eur": estimate_daily_savings_eur(
+                plan, by_start, tariff_policy=policy,
+                efficiency=snapshot.round_trip_efficiency,
+                degradation_eur_per_kwh=snapshot.degradation_eur_per_kwh,
+                risk_margin_eur_per_kwh=snapshot.risk_margin_eur_per_kwh,
+            ),
+            "economic_snapshot": snapshot_metadata,
             "tariff_warnings": [w.to_dict() for w in validate_tariff_policy(
                 policy,
                 export_model=str(settings_cache.get("prices.export_price_model", "net_metering")),
@@ -2712,40 +2746,6 @@ def create_app(
                          "override_active": override_active, "target_soc": tgt},
         }
 
-    @app.get("/api/plan")
-    def plan_endpoint() -> dict:
-        pp = _current_plan()
-        if pp is None:
-            return {"created_at": None, "current_intent": None,
-                    "current_reason": None, "slots": []}
-        now, _prices, plan = pp
-        cur = plan.intent_at(now)
-        val = _validate_plan_obj(plan, now)
-        return {
-            "created_at": plan.created_at.isoformat(),
-            "strategy": plan.strategy,
-            "target_soc": plan.target_soc,
-            "deadline": plan.deadline.isoformat() if plan.deadline else None,
-            "current_intent": cur.intent if cur else None,
-            "current_reason": cur.reason if cur else None,
-            # The §8.11 verdict so the UI can show "control held — why".
-            "validation": val.to_dict(),
-            "tariff_policy": policy_to_dict(policy_from_settings(settings_cache)),
-            "tariff_warnings": [w.to_dict() for w in validate_tariff_policy(
-                policy_from_settings(settings_cache),
-                export_model=str(settings_cache.get("prices.export_price_model", "net_metering")),
-            )],
-            "slots": [
-                # The energy contract travels with the mode (energy review P2.4): the UI shows
-                # "charge to X% (Y kWh) at Z W by <deadline>", not just a mode label.
-                {"start": s.start.isoformat(), "intent": s.intent, "reason": s.reason,
-                 "target_soc": s.target_soc, "target_kwh": s.target_kwh, "power_w": s.power_w,
-                 "floor_soc": s.floor_soc,
-                 "deadline": s.deadline.isoformat() if s.deadline else None}
-                for s in plan.slots
-            ],
-        }
-
     @app.post("/api/plan-preview")
     def plan_preview(body: dict | None = None) -> dict:
         # What-if: recompute the plan with PROPOSED (unsaved) settings so the UI can show the impact
@@ -2773,43 +2773,6 @@ def create_app(
         now, prices_, plan = pp
         fc = solar_forecast.slots() if solar_forecast is not None else None
         return {**build_plan_detail(now, prices_, plan, fc), "strategy": _active_strategy(now)}
-
-    @app.get("/api/plan-verification")
-    def plan_verification() -> dict:
-        """Compare the current planned intent with the latest measured battery outcome.
-
-        This is deliberately observational: it never changes a plan or commands hardware.
-        """
-        now = datetime.now(UTC)
-        pp = _current_plan()
-        sample = _current_sample(now)
-        if pp is None:
-            return {"status": "no_plan", "planned": None, "actual": None}
-        _plan_now, _prices, plan = pp
-        slot = plan.intent_at(now)
-        actual = None if sample is None else {
-            "soc_pct": sample.soc_pct,
-            "battery_power_w": sample.battery_power_w,
-            "grid_power_w": sample.grid_power_w,
-            "observed_at": sample.ts.isoformat() if hasattr(sample, "ts") else now.isoformat(),
-        }
-        planned = None if slot is None else {
-            "intent": slot.intent.value,
-            "target_soc": slot.target_soc,
-            "deadline": slot.deadline.isoformat() if slot.deadline else None,
-            "reason": slot.reason,
-        }
-        status = "awaiting_measurement"
-        if actual is not None:
-            status = "observed"
-            if (planned and planned["intent"] == "grid_charge_to_target"
-                    and actual["battery_power_w"] > 50):
-                status = "unexpected_discharge"
-            elif (planned and planned["intent"] == "discharge_for_load"
-                  and actual["battery_power_w"] < -50):
-                status = "unexpected_charge"
-        return {"status": status, "planned": planned, "actual": actual,
-                "checked_at": now.isoformat()}
 
     _STRATEGY_DESC = {
         "summer": "Solar-first — fill the battery from your panels and run the night on it; "
@@ -3522,6 +3485,18 @@ def create_app(
         prices = await _window_price_slots(start.astimezone(UTC).isoformat(),
                                            end.astimezone(UTC).isoformat())
         tariff_policy = policy_from_settings(settings_cache)
+        economic_snapshot_metadata = EconomicSnapshot.from_tariff_policy(
+            tariff_policy,
+            export_model=str(settings_cache.get("prices.export_price_model", "net_metering")),
+            round_trip_efficiency=float(settings_cache.get("planner.round_trip_efficiency", 0.90)),
+            degradation_eur_per_kwh=float(
+                settings_cache.get("planner.degradation_eur_per_kwh", 0.05)),
+            risk_margin_eur_per_kwh=float(
+                settings_cache.get("planner.risk_margin_eur_per_kwh", 0.02)),
+            energy_tax_eur_per_kwh=float(settings_cache.get("prices.energy_tax_eur_per_kwh", 0.13)),
+            fixed_feed_in_eur_per_kwh=float(
+                settings_cache.get("prices.fixed_feed_in_eur_per_kwh", 0.01)),
+        ).metadata()
         economic_prices = [
             PriceSlot(p.start, tariff_policy.normalize(p.eur_per_kwh).import_eur_per_kwh)
             for p in prices
@@ -3539,6 +3514,7 @@ def create_app(
             )
             resp["gas"] = None
             resp["tariff_policy"] = policy_to_dict(tariff_policy)
+            resp["economic_snapshot"] = economic_snapshot_metadata
             resp["tariff_warnings"] = [w.to_dict() for w in validate_tariff_policy(
                 tariff_policy,
                 export_model=str(settings_cache.get("prices.export_price_model", "net_metering")),
@@ -3593,6 +3569,7 @@ def create_app(
             # Insights gas panel. None-safe — the panel hides itself with <2 gas readings.
             resp["gas"] = gas_summary(gas_rows, price_eur_per_m3=gas_price, co2_factor=gas_factor)
             resp["tariff_policy"] = policy_to_dict(tariff_policy)
+            resp["economic_snapshot"] = economic_snapshot_metadata
             resp["tariff_warnings"] = [w.to_dict() for w in validate_tariff_policy(
                 tariff_policy,
                 export_model=str(settings_cache.get("prices.export_price_model", "net_metering")),
@@ -3601,7 +3578,6 @@ def create_app(
 
         return await asyncio.to_thread(_assemble)
 
-    @app.get("/api/report")
     async def report(
         period: str = Query(default="day", pattern="^(day|week|month|year)$"),
         date: str | None = None,
@@ -3620,7 +3596,7 @@ def create_app(
         else:
             anchor = now_local.date()
         start, end, label, partial = resolve_window(period, anchor, site_tz, now_local)
-        return await _report_for_window(period, start, end, label, partial, now_local)
+        return await report_service.report(period, start, end, label, partial, now_local)
 
     async def _solar_confidence_advice(now: datetime) -> dict | None:
         """Advisory-only recommendation for `planner.solar_confidence`, derived from how the
@@ -3676,6 +3652,8 @@ def create_app(
             energy_tax_eur_per_kwh=float(settings_cache.get("prices.energy_tax_eur_per_kwh", 0.13)),
             fixed_feed_in_eur_per_kwh=float(
                 settings_cache.get("prices.fixed_feed_in_eur_per_kwh", 0.01)),
+            export_fee_eur_per_kwh=float(
+                settings_cache.get("grid_fees.export_fee_eur_per_kwh", 0.0)),
             now=now,
         )
         return {"advice": advice}
@@ -3812,7 +3790,6 @@ def create_app(
             days.append(data)
         return days
 
-    @app.get("/api/finance")
     async def finance(
         period: str = Query(default="day", pattern="^(day|week|month|year)$"),
         date: str | None = None,
@@ -3831,25 +3808,7 @@ def create_app(
         else:
             anchor = now_local.date()
         start, end, label, partial = resolve_window(period, anchor, site_tz, now_local)
-        days = await _finance_window(start, end, now_local) if store is not None else []
-
-        def _sum(key: str) -> float | None:
-            vals = [d[key] for d in days if d.get(key) is not None]
-            return round(sum(vals), 2) if vals else None
-
-        totals = {
-            "grid_cost_eur": _sum("grid_cost_eur"),
-            "battery_cost_eur": _sum("battery_cost_eur"),
-            "saved_eur": _sum("saved_eur"),
-            "grid_import_kwh": _sum("grid_import_kwh") or 0.0,
-            "grid_export_kwh": _sum("grid_export_kwh") or 0.0,
-            "days_with_prices": sum(1 for d in days if d.get("price_coverage", 0) > 0),
-            "days_with_data": sum(1 for d in days if d.get("has_data")),
-        }
-        return {"period": period, "label": label,
-                "window_start": start.astimezone(UTC).isoformat(),
-                "window_end": end.astimezone(UTC).isoformat(),
-                "partial": partial, "days": days, "totals": totals}
+        return await report_service.finance(start, end, now_local, period, label, partial)
 
     @app.get("/api/series")
     async def series(limit: int = Query(default=100, ge=1, le=2000)) -> dict:
@@ -4111,10 +4070,52 @@ def create_app(
         is_supervised=_is_supervised,
         restart_pending=_restart_pending,
     )
+    async def _application_finance_window(start, end, now_local):
+        return await _finance_window(start, end, now_local) if store is not None else []
+
+    app.state.application_context = ApplicationContext(
+        source=source,
+        controller=controller,
+        recorder=recorder,
+        freshness=freshness,
+        settings=settings_cache,
+        storage=StorageContext.from_existing(
+            history=store,
+            settings=settings_store,
+            override=override_store,
+            audit=audit_store,
+            auth=auth_store,
+            cache=cache_store,
+            control_state=control_state_store,
+        ),
+        clock=application_clock,
+        runtime_state={"dry_run": dry_run, "dev_mode": dev_mode},
+        control_state=ctx.__dict__,
+        current_plan=_current_plan,
+        current_sample=_current_sample,
+        validate_plan=_validate_plan_obj,
+        policy=lambda s: policy_to_dict(policy_from_settings(s)),
+        tariff_warnings=lambda s: [w.to_dict() for w in validate_tariff_policy(
+            policy_from_settings(s),
+            export_model=str(s.get("prices.export_price_model", "net_metering")),
+        )],
+        report_for_window=_report_for_window,
+        finance_window=_application_finance_window,
+        savings_snapshot=_savings_snapshot,
+        diagnostics_snapshot=_diagnostics_snapshot,
+    )
+    plan_service = PlanService(app.state.application_context)
+    verification_service = VerificationService(app.state.application_context)
+    report_service = ReportService(app.state.application_context)
+    diagnostics_service = DiagnosticsService(app.state.application_context)
     for build in (build_auth_router, build_users_router, build_car_router, build_digest_router,
                   build_notify_router, build_export_router, build_accuracy_router,
                   build_whatif_router):
         app.include_router(build(ctx))
+    app.include_router(build_plan_router(ctx, plan_service))
+    app.include_router(build_report_router(ctx, report_service))
+    app.include_router(build_verification_router(ctx, verification_service))
+    app.include_router(build_diagnostics_router(ctx, diagnostics_service))
 
     # Unknown /api/* paths must return a JSON 404 — NOT fall through to the SPA catch-all
     # below (which would serve index.html with a 200, silently breaking API clients).

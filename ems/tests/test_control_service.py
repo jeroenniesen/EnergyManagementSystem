@@ -11,6 +11,8 @@ import asyncio
 from datetime import UTC, datetime, timedelta
 from zoneinfo import ZoneInfo
 
+import pytest
+
 from ems.control.mode_controller import ModeController
 from ems.control.override import Override
 from ems.control.service import ControlContext, ControlService
@@ -36,7 +38,7 @@ def _controlling_controller(driver=None) -> ModeController:
 
 def _service(
     controller: ModeController, *, audit_store=None, car_charging=None, price_source=None,
-    current_mode=None,
+    current_mode=None, clock=None,
 ) -> tuple[ControlService, ControlContext]:
     """Build a ControlService with mock collaborators + trivial injected callables. `price_source`
     is None so the plan path is a no-op (`current_plan()` returns None) — this test drives the
@@ -47,7 +49,7 @@ def _service(
     svc = ControlService(
         ctx=ctx, settings=settings, controller=controller, store=None, audit_store=audit_store,
         price_source=price_source, solar_forecast=None,
-        site_tz=ZoneInfo("Europe/Amsterdam"), dry_run=False,
+        site_tz=ZoneInfo("Europe/Amsterdam"), dry_run=False, clock=clock,
         current_soc=lambda now: 50.0,
         current_mode=current_mode or (lambda now: PhysicalMode.AUTO),
         current_towers=lambda now: None,
@@ -109,27 +111,47 @@ def test_control_service_constructs_and_runs_a_tick_standalone():
     assert controller.driver.current_mode() is PhysicalMode.CHARGE
 
 
+def test_forced_discharge_sizing_requires_export_capability():
+    """The extracted decision engine must retain the export-discharge safety gate."""
+    controller = _controlling_controller()
+    svc, ctx = _service(controller)
+    ctx.override_box["ov"] = Override(
+        intent=BatteryIntent.DISCHARGE_FOR_LOAD, expires_at=NOW + timedelta(hours=1)
+    )
+
+    intent, _, _, target, power, _, _ = svc.effective_intent(NOW)
+    assert intent is BatteryIntent.DISCHARGE_FOR_LOAD
+    assert target is None and power is None
+
+    controller.allow_export_discharge = True
+    intent, _, _, target, power, _, _ = svc.effective_intent(NOW)
+    assert intent is BatteryIntent.DISCHARGE_FOR_LOAD
+    assert target == svc._settings["battery.min_reserve_soc"]
+    assert power == svc._settings["battery.max_discharge_w"]
+
+
 def test_control_service_run_cycle_audits_the_write():
     # The async wrapper (run_cycle) serialises on ctx.control_lock, runs the tick off the loop, and
     # writes the tick's records to the injected audit store — proven with a tiny fake store.
-    appended: list[tuple[str, str]] = []
+    from ems.clock import FrozenClock
+
+    appended: list[tuple[str, str, str]] = []
 
     class _FakeAudit:
         async def append(self, ts, kind, summary, detail):
-            appended.append((kind, summary))
+            appended.append((ts, kind, summary))
 
     controller = _controlling_controller()
-    svc, ctx = _service(controller, audit_store=_FakeAudit())
-    # run_cycle reads the real wall clock (datetime.now), so the override must be live at real-now,
-    # not the fixed NOW the sync tick test uses.
+    svc, ctx = _service(controller, audit_store=_FakeAudit(), clock=FrozenClock(NOW))
     ctx.override_box["ov"] = Override(
         intent=BatteryIntent.GRID_CHARGE_TO_TARGET,
-        expires_at=datetime.now(UTC) + timedelta(hours=1))
+        expires_at=NOW + timedelta(hours=1))
 
     asyncio.run(svc.run_cycle())
 
     assert len(appended) == 1
-    kind, summary = appended[0]
+    ts, kind, summary = appended[0]
+    assert ts == NOW.isoformat()
     assert kind == "battery_decision"
     assert "command sent" in summary
     assert controller.driver.current_mode() is PhysicalMode.CHARGE
@@ -380,3 +402,61 @@ def test_persistence_hold_is_audited_once_across_the_hold():
     assert len(pend1) == 1  # explained once...
     assert pend2 == []      # ...deduped on the second observe cycle
     assert controller.driver.current_mode() is PhysicalMode.IDLE  # acted on the third
+
+
+@pytest.mark.parametrize("mode", ["static_discharge", "match_home_load"])
+def test_stable_car_session_preserves_command_budget_for_later_retune(mode):
+    from ems.planner.load_profile import LoadProfile
+
+    class RecordingDriver(MockBatteryDriver):
+        def __init__(self):
+            super().__init__()
+            self.writes = []
+
+        def apply(self, mode, *, target_soc=None, power_w=None):
+            self.writes.append((mode, target_soc, power_w))
+            return super().apply(mode, target_soc=target_soc, power_w=power_w)
+
+    driver = RecordingDriver()
+    svc, ctx = _service(_controlling_controller(driver), car_charging=lambda now: True,
+                        current_mode=lambda now: driver.current_mode())
+    svc._settings["control.car_charging_battery_mode"] = mode
+    svc._settings["control.car_discharge_w"] = 800
+    ctx.load_profile_box["profile"] = LoadProfile(dict.fromkeys(range(24), 800), svc._site_tz)
+    ctx.override_box["ov"] = Override(intent=BatteryIntent.ALLOW_SELF_CONSUMPTION,
+                                     expires_at=NOW + timedelta(hours=2))
+    for minute in range(0, 60, 10):
+        svc.control_tick(NOW + timedelta(minutes=minute))
+    assert driver.writes == [(PhysicalMode.DISCHARGE, 10.0, 800)]
+    assert ctx.car_session["commands"] == 1
+    svc._settings["control.car_discharge_w"] = 1400
+    ctx.load_profile_box["profile"] = LoadProfile(dict.fromkeys(range(24), 1400), svc._site_tz)
+    svc.control_tick(NOW + timedelta(hours=1))
+    assert driver.writes == [(PhysicalMode.DISCHARGE, 10.0, 800),
+                             (PhysicalMode.DISCHARGE, 10.0, 1400)]
+    assert ctx.car_session["commands"] == 2
+
+
+def test_current_plan_uses_injected_clock_and_explicit_time_consistently():
+    from ems.clock import FrozenClock
+
+    midnight = NOW.astimezone(ZoneInfo("Europe/Amsterdam")).replace(hour=0, minute=0)
+
+    class Prices:
+        def slots(self):
+            return [PriceSlot(midnight + timedelta(minutes=15 * i), .2) for i in range(192)]
+
+    svc, _ = _service(_controlling_controller(), price_source=Prices(), clock=FrozenClock(NOW))
+    seen = []
+    svc._current_soc = lambda now: seen.append(now) or 50.0
+    svc._planner_cfg = svc.planner_cfg
+    svc._summer_cfg = svc.summer_cfg
+    svc._adaptive_cfg = svc.adaptive_cfg
+    for explicit in (None, NOW + timedelta(minutes=30)):
+        expected = explicit or NOW
+        result = svc.current_plan() if explicit is None else svc.current_plan(explicit)
+        assert result is not None
+        at, _, plan = result
+        assert at == plan.created_at == expected
+        assert seen and set(seen) == {expected}
+        seen.clear()

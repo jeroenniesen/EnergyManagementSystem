@@ -108,6 +108,32 @@ def test_partial_failure_aggregates_online_only():
     assert [t.online for t in towers] == [True, False]
 
 
+def test_partial_failure_does_not_weight_soc_with_offline_tower_capacity():
+    """A cached capacity must not make an unreachable tower influence live SoC."""
+    responses = {
+        "a": {"6002": 60, "6000": 0, "6001": 1000, "142": 5},
+        "b": {"6002": 20, "6000": 0, "6001": 1000, "142": 15},
+    }
+    down = {"value": False}
+
+    def post_for(ip):
+        def post(_keys):
+            if ip == "b" and down["value"]:
+                raise OSError("tower unreachable")
+            return responses[ip]
+
+        return post
+
+    reader = IndevoltClusterReader(
+        [IndevoltReadClient("a", rpc_post=post_for("a")),
+         IndevoltReadClient("b", rpc_post=post_for("b"))],
+        cache_seconds=0,
+    )
+    assert reader.read_power_soc()[1] == 30.0  # (60*5 + 20*15) / 20
+    down["value"] = True
+    assert reader.read_power_soc()[1] == 60.0  # only the reachable 5 kWh tower counts
+
+
 def test_all_towers_down_raises_battery_unavailable():
     def boom(_keys):
         raise OSError("down")

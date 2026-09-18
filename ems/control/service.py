@@ -26,9 +26,10 @@ import logging
 import threading
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta
 from typing import Any
 
+from ems.clock import Clock, SystemClock
 from ems.control.car_mode import (
     _RESERVE_ENTER_PP,
     CarModeAction,
@@ -40,9 +41,13 @@ from ems.control.command_fence import (
     CommandClass,
     CommandTicket,
 )
+from ems.control.decision import ControlDecisionEngine
+from ems.control.execution import CommandExecutionBoundary
 from ems.control.failsafe import failsafe_intent
 from ems.control.override import NONE as OVERRIDE_NONE
 from ems.control.override import Override
+from ems.control.reconciliation import CommandReconciliation
+from ems.control.safety import SafetyValidator
 from ems.domain import BatteryIntent, PhysicalMode
 from ems.lifecycle import OwnershipState
 from ems.perf import PERF_BUDGETS, REGISTRY, atimed, timed
@@ -372,6 +377,7 @@ class ControlService:
         site_tz: Any,
         dry_run: bool,
         control_cycle_seconds: float = 300.0,
+        clock: Clock | None = None,
         # B-46 stage 2: the coalesced live reads need the meter/battery `source` and the seasonal
         # strategy resolution needs the KV `cache_store`; both are OPTIONAL so a unit test can build
         # the service with only the injected callables below (no hardware, no cache).
@@ -397,6 +403,7 @@ class ControlService:
         adaptive_cfg: Callable[[], Any] | None = None,
     ) -> None:
         self._ctx = ctx
+        self._clock = clock if clock is not None else SystemClock()
         self._settings = settings  # the live shared dict — never copied (see module docstring)
         self._controller = controller
         self._store = store
@@ -409,9 +416,16 @@ class ControlService:
         self._source = source
         self._cache_store = cache_store
         self._writer_local = threading.local()
+        self._execution = (CommandExecutionBoundary(controller, ctx.command_fence)
+                           if controller is not None else None)
+        self._reconciliation = CommandReconciliation(ctx.command_fence)
         self._price_horizon_status: PriceHorizonStatus | None = None
         self._data_quality = data_quality
         self._validate_plan_obj = validate_plan_obj
+        self._safety = SafetyValidator(
+            data_quality=self._data_quality,
+            validate_plan=lambda plan, now: self._validate_plan_obj(plan, now),
+        )
         # Resolve each moved dependency to the injected stand-in when given (tests), else this
         # service's own method (production). Internals call `self._<name>` throughout, unchanged.
         self._current_soc = current_soc if current_soc is not None else self.current_soc
@@ -425,6 +439,18 @@ class ControlService:
         self._planner_cfg = planner_cfg if planner_cfg is not None else self.planner_cfg
         self._summer_cfg = summer_cfg if summer_cfg is not None else self.summer_cfg
         self._adaptive_cfg = adaptive_cfg if adaptive_cfg is not None else self.adaptive_cfg
+        self._decision_engine = ControlDecisionEngine(
+            data_quality=self._data_quality,
+            car_mode_action=self._car_mode_action,
+            car_session_active=lambda: bool(self._ctx.car_session["active"]),
+            settings=self._settings,
+            site_tz=self._site_tz,
+            allow_export_discharge=lambda: bool(
+                self._controller is not None and self._controller.allow_export_discharge
+            ),
+            safety=self._safety,
+            validate_plan=self._validate_plan_obj,
+        )
 
     # --- coalesced live reads / config builders / strategy resolution (B-46 stage 2) -------------
     # Moved verbatim from api.py's create_app closures. Kept here because their primary caller is
@@ -647,13 +673,13 @@ class ControlService:
             "round_trip_efficiency": s["planner.round_trip_efficiency"],
         }
 
-    def build_plan_now(self):
+    def build_plan_now(self, now: datetime | None = None):
         """The fresh plan the active strategy builds THIS instant, BEFORE any missed-window
         recovery. Dispatches to the active strategy (summer solar-first / winter arbitrage).
         Returns (now, prices, plan) or None. Used by `plan_with_recovery` and the recovery cycle."""
         if self._price_source is None:
             return None
-        now = datetime.now(UTC)
+        now = self._clock.now_utc() if now is None else now
         prices = self._price_source.slots()
         self._price_horizon_status = validate_price_horizon(
             prices, now=now, site_tz=self._site_tz)
@@ -673,7 +699,7 @@ class ControlService:
         )
         return now, prices, plan
 
-    def plan_with_recovery(self):
+    def plan_with_recovery(self, now: datetime | None = None):
         """Single source of the plan to ACT on (DRY) so /api/plan, /api/savings, /api/decision, the
         control loop and the validator all reflect the SAME computation: the fresh strategy plan
         with SPEC §8.12 missed-window recovery folded in (BACKLOG B-16). Recovery is a PURE,
@@ -682,7 +708,7 @@ class ControlService:
         otherwise it returns the plan untouched. Because it runs here, the recovered plan still
         passes through `validate_plan_obj` (§8.11 incl. the B-22 projection gate) and the control
         caps/dwell before any write — recovery bypasses nothing. Returns (now, prices, plan)."""
-        pp = self.build_plan_now()
+        pp = self.build_plan_now(now)
         if pp is None:
             return None
         now, prices, plan = pp
@@ -692,8 +718,8 @@ class ControlService:
         )
         return now, prices, recovered, status, catch
 
-    def current_plan(self):
-        pp = self.plan_with_recovery()
+    def current_plan(self, now: datetime | None = None):
+        pp = self.plan_with_recovery(now)
         return None if pp is None else pp[:3]
 
     # --- car-charging guard ----------------------------------------------------------------------
@@ -772,7 +798,7 @@ class ControlService:
         return intent, reason, None  # "none" — defensive (car_charging was True), unchanged
 
     # --- effective intent ------------------------------------------------------------------------
-    def effective_intent(self, now: datetime):
+    def _effective_intent_legacy(self, now: datetime):
         """The intent the controller should act on now + its energy sizing, honouring an active
         manual override and the data-quality fail-safe. Returns (intent|None, reason|None,
         override_active, target_soc|None, power_w|None, validation|None, car_action|None).
@@ -808,7 +834,7 @@ class ControlService:
             else:
                 reason = f"manual override: {ov.intent.value} until {until}"
         else:
-            pp = self.current_plan()
+            pp = self.current_plan(now)
             if pp is None:
                 status = self._price_horizon_status
                 if self._price_source is not None and status is not None and not status.ok:
@@ -867,6 +893,17 @@ class ControlService:
                   and self._controller.allow_export_discharge):
                 target_soc, power_w = cur.floor_soc, cur.power_w  # forced discharge → reserve floor
         return intent, reason, override_active, target_soc, power_w, val, car_action
+
+    def effective_intent(self, now: datetime):
+        """Resolve intent through the pure decision engine."""
+        return self._decision_engine.effective_intent(
+            now,
+            override=self._ctx.override_box["ov"],
+            current_plan=self.current_plan,
+            price_horizon_status=lambda: self._price_horizon_status,
+            validate_plan=self._validate_plan_obj,
+            current_setpoint_w=self._ctx.car_session["setpoint_w"],
+        )
 
     # --- cluster-drift audit ---------------------------------------------------------------------
     def cluster_drift_record(self, desired: PhysicalMode, towers) -> dict | None:
@@ -1108,7 +1145,7 @@ class ControlService:
             reachable = any(t.online for t in towers) if towers else observed is not None
             if reachable:
                 lc.mark_probe_ok()  # battery readable this cycle
-            if self.current_plan() is not None:
+            if self.current_plan(now) is not None:
                 lc.mark_plan_loaded()
             lc.tick(now)
             if not lc.can_command(now):
@@ -1339,7 +1376,7 @@ class ControlService:
         IDEMPOTENT: `discard` is a no-op on an already-released token, and keyed by token identity
         it can never free a DIFFERENT writer's slot — so the override leak-safety done-callback
         (`spawn_override_cycle`) can release unconditionally without risking a double-free."""
-        self._ctx.command_fence.release(token)
+        self._reconciliation.release(token)
 
     def writer_registry_empty(self) -> bool:
         return self._ctx.command_fence.empty()
@@ -1374,12 +1411,10 @@ class ControlService:
 
     def _decide(self, *args, **kwargs):
         """Enter the fence only when the tick can reach its physical write seam."""
-        ticket = getattr(self._writer_local, "ticket", None)
-        if ticket is not None and not getattr(self._writer_local, "entered", False):
-            if not self._ctx.command_fence.enter(ticket):
-                raise _CommandSuperseded
-            self._writer_local.entered = True
-        return self._controller.decide(*args, **kwargs)
+        if self._execution is None:
+            return self._controller.decide(*args, **kwargs)
+        self._execution.writer_local = self._writer_local
+        return self._execution.decide(*args, **kwargs)
 
     def _release_cycle(self, token: CommandTicket) -> None:
         self.release_writer(token)
@@ -1490,7 +1525,7 @@ class ControlService:
             if not entered:
                 return False
             try:
-                confirmed = bool(self._controller.driver.apply(PhysicalMode.AUTO))
+                confirmed = self._execution.apply(PhysicalMode.AUTO)
             except Exception:
                 self._controller.note_overrun_recovery()
                 raise
@@ -1567,7 +1602,7 @@ class ControlService:
             entered = self._ctx.command_fence.enter(ticket, timeout_seconds=timeout_seconds)
             if not entered:
                 return False
-            return bool(self._controller.driver.apply(target))
+            return self._execution.apply(target)
         finally:
             if entered:
                 self._ctx.command_fence.leave(ticket)
@@ -1604,7 +1639,7 @@ class ControlService:
                 _log.info("control.cycle: draining for restart; not starting a new tick")
                 return
             async with self._ctx.control_lock:
-                now = datetime.now(UTC)
+                now = self._clock.now_utc()
                 await self.refresh_car_obs(now)  # warm house-load prediction before the (sync) tick
                 if cycle_token is None:
                     # Single-admission: reserve the cycle slot SYNCHRONOUSLY before spawning the

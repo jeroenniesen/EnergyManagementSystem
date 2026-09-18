@@ -107,6 +107,21 @@ def test_load_absent_row_is_fresh_not_corrupt(tmp_path):
     assert ctl.last_command_unconfirmed is False  # fresh, NOT fail-safe
 
 
+def test_store_read_failure_blocks_restart_instead_of_looking_fresh(monkeypatch, tmp_path):
+    """An unavailable state database is unknown device state, never a clean first boot."""
+    store = ControlStateStore(str(tmp_path / "ems.sqlite"))
+
+    def broken_connection():
+        raise sqlite3.DatabaseError("I/O error")
+
+    monkeypatch.setattr(store, "_conn", broken_connection)
+    assert store.load() is CONTROL_STATE_CORRUPT
+
+    controller = ModeController(MockBatteryDriver(), _controlling_lifecycle(), dry_run=False)
+    controller.restore_state(store.load())
+    assert controller.last_command_unconfirmed is True
+
+
 def _seed_raw_row(db: str, raw_value: str) -> None:
     """Write a RAW string straight into the controller's backing row (bypassing save(), which only
     ever persists a well-formed non-empty dict) so load() sees a present-but-malformed value."""

@@ -87,7 +87,7 @@ def test_reserve_floor_blocks_charge_below_reserve():
     svc._validate_plan_obj = lambda p, n: validate_plan(
         p, soc_pct=50.0, data_quality="complete", min_reserve_soc=reserve)
     # Bypass build_plan_now (needs price_source) — inject the plan directly.
-    svc.current_plan = lambda: (NOW, [], plan)
+    svc.current_plan = lambda now=None: (NOW, [], plan)
 
     result = svc.effective_intent(NOW)
     assert result[0] is BatteryIntent.ALLOW_SELF_CONSUMPTION  # validator rejected → ASC
@@ -245,7 +245,7 @@ def test_failed_validation_prevents_command():
     )
 
     # Bypass build_plan_now (which needs price_source) — inject the plan directly.
-    svc.current_plan = lambda: (NOW, [], plan)
+    svc.current_plan = lambda now=None: (NOW, [], plan)
 
     result = svc.effective_intent(NOW)
     assert result[0] is BatteryIntent.ALLOW_SELF_CONSUMPTION  # validator rejected → ASC

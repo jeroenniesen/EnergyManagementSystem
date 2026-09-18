@@ -9,9 +9,14 @@ never tries to track instantaneous power.
 """
 from __future__ import annotations
 
-from typing import Protocol
-
 from ems.domain import BatteryIntent, CapabilityReport, PhysicalMode
+
+from .ports import BatteryDriver
+
+__all__ = [
+    "BatteryDriver", "BatteryWriteUnconfirmed", "MockBatteryDriver",
+    "FailingMockBatteryDriver", "intent_to_mode",
+]
 
 
 class BatteryWriteUnconfirmed(Exception):
@@ -57,22 +62,6 @@ def intent_to_mode(
             return PhysicalMode.DISCHARGE
         return PhysicalMode.AUTO
     return _INTENT_TO_MODE[intent]
-
-
-class BatteryDriver(Protocol):
-    def probe(self) -> CapabilityReport: ...
-    def current_mode(self) -> PhysicalMode: ...
-    def apply(
-        self, mode: PhysicalMode, *, target_soc: float | None = None,
-        power_w: float | None = None,
-    ) -> bool:
-        """Set the battery to `mode`, charging/discharging toward `target_soc` (% — the
-        AUTHORITATIVE stop) at `power_w`. A real driver MUST refuse a CHARGE/DISCHARGE with no
-        `target_soc` rather than default to full (energy review #3/#4). Returns True only if the
-        transition was **confirmed** (post-write poll matched). False = command sent but unconfirmed
-        OR refused (e.g. missing target); the caller runs the SPEC §6.5 failure path (retry → AUTO →
-        alert). Never raise for an unconfirmed write."""
-        ...
 
 
 class MockBatteryDriver:

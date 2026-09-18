@@ -85,6 +85,7 @@ def build_app():
         solar_forecast=solar_forecast,
         battery=battery_endpoint,
         controller=controller,
+        control_state_store=control_state_store,
         settings_store=settings_store,
         override_store=override_store,
         audit_store=audit_store,

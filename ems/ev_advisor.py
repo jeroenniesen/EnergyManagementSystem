@@ -19,7 +19,8 @@ import math
 from datetime import datetime, timedelta
 from typing import Protocol
 
-from ems.planner.economics import export_value
+from ems.economics import EconomicSnapshot
+from ems.tariffs import TariffPolicy
 
 SLOT = timedelta(minutes=15)
 SLOT_HOURS = 0.25
@@ -50,6 +51,7 @@ def advise_charge_window(
     export_model: str = "net_metering",
     energy_tax_eur_per_kwh: float = 0.13,
     fixed_feed_in_eur_per_kwh: float = 0.01,
+    export_fee_eur_per_kwh: float = 0.0,
     surplus_threshold_w: float = 1000.0,
     now: datetime | None = None,
 ) -> dict | None:
@@ -71,15 +73,20 @@ def advise_charge_window(
 
     kwh_per_slot = kwh_needed / duration_slots
 
+    # Build the shared economics view once.  EV advice is still a pure function, while
+    # export valuation now stays in lock-step with planner/finance (including grid fees).
+    snapshot = EconomicSnapshot.from_tariff_policy(
+        TariffPolicy(export_fee_eur_per_kwh=max(0.0, float(export_fee_eur_per_kwh))),
+        export_model=export_model,
+        energy_tax_eur_per_kwh=energy_tax_eur_per_kwh,
+        fixed_feed_in_eur_per_kwh=fixed_feed_in_eur_per_kwh,
+    )
+
     def slot_cost(s: _PriceLike) -> tuple[float, bool]:
         p50 = p50_by_slot.get(s.start, 0.0)
         surplus = p50 >= surplus_threshold_w
         price = (
-            export_value(
-                s.eur_per_kwh, model=export_model,
-                energy_tax_eur_per_kwh=energy_tax_eur_per_kwh,
-                fixed_feed_in_eur_per_kwh=fixed_feed_in_eur_per_kwh,
-            )
+            snapshot.export_credit(s.eur_per_kwh)
             if surplus else s.eur_per_kwh
         )
         return price * kwh_per_slot, surplus
