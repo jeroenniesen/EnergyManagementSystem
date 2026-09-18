@@ -16,7 +16,9 @@ type Counterfactual = {
   days_used: number;
   days_skipped: number;
   scenarios: Record<string, ScenarioTotals>;
-  deltas: { planner_vs_no_battery: number | null; planner_vs_auto: number | null };
+  deltas: { planner_vs_no_battery: number | null; planner_vs_auto: number | null;
+    planner_vs_auto_net_eur?: number | null; planner_vs_no_battery_net_eur?: number | null };
+  limitations?: string[];
   note: string;
 };
 
@@ -28,6 +30,8 @@ type PerDay = {
 };
 
 type WhatIfResult = {
+  net_delta_eur?: number | null;
+  limitations?: string[];
   simulation: true;
   days: number;
   days_used: number;
@@ -45,6 +49,10 @@ type Preset = { key: string; label: string; overrides: Record<string, unknown> }
 // Four presets from the backlog card (BACKLOG B-73), each mapped onto ONE allow-listed knob
 // (ems/web/routes/whatif.py's WHATIF_ALLOWED_KEYS) so every chip is a single, legible change.
 const PRESETS: Preset[] = [
+  {
+    key: "bill-optimization", label: "Evaluate bill optimization",
+    overrides: { "planner.bill_optimization_enabled": true },
+  },
   {
     key: "cautious-forecast", label: "More cautious forecast (60%)",
     overrides: { "planner.solar_confidence": 60 },
@@ -69,7 +77,7 @@ function verdict(preset: Preset, delta: number | null, daysUsed: number): string
   if (delta == null || daysUsed === 0) {
     return `Not enough recorded history yet to simulate "${preset.label}".`;
   }
-  const window = `over the last ${daysUsed} measured day${daysUsed === 1 ? "" : "s"}`;
+  const window = `in simulation over ${daysUsed} recorded day${daysUsed === 1 ? "" : "s"}`;
   if (delta > 0.005) return `${preset.label} would have saved ≈ ${eur(delta)} ${window}.`;
   if (delta < -0.005) return `${preset.label} would have cost ≈ ${eur(Math.abs(delta))} more ${window}.`;
   return `${preset.label} would have made almost no difference ${window}.`;
@@ -121,8 +129,8 @@ export function WhatIf() {
     cf.days_used > 0 &&
     cf.deltas.planner_vs_no_battery != null &&
     cf.deltas.planner_vs_auto != null
-      ? `Over the last ${cf.days_used === 1 ? "measured day" : `${cf.days_used} days`} your setup beat no-battery by ` +
-        `${eur(cf.deltas.planner_vs_no_battery)} and vendor-auto by ${eur(cf.deltas.planner_vs_auto)}.`
+      ? `Simulated grid-bill reduction over ${cf.days_used} recorded days: ` +
+        `${eur(cf.deltas.planner_vs_no_battery)} versus no battery; ${eur(cf.deltas.planner_vs_auto)} versus vendor AUTO. Negative amounts mean higher costs.`
       : null;
 
   return (
@@ -139,6 +147,17 @@ export function WhatIf() {
           {cfHeader}
         </p>
       )}
+      {cf?.deltas.planner_vs_auto_net_eur != null && (
+        <p className="whatif-counterfactual" data-testid="whatif-net-benefit">
+          Net benefit versus AUTO after estimated wear and stored-energy adjustment:
+          {" "}<strong>{eur(cf.deltas.planner_vs_auto_net_eur)}</strong>. This is simulated,
+          not measured EMS savings.
+        </p>
+      )}
+      {!!cf?.limitations?.length && <details className="advisor-hint">
+        <summary>Simulation assumptions</summary>
+        <ul>{cf.limitations.map(note => <li key={note}>{note}</li>)}</ul>
+      </details>}
 
       <div className="whatif-days" role="group" aria-label="Simulation window">
         {DAY_OPTIONS.map((d) => (
@@ -188,6 +207,10 @@ export function WhatIf() {
           <p className="whatif-verdict" data-testid="whatif-verdict">
             {verdict(activePreset, result.delta_eur, result.days_used)}
           </p>
+          {result.net_delta_eur != null && <p>
+            Net benefit after wear and stored-energy adjustment: {eur(result.net_delta_eur)}.
+            Positive means this change improves the modeled result.
+          </p>}
           <div className="fin-tiles">
             <div className="fin-tile" data-testid="whatif-baseline">
               <div className="fin-val">

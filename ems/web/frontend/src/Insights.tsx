@@ -12,6 +12,8 @@ import { scoreBand, ScoreRing } from "./ScoreRing";
 import { ringLabel, scoreCaption, splitExplanation } from "./scoreCopy";
 import { WeekDigest } from "./WeekDigest";
 import { WhatIf } from "./WhatIf";
+import { SavingsAdvice } from "./SavingsAdvice";
+import { TariffTools } from "./TariffTools";
 
 type Score = {
   key: string;
@@ -554,6 +556,8 @@ export function Insights({ canOperate = true }: { canOperate?: boolean } = {}) {
 
           <div id="insights-sec-money">
             <FinanceSection period={period} anchor={anchor} />
+            <SavingsAdvice />
+            <TariffTools canOperate={canOperate} />
           </div>
 
           <div id="insights-sec-whatif">

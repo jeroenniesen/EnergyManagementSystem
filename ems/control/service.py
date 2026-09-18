@@ -25,7 +25,7 @@ import asyncio
 import logging
 import threading
 from collections.abc import Callable
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta
 from typing import Any
 
@@ -55,11 +55,14 @@ from ems.planner.adaptive import AdaptiveConfig
 from ems.planner.charge_need import compute_charge_need
 from ems.planner.recovery import recover_if_needed
 from ems.planner.rule_based import PlannerConfig
+from ems.planner.schedule import SLOT, Plan, PlanSlot
 from ems.planner.strategy import HysteresisState, build_plan, resolve_strategy_hysteretic
 from ems.planner.summer import SummerConfig
 from ems.planner.validator import PlanValidation
 from ems.price_quality import PriceHorizonStatus, validate_price_horizon
 from ems.sources.battery import intent_to_mode
+from ems.sources.prices import PriceSlot
+from ems.tariff_history import economic_snapshot_at
 
 _log = logging.getLogger("ems.recorder")
 
@@ -560,6 +563,9 @@ class ControlService:
             charge_slots=s["planner.charge_slots"],
             discharge_slots=s["planner.discharge_slots"],
             negative_price_soak=s["planner.negative_price_soak"],
+            bill_optimization_enabled=(self._dry_run
+                and s.get("planner.bill_optimization_enabled", False)),
+            max_discharge_w=s["battery.max_discharge_w"],
             import_fee_eur_per_kwh=s.get("grid_fees.import_fee_eur_per_kwh", 0.0)
             if not s.get("grid_fees.tibber_total_includes_all", False) else 0.0,
             tibber_total_includes_all=s.get("grid_fees.tibber_total_includes_all", False),
@@ -604,6 +610,11 @@ class ControlService:
             risk_margin_eur_per_kwh=s["planner.risk_margin_eur_per_kwh"],
             solar_confidence=s["planner.solar_confidence"] / 100.0,
             negative_price_soak=s["planner.negative_price_soak"],
+            bill_optimization_enabled=(self._dry_run
+                and s.get("planner.bill_optimization_enabled", False)),
+            max_discharge_w=s["battery.max_discharge_w"],
+            import_fee_eur_per_kwh=s.get("grid_fees.import_fee_eur_per_kwh", 0.0),
+            tibber_total_includes_all=s.get("grid_fees.tibber_total_includes_all", False),
         )
 
     def load_by(self, starts: list[datetime]) -> dict[datetime, float]:
@@ -673,6 +684,23 @@ class ControlService:
             "round_trip_efficiency": s["planner.round_trip_efficiency"],
         }
 
+    def economic_plan_inputs(self, prices: list[PriceSlot], now: datetime):
+        """Normalize the planning horizon once; unknown declared tariff coverage is unsafe."""
+        normalized = []
+        exports = {}
+        future = sorted((p for p in prices if p.start + SLOT > now), key=lambda p: p.start)[:96]
+        try:
+            for p in future:
+                snapshot = economic_snapshot_at(
+                    self._settings, p.start, p.eur_per_kwh, timezone=str(self._site_tz))
+                if snapshot is None:
+                    return None
+                normalized.append(PriceSlot(p.start, snapshot.import_price_eur_per_kwh))
+                exports[p.start] = snapshot.export_credit()
+        except (TypeError, ValueError):
+            return None
+        return normalized, exports
+
     def build_plan_now(self, now: datetime | None = None):
         """The fresh plan the active strategy builds THIS instant, BEFORE any missed-window
         recovery. Dispatches to the active strategy (summer solar-first / winter arbitrage).
@@ -692,10 +720,27 @@ class ControlService:
         soc = self._current_soc(now)
         forecast = self._solar_forecast.slots() if self._solar_forecast is not None else []
         load_by = self._load_by([p.start for p in prices])
+        winter_cfg = self._planner_cfg()
+        adaptive_cfg = self._adaptive_cfg()
+        plan_prices = prices
+        exports = None
+        if self._dry_run and self._settings.get("planner.bill_optimization_enabled", False):
+            normalized = self.economic_plan_inputs(prices, now)
+            if normalized is None:
+                slots = tuple(PlanSlot(p.start, BatteryIntent.ALLOW_SELF_CONSUMPTION,
+                    "AUTO: declared tariff coverage is missing or invalid")
+                    for p in prices if p.start + SLOT > now)
+                return now, prices, Plan(created_at=now, slots=slots, strategy=strategy)
+            plan_prices, exports = normalized
+            winter_cfg = replace(winter_cfg, import_fee_eur_per_kwh=0.0,
+                                 tibber_total_includes_all=True)
+            if adaptive_cfg is not None:
+                adaptive_cfg = replace(adaptive_cfg, import_fee_eur_per_kwh=0.0,
+                                       tibber_total_includes_all=True)
         plan = build_plan(
-            strategy, prices=prices, forecast=forecast, now=now, soc_pct=soc,
-            winter_cfg=self._planner_cfg(), summer_cfg=self._summer_cfg(soc),
-            load_w_by=load_by, adaptive_cfg=self._adaptive_cfg(),
+            strategy, prices=plan_prices, forecast=forecast, now=now, soc_pct=soc,
+            winter_cfg=winter_cfg, summer_cfg=self._summer_cfg(soc),
+            load_w_by=load_by, adaptive_cfg=adaptive_cfg, export_price_by=exports,
         )
         return now, prices, plan
 
@@ -714,7 +759,10 @@ class ControlService:
         now, prices, plan = pp
         recovered, status, catch = recover_if_needed(
             plan, now, soc_pct=self._current_soc(now), prices=prices,
-            enabled=bool(self._settings["planner.recovery_enabled"]), **self.recovery_sizing(),
+            enabled=(bool(self._settings["planner.recovery_enabled"])
+                     and not (self._dry_run
+                              and self._settings.get("planner.bill_optimization_enabled", False))),
+            **self.recovery_sizing(),
         )
         return now, prices, recovered, status, catch
 

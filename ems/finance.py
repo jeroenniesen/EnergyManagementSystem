@@ -21,13 +21,14 @@ otherwise `price_coverage` (0..1) signals how much of the day the money figures 
 """
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from zoneinfo import ZoneInfo
 
 from ems.economics import EconomicSnapshot
 from ems.retrospect import _floor, _parse
-from ems.tariffs import TariffPolicy
+from ems.tariffs import TariffPeriod, TariffPolicy, validate_periods
 from ems.timeseries import observed_segments
 
 
@@ -81,6 +82,9 @@ def day_finance(
     window_end: datetime | None = None,
     sample_interval_seconds: float = 900.0,
     max_hold_seconds: float | None = None,
+    tariff_periods: list[TariffPeriod] | None = None,
+    tariff_timezone: str = "Europe/Amsterdam",
+    legacy_before: str | None = None,
 ) -> DayFinance:
     """One day's finance from raw samples (`ts`, `grid_power_w`, `battery_power_w`; the caller
     windows the rows to the local day) and stored price slots (`start_ts`, `eur_per_kwh`).
@@ -88,6 +92,7 @@ def day_finance(
     `export_price_model` (+ `energy_tax_eur_per_kwh` / `fixed_feed_in_eur_per_kwh`) picks how
     exported energy is valued (see module docstring / `economics.export_value`); the default
     `net_metering` credits export at the full spot price — today's saldering behaviour."""
+    periods = validate_periods(tariff_periods or [])
     timestamps = [dt for row in raw_rows if (dt := _parse(row.get("ts"))) is not None]
     if window_start is None and timestamps:
         window_start = _floor(min(timestamps))
@@ -107,8 +112,12 @@ def day_finance(
     price_by: dict[datetime, float] = {}
     for p in price_rows:
         dt = _parse(p.get("start_ts"))
-        if dt is not None:
-            price_by[_floor(dt)] = float(p.get("eur_per_kwh", 0.0))
+        try:
+            value = float(p["eur_per_kwh"])
+        except (KeyError, TypeError, ValueError):
+            continue
+        if dt is not None and math.isfinite(value):
+            price_by[_floor(dt)] = value
 
     imp = exp = chg = dis = 0.0  # full-day physical energy (always reported)
     dis_priced = 0.0             # discharge over PRICED slots only → wear inside `saved`
@@ -133,6 +142,10 @@ def day_finance(
         price = price_by.get(_floor(segment.start))
         if price is None:
             continue
+        period = next((p for p in periods if p.contains(segment.start, tariff_timezone)), None)
+        local_day = segment.start.astimezone(ZoneInfo(tariff_timezone)).date().isoformat()
+        if periods and period is None and not (legacy_before and local_day < legacy_before):
+            continue
         priced_seconds += segment.duration_seconds
         snapshot = EconomicSnapshot.from_tariff_policy(
             tariff_policy,
@@ -146,6 +159,10 @@ def day_finance(
         # Import costs the full price; export earns the feed-in VALUE (full price under saldering,
         # less post-2027 — may even be negative). Same credit in both worlds so `saved` stays fair.
         credit = snapshot.export_credit(price)
+        if period is not None:
+            normalized = period.normalize(price)
+            import_price = normalized.import_eur_per_kwh
+            credit = normalized.export_eur_per_kwh
         cost += (max(0.0, grid_w) * import_price - max(0.0, -grid_w) * credit) * hours / 1000.0
         baseline_w = grid_w + batt_w  # the meter with the battery removed
         base_cost += (max(0.0, baseline_w) * import_price
@@ -153,7 +170,8 @@ def day_finance(
         dis_priced += max(0.0, batt_w) * hours / 1000.0
 
     coverage = priced_seconds / observed_seconds if observed_seconds else 0.0
-    window_seconds = max(0.0, (window_end - window_start).total_seconds())
+    window_seconds = max(0.0, (window_end.astimezone(UTC)
+                               - window_start.astimezone(UTC)).total_seconds())
     sample_coverage = observed_seconds / window_seconds if window_seconds else 0.0
     # Give € figures whenever ANY slot is priced. Charging wear only over PRICED-slot discharge
     # (`dis_priced`) keeps cost, baseline and wear on the SAME window, so a partial-price day yields
@@ -214,3 +232,32 @@ def price_rows_by_local_day(
     """Group already-fetched price-slot rows (`start_ts`) by LOCAL calendar day — see
     `_rows_by_local_day`."""
     return _rows_by_local_day(price_rows, "start_ts", start, end, tz)
+
+
+def reconcile_invoice(
+    raw_rows: list[dict], price_rows: list[dict], *, start: datetime, end: datetime,
+    invoice_eur: float, fixed_cost_eur: float, **kwargs,
+) -> dict:
+    """Compare a complete observed interval with an invoice; never extrapolate missing data."""
+    if start.tzinfo is None or end.tzinfo is None or end <= start:
+        raise ValueError("invoice window must have ordered timezone-aware boundaries")
+    if not math.isfinite(invoice_eur) or not math.isfinite(fixed_cost_eur):
+        raise ValueError("invoice and fixed costs must be finite")
+    result = day_finance(raw_rows, price_rows, day=start.date().isoformat(),
+                         window_start=start, window_end=end, **kwargs)
+    complete = result.sample_coverage >= 1 - 1e-9 and result.price_coverage >= 1 - 1e-9
+    total = (result.grid_cost_eur + fixed_cost_eur
+             if complete and result.grid_cost_eur is not None else None)
+    return {
+        "start": start.isoformat(), "end": end.isoformat(), "complete": complete,
+        "sample_coverage": result.sample_coverage, "price_coverage": result.price_coverage,
+        "observed_variable_cost_eur": result.grid_cost_eur,
+        "fixed_cost_eur": fixed_cost_eur, "invoice_eur": invoice_eur,
+        "estimated_total_eur": total,
+        "difference_eur": None if total is None else total - invoice_eur,
+        "grid_import_kwh": result.grid_import_kwh, "grid_export_kwh": result.grid_export_kwh,
+        "basis": "Observed sampled grid energy; variable import/export tariffs "
+                 "plus entered fixed costs. "
+                 "No extrapolation for missing observations, prices or tariff periods. "
+                 "Net-metering is a per-slot approximation, not annual saldering settlement.",
+    }

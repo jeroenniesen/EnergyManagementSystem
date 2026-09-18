@@ -23,6 +23,7 @@ _LEGACY_ACCESS_CAP = _TIER_RANK["operate"]
 OPERATE_PATHS = frozenset({
     "/api/override",
     "/api/settings",
+    "/api/tariffs",
     "/api/ai/validate",
     "/api/chat",
     "/api/car/soc",

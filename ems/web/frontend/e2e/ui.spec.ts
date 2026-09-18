@@ -685,7 +685,8 @@ test.describe("EMS dashboard", () => {
     test(`${viewport.name} remaining-surface density inventory is repeatable`, async ({ page }) => {
       await page.setViewportSize(viewport);
       const baselines = {
-        insights: { cards: 3, charts: 0, badges: 0, numbers: 19 },
+        // Calibration evidence adds one visible percentage to the fixed Insights scenario.
+        insights: { cards: 3, charts: 0, badges: 0, numbers: 20 },
         manage: { cards: 1, charts: 0, badges: 0, numbers: 0 },
         car: { cards: 4, charts: 0, badges: 0, numbers: 1 },
         chat: { cards: 1, charts: 0, badges: 1, numbers: 0 },

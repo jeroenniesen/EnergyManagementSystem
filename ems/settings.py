@@ -130,6 +130,12 @@ SETTINGS_SCHEMA: tuple[SettingsField, ...] = (
         help="Fee deducted from the value of each exported kWh after saldering ends.",
         min=0.0, max=1.0, step=0.005, unit="€/kWh", advanced=True,
     ),
+    SettingsField(
+        "planner.bill_optimization_enabled", "Evaluate bill optimization", "bool", False, "planner",
+        help="Opt-in evaluation of stricter economics, solar-aware charging and learned demand. "
+        "Runs only in dry-run; live control keeps the accepted strategy. Negative-price charging "
+        "also requires profitable future household demand in this evaluation.", advanced=True,
+    ),
     # --- Battery (Indevolt) — connection + capacity/reserve ---
     SettingsField(
         "battery.indevolt_ip", "Indevolt main tower IP", "text", "", "battery",
@@ -613,6 +619,11 @@ def effective_settings(stored: Any) -> dict[str, Any]:
     eff = defaults()
     clean, _errors = validate_settings(stored if isinstance(stored, dict) else {})
     eff.update(clean)
+    if isinstance(stored, dict):
+        # Tariff periods use their own validated append-only route, not editable scalar fields.
+        for key in ("tariffs.periods", "tariffs.legacy"):
+            if key in stored:
+                eff[key] = stored[key]
     from ems.battery_profile import apply_topology_defaults
     return apply_topology_defaults(eff)
 

@@ -407,6 +407,29 @@ Selection is **configurable** (calendar month, rolling solar-forecast threshold,
 >
 >   `day_finance` credits export via the selected model in **both** the actual and the no-battery baseline cost, so under a low feed-in the battery's measured benefit grows honestly rather than assuming export is free. The consume-side counterpart is the **negative-price soak** (`planner.negative_price_soak`, §8.2 step 5): charge when the price is below €0.
 
+### 8.3.1 Bill-optimization evaluation (September 2026)
+
+The opt-in `planner.bill_optimization_enabled` defaults **off**. It selects the revised
+economic planner and recent-weighted weekday/weekend demand profile only when the process is
+also in **dry-run**. Live control retains the accepted planner until a separate multi-day
+acceptance and activation change. Replay can evaluate the same option without writing settings.
+
+Every grid purchase must cover future household demand profitably after conversion losses,
+estimated wear and risk. Both seasons account chronologically for conservative solar, battery
+headroom and charge/discharge power. Solar after a peak cannot fund that peak. Contiguous
+charging slots share a target SoC so execution remains mode-change-only; projection honors
+window targets. Grid-charge slots exclude forecast solar surplus to prevent earlier grid
+purchases from replacing credited sunshine. Existing validation, dwell/switch limits, ownership,
+and the single writer remain authoritative.
+
+Date-effective declared import/export tariffs are resolved per slot. Missing coverage in an
+explicit tariff schedule returns an explanatory AUTO plan. Solar with a high export opportunity
+cost is not treated as free; where the available intents cannot realize the economic alternative,
+the planner returns AUTO rather than pretending to control export. In this evaluation,
+negative-price charging also needs profitable future household demand; the legacy unconditional
+negative-price-soak option remains unchanged when evaluation is off. Legacy missed-window
+recovery does not rewrite evaluation plans outside their profitability constraints.
+
 ### 8.4 Strategy selection & seasonal hysteresis
 - `summer_solar_threshold_kwh` is **roof-specific**, **calibrated from PVGIS / actual yield** (§6.3), not a guessed 12 kWh.
 - **Transition hysteresis** (`strategy_switch_hysteresis_days`, `strategy_switch_band_kwh`): require the rolling solar forecast to stay above/below the threshold **by a band, for N consecutive days**, before switching strategy — so it doesn't flip daily near the boundary. Calendar months remain a coarse override.
@@ -725,6 +748,48 @@ An **Insights** tab presents three self-explaining **0–100 scores (100 = best)
 > **Implemented since — additional Insights surfaces (BACKLOG B-58/B-69/B-72/B-73, PRs #21/#24).** A **weekly digest** ("Your week") delivered in-app and via the notification outbox every Sunday 18:00 local (`ems/digest.py`, `GET /api/digest`, dedupe-guarded so it fires once); **forecast/plan accuracy** tracking — solar forecast skill, plan-execution error, load-baseline error (`ems/analysis.py`, `GET /api/accuracy`); a **counterfactual savings** comparison against no-battery and vendor-`AUTO` baselines (`GET /api/counterfactual`); and a read-only **what-if scenario** simulator — allowlisted A/B replay, clearly labelled "simulation — nothing is changed" (`POST /api/whatif`).
 
 **Map/setup page:** **Leaflet** (vendored, no CDN) with **OSM tiles loaded only on the setup page**. Respect **OSM tile + Nominatim policies**: low-volume personal use, proper attribution, descriptive `User-Agent`, **no bulk/prefetch, and no autocomplete against public Nominatim** (geocode only on explicit submit). **Manual lat/lon entry** always works offline. The pin re-points the forecast, recomputes sunrise/sunset (`astral`), and triggers a replan; timezone optionally via `timezonefinder` (offline).
+
+### 9.1.2 Bill evidence and recommendations
+
+Insights includes read-only reserve-target recommendations, battery-calibration estimates,
+held-out load-model error comparisons, sustained household-demand checks, solar-underperformance
+evidence and appliance timing. No recommendation changes settings or controls an appliance.
+The hard reserve floor is never lowered. Reserve advice needs a complete next-24-hour price
+window and fresh evidence; its load bands are empirical spread, not calibrated probabilities.
+Appliance timing uses contiguous quarter hours, a user deadline and estimated constant-power
+energy, with conservative surplus valued at forgone export credit. It excludes battery response.
+
+The enhanced load profile uses 42 days of prior history, equal-weight daily-hour observations,
+14-day recency half-life and weekday/weekend groups with at least three observed dates. Missing
+groups fall back to the existing hourly/typical shape. Held-out scoring trains on earlier days
+only. Battery capacity and round-trip-efficiency estimates require at least three contiguous
+charge and discharge segments across overlapping 15-percentage-point SoC bands, comparable
+power, plausible readings and consistent results. Vendor SoC accuracy remains an assumption.
+Standby consumption is explicitly unavailable because the existing meters cannot isolate it.
+Wear remains a user-specified estimate.
+
+Tariff periods are append-only, non-overlapping, bounded local-date intervals with explicit
+VAT-inclusive import tax/surcharge and export tax/adjustment/fee or a fixed export rate.
+No supplier rates or statutory transition are activated automatically. The initial period
+freezes prior scalar tariff assumptions; uncovered later dates are unknown, not zero.
+Historical finance uses those periods and a tariff/wear fingerprint. Where raw source detail
+has been purged, a more complete historical rollup is retained under its original assumptions,
+with a visible caveat rather than being overwritten by a partial recomputation.
+
+Invoice reconciliation compares observed variable electricity cost plus a user-entered fixed
+amount with the invoice over an exclusive-end date range. Missing meter, price or tariff
+coverage leaves total and difference unavailable. Include invoice-specific credits, annual
+settlement and other adjustments in the fixed amount; the model does not invent annual
+saldering-limit adjustments. Actual household invoice verification remains a rollout step.
+
+Replay compares no battery, vendor AUTO and planned operation using quarter-hour replans,
+prior load history and issue-eligible solar forecasts. Scenario-specific stored energy carries
+across contiguous complete days; missing days reset continuity and are disclosed. Report
+grid bill separately from estimated wear and a fixed-value stored-energy adjustment.
+Comparisons are **simulations**, not measured EMS savings. Legacy price history lacks issue
+times, so next-day prices use an explicit 15:00 publication assumption. Simulated execution
+does not reproduce every live dwell/write constraint. The solar oracle is a sensitivity
+comparison, not a promised savings ceiling.
 
 ## 9.2 Home Assistant entities (optional, via MQTT discovery)
 

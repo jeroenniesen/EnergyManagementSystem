@@ -142,3 +142,85 @@ def test_soc_never_exceeds_100_across_a_long_charge():
     assert max(socs) <= 100.0
     assert socs[-1] == 100.0  # reaches and holds full
     assert all(a <= b + 1e-9 for a, b in zip(socs, socs[1:], strict=False))  # non-decreasing
+
+
+@pytest.mark.parametrize("fallback", [None, 20.0])
+def test_disjoint_economic_charge_windows_project_their_own_targets(fallback):
+    from ems.planner.rule_based import PlannerConfig, plan_rule_based
+    from ems.planner.validator import validate_plan
+    from ems.sources.prices import PriceSlot
+
+    prices = [PriceSlot(T0 + i * SLOT, p) for i, p in enumerate([.1, .5, .05, .6])]
+    loads = {p.start: w for p, w in zip(prices, [0, 1000, 0, 4000], strict=True)}
+    plan = plan_rule_based(prices, T0, PlannerConfig(
+        bill_optimization_enabled=True, round_trip_efficiency=1.0,
+        degradation_eur_per_kwh=0, risk_margin_eur_per_kwh=0),
+        soc_pct=10, load_w_by=loads, usable_kwh=10)
+    out = project_energy(plan.slots, start_soc_pct=10, solar_w_by={}, load_w_by=loads,
+                         model=_model(), charge_target_soc_pct=fallback)
+    assert out[0].soc_pct == pytest.approx(12.5)
+    assert out[0].grid_w == pytest.approx(1000)
+    assert out[1].soc_pct == pytest.approx(10)
+    assert out[2].soc_pct == pytest.approx(20)
+    assert out[2].grid_w == pytest.approx(4000)
+    assert out[3].soc_pct == pytest.approx(10)
+    assert validate_plan(plan, soc_pct=10, data_quality="complete", min_reserve_soc=10,
+                         projection=out, projection_target_margin_pp=0.01).ok
+
+
+def test_explicit_slot_target_takes_precedence_over_legacy_global_target():
+    slots = [PlanSlot(T0, BatteryIntent.GRID_CHARGE_TO_TARGET, "", target_soc=55)]
+    out = project_energy(slots, start_soc_pct=50, solar_w_by={}, load_w_by={},
+                         model=_model(), charge_target_soc_pct=52)
+    assert out[0].soc_pct == pytest.approx(55)
+
+
+def test_partial_first_charge_slot_preserves_price_and_energy_timing():
+    from datetime import timedelta
+
+    from ems.planner.explain import summarize_projection
+    from ems.planner.rule_based import PlannerConfig, plan_rule_based
+    from ems.sources.prices import PriceSlot
+
+    now = T0 + timedelta(minutes=14)
+    prices = [PriceSlot(T0 + i * SLOT, p) for i, p in enumerate([.15, .05, .5, .5])]
+    loads = {p.start: w for p, w in zip(prices, [0, 0, 4000, 2000], strict=True)}
+    plan = plan_rule_based(prices, now, PlannerConfig(
+        bill_optimization_enabled=True, round_trip_efficiency=1,
+        degradation_eur_per_kwh=0, risk_margin_eur_per_kwh=0),
+        soc_pct=10, load_w_by=loads)
+    out = project_energy(plan.slots, start_soc_pct=10, solar_w_by={}, load_w_by=loads,
+                         model=_model(), start_at=now)
+    assert out[0].duration_hours == pytest.approx(1 / 60)
+    assert out[0].soc_pct == pytest.approx(10 + 4 / 6)
+    assert out[1].soc_pct == pytest.approx(20 + 4 / 6)
+    charge_cost = sum(p.grid_w * p.duration_hours / 1000 * prices[i].eur_per_kwh
+                      for i, p in enumerate(out[:2]))
+    assert charge_cost == pytest.approx(.06)
+    assert summarize_projection(out)["import_kwh"] == pytest.approx(1.5, abs=.01)
+
+
+def test_partial_slot_projects_remaining_solar_and_house_energy():
+    from datetime import timedelta
+
+    from ems.planner.explain import summarize_projection
+
+    slots = _slots(BatteryIntent.ALLOW_SELF_CONSUMPTION, BatteryIntent.HOLD_RESERVE)
+    out = project_energy(slots, start_soc_pct=50, solar_w_by={T0: 2000},
+                         load_w_by={T0: 500, T0 + SLOT: 1000}, model=_model(),
+                         start_at=T0 + timedelta(minutes=14))
+    assert out[0].soc_pct == pytest.approx(50.25)
+    assert out[0].grid_w == 0
+    summary = summarize_projection(out)
+    assert summary["import_kwh"] == pytest.approx(.25)
+    assert summary["solar_kwh"] == pytest.approx(.03)
+    assert summary["load_kwh"] == pytest.approx(.26)
+
+
+def test_projection_omits_slots_that_have_already_ended():
+    slots = _slots(BatteryIntent.GRID_CHARGE_TO_TARGET, BatteryIntent.GRID_CHARGE_TO_TARGET)
+    out = project_energy(slots, start_soc_pct=50, solar_w_by={}, load_w_by={},
+                         model=_model(), start_at=T0 + SLOT)
+    assert len(out) == 1
+    assert out[0].start == T0 + SLOT
+    assert out[0].soc_pct == 60

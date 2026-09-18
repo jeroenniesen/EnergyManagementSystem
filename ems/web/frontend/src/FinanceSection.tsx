@@ -8,6 +8,7 @@ import { apiFetch } from "./auth";
 import { eur } from "./format";
 
 type DayFin = {
+  calculation_note?: string;
   day: string;
   has_data: boolean;
   price_coverage: number;
@@ -175,6 +176,8 @@ export function FinanceSection({ period, anchor }: { period: string; anchor: str
               the € figures cover that part.
             </p>
           )}
+          {Array.from(new Set(fin.days.map(d => d.calculation_note).filter(Boolean))).map(note =>
+            <p className="fin-caveat" key={note}>{note}</p>)}
           {multiDay && <SavedBars days={fin.days} />}
         </>
       )}

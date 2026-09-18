@@ -100,3 +100,26 @@ Quick, concrete cheat-sheet for every integration. Details and rationale are in 
 - WebSocket `ws://<host>:8123/api/websocket` (auth → `subscribe_entities` / `call_service`) — preferred for live state, for calling the `indevolt.charge`/`discharge` **services**, and for setting the Indevolt **entities** (energy-mode select, standby button, discharge-limit number, grid-charge switch). REST as fallback.
 - **Entity mapping:** pin role→entity ids in config `entity_map` (don't rely only on discovery names); validate they exist with sane `state_class`/units at startup (`../SPEC.md` §5.2, §11.5).
 - EMS → HA entities via **MQTT discovery** (`homeassistant/<component>/<object_id>/config`, with `unique_id` + `device`). **Retain** discovery **config** topics (survive restarts); retain slow state (mode/strategy/reason), don't retain fast telemetry. Do **not** use `POST /api/states` for durable entities (transient, lost on restart).
+
+## Bill minimization additions (2026-09-17)
+
+- `GET /api/bill-advice`: read-only reserve, capacity/efficiency calibration, held-out demand
+  accuracy, sustained household consumption and solar evidence. Each unavailable recommendation
+  includes its reason; no setting changes.
+- `POST /api/advisor/appliance`: read-only JSON
+  `{duration_minutes: 60, energy_kwh: 1, deadline: "<timezone-aware ISO timestamp>"}`.
+  Duration is 15–1440 minutes in quarter-hour increments; deadline is within 48 hours.
+  Returns a contiguous priced window, opportunity cost and savings against the earliest window.
+- `GET /api/tariffs`: declared periods, frozen legacy basis and site timezone.
+- `POST /api/tariffs`: operator permission required. Appends a non-overlapping immutable period
+  with `start_date`, exclusive `end_date`, `raw_includes_import_components` boolean,
+  `import_tax_eur_per_kwh`, `import_surcharge_eur_per_kwh`,
+  `export_tax_eur_per_kwh`, `export_surcharge_eur_per_kwh`, `export_fee_eur_per_kwh`,
+  and optional nullable `fixed_export_eur_per_kwh`. All rates are VAT-inclusive finite numbers.
+- `POST /api/invoice-reconciliation`: read-only JSON
+  `{start_date, end_date, invoice_eur, fixed_cost_eur}`, 1–366 local days, exclusive end.
+  Returns observed variable cost, coverage and estimated total/model-minus-invoice difference.
+  Total and difference are null unless source/price/tariff coverage is complete.
+- `/api/counterfactual` now separates grid bill, estimated wear, inventory adjustment and net
+  economic cost, exposes net deltas versus AUTO/no battery, and includes simulation limitations.
+  `/api/whatif` accepts `planner.bill_optimization_enabled` and includes `net_delta_eur`.

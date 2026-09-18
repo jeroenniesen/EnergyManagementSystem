@@ -11,7 +11,8 @@ from __future__ import annotations
 import math
 from collections import defaultdict
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from dataclasses import field as data_field
+from datetime import UTC, datetime, timedelta
 from zoneinfo import ZoneInfo
 
 from ems.load_model import MAX_LEARNABLE_LOAD_W
@@ -25,10 +26,22 @@ class LoadProfile:
 
     by_hour: dict[int, float]  # local hour -> mean load (only well-sampled hours)
     tz: ZoneInfo
+    by_day_type: dict[tuple[bool, int], float] = data_field(default_factory=dict)
+    uncertainty: dict[tuple[bool, int], float] = data_field(default_factory=dict)
 
     def expected_w(self, when: datetime) -> float:
-        local_hour = when.astimezone(self.tz).hour
-        return self.by_hour.get(local_hour, _typical_w(local_hour))
+        local = when.astimezone(self.tz)
+        return self.by_day_type.get(
+            (local.weekday() >= 5, local.hour),
+            self.by_hour.get(local.hour, _typical_w(local.hour)),
+        )
+
+    def band_w(self, when: datetime) -> tuple[float, float]:
+        """Empirical spread, not a calibrated probability of coverage."""
+        local = when.astimezone(self.tz)
+        expected = self.expected_w(when)
+        spread = self.uncertainty.get((local.weekday() >= 5, local.hour), expected * 0.5)
+        return max(0.0, expected - spread), expected + spread
 
 
 def _typical_w(hour: int) -> float:
@@ -48,6 +61,8 @@ def _typical_w(hour: int) -> float:
 def build_load_profile(
     rows: list[dict], tz: ZoneInfo, *, fallback_w: float | None = None, min_samples: int = 3,
     field: str = "non_ev_load_w",
+    enhanced: bool = False,
+    as_of: datetime | None = None,
 ) -> LoadProfile:
     """Learn an hourly load profile from history rows ({"ts": ISO, <field>: float}).
 
@@ -60,7 +75,10 @@ def build_load_profile(
     (a handful of samples taken during one high-draw burst) is NOT projected as a flat high load all
     day, which would wrongly hide the daytime solar surplus and stop the battery charging.
     (`fallback_w` is accepted for backward compatibility but superseded by the shaped default.)"""
+    if enhanced and as_of is None:
+        raise ValueError("enhanced load profiles need an explicit as_of time")
     buckets: dict[int, list[float]] = defaultdict(list)
+    daily: dict[tuple, list[float]] = defaultdict(list)
     for row in rows:
         ts, load = row.get("ts"), row.get(field)
         if not isinstance(ts, str) or load is None:
@@ -74,7 +92,33 @@ def build_load_profile(
             continue
         if dt.tzinfo is None:  # naive timestamps are UTC (the recorder writes aware-UTC)
             dt = dt.replace(tzinfo=UTC)
+        if as_of is not None and dt >= as_of:
+            continue
+        if enhanced and dt < as_of - timedelta(days=42):
+            continue
         buckets[dt.astimezone(tz).hour].append(value)
+        local = dt.astimezone(tz)
+        daily[(local.date(), local.hour)].append(value)
 
     by_hour = {h: sum(v) / len(v) for h, v in buckets.items() if len(v) >= min_samples}
-    return LoadProfile(by_hour=by_hour, tz=tz)
+    if not enhanced:
+        return LoadProfile(by_hour=by_hour, tz=tz)
+    groups: dict[tuple[bool, int], list[tuple[float, float]]] = defaultdict(list)
+    hours: dict[int, list[tuple[float, float]]] = defaultdict(list)
+    for (day, hour), values in daily.items():
+        age = (as_of.astimezone(tz).date() - day).days
+        item = (sum(values) / len(values), 2 ** (-age / 14.0))
+        groups[(day.weekday() >= 5, hour)].append(item)
+        hours[hour].append(item)
+
+    def mean(items: list[tuple[float, float]]) -> float:
+        return sum(v * w for v, w in items) / sum(w for _, w in items)
+
+    by_hour = {hour: mean(items) for hour, items in hours.items() if len(items) >= 3}
+    by_type = {key: mean(items) for key, items in groups.items() if len(items) >= 3}
+    uncertainty = {
+        key: max(50.0, math.sqrt(sum(w * (v - by_type[key]) ** 2 for v, w in items)
+                                / sum(w for _, w in items)))
+        for key, items in groups.items() if key in by_type
+    }
+    return LoadProfile(by_hour, tz, by_type, uncertainty)

@@ -105,7 +105,7 @@ def test_counterfactual_shape_and_delta_math_consistency(tmp_path):
     assert set(body["scenarios"].keys()) == {"no_battery", "auto_selfuse", "planner"}
     for name in ("no_battery", "auto_selfuse", "planner"):
         s = body["scenarios"][name]
-        assert set(s.keys()) == {"cost_eur", "import_kwh", "export_kwh"}
+        assert {"cost_eur", "import_kwh", "export_kwh"} <= set(s.keys())
         assert s["cost_eur"] is not None
 
     nb = body["scenarios"]["no_battery"]["cost_eur"]
@@ -286,3 +286,21 @@ def test_whatif_is_not_gated_by_write_auth(tmp_path):
     with TestClient(_app(db, token="s3cret")) as c:
         r = c.post("/api/whatif", json={"overrides": {}, "days": 2})
     assert r.status_code != 401
+
+
+def test_counterfactual_cache_tracks_changed_economic_settings(tmp_path):
+    from types import SimpleNamespace
+
+    from fastapi import FastAPI
+
+    db = str(tmp_path / 'ems.sqlite')
+    _seed_winter_days(db, 1)
+    settings = {'strategy.mode': 'winter', 'planner.degradation_eur_per_kwh': .01}
+    context = SimpleNamespace(store=HistoryStore(db), settings_cache=settings, site_tz=UTZ)
+    app = FastAPI()
+    app.include_router(whatif_mod.build_router(context))
+    with TestClient(app) as client:
+        first = client.get('/api/counterfactual?days=1').json()
+        settings['planner.degradation_eur_per_kwh'] = .50
+        second = client.get('/api/counterfactual?days=1').json()
+    assert first['scenarios']['planner']['cost_eur'] < second['scenarios']['planner']['cost_eur']

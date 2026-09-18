@@ -227,4 +227,7 @@ def test_write_exempt_paths_are_exactly_the_verified_read_only_posts():
     # Guard the exemption list itself: only the two POSTs proven read-only by construction may be
     # here. Widening it must be a deliberate, reviewed edit — never an accident.
     app = create_app(MockSource(), dry_run=True, dev_mode="mock")
-    assert app.state.write_exempt_paths == frozenset({"/api/whatif", "/api/plan-preview"})
+    assert app.state.write_exempt_paths == frozenset({
+        "/api/whatif", "/api/plan-preview", "/api/advisor/appliance",
+        "/api/invoice-reconciliation",
+    })

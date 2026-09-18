@@ -20,6 +20,8 @@ from ems.export_package import (
     validation_summary,
     zip_names,
 )
+from ems.settings import effective_settings
+from ems.tariff_history import finance_basis
 
 
 def test_rows_to_csv_has_header_and_ignores_unknown_keys():
@@ -546,6 +548,8 @@ def _seed(db: str) -> None:
         # it as stale and recomputing it from the raw sample above (which would overwrite 0.42).
         await store.upsert_daily_finance("2026-06-28", {"day": "2026-06-28", "has_data": True,
                                                          "saved_eur": 0.42, "price_coverage": 1.0,
+                                                         "tariff_basis": finance_basis(
+                                                             effective_settings({})),
                                                          "calc_v": _FINANCE_CALC_VERSION})
         await store.record_plan("2026-06-28T10:00:00+00:00", {
             "strategy": "winter", "target_soc": 80.0,
@@ -636,7 +640,7 @@ def test_export_package_backfills_daily_finance_for_unviewed_days(tmp_path):
         # backfill must trust it as-is (return the sentinel, not a freshly computed value).
         await store.upsert_daily_finance(day_list[0], {
             "day": day_list[0], "has_data": True, "saved_eur": -0.99, "price_coverage": 1.0,
-            "calc_v": _FINANCE_CALC_VERSION,
+            "tariff_basis": finance_basis(effective_settings({})), "calc_v": _FINANCE_CALC_VERSION,
         })
     asyncio.run(seed())
 
