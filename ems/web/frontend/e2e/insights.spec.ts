@@ -1024,6 +1024,7 @@ test.describe("Insights: sticky in-page section nav", () => {
     );
     await page.goto("/");
     await page.getByTestId("nav-insights").click();
+    await expect(page.getByTestId("score-grid")).toBeVisible();
     await page.mouse.wheel(0, 900);
     await expect(page.getByTestId("insights-section-nav")).toBeVisible();
     await expect(page.getByTestId("insights-nav-gas")).toHaveCount(0);
