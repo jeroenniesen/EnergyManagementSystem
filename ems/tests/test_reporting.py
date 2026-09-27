@@ -21,6 +21,7 @@ from ems.sources.mock import MockSource
 from ems.sources.prices import MockPriceSource
 from ems.storage.history import HistoryStore, materialize_daily_energy, materialize_observations
 from ems.storage.settings import SettingsStore
+from ems.tests.conftest import NO_HISTORY_PURGE
 from ems.web import api as api_mod
 from ems.web.api import create_app
 
@@ -197,6 +198,7 @@ def _app(db: str):
         MockSource(), dry_run=True, dev_mode="mock", tz=AMS,
         store=HistoryStore(db), settings_store=SettingsStore(db),
         price_source=MockPriceSource(AMS),
+        **NO_HISTORY_PURGE,
     )
 
 
@@ -519,6 +521,7 @@ def _seed_year_contradiction(db: str) -> None:
         # A lone raw day: 800 W grid import at noon, no solar/battery → flows self-consumption ~0.
         ts = datetime(2025, 6, 15, 12, 0, tzinfo=AMS)
         await store.record(ts.isoformat(), RawSample(800, 0, 0, 0.0, 50.0), DerivedSample(800, 800))
+        await store.upsert_price_slots([(ts.astimezone(UTC).isoformat(), 0.25)])
         await store.close()
         # 200 identical rollup rows: solar 10 / load 8 (home 8, car 0) / import 2 / export 1 kWh.
         async with aiosqlite.connect(db) as raw_db:

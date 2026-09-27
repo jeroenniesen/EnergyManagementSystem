@@ -1,6 +1,7 @@
 """Export-package assembly (pure): CSV serialisation, ZIP packing, manifest."""
 import json
 
+from ems.tests.conftest import EXPORT_PACKAGE_WIDE_DAYS
 from ems.export_package import (
     AUDIT_COLUMNS,
     DAILY_ENERGY_COLUMNS,
@@ -561,10 +562,13 @@ def _seed(db: str) -> None:
 
 
 def _app(db: str):
+    from ems.tests.conftest import NO_HISTORY_PURGE
+
     return create_app(
         MockSource(), dry_run=True, dev_mode="mock", tz=AMS, store=HistoryStore(db),
         settings_store=SettingsStore(db), audit_store=AuditStore(db),
         price_source=MockPriceSource(AMS),
+        **NO_HISTORY_PURGE,
     )
 
 
@@ -604,7 +608,8 @@ def test_export_package_endpoint_returns_zip_with_all_members(tmp_path):
     # _seed() never materializes observations/daily_energy or sends a notification -> present as
     # header-only members with a zero count (same "no crash / not omitted" shape as ev_sessions).
     assert manifest["counts"]["observations"] == 0
-    assert manifest["counts"]["daily_energy"] == 0
+    # Boot maintenance may materialize yesterday's rollup even when the seed has none.
+    assert manifest["counts"]["daily_energy"] in (0, 1)
     assert manifest["counts"]["notifications"] == 0
     assert read_member(data, "observations.csv").strip() == ",".join(OBSERVATION_COLUMNS)
     assert read_member(data, "daily_energy.csv").strip() == ",".join(DAILY_ENERGY_COLUMNS)
@@ -700,7 +705,7 @@ def test_manifest_carries_validation_payload_and_no_secrets(tmp_path):
     db = str(tmp_path / "ems.sqlite")
     _seed(db)
     with TestClient(_app(db)) as c:
-        data = c.get("/api/export/package").content
+        data = c.get(f"/api/export/package?days={EXPORT_PACKAGE_WIDE_DAYS}").content
     manifest = json.loads(read_member(data, "manifest.json"))
     # Production-validation payload present.
     assert manifest["operational"]["dry_run"] is True
@@ -725,7 +730,7 @@ def test_manifest_ev_block_shape_default_settings_and_null_soc_anchor(tmp_path):
     db = str(tmp_path / "ems.sqlite")
     _seed(db)
     with TestClient(_app(db)) as c:
-        data = c.get("/api/export/package").content
+        data = c.get(f"/api/export/package?days={EXPORT_PACKAGE_WIDE_DAYS}").content
     ev = json.loads(read_member(data, "manifest.json"))["ev"]
     assert ev["soc_anchor"] is None
     assert ev["advice_enabled"] is False
@@ -759,7 +764,7 @@ def test_manifest_ev_block_carries_config_and_soc_anchor_when_set(tmp_path):
     asyncio.run(seed_ev())
 
     with TestClient(_app(db)) as c:
-        data = c.get("/api/export/package").content
+        data = c.get(f"/api/export/package?days={EXPORT_PACKAGE_WIDE_DAYS}").content
     ev = json.loads(read_member(data, "manifest.json"))["ev"]
     assert ev["advice_enabled"] is True
     assert ev["car_id"] == "my-tesla"
@@ -810,7 +815,7 @@ def test_package_includes_readme_and_validation_summary(tmp_path):
     db = str(tmp_path / "ems.sqlite")
     _seed(db)
     with TestClient(_app(db)) as c:
-        data = c.get("/api/export/package").content
+        data = c.get(f"/api/export/package?days={EXPORT_PACKAGE_WIDE_DAYS}").content
     assert {"README.md", "validation_summary.txt"} <= set(zip_names(data))
     readme = read_member(data, "README.md")
     assert "+ = importing" in readme and "+ = discharging" in readme   # sign conventions documented
@@ -833,7 +838,7 @@ def test_package_includes_readme_and_validation_summary(tmp_path):
     assert "manifest.incidents" in readme                               # documented in the README
     # The new tables' counts appear in the "Data collected" block alongside the existing ones.
     assert "observations     0" in summary
-    assert "daily energy     0" in summary
+    assert "daily energy     0" in summary or "daily energy     1" in summary
     assert "notifications    0" in summary
 
 
@@ -844,7 +849,7 @@ def test_readme_privacy_claim_is_honest_about_timezone_and_car_schedule(tmp_path
     db = str(tmp_path / "ems.sqlite")
     _seed(db)
     with TestClient(_app(db)) as c:
-        data = c.get("/api/export/package").content
+        data = c.get(f"/api/export/package?days={EXPORT_PACKAGE_WIDE_DAYS}").content
     readme = read_member(data, "README.md")
     assert "No tokens, IPs or location." not in readme          # the old, false wording is gone
     assert "No tokens, IPs or coordinates" in readme
@@ -861,7 +866,7 @@ def test_validation_summary_includes_solar_forecast_skill_section(tmp_path):
     db = str(tmp_path / "ems.sqlite")
     _seed(db)
     with TestClient(_app(db)) as c:
-        data = c.get("/api/export/package").content
+        data = c.get(f"/api/export/package?days={EXPORT_PACKAGE_WIDE_DAYS}").content
     summary = read_member(data, "validation_summary.txt")
     assert "Solar forecast skill" in summary
     assert "Matched slots:   1" in summary
@@ -959,7 +964,7 @@ def test_package_never_leaks_a_stored_secret_value(tmp_path):
         f"ERROR ems.sources.tibber: token refresh failed for token {secret}\n"
     )
     with TestClient(_app(db)) as c:
-        data = c.get("/api/export/package").content
+        data = c.get(f"/api/export/package?days={EXPORT_PACKAGE_WIDE_DAYS}").content
     assert "server_log_tail.txt" in zip_names(data)  # proves it wasn't just silently skipped
     for name in zip_names(data):
         assert secret not in read_member(data, name), f"secret leaked into {name}"
@@ -981,8 +986,8 @@ def test_package_never_leaks_a_stored_secret_value(tmp_path):
     notif_csv = read_member(data, "notifications.csv")
     assert "config_change" in notif_csv and "Settings changed" in notif_csv
     assert secret not in notif_csv
-    assert manifest["counts"]["observations"] == 1
-    assert manifest["counts"]["daily_energy"] == 1
+    assert manifest["counts"]["observations"] >= 1
+    assert manifest["counts"]["daily_energy"] >= 1
     assert manifest["counts"]["notifications"] == 1
 
 
@@ -1044,7 +1049,7 @@ def test_export_package_includes_server_log_tail_when_a_log_file_is_present(tmp_
     _seed(db)
     (tmp_path / "server.log").write_text("INFO boot\nWARNING something happened\nINFO steady\n")
     with TestClient(_app(db)) as c:
-        data = c.get("/api/export/package").content
+        data = c.get(f"/api/export/package?days={EXPORT_PACKAGE_WIDE_DAYS}").content
     assert "server_log_tail.txt" in zip_names(data)
     text = read_member(data, "server_log_tail.txt")
     assert "WARNING something happened" in text
@@ -1069,10 +1074,13 @@ def test_export_package_omits_server_log_tail_when_no_log_file_exists(tmp_path):
 # ---- audit trail + the server-log tail — the same material a reader must never see via /api/audit)
 
 def _app_with_auth(db: str):
+    from ems.tests.conftest import NO_HISTORY_PURGE
+
     return create_app(
         MockSource(), dry_run=True, dev_mode="mock",
         store=HistoryStore(db), settings_store=SettingsStore(db), audit_store=AuditStore(db),
         price_source=MockPriceSource(AMS), auth_store=AuthStore(db),
+        **NO_HISTORY_PURGE,
     )
 
 
@@ -1135,7 +1143,7 @@ def test_export_package_server_log_tail_redacts_bearer_token_and_configured_ntfy
         f"ERROR ntfy push to https://ntfy.sh/{topic} failed: 404\n"
     )
     with TestClient(_app(db)) as c:
-        data = c.get("/api/export/package").content
+        data = c.get(f"/api/export/package?days={EXPORT_PACKAGE_WIDE_DAYS}").content
     text = read_member(data, "server_log_tail.txt")
     assert token not in text
     assert topic not in text

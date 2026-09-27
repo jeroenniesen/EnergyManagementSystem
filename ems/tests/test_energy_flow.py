@@ -194,9 +194,12 @@ def _seed_store(db_path: str) -> None:
 
 
 def _app(db_path):
+    from ems.tests.conftest import NO_HISTORY_PURGE
+
     return create_app(
         MockSource(), dry_run=True, dev_mode="mock", tz=UTC,
         store=HistoryStore(db_path), settings_store=SettingsStore(db_path),
+        **NO_HISTORY_PURGE,
     )
 
 
