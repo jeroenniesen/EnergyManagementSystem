@@ -1,3 +1,0 @@
-framework module EMSControlCore {
-  header "EMSControlCore-Swift.h"
-}
