@@ -48,6 +48,15 @@ struct ConnectionView: View {
                                 .frame(maxWidth: .infinity, alignment: .leading)
                         }
 
+                        // B-09 / #129 cold fail: restored client, EMS down → three-line banner
+                        // (Laatst bekend —), not a raw URLError dump under the sign-in form.
+                        if dashboardStore.failureState.showUnreachableBanner {
+                            UnreachableFailureBanner(
+                                lastUpdatedAt: dashboardStore.failureState.lastContactAt,
+                                theme: theme
+                            )
+                        }
+
                         VStack(alignment: .leading, spacing: 12) {
                             fieldLabel("Server URL")
                             TextField("http://ems.local:8080", text: $baseURL)
@@ -118,7 +127,7 @@ struct ConnectionView: View {
                             .buttonStyle(SecondaryEMSButtonStyle(theme: theme))
                         }
 
-                        if let error = errorMessage {
+                        if let error = errorMessage, !dashboardStore.failureState.showUnreachableBanner {
                             Text(error)
                                 .font(.footnote)
                                 .foregroundStyle(themeColor(theme.error))

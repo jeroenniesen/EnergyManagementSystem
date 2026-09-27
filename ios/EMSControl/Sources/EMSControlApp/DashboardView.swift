@@ -19,21 +19,29 @@ struct DashboardView: View {
                 ScrollView {
                     VStack(alignment: .leading, spacing: 16) {
                         if let snapshot = dashboardStore.snapshot {
+                            let failure = dashboardStore.failureState
                             // B-09 / #129: unreachable/stale uses the same three-line anatomy as web #73
                             // (message + failsafe + Laatst bekend) — never a bare "Stale" badge alone.
-                            if dashboardStore.isStale {
+                            if failure.showUnreachableBanner {
                                 UnreachableFailureBanner(
-                                    lastUpdatedAt: dashboardStore.lastUpdatedAt,
+                                    lastUpdatedAt: failure.lastContactAt,
                                     theme: theme
                                 )
                             }
 
-                            // 1. Status card
-                            HomeStatePanel(snapshot: snapshot, isStale: dashboardStore.isStale, nextRefreshAt: dashboardStore.nextRefreshAt, theme: theme)
+                            // Web #143 hides the hero while unreachable so a stale "Nothing needed"
+                            // / live-looking Mode pill never sits under the outage banner.
+                            if !failure.hideLiveStatusCard {
+                                HomeStatePanel(
+                                    snapshot: snapshot,
+                                    nextRefreshAt: dashboardStore.nextRefreshAt,
+                                    theme: theme
+                                )
+                            }
 
                             // Safety alerts stay at the top while reachable — never under the outage
                             // banner as "live" (web parity: hide alerts while unreachable).
-                            if !dashboardStore.isStale, !snapshot.alerts.alerts.isEmpty {
+                            if !failure.hideServerAlerts, !snapshot.alerts.alerts.isEmpty {
                                 AlertsPanel(alerts: snapshot.alerts.alerts, theme: theme)
                             }
 
@@ -124,7 +132,6 @@ struct DashboardView: View {
 
 private struct HomeStatePanel: View {
     let snapshot: MobileDashboardSnapshot
-    let isStale: Bool
     let nextRefreshAt: Date?
     let theme: EMSTheme
 
@@ -142,10 +149,7 @@ private struct HomeStatePanel: View {
                         .foregroundStyle(themeColor(theme.muted))
                 }
                 Spacer(minLength: 8)
-                // While unreachable, UnreachableFailureBanner carries the state — no bare "Stale" chip.
-                if !isStale {
-                    StatusBadge(text: badgeText, color: badgeColor, theme: theme)
-                }
+                StatusBadge(text: badgeText, color: badgeColor, theme: theme)
             }
 
             HStack(spacing: 10) {
@@ -2047,43 +2051,6 @@ private struct FinancePanel: View {
             RoundedRectangle(cornerRadius: 12, style: .continuous)
                 .stroke(themeColor(theme.line), lineWidth: 1)
         }
-    }
-}
-
-/// B-09 / #129 — three-line unreachable banner (parity with web `EMS_UNREACHABLE` + `Laatst bekend`).
-private struct UnreachableFailureBanner: View {
-    let lastUpdatedAt: Date?
-    let theme: EMSTheme
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Text(EMSUnreachableCopy.message)
-                .font(.footnote.weight(.semibold))
-                .foregroundStyle(themeColor(theme.error))
-                .fixedSize(horizontal: false, vertical: true)
-
-            Text(EMSUnreachableCopy.emsDoing)
-                .font(.caption)
-                .foregroundStyle(themeColor(theme.muted))
-                .fixedSize(horizontal: false, vertical: true)
-
-            Text(formatLaatstBekend(lastUpdatedAt))
-                .font(.caption.weight(.semibold))
-                .foregroundStyle(themeColor(theme.text))
-                .fixedSize(horizontal: false, vertical: true)
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(14)
-        .background(themeColor(theme.panel))
-        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
-        .overlay {
-            RoundedRectangle(cornerRadius: 12, style: .continuous)
-                .stroke(themeColor(theme.error).opacity(0.55), lineWidth: 1)
-        }
-        .accessibilityElement(children: .combine)
-        .accessibilityLabel(
-            "\(EMSUnreachableCopy.message). \(EMSUnreachableCopy.emsDoing). \(formatLaatstBekend(lastUpdatedAt))"
-        )
     }
 }
 

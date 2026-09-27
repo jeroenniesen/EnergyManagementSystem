@@ -18,6 +18,19 @@ public final class DashboardStore {
     /// successful login / demo / forget.
     public private(set) var authFailed = false
 
+    /// B-09 presentation flags — hide live status card / alerts under the outage banner; cold fail
+    /// (saved client, no snapshot) surfaces the same banner with `Laatst bekend —`.
+    public var failureState: DashboardFailureState {
+        DashboardFailureState.evaluate(
+            isStale: isStale,
+            hasSnapshot: snapshot != nil,
+            hasClient: client != nil,
+            authFailed: authFailed,
+            lastError: lastError,
+            lastUpdatedAt: lastUpdatedAt
+        )
+    }
+
     private let demoData: DemoDataStore
     private let credentialStore: CredentialStore
     private let widgetConfig: AppGroupConfigStore

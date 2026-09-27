@@ -3,14 +3,18 @@ import XCTest
 @testable import EMSControlCore
 
 final class FailureCopyTests: XCTestCase {
-    func testUnreachableCopyThreeLineContract() {
-        XCTAssertTrue(EMSUnreachableCopy.message.localizedCaseInsensitiveContains("unreachable"))
-        let doing = EMSUnreachableCopy.emsDoing.lowercased()
-        XCTAssertTrue(doing.contains("watch-only"))
-        XCTAssertTrue(doing.contains("self-use"))
+    func testUnreachableCopyMatchesWebByteForByte() {
+        // Exact parity with ems/web/frontend/src/labels.ts EMS_UNREACHABLE (#73 / #143).
+        XCTAssertEqual(
+            EMSUnreachableCopy.message,
+            "EMS is unreachable from this device."
+        )
+        XCTAssertEqual(
+            EMSUnreachableCopy.emsDoing,
+            "In watch-only mode EMS never changes your battery. After a clean stop the battery returns "
+                + "to its own self-use; if EMS itself is down, the last commanded mode stays until EMS is back."
+        )
 
-        // Never over-claim failsafe without confirmed AUTO; no viewer-network claim.
-        // Byte-parity with web labels.unreachable.test.ts / #73.
         let blob = "\(EMSUnreachableCopy.message) \(EMSUnreachableCopy.emsDoing)".lowercased()
         XCTAssertFalse(blob.contains("the battery is safe"))
         XCTAssertFalse(blob.contains("nothing changes"))
@@ -31,8 +35,21 @@ final class FailureCopyTests: XCTestCase {
         let date = calendar.date(from: components)!
 
         let line = formatLaatstBekend(date, calendar: calendar)
-        XCTAssertTrue(line.contains("Laatst bekend"))
         XCTAssertEqual(line, "Laatst bekend 14:05")
+    }
+
+    func testFormatLaatstBekendAmsterdamLocalWallClock() {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(identifier: "Europe/Amsterdam")!
+        var components = DateComponents()
+        components.year = 2026
+        components.month = 9
+        components.day = 27
+        components.hour = 14
+        components.minute = 5
+        let date = calendar.date(from: components)!
+
+        XCTAssertEqual(formatLaatstBekend(date, calendar: calendar), "Laatst bekend 14:05")
     }
 
     func testFormatLaatstBekendUnknownIsEmDash() {
@@ -87,5 +104,80 @@ final class FailureCopyTests: XCTestCase {
         XCTAssertNil(alert.safe)
         XCTAssertNil(alert.action)
         XCTAssertNil(alert.emsDoing)
+    }
+}
+
+final class DashboardFailureStateTests: XCTestCase {
+    func testStaleHidesLiveStatusCardAndAlerts() {
+        let at = Date(timeIntervalSince1970: 1_750_000_000)
+        let state = DashboardFailureState.evaluate(
+            isStale: true,
+            hasSnapshot: true,
+            hasClient: true,
+            authFailed: false,
+            lastError: "boom",
+            lastUpdatedAt: at
+        )
+        XCTAssertTrue(state.showUnreachableBanner)
+        XCTAssertTrue(state.hideLiveStatusCard)
+        XCTAssertTrue(state.hideServerAlerts)
+        XCTAssertEqual(state.lastContactAt, at)
+    }
+
+    func testColdFailShowsBannerWithNilLastContact() {
+        let state = DashboardFailureState.evaluate(
+            isStale: false,
+            hasSnapshot: false,
+            hasClient: true,
+            authFailed: false,
+            lastError: "URLError(...)",
+            lastUpdatedAt: nil
+        )
+        XCTAssertTrue(state.showUnreachableBanner)
+        XCTAssertTrue(state.hideLiveStatusCard)
+        XCTAssertTrue(state.hideServerAlerts)
+        XCTAssertNil(state.lastContactAt)
+        XCTAssertEqual(formatLaatstBekend(state.lastContactAt), "Laatst bekend —")
+    }
+
+    func testAuthFailureDoesNotShowUnreachableBanner() {
+        let state = DashboardFailureState.evaluate(
+            isStale: false,
+            hasSnapshot: false,
+            hasClient: false,
+            authFailed: true,
+            lastError: nil,
+            lastUpdatedAt: nil
+        )
+        XCTAssertEqual(state, .reachable)
+        XCTAssertFalse(state.showUnreachableBanner)
+    }
+
+    func testReachableWithSnapshotShowsLivePanels() {
+        let at = Date()
+        let state = DashboardFailureState.evaluate(
+            isStale: false,
+            hasSnapshot: true,
+            hasClient: true,
+            authFailed: false,
+            lastError: nil,
+            lastUpdatedAt: at
+        )
+        XCTAssertFalse(state.showUnreachableBanner)
+        XCTAssertFalse(state.hideLiveStatusCard)
+        XCTAssertFalse(state.hideServerAlerts)
+        XCTAssertEqual(state.lastContactAt, at)
+    }
+
+    func testNoClientNoErrorIsReachableSignIn() {
+        let state = DashboardFailureState.evaluate(
+            isStale: false,
+            hasSnapshot: false,
+            hasClient: false,
+            authFailed: false,
+            lastError: nil,
+            lastUpdatedAt: nil
+        )
+        XCTAssertFalse(state.showUnreachableBanner)
     }
 }

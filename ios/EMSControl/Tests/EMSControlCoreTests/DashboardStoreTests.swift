@@ -19,6 +19,57 @@ final class DashboardStoreTests: XCTestCase {
         // B-09 / #129: prior success time is preserved for "Laatst bekend hh:mm".
         XCTAssertEqual(store.lastUpdatedAt, lastGood)
         XCTAssertNotNil(store.lastUpdatedAt)
+        XCTAssertTrue(store.failureState.showUnreachableBanner)
+        XCTAssertTrue(store.failureState.hideLiveStatusCard)
+        XCTAssertTrue(store.failureState.hideServerAlerts)
+        XCTAssertEqual(store.failureState.lastContactAt, lastGood)
+    }
+
+    func testColdRefreshFailureLeavesNoStaleFlagAndNilLastUpdated() async throws {
+        let store = DashboardStore(
+            client: APIClient(
+                baseURL: URL(string: "http://ems.local:8080")!,
+                transport: FailingTransport()
+            )
+        )
+
+        await store.refresh()
+
+        XCTAssertNil(store.snapshot)
+        XCTAssertFalse(store.isStale)
+        XCTAssertNil(store.lastUpdatedAt)
+        XCTAssertNotNil(store.lastError)
+        XCTAssertTrue(store.failureState.showUnreachableBanner)
+        XCTAssertNil(store.failureState.lastContactAt)
+        XCTAssertEqual(formatLaatstBekend(store.failureState.lastContactAt), "Laatst bekend —")
+    }
+
+    func testSuccessfulRefreshSetsLastUpdatedAtAndClearsStale() async throws {
+        let store = DashboardStore(
+            client: APIClient(
+                baseURL: URL(string: "http://ems.local:8080")!,
+                transport: RoutingDashboardTransport()
+            )
+        )
+
+        await store.refresh()
+
+        XCTAssertNotNil(store.snapshot)
+        XCTAssertFalse(store.isStale)
+        XCTAssertNotNil(store.lastUpdatedAt)
+        XCTAssertFalse(store.failureState.showUnreachableBanner)
+        XCTAssertFalse(store.failureState.hideLiveStatusCard)
+    }
+
+    func testForgetServerClearsLastUpdatedAt() throws {
+        let store = DashboardStore(client: nil, demoData: DemoDataStore(bundle: .module))
+        try store.useDemo()
+        XCTAssertNotNil(store.lastUpdatedAt)
+        store.forgetServer()
+        XCTAssertNil(store.snapshot)
+        XCTAssertNil(store.nextRefreshAt)
+        XCTAssertNil(store.lastUpdatedAt)
+        XCTAssertFalse(store.failureState.showUnreachableBanner)
     }
 
     func testRefreshFailureSetsRetryDeadline() async throws {
