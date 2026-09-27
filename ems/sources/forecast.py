@@ -1,8 +1,9 @@
 """Solar production forecast normalised to 15-minute slots, with P10/P50/P90 (SPEC §6.3).
 
 `SolarForecastSource` is the port; `MockSolarForecastSource` synthesises a daily bell curve so
-the app runs credential-free (dev/mock). Real Solcast / Forecast.Solar adapters implement the
-same port. P10 < P50 < P90 (risk-aware sizing: P10 for commitments, P50 for the expected case).
+the app runs credential-free (dev/mock). Live adapters: `SolcastSource` (primary, real P10/P50/P90)
+and `ForecastSolarSource` (keyless fallback; derived bands). P10 < P50 < P90 (risk-aware sizing:
+P10 for commitments, P50 for the expected case).
 """
 from __future__ import annotations
 

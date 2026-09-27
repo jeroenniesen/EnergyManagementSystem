@@ -76,7 +76,7 @@ stored locally in `ems/data/` (which is never committed):
 | **Energy meters** — HomeWizard P1 / solar / car IPs | live power + house-load reconstruction |
 | **Battery** — Indevolt IP(s), capacity, reserve | battery sensing (and, later, control) |
 | **Electricity prices** — your Tibber token | live day-ahead prices |
-| **Solar & location** — pin on a map, tilt/azimuth/kWp | the solar forecast |
+| **Solar & location** — pin on a map, tilt/azimuth/kWp; optional Solcast provider + key | the solar forecast (Forecast.Solar by default) |
 | **AI explanations & chat** — MiniMax API key (optional) | natural-language explanations + chat |
 | **Access & security** — an optional access token | require a token to change settings/control |
 
@@ -123,7 +123,7 @@ Project conventions are in [`CLAUDE.md`](./CLAUDE.md); the north-star vision in 
 |---|---|
 | Battery | Indevolt **SolidFlex 2000 (Gen-2)** — one tower or a multi-tower cluster, controlled as one logical device |
 | Prices | **Tibber** day-ahead (15-min) |
-| Solar forecast | **Forecast.Solar** (keyless) with a built-in model fallback |
+| Solar forecast | **Forecast.Solar** (keyless) by default; switch to **Solcast** in Settings → Solar & location (API key + rooftop resource id — or env `SOLCAST_API_KEY` / `SOLCAST_RESOURCE_ID` on first boot) |
 | Live power | **HomeWizard** P1 + kWh meters (solar, car) — local, read-only |
 | EMS Core | **Python 3.12 / FastAPI** — planner · mode controller · §8.11 validator · **SQLite** history |
 | UI | **React + Vite** SPA served by the EMS, no runtime CDN |

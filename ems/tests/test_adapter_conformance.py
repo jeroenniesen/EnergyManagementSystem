@@ -22,6 +22,7 @@ from ems.sources.live import HomeWizardMeter, LiveSource, ev_w, grid_w, solar_w
 from ems.sources.mock import MockSource
 from ems.sources.ports import BatteryDriver, PriceSource, SolarForecastSource, Source
 from ems.sources.prices import MockPriceSource, PriceSlot
+from ems.sources.solcast import SolcastSource
 from ems.sources.tibber import TibberPriceSource
 
 
@@ -83,7 +84,7 @@ def test_all_current_adapters_match_port_signatures() -> None:
     for adapter in (TibberPriceSource, MockPriceSource):
         _assert_port_method(adapter, PriceSource, "slots")
 
-    for adapter in (MockSolarForecastSource, ForecastSolarSource):
+    for adapter in (MockSolarForecastSource, ForecastSolarSource, SolcastSource):
         _assert_port_method(adapter, SolarForecastSource, "slots")
 
 
@@ -129,6 +130,15 @@ def test_forecast_adapters_conform_and_forecast_solar_falls_back() -> None:
     assert isinstance(live, SolarForecastSource)
     assert live.slots() == fallback.slots()
     assert live.source_label == "model (fallback)"
+
+    solcast = SolcastSource(
+        tz=tz, api_key="tok", resource_id="rid", horizon_slots=8,
+        http_get=lambda _url, _h: (_ for _ in ()).throw(OSError("offline")),
+        fallback=fallback, clock=clock,
+    )
+    assert isinstance(solcast, SolarForecastSource)
+    assert solcast.slots() == fallback.slots()
+    assert "fallback" in solcast.source_label
 
 
 def test_homewizard_adapter_normalizes_signs_without_network() -> None:

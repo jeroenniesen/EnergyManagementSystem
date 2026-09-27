@@ -109,6 +109,50 @@ def test_build_wiring_live_prices_ignored_without_token():
     assert isinstance(price, MockPriceSource)
 
 
+def test_build_wiring_solcast_when_configured():
+    eff = effective_settings({
+        "connection.use_live_devices": True,
+        "meters.p1_ip": "192.0.2.10",
+        "site.lat": 52.13,
+        "site.lon": 5.29,
+        "solar.forecast_provider": "solcast",
+        "solar.solcast_api_key": "tok-solcast",
+        "solar.solcast_resource_id": "rid-123",
+    })
+    _src, _price, fc, *_ = build_wiring(eff, AMS)
+    from ems.sources.solcast import SolcastSource
+
+    assert isinstance(fc, SolcastSource)
+    assert fc.resource_id == "rid-123"
+
+
+def test_build_wiring_solcast_without_creds_falls_back_to_forecast_solar():
+    eff = effective_settings({
+        "connection.use_live_devices": True,
+        "meters.p1_ip": "192.0.2.10",
+        "site.lat": 52.13,
+        "site.lon": 5.29,
+        "solar.forecast_provider": "solcast",  # no key / resource id
+    })
+    _src, _price, fc, *_ = build_wiring(eff, AMS)
+    from ems.sources.forecast_solar import ForecastSolarSource
+
+    assert isinstance(fc, ForecastSolarSource)
+
+
+def test_build_wiring_default_live_forecast_is_forecast_solar():
+    eff = effective_settings({
+        "connection.use_live_devices": True,
+        "meters.p1_ip": "192.0.2.10",
+        "site.lat": 52.13,
+        "site.lon": 5.29,
+    })
+    _src, _price, fc, *_ = build_wiring(eff, AMS)
+    from ems.sources.forecast_solar import ForecastSolarSource
+
+    assert isinstance(fc, ForecastSolarSource)
+
+
 def test_operational_arms_driver_and_lifts_dry_run():
     eff = effective_settings({
         "connection.use_live_devices": True, "meters.p1_ip": "192.0.2.10",

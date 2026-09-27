@@ -38,6 +38,29 @@ def test_schema_json_shape():
     assert theme["options"] == ["auto", "dark", "light"]
 
 
+def test_default_forecast_provider_is_forecast_solar():
+    assert defaults()["solar.forecast_provider"] == "forecast_solar"
+    assert SETTINGS_BY_KEY["solar.forecast_provider"].options[0] == "forecast_solar"
+
+
+def test_solcast_fields_gated_behind_provider():
+    from ems.settings import field_visible
+
+    for key in (
+        "solar.solcast_api_key",
+        "solar.solcast_resource_id",
+        "solar.solcast_daily_call_budget",
+    ):
+        field = SETTINGS_BY_KEY[key]
+        assert field.visible_when == (("solar.forecast_provider", "solcast"),)
+        assert field_visible(field, {"solar.forecast_provider": "forecast_solar"}) is False
+        assert field_visible(field, {"solar.forecast_provider": "solcast"}) is True
+    # Provider itself is always visible.
+    assert field_visible(SETTINGS_BY_KEY["solar.forecast_provider"], {}) is True
+    row = next(r for r in schema_json() if r["key"] == "solar.solcast_api_key")
+    assert row["visible_when"] == {"solar.forecast_provider": "solcast"}
+
+
 def test_effective_overlays_valid_stored():
     eff = effective_settings({"planner.charge_slots": 8, "ui.theme": "dark"})
     assert eff["planner.charge_slots"] == 8

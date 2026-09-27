@@ -36,6 +36,10 @@ class SettingsField:
     advanced: bool = False  # hidden behind the "Advanced" toggle in the UI
     applies: str = "live"  # "live" = on save · "restart" = connection, read at startup
     slider: bool = False  # render as a drag slider (needs min+max) instead of a number box
+    # Show this field only when every (other_key, required_value) pair matches the current
+    # (edited) settings values. Empty = always visible. Used e.g. to gate Solcast credentials
+    # behind solar.forecast_provider=solcast.
+    visible_when: tuple[tuple[str, str], ...] = ()
 
 
 # The editable surface. Keep keys stable — they are persisted and consumed by the UI.
@@ -202,6 +206,36 @@ SETTINGS_SCHEMA: tuple[SettingsField, ...] = (
         "site.azimuth", "Panel azimuth", "number", 0.0, "site",
         help="Compass orientation: 0 = due south, −90 = east, +90 = west.",
         min=-180.0, max=180.0, step=5.0, unit="°", advanced=True,
+    ),
+    # --- Solar forecast provider (SPEC §6.3 / B-14) ---
+    # Default Forecast.Solar until the operator explicitly selects Solcast.
+    SettingsField(
+        "solar.forecast_provider", "Solar forecast provider", "enum", "forecast_solar", "site",
+        help="Forecast.Solar is keyless (default). Choose Solcast Hobbyist for real P10/P50/P90 "
+        "percentiles — then enter the API key and rooftop resource id below. Solcast falls back "
+        "to Forecast.Solar automatically when stale, unreachable, or over budget.",
+        options=("forecast_solar", "solcast"), applies="restart",
+    ),
+    SettingsField(
+        "solar.solcast_api_key", "Solcast API key", "secret", "", "site",
+        help="Hobbyist API key from toolkit.solcast.com.au (Account menu). Stored locally; leave "
+        "blank to keep the current value. Or set env SOLCAST_API_KEY before first boot.",
+        applies="restart",
+        visible_when=(("solar.forecast_provider", "solcast"),),
+    ),
+    SettingsField(
+        "solar.solcast_resource_id", "Solcast rooftop resource id", "text", "", "site",
+        help="rooftop_resource_id from the Solcast Toolkit site detail page. Or set env "
+        "SOLCAST_RESOURCE_ID before first boot.",
+        applies="restart",
+        visible_when=(("solar.forecast_provider", "solcast"),),
+    ),
+    SettingsField(
+        "solar.solcast_daily_call_budget", "Solcast daily call budget", "int", 10, "site",
+        help="Hard cap on Solcast API calls per local day (free Hobbyist = 10). The EMS refuses "
+        "further refreshes once the ledger hits this cap and falls back to Forecast.Solar.",
+        min=1, max=50, advanced=True, applies="restart",
+        visible_when=(("solar.forecast_provider", "solcast"),),
     ),
     # --- Control safety limits (pushed onto the mode controller live, SPEC §6.5) ---
     SettingsField(
@@ -546,9 +580,29 @@ def schema_json() -> list[dict]:
             "group": f.group, "help": f.help, "min": f.min, "max": f.max,
             "options": list(f.options) if f.options else None, "step": f.step, "unit": f.unit,
             "advanced": f.advanced, "applies": f.applies, "slider": f.slider,
+            "visible_when": {k: v for k, v in f.visible_when} if f.visible_when else None,
         }
         for f in SETTINGS_SCHEMA
     ]
+
+
+def field_visible(field: SettingsField | dict[str, Any], values: dict[str, Any]) -> bool:
+    """True when `field` should be shown given current (edited) setting values.
+
+    Accepts either a `SettingsField` or a `schema_json()` row. Missing keys in `values` are
+    treated as non-matching (field hidden) so a partially loaded form never flashes gated fields.
+    """
+    if isinstance(field, SettingsField):
+        rules = field.visible_when
+    else:
+        raw = field.get("visible_when") or {}
+        rules = tuple(raw.items()) if isinstance(raw, dict) else ()
+    if not rules:
+        return True
+    for key, need in rules:
+        if values.get(key) != need:
+            return False
+    return True
 
 
 def _coerce(field: SettingsField, value: Any) -> tuple[bool, Any]:

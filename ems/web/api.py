@@ -645,6 +645,7 @@ RECENT_HOURS = 3
 # unknown/future adapter class falls back to a plain word-split of the name (see
 # _forecast_source_label) rather than leaking raw CamelCase to the UI.
 _FORECAST_SOURCE_LABEL: dict[str, str] = {
+    "SolcastSource": "Solcast",
     "ForecastSolarSource": "Forecast.Solar",
     "MockSolarForecastSource": "Built-in model",
 }
