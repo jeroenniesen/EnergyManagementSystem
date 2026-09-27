@@ -131,3 +131,33 @@ class LoginRateLimiter:
     def reset(self, username: str) -> None:
         """Clear all failure/lock state for `username` — called on a successful login."""
         self._buckets.pop(self._key(username), None)
+
+
+class FixedWindowRateLimiter:
+    """Simple fixed-window counter for abuse-prone authenticated writes (e.g. /api/chat).
+
+    In-process / single-event-loop like LoginRateLimiter — sufficient at single-home scale."""
+
+    def __init__(
+        self,
+        *,
+        max_calls: int,
+        window_seconds: float,
+        clock: Callable[[], float] = time.monotonic,
+    ) -> None:
+        self.max_calls = max_calls
+        self.window = window_seconds
+        self._clock = clock
+        self._windows: dict[str, tuple[float, int]] = {}
+
+    def allow(self, key: str) -> bool:
+        """Return True if this call is within budget, False if rate-limited."""
+        now = self._clock()
+        start, count = self._windows.get(key, (now, 0))
+        if now - start >= self.window:
+            start, count = now, 0
+        if count >= self.max_calls:
+            self._windows[key] = (start, count)
+            return False
+        self._windows[key] = (start, count + 1)
+        return True

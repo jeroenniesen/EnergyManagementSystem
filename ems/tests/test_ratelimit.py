@@ -4,7 +4,7 @@ Uses an injected fake clock so no test ever sleeps; asserts lockout-after-N, Ret
 reset, per-username independence, window expiry, and the LRU map cap."""
 from __future__ import annotations
 
-from ems.web.ratelimit import LoginRateLimiter
+from ems.web.ratelimit import FixedWindowRateLimiter, LoginRateLimiter
 
 
 class _Clock:
@@ -161,3 +161,12 @@ def test_retry_after_never_creates_a_bucket():
     rl = _limiter(clock)
     assert rl.retry_after("never-seen") is None
     assert len(rl._buckets) == 0
+
+
+def test_fixed_window_rate_limiter_resets_after_window():
+    clock = _Clock()
+    rl = FixedWindowRateLimiter(max_calls=2, window_seconds=10.0, clock=clock)
+    assert rl.allow("a") and rl.allow("a")
+    assert not rl.allow("a")
+    clock.advance(10.0)
+    assert rl.allow("a")
