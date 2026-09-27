@@ -149,6 +149,7 @@ from ems.web.authz import (
     requires_session,
 )
 from ems.web.context import AppContext, history_row_cap
+from ems.web.ratelimit import FixedWindowRateLimiter
 from ems.web.routes.accuracy import build_router as build_accuracy_router
 from ems.web.routes.auth import build_router as build_auth_router
 from ems.web.routes.car import build_router as build_car_router
@@ -893,12 +894,20 @@ def create_app(
     cache_store: CacheStore | None = None,
     control_cycle_seconds: float = 300.0,
     history_retention_days: int = 90,
+    history_purge_enabled: bool = True,
     history_backup_keep: int = 7,
     web_auth_token: str | None = None,
     static_dir: str | Path | None = None,
     clock: Clock | None = None,
 ) -> FastAPI:
     application_clock = clock or SystemClock()
+
+    def _now_utc() -> datetime:
+        return application_clock.now_utc()
+
+    # Cap LLM chat cost/abuse: per authenticated user (or client host when legacy token mode).
+    _chat_limiter = FixedWindowRateLimiter(max_calls=30, window_seconds=60.0)
+
     def _effective_web_token() -> str | None:
         """The access token that must be presented for writes, or None if writes are open. The
         UI-set token (settings store, web.auth_token) takes precedence over the EMS_WEB_TOKEN env
@@ -978,10 +987,6 @@ def create_app(
     _sky_box: dict[str, Any] = {"cc": None, "at": None}
     # Last scheduled-backup outcome (SPEC §11 durability), surfaced in /api/diagnostics so a
     # silently-failing backup is VISIBLE. Mutated in place by _run_backup in the maintenance loop.
-    _backup_state: dict[str, Any] = {
-        "last_backup_ts": None, "last_backup_ok": None,
-        "last_backup_size": None, "backups_kept": 0,
-    }
     # Last scheduled-backup outcome (SPEC §11 durability), surfaced in /api/diagnostics so a
     # silently-failing backup is VISIBLE. Mutated in place by _run_backup in the maintenance loop.
     _backup_state: dict[str, Any] = {
@@ -1220,8 +1225,8 @@ def create_app(
                     pass
             first = False
             try:
-                if history_retention_days > 0:
-                    cutoff = (datetime.now(UTC)
+                if history_purge_enabled and history_retention_days > 0:
+                    cutoff = (_now_utc()
                               - timedelta(days=history_retention_days)).isoformat()
                     deleted = await store.purge_older_than(cutoff)
                     if deleted:
@@ -1233,7 +1238,7 @@ def create_app(
                 # a re-run (restart, retry) just overwrites. Observations then purge at their OWN
                 # 400-day horizon, INDEPENDENTLY of raw retention_days; daily_energy is never purged
                 # (that is the point — year-over-year kWh survives the raw purge).
-                now_local = datetime.now(UTC).astimezone(site_tz)
+                now_local = _now_utc().astimezone(site_tz)
                 y = now_local.date() - timedelta(days=1)
                 day_start = datetime(y.year, y.month, y.day, tzinfo=site_tz)
                 day_end = day_start + timedelta(days=1)
@@ -1247,7 +1252,7 @@ def create_app(
                 # every completed day's finance survive the raw purge. Idempotent: the day's cached
                 # row (under the current calc_v) is returned unchanged, never re-upserted.
                 await _ensure_day_finance(y)
-                obs_cutoff = (datetime.now(UTC)
+                obs_cutoff = (_now_utc()
                               - timedelta(days=OBSERVATION_RETENTION_DAYS)).isoformat()
                 purged = await store.purge_observations_older_than(obs_cutoff)
                 if purged:
@@ -1255,7 +1260,7 @@ def create_app(
                               purged, OBSERVATION_RETENTION_DAYS)
                 # Prediction ledger shares the 400-day horizon (purged by target_start, symmetric
                 # with observations — a forecast is only scorable against an actual we still keep).
-                nowcast_cutoff = (datetime.now(UTC) - timedelta(days=60)).isoformat()
+                nowcast_cutoff = (_now_utc() - timedelta(days=60)).isoformat()
                 purged_ledger = await store.purge_ledger_older_than(
                     obs_cutoff, nowcast_cutoff_iso=nowcast_cutoff)
                 if purged_ledger:
@@ -4019,6 +4024,16 @@ def create_app(
         question = (data.get("question") or "").strip()[:500] if isinstance(data, dict) else ""
         if not question:
             return JSONResponse({"detail": "empty question"}, status_code=400)
+        principal = request.scope.get("auth_principal")
+        chat_key = (
+            f"user:{principal.user_id}"
+            if principal is not None
+            else (request.client.host if request.client else "unknown")
+        )
+        if not _chat_limiter.allow(chat_key):
+            return JSONResponse(
+                {"detail": "too many chat requests; try again later"}, status_code=429,
+            )
         if not _explainer_active():
             return JSONResponse({
                 "answer": "AI chat is off. Turn on AI explanations in Settings to use it.",
