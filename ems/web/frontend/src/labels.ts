@@ -9,6 +9,31 @@ export function humanize(token: string): string {
   return words ? words.charAt(0).toUpperCase() + words.slice(1) : token;
 }
 
+/**
+ * B-09 / #73 — emotionally complete "EMS unreachable" banner copy.
+ * Three lines only: what's wrong, failsafe (never a live mode claim), and "Laatst bekend hh:mm".
+ * Does not say "the battery is safe" / "nothing changes" — the client cannot confirm AUTO.
+ */
+export const EMS_UNREACHABLE = {
+  message: "EMS is unreachable from this device.",
+  /** Failsafe intent only — not a live battery reading. No "network loss" claim: the client
+   * cannot tell EMS-down apart from a viewer-side network problem. */
+  ems_doing:
+    "In watch-only mode EMS never changes your battery. After a clean stop the battery returns " +
+    "to its own self-use; if EMS itself is down, the last commanded mode stays until EMS is back.",
+} as const;
+
+/** Format the B-09 "last contact" line. `atMs` null → never reached (cold fail). */
+export function formatLaatstBekend(atMs: number | null): string {
+  if (atMs == null || !Number.isFinite(atMs)) {
+    return "Laatst bekend —";
+  }
+  const d = new Date(atMs);
+  const hh = String(d.getHours()).padStart(2, "0");
+  const mm = String(d.getMinutes()).padStart(2, "0");
+  return `Laatst bekend ${hh}:${mm}`;
+}
+
 type Labelled = { label: string; title: string };
 
 /** Run mode: is the system actually commanding the battery, or only watching? */
@@ -41,8 +66,9 @@ export const DATA_QUALITY: Record<string, Labelled> = {
     title: "Live prices are unavailable, so a fallback price curve is in use.",
   },
   unsafe: {
-    label: "Paused — safe mode",
-    title: "Data is missing or stale, so the system fell back to the battery's own safe mode.",
+    label: "Paused — self-use",
+    title:
+      "Data is missing or stale, so EMS is directing the battery back to its own self-use.",
   },
 };
 
@@ -51,7 +77,8 @@ export const CONFIDENCE: Record<string, string> = {
   complete: "High confidence — all data is fresh.",
   degraded: "Good — some non-critical data is delayed or estimated.",
   price_fallback: "Using a fallback price curve — price-based moves are paused.",
-  unsafe: "Plan paused until battery/meter data returns; the battery is safe.",
+  unsafe:
+    "Plan paused until battery/meter data returns; EMS aims for the battery's own self-use.",
 };
 
 /** System-view overall health badge (same palette as data quality). Sentence-case "Check" so this

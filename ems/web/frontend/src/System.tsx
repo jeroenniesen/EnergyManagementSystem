@@ -276,8 +276,10 @@ const RECOVERY: Record<string, string> = {
   settings_store: "Settings can't be read or written — restart the app.",
   prices: "Live prices are unavailable, so EMS uses a fallback curve and avoids price-based charging.",
   forecast: "Solar forecast unavailable — EMS falls back to its built-in model curve.",
-  battery: "Battery unreachable — check the Indevolt IP and power. EMS stays in safe mode (no control).",
-  data_quality: "Some data is stale — see the sensor rows. Control stays safe until it returns.",
+  battery:
+    "Battery unreachable — check the Indevolt IP and power. Mode is unknown until it reconnects; EMS cannot confirm control.",
+  data_quality:
+    "Some data is stale — see the sensor rows. EMS aims for the battery's own self-use until it returns.",
   planner: "No plan yet — usually prices/forecast are still loading. EMS holds self-consumption.",
   "sensor.grid": "Critical — check the P1 meter. EMS won't control until grid data returns.",
   "sensor.soc": "Critical — check the battery connection. EMS won't control until SoC returns.",

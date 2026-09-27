@@ -422,6 +422,9 @@ class ControlService:
                            if controller is not None else None)
         self._reconciliation = CommandReconciliation(ctx.command_fence)
         self._price_horizon_status: PriceHorizonStatus | None = None
+        # Latched while a recent control.overrun is active (B-09 / #73) — set in `_handle_overrun`,
+        # cleared on the next cycle that completes without an overrun so /api/alerts can surface it.
+        self._control_overrun_active: bool = False
         self._data_quality = data_quality
         self._validate_plan_obj = validate_plan_obj
         self._safety = SafetyValidator(
@@ -458,6 +461,17 @@ class ControlService:
     # Moved verbatim from api.py's create_app closures. Kept here because their primary caller is
     # the control cycle (plan path, effective-intent, tick); api.py aliases them so its endpoints
     # keep calling the same names. Pure wrt logic — the only state is `ctx`'s coalescing caches.
+
+    @property
+    def price_horizon_status(self) -> PriceHorizonStatus | None:
+        """Latest validate_price_horizon result from the control cycle, or None before first tick.
+        """
+        return self._price_horizon_status
+
+    @property
+    def control_overrun_active(self) -> bool:
+        """True while a recent control.overrun is latched for /api/alerts (B-09 / #73)."""
+        return self._control_overrun_active
 
     def _coalesce_s(self) -> float:
         """How long a live read is reused before re-reading the hardware (UI-tunable, eases load on
@@ -1816,6 +1830,9 @@ class ControlService:
                         await self._handle_overrun(
                             now, timed_out, recent[-1], recovery_token=recovery_token,
                             recovery_suppressed=recovery_suppressed)
+                else:
+                    # A clean cycle clears the B-09 overrun latch so the alert does not stick.
+                    self._control_overrun_active = False
                 async with atimed("control.audit"):
                     for rec in records:
                         if self._audit_store is not None:
@@ -1851,6 +1868,9 @@ class ControlService:
         3. the AUTO write itself is wrapped in try/except so an unreachable driver during the
            recovery is logged-and-swallowed (non-fatal: the next cycle re-attempts via the normal
            path, and the audit row already records the original overrun)."""
+        # Latch for /api/alerts (B-09) even when dry-run / lifecycle blocks the AUTO write —
+        # operators still need the calm banner when a cycle blew its budget.
+        self._control_overrun_active = True
         if self._audit_store is not None:
             try:
                 intended_mode = self._ctx.intended_mode_box["value"]
