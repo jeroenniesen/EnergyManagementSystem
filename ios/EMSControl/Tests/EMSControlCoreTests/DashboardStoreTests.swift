@@ -9,12 +9,16 @@ final class DashboardStoreTests: XCTestCase {
         let store = DashboardStore(client: nil, demoData: good)
         try store.useDemo()
         let first = store.snapshot
+        let lastGood = store.lastUpdatedAt
 
         store.client = APIClient(baseURL: URL(string: "http://127.0.0.1:1")!, transport: FailingTransport())
         await store.refresh()
 
         XCTAssertEqual(store.snapshot, first)
         XCTAssertTrue(store.isStale)
+        // B-09 / #129: prior success time is preserved for "Laatst bekend hh:mm".
+        XCTAssertEqual(store.lastUpdatedAt, lastGood)
+        XCTAssertNotNil(store.lastUpdatedAt)
     }
 
     func testRefreshFailureSetsRetryDeadline() async throws {

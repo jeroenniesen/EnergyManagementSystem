@@ -19,11 +19,21 @@ struct DashboardView: View {
                 ScrollView {
                     VStack(alignment: .leading, spacing: 16) {
                         if let snapshot = dashboardStore.snapshot {
+                            // B-09 / #129: unreachable/stale uses the same three-line anatomy as web #73
+                            // (message + failsafe + Laatst bekend) — never a bare "Stale" badge alone.
+                            if dashboardStore.isStale {
+                                UnreachableFailureBanner(
+                                    lastUpdatedAt: dashboardStore.lastUpdatedAt,
+                                    theme: theme
+                                )
+                            }
+
                             // 1. Status card
                             HomeStatePanel(snapshot: snapshot, isStale: dashboardStore.isStale, nextRefreshAt: dashboardStore.nextRefreshAt, theme: theme)
 
-                            // Safety alerts stay at the top (conditional).
-                            if !snapshot.alerts.alerts.isEmpty {
+                            // Safety alerts stay at the top while reachable — never under the outage
+                            // banner as "live" (web parity: hide alerts while unreachable).
+                            if !dashboardStore.isStale, !snapshot.alerts.alerts.isEmpty {
                                 AlertsPanel(alerts: snapshot.alerts.alerts, theme: theme)
                             }
 
@@ -132,7 +142,10 @@ private struct HomeStatePanel: View {
                         .foregroundStyle(themeColor(theme.muted))
                 }
                 Spacer(minLength: 8)
-                StatusBadge(text: badgeText, color: badgeColor, theme: theme)
+                // While unreachable, UnreachableFailureBanner carries the state — no bare "Stale" chip.
+                if !isStale {
+                    StatusBadge(text: badgeText, color: badgeColor, theme: theme)
+                }
             }
 
             HStack(spacing: 10) {
@@ -154,14 +167,12 @@ private struct HomeStatePanel: View {
 
     private var badgeText: String {
         if snapshot.isDemo { return "Demo" }
-        if isStale { return "Stale" }
         if snapshot.decision.planValidation?.ok == false { return "Holding" }
         if snapshot.status.dryRun { return "Watch-only" }
         return "Live"
     }
 
     private var badgeColor: HexColor {
-        if isStale { return theme.amber }
         if snapshot.decision.planValidation?.ok == false { return theme.amber }
         if snapshot.status.dryRun { return theme.winter }
         return theme.accent
@@ -2039,17 +2050,78 @@ private struct FinancePanel: View {
     }
 }
 
+/// B-09 / #129 — three-line unreachable banner (parity with web `EMS_UNREACHABLE` + `Laatst bekend`).
+private struct UnreachableFailureBanner: View {
+    let lastUpdatedAt: Date?
+    let theme: EMSTheme
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text(EMSUnreachableCopy.message)
+                .font(.footnote.weight(.semibold))
+                .foregroundStyle(themeColor(theme.error))
+                .fixedSize(horizontal: false, vertical: true)
+
+            Text(EMSUnreachableCopy.emsDoing)
+                .font(.caption)
+                .foregroundStyle(themeColor(theme.muted))
+                .fixedSize(horizontal: false, vertical: true)
+
+            Text(formatLaatstBekend(lastUpdatedAt))
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(themeColor(theme.text))
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(14)
+        .background(themeColor(theme.panel))
+        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .stroke(themeColor(theme.error).opacity(0.55), lineWidth: 1)
+        }
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel(
+            "\(EMSUnreachableCopy.message). \(EMSUnreachableCopy.emsDoing). \(formatLaatstBekend(lastUpdatedAt))"
+        )
+    }
+}
+
 private struct AlertsPanel: View {
     let alerts: [DashboardAlert]
     let theme: EMSTheme
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
+        VStack(alignment: .leading, spacing: 10) {
             ForEach(orderedAlerts) { alert in
-                Label(alert.message, systemImage: icon(for: alert.severity))
-                    .font(.footnote)
-                    .foregroundStyle(themeColor(color(for: alert.severity)))
-                    .fixedSize(horizontal: false, vertical: true)
+                VStack(alignment: .leading, spacing: 4) {
+                    Label(alert.message, systemImage: icon(for: alert.severity))
+                        .font(.footnote)
+                        .foregroundStyle(themeColor(color(for: alert.severity)))
+                        .fixedSize(horizontal: false, vertical: true)
+
+                    // B-37 / B-09 structured sub-lines — only for warning/critical (web parity).
+                    if alert.severity != "info" {
+                        if let emsDoing = alert.emsDoing, !emsDoing.isEmpty {
+                            Text(emsDoing)
+                                .font(.caption)
+                                .foregroundStyle(themeColor(theme.muted))
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+                        if let safe = alert.safe, !safe.isEmpty {
+                            Text(safe)
+                                .font(.caption)
+                                .foregroundStyle(themeColor(theme.muted))
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+                        if let action = alert.action, !action.isEmpty {
+                            Text("→ \(action)")
+                                .font(.caption)
+                                .foregroundStyle(themeColor(theme.text))
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+                    }
+                }
             }
         }
         .padding(14)
@@ -2062,6 +2134,7 @@ private struct AlertsPanel: View {
     }
 
     private var orderedAlerts: [DashboardAlert] {
+        // Critical first (web: sort by severity descending so blockers never sit below notes).
         alerts.sorted { rank(for: $0.severity) < rank(for: $1.severity) }
     }
 

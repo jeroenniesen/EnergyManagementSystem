@@ -504,7 +504,27 @@ public struct DashboardAlert: Codable, Equatable, Identifiable, Sendable {
     public let key: String
     public let severity: String
     public let message: String
+    /// B-37 / B-09 structured sub-lines from `/api/alerts` (optional for older backends).
+    public let safe: String?
+    public let action: String?
+    public let emsDoing: String?
     public var id: String { key }
+
+    public init(
+        key: String,
+        severity: String,
+        message: String,
+        safe: String? = nil,
+        action: String? = nil,
+        emsDoing: String? = nil
+    ) {
+        self.key = key
+        self.severity = severity
+        self.message = message
+        self.safe = safe
+        self.action = action
+        self.emsDoing = emsDoing
+    }
 }
 
 public struct BatterySnapshot: Codable, Equatable, Sendable {

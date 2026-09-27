@@ -8,6 +8,9 @@ public final class DashboardStore {
     public private(set) var snapshot: MobileDashboardSnapshot?
     public private(set) var isLoading = false
     public private(set) var isStale = false
+    /// Wall-clock of the last successful dashboard fetch — drives B-09 "Laatst bekend" (#129).
+    /// Nil until a successful contact (cold fail → "Laatst bekend —", never a fabricated time).
+    public private(set) var lastUpdatedAt: Date?
     public private(set) var lastError: String?
     public private(set) var nextRefreshAt: Date?
     /// Set when an API call is rejected with 401 (the session token expired or was revoked). Drives
@@ -46,6 +49,7 @@ public final class DashboardStore {
             snapshot = response
             nextRefreshAt = response.generatedAt.addingTimeInterval(TimeInterval(response.cacheTTLSeconds))
             isStale = false
+            lastUpdatedAt = Date()
             lastError = nil
         } catch APIClientError.httpStatus(401) {
             // The session/token is no longer valid. Bounce back to the login screen rather than
@@ -60,8 +64,10 @@ public final class DashboardStore {
             snapshot = nil
             nextRefreshAt = nil
             isStale = false
+            lastUpdatedAt = nil
             lastError = nil
         } catch {
+            // Keep lastUpdatedAt from the prior success so "Laatst bekend hh:mm" stays honest.
             isStale = snapshot != nil
             lastError = String(describing: error)
             nextRefreshAt = Date().addingTimeInterval(refreshFailureRetryDelay)
@@ -102,6 +108,7 @@ public final class DashboardStore {
         widgetConfig.save(WidgetServerConfig(baseURL: baseURL, token: widgetToken))
 
         authFailed = false
+        lastUpdatedAt = nil
         client = liveClient
         await refresh()
     }
@@ -161,6 +168,7 @@ public final class DashboardStore {
             nextRefreshAt = snapshot.generatedAt.addingTimeInterval(TimeInterval(snapshot.cacheTTLSeconds))
         }
         isStale = false
+        lastUpdatedAt = Date()
         lastError = nil
     }
 
@@ -172,6 +180,7 @@ public final class DashboardStore {
             snapshot = nil
             nextRefreshAt = nil
             isStale = false
+            lastUpdatedAt = nil
             lastError = String(describing: error)
         }
     }
@@ -189,6 +198,7 @@ public final class DashboardStore {
         snapshot = nil
         nextRefreshAt = nil
         isStale = false
+        lastUpdatedAt = nil
         lastError = nil
         authFailed = false
     }
