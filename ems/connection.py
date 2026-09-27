@@ -150,7 +150,8 @@ def build_wiring(
     token = (eff.get("prices.tibber_token") or "").strip()
     live_prices = bool(eff.get("connection.use_live_prices")) and bool(token)
     # Operational requires a real battery AND live prices. force_dry_run (config control.dry_run /
-    # mock|replay) always wins over the UI operational toggle (#136). Mock prices keep dry_run (#126).
+    # mock|replay) always wins over the UI operational toggle (#136). Mock prices keep dry_run
+    # (#126).
     operational = False
     if use_live_devices:
         from ems.sources.indevolt import (

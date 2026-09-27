@@ -89,10 +89,10 @@ Nothing here needs an environment variable or a config file edit — it's all in
   or while `dev.mode` is `mock`/`replay` (those modes **force** dry-run) — the EMS stays watch-only
   and **wins over** the UI **operational** toggle. Decisions are logged; the battery writer stays
   unarmed. To allow live control set **`dev.mode: live`**, **`control.dry_run: false`**, enable
-  **operational** in the UI (plus a live Indevolt IP), then restart.
-- Going live is therefore deliberate layers: live devices (read-only sensing) → `dev.mode: live` +
-  `dry_run: false` in config → **operational** in the UI — gated behind layered readiness + a hard
-  plan validator; operational stays off by default.
+  **operational** in the UI (plus a live Indevolt IP **and** live Tibber prices — #126), then restart.
+- Going live is therefore deliberate layers: live devices (read-only sensing) → live Tibber →
+  `dev.mode: live` + `dry_run: false` in config → **operational** in the UI — gated behind layered
+  readiness + a hard plan validator; operational stays off by default.
 - Reads always work for a guest; only *changes* can be protected by the access token.
 
 ### Migration note (upgrade from pre-#136)

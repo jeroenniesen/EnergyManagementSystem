@@ -31,12 +31,14 @@ def test_build_app_passes_cfg_dry_run_into_build_wiring(monkeypatch, tmp_path):
         cycle_seconds=300.0,
         retention_days=90,
     )
-    # Seed operational + live battery so a dropped force_dry_run would wrongly arm.
+    # Seed operational + live battery + live Tibber so a dropped force_dry_run would wrongly arm.
     _seed_settings(str(db), {
         "connection.use_live_devices": True,
         "meters.p1_ip": "192.0.2.10",
         "battery.indevolt_ip": "192.0.2.20",
         "control.operational": True,
+        "connection.use_live_prices": True,
+        "prices.tibber_token": "tok",
     })
 
     seen: dict[str, object] = {}
@@ -73,6 +75,8 @@ def test_build_app_passes_dry_run_false_when_config_allows_live(monkeypatch, tmp
         "meters.p1_ip": "192.0.2.10",
         "battery.indevolt_ip": "192.0.2.20",
         "control.operational": True,
+        "connection.use_live_prices": True,
+        "prices.tibber_token": "tok",
     })
 
     seen: dict[str, object] = {}
