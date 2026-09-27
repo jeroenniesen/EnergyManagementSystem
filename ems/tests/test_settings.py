@@ -43,6 +43,11 @@ def test_default_forecast_provider_is_forecast_solar():
     assert SETTINGS_BY_KEY["solar.forecast_provider"].options[0] == "forecast_solar"
 
 
+def test_default_planner_mode_is_rule_based():
+    assert defaults()["planner.mode"] == "rule_based"
+    assert SETTINGS_BY_KEY["planner.mode"].options == ["rule_based", "ml", "advisory"]
+
+
 def test_solcast_fields_gated_behind_provider():
     from ems.settings import field_visible
 

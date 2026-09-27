@@ -1,12 +1,15 @@
-"""Strategy selection + dispatch (SPEC §8.2).
+"""Strategy selection + seasonal dispatch (SPEC §8.2).
 
 Two strategies, one `Plan` interface:
   - **summer** 'solar-first': fill from PV, run the night on the battery, grid only the shortfall.
   - **winter** arbitrage: charge the cheap window, discharge the expensive peaks.
 
 `select_strategy` resolves the runtime mode (`auto`|`summer`|`winter`) to one of the two — `auto`
-chooses by the local season. `build_plan` dispatches to the matching planner. Both planners emit
-the same `Plan`, so the projection, validator, UI and controller paths are unchanged.
+chooses by the local season. `build_plan` is the seasonal dispatcher used by the rule-based
+`Planner` adapter (`ems.planner.base.RuleBasedPlanner` / B-47); the control loop selects the
+producer via `ems.planner.factory.build_planner` (`planner.mode`), not by calling `build_plan`
+directly. Both seasonal planners emit the same `Plan`, so the projection, validator, UI and
+controller paths are unchanged.
 """
 from __future__ import annotations
 

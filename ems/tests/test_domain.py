@@ -2,7 +2,7 @@ import dataclasses
 
 import pytest
 
-from ems.domain import BatteryIntent, PlannerMode, RawSample
+from ems.domain import BatteryIntent, PlannerInputSnapshot, PlannerMode, RawSample
 
 
 def test_battery_intent_values():
@@ -18,6 +18,21 @@ def test_battery_intent_values():
 def test_planner_mode_default_is_rule_based():
     assert PlannerMode.RULE_BASED.value == "rule_based"
     assert {m.value for m in PlannerMode} == {"rule_based", "ml", "advisory"}
+
+
+def test_planner_input_snapshot_fields():
+    from datetime import UTC, datetime
+
+    snap = PlannerInputSnapshot(
+        taken_at=datetime(2026, 1, 1, tzinfo=UTC),
+        planner_mode="rule_based",
+        strategy="winter",
+        soc_pct=42.0,
+        price_slots=96,
+    )
+    assert snap.price_resolution_minutes == 15
+    assert snap.forecast_slots == 0
+    assert snap.config_hash is None
 
 
 def test_raw_sample_is_frozen():

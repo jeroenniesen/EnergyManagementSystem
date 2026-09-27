@@ -545,7 +545,7 @@ every plan for audit/replay — **does not exist**. Define `Planner` (mirroring 
 Protocols), a registry keyed by strategy/`PlannerMode`, add the input snapshot, and a discoverable
 `ports.py` catalog. This is the seam the optional ML planner and `advisory` mode plug into behind the
 unchanged §8.11 validator. Reframes B-26: **build** the port rather than delete it from the SPEC.
-**Track:** Pool · ⬜
+**Track:** Pool · 🟨 — in progress (draft PR on `cursor/b-47-planner-port-2122`; plan in agent store `docs/b-47-planner-port-plan.md`). Seam only: `ml`/`advisory` fall back to `rule_based` until M6.
 
 ### B-48 · Per-cycle compute memoization — Refactor/Perf · M · P2
 Nothing memoizes the plan/projection pipeline: `build_plan` runs ~6× and `_forward_projection` twice

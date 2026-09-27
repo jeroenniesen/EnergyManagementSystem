@@ -329,6 +329,14 @@ SETTINGS_SCHEMA: tuple[SettingsField, ...] = (
     ),
     # --- Planner economics (advanced — change these and /api/plan recomputes, SPEC §8.3) ---
     SettingsField(
+        "planner.mode", "Planner mode", "enum", "rule_based", "planner",
+        help="Which planner produces the schedule the battery follows. Rule-based (default) is the "
+        "deterministic summer/winter logic. ML and Advisory need the optional accelerator ML layer "
+        "(M6) — until then they fall back to rule-based so a Pi never loads GPU code. Every mode "
+        "still passes the same safety validator before any write.",
+        options=["rule_based", "ml", "advisory"], advanced=True,
+    ),
+    SettingsField(
         "planner.solar_confidence", "Solar forecast confidence", "number", 80.0, "planner",
         help="How much of the expected solar forecast to count on when deciding the grid top-up. "
         "Higher = trust the forecast and buy less grid power; lower = more cautious (buys more to "

@@ -10,7 +10,7 @@ the existing planner/validator path.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime
 from enum import StrEnum
 
@@ -66,13 +66,7 @@ def _scenario_forecast(
 
 
 def _with_strategy(plan: Plan, strategy: str) -> Plan:
-    return Plan(
-        created_at=plan.created_at,
-        slots=plan.slots,
-        strategy=strategy,
-        target_soc=plan.target_soc,
-        deadline=plan.deadline,
-    )
+    return replace(plan, strategy=strategy)
 
 
 def build_planning_scenarios(
