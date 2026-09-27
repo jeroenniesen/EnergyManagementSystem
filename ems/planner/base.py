@@ -8,7 +8,8 @@ points; this module is the composition face the control loop calls.
 from __future__ import annotations
 
 import hashlib
-from dataclasses import dataclass, replace
+import json
+from dataclasses import asdict, dataclass, replace
 from datetime import datetime
 
 from ems.domain import PlannerInputSnapshot, PlannerMode
@@ -22,6 +23,7 @@ from ems.sources.prices import PriceSlot
 
 SLOT_MINUTES = 15
 _DIGEST_LEN = 16
+_CONFIG_HASH_LEN = 12
 
 
 @dataclass(frozen=True)
@@ -43,11 +45,28 @@ class PlannerRequest:
     forecast_issued_at: datetime | None = None
     baseline: str | None = None
     capability_report_ref: str | None = None
-    config_hash: str | None = None
 
 
 def _mode_value(mode: PlannerMode | str) -> str:
     return mode.value if isinstance(mode, PlannerMode) else str(mode)
+
+
+def config_hash_for_request(request: PlannerRequest, *, strategy: str) -> str:
+    """Fingerprint of the configs the adapter actually received (no hand-maintained key list).
+
+    Hashes `winter_cfg` / `summer_cfg` / `adaptive_cfg` plus `planner_mode` and the resolved
+    strategy. Anything the control-loop builders fold into those dataclasses (import fees,
+    night-reserve-driven summer target, top-up caps, …) is covered automatically.
+    """
+    payload = {
+        "planner_mode": _mode_value(request.planner_mode),
+        "strategy": strategy,
+        "winter_cfg": asdict(request.winter_cfg),
+        "summer_cfg": asdict(request.summer_cfg),
+        "adaptive_cfg": asdict(request.adaptive_cfg) if request.adaptive_cfg is not None else None,
+    }
+    raw = json.dumps(payload, sort_keys=True, default=str, separators=(",", ":"))
+    return hashlib.sha256(raw.encode()).hexdigest()[:_CONFIG_HASH_LEN]
 
 
 def _digest(lines: list[str]) -> str | None:
@@ -109,7 +128,7 @@ def build_input_snapshot(request: PlannerRequest, *, strategy: str) -> PlannerIn
         load_digest=digest_load(request.load_w_by),
         baseline=request.baseline,
         capability_report_ref=request.capability_report_ref,
-        config_hash=request.config_hash,
+        config_hash=config_hash_for_request(request, strategy=strategy),
     )
 
 

@@ -13,13 +13,13 @@ from ems.planner.adaptive import AdaptiveConfig
 from ems.planner.base import (
     PlannerRequest,
     RuleBasedPlanner,
+    config_hash_for_request,
     digest_forecast,
     digest_load,
     digest_prices,
 )
 from ems.planner.factory import (
     build_planner,
-    planner_config_hash,
     registered_planners,
 )
 from ems.planner.rule_based import PlannerConfig
@@ -70,7 +70,6 @@ def _request(**overrides) -> PlannerRequest:
         price_provenance="MockPriceSource",
         forecast_provider="mock",
         baseline="load_profile",
-        config_hash="abc123",
     )
     base.update(overrides)
     return PlannerRequest(**base)
@@ -142,7 +141,10 @@ def test_plan_carries_versioned_input_snapshot():
     assert snap.forecast_digest == digest_forecast(_forecast())
     assert snap.load_digest is None  # no load_w_by on this request
     assert snap.baseline == "load_profile"
-    assert snap.config_hash == "abc123"
+    assert snap.config_hash == config_hash_for_request(
+        _request(soc_pct=55.0, strategy="winter"), strategy="winter",
+    )
+    assert snap.config_hash and len(snap.config_hash) == 12
 
 
 def test_summer_strategy_via_port():
@@ -199,13 +201,35 @@ def test_validator_still_rejects_target_out_of_range():
     assert any(f.code == "target_out_of_range" for f in v.findings)
 
 
-def test_planner_config_hash_stable():
-    a = planner_config_hash({"planner.mode": "rule_based", "battery.usable_kwh": 10.0})
-    b = planner_config_hash({"planner.mode": "rule_based", "battery.usable_kwh": 10.0})
-    c = planner_config_hash({"planner.mode": "rule_based", "battery.usable_kwh": 11.0})
-    assert a == b
-    assert a != c
-    assert len(a) == 12
+def test_config_hash_changes_with_import_fee_and_night_reserve_target():
+    """config_hash must reflect adapter configs — import fee and summer target.
+
+    Night-reserve-driven summer target_soc is folded into SummerConfig by the control builders;
+    hashing asdict(summer_cfg) covers that without a hand-maintained settings key list.
+    """
+    baseline = _request(
+        winter_cfg=PlannerConfig(charge_slots=4, discharge_slots=4, import_fee_eur_per_kwh=0.0),
+        summer_cfg=SummerConfig(usable_kwh=10.0, target_soc_pct=70.0),
+    )
+    fee_changed = _request(
+        winter_cfg=PlannerConfig(charge_slots=4, discharge_slots=4, import_fee_eur_per_kwh=0.05),
+        summer_cfg=SummerConfig(usable_kwh=10.0, target_soc_pct=70.0),
+    )
+    target_changed = _request(
+        winter_cfg=PlannerConfig(charge_slots=4, discharge_slots=4, import_fee_eur_per_kwh=0.0),
+        summer_cfg=SummerConfig(usable_kwh=10.0, target_soc_pct=85.0),  # night_reserve raised
+    )
+    h0 = config_hash_for_request(baseline, strategy="winter")
+    h_fee = config_hash_for_request(fee_changed, strategy="winter")
+    h_target = config_hash_for_request(target_changed, strategy="winter")
+    assert h0 == config_hash_for_request(baseline, strategy="winter")  # stable
+    assert h0 != h_fee
+    assert h0 != h_target
+    assert h_fee != h_target
+    # Via the port: snapshot picks up the same fingerprint.
+    snap_fee = RuleBasedPlanner().plan(fee_changed).input_snapshot
+    assert snap_fee is not None
+    assert snap_fee.config_hash == h_fee
 
 
 def test_adaptive_winter_via_port_attaches_snapshot():

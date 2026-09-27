@@ -54,7 +54,7 @@ from ems.perf import PERF_BUDGETS, REGISTRY, atimed, timed
 from ems.planner.adaptive import AdaptiveConfig
 from ems.planner.base import PlannerRequest
 from ems.planner.charge_need import compute_charge_need
-from ems.planner.factory import build_planner, planner_config_hash
+from ems.planner.factory import build_planner
 from ems.planner.recovery import recover_if_needed
 from ems.planner.rule_based import PlannerConfig
 from ems.planner.strategy import HysteresisState, resolve_strategy_hysteretic
@@ -717,7 +717,6 @@ class ControlService:
             forecast_provider=forecast_provider,
             forecast_issued_at=forecast_issued_at,
             baseline="load_profile" if load_by else None,
-            config_hash=planner_config_hash(self._settings),
         )
         plan = build_planner(mode).plan(request)
         return now, prices, plan
