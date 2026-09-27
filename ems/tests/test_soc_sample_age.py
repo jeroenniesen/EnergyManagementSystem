@@ -123,3 +123,12 @@ def test_fresh_sample_after_stale_window_restores_soc():
     recovered_at = stale_at + timedelta(seconds=1)
     assert svc.current_soc(recovered_at) == 61.0
     assert svc.soc_ready(recovered_at) is True
+
+
+def test_unknown_soc_grace_action_is_fall_through():
+    """Unknown SoC must not invent 0% and trip the reserve-floor hold."""
+    from ems.control.service import _decide_grace_action
+
+    assert _decide_grace_action(
+        override_active=False, failsafe=False, soc_pct=None, min_reserve_soc=10.0,
+    ) == "fall_through"
