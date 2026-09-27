@@ -146,6 +146,9 @@ class TibberPriceSource:
         self._outage_min_failures = (
             outage_min_failures if outage_min_failures is not None else _OUTAGE_MIN_FAILURES
         )
+        # When the cached curve was last successfully fetched (warm-start or live). Drives prices
+        # freshness so a last-good curve after an outage ages into STALE (issue #79).
+        self.fetched_at: datetime | None = None
         # Single-flight: when the TTL lapses, only ONE concurrent caller fetches; the rest wait and
         # then read the now-fresh cache. Prevents a dashboard poll fan-out (sync endpoints run in
         # the threadpool) from firing several simultaneous Tibber requests → HTTP 429.
@@ -172,8 +175,11 @@ class TibberPriceSource:
             return
         self._cached = slots
         # Warm-start counts as a prior success at (now - age), so outage grace is measured from
-        # when the cached curve was actually fetched — not from process start.
-        self._last_ok_at = self._clock() - timedelta(seconds=max(0.0, age))
+        # when the cached curve was actually fetched — not from process start. Same stamp drives
+        # prices freshness (issue #79).
+        stamped = self._clock() - timedelta(seconds=max(0.0, float(age)))
+        self._last_ok_at = stamped
+        self.fetched_at = stamped
         remaining = self._cache_ttl.total_seconds() - age
         if remaining > 0:
             self._next_fetch_at = self._clock() + timedelta(seconds=remaining)
@@ -240,6 +246,7 @@ class TibberPriceSource:
                 parsed = parse_price_info(data, self.home_index)
                 if parsed:
                     self._cached = parsed
+                    self.fetched_at = now
                     self._next_fetch_at = now + self._cache_ttl
                     self._note_success(now)
                     self._persist(parsed)

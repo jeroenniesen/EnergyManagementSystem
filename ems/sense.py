@@ -17,8 +17,10 @@ from ems.storage.history import HistoryStore
 
 _log = logging.getLogger("ems.recorder")
 
-# Per-signal names tracked for freshness (SPEC §4.7).
+# Per-signal names tracked for freshness (SPEC §4.7). Meter signals are always registered;
+# prices/forecast are registered separately when those sources are wired (issue #79).
 SIGNALS = ("grid", "solar", "ev", "battery", "soc")
+PRICE_FORECAST_SIGNALS = ("prices", "forecast")
 
 # Prediction-ledger throttle (design §4.2): append the CURRENT solar forecast to the ledger with
 # its true `issued_at` at most once per this interval (in-instance timestamp) — enough to preserve
@@ -126,6 +128,12 @@ class Recorder:
             slots = await asyncio.to_thread(self.price_source.slots)
             await self.store.upsert_price_slots(
                 [(p.start.astimezone(UTC).isoformat(), float(p.eur_per_kwh)) for p in slots])
+            # Stamp prices freshness from the source's real fetch time when available so a
+            # days-old last-good Tibber cache ages into STALE (issue #79); mock marks "now".
+            fetched = getattr(self.price_source, "fetched_at", None)
+            stamp = fetched if isinstance(fetched, datetime) else self._clock()
+            if slots or fetched is not None:
+                self.freshness.mark("prices", stamp)
         except Exception as exc:
             _log.warning("price persist failed (non-fatal): %s: %s", type(exc).__name__, exc)
 
@@ -146,6 +154,14 @@ class Recorder:
             return
         try:
             slots = await asyncio.to_thread(self.solar_forecast.slots)
+            # Freshness uses the provider's issue time (Solcast cache / fallback), NOT "now" —
+            # otherwise a days-old `_serve_cache` hit looks live (issue #79 Klaar-als #3).
+            issued = getattr(self.solar_forecast, "issued_at", None)
+            if not isinstance(issued, datetime):
+                issued = getattr(self.solar_forecast, "_last_fetch_at", None)
+            stamp = issued if isinstance(issued, datetime) else now
+            if slots or isinstance(issued, datetime):
+                self.freshness.mark("forecast", stamp)
             if (self._last_ledger_write_at is None
                     or (now - self._last_ledger_write_at) >= _LEDGER_MIN_INTERVAL):
                 issued_at = now.astimezone(UTC).isoformat()

@@ -11,11 +11,13 @@ import type {
   SavedToday,
 } from "./EnergyStory";
 import { Icon, type IconName } from "./icons";
+import { DeviceHealthStrip } from "./DeviceHealth";
 import {
   CAR_BADGE_SUFFIX,
   CAR_BADGE_SUFFIX_DEFAULT,
   DATA_QUALITY,
   DATA_SOURCE,
+  type DeviceHealth,
   EMS_UNREACHABLE,
   FRESHNESS_STATE,
   formatLaatstBekend,
@@ -23,6 +25,7 @@ import {
   OUTCOME_LABEL,
   RUN_MODE,
   SIGNAL_NAME,
+  summarizeDeviceHealth,
 } from "./labels";
 import { Login } from "./Login";
 import { NotificationBell } from "./Notifications";
@@ -342,6 +345,7 @@ export function App() {
 
   const [status, setStatus] = useState<Status | null>(null);
   const [freshness, setFreshness] = useState<FreshnessMap | null>(null);
+  const [deviceHealth, setDeviceHealth] = useState<DeviceHealth | null>(null);
   const [story, setStory] = useState<EnergyStoryData | null>(null);
   const [batteryPlan, setBatteryPlan] = useState<
     BatteryPlanData | null
@@ -492,12 +496,18 @@ export function App() {
       getJson(url).then((v) => { if (alive) apply(v); }).catch(() => { if (alive) failed?.(); });
     }
     function poll() {
-      const applyCore = (value: { status: Status; freshness: FreshnessMap; alerts: AlertsResp }) => {
+      const applyCore = (value: {
+        status: Status;
+        freshness: FreshnessMap;
+        alerts: AlertsResp;
+        device_health?: DeviceHealth | null;
+      }) => {
         unreachableRef.current = false;
         setStatus(value.status);
         setFreshness(value.freshness);
         batteryFreshness.current = value.freshness.battery ?? null;
         setAlertsData(value.alerts);
+        if (value.device_health) setDeviceHealth(value.device_health);
         setError(null);
         setLastReachableAt(Date.now());
         setTileFreshness((current) => ({
@@ -509,7 +519,12 @@ export function App() {
         }
       };
       getJson("/api/dashboard")
-        .then((value: { status: Status; freshness: FreshnessMap; alerts: AlertsResp }) => {
+        .then((value: {
+          status: Status;
+          freshness: FreshnessMap;
+          alerts: AlertsResp;
+          device_health?: DeviceHealth | null;
+        }) => {
           if (alive) applyCore(value);
         })
         .catch((snapshotError) => {
@@ -536,6 +551,7 @@ export function App() {
             setFreshness(value);
             batteryFreshness.current = value.battery ?? null;
           });
+          fill("/api/device-health", (value: DeviceHealth) => setDeviceHealth(value));
           // Older servers / snapshot-unavailable: still fan out /api/alerts. Skip applying if
           // status also failed (unreachable) so stale alerts never sit under the outage banner.
           fill("/api/alerts", (value: AlertsResp) => {
@@ -712,18 +728,36 @@ export function App() {
             {status.dev_mode === "live" ? DATA_SOURCE.live.label : DATA_SOURCE.sim.label}
           </span>
         )}
-        {alertsData && (
-          <span
-            className={`badge badge-dq dq-${alertsData.data_quality}`}
-            data-testid="data-quality"
-            title={
-              DATA_QUALITY[alertsData.data_quality]?.title ??
-              "How fresh and complete the data behind the plan is."
-            }
-          >
-            {DATA_QUALITY[alertsData.data_quality]?.label ?? humanize(alertsData.data_quality)}
-          </span>
-        )}
+        {alertsData && (() => {
+          // Prefer the consumer device-health summary (Deels verouderd / Demo / …) when it is
+          // more specific than the raw §8.11 token — e.g. freshness-only e2e mocks.
+          const health = summarizeDeviceHealth(
+            freshness, deviceHealth, status?.dev_mode !== "live",
+          );
+          // Demo stays on the data-source badge; override data-quality for partial stale /
+          // mock-prices so "Deels verouderd" / "Geen actuele prijzen" win over a stale token.
+          const useHealth =
+            health.badge === "partially_stale" || health.badge === "mock_prices";
+          const dqClass = useHealth
+            ? (health.badge === "mock_prices" ? "price_fallback" : "degraded")
+            : alertsData.data_quality;
+          const label = useHealth
+            ? health.label
+            : (DATA_QUALITY[alertsData.data_quality]?.label ?? humanize(alertsData.data_quality));
+          const title = useHealth
+            ? health.detail
+            : (DATA_QUALITY[alertsData.data_quality]?.title ??
+              "How fresh and complete the data behind the plan is.");
+          return (
+            <span
+              className={`badge badge-dq dq-${dqClass}`}
+              data-testid="data-quality"
+              title={title}
+            >
+              {label}
+            </span>
+          );
+        })()}
         <NotificationBell canOperate={canOperate} />
         <nav className="nav" aria-label="Views">
           <button
@@ -916,6 +950,27 @@ export function App() {
             </div>
           )}
         </section>
+      )}
+
+      {/* Issue #79: compact per-source freshness — visible without a click; System keeps detail. */}
+      {view === "dashboard" && !error && (freshness || deviceHealth) && (
+        <DeviceHealthStrip
+          freshness={freshness}
+          deviceHealth={deviceHealth}
+          isDemo={status?.dev_mode !== "live" || !!home?.simulated}
+          alertsForSource={(key) => {
+            const map: Record<string, string[]> = {
+              grid: ["grid_stale", "grid_missing"],
+              battery: ["battery_stale", "battery_missing", "soc_stale", "soc_missing"],
+              prices: ["mock_prices", "price_horizon_incomplete"],
+              forecast: [],
+            };
+            const keys = map[key] ?? [];
+            const hit = (alertsData?.alerts ?? []).find((a) => keys.includes(a.key));
+            if (!hit) return null;
+            return { message: hit.message, ems_doing: hit.ems_doing, action: hit.action };
+          }}
+        />
       )}
 
       {view === "manage" && (

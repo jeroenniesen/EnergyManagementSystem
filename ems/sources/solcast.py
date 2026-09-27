@@ -352,9 +352,17 @@ class SolcastSource:
     def _serve_cache(self) -> list[ForecastSlot] | None:
         if self._cache is None:
             return None
-        self.source_label = "solcast"
+        # A cache hit is never "live just now" — keep issued_at at fetch time and label it so the
+        # UI / data-quality path can tell a days-old warm-start from a fresh Solcast pull (#79).
         self.provider = "solcast"
         self.issued_at = self._last_fetch_at
+        age_s = 0.0
+        if self._last_fetch_at is not None:
+            age_s = max(0.0, (self._clock() - self._last_fetch_at).total_seconds())
+        if age_s > 6 * 3600:
+            self.source_label = "solcast (cached)"
+        else:
+            self.source_label = "solcast"
         return self._cache[1]
 
     def slots(self) -> list[ForecastSlot]:

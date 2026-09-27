@@ -51,19 +51,21 @@ export const RUN_MODE: Record<"dry" | "live", Labelled> = {
 /** Data source: real sensors vs. the built-in simulator. */
 export const DATA_SOURCE: Record<"live" | "sim", Labelled> = {
   live: { label: "Live sensors", title: "Readings come from your real meters and battery." },
-  sim: { label: "Demo data", title: "Readings come from the built-in simulator, not your home." },
+  // Issue #79: short "Demo" so web + phone share the same glanceable word.
+  sim: { label: "Demo", title: "Readings come from the built-in simulator, not your home." },
 };
 
 /** Overall data quality / system health → friendly phrase + explanation. */
 export const DATA_QUALITY: Record<string, Labelled> = {
-  complete: { label: "All data current", title: "All sensors and forecasts are fresh." },
+  complete: { label: "Alles actueel", title: "All sensors and forecasts are fresh." },
   degraded: {
-    label: "Some data delayed",
+    // Issue #79: never "Gedegradeerd" — consumer phrase naming partial staleness.
+    label: "Deels verouderd",
     title: "Some sensor or forecast data is stale, so the plan may be less precise.",
   },
   price_fallback: {
-    label: "Using backup prices",
-    title: "Live prices are unavailable, so a fallback price curve is in use.",
+    label: "Geen actuele prijzen",
+    title: "Live Tibber prices are unavailable, so a fallback / demo price curve is in use.",
   },
   unsafe: {
     label: "Paused — self-use",
@@ -71,6 +73,99 @@ export const DATA_QUALITY: Record<string, Labelled> = {
       "Data is missing or stale, so EMS is directing the battery back to its own self-use.",
   },
 };
+
+/** Dashboard consumer sources for the compact freshness strip (issue #79). */
+export const CONSUMER_SOURCES = ["battery", "grid", "prices", "forecast"] as const;
+export type ConsumerSource = (typeof CONSUMER_SOURCES)[number];
+
+export const CONSUMER_SOURCE_LABEL: Record<ConsumerSource, string> = {
+  battery: "Batterij",
+  grid: "P1-meter",
+  prices: "Prijzen",
+  forecast: "Zonvoorspelling",
+};
+
+export type DeviceHealthSummary = {
+  badge: string;
+  label: string;
+  detail: string;
+  severity: string;
+};
+
+export type DeviceHealthSource = {
+  key: string;
+  label: string;
+  state: string;
+  updated_at?: string | null;
+  updated_hhmm?: string | null;
+  age_seconds?: number | null;
+  note?: string | null;
+};
+
+export type DeviceHealth = {
+  sources: DeviceHealthSource[];
+  battery_reachable?: boolean | null;
+  forecast_age_seconds?: number | null;
+  prices_kind?: string;
+  summary: DeviceHealthSummary;
+};
+
+/** Plain-language detail like "prijzen van 14:00". */
+export function sourceDetail(key: string, hhmm: string | null | undefined): string {
+  const name =
+    key === "battery"
+      ? "batterij"
+      : key === "grid"
+        ? "P1-meter"
+        : key === "prices"
+          ? "prijzen"
+          : key === "forecast"
+            ? "zonvoorspelling"
+            : key;
+  return hhmm ? `${name} van ${hhmm}` : name;
+}
+
+/**
+ * Prefer a stale/missing consumer signal → "Deels verouderd" (e2e mocks freshness alone).
+ * Else use the backend device_health summary; else Demo / Alles actueel.
+ */
+export function summarizeDeviceHealth(
+  freshness: Record<string, string> | null | undefined,
+  deviceHealth: DeviceHealth | null | undefined,
+  isDemo: boolean,
+): DeviceHealthSummary {
+  const fromApi = deviceHealth?.sources ?? [];
+  const byKey = new Map(fromApi.map((s) => [s.key, s]));
+  const staleKeys = CONSUMER_SOURCES.filter((key) => {
+    const state = freshness?.[key] ?? byKey.get(key)?.state;
+    return state === "stale" || state === "missing";
+  });
+  if (staleKeys.length > 0) {
+    const key = staleKeys[0];
+    const hhmm = byKey.get(key)?.updated_hhmm ?? null;
+    return {
+      badge: "partially_stale",
+      label: "Deels verouderd",
+      detail: sourceDetail(key, hhmm),
+      severity: key === "grid" || key === "battery" ? "critical" : "warning",
+    };
+  }
+  if (deviceHealth?.summary) return deviceHealth.summary;
+  if (isDemo) {
+    return {
+      badge: "demo",
+      label: "Demo",
+      detail: "Cijfers komen niet van jouw huis — dit is demodata.",
+      severity: "warning",
+    };
+  }
+  return {
+    badge: "current",
+    label: "Alles actueel",
+    detail: "Batterij, P1-meter, prijzen en zonvoorspelling zijn bijgewerkt.",
+    severity: "ok",
+  };
+}
 
 /** Plain-language confidence behind the current plan, keyed by data-quality level. */
 export const CONFIDENCE: Record<string, string> = {
@@ -93,16 +188,16 @@ export const SYSTEM_OVERALL: Record<string, Labelled> = {
 
 /** Friendly names for the per-signal freshness keys. */
 export const SIGNAL_NAME: Record<string, string> = {
-  grid: "Grid meter",
+  grid: "P1-meter",
   solar: "Solar meter",
   soc: "Battery level",
-  battery: "Battery",
+  battery: "Batterij",
   ev: "Car charger",
-  tibber_price: "Prices",
-  prices: "Prices",
-  solar_forecast: "Solar forecast",
-  solcast: "Solar forecast",
-  forecast: "Solar forecast",
+  tibber_price: "Prijzen",
+  prices: "Prijzen",
+  solar_forecast: "Zonvoorspelling",
+  solcast: "Zonvoorspelling",
+  forecast: "Zonvoorspelling",
 };
 
 /** Freshness states in plain words. */

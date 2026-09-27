@@ -1250,6 +1250,86 @@ body {
 .chip-stale { color: var(--amber-text); border-color: rgba(224, 162, 58, 0.4); }
 .chip-missing { color: var(--error); border-color: rgba(220, 80, 80, 0.4); }
 
+/* Issue #79 — compact device / data-health strip (dashboard, no click). */
+.device-health {
+  margin: 0.75rem 0 1rem;
+  padding: 0.65rem 0.85rem;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--panel-2);
+}
+.device-health-summary {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0.4rem 0.75rem;
+  margin-bottom: 0.55rem;
+  font-size: 0.9rem;
+}
+.device-health-summary-label { font-weight: 700; }
+.device-health-summary.severity-ok .device-health-summary-label { color: var(--green-text); }
+.device-health-summary.severity-warning .device-health-summary-label { color: var(--amber-text); }
+.device-health-summary.severity-critical .device-health-summary-label { color: var(--error); }
+.device-health-summary-detail,
+.device-health-reachable,
+.device-health-forecast-age {
+  color: var(--muted);
+  font-size: 0.78rem;
+}
+.device-health-sources {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.45rem 0.75rem;
+}
+@media (max-width: 520px) {
+  .device-health-sources { grid-template-columns: 1fr; }
+}
+.device-health-source {
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  grid-template-areas:
+    "dot label state"
+    ". updated updated"
+    ". note note"
+    ". answers answers";
+  column-gap: 0.4rem;
+  row-gap: 0.1rem;
+  font-size: 0.78rem;
+  align-items: center;
+}
+.dh-dot {
+  grid-area: dot;
+  width: 0.55rem;
+  height: 0.55rem;
+  border-radius: 50%;
+  background: var(--muted);
+}
+.dh-fresh { background: var(--green-text); }
+.dh-stale { background: var(--amber-text); }
+.dh-missing { background: var(--error); }
+.dh-label { grid-area: label; font-weight: 600; }
+.dh-state { grid-area: state; color: var(--muted); font-variant-numeric: tabular-nums; }
+.device-health-source.state-stale .dh-state { color: var(--amber-text); }
+.device-health-source.state-missing .dh-state { color: var(--error); }
+.dh-updated { grid-area: updated; color: var(--muted); font-size: 0.72rem; }
+.dh-note { grid-area: note; color: var(--amber-text); font-size: 0.72rem; }
+.dh-alert-answers {
+  grid-area: answers;
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+  margin-top: 0.2rem;
+  padding: 0.35rem 0.45rem;
+  border-left: 2px solid var(--amber-text);
+  font-size: 0.72rem;
+  color: var(--text);
+}
+.device-health-source.state-missing .dh-alert-answers { border-left-color: var(--error); }
+.dh-answer-ems, .dh-answer-action { color: var(--muted); }
+
 /* Top-bar view switch */
 .nav { display: flex; gap: 4px; flex-wrap: wrap; }
 .nav-btn {

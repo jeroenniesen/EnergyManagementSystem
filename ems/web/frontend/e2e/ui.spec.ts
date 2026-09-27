@@ -1582,7 +1582,38 @@ test.describe("EMS dashboard", () => {
     await openAdvanced(page);
     const fr = page.getByTestId("freshness");
     await expect(fr).toBeVisible();
-    await expect(fr).toContainText("Grid meter: up to date");
+    await expect(fr).toContainText("P1-meter: up to date");
+  });
+
+  // Issue #79 / B-38 — consumer device-health strip + Demo / Deels verouderd labels.
+  test("device health: mock shows Demo; freshness grid stale shows Deels verouderd", async ({
+    page,
+  }) => {
+    await page.goto("/");
+    await expect(page.getByTestId("data-source")).toHaveText("Demo");
+    await expect(page.getByTestId("device-health")).toBeVisible();
+    await expect(page.getByTestId("device-health-summary")).toContainText("Demo");
+    await expect(page.getByTestId("device-health-battery")).toBeVisible();
+    await expect(page.getByTestId("device-health-grid")).toBeVisible();
+    await expect(page.getByTestId("device-health-prices")).toBeVisible();
+    await expect(page.getByTestId("device-health-forecast")).toBeVisible();
+
+    const dashboardMock = await mockRoute(page, "**/api/dashboard", async (route) => {
+      const response = await route.fetch();
+      const dashboard = await response.json();
+      await route.fulfill({
+        response,
+        json: {
+          ...dashboard,
+          freshness: { ...dashboard.freshness, grid: "stale" },
+        },
+      });
+    });
+    await page.reload();
+    await expect(page.getByTestId("device-health-summary")).toContainText("Deels verouderd");
+    await expect(page.getByTestId("data-quality")).toContainText("Deels verouderd");
+    await expect(page.getByTestId("device-health-grid")).toHaveAttribute("data-state", "stale");
+    dashboardMock.assertRequested();
   });
 
   test("System tab shows the readiness checks", async ({ page }) => {

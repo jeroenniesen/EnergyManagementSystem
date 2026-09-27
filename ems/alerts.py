@@ -314,16 +314,27 @@ def derive_alerts(
     return alerts
 
 
-def data_quality(freshness: dict[str, str], *, prices_ok: bool, forecast_ok: bool) -> str:
+def data_quality(
+    freshness: dict[str, str],
+    *,
+    prices_ok: bool,
+    forecast_ok: bool,
+    prices_live: bool = True,
+    operational: bool = False,
+) -> str:
     """complete | degraded | price_fallback | unsafe (SPEC §8.11).
 
     Precedence (most severe first): unsafe > price_fallback > degraded > complete. So a missing
     price with a simultaneously-stale non-critical signal reports price_fallback (the per-signal
-    staleness still surfaces separately as an alert)."""
+    staleness still surfaces separately as an alert).
+
+    `prices_live` / `operational` (issue #79 / #126): armed control on mock prices must never
+    report `complete` — price_fallback instead. Watch-only mock (demo) keeps other signals' badge.
+    """
     for sig in CRITICAL_SIGNALS:
         if freshness.get(sig, "missing") != "fresh":
             return "unsafe"  # can't safely reconstruct/plan
-    if not prices_ok:
+    if not prices_ok or (operational and not prices_live):
         return "price_fallback"
     if not forecast_ok or any(state != "fresh" for state in freshness.values()):
         return "degraded"

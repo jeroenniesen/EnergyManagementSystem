@@ -74,7 +74,12 @@ public struct DashboardSnapshot: Codable, Equatable, Sendable {
     public let energyStory: FlexibleSection
     public let aiValidation: FlexibleSection?
 
-    public var isDemo: Bool { serverName.lowercased().contains("demo") }
+    // Issue #79: demo when the fixture name says so OR the EMS reports simulator/mock mode.
+    public var isDemo: Bool {
+        serverName.lowercased().contains("demo")
+            || status.values["dev_mode"]?.string == "mock"
+            || status.values["dev_mode"]?.string == "sim"
+    }
 
     enum CodingKeys: String, CodingKey {
         case apiVersion
@@ -195,7 +200,12 @@ public struct MobileDashboardSnapshot: Codable, Equatable, Sendable {
     public let strategy: StrategySnapshot?
     public var carPlan: CarPlanSnapshot = .empty
 
-    public var isDemo: Bool { serverName.lowercased().contains("demo") }
+    // Issue #79: phone shows Demo when connected to a mock/simulator EMS, not only demo fixtures.
+    public var isDemo: Bool {
+        serverName.lowercased().contains("demo")
+            || status.devMode == "mock"
+            || status.devMode == "sim"
+    }
     public var degradedSections: [String] {
         var sections: [String] = []
         if alerts.dataQuality != "complete" { sections.append("data quality") }
