@@ -126,31 +126,34 @@ export function sourceDetail(key: string, hhmm: string | null | undefined): stri
 }
 
 /**
- * Prefer a stale/missing consumer signal → "Deels verouderd" (e2e mocks freshness alone).
- * Else use the backend device_health summary; else Demo / Alles actueel.
+ * Prefer the backend `device_health.summary` as source of truth.
+ * Fall back to a local "Deels verouderd" / Demo only when the API section is absent
+ * (older servers / fan-out path). Severity matches backend: critical only for missing grid.
  */
 export function summarizeDeviceHealth(
   freshness: Record<string, string> | null | undefined,
   deviceHealth: DeviceHealth | null | undefined,
   isDemo: boolean,
 ): DeviceHealthSummary {
+  if (deviceHealth?.summary) return deviceHealth.summary;
+
   const fromApi = deviceHealth?.sources ?? [];
   const byKey = new Map(fromApi.map((s) => [s.key, s]));
   const staleKeys = CONSUMER_SOURCES.filter((key) => {
-    const state = freshness?.[key] ?? byKey.get(key)?.state;
+    const state = byKey.get(key)?.state ?? freshness?.[key];
     return state === "stale" || state === "missing";
   });
   if (staleKeys.length > 0) {
     const key = staleKeys[0];
     const hhmm = byKey.get(key)?.updated_hhmm ?? null;
+    const state = byKey.get(key)?.state ?? freshness?.[key];
     return {
       badge: "partially_stale",
       label: "Deels verouderd",
       detail: sourceDetail(key, hhmm),
-      severity: key === "grid" || key === "battery" ? "critical" : "warning",
+      severity: key === "grid" && state === "missing" ? "critical" : "warning",
     };
   }
-  if (deviceHealth?.summary) return deviceHealth.summary;
   if (isDemo) {
     return {
       badge: "demo",
@@ -188,16 +191,16 @@ export const SYSTEM_OVERALL: Record<string, Labelled> = {
 
 /** Friendly names for the per-signal freshness keys. */
 export const SIGNAL_NAME: Record<string, string> = {
-  grid: "P1-meter",
+  grid: "Grid meter",
   solar: "Solar meter",
   soc: "Battery level",
-  battery: "Batterij",
+  battery: "Battery",
   ev: "Car charger",
-  tibber_price: "Prijzen",
-  prices: "Prijzen",
-  solar_forecast: "Zonvoorspelling",
-  solcast: "Zonvoorspelling",
-  forecast: "Zonvoorspelling",
+  tibber_price: "Prices",
+  prices: "Prices",
+  solar_forecast: "Solar forecast",
+  solcast: "Solar forecast",
+  forecast: "Solar forecast",
 };
 
 /** Freshness states in plain words. */

@@ -25,7 +25,6 @@ import {
   OUTCOME_LABEL,
   RUN_MODE,
   SIGNAL_NAME,
-  summarizeDeviceHealth,
 } from "./labels";
 import { Login } from "./Login";
 import { NotificationBell } from "./Notifications";
@@ -728,36 +727,18 @@ export function App() {
             {status.dev_mode === "live" ? DATA_SOURCE.live.label : DATA_SOURCE.sim.label}
           </span>
         )}
-        {alertsData && (() => {
-          // Prefer the consumer device-health summary (Deels verouderd / Demo / …) when it is
-          // more specific than the raw §8.11 token — e.g. freshness-only e2e mocks.
-          const health = summarizeDeviceHealth(
-            freshness, deviceHealth, status?.dev_mode !== "live",
-          );
-          // Demo stays on the data-source badge; override data-quality for partial stale /
-          // mock-prices so "Deels verouderd" / "Geen actuele prijzen" win over a stale token.
-          const useHealth =
-            health.badge === "partially_stale" || health.badge === "mock_prices";
-          const dqClass = useHealth
-            ? (health.badge === "mock_prices" ? "price_fallback" : "degraded")
-            : alertsData.data_quality;
-          const label = useHealth
-            ? health.label
-            : (DATA_QUALITY[alertsData.data_quality]?.label ?? humanize(alertsData.data_quality));
-          const title = useHealth
-            ? health.detail
-            : (DATA_QUALITY[alertsData.data_quality]?.title ??
-              "How fresh and complete the data behind the plan is.");
-          return (
-            <span
-              className={`badge badge-dq dq-${dqClass}`}
-              data-testid="data-quality"
-              title={title}
-            >
-              {label}
-            </span>
-          );
-        })()}
+        {alertsData && (
+          <span
+            className={`badge badge-dq dq-${alertsData.data_quality}`}
+            data-testid="data-quality"
+            title={
+              DATA_QUALITY[alertsData.data_quality]?.title ??
+              "How fresh and complete the data behind the plan is."
+            }
+          >
+            {DATA_QUALITY[alertsData.data_quality]?.label ?? humanize(alertsData.data_quality)}
+          </span>
+        )}
         <NotificationBell canOperate={canOperate} />
         <nav className="nav" aria-label="Views">
           <button
@@ -962,8 +943,15 @@ export function App() {
             const map: Record<string, string[]> = {
               grid: ["grid_stale", "grid_missing"],
               battery: ["battery_stale", "battery_missing", "soc_stale", "soc_missing"],
-              prices: ["mock_prices", "price_horizon_incomplete"],
-              forecast: [],
+              // Prefer #148 keys when present; keep price_horizon + prices_* freshness alerts.
+              prices: [
+                "no_live_prices",
+                "tibber_prices_unavailable",
+                "prices_stale",
+                "prices_missing",
+                "price_horizon_incomplete",
+              ],
+              forecast: ["forecast_stale", "forecast_missing"],
             };
             const keys = map[key] ?? [];
             const hit = (alertsData?.alerts ?? []).find((a) => keys.includes(a.key));

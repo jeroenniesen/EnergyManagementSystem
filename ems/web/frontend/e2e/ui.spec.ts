@@ -1582,11 +1582,11 @@ test.describe("EMS dashboard", () => {
     await openAdvanced(page);
     const fr = page.getByTestId("freshness");
     await expect(fr).toBeVisible();
-    await expect(fr).toContainText("P1-meter: up to date");
+    await expect(fr).toContainText("Grid meter: up to date");
   });
 
   // Issue #79 / B-38 — consumer device-health strip + Demo / Deels verouderd labels.
-  test("device health: mock shows Demo; freshness grid stale shows Deels verouderd", async ({
+  test("device health: mock shows Demo; forecast stale shows Deels verouderd on the strip", async ({
     page,
   }) => {
     await page.goto("/");
@@ -1598,7 +1598,41 @@ test.describe("EMS dashboard", () => {
     await expect(page.getByTestId("device-health-prices")).toBeVisible();
     await expect(page.getByTestId("device-health-forecast")).toBeVisible();
 
-    const dashboardMock = await mockRoute(page, "**/api/dashboard", async (route) => {
+    // Deels verouderd on the strip (non-critical forecast) — header badge stays §8.11.
+    const forecastStale = await mockRoute(page, "**/api/dashboard", async (route) => {
+      const response = await route.fetch();
+      const dashboard = await response.json();
+      await route.fulfill({
+        response,
+        json: {
+          ...dashboard,
+          freshness: { ...dashboard.freshness, forecast: "stale" },
+          device_health: {
+            ...(dashboard.device_health ?? {}),
+            sources: (dashboard.device_health?.sources ?? []).map(
+              (s: { key: string; state: string }) =>
+                s.key === "forecast" ? { ...s, state: "stale", updated_hhmm: "08:00" } : s,
+            ),
+            summary: {
+              badge: "partially_stale",
+              label: "Deels verouderd",
+              detail: "zonvoorspelling van 08:00",
+              severity: "warning",
+            },
+          },
+        },
+      });
+    });
+    await page.reload();
+    await expect(page.getByTestId("device-health-summary")).toContainText("Deels verouderd");
+    await expect(page.getByTestId("device-health-forecast")).toHaveAttribute("data-state", "stale");
+    forecastStale.assertRequested();
+  });
+
+  test("device health: stale P1 keeps unsafe header badge (Paused — self-use)", async ({
+    page,
+  }) => {
+    const gridStale = await mockRoute(page, "**/api/dashboard", async (route) => {
       const response = await route.fetch();
       const dashboard = await response.json();
       await route.fulfill({
@@ -1606,14 +1640,17 @@ test.describe("EMS dashboard", () => {
         json: {
           ...dashboard,
           freshness: { ...dashboard.freshness, grid: "stale" },
+          alerts: {
+            ...(dashboard.alerts ?? {}),
+            data_quality: "unsafe",
+            alerts: dashboard.alerts?.alerts ?? [],
+          },
         },
       });
     });
-    await page.reload();
-    await expect(page.getByTestId("device-health-summary")).toContainText("Deels verouderd");
-    await expect(page.getByTestId("data-quality")).toContainText("Deels verouderd");
-    await expect(page.getByTestId("device-health-grid")).toHaveAttribute("data-state", "stale");
-    dashboardMock.assertRequested();
+    await page.goto("/");
+    await expect(page.getByTestId("data-quality")).toContainText("Paused — self-use");
+    gridStale.assertRequested();
   });
 
   test("System tab shows the readiness checks", async ({ page }) => {

@@ -20,7 +20,6 @@ _log = logging.getLogger("ems.recorder")
 # Per-signal names tracked for freshness (SPEC §4.7). Meter signals are always registered;
 # prices/forecast are registered separately when those sources are wired (issue #79).
 SIGNALS = ("grid", "solar", "ev", "battery", "soc")
-PRICE_FORECAST_SIGNALS = ("prices", "forecast")
 
 # Prediction-ledger throttle (design §4.2): append the CURRENT solar forecast to the ledger with
 # its true `issued_at` at most once per this interval (in-instance timestamp) — enough to preserve

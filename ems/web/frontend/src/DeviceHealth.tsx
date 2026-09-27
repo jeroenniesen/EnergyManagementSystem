@@ -74,10 +74,15 @@ export function DeviceHealthStrip({
       <ul className="device-health-sources" data-testid="device-health-sources">
         {CONSUMER_SOURCES.map((key) => {
           const api = byKey.get(key);
-          const state = freshness?.[key] ?? api?.state ?? "missing";
+          // Prefer API state so battery_reachable=false (downgraded to missing) wins over a
+          // stale freshness map that still says "fresh".
+          const state = api?.state ?? freshness?.[key] ?? "missing";
           const hhmm = api?.updated_hhmm ?? hhmmFromIso(api?.updated_at ?? null);
           const note = api?.note;
-          const alert = state !== "fresh" ? alertsForSource?.(key) : null;
+          const alert =
+            state !== "fresh" || deviceHealth?.battery_reachable === false
+              ? alertsForSource?.(key)
+              : null;
           const label = api?.label ?? CONSUMER_SOURCE_LABEL[key as ConsumerSource] ?? key;
           return (
             <li

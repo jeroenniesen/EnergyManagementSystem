@@ -265,6 +265,49 @@ def test_alerts_endpoint_reports_dry_run_and_data_quality():
     assert any(a["key"] == "dry_run_active" for a in b["alerts"])
 
 
+def test_device_health_endpoint_and_prices_forecast_alerts():
+    """#79: device-health payload + honest prices/forecast alert copy (no jargon / no self-use)."""
+    from datetime import UTC, datetime, timedelta
+    from zoneinfo import ZoneInfo
+
+    from ems.freshness import FreshnessTracker
+    from ems.sense import SIGNALS
+    from ems.sources.forecast import MockSolarForecastSource
+    from ems.sources.prices import MockPriceSource
+
+    fr = FreshnessTracker()
+    fr.register(*SIGNALS, "prices", "forecast")
+    now = datetime.now(UTC)
+    for sig in SIGNALS:
+        fr.mark(sig, now)
+    fr.mark("prices", now - timedelta(hours=7))
+    fr.mark("forecast", now - timedelta(days=2))
+    app = create_app(
+        MockSource(),
+        dry_run=True,
+        dev_mode="mock",
+        freshness=fr,
+        price_source=MockPriceSource(ZoneInfo("Europe/Amsterdam")),
+        solar_forecast=MockSolarForecastSource(ZoneInfo("Europe/Amsterdam")),
+    )
+    client = TestClient(app)
+    dh = client.get("/api/device-health").json()
+    assert "sources" in dh and "summary" in dh
+    assert {s["key"] for s in dh["sources"]} >= {"battery", "grid", "prices", "forecast"}
+    alerts = client.get("/api/alerts").json()
+    keys = {a["key"] for a in alerts["alerts"]}
+    assert "prices_stale" in keys
+    assert "forecast_stale" in keys
+    for a in alerts["alerts"]:
+        if a["key"] in ("prices_stale", "forecast_stale"):
+            assert "signal delayed" not in a["message"].lower()
+            assert "falls back" not in a["safe"].lower()
+            assert "aims for" not in a["ems_doing"].lower()
+            assert a["ems_doing"] and a["action"]
+    dash = client.get("/api/dashboard").json()
+    assert dash.get("device_health") is not None
+
+
 def test_alerts_endpoint_unsafe_without_freshness():
     # No freshness tracker wired -> critical signals missing -> unsafe (cold start).
     b = _client().get("/api/alerts").json()

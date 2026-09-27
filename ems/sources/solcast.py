@@ -349,17 +349,18 @@ class SolcastSource:
         # Do not overwrite a good Solcast cache — keep last-good for later schedule windows.
         return slots
 
-    def _serve_cache(self) -> list[ForecastSlot] | None:
+    def _serve_cache(self, *, missed_refresh: bool = False) -> list[ForecastSlot] | None:
         if self._cache is None:
             return None
-        # A cache hit is never "live just now" — keep issued_at at fetch time and label it so the
-        # UI / data-quality path can tell a days-old warm-start from a fresh Solcast pull (#79).
+        # Keep issued_at at fetch time so freshness ages a days-old warm-start (#79).
+        # Do NOT label a healthy overnight gap (19:00→07:00) as "cached" — only a missed due
+        # refresh or a >24h-old snapshot (matches SIGNAL_STALE_AFTER_S["forecast"]).
         self.provider = "solcast"
         self.issued_at = self._last_fetch_at
         age_s = 0.0
         if self._last_fetch_at is not None:
             age_s = max(0.0, (self._clock() - self._last_fetch_at).total_seconds())
-        if age_s > 6 * 3600:
+        if missed_refresh or age_s > 24 * 3600:
             self.source_label = "solcast (cached)"
         else:
             self.source_label = "solcast"
@@ -377,13 +378,13 @@ class SolcastSource:
             # No cache before first refresh — fall through for a cold fetch if budget allows.
 
         if not self.api_key or not self.resource_id:
-            cached = self._serve_cache()
+            cached = self._serve_cache(missed_refresh=True)
             if cached is not None:
                 return cached
             return self._use_fallback("missing api_key/resource_id")
 
         if not self.budget.can_call():
-            cached = self._serve_cache()
+            cached = self._serve_cache(missed_refresh=True)
             if cached is not None:
                 self.source_label = "solcast (budget held)"
                 return cached
@@ -399,7 +400,7 @@ class SolcastSource:
                 if cached is not None:
                     return cached
             if not self.budget.can_call():
-                cached = self._serve_cache()
+                cached = self._serve_cache(missed_refresh=True)
                 if cached is not None:
                     self.source_label = "solcast (budget held)"
                     return cached
@@ -424,8 +425,7 @@ class SolcastSource:
                 _log.warning(
                     "Solcast fetch failed (%s: %s)", type(exc).__name__, exc,
                 )
-                cached = self._serve_cache()
+                cached = self._serve_cache(missed_refresh=True)
                 if cached is not None:
-                    self.source_label = "solcast (cached)"
                     return cached
                 return self._use_fallback(f"{type(exc).__name__}: {exc}")

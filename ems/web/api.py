@@ -2270,7 +2270,8 @@ def create_app(
             if ph is not None:
                 price_horizon_ok = ph.ok
             control_overrun = bool(control.control_overrun_active)
-        # #126: distinguish startup-without-live-prices (a) from a Tibber outage (b / b-watch).
+        # #126 / PR #148: startup-without-live-prices (a) vs Tibber outage (b / b-watch).
+        # Device-health strip maps these keys onto the prices row (#79).
         mock_blocked = (
             isinstance(price_source, MockPriceSource)
             and bool(settings_cache.get("control.operational"))

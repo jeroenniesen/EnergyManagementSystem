@@ -5,6 +5,9 @@ time, and a plain-language overall badge — separate from the §8.11 data-quali
 dashboard can say "Deels verouderd" + which source without leaking tokens like "degraded".
 
 Pure helpers over a freshness detail snapshot + a few flags; unit-tested with no I/O.
+
+Honesty: never claim EMS put the battery on self-use or blocked price moves unless that control
+path actually runs (#126 / PR #148 owns enforcement). This module only describes data freshness.
 """
 from __future__ import annotations
 
@@ -79,6 +82,9 @@ def build_device_health(
     """Return the device-health payload for /api/device-health and the dashboard snapshot.
 
     `detail` maps signal -> {state, updated_at (datetime|None), age_seconds (float|None)}.
+
+    Precedence for the summary badge: demo → operational mock prices (honest data label) →
+    partial stale → all current. Never claim a battery self-use write from this helper.
     """
     sources: list[SourceHealth] = []
     for key in CONSUMER_SOURCES:
@@ -88,7 +94,8 @@ def build_device_health(
         age = info.get("age_seconds")
         note: str | None = None
         if key == "battery" and battery_reachable is False:
-            state = "missing" if state == "fresh" else state
+            # Unreachable overrides a stale-but-present reading for the consumer strip.
+            state = "missing"
             note = "niet bereikbaar"
         if key == "prices":
             if prices_kind == "mock":
@@ -98,8 +105,11 @@ def build_device_health(
             elif state == "stale":
                 note = "reserveprijzen / laatst bekende curve"
         if key == "forecast":
-            if forecast_label and ("cached" in forecast_label or "fallback" in forecast_label
-                                   or "budget held" in forecast_label):
+            if forecast_label and (
+                "cached" in forecast_label
+                or "fallback" in forecast_label
+                or "budget held" in forecast_label
+            ):
                 note = "cached / reservevoorspelling"
             elif state == "stale":
                 note = "verouderde voorspelling"
@@ -115,8 +125,6 @@ def build_device_health(
             note=note,
         ))
 
-    # Overall badge (consumer language). Precedence: demo → mock-prices critical → partial stale
-    # → all current. "Deels verouderd" (never "Gedegradeerd") when any consumer source is off.
     stale_sources = [s for s in sources if s.state in ("stale", "missing")]
     if demo:
         badge = "demo"
@@ -124,20 +132,13 @@ def build_device_health(
         detail_txt = "Cijfers komen niet van jouw huis — dit is demodata."
         severity = "warning"
     elif operational_mock_prices:
-        # Armed on demoprijzen (#79 #4 / #126 case b) — critical, never "complete".
+        # Honest data label only (#79 #4) — does NOT claim self-use / blocked price moves.
+        # Enforcement of "no live steering on mock prices" is #126 / PR #148.
         badge = "mock_prices"
         label = "Geen actuele prijzen"
         detail_txt = (
-            "Geen actuele prijzen van Tibber. EMS heeft de batterij op eigen zelfverbruik "
-            "gezet tot de prijzen terug zijn. Je hoeft niets te doen."
-        )
-        severity = "critical"
-    elif dry_run and prices_kind == "mock":
-        # Watch-only without a live Tibber source (#126 case a) — kritiek kijkmodus-label.
-        badge = "mock_prices"
-        label = "Geen actuele prijzen"
-        detail_txt = (
-            "Kijkmodus: geen actuele prijzen van Tibber, EMS stuurt de batterij niet."
+            "Geen actuele prijzen van Tibber — EMS ziet demoprijzen. Koppel of herstel Tibber "
+            "in Instellingen."
         )
         severity = "critical"
     elif stale_sources:
@@ -145,8 +146,9 @@ def build_device_health(
         label = "Deels verouderd"
         first = stale_sources[0]
         detail_txt = format_source_detail(first.key, first.updated_hhmm)
-        severity = "critical" if first.key in ("grid", "battery") and first.state == "missing" \
-            else "warning"
+        # Match backend alert severity: critical only when a critical signal is missing
+        # (grid missing); battery missing from reachability is warning-class for the strip.
+        severity = "critical" if first.key == "grid" and first.state == "missing" else "warning"
     else:
         badge = "current"
         label = "Alles actueel"

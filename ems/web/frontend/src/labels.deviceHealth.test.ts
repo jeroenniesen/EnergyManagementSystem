@@ -17,15 +17,9 @@ describe("issue #79 device-health labels", () => {
     expect(DATA_SOURCE.sim.label).toBe("Demo");
   });
 
-  it("summarizeDeviceHealth: freshness grid stale → Deels verouderd", () => {
-    const s = summarizeDeviceHealth({ grid: "stale", battery: "fresh" }, null, true);
-    expect(s.label).toBe("Deels verouderd");
-    expect(s.detail).toContain("P1-meter");
-  });
-
-  it("summarizeDeviceHealth: demo with all fresh → Demo", () => {
+  it("summarizeDeviceHealth prefers backend summary over local freshness", () => {
     const s = summarizeDeviceHealth(
-      { grid: "fresh", battery: "fresh", prices: "fresh", forecast: "fresh" },
+      { grid: "stale", battery: "fresh" },
       {
         sources: [],
         summary: {
@@ -40,7 +34,17 @@ describe("issue #79 device-health labels", () => {
     expect(s.label).toBe("Demo");
   });
 
+  it("summarizeDeviceHealth falls back to Deels verouderd when API absent", () => {
+    const s = summarizeDeviceHealth({ forecast: "stale", battery: "fresh" }, null, false);
+    expect(s.label).toBe("Deels verouderd");
+    expect(s.detail).toContain("zonvoorspelling");
+  });
+
   it("sourceDetail formats prijzen van hh:mm", () => {
     expect(sourceDetail("prices", "14:00")).toBe("prijzen van 14:00");
+  });
+
+  it("keeps unsafe header vocabulary on DATA_QUALITY", () => {
+    expect(DATA_QUALITY.unsafe.label).toBe("Paused — self-use");
   });
 });
