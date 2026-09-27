@@ -8,7 +8,12 @@ from zoneinfo import ZoneInfo
 import uvicorn
 
 from ems.config import load_config
-from ems.connection import build_carbon_source, build_wiring, effective_connection
+from ems.connection import (
+    build_carbon_source,
+    build_wiring,
+    config_forced_dry_run_reason,
+    effective_connection,
+)
 from ems.control.mode_controller import ModeController
 from ems.freshness import FreshnessTracker
 from ems.lifecycle import Lifecycle
@@ -49,12 +54,14 @@ def build_app():
     freshness.register(*SIGNALS)
     tz = ZoneInfo(cfg.timezone)
     # Connection + run-mode come from the settings store (UI), seeded from config.yaml + env on
-    # first boot. dry_run is True (battery untouched) UNLESS control.operational is on with a live
-    # Indevolt — only then is the driver armed and the control loop started.
+    # first boot. dry_run stays True unless cfg.dry_run is false (needs control.dry_run: false AND
+    # dev.mode: live — mock/replay force dry_run) AND control.operational is on with a live
+    # Indevolt. Config dry_run wins over the UI toggle (#136).
     eff = effective_connection(str(db_path), cfg)
     source, price_source, solar_forecast, battery_endpoint, controller_driver, dev_mode, dry_run = (
-        build_wiring(eff, tz, cache_store=cache_store)
+        build_wiring(eff, tz, cache_store=cache_store, force_dry_run=cfg.dry_run)
     )
+    dry_run_block_reason = config_forced_dry_run_reason(eff, force_dry_run=cfg.dry_run)
     # Roadmap F3 (Insights reporting only — never touches control): static flat factor by default,
     # or the live ElectricityMaps signal when configured with a key. See build_carbon_source.
     carbon_source = build_carbon_source(eff)
@@ -76,6 +83,7 @@ def build_app():
     app = create_app(
         source,
         dry_run=dry_run,
+        dry_run_block_reason=dry_run_block_reason,
         dev_mode=dev_mode,
         tz=tz,
         store=store,

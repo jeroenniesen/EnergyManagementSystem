@@ -2,8 +2,12 @@
 site:
   timezone: Europe/Amsterdam
 dev:
-  mode: mock          # mock | replay | live  (mock/replay need no HA/battery and force dry_run)
+  mode: mock          # mock | replay | live  (mock/replay need no HA/battery and force dry_run;
+                      # must be `live` before control.dry_run: false can arm the battery)
 control:
+  # Watch-only by default. When true — or when dev.mode is mock/replay — always wins over UI
+  # control.operational (no battery writes). To go live: set dev.mode: live AND
+  # control.dry_run: false, enable operational in the UI (with a live Indevolt IP), then restart.
   dry_run: true
   # Production sampling cadence: one history row every 5 min — low write + device-read load for a
   # 24/7 install. The live dashboard tiles refresh independently (30 s coalesced read), so this does

@@ -159,10 +159,60 @@ def test_operational_arms_driver_and_lifts_dry_run():
         "battery.indevolt_ip": "192.0.2.20", "control.operational": True,
         "connection.use_live_prices": True, "prices.tibber_token": "tok",
     })
-    *_, driver, dev_mode, dry_run = build_wiring(eff, AMS)
+    # force_dry_run=False = config.yaml control.dry_run: false (explicit opt-in to live writes).
+    *_, driver, dev_mode, dry_run = build_wiring(eff, AMS, force_dry_run=False)
     assert dev_mode == "live"
     assert driver.armed is True  # operational -> armed with a real SetData transport
     assert dry_run is False
+
+
+def test_config_dry_run_wins_over_operational():
+    # #136 Klaar-als: dry_run: true + operational: true → dry_run stays True (config wins),
+    # even when live Tibber prices would otherwise allow arming (#126).
+    eff = effective_settings({
+        "connection.use_live_devices": True, "meters.p1_ip": "192.0.2.10",
+        "battery.indevolt_ip": "192.0.2.20", "control.operational": True,
+        "connection.use_live_prices": True, "prices.tibber_token": "tok",
+    })
+    *_, driver, _dev_mode, dry_run = build_wiring(eff, AMS, force_dry_run=True)
+    assert dry_run is True
+    assert driver.armed is False  # config dry-run also keeps the writer unarmed
+
+
+def test_force_dry_run_default_is_fail_safe():
+    # Omitting force_dry_run must NOT fail open (#136 F4) — default True keeps watch-only
+    # even when live prices would otherwise allow arming (#126).
+    eff = effective_settings({
+        "connection.use_live_devices": True, "meters.p1_ip": "192.0.2.10",
+        "battery.indevolt_ip": "192.0.2.20", "control.operational": True,
+        "connection.use_live_prices": True, "prices.tibber_token": "tok",
+    })
+    *_, driver, _dev_mode, dry_run = build_wiring(eff, AMS)
+    assert dry_run is True
+    assert driver.armed is False
+
+
+def test_config_forced_dry_run_reason_when_operational_blocked(caplog):
+    import logging
+
+    from ems.connection import CONFIG_FORCED_DRY_RUN_REASON, config_forced_dry_run_reason
+
+    eff = effective_settings({
+        "connection.use_live_devices": True, "meters.p1_ip": "192.0.2.10",
+        "battery.indevolt_ip": "192.0.2.20", "control.operational": True,
+        "connection.use_live_prices": True, "prices.tibber_token": "tok",
+    })
+    assert config_forced_dry_run_reason(eff, force_dry_run=True) == CONFIG_FORCED_DRY_RUN_REASON
+    assert config_forced_dry_run_reason(eff, force_dry_run=False) is None
+    # Without live prices, #126 would block anyway — no config-dry-run reason.
+    no_prices = effective_settings({
+        "connection.use_live_devices": True, "meters.p1_ip": "192.0.2.10",
+        "battery.indevolt_ip": "192.0.2.20", "control.operational": True,
+    })
+    assert config_forced_dry_run_reason(no_prices, force_dry_run=True) is None
+    with caplog.at_level(logging.WARNING, logger="ems.connection"):
+        build_wiring(eff, AMS, force_dry_run=True)
+    assert any("config forces watch-only" in r.message for r in caplog.records)
 
 
 def test_live_indevolt_driver_uses_configured_cluster_power_limits():
@@ -175,7 +225,7 @@ def test_live_indevolt_driver_uses_configured_cluster_power_limits():
         "control.operational": True,
         "connection.use_live_prices": True, "prices.tibber_token": "tok",
     })
-    *_, driver, _dev_mode, _dry_run = build_wiring(eff, AMS)
+    *_, driver, _dev_mode, _dry_run = build_wiring(eff, AMS, force_dry_run=False)
     assert driver.charge_power_w == 4800
     assert driver.discharge_power_w == 3600
 

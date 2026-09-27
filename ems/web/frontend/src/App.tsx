@@ -45,6 +45,7 @@ import { applyTheme, readStoredTheme, storeTheme, type Theme } from "./theme";
 
 type Status = {
   dry_run: boolean;
+  dry_run_reason?: string | null;
   dev_mode: string;
   soc_pct: number;
   grid_power_w: number;
@@ -677,7 +678,10 @@ export function App() {
           <span
             className={`badge ${status.dry_run ? "badge-dryrun" : "badge-live"}`}
             data-testid="run-mode-badge"
-            title={status.dry_run ? RUN_MODE.dry.title : RUN_MODE.live.title}
+            title={
+              status.dry_run_reason
+                || (status.dry_run ? RUN_MODE.dry.title : RUN_MODE.live.title)
+            }
           >
             {status.dry_run ? RUN_MODE.dry.label : RUN_MODE.live.label}
           </span>

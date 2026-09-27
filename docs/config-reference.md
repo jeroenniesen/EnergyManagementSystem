@@ -114,7 +114,7 @@ The car's SoC itself is **not** a config key — it's a runtime-store anchor (%,
 | `commitment_reserve` | int | 3 | of the daily cap, how many switches are held back for a committed grid-charge so routine idle/auto flapping can't starve it (07-12 guardrail-starvation incident); routine switches may use `cap − reserve`, a commitment draws from the full cap, the total is still capped. Runtime key `control.commitment_reserve`. **UI** (advanced) |
 | `intent_persistence_cycles` | int | 2 | a routine (non-AUTO) mode change must persist this many consecutive cycles before it commands the battery (first observes, rest confirm) so a transient flap wastes no switch; commitments, manual overrides, the car-charging safety hold and return-to-AUTO are never delayed. 1 = legacy (switch immediately). Runtime key `control.intent_persistence_cycles`. **UI** (advanced) |
 | `replan_times` | list[HH:MM] | [13:15, 06:00] | scheduled replans |
-| `dry_run` | bool | true | log decisions, no writes (per-strategy gate) |
+| `dry_run` | bool | true | log decisions, no writes; **wins over** UI `control.operational` when true (#136). Also forced on when `dev.mode` is `mock`/`replay` — set `dev.mode: live` before `dry_run: false` can arm. |
 | `min_replan_interval_seconds` | int | 600 | cap replan churn |
 | `soc_deviation_replan_pct` | % | 10 | planned-vs-actual SoC gap that triggers a replan |
 | `hold_battery_when_car_charging` | bool | true | **reworded master switch** (feat/car-charge-modes) — the on/off for ALL special battery behaviour while the car charges. Off: the planner runs exactly as it would with no car — untouched. On: the battery follows `car_charging_battery_mode` below. **UI** (Car tab, moved out of Settings) |
@@ -205,5 +205,5 @@ The car's SoC itself is **not** a config key — it's a runtime-store anchor (%,
 ## `dev` (local development / testing — `SPEC §11.6`)
 | Key | Type | Default | Effect |
 |---|---|---|---|
-| `mode` | enum | `live`\|`mock`\|`replay` = live | `mock`/`replay` need no HA/battery/GPU and **force `dry_run`** — for running on a Mac etc. |
+| `mode` | enum | `live`\|`mock`\|`replay` = live | `mock`/`replay` need no HA/battery/GPU and **force `dry_run`** (via `load_config`) — for running on a Mac etc. Shipped `config.yaml` uses `mock`; must be `live` before `control.dry_run: false` can lift watch-only (#136). |
 | `fixtures_dir` | path | /data/fixtures | canned Tibber/Solcast/HomeWizard/HA payloads for `replay` (§14) |
