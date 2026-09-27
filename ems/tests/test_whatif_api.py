@@ -4,6 +4,7 @@ mirrors `test_replay.py`'s own seed() pattern (HistoryStore.record + upsert_pric
 synthetic winter arbitrage day) rather than importing its underscore-prefixed helpers across test
 modules.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -27,7 +28,8 @@ UTZ = ZoneInfo("UTC")
 # non-deterministically, the moment "now" drifted 90+ days past it) race that purge against our own
 # seeding. Days-ago-from-now keeps the seeded window forever inside the retention default.
 FIRST_DAY = (datetime.now(UTC) - timedelta(days=10)).replace(
-    hour=0, minute=0, second=0, microsecond=0)
+    hour=0, minute=0, second=0, microsecond=0
+)
 # strategy.mode is still pinned to "winter" explicitly by every seeding helper below (regardless of
 # the real calendar month `FIRST_DAY` lands in) so the resolved strategy stays deterministic.
 
@@ -45,10 +47,20 @@ def _winter_price(i: int) -> float:
     return 0.20
 
 
-def _seed_winter_days(db: str, n_days: int, *, start: datetime = FIRST_DAY) -> None:
+def _seed_winter_days(
+    db: str,
+    n_days: int,
+    *,
+    start: datetime = FIRST_DAY,
+    with_forecast: bool = True,
+) -> None:
     """`n_days` consecutive flat-1kW, zero-solar days under `_winter_price` — the planner should
     strictly beat both no_battery and auto_selfuse on every one of them (mirrors
-    test_replay.py's test_planner_beats_auto_on_winter_arbitrage_day)."""
+    test_replay.py's test_planner_beats_auto_on_winter_arbitrage_day).
+
+    By default also seeds a canonical zero solar forecast (the honest winter day-ahead
+    commitment): range replay / Insights require forecast coverage (#132) and must not silently
+    plan without the ledger the live app writes."""
 
     async def go() -> None:
         store = HistoryStore(db)
@@ -56,13 +68,23 @@ def _seed_winter_days(db: str, n_days: int, *, start: datetime = FIRST_DAY) -> N
         for day_i in range(n_days):
             day = start + timedelta(days=day_i)
             price_rows = []
+            ledger_rows = []
+            issued_at = (day - timedelta(days=1)).replace(hour=18).isoformat()
             for i in range(96):
                 ts = (day + timedelta(minutes=15 * i)).isoformat()
-                raw = RawSample(grid_power_w=1000.0, solar_power_w=0.0, battery_power_w=0.0,
-                                 ev_power_w=0.0, soc_pct=0.0)
+                raw = RawSample(
+                    grid_power_w=1000.0,
+                    solar_power_w=0.0,
+                    battery_power_w=0.0,
+                    ev_power_w=0.0,
+                    soc_pct=0.0,
+                )
                 await store.record(ts, raw, reconstruct(raw))
                 price_rows.append((ts, _winter_price(i)))
+                ledger_rows.append((issued_at, "solar", ts, 0.0, 0.0, 0.0, "test", None, None, 1))
             await store.upsert_price_slots(price_rows)
+            if with_forecast:
+                await store.ledger_append(ledger_rows)
 
     asyncio.run(go())
 
@@ -78,14 +100,18 @@ def _seed_settings(db: str, values: dict) -> None:
 
 def _app(db: str, *, token: str | None = None, with_store: bool = True):
     return create_app(
-        MockSource(), dry_run=True, dev_mode="mock", tz=UTZ,
+        MockSource(),
+        dry_run=True,
+        dev_mode="mock",
+        tz=UTZ,
         store=HistoryStore(db) if with_store else None,
         settings_store=SettingsStore(db),
         web_auth_token=token,
         # Defense in depth alongside the relative FIRST_DAY above: the maintenance loop's retention
         # purge / backup both run unawaited at boot (see _maintenance_loop in api.py) and would
         # otherwise race replay_range's read of the very data we just seeded.
-        history_retention_days=0, history_backup_keep=0,
+        history_retention_days=0,
+        history_backup_keep=0,
     )
 
 
@@ -102,6 +128,7 @@ def test_counterfactual_shape_and_delta_math_consistency(tmp_path):
 
     assert body["days_used"] == 3
     assert body["days_skipped"] == 0
+    assert body["days_missing_forecast"] == 0
     assert set(body["scenarios"].keys()) == {"no_battery", "auto_selfuse", "planner"}
     for name in ("no_battery", "auto_selfuse", "planner"):
         s = body["scenarios"][name]
@@ -123,11 +150,29 @@ def test_counterfactual_shape_and_delta_math_consistency(tmp_path):
     assert "€" in body["note"] and "3" in body["note"]
 
 
+def test_counterfactual_without_forecast_is_honest_not_blank_sky(tmp_path):
+    """Issue #132 AC4: history without a day-ahead solar forecast must not yield a silent
+    planner-vs-auto € comparison that planned as if there was no sun."""
+    db = str(tmp_path / "ems.sqlite")
+    _seed_winter_days(db, 2, with_forecast=False)
+    _seed_settings(db, {"strategy.mode": "winter"})
+
+    with TestClient(_app(db)) as c:
+        body = c.get("/api/counterfactual?days=2").json()
+
+    assert body["days_used"] == 0
+    assert body["days_missing_forecast"] == 2
+    assert body["deltas"]["planner_vs_no_battery"] is None
+    assert body["deltas"]["planner_vs_auto"] is None
+    assert "solar forecast" in body["note"].lower()
+
+
 def test_counterfactual_without_a_store_is_graceful(tmp_path):
     db = str(tmp_path / "ems.sqlite")
     with TestClient(_app(db, with_store=False)) as c:
         body = c.get("/api/counterfactual").json()
     assert body["days_used"] == 0
+    assert body["days_missing_forecast"] == 0
     assert body["window"] is None
     assert body["deltas"] == {"planner_vs_no_battery": None, "planner_vs_auto": None}
     for s in body["scenarios"].values():
@@ -196,9 +241,13 @@ def test_whatif_rejects_unknown_override_key(tmp_path):
     _seed_settings(db, {"strategy.mode": "winter"})
 
     with TestClient(_app(db)) as c:
-        r = c.post("/api/whatif", json={
-            "overrides": {"battery.usable_kwh": 20.0}, "days": 2,
-        })
+        r = c.post(
+            "/api/whatif",
+            json={
+                "overrides": {"battery.usable_kwh": 20.0},
+                "days": 2,
+            },
+        )
     assert r.status_code == 422
     assert "battery.usable_kwh" in r.json().get("errors", {})
 
@@ -209,9 +258,13 @@ def test_whatif_rejects_invalid_value_for_an_allowed_key(tmp_path):
     _seed_settings(db, {"strategy.mode": "winter"})
 
     with TestClient(_app(db)) as c:
-        r = c.post("/api/whatif", json={
-            "overrides": {"battery.min_reserve_soc": 999.0}, "days": 2,
-        })
+        r = c.post(
+            "/api/whatif",
+            json={
+                "overrides": {"battery.min_reserve_soc": 999.0},
+                "days": 2,
+            },
+        )
     assert r.status_code == 422
     assert "battery.min_reserve_soc" in r.json().get("errors", {})
 
@@ -222,9 +275,13 @@ def test_whatif_huge_reserve_override_makes_the_variant_deterministically_dearer
     _seed_settings(db, {"strategy.mode": "winter"})
 
     with TestClient(_app(db)) as c:
-        r = c.post("/api/whatif", json={
-            "overrides": {"battery.min_reserve_soc": 50.0}, "days": 3,
-        })
+        r = c.post(
+            "/api/whatif",
+            json={
+                "overrides": {"battery.min_reserve_soc": 50.0},
+                "days": 3,
+            },
+        )
     assert r.status_code == 200
     body = r.json()
     assert body["simulation"] is True
@@ -243,6 +300,31 @@ def test_whatif_huge_reserve_override_makes_the_variant_deterministically_dearer
     assert "€" in body["note"]
 
 
+def test_whatif_without_forecast_is_honest_not_blank_sky(tmp_path):
+    """Issue #132 AC4: POST /api/whatif must not return a € A/B comparison when the window has
+    no day-ahead solar forecast — same honesty contract as GET /api/counterfactual."""
+    db = str(tmp_path / "ems.sqlite")
+    _seed_winter_days(db, 2, with_forecast=False)
+    _seed_settings(db, {"strategy.mode": "winter"})
+
+    with TestClient(_app(db)) as c:
+        r = c.post(
+            "/api/whatif",
+            json={
+                "overrides": {"planner.solar_confidence": 60.0},
+                "days": 2,
+            },
+        )
+    assert r.status_code == 200
+    body = r.json()
+    assert body["simulation"] is True
+    assert body["days_used"] == 0
+    assert body["days_missing_forecast"] == 2
+    assert body["delta_eur"] is None
+    assert body["per_day"] == []
+    assert "solar forecast" in body["note"].lower()
+
+
 def test_whatif_never_writes_settings(tmp_path):
     db = str(tmp_path / "ems.sqlite")
     _seed_winter_days(db, 2)
@@ -250,9 +332,13 @@ def test_whatif_never_writes_settings(tmp_path):
 
     with TestClient(_app(db)) as c:
         before = c.get("/api/settings").json()
-        r = c.post("/api/whatif", json={
-            "overrides": {"planner.negative_price_soak": True}, "days": 2,
-        })
+        r = c.post(
+            "/api/whatif",
+            json={
+                "overrides": {"planner.negative_price_soak": True},
+                "days": 2,
+            },
+        )
         assert r.status_code == 200
         after = c.get("/api/settings").json()
     assert before == after  # a simulation changes nothing

@@ -20,8 +20,11 @@ what each would have cost:
 
 The plan (b/c) is built at day-start from that day's STORED prices + STORED (day-ahead) solar
 forecast — what the planner actually knew — while the simulation runs against the day's ACTUAL
-reconstructed load + ACTUAL solar. That asymmetry is deliberate for the planner: a faithful replay
-(plan against forecast, reality happens). The oracle (d) removes only the solar-forecast error, so
+reconstructed load + ACTUAL solar. The day-ahead forecast is read from the canonical prediction
+ledger (`forecast_ledger`, kind=solar, canonical=1), the same source every live accuracy/plan
+surface uses; the deprecated `forecast_snapshots` table is only a read-only fallback for historic
+rows. That asymmetry is deliberate for the planner: a faithful replay (plan against forecast,
+reality happens). The oracle (d) removes only the solar-forecast error, so
 `planner_cost − oracle_cost` is an honest per-day ceiling on solar-forecast improvement.
 
 The battery model is shared across scenarios and mirrors `planner.projection` exactly: round-trip
@@ -385,6 +388,19 @@ def _resolve_strategy(
     return strat, new_state
 
 
+def _forecast_slot_start(row: dict) -> datetime | None:
+    """Accept both ledger (`target_start`) and legacy snapshot (`start`) column names."""
+    return _parse(row.get("start") or row.get("target_start"))
+
+
+def _forecast_band_w(row: dict) -> tuple[float, float, float]:
+    """Map ledger `low_w`/`expected_w`/`high_w` or legacy `p10_w`/`p50_w`/`p90_w` to a band."""
+    low = row.get("p10_w", row.get("low_w", 0.0))
+    expected = row.get("p50_w", row.get("expected_w", 0.0))
+    high = row.get("p90_w", row.get("high_w", 0.0))
+    return float(low or 0.0), float(expected or 0.0), float(high or 0.0)
+
+
 def replay_day(
     raw_rows: list[dict],
     price_rows: list[dict],
@@ -392,6 +408,7 @@ def replay_day(
     *,
     cfg: ReplayConfig,
     hysteresis_box: dict[str, HysteresisState] | None = None,
+    require_forecast: bool = False,
 ) -> DayResult:
     """Replay ONE day (rows already windowed to the local day) through all three scenarios.
 
@@ -399,6 +416,10 @@ def replay_day(
     stored price + day-ahead forecast, then simulates no_battery / auto_selfuse / planner sharing
     one battery model. A day with <80% slot coverage of load OR prices is not replayed — it returns
     `data_ok=False` with a `skip_reason` and empty scenarios (never a fabricated number).
+
+    When `require_forecast` is True (the range/Insights path), the same ≥80% coverage floor is
+    applied to the day-ahead solar forecast: a planner comparison without the forecast the live
+    app would have used is skipped rather than silently planned as if the sky were empty.
 
     `hysteresis_box` (optional `{"state": HysteresisState}`) carries the seasonal-transition counter
     across the days of a range replay so `auto` is dampened exactly like the live app (§8.4 / B-15);
@@ -437,23 +458,19 @@ def replay_day(
         if dt is not None:
             price_by[_floor(dt)] = float(p.get("eur_per_kwh", 0.0))
 
-    # Day-ahead forecast: keep the FIRST snapshot per slot (forecast rows arrive issued_date-ASC,
-    # so the earliest issue — the day-ahead — wins over a later same-day nowcast).
+    # Day-ahead forecast: keep the FIRST snapshot per slot (rows arrive oldest-issue first —
+    # issued_at/issued_date ASC — so the earliest day-ahead wins over a later same-day nowcast).
+    # Accepts prediction-ledger columns (`target_start`/`low_w`/`expected_w`/`high_w`) and the
+    # legacy `forecast_snapshots` shape (`start`/`p10_w`/`p50_w`/`p90_w`).
     fc_slots: list[ForecastSlot] = []
     seen: set[datetime] = set()
     for f in forecast_rows:
-        dt = _parse(f.get("start"))
+        dt = _forecast_slot_start(f)
         if dt is None or dt in seen:
             continue
         seen.add(dt)
-        fc_slots.append(
-            ForecastSlot(
-                start=dt,
-                p10_w=float(f.get("p10_w", 0.0)),
-                p50_w=float(f.get("p50_w", 0.0)),
-                p90_w=float(f.get("p90_w", 0.0)),
-            )
-        )
+        p10, p50, p90 = _forecast_band_w(f)
+        fc_slots.append(ForecastSlot(start=dt, p10_w=p10, p50_w=p50, p90_w=p90))
     fc_slots.sort(key=lambda f: f.start)
 
     all_keys = set(load_by) | set(price_by) | {f.start for f in fc_slots}
@@ -484,6 +501,17 @@ def replay_day(
             None,
             {},
         )
+    if require_forecast:
+        fc_cov = len(fc_slots) / expected
+        if fc_cov < _COVERAGE_MIN:
+            return DayResult(
+                date_str,
+                len(load_by),
+                False,
+                f"forecast coverage {fc_cov:.0%} < {_COVERAGE_MIN:.0%}",
+                None,
+                {},
+            )
 
     slots = sorted(load_by)
     start_soc = _mean(soc_by[min(soc_by)]) if soc_by else 0.0  # first recorded SoC of the day
@@ -622,7 +650,7 @@ def _query(conn: sqlite3.Connection, sql: str, params: tuple) -> list[dict]:
     try:
         cur = conn.execute(sql, params)
     except sqlite3.OperationalError:
-        return []  # table absent (an older-schema DB has no price_slots/forecast_snapshots)
+        return []  # table absent (an older-schema DB has no price_slots/forecast_ledger)
     cols = [c[0] for c in cur.description]
     return [dict(zip(cols, row, strict=False)) for row in cur.fetchall()]
 
@@ -633,6 +661,32 @@ def _day_window(d: date, tz: ZoneInfo) -> tuple[str, str]:
     nxt = d + timedelta(days=1)
     end = datetime(nxt.year, nxt.month, nxt.day, tzinfo=tz).astimezone(UTC).isoformat()
     return start, end
+
+
+def _day_ahead_forecast(conn: sqlite3.Connection, start_iso: str, end_iso: str) -> list[dict]:
+    """Day-ahead solar forecast for `[start_iso, end_iso)` from the CURRENT prediction ledger
+    (canonical `kind='solar'` rows — the same source every live accuracy/plan surface reads).
+
+    The legacy `forecast_snapshots` table is no longer written (design §3.3); it is only consulted
+    as a read-only fallback when the ledger has nothing for the window (pre-migration historic
+    rows that somehow were not copied). Returns rows in oldest-issue-first order so
+    `replay_day`'s first-wins rule keeps the genuine day-ahead commitment."""
+    ledger = _query(
+        conn,
+        "SELECT issued_at, target_start, low_w, expected_w, high_w FROM forecast_ledger "
+        "WHERE kind = 'solar' AND canonical = 1 "
+        "AND target_start >= ? AND target_start < ? "
+        "ORDER BY issued_at ASC, target_start ASC",
+        (start_iso, end_iso),
+    )
+    if ledger:
+        return ledger
+    return _query(
+        conn,
+        "SELECT issued_date, start, p10_w, p50_w, p90_w FROM forecast_snapshots "
+        "WHERE start >= ? AND start < ? ORDER BY issued_date ASC, start ASC",
+        (start_iso, end_iso),
+    )
 
 
 def replay_range(
@@ -681,16 +735,28 @@ def replay_range(
                     "WHERE start_ts >= ? AND start_ts < ? ORDER BY start_ts ASC",
                     (start_iso, end_iso),
                 )
-                forecast = _query(
-                    conn,
-                    "SELECT issued_date, start, p10_w, p50_w, p90_w FROM forecast_snapshots "
-                    "WHERE start >= ? AND start < ? ORDER BY issued_date ASC, start ASC",
-                    (start_iso, end_iso),
+                # Canonical prediction ledger (not the deprecated forecast_snapshots write path).
+                forecast = _day_ahead_forecast(conn, start_iso, end_iso)
+                results.append(
+                    replay_day(
+                        raw,
+                        prices,
+                        forecast,
+                        cfg=cfg,
+                        hysteresis_box=hyst_box,
+                        require_forecast=True,
+                    )
                 )
-                results.append(replay_day(raw, prices, forecast, cfg=cfg, hysteresis_box=hyst_box))
                 if results_b is not None and cfg_b is not None:
                     results_b.append(
-                        replay_day(raw, prices, forecast, cfg=cfg_b, hysteresis_box=hyst_box_b)
+                        replay_day(
+                            raw,
+                            prices,
+                            forecast,
+                            cfg=cfg_b,
+                            hysteresis_box=hyst_box_b,
+                            require_forecast=True,
+                        )
                     )
         finally:
             conn.close()

@@ -137,6 +137,33 @@ def _fc_day(p50_of_slot, *, day=DAY):
     return out
 
 
+def _ledger_rows(p50_of_slot, *, day=DAY, canonical: int = 1):
+    """96 canonical prediction-ledger solar rows (the live forecast source)."""
+    issued_at = (day - timedelta(days=1)).replace(hour=18).isoformat()
+    rows = []
+    for i in range(96):
+        w = float(p50_of_slot(i))
+        target = (day + timedelta(minutes=15 * i)).isoformat()
+        rows.append((issued_at, "solar", target, w, w, w, "test", None, None, canonical))
+    return rows
+
+
+async def _seed_day(store: HistoryStore, raw, prices, *, forecast_p50=None, day=DAY):
+    """Write one synthetic day (raw + prices + optional canonical ledger forecast) into `store`."""
+    for r in raw:
+        sample = RawSample(
+            grid_power_w=r["grid_power_w"],
+            solar_power_w=r["solar_power_w"],
+            battery_power_w=r["battery_power_w"],
+            ev_power_w=r["ev_power_w"],
+            soc_pct=r["soc_pct"],
+        )
+        await store.record(r["ts"], sample, reconstruct(sample))
+    await store.upsert_price_slots([(p["start_ts"], p["eur_per_kwh"]) for p in prices])
+    if forecast_p50 is not None:
+        await store.ledger_append(_ledger_rows(forecast_p50, day=day))
+
+
 # --- 1. no_battery exact cost ---------------------------------------------------------------------
 def test_no_battery_exact_cost():
     raw, prices = _solar_day()
@@ -290,16 +317,8 @@ def test_ab_override_changes_planner_cost(tmp_path):
         store = HistoryStore(db)
         await store.init()
         raw, prices = _winter_day()
-        for r in raw:
-            sample = RawSample(
-                grid_power_w=r["grid_power_w"],
-                solar_power_w=r["solar_power_w"],
-                battery_power_w=r["battery_power_w"],
-                ev_power_w=r["ev_power_w"],
-                soc_pct=r["soc_pct"],
-            )
-            await store.record(r["ts"], sample, reconstruct(sample))
-        await store.upsert_price_slots([(p["start_ts"], p["eur_per_kwh"]) for p in prices])
+        # Zero day-ahead solar (honest winter commitment) — range replay requires forecast coverage.
+        await _seed_day(store, raw, prices, forecast_p50=lambda _i: 0.0)
 
     asyncio.run(seed())
 
@@ -329,16 +348,7 @@ def test_cli_table_and_json_against_seeded_db(tmp_path, capsys):
         store = HistoryStore(db)
         await store.init()
         raw, prices = _winter_day()
-        for r in raw:
-            sample = RawSample(
-                grid_power_w=r["grid_power_w"],
-                solar_power_w=r["solar_power_w"],
-                battery_power_w=r["battery_power_w"],
-                ev_power_w=r["ev_power_w"],
-                soc_pct=r["soc_pct"],
-            )
-            await store.record(r["ts"], sample, reconstruct(sample))
-        await store.upsert_price_slots([(p["start_ts"], p["eur_per_kwh"]) for p in prices])
+        await _seed_day(store, raw, prices, forecast_p50=lambda _i: 0.0)
 
     asyncio.run(seed())
 
@@ -365,16 +375,7 @@ def test_replay_never_writes_db(tmp_path):
         store = HistoryStore(db)
         await store.init()
         raw, prices = _winter_day()
-        for r in raw:
-            sample = RawSample(
-                grid_power_w=r["grid_power_w"],
-                solar_power_w=r["solar_power_w"],
-                battery_power_w=r["battery_power_w"],
-                ev_power_w=r["ev_power_w"],
-                soc_pct=r["soc_pct"],
-            )
-            await store.record(r["ts"], sample, reconstruct(sample))
-        await store.upsert_price_slots([(p["start_ts"], p["eur_per_kwh"]) for p in prices])
+        await _seed_day(store, raw, prices, forecast_p50=lambda _i: 0.0)
 
     asyncio.run(seed())
 
@@ -382,6 +383,63 @@ def test_replay_never_writes_db(tmp_path):
     replay_range(db, 3, _cfg(**{"strategy.mode": "winter"}))
     # The file is untouched (mode=ro would raise on any write anyway).
     assert os.path.getmtime(db) == before
+
+
+# --- 10. issue #132: range replay reads forecast_ledger (not deprecated forecast_snapshots) -------
+def test_replay_range_planner_uses_forecast_ledger_when_snapshots_empty(tmp_path):
+    """AC1/AC3 (#132): the Insights/counterfactual path must feed the planner the canonical
+    prediction-ledger forecast. With snapshots empty (the post-deprecation reality) and a
+    deliberately WRONG ledger forecast, planner cost must match an in-memory replay that got that
+    same forecast — and must DIFFER from a planner that saw no forecast at all."""
+    db = str(tmp_path / "ems.sqlite")
+    raw, prices = _solar_day()
+    # Phantom all-day solar the live day never had — forces the planner off the empty-forecast path.
+    phantom = lambda i: 3000.0 if 6 <= _hour(i) < 18 else 0.0  # noqa: E731
+
+    async def seed():
+        store = HistoryStore(db)
+        await store.init()
+        await _seed_day(store, raw, prices, forecast_p50=phantom)
+        # Prove the deprecated table stayed empty (recorder no longer writes it).
+        assert (
+            await store.forecasts_between(DAY.isoformat(), (DAY + timedelta(days=1)).isoformat())
+            == []
+        )
+
+    asyncio.run(seed())
+
+    ranged = replay_range(db, 1, _cfg())
+    assert len(ranged.days) == 1 and ranged.days[0].data_ok
+    with_fc = replay_day(raw, prices, _fc_day(phantom), cfg=_cfg())
+    without_fc = replay_day(raw, prices, [], cfg=_cfg())
+    ranged_cost = ranged.days[0].scenarios["planner"].cost_eur
+    assert ranged_cost is not None
+    assert abs(ranged_cost - with_fc.scenarios["planner"].cost_eur) < 1e-9
+    # The bug this catches: reading empty forecast_snapshots made range == without_fc.
+    assert abs(ranged_cost - without_fc.scenarios["planner"].cost_eur) > 1e-6
+
+
+def test_replay_range_skips_day_when_forecast_missing(tmp_path):
+    """AC4 (#132): a day with load+prices but no day-ahead solar forecast is skipped — never a
+    silent planner comparison that assumed a blank sky."""
+    db = str(tmp_path / "ems.sqlite")
+
+    async def seed():
+        store = HistoryStore(db)
+        await store.init()
+        raw, prices = _winter_day()
+        await _seed_day(store, raw, prices, forecast_p50=None)  # deliberately no ledger rows
+
+    asyncio.run(seed())
+
+    result = replay_range(db, 1, _cfg(**{"strategy.mode": "winter"}))
+    assert len(result.days) == 1
+    day = result.days[0]
+    assert day.data_ok is False
+    assert day.skip_reason and "forecast coverage" in day.skip_reason
+    assert day.scenarios == {}
+    assert result.aggregate["days_replayed"] == 0
+    assert result.aggregate["days_skipped"] == 1
 
 
 def test_resolve_strategy_threads_hysteresis_across_days():
