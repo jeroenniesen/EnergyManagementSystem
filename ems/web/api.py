@@ -1124,15 +1124,17 @@ def create_app(
     rss_sampler_ref: dict[str, Any] = {"sampler": None}
 
     async def _apply_battery_power_settings() -> None:
-        """Keep the live driver's advertised capability aligned with battery.* power settings."""
+        """Keep the live driver's advertised capability aligned with battery.* power settings.
+
+        `configure_power_limits` is a required BatteryDriver port member (#139) — call it
+        directly (no getattr duck-typing). An adapter without it fails conformance.
+        """
         if controller is None:
             return
-        configure = getattr(controller.driver, "configure_power_limits", None)
-        if configure is not None:
-            configure(
-                max_charge_w=settings_cache["battery.max_charge_w"],
-                max_discharge_w=settings_cache["battery.max_discharge_w"],
-            )
+        controller.driver.configure_power_limits(
+            max_charge_w=settings_cache["battery.max_charge_w"],
+            max_discharge_w=settings_cache["battery.max_discharge_w"],
+        )
         try:
             _capability_box["cap"] = await asyncio.to_thread(controller.driver.probe)
         except Exception:

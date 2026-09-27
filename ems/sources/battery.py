@@ -9,6 +9,9 @@ never tries to track instantaneous power.
 """
 from __future__ import annotations
 
+from collections.abc import Callable
+from typing import Any
+
 from ems.domain import BatteryIntent, CapabilityReport, PhysicalMode
 
 from .ports import BatteryDriver
@@ -17,6 +20,9 @@ __all__ = [
     "BatteryDriver", "BatteryWriteUnconfirmed", "MockBatteryDriver",
     "FailingMockBatteryDriver", "intent_to_mode",
 ]
+
+# Optional spy/write hook for hermetic arming tests (#139 / I3). Not used in production wiring.
+WriteTransport = Callable[..., Any]
 
 
 class BatteryWriteUnconfirmed(Exception):
@@ -70,10 +76,19 @@ class MockBatteryDriver:
     through, but (being a mode-only mock) it does not require a target to confirm.
 
     `armed` defaults False (same refuse-by-default as IndevoltBatteryDriver). Tests that exercise
-    operational/shutdown/startup writes pass ``armed=True`` explicitly."""
+    operational/shutdown/startup writes pass ``armed=True`` explicitly.
 
-    def __init__(self, *, armed: bool = False) -> None:
+    Optional `write_transport` is a spy hook for hermetic I3 arming tests (#139): when injected,
+    `apply` refuses (no transport call) unless armed — matching Indevolt's triple-gate. Without a
+    transport (the default / existing unit-test path), in-memory mode updates still succeed so the
+    large ModeController suite stays behaviour-compatible.
+    """
+
+    def __init__(
+        self, *, armed: bool = False, write_transport: WriteTransport | None = None,
+    ) -> None:
         self._armed = armed
+        self._write_transport = write_transport
         self._mode = PhysicalMode.AUTO
         self.last_target_soc: float | None = None
         self.last_power_w: float | None = None
@@ -112,6 +127,13 @@ class MockBatteryDriver:
         self, mode: PhysicalMode, *, target_soc: float | None = None,
         power_w: float | None = None,
     ) -> bool:
+        # I3 spy path: when a write_transport is injected, honour armed like Indevolt
+        # (unarmed → refuse, zero transport calls). Default (no transport) keeps the in-memory
+        # self-confirming mock used by ModeController unit tests.
+        if self._write_transport is not None:
+            if not self._armed:
+                return False
+            self._write_transport(mode, target_soc=target_soc, power_w=power_w)
         # Idempotent: re-applying the current mode is a no-op but still "confirmed".
         self._mode = mode
         self.last_target_soc, self.last_power_w = target_soc, power_w

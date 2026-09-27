@@ -10,7 +10,29 @@ from ems.control.mode_controller import ActionDecision
 from ems.domain import BatteryIntent, PhysicalMode, RawSample
 from ems.planner.schedule import Plan
 from ems.planner.validator import PlanValidation
+
+# One BatteryDriver port — re-exported from sources (do not redefine a narrower copy). #139
+from ems.sources.ports import BatteryDriver
 from ems.sources.prices import PriceSlot
+
+__all__ = [
+    "BatteryDriver",
+    "BatteryController",
+    "CarModeActionProvider",
+    "DataQuality",
+    "DiagnosticsProvider",
+    "FinanceDay",
+    "FinanceProvider",
+    "PlanProvider",
+    "PlanValidator",
+    "ReportProvider",
+    "SampleProvider",
+    "SavingsProvider",
+    "TariffPolicyProvider",
+    "TariffWarningsProvider",
+    "TickCallback",
+    "ClockCallback",
+]
 
 
 class DataQuality(Protocol):
@@ -28,9 +50,6 @@ class CarModeActionProvider(Protocol):
     def __call__(
         self, now: datetime, *, current_setpoint_w: float | None = None
     ) -> CarModeAction | None: ...
-
-class BatteryDriver(Protocol):
-    def apply(self, mode: PhysicalMode) -> bool: ...
 
 class BatteryController(Protocol):
     @property

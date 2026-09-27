@@ -21,12 +21,17 @@ class Source(Protocol):
 
 @runtime_checkable
 class BatteryDriver(Protocol):
-    """Battery write/read port. `armed` is required (no getattr defaults): an adapter without it
-    fails isinstance/conformance rather than being silently skipped on the shutdown path (#127)."""
+    """Battery write/read port — the single vendor-neutral battery seam (#139 / epic #111).
+
+    `armed` is required (no getattr defaults): an adapter without it fails isinstance/conformance
+    rather than being silently skipped on the shutdown path (#127 / I5).
+    `configure_power_limits` is required so the API/settings path never ducks via getattr (#139).
+    """
 
     @property
     def armed(self) -> bool: ...
     def probe(self) -> CapabilityReport: ...
+    def configure_power_limits(self, *, max_charge_w: float, max_discharge_w: float) -> None: ...
     def current_mode(self) -> PhysicalMode: ...
     def apply(
         self,

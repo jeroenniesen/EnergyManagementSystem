@@ -14,7 +14,7 @@ each epic-#111 slice keeps this file current for its own invariants.
 | I4 | Power and SoC are centrally clamped from capabilities before `apply`. | Spy-transport capability bounds | #112 slice c, #114 |
 | I5 | `armed` is required on the port; no `getattr` on the shutdown path. | Shutdown test with a fake adapter | [#127](https://github.com/jeroenniesen/EnergyManagementSystem/issues/127) |
 
-Both I1 and I2 run in the ordinary `pytest` suite (hermetic, no network, no live Indevolt). They
+I1, I2, and I3 run in the ordinary `pytest` suite (hermetic, no network, no live Indevolt). They
 replace the epic's manual grep/review checklist. Exceptions must be listed in the test's
 allowlist with a reason (and, for I2, an issue that will remove them).
 
@@ -40,8 +40,35 @@ Source adapters sense devices and expose ports. They must not pull in the contro
 validator, or the settings schema — that keeps vendor code from bypassing fail-safe / dry-run
 gates. The AST import scan covers every module under `ems/sources/`.
 
+### I3 — one battery port + arming / spy-transport
+
+There is **one** `BatteryDriver` protocol: `ems/sources/ports.py`, re-exported from
+`ems/ports.py` and from `ems/application/protocols.py` (no second, narrower copy). Required
+members today:
+
+| Member | Role |
+|---|---|
+| `armed` | Read-only property; refuse-by-default. Required on the port (#127 / I5). |
+| `probe()` | Capability report (read-only). |
+| `configure_power_limits(*, max_charge_w, max_discharge_w)` | Align advertised limits with settings — called directly from the API (no `getattr`). |
+| `current_mode()` | Observed physical mode. |
+| `apply(mode, *, target_soc, power_w)` | The write path; gated by armed + transport + dry-run. |
+
+Triple-gate (still unchanged by this slice):
+
+1. **armed** — driver constructor defaults to `False`; no setter.
+2. **transport** — Indevolt refuses without an injected `rpc_post` / `post_factory`; Mock accepts an
+   optional `write_transport` spy for hermetic tests (production mock path has none).
+3. **dry-run** — `ModeController.decide` never calls `apply` when `dry_run=True`.
+
+Guard tests: `ems/tests/test_battery_arming.py` (parametrized over `IndevoltBatteryDriver` and
+`MockBatteryDriver`) plus conformance in `ems/tests/test_adapter_conformance.py`. Unarmed or
+dry-run ⇒ **0** spy-transport calls. `armed` as a port member and the shutdown-path getattr
+removal are owned by [#127](https://github.com/jeroenniesen/EnergyManagementSystem/issues/127)
+(already landed); this slice does not reopen them.
+
 ## Related
 
-- Ports: `ems/sources/ports.py` (re-exported from `ems/ports.py`)
+- Ports: `ems/sources/ports.py` (re-exported from `ems/ports.py` and `ems/application/protocols.py`)
 - Composition root: `ems/connection.py::build_wiring` → `Wiring`
 - Design note: `docs/superpowers/specs/2026-07-29-source-ports-design.md`
