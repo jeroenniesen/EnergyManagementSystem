@@ -1,7 +1,6 @@
 """Export-package assembly (pure): CSV serialisation, ZIP packing, manifest."""
 import json
 
-from ems.tests.conftest import EXPORT_PACKAGE_WIDE_DAYS
 from ems.export_package import (
     AUDIT_COLUMNS,
     DAILY_ENERGY_COLUMNS,
@@ -21,6 +20,7 @@ from ems.export_package import (
     validation_summary,
     zip_names,
 )
+from ems.tests.conftest import EXPORT_PACKAGE_WIDE_DAYS
 
 
 def test_rows_to_csv_has_header_and_ignores_unknown_keys():
@@ -609,10 +609,13 @@ def test_export_package_endpoint_returns_zip_with_all_members(tmp_path):
     # header-only members with a zero count (same "no crash / not omitted" shape as ev_sessions).
     assert manifest["counts"]["observations"] == 0
     # Boot maintenance may materialize yesterday's rollup even when the seed has none.
-    assert manifest["counts"]["daily_energy"] in (0, 1)
+    daily_energy_n = manifest["counts"]["daily_energy"]
+    assert daily_energy_n in (0, 1)
     assert manifest["counts"]["notifications"] == 0
     assert read_member(data, "observations.csv").strip() == ",".join(OBSERVATION_COLUMNS)
-    assert read_member(data, "daily_energy.csv").strip() == ",".join(DAILY_ENERGY_COLUMNS)
+    daily_energy_csv = read_member(data, "daily_energy.csv").strip().splitlines()
+    assert daily_energy_csv[0] == ",".join(DAILY_ENERGY_COLUMNS)
+    assert len(daily_energy_csv) == 1 + daily_energy_n
     assert read_member(data, "notifications.csv").strip() == ",".join(NOTIFICATION_COLUMNS)
 
 

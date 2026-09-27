@@ -7,6 +7,12 @@ import { type CarModel, type CarsResp } from "./ev";
 import { humanize } from "./labels";
 import { SectionIcon } from "./settingsIcons";
 
+/** Display labels for setting enum tokens that humanize() alone would mangle. */
+const SETTING_OPTION_LABEL: Record<string, string> = {
+  forecast_solar: "Forecast.Solar",
+  solcast: "Solcast",
+};
+
 export type SettingField = {
   key: string;
   label: string;
@@ -22,6 +28,8 @@ export type SettingField = {
   advanced: boolean;
   applies: "live" | "restart";
   slider?: boolean;
+  /** Show only when every key matches the current edited value (e.g. Solcast creds). */
+  visible_when?: Record<string, string> | null;
 };
 type SettingsResp = { schema: SettingField[]; values: Record<string, number | boolean | string> };
 type Values = Record<string, number | boolean | string>;
@@ -285,7 +293,7 @@ function Field({
         onChange={(e) => onChange(e.target.value)}>
         {(field.options ?? []).map((o) => (
           // Humanise the raw token for display; the submitted VALUE stays the token.
-          <option key={o} value={o}>{humanize(o)}</option>
+          <option key={o} value={o}>{SETTING_OPTION_LABEL[o] ?? humanize(o)}</option>
         ))}
       </select>
     );
@@ -547,6 +555,13 @@ export function Settings({
     ? new Set([...CAR_TAB_KEYS, ...LEGACY_SHARED_TOKEN_KEYS])
     : CAR_TAB_KEYS;
 
+  function isFieldVisible(f: SettingField): boolean {
+    if (hiddenFieldKeys.has(f.key)) return false;
+    const rules = f.visible_when;
+    if (!rules) return true;
+    return Object.entries(rules).every(([k, need]) => edited[k] === need);
+  }
+
   async function refreshAuth() {
     try {
       const r = await apiFetch("/api/auth");
@@ -701,7 +716,7 @@ export function Settings({
     const q = search.trim().toLowerCase();
     if (!q) return [];
     return (schema ?? [])
-      .filter((f) => f.group === group && !hiddenFieldKeys.has(f.key))
+      .filter((f) => f.group === group && isFieldVisible(f))
       .filter(
         (f) =>
           f.label.toLowerCase().includes(q) ||
@@ -861,7 +876,7 @@ export function Settings({
   }
 
   const sectionFields = active
-    ? schema.filter((f) => f.group === active && !hiddenFieldKeys.has(f.key))
+    ? schema.filter((f) => f.group === active && isFieldVisible(f))
     : [];
   const basicFields = sectionFields.filter((f) => !f.advanced);
   const advancedFields = sectionFields.filter((f) => f.advanced);
