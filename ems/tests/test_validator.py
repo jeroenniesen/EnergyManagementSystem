@@ -38,7 +38,14 @@ def test_clean_plan_is_valid():
 
 def test_unsafe_data_quality_blocks_control():
     v = validate_plan(_plan(_charge(0)), **_ctx(data_quality="unsafe"))
-    assert v.status == "unsafe" and v.ok is False
+    assert not v.ok
+    assert any(f.code == "stale_inputs" for f in v.findings)
+
+
+def test_unknown_soc_is_unsafe_stale_inputs():
+    """#134: soc_pct=None must block control — never invent 0% for the validator."""
+    v = validate_plan(_plan(_charge(0)), **_ctx(soc_pct=None, data_quality="complete"))
+    assert not v.ok
     assert any(f.code == "stale_inputs" for f in v.findings)
 
 

@@ -330,6 +330,14 @@ SETTINGS_SCHEMA: tuple[SettingsField, ...] = (
         "less often eases the load. Lower = more up-to-the-second dashboard.",
         min=15.0, max=300.0, step=15.0, unit="s", slider=True,
     ),
+    SettingsField(
+        "control.sample_max_age_seconds", "Max battery-level age", "number", 600.0, "control",
+        help="How long a freshly-read battery level (SoC) may still be treated as known. Past this "
+        "age EMS treats the level as unknown and will not plan or command on a fabricated empty "
+        "battery — it falls back to the battery's own self-use. Keep this at or above the "
+        "read interval so a single coalesced read doesn't look stale.",
+        min=300.0, max=3600.0, step=60.0, unit="s", slider=True, advanced=True,
+    ),
     # --- Planner economics (advanced — change these and /api/plan recomputes, SPEC §8.3) ---
     SettingsField(
         "planner.mode", "Planner mode", "enum", "rule_based", "planner",
