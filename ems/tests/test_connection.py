@@ -1,6 +1,6 @@
 from zoneinfo import ZoneInfo
 
-from ems.connection import _battery_ips, build_carbon_source, build_wiring
+from ems.connection import Wiring, _battery_ips, build_carbon_source, build_wiring
 from ems.settings import (
     SETTINGS_BY_KEY,
     effective_settings,
@@ -54,6 +54,28 @@ def test_schema_exposes_advanced_and_applies():
     assert by_key["ui.theme"]["applies"] == "live"
     # every schema field is represented
     assert set(by_key) == set(SETTINGS_BY_KEY)
+
+
+def test_build_wiring_returns_namedtuple_unpackable_as_legacy_7tuple():
+    """#138: Wiring is a NamedTuple; positional unpacking keeps working (no behaviour change)."""
+    wiring = build_wiring(effective_settings({}), AMS)
+    assert isinstance(wiring, Wiring)
+    assert issubclass(Wiring, tuple)
+    assert Wiring._fields == (
+        "source",
+        "price_source",
+        "solar_forecast",
+        "battery_endpoint",
+        "controller_driver",
+        "dev_mode",
+        "dry_run",
+    )
+    src, price, _fc, batt_ep, _driver, dev_mode, dry_run = wiring
+    assert wiring.source is src
+    assert wiring.price_source is price
+    assert wiring.battery_endpoint is batt_ep
+    assert wiring.dev_mode == dev_mode
+    assert wiring.dry_run is dry_run
 
 
 def test_build_wiring_defaults_to_mock():
