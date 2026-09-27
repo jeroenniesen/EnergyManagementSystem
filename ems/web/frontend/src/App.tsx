@@ -80,6 +80,19 @@ type ChargeNeed = {
   reason: string;
 };
 
+/** True when a charge-need payload has the finite fields ChargeTarget.toFixed needs (#134 B2). */
+export function isUsableChargeNeed(n: unknown): n is ChargeNeed {
+  if (n == null || typeof n !== "object") return false;
+  const o = n as Record<string, unknown>;
+  return (
+    typeof o.current_soc_pct === "number" &&
+    typeof o.target_soc_pct === "number" &&
+    typeof o.deficit_kwh === "number" &&
+    typeof o.on_track === "boolean" &&
+    typeof o.reason === "string"
+  );
+}
+
 // `safe`, `action`, and `ems_doing` are optional structured sub-lines (B-37 / B-09): "is my home
 // safe", "what can I do", and "what EMS is doing". The UI renders each only when present, else
 // falls back to the bare message — so an alert without the fields still renders as before.
@@ -551,7 +564,11 @@ export function App() {
         },
         () => setTileFreshness((current) => ({ ...current, finance: { ...current.finance, stale: true } })),
       );
-      fill("/api/charge-need", (v: ChargeNeed) => setChargeNeed(v ?? null));
+      fill(
+        "/api/charge-need",
+        (v: ChargeNeed) => setChargeNeed(isUsableChargeNeed(v) ? v : null),
+        () => setChargeNeed(null),
+      );
     }
     poll();
     const id = setInterval(poll, POLL_MS);

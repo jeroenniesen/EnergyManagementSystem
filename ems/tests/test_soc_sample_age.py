@@ -1,9 +1,12 @@
-"""Issue #134 — never fabricate SoC 0.0; last-good sample has a max age.
+"""Issue #134 — never fabricate SoC 0.0; max age for last-good sample.
 
 Klaar-als:
 1. Without a sample, SoC is unknown (`None`) and EMS is not SoC-ready.
 2. A sample older than the max age is stale (SoC `None`, not ready).
 3. Both cases covered with an injected clock (`now` argument).
+
+Also: production LiveSource never raises on battery failure — it returns seeded 0.0 /
+last-good SoC without ``"soc" in fresh``. Regression tests use a real LiveSource.
 """
 from __future__ import annotations
 
@@ -20,8 +23,10 @@ from ems.domain import RawSample
 from ems.lifecycle import Lifecycle
 from ems.settings import effective_settings
 from ems.sources.battery import MockBatteryDriver
+from ems.sources.live import HomeWizardMeter, LiveSource
 
 NOW = datetime(2026, 9, 27, 12, 0, tzinfo=UTC)
+P1 = {"active_power_w": 3, "active_power_l1_w": -348}
 
 
 def _sample(soc: float = 55.0) -> RawSample:
@@ -81,7 +86,6 @@ def test_no_sample_soc_is_none_and_not_ready():
     assert svc.current_soc(NOW) is None
     assert svc.current_soc(NOW) != 0.0
     assert svc.soc_ready(NOW) is False
-    assert svc.current_sample(NOW) is None
     assert source.calls >= 1
 
 
@@ -95,17 +99,16 @@ def test_stale_sample_soc_is_none_with_injected_clock():
     assert svc.soc_ready(NOW) is True
     assert source.calls == 1
 
-    # Later reads fail — within max age the last-good sample is still usable.
+    # Later reads fail — within max age the last-good SoC (soc_at) is still usable.
     source.fail = True
     still_ok = NOW + timedelta(seconds=_SAMPLE_MAX_AGE_SECONDS / 2)
     assert svc.current_soc(still_ok) == 72.0
     assert svc.soc_ready(still_ok) is True
 
-    # Past max age the same cached sample is stale → unknown SoC, not ready (#134).
+    # Past max age the same cached SoC is stale → unknown, not ready (#134).
     stale_at = NOW + timedelta(seconds=_SAMPLE_MAX_AGE_SECONDS + 1)
     assert svc.current_soc(stale_at) is None
     assert svc.soc_ready(stale_at) is False
-    assert svc.current_sample(stale_at) is None
 
 
 def test_fresh_sample_after_stale_window_restores_soc():
@@ -132,3 +135,75 @@ def test_unknown_soc_grace_action_is_fall_through():
     assert _decide_grace_action(
         override_active=False, failsafe=False, soc_pct=None, min_reserve_soc=10.0,
     ) == "fall_through"
+
+
+# --- B1 regression: real LiveSource never raises; seeded 0.0 / last-good must not look fresh ----
+
+class _FailingBattery:
+    def read_power_soc(self):
+        raise TimeoutError("Indevolt unreachable")
+
+
+class _OkBattery:
+    def __init__(self, soc: float = 72.0):
+        self.soc = soc
+        self.calls = 0
+
+    def read_power_soc(self):
+        self.calls += 1
+        return -500.0, self.soc
+
+
+class _FlakyBattery:
+    """OK once, then permanently fails — mirrors LiveSource last-good retention."""
+
+    def __init__(self, soc: float = 72.0):
+        self.soc = soc
+        self.calls = 0
+
+    def read_power_soc(self):
+        self.calls += 1
+        if self.calls == 1:
+            return -500.0, self.soc
+        raise TimeoutError("Indevolt unreachable")
+
+
+def _live(battery) -> LiveSource:
+    return LiveSource(
+        p1=HomeWizardMeter("x", http_get=lambda _u: P1),
+        solar=None,
+        car=None,
+        battery=battery,
+    )
+
+
+def test_livesource_boot_never_read_soc_is_none_not_zero():
+    """B1: LiveSource seeds soc=0.0; without a fresh soc signal current_soc must be None."""
+    svc = _service(_live(_FailingBattery()))
+    assert svc.current_soc(NOW) is None
+    assert svc.soc_ready(NOW) is False
+    # Raw sample still carries the seeded field — callers must use current_soc, not soc_pct.
+    sample = svc.current_sample(NOW)
+    assert sample is not None and sample.soc_pct == 0.0
+
+
+def test_livesource_battery_down_ages_out_last_good_soc():
+    """B1: good read then battery down re-stamps `at` but not soc_at → max age expires."""
+    batt = _FlakyBattery(72.0)
+    svc = _service(_live(batt))
+
+    assert svc.current_soc(NOW) == 72.0
+    assert svc.soc_ready(NOW) is True
+
+    # Force a re-read past the coalesce window; battery now fails.
+    later = NOW + timedelta(seconds=120)
+    assert svc.current_soc(later) == 72.0  # last-good still within max age
+    assert svc.soc_ready(later) is True
+    assert batt.calls >= 2  # LiveSource re-read; soc not in fresh
+
+    # Far past max age — even though LiveSource keeps returning soc_pct=72.0, SoC is unknown.
+    stale = NOW + timedelta(seconds=_SAMPLE_MAX_AGE_SECONDS + 1)
+    assert svc.current_soc(stale) is None
+    assert svc.soc_ready(stale) is False
+    sample = svc.current_sample(stale)
+    assert sample is not None and sample.soc_pct == 72.0  # last-good retained, untrusted

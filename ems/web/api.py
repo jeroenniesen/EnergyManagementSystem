@@ -20,7 +20,7 @@ from uuid import uuid4
 from zoneinfo import ZoneInfo
 
 from fastapi import FastAPI, HTTPException, Query, Request
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from starlette.background import BackgroundTask
 
@@ -2097,7 +2097,10 @@ def create_app(
                 _log.debug("readiness: storage integrity probe failed", exc_info=True)
         return compute_readiness(
             store_ok=storage_ok,
-            sensing_ok=dq != "unsafe",
+            # Sensing needs both the freshness badge AND a known live SoC (#134): LiveSource can
+            # keep returning a seeded 0.0 while freshness is separately stale/missing; soc_ready
+            # closes that gap for /health/ready and the control arming path.
+            sensing_ok=dq != "unsafe" and control.soc_ready(now),
             plan_ok=plan_ok,
             data_quality=dq,
             plan_valid=plan_valid,
@@ -2447,24 +2450,15 @@ def create_app(
         }
 
     @app.get("/api/charge-need")
-    def charge_need_endpoint() -> dict:
+    def charge_need_endpoint():
         # Advisory: how much the battery should hold by tonight, from current SoC + battery config.
         # Coalesced SoC (shared window) — don't read the battery on every poll of this card.
+        # Unknown/stale SoC (#134): 204 so the frontend clears the card (`fill` failed → null)
+        # instead of a null-float payload that crashes ChargeTarget.toFixed.
         s = settings_cache
         soc = _current_soc(datetime.now(UTC))
         if soc is None:
-            # Unknown/stale SoC (#134) — do not invent 0% for the advisory card.
-            return {
-                "usable_kwh": s["battery.usable_kwh"],
-                "current_soc_pct": None,
-                "current_kwh": None,
-                "reserve_kwh": None,
-                "target_kwh": None,
-                "target_soc_pct": None,
-                "deficit_kwh": None,
-                "on_track": None,
-                "reason": "Battery level unknown — waiting for a fresh reading.",
-            }
+            return Response(status_code=204)
         return compute_charge_need(
             soc_pct=soc,
             usable_kwh=s["battery.usable_kwh"],

@@ -118,13 +118,13 @@ def test_battery_timeout_recovery():
     ctx.override_box["ov"] = Override(
         intent=BatteryIntent.DISCHARGE_FOR_LOAD, expires_at=NOW + timedelta(hours=1))
 
-    # Cycle 1: source.read() raises TimeoutError → current_sample catches; tick survives.
-    # (A second read in the same tick may recover — TimeoutThenRecoverSource flips on call 2.)
+    # Cycle 1: source.read() raises TimeoutError → current_sample catches; SoC stays unknown
+    # this tick (soc_at unset). Exactly one read — car-mode path probes SoC once.
     records = svc.control_tick(NOW)
-    assert source._calls >= 1, "source.read() must have been called through current_sample"
+    assert source._calls == 1, "source.read() must have been called once through current_sample"
     assert isinstance(records, list)  # no crash
 
-    # Cycle 2: source.read() succeeds → fresh sample cached.
+    # Cycle 2: source.read() succeeds → fresh sample + soc_at cached.
     ctx.override_box["ov"] = Override(
         intent=BatteryIntent.DISCHARGE_FOR_LOAD, expires_at=NOW + timedelta(hours=2))
     records = svc.control_tick(NOW + timedelta(seconds=60))
@@ -132,6 +132,7 @@ def test_battery_timeout_recovery():
     # SoC is now readable from the recovered sample.
     soc = svc.current_soc(NOW + timedelta(seconds=60))
     assert soc == 50.0
+    assert svc.soc_ready(NOW + timedelta(seconds=60)) is True
 
 
 @pytest.mark.fault_injection

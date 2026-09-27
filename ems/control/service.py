@@ -306,7 +306,8 @@ class ControlContext:
     # Short in-memory coalescing of the (slow) live meter/SoC read + the per-tower cluster read, so
     # one dashboard refresh that fans out to several endpoints reads the hardware once. The
     # single-flight locks mean exactly ONE thread reads per window at cache expiry (flood safety).
-    sample_cache: dict[str, Any] = field(default_factory=lambda: {"sample": None, "at": None})
+    sample_cache: dict[str, Any] = field(
+        default_factory=lambda: {"sample": None, "at": None, "soc_at": None})
     tower_cache: dict[str, Any] = field(default_factory=lambda: {"towers": None, "at": None})
     sample_lock: threading.Lock = field(default_factory=threading.Lock)
     tower_lock: threading.Lock = field(default_factory=threading.Lock)
@@ -488,9 +489,10 @@ class ControlService:
             return _LIVE_SAMPLE_COALESCE_SECONDS
 
     def _sample_max_age_s(self) -> float:
-        """How long a last-good sample may still be treated as a known SoC (#134). Beyond this the
-        sample is stale → SoC unknown (`None`), never a fabricated 0.0. UI-tunable via
-        `control.sample_max_age_seconds`; falls back to the module default (matches freshness)."""
+        """How long a freshly-observed SoC may still be treated as known (#134). Beyond this
+        SoC is unknown (`None`), never a fabricated 0.0. Tunable via settings
+        `control.sample_max_age_seconds` (registered in the settings schema); falls back to the
+        module default (matches FreshnessTracker stale window)."""
         try:
             raw = self._settings.get("control.sample_max_age_seconds")
             if raw is None or raw == "":
@@ -506,45 +508,64 @@ class ControlService:
         return (at is not None and cache["sample"] is not None
                 and (now - at).total_seconds() < self._coalesce_s())
 
-    def _cached_sample_if_usable(self, now: datetime):
-        """Return the cached sample only while it is within the max age; else None (stale/missing).
+    def _read_live_sample(self, now: datetime) -> None:
+        """Populate sample_cache from the source. Prefer `read_sample()` so we know WHICH signals
+        were actually refreshed this cycle (#134 / LiveSource): `soc_at` advances only when
+        ``"soc" in fresh``. A bare `read()` (mocks) is treated as all-signals-fresh. On raise, the
+        cache is left untouched so prior `soc_at` can still age out."""
+        from ems.sense import SIGNALS
 
-        A failed re-read may keep the last-good entry in the cache, but callers must not treat an
-        over-age reading as current (#134)."""
+        read_sample = getattr(self._source, "read_sample", None)
+        if read_sample is not None:
+            sample, fresh = read_sample()
+        else:
+            sample = self._source.read()
+            fresh = set(SIGNALS)
         cache = self._ctx.sample_cache
-        sample, at = cache["sample"], cache["at"]
-        if sample is None or at is None:
-            return None
-        if (now - at).total_seconds() > self._sample_max_age_s():
-            return None
-        return sample
+        cache["sample"] = sample
+        cache["at"] = now
+        if "soc" in fresh:
+            cache["soc_at"] = now
 
     def current_sample(self, now: datetime):
+        """Coalesced live sample (meters + last-reported SoC field). SoC *trust* is gated separately
+        via `soc_at` in `current_soc` — LiveSource keeps returning a numeric `soc_pct` even when the
+        battery read failed (seeded 0.0 / last-good), so callers must not treat that field as known
+        without checking `current_soc`."""
         if self._sample_fresh(now):  # fast path: no lock when the cache is warm
-            return self._cached_sample_if_usable(now)
+            return self._ctx.sample_cache["sample"]
         with self._ctx.sample_lock:  # single-flight: one thread reads hardware/window, others reuse
             if self._sample_fresh(now):
-                return self._cached_sample_if_usable(now)
+                return self._ctx.sample_cache["sample"]
             try:
-                self._ctx.sample_cache["sample"], self._ctx.sample_cache["at"] = (
-                    self._source.read(), now)
+                self._read_live_sample(now)
             except Exception:
                 _log.debug("live sample read failed; keeping last good (non-fatal)", exc_info=True)
-                pass  # keep the last good sample in cache; usability gated by max age below
-            return self._cached_sample_if_usable(now)
+                pass  # leave cache (incl. soc_at) unchanged so SoC can age to unknown
+            return self._ctx.sample_cache["sample"]
 
     def current_soc(self, now: datetime) -> float | None:
-        """Live SoC percent, or None when there is no usable sample (#134).
+        """Live SoC percent, or None when SoC was never fresh or is past max age (#134).
 
-        Never fabricates 0.0 for a missing/stale reading — unknown SoC means not ready to plan or
-        command on SoC-dependent paths.
+        Never fabricates 0.0 for a missing/stale reading — LiveSource may still expose a seeded
+        `soc_pct=0.0` on the RawSample; we ignore that unless `soc_at` was set by a fresh soc
+        signal and is within the max age.
         """
-        s = self.current_sample(now)
-        return float(s.soc_pct) if s is not None else None
+        self.current_sample(now)  # refresh / coalesce the live read
+        cache = self._ctx.sample_cache
+        sample, soc_at = cache["sample"], cache.get("soc_at")
+        if sample is None or soc_at is None:
+            return None
+        if (now - soc_at).total_seconds() > self._sample_max_age_s():
+            return None
+        return float(sample.soc_pct)
 
     def soc_ready(self, now: datetime) -> bool:
-        """True when SoC is known from a non-stale sample — a required sensing readiness input."""
-        return self.current_soc(now) is not None
+        """True when SoC is known from a non-stale fresh reading — fed into sensing readiness.
+
+        Uses the injectable `_current_soc` seam so tests that stub SoC still drive readiness.
+        """
+        return self._current_soc(now) is not None
 
     def _towers_fresh(self, now: datetime) -> bool:
         cache = self._ctx.tower_cache
