@@ -20,7 +20,7 @@
 | **Solar meter stale** | freshness age exceeded | use forecast for `solar_power_w`; flag | `meter_missing` | resume on fresh read |
 | **Car meter stale** | freshness age exceeded | assume `ev_power_w=0`; widen load band | `meter_missing` | resume on fresh read |
 | **Clock skew / NTP unsynced** | `health.ntp_check` | windows misalign → flag; avoid acting on suspect times | `ntp_unsynced` | re-sync; resume |
-| **EMS process crash** | (external — supervisor) | battery stays in last (safe) mode; `restart: unless-stopped` | — | container restart; reload plan |
+| **EMS process crash** | (external — supervisor) | after restart + grace: if armed/operational, readiness incomplete, no active override, and observed ≠ `AUTO`, command `AUTO` (dry-run/unarmed never write); otherwise battery stays in last mode; `restart: unless-stopped` | — | container restart; reload plan |
 | **DB unwritable / full** | write error | continue control on in-memory state; stop sampling | (log) | free space; `VACUUM`; restore backup |
 | **Max writes/day hit** | counter at cap | stop switching; hold current mode | (log) | resets next day |
 | **No-trade day (unprofitable)** | `net_benefit ≤ 0` or savings < `daily_min_savings_eur` | `AUTO` all day (by design, not an error) | (info) | re-evaluate next replan |

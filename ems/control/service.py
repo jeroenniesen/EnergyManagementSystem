@@ -49,7 +49,7 @@ from ems.control.override import Override
 from ems.control.reconciliation import CommandReconciliation
 from ems.control.safety import SafetyValidator
 from ems.domain import BatteryIntent, PhysicalMode
-from ems.lifecycle import OwnershipState
+from ems.lifecycle import Lifecycle, OwnershipState
 from ems.perf import PERF_BUDGETS, REGISTRY, atimed, timed
 from ems.planner.adaptive import AdaptiveConfig
 from ems.planner.base import PlannerRequest
@@ -61,7 +61,7 @@ from ems.planner.strategy import HysteresisState, resolve_strategy_hysteretic
 from ems.planner.summer import SummerConfig
 from ems.planner.validator import PlanValidation
 from ems.price_quality import PriceHorizonStatus, validate_price_horizon
-from ems.sources.battery import intent_to_mode
+from ems.sources.battery import BatteryWriteUnconfirmed, intent_to_mode
 
 _log = logging.getLogger("ems.recorder")
 
@@ -1174,7 +1174,8 @@ class ControlService:
                 # Crash/restart fail-safe (#127): after the startup grace, if we still cannot reach
                 # CONTROLLING (readiness incomplete — e.g. unsafe/stale sensors) and the battery is
                 # observed in a forced mode, hand it back to AUTO. Only when armed/operational —
-                # dry-run and unarmed drivers never write. Manual override is left alone.
+                # dry-run and unarmed drivers never write. An active operator override
+                # (`ctx.override_box`) is left alone.
                 return self._startup_safe_auto_if_needed(now, lc, observed)
         with timed("control.decide"):
             intent, _reason, override_active, tgt, pw, _v, car_action = self.effective_intent(now)
@@ -1454,25 +1455,29 @@ class ControlService:
             self._writer_local.entered = True
 
     def _startup_safe_auto_if_needed(
-        self, now: datetime, lc, observed: PhysicalMode | None,
+        self, now: datetime, lc: Lifecycle, observed: PhysicalMode | None,
     ) -> list[dict]:
         """After grace, force AUTO when readiness is incomplete and the battery is not in AUTO.
 
         Complements graceful `_shutdown_restore`: a crash leaves the last forced mode in place, and
         stale sensors would otherwise keep the lifecycle in OBSERVING forever (never CONTROLLING,
-        never a plan-driven write). Dry-run / unarmed / override / already-AUTO → no write.
+        never a plan-driven write). Dry-run / unarmed / active operator override / already-AUTO →
+        no write. Operator overrides live in `ctx.override_box` (not Lifecycle.manual_override).
         """
+        operator_override = self._ctx.override_box["ov"].active(now)
         if (
             self._dry_run
             or self._controller is None
             or not self._controller.driver.armed
             or not lc.grace_elapsed(now)
+            or operator_override
             or lc.override_active(now)
             or lc.ready_to_act(now)
             or observed is None
             or observed is PhysicalMode.AUTO
         ):
             return []
+        outcome = "failed"
         try:
             self._ensure_fence_entered()
             confirmed = (
@@ -1482,31 +1487,58 @@ class ControlService:
             )
         except _CommandSuperseded:
             return []
+        except BatteryWriteUnconfirmed:
+            # Timeout: device likely received the write but we never confirmed — same I2 bookkeeping
+            # as decide()/overrun-AUTO (block refuse-when-busy until a confirmed cycle).
+            self._controller.note_overrun_recovery()
+            outcome = "unconfirmed"
+            confirmed = False
         except Exception:
             _log.warning("startup safe-AUTO write failed (non-fatal)", exc_info=True)
-            return [{
-                "summary": ("Post-restart fail-safe — could not force AUTO while readiness is "
-                            "incomplete; battery may still be in a forced mode"),
-                "detail": {
-                    "event": "startup_safe_auto",
-                    "outcome": "failed",
-                    "observed_mode": observed.value,
-                    "reason": "write raised; readiness incomplete after grace",
-                },
-            }]
-        if confirmed:
-            self._controller.note_confirmed_auto()
+            self._controller.note_overrun_recovery()
+            outcome = "failed"
+            confirmed = False
+        else:
+            if confirmed:
+                self._controller.note_confirmed_auto()
+                self._ctx.held_box["sig"] = None  # success clears any prior hold episode
+                outcome = "applied"
+            else:
+                # apply() returned False (rejection / unconfirmed without raising).
+                self._controller.note_overrun_recovery()
+                outcome = "unconfirmed"
+
+        # Retry AUTO every cycle (fail-safe), but audit only once per outcome episode (Indevolt
+        # saturation can otherwise produce ~288 identical rows/day).
+        sig = ("startup_safe_auto", outcome, observed.value)
+        if self._ctx.held_box["sig"] == sig:
+            return []
+        self._ctx.held_box["sig"] = sig
+        if outcome == "applied":
+            summary = (
+                f"Post-restart fail-safe — forced battery to AUTO (confirmed) because readiness "
+                f"is incomplete and observed mode was {observed.value}"
+            )
+            reason = "readiness incomplete after startup grace; refuse to leave forced mode"
+        elif outcome == "unconfirmed":
+            summary = (
+                "Post-restart fail-safe — AUTO write unconfirmed while readiness is incomplete; "
+                "battery may still be in a forced mode"
+            )
+            reason = "AUTO write timed out or was not accepted; will retry next cycle"
+        else:
+            summary = (
+                "Post-restart fail-safe — could not force AUTO while readiness is incomplete; "
+                "battery may still be in a forced mode"
+            )
+            reason = "write raised; readiness incomplete after grace"
         return [{
-            "summary": (
-                f"Post-restart fail-safe — forced battery to AUTO "
-                f"({'confirmed' if confirmed else 'UNCONFIRMED'}) because readiness is incomplete "
-                f"and observed mode was {observed.value}"
-            ),
+            "summary": summary,
             "detail": {
                 "event": "startup_safe_auto",
-                "outcome": "applied" if confirmed else "unconfirmed",
+                "outcome": outcome,
                 "observed_mode": observed.value,
-                "reason": "readiness incomplete after startup grace; refuse to leave forced mode",
+                "reason": reason,
             },
         }]
 
