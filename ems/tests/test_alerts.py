@@ -32,6 +32,37 @@ def test_unconfirmed_outcome_yields_warning_alert():
     assert "Indevolt" in a.message
 
 
+def test_last_command_unconfirmed_flag_yields_alert_without_outcome():
+    """Production path: sticky flag alone (preview never emits unconfirmed)."""
+    alerts = derive_alerts(
+        ALL_FRESH, dry_run=False, decision_outcome=None, last_command_unconfirmed=True,
+    )
+    assert any(a.key == "battery_command_unconfirmed" for a in alerts)
+
+
+def test_critical_signal_copy_mentions_active_self_use_not_pause():
+    fr = {**ALL_FRESH, "grid": "stale"}
+    a = next(
+        x for x in derive_alerts(fr, dry_run=False, decision_outcome=None, confirmed_auto=False)
+        if x.key == "grid_stale"
+    )
+    blob = f"{a.message} {a.safe} {a.ems_doing}".lower()
+    assert "self-use" in blob
+    assert "not yet confirmed" in blob
+    assert "pauses new battery" not in blob
+    assert "holds off on new battery" not in blob
+
+
+def test_soc_stale_confirmed_auto_copy():
+    fr = {**ALL_FRESH, "soc": "stale"}
+    a = next(
+        x for x in derive_alerts(fr, dry_run=False, decision_outcome=None, confirmed_auto=True)
+        if x.key == "soc_stale"
+    )
+    assert "confirmed" in a.message.lower()
+    assert "safe mode" not in f"{a.message} {a.safe} {a.ems_doing}".lower()
+
+
 def test_price_horizon_incomplete_alert():
     alerts = derive_alerts(
         ALL_FRESH, dry_run=False, decision_outcome=None, price_horizon_ok=False,

@@ -2654,7 +2654,7 @@ test.describe("EMS dashboard", () => {
     });
 
   test("shows the error banner when the snapshot and fallback status APIs fail", async ({ page }) => {
-    // B-09 / #73: dashboard + status both fail → emotionally complete banner with Laatst bekend.
+    // B-09 / #73: cold fail → emotionally complete banner; Laatst bekend is "—" (never fabricated).
     const dashboardMock = await mockRoute(page, "**/api/dashboard", (route) =>
       route.fulfill({
         status: 500,
@@ -2675,14 +2675,60 @@ test.describe("EMS dashboard", () => {
     const unreachable = page.getByTestId("alert-ems_unreachable");
     await expect(unreachable).toBeVisible();
     await expect(unreachable.getByTestId("alert-ems-doing")).toContainText("watch-only");
-    // Klaar-als #5: fixed phrase + clock — never a raw "Cannot reach EMS API" error code.
-    await expect(page.getByTestId("alert-laatst-bekend")).toContainText("Laatst bekend");
-    await expect(page.getByTestId("alert-laatst-bekend")).toHaveText(/Laatst bekend \d{2}:\d{2}/);
+    await expect(unreachable.getByTestId("alert-ems-doing")).not.toContainText("network loss");
+    // Cold fail: phrase present, no invented clock.
+    await expect(page.getByTestId("alert-laatst-bekend")).toHaveText("Laatst bekend —");
     await expect(banner).not.toContainText("Cannot reach EMS API");
-    // The live-status-dependent detail (Advanced + its tiles) stays hidden when status can't load.
+    // Stale live surfaces must not sit under the outage banner.
+    await expect(page.getByTestId("alerts")).toHaveCount(0);
+    await expect(page.getByTestId("home-state")).toHaveCount(0);
     await expect(page.getByTestId("advanced")).toHaveCount(0);
     dashboardMock.assertRequested();
     fallbackStatusMock.assertRequested();
+  });
+
+  test("reachable then fail keeps prior Laatst bekend time and hides stale live state", async ({
+    page,
+  }) => {
+    // B-09 / #73: after a successful contact, a later outage shows that earlier hh:mm — not now.
+    let failCore = false;
+    const dashboardMock = await mockRoute(page, "**/api/dashboard", async (route) => {
+      if (!failCore) {
+        await route.continue();
+        return;
+      }
+      await route.fulfill({
+        status: 500,
+        contentType: "application/json",
+        body: '{"detail":"snapshot boom"}',
+      });
+    });
+    const statusMock = await mockRoute(page, "**/api/status", async (route) => {
+      if (!failCore) {
+        await route.continue();
+        return;
+      }
+      await route.fulfill({
+        status: 500,
+        contentType: "application/json",
+        body: '{"detail":"status boom"}',
+      });
+    });
+    await page.goto("/");
+    // Wait until the first successful dashboard paint (hero or alerts from live data).
+    await expect(page.getByTestId("home-state").or(page.getByTestId("alerts"))).toBeVisible({
+      timeout: 15_000,
+    });
+    failCore = true;
+    // Remount the dashboard poll immediately (interval is 10s).
+    await page.getByTestId("nav-manage").click();
+    await page.getByTestId("nav-dashboard").click();
+    await expect(page.getByTestId("error")).toBeVisible({ timeout: 15_000 });
+    await expect(page.getByTestId("alert-laatst-bekend")).toHaveText(/Laatst bekend \d{2}:\d{2}/);
+    await expect(page.getByTestId("alerts")).toHaveCount(0);
+    await expect(page.getByTestId("home-state")).toHaveCount(0);
+    dashboardMock.assertRequested();
+    statusMock.assertRequested();
   });
 
   // B-20: the header bell — an in-app surface for the notification outbox.

@@ -11,6 +11,7 @@ Copy rules (B-09 / issue #73):
 - Never promise more than failsafe guarantees: no "the battery is safe" / "nothing changes"
   without a confirmed AUTO. Stale/missing critical signals without confirmed AUTO must not
   say "safe mode".
+- Critical-signal failsafe is ACTIVE AUTO (self-use), not "pause commands" (issue case c).
 """
 from __future__ import annotations
 
@@ -30,34 +31,39 @@ class Alert:
     ems_doing: str  # what EMS is doing / will do in this situation (failsafe intent)
 
 
-# Emotionally-complete signal messages (B-09): say what's wrong, what EMS does, and what
-# degrades — without claiming a confirmed AUTO "safe mode" unless the caller says so.
+# Emotionally-complete signal messages (B-09). Critical signals (grid/soc): EMS actively commands
+# AUTO / self-use when data is unsafe — distinguish confirmed vs not-yet-confirmed.
 # {state} is filled with "unavailable" (missing) or "delayed" (stale).
 _SIGNAL_INFO: dict[str, dict[str, str]] = {
     "grid": {
-        "message": "P1 meter {state} — EMS can't see your grid usage, so it pauses new battery "
-                    "commands until the meter returns.",
-        "safe": "EMS is not claiming a live battery mode — only that it stops new commands "
-                "until the P1 meter is back.",
-        "ems_doing": "EMS holds off on new battery commands and retries the P1 meter "
-                     "automatically.",
+        "message": "P1 meter {state} — EMS can't see your grid usage, so it switches the "
+                    "battery back to its own self-use (not yet confirmed).",
+        "safe": "EMS is directing the battery to self-use; that return is not yet confirmed.",
+        "ems_doing": "EMS actively commands the battery's own self-use and retries the P1 "
+                     "meter automatically.",
         "action": "Nothing needed — EMS retries automatically. If this lasts past an hour, "
                    "check the HomeWizard P1 meter's power and network.",
-        # When AUTO is confirmed, `safe` may mention self-use; still avoid "the battery is safe".
+        "message_confirmed_auto": "P1 meter {state} — EMS can't see your grid usage; the "
+                                  "battery is confirmed in its own self-use until it returns.",
         "safe_confirmed_auto": "EMS has confirmed the battery is in its own self-use mode "
                                "while the P1 meter is {state}.",
+        "ems_doing_confirmed_auto": "EMS is holding confirmed self-use and retries the P1 "
+                                    "meter automatically.",
     },
     "soc": {
-        "message": "Battery level {state} — EMS won't plan blind, so it pauses new battery "
-                    "commands until the Indevolt reading returns.",
-        "safe": "EMS is not claiming a live battery mode — only that it won't command a new "
-                "mode without a battery-level reading.",
-        "ems_doing": "EMS holds off on new battery commands and retries the Indevolt battery "
-                     "automatically.",
+        "message": "Battery level {state} — EMS won't plan blind, so it switches the Indevolt "
+                    "battery back to its own self-use (not yet confirmed).",
+        "safe": "EMS is directing the battery to self-use; that return is not yet confirmed.",
+        "ems_doing": "EMS actively commands the battery's own self-use and retries the Indevolt "
+                     "reading automatically.",
         "action": "Nothing needed — EMS retries automatically. If this lasts past an hour, "
                    "check the Indevolt battery's power and network.",
+        "message_confirmed_auto": "Battery level {state} — EMS won't plan blind; the battery "
+                                  "is confirmed in its own self-use until the reading returns.",
         "safe_confirmed_auto": "EMS has confirmed the battery is in its own self-use mode "
                                "while the battery level is {state}.",
+        "ems_doing_confirmed_auto": "EMS is holding confirmed self-use and retries the Indevolt "
+                                    "reading automatically.",
     },
     "solar": {
         "message": "Solar meter {state} — solar accounting is less precise; battery control "
@@ -89,11 +95,10 @@ _STATE_WORD = {"missing": "unavailable", "stale": "delayed"}
 # Fallback copy for any signal key not covered above, so a new signal never ships without an
 # answer to "is my home safe" / "what is EMS doing" / "what can I do" (B-37/B-09).
 _DEFAULT_SIGNAL_SAFE = (
-    "EMS falls back to holding new commands whenever a signal it depends on is missing."
+    "EMS falls back to the battery's own self-use whenever a signal it depends on is missing."
 )
 _DEFAULT_SIGNAL_EMS_DOING = (
-    "EMS retries the missing signal automatically and avoids new battery commands it can't "
-    "justify."
+    "EMS retries the missing signal automatically and aims for the battery's own self-use."
 )
 _DEFAULT_SIGNAL_ACTION = (
     "Nothing needed — EMS retries automatically. Check the affected meter's or battery's "
@@ -107,13 +112,18 @@ def derive_alerts(
     dry_run: bool,
     decision_outcome: str | None,
     confirmed_auto: bool = False,
+    last_command_unconfirmed: bool = False,
     price_horizon_ok: bool | None = None,
     control_overrun: bool = False,
 ) -> list[Alert]:
     """Build the calm alert list for the current snapshot.
 
-    `confirmed_auto`: True only when the controller's last confirmed action is AUTO and not
-    unconfirmed — gates wording that would otherwise over-claim failsafe ("safe mode").
+    `confirmed_auto`: True only when last confirmed action AND observed mode are AUTO and the
+    last command is not unconfirmed — gates wording that would otherwise over-claim failsafe.
+    `last_command_unconfirmed`: sticky controller flag (production path for the unconfirmed
+    alert — preview() never emits `unconfirmed`).
+    `decision_outcome`: sticky write outcome from decide() (`failed_*` / `unconfirmed`); not
+    from preview().
     `price_horizon_ok`: None = unknown/not yet checked (no alert); False = incomplete horizon.
     `control_overrun`: True while a recent control-cycle overrun is latched.
     """
@@ -132,18 +142,22 @@ def derive_alerts(
             sev = "critical" if sig in CRITICAL_SIGNALS else "warning"
             info = _SIGNAL_INFO.get(sig, {})
             state_word = _STATE_WORD.get(state, state)
-            msg_tpl = info.get("message", f"{sig} signal {{state}}")
-            msg = msg_tpl.format(state=state_word)
-            if confirmed_auto and "safe_confirmed_auto" in info:
+            if confirmed_auto and "message_confirmed_auto" in info:
+                msg = info["message_confirmed_auto"].format(state=state_word)
                 safe = info["safe_confirmed_auto"].format(state=state_word)
+                ems_doing = info["ems_doing_confirmed_auto"]
             else:
+                msg = info.get("message", f"{sig} signal {{state}}").format(state=state_word)
                 safe = info.get("safe", _DEFAULT_SIGNAL_SAFE)
+                ems_doing = info.get("ems_doing", _DEFAULT_SIGNAL_EMS_DOING)
             alerts.append(Alert(
                 f"{sig}_{state}", sev, msg,
                 safe=safe,
                 action=info.get("action", _DEFAULT_SIGNAL_ACTION),
-                ems_doing=info.get("ems_doing", _DEFAULT_SIGNAL_EMS_DOING),
+                ems_doing=ems_doing,
             ))
+    # Write-failure alerts: prefer sticky decide() outcome; fall back to last_command_unconfirmed
+    # so production /api/alerts can surface unconfirmed without relying on preview().
     if decision_outcome == "failed_unrecovered":
         alerts.append(Alert(
             "battery_write_failed_unrecovered", "critical",
@@ -166,7 +180,7 @@ def derive_alerts(
                    "Indevolt battery's connection if this keeps happening.",
             ems_doing="EMS commanded self-use after the failed write and will retry later.",
         ))
-    elif decision_outcome == "unconfirmed":
+    elif decision_outcome == "unconfirmed" or last_command_unconfirmed:
         alerts.append(Alert(
             "battery_command_unconfirmed", "warning",
             "A battery command was not confirmed — the Indevolt battery may still be catching "
@@ -189,14 +203,17 @@ def derive_alerts(
             ems_doing="EMS keeps self-use planning and waits for a full Tibber price horizon.",
         ))
     if control_overrun:
+        # Hedge: the overrun latch is set even when dry-run / lifecycle / drain skip the AUTO
+        # write, and the timed-out tick worker is shielded (not stopped).
         alerts.append(Alert(
             "control_overrun", "warning",
-            "A control cycle ran too long — EMS interrupted it to protect the plan.",
-            safe="EMS tries to return the battery to its own self-use after an overrun; "
-                 "confirmation comes on the next successful cycle.",
+            "A control cycle ran too long — EMS is recovering the plan.",
+            safe="EMS may command the battery back to its own self-use after an overrun; that "
+                 "write is skipped in watch-only mode or before control is ready.",
             action="Nothing needed — EMS recovers automatically. If this keeps recurring, "
                    "check the Indevolt battery's network latency.",
-            ems_doing="EMS stopped the slow cycle and commands the battery back to self-use.",
+            ems_doing="EMS flagged the over-budget cycle and will try self-use recovery when "
+                      "it is allowed to command.",
         ))
     return alerts
 

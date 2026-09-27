@@ -2173,23 +2173,27 @@ def create_app(
         dq = data_quality(
             snap, prices_ok=price_source is not None, forecast_ok=solar_forecast is not None
         )
-        # The controller's would-do outcome (read-only preview) feeds battery-failure alerts.
-        # Honour an active override so the outcome reflects what the controller would really do.
+        # Override banner needs effective intent; write-failure alerts do NOT use preview() —
+        # preview/_gate never emit unconfirmed/failed_* (B-09 / #73). Sticky decide() outcome +
+        # last_command_unconfirmed are the production signals.
+        intent, _reason, override_active, _tgt, _pw, _v, _ca = _effective_intent(now)
+        observed = _current_mode(now)
         outcome: str | None = None
-        intent, _reason, override_active, tgt, pw, _v, _ca = _effective_intent(now)
-        if intent is not None and controller is not None:
-            outcome = controller.preview(intent, now, target_soc=tgt, power_w=pw,
-                                         observed_mode=_current_mode(now),
-                                         manual=override_active,
-                                         priority=_car_charging(now),
-                                         car_session=_ca is not None and _ca.action == "discharge",
-                                         commitment=intent is BatteryIntent.GRID_CHARGE_TO_TARGET,
-                                         ).outcome
-        # B-09: confirmed AUTO gates wording that would over-claim failsafe ("safe mode").
+        last_unconfirmed = False
+        if controller is not None:
+            last_unconfirmed = bool(controller.last_command_unconfirmed)
+            sticky = controller.last_write_outcome
+            if sticky in ("failed_recovered", "failed_unrecovered", "unconfirmed"):
+                outcome = sticky
+            elif last_unconfirmed:
+                outcome = "unconfirmed"
+        # B-09: confirmed AUTO gates wording that would over-claim failsafe — requires last
+        # confirmed action AND observed mode AUTO, with no unconfirmed command outstanding.
         confirmed_auto = (
             controller is not None
             and controller.last_confirmed_action is PhysicalMode.AUTO
-            and not getattr(controller, "last_command_unconfirmed", False)
+            and not last_unconfirmed
+            and observed is PhysicalMode.AUTO
         )
         price_horizon_ok: bool | None = None
         control_overrun = False
@@ -2200,8 +2204,8 @@ def create_app(
             control_overrun = bool(control.control_overrun_active)
         alerts = derive_alerts(
             snap, dry_run=dry_run, decision_outcome=outcome,
-            confirmed_auto=confirmed_auto, price_horizon_ok=price_horizon_ok,
-            control_overrun=control_overrun,
+            confirmed_auto=confirmed_auto, last_command_unconfirmed=last_unconfirmed,
+            price_horizon_ok=price_horizon_ok, control_overrun=control_overrun,
         )
         out = [{"key": a.key, "severity": a.severity, "message": a.message,
                 "safe": a.safe, "action": a.action, "ems_doing": a.ems_doing} for a in alerts]

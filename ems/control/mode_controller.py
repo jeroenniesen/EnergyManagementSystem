@@ -108,6 +108,10 @@ class ModeController:
         # exact gap the naive "action in {AUTO,None}" predicate missed), so the restart gate must
         # honour BOTH. Persisted via state_snapshot()/restore_state() so it survives a restart.
         self.last_command_unconfirmed: bool = False
+        # Sticky write-path outcome from decide() for /api/alerts (B-09 / #73). preview() never
+        # emits unconfirmed/failed_*; alerts read this (or last_command_unconfirmed) instead.
+        # Cleared to None on a confirmed applied write so failure banners don't stick forever.
+        self.last_write_outcome: str | None = None
         # F3 incident de-dupe: the currently-open "unconfirmed" episode, so a stuck intent audits
         # once per episode rather than every dwell cycle (one live episode inflated to 13 rows).
         # Keyed by (intent, desired-mode); `_at` is when the episode was first (or last re-)logged.
@@ -415,6 +419,7 @@ class ModeController:
             # latency) but we never confirmed, so the last command's true device state is unknown.
             # Block a refuse-when-busy restart even though last_confirmed_action is left stale.
             self.last_command_unconfirmed = True
+            self.last_write_outcome = "unconfirmed"
             # F3: audit the FIRST unconfirmed of a stuck episode (and re-log after ~60 min);
             # suppress the duplicate rows in between. HOLD/retry behaviour above is untouched — only
             # the audit noise: one "charge isn't sticking because the device is slow" is one row.
@@ -439,6 +444,7 @@ class ModeController:
             # I2: a CONFIRMED AUTO recovery clears the unknown-state flag (the battery is provably
             # back in safe self-consumption); an unconfirmed AUTO recovery leaves it set (ALERT).
             self.last_command_unconfirmed = not recovered
+            self.last_write_outcome = outcome
             # A failed/unconfirmed write still hit the device with SetData POSTs, so it MUST count
             # like a switch: start the dwell timer and the daily cap. Without this, a write that
             # never confirms (e.g. a flaky/half-offline tower) was retried every single control
@@ -452,6 +458,7 @@ class ModeController:
         self.last_confirmed_action = desired
         # I2: a confirmed SetData acceptance (incl. a confirmed AUTO) clears the unknown-state flag.
         self.last_command_unconfirmed = False
+        self.last_write_outcome = None  # clear sticky failure banners for /api/alerts
         self._clear_unconfirmed_episode()  # F3: a confirmed write ends the episode → re-audit later
         self._persist()
         return ActionDecision(intent, desired, True, "applied", f"set {desired}")
@@ -464,6 +471,7 @@ class ModeController:
         never rewriting the field). Only call after a CONFIRMED AUTO write."""
         self.last_confirmed_action = PhysicalMode.AUTO
         self.last_command_unconfirmed = False
+        self.last_write_outcome = None
         self._persist()
 
     def note_overrun_recovery(self) -> None:

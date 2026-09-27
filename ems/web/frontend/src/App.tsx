@@ -350,8 +350,11 @@ export function App() {
     report: emptyFreshness(), status: emptyFreshness(), finance: emptyFreshness(),
   });
   const batteryFreshness = useRef<string | null>(null);
+  // True while the latest poll concluded EMS is unreachable — blocks late fills of stale alerts/hero.
+  const unreachableRef = useRef(false);
   const [error, setError] = useState<string | null>(null);
   // B-09: wall-clock of the last successful dashboard/status contact — drives "Laatst bekend".
+  // Null until a successful contact (cold fail → "Laatst bekend —", never a fabricated time).
   const [lastReachableAt, setLastReachableAt] = useState<number | null>(null);
   const [route, setRoute] = useState<Route>(() => routeFromHash(window.location.hash));
   const view = route.view;
@@ -476,6 +479,7 @@ export function App() {
     }
     function poll() {
       const applyCore = (value: { status: Status; freshness: FreshnessMap; alerts: AlertsResp }) => {
+        unreachableRef.current = false;
         setStatus(value.status);
         setFreshness(value.freshness);
         batteryFreshness.current = value.freshness.battery ?? null;
@@ -497,24 +501,37 @@ export function App() {
         .catch((snapshotError) => {
           // Older EMS servers do not expose the snapshot yet; retain the proven fan-out path.
           getJson("/api/status")
-            .then((v) => { if (alive) { setStatus(v); setError(null); setLastReachableAt(Date.now()); } })
+            .then((v) => {
+              if (alive) {
+                unreachableRef.current = false;
+                setStatus(v);
+                setError(null);
+                setLastReachableAt(Date.now());
+              }
+            })
             .catch((e) => { if (alive) {
+              unreachableRef.current = true;
               setError(String(e ?? snapshotError));
-              // First-ever failure still needs a clock for "Laatst bekend hh:mm" (B-09 / #73).
-              setLastReachableAt((prev) => prev ?? Date.now());
+              // Cold fail: leave lastReachableAt null → "Laatst bekend —" (never invent a time).
+              // Demote stale live state so old alerts/hero aren't shown as current under the banner.
+              setAlertsData(null);
+              setDecision(null);
               setTileFreshness((current) => ({ ...current, status: { ...current.status, stale: true } }));
             } });
           fill("/api/freshness", (value: FreshnessMap) => {
             setFreshness(value);
             batteryFreshness.current = value.battery ?? null;
           });
-          fill("/api/alerts", setAlertsData);
+          // Do not refill alerts on the fallback path — a total outage clears them above; a
+          // partial status recovery still gets alerts via the next successful /api/dashboard.
         });
       fill("/api/energy-story?window=next", setStory);
       fill("/api/battery-plan", setBatteryPlan);
       fill("/api/strategy", (v: Strategy) => { if (!strategyPending.current) setStrategy(v); });
       fill("/api/battery", setBattery);
-      fill("/api/decision", setDecision);
+      fill("/api/decision", (v: Decision) => {
+        if (!unreachableRef.current) setDecision(v);
+      });
       // B-03b: the measured figure, not the old plan-estimate tile — never a fake €0.00. finance's
       // totals.saved_eur is null until a day of prices has been recorded, in which case the footer
       // shows "measuring" instead of inventing a number.
@@ -598,8 +615,9 @@ export function App() {
   );
 
   // "Do I need to act?" — answered explicitly. Nothing to do unless an override is running, the
-  // system has fallen back to safe mode (unsafe data), or a warning/critical alert is live. Info
-  // notes (e.g. watch-only) are calm by design and never raise the act line.
+  // system is on unsafe data (self-use failsafe), or a warning/critical alert is live. Info
+  // notes (e.g. watch-only) are calm by design and never raise the act line. Never claim
+  // "safe mode" without a confirmed AUTO (B-09 / #73).
   const alerts = alertsData?.alerts ?? [];
   const topActionable = [...alerts]
     .filter((a) => a.severity === "warning" || a.severity === "critical")
@@ -609,8 +627,8 @@ export function App() {
     : alertsData?.data_quality === "unsafe"
       ? {
           text:
-            "EMS paused control and fell back to the battery's own safe mode — nothing to do; it " +
-            "resumes on its own once the data is trustworthy again.",
+            "EMS is switching the battery back to its own self-use until meter data is " +
+            "trustworthy again — nothing to do; it resumes on its own.",
           calm: false,
         }
       : topActionable
@@ -734,7 +752,8 @@ export function App() {
           Plain block with no box styling, so the calm-dashboard card spacing is unchanged. */}
       <main className="app-main">
 
-      {alertsData && alertsData.alerts.length > 0 && (
+      {/* Server alerts only while reachable — never above the unreachable banner as "live". */}
+      {!error && alertsData && alertsData.alerts.length > 0 && (
         <section className="alerts" data-testid="alerts">
           {/* Sort by severity so a control-blocking issue never sits below a watch-only note. */}
           {[...alertsData.alerts]
@@ -778,6 +797,7 @@ export function App() {
             className="alert-item alert-critical"
             data-severity="critical"
             data-testid="alert-ems_unreachable"
+            title={error}
           >
             <span className="alert-message">{EMS_UNREACHABLE.message}</span>
             <span className="alert-ems-doing" data-testid="alert-ems-doing">
@@ -791,8 +811,9 @@ export function App() {
       )}
 
       {/* The hero: one verdict, one synthesis line, one explicit answer to "do I need to act?".
-          Absorbs the old status banner + the scattered on-track/score copy into a single read. */}
-      {view === "dashboard" && home && (
+          Absorbs the old status banner + the scattered on-track/score copy into a single read.
+          Hidden while unreachable so a stale "Nothing needed" can't sit under the outage banner. */}
+      {view === "dashboard" && !error && home && (
         <section
           className={`hero home-${home.tone}`}
           data-testid="home-state"
