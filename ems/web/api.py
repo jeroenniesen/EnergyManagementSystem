@@ -168,9 +168,9 @@ from ems.web.routes.export import build_router as build_export_router
 from ems.web.routes.notify import build_router as build_notify_router
 from ems.web.routes.plan import build_router as build_plan_router
 from ems.web.routes.report import build_router as build_report_router
+from ems.web.routes.reserve_advice import build_router as build_reserve_advice_router
 from ems.web.routes.users import build_router as build_users_router
 from ems.web.routes.verification import build_router as build_verification_router
-from ems.web.routes.reserve_advice import build_router as build_reserve_advice_router
 from ems.web.routes.whatif import build_router as build_whatif_router
 
 _log = logging.getLogger("ems.recorder")
