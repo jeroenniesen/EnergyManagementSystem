@@ -1,5 +1,10 @@
 # Calm Dashboard and Combined Plan Chart Implementation Plan
 
+> **Backlog location:** do not edit `BACKLOG.md`. Tracking lives in
+> [GitHub Issues](https://github.com/jeroenniesen/EnergyManagementSystem/issues?q=is%3Aissue+is%3Aopen+label%3Abacklog)
+> (labels `type:*`, `prio:*`, `area:*`, `size:*`, `backlog`; titles keep `[B-86]` / `[B-87]`).
+> Steps below that name `BACKLOG.md` are historical.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Redesign the web Dashboard around one merged hero, four today-so-far outcome tiles, and one layered Next-24h chart while preserving technical evidence behind disclosure.
@@ -29,7 +34,7 @@
 - Modify `ems/web/frontend/src/styles.css`: tile grid, combined-chart layers, responsive behavior, focus, patterns, themes, and reduced motion.
 - Modify `ems/web/frontend/e2e/ui.spec.ts`: hierarchy, data semantics, interaction, disclosure, and density coverage.
 - Modify `SPEC.md`: replace the implemented B-32 dashboard hierarchy note with the approved B-86/B-87 reality.
-- Modify `BACKLOG.md`: carry the already-authored E-10 entries into this isolated branch and update B-86/B-87 tracking only after verification.
+- Update tracking for E-10 / B-86 / B-87 on the matching GitHub Issues (label `backlog`; titles `[B-86]` / `[B-87]`), only after verification. Do not edit `BACKLOG.md`.
 
 ---
 
@@ -280,7 +285,7 @@ Run `git diff --check` and inspect `App.tsx`, `styles.css`, and `ui.spec.ts` dif
 - Modify: `ems/web/frontend/e2e/ui.spec.ts`
 - Modify: `ems/web/frontend/playwright.config.ts` only if named desktop/phone projects are needed by existing conventions
 - Modify: `SPEC.md`
-- Modify: `BACKLOG.md`
+- Update the matching GitHub Issues (label `backlog`) instead of `BACKLOG.md`
 
 **Interfaces:**
 - Consumes: stable `data-density-kind="hero|tile|chart|badge|number|disclosure"` markers on Dashboard primitives.
@@ -319,7 +324,7 @@ Mock missing report flows, `saved_eur: null`, and missing solar/price chart data
 
 - [ ] **Step 4: Update SPEC and backlog truthfully**
 
-In `SPEC.md` §9.1, replace the B-32 implemented-reality paragraph with B-86/B-87’s merged hero, four today-so-far outcome tiles, combined chart, and retained technical disclosure. Bring E-10/B-86/B-87 from the main checkout’s current `BACKLOG.md` edit into this branch without overwriting unrelated backlog changes. Mark items done only after the full verification step succeeds.
+In `SPEC.md` §9.1, replace the B-32 implemented-reality paragraph with B-86/B-87’s merged hero, four today-so-far outcome tiles, combined chart, and retained technical disclosure. Update the GitHub issues for E-10/B-86/B-87 (label `backlog`) instead of `BACKLOG.md`. Mark those issues done only after the full verification step succeeds.
 
 - [ ] **Step 5: Run full frontend and relevant repository verification**
 
@@ -340,7 +345,7 @@ Run:
 ```bash
 git status --short
 git diff --stat
-git diff -- SPEC.md BACKLOG.md ems/web/frontend/src ems/web/frontend/e2e/ui.spec.ts
+git diff -- SPEC.md ems/web/frontend/src ems/web/frontend/e2e/ui.spec.ts
 ```
 
 Confirm no backend, planner, control, battery, storage, generated browser-companion, `.e2e-data`, or dependency-lock artifacts entered the change.
