@@ -428,7 +428,7 @@ ntfy/HA-companion pushes for genuine wins and warnings. **Trigger:** B-07 shows 
 
 ### B-14 · Solcast forecast provider — Feature · S
 Real P10/P50/P90 percentiles (SPEC's primary provider, unbuilt) instead of derived 0.6×/1.15× bands. Improves risk-aware grid-charge sizing.
-**Track:** Pool · ⬜
+**Track:** 🟨 in PR — see open draft for B-14 Solcast (awaiting merge + backlog-sync).
 
 ### B-23 · Deferred with roadmap triggers — Feature · L
 ML layer (accelerator-gated); hybrid heat-pump switchover (**trigger:** heat pump installed); OCPP wallbox (**trigger:** wallbox purchased); ToU/peak-aware planning (**trigger:** NL ToU tariffs ~2029).

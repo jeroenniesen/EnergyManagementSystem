@@ -203,6 +203,30 @@ SETTINGS_SCHEMA: tuple[SettingsField, ...] = (
         help="Compass orientation: 0 = due south, −90 = east, +90 = west.",
         min=-180.0, max=180.0, step=5.0, unit="°", advanced=True,
     ),
+    # --- Solar forecast provider (SPEC §6.3 / B-14) — Solcast primary, Forecast.Solar fallback ---
+    SettingsField(
+        "solar.forecast_provider", "Solar forecast provider", "enum", "forecast_solar", "site",
+        help="Solcast Hobbyist supplies real P10/P50/P90 percentiles (needs API key + rooftop "
+        "resource id). Forecast.Solar is keyless and the automatic fallback when Solcast is "
+        "unavailable or the daily call budget is exhausted.",
+        options=("solcast", "forecast_solar"), applies="restart",
+    ),
+    SettingsField(
+        "solar.solcast_api_key", "Solcast API key", "secret", "", "site",
+        help="Hobbyist API key from toolkit.solcast.com.au. Stored locally; leave blank to keep "
+        "the current value.", applies="restart",
+    ),
+    SettingsField(
+        "solar.solcast_resource_id", "Solcast rooftop resource id", "text", "", "site",
+        help="rooftop_resource_id from the Solcast Toolkit site detail page.",
+        applies="restart",
+    ),
+    SettingsField(
+        "solar.solcast_daily_call_budget", "Solcast daily call budget", "int", 10, "site",
+        help="Hard cap on Solcast API calls per local day (free Hobbyist = 10). The EMS refuses "
+        "further refreshes once the ledger hits this cap and falls back to Forecast.Solar.",
+        min=1, max=50, advanced=True, applies="restart",
+    ),
     # --- Control safety limits (pushed onto the mode controller live, SPEC §6.5) ---
     SettingsField(
         "control.operational", "Let the system control the battery", "bool", False, "control",

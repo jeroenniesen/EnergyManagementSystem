@@ -37,6 +37,12 @@ def _seed_from_config(cfg) -> dict:
     token = os.environ.get("TIBBER_TOKEN")
     if token:
         seed["prices.tibber_token"] = token
+    solcast_key = os.environ.get("SOLCAST_API_KEY")
+    if solcast_key:
+        seed["solar.solcast_api_key"] = solcast_key
+    solcast_rid = os.environ.get("SOLCAST_RESOURCE_ID")
+    if solcast_rid:
+        seed["solar.solcast_resource_id"] = solcast_rid
     # Don't seed empty strings (they'd just hide the schema default and clutter the store).
     return {k: v for k, v in seed.items() if v not in ("", None)}
 
@@ -183,16 +189,38 @@ def build_wiring(eff: dict, tz: ZoneInfo, cache_store: object | None = None):
     else:
         price_source = MockPriceSource(tz)
 
-    # Solar forecast: live Forecast.Solar (keyless, from the configured location) when live devices
-    # are on; otherwise the model curve. Forecast.Solar is cached + falls back to the model.
+    # Solar forecast (SPEC §6.3 / B-14): Solcast Hobbyist primary when configured; Forecast.Solar
+    # (keyless) is the automatic fallback. Live devices + lat/lon unlock the live path; otherwise
+    # the built-in model curve. Both live adapters cache + fail safe.
     if use_live_devices and eff.get("site.lat") is not None and eff.get("site.lon") is not None:
         from ems.sources.forecast_solar import ForecastSolarSource
 
-        solar_forecast = ForecastSolarSource(
+        forecast_solar = ForecastSolarSource(
             tz=tz, lat=float(eff["site.lat"]), lon=float(eff["site.lon"]),
             tilt=float(eff["site.tilt"]), azimuth=float(eff["site.azimuth"]),
             kwp=float(eff["site.kwp"]), cache_store=cache_store,
         )
+        want_solcast = eff.get("solar.forecast_provider") == "solcast"
+        solcast_key = (eff.get("solar.solcast_api_key") or "").strip()
+        solcast_rid = (eff.get("solar.solcast_resource_id") or "").strip()
+        if want_solcast and solcast_key and solcast_rid:
+            from ems.sources.solcast import SolcastSource
+
+            solar_forecast = SolcastSource(
+                tz=tz,
+                api_key=solcast_key,
+                resource_id=solcast_rid,
+                daily_budget=int(eff.get("solar.solcast_daily_call_budget") or 10),
+                fallback=forecast_solar,
+                cache_store=cache_store,
+            )
+        else:
+            if want_solcast:
+                _log.warning(
+                    "solar.forecast_provider=solcast but api key / resource id missing; "
+                    "using Forecast.Solar"
+                )
+            solar_forecast = forecast_solar
     else:
         solar_forecast = MockSolarForecastSource(tz)
     dry_run = not operational  # operational (armed + live battery) is the ONLY way dry_run lifts
