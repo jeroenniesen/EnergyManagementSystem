@@ -1,16 +1,24 @@
 """Tibber day-ahead prices adapter (SPEC §6.2). Implements the PriceSource port by querying the
-Tibber GraphQL API and expanding hourly `total` (€/kWh, energy+tax) into 15-min slots
+Tibber GraphQL API and normalising `total` (€/kWh, energy+tax) into 15-min slots
 (CLAUDE.md: NL is quarter-hourly; hourly auto-expands to 4×15min).
 
 Read-only. The token comes from the environment (never committed). Network I/O is injectable so
 tests run against recorded GraphQL payloads, never the live API.
+
+Format note (#137): Tibber's `priceInfo` takes an optional `resolution` (`HOURLY` |
+`QUARTER_HOURLY`). Omitting it defaults to **HOURLY** (back-compat since the 2025-09-30 MTU
+change). The shipped query therefore receives hourly `today`/`tomorrow` entries and expands
+each into four identical 15-min slots. The parser also accepts an already-quarter-hourly array
+(e.g. `resolution: QUARTER_HOURLY`) without re-expanding — otherwise duplicates would make
+completeness validation fail and leave the battery in HOLD/AUTO.
 """
 from __future__ import annotations
 
 import json
 import logging
+import statistics
 import threading
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from datetime import UTC, datetime, timedelta
 from zoneinfo import ZoneInfo
 
@@ -37,6 +45,12 @@ _OUTAGE_MIN_FAILURES = 3
 _PERSIST_TTL = timedelta(days=7)
 _CACHE_KEY = "tibber:prices"
 
+# Spacing thresholds for auto-detecting whether `today`/`tomorrow` entries are already
+# quarter-hourly or still hourly (SPEC §6.2 / #137). Midpoint between 15 min and 60 min.
+_QUARTER_SEC = SLOT.total_seconds()  # 900
+_HOUR_SEC = 4 * _QUARTER_SEC  # 3600
+_RESOLUTION_CUTOFF_SEC = (_QUARTER_SEC + _HOUR_SEC) / 2  # 2250
+
 
 def _serialize_slots(slots: list[PriceSlot]) -> str:
     return json.dumps([{"s": s.start.isoformat(), "e": s.eur_per_kwh} for s in slots])
@@ -51,7 +65,8 @@ def _deserialize_slots(blob: str) -> list[PriceSlot]:
         return []
 
 ENDPOINT = "https://api.tibber.com/v1-beta/gql"
-# priceInfo.today/tomorrow are hourly {total (€/kWh), startsAt (ISO, tz-aware)}.
+# priceInfo without `resolution` defaults to HOURLY (Tibber changelog 2025-09-30): each entry is
+# {total (€/kWh), startsAt (ISO, tz-aware)} at :00. Parser expands to 4×15min; see #137.
 PRICE_QUERY = (
     "{viewer{homes{currentSubscription{priceInfo{"
     "today{total startsAt} tomorrow{total startsAt}}}}}}"
@@ -80,25 +95,83 @@ def _expand_hour(total: float, starts_at: str) -> list[PriceSlot]:
     return [PriceSlot(start=start + i * SLOT, eur_per_kwh=float(total)) for i in range(4)]
 
 
+def _slot_from_entry(total: float, starts_at: str) -> PriceSlot:
+    """One already-quarter-hourly price -> a single 15-min slot (no expansion)."""
+    return PriceSlot(start=datetime.fromisoformat(starts_at), eur_per_kwh=float(total))
+
+
+def _parse_starts(entries: Sequence[dict]) -> list[datetime]:
+    out: list[datetime] = []
+    for entry in entries:
+        starts_at = entry.get("startsAt")
+        if not starts_at:
+            continue
+        try:
+            out.append(datetime.fromisoformat(starts_at))
+        except (ValueError, TypeError):
+            continue
+    return out
+
+
+def detect_price_resolution(entries: Sequence[dict]) -> str:
+    """Return ``\"hourly\"`` or ``\"quarter_hourly\"`` from consecutive `startsAt` spacing.
+
+    Tibber's default `priceInfo` (no `resolution` arg) is hourly; `resolution: QUARTER_HOURLY`
+    yields ~15-min spacing. A single entry falls back to the minute field (:00 → hourly, else
+    quarter-hourly) so we never expand a lone :15/:30/:45 point into four overlapping slots.
+    Empty input defaults to hourly (the shipped query's contract).
+    """
+    starts = sorted(_parse_starts(entries))
+    if len(starts) >= 2:
+        deltas = [
+            (b - a).total_seconds()
+            for a, b in zip(starts, starts[1:], strict=False)
+            if (b - a).total_seconds() > 0
+        ]
+        if deltas:
+            median = statistics.median(deltas)
+            return "quarter_hourly" if median < _RESOLUTION_CUTOFF_SEC else "hourly"
+    if len(starts) == 1:
+        return "hourly" if starts[0].minute == 0 else "quarter_hourly"
+    return "hourly"
+
+
+def _dedupe_slots(slots: list[PriceSlot]) -> list[PriceSlot]:
+    """Keep one slot per `start` (last write wins), preserving chronological order."""
+    by_start: dict[datetime, PriceSlot] = {}
+    for slot in slots:
+        by_start[slot.start] = slot
+    return [by_start[k] for k in sorted(by_start)]
+
+
 def parse_price_info(data: dict, home_index: int = 0) -> list[PriceSlot]:
     """Pure parser: GraphQL `data` -> 15-min PriceSlots (today then tomorrow), sorted by start.
-    Tolerant of missing pieces (returns what it can / empty)."""
+
+    Auto-detects hourly vs quarter-hourly from `startsAt` spacing (#137): hourly entries expand
+    to four identical 15-min slots; quarter-hourly entries pass through without re-expansion.
+    Tolerant of missing pieces (returns what it can / empty). Duplicate `startsAt` values are
+    collapsed so a mixed/retried payload cannot feed the planner overlapping quarters.
+    """
     homes = (((data or {}).get("viewer") or {}).get("homes")) or []
     if not homes or not (0 <= home_index < len(homes)):
         return []
     info = ((homes[home_index] or {}).get("currentSubscription") or {}).get("priceInfo") or {}
+    entries = list(info.get("today") or []) + list(info.get("tomorrow") or [])
+    resolution = detect_price_resolution(entries)
     out: list[PriceSlot] = []
-    for entry in (info.get("today") or []) + (info.get("tomorrow") or []):
+    for entry in entries:
         total, starts_at = entry.get("total"), entry.get("startsAt")
         if total is None or not starts_at:
             continue
         try:
-            out.extend(_expand_hour(total, starts_at))
+            if resolution == "hourly":
+                out.extend(_expand_hour(total, starts_at))
+            else:
+                out.append(_slot_from_entry(total, starts_at))
         except (ValueError, TypeError) as exc:
             # Skip a single malformed entry rather than discarding the whole response.
             _log.warning("skipping malformed Tibber price entry %s: %s", entry, exc)
-    out.sort(key=lambda s: s.start)
-    return out
+    return _dedupe_slots(out)
 
 
 class TibberPriceSource:
