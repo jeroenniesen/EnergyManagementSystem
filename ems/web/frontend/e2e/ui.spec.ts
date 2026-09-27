@@ -2715,10 +2715,8 @@ test.describe("EMS dashboard", () => {
       });
     });
     await page.goto("/");
-    // Wait until the first successful dashboard paint (hero or alerts from live data).
-    await expect(page.getByTestId("home-state").or(page.getByTestId("alerts"))).toBeVisible({
-      timeout: 15_000,
-    });
+    // Wait until the first successful dashboard paint (hero is enough; alerts may also be present).
+    await expect(page.getByTestId("home-state")).toBeVisible({ timeout: 15_000 });
     failCore = true;
     // Remount the dashboard poll immediately (interval is 10s).
     await page.getByTestId("nav-manage").click();

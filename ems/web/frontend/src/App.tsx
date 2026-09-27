@@ -522,8 +522,11 @@ export function App() {
             setFreshness(value);
             batteryFreshness.current = value.battery ?? null;
           });
-          // Do not refill alerts on the fallback path — a total outage clears them above; a
-          // partial status recovery still gets alerts via the next successful /api/dashboard.
+          // Older servers / snapshot-unavailable: still fan out /api/alerts. Skip applying if
+          // status also failed (unreachable) so stale alerts never sit under the outage banner.
+          fill("/api/alerts", (value: AlertsResp) => {
+            if (!unreachableRef.current) setAlertsData(value);
+          });
         });
       fill("/api/energy-story?window=next", setStory);
       fill("/api/battery-plan", setBatteryPlan);
