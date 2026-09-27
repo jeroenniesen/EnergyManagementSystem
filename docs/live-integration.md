@@ -73,16 +73,29 @@ Control is **off by default and gated** — the battery is never written until y
 it. In the shipped config the driver is built unarmed and `dry_run` stays on. `build_wiring`
 (`ems/connection.py`) arms the real driver (a real `SetData` transport, `armed=True`) and lifts
 `dry_run` **only when all of** these hold:
-1. **`control.dry_run: false`** in `config.yaml` (default is `true`; when true it **always wins**
-   over the UI operational toggle — #136),
-2. **`control.operational` is enabled** (Settings → Control & safety; off by default),
-3. a live **Indevolt IP** is configured with live devices on, and
-4. a **live Tibber price source** is wired (`connection.use_live_prices` + `prices.tibber_token`).
+1. **`dev.mode: live`** in `config.yaml` (shipped default is `mock`; mock/replay **force** dry-run
+   via `load_config`, so `control.dry_run: false` alone does nothing until mode is live),
+2. **`control.dry_run: false`** in `config.yaml` (default is `true`; when true — or forced by
+   mock/replay — it **always wins** over the UI operational toggle — #136),
+3. **`control.operational` is enabled** (Settings → Control & safety; off by default),
+4. a live **Indevolt IP** is configured with live devices on, and
+5. a **live Tibber price source** is wired (`connection.use_live_prices` + `prices.tibber_token`).
    Mock/demo prices keep `dry_run` on (#126) — EMS never live-commands on synthetic prices.
 
 When any gate fails (the default), `apply()` refuses to write and `decide()` is never even reached
-in dry-run. Going live is therefore: turn on live devices (read-only sensing), configure Tibber,
-set `control.dry_run: false`, restart, then much later turn on operational control.
+in dry-run. If the UI operational toggle is ON while config still forces dry-run, startup logs a
+WARNING and the System **Run mode** row explains why writes stay off. Going live is therefore:
+turn on live devices (read-only sensing), configure Tibber, set `dev.mode: live` +
+`control.dry_run: false`, restart, then much later turn on operational control.
+
+### Migration (pre-#136 installs)
+
+Production often runs from the git checkout (`scripts/upgrade.sh` → `git pull --ff-only`). After
+this change, an operational Mac Mini / Pi whose tracked `config.yaml` still has `dev.mode: mock`
+and `control.dry_run: true` **silently becomes watch-only** on restart (safe). To keep live
+control across upgrade, set `dev.mode: live` and `control.dry_run: false` **before** upgrading
+(and keep live Tibber prices configured — #126). If you edited `config.yaml` locally, the comment
+change next to `dry_run` can make `git pull --ff-only` abort — resolve local edits first.
 
 Once armed, extra guardrails still apply: idempotency (no write unless the mode actually changes),
 minimum dwell, a daily switch cap (failed writes count too), fail-safe to `AUTO` on unsafe data, and

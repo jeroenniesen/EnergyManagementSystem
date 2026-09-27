@@ -60,13 +60,18 @@ def build_diagnostics(
     identity_auth: bool = False,
     freshness: dict[str, str] | None = None,
     ev_guard_blind: bool = False,
+    dry_run_block_reason: str | None = None,
 ) -> list[Check]:
     dq_status = {"complete": "ok", "degraded": "warn", "price_fallback": "warn"}.get(
         data_quality, "fail"
     )
+    mode_detail = f"{dev_mode}, dry-run {'on' if dry_run else 'off'}"
+    if dry_run_block_reason:
+        mode_detail = f"{mode_detail} — {dry_run_block_reason}"
+    # Config override of an ON operational toggle is warn so System shows why writes stay off.
+    mode_status = "warn" if dry_run_block_reason else "ok"
     checks = [
-        Check("mode", "Run mode", "ok",
-              f"{dev_mode}, dry-run {'on' if dry_run else 'off'}"),
+        Check("mode", "Run mode", mode_status, mode_detail),
         Check("history_store", "History store", "ok" if store_ok else "fail",
               "reachable" if store_ok else "not reachable — history/UI degraded"),
         Check("settings_store", "Settings store", "ok" if settings_store_ok else "warn",

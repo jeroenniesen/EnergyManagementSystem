@@ -85,14 +85,26 @@ Nothing here needs an environment variable or a config file edit — it's all in
 ## Safety
 
 - Ships in **mock + dry-run**: the simulator runs with no devices, and the battery is never written.
-- **`control.dry_run` in `config.yaml` (default `true`) is authoritative:** while it is `true`, the
-  EMS stays watch-only and **wins over** the UI **operational** toggle — decisions are logged, the
-  battery writer stays unarmed. To allow live control you must set `control.dry_run: false` **and**
-  enable operational in the UI (plus a live Indevolt IP), then restart.
-- Going live is therefore deliberate layers: live devices (read-only sensing) → `dry_run: false` in
-  config → **operational** in the UI — gated behind layered readiness + a hard plan validator;
-  operational stays off by default.
+- **`control.dry_run` in `config.yaml` (default `true`) is authoritative:** while it is `true` —
+  or while `dev.mode` is `mock`/`replay` (those modes **force** dry-run) — the EMS stays watch-only
+  and **wins over** the UI **operational** toggle. Decisions are logged; the battery writer stays
+  unarmed. To allow live control set **`dev.mode: live`**, **`control.dry_run: false`**, enable
+  **operational** in the UI (plus a live Indevolt IP), then restart.
+- Going live is therefore deliberate layers: live devices (read-only sensing) → `dev.mode: live` +
+  `dry_run: false` in config → **operational** in the UI — gated behind layered readiness + a hard
+  plan validator; operational stays off by default.
 - Reads always work for a guest; only *changes* can be protected by the access token.
+
+### Migration note (upgrade from pre-#136)
+
+If you already run live battery control from a git checkout (`make upgrade` / `git pull`):
+
+1. Before upgrading, set `dev.mode: live` and `control.dry_run: false` in `config.yaml` if you want
+   to **keep** live control after restart. An untouched tracked config (`mock` + `dry_run: true`)
+   safely drops to watch-only — intentional fail-safe, not a silent live arm.
+2. This release edits comments next to `control.dry_run`. If you have **local edits** to
+   `config.yaml`, `git pull --ff-only` (used by `upgrade.sh`) can **abort** with "local changes
+   would be overwritten" — stash or merge those edits before upgrading.
 
 ## Developing
 

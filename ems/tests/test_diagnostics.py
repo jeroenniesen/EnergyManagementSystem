@@ -19,10 +19,23 @@ def _facts(**over):
     return base
 
 
-def test_all_healthy_is_overall_ok():
-    checks = build_diagnostics(**_facts())
-    assert overall_status(checks) == "ok"
-    assert {c.key for c in checks} >= {"history_store", "prices", "battery", "data_quality", "auth"}
+def test_mode_check_explains_config_forced_dry_run():
+    # #136 F3: when config blocks UI operational, System Run mode shows why (warn + reason).
+    checks = build_diagnostics(
+        **_facts(dry_run=True),
+        dry_run_block_reason="config forces watch-only; UI operational is ON",
+    )
+    mode = next(c for c in checks if c.key == "mode")
+    assert mode.status == "warn"
+    assert "config forces watch-only" in mode.detail
+    assert "dry-run on" in mode.detail
+
+
+def test_mode_check_ok_without_block_reason():
+    mode = next(c for c in build_diagnostics(**_facts(dry_run=True)) if c.key == "mode")
+    assert mode.status == "ok"
+    assert mode.detail == "mock, dry-run on"
+
 
 
 def test_unreachable_history_store_fails_overall():

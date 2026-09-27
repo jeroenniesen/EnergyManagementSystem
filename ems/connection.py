@@ -6,9 +6,9 @@ concrete source objects. On first boot the store is seeded from config.yaml + en
 out of the box; thereafter the UI is authoritative. Connection changes take effect on restart.
 
 SAFETY: default path builds READ paths + an UNARMED battery driver with dry_run on. A live writer
-is armed only when config ``control.dry_run`` is false, UI ``control.operational`` is on, a live
-Indevolt is configured, AND a live Tibber price source is wired (config dry_run and mock prices
-win — #136 / #126 / SPEC §11.6).
+is armed only when ``dev.mode: live``, ``control.dry_run: false``, UI ``control.operational`` is
+on, a live Indevolt is configured, AND a live Tibber price source is wired (config dry_run /
+mock|replay and mock prices win — #136 / #126 / SPEC §11.6).
 """
 from __future__ import annotations
 
@@ -22,6 +22,30 @@ from ems.battery_profile import normalize_tower_ips
 from ems.settings import effective_settings
 
 _log = logging.getLogger("ems.connection")
+
+# Surfaced in diagnostics /api/status when config blocks an ON operational toggle (#136 F3).
+CONFIG_FORCED_DRY_RUN_REASON = (
+    "config forces watch-only (need dev.mode: live and control.dry_run: false, then restart); "
+    "UI operational is ON but the battery writer stays unarmed"
+)
+
+
+def config_forced_dry_run_reason(eff: dict, *, force_dry_run: bool) -> str | None:
+    """Why config is forcing watch-only despite UI operational, or None if not that case.
+
+    ``force_dry_run`` is ``cfg.dry_run`` after load_config (True when ``control.dry_run`` is true
+    OR ``dev.mode`` is mock/replay). Only reports when operational would otherwise have armed
+    (live devices + Indevolt IP + live Tibber prices — #126).
+    """
+    if not force_dry_run or not bool(eff.get("control.operational")):
+        return None
+    use_live = bool(eff.get("connection.use_live_devices")) and bool(eff.get("meters.p1_ip"))
+    if not use_live or not (eff.get("battery.indevolt_ip") or ""):
+        return None
+    token = (eff.get("prices.tibber_token") or "").strip()
+    if not (bool(eff.get("connection.use_live_prices")) and bool(token)):
+        return None  # #126 would have blocked arming anyway
+    return CONFIG_FORCED_DRY_RUN_REASON
 
 
 def _seed_from_config(cfg) -> dict:
@@ -104,14 +128,15 @@ def build_wiring(
     tz: ZoneInfo,
     cache_store: object | None = None,
     *,
-    force_dry_run: bool = False,
+    force_dry_run: bool = True,
 ):
     """Build (source, price_source, solar_forecast, battery_endpoint, controller_driver, dev_mode,
     dry_run) from effective settings. The battery driver is unarmed and dry_run is True UNLESS
     control.operational is on AND a live Indevolt is configured AND a live Tibber price source is
     wired AND ``force_dry_run`` is False (then armed + dry_run False). ``force_dry_run`` comes from
-    ``config.yaml`` ``control.dry_run`` (default true) and always wins over the UI
-    ``control.operational`` toggle (#136). Mock/demo prices can never lift dry_run (#126).
+    ``cfg.dry_run`` (``control.dry_run`` after mock/replay force; default True) and always wins
+    over the UI ``control.operational`` toggle (#136). Mock/demo prices can never lift dry_run
+    (#126). Default ``force_dry_run=True`` is fail-safe if a caller omits the kwarg.
 
     `cache_store` (optional) is handed to the rate-limited external sources (Tibber, Forecast.Solar)
     so they warm-start from a persisted snapshot after a restart and don't immediately refetch."""
@@ -124,8 +149,8 @@ def build_wiring(
     )
     token = (eff.get("prices.tibber_token") or "").strip()
     live_prices = bool(eff.get("connection.use_live_prices")) and bool(token)
-    # Operational requires a real battery AND live prices. force_dry_run (config control.dry_run)
-    # always wins over the UI operational toggle (#136). Mock/demo prices keep dry_run (#126).
+    # Operational requires a real battery AND live prices. force_dry_run (config control.dry_run /
+    # mock|replay) always wins over the UI operational toggle (#136). Mock prices keep dry_run (#126).
     operational = False
     if use_live_devices:
         from ems.sources.indevolt import (
@@ -144,6 +169,9 @@ def build_wiring(
             and live_prices
             and not force_dry_run
         )
+        blocked = config_forced_dry_run_reason(eff, force_dry_run=force_dry_run)
+        if blocked:
+            _log.warning("%s", blocked)
         # F1: ONE DeviceQuiesce per master, shared by the cluster reader and the write driver below,
         # so reads back off while a SetData sequence (+ settle tail) lands on the device's single
         # embedded HTTP server (the charge-fails-under-car-load root cause).

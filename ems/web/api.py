@@ -878,6 +878,7 @@ def create_app(
     source: Source,
     *,
     dry_run: bool,
+    dry_run_block_reason: str | None = None,
     dev_mode: str,
     tz: ZoneInfo | None = None,
     store: HistoryStore | None = None,
@@ -2382,6 +2383,7 @@ def create_app(
         )
         checks = build_diagnostics(
             dev_mode=dev_mode, dry_run=dry_run,
+            dry_run_block_reason=dry_run_block_reason,
             data_quality=dq,
             prices_ok=prices_ok, forecast_ok=forecast_ok,
             battery_ok=battery_ok, p1_paired=p1_paired,
@@ -3932,6 +3934,7 @@ def create_app(
         derived = reconstruct(raw)
         return {
             "dry_run": dry_run,
+            "dry_run_reason": dry_run_block_reason,
             "dev_mode": dev_mode,
             "soc_pct": raw.soc_pct,
             "grid_power_w": raw.grid_power_w,
