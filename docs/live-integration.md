@@ -2,9 +2,10 @@
 
 How to run the EMS against the real devices. **Sensing is read-only and is the default.** Battery
 *control* is a separate, deliberately-armed step: it stays OFF (`dry_run`, no writes) until you turn
-on **`control.operational`** in the UI/settings **and** a live Indevolt IP is configured — only then
-is the write driver armed. See [Hands (battery control)](#hands-battery-control) below and
-`docs/control-model.md` for the ownership state machine and guardrails.
+on **`control.operational`**, configure a live Indevolt IP with live devices, **and** wire a live
+Tibber price source — only then is the write driver armed (#126). See
+[Hands (battery control)](#hands-battery-control) below and `docs/control-model.md` for the
+ownership state machine and guardrails.
 
 ## Enable live mode
 
@@ -86,6 +87,13 @@ minimum dwell, a daily switch cap (failed writes count too), fail-safe to `AUTO`
 a **graceful-shutdown safe-restore** that hands the battery back to its safe vendor mode on stop
 (see the operator runbook). The plan's target SoC / power are wired through to `setdata_registers`,
 so `apply()` charges to the planned target, never silently to 100%.
+
+**Tibber outage while live (#126):** day-ahead cache stays usable per SPEC §6 (the 15‑min cache TTL
+only throttles polls). Control fails over to vendor self-use only after **2 hours** since the last
+successful Tibber fetch **and** **3** consecutive failed/empty fetches — so a single 429 cannot
+burn a mode switch. The status badge's "sinds hh:mm" is the frozen start of that failure streak.
+The car-charging hold still applies on top of the outage fail-safe (never AUTO-discharge into the
+car).
 
 ## What's intentionally NOT done
 

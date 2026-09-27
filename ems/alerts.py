@@ -205,12 +205,13 @@ def derive_alerts(
         hhmm = _hhmm(tibber_unavailable_since, site_tz)
         if dry_run:
             # #126 case (b-kijkmodus): never claim a battery write / self-use command.
+            # warning (not critical): EMS changes nothing in watch mode (#148 review F7).
             alerts.append(Alert(
-                "tibber_prices_unavailable", "critical",
+                "tibber_prices_unavailable", "warning",
                 _MSG_TIBBER_DOWN_WATCH.format(hhmm=hhmm),
                 safe="In kijkmodus verandert EMS niets aan je batterij.",
-                action="Nothing needed — EMS retries Tibber automatically. Check your Tibber "
-                       "connection in Settings if this lasts.",
+                action="Niets nodig — EMS probeert Tibber automatisch opnieuw. Check je Tibber-"
+                       "verbinding in Instellingen als dit aanhoudt.",
                 ems_doing="EMS kijkt alleen mee tot actuele Tibber-prijzen terug zijn.",
             ))
         elif confirmed_auto:
@@ -218,7 +219,7 @@ def derive_alerts(
                 "tibber_prices_unavailable", "critical",
                 _MSG_TIBBER_DOWN_LIVE.format(hhmm=hhmm),
                 safe="De batterij draait op eigen zelfverbruik tot Tibber-prijzen terug zijn.",
-                action="Nothing needed — EMS retries Tibber automatically.",
+                action="Niets nodig — EMS probeert Tibber automatisch opnieuw.",
                 ems_doing="EMS houdt eigen zelfverbruik aan tot actuele prijzen terug zijn.",
             ))
         else:
@@ -227,8 +228,8 @@ def derive_alerts(
                 "tibber_prices_unavailable", "critical",
                 _MSG_TIBBER_DOWN_LIVE_UNCONFIRMED.format(hhmm=hhmm),
                 safe="Laatst bekende stand: onbekend — EMS claimt geen batterijstand.",
-                action="Nothing needed — EMS retries Tibber automatically and will confirm the "
-                       "Indevolt battery as soon as it can.",
+                action="Niets nodig — EMS probeert Tibber opnieuw en bevestigt de Indevolt-"
+                       "batterij zodra dat kan.",
                 ems_doing="EMS wacht op bevestiging van de Indevolt-batterij; de stand is nog "
                           "onbekend.",
             ))

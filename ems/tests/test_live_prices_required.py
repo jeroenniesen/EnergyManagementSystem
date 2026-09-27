@@ -127,6 +127,27 @@ def test_case_b_live_tibber_outage_commands_self_use_and_copy():
     assert a.severity == "critical"
 
 
+def test_tibber_outage_still_holds_when_car_charging():
+    """#126 review F1: outage fail-safe must NOT skip the car-charging guard.
+
+    Repro: 3 kW car + Tibber down → HOLD_RESERVE/idle, never AUTO (which would discharge into
+    the car via vendor self-use / P1-zeroing).
+    """
+    controller = _controlling_controller()
+    svc, _ctx = _service(
+        controller,
+        price_source=_UnavailableTibber(slots=[]),
+        car_charging=lambda now: True,  # ≥ threshold (3 kW car)
+        current_mode=lambda now: PhysicalMode.AUTO,
+    )
+    intent, reason, _ov, _tgt, _pw, _val, car_action = svc.effective_intent(datetime.now(UTC))
+    assert intent is BatteryIntent.HOLD_RESERVE
+    assert "car charging" in reason
+    assert car_action is None or car_action.action == "hold"
+    # Must not leave the outage path as bare self-consumption (AUTO discharge into the car).
+    assert intent is not BatteryIntent.ALLOW_SELF_CONSUMPTION
+
+
 def test_case_b_unconfirmed_auto_no_mode_name():
     """#126 (b) unconfirmed AUTO: 'Laatst bekende stand: onbekend', no mode name."""
     alerts = derive_alerts(
@@ -148,6 +169,7 @@ def test_case_b_kijkmodus_tibber_outage_no_self_use_claim():
         tibber_unavailable_since=SINCE, site_tz=AMS,
     )
     a = next(x for x in alerts if x.key == "tibber_prices_unavailable")
+    assert a.severity == "warning"
     assert "EMS kijkt alleen mee en verandert niets aan je batterij" in a.message
     assert "EMS heeft de batterij op eigen zelfverbruik gezet" not in a.message
     assert "Kijkmodus:" not in a.message
@@ -169,3 +191,41 @@ def test_alerts_api_case_a_surfaces_kijkmodus(tmp_path):
     a = next(x for x in alerts if x["key"] == "no_live_prices")
     assert a["severity"] == "critical"
     assert "Kijkmodus: geen actuele prijzen van Tibber" in a["message"]
+
+
+def test_alerts_api_case_b_and_b_kijkmodus(tmp_path):
+    """#126: /api/alerts wires tibber_unavailable_since for live and dry-run outages."""
+    hhmm = SINCE.astimezone(AMS).strftime("%H:%M")
+
+    # (b-kijkmodus) dry_run=True + outage source
+    app_watch = create_app(
+        MockSource(), dry_run=True, dev_mode="live", tz=AMS,
+        price_source=_UnavailableTibber(),
+        solar_forecast=MockSolarForecastSource(AMS),
+        freshness=_fresh_tracker(),
+        settings_store=SettingsStore(str(tmp_path / "w.sqlite")),
+    )
+    with TestClient(app_watch) as c:
+        alerts = c.get("/api/alerts").json()["alerts"]
+    a = next(x for x in alerts if x["key"] == "tibber_prices_unavailable")
+    assert a["severity"] == "warning"
+    assert f"sinds {hhmm}" in a["message"]
+    assert "EMS kijkt alleen mee" in a["message"]
+    assert "EMS heeft de batterij op eigen zelfverbruik gezet" not in a["message"]
+
+    # (b) dry_run=False + outage; AUTO not confirmed → onbekend copy (no mode name)
+    ctl = ModeController(MockBatteryDriver(), Lifecycle(dry_run=False), dry_run=False)
+    app_live = create_app(
+        MockSource(), dry_run=False, dev_mode="live", tz=AMS,
+        price_source=_UnavailableTibber(),
+        solar_forecast=MockSolarForecastSource(AMS),
+        freshness=_fresh_tracker(),
+        settings_store=SettingsStore(str(tmp_path / "l.sqlite")),
+        controller=ctl,
+    )
+    with TestClient(app_live) as c:
+        alerts = c.get("/api/alerts").json()["alerts"]
+    a = next(x for x in alerts if x["key"] == "tibber_prices_unavailable")
+    assert a["severity"] == "critical"
+    assert "Laatst bekende stand: onbekend" in a["message"]
+    assert "Kijkmodus:" not in a["message"]
