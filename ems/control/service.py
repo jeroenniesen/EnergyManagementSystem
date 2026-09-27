@@ -43,7 +43,6 @@ from ems.control.command_fence import (
 )
 from ems.control.decision import ControlDecisionEngine
 from ems.control.execution import CommandExecutionBoundary
-from ems.control.failsafe import failsafe_intent
 from ems.control.override import NONE as OVERRIDE_NONE
 from ems.control.override import Override
 from ems.control.reconciliation import CommandReconciliation
@@ -834,104 +833,16 @@ class ControlService:
         return intent, reason, None  # "none" — defensive (car_charging was True), unchanged
 
     # --- effective intent ------------------------------------------------------------------------
-    def _effective_intent_legacy(self, now: datetime):
-        """The intent the controller should act on now + its energy sizing, honouring an active
-        manual override and the data-quality fail-safe. Returns (intent|None, reason|None,
-        override_active, target_soc|None, power_w|None, validation|None, car_action|None).
-
-        An active override wins over the plan AND the fail-safe (deliberate, time-boxed operator
-        action — the UI shows the data-quality badge). The planner path is gated: unsafe data falls
-        back to self-consumption (CLAUDE.md "fail safe"). Sizing (target_soc/power_w) is taken from
-        the SAME plan slot we resolved, and ONLY when the final intent still matches that slot's
-        intent — an override or a fail-safe substitution carries no sizing, so a stale target can
-        never leak to the driver. A target is emitted only for a physical CHARGE (the slot target
-        SoC) or, when export-discharge is enabled, a forced DISCHARGE (the reserve floor); a
-        DISCHARGE_FOR_LOAD that maps to AUTO needs none.
-
-        `car_action` (the 7th element) is the CarModeAction chosen by the car-charging guard, or
-        None when car-mode is dormant. When it is a discharge, the intent is DISCHARGE_FOR_LOAD at
-        the bounded car setpoint (power_w = car_action.power_w, target_soc = the reserve floor) and
-        the control tick treats it as a car session (car_session=True → a real DISCHARGE)."""
-        cur = None
-        val: PlanValidation | None = None
-        ov = self._ctx.override_box["ov"]
-        if ov.active(now):
-            assert ov.intent is not None and ov.expires_at is not None
-            until = ov.expires_at.astimezone(self._site_tz).strftime("%H:%M")
-            intent, override_active = ov.intent, True
-            # Gate a RISKY override (anything other than self-consumption) on data quality: EMS
-            # won't force charge/discharge/hold when critical data is unsafe — it can't trust SoC or
-            # reachability. Returning to self-consumption is always allowed (energy review #5).
-            risky = intent is not BatteryIntent.ALLOW_SELF_CONSUMPTION
-            if risky and self._data_quality(now) == "unsafe":
-                intent = BatteryIntent.ALLOW_SELF_CONSUMPTION
-                reason = (f"manual override held — sensor data is unsafe, so EMS won't force "
-                          f"{ov.intent.value}; holding self-consumption until {until}")
-            else:
-                reason = f"manual override: {ov.intent.value} until {until}"
-        else:
-            pp = self.current_plan(now)
-            if pp is None:
-                status = self._price_horizon_status
-                if self._price_source is not None and status is not None and not status.ok:
-                    return (
-                        BatteryIntent.ALLOW_SELF_CONSUMPTION,
-                        f"holding self-consumption — incomplete prices: {status.reason}",
-                        False, None, None, None, None,
-                    )
-                return None, None, False, None, None, None, None
-            cur = pp[2].intent_at(now)
-            if cur is None:
-                return None, None, False, None, None, None, None
-            # §8.11 hard gate: a plan that fails validation (impossible target, projected below
-            # reserve, …) must not be acted on — hold self-consumption, like the data fail-safe.
-            # Validate the plan we ALREADY fetched (no second current_plan rebuild).
-            val = self._validate_plan_obj(pp[2], now)
-            if not val.ok:
-                top = next((f for f in val.findings if f.severity == "unsafe"), None)
-                note = top.message if top is not None else "plan failed validation"
-                cur = None  # not acting on a plan slot — sizing must be None below
-                intent, reason, override_active = (
-                    BatteryIntent.ALLOW_SELF_CONSUMPTION,
-                    f"holding self-consumption — {note}", False)
-            else:
-                safe, fs_reason = failsafe_intent(cur.intent, self._data_quality(now))
-                intent, reason = ((safe, fs_reason) if fs_reason is not None
-                                  else (cur.intent, cur.reason))
-                override_active = False
-        # Final guardrail (over the plan AND a manual override): never FEED the car — hold, or (if
-        # the operator chose a discharge behaviour) cover the house at a bounded setpoint.
-        intent, reason, car_action = self._car_guard(now, intent, reason)
-        target_soc = power_w = None
-        if car_action is not None and car_action.action == "discharge":
-            # Car session: the setpoint is authoritative; the reserve floor is the stop. This takes
-            # precedence over the override/plan sizing below (it IS the final guardrail).
-            power_w = car_action.power_w
-            target_soc = self._settings["battery.min_reserve_soc"]
-        elif override_active:
-            # A manual override is an EXPLICIT operator command, so it carries its own target —
-            # "charge now" means charge toward full (deliberate, not the planner's silent default),
-            # a forced discharge stops at the reserve floor. (Gated overrides held to
-            # self-consumption fall through with no target, which is correct.)
-            if intent is BatteryIntent.GRID_CHARGE_TO_TARGET:
-                target_soc = 100.0
-                # "charge now" = charge at the configured cluster max (default 4 kW), which the
-                # driver then splits across towers — not the driver's conservative 2 kW default.
-                power_w = self._settings["battery.max_charge_w"]
-            elif (intent is BatteryIntent.DISCHARGE_FOR_LOAD and self._controller is not None
-                  and self._controller.allow_export_discharge):
-                target_soc = self._settings["battery.min_reserve_soc"]
-                power_w = self._settings["battery.max_discharge_w"]
-        elif cur is not None and intent is cur.intent:
-            if intent is BatteryIntent.GRID_CHARGE_TO_TARGET:
-                target_soc, power_w = cur.target_soc, cur.power_w
-            elif (intent is BatteryIntent.DISCHARGE_FOR_LOAD and self._controller is not None
-                  and self._controller.allow_export_discharge):
-                target_soc, power_w = cur.floor_soc, cur.power_w  # forced discharge → reserve floor
-        return intent, reason, override_active, target_soc, power_w, val, car_action
+    def _prices_unavailable_since(self):
+        """#126: when the live Tibber source reports an outage, else None."""
+        unavail = getattr(self._price_source, "unavailable_since", None)
+        return unavail() if callable(unavail) else None
 
     def effective_intent(self, now: datetime):
-        """Resolve intent through the pure decision engine."""
+        """Resolve intent through the pure decision engine (`ControlDecisionEngine`).
+
+        Tibber-outage / incomplete-price fail-safes fall through to `_car_guard` there — never
+        return AUTO early past the car-charging hold (#126 review F1)."""
         return self._decision_engine.effective_intent(
             now,
             override=self._ctx.override_box["ov"],
@@ -939,6 +850,7 @@ class ControlService:
             price_horizon_status=lambda: self._price_horizon_status,
             validate_plan=self._validate_plan_obj,
             current_setpoint_w=self._ctx.car_session["setpoint_w"],
+            prices_unavailable_since=self._prices_unavailable_since,
         )
 
     # --- cluster-drift audit ---------------------------------------------------------------------

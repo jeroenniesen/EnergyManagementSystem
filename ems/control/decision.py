@@ -85,6 +85,7 @@ class ControlDecisionEngine:
         price_horizon_status,
         validate_plan: PlanValidator,
         current_setpoint_w: float | None = None,
+        prices_unavailable_since=None,
     ):
         """Return the legacy seven-element effective-intent tuple."""
         cur = None
@@ -107,41 +108,52 @@ class ControlDecisionEngine:
             else:
                 reason = f"manual override: {override.intent.value} until {until}"
         else:
-            pp = current_plan(now)
-            if pp is None:
-                if callable(price_horizon_status):
-                    price_horizon_status = price_horizon_status()
-                if price_horizon_status is not None and not price_horizon_status.ok:
-                    return (
-                        BatteryIntent.ALLOW_SELF_CONSUMPTION,
-                        "holding self-consumption — incomplete prices: "
-                        f"{price_horizon_status.reason}",
-                        False,
-                        None,
-                        None,
-                        None,
-                        None,
-                    )
-                return None, None, False, None, None, None, None
-            cur = pp[2].intent_at(now)
-            if cur is None:
-                return None, None, False, None, None, None, None
-            val = self._safety.validate(pp[2], now)
-            if not val.ok:
-                top = next((f for f in val.findings if f.severity == "unsafe"), None)
-                note = top.message if top is not None else "plan failed validation"
-                cur = None
-                intent, reason, override_active = (
-                    BatteryIntent.ALLOW_SELF_CONSUMPTION,
-                    f"holding self-consumption — {note}",
-                    False,
-                )
-            else:
-                safe, fs_reason = self._safety.failsafe(cur.intent, now)
-                intent, reason = (
-                    (safe, fs_reason) if fs_reason is not None else (cur.intent, cur.reason)
-                )
+            # #126: live Tibber outage → force self-use while staying operational, but FALL
+            # THROUGH to `_car_guard` (never return early). AUTO/self-use while the car charges
+            # would discharge into the car; the guard must still force HOLD_RESERVE.
+            since = prices_unavailable_since
+            if callable(since):
+                since = since()
+            if since is not None:
+                intent = BatteryIntent.ALLOW_SELF_CONSUMPTION
+                reason = "holding self-consumption — live Tibber prices unavailable"
                 override_active = False
+            else:
+                pp = current_plan(now)
+                if pp is None:
+                    if callable(price_horizon_status):
+                        price_horizon_status = price_horizon_status()
+                    if price_horizon_status is not None and not price_horizon_status.ok:
+                        # Same fall-through as #126: incomplete prices must still hit the car guard.
+                        intent = BatteryIntent.ALLOW_SELF_CONSUMPTION
+                        reason = (
+                            "holding self-consumption — incomplete prices: "
+                            f"{price_horizon_status.reason}"
+                        )
+                        override_active = False
+                    else:
+                        return None, None, False, None, None, None, None
+                else:
+                    cur = pp[2].intent_at(now)
+                    if cur is None:
+                        return None, None, False, None, None, None, None
+                    val = self._safety.validate(pp[2], now)
+                    if not val.ok:
+                        top = next((f for f in val.findings if f.severity == "unsafe"), None)
+                        note = top.message if top is not None else "plan failed validation"
+                        cur = None
+                        intent, reason, override_active = (
+                            BatteryIntent.ALLOW_SELF_CONSUMPTION,
+                            f"holding self-consumption — {note}",
+                            False,
+                        )
+                    else:
+                        safe, fs_reason = self._safety.failsafe(cur.intent, now)
+                        intent, reason = (
+                            (safe, fs_reason) if fs_reason is not None
+                            else (cur.intent, cur.reason)
+                        )
+                        override_active = False
         intent, reason, car_action = self._car_guard(
             now, intent, reason, current_setpoint_w=current_setpoint_w)
         target_soc = power_w = None

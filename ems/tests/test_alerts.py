@@ -1,8 +1,11 @@
+from datetime import UTC, datetime
+
 from ems.alerts import Alert, data_quality, derive_alerts
 
 ALL_FRESH = {"grid": "fresh", "solar": "fresh", "ev": "fresh", "battery": "fresh", "soc": "fresh"}
 SIGNALS = ("grid", "soc", "solar", "ev", "battery")
 STATES = ("missing", "stale")
+TIBBER_SINCE = datetime(2026, 9, 27, 14, 5, tzinfo=UTC)
 
 
 def test_dry_run_yields_info_alert():
@@ -119,13 +122,25 @@ def _collect_all_alerts() -> list[Alert]:
         ALL_FRESH, dry_run=False, decision_outcome=None, control_overrun=True,
     ):
         seen[a.key] = a
+    # #126 live-prices gate alerts (distinct keys from dry_run_active).
+    for a in derive_alerts(
+        ALL_FRESH, dry_run=True, decision_outcome="dry_run",
+        mock_prices_blocked_operational=True,
+    ):
+        seen[a.key] = a
+    for a in derive_alerts(
+        ALL_FRESH, dry_run=False, decision_outcome=None,
+        tibber_unavailable_since=TIBBER_SINCE, confirmed_auto=True,
+    ):
+        seen[a.key] = a
     return list(seen.values())
 
 
 def test_every_alert_has_non_empty_safe_action_and_ems_doing():
     alerts = _collect_all_alerts()
-    # dry_run + 3 battery-write outcomes + 5 signals×2 states + price_horizon + overrun = 16.
-    assert len(alerts) == 16
+    # dry_run + 3 battery-write outcomes + 5 signals×2 states + price_horizon + overrun
+    # + no_live_prices + tibber_prices_unavailable = 18.
+    assert len(alerts) == 18
     for a in alerts:
         assert a.safe.strip(), f"{a.key} has no safe answer"
         assert a.action.strip(), f"{a.key} has no action"
