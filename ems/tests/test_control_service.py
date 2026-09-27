@@ -18,6 +18,7 @@ from ems.control.override import Override
 from ems.control.service import ControlContext, ControlService
 from ems.domain import BatteryIntent, PhysicalMode
 from ems.lifecycle import Lifecycle
+from ems.planner.validator import PlanValidation
 from ems.settings import effective_settings
 from ems.sources.battery import BatteryWriteUnconfirmed, MockBatteryDriver
 from ems.sources.prices import PriceSlot
@@ -57,7 +58,9 @@ def _service(
         car_charging=car_charging if car_charging is not None else (lambda now: False),
         load_by=lambda starts: {s: 0.0 for s in starts},
         active_strategy=lambda now: "winter",
-        validate_plan_obj=lambda plan, now: (_ for _ in ()).throw(AssertionError("unused")),
+        # Permissive default: override path (#135) always runs the §8.11 gate; tests that need a
+        # rejecting validator replace `_validate_plan_obj` explicitly.
+        validate_plan_obj=lambda plan, now: PlanValidation(status="valid"),
         planner_cfg=lambda: None,
         summer_cfg=lambda soc: None,
         adaptive_cfg=lambda: None,

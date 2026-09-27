@@ -30,6 +30,7 @@ from ems.control.override import Override
 from ems.control.service import ControlContext, ControlService
 from ems.domain import BatteryIntent, PhysicalMode
 from ems.lifecycle import Lifecycle, OwnershipState
+from ems.planner.validator import PlanValidation
 from ems.settings import effective_settings
 from ems.sources.battery import BatteryWriteUnconfirmed, MockBatteryDriver
 from ems.sources.mock import MockSource
@@ -79,7 +80,7 @@ def _service(controller: ModeController, *, dry_run: bool = False):
         car_charging=lambda now: False,
         load_by=lambda starts: {s: 0.0 for s in starts},
         active_strategy=lambda now: "winter",
-        validate_plan_obj=lambda plan, now: (_ for _ in ()).throw(AssertionError("unused")),
+        validate_plan_obj=lambda plan, now: PlanValidation(status="valid"),
         planner_cfg=lambda: None,
         summer_cfg=lambda soc: None,
         adaptive_cfg=lambda: None,
@@ -1260,7 +1261,7 @@ def _observing_service(
         car_charging=lambda now: False,
         load_by=lambda starts: {s: 0.0 for s in starts},
         active_strategy=lambda now: "winter",
-        validate_plan_obj=lambda plan, now: (_ for _ in ()).throw(AssertionError("unused")),
+        validate_plan_obj=lambda plan, now: PlanValidation(status="valid"),
         planner_cfg=lambda: None,
         summer_cfg=lambda soc: None,
         adaptive_cfg=lambda: None,
