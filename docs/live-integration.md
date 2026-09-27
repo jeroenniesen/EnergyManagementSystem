@@ -71,13 +71,15 @@ correct `SetData`, confirmed) is unit-tested end-to-end against a mock device.
 Control is **off by default and gated** — the battery is never written until you deliberately arm
 it. In the shipped config the driver is built unarmed and `dry_run` stays on. `build_wiring`
 (`ems/connection.py`) arms the real driver (a real `SetData` transport, `armed=True`) and lifts
-`dry_run` **only when both** hold:
-1. **`control.operational` is enabled** (Settings → Control & safety; off by default), and
-2. a live **Indevolt IP** is configured with live devices on.
+`dry_run` **only when all three** hold:
+1. **`control.operational` is enabled** (Settings → Control & safety; off by default),
+2. a live **Indevolt IP** is configured with live devices on, and
+3. a **live Tibber price source** is wired (`connection.use_live_prices` + `prices.tibber_token`).
+   Mock/demo prices keep `dry_run` on (#126) — EMS never live-commands on synthetic prices.
 
-When neither is true (the default), `apply()` refuses to write and `decide()` is never even reached
-in dry-run. Going live is therefore two explicit, separate UI steps — turn on live devices
-(read-only sensing), then much later turn on operational control.
+When any gate is false (the default), `apply()` refuses to write and `decide()` is never even
+reached in dry-run. Going live is therefore explicit, separate UI steps — turn on live devices
+(read-only sensing), configure Tibber, then much later turn on operational control.
 
 Once armed, extra guardrails still apply: idempotency (no write unless the mode actually changes),
 minimum dwell, a daily switch cap (failed writes count too), fail-safe to `AUTO` on unsafe data, and

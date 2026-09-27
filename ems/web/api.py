@@ -25,7 +25,7 @@ from fastapi.staticfiles import StaticFiles
 from starlette.background import BackgroundTask
 
 from ems import export_package as expkg
-from ems.alerts import data_quality, derive_alerts
+from ems.alerts import data_quality, derive_alerts, prices_ok_for_quality
 from ems.analysis import (
     forecast_error,
     recommend_solar_confidence,
@@ -124,7 +124,7 @@ from ems.sources.base import Source
 from ems.sources.battery import BatteryDriver
 from ems.sources.forecast import SolarForecastSource, day_kwh_p50
 from ems.sources.indevolt import aggregate_soc
-from ems.sources.prices import PriceSlot, PriceSource, current_price
+from ems.sources.prices import MockPriceSource, PriceSlot, PriceSource, current_price
 from ems.storage.audit import AuditStore
 from ems.storage.auth import AuthStore
 from ems.storage.cache import CacheStore
@@ -1649,11 +1649,19 @@ def create_app(
     # ControlService (B-46). It is constructed just below `_validate_plan_obj` (its last injected
     # dependency); the aliases created there keep every endpoint + closure calling the same names.
 
+    def _prices_ok() -> bool:
+        """Live/demo price readiness for the data-quality badge (#126): mock prices are not OK
+        while operational control is requested, and a Tibber outage is never OK."""
+        return prices_ok_for_quality(
+            price_source,
+            operational_requested=bool(settings_cache.get("control.operational")),
+        )
+
     def _data_quality(now: datetime) -> str:
         """Single source of the current data-quality level (SPEC §8.11)."""
         snap = freshness.snapshot(now) if freshness is not None else {}
         return data_quality(
-            snap, prices_ok=price_source is not None, forecast_ok=solar_forecast is not None
+            snap, prices_ok=_prices_ok(), forecast_ok=solar_forecast is not None
         )
 
     def _freshness_ok(now: datetime) -> bool:
@@ -2171,7 +2179,7 @@ def create_app(
         # they can never disagree (a second snapshot could shift if the recorder marks a signal).
         snap = freshness.snapshot(now) if freshness is not None else {}
         dq = data_quality(
-            snap, prices_ok=price_source is not None, forecast_ok=solar_forecast is not None
+            snap, prices_ok=_prices_ok(), forecast_ok=solar_forecast is not None
         )
         # Override banner needs effective intent; write-failure alerts do NOT use preview() —
         # preview/_gate never emit unconfirmed/failed_* (B-09 / #73). Sticky decide() outcome +
@@ -2202,10 +2210,23 @@ def create_app(
             if ph is not None:
                 price_horizon_ok = ph.ok
             control_overrun = bool(control.control_overrun_active)
+        # #126: distinguish startup-without-live-prices (a) from a Tibber outage (b / b-watch).
+        mock_blocked = (
+            isinstance(price_source, MockPriceSource)
+            and bool(settings_cache.get("control.operational"))
+        )
+        tibber_since = None
+        if not mock_blocked and price_source is not None:
+            unavail = getattr(price_source, "unavailable_since", None)
+            if callable(unavail):
+                tibber_since = unavail()
         alerts = derive_alerts(
             snap, dry_run=dry_run, decision_outcome=outcome,
             confirmed_auto=confirmed_auto, last_command_unconfirmed=last_unconfirmed,
             price_horizon_ok=price_horizon_ok, control_overrun=control_overrun,
+            mock_prices_blocked_operational=mock_blocked,
+            tibber_unavailable_since=tibber_since,
+            site_tz=site_tz,
         )
         out = [{"key": a.key, "severity": a.severity, "message": a.message,
                 "safe": a.safe, "action": a.action, "ems_doing": a.ems_doing} for a in alerts]
@@ -2318,7 +2339,7 @@ def create_app(
         }
 
     async def _diagnostics_snapshot(now: datetime) -> dict:
-        prices_ok = price_source is not None
+        prices_ok = _prices_ok()
         forecast_ok = solar_forecast is not None
         # Actually probe the stores so a broken DB shows as a failed check, not a silent pass.
         store_ok = False

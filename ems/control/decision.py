@@ -85,6 +85,7 @@ class ControlDecisionEngine:
         price_horizon_status,
         validate_plan: PlanValidator,
         current_setpoint_w: float | None = None,
+        prices_unavailable_since=None,
     ):
         """Return the legacy seven-element effective-intent tuple."""
         cur = None
@@ -107,6 +108,20 @@ class ControlDecisionEngine:
             else:
                 reason = f"manual override: {override.intent.value} until {until}"
         else:
+            # #126: live Tibber outage → force self-use while staying operational.
+            since = prices_unavailable_since
+            if callable(since):
+                since = since()
+            if since is not None:
+                return (
+                    BatteryIntent.ALLOW_SELF_CONSUMPTION,
+                    "holding self-consumption — live Tibber prices unavailable",
+                    False,
+                    None,
+                    None,
+                    None,
+                    None,
+                )
             pp = current_plan(now)
             if pp is None:
                 if callable(price_horizon_status):

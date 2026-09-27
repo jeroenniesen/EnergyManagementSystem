@@ -870,6 +870,18 @@ class ControlService:
             else:
                 reason = f"manual override: {ov.intent.value} until {until}"
         else:
+            # #126: live Tibber outage → force self-use while staying operational (dry_run stays
+            # False). A wired source that reports unavailable_since() must not keep arbitraging
+            # on a stale cache; watch-only mode still computes intent but never writes.
+            unavail = getattr(self._price_source, "unavailable_since", None)
+            if callable(unavail):
+                since = unavail()
+                if since is not None:
+                    return (
+                        BatteryIntent.ALLOW_SELF_CONSUMPTION,
+                        "holding self-consumption — live Tibber prices unavailable",
+                        False, None, None, None, None,
+                    )
             pp = self.current_plan(now)
             if pp is None:
                 status = self._price_horizon_status
@@ -930,6 +942,11 @@ class ControlService:
                 target_soc, power_w = cur.floor_soc, cur.power_w  # forced discharge → reserve floor
         return intent, reason, override_active, target_soc, power_w, val, car_action
 
+    def _prices_unavailable_since(self):
+        """#126: when the live Tibber source reports an outage, else None."""
+        unavail = getattr(self._price_source, "unavailable_since", None)
+        return unavail() if callable(unavail) else None
+
     def effective_intent(self, now: datetime):
         """Resolve intent through the pure decision engine."""
         return self._decision_engine.effective_intent(
@@ -939,6 +956,7 @@ class ControlService:
             price_horizon_status=lambda: self._price_horizon_status,
             validate_plan=self._validate_plan_obj,
             current_setpoint_w=self._ctx.car_session["setpoint_w"],
+            prices_unavailable_since=self._prices_unavailable_since,
         )
 
     # --- cluster-drift audit ---------------------------------------------------------------------

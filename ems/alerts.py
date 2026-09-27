@@ -12,13 +12,37 @@ Copy rules (B-09 / issue #73):
   without a confirmed AUTO. Stale/missing critical signals without confirmed AUTO must not
   say "safe mode".
 - Critical-signal failsafe is ACTIVE AUTO (self-use), not "pause commands" (issue case c).
+
+Live-prices gate copy (issue #126): operational without a live Tibber source stays in watch
+mode; a Tibber outage while live forces self-use; dry-run outages never claim a battery write.
 """
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime
+from zoneinfo import ZoneInfo
+
+from ems.sources.prices import MockPriceSource
 
 # Signals whose staleness/absence makes control unsafe (can't reconstruct load / know SoC).
 CRITICAL_SIGNALS = ("grid", "soc")
+
+# Exact resident-facing copy from #126 (UX Designer + Safety & QA, 27-09-2026).
+_MSG_NO_LIVE_PRICES = (
+    "Kijkmodus: geen actuele prijzen van Tibber, EMS stuurt de batterij niet."
+)
+_MSG_TIBBER_DOWN_LIVE = (
+    "Geen actuele prijzen van Tibber sinds {hhmm}. EMS heeft de batterij op eigen "
+    "zelfverbruik gezet tot de prijzen terug zijn. Je hoeft niets te doen."
+)
+_MSG_TIBBER_DOWN_LIVE_UNCONFIRMED = (
+    "Geen actuele prijzen van Tibber sinds {hhmm}. Laatst bekende stand: onbekend. "
+    "Je hoeft niets te doen."
+)
+_MSG_TIBBER_DOWN_WATCH = (
+    "Geen actuele prijzen van Tibber sinds {hhmm}. EMS kijkt alleen mee en verandert "
+    "niets aan je batterij."
+)
 
 
 @dataclass(frozen=True)
@@ -106,6 +130,30 @@ _DEFAULT_SIGNAL_ACTION = (
 )
 
 
+def prices_ok_for_quality(
+    price_source: object | None, *, operational_requested: bool,
+) -> bool:
+    """Whether `_data_quality` may treat prices as OK toward `complete` (#126).
+
+    A missing source is never OK. Mock/demo prices are OK only while operational control is
+    *not* requested — operational + mock must not report `complete`. A live Tibber source that
+    reports `unavailable_since()` is not OK either.
+    """
+    if price_source is None:
+        return False
+    if isinstance(price_source, MockPriceSource):
+        return not operational_requested
+    unavailable = getattr(price_source, "unavailable_since", None)
+    if callable(unavailable) and unavailable() is not None:
+        return False
+    return True
+
+
+def _hhmm(ts: datetime, site_tz: ZoneInfo | None) -> str:
+    local = ts.astimezone(site_tz) if site_tz is not None else ts
+    return local.strftime("%H:%M")
+
+
 def derive_alerts(
     freshness: dict[str, str],
     *,
@@ -115,6 +163,9 @@ def derive_alerts(
     last_command_unconfirmed: bool = False,
     price_horizon_ok: bool | None = None,
     control_overrun: bool = False,
+    mock_prices_blocked_operational: bool = False,
+    tibber_unavailable_since: datetime | None = None,
+    site_tz: ZoneInfo | None = None,
 ) -> list[Alert]:
     """Build the calm alert list for the current snapshot.
 
@@ -126,9 +177,22 @@ def derive_alerts(
     from preview().
     `price_horizon_ok`: None = unknown/not yet checked (no alert); False = incomplete horizon.
     `control_overrun`: True while a recent control-cycle overrun is latched.
+    `mock_prices_blocked_operational`: #126 case (a) — operational requested but no live
+    Tibber source at startup, so EMS stays in watch mode.
+    `tibber_unavailable_since`: #126 case (b)/(b-kijkmodus) — Tibber outage while a live
+    price source is wired; wording depends on `dry_run` and `confirmed_auto`.
     """
     alerts: list[Alert] = []
-    if dry_run:
+    if mock_prices_blocked_operational:
+        # #126 case (a): more specific than the generic dry_run info banner.
+        alerts.append(Alert(
+            "no_live_prices", "critical",
+            _MSG_NO_LIVE_PRICES,
+            safe="EMS stuurt de batterij niet zolang er geen actuele Tibber-prijzen zijn.",
+            action="Zet live Tibber-prijzen aan in Instellingen (token) en herstart EMS.",
+            ems_doing="EMS blijft in kijkmodus en schrijft niets naar de Indevolt-batterij.",
+        ))
+    elif dry_run:
         alerts.append(Alert(
             "dry_run_active", "info",
             "Watch-only mode — EMS observes and advises but won't change the battery.",
@@ -137,6 +201,37 @@ def derive_alerts(
                    "dry-run in Manage → Settings when you're ready for it to act.",
             ems_doing="EMS watches meters and the Indevolt battery but issues no mode changes.",
         ))
+    if tibber_unavailable_since is not None:
+        hhmm = _hhmm(tibber_unavailable_since, site_tz)
+        if dry_run:
+            # #126 case (b-kijkmodus): never claim a battery write / self-use command.
+            alerts.append(Alert(
+                "tibber_prices_unavailable", "critical",
+                _MSG_TIBBER_DOWN_WATCH.format(hhmm=hhmm),
+                safe="In kijkmodus verandert EMS niets aan je batterij.",
+                action="Nothing needed — EMS retries Tibber automatically. Check your Tibber "
+                       "connection in Settings if this lasts.",
+                ems_doing="EMS kijkt alleen mee tot actuele Tibber-prijzen terug zijn.",
+            ))
+        elif confirmed_auto:
+            alerts.append(Alert(
+                "tibber_prices_unavailable", "critical",
+                _MSG_TIBBER_DOWN_LIVE.format(hhmm=hhmm),
+                safe="De batterij draait op eigen zelfverbruik tot Tibber-prijzen terug zijn.",
+                action="Nothing needed — EMS retries Tibber automatically.",
+                ems_doing="EMS houdt eigen zelfverbruik aan tot actuele prijzen terug zijn.",
+            ))
+        else:
+            # AUTO not confirmed: no mode name anywhere in the resident-facing lines (#126).
+            alerts.append(Alert(
+                "tibber_prices_unavailable", "critical",
+                _MSG_TIBBER_DOWN_LIVE_UNCONFIRMED.format(hhmm=hhmm),
+                safe="Laatst bekende stand: onbekend — EMS claimt geen batterijstand.",
+                action="Nothing needed — EMS retries Tibber automatically and will confirm the "
+                       "Indevolt battery as soon as it can.",
+                ems_doing="EMS wacht op bevestiging van de Indevolt-batterij; de stand is nog "
+                          "onbekend.",
+            ))
     for sig, state in sorted(freshness.items()):
         if state in ("missing", "stale"):
             sev = "critical" if sig in CRITICAL_SIGNALS else "warning"

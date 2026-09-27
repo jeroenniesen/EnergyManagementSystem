@@ -157,6 +157,7 @@ def test_operational_arms_driver_and_lifts_dry_run():
     eff = effective_settings({
         "connection.use_live_devices": True, "meters.p1_ip": "192.0.2.10",
         "battery.indevolt_ip": "192.0.2.20", "control.operational": True,
+        "connection.use_live_prices": True, "prices.tibber_token": "tok",
     })
     *_, driver, dev_mode, dry_run = build_wiring(eff, AMS)
     assert dev_mode == "live"
@@ -172,6 +173,7 @@ def test_live_indevolt_driver_uses_configured_cluster_power_limits():
         "battery.max_charge_w": 4800.0,
         "battery.max_discharge_w": 3600.0,
         "control.operational": True,
+        "connection.use_live_prices": True, "prices.tibber_token": "tok",
     })
     *_, driver, _dev_mode, _dry_run = build_wiring(eff, AMS)
     assert driver.charge_power_w == 4800
@@ -183,14 +185,44 @@ def test_operational_without_a_battery_stays_dry_run():
     eff = effective_settings({
         "connection.use_live_devices": True, "meters.p1_ip": "192.0.2.10",
         "control.operational": True,  # but no battery.indevolt_ip
+        "connection.use_live_prices": True, "prices.tibber_token": "tok",
     })
     *_, _driver, _dev_mode, dry_run = build_wiring(eff, AMS)
     assert dry_run is True
 
 
 def test_operational_ignored_without_live_devices():
-    eff = effective_settings({"control.operational": True})  # mock devices
+    eff = effective_settings({
+        "control.operational": True,
+        "connection.use_live_prices": True, "prices.tibber_token": "tok",
+    })  # mock devices
     *_, _driver, _dev_mode, dry_run = build_wiring(eff, AMS)
+    assert dry_run is True
+
+
+def test_operational_with_mock_prices_stays_dry_run():
+    """#126: operational without a live Tibber source must never lift dry_run."""
+    eff = effective_settings({
+        "connection.use_live_devices": True, "meters.p1_ip": "192.0.2.10",
+        "battery.indevolt_ip": "192.0.2.20", "control.operational": True,
+        # no use_live_prices / tibber token → MockPriceSource
+    })
+    _src, price, _fc, _batt, driver, _dev_mode, dry_run = build_wiring(eff, AMS)
+    assert isinstance(price, MockPriceSource)
+    assert driver.armed is False
+    assert dry_run is True
+
+
+def test_operational_with_live_prices_flag_but_no_token_stays_dry_run():
+    """#126: use_live_prices without a token falls back to mock → stay dry-run."""
+    eff = effective_settings({
+        "connection.use_live_devices": True, "meters.p1_ip": "192.0.2.10",
+        "battery.indevolt_ip": "192.0.2.20", "control.operational": True,
+        "connection.use_live_prices": True,  # token missing
+    })
+    _src, price, _fc, _batt, driver, _dev_mode, dry_run = build_wiring(eff, AMS)
+    assert isinstance(price, MockPriceSource)
+    assert driver.armed is False
     assert dry_run is True
 
 

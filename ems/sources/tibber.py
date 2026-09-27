@@ -127,6 +127,10 @@ class TibberPriceSource:
         self._clock = clock or (lambda: datetime.now(UTC))
         self._cached: list[PriceSlot] = []
         self._next_fetch_at: datetime | None = None  # earliest time we may hit the API again
+        # #126: track when Tibber last succeeded / started failing so control can fail-safe to
+        # AUTO and the status badge can say "geen actuele prijzen sinds hh:mm".
+        self._last_ok_at: datetime | None = None
+        self._last_error_at: datetime | None = None
         # Single-flight: when the TTL lapses, only ONE concurrent caller fetches; the rest wait and
         # then read the now-fresh cache. Prevents a dashboard poll fan-out (sync endpoints run in
         # the threadpool) from firing several simultaneous Tibber requests → HTTP 429.
@@ -152,10 +156,28 @@ class TibberPriceSource:
         if not slots:
             return
         self._cached = slots
+        # Warm-start counts as a prior success at (now - age), so unavailable_since stays honest
+        # about how old the cached curve is after a restart.
+        self._last_ok_at = self._clock() - timedelta(seconds=max(0.0, age))
         remaining = self._cache_ttl.total_seconds() - age
         if remaining > 0:
             self._next_fetch_at = self._clock() + timedelta(seconds=remaining)
         # else: leave _next_fetch_at None so the first slots() refetches (once), keeping last-good.
+
+    def unavailable_since(self) -> datetime | None:
+        """When live Tibber prices stopped being current, or None while the feed is OK.
+
+        A transient fetch failure inside the cache TTL still serves day-ahead prices as current.
+        Once the last success is older than `cache_ttl` (or there was never a success) and the
+        latest attempt failed / returned empty, prices are unavailable from `_last_error_at`.
+        """
+        if self._last_error_at is None:
+            return None
+        if self._last_ok_at is None:
+            return self._last_error_at
+        if self._clock() - self._last_ok_at > self._cache_ttl:
+            return self._last_error_at
+        return None
 
     def _persist(self, slots: list[PriceSlot]) -> None:
         if self._cache_store is None:
@@ -186,13 +208,17 @@ class TibberPriceSource:
                 if parsed:
                     self._cached = parsed
                     self._next_fetch_at = now + self._cache_ttl
+                    self._last_ok_at = now
+                    self._last_error_at = None
                     self._persist(parsed)
                 else:  # empty (no error): keep any last-good prices, retry soon
                     self._next_fetch_at = now + self._retry_ttl
+                    self._last_error_at = now
                 return self._cached
             except Exception as exc:
                 # Fail-safe: keep serving the last good prices; back off so we don't hammer a 429.
                 self._next_fetch_at = now + self._retry_ttl
+                self._last_error_at = now
                 _log.warning("Tibber price fetch failed (%s: %s); %s", type(exc).__name__, exc,
                              "serving cached prices" if self._cached else "no prices yet")
                 return self._cached

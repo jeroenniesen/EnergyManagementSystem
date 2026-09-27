@@ -100,7 +100,8 @@ def effective_connection(db_path: str, cfg) -> dict:
 def build_wiring(eff: dict, tz: ZoneInfo, cache_store: object | None = None):
     """Build (source, price_source, solar_forecast, battery_endpoint, controller_driver, dev_mode,
     dry_run) from effective settings. The battery driver is unarmed and dry_run is True UNLESS
-    control.operational is on AND a live Indevolt is configured (then armed + dry_run False).
+    control.operational is on AND a live Indevolt is configured AND a live Tibber price source is
+    wired (then armed + dry_run False). Mock/demo prices can never lift dry_run (#126).
 
     `cache_store` (optional) is handed to the rate-limited external sources (Tibber, Forecast.Solar)
     so they warm-start from a persisted snapshot after a restart and don't immediately refetch."""
@@ -111,8 +112,11 @@ def build_wiring(eff: dict, tz: ZoneInfo, cache_store: object | None = None):
     use_live_devices = bool(eff.get("connection.use_live_devices")) and bool(
         eff.get("meters.p1_ip")
     )
-    # Operational mode only means anything with a real battery to command. It ARMS the driver with
-    # a real SetData transport and lifts dry_run. Default off -> dry_run, battery never written.
+    token = (eff.get("prices.tibber_token") or "").strip()
+    live_prices = bool(eff.get("connection.use_live_prices")) and bool(token)
+    # Operational mode only means anything with a real battery to command AND live prices to plan
+    # on. It ARMS the driver with a real SetData transport and lifts dry_run. Default off → dry_run;
+    # mock/demo prices keep dry_run even when operational is toggled (#126).
     operational = False
     if use_live_devices:
         from ems.sources.indevolt import (
@@ -125,7 +129,7 @@ def build_wiring(eff: dict, tz: ZoneInfo, cache_store: object | None = None):
 
         ip = eff.get("battery.indevolt_ip") or ""
         port = int(eff.get("battery.indevolt_port") or 8080)
-        operational = bool(eff.get("control.operational")) and bool(ip)
+        operational = bool(eff.get("control.operational")) and bool(ip) and live_prices
         # F1: ONE DeviceQuiesce per master, shared by the cluster reader and the write driver below,
         # so reads back off while a SetData sequence (+ settle tail) lands on the device's single
         # embedded HTTP server (the charge-fails-under-car-load root cause).
@@ -180,8 +184,7 @@ def build_wiring(eff: dict, tz: ZoneInfo, cache_store: object | None = None):
         controller_driver = MockBatteryDriver()
         dev_mode, battery_endpoint = "mock", MockBatteryDriver()
 
-    token = eff.get("prices.tibber_token") or ""
-    if eff.get("connection.use_live_prices") and token:
+    if live_prices:
         from ems.sources.tibber import TibberPriceSource
 
         price_source = TibberPriceSource(token, tz=tz, cache_store=cache_store)
@@ -196,7 +199,8 @@ def build_wiring(eff: dict, tz: ZoneInfo, cache_store: object | None = None):
     solar_forecast = build_solar_forecast(
         eff, tz, cache_store=cache_store, use_live=use_live_devices,
     )
-    dry_run = not operational  # operational (armed + live battery) is the ONLY way dry_run lifts
+    # Operational (armed + live battery + live prices) is the ONLY way dry_run lifts (#126).
+    dry_run = not operational
     return (source, price_source, solar_forecast, battery_endpoint, controller_driver, dev_mode,
             dry_run)
 
