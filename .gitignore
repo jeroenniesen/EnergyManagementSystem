@@ -50,3 +50,15 @@ ems/web/frontend/.e2e-data/
 
 # local disarmed demo instance (never commit)
 .demo-data/
+
+# iOS / Xcode build artifacts (never commit DerivedData-style trees)
+ios/**/build/
+ios/**/.build/
+**/xcuserdata/
+*.xcuserstate
+
+# Ad-hoc validation screenshots / agent scratch reports at repo root
+/behavior-panels.png
+/ems-dashboard-validation.png
+/ems-dashboard-mobile-validation.png
+/task-1-report.md
