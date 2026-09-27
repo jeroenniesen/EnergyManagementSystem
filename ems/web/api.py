@@ -1683,6 +1683,8 @@ def create_app(
             return None
         try:
             soc = _current_soc(now)
+            if soc is None:
+                return None  # unknown/stale SoC (#134) — skip projection rather than invent 0%
             solar_by = {f.start: f.p50_w for f in solar_forecast.slots()}
             load_by = _load_by([s.start for s in plan.slots])
             # Both seasons now use the adaptive charger, which sizes its own charge slots — don't
@@ -1791,7 +1793,9 @@ def create_app(
         now = datetime.now(UTC)
         lines = [f"Now (UTC): {now:%Y-%m-%d %H:%M}", f"Strategy: {_active_strategy(now)}"]
         try:
-            lines.append(f"Battery level now: {_current_soc(now):.0f}%")
+            soc = _current_soc(now)
+            if soc is not None:
+                lines.append(f"Battery level now: {soc:.0f}%")
         except Exception:
             _log.debug("chat context: battery level unavailable (non-fatal)", exc_info=True)
         try:
@@ -1826,17 +1830,19 @@ def create_app(
                     f"priciest €{max(p.eur_per_kwh for p in future):.2f}/kWh"
                 )
         try:
-            need = compute_charge_need(
-                soc_pct=_current_soc(now), usable_kwh=settings_cache["battery.usable_kwh"],
-                min_reserve_soc=settings_cache["battery.min_reserve_soc"],
-                night_reserve_kwh=settings_cache["battery.night_reserve_kwh"],
-                overnight_load_kwh=settings_cache["battery.overnight_load_kwh"],
-                round_trip_efficiency=settings_cache["planner.round_trip_efficiency"],
-            )
-            lines.append(
-                f"Tonight's target level: {need.target_soc_pct:.0f}%; "
-                f"reserve floor: {settings_cache['battery.min_reserve_soc']:.0f}%"
-            )
+            soc = _current_soc(now)
+            if soc is not None:
+                need = compute_charge_need(
+                    soc_pct=soc, usable_kwh=settings_cache["battery.usable_kwh"],
+                    min_reserve_soc=settings_cache["battery.min_reserve_soc"],
+                    night_reserve_kwh=settings_cache["battery.night_reserve_kwh"],
+                    overnight_load_kwh=settings_cache["battery.overnight_load_kwh"],
+                    round_trip_efficiency=settings_cache["planner.round_trip_efficiency"],
+                )
+                lines.append(
+                    f"Tonight's target level: {need.target_soc_pct:.0f}%; "
+                    f"reserve floor: {settings_cache['battery.min_reserve_soc']:.0f}%"
+                )
         except Exception:
             _log.debug("chat context: night target unavailable (non-fatal)", exc_info=True)
         return "\n".join(lines)
@@ -1969,8 +1975,11 @@ def create_app(
         # resulting catch-up through the side-effect path without rebuilding or re-diagnosing it.
         if catch is None:
             return
+        soc = _current_soc(plan_now)
+        if soc is None:
+            return  # unknown SoC (#134) — skip recovery side effects rather than invent 0%
         await _run_recovery(
-            plan, plan_now, soc_pct=_current_soc(plan_now), prices=prices,
+            plan, plan_now, soc_pct=soc, prices=prices,
             enabled=bool(settings_cache["planner.recovery_enabled"]), tz=site_tz,
             cache_store=cache_store, notifier=notifier, audit_store=audit_store,
             validate_fn=_validate_plan_obj, precomputed_catch=catch, precomputed_status=_status,
@@ -2442,8 +2451,22 @@ def create_app(
         # Advisory: how much the battery should hold by tonight, from current SoC + battery config.
         # Coalesced SoC (shared window) — don't read the battery on every poll of this card.
         s = settings_cache
+        soc = _current_soc(datetime.now(UTC))
+        if soc is None:
+            # Unknown/stale SoC (#134) — do not invent 0% for the advisory card.
+            return {
+                "usable_kwh": s["battery.usable_kwh"],
+                "current_soc_pct": None,
+                "current_kwh": None,
+                "reserve_kwh": None,
+                "target_kwh": None,
+                "target_soc_pct": None,
+                "deficit_kwh": None,
+                "on_track": None,
+                "reason": "Battery level unknown — waiting for a fresh reading.",
+            }
         return compute_charge_need(
-            soc_pct=_current_soc(datetime.now(UTC)),
+            soc_pct=soc,
             usable_kwh=s["battery.usable_kwh"],
             min_reserve_soc=s["battery.min_reserve_soc"],
             night_reserve_kwh=s["battery.night_reserve_kwh"],
@@ -2883,6 +2906,8 @@ def create_app(
             if not plan.slots:
                 return None
             soc = _current_soc(now)
+            if soc is None:
+                return None  # unknown/stale SoC (#134)
             fc_slots = solar_forecast.slots()
             solar_by = {f.start: f.p50_w for f in fc_slots}
             fallback_w = settings_cache["battery.overnight_load_kwh"] * 1000.0 / 12.0
@@ -4037,9 +4062,11 @@ def create_app(
         except Exception:
             _log.debug("faq: 'why this mode?' item failed (non-fatal)", exc_info=True)
         try:
-            need = _night_target_soc(_current_soc(now))
-            items.append({"key": "tonight", "question": "What happens tonight?",
-                          "answer": need.reason})
+            soc = _current_soc(now)
+            if soc is not None:
+                need = _night_target_soc(soc)
+                items.append({"key": "tonight", "question": "What happens tonight?",
+                              "answer": need.reason})
         except Exception:
             _log.debug("faq: 'what happens tonight?' item failed (non-fatal)", exc_info=True)
         try:

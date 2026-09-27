@@ -54,7 +54,7 @@ from ems.planner.adaptive import AdaptiveConfig
 from ems.planner.base import PlannerRequest
 from ems.planner.charge_need import compute_charge_need
 from ems.planner.factory import build_planner
-from ems.planner.recovery import recover_if_needed
+from ems.planner.recovery import CompletionStatus, NOT_APPLICABLE, recover_if_needed
 from ems.planner.rule_based import PlannerConfig
 from ems.planner.strategy import HysteresisState, resolve_strategy_hysteretic
 from ems.planner.summer import SummerConfig
@@ -71,6 +71,9 @@ class _CommandSuperseded(Exception):
 # How long a live meter/SoC read is reused before the hardware is re-read (UI-tunable via
 # control.live_read_seconds; this is the fallback). Moved from api.py with the coalesced reads.
 _LIVE_SAMPLE_COALESCE_SECONDS = 30.0
+# Max age of a last-good sample before SoC is treated as unknown (#134). Aligns with the default
+# FreshnessTracker stale window so a kept-after-failure reading cannot outlive freshness.
+_SAMPLE_MAX_AGE_SECONDS = 600.0
 # Seasonal-transition hysteresis persistence (§8.4 / B-15). The KEY is also read by the api.py
 # lifespan to SEED the box at boot, so it's exported here as the single source of truth.
 HYSTERESIS_KEY = "strategy:hysteresis"
@@ -225,7 +228,7 @@ def _decide_car_session_end(
 
 
 def _decide_grace_action(
-    *, override_active: bool, failsafe: bool, soc_pct: float, min_reserve_soc: float,
+    *, override_active: bool, failsafe: bool, soc_pct: float | None, min_reserve_soc: float,
 ) -> str:
     """PURE. Within the below-threshold GRACE window (a car session is active and the car dipped
     below the charging threshold, but the end-hysteresis has not yet elapsed), decide what to do
@@ -234,7 +237,8 @@ def _decide_grace_action(
 
       * ``"fall_through"`` — a manual override or a data-quality fail-safe wants the battery NOW;
         the caller ends the session and lets the ordinary decide() apply the effective intent this
-        cycle (F3: the grace short-circuit must never swallow an override / fail-safe).
+        cycle (F3: the grace short-circuit must never swallow an override / fail-safe). Unknown SoC
+        (`None`) is also fall-through — never invent 0% and trip the reserve floor (#134).
       * ``"reserve_hold"`` — SoC is at/within the reserve floor band; the caller ends the session
         and holds at the reserve floor now, rather than keep discharging the last setpoint through
         the grace window on a nearly-drained battery (F5).
@@ -242,7 +246,7 @@ def _decide_grace_action(
         window (unchanged behaviour — the reason the grace window exists).
 
     An override (deliberate operator action) takes precedence over the reserve floor."""
-    if override_active or failsafe:
+    if override_active or failsafe or soc_pct is None:
         return "fall_through"
     if soc_pct <= min_reserve_soc + _RESERVE_ENTER_PP:
         return "reserve_hold"
@@ -393,7 +397,7 @@ class ControlService:
         # every behaviour-through-the-closures test are byte-for-byte unchanged.
         data_quality: Callable[[datetime], str],
         validate_plan_obj: Callable[[Any, datetime], PlanValidation],
-        current_soc: Callable[[datetime], float] | None = None,
+        current_soc: Callable[[datetime], float | None] | None = None,
         current_mode: Callable[[datetime], PhysicalMode | None] | None = None,
         current_towers: Callable[[datetime], Any] | None = None,
         car_charging: Callable[[datetime], bool] | None = None,
@@ -483,29 +487,64 @@ class ControlService:
             _log.debug("invalid control.live_read_seconds; default (non-fatal)", exc_info=True)
             return _LIVE_SAMPLE_COALESCE_SECONDS
 
+    def _sample_max_age_s(self) -> float:
+        """How long a last-good sample may still be treated as a known SoC (#134). Beyond this the
+        sample is stale → SoC unknown (`None`), never a fabricated 0.0. UI-tunable via
+        `control.sample_max_age_seconds`; falls back to the module default (matches freshness)."""
+        try:
+            raw = self._settings.get("control.sample_max_age_seconds")
+            if raw is None or raw == "":
+                return _SAMPLE_MAX_AGE_SECONDS
+            return float(raw)
+        except (TypeError, ValueError):
+            _log.debug("invalid control.sample_max_age_seconds; default (non-fatal)", exc_info=True)
+            return _SAMPLE_MAX_AGE_SECONDS
+
     def _sample_fresh(self, now: datetime) -> bool:
         cache = self._ctx.sample_cache
         at = cache["at"]
         return (at is not None and cache["sample"] is not None
                 and (now - at).total_seconds() < self._coalesce_s())
 
+    def _cached_sample_if_usable(self, now: datetime):
+        """Return the cached sample only while it is within the max age; else None (stale/missing).
+
+        A failed re-read may keep the last-good entry in the cache, but callers must not treat an
+        over-age reading as current (#134)."""
+        cache = self._ctx.sample_cache
+        sample, at = cache["sample"], cache["at"]
+        if sample is None or at is None:
+            return None
+        if (now - at).total_seconds() > self._sample_max_age_s():
+            return None
+        return sample
+
     def current_sample(self, now: datetime):
         if self._sample_fresh(now):  # fast path: no lock when the cache is warm
-            return self._ctx.sample_cache["sample"]
+            return self._cached_sample_if_usable(now)
         with self._ctx.sample_lock:  # single-flight: one thread reads hardware/window, others reuse
             if self._sample_fresh(now):
-                return self._ctx.sample_cache["sample"]
+                return self._cached_sample_if_usable(now)
             try:
                 self._ctx.sample_cache["sample"], self._ctx.sample_cache["at"] = (
                     self._source.read(), now)
             except Exception:
                 _log.debug("live sample read failed; keeping last good (non-fatal)", exc_info=True)
-                pass  # keep the last good sample (fail-safe)
-            return self._ctx.sample_cache["sample"]
+                pass  # keep the last good sample in cache; usability gated by max age below
+            return self._cached_sample_if_usable(now)
 
-    def current_soc(self, now: datetime) -> float:
+    def current_soc(self, now: datetime) -> float | None:
+        """Live SoC percent, or None when there is no usable sample (#134).
+
+        Never fabricates 0.0 for a missing/stale reading — unknown SoC means not ready to plan or
+        command on SoC-dependent paths.
+        """
         s = self.current_sample(now)
-        return float(s.soc_pct) if s is not None else 0.0
+        return float(s.soc_pct) if s is not None else None
+
+    def soc_ready(self, now: datetime) -> bool:
+        """True when SoC is known from a non-stale sample — a required sensing readiness input."""
+        return self.current_soc(now) is not None
 
     def _towers_fresh(self, now: datetime) -> bool:
         cache = self._ctx.tower_cache
@@ -706,6 +745,9 @@ class ControlService:
         # solar forecast and the expected-load profile — winter sizes the top-up to the evening
         # peak load above reserve, not just the cheapest slots (energy review P1.2).
         soc = self._current_soc(now)
+        if soc is None:
+            # Unknown/stale SoC (#134) — refuse to plan; EMS is not sensing-ready for control.
+            return None
         forecast = self._solar_forecast.slots() if self._solar_forecast is not None else []
         load_by = self._load_by([p.start for p in prices])
         fc = self._solar_forecast
@@ -747,8 +789,16 @@ class ControlService:
         if pp is None:
             return None
         now, prices, plan = pp
+        soc = self._current_soc(now)
+        if soc is None:
+            # SoC became unknown between plan build and recovery (#134) — leave plan untouched.
+            return (
+                now, prices, plan,
+                CompletionStatus(NOT_APPLICABLE, 0.0, "battery level unknown"),
+                None,
+            )
         recovered, status, catch = recover_if_needed(
-            plan, now, soc_pct=self._current_soc(now), prices=prices,
+            plan, now, soc_pct=soc, prices=prices,
             enabled=bool(self._settings["planner.recovery_enabled"]), **self.recovery_sizing(),
         )
         return now, prices, recovered, status, catch
@@ -779,9 +829,13 @@ class ControlService:
         if (not self._settings["control.hold_battery_when_car_charging"]
                 or not self._car_charging(now)):
             return None
+        soc = self._current_soc(now)
+        if soc is None:
+            # Unknown SoC (#134) — do not invent 0% and trip the reserve-floor hold.
+            return None
         return decide_car_mode_action(
             self._settings["control.car_charging_battery_mode"],
-            car_charging=True, soc_pct=self._current_soc(now),
+            car_charging=True, soc_pct=soc,
             min_reserve_soc=self._settings["battery.min_reserve_soc"],
             max_discharge_w=self._settings["battery.max_discharge_w"],
             static_w=self._settings["control.car_discharge_w"],

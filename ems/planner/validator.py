@@ -51,7 +51,7 @@ class PlanValidation:
 def validate_plan(
     plan: Plan,
     *,
-    soc_pct: float,
+    soc_pct: float | None,
     data_quality: str,
     min_reserve_soc: float,
     capability: CapabilityReport | None = None,
@@ -73,8 +73,9 @@ def validate_plan(
     slots = plan.slots[:slot_horizon]
 
     # 1. Stale/missing critical inputs make any non-self-consumption action unsafe (matches the
-    #    per-slot fail-safe, lifted to a plan-level gate).
-    if data_quality == "unsafe":
+    #    per-slot fail-safe, lifted to a plan-level gate). Unknown SoC (#134) is the same class of
+    #    failure — never plan against a fabricated 0.0.
+    if data_quality == "unsafe" or soc_pct is None:
         findings.append(Finding(_UNSAFE, "stale_inputs",
                                 "Critical sensor data is stale or missing — holding self-use."))
 
@@ -126,8 +127,8 @@ def validate_plan(
 
     # 5. Projected SoC must stay within [reserve, 100] when a projection is supplied. If the
     # battery is already below reserve, don't turn that starting condition into a false unsafe
-    # finding; only block plans that make it worse.
-    if projection:
+    # finding; only block plans that make it worse. Skipped when SoC is unknown (#134).
+    if projection and soc_pct is not None:
         floor = min(min_reserve_soc, soc_pct)
         if any(p.soc_pct < floor - 1e-6 for p in projection):
             findings.append(Finding(_UNSAFE, "projection_below_reserve",
