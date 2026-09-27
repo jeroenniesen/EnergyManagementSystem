@@ -896,7 +896,9 @@ ems/
 async def cycle():
     raw   = await read_raw_sources()           # meters, SoC, price-now; per-SIGNAL freshness + plausibility (§4.7)
     state = reconstruct(raw)                    # §4: house_load, non_ev_load (sign-normalised)
-    if ownership in (INACTIVE, GRACE): return   # boot/grace: observe only, no commands (§13.4)
+    if ownership is INACTIVE or in_startup_grace: return  # boot/grace: observe only (§13.4)
+    # Post-grace OBSERVING + incomplete readiness: if armed (not dry-run), no active operator
+    # override, and observed ≠ AUTO → force AUTO (crash fail-safe; see §13.4). Else continue.
     if plan_invalidated(state) and replan_allowed():    # §8.11 reasons; min_replan_interval
         prices = await tibber.prices_normalised()        # cached+forward; quarter→expand; validated complete
         if not prices.complete_for_planning(): return failsafe("prices incomplete")  # stay AUTO
@@ -932,7 +934,7 @@ All 15-min slot math goes through `timeutil.py`; **naive datetimes never enter p
 - **Persisted across restarts:** plan id/version, `last_action_requested`/`last_action_confirmed`, the **per-day switch counter (keyed by local date)**, and **unresolved warnings**.
 
 ### 13.4 Startup grace period
-After boot/restart the EMS stays in `OBSERVING` for `startup_grace_seconds`, issuing **no** battery commands, so it doesn't act on half-populated HA state while entities settle.
+After boot/restart the EMS stays in `OBSERVING` for `startup_grace_seconds`, issuing **no** battery commands, so it doesn't act on half-populated HA state while entities settle. **Exception (post-grace crash fail-safe):** once grace has elapsed, if readiness is still incomplete, EMS is armed/operational (not dry-run), no operator override is active (`override_box`), and the observed mode is not `AUTO`, EMS writes `AUTO` so a forced charge/discharge cannot persist after a crash. Retries each cycle are allowed; dry-run and unarmed drivers never write. A brief AUTO↔planned bounce is acceptable if the plan loads after grace.
 
 **Runtime alternative:** `planner/` + `control/` could run inside **AppDaemon** (kept as fallback), but you'd lose the self-contained web UI/SQLite history — so the standalone service is recommended.
 

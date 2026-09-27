@@ -69,6 +69,11 @@ def test_all_current_adapters_match_port_signatures() -> None:
 
     battery_adapters = (IndevoltBatteryDriver, MockBatteryDriver)
     for adapter in battery_adapters:
+        # #127 / epic #111 I5: `armed` is a required port member (not an optional getattr).
+        assert isinstance(getattr(BatteryDriver, "armed", None), property)
+        assert isinstance(getattr(adapter, "armed", None), property), (
+            f"{adapter.__name__} must expose armed as a property matching BatteryDriver"
+        )
         for method in ("probe", "current_mode", "apply"):
             expected = (
                 (
@@ -174,8 +179,33 @@ def test_indevolt_driver_conforms_but_unarmed_apply_never_writes() -> None:
         ),
     )
     assert isinstance(driver, BatteryDriver)
+    assert driver.armed is False
     assert driver.apply(PhysicalMode.AUTO) is False
     assert calls == []
+
+
+def test_battery_port_requires_armed_member() -> None:
+    """#127 / I5: an adapter without `armed` must fail the BatteryDriver conformance check."""
+    class MissingArmed:
+        def probe(self):
+            raise NotImplementedError
+
+        def current_mode(self):
+            return PhysicalMode.AUTO
+
+        def apply(self, mode, *, target_soc=None, power_w=None):
+            return True
+
+    class WithArmed(MissingArmed):
+        @property
+        def armed(self) -> bool:
+            return False
+
+    assert not isinstance(MissingArmed(), BatteryDriver)
+    assert isinstance(WithArmed(), BatteryDriver)
+    assert isinstance(MockBatteryDriver(), BatteryDriver)
+    assert MockBatteryDriver().armed is False
+    assert MockBatteryDriver(armed=True).armed is True
 
 
 @pytest.mark.parametrize('broken', ['required_argument', 'argument_type', 'return_type'])

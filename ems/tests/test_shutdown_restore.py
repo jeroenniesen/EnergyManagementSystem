@@ -1,6 +1,10 @@
-"""Graceful-shutdown safe restore (SPEC §6.5 / operator runbook): in operational mode, stopping
-the service must hand the battery back to its safe vendor mode so an upgrade/reboot/launchd restart
-can't leave it in a forced charge/hold/discharge. Validated against a mock armed driver."""
+"""Graceful-shutdown safe restore (SPEC §6.5 / operator runbook) + epic #111 invariant I5 (#127).
+
+In operational/armed mode, stopping the service must hand the battery back to its safe vendor mode
+so an upgrade/reboot/launchd restart can't leave it in a forced charge/hold/discharge. Dry-run
+writes nothing. `armed` is a required BatteryDriver port member — `_shutdown_restore` reads
+`controller.driver.armed` directly (no getattr default).
+"""
 import threading
 from zoneinfo import ZoneInfo
 
@@ -11,6 +15,7 @@ from ems.control.mode_controller import ModeController
 from ems.domain import PhysicalMode
 from ems.lifecycle import Lifecycle
 from ems.sources.mock import MockSource
+from ems.sources.ports import BatteryDriver
 from ems.sources.prices import MockPriceSource
 from ems.web.api import create_app
 
@@ -20,16 +25,22 @@ AMS = ZoneInfo("Europe/Amsterdam")
 class _ArmedRecordingDriver:
     """A live-shaped, ARMED driver that records every apply() and starts in a forced mode."""
 
-    def __init__(self, mode=PhysicalMode.CHARGE):
+    def __init__(self, mode=PhysicalMode.CHARGE, *, armed: bool = True):
         self._mode = mode
         self.applied: list[PhysicalMode] = []
-        self.armed = True
+        self.writes: list[PhysicalMode] = []
+        self._armed = armed
+
+    @property
+    def armed(self) -> bool:
+        return self._armed
 
     def current_mode(self):
         return self._mode
 
     def apply(self, mode, *, target_soc=None, power_w=None):
         self.applied.append(mode)
+        self.writes.append(mode)
         self._mode = mode
         return True  # confirmed
 
@@ -50,11 +61,15 @@ def _operational_app(driver, *, dry_run, last_action, original=PhysicalMode.AUTO
 
 
 def test_operational_shutdown_restores_safe_vendor_mode():
-    # EMS had forced CHARGE; a graceful stop must restore the pre-EMS vendor mode (AUTO).
+    # #127 / I5: armed + operational graceful stop → AUTO via lifespan `_shutdown_restore`
+    # (which calls `ControlService.restore_for_shutdown`).
     driver = _ArmedRecordingDriver(mode=PhysicalMode.CHARGE)
+    assert isinstance(driver, BatteryDriver)
+    assert driver.armed is True
     app, ctl = _operational_app(driver, dry_run=False, last_action=PhysicalMode.CHARGE)
     with TestClient(app):
         pass  # enter + exit the lifespan (graceful shutdown)
+    assert driver.writes[-1] is PhysicalMode.AUTO
     assert driver.applied and driver.applied[-1] is PhysicalMode.AUTO
     # Fix 6: the REAL lifespan-shutdown restore also un-wedges the refuse-when-busy restart gate via
     # note_confirmed_auto() — the NEXT process must boot with a confirmed-AUTO, not-unconfirmed
@@ -65,13 +80,54 @@ def test_operational_shutdown_restores_safe_vendor_mode():
     assert ctl.last_command_unconfirmed is False
 
 
+def test_restore_for_shutdown_service_seam_writes_auto_when_armed():
+    """#127 Klaar-als 5: restore_for_shutdown writes AUTO when armed/operational."""
+    from ems.control.service import ControlContext, ControlService
+    from ems.settings import effective_settings
+
+    driver = _ArmedRecordingDriver(mode=PhysicalMode.DISCHARGE)
+    ctl = ModeController(driver, Lifecycle(dry_run=False), dry_run=False)
+    ctl.last_confirmed_action = PhysicalMode.DISCHARGE
+    svc = ControlService(
+        ctx=ControlContext(), settings=effective_settings({}), controller=ctl, store=None,
+        audit_store=None, price_source=None, solar_forecast=None, site_tz=AMS, dry_run=False,
+        current_soc=lambda now: 50.0,
+        current_mode=lambda now: driver.current_mode(),
+        current_towers=lambda now: None,
+        data_quality=lambda now: "fresh",
+        car_charging=lambda now: False,
+        load_by=lambda starts: {s: 0.0 for s in starts},
+        active_strategy=lambda now: "winter",
+        validate_plan_obj=lambda plan, now: (_ for _ in ()).throw(AssertionError("unused")),
+        planner_cfg=lambda: None,
+        summer_cfg=lambda soc: None,
+        adaptive_cfg=lambda: None,
+    )
+    assert svc.restore_for_shutdown(PhysicalMode.AUTO) is True
+    assert driver.writes[-1] is PhysicalMode.AUTO
+    assert driver.current_mode() is PhysicalMode.AUTO
+
+
+def test_i5_shutdown_restore_reads_armed_without_getattr():
+    """#127 Klaar-als 4 / epic #111 I5: shutdown path uses driver.armed (no getattr default)."""
+    import inspect
+
+    from ems.web import api as api_mod
+
+    source = inspect.getsource(api_mod.create_app)
+    assert 'getattr(controller.driver, "armed"' not in source
+    assert "getattr(controller.driver, 'armed'" not in source
+    assert "controller.driver.armed" in source
+
+
 def test_dry_run_shutdown_never_touches_the_battery():
-    # In dry-run the battery is never written — shutdown must not issue any apply().
-    driver = _ArmedRecordingDriver(mode=PhysicalMode.AUTO)
+    # #127 / I5: in dry-run the battery is never written — shutdown must not issue any apply().
+    driver = _ArmedRecordingDriver(mode=PhysicalMode.CHARGE)
     app, _ctl = _operational_app(driver, dry_run=True, last_action=PhysicalMode.CHARGE)
     with TestClient(app):
         pass
     assert driver.applied == []
+    assert driver.writes == []
 
 
 def test_no_restore_when_ems_never_forced_a_mode():

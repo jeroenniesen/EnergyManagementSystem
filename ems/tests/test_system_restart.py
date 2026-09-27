@@ -29,7 +29,7 @@ from ems.control.mode_controller import ModeController
 from ems.control.override import Override
 from ems.control.service import ControlContext, ControlService
 from ems.domain import BatteryIntent, PhysicalMode
-from ems.lifecycle import Lifecycle
+from ems.lifecycle import Lifecycle, OwnershipState
 from ems.settings import effective_settings
 from ems.sources.battery import BatteryWriteUnconfirmed, MockBatteryDriver
 from ems.sources.mock import MockSource
@@ -1202,3 +1202,207 @@ def test_restart_endpoint_is_covered_by_write_gating_invariant(tmp_path):
     paths = {getattr(r, "path", None) for r in app.routes}
     assert "/api/system/restart" in paths
     assert required_tier("/api/system/restart", "POST") != Tier.VIEW
+
+
+# --------------------------------------------------------------------------------------------
+# 6. #127 — post-crash / restart fail-safe AUTO (when readiness never arrives)
+# --------------------------------------------------------------------------------------------
+class _WritesDriver(MockBatteryDriver):
+    """Armed recording driver with a `writes` list (issue #127 acceptance wording)."""
+
+    def __init__(self, mode=PhysicalMode.CHARGE, *, armed: bool = True):
+        super().__init__(armed=armed)
+        self._mode = mode
+        self.writes: list[PhysicalMode] = []
+
+    def apply(self, mode, *, target_soc=None, power_w=None):
+        self.writes.append(mode)
+        return super().apply(mode, target_soc=target_soc, power_w=power_w)
+
+
+class _TimeoutAutoDriver(_WritesDriver):
+    """AUTO apply times out (Indevolt saturation); mode unchanged."""
+
+    def apply(self, mode, *, target_soc=None, power_w=None):
+        self.writes.append(mode)
+        if mode is PhysicalMode.AUTO:
+            raise BatteryWriteUnconfirmed("device slow")
+        self._mode = mode
+        self.last_target_soc, self.last_power_w = target_soc, power_w
+        return True
+
+
+class _RejectAutoDriver(_WritesDriver):
+    """AUTO apply returns False without changing mode."""
+
+    def apply(self, mode, *, target_soc=None, power_w=None):
+        self.writes.append(mode)
+        if mode is PhysicalMode.AUTO:
+            return False
+        return super().apply(mode, target_soc=target_soc, power_w=power_w)
+
+
+def _observing_service(
+    controller: ModeController, *, dry_run: bool, data_quality: str = "unsafe",
+    current_mode=None,
+):
+    """ControlService still in OBSERVING (grace may elapse; readiness incomplete)."""
+    ctx = ControlContext()
+    settings = effective_settings({})
+    svc = ControlService(
+        ctx=ctx, settings=settings, controller=controller, store=None, audit_store=None,
+        price_source=None, solar_forecast=None,
+        site_tz=ZoneInfo("Europe/Amsterdam"), dry_run=dry_run,
+        current_soc=lambda now: 50.0,
+        current_mode=current_mode or (lambda now: controller.driver.current_mode()),
+        current_towers=lambda now: None,
+        data_quality=lambda now: data_quality,
+        car_charging=lambda now: False,
+        load_by=lambda starts: {s: 0.0 for s in starts},
+        active_strategy=lambda now: "winter",
+        validate_plan_obj=lambda plan, now: (_ for _ in ()).throw(AssertionError("unused")),
+        planner_cfg=lambda: None,
+        summer_cfg=lambda soc: None,
+        adaptive_cfg=lambda: None,
+    )
+    return svc, ctx
+
+
+def test_restart_with_saved_charge_and_unsafe_data_writes_auto_after_grace(tmp_path):
+    """#127: CHARGE via ControlStateStore → fresh boot → AUTO after grace."""
+    store = ControlStateStore(str(tmp_path / "control.sqlite"))
+    store.init()
+    # Prior process left a confirmed CHARGE in the store (true restart, not in-memory assignment).
+    prior = ModeController(
+        _WritesDriver(PhysicalMode.CHARGE, armed=True),
+        Lifecycle(dry_run=False, startup_grace_seconds=0.0), dry_run=False,
+    )
+    prior.last_confirmed_action = PhysicalMode.CHARGE
+    prior.last_requested_action = PhysicalMode.CHARGE
+    store.save(prior.state_snapshot())
+
+    grace_s = 120.0
+    driver = _WritesDriver(PhysicalMode.CHARGE, armed=True)
+    lc = Lifecycle(dry_run=False, startup_grace_seconds=grace_s)
+    controller = ModeController(driver, lc, dry_run=False)
+    loaded = store.load()
+    assert loaded != {} and loaded is not CONTROL_STATE_CORRUPT
+    controller.restore_state(loaded)
+    assert controller.last_confirmed_action is PhysicalMode.CHARGE
+    svc, _ = _observing_service(controller, dry_run=False, data_quality="unsafe")
+
+    # Still inside grace → observe only, no write.
+    svc.control_tick(NOW)
+    assert lc.state is OwnershipState.OBSERVING
+    assert driver.writes == []
+
+    # After grace, readiness still incomplete (unsafe ⇒ sensors never validated) → force AUTO.
+    after_grace = NOW + timedelta(seconds=grace_s)
+    records = svc.control_tick(after_grace)
+    assert lc.ready_to_act(after_grace) is False
+    assert lc.can_command(after_grace) is False
+    assert driver.writes[-1] is PhysicalMode.AUTO
+    assert driver.current_mode() is PhysicalMode.AUTO
+    assert controller.last_confirmed_action is PhysicalMode.AUTO
+    assert any(r.get("detail", {}).get("event") == "startup_safe_auto" for r in records)
+
+
+def test_restart_safe_auto_skips_active_operator_override():
+    """#127 M1-A: active override_box GRID_CHARGE is left alone (no AUTO overwrite)."""
+    driver = _WritesDriver(PhysicalMode.CHARGE, armed=True)
+    grace_s = 60.0
+    lc = Lifecycle(dry_run=False, startup_grace_seconds=grace_s)
+    controller = ModeController(driver, lc, dry_run=False)
+    # Fresh sensors but no plan → readiness incomplete; override is still active.
+    svc, ctx = _observing_service(controller, dry_run=False, data_quality="fresh")
+    ctx.override_box["ov"] = Override(
+        intent=BatteryIntent.GRID_CHARGE_TO_TARGET,
+        expires_at=NOW + timedelta(hours=2),
+    )
+    after_grace = NOW + timedelta(seconds=grace_s)
+    assert ctx.override_box["ov"].active(after_grace) is True
+    records = svc.control_tick(after_grace)
+    assert driver.writes == []
+    assert driver.current_mode() is PhysicalMode.CHARGE
+    assert records == []
+
+
+def test_restart_safe_auto_dry_run_never_writes():
+    """#127 Klaar-als 3: dry-run never writes (inside grace and after)."""
+    driver = _WritesDriver(PhysicalMode.CHARGE, armed=True)
+    grace_s = 30.0
+    lc = Lifecycle(dry_run=True, startup_grace_seconds=grace_s)
+    controller = ModeController(driver, lc, dry_run=True)
+    svc, _ = _observing_service(controller, dry_run=True, data_quality="unsafe")
+
+    svc.control_tick(NOW)
+    svc.control_tick(NOW + timedelta(seconds=grace_s))
+    assert driver.writes == []
+    assert driver.current_mode() is PhysicalMode.CHARGE
+
+
+def test_restart_safe_auto_unarmed_never_writes():
+    """#127: unarmed driver never writes (inside grace and after)."""
+    driver = _WritesDriver(PhysicalMode.CHARGE, armed=False)
+    grace_s = 30.0
+    lc = Lifecycle(dry_run=False, startup_grace_seconds=grace_s)
+    controller = ModeController(driver, lc, dry_run=False)
+    svc, _ = _observing_service(controller, dry_run=False, data_quality="unsafe")
+
+    svc.control_tick(NOW)
+    svc.control_tick(NOW + timedelta(seconds=grace_s))
+    assert driver.writes == []
+    assert driver.current_mode() is PhysicalMode.CHARGE
+
+
+def test_restart_safe_auto_already_auto_and_none_observed_never_write():
+    """Negatives: already AUTO and observed=None → no write after grace."""
+    auto_driver = _WritesDriver(PhysicalMode.AUTO, armed=True)
+    lc = Lifecycle(dry_run=False, startup_grace_seconds=0.0)
+    auto_ctl = ModeController(auto_driver, lc, dry_run=False)
+    svc, _ = _observing_service(auto_ctl, dry_run=False, data_quality="unsafe")
+    svc.control_tick(NOW)
+    assert auto_driver.writes == []
+
+    charge_driver = _WritesDriver(PhysicalMode.CHARGE, armed=True)
+    lc2 = Lifecycle(dry_run=False, startup_grace_seconds=0.0)
+    charge_ctl = ModeController(charge_driver, lc2, dry_run=False)
+    svc2, _ = _observing_service(
+        charge_ctl, dry_run=False, data_quality="unsafe",
+        current_mode=lambda now: None,
+    )
+    svc2.control_tick(NOW)
+    assert charge_driver.writes == []
+
+
+def test_restart_safe_auto_timeout_sets_unconfirmed_and_dedupes_audit():
+    """#127 review M3: timeout → note_overrun_recovery + unconfirmed; audit once across retries."""
+    driver = _TimeoutAutoDriver(PhysicalMode.CHARGE, armed=True)
+    lc = Lifecycle(dry_run=False, startup_grace_seconds=0.0)
+    controller = ModeController(driver, lc, dry_run=False)
+    svc, _ = _observing_service(controller, dry_run=False, data_quality="unsafe")
+
+    first = svc.control_tick(NOW)
+    second = svc.control_tick(NOW + timedelta(seconds=1))
+    third = svc.control_tick(NOW + timedelta(seconds=2))
+
+    assert len(driver.writes) == 3  # retry every cycle
+    assert all(w is PhysicalMode.AUTO for w in driver.writes)
+    assert controller.last_command_unconfirmed is True
+    assert len(first) == 1 and first[0]["detail"]["outcome"] == "unconfirmed"
+    assert second == [] and third == []  # audit deduped via held_box
+
+
+def test_restart_safe_auto_reject_sets_unconfirmed_and_dedupes_audit():
+    """#127 review M3: apply() False → unconfirmed flag + single audit row."""
+    driver = _RejectAutoDriver(PhysicalMode.DISCHARGE, armed=True)
+    lc = Lifecycle(dry_run=False, startup_grace_seconds=0.0)
+    controller = ModeController(driver, lc, dry_run=False)
+    svc, _ = _observing_service(controller, dry_run=False, data_quality="unsafe")
+
+    first = svc.control_tick(NOW)
+    again = svc.control_tick(NOW + timedelta(seconds=1))
+    assert len(driver.writes) == 2
+    assert controller.last_command_unconfirmed is True
+    assert first[0]["detail"]["outcome"] == "unconfirmed"
+    assert again == []
