@@ -3,6 +3,8 @@ import { describe, expect, it } from "vitest";
 import {
   DATA_QUALITY,
   DATA_SOURCE,
+  DEVICE_HEALTH_SOURCE_ALERT_KEYS,
+  pickDeviceHealthAlert,
   sourceDetail,
   summarizeDeviceHealth,
 } from "./labels";
@@ -46,5 +48,20 @@ describe("issue #79 device-health labels", () => {
 
   it("keeps unsafe header vocabulary on DATA_QUALITY", () => {
     expect(DATA_QUALITY.unsafe.label).toBe("Paused — self-use");
+  });
+
+  it("prices row prefers #148 live-price alert keys over freshness", () => {
+    expect(DEVICE_HEALTH_SOURCE_ALERT_KEYS.prices[0]).toBe("no_live_prices");
+    expect(DEVICE_HEALTH_SOURCE_ALERT_KEYS.prices[1]).toBe("tibber_prices_unavailable");
+    const hit = pickDeviceHealthAlert("prices", [
+      { key: "prices_stale", message: "stale" },
+      { key: "tibber_prices_unavailable", message: "tibber down" },
+      { key: "no_live_prices", message: "kijkmodus" },
+    ]);
+    // First matching key in map order wins — no_live_prices before tibber / stale.
+    expect(hit?.key).toBe("no_live_prices");
+    expect(
+      pickDeviceHealthAlert("prices", [{ key: "tibber_prices_unavailable", message: "x" }])?.key,
+    ).toBe("tibber_prices_unavailable");
   });
 });

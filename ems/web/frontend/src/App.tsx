@@ -23,6 +23,7 @@ import {
   formatLaatstBekend,
   humanize,
   OUTCOME_LABEL,
+  pickDeviceHealthAlert,
   RUN_MODE,
   SIGNAL_NAME,
 } from "./labels";
@@ -940,21 +941,7 @@ export function App() {
           deviceHealth={deviceHealth}
           isDemo={status?.dev_mode !== "live" || !!home?.simulated}
           alertsForSource={(key) => {
-            const map: Record<string, string[]> = {
-              grid: ["grid_stale", "grid_missing"],
-              battery: ["battery_stale", "battery_missing", "soc_stale", "soc_missing"],
-              // Prefer #148 keys when present; keep price_horizon + prices_* freshness alerts.
-              prices: [
-                "no_live_prices",
-                "tibber_prices_unavailable",
-                "prices_stale",
-                "prices_missing",
-                "price_horizon_incomplete",
-              ],
-              forecast: ["forecast_stale", "forecast_missing"],
-            };
-            const keys = map[key] ?? [];
-            const hit = (alertsData?.alerts ?? []).find((a) => keys.includes(a.key));
+            const hit = pickDeviceHealthAlert(key, alertsData?.alerts);
             if (!hit) return null;
             return { message: hit.message, ems_doing: hit.ems_doing, action: hit.action };
           }}

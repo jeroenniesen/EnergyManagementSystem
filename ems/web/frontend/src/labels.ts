@@ -110,6 +110,38 @@ export type DeviceHealth = {
   summary: DeviceHealthSummary;
 };
 
+/**
+ * Alert keys the device-health strip matches onto each source row (#73 three answers).
+ * Prices prefer #126 / PR #148 live-price keys (`no_live_prices`, `tibber_prices_unavailable`)
+ * ahead of freshness / horizon warnings.
+ */
+export const DEVICE_HEALTH_SOURCE_ALERT_KEYS: Record<string, readonly string[]> = {
+  grid: ["grid_stale", "grid_missing"],
+  battery: ["battery_stale", "battery_missing", "soc_stale", "soc_missing"],
+  prices: [
+    "no_live_prices",
+    "tibber_prices_unavailable",
+    "prices_stale",
+    "prices_missing",
+    "price_horizon_incomplete",
+  ],
+  forecast: ["forecast_stale", "forecast_missing"],
+};
+
+/** First matching alert for a strip source, preferring the order in DEVICE_HEALTH_SOURCE_ALERT_KEYS. */
+export function pickDeviceHealthAlert<T extends { key: string }>(
+  sourceKey: string,
+  alerts: readonly T[] | null | undefined,
+): T | null {
+  const keys = DEVICE_HEALTH_SOURCE_ALERT_KEYS[sourceKey] ?? [];
+  if (!alerts?.length || !keys.length) return null;
+  for (const key of keys) {
+    const hit = alerts.find((a) => a.key === key);
+    if (hit) return hit;
+  }
+  return null;
+}
+
 /** Plain-language detail like "prijzen van 14:00". */
 export function sourceDetail(key: string, hhmm: string | null | undefined): string {
   const name =

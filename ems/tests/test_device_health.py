@@ -76,6 +76,33 @@ def test_operational_mock_prices_badge_is_honest_not_self_use():
     assert not any(a.key == "mock_prices" for a in alerts)
 
 
+def test_strip_alert_keys_prefer_148_live_price_alerts():
+    """Device-health prices row must surface #148 keys ahead of freshness jargon."""
+    from datetime import UTC, datetime
+
+    fr = {"grid": "fresh", "soc": "fresh", "prices": "stale"}
+    # Case (a): no live prices while operational → no_live_prices wins in the strip map.
+    a = derive_alerts(
+        fr, dry_run=True, decision_outcome=None, mock_prices_blocked_operational=True,
+    )
+    keys = [x.key for x in a]
+    assert "no_live_prices" in keys
+    assert "mock_prices" not in keys
+    # Case (b): Tibber outage while live → tibber_prices_unavailable.
+    since = datetime(2026, 9, 27, 12, 0, tzinfo=UTC)
+    b = derive_alerts(
+        {"grid": "fresh", "soc": "fresh"},
+        dry_run=False,
+        decision_outcome=None,
+        confirmed_auto=True,
+        tibber_unavailable_since=since,
+        site_tz=AMS,
+    )
+    assert any(x.key == "tibber_prices_unavailable" for x in b)
+    msg = next(x.message for x in b if x.key == "tibber_prices_unavailable")
+    assert "zelfverbruik" in msg.lower() or "tibber" in msg.lower()
+
+
 def test_prices_forecast_alerts_have_honest_three_answers():
     fr = {"grid": "fresh", "soc": "fresh", "prices": "stale", "forecast": "stale"}
     alerts = derive_alerts(fr, dry_run=False, decision_outcome=None)

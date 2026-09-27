@@ -253,10 +253,16 @@ test.describe("EMS dashboard", () => {
 
   async function moveToViewBoxX(page: Page, x: number) {
     const plot = page.getByTestId("plan-story-plot");
+    await expect(plot).toBeVisible();
     await plot.scrollIntoViewIfNeeded();
     const box = await plot.boundingBox();
     expect(box).not.toBeNull();
-    await page.mouse.move(box!.x + (x / 1000) * box!.width, box!.y + box!.height * 0.45);
+    // Hover via the plot locator (not page.mouse) so Playwright retries if layout
+    // settles after the device-health strip / outcome tiles finish painting.
+    await plot.hover({
+      position: { x: (x / 1000) * box!.width, y: box!.height * 0.45 },
+      force: true,
+    });
   }
 
   test("phase 1 renders one PlanStory and removes all competing dashboard charts", async ({ page }) => {
@@ -527,6 +533,7 @@ test.describe("EMS dashboard", () => {
   test("mouse hover uses time inversion and clears over a hole or on leave", async ({ page }) => {
     await routePlanStory(page);
     await page.goto("/");
+    await expect(page.getByTestId("plan-story-plot")).toBeVisible();
 
     await moveToViewBoxX(page, 122);
     await expect(page.getByTestId("plan-story-tip")).toContainText("08:00 · recorded");
