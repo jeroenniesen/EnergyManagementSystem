@@ -4,12 +4,19 @@ Canned prices/forecast only — no hardware, no network. Validator behaviour mus
 """
 from __future__ import annotations
 
+import dataclasses
 from datetime import UTC, datetime, timedelta
 from zoneinfo import ZoneInfo
 
 from ems.domain import BatteryIntent, PlannerInputSnapshot, PlannerMode
 from ems.planner.adaptive import AdaptiveConfig
-from ems.planner.base import PlannerRequest, RuleBasedPlanner
+from ems.planner.base import (
+    PlannerRequest,
+    RuleBasedPlanner,
+    digest_forecast,
+    digest_load,
+    digest_prices,
+)
 from ems.planner.factory import (
     build_planner,
     planner_config_hash,
@@ -128,9 +135,12 @@ def test_plan_carries_versioned_input_snapshot():
     assert snap.price_provenance == "MockPriceSource"
     assert snap.price_min_eur == 0.05
     assert snap.price_max_eur == 0.40
+    assert snap.prices_digest == digest_prices(_prices())
     assert snap.forecast_slots == 16
     assert snap.forecast_provider == "mock"
     assert snap.forecast_p50_kwh is not None and snap.forecast_p50_kwh > 0
+    assert snap.forecast_digest == digest_forecast(_forecast())
+    assert snap.load_digest is None  # no load_w_by on this request
     assert snap.baseline == "load_profile"
     assert snap.config_hash == "abc123"
 
@@ -209,3 +219,44 @@ def test_adaptive_winter_via_port_attaches_snapshot():
     assert plan.input_snapshot is not None
     assert plan.strategy == "winter"
     assert isinstance(plan, Plan)
+    assert plan.input_snapshot.load_digest == digest_load(load)
+
+
+def test_series_digests_are_stable_and_detect_drift():
+    prices = _prices()
+    forecast = _forecast()
+    load = {T0 + i * SLOT: 500.0 + i for i in range(8)}
+    assert digest_prices(prices) == digest_prices(list(prices))
+    assert digest_forecast(forecast) == digest_forecast(list(forecast))
+    assert digest_load(load) == digest_load(dict(load))
+    # Order-independent for load (sorted by start).
+    scrambled = {T0 + 7 * SLOT: 507.0, **{T0 + i * SLOT: 500.0 + i for i in range(7)}}
+    assert digest_load(load) == digest_load(scrambled)
+    # Drift: one price tick changes the digest.
+    drifted = list(prices)
+    drifted[0] = PriceSlot(drifted[0].start, drifted[0].eur_per_kwh + 0.01)
+    assert digest_prices(prices) != digest_prices(drifted)
+    # Empty → None (nothing to fingerprint).
+    assert digest_prices([]) is None
+    assert digest_forecast([]) is None
+    assert digest_load(None) is None
+    assert digest_load({}) is None
+
+
+def test_snapshot_does_not_persist_full_slot_series():
+    load = {T0 + i * SLOT: 800.0 for i in range(8)}
+    plan = RuleBasedPlanner().plan(_request(load_w_by=load))
+    snap = plan.input_snapshot
+    assert snap is not None
+    field_names = {f.name for f in dataclasses.fields(snap)}
+    # Compact+digest surface — never store the live series on the snapshot.
+    assert "prices" not in field_names
+    assert "forecast" not in field_names
+    assert "load_w_by" not in field_names
+    assert "slots" not in field_names
+    values = dataclasses.astuple(snap)
+    assert not any(isinstance(v, (list, tuple, dict)) for v in values)
+    assert snap.prices_digest and snap.forecast_digest and snap.load_digest
+    assert len(snap.prices_digest) == 16
+    assert len(snap.forecast_digest) == 16
+    assert len(snap.load_digest) == 16

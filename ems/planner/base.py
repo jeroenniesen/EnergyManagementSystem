@@ -21,6 +21,7 @@ from ems.sources.forecast import ForecastSlot
 from ems.sources.prices import PriceSlot
 
 SLOT_MINUTES = 15
+_DIGEST_LEN = 16
 
 
 @dataclass(frozen=True)
@@ -49,6 +50,35 @@ def _mode_value(mode: PlannerMode | str) -> str:
     return mode.value if isinstance(mode, PlannerMode) else str(mode)
 
 
+def _digest(lines: list[str]) -> str | None:
+    """Stable short content hash; None when there is nothing to fingerprint."""
+    if not lines:
+        return None
+    return hashlib.sha256("\n".join(lines).encode()).hexdigest()[:_DIGEST_LEN]
+
+
+def digest_prices(prices: list[PriceSlot]) -> str | None:
+    """Content digest of a price series (start + €/kWh). Detects drift without storing slots."""
+    return _digest([f"{p.start.isoformat()}|{p.eur_per_kwh:.8f}" for p in prices])
+
+
+def digest_forecast(forecast: list[ForecastSlot]) -> str | None:
+    """Content digest of a forecast series (start + P10/P50/P90)."""
+    return _digest([
+        f"{s.start.isoformat()}|{s.p10_w:.4f}|{s.p50_w:.4f}|{s.p90_w:.4f}"
+        for s in forecast
+    ])
+
+
+def digest_load(load_w_by: dict[datetime, float] | None) -> str | None:
+    """Content digest of a load profile keyed by slot start (sorted for stability)."""
+    if not load_w_by:
+        return None
+    return _digest([
+        f"{t.isoformat()}|{float(w):.4f}" for t, w in sorted(load_w_by.items())
+    ])
+
+
 def _forecast_p50_kwh(forecast: list[ForecastSlot]) -> float | None:
     if not forecast:
         return None
@@ -57,7 +87,7 @@ def _forecast_p50_kwh(forecast: list[ForecastSlot]) -> float | None:
 
 
 def build_input_snapshot(request: PlannerRequest, *, strategy: str) -> PlannerInputSnapshot:
-    """Build the compact audit snapshot attached to every Plan from the port."""
+    """Build the compact+digest audit snapshot attached to every Plan from the port."""
     prices = request.prices
     euros = [p.eur_per_kwh for p in prices] if prices else []
     return PlannerInputSnapshot(
@@ -70,10 +100,13 @@ def build_input_snapshot(request: PlannerRequest, *, strategy: str) -> PlannerIn
         price_provenance=request.price_provenance,
         price_min_eur=min(euros) if euros else None,
         price_max_eur=max(euros) if euros else None,
+        prices_digest=digest_prices(prices),
         forecast_slots=len(request.forecast),
         forecast_provider=request.forecast_provider,
         forecast_issued_at=request.forecast_issued_at,
         forecast_p50_kwh=_forecast_p50_kwh(request.forecast),
+        forecast_digest=digest_forecast(request.forecast),
+        load_digest=digest_load(request.load_w_by),
         baseline=request.baseline,
         capability_report_ref=request.capability_report_ref,
         config_hash=request.config_hash,

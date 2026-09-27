@@ -23,9 +23,9 @@ class PlannerMode(StrEnum):
 class PlannerInputSnapshot:
     """Inputs captured with every Plan for audit/replay (SPEC §8.11 / §13.2, control-model §9).
 
-    Compact by design: counts, provenance, and light aggregates — not a full slot dump. Full
-    price/forecast series remain on the live sources; deepen later without changing the
-    Planner port.
+    Compact + digests (product choice B for B-47): counts, provenance, key scalars, and content
+    hashes of the price/forecast/(optional) load series so drift is detectable without persisting
+    full slot arrays. Full series stay on the live sources.
     """
 
     taken_at: datetime
@@ -37,10 +37,13 @@ class PlannerInputSnapshot:
     price_provenance: str | None = None
     price_min_eur: float | None = None
     price_max_eur: float | None = None
+    prices_digest: str | None = None
     forecast_slots: int = 0
     forecast_provider: str | None = None
     forecast_issued_at: datetime | None = None
     forecast_p50_kwh: float | None = None
+    forecast_digest: str | None = None
+    load_digest: str | None = None
     baseline: str | None = None
     capability_report_ref: str | None = None
     config_hash: str | None = None

@@ -45,7 +45,27 @@ def test_default_forecast_provider_is_forecast_solar():
 
 def test_default_planner_mode_is_rule_based():
     assert defaults()["planner.mode"] == "rule_based"
-    assert SETTINGS_BY_KEY["planner.mode"].options == ["rule_based", "ml", "advisory"]
+    assert SETTINGS_BY_KEY["planner.mode"].options == ("rule_based", "ml", "advisory")
+    assert SETTINGS_BY_KEY["planner.mode"].disabled_options == ("ml", "advisory")
+    row = next(r for r in schema_json() if r["key"] == "planner.mode")
+    assert row["disabled_options"] == ["ml", "advisory"]
+
+
+def test_planner_mode_rejects_disabled_ml_and_advisory():
+    from ems.settings import validate_settings
+
+    clean, errors = validate_settings({"planner.mode": "ml"})
+    assert "planner.mode" not in clean
+    assert "planner.mode" in errors
+    assert "not available" in errors["planner.mode"]
+
+    clean, errors = validate_settings({"planner.mode": "advisory"})
+    assert "planner.mode" not in clean
+    assert "not available" in errors["planner.mode"]
+
+    clean, errors = validate_settings({"planner.mode": "rule_based"})
+    assert clean["planner.mode"] == "rule_based"
+    assert "planner.mode" not in errors
 
 
 def test_solcast_fields_gated_behind_provider():
