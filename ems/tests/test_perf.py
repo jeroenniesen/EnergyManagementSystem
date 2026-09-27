@@ -430,7 +430,7 @@ def test_rss_ceiling_sampled():
 
 def test_sustained_dashboard_poll():
     """Fire 20 rounds of all 11 H-tier routes; assert p95 < 500 ms each AND
-    later rounds do not regress badly vs an early-round baseline.
+    no measured round's wall-clock grows > 50% vs an early-round baseline.
 
     B-80 task 5: end-to-end check that the dashboard-10s polling pattern stays well under budget
     in mock mode and does not regress across rounds. Uses the real create_app with MockSource
@@ -453,14 +453,20 @@ def test_sustained_dashboard_poll():
     )
 
     with TestClient(app) as client:
-        round_walls: list[float] = []
+        # One warm-up round so round-0 isn't a lucky cold/hot mix that sets an impossible
+        # baseline on noisy CI runners (GitHub Actions scheduler jitter).
+        for path in HOT_PATHS:
+            client.get(path)
+        REGISTRY.reset()
+
+        round_maxes: list[float] = []
         for _round_idx in range(20):
             round_t0 = _time.perf_counter()
             for path in HOT_PATHS:
                 client.get(path)
-            round_walls.append((_time.perf_counter() - round_t0) * 1000)
+            round_maxes.append((_time.perf_counter() - round_t0) * 1000)
 
-    # p95 of all 220 H-tier requests must be under the 500 ms budget.
+    # p95 of all H-tier requests must be under the 500 ms budget.
     all_samples = REGISTRY.recent("api.hot", n=1000)
     durations = sorted(s.duration_ms for s in all_samples)
     n = len(durations)
@@ -468,17 +474,12 @@ def test_sustained_dashboard_poll():
     p95 = durations[k]
     assert p95 < 500, f"hot-route p95 = {p95:.1f} ms exceeds 500 ms budget"
 
-    # Relative check vs an early-round *median*, not round 1 alone. On shared CI a lucky-fast
-    # first round (~25–30 ms wall for all 11 paths) makes 1.5× ≈ 40 ms — GC/scheduling noise
-    # then fails a round that is still << the 500 ms p95 budget (CI: round 13 @ ~80–90 ms).
-    # Enforce the ratio only once a round exceeds an absolute floor well under that budget.
-    # (round_walls is whole-round wall-clock, not per-request slowest.)
-    baseline = statistics.median(round_walls[:5])
-    floor_ms = 150.0
-    for i, m in enumerate(round_walls):
-        if m < floor_ms:
-            continue
-        assert m < 1.5 * max(baseline, floor_ms), (
-            f"round {i} wall={m:.1f}ms vs early-median={baseline:.1f}ms "
-            f"(degradation > 50% above {floor_ms:.0f}ms floor)"
+    # Degradation vs early-round median (not a single lucky first sample). Absolute +50 ms
+    # slack absorbs runner noise when whole-round times are still trivially small.
+    baseline = statistics.median(round_maxes[:5])
+    limit = max(1.5 * baseline, baseline + 50.0)
+    for i, m in enumerate(round_maxes):
+        assert m < limit, (
+            f"round {i} wall={m:.1f}ms vs early median={baseline:.1f}ms "
+            f"(limit {limit:.1f}ms; degradation)"
         )
