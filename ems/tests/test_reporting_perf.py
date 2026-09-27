@@ -69,14 +69,14 @@ async def _seed(db: str) -> None:
 
 
 def _app(db: str):
-    # history_retention_days=0: the seeded year (2025) is deliberately far in the past for
-    # deterministic "completed window" resolution — the maintenance loop's "purge on boot" must
-    # not sweep it away before the test ever queries it (retention purging is unrelated to what's
-    # under test here).
+    from ems.tests.conftest import NO_HISTORY_PURGE
+
+    # The seeded year (2025) is deliberately far in the past — disable boot purge only.
     return create_app(
         MockSource(), dry_run=True, dev_mode="mock", tz=AMS,
         store=HistoryStore(db), settings_store=SettingsStore(db),
-        price_source=MockPriceSource(AMS), history_retention_days=0,
+        price_source=MockPriceSource(AMS),
+        **NO_HISTORY_PURGE,
     )
 
 

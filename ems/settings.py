@@ -600,10 +600,17 @@ def validate_settings(partial: Any) -> tuple[dict[str, Any], dict[str, str]]:
         ok, result = _coerce(field, value)
         if not ok:
             errors[key] = result
-        elif field.type == "secret" and result == "":
+            continue
+        if key == "notify.ntfy_url" and result:
+            from urllib.parse import urlparse
+
+            parsed = urlparse(result)
+            if parsed.scheme not in ("http", "https") or not parsed.netloc:
+                errors[key] = "must be an http(s) URL with a host"
+                continue
+        if field.type == "secret" and result == "":
             continue  # blank secret = keep the existing value
-        else:
-            clean[key] = result
+        clean[key] = result
     return clean, errors
 
 
