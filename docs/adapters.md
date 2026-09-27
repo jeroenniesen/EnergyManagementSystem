@@ -26,8 +26,13 @@ explicit field, not a positional slot. Runtime writes still go only through:
 1. `ems/control/mode_controller.py` — `ModeController.decide` → `driver.apply(...)`
 2. `ems/control/execution.py` — `CommandExecutionBoundary.apply` → `controller.driver.apply(...)`
 
-Any new production `.driver.apply(` / `driver.apply(` under `ems/` outside those files fails CI
-unless it is added to `_I1_ALLOWLIST` with a documented reason.
+Any new production `*driver.apply(` under `ems/` outside those files fails CI
+unless it is added to `_I1_ALLOWLIST` with a documented reason. Matching is by name
+suffix (`endswith("driver")`), so `controller_driver.apply(...)`,
+`wiring.controller_driver.apply(...)`, and `self._driver.apply(...)` are caught as
+well as the literal `driver` / `.driver` forms. Known AST blind spots (not a proof):
+`getattr(driver, "apply")(...)`, `importlib.import_module("ems.control")`, and
+calls through an arbitrary alias (`d = self.driver; d.apply()`).
 
 ### I2 — adapters stay below the control layer
 
