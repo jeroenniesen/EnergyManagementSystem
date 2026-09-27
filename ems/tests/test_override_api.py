@@ -74,7 +74,10 @@ def test_invalid_override_rejected(tmp_path):
         assert bad_minutes.status_code == 422
         assert "minutes" in bad_minutes.json()["errors"]
         # #135: 24 h at max power is no longer admissible — duration is server-clamped to 8 h.
-        day_long = c.post("/api/override", json={"intent": "grid_charge_to_target", "minutes": 24 * 60})
+        day_long = c.post(
+            "/api/override",
+            json={"intent": "grid_charge_to_target", "minutes": 24 * 60},
+        )
         assert day_long.status_code == 422
         assert "minutes" in day_long.json()["errors"]
         # A rejected payload must leave no override set.

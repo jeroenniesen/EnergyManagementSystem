@@ -125,7 +125,8 @@ def test_override_discharge_maps_to_auto_by_default():
 
 def test_unsafe_override_is_held_by_validator():
     """#135: a manual GRID_CHARGE override whose synthetic Plan fails §8.11 is held at
-    ALLOW_SELF_CONSUMPTION (override stays active). Never worse than no EMS — mocked battery only."""
+    ALLOW_SELF_CONSUMPTION (override stays active). Mocked battery only — never worse than no EMS.
+    """
     def rejecting_validator(plan, now):
         return PlanValidation(
             status="unsafe",
