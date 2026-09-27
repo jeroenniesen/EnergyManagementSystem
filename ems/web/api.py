@@ -73,6 +73,7 @@ from ems.detectors import (
     price_opportunity,
     typical_daily_solar_kwh,
 )
+from ems.device_health import build_device_health
 from ems.diagnostics import build_diagnostics, overall_status
 from ems.domain import BatteryIntent, IntelligenceState, PhysicalMode
 from ems.economics import EconomicSnapshot
@@ -1658,6 +1659,39 @@ def create_app(
             operational_requested=bool(settings_cache.get("control.operational")),
         )
 
+    def _prices_live() -> bool:
+        """True only for a non-mock price source (Tibber). MockPriceSource is demoprijzen (#79)."""
+        return price_source is not None and not isinstance(price_source, MockPriceSource)
+
+    def _prices_kind() -> str:
+        if price_source is None:
+            return "none"
+        if isinstance(price_source, MockPriceSource):
+            return "mock"
+        return "live"
+
+    def _device_health_payload(now: datetime) -> dict:
+        detail = freshness.detail_snapshot(now) if freshness is not None else {}
+        reachable = None
+        if control is not None:
+            try:
+                reachable = bool(_battery_reachable(now))
+            except Exception:
+                reachable = False
+        forecast_label = getattr(solar_forecast, "source_label", None) if solar_forecast else None
+        # #148 owns live-price enforcement; strip still surfaces mock/demo via prices_kind.
+        return build_device_health(
+            detail,
+            now=now,
+            tz=site_tz,
+            battery_reachable=reachable,
+            prices_kind=_prices_kind(),
+            forecast_label=str(forecast_label) if forecast_label else None,
+            dry_run=dry_run,
+            operational_mock_prices=(not dry_run and not _prices_live()),
+            demo=dev_mode != "live",
+        )
+
     def _data_quality(now: datetime) -> str:
         """Single source of the current data-quality level (SPEC §8.11)."""
         snap = freshness.snapshot(now) if freshness is not None else {}
@@ -2143,16 +2177,23 @@ def create_app(
 
     @app.get("/api/freshness")
     def freshness_snapshot() -> dict:
+        # Flat {signal: state} map — kept for iOS FreshnessSnapshot + existing e2e mocks.
         if freshness is None:
             return {}
         return freshness.snapshot(datetime.now(UTC))
+
+    @app.get("/api/device-health")
+    def device_health_endpoint() -> dict:
+        """Consumer-facing per-source freshness + summary badge (B-38 / issue #79)."""
+        return _device_health_payload(datetime.now(UTC))
 
     @app.get("/api/dashboard")
     def dashboard_snapshot(api_version: int = Query(default=1, ge=1)) -> dict:
         """Return one timestamped dashboard snapshot for clients that need a coherent read."""
         if api_version != 1:
             raise HTTPException(status_code=406, detail="unsupported dashboard api version")
-        generated_at = datetime.now(UTC).isoformat()
+        now = datetime.now(UTC)
+        generated_at = now.isoformat()
         sections: dict[str, object] = {
             "status": status(),
             "freshness": freshness_snapshot(),
@@ -2165,6 +2206,12 @@ def create_app(
                 _log.warning("dashboard snapshot section failed: %s", name, exc_info=True)
                 sections[name] = None
                 degraded_sections.append(name)
+        try:
+            sections["device_health"] = _device_health_payload(now)
+        except Exception:
+            _log.warning("dashboard snapshot section failed: device_health", exc_info=True)
+            sections["device_health"] = None
+            degraded_sections.append("device_health")
         return {
             "api_version": 1,
             "generated_at": generated_at,
@@ -2223,7 +2270,8 @@ def create_app(
             if ph is not None:
                 price_horizon_ok = ph.ok
             control_overrun = bool(control.control_overrun_active)
-        # #126: distinguish startup-without-live-prices (a) from a Tibber outage (b / b-watch).
+        # #126 / PR #148: startup-without-live-prices (a) vs Tibber outage (b / b-watch).
+        # Device-health strip maps these keys onto the prices row (#79).
         mock_blocked = (
             isinstance(price_source, MockPriceSource)
             and bool(settings_cache.get("control.operational"))
@@ -3949,8 +3997,15 @@ def create_app(
         # Coalesced read (shared 30 s window) so the 5–10 s dashboard poll doesn't read the battery
         # cluster on every refresh. Fall back to a direct read only if nothing's cached yet (cold
         # start) — preserving the original "unreadable source surfaces an error" behaviour.
-        raw = _current_sample(datetime.now(UTC)) or source.read()
+        now = datetime.now(UTC)
+        raw = _current_sample(now) or source.read()
         derived = reconstruct(raw)
+        reachable = None
+        if control is not None:
+            try:
+                reachable = bool(_battery_reachable(now))
+            except Exception:
+                reachable = False
         return {
             "dry_run": dry_run,
             "dry_run_reason": dry_run_block_reason,
@@ -3961,6 +4016,8 @@ def create_app(
             "battery_power_w": raw.battery_power_w,
             "house_load_w": derived.house_load_w,
             "non_ev_load_w": derived.non_ev_load_w,
+            "battery_reachable": reachable,
+            "prices_kind": _prices_kind(),
         }
 
     @app.get("/api/audit")

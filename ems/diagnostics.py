@@ -18,6 +18,8 @@ _SIGNAL_LABEL = {
     "ev": "Sensor: EV",
     "battery": "Sensor: battery power",
     "soc": "Sensor: battery SoC",
+    "prices": "Prices (Tibber)",
+    "forecast": "Solar forecast",
 }
 
 

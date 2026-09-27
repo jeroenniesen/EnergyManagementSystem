@@ -429,16 +429,20 @@ def test_rss_ceiling_sampled():
 
 
 def test_sustained_dashboard_poll():
-    """Fire 20 rounds of all 11 H-tier routes; assert p95 < 500 ms each AND
-    later rounds do not regress badly vs an early-round baseline.
+    """Fire 20 rounds of all 11 H-tier routes; assert p95 < 500 ms AND
+    late-half request times do not sustainably grow vs early-half.
 
     B-80 task 5: end-to-end check that the dashboard-10s polling pattern stays well under budget
     in mock mode and does not regress across rounds. Uses the real create_app with MockSource
     (the project's standard test app pattern, see test_api.py) and the project's standard
     `TestClient` lifespan context to start/stop background tasks.
+
+    Degradation is judged from PerfTimingMiddleware REGISTRY samples (handler time), not
+    test-loop wall-clock. Wall-clock of a whole round includes OS scheduler gaps between
+    GETs and flakes on shared CI runners (~10 ms quiet baseline vs ~80–90 ms noisy round)
+    even when every individual request stays under budget.
     """
     import statistics
-    import time as _time
 
     from ems.sources.mock import MockSource
     from ems.web.api import create_app
@@ -453,32 +457,28 @@ def test_sustained_dashboard_poll():
     )
 
     with TestClient(app) as client:
-        round_walls: list[float] = []
+        # Warm-up so cold-start cost is not mixed into measured samples.
+        for path in HOT_PATHS:
+            client.get(path)
+        REGISTRY.reset()
+
         for _round_idx in range(20):
-            round_t0 = _time.perf_counter()
             for path in HOT_PATHS:
                 client.get(path)
-            round_walls.append((_time.perf_counter() - round_t0) * 1000)
 
-    # p95 of all 220 H-tier requests must be under the 500 ms budget.
-    all_samples = REGISTRY.recent("api.hot", n=1000)
-    durations = sorted(s.duration_ms for s in all_samples)
-    n = len(durations)
-    k = max(0, min(n - 1, int(round(0.95 * (n - 1)))))
-    p95 = durations[k]
+    # Chronological handler timings from the middleware (not wall-clock of the test loop).
+    samples = REGISTRY.recent("api.hot", n=1000)
+    assert len(samples) >= 220, f"expected ≥220 hot samples, got {len(samples)}"
+    durations = [s.duration_ms for s in samples]
+    sorted_all = sorted(durations)
+    p95 = sorted_all[max(0, min(len(sorted_all) - 1, int(round(0.95 * (len(sorted_all) - 1)))))]
     assert p95 < 500, f"hot-route p95 = {p95:.1f} ms exceeds 500 ms budget"
 
-    # Relative check vs an early-round *median*, not round 1 alone. On shared CI a lucky-fast
-    # first round (~25–30 ms wall for all 11 paths) makes 1.5× ≈ 40 ms — GC/scheduling noise
-    # then fails a round that is still << the 500 ms p95 budget (CI: round 13 @ ~80–90 ms).
-    # Enforce the ratio only once a round exceeds an absolute floor well under that budget.
-    # (round_walls is whole-round wall-clock, not per-request slowest.)
-    baseline = statistics.median(round_walls[:5])
-    floor_ms = 150.0
-    for i, m in enumerate(round_walls):
-        if m < floor_ms:
-            continue
-        assert m < 1.5 * max(baseline, floor_ms), (
-            f"round {i} wall={m:.1f}ms vs early-median={baseline:.1f}ms "
-            f"(degradation > 50% above {floor_ms:.0f}ms floor)"
-        )
+    # Sustained growth: late-half median of *request* times vs early-half median.
+    mid = len(durations) // 2
+    early = statistics.median(durations[:mid])
+    late = statistics.median(durations[mid:])
+    assert late < 1.5 * early, (
+        f"late-half request median={late:.1f}ms vs early-half={early:.1f}ms "
+        f"(sustained handler degradation > 50%)"
+    )

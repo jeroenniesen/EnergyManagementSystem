@@ -11,16 +11,19 @@ import type {
   SavedToday,
 } from "./EnergyStory";
 import { Icon, type IconName } from "./icons";
+import { DeviceHealthStrip } from "./DeviceHealth";
 import {
   CAR_BADGE_SUFFIX,
   CAR_BADGE_SUFFIX_DEFAULT,
   DATA_QUALITY,
   DATA_SOURCE,
+  type DeviceHealth,
   EMS_UNREACHABLE,
   FRESHNESS_STATE,
   formatLaatstBekend,
   humanize,
   OUTCOME_LABEL,
+  pickDeviceHealthAlert,
   RUN_MODE,
   SIGNAL_NAME,
 } from "./labels";
@@ -342,6 +345,7 @@ export function App() {
 
   const [status, setStatus] = useState<Status | null>(null);
   const [freshness, setFreshness] = useState<FreshnessMap | null>(null);
+  const [deviceHealth, setDeviceHealth] = useState<DeviceHealth | null>(null);
   const [story, setStory] = useState<EnergyStoryData | null>(null);
   const [batteryPlan, setBatteryPlan] = useState<
     BatteryPlanData | null
@@ -492,12 +496,18 @@ export function App() {
       getJson(url).then((v) => { if (alive) apply(v); }).catch(() => { if (alive) failed?.(); });
     }
     function poll() {
-      const applyCore = (value: { status: Status; freshness: FreshnessMap; alerts: AlertsResp }) => {
+      const applyCore = (value: {
+        status: Status;
+        freshness: FreshnessMap;
+        alerts: AlertsResp;
+        device_health?: DeviceHealth | null;
+      }) => {
         unreachableRef.current = false;
         setStatus(value.status);
         setFreshness(value.freshness);
         batteryFreshness.current = value.freshness.battery ?? null;
         setAlertsData(value.alerts);
+        if (value.device_health) setDeviceHealth(value.device_health);
         setError(null);
         setLastReachableAt(Date.now());
         setTileFreshness((current) => ({
@@ -509,7 +519,12 @@ export function App() {
         }
       };
       getJson("/api/dashboard")
-        .then((value: { status: Status; freshness: FreshnessMap; alerts: AlertsResp }) => {
+        .then((value: {
+          status: Status;
+          freshness: FreshnessMap;
+          alerts: AlertsResp;
+          device_health?: DeviceHealth | null;
+        }) => {
           if (alive) applyCore(value);
         })
         .catch((snapshotError) => {
@@ -536,6 +551,7 @@ export function App() {
             setFreshness(value);
             batteryFreshness.current = value.battery ?? null;
           });
+          fill("/api/device-health", (value: DeviceHealth) => setDeviceHealth(value));
           // Older servers / snapshot-unavailable: still fan out /api/alerts. Skip applying if
           // status also failed (unreachable) so stale alerts never sit under the outage banner.
           fill("/api/alerts", (value: AlertsResp) => {
@@ -916,6 +932,20 @@ export function App() {
             </div>
           )}
         </section>
+      )}
+
+      {/* Issue #79: compact per-source freshness — visible without a click; System keeps detail. */}
+      {view === "dashboard" && !error && (freshness || deviceHealth) && (
+        <DeviceHealthStrip
+          freshness={freshness}
+          deviceHealth={deviceHealth}
+          isDemo={status?.dev_mode !== "live" || !!home?.simulated}
+          alertsForSource={(key) => {
+            const hit = pickDeviceHealthAlert(key, alertsData?.alerts);
+            if (!hit) return null;
+            return { message: hit.message, ems_doing: hit.ems_doing, action: hit.action };
+          }}
+        />
       )}
 
       {view === "manage" && (

@@ -12,9 +12,12 @@ Copy rules (B-09 / issue #73):
   without a confirmed AUTO. Stale/missing critical signals without confirmed AUTO must not
   say "safe mode".
 - Critical-signal failsafe is ACTIVE AUTO (self-use), not "pause commands" (issue case c).
+- Non-critical signals (prices / forecast / solar / …) must NOT claim a self-use fallback —
+  control only fails safe on CRITICAL_SIGNALS (issue #79 review).
 
-Live-prices gate copy (issue #126): operational without a live Tibber source stays in watch
-mode; a Tibber outage while live forces self-use; dry-run outages never claim a battery write.
+Live-prices gate copy (issue #126 / PR #148): operational without a live Tibber source stays
+in watch mode; a Tibber outage while live forces self-use; dry-run outages never claim a
+battery write. Device-health strip maps those alert keys onto the prices row.
 """
 from __future__ import annotations
 
@@ -114,15 +117,36 @@ _SIGNAL_INFO: dict[str, dict[str, str]] = {
         "action": "Nothing needed — EMS catches up automatically once readings resume. Check "
                    "the Indevolt battery's power and network if this persists.",
     },
+    # Non-critical: stale prices/forecast do NOT trip failsafe — never claim self-use (#79).
+    "prices": {
+        "message": "Electricity prices {state} — EMS is working from an older price curve, so "
+                    "price-based plans may be less precise.",
+        "safe": "This does not by itself put the battery into self-use; only critical meter "
+                "or SoC problems do that.",
+        "ems_doing": "EMS keeps the current plan on the last known prices and refreshes Tibber "
+                     "when it can.",
+        "action": "Nothing needed — prices refresh automatically. If this lasts past an hour, "
+                   "check your Tibber token and connection in Settings.",
+    },
+    "forecast": {
+        "message": "Solar forecast {state} — today's solar outlook may be outdated.",
+        "safe": "This does not by itself put the battery into self-use; battery control "
+                "continues on the last forecast.",
+        "ems_doing": "EMS keeps planning with the last forecast and will refresh Solcast / "
+                     "Forecast.Solar on the next schedule window.",
+        "action": "Nothing needed — the forecast refreshes on its daylight schedule. If this "
+                   "lasts into the afternoon, check solar settings and Solcast credentials.",
+    },
 }
 _STATE_WORD = {"missing": "unavailable", "stale": "delayed"}
 # Fallback copy for any signal key not covered above, so a new signal never ships without an
 # answer to "is my home safe" / "what is EMS doing" / "what can I do" (B-37/B-09).
+# Deliberately does NOT claim self-use — only CRITICAL_SIGNALS do that.
 _DEFAULT_SIGNAL_SAFE = (
-    "EMS falls back to the battery's own self-use whenever a signal it depends on is missing."
+    "EMS keeps control when it can; only a missing P1 meter or battery level forces self-use."
 )
 _DEFAULT_SIGNAL_EMS_DOING = (
-    "EMS retries the missing signal automatically and aims for the battery's own self-use."
+    "EMS retries the missing signal automatically and keeps the current plan where it is safe."
 )
 _DEFAULT_SIGNAL_ACTION = (
     "Nothing needed — EMS retries automatically. Check the affected meter's or battery's "
@@ -314,16 +338,28 @@ def derive_alerts(
     return alerts
 
 
-def data_quality(freshness: dict[str, str], *, prices_ok: bool, forecast_ok: bool) -> str:
+def data_quality(
+    freshness: dict[str, str],
+    *,
+    prices_ok: bool,
+    forecast_ok: bool,
+    prices_live: bool = True,
+    operational: bool = False,
+) -> str:
     """complete | degraded | price_fallback | unsafe (SPEC §8.11).
 
     Precedence (most severe first): unsafe > price_fallback > degraded > complete. So a missing
     price with a simultaneously-stale non-critical signal reports price_fallback (the per-signal
-    staleness still surfaces separately as an alert)."""
+    staleness still surfaces separately as an alert).
+
+    `prices_live` / `operational` (issue #79 Klaar-als #4): armed control on mock prices must
+    never report `complete` — `price_fallback` instead. This is a badge/quality signal only;
+    forcing dry-run / self-use when prices aren't live is owned by #126 / PR #148.
+    """
     for sig in CRITICAL_SIGNALS:
         if freshness.get(sig, "missing") != "fresh":
             return "unsafe"  # can't safely reconstruct/plan
-    if not prices_ok:
+    if not prices_ok or (operational and not prices_live):
         return "price_fallback"
     if not forecast_ok or any(state != "fresh" for state in freshness.values()):
         return "degraded"

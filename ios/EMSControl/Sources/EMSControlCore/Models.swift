@@ -76,6 +76,12 @@ public struct DashboardSnapshot: Codable, Equatable, Sendable {
 
     public var isDemo: Bool { serverName.lowercased().contains("demo") }
 
+    /// Label-only: EMS `dev_mode=mock` (simulator meters). Must NOT drive session switching /
+    /// forgetServer / setDemo fixtures — Klaar-als #5 is a visible badge only (#79 review).
+    public var isSimulatedServer: Bool {
+        status.values["dev_mode"]?.string == "mock"
+    }
+
     enum CodingKeys: String, CodingKey {
         case apiVersion
         case generatedAt
@@ -196,6 +202,11 @@ public struct MobileDashboardSnapshot: Codable, Equatable, Sendable {
     public var carPlan: CarPlanSnapshot = .empty
 
     public var isDemo: Bool { serverName.lowercased().contains("demo") }
+
+    /// Label-only: EMS `dev_mode=mock`. Does not swap Chat/Insights/Car/Notifications to demo
+    /// fixtures or change Forget→Connect (#79 review / Klaar-als #5).
+    public var isSimulatedServer: Bool { status.devMode == "mock" }
+
     public var degradedSections: [String] {
         var sections: [String] = []
         if alerts.dataQuality != "complete" { sections.append("data quality") }

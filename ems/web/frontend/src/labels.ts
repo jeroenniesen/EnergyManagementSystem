@@ -51,19 +51,21 @@ export const RUN_MODE: Record<"dry" | "live", Labelled> = {
 /** Data source: real sensors vs. the built-in simulator. */
 export const DATA_SOURCE: Record<"live" | "sim", Labelled> = {
   live: { label: "Live sensors", title: "Readings come from your real meters and battery." },
-  sim: { label: "Demo data", title: "Readings come from the built-in simulator, not your home." },
+  // Issue #79: short "Demo" so web + phone share the same glanceable word.
+  sim: { label: "Demo", title: "Readings come from the built-in simulator, not your home." },
 };
 
 /** Overall data quality / system health → friendly phrase + explanation. */
 export const DATA_QUALITY: Record<string, Labelled> = {
-  complete: { label: "All data current", title: "All sensors and forecasts are fresh." },
+  complete: { label: "Alles actueel", title: "All sensors and forecasts are fresh." },
   degraded: {
-    label: "Some data delayed",
+    // Issue #79: never "Gedegradeerd" — consumer phrase naming partial staleness.
+    label: "Deels verouderd",
     title: "Some sensor or forecast data is stale, so the plan may be less precise.",
   },
   price_fallback: {
-    label: "Using backup prices",
-    title: "Live prices are unavailable, so a fallback price curve is in use.",
+    label: "Geen actuele prijzen",
+    title: "Live Tibber prices are unavailable, so a fallback / demo price curve is in use.",
   },
   unsafe: {
     label: "Paused — self-use",
@@ -71,6 +73,134 @@ export const DATA_QUALITY: Record<string, Labelled> = {
       "Data is missing or stale, so EMS is directing the battery back to its own self-use.",
   },
 };
+
+/** Dashboard consumer sources for the compact freshness strip (issue #79). */
+export const CONSUMER_SOURCES = ["battery", "grid", "prices", "forecast"] as const;
+export type ConsumerSource = (typeof CONSUMER_SOURCES)[number];
+
+export const CONSUMER_SOURCE_LABEL: Record<ConsumerSource, string> = {
+  battery: "Batterij",
+  grid: "P1-meter",
+  prices: "Prijzen",
+  forecast: "Zonvoorspelling",
+};
+
+export type DeviceHealthSummary = {
+  badge: string;
+  label: string;
+  detail: string;
+  severity: string;
+};
+
+export type DeviceHealthSource = {
+  key: string;
+  label: string;
+  state: string;
+  updated_at?: string | null;
+  updated_hhmm?: string | null;
+  age_seconds?: number | null;
+  note?: string | null;
+};
+
+export type DeviceHealth = {
+  sources: DeviceHealthSource[];
+  battery_reachable?: boolean | null;
+  forecast_age_seconds?: number | null;
+  prices_kind?: string;
+  summary: DeviceHealthSummary;
+};
+
+/**
+ * Alert keys the device-health strip matches onto each source row (#73 three answers).
+ * Prices prefer #126 / PR #148 live-price keys (`no_live_prices`, `tibber_prices_unavailable`)
+ * ahead of freshness / horizon warnings.
+ */
+export const DEVICE_HEALTH_SOURCE_ALERT_KEYS: Record<string, readonly string[]> = {
+  grid: ["grid_stale", "grid_missing"],
+  battery: ["battery_stale", "battery_missing", "soc_stale", "soc_missing"],
+  prices: [
+    "no_live_prices",
+    "tibber_prices_unavailable",
+    "prices_stale",
+    "prices_missing",
+    "price_horizon_incomplete",
+  ],
+  forecast: ["forecast_stale", "forecast_missing"],
+};
+
+/** First matching alert for a strip source, preferring the order in DEVICE_HEALTH_SOURCE_ALERT_KEYS. */
+export function pickDeviceHealthAlert<T extends { key: string }>(
+  sourceKey: string,
+  alerts: readonly T[] | null | undefined,
+): T | null {
+  const keys = DEVICE_HEALTH_SOURCE_ALERT_KEYS[sourceKey] ?? [];
+  if (!alerts?.length || !keys.length) return null;
+  for (const key of keys) {
+    const hit = alerts.find((a) => a.key === key);
+    if (hit) return hit;
+  }
+  return null;
+}
+
+/** Plain-language detail like "prijzen van 14:00". */
+export function sourceDetail(key: string, hhmm: string | null | undefined): string {
+  const name =
+    key === "battery"
+      ? "batterij"
+      : key === "grid"
+        ? "P1-meter"
+        : key === "prices"
+          ? "prijzen"
+          : key === "forecast"
+            ? "zonvoorspelling"
+            : key;
+  return hhmm ? `${name} van ${hhmm}` : name;
+}
+
+/**
+ * Prefer the backend `device_health.summary` as source of truth.
+ * Fall back to a local "Deels verouderd" / Demo only when the API section is absent
+ * (older servers / fan-out path). Severity matches backend: critical only for missing grid.
+ */
+export function summarizeDeviceHealth(
+  freshness: Record<string, string> | null | undefined,
+  deviceHealth: DeviceHealth | null | undefined,
+  isDemo: boolean,
+): DeviceHealthSummary {
+  if (deviceHealth?.summary) return deviceHealth.summary;
+
+  const fromApi = deviceHealth?.sources ?? [];
+  const byKey = new Map(fromApi.map((s) => [s.key, s]));
+  const staleKeys = CONSUMER_SOURCES.filter((key) => {
+    const state = byKey.get(key)?.state ?? freshness?.[key];
+    return state === "stale" || state === "missing";
+  });
+  if (staleKeys.length > 0) {
+    const key = staleKeys[0];
+    const hhmm = byKey.get(key)?.updated_hhmm ?? null;
+    const state = byKey.get(key)?.state ?? freshness?.[key];
+    return {
+      badge: "partially_stale",
+      label: "Deels verouderd",
+      detail: sourceDetail(key, hhmm),
+      severity: key === "grid" && state === "missing" ? "critical" : "warning",
+    };
+  }
+  if (isDemo) {
+    return {
+      badge: "demo",
+      label: "Demo",
+      detail: "Cijfers komen niet van jouw huis — dit is demodata.",
+      severity: "warning",
+    };
+  }
+  return {
+    badge: "current",
+    label: "Alles actueel",
+    detail: "Batterij, P1-meter, prijzen en zonvoorspelling zijn bijgewerkt.",
+    severity: "ok",
+  };
+}
 
 /** Plain-language confidence behind the current plan, keyed by data-quality level. */
 export const CONFIDENCE: Record<string, string> = {

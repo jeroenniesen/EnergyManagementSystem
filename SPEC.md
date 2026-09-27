@@ -125,6 +125,7 @@ Per-source freshness is tracked (§6, §16). If a meter is missing or stale:
 ### 4.7 Data quality (per-signal staleness, plausibility, source priority)
 Quality is tracked **per signal, not as one global stale flag** ([`docs/control-model.md`](docs/control-model.md) §11):
 - **Per-signal staleness:** each of `grid`/`solar`/`ev`/`soc`/`price`/`forecast` has its **own** freshness state and age, surfaced individually in the UI (§9.1) and feeding the per-plan data-quality badge (§8.11).
+  - **Implemented (B-38 / #79):** meter signals use a ~10 min stale window; `prices` ≈ 6 h; `forecast` ≈ 24 h (so a days-old Solcast warm-start cannot read as live). Stale/missing `prices` or `forecast` make `data_quality` `degraded` (not `unsafe`) and lower plan confidence via `_freshness_ok` — the §8.11 projected-reachability check that only runs when quality is `complete` is therefore skipped more often, by design. Armed control on demoprijzen reports `price_fallback` (badge only); forcing dry-run / self-use without live Tibber is owned by #126.
 - **Source priority per metric:** **HA sensor → direct device API → cached value** — and a *cached* value is for **display only, never for control**.
 - **Plausibility checks:** reject/flag implausible readings — SoC can't jump more than `soc_max_jump_pct_per_5min` (e.g. 20%/5 min), `solar_power_w` can't be negative, prices must be **chronological** and within sane bounds.
 - **Learning quarantine (implemented):** the established plausibility-clamped ingest values remain

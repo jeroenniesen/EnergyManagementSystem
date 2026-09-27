@@ -253,10 +253,16 @@ test.describe("EMS dashboard", () => {
 
   async function moveToViewBoxX(page: Page, x: number) {
     const plot = page.getByTestId("plan-story-plot");
+    await expect(plot).toBeVisible();
     await plot.scrollIntoViewIfNeeded();
     const box = await plot.boundingBox();
     expect(box).not.toBeNull();
-    await page.mouse.move(box!.x + (x / 1000) * box!.width, box!.y + box!.height * 0.45);
+    // Hover via the plot locator (not page.mouse) so Playwright retries if layout
+    // settles after the device-health strip / outcome tiles finish painting.
+    await plot.hover({
+      position: { x: (x / 1000) * box!.width, y: box!.height * 0.45 },
+      force: true,
+    });
   }
 
   test("phase 1 renders one PlanStory and removes all competing dashboard charts", async ({ page }) => {
@@ -527,6 +533,7 @@ test.describe("EMS dashboard", () => {
   test("mouse hover uses time inversion and clears over a hole or on leave", async ({ page }) => {
     await routePlanStory(page);
     await page.goto("/");
+    await expect(page.getByTestId("plan-story-plot")).toBeVisible();
 
     await moveToViewBoxX(page, 122);
     await expect(page.getByTestId("plan-story-tip")).toContainText("08:00 · recorded");
@@ -1583,6 +1590,74 @@ test.describe("EMS dashboard", () => {
     const fr = page.getByTestId("freshness");
     await expect(fr).toBeVisible();
     await expect(fr).toContainText("Grid meter: up to date");
+  });
+
+  // Issue #79 / B-38 — consumer device-health strip + Demo / Deels verouderd labels.
+  test("device health: mock shows Demo; forecast stale shows Deels verouderd on the strip", async ({
+    page,
+  }) => {
+    await page.goto("/");
+    await expect(page.getByTestId("data-source")).toHaveText("Demo");
+    await expect(page.getByTestId("device-health")).toBeVisible();
+    await expect(page.getByTestId("device-health-summary")).toContainText("Demo");
+    await expect(page.getByTestId("device-health-battery")).toBeVisible();
+    await expect(page.getByTestId("device-health-grid")).toBeVisible();
+    await expect(page.getByTestId("device-health-prices")).toBeVisible();
+    await expect(page.getByTestId("device-health-forecast")).toBeVisible();
+
+    // Deels verouderd on the strip (non-critical forecast) — header badge stays §8.11.
+    const forecastStale = await mockRoute(page, "**/api/dashboard", async (route) => {
+      const response = await route.fetch();
+      const dashboard = await response.json();
+      await route.fulfill({
+        response,
+        json: {
+          ...dashboard,
+          freshness: { ...dashboard.freshness, forecast: "stale" },
+          device_health: {
+            ...(dashboard.device_health ?? {}),
+            sources: (dashboard.device_health?.sources ?? []).map(
+              (s: { key: string; state: string }) =>
+                s.key === "forecast" ? { ...s, state: "stale", updated_hhmm: "08:00" } : s,
+            ),
+            summary: {
+              badge: "partially_stale",
+              label: "Deels verouderd",
+              detail: "zonvoorspelling van 08:00",
+              severity: "warning",
+            },
+          },
+        },
+      });
+    });
+    await page.reload();
+    await expect(page.getByTestId("device-health-summary")).toContainText("Deels verouderd");
+    await expect(page.getByTestId("device-health-forecast")).toHaveAttribute("data-state", "stale");
+    forecastStale.assertRequested();
+  });
+
+  test("device health: stale P1 keeps unsafe header badge (Paused — self-use)", async ({
+    page,
+  }) => {
+    const gridStale = await mockRoute(page, "**/api/dashboard", async (route) => {
+      const response = await route.fetch();
+      const dashboard = await response.json();
+      await route.fulfill({
+        response,
+        json: {
+          ...dashboard,
+          freshness: { ...dashboard.freshness, grid: "stale" },
+          alerts: {
+            ...(dashboard.alerts ?? {}),
+            data_quality: "unsafe",
+            alerts: dashboard.alerts?.alerts ?? [],
+          },
+        },
+      });
+    });
+    await page.goto("/");
+    await expect(page.getByTestId("data-quality")).toContainText("Paused — self-use");
+    gridStale.assertRequested();
   });
 
   test("System tab shows the readiness checks", async ({ page }) => {

@@ -62,6 +62,12 @@ def build_app():
         build_wiring(eff, tz, cache_store=cache_store, force_dry_run=cfg.dry_run)
     )
     dry_run_block_reason = config_forced_dry_run_reason(eff, force_dry_run=cfg.dry_run)
+    # Register prices/forecast only when wired (issue #79) — avoids a permanent "missing" that
+    # would force data_quality=degraded on a prices-less test harness.
+    if price_source is not None:
+        freshness.register("prices")
+    if solar_forecast is not None:
+        freshness.register("forecast")
     # Roadmap F3 (Insights reporting only — never touches control): static flat factor by default,
     # or the live ElectricityMaps signal when configured with a key. See build_carbon_source.
     carbon_source = build_carbon_source(eff)
