@@ -54,7 +54,7 @@ from ems.planner.adaptive import AdaptiveConfig
 from ems.planner.base import PlannerRequest
 from ems.planner.charge_need import compute_charge_need
 from ems.planner.factory import build_planner
-from ems.planner.recovery import CompletionStatus, NOT_APPLICABLE, recover_if_needed
+from ems.planner.recovery import NOT_APPLICABLE, CompletionStatus, recover_if_needed
 from ems.planner.rule_based import PlannerConfig
 from ems.planner.strategy import HysteresisState, resolve_strategy_hysteretic
 from ems.planner.summer import SummerConfig
