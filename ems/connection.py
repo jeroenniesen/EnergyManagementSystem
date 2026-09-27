@@ -16,6 +16,7 @@ import json
 import logging
 import os
 import sqlite3
+from typing import NamedTuple
 from zoneinfo import ZoneInfo
 
 from ems.battery_profile import normalize_tower_ips
@@ -46,6 +47,22 @@ def config_forced_dry_run_reason(eff: dict, *, force_dry_run: bool) -> str | Non
     if not (bool(eff.get("connection.use_live_prices")) and bool(token)):
         return None  # #126 would have blocked arming anyway
     return CONFIG_FORCED_DRY_RUN_REASON
+
+
+class Wiring(NamedTuple):
+    """Named startup wiring for telemetry sources + the (unarmed-by-default) battery driver.
+
+    Field order matches the historical positional 7-tuple from `build_wiring`, so existing
+    unpacking callers keep working without a behaviour change (#138 / epic #111).
+    """
+
+    source: object
+    price_source: object
+    solar_forecast: object
+    battery_endpoint: object | None
+    controller_driver: object
+    dev_mode: str
+    dry_run: bool
 
 
 def _seed_from_config(cfg) -> dict:
@@ -129,14 +146,17 @@ def build_wiring(
     cache_store: object | None = None,
     *,
     force_dry_run: bool = True,
-):
-    """Build (source, price_source, solar_forecast, battery_endpoint, controller_driver, dev_mode,
-    dry_run) from effective settings. The battery driver is unarmed and dry_run is True UNLESS
-    control.operational is on AND a live Indevolt is configured AND a live Tibber price source is
-    wired AND ``force_dry_run`` is False (then armed + dry_run False). ``force_dry_run`` comes from
-    ``cfg.dry_run`` (``control.dry_run`` after mock/replay force; default True) and always wins
-    over the UI ``control.operational`` toggle (#136). Mock/demo prices can never lift dry_run
-    (#126). Default ``force_dry_run=True`` is fail-safe if a caller omits the kwarg.
+) -> Wiring:
+    """Build a `Wiring` NamedTuple from effective settings.
+
+    Order is (source, price_source, solar_forecast, battery_endpoint, controller_driver, dev_mode,
+    dry_run) — same as the historical positional tuple, so unpacking callers stay valid. The battery
+    driver is unarmed and dry_run is True UNLESS control.operational is on AND a live Indevolt is
+    configured AND a live Tibber price source is wired AND ``force_dry_run`` is False (then armed +
+    dry_run False). ``force_dry_run`` comes from ``cfg.dry_run`` (``control.dry_run`` after
+    mock/replay force; default True) and always wins over the UI ``control.operational`` toggle
+    (#136). Mock/demo prices can never lift dry_run (#126). Default ``force_dry_run=True`` is
+    fail-safe if a caller omits the kwarg.
 
     `cache_store` (optional) is handed to the rate-limited external sources (Tibber, Forecast.Solar)
     so they warm-start from a persisted snapshot after a restart and don't immediately refetch."""
@@ -245,8 +265,15 @@ def build_wiring(
     # Live writes only when operational (battery + live prices) AND config did not force dry-run.
     # force_dry_run alone keeps dry_run True even if the UI asked for operational (#136 / #126).
     dry_run = not operational or force_dry_run
-    return (source, price_source, solar_forecast, battery_endpoint, controller_driver, dev_mode,
-            dry_run)
+    return Wiring(
+        source=source,
+        price_source=price_source,
+        solar_forecast=solar_forecast,
+        battery_endpoint=battery_endpoint,
+        controller_driver=controller_driver,
+        dev_mode=dev_mode,
+        dry_run=dry_run,
+    )
 
 
 def build_carbon_source(eff: dict):
