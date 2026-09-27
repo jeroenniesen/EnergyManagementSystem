@@ -2185,9 +2185,26 @@ def create_app(
                                          car_session=_ca is not None and _ca.action == "discharge",
                                          commitment=intent is BatteryIntent.GRID_CHARGE_TO_TARGET,
                                          ).outcome
-        alerts = derive_alerts(snap, dry_run=dry_run, decision_outcome=outcome)
+        # B-09: confirmed AUTO gates wording that would over-claim failsafe ("safe mode").
+        confirmed_auto = (
+            controller is not None
+            and controller.last_confirmed_action is PhysicalMode.AUTO
+            and not getattr(controller, "last_command_unconfirmed", False)
+        )
+        price_horizon_ok: bool | None = None
+        control_overrun = False
+        if control is not None:
+            ph = control.price_horizon_status
+            if ph is not None:
+                price_horizon_ok = ph.ok
+            control_overrun = bool(control.control_overrun_active)
+        alerts = derive_alerts(
+            snap, dry_run=dry_run, decision_outcome=outcome,
+            confirmed_auto=confirmed_auto, price_horizon_ok=price_horizon_ok,
+            control_overrun=control_overrun,
+        )
         out = [{"key": a.key, "severity": a.severity, "message": a.message,
-                "safe": a.safe, "action": a.action} for a in alerts]
+                "safe": a.safe, "action": a.action, "ems_doing": a.ems_doing} for a in alerts]
         if override_active:
             ov = override_box["ov"]
             until = ov.expires_at.astimezone(site_tz).strftime("%H:%M") if ov.expires_at else "?"
@@ -2197,19 +2214,23 @@ def create_app(
             if held:
                 msg = (f"Manual override held until {until} — data unsafe, so EMS is holding "
                        "self-consumption instead of forcing the requested action")
-                safe = ("Yes — EMS is protecting the battery by holding self-consumption instead "
+                safe = ("EMS is protecting the battery by holding self-consumption instead "
                         "of forcing an action while the data quality issue lasts.")
                 action = ("Nothing needed — EMS applies your override automatically once the "
                           "data-quality issue clears. See the related alert above for what to "
                           "check.")
+                ems_doing = ("EMS keeps self-use and will apply your override once critical "
+                             "inputs are fresh again.")
             else:
                 msg = f"Manual override: forcing {intent.value if intent else '?'} until {until}"
-                safe = ("Yes — you're intentionally directing the battery; EMS still enforces "
+                safe = ("You're intentionally directing the battery; EMS still enforces "
                         "its safety checks underneath.")
                 action = (f"Nothing needed — the override ends automatically at {until}, or "
                           "cancel it now from Manual control.")
+                ems_doing = ("EMS is applying your manual override and will return to the "
+                             "automatic plan when it expires.")
             out.append({"key": "manual_override_active", "severity": "warning", "message": msg,
-                        "safe": safe, "action": action})
+                        "safe": safe, "action": action, "ems_doing": ems_doing})
         # Cluster mismatch (a tower not following the commanded mode) — surfaced prominently, not
         # just in the audit log, because it means part of the battery isn't doing what was asked.
         laggard_sig = _drift_box.get("sig")
@@ -2220,10 +2241,12 @@ def create_app(
                 "message": f"Battery cluster mismatch — tower(s) {ips} are not following "
                            "the commanded mode. The EMS commands the master; a tower that "
                            "doesn't follow keeps running its own mode.",
-                "safe": "Yes — the mismatched tower is just running its own onboard self-use "
-                        "mode; nothing unsafe is happening.",
+                "safe": "The mismatched tower is running its own onboard self-use mode; EMS "
+                        "is not claiming the whole cluster matches yet.",
                 "action": f"Check tower(s) {ips} — power-cycle or reconnect it if it hasn't "
                           "rejoined the commanded mode after a few cycles.",
+                "ems_doing": "EMS keeps commanding the master Indevolt tower; laggards keep "
+                             "their own mode until they rejoin.",
             })
         return {"data_quality": dq, "alerts": out}
 

@@ -9,6 +9,33 @@ export function humanize(token: string): string {
   return words ? words.charAt(0).toUpperCase() + words.slice(1) : token;
 }
 
+/**
+ * B-09 / #73 — emotionally complete "EMS unreachable" banner copy.
+ * Three lines only: what's wrong, failsafe (never a live mode claim), and "Laatst bekend hh:mm".
+ * Does not say "the battery is safe" / "nothing changes" — the client cannot confirm AUTO.
+ */
+export const EMS_UNREACHABLE = {
+  message: "EMS is unreachable from this device.",
+  /** Failsafe intent only — not a live battery reading. */
+  ems_doing:
+    "In watch-only mode EMS never changes your battery. After a clean stop the battery returns " +
+    "to its own self-use; after a crash or network loss the last commanded mode stays until EMS " +
+    "is back.",
+} as const;
+
+/** Format the B-09 "last contact" line. `atMs` null → unknown time still uses the fixed phrase. */
+export function formatLaatstBekend(atMs: number | null, now: Date = new Date()): string {
+  if (atMs == null || !Number.isFinite(atMs)) {
+    return "Laatst bekend —";
+  }
+  const d = new Date(atMs);
+  const hh = String(d.getHours()).padStart(2, "0");
+  const mm = String(d.getMinutes()).padStart(2, "0");
+  // Keep the clock in the viewer's local zone; the phrase itself is fixed (Klaar-als / e2e).
+  void now;
+  return `Laatst bekend ${hh}:${mm}`;
+}
+
 type Labelled = { label: string; title: string };
 
 /** Run mode: is the system actually commanding the battery, or only watching? */

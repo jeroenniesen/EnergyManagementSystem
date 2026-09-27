@@ -18,18 +18,20 @@ const STRUCTURED_ALERTS = {
     {
       key: "solar_stale",
       severity: "warning",
-      message: "Solar reading delayed — solar accounting is less precise.",
-      safe: "Yes — this only affects solar accounting, not battery safety or control.",
+      message: "Solar meter delayed — solar accounting is less precise; battery control continues.",
+      safe: "This only affects solar accounting, not whether EMS can command the battery.",
       action: "Nothing needed — EMS keeps controlling the battery normally.",
+      ems_doing: "EMS keeps controlling the battery; only solar totals may be less precise.",
     },
     {
-      // Info-level: stays ONE calm line even when safe/action exist — reassurance
+      // Info-level: stays ONE calm line even when safe/action/ems_doing exist — reassurance
       // sub-lines are reserved for warning/critical (calm states stay calm).
       key: "bare_note",
       severity: "info",
       message: "A plain note with no extra fields.",
       safe: "Should never render for info.",
       action: "Should never render for info.",
+      ems_doing: "Should never render for info.",
     },
   ],
 };
@@ -2595,8 +2597,8 @@ test.describe("EMS dashboard", () => {
   });
 
   test("an alert with safe + action fields renders structured sub-lines", async ({ page }) => {
-    // B-37 contract: alerts may carry optional `safe` (is-my-home-safe) and `action` (what-I-can-do)
-    // fields; when present the UI renders them as sub-lines, defensively skipping either if absent.
+    // B-37 / B-09 contract: alerts may carry optional `safe`, `action`, and `ems_doing` fields;
+    // when present the UI renders them as sub-lines, defensively skipping any that are absent.
     const dashboardMock = await mockRoute(page, "**/api/dashboard", async (route) => {
       const response = await route.fetch();
       const dashboard = await response.json();
@@ -2607,16 +2609,18 @@ test.describe("EMS dashboard", () => {
     });
     await page.goto("/");
     const alert = page.getByTestId("alert-solar_stale");
-    await expect(alert).toContainText("Solar reading delayed");
+    await expect(alert).toContainText("Solar meter delayed");
+    await expect(alert.getByTestId("alert-ems-doing")).toContainText("keeps controlling");
     await expect(alert.getByTestId("alert-safe")).toContainText(
       "only affects solar accounting",
     );
     await expect(alert.getByTestId("alert-action")).toContainText("Nothing needed");
-    // The field-less alert renders its message and NO sub-lines.
+    // Info-level stays ONE calm line — no structured sub-lines.
     const bare = page.getByTestId("alert-bare_note");
     await expect(bare).toContainText("A plain note with no extra fields.");
     await expect(bare.getByTestId("alert-safe")).toHaveCount(0);
     await expect(bare.getByTestId("alert-action")).toHaveCount(0);
+    await expect(bare.getByTestId("alert-ems-doing")).toHaveCount(0);
     dashboardMock.assertRequested();
   });
 
@@ -2634,7 +2638,8 @@ test.describe("EMS dashboard", () => {
       );
       await page.goto("/");
       const alert = page.getByTestId("alert-solar_stale");
-      await expect(alert).toContainText("Solar reading delayed");
+      await expect(alert).toContainText("Solar meter delayed");
+      await expect(alert.getByTestId("alert-ems-doing")).toContainText("keeps controlling");
       await expect(alert.getByTestId("alert-safe")).toContainText(
         "only affects solar accounting",
       );
@@ -2643,11 +2648,13 @@ test.describe("EMS dashboard", () => {
       await expect(bare).toContainText("A plain note with no extra fields.");
       await expect(bare.getByTestId("alert-safe")).toHaveCount(0);
       await expect(bare.getByTestId("alert-action")).toHaveCount(0);
+      await expect(bare.getByTestId("alert-ems-doing")).toHaveCount(0);
       dashboardMock.assertRequested();
       alertsMock.assertRequested();
     });
 
   test("shows the error banner when the snapshot and fallback status APIs fail", async ({ page }) => {
+    // B-09 / #73: dashboard + status both fail → emotionally complete banner with Laatst bekend.
     const dashboardMock = await mockRoute(page, "**/api/dashboard", (route) =>
       route.fulfill({
         status: 500,
@@ -2663,7 +2670,15 @@ test.describe("EMS dashboard", () => {
       }),
     );
     await page.goto("/");
-    await expect(page.getByTestId("error")).toBeVisible();
+    const banner = page.getByTestId("error");
+    await expect(banner).toBeVisible();
+    const unreachable = page.getByTestId("alert-ems_unreachable");
+    await expect(unreachable).toBeVisible();
+    await expect(unreachable.getByTestId("alert-ems-doing")).toContainText("watch-only");
+    // Klaar-als #5: fixed phrase + clock — never a raw "Cannot reach EMS API" error code.
+    await expect(page.getByTestId("alert-laatst-bekend")).toContainText("Laatst bekend");
+    await expect(page.getByTestId("alert-laatst-bekend")).toHaveText(/Laatst bekend \d{2}:\d{2}/);
+    await expect(banner).not.toContainText("Cannot reach EMS API");
     // The live-status-dependent detail (Advanced + its tiles) stays hidden when status can't load.
     await expect(page.getByTestId("advanced")).toHaveCount(0);
     dashboardMock.assertRequested();

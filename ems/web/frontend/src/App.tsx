@@ -16,7 +16,9 @@ import {
   CAR_BADGE_SUFFIX_DEFAULT,
   DATA_QUALITY,
   DATA_SOURCE,
+  EMS_UNREACHABLE,
   FRESHNESS_STATE,
+  formatLaatstBekend,
   humanize,
   OUTCOME_LABEL,
   RUN_MODE,
@@ -77,10 +79,17 @@ type ChargeNeed = {
   reason: string;
 };
 
-// `safe` and `action` are optional, structured sub-lines (B-37): "is my home safe" + "what can I
-// do". The backend adds them incrementally; the UI renders them only when present, else falls back
-// to the bare message — so an alert without the fields still renders exactly as before.
-type AlertItem = { key: string; severity: string; message: string; safe?: string; action?: string };
+// `safe`, `action`, and `ems_doing` are optional structured sub-lines (B-37 / B-09): "is my home
+// safe", "what can I do", and "what EMS is doing". The UI renders each only when present, else
+// falls back to the bare message — so an alert without the fields still renders as before.
+type AlertItem = {
+  key: string;
+  severity: string;
+  message: string;
+  safe?: string;
+  action?: string;
+  ems_doing?: string;
+};
 type AlertsResp = { data_quality: string; alerts: AlertItem[] };
 // The nav restructure (feat/ux-batch-3): five top-level views. Settings/System/Audit are no longer
 // top-level — they are sub-tabs of "manage" (see Manage.tsx + `ManageTab`). "car" is a first-class
@@ -342,6 +351,8 @@ export function App() {
   });
   const batteryFreshness = useRef<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  // B-09: wall-clock of the last successful dashboard/status contact — drives "Laatst bekend".
+  const [lastReachableAt, setLastReachableAt] = useState<number | null>(null);
   const [route, setRoute] = useState<Route>(() => routeFromHash(window.location.hash));
   const view = route.view;
   const manageTab = route.tab;
@@ -470,6 +481,7 @@ export function App() {
         batteryFreshness.current = value.freshness.battery ?? null;
         setAlertsData(value.alerts);
         setError(null);
+        setLastReachableAt(Date.now());
         setTileFreshness((current) => ({
           ...current,
           status: { updatedAt: Date.now(), stale: batteryFreshness.current === "stale" },
@@ -485,9 +497,11 @@ export function App() {
         .catch((snapshotError) => {
           // Older EMS servers do not expose the snapshot yet; retain the proven fan-out path.
           getJson("/api/status")
-            .then((v) => { if (alive) { setStatus(v); setError(null); } })
+            .then((v) => { if (alive) { setStatus(v); setError(null); setLastReachableAt(Date.now()); } })
             .catch((e) => { if (alive) {
               setError(String(e ?? snapshotError));
+              // First-ever failure still needs a clock for "Laatst bekend hh:mm" (B-09 / #73).
+              setLastReachableAt((prev) => prev ?? Date.now());
               setTileFreshness((current) => ({ ...current, status: { ...current.status, stale: true } }));
             } });
           fill("/api/freshness", (value: FreshnessMap) => {
@@ -733,9 +747,14 @@ export function App() {
                 data-testid={`alert-${a.key}`}
               >
                 <span className="alert-message">{a.message}</span>
-                {/* B-37 structured sub-lines — only for warning/critical. Info-level notices
-                    (watch-only, dry-run) stay one calm line; their reassurance would otherwise
-                    out-shout the hero's "Nothing needed from you." */}
+                {/* B-37 / B-09 structured sub-lines — only for warning/critical. Info-level
+                    notices (watch-only, dry-run) stay one calm line; their reassurance would
+                    otherwise out-shout the hero's "Nothing needed from you." */}
+                {a.severity !== "info" && a.ems_doing && (
+                  <span className="alert-ems-doing" data-testid="alert-ems-doing">
+                    {a.ems_doing}
+                  </span>
+                )}
                 {a.severity !== "info" && a.safe && (
                   <span className="alert-safe" data-testid="alert-safe">
                     <Icon name="check" /> {a.safe}
@@ -751,8 +770,24 @@ export function App() {
         </section>
       )}
 
+      {/* B-09 / #73: unreachable EMS uses the same alert-item anatomy (message + failsafe +
+          Laatst bekend) — never a bare "Cannot reach EMS API: …" error code. */}
       {view === "dashboard" && error && (
-        <div className="error" data-testid="error">Cannot reach EMS API: {error}</div>
+        <section className="alerts" data-testid="error">
+          <div
+            className="alert-item alert-critical"
+            data-severity="critical"
+            data-testid="alert-ems_unreachable"
+          >
+            <span className="alert-message">{EMS_UNREACHABLE.message}</span>
+            <span className="alert-ems-doing" data-testid="alert-ems-doing">
+              {EMS_UNREACHABLE.ems_doing}
+            </span>
+            <span className="alert-action" data-testid="alert-laatst-bekend">
+              {formatLaatstBekend(lastReachableAt)}
+            </span>
+          </div>
+        </section>
       )}
 
       {/* The hero: one verdict, one synthesis line, one explicit answer to "do I need to act?".
