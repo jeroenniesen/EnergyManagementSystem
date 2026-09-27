@@ -67,9 +67,13 @@ def intent_to_mode(
 class MockBatteryDriver:
     """Fake Indevolt: a SolidFlex-2000-shaped cluster. `apply` is idempotent and self-confirms.
     It records the last commanded target/power so tests can assert the energy contract was passed
-    through, but (being a mode-only mock) it does not require a target to confirm."""
+    through, but (being a mode-only mock) it does not require a target to confirm.
 
-    def __init__(self) -> None:
+    `armed` defaults False (same refuse-by-default as IndevoltBatteryDriver). Tests that exercise
+    operational/shutdown/startup writes pass ``armed=True`` explicitly."""
+
+    def __init__(self, *, armed: bool = False) -> None:
+        self._armed = armed
         self._mode = PhysicalMode.AUTO
         self.last_target_soc: float | None = None
         self.last_power_w: float | None = None
@@ -82,6 +86,10 @@ class MockBatteryDriver:
             max_charge_w=4000.0,
             max_discharge_w=4000.0,
         )
+
+    @property
+    def armed(self) -> bool:
+        return self._armed
 
     def probe(self) -> CapabilityReport:
         return self._capabilities

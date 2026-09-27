@@ -21,6 +21,11 @@ class Source(Protocol):
 
 @runtime_checkable
 class BatteryDriver(Protocol):
+    """Battery write/read port. `armed` is required (no getattr defaults): an adapter without it
+    fails isinstance/conformance rather than being silently skipped on the shutdown path (#127)."""
+
+    @property
+    def armed(self) -> bool: ...
     def probe(self) -> CapabilityReport: ...
     def current_mode(self) -> PhysicalMode: ...
     def apply(

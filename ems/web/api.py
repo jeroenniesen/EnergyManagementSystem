@@ -1280,7 +1280,9 @@ def create_app(
         back to its safe vendor mode before exiting, so an upgrade/reboot/launchd restart can't
         leave it in a forced charge/hold/discharge. Bounded + best-effort — a slow or offline
         device can never hang shutdown — and the outcome is audited."""
-        if dry_run or controller is None or not getattr(controller.driver, "armed", False):
+        # `armed` is required on the BatteryDriver port (#127 / epic #111 I5) — no getattr default.
+        # An adapter without `armed` fails conformance (isinstance) rather than silently skipping.
+        if dry_run or controller is None or not controller.driver.armed:
             return
         # Freeze admission before inspecting state: an outstanding write may still be transitioning
         # away from AUTO even though last_confirmed_action has not changed yet.

@@ -1171,7 +1171,11 @@ class ControlService:
                 lc.mark_plan_loaded()
             lc.tick(now)
             if not lc.can_command(now):
-                return []
+                # Crash/restart fail-safe (#127): after the startup grace, if we still cannot reach
+                # CONTROLLING (readiness incomplete — e.g. unsafe/stale sensors) and the battery is
+                # observed in a forced mode, hand it back to AUTO. Only when armed/operational —
+                # dry-run and unarmed drivers never write. Manual override is left alone.
+                return self._startup_safe_auto_if_needed(now, lc, observed)
         with timed("control.decide"):
             intent, _reason, override_active, tgt, pw, _v, car_action = self.effective_intent(now)
             # captured for the control.overrun audit detail (B-80 task 4 review)
@@ -1437,6 +1441,74 @@ class ControlService:
             return self._controller.decide(*args, **kwargs)
         self._execution.writer_local = self._writer_local
         return self._execution.decide(*args, **kwargs)
+
+    def _ensure_fence_entered(self) -> None:
+        """Enter the generation fence before a physical write (same latch as decide())."""
+        if self._execution is None:
+            return
+        self._execution.writer_local = self._writer_local
+        ticket = getattr(self._writer_local, "ticket", None)
+        if ticket is not None and not getattr(self._writer_local, "entered", False):
+            if not self._ctx.command_fence.enter(ticket):
+                raise _CommandSuperseded
+            self._writer_local.entered = True
+
+    def _startup_safe_auto_if_needed(
+        self, now: datetime, lc, observed: PhysicalMode | None,
+    ) -> list[dict]:
+        """After grace, force AUTO when readiness is incomplete and the battery is not in AUTO.
+
+        Complements graceful `_shutdown_restore`: a crash leaves the last forced mode in place, and
+        stale sensors would otherwise keep the lifecycle in OBSERVING forever (never CONTROLLING,
+        never a plan-driven write). Dry-run / unarmed / override / already-AUTO → no write.
+        """
+        if (
+            self._dry_run
+            or self._controller is None
+            or not self._controller.driver.armed
+            or not lc.grace_elapsed(now)
+            or lc.override_active(now)
+            or lc.ready_to_act(now)
+            or observed is None
+            or observed is PhysicalMode.AUTO
+        ):
+            return []
+        try:
+            self._ensure_fence_entered()
+            confirmed = (
+                self._execution.apply(PhysicalMode.AUTO)
+                if self._execution is not None
+                else bool(self._controller.driver.apply(PhysicalMode.AUTO))
+            )
+        except _CommandSuperseded:
+            return []
+        except Exception:
+            _log.warning("startup safe-AUTO write failed (non-fatal)", exc_info=True)
+            return [{
+                "summary": ("Post-restart fail-safe — could not force AUTO while readiness is "
+                            "incomplete; battery may still be in a forced mode"),
+                "detail": {
+                    "event": "startup_safe_auto",
+                    "outcome": "failed",
+                    "observed_mode": observed.value,
+                    "reason": "write raised; readiness incomplete after grace",
+                },
+            }]
+        if confirmed:
+            self._controller.note_confirmed_auto()
+        return [{
+            "summary": (
+                f"Post-restart fail-safe — forced battery to AUTO "
+                f"({'confirmed' if confirmed else 'UNCONFIRMED'}) because readiness is incomplete "
+                f"and observed mode was {observed.value}"
+            ),
+            "detail": {
+                "event": "startup_safe_auto",
+                "outcome": "applied" if confirmed else "unconfirmed",
+                "observed_mode": observed.value,
+                "reason": "readiness incomplete after startup grace; refuse to leave forced mode",
+            },
+        }]
 
     def _release_cycle(self, token: CommandTicket) -> None:
         self.release_writer(token)
