@@ -85,9 +85,13 @@ Nothing here needs an environment variable or a config file edit — it's all in
 ## Safety
 
 - Ships in **mock + dry-run**: the simulator runs with no devices, and the battery is never written.
-- Going live is two deliberate, separate steps in the UI: turn on **live devices** (read-only
-  sensing), and only much later turn on **operational** control — which is gated behind layered
-  readiness + a hard plan validator, and stays off by default.
+- **`control.dry_run` in `config.yaml` (default `true`) is authoritative:** while it is `true`, the
+  EMS stays watch-only and **wins over** the UI **operational** toggle — decisions are logged, the
+  battery writer stays unarmed. To allow live control you must set `control.dry_run: false` **and**
+  enable operational in the UI (plus a live Indevolt IP), then restart.
+- Going live is therefore deliberate layers: live devices (read-only sensing) → `dry_run: false` in
+  config → **operational** in the UI — gated behind layered readiness + a hard plan validator;
+  operational stays off by default.
 - Reads always work for a guest; only *changes* can be protected by the access token.
 
 ## Developing

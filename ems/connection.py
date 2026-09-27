@@ -5,8 +5,10 @@ they are editable in the UI. They are read **synchronously at startup** here and
 concrete source objects. On first boot the store is seeded from config.yaml + env so the app works
 out of the box; thereafter the UI is authoritative. Connection changes take effect on restart.
 
-SAFETY: this only ever builds READ paths + an UNARMED battery driver. dry_run stays forced on; no
-live battery writer is constructed (arming is a separate, deliberate step — SPEC §11.6).
+SAFETY: default path builds READ paths + an UNARMED battery driver with dry_run on. A live writer
+is armed only when config ``control.dry_run`` is false, UI ``control.operational`` is on, a live
+Indevolt is configured, AND a live Tibber price source is wired (config dry_run and mock prices
+win — #136 / #126 / SPEC §11.6).
 """
 from __future__ import annotations
 
@@ -97,11 +99,19 @@ def effective_connection(db_path: str, cfg) -> dict:
     return effective_settings(_read_store(db_path))
 
 
-def build_wiring(eff: dict, tz: ZoneInfo, cache_store: object | None = None):
+def build_wiring(
+    eff: dict,
+    tz: ZoneInfo,
+    cache_store: object | None = None,
+    *,
+    force_dry_run: bool = False,
+):
     """Build (source, price_source, solar_forecast, battery_endpoint, controller_driver, dev_mode,
     dry_run) from effective settings. The battery driver is unarmed and dry_run is True UNLESS
     control.operational is on AND a live Indevolt is configured AND a live Tibber price source is
-    wired (then armed + dry_run False). Mock/demo prices can never lift dry_run (#126).
+    wired AND ``force_dry_run`` is False (then armed + dry_run False). ``force_dry_run`` comes from
+    ``config.yaml`` ``control.dry_run`` (default true) and always wins over the UI
+    ``control.operational`` toggle (#136). Mock/demo prices can never lift dry_run (#126).
 
     `cache_store` (optional) is handed to the rate-limited external sources (Tibber, Forecast.Solar)
     so they warm-start from a persisted snapshot after a restart and don't immediately refetch."""
@@ -114,9 +124,8 @@ def build_wiring(eff: dict, tz: ZoneInfo, cache_store: object | None = None):
     )
     token = (eff.get("prices.tibber_token") or "").strip()
     live_prices = bool(eff.get("connection.use_live_prices")) and bool(token)
-    # Operational mode only means anything with a real battery to command AND live prices to plan
-    # on. It ARMS the driver with a real SetData transport and lifts dry_run. Default off → dry_run;
-    # mock/demo prices keep dry_run even when operational is toggled (#126).
+    # Operational requires a real battery AND live prices. force_dry_run (config control.dry_run)
+    # always wins over the UI operational toggle (#136). Mock/demo prices keep dry_run (#126).
     operational = False
     if use_live_devices:
         from ems.sources.indevolt import (
@@ -129,7 +138,12 @@ def build_wiring(eff: dict, tz: ZoneInfo, cache_store: object | None = None):
 
         ip = eff.get("battery.indevolt_ip") or ""
         port = int(eff.get("battery.indevolt_port") or 8080)
-        operational = bool(eff.get("control.operational")) and bool(ip) and live_prices
+        operational = (
+            bool(eff.get("control.operational"))
+            and bool(ip)
+            and live_prices
+            and not force_dry_run
+        )
         # F1: ONE DeviceQuiesce per master, shared by the cluster reader and the write driver below,
         # so reads back off while a SetData sequence (+ settle tail) lands on the device's single
         # embedded HTTP server (the charge-fails-under-car-load root cause).
@@ -199,8 +213,9 @@ def build_wiring(eff: dict, tz: ZoneInfo, cache_store: object | None = None):
     solar_forecast = build_solar_forecast(
         eff, tz, cache_store=cache_store, use_live=use_live_devices,
     )
-    # Operational (armed + live battery + live prices) is the ONLY way dry_run lifts (#126).
-    dry_run = not operational
+    # Live writes only when operational (battery + live prices) AND config did not force dry-run.
+    # force_dry_run alone keeps dry_run True even if the UI asked for operational (#136 / #126).
+    dry_run = not operational or force_dry_run
     return (source, price_source, solar_forecast, battery_endpoint, controller_driver, dev_mode,
             dry_run)
 

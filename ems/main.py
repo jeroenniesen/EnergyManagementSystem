@@ -49,11 +49,12 @@ def build_app():
     freshness.register(*SIGNALS)
     tz = ZoneInfo(cfg.timezone)
     # Connection + run-mode come from the settings store (UI), seeded from config.yaml + env on
-    # first boot. dry_run is True (battery untouched) UNLESS control.operational is on with a live
-    # Indevolt — only then is the driver armed and the control loop started.
+    # first boot. dry_run stays True (battery untouched) unless config control.dry_run is false
+    # AND control.operational is on with a live Indevolt — config dry_run wins over the UI toggle
+    # (#136). Only then is the driver armed and the control loop started.
     eff = effective_connection(str(db_path), cfg)
     source, price_source, solar_forecast, battery_endpoint, controller_driver, dev_mode, dry_run = (
-        build_wiring(eff, tz, cache_store=cache_store)
+        build_wiring(eff, tz, cache_store=cache_store, force_dry_run=cfg.dry_run)
     )
     # Roadmap F3 (Insights reporting only — never touches control): static flat factor by default,
     # or the live ElectricityMaps signal when configured with a key. See build_carbon_source.

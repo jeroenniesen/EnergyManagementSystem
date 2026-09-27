@@ -4,6 +4,8 @@ site:
 dev:
   mode: mock          # mock | replay | live  (mock/replay need no HA/battery and force dry_run)
 control:
+  # Watch-only by default. When true, always wins over UI control.operational (no battery writes).
+  # Set false AND enable operational in the UI to allow live control after acceptance.
   dry_run: true
   # Production sampling cadence: one history row every 5 min — low write + device-read load for a
   # 24/7 install. The live dashboard tiles refresh independently (30 s coalesced read), so this does
