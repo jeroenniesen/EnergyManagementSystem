@@ -980,6 +980,13 @@ body {
   border-radius: var(--radius);
   padding: 18px;
 }
+.reserve-advice-row {
+  margin: 10px 0 4px;
+  font-size: 0.95rem;
+  color: var(--text);
+}
+.reserve-advice-row strong { font-variant-numeric: tabular-nums; }
+.reserve-advice-delta { color: var(--muted); font-size: 0.85rem; }
 .charge-bar {
   position: relative;
   height: 14px;

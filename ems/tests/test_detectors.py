@@ -135,6 +135,7 @@ def test_evening_peak_risk_fires_when_shortfall_exceeds_5pp():
     assert result is not None
     assert result["key"] == "peak_risk"
     assert "45%" in result["body"] and "50%" in result["body"]
+    assert "reserve advice" in result["body"]
     assert result["confidence"] == "medium"
     assert result["dedupe_key"] == "peak_risk:2026-07-12"
 

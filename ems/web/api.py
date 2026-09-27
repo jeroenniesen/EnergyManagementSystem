@@ -170,6 +170,7 @@ from ems.web.routes.plan import build_router as build_plan_router
 from ems.web.routes.report import build_router as build_report_router
 from ems.web.routes.users import build_router as build_users_router
 from ems.web.routes.verification import build_router as build_verification_router
+from ems.web.routes.reserve_advice import build_router as build_reserve_advice_router
 from ems.web.routes.whatif import build_router as build_whatif_router
 
 _log = logging.getLogger("ems.recorder")
@@ -4259,7 +4260,7 @@ def create_app(
     diagnostics_service = DiagnosticsService(app.state.application_context)
     for build in (build_auth_router, build_users_router, build_car_router, build_digest_router,
                   build_notify_router, build_export_router, build_accuracy_router,
-                  build_whatif_router):
+                  build_whatif_router, build_reserve_advice_router):
         app.include_router(build(ctx))
     app.include_router(build_plan_router(ctx, plan_service))
     app.include_router(build_report_router(ctx, report_service))
