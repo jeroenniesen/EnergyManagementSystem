@@ -37,10 +37,13 @@ def _seed_week(db: str) -> None:
 
 
 def _app(db: str, *, audit_store: AuditStore | None = None):
+    from ems.tests.conftest import NO_HISTORY_PURGE
+
     return create_app(
         MockSource(), dry_run=True, dev_mode="mock", tz=AMS,
         store=HistoryStore(db), settings_store=SettingsStore(db),
         price_source=MockPriceSource(AMS), audit_store=audit_store,
+        **NO_HISTORY_PURGE,
     )
 
 

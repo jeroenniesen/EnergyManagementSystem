@@ -189,10 +189,13 @@ def test_empty_day():
 
 
 def _econ_app(db: str):
+    from ems.tests.conftest import NO_HISTORY_PURGE
+
     return create_app(
         MockSource(), dry_run=True, dev_mode="mock", tz=AMS,
         store=HistoryStore(db), settings_store=SettingsStore(db),
         price_source=MockPriceSource(AMS),
+        **NO_HISTORY_PURGE,
     )
 
 
@@ -227,11 +230,13 @@ def test_maintenance_caches_yesterday_finance_and_second_tick_no_ops(tmp_path):
     asyncio.run(seed())
 
     def _app():
+        from ems.tests.conftest import NO_HISTORY_PURGE
+
         # backup disabled (keep=0) so the maintenance loop doesn't clutter tmp with snapshots.
         return create_app(
             MockSource(), dry_run=True, dev_mode="mock", tz=AMS,
             store=store, settings_store=SettingsStore(db),
-            price_source=MockPriceSource(AMS), history_backup_keep=0)
+            price_source=MockPriceSource(AMS), **NO_HISTORY_PURGE)
 
     # Boot 1: the lifespan's maintenance loop runs its first tick to completion on context exit.
     _CountingStore.finance_upserts = 0

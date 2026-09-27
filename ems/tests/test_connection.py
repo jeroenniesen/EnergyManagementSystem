@@ -21,6 +21,15 @@ def test_text_and_secret_validation():
     assert "meters.p1_ip" in e
 
 
+def test_ntfy_url_must_be_http_or_https():
+    clean, errors = validate_settings({"notify.ntfy_url": "https://ntfy.sh"})
+    assert clean == {"notify.ntfy_url": "https://ntfy.sh"} and errors == {}
+    _c, e = validate_settings({"notify.ntfy_url": "file:///etc/passwd"})
+    assert "notify.ntfy_url" in e
+    _c2, e2 = validate_settings({"notify.ntfy_url": ""})
+    assert _c2 == {"notify.ntfy_url": ""} and e2 == {}
+
+
 def test_blank_secret_is_dropped_not_stored():
     # A blank token means "keep the current value" — it must not overwrite/clear the stored one.
     clean, errors = validate_settings({"prices.tibber_token": ""})
