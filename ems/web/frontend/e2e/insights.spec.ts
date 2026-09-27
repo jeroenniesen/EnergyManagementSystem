@@ -28,18 +28,28 @@ const REPORT = {
 // B-06 trend chips: the app fetches the SAME period one step back using its own local-calendar
 // date math (Insights.tsx's shiftAnchor). Mirror that math here so the mock can tell "today"'s
 // request apart from "yesterday"'s regardless of which real day the test happens to run on.
-function ymd(d: Date): string {
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(
-    d.getDate(),
-  ).padStart(2, "0")}`;
-}
+//
+// Playwright pins the browser to Europe/Amsterdam (playwright.config.ts). CI runners are UTC, so
+// Node's local `new Date()` calendar day drifts from the browser's after ~22:00 UTC — use the same
+// zone here or the route mock keys the wrong "yesterday" and heating done-labels disagree.
+const E2E_TZ = "Europe/Amsterdam";
+
 function todayStr(): string {
-  return ymd(new Date());
+  return new Intl.DateTimeFormat("en-CA", {
+    timeZone: E2E_TZ,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).format(new Date());
 }
 function shiftDay(d: string, delta: number): string {
-  const dt = new Date(`${d}T00:00:00`);
-  dt.setDate(dt.getDate() + delta);
-  return ymd(dt);
+  // Pure calendar math on the YMD string — avoid Node-local Date parsing of `T00:00:00`.
+  const [y, m, day] = d.split("-").map(Number);
+  const dt = new Date(Date.UTC(y, m - 1, day));
+  dt.setUTCDate(dt.getUTCDate() + delta);
+  return `${dt.getUTCFullYear()}-${String(dt.getUTCMonth() + 1).padStart(2, "0")}-${String(
+    dt.getUTCDate(),
+  ).padStart(2, "0")}`;
 }
 
 test.describe("Insights", () => {
@@ -372,8 +382,9 @@ test.describe("Insights: heating advice (B-11, advice-only)", () => {
 test.describe("Insights: heating advice — mark as done", () => {
   const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
   function doneLabel(iso: string): string {
-    const d = new Date(`${iso}T00:00:00`);
-    return `${d.getDate()} ${MONTHS[d.getMonth()]}`;
+    // Calendar date only — do not parse via Node-local Date (UTC runners vs Amsterdam browser).
+    const [, m, day] = iso.split("-").map(Number);
+    return `${day} ${MONTHS[m - 1]}`;
   }
 
   function mockSettings(
