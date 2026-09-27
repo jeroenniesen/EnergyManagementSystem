@@ -74,16 +74,20 @@ def test_all_current_adapters_match_port_signatures() -> None:
         assert isinstance(getattr(adapter, "armed", None), property), (
             f"{adapter.__name__} must expose armed as a property matching BatteryDriver"
         )
-        for method in ("probe", "current_mode", "apply"):
-            expected = (
-                (
+        for method in ("probe", "configure_power_limits", "current_mode", "apply"):
+            if method == "apply":
+                expected = (
                     ("mode", Parameter.POSITIONAL_OR_KEYWORD),
                     ("target_soc", Parameter.KEYWORD_ONLY),
                     ("power_w", Parameter.KEYWORD_ONLY),
                 )
-                if method == "apply"
-                else ()
-            )
+            elif method == "configure_power_limits":
+                expected = (
+                    ("max_charge_w", Parameter.KEYWORD_ONLY),
+                    ("max_discharge_w", Parameter.KEYWORD_ONLY),
+                )
+            else:
+                expected = ()
             _assert_port_method(adapter, BatteryDriver, method, expected)
 
     for adapter in (TibberPriceSource, MockPriceSource):
@@ -190,6 +194,9 @@ def test_battery_port_requires_armed_member() -> None:
         def probe(self):
             raise NotImplementedError
 
+        def configure_power_limits(self, *, max_charge_w: float, max_discharge_w: float) -> None:
+            return None
+
         def current_mode(self):
             return PhysicalMode.AUTO
 
@@ -206,6 +213,44 @@ def test_battery_port_requires_armed_member() -> None:
     assert isinstance(MockBatteryDriver(), BatteryDriver)
     assert MockBatteryDriver().armed is False
     assert MockBatteryDriver(armed=True).armed is True
+
+
+def test_battery_port_requires_configure_power_limits() -> None:
+    """#139: an adapter without `configure_power_limits` fails BatteryDriver conformance."""
+    class MissingConfigure:
+        @property
+        def armed(self) -> bool:
+            return False
+
+        def probe(self):
+            raise NotImplementedError
+
+        def current_mode(self):
+            return PhysicalMode.AUTO
+
+        def apply(self, mode, *, target_soc=None, power_w=None):
+            return True
+
+    class WithConfigure(MissingConfigure):
+        def configure_power_limits(self, *, max_charge_w: float, max_discharge_w: float) -> None:
+            return None
+
+    assert not isinstance(MissingConfigure(), BatteryDriver)
+    assert isinstance(WithConfigure(), BatteryDriver)
+    assert isinstance(MockBatteryDriver(), BatteryDriver)
+    assert isinstance(
+        IndevoltBatteryDriver(
+            "192.0.2.2",
+            reader=IndevoltReadClient(
+                "192.0.2.2",
+                rpc_post=lambda _keys: {
+                    "6002": 66, "6000": 0, "6001": 1000, "7101": 4,
+                    "142": 10, "7120": 1000,
+                },
+            ),
+        ),
+        BatteryDriver,
+    )
 
 
 @pytest.mark.parametrize('broken', ['required_argument', 'argument_type', 'return_type'])

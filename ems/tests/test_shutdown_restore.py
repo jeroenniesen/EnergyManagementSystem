@@ -38,6 +38,10 @@ class _ArmedRecordingDriver:
     def current_mode(self):
         return self._mode
 
+    def configure_power_limits(self, *, max_charge_w: float, max_discharge_w: float) -> None:
+        # Required BatteryDriver port member (#139); no-op for this recording double.
+        return None
+
     def apply(self, mode, *, target_soc=None, power_w=None):
         self.applied.append(mode)
         self.writes.append(mode)
