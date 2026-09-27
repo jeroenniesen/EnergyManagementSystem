@@ -52,10 +52,12 @@ from ems.domain import BatteryIntent, PhysicalMode
 from ems.lifecycle import OwnershipState
 from ems.perf import PERF_BUDGETS, REGISTRY, atimed, timed
 from ems.planner.adaptive import AdaptiveConfig
+from ems.planner.base import PlannerRequest
 from ems.planner.charge_need import compute_charge_need
+from ems.planner.factory import build_planner
 from ems.planner.recovery import recover_if_needed
 from ems.planner.rule_based import PlannerConfig
-from ems.planner.strategy import HysteresisState, build_plan, resolve_strategy_hysteretic
+from ems.planner.strategy import HysteresisState, resolve_strategy_hysteretic
 from ems.planner.summer import SummerConfig
 from ems.planner.validator import PlanValidation
 from ems.price_quality import PriceHorizonStatus, validate_price_horizon
@@ -675,8 +677,9 @@ class ControlService:
 
     def build_plan_now(self, now: datetime | None = None):
         """The fresh plan the active strategy builds THIS instant, BEFORE any missed-window
-        recovery. Dispatches to the active strategy (summer solar-first / winter arbitrage).
-        Returns (now, prices, plan) or None. Used by `plan_with_recovery` and the recovery cycle."""
+        recovery. Goes through the Planner port (B-47): registry selects the producer by
+        `planner.mode` (default rule_based); seasonal summer/winter dispatch stays inside the
+        rule-based adapter. Returns (now, prices, plan) or None."""
         if self._price_source is None:
             return None
         now = self._clock.now_utc() if now is None else now
@@ -692,11 +695,30 @@ class ControlService:
         soc = self._current_soc(now)
         forecast = self._solar_forecast.slots() if self._solar_forecast is not None else []
         load_by = self._load_by([p.start for p in prices])
-        plan = build_plan(
-            strategy, prices=prices, forecast=forecast, now=now, soc_pct=soc,
-            winter_cfg=self._planner_cfg(), summer_cfg=self._summer_cfg(soc),
-            load_w_by=load_by, adaptive_cfg=self._adaptive_cfg(),
+        fc = self._solar_forecast
+        forecast_provider = (
+            getattr(fc, "source_label", None) or getattr(fc, "provider", None)
+            or type(fc).__name__
+        ) if fc is not None else None
+        forecast_issued_at = getattr(fc, "issued_at", None) if fc is not None else None
+        mode = self._settings.get("planner.mode", "rule_based")
+        request = PlannerRequest(
+            now=now,
+            prices=prices,
+            forecast=forecast,
+            soc_pct=soc,
+            strategy=strategy,
+            winter_cfg=self._planner_cfg(),
+            summer_cfg=self._summer_cfg(soc),
+            load_w_by=load_by,
+            adaptive_cfg=self._adaptive_cfg(),
+            planner_mode=mode,
+            price_provenance=type(self._price_source).__name__,
+            forecast_provider=forecast_provider,
+            forecast_issued_at=forecast_issued_at,
+            baseline="load_profile" if load_by else None,
         )
+        plan = build_planner(mode).plan(request)
         return now, prices, plan
 
     def plan_with_recovery(self, now: datetime | None = None):

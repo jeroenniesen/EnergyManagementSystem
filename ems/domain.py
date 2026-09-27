@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime
 from enum import StrEnum
 
 
@@ -16,6 +17,36 @@ class PlannerMode(StrEnum):
     RULE_BASED = "rule_based"
     ML = "ml"
     ADVISORY = "advisory"
+
+
+@dataclass(frozen=True)
+class PlannerInputSnapshot:
+    """Inputs captured with every Plan for audit/replay (SPEC §8.11 / §13.2, control-model §9).
+
+    Compact + digests (product choice B for B-47): counts, provenance, key scalars, and content
+    hashes of the price/forecast/(optional) load series so drift is detectable without persisting
+    full slot arrays. Full series stay on the live sources.
+    """
+
+    taken_at: datetime
+    planner_mode: str
+    strategy: str
+    soc_pct: float
+    price_slots: int
+    price_resolution_minutes: int = 15
+    price_provenance: str | None = None
+    price_min_eur: float | None = None
+    price_max_eur: float | None = None
+    prices_digest: str | None = None
+    forecast_slots: int = 0
+    forecast_provider: str | None = None
+    forecast_issued_at: datetime | None = None
+    forecast_p50_kwh: float | None = None
+    forecast_digest: str | None = None
+    load_digest: str | None = None
+    baseline: str | None = None
+    capability_report_ref: str | None = None
+    config_hash: str | None = None
 
 
 class IntelligenceState(StrEnum):

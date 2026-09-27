@@ -29,7 +29,7 @@ day's PV, so grid-charging to "catch it up" would over-buy — recovery leaves s
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime
 
 from ems.domain import BatteryIntent
@@ -251,8 +251,13 @@ def build_catch_up_plan(
         else:
             out.append(s)
 
-    recovered = Plan(created_at=now, slots=tuple(out), strategy=plan.strategy,
-                     target_soc=recovered_target, deadline=deadline)
+    # Preserve identity/audit fields from the committed plan (B-47 snapshot); bump version so a
+    # catch-up reshape is distinguishable from the original without dropping the input snapshot.
+    recovered = replace(
+        plan, created_at=now, slots=tuple(out),
+        target_soc=recovered_target, deadline=deadline,
+        version=int(plan.version) + 1,
+    )
     return CatchUpResult(
         plan=recovered, feasible=feasible, target_soc=recovered_target, kwh_short=kwh_short,
         slots_used=len(chosen), reason=reason, note=note,

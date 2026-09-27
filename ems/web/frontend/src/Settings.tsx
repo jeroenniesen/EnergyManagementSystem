@@ -11,6 +11,9 @@ import { SectionIcon } from "./settingsIcons";
 const SETTING_OPTION_LABEL: Record<string, string> = {
   forecast_solar: "Forecast.Solar",
   solcast: "Solcast",
+  rule_based: "Rule-based",
+  ml: "ML (arrives in M6)",
+  advisory: "Advisory (arrives in M6)",
 };
 
 export type SettingField = {
@@ -30,6 +33,8 @@ export type SettingField = {
   slider?: boolean;
   /** Show only when every key matches the current edited value (e.g. Solcast creds). */
   visible_when?: Record<string, string> | null;
+  /** Enum tokens shown greyed out and not selectable (e.g. planner.mode ml/advisory until M6). */
+  disabled_options?: string[] | null;
 };
 type SettingsResp = { schema: SettingField[]; values: Record<string, number | boolean | string> };
 type Values = Record<string, number | boolean | string>;
@@ -288,12 +293,16 @@ function Field({
   }
   let control;
   if (field.type === "enum") {
+    const blocked = new Set(field.disabled_options ?? []);
     control = (
       <select id={id} value={String(value)} disabled={disabled}
         onChange={(e) => onChange(e.target.value)}>
         {(field.options ?? []).map((o) => (
           // Humanise the raw token for display; the submitted VALUE stays the token.
-          <option key={o} value={o}>{SETTING_OPTION_LABEL[o] ?? humanize(o)}</option>
+          // Disabled options stay visible (greyed) so future modes are discoverable.
+          <option key={o} value={o} disabled={blocked.has(o)}>
+            {SETTING_OPTION_LABEL[o] ?? humanize(o)}
+          </option>
         ))}
       </select>
     );

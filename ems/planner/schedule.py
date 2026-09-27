@@ -14,7 +14,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 
-from ems.domain import BatteryIntent
+from ems.domain import BatteryIntent, PlannerInputSnapshot
 
 SLOT = timedelta(minutes=15)
 
@@ -48,6 +48,11 @@ class Plan:
     strategy: str | None = None       # 'summer' | 'winter' — which planner produced it
     target_soc: float | None = None   # plan-level night-carry / arbitrage target SoC, if known
     deadline: datetime | None = None  # plan-level charge deadline (sunset / first peak), if known
+    # --- identity / audit (SPEC §8.11 / §13.2; optional so pure planners stay lightweight) ---
+    id: str | None = None
+    version: int = 1
+    input_snapshot: PlannerInputSnapshot | None = None
+    planner_mode: str | None = None   # rule_based | ml | advisory (requested producer mode)
 
     def intent_at(self, now: datetime) -> PlanSlot | None:
         """The slot covering `now`, or None if `now` is outside the plan horizon. Uses each slot's

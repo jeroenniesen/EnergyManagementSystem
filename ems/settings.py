@@ -40,6 +40,9 @@ class SettingsField:
     # (edited) settings values. Empty = always visible. Used e.g. to gate Solcast credentials
     # behind solar.forecast_provider=solcast.
     visible_when: tuple[tuple[str, str], ...] = ()
+    # Enum tokens that appear in the UI (greyed) but cannot be selected or saved. Used e.g. to
+    # preview future planner.mode values (ml / advisory) until M6 ships adapters.
+    disabled_options: tuple[str, ...] = ()
 
 
 # The editable surface. Keep keys stable — they are persisted and consumed by the UI.
@@ -329,6 +332,17 @@ SETTINGS_SCHEMA: tuple[SettingsField, ...] = (
     ),
     # --- Planner economics (advanced — change these and /api/plan recomputes, SPEC §8.3) ---
     SettingsField(
+        "planner.mode", "Planner mode", "enum", "rule_based", "planner",
+        help="Which planner produces the schedule the battery follows. Rule-based (default) is the "
+        "deterministic summer/winter logic and the only selectable mode today. ML and Advisory are "
+        "shown greyed out — they arrive with the optional accelerator ML layer (M6) and stay off "
+        "so a Pi never loads GPU code. Every mode still passes the same safety validator before "
+        "any write.",
+        options=("rule_based", "ml", "advisory"),
+        disabled_options=("ml", "advisory"),
+        advanced=True,
+    ),
+    SettingsField(
         "planner.solar_confidence", "Solar forecast confidence", "number", 80.0, "planner",
         help="How much of the expected solar forecast to count on when deciding the grid top-up. "
         "Higher = trust the forecast and buy less grid power; lower = more cautious (buys more to "
@@ -581,6 +595,7 @@ def schema_json() -> list[dict]:
             "options": list(f.options) if f.options else None, "step": f.step, "unit": f.unit,
             "advanced": f.advanced, "applies": f.applies, "slider": f.slider,
             "visible_when": {k: v for k, v in f.visible_when} if f.visible_when else None,
+            "disabled_options": list(f.disabled_options) if f.disabled_options else [],
         }
         for f in SETTINGS_SCHEMA
     ]
@@ -619,6 +634,9 @@ def _coerce(field: SettingsField, value: Any) -> tuple[bool, Any]:
         opts = field.options or ()
         if value not in opts:
             return False, f"must be one of: {', '.join(opts)}"
+        if value in field.disabled_options:
+            return False, (f"{value!r} is not available yet "
+                           f"(arrives in a later release; use {field.default!r})")
         return True, value
     if field.type in ("number", "int"):
         # bool is a subclass of int in Python — reject it explicitly so True != 1 here.
