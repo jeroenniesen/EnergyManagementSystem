@@ -121,6 +121,24 @@ def test_winter_is_demand_sized_when_a_load_profile_is_present():
     assert plan.target_soc is not None and plan.deadline == t0 + 12 * SLOT
 
 
+def test_winter_build_plan_passes_expected_ev_kwh():
+    """#181: build_plan('winter', expected_ev_kwh=…) sizes a larger target than without EV."""
+    t0 = datetime(2026, 1, 10, 12, 0, tzinfo=UTC)
+    prices = [PriceSlot(t0 + i * SLOT, 0.10 if i < 12 else 0.40) for i in range(16)]
+    fc = [ForecastSlot(t0 + i * SLOT, 0.0, 0.0, 0.0) for i in range(16)]
+    load = {t0 + i * SLOT: (200.0 if i < 12 else 3000.0) for i in range(16)}
+    kwargs = dict(
+        prices=prices, forecast=fc, now=t0, soc_pct=20.0,
+        winter_cfg=PlannerConfig(), summer_cfg=SummerConfig(usable_kwh=10.0, target_soc_pct=80.0),
+        load_w_by=load, adaptive_cfg=AdaptiveConfig(usable_kwh=10.0),
+    )
+    base = build_plan("winter", **kwargs)
+    with_ev = build_plan("winter", expected_ev_kwh=25.0, **kwargs)
+    assert with_ev.target_soc is not None and base.target_soc is not None
+    assert with_ev.target_soc > base.target_soc
+    assert any("EV load expected ~25 kWh" in s.reason for s in with_ev.slots)
+
+
 def test_winter_demand_sized_no_discharge_when_no_load_at_the_peak():
     # Load profile present but the expensive window has NO house load → nothing to shave, and this
     # system doesn't export, so it must NOT discharge for price alone → no-trade (review fix #3).

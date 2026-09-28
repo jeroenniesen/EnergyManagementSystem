@@ -3073,6 +3073,8 @@ def create_app(
         freeze unrelated requests)."""
         # Learn the expected load from ~7 days of derived history (async DB read off the loop).
         drows = await store.recent_derived(2016) if store is not None else []
+        # Warm EV daily history for winter exogenous sizing (#181) — fail-soft if store missing.
+        await control.refresh_ev_daily(_now())
 
         def _compute():
             pp = _current_plan()  # touches price_source/solar_forecast/source.read (all cached)

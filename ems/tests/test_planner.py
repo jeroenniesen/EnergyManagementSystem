@@ -150,3 +150,53 @@ def test_undercharge_commits_honest_partial_target_not_unreachable_shortfall():
     # Full shortfall for the 8-slot peak @ 4 kW would need ~94% — honest partial is ~29%.
     assert plan.target_soc < 40.0
     assert all(abs((s.target_soc or 0) - plan.target_soc) < 1e-6 for s in charge)
+
+
+def test_winter_ev_exogenous_raises_target_and_reason():
+    """#181: canned car-load (expected_ev_kwh) enlarges winter top-up vs the same house load alone.
+    Validator/guardrails spirit unchanged — still a normal demand-sized winter plan."""
+    t0 = datetime(2026, 1, 10, 12, 0, tzinfo=AMS)
+    prices = [
+        PriceSlot(t0 + i * timedelta(minutes=15), 0.10 if i < 12 else 0.40)
+        for i in range(16)
+    ]
+    # Modest evening peak (~3 kW × 1 h) so baseline shortfall is small; EV addend should clear.
+    load = {p.start: (200.0 if i < 12 else 3000.0) for i, p in enumerate(prices)}
+    baseline = plan_rule_based(
+        prices, t0, PlannerConfig(), soc_pct=50.0, load_w_by=load,
+        usable_kwh=10.0, reserve_soc_pct=10.0, max_charge_w=4000.0,
+    )
+    with_ev = plan_rule_based(
+        prices, t0, PlannerConfig(), soc_pct=50.0, load_w_by=load,
+        usable_kwh=10.0, reserve_soc_pct=10.0, max_charge_w=4000.0,
+        expected_ev_kwh=20.0,
+    )
+    assert baseline.target_soc is not None and with_ev.target_soc is not None
+    assert with_ev.target_soc > baseline.target_soc
+    charge = [s for s in with_ev.slots if s.intent is BatteryIntent.GRID_CHARGE_TO_TARGET]
+    assert charge
+    assert any("EV load expected ~20 kWh" in s.reason for s in charge)
+    # Fail-soft: 0 kWh matches baseline (no EV fragment in reasons).
+    zero = plan_rule_based(
+        prices, t0, PlannerConfig(), soc_pct=50.0, load_w_by=load,
+        usable_kwh=10.0, reserve_soc_pct=10.0, max_charge_w=4000.0,
+        expected_ev_kwh=0.0,
+    )
+    assert zero.target_soc == baseline.target_soc
+    assert not any("EV load expected" in s.reason for s in zero.slots)
+
+
+def test_winter_ev_alone_does_not_invent_peak_discharge():
+    """EV addend must not create a discharge plan when house peak load is zero (car-guard §4.5)."""
+    t0 = datetime(2026, 1, 10, 12, 0, tzinfo=AMS)
+    prices = [
+        PriceSlot(t0 + i * timedelta(minutes=15), 0.10 if i < 12 else 0.40)
+        for i in range(16)
+    ]
+    load = {p.start: (3000.0 if i < 12 else 0.0) for i, p in enumerate(prices)}
+    plan = plan_rule_based(
+        prices, t0, PlannerConfig(), soc_pct=20.0, load_w_by=load,
+        usable_kwh=10.0, reserve_soc_pct=10.0, max_charge_w=4000.0,
+        expected_ev_kwh=30.0,
+    )
+    assert all(s.intent is BatteryIntent.ALLOW_SELF_CONSUMPTION for s in plan.slots)

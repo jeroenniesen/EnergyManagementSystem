@@ -85,10 +85,14 @@ Legend: **UI** = also editable from the web UI (overlays the file). **CONFIRM** 
 | `charge_efficiency` | 0–1 | 0.90 | AC→battery charging efficiency `η_c`, used by the SoC estimate and the planner. **UI** (advanced) |
 | `charger_kw` | kW | 11.0 | home wallbox power; effective charge rate is `min(charger_kw, car.max_ac_kw)`. **UI** |
 | `schedule` | JSON (per-day) | all days off, 80%/07:30 | the weekly minimum-charge schedule (`enabled`/`min_pct`/`ready_by` per day-of-week), edited via the schedule editor; parsed tolerantly by `ems/ev_schedule.parse_schedule`. **UI** |
-| `charge_kwh` | kWh | 20.0 | **legacy** — a flat "typical top-up" size. Superseded by `schedule` (per-deadline `required_kwh`, computed from the SoC anchor); used by the deprecated quick-advice endpoint only (`GET /api/advisor/ev-charge`, kept for compatibility — do not extend it). Not read by `GET /api/car/plan`. |
+| `charge_kwh` | kWh | 20.0 | **legacy** for the deprecated quick-advice endpoint (`GET /api/advisor/ev-charge`). Also the typical size used by winter EV-exogenous sizing (#181) when `day_hint` or today's schedule day is on. Not read by `GET /api/car/plan`. |
 | `departure_time` | HH:MM | 07:30 | **legacy** — a single daily departure time. Superseded by `schedule`'s per-day `ready_by`; used by the deprecated quick-advice endpoint only (`GET /api/advisor/ev-charge`). Not read by `GET /api/car/plan`. |
+| `day_hint` | bool | false | Manual "EV day" for winter battery sizing (#181). When on, re-adds ~`charge_kwh` as exogenous load into winter top-up / peak readiness with reason `EV load expected ~X kWh`. **Advice only — no charger writes.** Does not unblock B-17 / #105. **UI** |
+| `expected_day_kwh` | kWh | 0 | Optional manual override for today's expected car import. When > 0, wins over day hint / schedule / history for winter exogenous sizing (#181). 0 = auto. Advanced. **UI** |
 
 The car's SoC itself is **not** a config key — it's a runtime-store anchor (%, timestamp) set via `POST /api/car/soc` and estimated forward from measured charging (`ems/ev_session.py`); see `SPEC.md §16`.
+
+**#181 note:** winter EV exogenous is an advice/forecast bridge toward B-17 — historical same-weekday `daily_energy.ev_kwh`, schedule day-type, or the hints above. It never commands a charger.
 
 ## `strategy`
 | Key | Type | Default | Effect |

@@ -39,6 +39,9 @@ class PlannerRequest:
     summer_cfg: SummerConfig
     load_w_by: dict[datetime, float] | None = None
     adaptive_cfg: AdaptiveConfig | None = None
+    # Winter-only (#181 / SPEC §4.5): expected EV import (AC kWh) re-added as exogenous load.
+    # 0 / missing = fail-soft (no EV day signal). Advice/forecast only — never charger control.
+    expected_ev_kwh: float = 0.0
     planner_mode: PlannerMode | str = PlannerMode.RULE_BASED
     price_provenance: str | None = None
     forecast_provider: str | None = None
@@ -64,6 +67,8 @@ def config_hash_for_request(request: PlannerRequest, *, strategy: str) -> str:
         "winter_cfg": asdict(request.winter_cfg),
         "summer_cfg": asdict(request.summer_cfg),
         "adaptive_cfg": asdict(request.adaptive_cfg) if request.adaptive_cfg is not None else None,
+        # Include EV exogenous so a change of day-hint / history estimate invalidates plan identity.
+        "expected_ev_kwh": round(max(0.0, float(request.expected_ev_kwh or 0.0)), 3),
     }
     raw = json.dumps(payload, sort_keys=True, default=str, separators=(",", ":"))
     return hashlib.sha256(raw.encode()).hexdigest()[:_CONFIG_HASH_LEN]
@@ -127,6 +132,7 @@ def build_input_snapshot(request: PlannerRequest, *, strategy: str) -> PlannerIn
         forecast_digest=digest_forecast(request.forecast),
         load_digest=digest_load(request.load_w_by),
         baseline=request.baseline,
+        expected_ev_kwh=round(max(0.0, float(request.expected_ev_kwh or 0.0)), 3) or None,
         capability_report_ref=request.capability_report_ref,
         config_hash=config_hash_for_request(request, strategy=strategy),
     )
@@ -155,6 +161,7 @@ class RuleBasedPlanner:
             summer_cfg=request.summer_cfg,
             load_w_by=request.load_w_by,
             adaptive_cfg=request.adaptive_cfg,
+            expected_ev_kwh=request.expected_ev_kwh,
         )
         strategy = plan.strategy or request.strategy
         snapshot = build_input_snapshot(request, strategy=strategy)

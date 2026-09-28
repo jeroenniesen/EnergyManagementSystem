@@ -155,6 +155,12 @@ The AC balance `grid = load − solar − battery` holds exactly every slot.
   car, so the profile uses `non_ev_load_w` (§4.5). It is the mean by **hour-of-day** from recent
   history (so within an hour the four 15-min slots share one value); a cold start (< 3 samples)
   uses the overnight-load baseline until real history accrues.
+- **Winter EV exogenous (#181, advice only):** when the winter planner *knows* an EV day (manual
+  hint, schedule day, or same-weekday `daily_energy.ev_kwh` history), it re-adds that expected
+  import as a separate kWh addend into top-up / target SoC sizing — with reason
+  `EV load expected ~X kWh`. This is **not** baked into the learned hourly profile (that would
+  poison every day) and **does not** unlock charger control (B-17 / #105). Fail-soft to 0 when
+  unknown. See `ems/planner/ev_load.py` and `docs/v2-ev-control.md`.
 - **Round-trip efficiency** is split evenly, `η = √rte`, applied on both charge (store gains AC·η)
   and discharge (store loses AC/η), so a full store-then-return cycle loses exactly `rte`.
 - Charge/discharge are bounded by **both** the power limits (`battery.max_charge_w` /
