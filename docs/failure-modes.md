@@ -21,6 +21,7 @@
 | **Car meter stale** | freshness age exceeded | assume `ev_power_w=0`; widen load band | `meter_missing` | resume on fresh read |
 | **Clock skew / NTP unsynced** | `health.ntp_check` | windows misalign → flag; avoid acting on suspect times | `ntp_unsynced` | re-sync; resume |
 | **EMS process crash** | (external — supervisor) | after restart + grace: if armed/operational, readiness incomplete, no active override, and observed ≠ `AUTO`, command `AUTO` (dry-run/unarmed never write); otherwise battery stays in last mode; `restart: unless-stopped` | — | container restart; reload plan |
+| **Deploy / graceful restart mid GRID_CHARGE** | `shutdown_restore` → AUTO (#127); commitment persisted in control state (#177) | on next boot: **resume** CHARGE if deadline ahead, SoC &lt; target, armed, not dry-run, data not unsafe; else **abort with audited reason** (`commitment_aborted: dry_run` / `expired` / `unsafe` / …) — never a silent wipe | audit `charge_commitment` | keep live control through cheap windows; flip dry-run only after the window |
 | **DB unwritable / full** | write error | continue control on in-memory state; stop sampling | (log) | free space; `VACUUM`; restore backup |
 | **Max writes/day hit** | counter at cap | stop switching; hold current mode | (log) | resets next day |
 | **No-trade day (unprofitable)** | `net_benefit ≤ 0` or savings < `daily_min_savings_eur` | `AUTO` all day (by design, not an error) | (info) | re-evaluate next replan |
