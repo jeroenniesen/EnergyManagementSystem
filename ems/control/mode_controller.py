@@ -16,6 +16,7 @@ from datetime import date, datetime, timedelta
 from typing import TYPE_CHECKING
 from zoneinfo import ZoneInfo
 
+from ems.control.charge_commitment import ChargeCommitment
 from ems.domain import BatteryIntent, PhysicalMode
 from ems.lifecycle import Lifecycle
 from ems.sources.battery import BatteryDriver, BatteryWriteUnconfirmed, intent_to_mode
@@ -117,6 +118,9 @@ class ModeController:
         # Keyed by (intent, desired-mode); `_at` is when the episode was first (or last re-)logged.
         self._unconfirmed_key: tuple[BatteryIntent, PhysicalMode] | None = None
         self._unconfirmed_logged_at: datetime | None = None
+        # Active GRID_CHARGE contract (#177): survives shutdown_restore → AUTO so the next boot
+        # can resume or abort with an explicit reason (never a silent cheap-window wipe).
+        self.charge_commitment: ChargeCommitment | None = None
         # Called (with state_snapshot()) whenever persistable state changes; the caller persists it.
         self._on_state_change = on_state_change
 
@@ -135,7 +139,20 @@ class ModeController:
             "original_vendor_mode": self.original_vendor_mode.value
             if self.original_vendor_mode else None,
             "last_command_unconfirmed": self.last_command_unconfirmed,
+            "charge_commitment": (
+                self.charge_commitment.to_dict() if self.charge_commitment is not None else None
+            ),
         }
+
+    def set_charge_commitment(self, commitment: ChargeCommitment | None) -> None:
+        """Persist (or clear) the active GRID_CHARGE commitment (#177)."""
+        self.charge_commitment = commitment
+        self._persist()
+
+    def clear_charge_commitment(self) -> None:
+        if self.charge_commitment is not None:
+            self.charge_commitment = None
+            self._persist()
 
     def restore_state(self, state: dict | None | _CorruptControlState) -> None:
         """Load a state_snapshot() (e.g. at startup) — tolerant of missing/garbage fields.
@@ -194,11 +211,14 @@ class ModeController:
                 self.last_command_unconfirmed = raw_unconfirmed
             else:
                 self.last_command_unconfirmed = True
+            # #177: restore a well-formed charge commitment; garbage → absent (no silent resume).
+            self.charge_commitment = ChargeCommitment.from_dict(state.get("charge_commitment"))
         except (ValueError, TypeError, AttributeError):
             # A corrupt/unparseable blob must not crash startup — but it must FAIL SAFE, not fail
             # open: an unknown device state blocks a refuse-when-busy restart until a normal
             # confirmed cycle (or the shutdown-restore's note_confirmed_auto) re-establishes AUTO.
             self.last_command_unconfirmed = True
+            self.charge_commitment = None
 
     def _persist(self) -> None:
         if self._on_state_change is not None:

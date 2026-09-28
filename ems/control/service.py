@@ -36,6 +36,10 @@ from ems.control.car_mode import (
     decide_car_mode_action,
     predict_house_load_w,
 )
+from ems.control.charge_commitment import (
+    ChargeCommitment,
+    evaluate_commitment,
+)
 from ems.control.command_fence import (
     BatteryCommandFence,
     CommandClass,
@@ -1218,27 +1222,34 @@ class ControlService:
                 lc.mark_plan_loaded()
             lc.tick(now)
             if not lc.can_command(now):
-                # Crash/restart fail-safe (#127): after the startup grace, if we still cannot reach
-                # CONTROLLING (readiness incomplete — e.g. unsafe/stale sensors) and the battery is
-                # observed in a forced mode, hand it back to AUTO. Only when armed/operational —
-                # dry-run and unarmed drivers never write. An active operator override
-                # (`ctx.override_box`) is left alone.
-                return self._startup_safe_auto_if_needed(now, lc, observed)
+                # #177: abort a persisted charge commitment with an EXPLICIT reason even when we
+                # cannot command (dry_run / unarmed / expired / unsafe) — never a silent wipe after
+                # shutdown_restore. Then the #127 crash fail-safe AUTO path as before.
+                records = self._resolve_charge_commitment(now, lc, commanding=False)
+                records.extend(self._startup_safe_auto_if_needed(now, lc, observed))
+                return records
         with timed("control.decide"):
             intent, _reason, override_active, tgt, pw, _v, car_action = self.effective_intent(now)
+            # #177: resume a still-valid GRID_CHARGE commitment after restart (overrides a
+            # planner slot that may have been rebuilt empty), or abort with a clear reason.
+            c_records, intent, _reason, tgt, pw = self._apply_charge_commitment_to_intent(
+                now, lc, intent, _reason, tgt, pw, override_active)
             # captured for the control.overrun audit detail (B-80 task 4 review)
             intended_mode = intent
             self._ctx.intended_mode_box["value"] = intended_mode
         if intent is None:
             # End a dangling session, nothing else to do — [] both when already inactive and when
             # the end-hysteresis grace window is still open (nothing to act on either way).
-            return self.car_session_end_if_active(now) or []
+            return c_records + (self.car_session_end_if_active(now) or [])
+        # Seed audit with any commitment resume/abort rows from above.
+        records = list(c_records)
         # A car-charging discharge session owns its own bounded command cadence (a real DISCHARGE at
         # the covered-house setpoint) — handled separately from the ordinary single-write path.
         if car_action is not None and car_action.action == "discharge":
             self._ctx.car_session["below_threshold_cycles"] = 0  # car read above threshold this cyc
             self._ctx.car_session["reserve_hold"] = False  # F2: discharging → not in reserve hold
-            return self.car_session_command(now, car_action, tgt, override_active, observed)
+            return records + self.car_session_command(
+                now, car_action, tgt, override_active, observed)
         # F2: a RESERVE-floor hold that interrupts an ACTIVE session (car still charging, SoC in the
         # floor band). Keep the session ALIVE and idle the battery through the ordinary idempotent
         # HOLD path; reserve_hold sticks (resume only at +3pp) so floor noise can't flap it. Do NOT
@@ -1255,9 +1266,10 @@ class ControlService:
                     manual=override_active, priority=True, count_toward_cap=False)
             self._ctx.car_session["last_outcome"] = dec.outcome
             if entering:
-                return [{"summary": f"car session held at the reserve floor — {car_action.reason}",
-                         "detail": {"event": "car_session_reserve_hold", "outcome": dec.outcome}}]
-            return []  # steady reserve hold — quiet (idempotent downstream)
+                return records + [
+                    {"summary": f"car session held at the reserve floor — {car_action.reason}",
+                     "detail": {"event": "car_session_reserve_hold", "outcome": dec.outcome}}]
+            return records  # steady reserve hold — quiet (idempotent downstream)
         # F2 (production audit: ~15 write timeouts/week, ALL inside ~10 kW car-charging windows —
         # the Indevolt's single embedded HTTP server saturates and register writes time out). While
         # a car discharge session is ACTIVE and the car is still drawing under car-mode management,
@@ -1278,11 +1290,12 @@ class ControlService:
                 and self._car_charging(now)):
             sig = ("deferred", PhysicalMode.CHARGE.value)
             if self._ctx.held_box["sig"] == sig:
-                return []  # already explained this deferral episode (deduped like a held decision)
+                # Already explained this deferral episode (deduped like a held decision).
+                return records
             self._ctx.held_box["sig"] = sig
             reason = ("car charging in progress — deferring grid-charge command to avoid Indevolt "
                       "write timeouts; will retry after session ends")
-            return [{"summary": reason,
+            return records + [{"summary": reason,
                      "detail": {"desired_mode": PhysicalMode.CHARGE.value, "intent": str(intent),
                                 "outcome": "deferred", "reason": reason,
                                 "override_active": override_active}}]
@@ -1290,8 +1303,8 @@ class ControlService:
         # threshold / master off / plan resumed) decide whether to end it now
         # (see car_session_end_if_active) — a below-threshold dip gets a few cycles' grace, so
         # `None` means "still in the grace window".
-        records = self.car_session_end_if_active(now)
-        if records is None:
+        end_records = self.car_session_end_if_active(now)
+        if end_records is None:
             # Within the below-threshold GRACE window. The grace hold exists to bridge a benign
             # EV-power blip WITHOUT resuming the plan — but three things must still act THIS cycle
             # and never be swallowed by the hold: a manual override or data-quality fail-safe (F3),
@@ -1308,21 +1321,26 @@ class ControlService:
                 override_active=override_active, failsafe=failsafe, soc_pct=self._current_soc(now),
                 min_reserve_soc=self._settings["battery.min_reserve_soc"])
             if grace == "hold":
-                return []  # benign blip — hold the current setpoint through the grace window
+                return records  # benign blip — hold the current setpoint through the grace window
             self.car_session_reset()  # F3/F5: end the session; act THIS cycle
             if grace == "reserve_hold":
                 with timed("control.write"):
                     dec = self._decide(BatteryIntent.HOLD_RESERVE, now,
                                                   observed_mode=observed, manual=override_active,
                                                   priority=True, count_toward_cap=False)
-                return [{"summary": "car session ended at the reserve floor — holding (idle) so "
-                                    "the battery can't drain into the car",
-                         "detail": {"event": "car_session_end", "reason": "reserve_floor",
-                                    "outcome": dec.outcome}}]
+                return records + [{
+                    "summary": ("car session ended at the reserve floor — holding (idle) so "
+                                "the battery can't drain into the car"),
+                    "detail": {"event": "car_session_end", "reason": "reserve_floor",
+                               "outcome": dec.outcome},
+                }]
             # grace == "fall_through": end + fall through to apply the override/fail-safe via the
             # ordinary decide() below, so it takes effect THIS cycle (not after the grace elapses).
-            records = [{"summary": "car session ended — override/fail-safe takes precedence",
-                        "detail": {"event": "car_session_end", "reason": "override_or_failsafe"}}]
+            records = records + [
+                {"summary": "car session ended — override/fail-safe takes precedence",
+                 "detail": {"event": "car_session_end", "reason": "override_or_failsafe"}}]
+        else:
+            records = records + end_records
         # Floor anti-flap (#165): at/below min_reserve_soc, collapse hold_reserve↔self-consumption
         # to ONE safe mode so overnight idle↔auto thrash cannot burn the daily switch budget
         # (intent-persistence alone is insufficient — return-to-AUTO is exempt and immediate).
@@ -1391,11 +1409,25 @@ class ControlService:
                 "detail": {"from_mode": before, "desired_mode": dec.desired_mode.value,
                            "intent": str(dec.intent), "outcome": dec.outcome,
                            "accepted": accepted, "reason": reason}})
+            # #177: persist an active GRID_CHARGE commitment with the apply (survives restart).
+            if accepted and dec.intent is BatteryIntent.GRID_CHARGE_TO_TARGET:
+                self._persist_charge_commitment(now, tgt, pw, _reason or dec.reason)
+            elif accepted and dec.desired_mode is PhysicalMode.AUTO:
+                # Leaving charge for AUTO (fail-safe / plan) — only clear if commitment is no
+                # longer valid; explicit abort path already cleared via evaluate.
+                pass
         elif dec.outcome == "idempotent":
             # Steady state: EMS believes it's already in `desired`. VERIFY the whole cluster —
             # a tower that didn't follow (still self-consuming while we commanded real-time) is the
             # silent slave-not-following bug. Towers are fresh here (no write this cycle).
             held["sig"] = None
+            # #177: refresh/keep commitment while already charging under GRID_CHARGE.
+            if (dec.intent is BatteryIntent.GRID_CHARGE_TO_TARGET
+                    and dec.desired_mode is PhysicalMode.CHARGE
+                    and self._controller is not None
+                    and self._controller.charge_commitment is None
+                    and tgt is not None):
+                self._persist_charge_commitment(now, tgt, pw, _reason or dec.reason)
             drift = self.cluster_drift_record(dec.desired_mode, towers)
             if drift is not None:
                 records.append(drift)
@@ -1534,6 +1566,175 @@ class ControlService:
             if not self._ctx.command_fence.enter(ticket):
                 raise _CommandSuperseded
             self._writer_local.entered = True
+
+    def _charge_deadline(self, now: datetime) -> datetime | None:
+        """Deadline for the current GRID_CHARGE slot/plan, if any."""
+        pp = self.current_plan(now)
+        if pp is None:
+            return None
+        plan = pp[2]
+        slot = plan.intent_at(now)
+        if slot is not None and slot.deadline is not None:
+            return slot.deadline
+        if plan.deadline is not None:
+            return plan.deadline
+        if slot is not None:
+            return slot.slot_end
+        return None
+
+    def _persist_charge_commitment(
+        self,
+        now: datetime,
+        target_soc: float | None,
+        power_w: float | None,
+        reason: str | None,
+    ) -> None:
+        """Store an active GRID_CHARGE commitment alongside control state (#177)."""
+        if self._controller is None or target_soc is None:
+            return
+        deadline = self._charge_deadline(now)
+        if deadline is None:
+            # No planner deadline — still persist with a conservative same-day bound so a
+            # mid-window restart has *something* to evaluate (abort if that bound passes).
+            deadline = now + timedelta(hours=4)
+        existing = self._controller.charge_commitment
+        # Refresh in place when the contract is unchanged (avoid churning applied_at).
+        if (existing is not None
+                and abs(existing.target_soc - float(target_soc)) < 0.05
+                and existing.deadline == deadline):
+            return
+        self._controller.set_charge_commitment(ChargeCommitment(
+            target_soc=float(target_soc),
+            deadline=deadline,
+            reason=reason or "grid_charge_to_target",
+            applied_at=now,
+            power_w=float(power_w) if power_w is not None else None,
+        ))
+
+    def _commitment_audit(self, verdict_reason: str, *, event: str, outcome: str) -> dict:
+        return {
+            "summary": verdict_reason,
+            "detail": {
+                "event": event,
+                "outcome": outcome,
+                "reason": verdict_reason,
+            },
+        }
+
+    def _resolve_charge_commitment(
+        self, now: datetime, lc: Lifecycle, *, commanding: bool,
+    ) -> list[dict]:
+        """Evaluate a persisted commitment when we are NOT commanding (dry_run / observing).
+
+        Abort with an explicit audited reason; never silently drop a cheap-window charge (#177).
+        Resume is handled by `_apply_charge_commitment_to_intent` on the commanding path.
+        """
+        if self._controller is None or self._controller.charge_commitment is None:
+            return []
+        armed = bool(self._controller.driver.armed)
+        verdict = evaluate_commitment(
+            self._controller.charge_commitment,
+            now=now,
+            soc_pct=self._current_soc(now),
+            dry_run=self._dry_run or lc.dry_run,
+            armed=armed,
+            data_quality=self._data_quality(now),
+            grace_elapsed=lc.grace_elapsed(now),
+        )
+        if verdict.action == "hold":
+            # During grace: explain once, keep the commitment for post-grace resume.
+            sig = ("commitment_hold",)
+            if self._ctx.held_box["sig"] == sig:
+                return []
+            self._ctx.held_box["sig"] = sig
+            return [self._commitment_audit(
+                verdict.reason, event="charge_commitment", outcome="hold")]
+        if verdict.action == "abort":
+            self._controller.clear_charge_commitment()
+            self._ctx.held_box["sig"] = None
+            return [self._commitment_audit(
+                verdict.reason, event="charge_commitment", outcome="aborted")]
+        if verdict.action == "resume" and not commanding:
+            # Controllable on next CONTROLLING tick — keep stored; no silent wipe.
+            return []
+        return []
+
+    def _apply_charge_commitment_to_intent(
+        self,
+        now: datetime,
+        lc: Lifecycle,
+        intent: BatteryIntent | None,
+        reason: str | None,
+        tgt: float | None,
+        pw: float | None,
+        override_active: bool,
+    ) -> tuple[list[dict], BatteryIntent | None, str | None, float | None, float | None]:
+        """On the commanding path: abort/clear or force-resume a still-valid GRID_CHARGE (#177).
+
+        A manual override always wins. Fail-safe abort clears the commitment with an audited
+        reason. Resume replaces a missing/mismatched planner intent so a restart mid-window
+        does not lose the cheap charge after #127 AUTO restore.
+        """
+        records: list[dict] = []
+        if self._controller is None or self._controller.charge_commitment is None:
+            return records, intent, reason, tgt, pw
+        if override_active:
+            # A GRID_CHARGE override *is* the commitment (manual "charge now") — keep it so the
+            # next cycle does not audit-abort the apply we just persisted (#177 / CI regression).
+            # Only abort when the operator overrides *away* from grid-charge.
+            if intent is BatteryIntent.GRID_CHARGE_TO_TARGET:
+                return records, intent, reason, tgt, pw
+            c = self._controller.charge_commitment
+            self._controller.clear_charge_commitment()
+            note = (f"commitment_aborted: manual_override — cleared GRID_CHARGE to "
+                    f"{c.target_soc:.0f}% by {c.deadline.isoformat()}")
+            records.append(self._commitment_audit(
+                note, event="charge_commitment", outcome="aborted"))
+            return records, intent, reason, tgt, pw
+
+        armed = bool(self._controller.driver.armed)
+        verdict = evaluate_commitment(
+            self._controller.charge_commitment,
+            now=now,
+            soc_pct=self._current_soc(now),
+            dry_run=self._dry_run or lc.dry_run,
+            armed=armed,
+            data_quality=self._data_quality(now),
+            grace_elapsed=lc.grace_elapsed(now),
+        )
+        if verdict.action == "abort":
+            self._controller.clear_charge_commitment()
+            records.append(self._commitment_audit(
+                verdict.reason, event="charge_commitment", outcome="aborted"))
+            return records, intent, reason, tgt, pw
+        if verdict.action == "hold":
+            records.append(self._commitment_audit(
+                verdict.reason, event="charge_commitment", outcome="hold"))
+            return records, intent, reason, tgt, pw
+        if verdict.action != "resume" or verdict.commitment is None:
+            return records, intent, reason, tgt, pw
+
+        c = verdict.commitment
+        # Already on the same grid-charge intent with a compatible target — keep planner reason.
+        if (intent is BatteryIntent.GRID_CHARGE_TO_TARGET
+                and tgt is not None
+                and abs(float(tgt) - c.target_soc) < 1.0):
+            return records, intent, reason, tgt, pw
+
+        # Force resume: re-apply CHARGE toward the persisted target/deadline.
+        resume_reason = verdict.reason
+        sig = ("commitment_resume", c.deadline.isoformat(), c.target_soc)
+        if self._ctx.held_box["sig"] != sig:
+            self._ctx.held_box["sig"] = sig
+            records.append(self._commitment_audit(
+                resume_reason, event="charge_commitment", outcome="resumed"))
+        return (
+            records,
+            BatteryIntent.GRID_CHARGE_TO_TARGET,
+            resume_reason,
+            c.target_soc,
+            c.power_w if c.power_w is not None else pw,
+        )
 
     def _startup_safe_auto_if_needed(
         self, now: datetime, lc: Lifecycle, observed: PhysicalMode | None,
