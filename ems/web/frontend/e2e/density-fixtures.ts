@@ -41,7 +41,7 @@ export async function mockInsightsDensity(page: Page) {
     tweak: null, days_measured: 7, days_total: 7,
   } }));
   await page.route("**/api/counterfactual**", route => route.fulfill({ json: {
-    window: null, days_used: 0, days_skipped: 0, scenarios: {},
+    window: null, days_used: 0, days_skipped: 0, days_missing_forecast: 0, scenarios: {},
     deltas: { planner_vs_no_battery: null, planner_vs_auto: null }, note: "No measured days yet.",
   } }));
 }

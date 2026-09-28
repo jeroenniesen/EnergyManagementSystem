@@ -759,6 +759,7 @@ const COUNTERFACTUAL = {
   window: { start: "2026-06-30", end: "2026-07-13", days_requested: 14 },
   days_used: 14,
   days_skipped: 0,
+  days_missing_forecast: 0,
   scenarios: {
     no_battery: { cost_eur: 42.1, import_kwh: 210, export_kwh: 30 },
     auto_selfuse: { cost_eur: 31.5, import_kwh: 150, export_kwh: 10 },
@@ -773,6 +774,7 @@ const WHATIF_RESULT = {
   days: 14,
   days_used: 14,
   days_skipped: 0,
+  days_missing_forecast: 0,
   overrides: { "planner.negative_price_soak": true },
   baseline: { cost_eur: 24.2 },
   variant: { cost_eur: 23.36 },
@@ -812,6 +814,36 @@ test.describe("Insights: what-if scenario simulator (B-73) + counterfactual (B-6
     await page.getByTestId("nav-insights").click();
     await expect(page.getByTestId("whatif-panel")).toBeVisible();
     await expect(page.getByTestId("whatif-counterfactual")).toHaveCount(0);
+    await expect(page.getByTestId("whatif-badge")).toBeVisible();
+  });
+
+  test("shows an honest gap when the day-ahead solar forecast is missing (#132)", async ({ page }) => {
+    await page.route("**/api/counterfactual**", (route) =>
+      route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          window: null,
+          days_used: 0,
+          days_skipped: 3,
+          days_missing_forecast: 3,
+          scenarios: {
+            no_battery: { cost_eur: null, import_kwh: 0, export_kwh: 0 },
+            auto_selfuse: { cost_eur: null, import_kwh: 0, export_kwh: 0 },
+            planner: { cost_eur: null, import_kwh: 0, export_kwh: 0 },
+          },
+          deltas: { planner_vs_no_battery: null, planner_vs_auto: null },
+          note:
+            "No day-ahead solar forecast on file for 3 measured days — can't compare without " +
+            "the same forecast the plan used.",
+        }),
+      }),
+    );
+    await page.goto("/");
+    await page.getByTestId("nav-insights").click();
+    await expect(page.getByTestId("whatif-panel")).toBeVisible();
+    await expect(page.getByTestId("whatif-counterfactual")).toHaveCount(0);
+    await expect(page.getByTestId("whatif-forecast-missing")).toContainText("solar forecast");
     await expect(page.getByTestId("whatif-badge")).toBeVisible();
   });
 

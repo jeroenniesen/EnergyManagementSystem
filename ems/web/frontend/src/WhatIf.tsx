@@ -15,6 +15,8 @@ type Counterfactual = {
   window: { start: string; end: string; days_requested: number } | null;
   days_used: number;
   days_skipped: number;
+  /** Days skipped because the day-ahead solar forecast was missing (issue #132). */
+  days_missing_forecast?: number;
   scenarios: Record<string, ScenarioTotals>;
   deltas: { planner_vs_no_battery: number | null; planner_vs_auto: number | null };
   note: string;
@@ -32,6 +34,7 @@ type WhatIfResult = {
   days: number;
   days_used: number;
   days_skipped: number;
+  days_missing_forecast?: number;
   overrides: Record<string, unknown>;
   baseline: { cost_eur: number | null };
   variant: { cost_eur: number | null };
@@ -65,7 +68,19 @@ const PRESETS: Preset[] = [
 
 const DAY_OPTIONS = [7, 14, 30] as const;
 
-function verdict(preset: Preset, delta: number | null, daysUsed: number): string {
+function verdict(
+  preset: Preset,
+  delta: number | null,
+  daysUsed: number,
+  daysMissingForecast = 0,
+): string {
+  if (daysUsed === 0 && daysMissingForecast > 0) {
+    const plural = daysMissingForecast === 1 ? "" : "s";
+    return (
+      `No day-ahead solar forecast on file for ${daysMissingForecast} measured day${plural} — ` +
+      `can't simulate "${preset.label}" without the same forecast the plan used.`
+    );
+  }
   if (delta == null || daysUsed === 0) {
     return `Not enough recorded history yet to simulate "${preset.label}".`;
   }
@@ -116,7 +131,19 @@ export function WhatIf() {
   };
 
   const cf = counterfactual;
+  const cfMissingForecast = (cf?.days_missing_forecast ?? 0) > 0 && (cf?.days_used ?? 0) === 0;
+  // Honest empty state when the planner comparison would have run without a day-ahead solar
+  // forecast (deprecated forecast_snapshots / missing ledger rows) — never show a € delta that
+  // planned as if there was no sun.
+  const cfForecastGap =
+    cfMissingForecast && cf
+      ? (cf.note ||
+        `No day-ahead solar forecast on file for ${cf.days_missing_forecast} measured ` +
+          `day${cf.days_missing_forecast === 1 ? "" : "s"} — can't compare without the same ` +
+          "forecast the plan used.")
+      : null;
   const cfHeader =
+    !cfForecastGap &&
     cf &&
     cf.days_used > 0 &&
     cf.deltas.planner_vs_no_battery != null &&
@@ -134,6 +161,11 @@ export function WhatIf() {
         </span>
       </div>
 
+      {cfForecastGap && (
+        <p className="fin-caveat" data-testid="whatif-forecast-missing">
+          {cfForecastGap}
+        </p>
+      )}
       {cfHeader && (
         <p className="whatif-counterfactual" data-testid="whatif-counterfactual">
           {cfHeader}
@@ -186,8 +218,14 @@ export function WhatIf() {
       {result && !loading && !error && activePreset && (
         <div className="whatif-result" data-testid="whatif-result">
           <p className="whatif-verdict" data-testid="whatif-verdict">
-            {verdict(activePreset, result.delta_eur, result.days_used)}
+            {verdict(
+              activePreset,
+              result.delta_eur,
+              result.days_used,
+              result.days_missing_forecast ?? 0,
+            )}
           </p>
+          {result.days_used > 0 && (
           <div className="fin-tiles">
             <div className="fin-tile" data-testid="whatif-baseline">
               <div className="fin-val">
@@ -202,7 +240,8 @@ export function WhatIf() {
               <div className="fin-name">with this change</div>
             </div>
           </div>
-          {result.per_day.length > 0 && (
+          )}
+          {result.days_used > 0 && result.per_day.length > 0 && (
             <details className="chart-table" data-testid="whatif-per-day">
               <summary>Day by day</summary>
               <div className="chart-table-scroll">

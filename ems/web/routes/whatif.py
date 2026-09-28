@@ -26,6 +26,7 @@ narrow on purpose — only planner/battery/strategy/price knobs a homeowner woul
 "what if"; no connection field, secret, or location could ever reach it even if `SETTINGS_BY_KEY`
 grows a new field with the same prefix.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -77,7 +78,27 @@ def _scenario_totals(days: list[DayResult]) -> dict[str, dict[str, float | None]
     return out
 
 
-def _counterfactual_note(days_used: int, delta_no_battery: float | None) -> str:
+def _days_missing_forecast(days: list[DayResult]) -> int:
+    """Count days skipped because the day-ahead solar forecast was absent/sparse — the honest
+    signal WhatIf shows instead of a planner-vs-auto comparison that planned as if there was no
+    sun (issue #132 / deprecated `forecast_snapshots`)."""
+    return sum(
+        1 for d in days if not d.data_ok and d.skip_reason and "forecast coverage" in d.skip_reason
+    )
+
+
+def _counterfactual_note(
+    days_used: int,
+    delta_no_battery: float | None,
+    *,
+    days_missing_forecast: int = 0,
+) -> str:
+    if days_used == 0 and days_missing_forecast > 0:
+        plural = "s" if days_missing_forecast != 1 else ""
+        return (
+            f"No day-ahead solar forecast on file for {days_missing_forecast} measured "
+            f"day{plural} — can't compare without the same forecast the plan used."
+        )
     if days_used == 0 or delta_no_battery is None:
         return "Not enough recorded history yet to compare — check back after a few days."
     verb = "beat" if delta_no_battery >= 0 else "trailed"
@@ -95,6 +116,7 @@ def build_counterfactual(result: RangeResult, days_requested: int) -> dict:
     agg = result.aggregate
     days_used = int(agg["days_replayed"])
     days_skipped = int(agg["days_skipped"])
+    days_missing_forecast = _days_missing_forecast(result.days)
     scenarios = _scenario_totals(result.days)
     delta_no_battery = agg["planner_vs_no_battery_eur"] if days_used else None
     delta_auto = agg["planner_vs_auto_eur"] if days_used else None
@@ -106,16 +128,30 @@ def build_counterfactual(result: RangeResult, days_requested: int) -> dict:
         "window": window,
         "days_used": days_used,
         "days_skipped": days_skipped,
+        "days_missing_forecast": days_missing_forecast,
         "scenarios": scenarios,
         "deltas": {
             "planner_vs_no_battery": delta_no_battery,
             "planner_vs_auto": delta_auto,
         },
-        "note": _counterfactual_note(days_used, delta_no_battery),
+        "note": _counterfactual_note(
+            days_used, delta_no_battery, days_missing_forecast=days_missing_forecast
+        ),
     }
 
 
-def _whatif_note(days_used: int, delta_eur: float | None) -> str:
+def _whatif_note(
+    days_used: int,
+    delta_eur: float | None,
+    *,
+    days_missing_forecast: int = 0,
+) -> str:
+    if days_used == 0 and days_missing_forecast > 0:
+        plural = "s" if days_missing_forecast != 1 else ""
+        return (
+            f"No day-ahead solar forecast on file for {days_missing_forecast} measured "
+            f"day{plural} — can't simulate without the same forecast the plan used."
+        )
     if days_used == 0 or delta_eur is None:
         return "Not enough recorded history yet to simulate this."
     plural = "s" if days_used != 1 else ""
@@ -130,8 +166,7 @@ def _whatif_note(days_used: int, delta_eur: float | None) -> str:
             f"measured day{plural}."
         )
     return (
-        f"This would have made almost no difference over the last {days_used} "
-        f"measured day{plural}."
+        f"This would have made almost no difference over the last {days_used} measured day{plural}."
     )
 
 
@@ -141,6 +176,7 @@ def build_whatif(result: RangeResult, overrides: dict[str, Any], days_requested:
     agg = result.aggregate
     days_used = int(agg["days_replayed"])
     days_skipped = int(agg["days_skipped"])
+    days_missing_forecast = _days_missing_forecast(result.days)
     cfg_b_agg = agg.get("cfg_b") or {}
     baseline_cost = agg["planner_cost_eur"] if days_used else None
     variant_cost = cfg_b_agg.get("planner_cost_eur") if days_used else None
@@ -156,24 +192,27 @@ def build_whatif(result: RangeResult, overrides: dict[str, Any], days_requested:
             cost_a = day_a.scenarios["planner"].cost_eur
             cost_b = day_b.scenarios["planner"].cost_eur
             day_delta = None if cost_a is None or cost_b is None else round(cost_a - cost_b, 4)
-            per_day.append({
-                "date": day_a.date,
-                "baseline_eur": cost_a,
-                "variant_eur": cost_b,
-                "delta_eur": day_delta,
-            })
+            per_day.append(
+                {
+                    "date": day_a.date,
+                    "baseline_eur": cost_a,
+                    "variant_eur": cost_b,
+                    "delta_eur": day_delta,
+                }
+            )
 
     return {
         "simulation": True,
         "days": days_requested,
         "days_used": days_used,
         "days_skipped": days_skipped,
+        "days_missing_forecast": days_missing_forecast,
         "overrides": overrides,
         "baseline": {"cost_eur": baseline_cost},
         "variant": {"cost_eur": variant_cost},
         "delta_eur": delta_eur,
         "per_day": per_day,
-        "note": _whatif_note(days_used, delta_eur),
+        "note": _whatif_note(days_used, delta_eur, days_missing_forecast=days_missing_forecast),
     }
 
 
@@ -182,8 +221,10 @@ def _empty_counterfactual(note: str) -> dict:
         "window": None,
         "days_used": 0,
         "days_skipped": 0,
-        "scenarios": {name: {"cost_eur": None, "import_kwh": 0.0, "export_kwh": 0.0}
-                      for name in _SCENARIOS},
+        "days_missing_forecast": 0,
+        "scenarios": {
+            name: {"cost_eur": None, "import_kwh": 0.0, "export_kwh": 0.0} for name in _SCENARIOS
+        },
         "deltas": {"planner_vs_no_battery": None, "planner_vs_auto": None},
         "note": note,
     }
@@ -232,12 +273,14 @@ def build_router(ctx: AppContext) -> APIRouter:
         docstring), so gating it like a write would misrepresent what it does."""
         if ctx.store is None:
             return JSONResponse(  # type: ignore[return-value]
-                {"detail": "history store not configured"}, status_code=503)
+                {"detail": "history store not configured"}, status_code=503
+            )
         body = body if isinstance(body, dict) else {}
         overrides = body.get("overrides")
         if not isinstance(overrides, dict):
             return JSONResponse(  # type: ignore[return-value]
-                {"detail": "overrides must be an object"}, status_code=422)
+                {"detail": "overrides must be an object"}, status_code=422
+            )
 
         unknown = sorted(k for k in overrides if k not in WHATIF_ALLOWED_KEYS)
         if unknown:
@@ -257,7 +300,8 @@ def build_router(ctx: AppContext) -> APIRouter:
         days_raw = body.get("days", 7)
         if isinstance(days_raw, bool) or not isinstance(days_raw, (int, float)):
             return JSONResponse(  # type: ignore[return-value]
-                {"detail": "days must be a number"}, status_code=422)
+                {"detail": "days must be a number"}, status_code=422
+            )
         days = max(1, min(90, int(days_raw)))
 
         result = await asyncio.to_thread(_replay_ab, days, clean)
