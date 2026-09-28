@@ -338,6 +338,14 @@ SETTINGS_SCHEMA: tuple[SettingsField, ...] = (
         "read interval so a single coalesced read doesn't look stale.",
         min=300.0, max=3600.0, step=60.0, unit="s", slider=True, advanced=True,
     ),
+    SettingsField(
+        "control.grid_limit_w", "Grid fuse limit (netlimiet)", "number", 5750.0, "control",
+        help="Main fuse / hoofdzekering ceiling in watts. A grid-charge plan whose charge power "
+        "plus expected house load would exceed this is rejected as unsafe (hold self-use) so the "
+        "EMS never trips the fuse. Common NL sizes at 230 V: 1×25 A ≈ 5750 W, 1×35 A ≈ 8050 W, "
+        "3×25 A ≈ 17250 W. Set 0 to disable the check.",
+        min=0.0, max=50000.0, step=50.0, unit="W",
+    ),
     # --- Planner economics (advanced — change these and /api/plan recomputes, SPEC §8.3) ---
     SettingsField(
         "planner.mode", "Planner mode", "enum", "rule_based", "planner",

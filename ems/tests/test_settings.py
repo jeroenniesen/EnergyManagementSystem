@@ -30,6 +30,20 @@ def test_anti_flap_control_knob_defaults():
     assert SETTINGS_BY_KEY["control.commitment_reserve"].min == 0
 
 
+def test_grid_limit_setting_default():
+    """#133: configurable hoofdzekering / netlimiet — default 1×25 A @ 230 V; 0 disables."""
+    d = defaults()
+    assert d["control.grid_limit_w"] == 5750.0
+    field = SETTINGS_BY_KEY["control.grid_limit_w"]
+    assert field.type == "number" and field.min == 0.0 and field.unit == "W"
+    clean, errors = validate_settings({"control.grid_limit_w": 0})
+    assert clean["control.grid_limit_w"] == 0.0 and "control.grid_limit_w" not in errors
+    clean, errors = validate_settings({"control.grid_limit_w": 17250})
+    assert clean["control.grid_limit_w"] == 17250.0
+    _clean, errors = validate_settings({"control.grid_limit_w": -1})
+    assert "control.grid_limit_w" in errors
+
+
 def test_schema_json_shape():
     rows = schema_json()
     assert {r["key"] for r in rows} == set(SETTINGS_BY_KEY)

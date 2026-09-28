@@ -1725,6 +1725,7 @@ def create_app(
     def _validate_plan_obj(plan, now: datetime) -> PlanValidation:
         """Run the §8.11 hard validator over a given plan (pure besides the cached SoC, capability
         and projection). `unsafe` ⇒ the controller must hold AUTO."""
+        load_by = _load_by([s.start for s in plan.slots]) if plan.slots else {}
         return validate_plan(
             plan, soc_pct=_current_soc(now), data_quality=_data_quality(now),
             min_reserve_soc=settings_cache["battery.min_reserve_soc"],
@@ -1732,6 +1733,8 @@ def create_app(
             min_dwell=timedelta(seconds=settings_cache["control.min_dwell_seconds"]),
             capability=_capability_box["cap"], projection=_projection_sync(plan, now),
             validate_projection=bool(settings_cache["planner.validate_projection"]),
+            grid_limit_w=float(settings_cache["control.grid_limit_w"]),
+            load_w_by=load_by,
         )
 
     # --- The control brain (B-46): the plan-to-act path, intent resolution, car-session lifecycle

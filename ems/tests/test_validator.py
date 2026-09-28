@@ -209,3 +209,59 @@ def test_projection_slot_starting_at_deadline_does_not_count():
     finding = next((f for f in validate_plan(plan, projection=projection, **_ctx()).findings
                     if f.code == "projection_short_of_target"), None)
     assert finding is not None and "70%" in finding.message
+
+
+# --- Grid fuse / netlimiet (#133) ----------------------------------------------------------------
+def test_charge_plus_load_above_grid_limit_is_unsafe():
+    # 4000 W charge + 2000 W house = 6000 W > 5750 W fuse → unsafe.
+    v = validate_plan(
+        _plan(_charge(0, power=4000.0)),
+        grid_limit_w=5750.0, expected_load_w=2000.0, **_ctx(),
+    )
+    assert v.status == "unsafe" and not v.ok
+    f = next(f for f in v.findings if f.code == "grid_limit_exceeded")
+    assert "4000" in f.message and "2000" in f.message and "5750" in f.message
+
+
+def test_charge_plus_load_under_grid_limit_is_valid():
+    # 4000 W charge + 500 W house = 4500 W < 5750 W → ok.
+    v = validate_plan(
+        _plan(_charge(0, power=4000.0)),
+        grid_limit_w=5750.0, expected_load_w=500.0, **_ctx(),
+    )
+    assert not any(f.code == "grid_limit_exceeded" for f in v.findings)
+    assert v.ok is True
+
+
+def test_grid_limit_zero_disables_check():
+    v = validate_plan(
+        _plan(_charge(0, power=4000.0)),
+        grid_limit_w=0.0, expected_load_w=9000.0, **_ctx(),
+    )
+    assert not any(f.code == "grid_limit_exceeded" for f in v.findings)
+
+
+def test_grid_limit_uses_per_slot_load_w_by():
+    # Slot 0 load is over the fuse; slot 1 would be fine — one over-limit charge is enough.
+    plan = _plan(_charge(0, power=4000.0), _charge(1, power=4000.0))
+    load = {T0: 2500.0, T0 + SLOT: 100.0}
+    v = validate_plan(plan, grid_limit_w=5750.0, load_w_by=load, **_ctx())
+    assert any(f.code == "grid_limit_exceeded" for f in v.findings) and not v.ok
+
+
+def test_grid_limit_uses_capability_when_slot_power_missing():
+    slot = PlanSlot(T0, BatteryIntent.GRID_CHARGE_TO_TARGET, "charge",
+                    target_soc=80.0, floor_soc=10.0, power_w=None)
+    v = validate_plan(
+        _plan(slot), grid_limit_w=5000.0, expected_load_w=1500.0, **_ctx(),
+    )
+    # CAP.max_charge_w=4000 + 1500 = 5500 > 5000.
+    assert any(f.code == "grid_limit_exceeded" for f in v.findings)
+
+
+def test_non_charge_plan_ignores_grid_limit():
+    v = validate_plan(
+        _plan(_self(0)), grid_limit_w=100.0, expected_load_w=2000.0, **_ctx(),
+    )
+    assert not any(f.code == "grid_limit_exceeded" for f in v.findings)
+    assert v.ok is True
