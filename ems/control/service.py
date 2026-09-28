@@ -46,7 +46,7 @@ from ems.control.execution import CommandExecutionBoundary
 from ems.control.override import NONE as OVERRIDE_NONE
 from ems.control.override import Override
 from ems.control.reconciliation import CommandReconciliation
-from ems.control.safety import SafetyValidator
+from ems.control.safety import SafetyValidator, resolve_floor_anti_flap
 from ems.domain import BatteryIntent, PhysicalMode
 from ems.lifecycle import Lifecycle, OwnershipState
 from ems.perf import PERF_BUDGETS, REGISTRY, atimed, timed
@@ -327,6 +327,12 @@ class ControlContext:
     # write), so a flap costs at most one row per flap, never one per cycle.
     intent_persist_box: dict[str, Any] = field(
         default_factory=lambda: {"mode": None, "count": 0})
+    # Floor anti-flap latch (#165): once SoC is at/below min_reserve_soc, suppress
+    # hold_reserve↔AUTO oscillation until SoC recovers (+3pp hysteresis). `holding` carries the
+    # latch across cycles; `audit_sig` dedupes the "why not switching" audit row (held_box is
+    # cleared on every idempotent decide, so it cannot own this dedupe).
+    floor_anti_flap_box: dict[str, Any] = field(
+        default_factory=lambda: {"holding": False, "audit_sig": None})
     # Captured by control_tick after effective_intent returns so a control.overrun audit row can
     # attribute the breach to the value the tick reached (B-80 task 4 review). Read by
     # _handle_overrun. None when no tick has run yet (or the tick timed out before reaching
@@ -1277,6 +1283,25 @@ class ControlService:
             # ordinary decide() below, so it takes effect THIS cycle (not after the grace elapses).
             records = [{"summary": "car session ended — override/fail-safe takes precedence",
                         "detail": {"event": "car_session_end", "reason": "override_or_failsafe"}}]
+        # Floor anti-flap (#165): at/below min_reserve_soc, collapse hold_reserve↔self-consumption
+        # to ONE safe mode so overnight idle↔auto thrash cannot burn the daily switch budget
+        # (intent-persistence alone is insufficient — return-to-AUTO is exempt and immediate).
+        # Manual overrides are never remapped. Runs before intent-persistence so the latched intent
+        # is what persistence / decide see. See resolve_floor_anti_flap for AUTO-vs-idle choice.
+        floor_note: str | None = None
+        if not override_active:
+            box = self._ctx.floor_anti_flap_box
+            intent, floor_note, holding = resolve_floor_anti_flap(
+                intent,
+                soc_pct=self._current_soc(now),
+                min_reserve_soc=float(self._settings["battery.min_reserve_soc"]),
+                observed_mode=observed,
+                holding=bool(box.get("holding")),
+            )
+            box["holding"] = holding
+            self._ctx.intended_mode_box["value"] = intent
+            if not holding:
+                box["audit_sig"] = None
         # decide() uses `observed` for the idempotency gate; its post-write CONFIRM re-reads the
         # device fresh, so a stale observation only risks a redundant idempotent write. `manual` (an
         # active operator override) and `priority` (a SAFETY action — the car-guard hold while the
@@ -1316,14 +1341,16 @@ class ControlService:
             # on a later cycle by the cluster-consistency check below (which flags a tower that
             # never follows). So this logs "command sent" / "FAILED", not a premature "confirmed".
             held["sig"] = None  # an action happened — re-explain any future hold afresh
+            self._ctx.floor_anti_flap_box["audit_sig"] = None
             before = observed.value if observed is not None else "unknown"
             accepted = dec.applied
+            reason = floor_note or dec.reason
             records.append({
                 "summary": (f"Battery mode {before} → {dec.desired_mode.value} — "
                             + ("command sent" if accepted else f"command FAILED ({dec.reason})")),
                 "detail": {"from_mode": before, "desired_mode": dec.desired_mode.value,
                            "intent": str(dec.intent), "outcome": dec.outcome,
-                           "accepted": accepted, "reason": dec.reason}})
+                           "accepted": accepted, "reason": reason}})
         elif dec.outcome == "idempotent":
             # Steady state: EMS believes it's already in `desired`. VERIFY the whole cluster —
             # a tower that didn't follow (still self-consuming while we commanded real-time) is the
@@ -1332,6 +1359,19 @@ class ControlService:
             drift = self.cluster_drift_record(dec.desired_mode, towers)
             if drift is not None:
                 records.append(drift)
+            # Floor anti-flap suppressed a hold↔auto switch: explain once why we are NOT acting
+            # (CLAUDE.md explainability). Deduped on floor_anti_flap_box — held_box is cleared
+            # above on every idempotent, so it cannot own this row.
+            if floor_note:
+                sig = ("floor_anti_flap", dec.desired_mode.value)
+                if self._ctx.floor_anti_flap_box.get("audit_sig") != sig:
+                    self._ctx.floor_anti_flap_box["audit_sig"] = sig
+                    records.append({
+                        "summary": f"Battery NOT switched — {floor_note}",
+                        "detail": {"desired_mode": dec.desired_mode.value,
+                                   "intent": str(dec.intent),
+                                   "outcome": "floor_anti_flap", "reason": floor_note,
+                                   "override_active": override_active}})
         elif dec.outcome == "unconfirmed":
             # The write TIMED OUT (device slow/unreachable) — we did NOT revert (the device likely
             # got it; reverting would also time out). Surface it so a recurring "charge isn't
