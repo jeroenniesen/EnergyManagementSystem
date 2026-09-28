@@ -122,16 +122,16 @@ The car's SoC itself is **not** a config key — it's a runtime-store anchor (%,
 | `car_charging_battery_mode` | enum | `hold` | `hold` (default, today's guard: idles so it can't feed the car) \| `static_discharge` (fixed `car_discharge_w`; any part above the actual house load deliberately feeds the car) \| `match_home_load` (discharges only the predicted non-EV house load, so the grid — not the battery — keeps feeding the car). Only takes effect while `hold_battery_when_car_charging` is on; see `SPEC.md §4.5`. **UI** (Car tab) |
 | `car_discharge_w` | W | 800 | fixed discharge power for `car_charging_battery_mode: static_discharge`, clamped to `[100, max_discharge_w]`; ignored by the other two modes. **UI** (Car tab) |
 
-## `homeassistant` — planned, not yet implemented (BACKLOG B-18, pool)
+## `homeassistant` — planned, not yet implemented ([B-18 / #107](https://github.com/jeroenniesen/EnergyManagementSystem/issues/107))
 | Key | Type | Default | Effect |
 |---|---|---|---|
 | `base_url` | url | http://homeassistant.local:8123 | HA endpoint |
 | `token` | secret | `!secret` | long-lived token |
 | `entity_map` | map | — | role→entity id (pin; validated at startup) |
 
-> None of these keys are read by the shipped code — there is no `ems/sources/ha.py` and the real `config.yaml` has no `homeassistant:` block. Devices are read/written directly (`SPEC §5.2`).
+> None of these keys are read by the shipped control path. `ems/sources/ha.py` is a **read-only skeleton** (not wired into config / `sense` / startup validation). The real `config.yaml` has no `homeassistant:` block. Devices are read/written **directly** (`SPEC §5.2`). Current production: Mac Mini LaunchAgent, no required HA.
 
-## `mqtt` — planned, not yet implemented (BACKLOG B-18, pool)
+## `mqtt` — planned, not yet implemented ([B-18 / #107](https://github.com/jeroenniesen/EnergyManagementSystem/issues/107))
 | Key | Type | Default | Effect |
 |---|---|---|---|
 | `host` | str | localhost | broker (use host IP on compose) |
@@ -139,7 +139,7 @@ The car's SoC itself is **not** a config key — it's a runtime-store anchor (%,
 | `publish_discovery` | bool | true | expose HA entities; false = UI only |
 | `retain_config` | bool | true | retain discovery configs |
 
-> `paho-mqtt` is not a project dependency and there is no `ems/publish/` module — nothing above is wired up (`SPEC §9.2`).
+> `paho-mqtt` is not a project dependency and there is no `ems/publish/` module — MQTT discovery is **planned, not implemented** (`SPEC §9.2`).
 
 ## `notify` — implemented (BACKLOG B-20), missing from this reference until now
 | Key | Type | Default | Effect |

@@ -2,6 +2,8 @@
 
 > Companion to `../SPEC.md` §7 (modes/intent), §8 (decision logic) and §13 (internal structure). This is the implementer-level reference for the **control plane**: the intent layer, target-SoC math, deadline planning, the Plan domain object, plan validation, and the runtime state machine. The spec carries the decisions and key tables; this doc carries the detail.
 
+> **Deployment context ([#182](https://github.com/jeroenniesen/EnergyManagementSystem/issues/182)).** **Current:** Mac Mini (Apple Silicon) · LaunchAgent · **direct-device** battery writes via `ems/sources/battery.py` → Indevolt OpenData RPC — HA / `entity_map` / MQTT discovery are **not** on the live path ([B-18 / #107](https://github.com/jeroenniesen/EnergyManagementSystem/issues/107)). **Target:** Pi (+ HA hub) or Jetson (ML sidecar). Control invariants below (mode-switching, one writer, fail-safe `AUTO`, dry-run floors) apply on **both** paths — they do not depend on HA.
+
 ## 1. The cardinal contract — Indevolt owns P1 zeroing
 
 The Indevolt, when paired with the P1/CT meter, runs its **own fast self-consumption controller** that modulates power to keep net grid flow near zero ("P1 zeroing"). The EMS is a **mode/intent switcher, not a power-tracking loop** — it must **never fight that controller**:
