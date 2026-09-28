@@ -77,7 +77,7 @@ from ems.device_health import build_device_health
 from ems.diagnostics import build_diagnostics, overall_status
 from ems.domain import BatteryIntent, IntelligenceState, PhysicalMode
 from ems.economics import EconomicSnapshot
-from ems.energy_flow import build_daily_flows
+from ems.energy_flow import build_daily_flows, charge_kind
 from ems.ev_advisor import advise_charge_window
 from ems.finance import day_finance, price_rows_by_local_day, raw_rows_by_local_day
 from ems.freshness import FreshnessTracker
@@ -689,18 +689,6 @@ _INTENT_ACTION = {
 }
 
 
-def _charge_kind(battery_w: float, solar_w: float, load_w: float) -> str:
-    """Label a CHARGING slot by its DOMINANT source — the same solar-first split the Sankey uses
-    (energy_flow._allocate_slot). The grid only counts as charging the battery to the extent the
-    grid covered the charge AFTER solar served the house; if more of the charge came from the roof
-    than the grid, it's a SOLAR charge. This is what stops a sunny slot — battery filling from solar
-    while the house draws a little grid for its own load — from being mislabelled "grid charge"."""
-    charge = -battery_w
-    solar_to_batt = min(charge, max(0.0, solar_w - load_w))  # solar left after the house
-    grid_to_batt = charge - solar_to_batt
-    return "grid_charge" if grid_to_batt > solar_to_batt else "solar_charge"
-
-
 def _action_from_intent(intent: object, battery_w: float) -> str:
     action = _INTENT_ACTION.get(str(intent), "self_consume")
     # In self-consumption the battery only ever charges from solar surplus (the vendor never
@@ -714,9 +702,9 @@ def _action_from_intent(intent: object, battery_w: float) -> str:
 def _action_from_battery(battery_w: float, solar_w: float, load_w: float) -> str:
     # What the battery actually did this slot (+discharge / −charge); a small dead-band = idle.
     # A charge is split by its dominant source (grid import vs solar surplus), NOT by whether the
-    # grid happened to be importing for the house at the time.
+    # grid happened to be importing for the house at the time. Shared with the Sankey (B-27).
     if battery_w < -50.0:
-        return _charge_kind(battery_w, solar_w, load_w)
+        return charge_kind(battery_w, solar_w, load_w)
     if battery_w > 50.0:
         return "discharge"
     return "idle"
