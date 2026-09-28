@@ -28,12 +28,29 @@ type BackupState = {
   last_backup_ts: string | null;
   last_backup_ok: boolean | null;
 };
+type ControlLoopCounters = {
+  cycles: number;
+  cycle_latency_ms_last: number | null;
+  cycle_latency_ms_avg: number | null;
+  stale_sensor_cycles: number;
+  http_retries: number;
+  mode_applies: number;
+  validator_rejects: number;
+  outcomes?: {
+    idempotent?: number;
+    dry_run?: number;
+    fail_safe?: number;
+    applied?: number;
+  };
+  last_outcome: string | null;
+};
 type Diag = {
   overall: "ok" | "warn" | "fail";
   checks: Check[];
   readiness?: Readiness;
   storage?: { backup?: BackupState | null } | null;
   recorder?: { clamped_samples: number } | null;
+  control_loop?: ControlLoopCounters | null;
 };
 type IncidentRollup = {
   total: number;
@@ -614,6 +631,32 @@ export function SystemView({
               <span className="health-ops-label">Clamped samples</span>
               <span className="health-ops-value">
                 {diag.recorder ? diag.recorder.clamped_samples : "—"}
+              </span>
+            </li>
+            <li className="health-ops-row" data-testid="health-control-loop">
+              <span className="health-ops-label">Control loop (since boot)</span>
+              <span className="health-ops-value">
+                {diag.control_loop
+                  ? (() => {
+                      const c = diag.control_loop;
+                      const last =
+                        c.cycle_latency_ms_last != null
+                          ? `${Math.round(c.cycle_latency_ms_last)} ms`
+                          : "—";
+                      const o = c.outcomes ?? {};
+                      return (
+                        `${c.cycles} cycles · last ${last}` +
+                        ` · applies ${c.mode_applies}` +
+                        ` · rejects ${c.validator_rejects}` +
+                        ` · HTTP retries ${c.http_retries}` +
+                        ` · stale cycles ${c.stale_sensor_cycles}` +
+                        ` · outcomes idempotent/${o.idempotent ?? 0}` +
+                        ` dry_run/${o.dry_run ?? 0}` +
+                        ` fail_safe/${o.fail_safe ?? 0}` +
+                        ` applied/${o.applied ?? 0}`
+                      );
+                    })()
+                  : "—"}
               </span>
             </li>
           </ul>

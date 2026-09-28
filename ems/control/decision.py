@@ -16,6 +16,7 @@ from ems.application.protocols import (
     PlanProvider,
     PlanValidator,
 )
+from ems.control.loop_counters import LOOP_COUNTERS
 from ems.control.override import as_plan
 from ems.control.safety import SafetyValidator
 from ems.domain import BatteryIntent
@@ -117,6 +118,7 @@ class ControlDecisionEngine:
             )
             val = self._safety.validate(plan, now)
             if not val.ok and intent is not BatteryIntent.ALLOW_SELF_CONSUMPTION:
+                LOOP_COUNTERS.incr_validator_rejects()
                 top = next((f for f in val.findings if f.severity == "unsafe"), None)
                 note = top.message if top is not None else "override failed validation"
                 intent = BatteryIntent.ALLOW_SELF_CONSUMPTION
@@ -158,6 +160,7 @@ class ControlDecisionEngine:
                         return None, None, False, None, None, None, None
                     val = self._safety.validate(pp[2], now)
                     if not val.ok:
+                        LOOP_COUNTERS.incr_validator_rejects()
                         top = next((f for f in val.findings if f.severity == "unsafe"), None)
                         note = top.message if top is not None else "plan failed validation"
                         cur = None

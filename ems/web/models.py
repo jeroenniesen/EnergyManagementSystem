@@ -315,6 +315,27 @@ class PerformanceMetrics(APIResponseModel):
     last_overruns: list[BudgetOverrun] | None = None
 
 
+class ControlLoopOutcomes(APIResponseModel):
+    idempotent: int | None = None
+    dry_run: int | None = None
+    fail_safe: int | None = None
+    applied: int | None = None
+
+
+class ControlLoopCounters(APIResponseModel):
+    """Since-boot soak counters (#179) — diagnostics/logs only, not Prometheus."""
+
+    cycles: int | None = None
+    cycle_latency_ms_last: float | None = None
+    cycle_latency_ms_avg: float | None = None
+    stale_sensor_cycles: int | None = None
+    http_retries: int | None = None
+    mode_applies: int | None = None
+    validator_rejects: int | None = None
+    outcomes: ControlLoopOutcomes | None = None
+    last_outcome: str | None = None
+
+
 class DiagnosticsResponse(APIResponseModel):
     overall: CheckStatus | None = None
     checks: list[DiagnosticCheck] | None = None
@@ -323,3 +344,4 @@ class DiagnosticsResponse(APIResponseModel):
     storage: StorageHealth | None = None
     recorder: RecorderHealth | None = None
     perf: PerformanceMetrics | None = None
+    control_loop: ControlLoopCounters | None = None
