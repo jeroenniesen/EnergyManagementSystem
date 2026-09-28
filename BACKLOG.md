@@ -37,7 +37,7 @@ observability (B-24); numbered date-less sprints, Issues+Milestones on GitHub.
 | **E-01 · Honest CO₂ picture** | ✅ B-02 gas | | | ✅ B-10 |
 | **E-02 · Measured money** | ✅ B-03a history | ⬜ B-03b tile | ⬜ B-13 rollups | |
 | **E-03 · Family reach: iOS** | | ✅ B-04a ✅ B-04b | ⬜ B-04c | |
-| **E-04 · 2027-ready planner** | ✅ B-30 valley fix | | ✅ B-05 economics | B-15 B-16 B-22 |
+| **E-04 · 2027-ready planner** | ✅ B-30 valley fix | ⬜ B-90 B-91 B-92 B-93 | ✅ B-05 economics | ✅ B-15 ✅ B-16 ✅ B-22 |
 | **E-05 · Quiet motivation** | ⬜ B-06 trends | | ⬜ B-08 markers | B-07 |
 | **E-06 · Trust & guidance** | | ⬜ B-31 marker | | B-09 B-12 B-21 |
 | **E-07 · Consumer-ready commercial product** | 🟨 B-55 settings menu | | | B-32 B-33 B-34 B-35 🟨 B-36 B-37 🟨 B-38 B-39 ✅ B-40 B-41 B-56 B-57 B-58 B-59 B-60 B-61 B-62 ✅ B-89 |
@@ -117,6 +117,22 @@ SPEC §8.12 (`planner/recovery.py`): charge-completion checks and a catch-up pat
 ### B-22 · Projected-SoC gating in the plan validator — Feature · S–M
 SPEC §8.5's "later step": use the SoC projection (already computed for display) to reject/adjust plans pre-apply.
 **Track:** ✅ done — [PR #25](https://github.com/jeroenniesen/EnergyManagementSystem/pull/25). Validator check #6: grid-charge plans projecting >5pp short of their own target are rejected with the numbers named (complete-data only; reserve check #5 already existed). planner.validate_projection default ON.
+
+### B-90 · B-22/B-16 partial accept (no AUTO death spiral) — Bug · M · P1
+Mac Mini SQLite (2026-09-28): 350/357 recovery rejects = `projection_short_of_target`; live decision holds AUTO at 5% SoC. When projection is short of target, lower `target_soc` to reachable (B-16 honest-partial), keep charging on cheapest remaining slots, mark `warn` not `unsafe`. Right-size overnight target to required kWh / first peak (SPEC §7). Do **not** disable `validate_projection` permanently.
+**Track:** Sprint 2 · E-04 · [GitHub #162](https://github.com/jeroenniesen/EnergyManagementSystem/issues/162) · ⬜
+
+### B-91 · Stop idle→charge re-command thrash + protect switch budget — Bug · M · P1
+Live: 09-26 ~26 charge `applied` writes in ~25 min (`from_mode=idle`); 09-27 overnight flaps then `cap_reached` blocks cheap `grid_charge_to_target`. Treat already-charging / unconfirmed charge as HOLD/idempotent (no new switch count); strengthen commitment reservation so routine flaps cannot burn the budget before the valley. SPEC §2/§6.5/§8.11. Do **not** only raise `max_mode_switches_per_day`.
+**Track:** Sprint 2 · E-04 · [GitHub #163](https://github.com/jeroenniesen/EnergyManagementSystem/issues/163) · ⬜
+
+### B-92 · Cluster max_charge_w vs capability (4800 vs 2400) — Bug · S · P1
+Settings/profile 4800 W (2×2400) but capability/validator saw 2400 → recovery reject 2026-09-28 (“slot requests 4800 W…”). Probe must report cluster total (or clamp plan power to `min(settings, capability)`). SPEC open item “Cluster max charge/discharge read”. Related longer path: #112 / #116 (do not block this live fix).
+**Track:** Sprint 2 · E-04 · [GitHub #164](https://github.com/jeroenniesen/EnergyManagementSystem/issues/164) · ⬜
+
+### B-93 · Anti-flap at SoC floor (hold_reserve↔AUTO) — Bug · S · P1
+224 `hold_reserve` samples with SoC≤10% (14d); 09-27 night 8 idle↔auto switches at 5% SoC burned budget before the cheap window. If SoC ≤ reserve: stay in one safe mode; no intent oscillation. Distinct from B-91 (charge re-command).
+**Track:** Sprint 2 · E-04 · [GitHub #165](https://github.com/jeroenniesen/EnergyManagementSystem/issues/165) · ⬜
 
 ## EPIC E-05 · Quiet motivation
 *Goal: progress you can watch — trends, recaps, and honest wins, without confetti.* (Motivation)
