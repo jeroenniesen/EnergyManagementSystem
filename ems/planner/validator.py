@@ -11,12 +11,12 @@ capability + projection, and the same dwell/switch limits the controller enforce
 """
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import timedelta
 
 from ems.domain import BatteryIntent, CapabilityReport
 from ems.planner.projection import ProjectedSlot
-from ems.planner.schedule import Plan
+from ems.planner.schedule import Plan, PlanSlot
 
 # Severity order: unsafe (control-blocking) > warn (degraded, still usable) > (none).
 _UNSAFE, _WARN = "unsafe", "warn"
@@ -48,6 +48,91 @@ class PlanValidation:
                 "findings": [f.to_dict() for f in self.findings]}
 
 
+def effective_power_limit_w(
+    *,
+    capability_w: float | None,
+    settings_w: float | None,
+) -> float | None:
+    """Capability-driven charge/discharge ceiling: min(settings, capability) when both known.
+
+    Prefer the live CapabilityReport over a hardcoded wattage so Gen-2 (or any device whose
+    real rating exceeds the SolidFlex OpenData 2400 W/tower default) is not silently capped
+    below what the probe advertised (#164)."""
+    if capability_w is None and settings_w is None:
+        return None
+    if capability_w is None:
+        return float(settings_w) if settings_w is not None else None
+    if settings_w is None:
+        return float(capability_w)
+    return float(min(capability_w, settings_w))
+
+
+def clamp_plan_power(
+    plan: Plan,
+    *,
+    capability: CapabilityReport | None,
+    settings_max_charge_w: float | None = None,
+    settings_max_discharge_w: float | None = None,
+) -> tuple[Plan, tuple[Finding, ...]]:
+    """Clamp each slot's `power_w` to min(settings, capability) **before** §8.11 validate (#164).
+
+    Stops a healthy catch-up/recovery plan sized at settings (e.g. 4800 W for 2×2400) from being
+    rejected or warned solely because CapabilityReport under-reported the cluster total. Returns
+    the (possibly replaced) plan plus warn findings when settings and capability diverge or a
+    slot was clamped. Pure — no I/O."""
+    findings: list[Finding] = []
+    if capability is None:
+        return plan, ()
+
+    charge_limit = effective_power_limit_w(
+        capability_w=capability.max_charge_w, settings_w=settings_max_charge_w,
+    )
+    discharge_limit = effective_power_limit_w(
+        capability_w=capability.max_discharge_w, settings_w=settings_max_discharge_w,
+    )
+
+    # Debugability: surface settings vs capability divergence even when no slot needs a clamp.
+    if (settings_max_charge_w is not None
+            and abs(float(settings_max_charge_w) - capability.max_charge_w) > 1e-6):
+        findings.append(Finding(
+            _WARN, "settings_capability_power_mismatch",
+            f"Settings max_charge_w={settings_max_charge_w:.0f} W diverges from capability "
+            f"{capability.max_charge_w:.0f} W — clamping plan power to "
+            f"{charge_limit:.0f} W (the lower figure).",
+        ))
+    elif (settings_max_discharge_w is not None
+          and abs(float(settings_max_discharge_w) - capability.max_discharge_w) > 1e-6):
+        findings.append(Finding(
+            _WARN, "settings_capability_power_mismatch",
+            f"Settings max_discharge_w={settings_max_discharge_w:.0f} W diverges from capability "
+            f"{capability.max_discharge_w:.0f} W — clamping plan power to "
+            f"{discharge_limit:.0f} W (the lower figure).",
+        ))
+
+    new_slots: list[PlanSlot] = []
+    changed = False
+    for s in plan.slots:
+        if s.power_w is None:
+            new_slots.append(s)
+            continue
+        limit = charge_limit if s.intent in _CHARGE_INTENTS else discharge_limit
+        if limit is None or s.power_w <= limit + 1e-6:
+            new_slots.append(s)
+            continue
+        new_slots.append(replace(s, power_w=float(limit)))
+        changed = True
+        if not any(f.code == "power_clamped_to_capability" for f in findings):
+            findings.append(Finding(
+                _WARN, "power_clamped_to_capability",
+                f"A slot requested {s.power_w:.0f} W; clamped to {limit:.0f} W "
+                f"(min of settings and capability) before validate.",
+            ))
+
+    if not changed:
+        return plan, tuple(findings)
+    return replace(plan, slots=tuple(new_slots)), tuple(findings)
+
+
 def validate_plan(
     plan: Plan,
     *,
@@ -64,6 +149,8 @@ def validate_plan(
     grid_limit_w: float | None = None,
     expected_load_w: float | None = None,
     load_w_by: dict | None = None,
+    settings_max_charge_w: float | None = None,
+    settings_max_discharge_w: float | None = None,
 ) -> PlanValidation:
     """Validate `plan` against the current conditions. Returns a PlanValidation; `unsafe` ⇒ the
     controller must hold AUTO. Each check appends at most one representative finding (not one per
@@ -75,7 +162,10 @@ def validate_plan(
 
     `grid_limit_w` (SPEC §8.11 / #133) is the main-fuse ceiling. When set (>0), any grid-charge
     slot whose charge power + expected house load exceeds it is `unsafe`. Prefer per-slot
-    `load_w_by`; fall back to scalar `expected_load_w`. Zero/None disables the check."""
+    `load_w_by`; fall back to scalar `expected_load_w`. Zero/None disables the check.
+
+    Optional `settings_max_*_w` enrich the power-exceeds finding when settings and capability
+    diverge (#164) — callers that already ran `clamp_plan_power` normally won't hit that check."""
     findings: list[Finding] = []
     slots = plan.slots[:slot_horizon]
 
@@ -109,16 +199,27 @@ def validate_plan(
 
     # 3. Power must not exceed what the battery can do (when capability is known). Check against the
     #    DIRECTION-appropriate limit — a charge slot vs max_charge_w, otherwise max_discharge_w.
+    #    Prefer min(settings, capability) when settings are supplied so a divergent pair is named
+    #    in the finding (#164) rather than a bare capability number.
     if capability is not None:
         for s in slots:
             if s.power_w is None:
                 continue
-            limit = (capability.max_charge_w if s.intent in _CHARGE_INTENTS
-                     else capability.max_discharge_w)
+            cap_limit = (capability.max_charge_w if s.intent in _CHARGE_INTENTS
+                         else capability.max_discharge_w)
+            settings_w = (settings_max_charge_w if s.intent in _CHARGE_INTENTS
+                          else settings_max_discharge_w)
+            limit = effective_power_limit_w(capability_w=cap_limit, settings_w=settings_w)
+            if limit is None:
+                continue
             if s.power_w > limit + 1e-6:
-                findings.append(Finding(_WARN, "power_exceeds_capability",
-                                        f"A slot requests {s.power_w:.0f} W, above the battery's "
-                                        f"{limit:.0f} W rated power."))
+                msg = (f"A slot requests {s.power_w:.0f} W, above the battery's "
+                       f"{limit:.0f} W rated power.")
+                if (settings_w is not None
+                        and abs(float(settings_w) - float(cap_limit)) > 1e-6):
+                    msg += (f" Settings advertise {float(settings_w):.0f} W vs capability "
+                            f"{cap_limit:.0f} W.")
+                findings.append(Finding(_WARN, "power_exceeds_capability", msg))
                 break
 
     # 4. Excessive mode switches / sub-dwell churn — protect the battery from thrash.
@@ -187,7 +288,10 @@ def validate_plan(
         for s in charge:
             charge_w = s.power_w
             if charge_w is None and capability is not None:
-                charge_w = capability.max_charge_w
+                charge_w = effective_power_limit_w(
+                    capability_w=capability.max_charge_w,
+                    settings_w=settings_max_charge_w,
+                )
             if charge_w is None:
                 continue
             if load_w_by is not None and s.start in load_w_by:

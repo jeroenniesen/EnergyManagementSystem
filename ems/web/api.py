@@ -108,7 +108,7 @@ from ems.planner.recovery import check_charge_completion, recover_if_needed
 from ems.planner.rule_based import plan_rule_based
 from ems.planner.strategy import HysteresisState
 from ems.planner.summer import sunset_after
-from ems.planner.validator import PlanValidation, validate_plan
+from ems.planner.validator import PlanValidation, clamp_plan_power, validate_plan
 from ems.readiness import Readiness, compute_readiness, home_state
 from ems.reporting import (
     apply_year_totals,
@@ -1777,18 +1777,40 @@ def create_app(
 
     def _validate_plan_obj(plan, now: datetime) -> PlanValidation:
         """Run the §8.11 hard validator over a given plan (pure besides the cached SoC, capability
-        and projection). `unsafe` ⇒ the controller must hold AUTO."""
-        load_by = _load_by([s.start for s in plan.slots]) if plan.slots else {}
-        return validate_plan(
-            plan, soc_pct=_current_soc(now), data_quality=_data_quality(now),
+        and projection). `unsafe` ⇒ the controller must hold AUTO.
+
+        #164: clamp slot power to min(settings, capability) *before* validate so a catch-up plan
+        sized at the cluster settings total is not rejected solely because CapabilityReport
+        under-reported (settings 4800 vs capability 2400). Divergence stays visible as a warn.
+        """
+        cap = _capability_box["cap"]
+        settings_charge = float(settings_cache["battery.max_charge_w"])
+        settings_discharge = float(settings_cache["battery.max_discharge_w"])
+        aligned, clamp_findings = clamp_plan_power(
+            plan, capability=cap,
+            settings_max_charge_w=settings_charge,
+            settings_max_discharge_w=settings_discharge,
+        )
+        load_by = _load_by([s.start for s in aligned.slots]) if aligned.slots else {}
+        # Project the *clamped* plan so reachability matches the power we will actually command.
+        val = validate_plan(
+            aligned, soc_pct=_current_soc(now), data_quality=_data_quality(now),
             min_reserve_soc=settings_cache["battery.min_reserve_soc"],
             max_switches_per_day=int(settings_cache["control.max_switches_per_day"]),
             min_dwell=timedelta(seconds=settings_cache["control.min_dwell_seconds"]),
-            capability=_capability_box["cap"], projection=_projection_sync(plan, now),
+            capability=cap, projection=_projection_sync(aligned, now),
             validate_projection=bool(settings_cache["planner.validate_projection"]),
             grid_limit_w=float(settings_cache["control.grid_limit_w"]),
             load_w_by=load_by,
+            settings_max_charge_w=settings_charge,
+            settings_max_discharge_w=settings_discharge,
         )
+        if not clamp_findings:
+            return val
+        merged = tuple(clamp_findings) + tuple(val.findings)
+        status = ("unsafe" if any(f.severity == "unsafe" for f in merged)
+                  else "warn" if merged else "valid")
+        return PlanValidation(status=status, findings=merged)
 
     # --- The control brain (B-46): the plan-to-act path, intent resolution, car-session lifecycle
     # and the single per-cycle write. Stage 2 also folds the coalesced live reads, config builders

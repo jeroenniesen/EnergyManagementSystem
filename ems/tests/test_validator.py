@@ -71,6 +71,65 @@ def test_power_above_capability_warns():
     assert any(f.code == "power_exceeds_capability" for f in v.findings) and v.ok is True
 
 
+def test_power_exceeds_names_settings_vs_capability_divergence():
+    """#164: when settings and capability disagree, the finding names both figures."""
+    under = CapabilityReport(
+        services=("charge", "discharge"), energy_mode_options=(),
+        has_standby=True, has_grid_charge_switch=True, p1_paired=True,
+        max_charge_w=2400.0, max_discharge_w=2400.0,
+    )
+    v = validate_plan(
+        _plan(_charge(0, power=4800.0)),
+        **_ctx(capability=under),
+        settings_max_charge_w=4800.0,
+    )
+    f = next(f for f in v.findings if f.code == "power_exceeds_capability")
+    assert "4800" in f.message and "2400" in f.message
+    assert "Settings advertise" in f.message
+
+
+def test_clamp_plan_power_before_validate_avoids_reject_path():
+    """#164: clamp to min(settings, capability) so a 4800 W catch-up slot survives validate."""
+    from ems.planner.validator import clamp_plan_power
+
+    under = CapabilityReport(
+        services=("charge", "discharge"), energy_mode_options=(),
+        has_standby=True, has_grid_charge_switch=True, p1_paired=True,
+        max_charge_w=2400.0, max_discharge_w=2400.0,
+    )
+    plan = _plan(_charge(0, power=4800.0))
+    aligned, clamp_findings = clamp_plan_power(
+        plan, capability=under, settings_max_charge_w=4800.0, settings_max_discharge_w=4800.0,
+    )
+    assert aligned.slots[0].power_w == 2400.0
+    assert any(f.code == "settings_capability_power_mismatch" for f in clamp_findings)
+    assert any(f.code == "power_clamped_to_capability" for f in clamp_findings)
+    v = validate_plan(
+        aligned, **_ctx(capability=under),
+        settings_max_charge_w=4800.0, settings_max_discharge_w=4800.0,
+    )
+    assert not any(f.code == "power_exceeds_capability" for f in v.findings)
+    assert v.ok is True
+
+
+def test_clamp_uses_higher_capability_when_gen2_exceeds_settings_floor():
+    """#164: capability-driven clamp must not hardcode 2400 when capability is higher."""
+    from ems.planner.validator import clamp_plan_power, effective_power_limit_w
+
+    assert effective_power_limit_w(capability_w=6000.0, settings_w=5000.0) == 5000.0
+    assert effective_power_limit_w(capability_w=6000.0, settings_w=7000.0) == 6000.0
+    gen2 = CapabilityReport(
+        services=("charge", "discharge"), energy_mode_options=(),
+        has_standby=True, has_grid_charge_switch=True, p1_paired=True,
+        max_charge_w=6000.0, max_discharge_w=6000.0,
+    )
+    plan = _plan(_charge(0, power=7000.0))
+    aligned, _ = clamp_plan_power(
+        plan, capability=gen2, settings_max_charge_w=7000.0, settings_max_discharge_w=7000.0,
+    )
+    assert aligned.slots[0].power_w == 6000.0
+
+
 def test_projection_below_reserve_is_unsafe():
     proj = [ProjectedSlot(T0, BatteryIntent.DISCHARGE_FOR_LOAD, 5.0, 0, 0, 0, 0)]
     v = validate_plan(_plan(_self(0)), projection=proj, **_ctx())

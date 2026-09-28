@@ -252,6 +252,23 @@ def test_live_indevolt_driver_uses_configured_cluster_power_limits():
     assert driver.discharge_power_w == 3600
 
 
+def test_unarmed_driver_still_carries_cluster_extra_ips():
+    """#164: watch-only / unarmed wiring must still probe cluster-total power (n IPs)."""
+    eff = effective_settings({
+        "connection.use_live_devices": True,
+        "meters.p1_ip": "192.0.2.10",
+        "battery.indevolt_ip": "192.0.2.20",
+        "battery.indevolt_ips_extra": "192.0.2.21",
+        "battery.max_charge_w": 4800.0,
+        "battery.max_discharge_w": 4800.0,
+        "control.operational": False,
+    })
+    *_, driver, _dev_mode, dry_run = build_wiring(eff, AMS, force_dry_run=True)
+    assert dry_run is True
+    assert driver.armed is False
+    assert driver.ips == ["192.0.2.20", "192.0.2.21"]
+
+
 def test_operational_without_a_battery_stays_dry_run():
     # Operational only means something with a real battery to command — else stay safe.
     eff = effective_settings({
