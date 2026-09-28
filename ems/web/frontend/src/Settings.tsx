@@ -959,7 +959,9 @@ export function Settings({
               <p className="override-consequence" data-testid="restart-consequence">
                 This restarts the EMS to apply the changes. It only restarts when the battery is
                 already in its safe AUTO mode; if the system is mid-adjustment it&apos;ll ask you
-                to try again in a moment.
+                to try again in a moment. If a cheap-charge window is active, a restart hands the
+                battery back to AUTO and can abort that charge — prefer waiting until the window
+                ends when flipping Watch only / live control.
               </p>
               <p className="override-reassure">
                 The app comes back on its own in a few seconds.

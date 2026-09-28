@@ -5,6 +5,11 @@ import asyncio
 from zoneinfo import ZoneInfo
 
 from ems.config import Config
+from ems.connection import (
+    SETTINGS_FORCED_DRY_RUN_REASON,
+    effective_connection,
+    watch_only_block_reason,
+)
 from ems.storage.settings import SettingsStore
 
 
@@ -32,20 +37,26 @@ def test_build_app_passes_cfg_dry_run_into_build_wiring(monkeypatch, tmp_path):
         retention_days=90,
     )
     # Seed operational + live battery + live Tibber so a dropped force_dry_run would wrongly arm.
+    # Settings watch-only OFF so only config.yaml is forcing (#136 / #171).
     _seed_settings(str(db), {
         "connection.use_live_devices": True,
         "meters.p1_ip": "192.0.2.10",
         "battery.indevolt_ip": "192.0.2.20",
         "control.operational": True,
+        "control.dry_run": False,
         "connection.use_live_prices": True,
         "prices.tibber_token": "tok",
     })
 
     seen: dict[str, object] = {}
 
-    def wrap(eff, tz, cache_store=None, *, force_dry_run=True):
+    def wrap(eff, tz, cache_store=None, *, force_dry_run=True, config_dry_run=None):
         seen["force_dry_run"] = force_dry_run
-        return real_build_wiring(eff, tz, cache_store=cache_store, force_dry_run=force_dry_run)
+        seen["config_dry_run"] = config_dry_run
+        return real_build_wiring(
+            eff, tz, cache_store=cache_store,
+            force_dry_run=force_dry_run, config_dry_run=config_dry_run,
+        )
 
     monkeypatch.setattr(main_mod, "load_config", lambda _path: cfg)
     monkeypatch.setattr(main_mod, "build_wiring", wrap)
@@ -53,6 +64,7 @@ def test_build_app_passes_cfg_dry_run_into_build_wiring(monkeypatch, tmp_path):
     app, loaded = main_mod.build_app()
     assert loaded.dry_run is True
     assert seen.get("force_dry_run") is True  # dropping the kwarg would fail this
+    assert seen.get("config_dry_run") is True
     assert app.state.application_context.runtime_state["dry_run"] is True
 
 
@@ -75,22 +87,73 @@ def test_build_app_passes_dry_run_false_when_config_allows_live(monkeypatch, tmp
         "meters.p1_ip": "192.0.2.10",
         "battery.indevolt_ip": "192.0.2.20",
         "control.operational": True,
+        "control.dry_run": False,  # Settings watch-only OFF (#171)
         "connection.use_live_prices": True,
         "prices.tibber_token": "tok",
     })
 
     seen: dict[str, object] = {}
 
-    def wrap(eff, tz, cache_store=None, *, force_dry_run=True):
+    def wrap(eff, tz, cache_store=None, *, force_dry_run=True, config_dry_run=None):
         seen["force_dry_run"] = force_dry_run
-        return real_build_wiring(eff, tz, cache_store=cache_store, force_dry_run=force_dry_run)
+        seen["config_dry_run"] = config_dry_run
+        return real_build_wiring(
+            eff, tz, cache_store=cache_store,
+            force_dry_run=force_dry_run, config_dry_run=config_dry_run,
+        )
 
     monkeypatch.setattr(main_mod, "load_config", lambda _path: cfg)
     monkeypatch.setattr(main_mod, "build_wiring", wrap)
 
     app, _loaded = main_mod.build_app()
     assert seen.get("force_dry_run") is False
+    assert seen.get("config_dry_run") is False
     assert app.state.application_context.runtime_state["dry_run"] is False
+
+
+def test_build_app_settings_watch_only_forces_dry_run_when_config_allows(monkeypatch, tmp_path):
+    """#171: Settings control.dry_run True keeps watch-only even when yaml dry_run is false."""
+    from ems import main as main_mod
+    from ems.connection import build_wiring as real_build_wiring
+
+    db = tmp_path / "ems.sqlite"
+    cfg = Config(
+        timezone="Europe/Amsterdam",
+        dev_mode="live",
+        dry_run=False,
+        web_port=8080,
+        db_path=str(db),
+        cycle_seconds=300.0,
+        retention_days=90,
+    )
+    _seed_settings(str(db), {
+        "connection.use_live_devices": True,
+        "meters.p1_ip": "192.0.2.10",
+        "battery.indevolt_ip": "192.0.2.20",
+        "control.operational": True,
+        "control.dry_run": True,  # Settings watch-only ON
+        "connection.use_live_prices": True,
+        "prices.tibber_token": "tok",
+    })
+
+    seen: dict[str, object] = {}
+
+    def wrap(eff, tz, cache_store=None, *, force_dry_run=True, config_dry_run=None):
+        seen["force_dry_run"] = force_dry_run
+        return real_build_wiring(
+            eff, tz, cache_store=cache_store,
+            force_dry_run=force_dry_run, config_dry_run=config_dry_run,
+        )
+
+    monkeypatch.setattr(main_mod, "load_config", lambda _path: cfg)
+    monkeypatch.setattr(main_mod, "build_wiring", wrap)
+
+    app, _loaded = main_mod.build_app()
+    assert seen.get("force_dry_run") is True
+    assert app.state.application_context.runtime_state["dry_run"] is True
+    # Reason string is closed over into create_app; recompute the same way main does.
+    eff = effective_connection(str(db), cfg)
+    assert watch_only_block_reason(eff, config_dry_run=False) == SETTINGS_FORCED_DRY_RUN_REASON
 
 
 def test_load_config_mock_forces_dry_run_even_when_yaml_false(tmp_path):

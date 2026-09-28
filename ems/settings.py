@@ -241,11 +241,24 @@ SETTINGS_SCHEMA: tuple[SettingsField, ...] = (
         visible_when=(("solar.forecast_provider", "solcast"),),
     ),
     # --- Control safety limits (pushed onto the mode controller live, SPEC §6.5) ---
+    # Runtime watch-only toggle (#171). Default True = fail-safe. Seeded from config.yaml on
+    # first boot so a production host with yaml dry_run:false keeps live arming after upgrade.
+    # config.yaml dry_run / mock|replay still always wins (#136) — see resolve_force_dry_run.
+    SettingsField(
+        "control.dry_run", "Watch only (no battery writes)", "bool", True, "control",
+        help="ON (safe default): log decisions only — the battery is never written. OFF: allow "
+        "live control when 'Let the system control the battery' is also ON, devices/prices are "
+        "live, and config.yaml is not forcing watch-only (dev.mode: live and control.dry_run: "
+        "false). Takes effect after Apply & restart — a restart while charging can hand the "
+        "battery back to AUTO and abort an active cheap-charge window.",
+        applies="restart",
+    ),
     SettingsField(
         "control.operational", "Let the system control the battery", "bool", False, "control",
         help="OFF (safe default): the system only shows what it would do — your battery is never "
         "changed. ON: the system actually switches the battery's mode, within all the safety "
-        "limits below. Takes effect after a restart.",
+        "limits below — but only when Watch only is OFF and config.yaml is not forcing "
+        "watch-only. Takes effect after Apply & restart.",
         applies="restart",
     ),
     SettingsField(

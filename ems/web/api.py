@@ -898,7 +898,7 @@ def _is_supervised() -> bool:
     return os.getenv("EMS_SUPERVISED", "").strip().lower() in _SUPERVISED_TRUTHY
 
 
-# The 12 restart-tagged settings (connection / meters / battery IPs / operational mode / carbon):
+# Restart-tagged settings (connection / meters / battery IPs / dry_run / operational / carbon / …):
 # read once at boot, so saving one is a no-op until the process restarts. Sorted for a stable
 # fingerprint. `restart_pending` compares the live values against a fingerprint captured AFTER the
 # persisted settings load (not the default cache), so it is true exactly when a restart would apply

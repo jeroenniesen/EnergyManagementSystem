@@ -17,7 +17,7 @@
 | **Check whether the current plan matches measured battery behaviour** | `GET /api/plan-verification` — read-only comparison of planned intent, target SoC, and latest measured SoC/power. |
 | **Interpret tariff warnings** | Review `tariff_warnings` in `/api/plan`, `/api/report`, or `/api/savings`; they identify missing or contradictory import/export fee assumptions. |
 | **Check control-health incidents** | System page → *Control health* panel, or `GET /api/incidents` (rollup of command failures, cluster mismatches, fallbacks, reverts over the window). |
-| **Enter/exit dry-run** | `control.dry_run: true` in `config.yaml` (logs decisions, no writes) → restart `ems`. The UI shows a large `DRY-RUN`/`LIVE` badge. |
+| **Enter/exit dry-run (watch-only)** | **Settings → Control & safety → "Watch only (no battery writes)"** (and/or "Let the system control the battery"). Save → **Apply & restart**. No daily `config.yaml` edit. The UI shows a large `DRY-RUN`/`LIVE` (Watching only / Controlling) badge. **config.yaml `control.dry_run: true`** (or `dev.mode: mock`/`replay`) still always forces watch-only over the UI (#136). **Caution:** a restart in operational mode runs `shutdown_restore` → AUTO and can abort an active cheap-charge window — prefer flipping after the window ends. |
 | **Run the capability probe again** | Restart `ems` (probe runs at startup) or hit the probe endpoint; review the logged service/entity surface. |
 | **Run locally on a Mac/laptop for testing** | `docker compose -f docker-compose.dev.yml up` with `dev.mode: mock` — no HA/battery/GPU, `dry_run` forced; dashboard at `http://localhost:8080`. For UI work, `npm run dev` (Vite HMR) proxying to the backend. See `SPEC §11.6`. |
 
