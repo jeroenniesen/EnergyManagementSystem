@@ -67,9 +67,12 @@ from ems.control.service import (
     _tower_family,  # noqa: F401 — re-exported for the closure-testing tests
 )
 from ems.detectors import (
+    DeviceUnreachableState,
+    device_unreachable,
     ev_plug_in_reminder,
     evening_peak_risk,
     low_solar_tomorrow,
+    open_incidents_from_notifications,
     price_opportunity,
     typical_daily_solar_kwh,
 )
@@ -284,20 +287,32 @@ async def _run_detectors(
     needed_soc: float | None = None,
     confidence_level: str | None = None,
     price_slots_tomorrow: list[Any] | None = None,
+    device_states: dict[str, DeviceUnreachableState] | None = None,
+    battery_last_fresh_at: datetime | None = None,
+    p1_last_fresh_at: datetime | None = None,
+    battery_stand: str | None = None,
+    battery_stand_confirmed: bool = True,
+    p1_stand: str | None = None,
+    unreachable_threshold: timedelta | None = None,
+    dry_run: bool = True,
 ) -> None:
-    """Forecast-driven notifications (BACKLOG B-75): run the four pure detectors in
-    `ems.detectors` against already-gathered PLAIN data and hand any that trigger to
-    `notifier.send()`. Mirrors `_run_backup`'s shape — a plain, directly-testable function, NOT a
-    closure — so all the live gathering (price_source/solar_forecast/store reads, the car-plan
-    internals, the charge-need/projection for peak risk) happens in the caller
-    (`create_app`'s `_run_detector_cycle`) and this stays pure glue, easy to unit-test with canned
-    inputs the same way `test_backup.py` exercises `_run_backup`.
+    """Forecast-driven notifications (BACKLOG B-75) + device-unreachable (issue #128): run the
+    pure detectors in `ems.detectors` against already-gathered PLAIN data and hand any that
+    trigger to `notifier.send()`. Mirrors `_run_backup`'s shape — a plain, directly-testable
+    function, NOT a closure — so all the live gathering (price_source/solar_forecast/store reads,
+    the car-plan internals, the charge-need/projection for peak risk, freshness last-seen) happens
+    in the caller (`create_app`'s `_run_detector_cycle`) and this stays pure glue, easy to
+    unit-test with canned inputs the same way `test_backup.py` exercises `_run_backup`.
 
     Each detector call is individually wrapped: one detector raising (bad/unexpected data, a
     coding slip) must never block the others or escape to the caller — the same fail-safe
     convention as every other optional step in this codebase (`ems/sources/carbon.py`,
     `Notifier.send` itself, `_run_backup` above). A no-op when `store`/`notifier` isn't
-    configured — there is nowhere to persist a notification."""
+    configured — there is nowhere to persist a notification.
+
+    `device_unreachable` is notify-only: it never opens a battery write path. Per-device
+    `DeviceUnreachableState` is owned by the caller so `incident_since` survives across cycles
+    (and across restart via `open_incidents_from_notifications`)."""
     if store is None or notifier is None:
         return
     checks: list[tuple[str, Any, tuple]] = [
@@ -315,6 +330,32 @@ async def _run_detectors(
                 await notifier.send(**result)
         except Exception:
             _log.warning("%s detector failed (non-fatal)", name, exc_info=True)
+
+    if device_states is None:
+        return
+    thr = unreachable_threshold  # None → detector default (15 min)
+    device_inputs = (
+        ("battery", battery_last_fresh_at, battery_stand, battery_stand_confirmed),
+        ("p1", p1_last_fresh_at, p1_stand, True),
+    )
+    for device, last_fresh, stand, confirmed in device_inputs:
+        try:
+            st = device_states.setdefault(device, DeviceUnreachableState())
+            kwargs: dict[str, Any] = {
+                "now": now,
+                "state": st,
+                "last_known_stand": stand,
+                "stand_confirmed": confirmed,
+                "dry_run": dry_run,
+            }
+            if thr is not None:
+                kwargs["threshold"] = thr
+            result = device_unreachable(device, last_fresh, **kwargs)
+            if result is not None:
+                await notifier.send(**result)
+        except Exception:
+            _log.warning("device_unreachable(%s) detector failed (non-fatal)", device,
+                         exc_info=True)
 
 
 # One recovery per committed window (its deadline) per day; the KV key IS the deadline so it is
@@ -1005,6 +1046,10 @@ def create_app(
     _canonical_forecast_state: dict[str, Any] = {
         "last_success_date": None, "last_attempt_iso": None, "ok": None,
     }
+    # Issue #128: per-device unreachable incident state (P1 + battery). Survives restart by
+    # rehydrating from the notifications table on the first detector cycle — no new table.
+    _device_unreachable_state: dict[str, DeviceUnreachableState] = {}
+    _device_unreachable_restored = False
     # Store-health escalation (B-49): in-memory per-day dedupe for the `store_unhealthy` alert. Kept
     # in memory (not the store's dedupe) so it stays robust even when the store is the dead thing.
     _store_unhealthy_state: dict[str, Any] = {"alerted_date": None}
@@ -1927,18 +1972,32 @@ def create_app(
 
     async def _run_detector_cycle(now: datetime) -> None:
         """Gathers already-available PLAIN data (price slots, solar P50, the car-charging plan,
-        charge-need/projection for tonight's peak, 14 days of solar history) and hands it to the
-        pure detectors via the standalone `_run_detectors` (BACKLOG B-75). Runs from `_notify_loop`
-        on the same 5-minute cadence as the operational control loop, but DELIBERATELY
-        INDEPENDENTLY of dry_run/controller: `_control_loop` only ever runs in live operational
-        mode (see its spawn condition in `lifespan`), yet forecast notifications are just as
-        useful during dry-run acceptance (CLAUDE.md "dry-run before every live strategy") and on
-        an install with no battery configured at all — so this gets its own tiny loop instead of
-        piggybacking on the battery-write path."""
+        charge-need/projection for tonight's peak, 14 days of solar history, P1/battery last-seen)
+        and hands it to the pure detectors via the standalone `_run_detectors` (BACKLOG B-75 +
+        issue #128). Runs from `_notify_loop` on the same 5-minute cadence as the operational
+        control loop, but DELIBERATELY INDEPENDENTLY of dry_run/controller: `_control_loop` only
+        ever runs in live operational mode (see its spawn condition in `lifespan`), yet forecast
+        and device-down notifications are just as useful during dry-run acceptance (CLAUDE.md
+        "dry-run before every live strategy") and on an install with no battery configured at all
+        — so this gets its own tiny loop instead of piggybacking on the battery-write path.
+        Device-unreachable is notify-only; it never opens a battery write."""
+        nonlocal _device_unreachable_restored
         if store is None or notifier is None:
             return
         now_local = now.astimezone(site_tz)
         tomorrow = now_local.date() + timedelta(days=1)
+
+        if not _device_unreachable_restored:
+            try:
+                rows = await store.notifications_between(
+                    "2020-01-01T00:00:00+00:00", "2100-01-01T00:00:00+00:00", limit=500,
+                )
+                restored = open_incidents_from_notifications(rows)
+                for device, st in restored.items():
+                    _device_unreachable_state[device] = st
+            except Exception:
+                _log.warning("device-unreachable restore failed (non-fatal)", exc_info=True)
+            _device_unreachable_restored = True
 
         p50_tomorrow: dict[datetime, float] = {}
         if solar_forecast is not None:
@@ -1989,12 +2048,41 @@ def create_app(
                 if p.start.astimezone(site_tz).date() == tomorrow
             ]
 
+        # Issue #128: last fresh measurement per device from the freshness tracker (#79).
+        battery_last = freshness.last_update("battery") if freshness is not None else None
+        p1_last = freshness.last_update("grid") if freshness is not None else None
+        battery_stand: str | None = None
+        battery_stand_confirmed = True
+        p1_stand: str | None = None
+        if controller is not None:
+            battery_stand_confirmed = not bool(controller.last_command_unconfirmed)
+            mode = controller.last_confirmed_action
+            if mode is not None and battery_stand_confirmed:
+                battery_stand = {
+                    PhysicalMode.AUTO: "zelfverbruik",
+                    PhysicalMode.CHARGE: "laden",
+                    PhysicalMode.DISCHARGE: "ontladen",
+                    PhysicalMode.IDLE: "stilstand",
+                }.get(mode, mode.value)
+        try:
+            sample = _current_sample(now)
+            if sample is not None and getattr(sample, "grid_power_w", None) is not None:
+                p1_stand = f"{int(round(sample.grid_power_w))} W"
+        except Exception:
+            pass
+        thr_min = int(settings_cache.get("notify.device_unreachable_minutes") or 15)
+        thr = timedelta(minutes=max(5, thr_min))
+
         await _run_detectors(
             store, notifier, now_local,
             p50_by_slot_tomorrow=p50_tomorrow, typical_daily_kwh=typical_daily_kwh,
             car_plan=car_plan_resp.get("plan"), car_charging_now=car_charging_now,
             projected_soc_at_peak=projected_soc_at_peak, needed_soc=needed_soc,
             confidence_level=confidence_level, price_slots_tomorrow=price_slots_tomorrow,
+            device_states=_device_unreachable_state,
+            battery_last_fresh_at=battery_last, p1_last_fresh_at=p1_last,
+            battery_stand=battery_stand, battery_stand_confirmed=battery_stand_confirmed,
+            p1_stand=p1_stand, unreachable_threshold=thr, dry_run=dry_run,
         )
 
     async def _run_recovery_cycle(now: datetime) -> None:

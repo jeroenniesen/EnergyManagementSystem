@@ -1,13 +1,19 @@
-"""BACKLOG B-75 wiring: `_run_detectors(store, notifier, now, **gathered)` runs the four pure
+"""BACKLOG B-75 wiring: `_run_detectors(store, notifier, now, **gathered)` runs the pure
 detectors (`ems/detectors.py`) against already-gathered plain data and fires any that trigger
 through the real `Notifier` — mirrors `test_backup.py`'s pattern for `_run_backup`. Covers: one
 detector raising must not block the others or propagate (fail-safe, CLAUDE.md); dedupe is proven
 end-to-end through the real HistoryStore + Notifier (reusing test_notify.py's patterns); and the
-store/notifier-absent no-op."""
+store/notifier-absent no-op. Issue #128: device-unreachable dedupe + `incident_since` survive an
+EMS restart via the notifications table."""
 import asyncio
-from datetime import timedelta
+from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
+from ems.detectors import (
+    STABLE_RECOVER_AFTER,
+    DeviceUnreachableState,
+    open_incidents_from_notifications,
+)
 from ems.notify import Notifier
 from ems.sources.prices import PriceSlot
 from ems.storage.history import HistoryStore
@@ -104,3 +110,68 @@ def test_run_detectors_fires_multiple_independent_detectors_in_one_pass(tmp_path
 
     keys = {r["key"] for r in _notifications(store)}
     assert keys == {"low_solar_tomorrow", "price_opportunity", "peak_risk"}
+
+
+# ---------------------------------------------------------------------------------------------
+# device_unreachable wiring (issue #128) — real HistoryStore, restart survival
+# ---------------------------------------------------------------------------------------------
+
+def test_device_unreachable_dedupe_and_incident_since_survive_restart(tmp_path):
+    """Down push lands in HistoryStore; a fresh in-memory state rebuilt from notifications keeps
+    the same incident_since so a second cycle after "restart" dedupes instead of re-pushing."""
+    store = _store(tmp_path)
+    notifier = Notifier(store, {"notify.ntfy_url": "", "notify.ntfy_topic": ""})
+    last = datetime(2026, 7, 12, 10, 0, tzinfo=AMS)
+    now_down = last + timedelta(minutes=15)
+    states: dict[str, DeviceUnreachableState] = {}
+
+    asyncio.run(_run_detectors(
+        store, notifier, now_down,
+        device_states=states,
+        battery_last_fresh_at=last,
+        battery_stand="zelfverbruik",
+        battery_stand_confirmed=True,
+        dry_run=True,
+    ))
+    rows = _notifications(store)
+    assert len(rows) == 1
+    assert rows[0]["key"] == "battery_down"
+    incident_iso = states["battery"].incident_since.isoformat()
+    assert rows[0]["dedupe_key"] == f"battery_down:{incident_iso}"
+
+    # Simulate EMS restart: discard in-memory state, rebuild from the notifications table.
+    restored = open_incidents_from_notifications(rows)
+    assert restored["battery"].incident_since.isoformat() == incident_iso
+    assert restored["battery"].down_push_sent is True
+
+    # Same outage still ongoing — second cycle must NOT insert another down row (dedupe).
+    asyncio.run(_run_detectors(
+        store, notifier, now_down + timedelta(minutes=5),
+        device_states=restored,
+        battery_last_fresh_at=last,
+        battery_stand="zelfverbruik",
+        dry_run=True,
+    ))
+    assert len(_notifications(store)) == 1
+
+    # After 10 min stable contact, one recovery push; incident clears.
+    t_contact = now_down + timedelta(minutes=6)
+    asyncio.run(_run_detectors(
+        store, notifier, t_contact,
+        device_states=restored,
+        battery_last_fresh_at=t_contact,
+        dry_run=True,
+    ))
+    asyncio.run(_run_detectors(
+        store, notifier, t_contact + STABLE_RECOVER_AFTER,
+        device_states=restored,
+        battery_last_fresh_at=t_contact + STABLE_RECOVER_AFTER,
+        dry_run=True,
+    ))
+    keys = [r["key"] for r in _notifications(store)]
+    assert keys == ["battery_down", "battery_up"]
+    assert _notifications(store)[1]["body"] == "Batterij weer bereikbaar, EMS kijkt weer mee."
+    assert restored["battery"].incident_since is None
+
+    # After recovery, a fresh restart sees no open incident.
+    assert open_incidents_from_notifications(_notifications(store)) == {}

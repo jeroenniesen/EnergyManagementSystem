@@ -538,6 +538,14 @@ SETTINGS_SCHEMA: tuple[SettingsField, ...] = (
         "the exact same topic in the ntfy app. Pick a long random topic — anyone who knows it "
         "can read these notifications on ntfy.sh.",
     ),
+    SettingsField(
+        "notify.device_unreachable_minutes", "Device-down push after (minutes)", "int", 15,
+        "notify",
+        help="Send a push when the P1 meter or battery has had no fresh reading for this many "
+        "minutes (issue #128). Default 15. Notify-only — never writes to the battery. Recovery "
+        "push waits for 10 minutes of stable contact so short flaps don't spam.",
+        min=5, max=120, step=1, unit="min",
+    ),
     # --- Car (v2 EV control is out of scope — advisory only, docs/v2-ev-control.md) ---
     SettingsField(
         "ev.advice_enabled", "Show best-time-to-charge card", "bool", False, "ev",
