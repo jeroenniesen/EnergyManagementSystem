@@ -595,8 +595,22 @@ SETTINGS_SCHEMA: tuple[SettingsField, ...] = (
     ),
     SettingsField(
         "ev.charge_kwh", "Typical energy to add", "number", 20.0, "ev",
-        help="Roughly how much energy a typical top-up adds.",
+        help="Roughly how much energy a typical top-up adds. Also used as the winter-planner "
+        "EV-day size when the EV day hint or today's schedule day is on (#181 — advice only).",
         min=1.0, max=100.0, step=1.0, unit="kWh",
+    ),
+    SettingsField(
+        "ev.day_hint", "EV day hint (winter sizing)", "bool", False, "ev",
+        help="Mark today as an EV-import day so the winter planner sizes battery top-up / peak "
+        "readiness for ~ev.charge_kwh of car load (#181). Advice/forecast only — never controls "
+        "the charger. Off + no schedule/history ⇒ fail-soft (no EV addend).",
+    ),
+    SettingsField(
+        "ev.expected_day_kwh", "Expected EV import today", "number", 0.0, "ev",
+        help="Optional manual override for today's expected car import (kWh). When > 0, the "
+        "winter planner uses this instead of the day hint / schedule / same-weekday history "
+        "(#181). 0 = auto. Advice only — no charger writes. Does not unblock B-17 / #105.",
+        min=0.0, max=100.0, step=1.0, unit="kWh", advanced=True,
     ),
     SettingsField(
         "ev.charger_kw", "Charger power", "number", 11.0, "ev",

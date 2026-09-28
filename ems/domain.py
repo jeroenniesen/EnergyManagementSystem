@@ -45,6 +45,9 @@ class PlannerInputSnapshot:
     forecast_digest: str | None = None
     load_digest: str | None = None
     baseline: str | None = None
+    # Winter EV exogenous (#181 / SPEC §4.5): expected car import re-added for sizing, or None/0
+    # when unknown (fail-soft). Advice/forecast only — does not unlock charger control (B-17).
+    expected_ev_kwh: float | None = None
     capability_report_ref: str | None = None
     config_hash: str | None = None
 

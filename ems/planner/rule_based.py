@@ -15,6 +15,7 @@ from datetime import datetime
 from ems.domain import BatteryIntent
 from ems.planner import economics
 from ems.planner.charge_need import stored_kwh_per_slot
+from ems.planner.ev_load import format_ev_load_reason
 from ems.planner.schedule import SLOT, Plan, PlanSlot
 from ems.sources.prices import PriceSlot
 
@@ -63,12 +64,16 @@ def plan_rule_based(
     usable_kwh: float = 10.0,
     reserve_soc_pct: float = 10.0,
     max_charge_w: float = 4000.0,
+    expected_ev_kwh: float = 0.0,
 ) -> Plan:
     """Winter arbitrage: charge the cheap window, discharge the profitable peaks. When a load
     profile + battery sizing are supplied it is **demand-sized** (energy review P1.2): the cheap-
     window charge is sized to the energy the expensive (discharge) window will actually need above
     the reserve already in the pack, and the charge slots carry a target SoC + deadline. Without a
     load profile it falls back to the original fixed-count behaviour (no target).
+
+    `expected_ev_kwh` (#181 / SPEC §4.5) is an optional exogenous EV-day addend — advice/forecast
+    only; missing/0 is fail-soft (byte-identical to pre-#181 sizing). Never commands a charger.
 
     With `cfg.negative_price_soak` (opt-in, default OFF) every sub-zero-priced slot is additionally
     turned into a charge slot afterwards — you are *paid* to consume — even outside a normal cheap
@@ -77,6 +82,7 @@ def plan_rule_based(
     plan = _plan_winter(
         prices, now, cfg, soc_pct=soc_pct, load_w_by=load_w_by, usable_kwh=usable_kwh,
         reserve_soc_pct=reserve_soc_pct, max_charge_w=max_charge_w,
+        expected_ev_kwh=expected_ev_kwh,
     )
     if cfg.negative_price_soak:
         plan = _soak_negative(plan, prices, cfg, max_charge_w=max_charge_w)
@@ -93,6 +99,7 @@ def _plan_winter(
     usable_kwh: float,
     reserve_soc_pct: float,
     max_charge_w: float,
+    expected_ev_kwh: float = 0.0,
 ) -> Plan:
     """The base winter arbitrage plan (no soak) — the original logic, unchanged."""
     horizon = [p for p in prices if p.start + SLOT > now][: cfg.horizon_slots]
@@ -125,17 +132,26 @@ def _plan_winter(
     floor = reserve_soc_pct if load_w_by is not None else None
     slot_stored_kwh = stored_kwh_per_slot(max_charge_w, cfg.round_trip_efficiency)
     per_slot_kwh = round(slot_stored_kwh, 3) if load_w_by is not None else None
+    # Exogenous EV (#181): AC kWh to fold into winter demand sizing when known. Clamped ≥ 0;
+    # ignored when there is no load profile (fixed-count path has no demand target).
+    ev_kwh = max(0.0, float(expected_ev_kwh or 0.0)) if load_w_by is not None else 0.0
+    ev_reason = format_ev_load_reason(ev_kwh) if ev_kwh > 1e-9 else ""
     if load_w_by is not None:
         # Demand-sized: the energy the expensive window needs from the battery, above what's already
         # stored over reserve. Size the cheap-window charge (pre-peak) to exactly that shortfall.
+        # On an EV day, re-add the separately known EV import (§4.5) so top-up / peak readiness is
+        # not surprised by 30+ kWh car import — still advice-only, never charger control.
         reserve_kwh = reserve_soc_pct / 100.0 * usable_kwh
         avail_now_kwh = max(0.0, soc_pct / 100.0 * usable_kwh - reserve_kwh)
         peak_load_kwh = sum(load_w_by.get(d, 0.0) for d in discharge_set) * _DH / 1000.0
         # Sizing to LOAD: if the peak window has no house load to serve, there's nothing to shave —
         # don't discharge for price alone (this system doesn't export). Treat as no-trade.
+        # EV-only days with zero house peak load still no-trade on discharge; EV addend alone does
+        # not invent a peak to shave (battery does not feed the car — car-guard §4.5).
         if peak_load_kwh <= 1e-9:
             return _all_auto(horizon, now, "no-trade: no house load in the expensive window")
-        shortfall_dc = max(0.0, peak_load_kwh / eta - avail_now_kwh)
+        demand_kwh = peak_load_kwh + ev_kwh
+        shortfall_dc = max(0.0, demand_kwh / eta - avail_now_kwh)
         slot_kwh = slot_stored_kwh
         n_charge = math.ceil(shortfall_dc / slot_kwh) if slot_kwh > 0 and shortfall_dc > 1e-9 else 0
         # Pool = every slot before the LAST profitable peak that is strictly worth buying — i.e.
@@ -175,9 +191,12 @@ def _plan_winter(
             # Deadline = the peak this charge actually feeds (the next discharge after it) — the
             # first peak may already be in the past when replanning mid-peak.
             next_peak = min(d for d in discharge_set if d > p.start)
+            charge_reason = f"charge: cheap window €{p.eur_per_kwh:.2f}/kWh"
+            if ev_reason:
+                charge_reason = f"{charge_reason}; {ev_reason}"
             out.append(PlanSlot(
                 p.start, BatteryIntent.GRID_CHARGE_TO_TARGET,
-                f"charge: cheap window €{p.eur_per_kwh:.2f}/kWh", target_soc=target_soc,
+                charge_reason, target_soc=target_soc,
                 target_kwh=per_slot_kwh,
                 power_w=(max_charge_w if load_w_by is not None else None),
                 floor_soc=floor, deadline=next_peak,
@@ -190,9 +209,13 @@ def _plan_winter(
         elif p.start in discharge_set:
             intent = BatteryIntent.DISCHARGE_FOR_LOAD
             reason = f"discharge: €{p.eur_per_kwh:.2f}/kWh > break-even €{breakeven:.2f}"
+            if ev_reason:
+                reason = f"{reason}; {ev_reason}"
         elif has_later_discharge and any(c < p.start for c in charge_set):
             intent = BatteryIntent.HOLD_RESERVE
             reason = f"hold cheap energy for the coming peak (now €{p.eur_per_kwh:.2f}/kWh)"
+            if ev_reason:
+                reason = f"{reason}; {ev_reason}"
         else:
             intent = BatteryIntent.ALLOW_SELF_CONSUMPTION
             reason = f"self-consumption (€{p.eur_per_kwh:.2f}/kWh)"

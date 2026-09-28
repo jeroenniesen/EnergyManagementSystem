@@ -19,6 +19,18 @@ Design: [`../docs/superpowers/specs/2026-07-12-ev-charging-design.md`](superpowe
 
 All of the above is **advisory only** — it recommends a plug-in window, never actuates a charger or the car, and shares no code with the battery writer (`ems/sources/battery.py`) or `ems/control/`; the existing car-guard (never discharge the home battery into the car, `../SPEC.md §4.5`) is untouched.
 
+### Winter EV exogenous sizing (#181) — advice-only bridge toward B-17
+
+Separately from the Car-card charge *advice*, the **winter battery planner** may treat a known EV-import day as an exogenous load addend (`ems/planner/ev_load.py` → `expected_ev_kwh` into `_plan_winter` demand sizing). Sources (fail-soft): manual `ev.expected_day_kwh` / `ev.day_hint`, schedule-enabled weekday, or same-weekday `daily_energy.ev_kwh` history. Slot reasons include `EV load expected ~X kWh`.
+
+This is an **advice/forecast bridge** so arbitrage is not surprised by 30+ kWh car import. It:
+
+- **does not** write to Tesla/OCPP/charger hardware,
+- **does not** unblock B-17 / #105 (charger control) or B-71 / #106 (peak-protect EV optimizer),
+- **does not** change the car-guard or the single battery writer.
+
+Until this v2 control spec is written, do not implement EV control — #181 stays on the advisory side of the seam.
+
 ### The v2 seam this leaves
 
 The planner's `slots` output (`start`, `kw`, `ac_kwh`, `for_deadline`, …) **is** the future control schedule: a charger driver would consume it behind the same intent→confirm pattern as the battery (single writer, dry-run first) once this spec exists (design doc, "v2 seam"). Everything below still needs to be worked out first — this stub is not yet that spec.

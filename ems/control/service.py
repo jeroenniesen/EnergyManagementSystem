@@ -368,6 +368,9 @@ class ControlContext:
     # Cached expected-load profile (learned async in _forward_projection) so the sync plan path can
     # feed the adaptive charger without its own DB read. None until the first projection runs.
     load_profile_box: dict[str, Any] = field(default_factory=lambda: {"profile": None})
+    # Cached daily_energy.ev_kwh rows for winter EV-exogenous sizing (#181). Warmed by
+    # refresh_ev_daily / _forward_projection; None ⇒ estimator fail-softs to 0 kWh.
+    ev_daily_box: dict[str, Any] = field(default_factory=lambda: {"rows": None, "at": None})
     # SAF-01: one synchronous generation fence owns outstanding-work truth AND the physical command
     # boundary. Async timeouts cannot release or overlap a live worker-thread device call.
     command_fence: BatteryCommandFence = field(default_factory=BatteryCommandFence)
@@ -706,6 +709,31 @@ class ControlService:
             return {s: fallback for s in starts}
         return {s: prof.expected_w(s) for s in starts}
 
+    def expected_ev_exogenous(self, now: datetime):
+        """Winter EV-day estimate (#181 / SPEC §4.5). Fail-soft to 0 kWh when history/settings
+        are missing. Advice/forecast only — never commands a charger."""
+        from ems.planner.ev_load import estimate_ev_exogenous_kwh
+
+        s = self._settings
+        try:
+            expected_day = float(s.get("ev.expected_day_kwh") or 0.0)
+        except (TypeError, ValueError):
+            expected_day = 0.0
+        try:
+            typical = float(s.get("ev.charge_kwh") or 20.0)
+        except (TypeError, ValueError):
+            typical = 20.0
+        rows = self._ctx.ev_daily_box.get("rows")
+        return estimate_ev_exogenous_kwh(
+            now=now,
+            tz=self._site_tz,
+            expected_day_kwh=expected_day if expected_day > 0.0 else None,
+            day_hint=bool(s.get("ev.day_hint")),
+            typical_charge_kwh=typical,
+            schedule_raw=s.get("ev.schedule"),
+            daily_ev_rows=rows if isinstance(rows, list) else None,
+        )
+
     def strategy_inputs(self, now: datetime):
         """(surplus_kwh, price_spread_eur) over the next ~24h, for the energy-condition `auto`
         strategy choice. Defensive — any failure yields None so it falls back to the season."""
@@ -789,6 +817,12 @@ class ControlService:
             return None
         forecast = self._solar_forecast.slots() if self._solar_forecast is not None else []
         load_by = self._load_by([p.start for p in prices])
+        # Winter EV exogenous (#181): re-add expected car import when known; summer ignores it
+        # inside build_plan. Fail-soft (0) when no hint/schedule/history.
+        ev_est = self.expected_ev_exogenous(now)
+        expected_ev_kwh = (
+            float(ev_est.expected_kwh) if strategy == "winter" else 0.0
+        )
         fc = self._solar_forecast
         forecast_provider = (
             getattr(fc, "source_label", None) or getattr(fc, "provider", None)
@@ -806,6 +840,7 @@ class ControlService:
             summer_cfg=self._summer_cfg(soc),
             load_w_by=load_by,
             adaptive_cfg=self._adaptive_cfg(),
+            expected_ev_kwh=expected_ev_kwh,
             planner_mode=mode,
             price_provenance=type(self._price_source).__name__,
             forecast_provider=forecast_provider,
@@ -1567,6 +1602,22 @@ class ControlService:
             _log.debug("car-mode observation read failed; keeping last good (non-fatal)",
                        exc_info=True)
 
+    async def refresh_ev_daily(self, now: datetime) -> None:
+        """Warm `ctx.ev_daily_box` with recent `daily_energy` rows for winter EV-exogenous sizing
+        (#181). Best-effort / fail-soft: a failed read keeps the last good rows; an empty box makes
+        the estimator return 0 kWh (no EV addend). Never touches the battery or a charger."""
+        if self._store is None:
+            return
+        try:
+            local = now.astimezone(self._site_tz).date()
+            start = (local - timedelta(days=28)).isoformat()
+            end = (local + timedelta(days=1)).isoformat()
+            self._ctx.ev_daily_box["rows"] = await self._store.daily_energy_between(start, end)
+            self._ctx.ev_daily_box["at"] = now
+        except Exception:
+            _log.debug("EV daily_energy read failed; keeping last good (non-fatal)",
+                       exc_info=True)
+
     # --- Battery-command generation fence (SAF-01; extends PR #51 restart registry) -------------
     # Reserve a slot SYNCHRONOUSLY at submission (before spawning the to_thread worker) and release
     # it ONLY from the worker's real completion — never on a wait_for timeout. All three write paths
@@ -2125,6 +2176,7 @@ class ControlService:
             async with self._ctx.control_lock:
                 now = self._clock.now_utc()
                 await self.refresh_car_obs(now)  # warm house-load prediction before the (sync) tick
+                await self.refresh_ev_daily(now)  # warm EV-day history for winter sizing (#181)
                 if cycle_token is None:
                     # Single-admission: reserve the cycle slot SYNCHRONOUSLY before spawning the
                     # worker. If a prior tick worker is still outstanding (e.g. it timed out and

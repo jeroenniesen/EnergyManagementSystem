@@ -212,6 +212,7 @@ def build_plan(
     summer_cfg: SummerConfig,
     load_w_by: dict[datetime, float] | None = None,
     adaptive_cfg: AdaptiveConfig | None = None,
+    expected_ev_kwh: float = 0.0,
 ) -> Plan:
     """Dispatch to the chosen strategy's planner. `strategy` is already resolved (not 'auto').
 
@@ -220,7 +221,10 @@ def build_plan(
     planner. Winter uses the arbitrage planner, which — when a load profile + battery sizing are
     supplied — sizes the grid top-up to the evening peak load above reserve and carries target SoC +
     deadline (energy review P1.2: no longer price-only), keeping its distinct charge-cheap/
-    discharge-peaks character so the season choice still changes the plan."""
+    discharge-peaks character so the season choice still changes the plan.
+
+    `expected_ev_kwh` (#181) is winter-only exogenous EV load (SPEC §4.5 re-add); summer ignores it.
+    Fail-soft when 0 / missing — never charger control."""
     if strategy == "summer":
         if adaptive_cfg is not None and load_w_by is not None:
             plan = plan_adaptive(prices, forecast or [], now, soc_pct=soc_pct,
@@ -231,9 +235,9 @@ def build_plan(
         plan = plan_rule_based(
             prices, now, winter_cfg, soc_pct=soc_pct, load_w_by=load_w_by,
             usable_kwh=adaptive_cfg.usable_kwh, reserve_soc_pct=adaptive_cfg.reserve_soc_pct,
-            max_charge_w=adaptive_cfg.max_charge_w,
+            max_charge_w=adaptive_cfg.max_charge_w, expected_ev_kwh=expected_ev_kwh,
         )
     else:
-        plan = plan_rule_based(prices, now, winter_cfg)
+        plan = plan_rule_based(prices, now, winter_cfg, expected_ev_kwh=expected_ev_kwh)
     # The resolved strategy is authoritative on the returned plan (whichever planner ran).
     return replace(plan, strategy=strategy)

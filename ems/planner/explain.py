@@ -96,7 +96,19 @@ def _summary(slots, price_by: dict[datetime, float]) -> str:
     sc = counts.get(BatteryIntent.ALLOW_SELF_CONSUMPTION, 0)
     if sc:
         parts.append(f"self-consume {sc}×15m")
-    return "Next 24h — " + ", ".join(parts) + "." if parts else "Next 24h — self-consumption."
+    summary = "Next 24h — " + ", ".join(parts) + "." if parts else "Next 24h — self-consumption."
+    # Surface winter EV-day sizing (#181) when any slot already carries the deterministic reason.
+    for s in slots:
+        reason = getattr(s, "reason", "") or ""
+        marker = "EV load expected ~"
+        if marker in reason:
+            # Keep the fragment as written by the winter planner (includes the kWh number).
+            start = reason.index(marker)
+            frag = reason[start:].split(";")[0].strip().rstrip(".")
+            if frag and frag not in summary:
+                summary = summary.rstrip(".") + f" ({frag})."
+            break
+    return summary
 
 
 def plan_metrics(plan: Plan, prices: list[PriceSlot]) -> dict:
