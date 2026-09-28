@@ -50,12 +50,12 @@ def test_build_app_passes_cfg_dry_run_into_build_wiring(monkeypatch, tmp_path):
 
     seen: dict[str, object] = {}
 
-    def wrap(eff, tz, cache_store=None, *, force_dry_run=True, config_dry_run=None):
+    def wrap(eff, tz, cache_store=None, *, force_dry_run=True, config_dry_run=None, **kw):
         seen["force_dry_run"] = force_dry_run
         seen["config_dry_run"] = config_dry_run
         return real_build_wiring(
             eff, tz, cache_store=cache_store,
-            force_dry_run=force_dry_run, config_dry_run=config_dry_run,
+            force_dry_run=force_dry_run, config_dry_run=config_dry_run, **kw,
         )
 
     monkeypatch.setattr(main_mod, "load_config", lambda _path: cfg)
@@ -94,12 +94,12 @@ def test_build_app_passes_dry_run_false_when_config_allows_live(monkeypatch, tmp
 
     seen: dict[str, object] = {}
 
-    def wrap(eff, tz, cache_store=None, *, force_dry_run=True, config_dry_run=None):
+    def wrap(eff, tz, cache_store=None, *, force_dry_run=True, config_dry_run=None, **kw):
         seen["force_dry_run"] = force_dry_run
         seen["config_dry_run"] = config_dry_run
         return real_build_wiring(
             eff, tz, cache_store=cache_store,
-            force_dry_run=force_dry_run, config_dry_run=config_dry_run,
+            force_dry_run=force_dry_run, config_dry_run=config_dry_run, **kw,
         )
 
     monkeypatch.setattr(main_mod, "load_config", lambda _path: cfg)
@@ -138,11 +138,11 @@ def test_build_app_settings_watch_only_forces_dry_run_when_config_allows(monkeyp
 
     seen: dict[str, object] = {}
 
-    def wrap(eff, tz, cache_store=None, *, force_dry_run=True, config_dry_run=None):
+    def wrap(eff, tz, cache_store=None, *, force_dry_run=True, config_dry_run=None, **kw):
         seen["force_dry_run"] = force_dry_run
         return real_build_wiring(
             eff, tz, cache_store=cache_store,
-            force_dry_run=force_dry_run, config_dry_run=config_dry_run,
+            force_dry_run=force_dry_run, config_dry_run=config_dry_run, **kw,
         )
 
     monkeypatch.setattr(main_mod, "load_config", lambda _path: cfg)

@@ -17,6 +17,7 @@ from ems.connection import (
 )
 from ems.control.mode_controller import ModeController
 from ems.freshness import FreshnessTracker
+from ems.http_client import HttpRuntime
 from ems.lifecycle import Lifecycle
 from ems.logging_setup import configure_logging
 from ems.sense import SIGNALS, Recorder
@@ -61,10 +62,14 @@ def build_app():
     # wins over Settings (#136); missing Settings value ⇒ watch-only (#171 fail-safe).
     eff = effective_connection(str(db_path), cfg)
     force_dry_run = resolve_force_dry_run(eff, config_dry_run=cfg.dry_run)
+    # Shared sync httpx client for all outbound LAN/cloud I/O (Phase 1). Passed into wiring and
+    # create_app; lifespan installs it as the process default and closes it on teardown.
+    http_runtime = HttpRuntime()
     source, price_source, solar_forecast, battery_endpoint, controller_driver, dev_mode, dry_run = (
         build_wiring(
             eff, tz, cache_store=cache_store,
             force_dry_run=force_dry_run, config_dry_run=cfg.dry_run,
+            http=http_runtime,
         )
     )
     dry_run_block_reason = watch_only_block_reason(eff, config_dry_run=cfg.dry_run)
@@ -76,7 +81,7 @@ def build_app():
         freshness.register("forecast")
     # Roadmap F3 (Insights reporting only — never touches control): static flat factor by default,
     # or the live ElectricityMaps signal when configured with a key. See build_carbon_source.
-    carbon_source = build_carbon_source(eff)
+    carbon_source = build_carbon_source(eff, http=http_runtime)
     recorder = Recorder(source, store, freshness, cycle_seconds=cfg.cycle_seconds,
                         price_source=price_source, solar_forecast=solar_forecast,
                         carbon_source=carbon_source)
@@ -116,6 +121,7 @@ def build_app():
         history_backup_keep=cfg.backup_keep,
         web_auth_token=os.environ.get("EMS_WEB_TOKEN") or None,
         static_dir=_STATIC_DIR,
+        http_runtime=http_runtime,
     )
     return app, cfg
 

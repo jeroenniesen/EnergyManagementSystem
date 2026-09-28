@@ -353,21 +353,36 @@ class ExternalLlmExplainer:
 
 
 def make_openai_chat_post(base_url: str, api_key: str, *, timeout: float = 8.0) -> ChatPost:
-    """Build a `ChatPost` transport for any OpenAI-compatible chat endpoint (e.g. MiniMax). httpx is
-    imported lazily inside the call so the core/Pi path carries no hard network dependency (the same
-    pattern the live device/price sources use)."""
+    """Build a `ChatPost` transport for any OpenAI-compatible chat endpoint (e.g. MiniMax).
+
+    Uses the shared sync client when installed (``cloud`` profile connect budget); otherwise
+    one-shot httpx with a structured Timeout (connect=3 s) so a stalled TCP connect fails fast
+    instead of holding a worker thread for the full window — important on a single-threaded Pi."""
+    import httpx
+
+    from ems.http_client import get_default_runtime
+    from ems.http_client import request as http_request
+
     url = base_url.rstrip("/") + "/chat/completions"
+    # Prefer shared cloud profile connect (3 s); keep caller read budget as override when no
+    # runtime is installed, matching the previous ``Timeout(timeout, connect=3.0)`` shape.
+    _oneshot_timeout = httpx.Timeout(timeout, connect=3.0)
 
     def chat_post(messages: list[dict], params: dict) -> dict:
-        import httpx
-
-        resp = httpx.post(
-            url,
+        rt = get_default_runtime()
+        req_timeout: float | httpx.Timeout
+        if rt is not None:
+            base = rt.timeout("cloud")
+            req_timeout = httpx.Timeout(
+                connect=base.connect, read=timeout, write=timeout, pool=timeout,
+            )
+        else:
+            req_timeout = _oneshot_timeout
+        resp = http_request(
+            "POST", url, profile="cloud",
             headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
             json={"messages": messages, **params},
-            # Structured timeout so a stalled TCP connect fails fast (3 s) instead of holding a
-            # worker thread for the full window — important on a single-threaded Pi.
-            timeout=httpx.Timeout(timeout, connect=3.0),
+            timeout=req_timeout,
         )
         resp.raise_for_status()
         return resp.json()

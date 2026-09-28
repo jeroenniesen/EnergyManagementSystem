@@ -61,9 +61,9 @@ JsonGet = Callable[[str, dict], dict]
 
 
 def _default_get(url: str, headers: dict, timeout: float = _TIMEOUT_SECONDS) -> dict:
-    import httpx
+    from ems.http_client import request as http_request
 
-    r = httpx.get(url, headers=headers, timeout=timeout)
+    r = http_request("GET", url, profile="best_effort", headers=headers, timeout=timeout)
     r.raise_for_status()
     return r.json()
 

@@ -220,6 +220,8 @@ def build_solar_forecast(
     *,
     cache_store: object | None = None,
     use_live: bool | None = None,
+    http_get: object | None = None,
+    solcast_http_get: object | None = None,
 ) -> Any:
     """Construct the solar forecast source for the effective settings.
 
@@ -227,6 +229,9 @@ def build_solar_forecast(
     - Otherwise look up `solar.forecast_provider` in the registry (default `forecast_solar`).
     - Solcast always receives Forecast.Solar as its SPEC fallback; unknown providers fall back to
       Forecast.Solar as well (fail safe — never worse than the keyless path).
+
+    ``http_get`` is the Forecast.Solar ``(url) -> dict`` transport; ``solcast_http_get`` is the
+    Solcast ``(url, headers) -> dict`` transport (different arity — keep them separate).
     """
     live = bool(use_live) if use_live is not None else (
         bool(eff.get("connection.use_live_devices")) and bool(eff.get("meters.p1_ip"))
@@ -246,7 +251,7 @@ def build_solar_forecast(
     baseline_builder = get_builder(FORECAST_DOMAIN, "forecast_solar")
     if baseline_builder is None:  # pragma: no cover — registered at import
         raise RuntimeError("forecast_solar adapter missing from registry")
-    baseline = baseline_builder(eff, tz, cache_store=cache_store)
+    baseline = baseline_builder(eff, tz, cache_store=cache_store, http_get=http_get)
     if provider == "forecast_solar":
         return baseline
 
@@ -257,6 +262,10 @@ def build_solar_forecast(
 
     # Only the chosen provider's builder runs here (lazy). Baseline was built because Solcast
     # needs it as SPEC fallback / incomplete-config path — not because every registered builder
-    # is eagerly constructed.
-    built = builder(eff, tz, cache_store=cache_store, fallback=baseline)
+    # is eagerly constructed. Solcast uses a headers-aware GET; fall back to http_get only if
+    # the caller didn't supply a dedicated transport (tests often inject one shape).
+    built = builder(
+        eff, tz, cache_store=cache_store, fallback=baseline,
+        http_get=solcast_http_get if solcast_http_get is not None else http_get,
+    )
     return built if built is not None else baseline

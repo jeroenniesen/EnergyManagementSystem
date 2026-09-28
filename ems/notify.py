@@ -28,9 +28,12 @@ PostFn = Callable[[str, bytes, dict], None]
 
 
 def _default_post(url: str, data: bytes, headers: dict) -> None:
-    import httpx
+    from ems.http_client import request as http_request
 
-    r = httpx.post(url, content=data, headers=headers, timeout=_NTFY_TIMEOUT_SECONDS)
+    r = http_request(
+        "POST", url, profile="best_effort", content=data, headers=headers,
+        timeout=_NTFY_TIMEOUT_SECONDS,
+    )
     r.raise_for_status()
 
 

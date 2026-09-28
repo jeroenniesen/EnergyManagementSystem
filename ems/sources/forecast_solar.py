@@ -51,9 +51,9 @@ def _utcnow() -> datetime:
 
 
 def _httpx_get(url: str, timeout: float) -> dict:
-    import httpx
+    from ems.http_client import request as http_request
 
-    r = httpx.get(url, timeout=timeout)
+    r = http_request("GET", url, profile="cloud", timeout=timeout)
     r.raise_for_status()
     return r.json()
 
