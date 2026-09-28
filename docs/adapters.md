@@ -67,8 +67,36 @@ dry-run ⇒ **0** spy-transport calls. `armed` as a port member and the shutdown
 removal are owned by [#127](https://github.com/jeroenniesen/EnergyManagementSystem/issues/127)
 (already landed); this slice does not reopen them.
 
+## Adapter registry (#140)
+
+Generic registry: `ems/sources/registry.py`. Register with
+`register_adapter(domain, name, builder, metadata)`. Builders are **lazy** — registration only
+stores the callable; vendor imports and network clients run when that name is chosen.
+
+| Concern | Behaviour |
+|---|---|
+| Sync ports | `SolarForecastSource`, `PriceSource` — builder returns the adapter; callers use sync methods. |
+| Async ports | `CarbonSource`, `HaClient` — same `register_adapter` / `build_adapter` API; the registry never awaits. |
+| Unknown name | Fail-safe to a `fallback` baseline (same idea as `ems/planner/factory.py` / #70). |
+| Incomplete config | Builder returns `None` → same fallback path. |
+| Duplicate `(domain, name)` | Raises `ValueError`. |
+
+**First consumer — forecast.** `ems/sources/forecast_factory.py` keeps
+`@register_forecast_provider` / `build_solar_forecast` / `solar.forecast_provider`; the decorator
+delegates to `register_adapter("forecast", …)`. Solcast → Forecast.Solar → model and the live gate
+(`meters.p1_ip`) are unchanged. Prediction-ledger provenance still uses
+`type(solar_forecast).__name__` (`ForecastSolarSource` / `SolcastSource` /
+`MockSolarForecastSource`) — do not rename those classes lightly. Pre-#140 settings DBs need no
+migration: the stored `solar.forecast_provider` value resolves to the same adapter.
+
+CO₂ via the registry and enum options sourced from the registry are **not** in this slice
+([#113](https://github.com/jeroenniesen/EnergyManagementSystem/issues/113) slice b).
+
+Guard tests: `ems/tests/test_adapter_registry.py`, `ems/tests/test_forecast_factory.py`.
+
 ## Related
 
 - Ports: `ems/sources/ports.py` (re-exported from `ems/ports.py` and `ems/application/protocols.py`)
+- Registry: `ems/sources/registry.py` (forecast factory is the first user)
 - Composition root: `ems/connection.py::build_wiring` → `Wiring`
 - Design note: `docs/superpowers/specs/2026-07-29-source-ports-design.md`
