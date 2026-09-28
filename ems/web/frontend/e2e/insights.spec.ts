@@ -504,15 +504,18 @@ const SERIES = Array.from({ length: 96 }, (_, i) => {
 });
 
 const FINANCE = {
-  period: "day", label: "2026-06-28", partial: false,
+  period: "month", label: "June 2026", partial: false,
   days: [{
-    day: "2026-06-28", has_data: true, price_coverage: 1.0,
+    day: "2026-06-28", has_data: true, price_coverage: 1.0, sample_coverage: 1.0,
     grid_cost_eur: 1.42, battery_cost_eur: 0.11, baseline_cost_eur: 2.31, saved_eur: 0.78,
+    solar_self_use_eur: 0.20, avoided_expensive_eur: 0.50, battery_contribution_eur: 0.08,
     grid_import_kwh: 7.4, grid_export_kwh: 2.0,
   }],
   totals: {
     grid_cost_eur: 1.42, battery_cost_eur: 0.11, saved_eur: 0.78,
+    solar_self_use_eur: 0.20, avoided_expensive_eur: 0.50, battery_contribution_eur: 0.08,
     grid_import_kwh: 7.4, grid_export_kwh: 2.0, days_with_prices: 1, days_with_data: 1,
+    days_with_coverage_gap: 0, days_without_data: 0,
   },
 };
 
@@ -563,12 +566,61 @@ test.describe("Insights: behavior chart + money", () => {
     );
     await page.goto("/");
     await page.getByTestId("nav-insights").click();
+    await page.getByTestId("period-month").click();
     const fin = page.getByTestId("finance-section");
     await expect(fin).toBeVisible();
     await expect(page.getByTestId("fin-saved")).toContainText("€0.78");
     await expect(page.getByTestId("fin-grid")).toContainText("€1.42");
     await expect(page.getByTestId("fin-wear")).toContainText("€0.11");
     await expect(fin).toContainText("measured, after wear");
+    await expect(page.getByTestId("fin-baseline")).toContainText("without a battery");
+    await expect(page.getByTestId("fin-breakdown")).toBeVisible();
+    await expect(page.getByTestId("fin-solar-self-use")).toContainText("€0.20");
+    await expect(page.getByTestId("fin-avoided-expensive")).toContainText("€0.50");
+    await expect(page.getByTestId("fin-battery-contribution")).toContainText("€0.08");
+    await expect(page.getByTestId("fin-avoided-expensive")).toContainText("not bought at expensive");
+    await expect(fin).not.toContainText("vermeden piekprijs");
+    await expect(fin).not.toContainText("peak-price");
+  });
+
+  test("shows coverage gaps and never paints missing days as €0", async ({ page }) => {
+    const monthFin = {
+      period: "month", label: "June 2026", partial: false,
+      days: [
+        {
+          day: "2026-06-01", has_data: true, price_coverage: 0.5, sample_coverage: 0.8,
+          grid_cost_eur: 0.40, battery_cost_eur: 0.0, baseline_cost_eur: 0.50, saved_eur: 0.10,
+          solar_self_use_eur: 0.0, avoided_expensive_eur: 0.10, battery_contribution_eur: 0.0,
+          grid_import_kwh: 2, grid_export_kwh: 0,
+        },
+        {
+          day: "2026-06-02", has_data: false, price_coverage: 0, sample_coverage: 0,
+          grid_cost_eur: null, battery_cost_eur: null, baseline_cost_eur: null, saved_eur: null,
+          solar_self_use_eur: null, avoided_expensive_eur: null, battery_contribution_eur: null,
+          grid_import_kwh: 0, grid_export_kwh: 0,
+        },
+      ],
+      totals: {
+        grid_cost_eur: 0.40, battery_cost_eur: 0.0, saved_eur: 0.10,
+        solar_self_use_eur: 0.0, avoided_expensive_eur: 0.10, battery_contribution_eur: 0.0,
+        grid_import_kwh: 2, grid_export_kwh: 0, days_with_prices: 1, days_with_data: 1,
+        days_with_coverage_gap: 1, days_without_data: 1,
+      },
+    };
+    await page.route("**/api/report**", (route) =>
+      route.fulfill({ status: 200, contentType: "application/json",
+        body: JSON.stringify({ ...REPORT, series: SERIES }) }),
+    );
+    await page.route("**/api/finance**", (route) =>
+      route.fulfill({ status: 200, contentType: "application/json",
+        body: JSON.stringify(monthFin) }),
+    );
+    await page.goto("/");
+    await page.getByTestId("nav-insights").click();
+    await page.getByTestId("period-month").click();
+    await expect(page.getByTestId("fin-caveat")).toContainText("Coverage gap");
+    await expect(page.getByTestId("fin-caveat")).toContainText("gaps");
+    await expect(page.getByTestId("fin-bar-gap-2026-06-02")).toHaveCount(1);
   });
 
   test("is honest when no price history exists yet", async ({ page }) => {

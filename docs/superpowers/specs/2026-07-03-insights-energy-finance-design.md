@@ -50,6 +50,15 @@ totals}`. Reuses `resolve_window`. Effective settings supply degradation.
 **Frontend.** "Money" section in Insights: totals (saved / grid cost / battery wear), per-day saved
 bars for week/month/year, coverage caveat when price history is incomplete.
 
+### B-36 value proof (2026-09 follow-up)
+
+Week/month/year Insights money section also shows a **plain-language split** of `saved_eur`:
+`solar_self_use_eur` (own solar stored then used), `avoided_expensive_eur` (grid energy shifted off
+expensive hours), `battery_contribution_eur` (residual so the three sum to `saved_eur`). One
+baseline sentence: compared with the same home **without a battery**. Days without figures are
+chart **gaps** (never €0); a coverage caveat fires when `price_coverage` or `sample_coverage` is
+incomplete. DST local days (92 / 100 quarters) are covered in `test_finance.py`.
+
 ## Testing
 - `test_finance.py`: exact € on canned slots (import/export/battery), baseline identity, missing
   prices → coverage + None totals, empty day.

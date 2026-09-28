@@ -381,3 +381,96 @@ def test_grouped_rows_feed_day_finance_identically_to_the_unbatched_per_day_fetc
     batched = day_finance(raw_by_day["2026-06-28"], price_by_day["2026-06-28"],
                           day="2026-06-28", degradation_eur_per_kwh=0.05)
     assert batched.to_dict() == unbatched.to_dict()
+
+
+# --- B-36 / #80: savings breakdown + DST kWh sums -------------------------------------------------
+
+def test_arbitrage_breakdown_is_avoided_expensive_and_sums_to_saved():
+    # Cheap night charge + expensive evening discharge → "not bought at expensive hours".
+    rows = _rows([(1, 1, 4000.0, -4000.0), (19, 2, 0.0, 2000.0)])
+    prices = _prices({1: 0.10, 19: 0.40, 20: 0.40})
+    f = day_finance(rows, prices, day="2026-06-28", degradation_eur_per_kwh=0.05)
+    assert f.saved_eur is not None
+    assert abs(f.saved_eur - 1.00) < 1e-9
+    assert f.solar_self_use_eur is not None and f.avoided_expensive_eur is not None
+    assert f.battery_contribution_eur is not None
+    assert abs(f.solar_self_use_eur) < 1e-9
+    assert abs(f.avoided_expensive_eur - 1.00) < 1e-6
+    assert abs(
+        f.solar_self_use_eur + f.avoided_expensive_eur + f.battery_contribution_eur - f.saved_eur
+    ) < 1e-6
+
+
+def test_solar_self_use_breakdown_when_battery_stores_surplus():
+    # Midday: solar surplus charges the battery (grid ~0). Evening: battery covers load at a
+    # higher import price while export credit at charge time was lower (spot_minus_tax) so the
+    # solar-shift is worth real money — attributed to "your own solar used".
+    rows = []
+    # 12:00–13:00: solar 3000 W, load 1000 W, battery charge 2000 W, grid 0.
+    t0 = DAY + timedelta(hours=12)
+    for i in range(4):
+        ts = (t0 + timedelta(minutes=15 * i)).isoformat()
+        rows.append({"ts": ts, "grid_power_w": 0.0, "solar_power_w": 3000.0,
+                     "battery_power_w": -2000.0})
+    # 19:00–20:00: no solar, battery discharges 2000 W into the load, grid 0.
+    t1 = DAY + timedelta(hours=19)
+    for i in range(4):
+        ts = (t1 + timedelta(minutes=15 * i)).isoformat()
+        rows.append({"ts": ts, "grid_power_w": 0.0, "solar_power_w": 0.0,
+                     "battery_power_w": 2000.0})
+    prices = _prices({12: 0.20, 19: 0.40})
+    f = day_finance(
+        rows, prices, day="2026-06-28", degradation_eur_per_kwh=0.05,
+        export_price_model="spot_minus_tax", energy_tax_eur_per_kwh=0.13,
+    )
+    assert f.saved_eur is not None and f.solar_self_use_eur is not None
+    assert f.solar_self_use_eur > 0.0
+    assert abs(
+        f.solar_self_use_eur + f.avoided_expensive_eur + f.battery_contribution_eur - f.saved_eur
+    ) < 1e-6
+
+
+def _dst_day_rows(day, grid_w: float, price: float = 0.20):
+    """One sample + price slot per local quarter of a Europe/Amsterdam calendar day (92/96/100)."""
+    start = datetime(day.year, day.month, day.day, tzinfo=AMS)
+    end = start + timedelta(days=1)
+    utc0, utc1 = start.astimezone(UTC), end.astimezone(UTC)
+    rows, prices = [], []
+    t = utc0
+    while t < utc1:
+        rows.append({"ts": t.isoformat(), "grid_power_w": grid_w,
+                     "battery_power_w": 0.0, "solar_power_w": 0.0})
+        prices.append({"start_ts": t.isoformat(), "eur_per_kwh": price})
+        t += timedelta(minutes=15)
+    return rows, prices, start, end
+
+
+def test_dst_spring_forward_day_kwh_sums_92_quarters():
+    # 2026-03-29 Europe/Amsterdam: clocks jump 02→03 → 23 h = 92 quarters → 23 kWh at 1 kW.
+    from datetime import date
+    day = date(2026, 3, 29)
+    rows, prices, start, end = _dst_day_rows(day, 1000.0)
+    assert len(rows) == 92
+    f = day_finance(
+        rows, prices, day=day.isoformat(),
+        window_start=start, window_end=end, sample_interval_seconds=900.0,
+    )
+    assert abs(f.grid_import_kwh - 23.0) < 1e-6
+    assert abs(f.sample_coverage - 1.0) < 1e-9
+    assert abs(f.price_coverage - 1.0) < 1e-9
+    assert abs(f.grid_cost_eur - 23.0 * 0.20) < 1e-6
+
+
+def test_dst_fall_back_day_kwh_sums_100_quarters():
+    # 2026-10-25 Europe/Amsterdam: clocks repeat 02→03 → 25 h = 100 quarters → 25 kWh at 1 kW.
+    from datetime import date
+    day = date(2026, 10, 25)
+    rows, prices, start, end = _dst_day_rows(day, 1000.0)
+    assert len(rows) == 100
+    f = day_finance(
+        rows, prices, day=day.isoformat(),
+        window_start=start, window_end=end, sample_interval_seconds=900.0,
+    )
+    assert abs(f.grid_import_kwh - 25.0) < 1e-6
+    assert abs(f.sample_coverage - 1.0) < 1e-9
+    assert abs(f.grid_cost_eur - 25.0 * 0.20) < 1e-6

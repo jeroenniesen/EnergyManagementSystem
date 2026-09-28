@@ -18,11 +18,23 @@ Every € figure is computed over the SAME priced slots (cost, baseline, and the
 `saved`), so a partial-price day yields a correct partial-window saving — it can't mix partial
 revenue with a full day of wear. A day with no priced slots at all reports energy only (€ = None);
 otherwise `price_coverage` (0..1) signals how much of the day the money figures cover.
+
+**Savings breakdown (B-36 / #80).** When € figures exist, `saved_eur` is also split into three
+plain-language parts that sum to it (wear included in each discharged kWh):
+
+- `solar_self_use_eur` — own solar stored in the battery and used later (vs exporting it)
+- `avoided_expensive_eur` — grid energy shifted off expensive hours (cheap charge → dear discharge)
+- `battery_contribution_eur` — residual (unmatched discharge / rounding) so the three sum to
+  `saved_eur`
+
+Attribution uses a same-day FIFO of priced charge packets (solar-first vs grid), matching the
+energy-flow solar-first intuition. Comparison baseline stays "without a battery".
 """
 from __future__ import annotations
 
+from collections import deque
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from zoneinfo import ZoneInfo
 
 from ems.economics import EconomicSnapshot
@@ -45,6 +57,10 @@ class DayFinance:
     grid_export_kwh: float
     battery_charge_kwh: float
     battery_discharge_kwh: float
+    # B-36 breakdown — None when saved_eur is None (no priced window).
+    solar_self_use_eur: float | None = None
+    avoided_expensive_eur: float | None = None
+    battery_contribution_eur: float | None = None
 
     def to_dict(self) -> dict:
         def r2(x: float | None) -> float | None:
@@ -62,7 +78,17 @@ class DayFinance:
             "grid_export_kwh": round(self.grid_export_kwh, 2),
             "battery_charge_kwh": round(self.battery_charge_kwh, 2),
             "battery_discharge_kwh": round(self.battery_discharge_kwh, 2),
+            "solar_self_use_eur": r2(self.solar_self_use_eur),
+            "avoided_expensive_eur": r2(self.avoided_expensive_eur),
+            "battery_contribution_eur": r2(self.battery_contribution_eur),
         }
+
+
+@dataclass
+class _ChargePacket:
+    kwh: float
+    unit_cost: float  # €/kWh paid (grid import) or forgone (export credit) to store
+    source: str  # "solar" | "grid"
 
 
 def day_finance(
@@ -82,13 +108,19 @@ def day_finance(
     sample_interval_seconds: float = 900.0,
     max_hold_seconds: float | None = None,
 ) -> DayFinance:
-    """One day's finance from raw samples (`ts`, `grid_power_w`, `battery_power_w`; the caller
-    windows the rows to the local day) and stored price slots (`start_ts`, `eur_per_kwh`).
+    """One day's finance from raw samples (`ts`, `grid_power_w`, `battery_power_w`, optional
+    `solar_power_w`; the caller windows the rows to the local day) and stored price slots
+    (`start_ts`, `eur_per_kwh`).
 
     `export_price_model` (+ `energy_tax_eur_per_kwh` / `fixed_feed_in_eur_per_kwh`) picks how
     exported energy is valued (see module docstring / `economics.export_value`); the default
     `net_metering` credits export at the full spot price — today's saldering behaviour."""
-    timestamps = [dt for row in raw_rows if (dt := _parse(row.get("ts"))) is not None]
+    # Ensure solar is present so observed_segments can require the field without dropping rows
+    # from older callers that only passed grid + battery.
+    normalized = [
+        {**r, "solar_power_w": r.get("solar_power_w", 0.0)} for r in raw_rows
+    ]
+    timestamps = [dt for row in normalized if (dt := _parse(row.get("ts"))) is not None]
     if window_start is None and timestamps:
         window_start = _floor(min(timestamps))
     if window_end is None and timestamps:
@@ -98,8 +130,8 @@ def day_finance(
                           0.0, 0.0, 0.0, 0.0)
 
     segments = observed_segments(
-        raw_rows, start=window_start, end=window_end,
-        fields=("grid_power_w", "battery_power_w"),
+        normalized, start=window_start, end=window_end,
+        fields=("grid_power_w", "battery_power_w", "solar_power_w"),
         nominal_interval_seconds=sample_interval_seconds,
         max_hold_seconds=max_hold_seconds,
     )
@@ -115,6 +147,10 @@ def day_finance(
     cost = base_cost = 0.0
     priced_seconds = 0.0
     observed_seconds = 0.0
+    solar_self_use = 0.0
+    avoided_expensive = 0.0
+    residual_benefit = 0.0
+    charge_q: deque[_ChargePacket] = deque()
     # Keep all measured cost calculations on the same normalized economic boundary used by
     # planning and savings.  Tibber totals already include the import fee, so suppress it here.
     tariff_policy = TariffPolicy(
@@ -124,6 +160,7 @@ def day_finance(
     for segment in segments:
         grid_w = segment.values["grid_power_w"]
         batt_w = segment.values["battery_power_w"]  # + discharge / − charge
+        solar_w = max(0.0, segment.values["solar_power_w"])
         hours = segment.duration_seconds / 3600.0
         observed_seconds += segment.duration_seconds
         imp += max(0.0, grid_w) * hours / 1000.0
@@ -150,10 +187,51 @@ def day_finance(
         baseline_w = grid_w + batt_w  # the meter with the battery removed
         base_cost += (max(0.0, baseline_w) * import_price
                       - max(0.0, -baseline_w) * credit) * hours / 1000.0
-        dis_priced += max(0.0, batt_w) * hours / 1000.0
+        dis_kwh = max(0.0, batt_w) * hours / 1000.0
+        chg_kwh = max(0.0, -batt_w) * hours / 1000.0
+        dis_priced += dis_kwh
+
+        # FIFO charge packets for the B-36 breakdown (priced slots only).
+        if chg_kwh > 0.0:
+            # Solar-first: load = grid + solar + battery; solar left after serving load can charge.
+            load_w = grid_w + solar_w + batt_w
+            solar_to_load = min(solar_w, max(0.0, load_w))
+            solar_left = solar_w - solar_to_load
+            solar_chg = min(chg_kwh, solar_left * hours / 1000.0)
+            grid_chg = chg_kwh - solar_chg
+            # Storing solar forgoes the export credit; storing grid energy pays the import price.
+            if solar_chg > 0.0:
+                charge_q.append(_ChargePacket(solar_chg, credit, "solar"))
+            if grid_chg > 0.0:
+                charge_q.append(_ChargePacket(grid_chg, import_price, "grid"))
+        if dis_kwh > 0.0:
+            remaining = dis_kwh
+            while remaining > 1e-12 and charge_q:
+                pkt = charge_q[0]
+                take = min(remaining, pkt.kwh)
+                # Benefit of discharging this packet now (vs having no battery): avoid import_price,
+                # minus what it cost to store, minus wear on the delivered kWh.
+                benefit = take * (import_price - pkt.unit_cost - degradation_eur_per_kwh)
+                if pkt.source == "solar":
+                    solar_self_use += benefit
+                else:
+                    avoided_expensive += benefit
+                pkt.kwh -= take
+                remaining -= take
+                if pkt.kwh <= 1e-12:
+                    charge_q.popleft()
+            if remaining > 1e-12:
+                # Discharge with no same-day priced charge to match (overnight carry / gap) —
+                # count as residual battery contribution at avoided import minus wear.
+                residual_benefit += remaining * (import_price - degradation_eur_per_kwh)
 
     coverage = priced_seconds / observed_seconds if observed_seconds else 0.0
-    window_seconds = max(0.0, (window_end - window_start).total_seconds())
+    # DST-safe window length: subtract in UTC so a spring-forward / fall-back local day is 23 h /
+    # 25 h (92 / 100 quarters), not a naive 24 h wall-clock difference.
+    window_seconds = max(
+        0.0,
+        (window_end.astimezone(UTC) - window_start.astimezone(UTC)).total_seconds(),
+    )
     sample_coverage = observed_seconds / window_seconds if window_seconds else 0.0
     # Give € figures whenever ANY slot is priced. Charging wear only over PRICED-slot discharge
     # (`dis_priced`) keeps cost, baseline and wear on the SAME window, so a partial-price day yields
@@ -162,9 +240,16 @@ def day_finance(
     if priced_seconds:
         battery_cost = dis_priced * degradation_eur_per_kwh
         saved = base_cost - cost - battery_cost
+        # Reconcile FIFO attribution to the exact measured `saved` (floating residuals + unmatched
+        # charge left in the queue that never discharged today).
+        attributed = solar_self_use + avoided_expensive + residual_benefit
+        battery_contribution = residual_benefit + (saved - attributed)
         return DayFinance(
             day, True, coverage, sample_coverage, cost, battery_cost, base_cost, saved,
             imp, exp, chg, dis,
+            solar_self_use_eur=solar_self_use,
+            avoided_expensive_eur=avoided_expensive,
+            battery_contribution_eur=battery_contribution,
         )
     # No priced slots at all → can't compute money figures; report energy only.
     return DayFinance(day, bool(segments), coverage, sample_coverage,

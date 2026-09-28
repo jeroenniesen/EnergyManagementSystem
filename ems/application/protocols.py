@@ -99,6 +99,9 @@ class FinanceDay(TypedDict, total=False):
     grid_export_kwh: float
     battery_charge_kwh: float
     battery_discharge_kwh: float
+    solar_self_use_eur: float | None
+    avoided_expensive_eur: float | None
+    battery_contribution_eur: float | None
     calc_v: int
 
 

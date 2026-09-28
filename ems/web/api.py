@@ -770,7 +770,7 @@ def _uslot_totals(slots: list[dict]) -> dict:
 # Bump when the finance math changes so completed-day rows cached under the OLD formula are
 # recomputed instead of served stale (finding 4). v2 = same-window wear (dis_priced) + price-gate;
 # v3 = export credited via the configurable feed-in model (B-05), not always the full spot price.
-_FINANCE_CALC_VERSION = 5  # includes grid-fee-aware import/export valuation
+_FINANCE_CALC_VERSION = 6  # B-36 savings breakdown (solar / avoided-expensive / battery)
 
 
 # The car-charging discharge-session constants + the PURE decision helpers (`_decide_car_command`,
