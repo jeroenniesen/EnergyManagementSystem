@@ -11,6 +11,8 @@ dependencies = [
     # Lightweight HTTP client used at runtime by the live device/price sources and the optional
     # external-LLM explainer (loaded lazily, behind their feature flags). No GPU/ML deps.
     "httpx>=0.27",
+    # Bounded retries for outbound HTTP *reads* only (lan_read / cloud / best_effort) — never lan_write.
+    "tenacity>=8.2",
     "argon2-cffi>=23.1",
 ]
 
