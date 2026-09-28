@@ -41,6 +41,7 @@ from ems.battery_profile import BatteryTopology, normalize_tower_ips
 from ems.cars import by_id as car_by_id
 from ems.clock import Clock, SystemClock
 from ems.confidence import plan_confidence
+from ems.connection import watching_only_primary_reason
 from ems.control.mode_controller import ModeController
 from ems.control.override import (
     MAX_MINUTES,
@@ -110,7 +111,6 @@ from ems.planner.rule_based import plan_rule_based
 from ems.planner.strategy import HysteresisState
 from ems.planner.summer import sunset_after
 from ems.planner.validator import PlanValidation, clamp_plan_power, validate_plan
-from ems.connection import watching_only_primary_reason
 from ems.readiness import Readiness, compute_readiness, home_state
 from ems.reporting import (
     apply_year_totals,
