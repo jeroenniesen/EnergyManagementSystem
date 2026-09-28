@@ -13,7 +13,11 @@ Run through this before trusting any strategy. Each item has a home in §17 (*Kn
 
 - [ ] **Tibber token works** — personal token created; `viewer.homes[].currentSubscription.priceInfo` returns `today`/`tomorrow`; quarter-hourly `priceInfoRange` returns data (see §6.2 for the exact placement caveat).
 - [ ] **HA Indevolt actions/entities discovered** — run the **capability probe** (§6.5): which of `indevolt.charge` / `indevolt.discharge` exist, which **entities** back "standby"/"energy mode"/"discharge floor"/"grid charging", and their parameter ranges.
-- [ ] **Cluster max charge/discharge read** from the live HA power sensors (or `Indevolt.GetData`) → set `max_charge_w` / `max_discharge_w`.
+- [x] **Cluster max charge/discharge** — `IndevoltBatteryDriver.probe()` advertises
+  `battery.max_charge_w` / `max_discharge_w` scaled by configured tower count (n × OpenData
+  SolidFlex 2400 W ceiling for a single tower; cluster trusts settings / Gen-2 overrides).
+  Plan slots are clamped to `min(settings, capability)` before §8.11 validate (#164). Live
+  HA power-sensor / GetData discovery remains optional polish behind adapter epic #112/#116.
 - [ ] **HomeWizard meters identified** — confirm which `product_type` is P1 vs the two kWh meters, and which kWh meter is **solar** vs **car**; confirm each meter's **sign convention** (§4).
 - [ ] **Solcast account created** — free Hobbyist (new account = 10 calls/day); resource id noted; a single refresh owner chosen (§6.3).
 - [ ] **NTP healthy** — the Pi's clock is synced (price/charge windows are time-critical, §11).
@@ -1016,7 +1020,7 @@ Each milestone is independently useful and testable.
 
 | # | Unknown | Owner | Action (when) | Evidence required to close |
 |---|---|---|---|---|
-| 1 | Cluster max charge/discharge W | Jeroen | M1a probe | HA power-sensor max / `Indevolt.GetData` value |
+| 1 | Cluster max charge/discharge W | Jeroen | M1a probe + #164 | **Closed for SolidFlex cluster:** probe advertises settings × tower topology; plan power clamped to min(settings, capability). Gen-2 above OpenData 2400 W/tower trusts settings. Optional live HA/GetData discovery → #112/#116. |
 | 2 | Whether `indevolt.charge/discharge` take `power` + `target_soc` (exact schema) | Jeroen | M1a probe | HA service schema dump |
 | 3 | Energy-mode **select** options (which = self-consumption) | Jeroen | M1a probe | select entity options list |
 | 4 | True IDLE/hold available? (standby button vs emulate) | Jeroen | M1a/M1b | observed SoC holds after standby press |

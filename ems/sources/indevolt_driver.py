@@ -186,16 +186,25 @@ class IndevoltBatteryDriver:
         data = self.reader.read_keys([K_CAPACITY, K_MODE, K_METER_CONN])
         if not data:
             raise BatteryUnavailable("Indevolt probe: GetData empty")
+        # Advertise configured cluster power. A single tower never claims more than the OpenData
+        # SolidFlex per-tower ceiling (legacy cluster defaults like 4800 on 1 IP stay capped at
+        # 2400). A multi-tower driver trusts settings (battery_profile × towers, or a Gen-2 /
+        # measured override above n×2400) so planner/validator match apply() (#164).
+        n = max(1, len(self.ips))
+        if n == 1:
+            max_charge = min(float(self.charge_power_w), float(_MAX_POWER_W))
+            max_discharge = min(float(self.discharge_power_w), float(_MAX_POWER_W))
+        else:
+            max_charge = float(self.charge_power_w)
+            max_discharge = float(self.discharge_power_w)
         return CapabilityReport(
             services=("charge", "discharge"),
             energy_mode_options=("self_consumption", "real_time_control"),
             has_standby=True,
             has_grid_charge_switch=True,
             p1_paired=data.get(str(K_METER_CONN)) == 1000,
-            # The driver is the final safety boundary: a tower cannot receive more than the
-            # conservative 2.4 kW per-tower limit, regardless of a legacy cluster setting.
-            max_charge_w=float(min(self.charge_power_w, len(self.ips) * _MAX_POWER_W)),
-            max_discharge_w=float(min(self.discharge_power_w, len(self.ips) * _MAX_POWER_W)),
+            max_charge_w=max_charge,
+            max_discharge_w=max_discharge,
         )
 
     def current_mode(self) -> PhysicalMode:
@@ -263,9 +272,11 @@ class IndevoltBatteryDriver:
             self.discharge_power_w if mode is PhysicalMode.DISCHARGE else self.charge_power_w
         )
         total_power = int(power_w) if power_w is not None else default_power
-        # The cluster total can be up to n_towers × the per-device max; the master accepts it and
-        # distributes. Don't split — the master's setpoint IS the cluster figure.
-        cluster_max = len(self.ips) * _MAX_POWER_W
+        # Cluster write ceiling: at least n × SolidFlex OpenData max, but never below the
+        # configured settings (Gen-2 / measured overrides above 2400 W/tower).
+        configured = (self.discharge_power_w if mode is PhysicalMode.DISCHARGE
+                      else self.charge_power_w)
+        cluster_max = max(len(self.ips) * _MAX_POWER_W, int(configured))
         total_power = max(_MIN_POWER_W, min(cluster_max, total_power))
         soc = int(target_soc) if target_soc is not None else None
         # Real-time modes → MASTER only (it drives the cluster). AUTO → every tower (guarantee the

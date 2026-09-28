@@ -218,26 +218,30 @@ def build_wiring(
             car=HomeWizardMeter(str(car_ip)) if car_ip else None,
             battery=battery_reader,
         )
+        # Cluster topology always belongs on the driver — armed or not. probe() advertises
+        # n × per-tower OpenData ceiling from len(ips); omitting extra_ips on the unarmed path
+        # under-reported a 2-tower cluster as 2400 W while settings (and the reader) said 4800
+        # (#164). Realtime writes still target the master only when armed (see apply()).
+        driver_kwargs = dict(
+            port=port,
+            charge_power_w=int(eff.get("battery.max_charge_w") or 2000),
+            discharge_power_w=int(eff.get("battery.max_discharge_w") or 2000),
+            extra_ips=tower_ips[1:],
+        )
         if operational:
             # Arm the writer with cluster topology. The driver commands realtime modes through the
             # master and uses every tower only when returning to vendor self-consumption.
             controller_driver = IndevoltBatteryDriver(
-                ip, port=port, armed=True,
-                charge_power_w=int(eff.get("battery.max_charge_w") or 2000),
-                discharge_power_w=int(eff.get("battery.max_discharge_w") or 2000),
-                extra_ips=tower_ips[1:],
+                ip, armed=True,
                 # Generous write timeout + retry: the device is slow under shared load (HA + app +
                 # cluster) and a too-tight timeout false-failed the charge, triggering the AUTO-
                 # revert spiral. A timeout now raises BatteryWriteUnconfirmed (hold, don't revert).
                 post_factory=lambda a, _p=port: make_setdata_post(a, _p, timeout=8.0),
                 quiesce=quiesce,  # F1: same lock as the reader → reads quiesce while a write lands
+                **driver_kwargs,
             )
         elif ip:
-            controller_driver = IndevoltBatteryDriver(
-                ip, port=port, armed=False,
-                charge_power_w=int(eff.get("battery.max_charge_w") or 2000),
-                discharge_power_w=int(eff.get("battery.max_discharge_w") or 2000),
-            )
+            controller_driver = IndevoltBatteryDriver(ip, armed=False, **driver_kwargs)
         else:
             controller_driver = MockBatteryDriver()
         dev_mode, battery_endpoint = "live", None

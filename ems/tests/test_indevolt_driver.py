@@ -223,6 +223,28 @@ def test_probe_caps_configured_power_to_single_tower_limit():
     assert cap.max_discharge_w == 2400.0
 
 
+def test_probe_reports_cluster_total_for_two_towers():
+    """#164: 2-IP cluster advertises settings-scaled ~4800 W (not a single-tower 2400)."""
+    drv = IndevoltBatteryDriver(
+        "10.0.0.1", reader=FakeIndevolt(), charge_power_w=4800, discharge_power_w=4800,
+        extra_ips=["10.0.0.2"],
+    )
+    cap = drv.probe()
+    assert cap.max_charge_w == 4800.0
+    assert cap.max_discharge_w == 4800.0
+
+
+def test_probe_cluster_trusts_gen2_above_solidflex_ceiling():
+    """#164: Gen-2 / measured override above n×2400 must not be forced down."""
+    drv = IndevoltBatteryDriver(
+        "10.0.0.1", reader=FakeIndevolt(), charge_power_w=6000, discharge_power_w=6000,
+        extra_ips=["10.0.0.2"],
+    )
+    cap = drv.probe()
+    assert cap.max_charge_w == 6000.0
+    assert cap.max_discharge_w == 6000.0
+
+
 def test_full_control_chain_commands_driver_when_controlling():
     # Hands end-to-end against a MOCK device: CHARGE intent -> decide -> apply -> correct writes.
     fake = FakeIndevolt(mode=1, state=1000)
