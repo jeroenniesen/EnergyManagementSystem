@@ -1,5 +1,16 @@
 # Multi-level backlog + GitHub sync — design spec
 
+> **Retired.** Do not follow this spec, and do not maintain `BACKLOG.md`.
+> The backlog lives in GitHub Issues:
+> <https://github.com/jeroenniesen/EnergyManagementSystem/issues?q=is%3Aissue+is%3Aopen+label%3Abacklog>
+> Order is the `prio:*` labels plus the line `_Volgorde in backlog: #N_` in each issue.
+> Titles keep the old B-number, for example `[B-09] ...`.
+> New work is a GitHub issue with labels `type:*`, `prio:*`, `area:*`, `size:*`
+> (`size:S` at most 3 hours, `size:M` 3–6 hours, `size:L` more than 6 hours — split it), and `backlog`.
+> `/backlog-sync` no longer mirrors markdown to GitHub.
+> The last full `BACKLOG.md` is commit `00ed087aa7a06ee3e9a83164e63563a7eb7418fc`.
+> Everything below is the historical design and is not an instruction.
+
 *2026-07-03. User request: a multi-level backlog view (feature/epic → items spread over sprints),
 edited locally, with a sync skill that pushes local changes to GitHub and pulls GitHub status back.
 Decisions taken with recommended defaults (user AFK during the option prompt — all reversible):
@@ -72,21 +83,26 @@ active work only (~5–10 issues), not the whole 30-item backlog.
 
 ## The `/backlog-sync` skill
 
-Project skill at `.claude/skills/backlog-sync/SKILL.md` (checked in). When invoked it:
+**Retired.** The skill at `.claude/skills/backlog-sync/SKILL.md` no longer reads or writes
+`BACKLOG.md`. It points agents at GitHub Issues (see the notice at the top of this file).
+Do not run the old procedure below.
 
-1. Reads `BACKLOG.md`; collects epics/items/sprints/refs.
-2. Reads GitHub: `gh api` milestones, `gh issue list --label backlog`, PR states for referenced PRs.
-3. Prints a **dry-run plan** (creates / updates / closes / local write-backs) and **asks for
-   confirmation before any GitHub mutation** (outward-facing writes need explicit approval).
-4. Pushes: missing milestones → create; sprint items without refs → create issues; changed local
+<details>
+<summary>Historical procedure (do not run)</summary>
+
+When invoked, the old skill:
+
+1. Read `BACKLOG.md`; collected epics/items/sprints/refs.
+2. Read GitHub: `gh api` milestones, `gh issue list --label backlog`, PR states for referenced PRs.
+3. Printed a **dry-run plan** (creates / updates / closes / local write-backs) and **asked for
+   confirmation before any GitHub mutation**.
+4. Pushed: missing milestones → create; sprint items without refs → create issues; changed local
    content → update issue bodies; epics → create/refresh task lists.
-5. Pulls: closed issues / merged PRs / moved milestones → update `Track` lines + board glyphs
+5. Pulled: closed issues / merged PRs / moved milestones → update `Track` lines + board glyphs
    (✅/🔄/⬜) in `BACKLOG.md`.
-6. Ends with a sync report (what changed in each direction) and leaves `BACKLOG.md` staged but
-   uncommitted (the operator reviews the diff).
+6. Ended with a sync report and left `BACKLOG.md` staged but uncommitted.
 
-Model-driven, no parser code: the skill is instructions over `gh` + file edits, same as every
-other skill. Requires `gh` authenticated with repo scope (already true in this repo).
+</details>
 
 ## Initial epic/sprint cut (first grooming, adjustable by editing the file)
 

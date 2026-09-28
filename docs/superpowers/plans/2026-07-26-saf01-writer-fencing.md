@@ -1,5 +1,9 @@
 # SAF-01 Writer Fencing Implementation Plan
 
+> **Backlog location:** do not edit `BACKLOG.md`. Tracking lives in
+> [GitHub Issues](https://github.com/jeroenniesen/EnergyManagementSystem/issues?q=is%3Aissue+is%3Aopen+label%3Abacklog)
+> (labels `type:*`, `prio:*`, `area:*`, `size:*`, `backlog`). The `BACKLOG.md` step below is historical.
+
 > **Execution status:** completed in five implementation iterations and five polishing/fixing loops.
 > Steps use checkbox syntax to preserve the verification record.
 
@@ -135,7 +139,7 @@ boundary so AUTO is final.
 **Files:**
 - Modify: `ems/control/service.py`
 - Modify: `ems/web/api.py`
-- Modify: `BACKLOG.md`
+- Historical: `BACKLOG.md` (now a pointer only — update the SAF-01 GitHub issue, label `backlog`, instead)
 - Modify: `docs/failure-modes.md`
 - Modify: `docs/superpowers/specs/2026-07-26-saf01-writer-fencing-design.md`
 
