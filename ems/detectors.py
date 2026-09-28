@@ -146,7 +146,8 @@ def evening_peak_risk(
         "title": "Battery may fall short tonight",
         "body": (
             f"Battery may fall short of tonight's peak (projected {projected_soc_at_peak:.0f}% "
-            f"vs {needed_soc:.0f}% needed). EMS will top up if the price allows."
+            f"vs {needed_soc:.0f}% needed). Check tonight's reserve advice on the dashboard — "
+            f"EMS will top up if the price allows."
         ),
         "confidence": confidence_level,
         "dedupe_key": f"peak_risk:{now.date().isoformat()}",

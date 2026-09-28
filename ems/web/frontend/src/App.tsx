@@ -83,6 +83,18 @@ type ChargeNeed = {
   reason: string;
 };
 
+/** B-67 / #74 — advice-only night-reserve recommendation. Never writes settings. */
+type ReserveAdvice = {
+  recommended_soc_pct: number;
+  min_reserve_soc: number;
+  current_night_reserve_kwh: number;
+  current_target_soc_pct: number;
+  night_demand_kwh: number | null;
+  label: string | null;
+  reason: string;
+  automatic: boolean;
+};
+
 /** True when a charge-need payload has the finite fields ChargeTarget.toFixed needs (#134 B2). */
 export function isUsableChargeNeed(n: unknown): n is ChargeNeed {
   if (n == null || typeof n !== "object") return false;
@@ -294,6 +306,38 @@ function ChargeTarget({ n }: { n: ChargeNeed }) {
   );
 }
 
+/** Advice-only night reserve (B-67 / #74) — shown next to the configured buffer; never applied. */
+function NightReserveAdvice({ advice }: { advice: ReserveAdvice }) {
+  return (
+    <section className="charge-need reserve-advice" data-testid="reserve-advice">
+      <div className="override-head">
+        <span className="metric-label">Night reserve</span>
+        {advice.label && (
+          <span className="badge badge-amber" data-testid="reserve-advice-label">
+            {advice.label}
+          </span>
+        )}
+      </div>
+      <p className="reserve-advice-row" data-testid="reserve-advice-current">
+        Your setting:{" "}
+        <strong>{advice.current_night_reserve_kwh.toFixed(1)} kWh</strong>
+        {" · "}
+        Advice: <strong>{advice.recommended_soc_pct.toFixed(0)}%</strong> carry
+        {advice.recommended_soc_pct !== advice.current_target_soc_pct && (
+          <span className="reserve-advice-delta">
+            {" "}
+            (usual plan {advice.current_target_soc_pct.toFixed(0)}%)
+          </span>
+        )}
+      </p>
+      <p className="plan-reason" data-testid="reserve-advice-reason">
+        {advice.reason}
+      </p>
+      <p className="advisor-hint">Advice only — this never changes your settings.</p>
+    </section>
+  );
+}
+
 
 // Discovery payload shape from GET /api/auth (identity mode) — see docs/superpowers/specs/
 // 2026-07-17-auth-users-roles-design.md §5. `null` until the first fetch resolves. `user` (auth
@@ -358,6 +402,7 @@ export function App() {
   const [decision, setDecision] = useState<Decision | null>(null);
   const [alertsData, setAlertsData] = useState<AlertsResp | null>(null);
   const [chargeNeed, setChargeNeed] = useState<ChargeNeed | null>(null);
+  const [reserveAdvice, setReserveAdvice] = useState<ReserveAdvice | null>(null);
   // B-03b: MEASURED (from /api/finance), not a plan estimate — null until the first successful
   // fetch (then the footer stat stays hidden; a later failure just keeps the last-known value,
   // same best-effort convention as the other polled cards below).
@@ -584,6 +629,21 @@ export function App() {
         "/api/charge-need",
         (v: ChargeNeed) => setChargeNeed(isUsableChargeNeed(v) ? v : null),
         () => setChargeNeed(null),
+      );
+      fill(
+        "/api/advisor/reserve",
+        (v: { advice?: ReserveAdvice | null }) => {
+          const a = v?.advice;
+          setReserveAdvice(
+            a &&
+              typeof a.recommended_soc_pct === "number" &&
+              typeof a.current_night_reserve_kwh === "number" &&
+              typeof a.reason === "string"
+              ? a
+              : null,
+          );
+        },
+        () => setReserveAdvice(null),
       );
     }
     poll();
@@ -1072,6 +1132,7 @@ export function App() {
           <EnergyDistribution />
 
           {chargeNeed && <ChargeTarget n={chargeNeed} />}
+          {reserveAdvice && <NightReserveAdvice advice={reserveAdvice} />}
 
           {decision && decision.outcome !== "unconfigured" && (
             <section className="decision" data-testid="decision">
