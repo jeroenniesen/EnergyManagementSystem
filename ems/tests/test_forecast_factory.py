@@ -29,11 +29,13 @@ _LIVE = {
 }
 
 
-def test_registry_includes_forecast_solar_and_solcast():
+def test_registry_includes_mock_forecast_solar_and_solcast():
+    assert "mock" in registered_providers()
     assert "forecast_solar" in registered_providers()
     assert "solcast" in registered_providers()
     # Delegates to the generic registry under domain="forecast".
     assert registered_adapters(FORECAST_DOMAIN) == registered_providers()
+    assert get_metadata(FORECAST_DOMAIN, "mock") is not None
     assert get_metadata(FORECAST_DOMAIN, "forecast_solar") is not None
     assert get_metadata(FORECAST_DOMAIN, "solcast") is not None
 

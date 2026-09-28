@@ -81,22 +81,45 @@ stores the callable; vendor imports and network clients run when that name is ch
 | Incomplete config | Builder returns `None` → same fallback path. |
 | Duplicate `(domain, name)` | Raises `ValueError`. |
 
-**First consumer — forecast.** `ems/sources/forecast_factory.py` keeps
-`@register_forecast_provider` / `build_solar_forecast` / `solar.forecast_provider`; the decorator
-delegates to `register_adapter("forecast", …)`. Solcast → Forecast.Solar → model and the live gate
-(`meters.p1_ip`) are unchanged. Prediction-ledger provenance still uses
-`type(solar_forecast).__name__` (`ForecastSolarSource` / `SolcastSource` /
-`MockSolarForecastSource`) — do not rename those classes lightly. Pre-#140 settings DBs need no
-migration: the stored `solar.forecast_provider` value resolves to the same adapter.
+**Forecast** (`ems/sources/forecast_factory.py`): `@register_forecast_provider` /
+`build_solar_forecast` / `solar.forecast_provider`; the decorator delegates to
+`register_adapter("forecast", …)`. Registered names: `mock`, `forecast_solar`, `solcast`.
+Solcast → Forecast.Solar → model and the live gate (`meters.p1_ip`) are unchanged.
+Prediction-ledger provenance still uses `type(solar_forecast).__name__`
+(`ForecastSolarSource` / `SolcastSource` / `MockSolarForecastSource`) — do not rename those
+classes lightly. Pre-#140 settings DBs need no migration.
+
+**Price** (`ems/sources/price_factory.py`, [#114](https://github.com/jeroenniesen/EnergyManagementSystem/issues/114) slice a):
+`@register_price_provider` / `build_price_source`; delegates to `register_adapter("price", …)`.
+Registered names: `mock`, `tibber`. Live Tibber still requires `connection.use_live_prices` +
+token; incomplete config fails safe to mock. Dry-run / arming rules are unchanged.
 
 CO₂ via the registry and enum options sourced from the registry are **not** in this slice
 ([#113](https://github.com/jeroenniesen/EnergyManagementSystem/issues/113) slice b).
 
-Guard tests: `ems/tests/test_adapter_registry.py`, `ems/tests/test_forecast_factory.py`.
+Guard tests: `ems/tests/test_adapter_registry.py`, `ems/tests/test_forecast_factory.py`,
+`ems/tests/test_price_factory.py`.
+
+## Behaviour contracts (#114 slice a)
+
+`ems/tests/test_adapter_contracts.py` parametrizes over **every** adapter registered for
+`price` and `forecast`. It checks behaviour, not only signatures:
+
+| Port | Contract |
+|---|---|
+| Price | `isinstance(..., PriceSource)`; tz-aware 15-min slots; on failure `[]` (cold) or last-good |
+| Forecast | `isinstance(..., SolarForecastSource)`; P10 ≤ P50 ≤ P90; network failure → labelled fallback |
+
+Each domain has a fake/simulator in the registry (`mock`), reusing `MockPriceSource` /
+`MockSolarForecastSource`. The suite is hermetic (injected transports only). Battery / meter /
+CO₂ contracts are **out of scope** until #114 slices b/c.
+
+Signature conformance for price + forecast in `ems/tests/test_adapter_conformance.py` also
+reads the registry instead of a hard-coded adapter list.
 
 ## Related
 
 - Ports: `ems/sources/ports.py` (re-exported from `ems/ports.py` and `ems/application/protocols.py`)
-- Registry: `ems/sources/registry.py` (forecast factory is the first user)
+- Registry: `ems/sources/registry.py` (forecast + price factories)
 - Composition root: `ems/connection.py::build_wiring` → `Wiring`
 - Design note: `docs/superpowers/specs/2026-07-29-source-ports-design.md`

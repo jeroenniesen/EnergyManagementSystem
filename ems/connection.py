@@ -162,7 +162,6 @@ def build_wiring(
     so they warm-start from a persisted snapshot after a restart and don't immediately refetch."""
     from ems.sources.battery import MockBatteryDriver
     from ems.sources.mock import MockSource
-    from ems.sources.prices import MockPriceSource
 
     use_live_devices = bool(eff.get("connection.use_live_devices")) and bool(
         eff.get("meters.p1_ip")
@@ -247,12 +246,13 @@ def build_wiring(
         controller_driver = MockBatteryDriver()
         dev_mode, battery_endpoint = "mock", MockBatteryDriver()
 
-    if live_prices:
-        from ems.sources.tibber import TibberPriceSource
+    # Prices via the adapter registry (#114 slice a). Live Tibber when use_live_prices + token;
+    # otherwise the credential-free mock. Fail-safe incomplete Tibber → mock.
+    from ems.sources.price_factory import build_price_source
 
-        price_source = TibberPriceSource(token, tz=tz, cache_store=cache_store)
-    else:
-        price_source = MockPriceSource(tz)
+    price_source = build_price_source(
+        eff, tz, cache_store=cache_store, use_live=live_prices,
+    )
 
     # Solar forecast via the adapter registry (SPEC §6.3 / B-14). Live devices + lat/lon unlock
     # the live path; otherwise the built-in model. Provider selection + Solcast→Forecast.Solar
