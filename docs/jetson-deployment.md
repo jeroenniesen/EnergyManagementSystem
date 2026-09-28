@@ -2,6 +2,8 @@
 
 > Companion to `../SPEC.md §11` (Raspberry Pi variant) and `docs/ml-layer.md`. This doc covers running the EMS on an **NVIDIA Jetson** — the platform that enables the optional GPU-accelerated ML layer (`docs/ml-layer.md`). The key topology difference from §11: **the Jetson runs the EMS + the ML sidecar only; Home Assistant and the MQTT broker live on a separate host on the LAN** (e.g. a dedicated Pi running HA Container). The same codebase runs on a plain Pi (CPU-only, no ML) or a Jetson (ML lit up via `ml.enabled`); this doc is the Jetson variant.
 
+> **Status vs production ([#182](https://github.com/jeroenniesen/EnergyManagementSystem/issues/182)).** This guide is a **target** deployment. **Current production** is a **Mac Mini (Apple Silicon)** LaunchAgent install with **direct-device** I/O and **no required HA/MQTT** (`SPEC §5.2` / §11). HA client wiring, `entity_map`, and MQTT discovery remain **planned** ([B-18 / #107](https://github.com/jeroenniesen/EnergyManagementSystem/issues/107)). Do not treat this Jetson compose as the running system.
+
 ---
 
 ## 1. Hardware and OS

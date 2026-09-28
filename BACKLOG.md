@@ -469,7 +469,7 @@ Now **3,079 lines** with 44 routes, most inside one `create_app()` closure; doma
 
 ### B-26 · Reconcile SPEC with reality — Refactor/docs · S · P2
 SPEC mandates HA integration (`entity_map`, WS/REST) and lists MQTT (`ems/publish/`) + a §14 visual/bundle/WCAG gate; the code reads devices directly, has no `ems/publish/`, and the visual gate is unimplemented — and works. Update SPEC §5/§9/§11/§13/§14 + CLAUDE.md deliberately (or build the gaps: HA client = B-18, visual/bundle gate ships with B-44). **Note:** the `ports.py`/`Planner` seam is now recommended to be **built** (B-47), not deleted from the SPEC.
-**Track:** ✅ done — [PR #25](https://github.com/jeroenniesen/EnergyManagementSystem/pull/25). Major drift surfaced honestly: HA/MQTT/Solcast/Pi-Docker are planned-not-implemented; production = Mac Mini LaunchAgent, direct-device, armed control; §9.1 endpoints grep-verified (48 routes); §13 tree matched file-for-file; CLAUDE.md premise corrected to match.
+**Track:** ✅ done — [PR #25](https://github.com/jeroenniesen/EnergyManagementSystem/pull/25). Major drift surfaced honestly: HA/MQTT/Solcast/Pi-Docker are planned-not-implemented; production = Mac Mini LaunchAgent, direct-device, armed control; §9.1 endpoints grep-verified (48 routes); §13 tree matched file-for-file; CLAUDE.md premise corrected to match. **Refresh:** [#182](https://github.com/jeroenniesen/EnergyManagementSystem/issues/182) (docs-only) re-states Current vs Target after post–PR #25 drift (`ha.py` skeleton exists but unwired; endpoints / dry-run floors / planner-mode).
 
 ### B-27 · Dead & duplicated planner logic — Refactor · S · P3
 Remove or wire `planner/optimal.py` (tested, never dispatched); dedupe `api._charge_kind` vs `energy_flow._allocate_slot`.

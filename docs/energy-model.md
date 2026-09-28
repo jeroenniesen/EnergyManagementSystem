@@ -8,7 +8,7 @@
 
 ## 2. Sign conventions (fixed, EMS-internal)
 
-Every source is normalised to this one convention. Each source's *native* sign is confirmed during calibration (§5) and recorded in `config.homeassistant.entity_map` notes.
+Every source is normalised to this one convention. Each source's *native* sign is confirmed during calibration (§5) and recorded in adapter/config notes (today: direct-device settings; **target:** `config.homeassistant.entity_map` notes once [B-18 / #107](https://github.com/jeroenniesen/EnergyManagementSystem/issues/107) ships — that map is **not** in today's `config.yaml`).
 
 | Internal metric | Unit | Sign | Native source | Notes |
 |---|---|---|---|---|

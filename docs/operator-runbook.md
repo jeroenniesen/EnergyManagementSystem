@@ -1,6 +1,8 @@
 # Operator runbook
 
-> Companion to `../SPEC.md` §11–§12. Practical "how do I…" procedures for running the EMS on the Pi. Assumes the single-host Docker Compose layout (HA Container + Mosquitto + EMS).
+> Companion to `../SPEC.md` §11–§12. Practical "how do I…" procedures for running the EMS.
+>
+> **Current production ([#182](https://github.com/jeroenniesen/EnergyManagementSystem/issues/182)):** Mac Mini (Apple Silicon) · `scripts/install.sh` LaunchAgent · **direct-device** I/O · **no required HA/MQTT**. Many rows below still mention Docker Compose / HA `select.*` entities — those describe the **target** Pi (+ HA) layout (`SPEC §11.1`) and MQTT discovery (**planned** — [B-18 / #107](https://github.com/jeroenniesen/EnergyManagementSystem/issues/107)), not today's Mac Mini path. Prefer the web UI / `GET /api/*` on the live install.
 
 ## Quick reference
 
