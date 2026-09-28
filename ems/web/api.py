@@ -4097,6 +4097,15 @@ def create_app(
         start, end, label, partial = resolve_window(period, anchor, site_tz, now_local)
         return await report_service.finance(start, end, now_local, period, label, partial)
 
+    @app.get("/api/series")
+    async def series(limit: int = Query(default=100, ge=1, le=2000)) -> dict:
+        if store is None:
+            return {"raw": [], "derived": []}
+        return {
+            "raw": await store.recent_raw(limit),
+            "derived": await store.recent_derived(limit),
+        }
+
     @app.get("/api/settings")
     def get_settings() -> dict:
         # The UI renders a form from `schema` and fills it from `values` (effective config).
