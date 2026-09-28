@@ -1,16 +1,21 @@
 """BACKLOG B-75 — pure forecast-driven detectors (`ems/detectors.py`). Each detector is exercised
 at its exact trigger/no-trigger boundary: the 40%/30% thresholds, the 17:00-21:00 evening window,
 the 3h EV plug-in horizon, and the confidence gate on `evening_peak_risk`. `typical_daily_solar_kwh`
-(the caller-side baseline helper) gets its own section at the bottom."""
+(the caller-side baseline helper) gets its own section at the bottom. Issue #128 adds
+`device_unreachable` (threshold / flap / recovery / unconfirmed stand / dry-run copy)."""
 from __future__ import annotations
 
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
 from ems.detectors import (
+    STABLE_RECOVER_AFTER,
+    DeviceUnreachableState,
+    device_unreachable,
     ev_plug_in_reminder,
     evening_peak_risk,
     low_solar_tomorrow,
+    open_incidents_from_notifications,
     price_opportunity,
     typical_daily_solar_kwh,
 )
@@ -291,3 +296,152 @@ def test_typical_daily_solar_kwh_no_data_returns_none():
 def date_today():
     from datetime import date
     return date(2026, 7, 12)
+
+
+# ---------------------------------------------------------------------------------------------
+# device_unreachable (issue #128)
+# ---------------------------------------------------------------------------------------------
+
+def _unreachable(device, last_fresh, now, state, **kw):
+    return device_unreachable(device, last_fresh, now=now, state=state, **kw)
+
+
+def test_device_unreachable_fires_after_threshold():
+    state = DeviceUnreachableState()
+    last = _local(2026, 7, 12, 10, 0)
+    now = last + timedelta(minutes=15)
+    result = _unreachable("battery", last, now, state, last_known_stand="zelfverbruik")
+    assert result is not None
+    assert result["key"] == "battery_down"
+    assert result["title"] == "Batterij reageert niet"
+    assert "Al 15 minuten geen contact (sinds 10:00)" in result["body"]
+    assert "Laatst bekende stand: zelfverbruik" in result["body"]
+    assert "stroom en netwerk" in result["body"]
+    assert result["dedupe_key"] == f"battery_down:{state.incident_since.isoformat()}"
+    assert state.down_push_sent is True
+
+
+def test_device_unreachable_threshold_is_configurable():
+    state = DeviceUnreachableState()
+    last = _local(2026, 7, 12, 10, 0)
+    # Under a 20-min threshold, 15 min of silence must NOT fire.
+    assert _unreachable(
+        "p1", last, last + timedelta(minutes=15), state, threshold=timedelta(minutes=20),
+    ) is None
+    result = _unreachable(
+        "p1", last, last + timedelta(minutes=20), state, threshold=timedelta(minutes=20),
+        last_known_stand="120 W",
+    )
+    assert result is not None
+    assert result["title"] == "P1-meter reageert niet"
+    assert "Al 20 minuten geen contact" in result["body"]
+
+
+def test_device_unreachable_flap_one_down_no_recovery():
+    """Down → 2 min up → down again: one down-push (same incident), no recovery push."""
+    state = DeviceUnreachableState()
+    last = _local(2026, 7, 12, 10, 0)
+    t_down = last + timedelta(minutes=15)
+    down1 = _unreachable("battery", last, t_down, state, last_known_stand="laden")
+    assert down1 is not None
+    incident = state.incident_since
+    dedupe = down1["dedupe_key"]
+
+    # 2 minutes of contact — not yet stable recovery.
+    t_up = t_down + timedelta(minutes=2)
+    assert _unreachable("battery", t_up, t_up, state) is None
+    assert state.incident_since == incident  # still same outage
+    assert state.contact_since == t_up
+
+    # Silence again past threshold from the brief contact — same incident_since / dedupe_key
+    # (Notifier would suppress a second push); no recovery was ever emitted.
+    t_down2 = t_up + timedelta(minutes=15)
+    down2 = _unreachable("battery", t_up, t_down2, state, last_known_stand="laden")
+    assert down2 is not None
+    assert down2["dedupe_key"] == dedupe
+    assert state.incident_since == incident
+    assert state.contact_since is None  # flap reset
+
+
+def test_device_unreachable_stable_recovery_one_up_push():
+    state = DeviceUnreachableState()
+    last = _local(2026, 7, 12, 10, 0)
+    t_down = last + timedelta(minutes=15)
+    assert _unreachable("battery", last, t_down, state) is not None
+
+    t_contact = t_down + timedelta(minutes=1)
+    assert _unreachable("battery", t_contact, t_contact, state, dry_run=False) is None
+
+    t_stable = t_contact + STABLE_RECOVER_AFTER
+    up = _unreachable("battery", t_stable, t_stable, state, dry_run=False)
+    assert up is not None
+    assert up["key"] == "battery_up"
+    assert up["body"] == "Batterij weer bereikbaar, EMS stuurt weer."
+    assert state.incident_since is None
+    assert state.down_push_sent is False
+
+
+def test_device_unreachable_no_recovery_without_prior_down_push():
+    state = DeviceUnreachableState(
+        incident_since=_local(2026, 7, 12, 10, 0),
+        down_push_sent=False,  # outage tracked but never notified
+    )
+    t_contact = _local(2026, 7, 12, 10, 5)
+    assert _unreachable("p1", t_contact, t_contact, state) is None
+    t_stable = t_contact + STABLE_RECOVER_AFTER
+    assert _unreachable("p1", t_stable, t_stable, state, dry_run=False) is None
+    assert state.incident_since is None  # cleared, but no push
+
+
+def test_device_unreachable_unconfirmed_stand_is_unknown_no_mode_name():
+    state = DeviceUnreachableState()
+    last = _local(2026, 7, 12, 10, 0)
+    result = _unreachable(
+        "battery", last, last + timedelta(minutes=15), state,
+        last_known_stand="zelfverbruik", stand_confirmed=False,
+    )
+    assert result is not None
+    assert "Laatst bekende stand: onbekend" in result["body"]
+    assert "zelfverbruik" not in result["body"]
+
+
+def test_device_unreachable_live_and_dry_run_recovery_copy():
+    def _recover(dry_run: bool, device: str) -> str:
+        state = DeviceUnreachableState()
+        last = _local(2026, 7, 12, 10, 0)
+        t_down = last + timedelta(minutes=15)
+        assert _unreachable(device, last, t_down, state, dry_run=dry_run) is not None
+        t_contact = t_down + timedelta(minutes=1)
+        assert _unreachable(device, t_contact, t_contact, state, dry_run=dry_run) is None
+        up = _unreachable(
+            device, t_contact + STABLE_RECOVER_AFTER,
+            t_contact + STABLE_RECOVER_AFTER, state, dry_run=dry_run,
+        )
+        assert up is not None
+        return up["body"]
+
+    assert _recover(False, "battery") == "Batterij weer bereikbaar, EMS stuurt weer."
+    assert _recover(True, "battery") == "Batterij weer bereikbaar, EMS kijkt weer mee."
+    assert _recover(False, "p1") == "P1-meter weer bereikbaar, EMS stuurt weer."
+    assert _recover(True, "p1") == "P1-meter weer bereikbaar, EMS kijkt weer mee."
+
+
+def test_device_unreachable_never_seen_stays_quiet():
+    state = DeviceUnreachableState()
+    assert _unreachable("battery", None, _local(2026, 7, 12, 12, 0), state) is None
+
+
+def test_open_incidents_from_notifications_survives_restart_shape():
+    since = _local(2026, 7, 12, 10, 15)
+    rows = [
+        {"key": "battery_down", "dedupe_key": f"battery_down:{since.isoformat()}"},
+        {"key": "price_opportunity", "dedupe_key": "price_opp:2026-07-13"},
+    ]
+    restored = open_incidents_from_notifications(rows)
+    assert "battery" in restored
+    assert restored["battery"].incident_since == since
+    assert restored["battery"].down_push_sent is True
+
+    # Matching up closes it.
+    rows.append({"key": "battery_up", "dedupe_key": f"battery_up:{since.isoformat()}"})
+    assert open_incidents_from_notifications(rows) == {}

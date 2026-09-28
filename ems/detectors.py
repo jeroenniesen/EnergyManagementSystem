@@ -19,13 +19,18 @@ None of these functions guess at missing data: an empty/absent forecast, plan, o
 as "nothing to say", never as a worst-case assumption — a false "grey day" or "cheap window"
 notification born from missing data would be worse than staying quiet (CLAUDE.md fail-safe).
 
-`typical_daily_solar_kwh` at the bottom is NOT a detector — it is the caller-side helper that
-prepares `low_solar_tomorrow`'s baseline argument (median of the last 14 days' actual solar from
-raw history rows), kept here because it is pure and most naturally tested alongside its consumer.
+`typical_daily_solar_kwh` is NOT a detector — it is the caller-side helper that prepares
+`low_solar_tomorrow`'s baseline argument (median of the last 14 days' actual solar from raw
+history rows), kept here because it is pure and most naturally tested alongside its consumer.
+
+`device_unreachable` (issue #128) is also pure aside from mutating a caller-owned
+`DeviceUnreachableState`; it never writes to the battery. Open incidents survive EMS restart via
+`open_incidents_from_notifications` over the existing `notifications` table.
 """
 from __future__ import annotations
 
 from collections import defaultdict
+from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta
 from typing import Any
 from zoneinfo import ZoneInfo
@@ -245,3 +250,183 @@ def typical_daily_solar_kwh(
     n = len(values)
     mid = n // 2
     return values[mid] if n % 2 else (values[mid - 1] + values[mid]) / 2.0
+
+
+# ---------------------------------------------------------------------------------------------
+# Device unreachable (issue #128) — P1 meter / battery silence → sparse push; notify only.
+# ---------------------------------------------------------------------------------------------
+
+# Default: alert after 15 min without a fresh reading; clear the incident only after 10 min of
+# unbroken contact so short flaps don't open a new outage or spam recovery pushes.
+DEFAULT_UNREACHABLE_THRESHOLD = timedelta(minutes=15)
+STABLE_RECOVER_AFTER = timedelta(minutes=10)
+
+_DEVICE_LABEL = {
+    "battery": "Batterij",
+    "p1": "P1-meter",
+}
+
+
+@dataclass
+class DeviceUnreachableState:
+    """Per-device outage tracker. `incident_since` is the wall-clock moment we first declared the
+    device down for THIS outage — deliberately NOT derived from `last_fresh_at` (a short flap
+    would shift that timestamp and look like a new incident). Cleared only after
+    `STABLE_RECOVER_AFTER` of continuous contact. `down_push_sent` gates the recovery push."""
+
+    incident_since: datetime | None = None
+    down_push_sent: bool = False
+    contact_since: datetime | None = None  # set while recovering; cleared on re-drop
+
+
+def _hhmm(ts: datetime) -> str:
+    return f"{ts.hour:02d}:{ts.minute:02d}"
+
+
+def _down_key(device: str) -> str:
+    return f"{device}_down"
+
+
+def _up_key(device: str) -> str:
+    return f"{device}_up"
+
+
+def _dedupe(device: str, kind: str, incident_since: datetime) -> str:
+    return f"{device}_{kind}:{incident_since.isoformat()}"
+
+
+def device_unreachable(
+    device: str,
+    last_fresh_at: datetime | None,
+    *,
+    now: datetime,
+    state: DeviceUnreachableState,
+    threshold: timedelta = DEFAULT_UNREACHABLE_THRESHOLD,
+    stable_recover: timedelta = STABLE_RECOVER_AFTER,
+    last_known_stand: str | None = None,
+    stand_confirmed: bool = True,
+    dry_run: bool = True,
+) -> dict[str, Any] | None:
+    """Push when P1 or battery has had no fresh reading for `threshold` (default 15 min).
+
+    Pure except for mutating `state` (caller owns the per-device dict across cycles). Returns a
+    `Notifier.send` kwargs dict or None. Never opens a battery write path.
+
+    Rules (issue #128):
+    - Never-seen (`last_fresh_at is None`) stays quiet until an incident is already open
+      (e.g. restored after restart) — avoids a boot-time false alarm before the first sample.
+    - `incident_since` sticks across short flaps; only clears after `stable_recover` of contact.
+    - At most one down push per incident (`dedupe_key` embeds `incident_since`); recovery push
+      only when that down push was actually sent (`state.down_push_sent`).
+    - Unconfirmed last write → "Laatst bekende stand: onbekend" with no mode name.
+    """
+    if device not in _DEVICE_LABEL:
+        return None
+
+    is_down = (
+        last_fresh_at is not None
+        and (now - last_fresh_at) >= threshold
+    )
+    # Restored open incident with still-missing data also counts as down.
+    if last_fresh_at is None and state.incident_since is not None:
+        is_down = True
+
+    label = _DEVICE_LABEL[device]
+    threshold_min = max(1, int(threshold.total_seconds() // 60))
+
+    if is_down:
+        state.contact_since = None
+        if state.incident_since is None:
+            state.incident_since = now
+        # Always re-emit the same down payload; Notifier dedupe suppresses repeats.
+        sinds = _hhmm(last_fresh_at) if last_fresh_at is not None else _hhmm(state.incident_since)
+        if stand_confirmed and last_known_stand:
+            stand_txt = last_known_stand
+        else:
+            stand_txt = "onbekend"
+        result = {
+            "key": _down_key(device),
+            "title": f"{label} reageert niet",
+            "body": (
+                f"Al {threshold_min} minuten geen contact (sinds {sinds}). "
+                f"Laatst bekende stand: {stand_txt}. "
+                "Kijk of het apparaat stroom en netwerk heeft."
+            ),
+            "confidence": "high",
+            "dedupe_key": _dedupe(device, "down", state.incident_since),
+        }
+        # Mark intent to notify; wiring may clear this if send() fails before store.
+        state.down_push_sent = True
+        return result
+
+    # Contact is back (or never lost).
+    if state.incident_since is None:
+        return None
+
+    if state.contact_since is None:
+        state.contact_since = now
+
+    if (now - state.contact_since) < stable_recover:
+        return None  # flap window — keep the incident open, no recovery yet
+
+    # Stable recovery.
+    incident = state.incident_since
+    sent = state.down_push_sent
+    state.incident_since = None
+    state.down_push_sent = False
+    state.contact_since = None
+    if not sent:
+        return None  # never pushed the down alert → no recovery noise
+
+    verb = "kijkt weer mee" if dry_run else "stuurt weer"
+    return {
+        "key": _up_key(device),
+        "title": f"{label} weer bereikbaar",
+        "body": f"{label} weer bereikbaar, EMS {verb}.",
+        "confidence": "high",
+        "dedupe_key": _dedupe(device, "up", incident),
+    }
+
+
+def open_incidents_from_notifications(
+    rows: list[dict[str, Any]],
+) -> dict[str, DeviceUnreachableState]:
+    """Rebuild open per-device incidents from the notifications table (restart survival).
+
+    An incident is open when a `*_down:<iso>` has no matching `*_up:<iso>` with the same
+    incident timestamp. No new table — HistoryStore only.
+    """
+    downs: dict[str, set[datetime]] = defaultdict(set)
+    ups: dict[str, set[datetime]] = defaultdict(set)
+    for row in rows:
+        key = str(row.get("key") or "")
+        dk = row.get("dedupe_key")
+        if key.endswith("_down"):
+            device, kind = key[: -len("_down")], "down"
+        elif key.endswith("_up"):
+            device, kind = key[: -len("_up")], "up"
+        else:
+            continue
+        if device not in _DEVICE_LABEL:
+            continue
+        iso = None
+        if isinstance(dk, str) and ":" in dk:
+            iso = dk.split(":", 1)[1]
+        if not iso:
+            continue
+        try:
+            ts = datetime.fromisoformat(iso)
+        except ValueError:
+            continue
+        (downs if kind == "down" else ups)[device].add(ts)
+
+    out: dict[str, DeviceUnreachableState] = {}
+    for device, since_set in downs.items():
+        open_set = since_set - ups.get(device, set())
+        if not open_set:
+            continue
+        since = max(open_set)
+        out[device] = DeviceUnreachableState(
+            incident_since=since, down_push_sent=True, contact_since=None,
+        )
+    return out
