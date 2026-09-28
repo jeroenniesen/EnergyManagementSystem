@@ -1,6 +1,6 @@
 # Configuration reference
 
-> Companion to `../SPEC.md` §9. The spec shows a *sample* `config.yaml`; this is the **per-key reference** (type, range, default, effect). `config.yaml` holds read-only **defaults**; UI-editable keys are overlaid from the runtime settings store in `/data` (**effective = defaults + runtime**). Secrets use `!secret`/env and are **never** persisted to the settings store or logs.
+> Companion to `../SPEC.md` §9. The spec shows a *sample* `config.yaml`; this is the **per-key reference** (type, range, default, effect). `config.yaml` holds read-only **defaults**; UI-editable keys are overlaid from the runtime settings store in `/data` (**effective = defaults + runtime**). Secrets use `!secret`/env and are **never** persisted to the settings store or logs. For **yaml vs store-key vs apply (hot / restart / boot-only)** on control/planner keys, see `operator-runbook.md` → **Config authority** (#178).
 
 Legend: **UI** = also editable from the web UI (overlays the file). **CONFIRM** = needs M0/M1 hardware validation.
 

@@ -24,6 +24,7 @@ import {
   humanize,
   OUTCOME_LABEL,
   pickDeviceHealthAlert,
+  DRY_RUN_CAUSE_LABEL,
   RUN_MODE,
   SIGNAL_NAME,
 } from "./labels";
@@ -49,6 +50,7 @@ import { applyTheme, readStoredTheme, storeTheme, type Theme } from "./theme";
 type Status = {
   dry_run: boolean;
   dry_run_reason?: string | null;
+  dry_run_cause?: string | null;
   dev_mode: string;
   soc_pct: number;
   grid_power_w: number;
@@ -771,12 +773,24 @@ export function App() {
           <span
             className={`badge ${status.dry_run ? "badge-dryrun" : "badge-live"}`}
             data-testid="run-mode-badge"
+            data-cause={status.dry_run_cause ?? undefined}
             title={
               status.dry_run_reason
                 || (status.dry_run ? RUN_MODE.dry.title : RUN_MODE.live.title)
             }
           >
             {status.dry_run ? RUN_MODE.dry.label : RUN_MODE.live.label}
+          </span>
+        )}
+        {status?.dry_run_reason && (
+          <span
+            className="badge badge-muted run-mode-reason"
+            data-testid="run-mode-reason"
+            title={status.dry_run_reason}
+          >
+            {status.dry_run_cause
+              ? (DRY_RUN_CAUSE_LABEL[status.dry_run_cause] ?? status.dry_run_cause)
+              : "why"}
           </span>
         )}
         {status && (
