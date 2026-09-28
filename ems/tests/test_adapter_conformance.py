@@ -104,13 +104,20 @@ def _hermetic_forecast(name: str):
     builder = get_builder(FORECAST_DOMAIN, name)
     assert builder is not None
     fallback = MockSolarForecastSource(_AMS, kwp=2.0, clock=lambda: _FIXED, horizon_slots=8)
-    if name == "solcast":
-        http_get = lambda _u, _h: {"forecasts": [{
+
+    def solcast_get(_u, _h):
+        return {"forecasts": [{
             "pv_estimate": 1.0, "pv_estimate10": 0.6, "pv_estimate90": 1.4,
             "period_end": "2026-07-29T12:30:00.0000000Z", "period": "PT30M",
         }]}
+
+    def forecast_solar_get(_u):
+        return {"result": {"watts": {"2026-07-29 12:00:00": 800.0}}}
+
+    if name == "solcast":
+        http_get = solcast_get
     elif name == "forecast_solar":
-        http_get = lambda _u: {"result": {"watts": {"2026-07-29 12:00:00": 800.0}}}
+        http_get = forecast_solar_get
     else:
         http_get = None
     return builder(
