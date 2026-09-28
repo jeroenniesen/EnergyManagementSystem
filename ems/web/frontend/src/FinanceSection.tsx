@@ -1,7 +1,9 @@
-// What the window cost and saved (spec 2026-07-03 B / B-36 #80): measured grid cost, battery
-// wear, and the € saved vs the no-battery baseline — from /api/finance (recorded samples + stored
-// prices, never the plan). Honest by construction: totals are absent until price history exists,
-// days without figures are chart gaps (never €0), and a coverage caveat names price/sample holes.
+// What the window cost and saved (spec 2026-07-03 B / B-36 #80 / #131): measured grid cost,
+// battery wear, and the € saved vs the no-battery baseline — from /api/finance (recorded samples +
+// stored prices, never the plan). #131 adds a per-request "gesimuleerd" tile: EMS vs the battery's
+// own AUTO default over the last 90 days (never stored). Honest by construction: totals are absent
+// until price history exists, days without figures are chart gaps (never €0), and a coverage caveat
+// names price/sample holes. Negative vs-AUTO outcomes stay visible.
 import { useEffect, useState } from "react";
 
 import { apiFetch } from "./auth";
@@ -23,6 +25,15 @@ type DayFin = {
   grid_export_kwh: number;
 };
 
+type VsAuto = {
+  saved_eur: number;
+  auto_cost_eur?: number | null;
+  days_simulated?: number;
+  days_window?: number;
+  label: string;
+  note?: string;
+};
+
 type FinResp = {
   period: string;
   label: string;
@@ -40,6 +51,7 @@ type FinResp = {
     days_with_coverage_gap?: number;
     days_without_data?: number;
   };
+  vs_auto?: VsAuto | null;
 };
 
 const BW = 720;
@@ -242,6 +254,30 @@ export function FinanceSection({ period, anchor }: { period: string; anchor: str
           <p className="fin-caveat" data-testid="fin-baseline">
             Compared with the same home without a battery.
           </p>
+          {fin.vs_auto != null && fin.vs_auto.saved_eur != null && (
+            <div className="fin-tiles" data-testid="fin-vs-auto">
+              <div className="fin-tile" data-testid="fin-vs-auto-saved">
+                <div
+                  className={`fin-val${fin.vs_auto.saved_eur >= 0 ? " fin-good" : " fin-amber"}`}
+                >
+                  {eur(fin.vs_auto.saved_eur)}
+                </div>
+                <div className="fin-name">
+                  vs battery default — {fin.vs_auto.label}
+                  {fin.vs_auto.days_window != null
+                    ? ` · last ${fin.vs_auto.days_window} days`
+                    : fin.vs_auto.days_simulated != null
+                      ? ` · ${fin.vs_auto.days_simulated} days`
+                      : ""}
+                </div>
+              </div>
+            </div>
+          )}
+          {fin.vs_auto?.note && (
+            <p className="fin-caveat" data-testid="fin-vs-auto-note">
+              {fin.vs_auto.note}
+            </p>
+          )}
           {showBreakdown && (
             <div className="fin-tiles fin-breakdown" data-testid="fin-breakdown">
               <div className="fin-tile" data-testid="fin-solar-self-use">

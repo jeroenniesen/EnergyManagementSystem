@@ -23,6 +23,7 @@ __all__ = [
     "DiagnosticsProvider",
     "FinanceDay",
     "FinanceProvider",
+    "VsAutoRollingProvider",
     "PlanProvider",
     "PlanValidator",
     "ReportProvider",
@@ -109,6 +110,12 @@ class FinanceProvider(Protocol):
     async def __call__(
         self, start: datetime, end: datetime, now_local: datetime,
     ) -> list[FinanceDay]: ...
+
+
+class VsAutoRollingProvider(Protocol):
+    async def __call__(
+        self, days: int, now_local: datetime,
+    ) -> dict[str, object] | None: ...
 
 
 class SavingsProvider(Protocol):

@@ -82,7 +82,14 @@ from ems.domain import BatteryIntent, IntelligenceState, PhysicalMode
 from ems.economics import EconomicSnapshot
 from ems.energy_flow import build_daily_flows, charge_kind
 from ems.ev_advisor import advise_charge_window
-from ems.finance import day_finance, price_rows_by_local_day, raw_rows_by_local_day
+from ems.finance import (
+    VS_AUTO_MODEL_NOTE,
+    day_finance,
+    day_vs_auto,
+    price_rows_by_local_day,
+    raw_rows_by_local_day,
+    strip_vs_auto_ephemeral,
+)
 from ems.freshness import FreshnessTracker
 from ems.load_model import reconstruct
 from ems.notify import Notifier
@@ -799,6 +806,7 @@ def _uslot_totals(slots: list[dict]) -> dict:
 # Bump when the finance math changes so completed-day rows cached under the OLD formula are
 # recomputed instead of served stale (finding 4). v2 = same-window wear (dis_priced) + price-gate;
 # v3 = export credited via the configurable feed-in model (B-05), not always the full spot price.
+# v6 = B-36 savings breakdown. #131 (EMS vs AUTO) is per-request only — do NOT bump for it.
 _FINANCE_CALC_VERSION = 6  # B-36 savings breakdown (solar / avoided-expensive / battery)
 
 
@@ -3864,6 +3872,42 @@ def create_app(
         )
         return {"advice": advice}
 
+    def _attach_vs_auto(
+        day_label: str, data: dict, raw: list[dict], price_rows: list[dict],
+    ) -> dict:
+        """Overlay per-request EMS-vs-AUTO fields when raw samples exist. Never persists them."""
+        if not raw:
+            return data
+        vs = day_vs_auto(
+            raw, price_rows, day=day_label,
+            usable_kwh=float(settings_cache.get("battery.usable_kwh", 10.8)),
+            max_charge_w=float(settings_cache.get("battery.max_charge_w", 4000.0)),
+            max_discharge_w=float(settings_cache.get("battery.max_discharge_w", 4000.0)),
+            min_reserve_soc=float(settings_cache.get("battery.min_reserve_soc", 10.0)),
+            degradation_eur_per_kwh=float(
+                settings_cache.get("planner.degradation_eur_per_kwh", 0.05)
+            ),
+            export_price_model=str(settings_cache.get("prices.export_price_model", "net_metering")),
+            energy_tax_eur_per_kwh=float(
+                settings_cache.get("prices.energy_tax_eur_per_kwh", 0.13)
+            ),
+            fixed_feed_in_eur_per_kwh=float(
+                settings_cache.get("prices.fixed_feed_in_eur_per_kwh", 0.01)
+            ),
+            tibber_total_includes_all=bool(
+                settings_cache.get("grid_fees.tibber_total_includes_all", False)
+            ),
+            import_fee_eur_per_kwh=float(
+                settings_cache.get("grid_fees.import_fee_eur_per_kwh", 0.0)
+            ),
+            export_fee_eur_per_kwh=float(
+                settings_cache.get("grid_fees.export_fee_eur_per_kwh", 0.0)
+            ),
+        )
+        out = dict(data)
+        out.update(vs.to_ephemeral_dict())
+        return out
+
     async def _persist_daily_finance(day_label: str, data: dict) -> None:
         """Best-effort write-through of one day's finance rollup to the `daily_finance` MEMO cache.
 
@@ -3873,9 +3917,11 @@ def create_app(
         suite's parallel load — must therefore NOT turn a successful read into a 500: swallow it
         (logged), leave the day uncached, and let the next request recompute + re-upsert. Anything
         that is NOT transient contention (a real schema/IO error) still propagates. This mirrors the
-        best-effort persist philosophy used elsewhere (notification store, recorder)."""
+        best-effort persist philosophy used elsewhere (notification store, recorder).
+
+        #131: strip per-request vs-AUTO fields — the simulation is never stored."""
         try:
-            await store.upsert_daily_finance(day_label, data)
+            await store.upsert_daily_finance(day_label, strip_vs_auto_ephemeral(data))
         except sqlite3.OperationalError as exc:
             msg = str(exc).lower()
             if "locked" not in msg and "busy" not in msg:
@@ -3893,12 +3939,6 @@ def create_app(
         cur = datetime(day_local.year, day_local.month, day_local.day, tzinfo=site_tz)
         nxt = cur + timedelta(days=1)
         completed = nxt <= now_local
-        if completed:
-            cached = await store.daily_finance_between(day_label, nxt.date().isoformat())
-            # Only trust a cache entry written by the CURRENT finance formula; a day cached
-            # under an older version is recomputed (re-upserted) so a math fix reaches history.
-            if cached and cached[0]["data"].get("calc_v") == _FINANCE_CALC_VERSION:
-                return cached[0]["data"]
         degradation = float(settings_cache.get("planner.degradation_eur_per_kwh", 0.05))
         export_model = str(settings_cache.get("prices.export_price_model", "net_metering"))
         energy_tax = float(settings_cache.get("prices.energy_tax_eur_per_kwh", 0.13))
@@ -3907,13 +3947,23 @@ def create_app(
         import_fee = float(settings_cache.get("grid_fees.import_fee_eur_per_kwh", 0.0))
         export_fee = float(settings_cache.get("grid_fees.export_fee_eur_per_kwh", 0.0))
         q_end = min(nxt, now_local + timedelta(minutes=1))
-        # Cadence-aware per-day cap (finding 10): sized to the recorder frequency, not a fixed
-        # 3000 that would truncate a finer sampling rate.
         day_limit = history_row_cap((nxt - cur).total_seconds(), _sample_cadence_seconds())
         raw = await store.raw_between(cur.astimezone(UTC).isoformat(),
                                       q_end.astimezone(UTC).isoformat(), limit=day_limit)
         price_rows = await store.prices_between(cur.astimezone(UTC).isoformat(),
                                                 nxt.astimezone(UTC).isoformat())
+        cached_data = None
+        if completed:
+            cached = await store.daily_finance_between(day_label, nxt.date().isoformat())
+            if cached:
+                cached_data = cached[0]["data"]
+            # Current-version cache is trusted as-is.
+            if cached_data is not None and cached_data.get("calc_v") == _FINANCE_CALC_VERSION:
+                return _attach_vs_auto(day_label, cached_data, raw, price_rows)
+            # #131 guard: never overwrite a stored rollup with an empty recompute when raw is gone
+            # (purged after retention). Keep the cached row byte-for-byte; vs-AUTO stays absent.
+            if cached_data is not None and not raw:
+                return dict(cached_data)
         f = day_finance(raw, price_rows, day=day_label,
                         degradation_eur_per_kwh=degradation,
                         export_price_model=export_model,
@@ -3928,7 +3978,7 @@ def create_app(
         f["calc_v"] = _FINANCE_CALC_VERSION
         if completed:
             await _persist_daily_finance(day_label, f)
-        return f
+        return _attach_vs_auto(day_label, f, raw, price_rows)
 
     async def _finance_window(start: datetime, end: datetime, now_local: datetime) -> list[dict]:
         """Batched replacement for calling `_ensure_day_finance` once per day (BACKLOG B-49): the
@@ -3939,7 +3989,10 @@ def create_app(
         + cache-guard decision runs OFF the event loop in a worker thread (item 3: CPU that used to
         run inline for up to 365 days). Only days that actually need (re)computing are upserted —
         same calc_v cache-guard contract as `_ensure_day_finance`, which stays UNCHANGED (and is
-        still used, one day at a time, by the export package for arbitrary/non-contiguous days)."""
+        still used, one day at a time, by the export package for arbitrary/non-contiguous days).
+
+        #131: per-request `day_vs_auto` attached when raw exists; never stored. A completed day
+        with a cached row and no raw is returned unchanged (never overwritten with empty)."""
         q_end = min(end, now_local + timedelta(minutes=1))
         limit = history_row_cap((end - start).total_seconds(), _sample_cadence_seconds())
         raw = await store.raw_between(start.astimezone(UTC).isoformat(),
@@ -3958,6 +4011,12 @@ def create_app(
         includes_all = bool(settings_cache.get("grid_fees.tibber_total_includes_all", False))
         import_fee = float(settings_cache.get("grid_fees.import_fee_eur_per_kwh", 0.0))
         export_fee = float(settings_cache.get("grid_fees.export_fee_eur_per_kwh", 0.0))
+        batt_kw = {
+            "usable_kwh": float(settings_cache.get("battery.usable_kwh", 10.8)),
+            "max_charge_w": float(settings_cache.get("battery.max_charge_w", 4000.0)),
+            "max_discharge_w": float(settings_cache.get("battery.max_discharge_w", 4000.0)),
+            "min_reserve_soc": float(settings_cache.get("battery.min_reserve_soc", 10.0)),
+        }
 
         def _compute() -> list[tuple[str, dict, bool]]:
             out: list[tuple[str, dict, bool]] = []
@@ -3967,12 +4026,19 @@ def create_app(
                 nxt = cur + timedelta(days=1)
                 completed = nxt <= now_local
                 cached_data = cached_by_day.get(day_label)
+                day_raw = raw_by_day.get(day_label, [])
+                day_prices = price_by_day.get(day_label, [])
                 if completed and cached_data is not None \
                         and cached_data.get("calc_v") == _FINANCE_CALC_VERSION:
-                    out.append((day_label, cached_data, False))
+                    data = dict(cached_data)
+                    needs_upsert = False
+                elif completed and cached_data is not None and not day_raw:
+                    # #131: raw purged — keep the stored rollup; never write "geen data".
+                    data = dict(cached_data)
+                    needs_upsert = False
                 else:
                     f = day_finance(
-                        raw_by_day.get(day_label, []), price_by_day.get(day_label, []),
+                        day_raw, day_prices,
                         day=day_label, degradation_eur_per_kwh=degradation,
                         export_price_model=export_model, energy_tax_eur_per_kwh=energy_tax,
                         fixed_feed_in_eur_per_kwh=fixed_feed_in,
@@ -3984,7 +4050,22 @@ def create_app(
                         max_hold_seconds=2 * _sample_cadence_seconds(),
                     ).to_dict()
                     f["calc_v"] = _FINANCE_CALC_VERSION
-                    out.append((day_label, f, completed))
+                    data = f
+                    needs_upsert = completed
+                if day_raw:
+                    vs = day_vs_auto(
+                        day_raw, day_prices, day=day_label,
+                        degradation_eur_per_kwh=degradation,
+                        export_price_model=export_model,
+                        energy_tax_eur_per_kwh=energy_tax,
+                        fixed_feed_in_eur_per_kwh=fixed_feed_in,
+                        tibber_total_includes_all=includes_all,
+                        import_fee_eur_per_kwh=import_fee,
+                        export_fee_eur_per_kwh=export_fee,
+                        **batt_kw,
+                    )
+                    data.update(vs.to_ephemeral_dict())
+                out.append((day_label, data, needs_upsert))
                 cur = nxt
             return out
 
@@ -3996,6 +4077,82 @@ def create_app(
             days.append(data)
         return days
 
+    async def _vs_auto_rolling(self_days: int, now_local: datetime) -> dict | None:
+        """Per-request EMS-vs-AUTO over the last `self_days` local days (default 90).
+
+        Uses the same `day_vs_auto` helper hung from `_finance_window`; never writes
+        `daily_finance`. Returns None when no day could be simulated."""
+        if store is None or self_days <= 0:
+            return None
+        end = (now_local + timedelta(days=1)).replace(
+            hour=0, minute=0, second=0, microsecond=0
+        )
+        start = end - timedelta(days=self_days)
+        q_end = min(end, now_local + timedelta(minutes=1))
+        limit = history_row_cap((end - start).total_seconds(), _sample_cadence_seconds())
+        raw = await store.raw_between(
+            start.astimezone(UTC).isoformat(),
+            q_end.astimezone(UTC).isoformat(),
+            limit=limit,
+        )
+        price_rows = await store.prices_between(
+            start.astimezone(UTC).isoformat(),
+            end.astimezone(UTC).isoformat(),
+        )
+        raw_by_day = raw_rows_by_local_day(raw, start, end, site_tz)
+        price_by_day = price_rows_by_local_day(price_rows, start, end, site_tz)
+        degradation = float(settings_cache.get("planner.degradation_eur_per_kwh", 0.05))
+        export_model = str(settings_cache.get("prices.export_price_model", "net_metering"))
+        energy_tax = float(settings_cache.get("prices.energy_tax_eur_per_kwh", 0.13))
+        fixed_feed_in = float(settings_cache.get("prices.fixed_feed_in_eur_per_kwh", 0.01))
+        includes_all = bool(settings_cache.get("grid_fees.tibber_total_includes_all", False))
+        import_fee = float(settings_cache.get("grid_fees.import_fee_eur_per_kwh", 0.0))
+        export_fee = float(settings_cache.get("grid_fees.export_fee_eur_per_kwh", 0.0))
+        batt_kw = {
+            "usable_kwh": float(settings_cache.get("battery.usable_kwh", 10.8)),
+            "max_charge_w": float(settings_cache.get("battery.max_charge_w", 4000.0)),
+            "max_discharge_w": float(settings_cache.get("battery.max_discharge_w", 4000.0)),
+            "min_reserve_soc": float(settings_cache.get("battery.min_reserve_soc", 10.0)),
+        }
+
+        def _sum() -> dict | None:
+            saved = 0.0
+            auto_cost = 0.0
+            n = 0
+            cur = start
+            while cur < end and cur <= now_local:
+                day_label = cur.date().isoformat()
+                day_raw = raw_by_day.get(day_label, [])
+                if day_raw:
+                    vs = day_vs_auto(
+                        day_raw, price_by_day.get(day_label, []), day=day_label,
+                        degradation_eur_per_kwh=degradation,
+                        export_price_model=export_model,
+                        energy_tax_eur_per_kwh=energy_tax,
+                        fixed_feed_in_eur_per_kwh=fixed_feed_in,
+                        tibber_total_includes_all=includes_all,
+                        import_fee_eur_per_kwh=import_fee,
+                        export_fee_eur_per_kwh=export_fee,
+                        **batt_kw,
+                    )
+                    if vs.saved_vs_auto_eur is not None:
+                        saved += vs.saved_vs_auto_eur
+                        auto_cost += vs.auto_cost_eur or 0.0
+                        n += 1
+                cur += timedelta(days=1)
+            if n == 0:
+                return None
+            return {
+                "saved_eur": round(saved, 2),
+                "auto_cost_eur": round(auto_cost, 2),
+                "days_simulated": n,
+                "days_window": self_days,
+                "label": "gesimuleerd",
+                "note": VS_AUTO_MODEL_NOTE,
+            }
+
+        return await asyncio.to_thread(_sum)
+
     async def finance(
         period: str = Query(default="day", pattern="^(day|week|month|year)$"),
         date: str | None = None,
@@ -4003,7 +4160,10 @@ def create_app(
         """Financial history (spec 2026-07-03 B): per LOCAL day — what the grid cost, what the
         battery cost in wear, and what the EMS saved vs the no-battery baseline — measured from
         recorded samples + stored prices, never from the plan. Completed days are computed once
-        and persisted (`daily_finance`, retention-proof); the running day is always fresh."""
+        and persisted (`daily_finance`, retention-proof); the running day is always fresh.
+
+        Live HTTP route is `ems.web.routes.report` via ReportService (#131 `vs_auto`).
+        This closure remains for parity with the in-app report helper shape."""
         now_local = datetime.now(UTC).astimezone(site_tz)
         if date:
             try:
@@ -4301,6 +4461,9 @@ def create_app(
     async def _application_finance_window(start, end, now_local):
         return await _finance_window(start, end, now_local) if store is not None else []
 
+    async def _application_vs_auto_rolling(days: int, now_local):
+        return await _vs_auto_rolling(days, now_local) if store is not None else None
+
     app.state.application_context = ApplicationContext(
         source=source,
         controller=controller,
@@ -4329,6 +4492,7 @@ def create_app(
         )],
         report_for_window=_report_for_window,
         finance_window=_application_finance_window,
+        vs_auto_rolling=_application_vs_auto_rolling,
         savings_snapshot=_savings_snapshot,
         diagnostics_snapshot=_diagnostics_snapshot,
     )

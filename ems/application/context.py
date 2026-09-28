@@ -14,6 +14,7 @@ from ems.application.protocols import (
     SavingsProvider,
     TariffPolicyProvider,
     TariffWarningsProvider,
+    VsAutoRollingProvider,
 )
 from ems.clock import Clock, SystemClock
 from ems.control.mode_controller import ModeController
@@ -51,5 +52,6 @@ class ApplicationContext:
     tariff_warnings: TariffWarningsProvider | None = None
     report_for_window: ReportProvider | None = None
     finance_window: FinanceProvider | None = None
+    vs_auto_rolling: VsAutoRollingProvider | None = None
     savings_snapshot: SavingsProvider | None = None
     diagnostics_snapshot: DiagnosticsProvider | None = None

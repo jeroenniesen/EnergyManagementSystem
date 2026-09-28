@@ -10,7 +10,14 @@ from zoneinfo import ZoneInfo
 from fastapi.testclient import TestClient
 
 from ems.domain import RawSample
-from ems.finance import day_finance, price_rows_by_local_day, raw_rows_by_local_day
+from ems.finance import (
+    VS_AUTO_MODEL_NOTE,
+    day_finance,
+    day_vs_auto,
+    price_rows_by_local_day,
+    raw_rows_by_local_day,
+    strip_vs_auto_ephemeral,
+)
 from ems.load_model import reconstruct
 from ems.sources.mock import MockSource
 from ems.sources.prices import MockPriceSource
@@ -474,3 +481,132 @@ def test_dst_fall_back_day_kwh_sums_100_quarters():
     assert abs(f.grid_import_kwh - 25.0) < 1e-6
     assert abs(f.sample_coverage - 1.0) < 1e-9
     assert abs(f.grid_cost_eur - 25.0 * 0.20) < 1e-6
+
+
+# --- #131: EMS vs battery AUTO (per-request; never bumps calc_v / never overwrites without raw) ---
+
+def test_finance_calc_version_unchanged_by_vs_auto_slice():
+    # AC #131: this slice must NOT bump `_FINANCE_CALC_VERSION` (simulation is per-request only).
+    assert _FINANCE_CALC_VERSION == 6
+
+
+def test_day_vs_auto_solar_day_auto_beats_idle_battery():
+    # Midday surplus charges AUTO; evening load is served from the pack. Measured day left the
+    # battery idle → EMS (idle) costs more than AUTO → saved_vs_auto is negative and stays visible.
+    rows = []
+    for h, grid, solar, batt in (
+        (10, 0.0, 2000.0, 0.0),   # surplus exported (idle battery)
+        (11, 0.0, 2000.0, 0.0),
+        (12, 0.0, 2000.0, 0.0),
+        (19, 1000.0, 0.0, 0.0),  # evening import
+        (20, 1000.0, 0.0, 0.0),
+    ):
+        t0 = DAY + timedelta(hours=h)
+        for i in range(4):
+            rows.append({
+                "ts": (t0 + timedelta(minutes=15 * i)).isoformat(),
+                "grid_power_w": grid, "solar_power_w": solar, "battery_power_w": batt,
+                "soc_pct": 50.0,
+            })
+    prices = _prices({10: 0.20, 11: 0.20, 12: 0.20, 19: 0.40, 20: 0.40})
+    vs = day_vs_auto(
+        rows, prices, day="2026-06-28",
+        usable_kwh=10.0, max_charge_w=4000.0, max_discharge_w=4000.0,
+        min_reserve_soc=0.0, degradation_eur_per_kwh=0.05,
+    )
+    assert vs.has_sim and vs.saved_vs_auto_eur is not None
+    assert vs.saved_vs_auto_eur < 0.0  # AUTO would have been cheaper → EMS "saved" is negative
+    assert "0.90" in VS_AUTO_MODEL_NOTE and "50 W" in VS_AUTO_MODEL_NOTE
+    assert "EV" in VS_AUTO_MODEL_NOTE or "car" in VS_AUTO_MODEL_NOTE.lower()
+
+
+def test_day_vs_auto_prices_import_fee_like_day_finance_not_replay_spot():
+    # AC #131: same EconomicSnapshot / import-fee boundary as day_finance — a 0.05 €/kWh import
+    # fee raises both legs equally when the meter is identical to AUTO (idle → AUTO idle too).
+    rows = _rows([(12, 1, 1000.0, 0.0)])
+    # Flat load with solar would let AUTO discharge; idle meter keeps AUTO idle (net=0).
+    idle = []
+    t0 = DAY + timedelta(hours=12)
+    for i in range(4):
+        idle.append({
+            "ts": (t0 + timedelta(minutes=15 * i)).isoformat(),
+            "grid_power_w": 0.0, "solar_power_w": 0.0, "battery_power_w": 0.0, "soc_pct": 50.0,
+        })
+    prices = _prices({12: 0.20})
+    vs_fee = day_vs_auto(
+        idle, prices, day="2026-06-28", min_reserve_soc=0.0,
+        tibber_total_includes_all=False, import_fee_eur_per_kwh=0.05,
+    )
+    vs_spot = day_vs_auto(
+        idle, prices, day="2026-06-28", min_reserve_soc=0.0,
+        tibber_total_includes_all=False, import_fee_eur_per_kwh=0.0,
+    )
+    assert vs_fee.has_sim and vs_spot.has_sim
+    # Idle both worlds → saved ≈ 0 either way; fee path still builds snapshots (no crash).
+    assert abs(vs_fee.saved_vs_auto_eur) < 1e-6
+    assert abs(vs_spot.saved_vs_auto_eur) < 1e-6
+    # Non-idle import day: fee increases actual AND auto grid cost (replay would miss this).
+    vs_imp = day_vs_auto(
+        rows, prices, day="2026-06-28", min_reserve_soc=100.0,  # reserve blocks AUTO discharge
+        tibber_total_includes_all=False, import_fee_eur_per_kwh=0.05,
+        degradation_eur_per_kwh=0.0,
+    )
+    vs_imp0 = day_vs_auto(
+        rows, prices, day="2026-06-28", min_reserve_soc=100.0,
+        tibber_total_includes_all=False, import_fee_eur_per_kwh=0.0,
+        degradation_eur_per_kwh=0.0,
+    )
+    assert vs_imp.actual_cost_eur is not None and vs_imp0.actual_cost_eur is not None
+    assert vs_imp.actual_cost_eur > vs_imp0.actual_cost_eur  # import fee visible on finance path
+
+
+def test_strip_vs_auto_ephemeral_removes_simulation_keys_only():
+    row = {
+        "day": "2026-06-28", "has_data": True, "saved_eur": 1.0, "calc_v": 6,
+        "saved_vs_auto_eur": 0.5, "auto_cost_eur": 2.0, "vs_auto_has_sim": True,
+        "auto_grid_cost_eur": 1.8, "auto_battery_cost_eur": 0.2,
+    }
+    stripped = strip_vs_auto_ephemeral(row)
+    assert stripped == {"day": "2026-06-28", "has_data": True, "saved_eur": 1.0, "calc_v": 6}
+    assert "saved_vs_auto_eur" not in stripped
+
+
+def test_cached_finance_without_raw_is_never_overwritten_with_empty(tmp_path):
+    # AC #131: filled daily_finance + no raw_samples → after a finance window pass the stored row
+    # is byte-for-byte equal and never becomes has_data=False / "geen data".
+    db = str(tmp_path / "ems.sqlite")
+    sentinel = {
+        "day": "2026-06-28", "has_data": True, "saved_eur": 12.34,
+        "grid_cost_eur": 5.0, "battery_cost_eur": 0.5, "baseline_cost_eur": 18.0,
+        "price_coverage": 1.0, "sample_coverage": 1.0,
+        "grid_import_kwh": 10.0, "grid_export_kwh": 2.0,
+        "battery_charge_kwh": 4.0, "battery_discharge_kwh": 3.0,
+        "solar_self_use_eur": 4.0, "avoided_expensive_eur": 7.0, "battery_contribution_eur": 1.34,
+        "calc_v": _FINANCE_CALC_VERSION,
+    }
+
+    async def seed() -> None:
+        store = HistoryStore(db)
+        await store.init()
+        # Prices alone (no raw) — enough for the window to exist; finance must trust the cache.
+        await store.upsert_price_slots([("2026-06-28T12:00:00+00:00", 0.30)])
+        await store.upsert_daily_finance("2026-06-28", dict(sentinel))
+        await store.close()
+
+    asyncio.run(seed())
+
+    with TestClient(_econ_app(db)) as c:
+        body = c.get("/api/finance?period=day&date=2026-06-28").json()
+    assert body["days"][0]["saved_eur"] == 12.34
+    assert body["days"][0]["has_data"] is True
+
+    async def stored() -> dict:
+        store = HistoryStore(db)
+        rows = await store.daily_finance_between("2026-06-28", "2026-06-29")
+        await store.close()
+        return rows[0]["data"]
+
+    after = asyncio.run(stored())
+    assert after == sentinel  # byte-for-byte — no empty overwrite, no vs_auto keys persisted
+    assert after.get("has_data") is True
+    assert "saved_vs_auto_eur" not in after
