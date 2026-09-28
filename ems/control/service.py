@@ -1292,6 +1292,11 @@ class ControlService:
                 return self._startup_safe_auto_if_needed(now, lc, observed)
         with timed("control.decide"):
             intent, _reason, override_active, tgt, pw, _v, car_action = self.effective_intent(now)
+            # Soak counters (#179): count §8.11 rejects once per operational tick only —
+            # effective_intent is also called from UI/recorder/advisory paths and must not
+            # inflate validator_rejects / pending fail_safe there.
+            if getattr(self._decision_engine, "last_validator_rejected", False):
+                LOOP_COUNTERS.incr_validator_rejects()
             # captured for the control.overrun audit detail (B-80 task 4 review)
             intended_mode = intent
             self._ctx.intended_mode_box["value"] = intended_mode

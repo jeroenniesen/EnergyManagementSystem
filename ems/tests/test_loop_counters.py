@@ -141,6 +141,31 @@ def test_hermetic_validator_reject_increments_counter():
     assert snap["cycles"] == 1
 
 
+def test_effective_intent_alone_does_not_inflate_validator_rejects():
+    """UI/recorder/advisory effective_intent must not bump soak counters (#179)."""
+    controller = _controlling_controller()
+
+    def _reject(plan, now):
+        return PlanValidation(
+            status="unsafe",
+            findings=(Finding(severity="unsafe", code="test", message="unsafe for test"),),
+        )
+
+    svc = _service(controller, validate=_reject)
+    svc._ctx.override_box["ov"] = Override(
+        intent=BatteryIntent.GRID_CHARGE_TO_TARGET, expires_at=NOW + timedelta(hours=1),
+    )
+    LOOP_COUNTERS.reset()
+    for _ in range(5):
+        intent, *_ = svc.effective_intent(NOW)
+        assert intent is BatteryIntent.ALLOW_SELF_CONSUMPTION
+        assert svc._decision_engine.last_validator_rejected is True
+    snap = LOOP_COUNTERS.snapshot()
+    assert snap["validator_rejects"] == 0
+    assert snap["cycles"] == 0
+    assert snap["outcomes"]["fail_safe"] == 0
+
+
 def test_diagnostics_exposes_control_loop_counters():
     with TestClient(create_app(MockSource(), dry_run=True, dev_mode="mock")) as c:
         b = c.get("/api/diagnostics").json()
