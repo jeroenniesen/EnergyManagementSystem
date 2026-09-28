@@ -332,6 +332,41 @@ def test_persist_charge_commitment_from_service():
     assert ctl.charge_commitment.deadline == NOW + timedelta(hours=4)
 
 
+def test_grid_charge_override_keeps_commitment_without_abort_audit():
+    """Manual GRID_CHARGE override must not immediately abort the commitment it just created
+    (otherwise the abort row becomes the newest battery_decision and lacks desired_mode)."""
+    driver = _WritesDriver(PhysicalMode.CHARGE, armed=True)
+    lc = Lifecycle(dry_run=False, startup_grace_seconds=0.0)
+    ctl = ModeController(driver, lc, dry_run=False)
+    ctl.set_charge_commitment(_commitment(target_soc=100.0))
+    lc.start(NOW)
+    lc.mark_sensors_validated()
+    lc.mark_probe_ok()
+    lc.mark_plan_loaded()
+    lc.tick(NOW)
+    svc, _ = _service(ctl, dry_run=False, soc=25.0)
+    records, intent, reason, tgt, pw = svc._apply_charge_commitment_to_intent(
+        NOW, lc, BatteryIntent.GRID_CHARGE_TO_TARGET, "manual override", 100.0, 4800.0, True)
+    assert records == []
+    assert ctl.charge_commitment is not None
+    assert intent is BatteryIntent.GRID_CHARGE_TO_TARGET
+    assert tgt == 100.0
+
+
+def test_non_charge_override_aborts_commitment_with_reason():
+    driver = _WritesDriver(PhysicalMode.CHARGE, armed=True)
+    lc = Lifecycle(dry_run=False, startup_grace_seconds=0.0)
+    ctl = ModeController(driver, lc, dry_run=False)
+    ctl.set_charge_commitment(_commitment())
+    lc.start(NOW)
+    svc, _ = _service(ctl, dry_run=False, soc=25.0)
+    records, intent, *_ = svc._apply_charge_commitment_to_intent(
+        NOW, lc, BatteryIntent.ALLOW_SELF_CONSUMPTION, "manual override", None, None, True)
+    assert ctl.charge_commitment is None
+    assert intent is BatteryIntent.ALLOW_SELF_CONSUMPTION
+    assert any("manual_override" in r["detail"]["reason"] for r in records)
+
+
 def test_shutdown_restore_audit_preserves_commitment_flag():
     """Lifespan shutdown keeps commitment in controller state (interaction with #127)."""
     from fastapi.testclient import TestClient

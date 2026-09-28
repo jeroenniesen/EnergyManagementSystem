@@ -1679,7 +1679,11 @@ class ControlService:
         if self._controller is None or self._controller.charge_commitment is None:
             return records, intent, reason, tgt, pw
         if override_active:
-            # Operator override owns the battery; drop the auto commitment with an explicit note.
+            # A GRID_CHARGE override *is* the commitment (manual "charge now") — keep it so the
+            # next cycle does not audit-abort the apply we just persisted (#177 / CI regression).
+            # Only abort when the operator overrides *away* from grid-charge.
+            if intent is BatteryIntent.GRID_CHARGE_TO_TARGET:
+                return records, intent, reason, tgt, pw
             c = self._controller.charge_commitment
             self._controller.clear_charge_commitment()
             note = (f"commitment_aborted: manual_override — cleared GRID_CHARGE to "
