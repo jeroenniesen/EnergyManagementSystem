@@ -123,8 +123,11 @@ const GROUP_HINT: Record<string, string> = {
   battery: "Battery address, capacity and reserves.",
   prices: "Your Tibber token for live day-ahead prices.",
   site: "Location & array — these drive the solar forecast.",
-  control: "Safety limits applied to the battery mode controller.",
-  planner: "The arbitrage maths — the plan recomputes from these immediately.",
+  control:
+    "Safety limits and arming. Watch only / Let the system control need Apply & restart — "
+    + "saved ≠ live until then. config.yaml dry_run / mock still always wins over these toggles. "
+    + "Other control knobs apply as soon as you save (active now).",
+  planner: "Arbitrage maths — these apply as soon as you save; the next plan uses them (active now).",
   ai: "Optional. Off by default. Turn on to get natural-language explanations and the chat — a tiny, "
     + "redacted summary is sent to MiniMax; never your address, history or tokens.",
   access: "Optional. Set a token to require it for saving/control. Then enter the same token in the "
@@ -252,6 +255,7 @@ function Field({
   error,
   disabled,
   secretSet,
+  restartPending,
   onChange,
 }: {
   field: SettingField;
@@ -259,6 +263,7 @@ function Field({
   error?: string;
   disabled: boolean;
   secretSet?: boolean;
+  restartPending?: boolean;
   onChange: (v: number | boolean | string) => void;
 }) {
   const id = `set-${field.key}`;
@@ -266,7 +271,27 @@ function Field({
     <label htmlFor={id} className="field-label">
       {field.label}
       {field.unit && <span className="field-unit"> ({field.unit})</span>}
-      {field.applies === "restart" && <span className="field-badge">restart</span>}
+      {field.applies === "restart" ? (
+        <span
+          className={`field-badge field-badge-restart${restartPending ? " field-badge-pending" : ""}`}
+          data-testid={`apply-${field.key}`}
+          title={
+            restartPending
+              ? "Saved, but still running the old value until Apply & restart"
+              : "Takes effect after Apply & restart — saved ≠ live yet"
+          }
+        >
+          {restartPending ? "restart_pending" : "needs restart"}
+        </span>
+      ) : (
+        <span
+          className="field-badge field-badge-live"
+          data-testid={`apply-${field.key}`}
+          title="Takes effect as soon as you save — no restart"
+        >
+          active now
+        </span>
+      )}
     </label>
   );
   // Booleans render as a proper toggle switch, laid out as a row (label left, switch right). It's
@@ -449,8 +474,9 @@ export function Settings({
   const [advancedOpen, setAdvancedOpen] = useState<Set<string>>(new Set());
   // Field flashed after a search-driven jump (brief highlight + scroll-into-view).
   const [highlightKey, setHighlightKey] = useState<string | null>(null);
-  // Sections whose saved changes need a restart to take effect (client-side, this session).
+  // Sections / keys whose saved changes need a restart to take effect (client-side, this session).
   const [restartPending, setRestartPending] = useState<Set<string>>(new Set());
+  const [restartPendingKeys, setRestartPendingKeys] = useState<Set<string>>(new Set());
   const [lastSaveRestart, setLastSaveRestart] = useState(false);
   // Mobile drill-in (≤700px): start on the section list, then drill into one section.
   const [mobileList, setMobileList] = useState(true);
@@ -757,6 +783,9 @@ export function Settings({
     const restartGroups = (schema ?? [])
       .filter((f) => f.applies === "restart" && f.key in changed)
       .map((f) => f.group);
+    const restartKeys = (schema ?? [])
+      .filter((f) => f.applies === "restart" && f.key in changed)
+      .map((f) => f.key);
     try {
       const r = await apiFetch("/api/settings", {
         method: "POST",
@@ -783,6 +812,7 @@ export function Settings({
       setStatus("saved");
       if (restartGroups.length) {
         setRestartPending((prev) => new Set([...prev, ...restartGroups]));
+        setRestartPendingKeys((prev) => new Set([...prev, ...restartKeys]));
         setLastSaveRestart(true);
         // Re-derive the SERVER's restart_pending against the fresh boot fingerprint — a
         // restart-tagged save is exactly when the "Apply & restart" control can newly appear.
@@ -845,6 +875,7 @@ export function Settings({
           error={errors[f.key]}
           disabled={status === "saving" || !canOperate}
           secretSet={Boolean(values[`${f.key}.__set`])}
+          restartPending={restartPendingKeys.has(f.key)}
           onChange={(v) => {
             set(f.key, v);
             // A manual edit (drag/type) after an "Apply" tap returns the hint to normal.
@@ -1195,7 +1226,9 @@ export function Settings({
               )}
               {status === "saved" && (
                 <span className="settings-msg-ok" data-testid="settings-saved">
-                  Saved{lastSaveRestart ? " — restart to apply connection changes" : ""}
+                  {lastSaveRestart
+                    ? "Saved — restart_pending (boot still runs old values until Apply & restart)"
+                    : "Saved — active now"}
                 </span>
               )}
               {status === "error" && errors._ && (

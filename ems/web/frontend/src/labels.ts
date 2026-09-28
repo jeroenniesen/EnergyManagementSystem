@@ -48,6 +48,18 @@ export const RUN_MODE: Record<"dry" | "live", Labelled> = {
   },
 };
 
+/** Short labels for /api/status dry_run_cause (#178) — full text stays in dry_run_reason. */
+export const DRY_RUN_CAUSE_LABEL: Record<string, string> = {
+  mock: "demo/mock",
+  config_dry_run: "config.yaml dry_run",
+  settings_dry_run: "Settings watch-only",
+  unarmed: "unarmed",
+  no_live_prices: "no live prices",
+  no_live_devices: "no live devices",
+  observing: "observing grace",
+  dry_run: "watch-only",
+};
+
 /** Data source: real sensors vs. the built-in simulator. */
 export const DATA_SOURCE: Record<"live" | "sim", Labelled> = {
   live: { label: "Live sensors", title: "Readings come from your real meters and battery." },

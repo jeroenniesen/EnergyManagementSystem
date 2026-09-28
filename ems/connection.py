@@ -36,6 +36,35 @@ SETTINGS_FORCED_DRY_RUN_REASON = (
     "UI operational is ON but the battery writer stays unarmed"
 )
 
+# #178: primary cause strings for the Watching-only badge / dry_run_reason (operators misread
+# a bare "Watching only" as "Settings broken"). Narrow block reasons above stay for diagnostics
+# when operational is ON but forced; these cover every common watch-only path.
+MOCK_WATCH_REASON = (
+    "Demo / mock mode (dev.mode is mock or replay) — battery writes stay off until "
+    "config.yaml uses dev.mode: live"
+)
+CONFIG_WATCH_REASON = (
+    "config.yaml forces watch-only (set control.dry_run: false and dev.mode: live, then restart)"
+)
+SETTINGS_WATCH_REASON = (
+    "Settings → Watch only is ON — turn it off under Control & safety, then Apply & restart"
+)
+UNARMED_WATCH_REASON = (
+    "Control is unarmed — turn on Settings → Let the system control the battery, "
+    "then Apply & restart (and keep Watch only OFF)"
+)
+NO_LIVE_PRICES_WATCH_REASON = (
+    "Live Tibber prices required for control — enable Use live Tibber prices and set a token, "
+    "then Apply & restart (#126)"
+)
+NO_LIVE_DEVICES_WATCH_REASON = (
+    "Live devices / Indevolt IP not configured — enable Use live devices, set meter + battery IPs, "
+    "then Apply & restart"
+)
+OBSERVING_WATCH_REASON = (
+    "Startup observing grace — sensors/plan are still validating; EMS will not command yet"
+)
+
 
 def resolve_force_dry_run(eff: dict, *, config_dry_run: bool) -> bool:
     """Whether battery writes must stay off (watch-only).
@@ -67,6 +96,8 @@ def watch_only_block_reason(eff: dict, *, config_dry_run: bool) -> str | None:
 
     Distinguishes config.yaml / mock|replay (#136) from Settings watch-only (#171). Only reports
     when operational would otherwise have armed (live devices + Indevolt IP + live Tibber — #126).
+    Used by diagnostics (warn when UI asks to control but a floor blocks). For the operator-facing
+    Watching-only badge, prefer ``watching_only_primary_reason`` (#178).
     """
     if not bool(eff.get("control.operational")) or not _would_otherwise_arm(eff):
         return None
@@ -75,6 +106,45 @@ def watch_only_block_reason(eff: dict, *, config_dry_run: bool) -> str | None:
     if resolve_force_dry_run(eff, config_dry_run=False):
         return SETTINGS_FORCED_DRY_RUN_REASON
     return None
+
+
+def watching_only_primary_reason(
+    eff: dict,
+    *,
+    config_dry_run: bool,
+    dry_run: bool,
+    dev_mode: str = "live",
+    lifecycle_state: str | None = None,
+) -> tuple[str | None, str | None]:
+    """Primary cause for Watching-only / no battery writes (#178).
+
+    Returns ``(cause_code, human_reason)`` or ``(None, None)`` when EMS is live-controlling
+    (or about to be — not dry-run and past observing).
+
+    Priority (first match wins): mock/replay → config.yaml dry_run → Settings watch-only →
+    unarmed (operational off) → no live devices → no live prices → observing grace.
+    """
+    if not dry_run:
+        if lifecycle_state in ("observing", "inactive"):
+            return "observing", OBSERVING_WATCH_REASON
+        return None, None
+
+    if dev_mode in ("mock", "replay"):
+        return "mock", MOCK_WATCH_REASON
+    if config_dry_run:
+        return "config_dry_run", CONFIG_WATCH_REASON
+    if resolve_force_dry_run(eff, config_dry_run=False):
+        return "settings_dry_run", SETTINGS_WATCH_REASON
+    if not bool(eff.get("control.operational")):
+        return "unarmed", UNARMED_WATCH_REASON
+    use_live = bool(eff.get("connection.use_live_devices")) and bool(eff.get("meters.p1_ip"))
+    if not use_live or not (eff.get("battery.indevolt_ip") or ""):
+        return "no_live_devices", NO_LIVE_DEVICES_WATCH_REASON
+    token = (eff.get("prices.tibber_token") or "").strip()
+    if not (bool(eff.get("connection.use_live_prices")) and bool(token)):
+        return "no_live_prices", NO_LIVE_PRICES_WATCH_REASON
+    # dry_run True with all gates open should not happen; keep a honest fallback.
+    return "dry_run", "Watch-only — battery writes are disabled"
 
 
 def config_forced_dry_run_reason(eff: dict, *, force_dry_run: bool) -> str | None:

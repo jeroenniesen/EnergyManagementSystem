@@ -242,6 +242,58 @@ def test_watch_only_block_reason_distinguishes_config_vs_settings():
     assert watch_only_block_reason(both_off, config_dry_run=False) is None
 
 
+def test_watching_only_primary_reason_priority():
+    """#178: primary cause order — mock > config > settings > unarmed > devices > prices."""
+    from ems.connection import (
+        CONFIG_WATCH_REASON,
+        MOCK_WATCH_REASON,
+        NO_LIVE_DEVICES_WATCH_REASON,
+        NO_LIVE_PRICES_WATCH_REASON,
+        OBSERVING_WATCH_REASON,
+        SETTINGS_WATCH_REASON,
+        UNARMED_WATCH_REASON,
+        watching_only_primary_reason,
+    )
+
+    live = {
+        "connection.use_live_devices": True, "meters.p1_ip": "192.0.2.10",
+        "battery.indevolt_ip": "192.0.2.20", "control.operational": True,
+        "control.dry_run": False,
+        "connection.use_live_prices": True, "prices.tibber_token": "tok",
+    }
+    assert watching_only_primary_reason(
+        effective_settings(live), config_dry_run=False, dry_run=True, dev_mode="mock",
+    ) == ("mock", MOCK_WATCH_REASON)
+    assert watching_only_primary_reason(
+        effective_settings(live), config_dry_run=True, dry_run=True, dev_mode="live",
+    ) == ("config_dry_run", CONFIG_WATCH_REASON)
+    assert watching_only_primary_reason(
+        effective_settings({**live, "control.dry_run": True}),
+        config_dry_run=False, dry_run=True, dev_mode="live",
+    ) == ("settings_dry_run", SETTINGS_WATCH_REASON)
+    assert watching_only_primary_reason(
+        effective_settings({**live, "control.operational": False}),
+        config_dry_run=False, dry_run=True, dev_mode="live",
+    ) == ("unarmed", UNARMED_WATCH_REASON)
+    assert watching_only_primary_reason(
+        effective_settings({**live, "battery.indevolt_ip": ""}),
+        config_dry_run=False, dry_run=True, dev_mode="live",
+    ) == ("no_live_devices", NO_LIVE_DEVICES_WATCH_REASON)
+    assert watching_only_primary_reason(
+        effective_settings({**live, "connection.use_live_prices": False}),
+        config_dry_run=False, dry_run=True, dev_mode="live",
+    ) == ("no_live_prices", NO_LIVE_PRICES_WATCH_REASON)
+    # Armed + observing grace.
+    assert watching_only_primary_reason(
+        effective_settings(live), config_dry_run=False, dry_run=False, dev_mode="live",
+        lifecycle_state="observing",
+    ) == ("observing", OBSERVING_WATCH_REASON)
+    # Fully live controlling → no reason.
+    assert watching_only_primary_reason(
+        effective_settings(live), config_dry_run=False, dry_run=False, dev_mode="live",
+        lifecycle_state="controlling",
+    ) == (None, None)
+
 def test_settings_watch_only_keeps_driver_unarmed_when_config_allows():
     """#171: Settings dry_run True + force_dry_run True → unarmed even if operational ON."""
     eff = effective_settings({

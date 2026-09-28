@@ -110,6 +110,7 @@ from ems.planner.rule_based import plan_rule_based
 from ems.planner.strategy import HysteresisState
 from ems.planner.summer import sunset_after
 from ems.planner.validator import PlanValidation, clamp_plan_power, validate_plan
+from ems.connection import watching_only_primary_reason
 from ems.readiness import Readiness, compute_readiness, home_state
 from ems.reporting import (
     apply_year_totals,
@@ -919,6 +920,7 @@ def create_app(
     *,
     dry_run: bool,
     dry_run_block_reason: str | None = None,
+    config_dry_run: bool = True,
     dev_mode: str,
     tz: ZoneInfo | None = None,
     store: HistoryStore | None = None,
@@ -4298,9 +4300,26 @@ def create_app(
                 reachable = bool(_battery_reachable(now))
             except Exception:
                 reachable = False
+        # #178: primary Watching-only cause (mock / yaml / Settings / unarmed / prices / observing)
+        # so operators don't treat the badge as "Settings broken". Narrow dry_run_block_reason stays
+        # for diagnostics when operational is ON but a floor blocks.
+        lc_state = None
+        if controller is not None:
+            try:
+                lc_state = str(controller.lifecycle.state)
+            except Exception:
+                lc_state = None
+        cause, reason = watching_only_primary_reason(
+            settings_cache,
+            config_dry_run=config_dry_run,
+            dry_run=dry_run,
+            dev_mode=dev_mode,
+            lifecycle_state=lc_state,
+        )
         return {
             "dry_run": dry_run,
-            "dry_run_reason": dry_run_block_reason,
+            "dry_run_reason": reason,
+            "dry_run_cause": cause,
             "dev_mode": dev_mode,
             "soc_pct": raw.soc_pct,
             "grid_power_w": raw.grid_power_w,

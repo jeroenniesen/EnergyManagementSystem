@@ -17,9 +17,37 @@
 | **Check whether the current plan matches measured battery behaviour** | `GET /api/plan-verification` — read-only comparison of planned intent, target SoC, and latest measured SoC/power. |
 | **Interpret tariff warnings** | Review `tariff_warnings` in `/api/plan`, `/api/report`, or `/api/savings`; they identify missing or contradictory import/export fee assumptions. |
 | **Check control-health incidents** | System page → *Control health* panel, or `GET /api/incidents` (rollup of command failures, cluster mismatches, fallbacks, reverts over the window). |
-| **Enter/exit dry-run (watch-only)** | **Settings → Control & safety → "Watch only (no battery writes)"** (and/or "Let the system control the battery"). Save → **Apply & restart**. No daily `config.yaml` edit. The UI shows a large `DRY-RUN`/`LIVE` (Watching only / Controlling) badge. **config.yaml `control.dry_run: true`** (or `dev.mode: mock`/`replay`) still always forces watch-only over the UI (#136). **Caution:** a restart in operational mode runs `shutdown_restore` → AUTO and can abort an active cheap-charge window — prefer flipping after the window ends. |
+| **Enter/exit dry-run (watch-only)** | **Settings → Control & safety → "Watch only (no battery writes)"** (and/or "Let the system control the battery"). Save → **Apply & restart**. No daily `config.yaml` edit. The UI shows a large `DRY-RUN`/`LIVE` (Watching only / Controlling) badge **plus the primary cause** (demo/mock, config.yaml, Settings watch-only, unarmed, no live prices/devices, observing grace) so “Watching only” is not mistaken for a broken Settings save. **config.yaml `control.dry_run: true`** (or `dev.mode: mock`/`replay`) still always forces watch-only over the UI (#136). **Caution:** a restart in operational mode runs `shutdown_restore` → AUTO and can abort an active cheap-charge window — prefer flipping after the window ends. |
+| **See yaml vs Settings vs apply** | See **Config authority** below (hot / restart / boot-only). Each Settings field is badged **active now** or **needs restart** / **restart_pending**. |
 | **Run the capability probe again** | Restart `ems` (probe runs at startup) or hit the probe endpoint; review the logged service/entity surface. |
 | **Run locally on a Mac/laptop for testing** | `docker compose -f docker-compose.dev.yml up` with `dev.mode: mock` — no HA/battery/GPU, `dry_run` forced; dashboard at `http://localhost:8080`. For UI work, `npm run dev` (Vite HMR) proxying to the backend. See `SPEC §11.6`. |
+
+## Config authority (yaml defaults vs settings-store)
+
+Effective config = **`config.yaml` defaults + runtime settings-store overlay** (`/data`). The UI edits the store; `config.yaml` is the file-level seed / floor for a few keys. **Saved ≠ live** for restart-tagged keys until Apply & restart (boot still runs the previous values).
+
+Apply column: **hot** = on save (controller/plan picks it up); **restart** = connection / arming, read at next process start (`restart_pending` until then); **boot-only** = only from yaml/env at process start (no Settings twin, or Settings cannot override the floor).
+
+### Control & arming (operator-critical)
+
+| yaml / boot default | store key (Settings) | Apply | Notes |
+|---|---|---|---|
+| `control.dry_run` (default **true**) | `control.dry_run` | **restart** | Seeded from yaml on first boot. yaml / `dev.mode: mock\|replay` **always wins** over Settings (#136). Missing store ⇒ watch-only. |
+| `dev.mode` (`live`\|`mock`\|`replay`) | — | **boot-only** | mock/replay force dry_run; no Settings twin. |
+| — (no yaml twin) | `control.operational` | **restart** | Default **false** (unarmed). Needs Watch only OFF + live devices + live Tibber + Indevolt IP. |
+| — | `connection.use_live_devices` / `use_live_prices` | **restart** | Live-prices gate (#126): mock prices never arm writes. |
+| — | `meters.*_ip`, `battery.indevolt_*`, `prices.tibber_token` | **restart** | Device/service wiring. |
+| — | `control.max_switches_per_day`, `min_dwell_seconds`, car-guard knobs, `grid_limit_w`, … | **hot** | Pushed onto the live mode controller on save. |
+
+### Planner & strategy (replan path)
+
+| yaml / related default | store key | Apply | Notes |
+|---|---|---|---|
+| strategy / arbitrage sample keys in `config.yaml` | `strategy.mode`, `strategy.*` | **hot** | Next plan / season pick uses the store. |
+| arbitrage economics sample | `planner.*` (efficiency, wear, margins, slots, …) | **hot** | `/api/plan` recomputes; Settings shows plan-preview impact. |
+| `planner.mode` (rule_based) | `planner.mode` | **hot** | ml/advisory greyed until M6; same §8.11 validator. |
+
+Full key list: `docs/config-reference.md` + `GET /api/settings` `schema[].applies`.
 
 ## Rotate a token (Tibber / Solcast / HA / web)
 
