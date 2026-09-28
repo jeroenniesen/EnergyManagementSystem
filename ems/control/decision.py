@@ -16,6 +16,7 @@ from ems.application.protocols import (
     PlanProvider,
     PlanValidator,
 )
+from ems.control.override import as_plan
 from ems.control.safety import SafetyValidator
 from ems.domain import BatteryIntent
 
@@ -90,6 +91,8 @@ class ControlDecisionEngine:
         """Return the legacy seven-element effective-intent tuple."""
         cur = None
         val = None
+        # Energy contract the override would command (filled below for charge/export intents).
+        override_target_soc = override_power_w = None
         if override.active(now):
             assert override.intent is not None and override.expires_at is not None
             until = (
@@ -98,13 +101,29 @@ class ControlDecisionEngine:
                 else override.expires_at.strftime("%H:%M")
             )
             intent, override_active = override.intent, True
-            risky = intent is not BatteryIntent.ALLOW_SELF_CONSUMPTION
-            if risky and self._data_quality(now) == "unsafe":
+            floor = float(self._settings["battery.min_reserve_soc"])
+            if intent is BatteryIntent.GRID_CHARGE_TO_TARGET:
+                override_target_soc = 100.0
+                override_power_w = float(self._settings["battery.max_charge_w"])
+            elif intent is BatteryIntent.DISCHARGE_FOR_LOAD and self._allow_export_discharge():
+                override_target_soc = floor
+                override_power_w = float(self._settings["battery.max_discharge_w"])
+            # Same §8.11 gate as an automatic plan (#135): materialise the override as a Plan
+            # and reject unsafe ones → hold AUTO. ALLOW_SELF_CONSUMPTION is the fail-safe itself,
+            # so it still applies even when stale inputs make the synthetic plan `unsafe`.
+            plan = as_plan(
+                override, now,
+                target_soc=override_target_soc, power_w=override_power_w, floor_soc=floor,
+            )
+            val = self._safety.validate(plan, now)
+            if not val.ok and intent is not BatteryIntent.ALLOW_SELF_CONSUMPTION:
+                top = next((f for f in val.findings if f.severity == "unsafe"), None)
+                note = top.message if top is not None else "override failed validation"
                 intent = BatteryIntent.ALLOW_SELF_CONSUMPTION
                 reason = (
-                    f"manual override held — sensor data is unsafe, so EMS won't force "
-                    f"{override.intent.value}; holding self-consumption until {until}"
+                    f"manual override held — {note}; holding self-consumption until {until}"
                 )
+                override_target_soc = override_power_w = None
             else:
                 reason = f"manual override: {override.intent.value} until {until}"
         else:
@@ -161,13 +180,7 @@ class ControlDecisionEngine:
             power_w = car_action.power_w
             target_soc = self._settings["battery.min_reserve_soc"]
         elif override_active:
-            if intent is BatteryIntent.GRID_CHARGE_TO_TARGET:
-                target_soc, power_w = 100.0, self._settings["battery.max_charge_w"]
-            elif intent is BatteryIntent.DISCHARGE_FOR_LOAD and self._allow_export_discharge():
-                target_soc, power_w = (
-                    self._settings["battery.min_reserve_soc"],
-                    self._settings["battery.max_discharge_w"],
-                )
+            target_soc, power_w = override_target_soc, override_power_w
         elif cur is not None and intent is cur.intent:
             if intent is BatteryIntent.GRID_CHARGE_TO_TARGET:
                 target_soc, power_w = cur.target_soc, cur.power_w

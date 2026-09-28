@@ -5,9 +5,9 @@ safely reconstruct load or trust SoC — the EMS must fall back to the battery's
 self-consumption (AUTO / ALLOW_SELF_CONSUMPTION) rather than acting on a plan built from bad data.
 "The system must never be worse than no EMS."
 
-This gates the PLANNER-derived intent. An explicit, time-boxed manual override is a deliberate
-operator action (they can see the data-quality badge) and is handled separately by the caller.
-Pure + unit-testable.
+This gates the PLANNER-derived intent. A time-boxed manual override is materialised as a Plan and
+passes the same §8.11 validator before apply (`decision.py`); this helper remains the per-intent
+data-quality fail-safe used on the planner path. Pure + unit-testable.
 """
 from __future__ import annotations
 

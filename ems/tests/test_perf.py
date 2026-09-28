@@ -248,6 +248,7 @@ def test_control_tick_phase_push_points_fire_in_order():
     from ems.control.service import ControlContext, ControlService
     from ems.domain import BatteryIntent, PhysicalMode
     from ems.lifecycle import Lifecycle
+    from ems.planner.validator import PlanValidation
     from ems.settings import effective_settings
     from ems.sources.battery import MockBatteryDriver
 
@@ -273,7 +274,7 @@ def test_control_tick_phase_push_points_fire_in_order():
         car_charging=lambda now: False,
         load_by=lambda starts: {s: 0.0 for s in starts},
         active_strategy=lambda now: "winter",
-        validate_plan_obj=lambda plan, now: (_ for _ in ()).throw(AssertionError("unused")),
+        validate_plan_obj=lambda plan, now: PlanValidation(status="valid"),
         planner_cfg=lambda: None,
         summer_cfg=lambda soc: None,
         adaptive_cfg=lambda: None,
@@ -323,6 +324,7 @@ def test_overrun_audit_includes_intended_mode():
             from ems.domain import BatteryIntent, PhysicalMode
             from ems.lifecycle import Lifecycle
             from ems.perf import PERF_BUDGETS
+            from ems.planner.validator import PlanValidation
             from ems.settings import effective_settings
             from ems.sources.battery import MockBatteryDriver
             from ems.storage.audit import AuditStore
@@ -360,7 +362,7 @@ def test_overrun_audit_includes_intended_mode():
                 car_charging=lambda now: False,
                 load_by=lambda starts: {s: 0.0 for s in starts},
                 active_strategy=lambda now: "winter",
-                validate_plan_obj=lambda plan, now: (_ for _ in ()).throw(AssertionError("unused")),
+                validate_plan_obj=lambda plan, now: PlanValidation(status="valid"),
                 planner_cfg=lambda: None,
                 summer_cfg=lambda soc: None,
                 adaptive_cfg=lambda: None,

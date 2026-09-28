@@ -5,8 +5,10 @@ or is cleared, the system returns to following the plan (fail-safe: time-boxed s
 override can't strand the battery). Forcing ALLOW_SELF_CONSUMPTION is the "pause the EMS" action —
 it hands control back to the battery's own vendor mode.
 
-Pure data + (de)serialisation here; persistence lives in the runtime-state KV store and the
-controller still owns the single battery write.
+Before any forced intent is applied it is materialised as a synthetic `Plan` and passed through
+the same §8.11 plan validator as an automatic plan (`unsafe` ⇒ hold AUTO). Pure data +
+(de)serialisation here; persistence lives in the runtime-state KV store and the controller still
+owns the single battery write.
 """
 from __future__ import annotations
 
@@ -14,10 +16,12 @@ from dataclasses import dataclass
 from datetime import datetime
 
 from ems.domain import BatteryIntent
+from ems.planner.schedule import SLOT, Plan, PlanSlot
 
-# How long an override may last, in minutes (1 min .. 24 h). Server-clamped at the API.
+# How long an override may last, in minutes. Server-clamped at the API.
+# Upper bound matches the UI presets (8 h) — never allow a forgotten 24 h max-power force (#135).
 MIN_MINUTES = 1
-MAX_MINUTES = 24 * 60
+MAX_MINUTES = 8 * 60
 
 
 @dataclass(frozen=True)
@@ -68,3 +72,45 @@ def from_stored(intent: str | None, expires_at: str | None) -> Override:
     if parsed_exp.tzinfo is None:
         return NONE
     return Override(intent=parsed_intent, expires_at=parsed_exp)
+
+
+def as_plan(
+    override: Override,
+    now: datetime,
+    *,
+    target_soc: float | None = None,
+    power_w: float | None = None,
+    floor_soc: float | None = None,
+) -> Plan:
+    """Materialise an active override as a one-slot Plan for the §8.11 validator.
+
+    The slot spans `now` → expiry (at least one 15-min quantum) and carries the same energy
+    contract the controller would command. Strategy is ``manual`` so winter-only projection
+    reachability gates do not treat a deliberate "charge now" as a committed arbitrage window.
+    """
+    if override.intent is None or override.expires_at is None:
+        raise ValueError("as_plan requires a set override")
+    end = max(override.expires_at, now + SLOT)
+    deadline = (
+        override.expires_at
+        if override.intent is BatteryIntent.GRID_CHARGE_TO_TARGET
+        else None
+    )
+    slot = PlanSlot(
+        start=now,
+        intent=override.intent,
+        reason=f"manual override until {override.expires_at.isoformat()}",
+        target_soc=target_soc,
+        power_w=power_w,
+        floor_soc=floor_soc,
+        deadline=deadline,
+        end=end,
+    )
+    return Plan(
+        created_at=now,
+        slots=(slot,),
+        strategy="manual",
+        target_soc=target_soc,
+        deadline=deadline,
+        planner_mode="manual_override",
+    )

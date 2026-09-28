@@ -17,6 +17,7 @@ from ems.control.override import Override
 from ems.control.service import ControlContext, ControlService
 from ems.domain import BatteryIntent, PhysicalMode
 from ems.lifecycle import Lifecycle, OwnershipState
+from ems.planner.validator import PlanValidation
 from ems.settings import effective_settings
 from ems.sources.battery import MockBatteryDriver
 
@@ -49,8 +50,8 @@ def _service_with_source(controller, source, **kwargs):
         car_charging=lambda now: True,  # force car-charging path to trigger current_soc
         load_by=lambda starts: {s: 0.0 for s in starts},
         active_strategy=lambda now: "winter",
-        validate_plan_obj=kwargs.get("validate_plan_callable", lambda p, n: (
-            _ for _ in ()).throw(AssertionError("validate_plan_obj not wired"))),
+        validate_plan_obj=kwargs.get(
+            "validate_plan_callable", lambda p, n: PlanValidation(status="valid")),
         planner_cfg=lambda: None, summer_cfg=lambda soc: None, adaptive_cfg=lambda: None,
         # Pass None → service uses its own methods that read from `source` via current_sample.
         current_soc=None, current_mode=None, current_towers=None,
@@ -64,8 +65,9 @@ def _service(controller, **kwargs):
     settings = effective_settings({})
 
     dq_fn = kwargs.get("data_quality", lambda now: "complete")
+    # Permissive default: override path (#135) always hits the §8.11 gate.
     val_fn = kwargs.get("validate_plan_callable") or (
-        lambda plan, now: (_ for _ in ()).throw(AssertionError("validate_plan_obj not wired")))
+        lambda plan, now: PlanValidation(status="valid"))
 
     svc = ControlService(
         ctx=ctx, settings=settings, controller=controller, store=None, audit_store=None,

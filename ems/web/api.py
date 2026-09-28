@@ -2296,19 +2296,18 @@ def create_app(
         if override_active:
             ov = override_box["ov"]
             until = ov.expires_at.astimezone(site_tz).strftime("%H:%M") if ov.expires_at else "?"
-            # If the override was HELD (gated on unsafe data), say so — never claim it's "forcing"
-            # the requested action when the battery is actually held at self-consumption.
+            # If the override was HELD (validator/fail-safe blocked it), say so — never claim
+            # it's "forcing" the requested action when the battery is actually at self-consumption.
             held = ov.intent is not None and intent is not ov.intent
             if held:
-                msg = (f"Manual override held until {until} — data unsafe, so EMS is holding "
-                       "self-consumption instead of forcing the requested action")
+                msg = (f"Manual override held until {until} — safety checks blocked the "
+                       "requested action, so EMS is holding self-consumption")
                 safe = ("EMS is protecting the battery by holding self-consumption instead "
-                        "of forcing an action while the data quality issue lasts.")
+                        "of forcing an action the §8.11 validator rejected.")
                 action = ("Nothing needed — EMS applies your override automatically once the "
-                          "data-quality issue clears. See the related alert above for what to "
-                          "check.")
-                ems_doing = ("EMS keeps self-use and will apply your override once critical "
-                             "inputs are fresh again.")
+                          "blocking condition clears, or cancel it now from Manual control.")
+                ems_doing = ("EMS keeps self-use and will apply your override once the safety "
+                             "checks allow it.")
             else:
                 msg = f"Manual override: forcing {intent.value if intent else '?'} until {until}"
                 safe = ("You're intentionally directing the battery; EMS still enforces "

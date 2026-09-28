@@ -43,8 +43,10 @@ def _service(controller, *, audit_store=None, car_charging=None, data_quality="c
 
     dq_fn = data_quality if callable(data_quality) else (lambda now: data_quality)
     cc_fn = car_charging if car_charging is not None else (lambda now: False)
-    val_fn = validate_plan_callable or (
-        lambda plan, now: (_ for _ in ()).throw(AssertionError("validate_plan_obj not wired")))
+    # Permissive default so override-driven scenarios (#135) hit the §8.11 gate without each
+    # test wiring a validator; rejecting/real validators are injected where the scenario needs them.
+    from ems.planner.validator import PlanValidation as _PV
+    val_fn = validate_plan_callable or (lambda plan, now: _PV(status="valid"))
 
     svc = ControlService(
         ctx=ctx, settings=settings, controller=controller, store=None, audit_store=audit_store,
@@ -118,14 +120,57 @@ def test_override_discharge_maps_to_auto_by_default():
 
 
 # ==================================================================================================
+# I2b — Manual override goes through the §8.11 plan validator (#135)
+# ==================================================================================================
+
+def test_unsafe_override_is_held_by_validator():
+    """#135: a manual GRID_CHARGE override whose synthetic Plan fails §8.11 is held at
+    ALLOW_SELF_CONSUMPTION (override stays active). Mocked battery only — never worse than no EMS.
+    """
+    def rejecting_validator(plan, now):
+        return PlanValidation(
+            status="unsafe",
+            findings=(
+                Finding(severity="unsafe", code="target_below_reserve",
+                        message="Charge target 5% is below the reserve floor 10%"),
+            ),
+        )
+
+    controller = _controlling_controller()
+    svc, ctx = _service(controller, validate_plan_callable=rejecting_validator)
+    ctx.override_box["ov"] = Override(
+        intent=BatteryIntent.GRID_CHARGE_TO_TARGET, expires_at=NOW + timedelta(hours=1))
+
+    intent, reason, override_active, tgt, pw, val, _ca = svc.effective_intent(NOW)
+    assert intent is BatteryIntent.ALLOW_SELF_CONSUMPTION
+    assert override_active is True
+    assert "held" in reason
+    assert tgt is None and pw is None
+    assert val is not None and not val.ok
+
+    svc.control_tick(NOW)
+    assert controller.driver.current_mode() is PhysicalMode.AUTO
+
+
+# ==================================================================================================
 # I3 — AUTO fallback on unsafe data quality
 # ==================================================================================================
 
 def test_unsafe_data_forces_auto_fallback():
-    """When data quality is 'unsafe', even a GRID_CHARGE_TO_TARGET plan intent is forced to
-    ALLOW_SELF_CONSUMPTION (AUTO). The fail-safe gate in effective_intent."""
+    """When data quality is 'unsafe', even a GRID_CHARGE_TO_TARGET override is held at
+    ALLOW_SELF_CONSUMPTION (AUTO). The §8.11 validator (stale_inputs) is the gate (#135)."""
+    from ems.planner.validator import validate_plan
+
+    settings = effective_settings({})
+    reserve = settings["battery.min_reserve_soc"]
+
+    def real_validator(plan, now):
+        return validate_plan(
+            plan, soc_pct=50.0, data_quality="unsafe", min_reserve_soc=reserve)
+
     controller = _controlling_controller()
-    svc, ctx = _service(controller, data_quality="unsafe")
+    svc, ctx = _service(
+        controller, data_quality="unsafe", validate_plan_callable=real_validator)
 
     # Active manual override for GRID_CHARGE — should be forced to self-consumption.
     ctx.override_box["ov"] = Override(
@@ -133,7 +178,9 @@ def test_unsafe_data_forces_auto_fallback():
 
     result = svc.effective_intent(NOW)
     assert result[0] is BatteryIntent.ALLOW_SELF_CONSUMPTION
-    assert "unsafe" in result[1].lower()
+    assert "held" in result[1].lower()
+    # stale_inputs finding surfaces in the reason (never force charge on untrusted data).
+    assert "stale" in result[1].lower() or "missing" in result[1].lower()
 
     # The tick should NOT command CHARGE — it commands AUTO.
     svc.control_tick(NOW)
