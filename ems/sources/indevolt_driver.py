@@ -189,7 +189,7 @@ class IndevoltBatteryDriver:
         # Advertise configured cluster power. A single tower never claims more than the OpenData
         # SolidFlex per-tower ceiling (legacy cluster defaults like 4800 on 1 IP stay capped at
         # 2400). A multi-tower driver trusts settings (battery_profile × towers, or a Gen-2 /
-        # measured override above n×2400) so planner/validator match what apply() will command (#164).
+        # measured override above n×2400) so planner/validator match apply() (#164).
         n = max(1, len(self.ips))
         if n == 1:
             max_charge = min(float(self.charge_power_w), float(_MAX_POWER_W))
