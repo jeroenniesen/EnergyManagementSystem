@@ -1435,6 +1435,20 @@ body {
   color: var(--amber-text); background: rgba(224, 162, 58, 0.16);
   padding: 1px 6px; border-radius: 999px;
 }
+.field-badge-live {
+  color: var(--ok-text, #1a6b3c); background: rgba(46, 160, 90, 0.14);
+}
+.field-badge-pending {
+  color: var(--amber-text); background: rgba(224, 162, 58, 0.28);
+  outline: 1px solid color-mix(in srgb, var(--amber-text) 35%, transparent);
+}
+.run-mode-reason {
+  max-width: 14rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 500;
+}
 .field input[type="text"], .field input[type="password"] {
   font: inherit; color: var(--text); background: var(--panel-2);
   border: 1px solid var(--line); border-radius: 8px; padding: 7px 10px; width: 100%;

@@ -115,12 +115,19 @@ test.describe("EMS settings", () => {
     // Devices are editable fields grouped by type — open each section from the sidebar.
     await page.getByTestId("group-meters").click();
     await expect(page.getByTestId("field-meters.p1_ip")).toBeVisible();
-    // Connection fields are flagged as needing a restart.
-    await expect(page.getByTestId("field-meters.p1_ip")).toContainText("restart");
+    // Connection fields are flagged as needing a restart (#178: explicit apply badge).
+    await expect(page.getByTestId("apply-meters.p1_ip")).toHaveText("needs restart");
     await page.getByTestId("group-battery").click();
     await expect(page.getByTestId("field-battery.indevolt_ip")).toBeVisible();
     await page.getByTestId("group-prices").click();
     await expect(page.getByTestId("field-prices.tibber_token")).toBeVisible();
+  });
+
+  test("live planner knobs show active-now apply badge", async ({ page }) => {
+    await page.goto("/");
+    await page.getByTestId("nav-manage").click();
+    await page.getByTestId("group-planner").click();
+    await expect(page.getByTestId("apply-planner.solar_confidence")).toHaveText("active now");
   });
 
   test("watch-only and operational toggles are present, fail-safe defaults, restart-tagged", async ({
@@ -132,13 +139,13 @@ test.describe("EMS settings", () => {
     const watch = page.getByTestId("field-control.dry_run");
     await expect(watch).toBeVisible();
     await expect(watch).toContainText("Watch only");
-    await expect(watch).toContainText("restart");
+    await expect(page.getByTestId("apply-control.dry_run")).toHaveText("needs restart");
     // Default ON (fail-safe watch-only) — #171.
     await expect(watch.locator("#set-control\\.dry_run")).toBeChecked();
     const op = page.getByTestId("field-control.operational");
     await expect(op).toBeVisible();
     await expect(op).toContainText("control the battery");
-    await expect(op).toContainText("restart");
+    await expect(page.getByTestId("apply-control.operational")).toHaveText("needs restart");
     // Default OFF — the switch is unchecked, so the battery is never commanded.
     await expect(op.locator("#set-control\\.operational")).not.toBeChecked();
   });

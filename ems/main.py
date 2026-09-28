@@ -72,6 +72,8 @@ def build_app():
             http=http_runtime,
         )
     )
+    # Narrow reason for diagnostics (operational ON but a floor blocks). Broad primary cause for
+    # the Watching-only badge is computed live in /api/status (#178).
     dry_run_block_reason = watch_only_block_reason(eff, config_dry_run=cfg.dry_run)
     # Register prices/forecast only when wired (issue #79) — avoids a permanent "missing" that
     # would force data_quality=degraded on a prices-less test harness.
@@ -101,6 +103,7 @@ def build_app():
         source,
         dry_run=dry_run,
         dry_run_block_reason=dry_run_block_reason,
+        config_dry_run=bool(cfg.dry_run),
         dev_mode=dev_mode,
         tz=tz,
         store=store,

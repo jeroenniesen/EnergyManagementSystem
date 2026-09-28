@@ -173,18 +173,72 @@ def test_load_config_live_allows_dry_run_false(tmp_path):
     assert load_config(p).dry_run is False
 
 
-def test_status_exposes_dry_run_reason_when_blocked():
+def test_status_exposes_primary_watching_cause():
+    """#178: /api/status dry_run_reason names the primary cause (not only the narrow block)."""
     from fastapi.testclient import TestClient
 
+    from ems.connection import CONFIG_WATCH_REASON, MOCK_WATCH_REASON, UNARMED_WATCH_REASON
     from ems.sources.mock import MockSource
     from ems.web.api import create_app
 
-    reason = "config forces watch-only; UI operational is ON"
+    # Mock mode wins even when config_dry_run is false.
+    app_mock = create_app(
+        MockSource(), dry_run=True, config_dry_run=False, dry_run_block_reason=None,
+        dev_mode="mock", tz=ZoneInfo("Europe/Amsterdam"),
+    )
+    with TestClient(app_mock) as client:
+        body = client.get("/api/status").json()
+    assert body["dry_run"] is True
+    assert body["dry_run_cause"] == "mock"
+    assert body["dry_run_reason"] == MOCK_WATCH_REASON
+
+    # Config yaml floor.
+    app_cfg = create_app(
+        MockSource(), dry_run=True, config_dry_run=True, dry_run_block_reason="ignored-narrow",
+        dev_mode="live", tz=ZoneInfo("Europe/Amsterdam"),
+    )
+    with TestClient(app_cfg) as client:
+        body = client.get("/api/status").json()
+    assert body["dry_run_cause"] == "config_dry_run"
+    assert body["dry_run_reason"] == CONFIG_WATCH_REASON
+
+    # Unarmed: config allows live, Settings dry_run off, operational default false.
+    app_unarmed = create_app(
+        MockSource(), dry_run=True, config_dry_run=False, dry_run_block_reason=None,
+        dev_mode="live", tz=ZoneInfo("Europe/Amsterdam"),
+    )
+    # Override settings cache so Settings watch-only is OFF (schema default is True).
+    app_unarmed.state.application_context.settings["control.dry_run"] = False
+    app_unarmed.state.application_context.settings["control.operational"] = False
+    with TestClient(app_unarmed) as client:
+        body = client.get("/api/status").json()
+    assert body["dry_run_cause"] == "unarmed"
+    assert body["dry_run_reason"] == UNARMED_WATCH_REASON
+
+
+def test_status_exposes_observing_grace_when_armed():
+    """#178: when dry_run is False but lifecycle is still OBSERVING, reason = observing."""
+    from datetime import UTC, datetime
+
+    from fastapi.testclient import TestClient
+
+    from ems.connection import OBSERVING_WATCH_REASON
+    from ems.control.mode_controller import ModeController
+    from ems.lifecycle import Lifecycle, OwnershipState
+    from ems.sources.battery import MockBatteryDriver
+    from ems.sources.mock import MockSource
+    from ems.web.api import create_app
+
+    lc = Lifecycle(dry_run=False, startup_grace_seconds=120.0)
+    lc.start(datetime.now(UTC))
+    assert lc.state is OwnershipState.OBSERVING
+    ctl = ModeController(MockBatteryDriver(), lc, dry_run=False)
     app = create_app(
-        MockSource(), dry_run=True, dry_run_block_reason=reason, dev_mode="live",
-        tz=ZoneInfo("Europe/Amsterdam"),
+        MockSource(), dry_run=False, config_dry_run=False, dry_run_block_reason=None,
+        dev_mode="live", tz=ZoneInfo("Europe/Amsterdam"), controller=ctl,
     )
     with TestClient(app) as client:
         body = client.get("/api/status").json()
-    assert body["dry_run"] is True
-    assert body["dry_run_reason"] == reason
+    assert body["dry_run"] is False
+    assert body["dry_run_cause"] == "observing"
+    assert body["dry_run_reason"] == OBSERVING_WATCH_REASON

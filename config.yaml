@@ -9,8 +9,9 @@ control:
   # over Settings → Watch only / operational (no battery writes; #136). Daily ops: toggle
   # Watch only + operational in Settings (Apply & restart) — no need to edit this file.
   # To allow live control: set dev.mode: live AND control.dry_run: false here once, then use the
-  # UI toggles (live Indevolt IP + live Tibber required). Restart while charging can abort an
-  # active cheap-charge window (shutdown_restore → AUTO).
+  # UI toggles (live Indevolt IP + live Tibber required). Restart while charging still runs
+  # shutdown_restore → AUTO (#127); the GRID_CHARGE commitment is persisted and either resumed
+  # or aborted with an explicit reason on the next boot (#177) — never a silent wipe.
   dry_run: true
   # Production sampling cadence: one history row every 5 min — low write + device-read load for a
   # 24/7 install. The live dashboard tiles refresh independently (30 s coalesced read), so this does
