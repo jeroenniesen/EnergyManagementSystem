@@ -252,6 +252,46 @@ def test_chat_context_is_redacted(tmp_path, monkeypatch):
         assert forbidden not in blob
 
 
+def test_chat_context_prefers_plan_target_soc_over_advisory(tmp_path, monkeypatch):
+    """Tonight's target in chat must mirror plan.target_soc when the planner committed one —
+    not the separate advisory overnight ceiling from compute_charge_need (#180 polish)."""
+    capture: dict = {}
+    _enable_ai(monkeypatch, capture=capture, answer="Noted.")
+
+    class _LowSoc:
+        def read(self) -> RawSample:
+            return RawSample(grid_power_w=0.0, solar_power_w=0.0, battery_power_w=0.0,
+                             ev_power_w=0.0, soc_pct=40.0)
+
+    db = str(tmp_path / "ems.sqlite")
+    controller = ModeController(MockBatteryDriver(), Lifecycle(dry_run=True), dry_run=True)
+    app = create_app(
+        _LowSoc(), dry_run=True, dev_mode="mock", tz=AMS,
+        price_source=MockPriceSource(AMS), solar_forecast=MockSolarForecastSource(AMS),
+        controller=controller, settings_store=SettingsStore(db), cache_store=CacheStore(db),
+    )
+    with TestClient(app) as c:
+        c.post("/api/settings", json={
+            "strategy.mode": "winter",
+            "battery.usable_kwh": 10.0,
+            "battery.min_reserve_soc": 10.0,
+            "battery.night_reserve_kwh": 2.0,
+            "battery.overnight_load_kwh": 5.0,
+            "explainer.mode": "external_llm",
+            "explainer.api_key": "k",
+        })
+        plan = c.get("/api/plan").json()
+        need = c.get("/api/charge-need").json()
+        assert plan.get("target_soc") is not None
+        plan_tgt = float(plan["target_soc"])
+        advisory = float(need["target_soc_pct"])
+        assert abs(plan_tgt - advisory) > 1.0  # otherwise the preference is unobservable
+        c.post("/api/chat", json={"question": "what's tonight's target?"})
+    blob = " ".join(m["content"] for m in capture["msgs"])
+    assert f"Tonight's target level: {plan_tgt:.0f}%" in blob
+    assert f"Tonight's target level: {advisory:.0f}%" not in blob
+
+
 # ---- scheduled AI second-opinion (validation) -------------------------------------------------
 
 def test_ai_validation_off_by_default(tmp_path):

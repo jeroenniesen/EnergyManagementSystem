@@ -29,7 +29,7 @@ Two layers (SPEC §5):
 1. **Home Assistant** = integration hub + system of record.
 2. **EMS Core** = standalone **Python 3.12 / FastAPI** service holding all decision logic, serving its **own web UI with graphs**, and owning a local **SQLite** history store (so the UI survives an HA outage read-only).
 
-Control loop every `cycle_seconds` (default 300 s): **sense → reconstruct load → (re)plan if stale → decide → act only on mode change → confirm → record → publish**.
+Control loop every `cycle_seconds` (default 300 s): **sense → reconstruct load → (re)plan if stale → decide → act only on mode change → confirm → record → publish** (UI / SQLite history today; MQTT→HA remains a **target**, B-18/#107 — not shipped).
 
 ## Hardware (confirmed)
 
