@@ -61,6 +61,9 @@ def validate_plan(
     slot_horizon: int = 96,
     validate_projection: bool = True,
     projection_target_margin_pp: float = 5.0,
+    grid_limit_w: float | None = None,
+    expected_load_w: float | None = None,
+    load_w_by: dict | None = None,
 ) -> PlanValidation:
     """Validate `plan` against the current conditions. Returns a PlanValidation; `unsafe` ⇒ the
     controller must hold AUTO. Each check appends at most one representative finding (not one per
@@ -68,7 +71,11 @@ def validate_plan(
 
     `validate_projection` (default on — the SPEC §8.5 "later step", BACKLOG B-22) adds the
     projected-target reachability gate below. It is a pure safety net: a rejection just falls back
-    to AUTO, which is never worse than "no EMS", so it defaults on."""
+    to AUTO, which is never worse than "no EMS", so it defaults on.
+
+    `grid_limit_w` (SPEC §8.11 / #133) is the main-fuse ceiling. When set (>0), any grid-charge
+    slot whose charge power + expected house load exceeds it is `unsafe`. Prefer per-slot
+    `load_w_by`; fall back to scalar `expected_load_w`. Zero/None disables the check."""
     findings: list[Finding] = []
     slots = plan.slots[:slot_horizon]
 
@@ -169,6 +176,33 @@ def validate_plan(
                     _UNSAFE, "projection_short_of_target",
                     f"Plan targets {target:.0f}% by {when} but projects only "
                     f"{reached:.0f}% — the charge windows can't reach it in time."))
+                break
+
+    # 7. Grid fuse / netlimiet (#133): charge power + expected house load must not exceed the
+    #    configured main-fuse ceiling. Conservative (ignores solar credit) so a cloudy slot
+    #    can't trip the hoofdzekering. Mode-switch only — never a live power-tracking loop.
+    #    Disabled when grid_limit_w is None/≤0. Skips a slot when charge power or load is unknown
+    #    (other gates cover missing inputs; we don't invent load).
+    if grid_limit_w is not None and grid_limit_w > 0:
+        for s in charge:
+            charge_w = s.power_w
+            if charge_w is None and capability is not None:
+                charge_w = capability.max_charge_w
+            if charge_w is None:
+                continue
+            if load_w_by is not None and s.start in load_w_by:
+                load_w = float(load_w_by[s.start])
+            elif expected_load_w is not None:
+                load_w = float(expected_load_w)
+            else:
+                continue
+            demand_w = charge_w + max(0.0, load_w)
+            if demand_w > grid_limit_w + 1e-6:
+                findings.append(Finding(
+                    _UNSAFE, "grid_limit_exceeded",
+                    f"Grid-charge {charge_w:.0f} W + house load {load_w:.0f} W = "
+                    f"{demand_w:.0f} W exceeds the grid fuse limit "
+                    f"{grid_limit_w:.0f} W — holding self-use."))
                 break
 
     status = (_UNSAFE if any(f.severity == _UNSAFE for f in findings)
