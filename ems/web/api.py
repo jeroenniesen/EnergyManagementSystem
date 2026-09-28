@@ -2640,6 +2640,7 @@ def create_app(
                         recorder.health()["consecutive_failures"] if recorder is not None else 0),
                     "last_reheal_iso": store.reheal_stats()["last_reheal_iso"],
                 }
+        from ems.control.loop_counters import LOOP_COUNTERS
         from ems.perf import build_perf_block
         return {
             "overall": overall_status(checks),
@@ -2649,6 +2650,8 @@ def create_app(
             "storage": storage,
             "recorder": recorder.health() if recorder is not None else None,
             "perf": build_perf_block(),
+            # Thin soak counters (#179) — diagnostics UI / structured logs only (no /metrics).
+            "control_loop": LOOP_COUNTERS.snapshot(),
         }
 
     @app.get("/api/charge-need")

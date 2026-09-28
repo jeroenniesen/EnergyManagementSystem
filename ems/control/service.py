@@ -24,6 +24,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import threading
+import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
@@ -47,6 +48,7 @@ from ems.control.command_fence import (
 )
 from ems.control.decision import ControlDecisionEngine
 from ems.control.execution import CommandExecutionBoundary
+from ems.control.loop_counters import LOOP_COUNTERS
 from ems.control.override import NONE as OVERRIDE_NONE
 from ems.control.override import Override
 from ems.control.reconciliation import CommandReconciliation
@@ -1197,7 +1199,71 @@ class ControlService:
         fail-safe AUTO on unsafe data, override) is enforced by ModeController.decide /
         effective_intent. Returns audit records for the async caller to log: a CONFIRMED
         mode-change record when a write was attempted (applied/failed), and/or a cluster-mismatch
-        record when a tower isn't following the commanded mode (steady state). [] = nothing."""
+        record when a tower isn't following the commanded mode (steady state). [] = nothing.
+
+        Also updates thin since-boot soak counters (#179) and emits ``control.cycle_summary``.
+        """
+        t0 = time.perf_counter()
+        records: list[dict] = []
+        self._tick_outcome: str | None = None
+        try:
+            records = self._control_tick_body(now)
+            return records
+        finally:
+            latency_ms = (time.perf_counter() - t0) * 1000.0
+            self._observe_cycle_counters(now, records, latency_ms=latency_ms)
+
+    def _observe_cycle_counters(
+        self, now: datetime, records: list[dict], *, latency_ms: float,
+    ) -> None:
+        """Bump soak counters + one structured log line (diagnostics UI / logs only — #179)."""
+        outcome: str | None = getattr(self, "_tick_outcome", None)
+        fail_safe = False
+        for rec in reversed(records):
+            detail = rec.get("detail") or {}
+            o = detail.get("outcome")
+            if o and outcome is None:
+                outcome = str(o)
+            event = detail.get("event")
+            if event in ("startup_safe_auto", "control.overrun") or o == "fail_safe":
+                fail_safe = True
+            reason = str(detail.get("reason") or "")
+            if "holding self-consumption" in reason or "fail-safe" in reason.lower():
+                fail_safe = True
+        # Data-quality unsafe / incomplete prices also count as fail-safe soak signal.
+        dq = self._data_quality(now)
+        stale = dq != "fresh"
+        if dq == "unsafe":
+            fail_safe = True
+        if self._price_horizon_status is not None and not self._price_horizon_status.ok:
+            fail_safe = True
+        LOOP_COUNTERS.record_cycle(
+            latency_ms=latency_ms,
+            outcome=outcome,
+            fail_safe=fail_safe,
+            stale_sensors=stale,
+        )
+        snap = LOOP_COUNTERS.snapshot()
+        outcomes = snap["outcomes"]
+        assert isinstance(outcomes, dict)
+        _log.info(
+            "control.cycle_summary cycles=%s latency_ms=%.0f outcome=%s "
+            "stale_sensors=%s http_retries=%s applies=%s validator_rejects=%s "
+            "fail_safe=%s idempotent=%s dry_run=%s",
+            snap["cycles"],
+            latency_ms,
+            outcome or "-",
+            "1" if stale else "0",
+            snap["http_retries"],
+            snap["mode_applies"],
+            snap["validator_rejects"],
+            outcomes.get("fail_safe", 0),
+            outcomes.get("idempotent", 0),
+            outcomes.get("dry_run", 0),
+        )
+
+    def _control_tick_body(self, now: datetime) -> list[dict]:
+        """Inner tick body — wrapper records soak counters (#179)."""
         if self._controller is None:
             return []
         lc = self._controller.lifecycle
@@ -1230,6 +1296,11 @@ class ControlService:
                 return records
         with timed("control.decide"):
             intent, _reason, override_active, tgt, pw, _v, car_action = self.effective_intent(now)
+            # Soak counters (#179): count §8.11 rejects once per operational tick only —
+            # effective_intent is also called from UI/recorder/advisory paths and must not
+            # inflate validator_rejects / pending fail_safe there.
+            if getattr(self._decision_engine, "last_validator_rejected", False):
+                LOOP_COUNTERS.incr_validator_rejects()
             # #177: resume a still-valid GRID_CHARGE commitment after restart (overrides a
             # planner slot that may have been rebuilt empty), or abort with a clear reason.
             c_records, intent, _reason, tgt, pw = self._apply_charge_commitment_to_intent(
@@ -1552,9 +1623,14 @@ class ControlService:
     def _decide(self, *args, **kwargs):
         """Enter the fence only when the tick can reach its physical write seam."""
         if self._execution is None:
-            return self._controller.decide(*args, **kwargs)
-        self._execution.writer_local = self._writer_local
-        return self._execution.decide(*args, **kwargs)
+            dec = self._controller.decide(*args, **kwargs)
+        else:
+            self._execution.writer_local = self._writer_local
+            dec = self._execution.decide(*args, **kwargs)
+        # Soak counters (#179): capture decide outcome even when the tick stays quiet (idempotent).
+        if dec is not None and getattr(dec, "outcome", None) is not None:
+            self._tick_outcome = str(dec.outcome)
+        return dec
 
     def _ensure_fence_entered(self) -> None:
         """Enter the generation fence before a physical write (same latch as decide())."""

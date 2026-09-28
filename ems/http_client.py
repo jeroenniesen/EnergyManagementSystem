@@ -142,11 +142,19 @@ def _call_with_read_retry(profile: str, fn: Callable[[], httpx.Response]) -> htt
     """Run ``fn`` once for writes; for read profiles, retry Timeout/ConnectError only."""
     if profile not in READ_RETRY_PROFILES:
         return fn()
+
+    def _before_sleep(retry_state: Any) -> None:
+        # Count each tenacity *retry* (not the initial attempt) for soak diagnostics (#179).
+        from ems.control.loop_counters import LOOP_COUNTERS
+
+        LOOP_COUNTERS.incr_http_retries()
+
     retrying = Retrying(
         stop=stop_after_attempt(READ_RETRY_ATTEMPTS),
         wait=READ_RETRY_WAIT,
         retry=retry_if_exception_type(READ_RETRY_EXCEPTIONS),
         reraise=True,
+        before_sleep=_before_sleep,
     )
     return retrying(fn)
 

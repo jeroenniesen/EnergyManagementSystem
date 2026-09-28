@@ -45,6 +45,10 @@ class ControlDecisionEngine:
         self._safety = safety or SafetyValidator(
             data_quality=data_quality, validate_plan=validate_plan or (lambda plan, now: plan)
         )
+        # Diagnostic latch for soak counters (#179): set by effective_intent, consumed only by
+        # ControlService.control_tick. Not a control-state input — UI/recorder may call
+        # effective_intent without advancing LOOP_COUNTERS.
+        self.last_validator_rejected: bool = False
 
     def _car_guard(
         self,
@@ -91,6 +95,7 @@ class ControlDecisionEngine:
         """Return the legacy seven-element effective-intent tuple."""
         cur = None
         val = None
+        self.last_validator_rejected = False
         # Energy contract the override would command (filled below for charge/export intents).
         override_target_soc = override_power_w = None
         if override.active(now):
@@ -117,6 +122,7 @@ class ControlDecisionEngine:
             )
             val = self._safety.validate(plan, now)
             if not val.ok and intent is not BatteryIntent.ALLOW_SELF_CONSUMPTION:
+                self.last_validator_rejected = True
                 top = next((f for f in val.findings if f.severity == "unsafe"), None)
                 note = top.message if top is not None else "override failed validation"
                 intent = BatteryIntent.ALLOW_SELF_CONSUMPTION
@@ -158,6 +164,7 @@ class ControlDecisionEngine:
                         return None, None, False, None, None, None, None
                     val = self._safety.validate(pp[2], now)
                     if not val.ok:
+                        self.last_validator_rejected = True
                         top = next((f for f in val.findings if f.severity == "unsafe"), None)
                         note = top.message if top is not None else "plan failed validation"
                         cur = None
