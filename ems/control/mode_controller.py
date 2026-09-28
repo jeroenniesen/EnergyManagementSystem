@@ -299,7 +299,7 @@ class ModeController:
         dry_run / not_controlling / idempotency still apply to everyone; idempotency means even a
         bypassed write happens at most once per actual mode change (no device hammering). An
         already-confirmed CHARGE request is also treated as idempotent when the vendor reports a
-        transient IDLE/AUTO (#163) — see the active-charge hold below.
+        transient IDLE (#163) — see the active-charge hold below.
 
         `force=True` skips ONLY the idempotency check (dry_run / not_controlling still apply). It
         exists for the car-charging discharge session (feat/car-charge-modes): the setpoint
