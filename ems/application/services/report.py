@@ -25,7 +25,9 @@ class ReportService:
         days = await finance(start, end, now_local)
 
         def total(key: Literal["grid_cost_eur", "battery_cost_eur", "saved_eur",
-                               "grid_import_kwh", "grid_export_kwh"]) -> float | None:
+                               "grid_import_kwh", "grid_export_kwh",
+                               "solar_self_use_eur", "avoided_expensive_eur",
+                               "battery_contribution_eur"]) -> float | None:
             vals = [value for d in days if (value := d.get(key)) is not None]
             return round(sum(vals), 2) if vals else None
 
@@ -33,10 +35,21 @@ class ReportService:
             "grid_cost_eur": total("grid_cost_eur"),
             "battery_cost_eur": total("battery_cost_eur"),
             "saved_eur": total("saved_eur"),
+            "solar_self_use_eur": total("solar_self_use_eur"),
+            "avoided_expensive_eur": total("avoided_expensive_eur"),
+            "battery_contribution_eur": total("battery_contribution_eur"),
             "grid_import_kwh": total("grid_import_kwh") or 0.0,
             "grid_export_kwh": total("grid_export_kwh") or 0.0,
             "days_with_prices": sum(1 for d in days if d.get("price_coverage", 0) > 0),
             "days_with_data": sum(1 for d in days if d.get("has_data")),
+            "days_with_coverage_gap": sum(
+                1 for d in days
+                if d.get("has_data") and (
+                    float(d.get("price_coverage") or 0) < 1.0 - 1e-9
+                    or float(d.get("sample_coverage") or 0) < 1.0 - 1e-9
+                )
+            ),
+            "days_without_data": sum(1 for d in days if not d.get("has_data")),
         }
         return {"period": period, "label": label,
                 "window_start": start.astimezone(UTC).isoformat(),

@@ -1351,10 +1351,15 @@ public struct FinanceSnapshot: Codable, Equatable, Sendable {
             gridCostEur: nil,
             batteryCostEur: nil,
             savedEur: nil,
+            solarSelfUseEur: nil,
+            avoidedExpensiveEur: nil,
+            batteryContributionEur: nil,
             gridImportKwh: nil,
             gridExportKwh: nil,
             daysWithPrices: nil,
-            daysWithData: nil
+            daysWithData: nil,
+            daysWithCoverageGap: nil,
+            daysWithoutData: nil
         )
     )
 }
@@ -1363,10 +1368,14 @@ public struct FinanceDay: Codable, Equatable, Identifiable, Sendable {
     public let day: String
     public let hasData: Bool
     public let priceCoverage: Double?
+    public let sampleCoverage: Double?
     public let gridCostEur: Double?
     public let batteryCostEur: Double?
     public let baselineCostEur: Double?
     public let savedEur: Double?
+    public let solarSelfUseEur: Double?
+    public let avoidedExpensiveEur: Double?
+    public let batteryContributionEur: Double?
     public let gridImportKwh: Double?
     public let gridExportKwh: Double?
     public let batteryChargeKwh: Double?
@@ -1378,10 +1387,15 @@ public struct FinanceTotals: Codable, Equatable, Sendable {
     public let gridCostEur: Double?
     public let batteryCostEur: Double?
     public let savedEur: Double?
+    public let solarSelfUseEur: Double?
+    public let avoidedExpensiveEur: Double?
+    public let batteryContributionEur: Double?
     public let gridImportKwh: Double?
     public let gridExportKwh: Double?
     public let daysWithPrices: Int?
     public let daysWithData: Int?
+    public let daysWithCoverageGap: Int?
+    public let daysWithoutData: Int?
 }
 
 // MARK: - Car charging (advisory)

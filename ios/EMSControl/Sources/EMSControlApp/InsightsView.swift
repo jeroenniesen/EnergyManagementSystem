@@ -500,6 +500,21 @@ private struct FinanceInsightsPanel: View {
                     FlowMetric(title: "Price days", value: "\(finance.totals.daysWithPrices ?? 0)/\(finance.totals.daysWithData ?? 0)", color: theme.muted, theme: theme)
                 }
 
+                if finance.totals.savedEur != nil {
+                    Text("Compared with the same home without a battery.")
+                        .font(.caption)
+                        .foregroundStyle(themeColor(theme.muted))
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+
+                if showsBreakdown {
+                    LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible()), GridItem(.flexible())], spacing: 10) {
+                        FlowMetric(title: "Your own solar used", value: euro(finance.totals.solarSelfUseEur), color: theme.accent, theme: theme)
+                        FlowMetric(title: "Not bought at expensive hours", value: euro(finance.totals.avoidedExpensiveEur), color: theme.winter, theme: theme)
+                        FlowMetric(title: "Battery contribution", value: euro(finance.totals.batteryContributionEur), color: theme.amber, theme: theme)
+                    }
+                }
+
                 if let caveat = priceCoverageCaveat {
                     Label(caveat, systemImage: "info.circle")
                         .font(.caption)
@@ -507,7 +522,7 @@ private struct FinanceInsightsPanel: View {
                         .fixedSize(horizontal: false, vertical: true)
                 }
 
-                if finance.days.filter(\.hasData).count > 1 {
+                if finance.days.count > 1 {
                     SavedBars(days: finance.days, theme: theme)
                 }
             }
@@ -521,16 +536,37 @@ private struct FinanceInsightsPanel: View {
         }
     }
 
+    private var showsBreakdown: Bool {
+        guard finance.totals.savedEur != nil else { return false }
+        let period = finance.period ?? ""
+        guard period == "month" || period == "week" || period == "year" else { return false }
+        return finance.totals.solarSelfUseEur != nil
+            || finance.totals.avoidedExpensiveEur != nil
+            || finance.totals.batteryContributionEur != nil
+    }
+
     /// Honest coverage caveat, mirroring the web FinanceSection: never imply €0 saved when prices
-    /// simply weren't recorded.
+    /// simply weren't recorded; days without data are gaps.
     private var priceCoverageCaveat: String? {
         let withData = finance.totals.daysWithData ?? 0
         let withPrices = finance.totals.daysWithPrices ?? 0
+        let gapDays = finance.totals.daysWithCoverageGap ?? 0
+        let missingDays = finance.totals.daysWithoutData ?? 0
         if finance.totals.savedEur == nil {
             return "No price history recorded yet — savings can't be computed."
         }
+        if gapDays > 0 {
+            var text = "Coverage gap: \(gapDays) day\(gapDays == 1 ? "" : "s") with incomplete prices or meter samples"
+            if missingDays > 0 {
+                text += "; \(missingDays) day\(missingDays == 1 ? "" : "s") with no meter data (shown as gaps)"
+            }
+            return text + ". Missing days are gaps, not €0."
+        }
         if withPrices < withData {
             return "Prices are known for \(withPrices) of \(withData) recorded days; savings shown for those only."
+        }
+        if missingDays > 0 {
+            return "\(missingDays) day\(missingDays == 1 ? "" : "s") had no meter data — shown as gaps, not €0."
         }
         return nil
     }

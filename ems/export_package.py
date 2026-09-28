@@ -29,8 +29,11 @@ PRICE_COLUMNS = ("start_ts", "eur_per_kwh")
 # date), replacing the legacy date-keyed `issued_date`/`start`/`p10_w`/`p50_w`/`p90_w` shape.
 FORECAST_COLUMNS = ("issued_at", "target_start", "low_w", "expected_w", "high_w", "source")
 FINANCE_COLUMNS = (
-    "day", "has_data", "price_coverage", "grid_cost_eur", "battery_cost_eur",
-    "baseline_cost_eur", "saved_eur", "grid_import_kwh", "grid_export_kwh",
+    "day", "has_data", "price_coverage", "sample_coverage",
+    "grid_cost_eur", "battery_cost_eur",
+    "baseline_cost_eur", "saved_eur",
+    "solar_self_use_eur", "avoided_expensive_eur", "battery_contribution_eur",
+    "grid_import_kwh", "grid_export_kwh",
     "battery_charge_kwh", "battery_discharge_kwh",
 )
 AUDIT_COLUMNS = ("id", "ts", "category", "summary", "detail")
@@ -346,9 +349,12 @@ health check of production operation. All timestamps are **UTC, ISO-8601**. All 
   issued (the 18:00-local day-ahead snapshot — a later same-day nowcast is never included here,
   so accuracy is not overstated); `source` names the forecast provider/model.
 - **daily_finance.csv** — measured money per local day:
-  `day, has_data, price_coverage, grid_cost_eur, battery_cost_eur, baseline_cost_eur,
-  saved_eur, grid_import_kwh, grid_export_kwh, battery_charge_kwh, battery_discharge_kwh`.
+  `day, has_data, price_coverage, sample_coverage, grid_cost_eur, battery_cost_eur,
+  baseline_cost_eur, saved_eur, solar_self_use_eur, avoided_expensive_eur,
+  battery_contribution_eur, grid_import_kwh, grid_export_kwh, battery_charge_kwh,
+  battery_discharge_kwh`.
   `saved_eur` = no-battery baseline grid cost − actual grid cost − battery wear;
+  the three `*_eur` breakdown fields partition `saved_eur` (B-36);
   `price_coverage` (0..1) is how much of the day had a known price.
 - **audit_log.csv** — every decision, config change, override and AI check the system made:
   `id, ts, category, summary, detail` (detail is a JSON object).

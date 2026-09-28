@@ -2469,6 +2469,7 @@ body {
 }
 .chart-table th:first-child, .chart-table td:first-child { text-align: left; }
 .fin-tiles { display: flex; flex-wrap: wrap; gap: 12px; margin-bottom: 10px; }
+.fin-breakdown { margin-top: 2px; }
 .fin-tile {
   flex: 1 1 140px; background: var(--panel-2); border: 1px solid var(--line);
   border-radius: 12px; padding: 10px 14px;
