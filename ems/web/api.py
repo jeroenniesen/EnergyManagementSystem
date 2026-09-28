@@ -91,6 +91,7 @@ from ems.finance import (
     strip_vs_auto_ephemeral,
 )
 from ems.freshness import FreshnessTracker
+from ems.http_client import HttpRuntime, make_bytes_post, make_cloud_cover_get
 from ems.load_model import reconstruct
 from ems.notify import Notifier
 from ems.planner.charge_need import compute_charge_need
@@ -940,6 +941,7 @@ def create_app(
     web_auth_token: str | None = None,
     static_dir: str | Path | None = None,
     clock: Clock | None = None,
+    http_runtime: HttpRuntime | None = None,
 ) -> FastAPI:
     application_clock = clock or SystemClock()
 
@@ -1052,7 +1054,14 @@ def create_app(
     # Notification outbox (B-20): built from the SAME history store + the live settings cache, so
     # a just-saved ntfy url/topic applies to the very next send without a restart. None when no
     # store is configured (e.g. some unit tests) — _run_backup treats a None notifier as a no-op.
-    notifier = Notifier(store, settings_cache) if store is not None else None
+    # Shared-client POST when http_runtime is wired (best_effort profile).
+    notifier = (
+        Notifier(
+            store, settings_cache,
+            post=make_bytes_post(http_runtime, "best_effort") if http_runtime is not None else None,
+        )
+        if store is not None else None
+    )
 
     def _apply_control_settings() -> None:
         """Push the control.* settings onto the live controller (preserves its switch counters)."""
@@ -1372,6 +1381,12 @@ def create_app(
 
     @asynccontextmanager
     async def lifespan(_app: FastAPI):
+        # Shared outbound client: install as process default for module helpers (explainer /
+        # one-shot fallbacks) for the lifetime of this app instance only.
+        if http_runtime is not None:
+            from ems.http_client import set_default_runtime
+
+            set_default_runtime(http_runtime)
         # Guarantee the schema exists before anything touches the DB (no caller footgun).
         if store is not None:
             await store.init()
@@ -1498,6 +1513,14 @@ def create_app(
             # audit work) and the battery AUTO restore have completed.  The boundary also covers
             # synchronous cache/control-state stores and isolates/idempotently retries failures.
             await app.state.application_context.storage.close()
+            # Shared outbound httpx client (Phase 1) — close after tasks so in-flight to_thread
+            # helpers are not racing a closed pool. Idempotent; no-op when tests omit the runtime.
+            if http_runtime is not None:
+                from ems.http_client import get_default_runtime, set_default_runtime
+
+                if get_default_runtime() is http_runtime:
+                    set_default_runtime(None)
+                http_runtime.close()
 
     app = FastAPI(title="Smart Energy Manager", version="0.0.1", lifespan=lifespan)
     # Expose the intelligence evaluation-record seam (B-79) for the runtime to record into and for
@@ -3690,7 +3713,13 @@ def create_app(
                 sunset = ss.isoformat() if ss else None
                 last = _sky_box["at"]
                 if last is None or (now - last).total_seconds() > 900:
-                    cloud_cover = await asyncio.to_thread(cloud_cover_pct, lat_f, lon_f)
+                    sky_get = (
+                        make_cloud_cover_get(http_runtime, "best_effort")
+                        if http_runtime is not None else None
+                    )
+                    cloud_cover = await asyncio.to_thread(
+                        cloud_cover_pct, lat_f, lon_f, http_get=sky_get,
+                    )
                     _sky_box["cc"], _sky_box["at"] = cloud_cover, now
         except (TypeError, ValueError):
             _log.debug("sky: sun/cloud lookup failed (non-fatal)", exc_info=True)

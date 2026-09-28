@@ -58,21 +58,36 @@ def _refusing_post(point: int, values: list[int]) -> object:
     )
 
 
-def make_setdata_post(ip: str, port: int = 8080, timeout: float = 8.0) -> SetDataPost:
+def make_setdata_post(
+    ip: str,
+    port: int = 8080,
+    timeout: float | None = None,
+    *,
+    client: object | None = None,
+) -> SetDataPost:
     """Build a REAL SetData write transport (point, [values]) -> response, matching the official
     integration: POST /rpc/Indevolt.SetData?config={"f":16,"t":<point>,"v":[<values>]}.
 
     Returned ONLY when the operator explicitly enables operational mode; an unarmed driver never
-    calls it. This is the single place the EMS can change the battery."""
+    calls it. This is the single place the EMS can change the battery.
+
+    ``timeout=None`` resolves to the shared ``lan_write`` profile (or 8 s one-shot fallback).
+    This factory never enables httpx transport retries — application retries stay in
+    ``IndevoltBatteryDriver._post_with_retry``."""
     import json as _json
 
+    from ems.http_client import request as http_request
+
     url = f"http://{ip}:{port}/rpc/Indevolt.SetData"
+    _timeout = timeout
+    _client = client
 
     def post(point: int, values: list[int]) -> object:
-        import httpx
-
         config = _json.dumps({"f": 16, "t": point, "v": list(values)}).replace(" ", "")
-        r = httpx.post(url, params={"config": config}, timeout=timeout)
+        r = http_request(
+            "POST", url, profile="lan_write", params={"config": config},
+            timeout=_timeout, client=_client,  # type: ignore[arg-type]
+        )
         r.raise_for_status()
         return r.json()
 

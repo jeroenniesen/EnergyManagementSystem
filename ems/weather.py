@@ -14,10 +14,12 @@ CloudGet = Callable[[float, float, float], dict]
 
 
 def _default_get(lat: float, lon: float, timeout: float) -> dict:
-    import httpx
+    from ems.http_client import request as http_request
 
-    r = httpx.get(
-        _URL, params={"latitude": lat, "longitude": lon, "current": "cloud_cover"}, timeout=timeout
+    r = http_request(
+        "GET", _URL, profile="best_effort",
+        params={"latitude": lat, "longitude": lon, "current": "cloud_cover"},
+        timeout=timeout,
     )
     r.raise_for_status()
     return r.json()

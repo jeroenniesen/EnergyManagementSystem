@@ -59,9 +59,9 @@ def _deserialize_slots(blob: str) -> list[ForecastSlot]:
 
 
 def _httpx_get(url: str, headers: dict[str, str], timeout: float) -> dict:
-    import httpx
+    from ems.http_client import request as http_request
 
-    r = httpx.get(url, headers=headers, timeout=timeout)
+    r = http_request("GET", url, profile="cloud", headers=headers, timeout=timeout)
     r.raise_for_status()
     return r.json()
 

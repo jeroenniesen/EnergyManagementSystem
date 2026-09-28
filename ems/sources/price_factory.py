@@ -133,6 +133,7 @@ def build_price_source(
     *,
     cache_store: object | None = None,
     use_live: bool | None = None,
+    http_post: object | None = None,
 ) -> Any:
     """Construct the price source for the effective settings.
 
@@ -154,5 +155,5 @@ def build_price_source(
         _log.warning("tibber adapter missing from registry; using mock prices")
         return mock_builder(eff, tz, cache_store=cache_store)
 
-    built = builder(eff, tz, cache_store=cache_store)
+    built = builder(eff, tz, cache_store=cache_store, http_post=http_post)
     return built if built is not None else mock_builder(eff, tz, cache_store=cache_store)

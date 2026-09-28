@@ -77,10 +77,11 @@ GraphQLPost = Callable[[str, str, dict], dict]
 
 
 def _default_post(url: str, token: str, body: dict, timeout: float = 12.0) -> dict:
-    import httpx
+    from ems.http_client import request as http_request
 
-    r = httpx.post(
-        url, json=body, headers={"Authorization": f"Bearer {token}"}, timeout=timeout
+    r = http_request(
+        "POST", url, profile="cloud", json=body,
+        headers={"Authorization": f"Bearer {token}"}, timeout=timeout,
     )
     r.raise_for_status()
     payload = r.json()

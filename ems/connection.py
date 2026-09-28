@@ -191,6 +191,7 @@ def build_wiring(
     *,
     force_dry_run: bool = True,
     config_dry_run: bool | None = None,
+    http: object | None = None,
 ) -> Wiring:
     """Build a `Wiring` NamedTuple from effective settings.
 
@@ -207,7 +208,11 @@ def build_wiring(
     Settings watch-only can be told apart; when omitted, logging uses the combined force flag.
 
     `cache_store` (optional) is handed to the rate-limited external sources (Tibber, Forecast.Solar)
-    so they warm-start from a persisted snapshot after a restart and don't immediately refetch."""
+    so they warm-start from a persisted snapshot after a restart and don't immediately refetch.
+
+    Optional ``http`` is an ``HttpRuntime`` (shared sync client + named timeout profiles). When
+    present, LAN/cloud transports are injected so callers share one connection pool; when absent,
+    sources keep their one-shot defaults (tests / scripts)."""
     from ems.sources.battery import MockBatteryDriver
     from ems.sources.mock import MockSource
 
@@ -220,6 +225,22 @@ def build_wiring(
     # mock|replay OR Settings watch-only) always wins over the UI operational toggle (#136/#171).
     # Mock prices keep dry_run (#126).
     operational = False
+    # Optional shared-client factories (Phase 1 httpx pooling).
+    hw_get = None
+    solcast_get = None
+    fs_get = None
+    tibber_post = None
+    if http is not None:
+        from ems.http_client import (
+            make_json_get,
+            make_json_get_headers,
+            make_tibber_post,
+        )
+
+        hw_get = make_json_get(http, "lan_read")  # type: ignore[arg-type]
+        solcast_get = make_json_get_headers(http, "cloud")  # type: ignore[arg-type]
+        fs_get = make_json_get(http, "cloud")  # type: ignore[arg-type]
+        tibber_post = make_tibber_post(http, "cloud")  # type: ignore[arg-type]
     if use_live_devices:
         from ems.sources.indevolt import (
             DeviceQuiesce,
@@ -251,12 +272,22 @@ def build_wiring(
         # dashboard SoC is the capacity-weighted average. Writes still target the master (`ip`).
         tower_ips = _battery_ips(ip, eff.get("battery.indevolt_ips_extra"))
         # A snappy timeout so one flaky tower fails fast instead of stalling the dashboard; the
-        # cluster reader just aggregates over whatever responds.
+        # cluster reader just aggregates over whatever responds. Shared client still pools sockets;
+        # the 2.5 s float keeps the previous fail-fast read budget.
+        if http is not None:
+            from ems.http_client import make_indevolt_getdata_post
+
+            readers = [
+                IndevoltReadClient(
+                    a, port=port, timeout=2.5,
+                    rpc_post=make_indevolt_getdata_post(http, a, port, timeout=2.5),  # type: ignore[arg-type]
+                )
+                for a in tower_ips
+            ]
+        else:
+            readers = [IndevoltReadClient(a, port=port, timeout=2.5) for a in tower_ips]
         battery_reader = (
-            IndevoltClusterReader([IndevoltReadClient(a, port=port, timeout=2.5)
-                                   for a in tower_ips], quiesce=quiesce)
-            if tower_ips
-            else None
+            IndevoltClusterReader(readers, quiesce=quiesce) if tower_ips else None
         )
         # A missing solar/car meter is left absent (None) — NEVER substituted with the P1 IP. P1 is
         # net grid flow, not PV production or EV load; impersonating corrupts load reconstruction,
@@ -264,9 +295,9 @@ def build_wiring(
         solar_ip = eff.get("meters.solar_ip")
         car_ip = eff.get("meters.car_ip")
         source = LiveSource(
-            p1=HomeWizardMeter(eff["meters.p1_ip"]),
-            solar=HomeWizardMeter(str(solar_ip)) if solar_ip else None,
-            car=HomeWizardMeter(str(car_ip)) if car_ip else None,
+            p1=HomeWizardMeter(eff["meters.p1_ip"], http_get=hw_get),
+            solar=HomeWizardMeter(str(solar_ip), http_get=hw_get) if solar_ip else None,
+            car=HomeWizardMeter(str(car_ip), http_get=hw_get) if car_ip else None,
             battery=battery_reader,
         )
         # Cluster topology always belongs on the driver — armed or not. probe() advertises
@@ -282,12 +313,14 @@ def build_wiring(
         if operational:
             # Arm the writer with cluster topology. The driver commands realtime modes through the
             # master and uses every tower only when returning to vendor self-consumption.
+            # Write timeouts via shared ``lan_write`` profile (timeout=None); driver keeps its own
+            # write_attempts — never httpx Transport retries.
+            _http_client = getattr(http, "client", None) if http is not None else None
             controller_driver = IndevoltBatteryDriver(
                 ip, armed=True,
-                # Generous write timeout + retry: the device is slow under shared load (HA + app +
-                # cluster) and a too-tight timeout false-failed the charge, triggering the AUTO-
-                # revert spiral. A timeout now raises BatteryWriteUnconfirmed (hold, don't revert).
-                post_factory=lambda a, _p=port: make_setdata_post(a, _p, timeout=8.0),
+                post_factory=lambda a, _p=port, _c=_http_client: make_setdata_post(
+                    a, _p, timeout=None, client=_c,
+                ),
                 quiesce=quiesce,  # F1: same lock as the reader → reads quiesce while a write lands
                 **driver_kwargs,
             )
@@ -306,7 +339,7 @@ def build_wiring(
     from ems.sources.price_factory import build_price_source
 
     price_source = build_price_source(
-        eff, tz, cache_store=cache_store, use_live=live_prices,
+        eff, tz, cache_store=cache_store, use_live=live_prices, http_post=tibber_post,
     )
 
     # Solar forecast via the adapter registry (SPEC §6.3 / B-14). Live devices + lat/lon unlock
@@ -316,6 +349,7 @@ def build_wiring(
 
     solar_forecast = build_solar_forecast(
         eff, tz, cache_store=cache_store, use_live=use_live_devices,
+        http_get=fs_get, solcast_http_get=solcast_get,
     )
     # Live writes only when operational (battery + live prices) AND force_dry_run is False.
     # force_dry_run alone keeps dry_run True even if the UI asked for operational (#136 / #171).
@@ -331,21 +365,28 @@ def build_wiring(
     )
 
 
-def build_carbon_source(eff: dict):
+def build_carbon_source(eff: dict, *, http: object | None = None):
     """Build the CarbonSource (roadmap F3, Insights reporting only — never touches control) per
     `reporting.carbon_signal`: `static` (default) is the flat `reporting.grid_co2_factor`, always
     available; `electricitymaps` is the optional live signal, only when a personal API key is set —
     a configured-but-keyless live signal falls back to static with a one-line warning rather than
     silently doing nothing. Kept OUT of `build_wiring`'s return tuple deliberately: several callers
     unpack that tuple by fixed position/arity, and this is wired into the Recorder only, not the
-    battery/price/forecast read paths."""
+    battery/price/forecast read paths.
+
+    Optional ``http`` (``HttpRuntime``) injects a shared-client GET for ElectricityMaps."""
     from ems.sources.carbon import ElectricityMapsCarbonSource, StaticCarbonSource
 
     factor = float(eff.get("reporting.grid_co2_factor") or 0.27)
     if eff.get("reporting.carbon_signal") == "electricitymaps":
         api_key = eff.get("reporting.electricitymaps_api_key") or ""
         if api_key:
-            return ElectricityMapsCarbonSource(api_key)
+            client = None
+            if http is not None:
+                from ems.http_client import make_json_get_headers
+
+                client = make_json_get_headers(http, "best_effort")  # type: ignore[arg-type]
+            return ElectricityMapsCarbonSource(api_key, client=client)
         _log.warning(
             "reporting.carbon_signal=electricitymaps but no API key is set; "
             "using the flat grid CO2 factor instead"
