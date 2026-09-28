@@ -1366,17 +1366,29 @@ def create_app(
             # last_confirmed_action=AUTO — otherwise the refuse-when-busy restart gate (I2) would
             # sit at 409 forever after this external/deploy restart even though the battery is
             # confirmed-safe (an AUTO-desired cycle is idempotent and never rewrites the field).
+            # #177: do NOT clear an active GRID_CHARGE commitment here — shutdown_restore → AUTO
+            # is correct fail-safe (#127), but the cheap-window contract must survive for resume
+            # (or an explicit abort reason) on the next boot.
             try:
                 controller.note_confirmed_auto()
             except Exception:
                 _log.debug("shutdown-restore state reconcile failed (non-fatal)", exc_info=True)
         if audit_store is not None:
             try:
-                await audit_store.append(
-                    datetime.now(UTC).isoformat(), "shutdown_restore",
+                from ems.control.charge_commitment import shutdown_preserve_reason
+
+                preserve = shutdown_preserve_reason(
+                    getattr(controller, "charge_commitment", None) if controller else None)
+                detail = {"target": target.value, "confirmed": ok}
+                note = (
                     f"Graceful shutdown — restored battery to {target.value} "
-                    f"({'confirmed' if ok else 'UNCONFIRMED — verify the device'})",
-                    {"target": target.value, "confirmed": ok},
+                    f"({'confirmed' if ok else 'UNCONFIRMED — verify the device'})"
+                )
+                if preserve:
+                    note = f"{note}. {preserve}"
+                    detail["charge_commitment"] = "preserved_for_resume"
+                await audit_store.append(
+                    datetime.now(UTC).isoformat(), "shutdown_restore", note, detail,
                 )
             except Exception:
                 _log.warning("shutdown-restore audit append failed (non-fatal)", exc_info=True)
@@ -2531,6 +2543,12 @@ def create_app(
             # The energy amount travelling with the mode (energy review P2.4): the SoC the
             # controller would aim for now (None for self-consumption/hold) → UI "aiming for X%".
             "target_soc": tgt,
+            # #177: active GRID_CHARGE commitment surviving restart (or null).
+            "charge_commitment": (
+                controller.charge_commitment.to_dict()
+                if getattr(controller, "charge_commitment", None) is not None
+                else None
+            ),
             # The single top-of-dashboard headline + tone the homeowner reads first (emotional #1).
             "home_state": home,
         }
