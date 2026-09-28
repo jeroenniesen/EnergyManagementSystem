@@ -88,8 +88,12 @@ in dry-run. If the UI operational toggle is ON while config or Settings still fo
 startup logs a WARNING and the System **Run mode** row explains why writes stay off. Going live is
 therefore: turn on live devices (read-only sensing), configure Tibber, set `dev.mode: live` +
 yaml `control.dry_run: false` once, then use Settings **Watch only OFF** + **operational ON** and
-**Apply & restart**. A restart while charging can hand the battery back to AUTO
-(`shutdown_restore`) and abort an active cheap-charge window — prefer waiting until the window ends.
+**Apply & restart**. A restart while charging still hands the battery back to AUTO
+(`shutdown_restore`, #127). Active `GRID_CHARGE` commitments are **persisted** (#177): after
+restart EMS either **resumes** the charge (if still valid and live) or **aborts with an explicit
+audit reason** (e.g. `commitment_aborted: dry_run`) — never a silent wipe. Prefer flipping
+dry-run / restarting after the cheap window ends when possible; see
+`docs/operator-runbook.md`.
 
 ### Migration (pre-#136 installs)
 

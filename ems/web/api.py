@@ -1972,15 +1972,22 @@ def create_app(
         try:
             soc = _current_soc(now)
             if soc is not None:
-                need = compute_charge_need(
-                    soc_pct=soc, usable_kwh=settings_cache["battery.usable_kwh"],
-                    min_reserve_soc=settings_cache["battery.min_reserve_soc"],
-                    night_reserve_kwh=settings_cache["battery.night_reserve_kwh"],
-                    overnight_load_kwh=settings_cache["battery.overnight_load_kwh"],
-                    round_trip_efficiency=settings_cache["planner.round_trip_efficiency"],
-                )
+                # Prefer the active plan's committed target_soc over the advisory overnight
+                # ceiling (~config night reserve) so chat matches plan header / battery-plan (#180).
+                plan_tgt = getattr(pp[2], "target_soc", None) if pp is not None else None
+                if plan_tgt is not None:
+                    target_pct = float(plan_tgt)
+                else:
+                    need = compute_charge_need(
+                        soc_pct=soc, usable_kwh=settings_cache["battery.usable_kwh"],
+                        min_reserve_soc=settings_cache["battery.min_reserve_soc"],
+                        night_reserve_kwh=settings_cache["battery.night_reserve_kwh"],
+                        overnight_load_kwh=settings_cache["battery.overnight_load_kwh"],
+                        round_trip_efficiency=settings_cache["planner.round_trip_efficiency"],
+                    )
+                    target_pct = need.target_soc_pct
                 lines.append(
-                    f"Tonight's target level: {need.target_soc_pct:.0f}%; "
+                    f"Tonight's target level: {target_pct:.0f}%; "
                     f"reserve floor: {settings_cache['battery.min_reserve_soc']:.0f}%"
                 )
         except Exception:

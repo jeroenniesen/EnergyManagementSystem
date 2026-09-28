@@ -13,7 +13,7 @@
 Run through this before trusting any strategy. Each item has a home in §17 (*Known uncertainties*).
 
 - [ ] **Tibber token works** — personal token created; `viewer.homes[].currentSubscription.priceInfo` returns `today`/`tomorrow`; quarter-hourly `priceInfoRange` returns data (see §6.2 for the exact placement caveat).
-- [ ] **HA Indevolt actions/entities discovered** — run the **capability probe** (§6.5): which of `indevolt.charge` / `indevolt.discharge` exist, which **entities** back "standby"/"energy mode"/"discharge floor"/"grid charging", and their parameter ranges.
+- [ ] **HA Indevolt actions/entities discovered** *(target / [B-18](BACKLOG.md) / [#107](https://github.com/jeroenniesen/EnergyManagementSystem/issues/107))* — run the **capability probe** (§6.5): which of `indevolt.charge` / `indevolt.discharge` exist, which **entities** back "standby"/"energy mode"/"discharge floor"/"grid charging", and their parameter ranges. Not required on today's direct-device Mac Mini path.
 - [x] **Cluster max charge/discharge** — `IndevoltBatteryDriver.probe()` advertises
   `battery.max_charge_w` / `max_discharge_w` scaled by configured tower count (n × OpenData
   SolidFlex 2400 W ceiling for a single tower; cluster trusts settings / Gen-2 overrides).
@@ -289,7 +289,7 @@ Indevolt is a German brand (Power Genius GmbH). Your system is a **SolidFlex 200
   - **Max AC output power / feed-in limit / inverter input limit** = **number entities** (Gen-2).
   - **Grid charging** = a **switch entity** ("Allow grid charging").
 
-> **Implemented reality:** only **(B) direct OpenData RPC**, below, ships (`ems/sources/indevolt.py` read, `ems/sources/indevolt_driver.py` write) — path (A)'s whole HA capability-probe-via-services flow is **planned, not yet implemented** (§5.2, BACKLOG B-18). The real device needs **no auth at all** in practice — plain HTTP POST, IP-only, no key — contrary to the "Auth: HTTP Digest" line in (B) below (never observed/required against the live device; correct only if a future firmware demands it). The M1a `probe()` **is** real — it reads capacity/mode/meter-pairing live over RPC — but most `CapabilityReport` fields (`services`, `energy_mode_options`, `has_standby`, `has_grid_charge_switch`) are **fixed constants** in code, not dynamically discovered from HA service/entity schemas as designed below.
+> **Implemented reality:** only **(B) direct OpenData RPC**, below, ships (`ems/sources/indevolt.py` read, `ems/sources/indevolt_driver.py` write) — path (A)'s whole HA capability-probe-via-services flow is **planned, not yet implemented** (§5.2, [BACKLOG B-18](BACKLOG.md) / [#107](https://github.com/jeroenniesen/EnergyManagementSystem/issues/107)). The real device needs **no auth at all** in practice — plain HTTP POST, IP-only, no key — contrary to the "Auth: HTTP Digest" line in (B) below (never observed/required against the live device; correct only if a future firmware demands it). The M1a `probe()` **is** real — it reads capacity/mode/meter-pairing live over RPC — but most `CapabilityReport` fields (`services`, `energy_mode_options`, `has_standby`, `has_grid_charge_switch`) are **fixed constants** in code, not dynamically discovered from HA service/entity schemas as designed below.
 
 **A) Primary — via HA, after a capability probe (M1a).** At startup the EMS runs a **capability probe** and records a stored **`CapabilityReport`** (full schema in [`docs/control-model.md`](docs/control-model.md) §6):
 1. List available `indevolt.*` services and their schemas.

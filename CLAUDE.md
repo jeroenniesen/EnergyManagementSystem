@@ -36,7 +36,7 @@ A home energy management system that **switches the operating mode of an Indevol
 
 **Current:** EMS Core alone on the Mac Mini, talking to devices directly; HA/MQTT optional layers are absent from the live path.
 
-Control loop every `cycle_seconds` (default 300 s): **sense → reconstruct load → (re)plan if stale → decide → act only on mode change → confirm → record → publish**.
+Control loop every `cycle_seconds` (default 300 s): **sense → reconstruct load → (re)plan if stale → decide → act only on mode change → confirm → record → publish** (UI / SQLite history today; MQTT→HA remains a **target**, B-18/#107 — not shipped).
 
 ## Hardware (confirmed)
 
