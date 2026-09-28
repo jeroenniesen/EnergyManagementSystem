@@ -274,3 +274,46 @@ def test_battery_plan_provenance_is_present_even_when_paused_safely(tmp_path):
     assert prov["solar_confidence_pct"] == 80.0
     assert prov["planner"] in {"rule_based", "adaptive", "summer"}
     assert prov["intelligence"]["state"] == "not_active"
+
+
+def test_battery_plan_target_matches_plan_header_not_advisory_night_ceiling(tmp_path):
+    """#180: after #162 honest partial, battery-plan must not scream ~88% behind_target while
+    /api/plan committed a lower reachable target (and possibly 0 kWh grid top-up)."""
+    class LowSoc(MockSource):
+        def read(self):
+            raw = super().read()
+            return RawSample(raw.grid_power_w, raw.solar_power_w, raw.battery_power_w,
+                             raw.ev_power_w, 5.0)
+
+    with TestClient(_app(tmp_path, source=LowSoc())) as c:
+        # Force winter so the rule-based planner owns target_soc (honest required-kWh sizing).
+        assert c.post("/api/settings", json={"strategy.mode": "winter"}).status_code == 200
+        plan = c.get("/api/plan").json()
+        body = c.get("/api/battery-plan").json()
+
+    assert plan.get("target_soc") is not None
+    assert body["target_soc_pct"] is not None
+    # Same commitment surface — UI target mirrors plan header (not advisory overnight ~88%).
+    assert abs(body["target_soc_pct"] - plan["target_soc"]) < 0.6
+    # Advisory overnight with defaults is ~88%; a partial day must not re-inflate that far when
+    # the plan committed less (or equal only when the plan itself reaches that high).
+    if plan["target_soc"] < 70.0:
+        assert body["target_soc_pct"] < 70.0
+    # 0 kWh top-up + low committed target must not false-alarm behind an unreachable ceiling.
+    met_target = body["current_soc_pct"] >= body["target_soc_pct"] - 1.0
+    if body["planned_grid_topup_kwh"] < 0.05 and met_target:
+        assert body["status"] in {"on_track", "ahead", "needs_topup", "paused_safely", "data_stale"}
+        assert body["status"] != "behind_target"
+
+
+def test_battery_plan_full_cheap_window_keeps_normal_committed_target(tmp_path):
+    """#180 acceptance: when the planner can cover demand, target stays the plan commitment
+    (may be high) — we only forbid the UI inventing a *higher* advisory ceiling than the plan."""
+    with TestClient(_app(tmp_path)) as c:
+        assert c.post("/api/settings", json={"strategy.mode": "winter"}).status_code == 200
+        plan = c.get("/api/plan").json()
+        body = c.get("/api/battery-plan").json()
+
+    if plan.get("target_soc") is None:
+        return
+    assert abs(body["target_soc_pct"] - plan["target_soc"]) < 0.6

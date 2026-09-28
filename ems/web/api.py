@@ -95,7 +95,7 @@ from ems.freshness import FreshnessTracker
 from ems.http_client import HttpRuntime, make_bytes_post, make_cloud_cover_get
 from ems.load_model import reconstruct
 from ems.notify import Notifier
-from ems.planner.charge_need import compute_charge_need
+from ems.planner.charge_need import compute_charge_need, ui_charge_need
 from ems.planner.explain import (
     ExternalLlmExplainer,
     TemplateExplainer,
@@ -3113,12 +3113,17 @@ def create_app(
             profile = build_load_profile(drows, site_tz, fallback_w=fallback_w)
             _load_profile_box["profile"] = profile  # share with the sync _current_plan (adaptive)
             load_by = {s.start: profile.expected_w(s.start) for s in plan.slots}
-            need = compute_charge_need(
+            # #180: on-track / behind_target / target line must use the plan's committed
+            # target_soc (required kWh / honest partial from #162), not the separate advisory
+            # overnight config ceiling (~88% with defaults) — otherwise UI screams behind while
+            # the plan honestly scheduled 0 kWh top-up.
+            need = ui_charge_need(
                 soc_pct=soc, usable_kwh=settings_cache["battery.usable_kwh"],
                 min_reserve_soc=settings_cache["battery.min_reserve_soc"],
                 night_reserve_kwh=settings_cache["battery.night_reserve_kwh"],
                 overnight_load_kwh=settings_cache["battery.overnight_load_kwh"],
                 round_trip_efficiency=settings_cache["planner.round_trip_efficiency"],
+                plan_target_soc=plan.target_soc,
             )
             # Both seasons use the adaptive charger, which sizes its own charge slots — the
             # projection must NOT cap them at the night target (undoing demand-aware peak-shaving).
@@ -3127,14 +3132,18 @@ def create_app(
                 load_w_by=load_by, model=_battery_model(),
                 charge_target_soc_pct=None,
             )
+            # Prefer the plan deadline (first peak / catch-up) when the planner set one; sunset
+            # remains the advisory fallback when the plan has no commitment deadline.
+            deadline = plan.deadline if plan.deadline is not None else sunset_after(fc_slots, now)
             return {"now": now, "current_soc": soc, "projected": projected, "need": need,
-                    "deadline": sunset_after(fc_slots, now),
+                    "deadline": deadline,
                     "price_by": {p.start: p.eur_per_kwh for p in prices_},
                     # The resolved season ('summer'/'winter') the ACTIVE plan was built with —
                     # carried through so /api/battery-plan's provenance line never has to rebuild
                     # the plan (or re-touch the seasonal-hysteresis counter) to know which planner
                     # ran.
-                    "strategy": plan.strategy}
+                    "strategy": plan.strategy,
+                    "plan_target_soc": plan.target_soc}
 
         return await asyncio.to_thread(_compute)
 
@@ -3188,7 +3197,7 @@ def create_app(
         peak = totals["soc_max_pct"]
         if grid_charge_kwh > 0.1:
             head = (f"Next 24h — top up {grid_charge_kwh:.1f} kWh from the grid toward the "
-                    f"{need.target_soc_pct:.0f}% night target, then run the evening on battery.")
+                    f"{need.target_soc_pct:.0f}% plan target, then run the evening on battery.")
         elif peak is not None:
             head = (f"Next 24h — your solar fills the battery (peaking near {peak:.0f}%), then "
                     "runs the evening on it — no grid charging.")
@@ -3312,9 +3321,10 @@ def create_app(
     def _on_track(current_soc: float, need, totals: dict, grid_charge_kwh: float,
                   reserve_pct: float) -> dict:
         """Verdict derived from the ACTUAL plan (not a separate heuristic), so it can never claim a
-        top-up the plan doesn't contain. The conservative night target is a ceiling, not the goal —
-        what matters is staying self-sufficient and above reserve:
-          ahead       — the plan reaches the night target;
+        top-up the plan doesn't contain. `need` is the committed plan target when present (#180),
+        else the advisory overnight ceiling — what matters is staying self-sufficient and above
+        reserve:
+          ahead       — the plan reaches the committed target;
           on_track    — projected self-sufficient (≈no import) AND above reserve (even if below the
                         target — that's fine, no grid power needed);
           behind      — short AND either a grid top-up IS planned (say so, truthfully) or the
@@ -3326,16 +3336,16 @@ def create_app(
         self_sufficient = imp is not None and imp < 0.1
         if proj_max is not None and proj_max >= target - 0.5:
             status = "ahead"
-            msg = f"On track — projected to reach the {target:.0f}% night target."
+            msg = f"On track — projected to reach the {target:.0f}% plan target."
         elif self_sufficient and above_reserve:
             status = "on_track"
             msg = (f"On track — solar covers the home: projected self-sufficient and above the "
-                   f"{reserve_pct:.0f}% reserve. Below the {target:.0f}% night target, but no grid "
+                   f"{reserve_pct:.0f}% reserve. Below the {target:.0f}% plan target, but no grid "
                    "power is needed.")
         elif grid_charge_kwh > 0.05:
             status = "behind"
             msg = (f"Behind the {target:.0f}% target — EMS tops up {grid_charge_kwh:.1f} kWh from "
-                   "the grid in the cheapest window before sunset.")
+                   "the grid in the cheapest window before the deadline.")
         elif imp and imp > 0.05:
             status = "behind"
             msg = (f"Short of the {target:.0f}% target with no grid top-up planned — about "
@@ -3585,7 +3595,7 @@ def create_app(
         elif verdict["status"] == "behind":
             status = "behind_target"
             summary = f"Behind target — {verdict['message']}"
-            current_reason = reason or "The battery is short of the night target."
+            current_reason = reason or "The battery is short of the plan target."
             warnings.append(verdict["message"])
         else:
             status = "on_track"
@@ -3598,7 +3608,9 @@ def create_app(
         start = (recent[0]["start"] if recent else
                  (slots[0]["start"] if slots else fp["now"].isoformat()))
         end = _slot_end_iso(slots[-1]) if slots else (fp["now"] + timedelta(hours=24)).isoformat()
-        target = round(need.target_soc_pct, 1)
+        # Prefer the plan header target when present so battery-plan /api/plan stay consistent.
+        plan_tgt = fp.get("plan_target_soc")
+        target = round(plan_tgt if plan_tgt is not None else need.target_soc_pct, 1)
         reserve = round(reserve_pct, 1)
         return {
             "status": status,
