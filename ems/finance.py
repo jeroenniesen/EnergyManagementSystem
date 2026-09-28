@@ -292,8 +292,10 @@ def _clamp(value: float, low: float, high: float) -> float:
 
 def _slot_series(
     raw_rows: list[dict],
-) -> tuple[dict[datetime, float], dict[datetime, float], dict[datetime, float], dict[datetime, float]]:
-    """Mean grid/solar/battery/SoC per 15-min slot from raw samples (SPEC §4 load reconstruction)."""
+) -> tuple[
+    dict[datetime, float], dict[datetime, float], dict[datetime, float], dict[datetime, float]
+]:
+    """Mean grid/solar/battery/SoC per 15-min slot (SPEC §4 load reconstruction)."""
     grid_by: dict[datetime, list[float]] = defaultdict(list)
     solar_l: dict[datetime, list[float]] = defaultdict(list)
     batt_by: dict[datetime, list[float]] = defaultdict(list)

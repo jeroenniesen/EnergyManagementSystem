@@ -3793,7 +3793,9 @@ def create_app(
         )
         return {"advice": advice}
 
-    def _attach_vs_auto(day_label: str, data: dict, raw: list[dict], price_rows: list[dict]) -> dict:
+    def _attach_vs_auto(
+        day_label: str, data: dict, raw: list[dict], price_rows: list[dict],
+    ) -> dict:
         """Overlay per-request EMS-vs-AUTO fields when raw samples exist. Never persists them."""
         if not raw:
             return data
@@ -3910,8 +3912,8 @@ def create_app(
         same calc_v cache-guard contract as `_ensure_day_finance`, which stays UNCHANGED (and is
         still used, one day at a time, by the export package for arbitrary/non-contiguous days).
 
-        #131: per-request `day_vs_auto` is attached when raw samples exist; never stored. A completed
-        day with a cached row and no raw is returned unchanged (never overwritten with empty)."""
+        #131: per-request `day_vs_auto` attached when raw exists; never stored. A completed day
+        with a cached row and no raw is returned unchanged (never overwritten with empty)."""
         q_end = min(end, now_local + timedelta(minutes=1))
         limit = history_row_cap((end - start).total_seconds(), _sample_cadence_seconds())
         raw = await store.raw_between(start.astimezone(UTC).isoformat(),
@@ -4081,7 +4083,7 @@ def create_app(
         recorded samples + stored prices, never from the plan. Completed days are computed once
         and persisted (`daily_finance`, retention-proof); the running day is always fresh.
 
-        Live HTTP route is `ems.web.routes.report` via ReportService (which attaches #131 `vs_auto`).
+        Live HTTP route is `ems.web.routes.report` via ReportService (#131 `vs_auto`).
         This closure remains for parity with the in-app report helper shape."""
         now_local = datetime.now(UTC).astimezone(site_tz)
         if date:

@@ -10,7 +10,14 @@ from zoneinfo import ZoneInfo
 from fastapi.testclient import TestClient
 
 from ems.domain import RawSample
-from ems.finance import day_finance, price_rows_by_local_day, raw_rows_by_local_day
+from ems.finance import (
+    VS_AUTO_MODEL_NOTE,
+    day_finance,
+    day_vs_auto,
+    price_rows_by_local_day,
+    raw_rows_by_local_day,
+    strip_vs_auto_ephemeral,
+)
 from ems.load_model import reconstruct
 from ems.sources.mock import MockSource
 from ems.sources.prices import MockPriceSource
@@ -478,9 +485,6 @@ def test_dst_fall_back_day_kwh_sums_100_quarters():
 
 # --- #131: EMS vs battery AUTO (per-request; never bumps calc_v / never overwrites without raw) ---
 
-from ems.finance import VS_AUTO_MODEL_NOTE, day_vs_auto, strip_vs_auto_ephemeral
-
-
 def test_finance_calc_version_unchanged_by_vs_auto_slice():
     # AC #131: this slice must NOT bump `_FINANCE_CALC_VERSION` (simulation is per-request only).
     assert _FINANCE_CALC_VERSION == 6
@@ -520,8 +524,7 @@ def test_day_vs_auto_prices_import_fee_like_day_finance_not_replay_spot():
     # AC #131: same EconomicSnapshot / import-fee boundary as day_finance — a 0.05 €/kWh import
     # fee raises both legs equally when the meter is identical to AUTO (idle → AUTO idle too).
     rows = _rows([(12, 1, 1000.0, 0.0)])
-    # Give SoC so AUTO starts full enough; with zero solar and flat load AUTO discharges → different.
-    # Use zero load + zero solar + idle battery so AUTO also idles (net=0).
+    # Flat load with solar would let AUTO discharge; idle meter keeps AUTO idle (net=0).
     idle = []
     t0 = DAY + timedelta(hours=12)
     for i in range(4):
