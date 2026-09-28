@@ -29,18 +29,48 @@ plain-language parts that sum to it (wear included in each discharged kWh):
 
 Attribution uses a same-day FIFO of priced charge packets (solar-first vs grid), matching the
 energy-flow solar-first intuition. Comparison baseline stays "without a battery".
+
+**EMS vs battery AUTO (#131).** `day_vs_auto` answers "is EMS worth it vs the vendor default?" by
+simulating Indevolt self-consumption (`auto_selfuse`) on the same reconstructed load + solar, then
+pricing BOTH the measured meter and the simulation on the same quarter-hour basis via
+`EconomicSnapshot.from_tariff_policy` (import fee / `tibber_total_includes_all` included) — not via
+replay's simpler spot×kWh cost. The simulation is a model (fixed η=0.90, no 50 W floor, no dead
+zone or standby loss); EV charging sits inside reconstructed load while EMS would hold the battery.
+Computed per request only — never written into `daily_finance`.
 """
 from __future__ import annotations
 
-from collections import deque
+import math
+from collections import defaultdict, deque
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from zoneinfo import ZoneInfo
 
 from ems.economics import EconomicSnapshot
-from ems.retrospect import _floor, _parse
+from ems.retrospect import _floor, _mean, _parse
 from ems.tariffs import TariffPolicy
 from ems.timeseries import observed_segments
+
+# Ephemeral vs-AUTO fields attached to a finance day dict for the API response only. MUST be
+# stripped before any `daily_finance` upsert so a simulation never lands in the long-horizon store
+# and never bumps `_FINANCE_CALC_VERSION`.
+VS_AUTO_EPHEMERAL_KEYS = (
+    "saved_vs_auto_eur",
+    "auto_cost_eur",
+    "auto_grid_cost_eur",
+    "auto_battery_cost_eur",
+    "vs_auto_has_sim",
+)
+
+VS_AUTO_MODEL_NOTE = (
+    "Simulated model of the battery's own default (self-consumption): fixed round-trip "
+    "efficiency 0.90, no 50 W floor, no dead zone or standby loss. The EV charger is inside "
+    "house load — this model lets AUTO discharge into it, while EMS holds the battery during "
+    "car charging."
+)
+
+_SLOT_H = 0.25  # hours per 15-min quarter
+_AUTO_ETA = 0.90  # fixed model efficiency (AC #131) — not the live settings knob
 
 
 @dataclass(frozen=True)
@@ -254,6 +284,253 @@ def day_finance(
     # No priced slots at all → can't compute money figures; report energy only.
     return DayFinance(day, bool(segments), coverage, sample_coverage,
                       None, None, None, None, imp, exp, chg, dis)
+
+
+def _clamp(value: float, low: float, high: float) -> float:
+    return max(low, min(high, value))
+
+
+def _slot_series(
+    raw_rows: list[dict],
+) -> tuple[dict[datetime, float], dict[datetime, float], dict[datetime, float], dict[datetime, float]]:
+    """Mean grid/solar/battery/SoC per 15-min slot from raw samples (SPEC §4 load reconstruction)."""
+    grid_by: dict[datetime, list[float]] = defaultdict(list)
+    solar_l: dict[datetime, list[float]] = defaultdict(list)
+    batt_by: dict[datetime, list[float]] = defaultdict(list)
+    soc_by: dict[datetime, list[float]] = defaultdict(list)
+    for r in raw_rows:
+        dt = _parse(r.get("ts"))
+        if dt is None:
+            continue
+        s = _floor(dt)
+        grid_by[s].append(float(r.get("grid_power_w", 0.0)))
+        solar_l[s].append(float(r.get("solar_power_w", 0.0) or 0.0))
+        batt_by[s].append(float(r.get("battery_power_w", 0.0)))
+        if r.get("soc_pct") is not None:
+            soc_by[s].append(float(r["soc_pct"]))
+    load_by: dict[datetime, float] = {}
+    solar_by: dict[datetime, float] = {}
+    batt_meas: dict[datetime, float] = {}
+    for s in grid_by:
+        solar = _mean(solar_l[s])
+        # house_load = grid + solar + battery (SPEC §4 / load_model) — includes EV on P1.
+        load_by[s] = _mean(grid_by[s]) + solar + _mean(batt_by[s])
+        solar_by[s] = solar
+        batt_meas[s] = _mean(batt_by[s])
+    start_soc_by: dict[datetime, float] = {s: _mean(v) for s, v in soc_by.items()}
+    return load_by, solar_by, batt_meas, start_soc_by
+
+
+def _price_grid_cost(
+    grid_w_by: dict[datetime, float],
+    price_by: dict[datetime, float],
+    *,
+    degradation_eur_per_kwh: float,
+    discharge_kwh: float,
+    export_price_model: str,
+    energy_tax_eur_per_kwh: float,
+    fixed_feed_in_eur_per_kwh: float,
+    tibber_total_includes_all: bool,
+    import_fee_eur_per_kwh: float,
+    export_fee_eur_per_kwh: float,
+) -> tuple[float | None, float]:
+    """Price a quarter-hour grid series via the same EconomicSnapshot path as `day_finance`.
+
+    Returns `(grid_cost_eur or None if no priced slots, battery_wear_eur)`. Wear uses the caller's
+    discharge total (priced-window discharge for honesty with day_finance's `dis_priced` basis when
+    the caller passes only priced-slot discharge)."""
+    tariff_policy = TariffPolicy(
+        import_fee_eur_per_kwh=0.0 if tibber_total_includes_all else import_fee_eur_per_kwh,
+        export_fee_eur_per_kwh=export_fee_eur_per_kwh,
+    )
+    cost = 0.0
+    priced = 0
+    for slot, grid_w in grid_w_by.items():
+        price = price_by.get(slot)
+        if price is None:
+            continue
+        priced += 1
+        snapshot = EconomicSnapshot.from_tariff_policy(
+            tariff_policy,
+            raw_price_eur_per_kwh=price,
+            degradation_eur_per_kwh=degradation_eur_per_kwh,
+            export_model=export_price_model,
+            energy_tax_eur_per_kwh=energy_tax_eur_per_kwh,
+            fixed_feed_in_eur_per_kwh=fixed_feed_in_eur_per_kwh,
+        )
+        import_price = snapshot.import_price_eur_per_kwh
+        credit = snapshot.export_credit(price)
+        cost += (max(0.0, grid_w) * import_price - max(0.0, -grid_w) * credit) * _SLOT_H / 1000.0
+    wear = discharge_kwh * degradation_eur_per_kwh
+    return (cost if priced else None), wear
+
+
+def _simulate_auto_battery(
+    slots: list[datetime],
+    load_by: dict[datetime, float],
+    solar_by: dict[datetime, float],
+    *,
+    start_soc: float,
+    usable_kwh: float,
+    max_charge_w: float,
+    max_discharge_w: float,
+    min_reserve_soc: float,
+) -> tuple[dict[datetime, float], dict[datetime, float]]:
+    """Vendor AUTO / self-consumption trajectory (mirrors replay `auto_selfuse` / projection).
+
+    Fixed η = `_AUTO_ETA` (0.90). No 50 W dead-band, no standby loss — deliberate model limits
+    called out in `VS_AUTO_MODEL_NOTE`. Returns `(grid_w_by_slot, battery_w_by_slot)`."""
+    eta = math.sqrt(_clamp(_AUTO_ETA, 1e-6, 1.0))
+    usable = max(1e-6, usable_kwh)
+    reserve_kwh = _clamp(min_reserve_soc, 0.0, 100.0) / 100.0 * usable
+    soc_kwh = _clamp(start_soc, 0.0, 100.0) / 100.0 * usable
+    grid_by: dict[datetime, float] = {}
+    batt_by: dict[datetime, float] = {}
+    for slot in slots:
+        solar = solar_by.get(slot, 0.0)
+        load = load_by.get(slot, 0.0)
+        net = load - solar  # + deficit / − surplus
+        headroom_kwh = max(0.0, usable - soc_kwh)
+        avail_kwh = max(0.0, soc_kwh - reserve_kwh)
+        max_charge_ac = min(max_charge_w, headroom_kwh / eta / _SLOT_H * 1000.0)
+        max_discharge_ac = min(max_discharge_w, avail_kwh * eta / _SLOT_H * 1000.0)
+        if net > 0:
+            battery_w = min(net, max_discharge_ac)
+        elif net < 0:
+            battery_w = -min(-net, max_charge_ac)
+        else:
+            battery_w = 0.0
+        if battery_w < 0:
+            soc_kwh += (-battery_w) * eta * _SLOT_H / 1000.0
+        elif battery_w > 0:
+            soc_kwh -= battery_w / eta * _SLOT_H / 1000.0
+        soc_kwh = _clamp(soc_kwh, 0.0, usable)
+        batt_by[slot] = battery_w
+        grid_by[slot] = load - solar - battery_w
+    return grid_by, batt_by
+
+
+@dataclass(frozen=True)
+class DayVsAuto:
+    """Per-request EMS-vs-AUTO comparison for one local day (never persisted)."""
+
+    day: str
+    has_sim: bool
+    actual_cost_eur: float | None  # measured grid + wear, finance-priced
+    auto_cost_eur: float | None  # simulated AUTO grid + wear, finance-priced
+    auto_grid_cost_eur: float | None
+    auto_battery_cost_eur: float | None
+    saved_vs_auto_eur: float | None  # auto_cost − actual_cost (negative stays visible)
+
+    def to_ephemeral_dict(self) -> dict:
+        def r2(x: float | None) -> float | None:
+            return None if x is None else round(x, 2)
+
+        return {
+            "vs_auto_has_sim": self.has_sim,
+            "auto_cost_eur": r2(self.auto_cost_eur),
+            "auto_grid_cost_eur": r2(self.auto_grid_cost_eur),
+            "auto_battery_cost_eur": r2(self.auto_battery_cost_eur),
+            "saved_vs_auto_eur": r2(self.saved_vs_auto_eur),
+        }
+
+
+def day_vs_auto(
+    raw_rows: list[dict],
+    price_rows: list[dict],
+    *,
+    day: str,
+    usable_kwh: float = 10.8,
+    max_charge_w: float = 4000.0,
+    max_discharge_w: float = 4000.0,
+    min_reserve_soc: float = 10.0,
+    degradation_eur_per_kwh: float = 0.05,
+    export_price_model: str = "net_metering",
+    energy_tax_eur_per_kwh: float = 0.13,
+    fixed_feed_in_eur_per_kwh: float = 0.01,
+    tibber_total_includes_all: bool = False,
+    import_fee_eur_per_kwh: float = 0.0,
+    export_fee_eur_per_kwh: float = 0.0,
+) -> DayVsAuto:
+    """Simulate battery AUTO on this day's reconstructed load and compare to measured cost.
+
+    Both legs are priced on the same 15-min slots via `EconomicSnapshot.from_tariff_policy` (same
+    import-fee / feed-in boundary as `day_finance`). Returns `has_sim=False` when there are no
+    usable samples — never invents a € figure. Pure; the caller must NOT persist the result."""
+    load_by, solar_by, batt_meas, soc_by = _slot_series(raw_rows)
+    if not load_by:
+        return DayVsAuto(day, False, None, None, None, None, None)
+
+    price_by: dict[datetime, float] = {}
+    for p in price_rows:
+        dt = _parse(p.get("start_ts"))
+        if dt is not None:
+            price_by[_floor(dt)] = float(p.get("eur_per_kwh", 0.0))
+
+    slots = sorted(load_by)
+    start_soc = soc_by[slots[0]] if slots[0] in soc_by else (
+        next(iter(soc_by.values())) if soc_by else 50.0
+    )
+
+    # Measured meter on the same quarter-hour grid (grid_w already recorded).
+    actual_grid = {
+        s: load_by[s] - solar_by.get(s, 0.0) - batt_meas.get(s, 0.0) for s in slots
+    }
+    # Discharge only over priced slots — same wear window as day_finance's `dis_priced`.
+    actual_dis = sum(
+        max(0.0, batt_meas.get(s, 0.0)) * _SLOT_H / 1000.0
+        for s in slots if s in price_by
+    )
+    actual_grid_cost, actual_wear = _price_grid_cost(
+        actual_grid, price_by,
+        degradation_eur_per_kwh=degradation_eur_per_kwh,
+        discharge_kwh=actual_dis,
+        export_price_model=export_price_model,
+        energy_tax_eur_per_kwh=energy_tax_eur_per_kwh,
+        fixed_feed_in_eur_per_kwh=fixed_feed_in_eur_per_kwh,
+        tibber_total_includes_all=tibber_total_includes_all,
+        import_fee_eur_per_kwh=import_fee_eur_per_kwh,
+        export_fee_eur_per_kwh=export_fee_eur_per_kwh,
+    )
+
+    auto_grid, auto_batt = _simulate_auto_battery(
+        slots, load_by, solar_by,
+        start_soc=start_soc,
+        usable_kwh=usable_kwh,
+        max_charge_w=max_charge_w,
+        max_discharge_w=max_discharge_w,
+        min_reserve_soc=min_reserve_soc,
+    )
+    auto_dis_priced = sum(
+        max(0.0, auto_batt.get(s, 0.0)) * _SLOT_H / 1000.0
+        for s in slots if s in price_by
+    )
+    auto_grid_cost, auto_wear = _price_grid_cost(
+        auto_grid, price_by,
+        degradation_eur_per_kwh=degradation_eur_per_kwh,
+        discharge_kwh=auto_dis_priced,
+        export_price_model=export_price_model,
+        energy_tax_eur_per_kwh=energy_tax_eur_per_kwh,
+        fixed_feed_in_eur_per_kwh=fixed_feed_in_eur_per_kwh,
+        tibber_total_includes_all=tibber_total_includes_all,
+        import_fee_eur_per_kwh=import_fee_eur_per_kwh,
+        export_fee_eur_per_kwh=export_fee_eur_per_kwh,
+    )
+
+    if actual_grid_cost is None or auto_grid_cost is None:
+        return DayVsAuto(day, bool(slots), None, None, None, None, None)
+
+    actual_total = actual_grid_cost + actual_wear
+    auto_total = auto_grid_cost + auto_wear
+    return DayVsAuto(
+        day, True, actual_total, auto_total, auto_grid_cost, auto_wear,
+        auto_total - actual_total,
+    )
+
+
+def strip_vs_auto_ephemeral(data: dict) -> dict:
+    """Return a shallow copy of a finance day dict without per-request vs-AUTO fields."""
+    return {k: v for k, v in data.items() if k not in VS_AUTO_EPHEMERAL_KEYS}
 
 
 def _rows_by_local_day(

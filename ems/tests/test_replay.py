@@ -505,3 +505,57 @@ def test_oracle_headroom_is_wired_into_the_aggregate():
     assert agg["oracle_headroom_eur"] == round(pl - orc, 4)
     # Perfect solar can never make the SAME strategy pay MORE here: oracle ≤ planner (headroom ≥ 0).
     assert orc <= pl + 1e-9
+
+
+# --- #131: day_vs_auto shares AUTO trajectory with replay; prices via finance fees --------------
+
+def test_day_vs_auto_auto_trajectory_matches_replay_auto_selfuse_energy():
+    """AUTO kWh from `day_vs_auto` must match replay `auto_selfuse` (same battery model math).
+
+    Costs may differ: finance prices with EconomicSnapshot + import fee; replay uses raw spot.
+    """
+    from ems.finance import day_vs_auto
+
+    raw, prices = _solar_day()
+    # Lossless η=1.0 in replay cfg; day_vs_auto fixes η=0.90 — use a day that starts with SoC so
+    # both can store midday surplus. Compare energy by re-simulating with η=0.90 in replay too.
+    cfg = _cfg(**{
+        "planner.round_trip_efficiency": 0.90,
+        "battery.min_reserve_soc": 0.0,
+        "battery.usable_kwh": 10.0,
+    })
+    # Start SoC 0 — same as _solar_day default.
+    auto = replay_day(raw, prices, [], cfg=cfg).scenarios["auto_selfuse"]
+    vs = day_vs_auto(
+        raw, prices, day="2026-01-15",
+        usable_kwh=10.0, max_charge_w=4000.0, max_discharge_w=4000.0,
+        min_reserve_soc=0.0, degradation_eur_per_kwh=0.0,
+        export_price_model="net_metering",
+    )
+    assert vs.has_sim and vs.auto_grid_cost_eur is not None
+    # Replay cost uses raw spot (no import fee); finance path with fee=0 + net_metering should
+    # match auto grid cost when wear=0 (degradation 0) and η matches.
+    assert abs(vs.auto_grid_cost_eur - auto.cost_eur) < 1e-6
+    assert abs(auto.import_kwh - 5.0) < 1e-6  # still the known solar-day AUTO import
+
+
+def test_day_vs_auto_includes_import_fee_replay_cost_misses():
+    # AC #131: simulation priced via finance EconomicSnapshot — import fee raises AUTO cost;
+    # replay's ScenarioResult.cost_eur does not add import_fee.
+    from ems.finance import day_vs_auto
+
+    raw, prices = _solar_day()
+    cfg = _cfg(**{
+        "planner.round_trip_efficiency": 0.90,
+        "battery.min_reserve_soc": 0.0,
+        "battery.usable_kwh": 10.0,
+    })
+    auto = replay_day(raw, prices, [], cfg=cfg).scenarios["auto_selfuse"]
+    vs = day_vs_auto(
+        raw, prices, day="2026-01-15",
+        usable_kwh=10.0, max_charge_w=4000.0, max_discharge_w=4000.0,
+        min_reserve_soc=0.0, degradation_eur_per_kwh=0.0,
+        tibber_total_includes_all=False, import_fee_eur_per_kwh=0.10,
+    )
+    assert vs.auto_grid_cost_eur is not None and auto.cost_eur is not None
+    assert vs.auto_grid_cost_eur > auto.cost_eur + 0.01  # fee visibly increases finance-priced cost

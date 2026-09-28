@@ -2476,6 +2476,7 @@ body {
 }
 .fin-val { font-size: 20px; font-weight: 600; font-variant-numeric: tabular-nums; }
 .fin-good { color: var(--green-text); }
+.fin-amber { color: var(--amber-text); }
 .fin-name { color: var(--muted); font-size: 12px; margin-top: 2px; }
 .fin-caveat { color: var(--muted); font-size: 12px; margin: 6px 0; }
 @media (max-width: 560px) {

@@ -517,6 +517,18 @@ const FINANCE = {
     grid_import_kwh: 7.4, grid_export_kwh: 2.0, days_with_prices: 1, days_with_data: 1,
     days_with_coverage_gap: 0, days_without_data: 0,
   },
+  vs_auto: {
+    saved_eur: 3.45,
+    auto_cost_eur: 12.0,
+    days_simulated: 60,
+    days_window: 90,
+    label: "gesimuleerd",
+    note:
+      "Simulated model of the battery's own default (self-consumption): fixed round-trip " +
+      "efficiency 0.90, no 50 W floor, no dead zone or standby loss. The EV charger is inside " +
+      "house load — this model lets AUTO discharge into it, while EMS holds the battery during " +
+      "car charging.",
+  },
 };
 
 test.describe("Insights: behavior chart + money", () => {
@@ -581,6 +593,38 @@ test.describe("Insights: behavior chart + money", () => {
     await expect(page.getByTestId("fin-avoided-expensive")).toContainText("not bought at expensive");
     await expect(fin).not.toContainText("vermeden piekprijs");
     await expect(fin).not.toContainText("peak-price");
+  });
+
+  test("shows gesimuleerd EMS-vs-AUTO tile including negative outcomes (#131)", async ({ page }) => {
+    await page.route("**/api/report**", (route) =>
+      route.fulfill({ status: 200, contentType: "application/json",
+        body: JSON.stringify({ ...REPORT, series: SERIES }) }),
+    );
+    await page.route("**/api/finance**", (route) =>
+      route.fulfill({
+        status: 200, contentType: "application/json",
+        body: JSON.stringify({
+          ...FINANCE,
+          vs_auto: {
+            ...FINANCE.vs_auto!,
+            saved_eur: -1.25, // summer: EMS can lose vs AUTO — must stay visible
+          },
+        }),
+      }),
+    );
+    await page.goto("/");
+    await page.getByTestId("nav-insights").click();
+    await page.getByTestId("period-month").click();
+    const tile = page.getByTestId("fin-vs-auto");
+    await expect(tile).toBeVisible();
+    await expect(page.getByTestId("fin-vs-auto-saved")).toContainText("−€1.25");
+    await expect(page.getByTestId("fin-vs-auto-saved")).toContainText("gesimuleerd");
+    await expect(page.getByTestId("fin-vs-auto-saved")).toContainText("last 90 days");
+    const note = page.getByTestId("fin-vs-auto-note");
+    await expect(note).toContainText("0.90");
+    await expect(note).toContainText("50 W");
+    await expect(note).toContainText("EV charger");
+    await expect(note).toContainText("holds the battery");
   });
 
   test("shows coverage gaps and never paints missing days as €0", async ({ page }) => {

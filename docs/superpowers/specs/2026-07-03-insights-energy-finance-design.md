@@ -59,6 +59,18 @@ baseline sentence: compared with the same home **without a battery**. Days witho
 chart **gaps** (never €0); a coverage caveat fires when `price_coverage` or `sample_coverage` is
 incomplete. DST local days (92 / 100 quarters) are covered in `test_finance.py`.
 
+### #131 EMS vs battery default (2026-09 follow-up)
+
+One Insights tile answers “is EMS worth it vs Indevolt AUTO?”: `vs_auto` on `/api/finance` is the
+difference between measured cost and a **per-request** simulation of vendor self-consumption over
+the last **90 days**, labelled **gesimuleerd**. Pure helper `day_vs_auto()` beside `day_finance()`;
+hung from `_finance_window` (ephemeral day fields) + a rolling 90-day aggregate. Both legs priced
+via `EconomicSnapshot.from_tariff_policy` (same import fee / feed-in as measured finance) — not
+replay cost. Model note: fixed η=0.90, no 50 W floor, no dead zone or standby loss; EV charger is
+inside reconstructed load while EMS holds during car charging. Never stored in `daily_finance`;
+`_FINANCE_CALC_VERSION` not bumped; cache guard keeps a filled `daily_finance` row when raw is
+gone. Negative € stays visible.
+
 ## Testing
 - `test_finance.py`: exact € on canned slots (import/export/battery), baseline identity, missing
   prices → coverage + None totals, empty day.
@@ -69,8 +81,11 @@ incomplete. DST local days (92 / 100 quarters) are covered in `test_finance.py`.
   month-buckets, tz boundaries).
 - API tests: `/api/finance` day + week (lazy rollup persisted), `/api/report` carries `series`.
 - Playwright: Insights shows the behavior chart + money section against a seeded DB.
+- #131: `test_finance.py` (vs-AUTO math, calc_v unchanged, no overwrite without raw),
+  `test_replay.py` (AUTO trajectory parity / fee pricing), `e2e/insights.spec.ts` (gesimuleerd tile).
 
 ## Non-goals
 No dynamic-contract fee modelling (fixed fees/taxes cancel in saved-€ deltas at spot; document),
 no gas costs (B-02 lands gas), no export-tariff asymmetry until B-05, no schema change to existing
-tables.
+tables. #131 does **not** persist AUTO simulation into `daily_finance` (year totals would need
+that later, only if asked).

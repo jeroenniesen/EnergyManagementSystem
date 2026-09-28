@@ -27,10 +27,15 @@ class ReportService:
         def total(key: Literal["grid_cost_eur", "battery_cost_eur", "saved_eur",
                                "grid_import_kwh", "grid_export_kwh",
                                "solar_self_use_eur", "avoided_expensive_eur",
-                               "battery_contribution_eur"]) -> float | None:
+                               "battery_contribution_eur",
+                               "saved_vs_auto_eur", "auto_cost_eur"]) -> float | None:
             vals = [value for d in days if (value := d.get(key)) is not None]
             return round(sum(vals), 2) if vals else None
 
+        vs_auto_days = sum(
+            1 for d in days
+            if d.get("vs_auto_has_sim") and d.get("saved_vs_auto_eur") is not None
+        )
         totals = {
             "grid_cost_eur": total("grid_cost_eur"),
             "battery_cost_eur": total("battery_cost_eur"),
@@ -38,6 +43,9 @@ class ReportService:
             "solar_self_use_eur": total("solar_self_use_eur"),
             "avoided_expensive_eur": total("avoided_expensive_eur"),
             "battery_contribution_eur": total("battery_contribution_eur"),
+            "saved_vs_auto_eur": total("saved_vs_auto_eur"),
+            "auto_cost_eur": total("auto_cost_eur"),
+            "vs_auto_days": vs_auto_days,
             "grid_import_kwh": total("grid_import_kwh") or 0.0,
             "grid_export_kwh": total("grid_export_kwh") or 0.0,
             "days_with_prices": sum(1 for d in days if d.get("price_coverage", 0) > 0),
@@ -51,10 +59,23 @@ class ReportService:
             ),
             "days_without_data": sum(1 for d in days if not d.get("has_data")),
         }
+        # #131: 90-day rolling EMS-vs-AUTO (per-request; never stored). Falls back to the
+        # period-window sum when the rolling collaborator is absent (unit tests).
+        vs_auto: dict[str, object] | None = None
+        if self.context.vs_auto_rolling is not None:
+            vs_auto = await self.context.vs_auto_rolling(90, now_local)
+        elif totals["saved_vs_auto_eur"] is not None:
+            vs_auto = {
+                "saved_eur": totals["saved_vs_auto_eur"],
+                "auto_cost_eur": totals["auto_cost_eur"],
+                "days_simulated": vs_auto_days,
+                "label": "gesimuleerd",
+            }
         return {"period": period, "label": label,
                 "window_start": start.astimezone(UTC).isoformat(),
                 "window_end": end.astimezone(UTC).isoformat(),
-                "partial": partial, "days": days, "totals": totals}
+                "partial": partial, "days": days, "totals": totals,
+                "vs_auto": vs_auto}
 
     def savings(self) -> dict[str, object]:
         savings = require_collaborator(self.context.savings_snapshot, "savings_snapshot")
