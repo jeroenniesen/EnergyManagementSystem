@@ -300,7 +300,8 @@ def test_battery_plan_target_matches_plan_header_not_advisory_night_ceiling(tmp_
     if plan["target_soc"] < 70.0:
         assert body["target_soc_pct"] < 70.0
     # 0 kWh top-up + low committed target must not false-alarm behind an unreachable ceiling.
-    if body["planned_grid_topup_kwh"] < 0.05 and body["current_soc_pct"] >= body["target_soc_pct"] - 1.0:
+    met_target = body["current_soc_pct"] >= body["target_soc_pct"] - 1.0
+    if body["planned_grid_topup_kwh"] < 0.05 and met_target:
         assert body["status"] in {"on_track", "ahead", "needs_topup", "paused_safely", "data_stale"}
         assert body["status"] != "behind_target"
 
