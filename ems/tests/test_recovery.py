@@ -10,7 +10,7 @@ from datetime import UTC, datetime, timedelta
 
 from ems.domain import BatteryIntent, CapabilityReport
 from ems.planner.charge_need import stored_kwh_per_slot
-from ems.planner.projection import BatteryModel, project_energy
+from ems.planner.projection import BatteryModel, ProjectedSlot, project_energy
 from ems.planner.recovery import (
     BEHIND,
     COMPLETE,
@@ -109,6 +109,82 @@ def test_missed_off_ramp_late_in_window():
     plan = _committed_plan(charge_idx=range(8, 16))
     s = check_charge_completion(plan, DEADLINE - SLOT, 45.0)  # 07:15, 35 pp short
     assert s.status == MISSED and s.needs_recovery is True
+
+
+# --------------------------------------------------------------------------------------------------
+# honest_partial_from_projection (#162)
+# --------------------------------------------------------------------------------------------------
+def test_honest_partial_lowers_target_keeps_charge_and_passes_as_warn():
+    """Short-of-target recovery must NOT force AUTO: lower target, keep charging, finding=warn."""
+    from ems.planner.recovery import honest_partial_from_projection
+
+    plan = _committed_plan(charge_idx=range(8, 14), target_soc=88.0)  # ambitious overnight
+    # Projection climbs only to 68% by the morning deadline — classic death-spiral inputs.
+    proj = []
+    for i, s in enumerate(plan.slots):
+        # Rough climb during charge slots 8..13, then flat — tops out ~68%.
+        if i < 8:
+            soc = 5.0 + i * 0.5
+        elif i <= 13:
+            soc = 9.0 + (i - 7) * 10.0  # → ~69% by end of slot 13
+        else:
+            soc = 68.0
+        proj.append(ProjectedSlot(
+            s.start, s.intent, min(soc, 68.0), 0, 0, 0, 0,
+        ))
+    # Before resize: warn (not unsafe), and still applicable.
+    v0 = validate_plan(plan, soc_pct=5.0, data_quality="complete", min_reserve_soc=RESERVE,
+                       capability=CAP, projection=proj, validate_projection=True,
+                       min_dwell=timedelta(seconds=0))
+    assert v0.ok is True
+    assert any(f.code == "projection_short_of_target" and f.severity == "warn"
+               for f in v0.findings)
+
+    resized = honest_partial_from_projection(plan, proj, min_reserve_soc=RESERVE)
+    assert resized is not plan
+    assert resized.target_soc is not None and resized.target_soc <= 68.0 + 1e-6
+    assert resized.target_soc >= RESERVE
+    charge = [s for s in resized.slots if s.intent is BatteryIntent.GRID_CHARGE_TO_TARGET]
+    assert len(charge) == 6  # charge slots kept — best-effort
+    assert all(s.target_soc == resized.target_soc for s in charge)
+    # After resize the plan is self-consistent vs its own projection.
+    v1 = validate_plan(resized, soc_pct=5.0, data_quality="complete", min_reserve_soc=RESERVE,
+                       capability=CAP, projection=proj, validate_projection=True,
+                       min_dwell=timedelta(seconds=0))
+    assert v1.ok is True
+    assert not any(f.code == "projection_short_of_target" for f in v1.findings)
+
+
+def test_honest_partial_leaves_reachable_plan_unchanged():
+    from ems.planner.recovery import honest_partial_from_projection
+
+    plan = _committed_plan(charge_idx=range(8, 16), target_soc=80.0)
+    proj = [ProjectedSlot(s.start, s.intent, 80.0, 0, 0, 0, 0) for s in plan.slots]
+    assert honest_partial_from_projection(plan, proj, min_reserve_soc=RESERVE) is plan
+
+
+def test_truly_unsafe_below_reserve_still_blocks():
+    """Écht onveilig (projection under reserve) blijft fail-safe — #162 AC (b)."""
+    plan = _committed_plan(charge_idx=range(8, 12), target_soc=80.0)
+    # Projection drains below reserve — must stay control-blocking.
+    proj = [ProjectedSlot(s.start, BatteryIntent.DISCHARGE_FOR_LOAD, 5.0, 0, 0, 0, 0)
+            for s in plan.slots]
+    v = validate_plan(plan, soc_pct=50.0, data_quality="complete", min_reserve_soc=RESERVE,
+                      capability=CAP, projection=proj, validate_projection=True,
+                      min_dwell=timedelta(seconds=0))
+    assert v.ok is False and v.status == "unsafe"
+    assert any(f.code == "projection_below_reserve" for f in v.findings)
+
+
+def test_unsafe_data_quality_still_blocks_despite_short_of_target_warn():
+    """Incomplete/unsafe inputs still fail-safe to AUTO — #162 AC (b)."""
+    plan = _committed_plan(charge_idx=range(8, 12), target_soc=88.0)
+    proj = [ProjectedSlot(s.start, s.intent, 40.0, 0, 0, 0, 0) for s in plan.slots]
+    v = validate_plan(plan, soc_pct=5.0, data_quality="unsafe", min_reserve_soc=RESERVE,
+                      capability=CAP, projection=proj, validate_projection=True,
+                      min_dwell=timedelta(seconds=0))
+    assert v.ok is False
+    assert any(f.code == "stale_inputs" for f in v.findings)
 
 
 # --------------------------------------------------------------------------------------------------

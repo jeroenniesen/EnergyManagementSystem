@@ -114,14 +114,29 @@ def _proj(*soc_by_slot: float) -> list[ProjectedSlot]:
             for i, soc in enumerate(soc_by_slot)]
 
 
-def test_projection_short_of_target_is_unsafe_with_the_numbers():
+def test_projection_short_of_target_is_warn_with_the_numbers():
     # Plan commits to 88% by slot 4, but the projection tops out at 71% → clear (>5pp) shortfall.
+    # #162: warn (not unsafe) so control keeps best-effort charging instead of failing to AUTO.
     plan = _charge_plan(88.0, deadline_slot=4)
     proj = _proj(40.0, 55.0, 65.0, 71.0, 71.0)
     v = validate_plan(plan, projection=proj, **_ctx())
-    assert v.status == "unsafe"
+    assert v.status == "warn"
+    assert v.ok is True  # warn is still applicable — not control-blocking
     f = next(f for f in v.findings if f.code == "projection_short_of_target")
+    assert f.severity == "warn"
     assert "88%" in f.message and "71%" in f.message
+
+
+def test_projection_short_of_target_still_charges_when_below_reserve_start():
+    # Battery already at/below reserve: short-of-target must NOT become the second death-spiral
+    # (unsafe → AUTO → no charge). Reserve breach is a separate finding; short-of-target is warn.
+    plan = _charge_plan(88.0, deadline_slot=4)
+    proj = _proj(10.0, 25.0, 40.0, 55.0, 55.0)
+    v = validate_plan(plan, projection=proj, **_ctx(soc_pct=5.0, min_reserve_soc=10.0))
+    short = next(f for f in v.findings if f.code == "projection_short_of_target")
+    assert short.severity == "warn"
+    assert v.ok is True
+    assert not any(f.code == "projection_below_reserve" for f in v.findings)
 
 
 def test_projection_within_margin_passes():
@@ -187,8 +202,10 @@ def test_projection_gate_checks_each_winter_peak_deadline():
     # First peak is reached, second is not; the old plan-level check incorrectly passed.
     projection = _proj(50, 68, 70, 65, 72, 72)
     v = validate_plan(plan, projection=projection, **_ctx())
-    assert v.status == "unsafe"
+    assert v.status == "warn"
+    assert v.ok is True
     finding = next(f for f in v.findings if f.code == "projection_short_of_target")
+    assert finding.severity == "warn"
     assert "88%" in finding.message and "72%" in finding.message
 
 

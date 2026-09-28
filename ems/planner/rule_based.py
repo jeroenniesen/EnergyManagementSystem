@@ -155,11 +155,16 @@ def _plan_winter(
                        and _effective_import_price(p, cfg) <= max_buy),
                       key=lambda p: (_effective_import_price(p, cfg), p.start))
         charge_set = {p.start for p in pool[:n_charge]}
-        if len(pool) < n_charge:  # not enough cheap room before the last peak → will under-charge
+        # Honest partial (#162): commit only to the DC the chosen cheap slots can actually store.
+        # A full shortfall target with too few slots trips B-22 and used to fail-safe to AUTO —
+        # leaving an empty battery uncharged. Prefer best-effort charge to a reachable target.
+        stored_dc = min(shortfall_dc, len(charge_set) * slot_kwh)
+        if len(pool) < n_charge:  # not enough cheap room before the last peak → under-charge
             _log.warning("winter planner under-charge: need %d cheap pre-peak slots, only %d "
-                         "available (shortfall %.2f kWh) — battery may enter the peak short",
-                         n_charge, len(pool), shortfall_dc)
-        target_soc = min(100.0, (reserve_kwh + avail_now_kwh + shortfall_dc) / usable_kwh * 100.0)
+                         "available (shortfall %.2f kWh) — targeting reachable %.2f kWh "
+                         "(honest partial, not the full shortfall)",
+                         n_charge, len(pool), shortfall_dc, stored_dc)
+        target_soc = min(100.0, (reserve_kwh + avail_now_kwh + stored_dc) / usable_kwh * 100.0)
     else:
         charge_set = {p.start for p in charge_candidates}
 

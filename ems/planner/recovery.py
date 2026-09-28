@@ -13,12 +13,17 @@ Two pure pieces the control loop leans on when a committed grid-charge plan slip
    still short. Not enough hours left to reach the full target ⇒ an honest PARTIAL target (never a
    fantasy), with a note the wiring can surface.
 
-Both are pure + deterministic (no I/O, no clock reads). Recovery only ever ADDS charging toward an
-already-committed, already-validated target: the recovered `Plan` goes back through the SAME §8.11
-validator (including the B-22 projection_short_of_target gate) and the SAME control-layer caps/
-dwell — it bypasses nothing. It also never touches strategy selection, so the §8.4 seasonal
-hysteresis counter is untouched: recovery reshapes the CURRENT strategy's charge slots, it never
-re-picks summer vs winter.
+3. `honest_partial_from_projection(...)` — when a (fresh or recovered) winter grid-charge plan's
+   forward projection still falls >margin short of its committed target, lower `target_soc` to the
+   projected reachable value and keep the charge slots (best-effort). Prevents the B-22 gate from
+   forcing AUTO with zero charge (#162) while keeping the plan self-consistent.
+
+All are pure + deterministic (no I/O, no clock reads). Recovery only ever ADDS charging toward an
+already-committed target: the recovered `Plan` goes back through the SAME §8.11 validator
+(including the B-22 projection_short_of_target finding — severity **warn**, not unsafe, when
+charge remains) and the SAME control-layer caps/dwell — it bypasses nothing. It also never
+touches strategy selection, so the §8.4 seasonal hysteresis counter is untouched: recovery
+reshapes the CURRENT strategy's charge slots, it never re-picks summer vs winter.
 
 Sizing reuses `charge_need.stored_kwh_per_slot` — the per-slot charge quantum is defined once.
 
@@ -30,10 +35,11 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass, replace
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from ems.domain import BatteryIntent
 from ems.planner.charge_need import stored_kwh_per_slot
+from ems.planner.projection import ProjectedSlot
 from ems.planner.schedule import SLOT, Plan, PlanSlot
 from ems.sources.prices import PriceSlot
 
@@ -261,6 +267,82 @@ def build_catch_up_plan(
     return CatchUpResult(
         plan=recovered, feasible=feasible, target_soc=recovered_target, kwh_short=kwh_short,
         slots_used=len(chosen), reason=reason, note=note,
+    )
+
+
+def honest_partial_from_projection(
+    plan: Plan,
+    projection: list[ProjectedSlot] | None,
+    *,
+    min_reserve_soc: float,
+    margin_pp: float = 5.0,
+) -> Plan:
+    """Lower unreachable winter grid-charge targets to the projected reachable SoC (#162).
+
+    When the forward projection falls more than `margin_pp` short of a committed charge target by
+    its deadline, keep every `GRID_CHARGE_TO_TARGET` slot (best-effort charge) but rewrite
+    plan- and slot-level `target_soc` to `max(reserve, projected_reached)`. Returns `plan`
+    unchanged when there is nothing to resize (no projection, non-winter, no charge commitment,
+    or already reachable within the margin).
+
+    Pure — the caller still runs the §8.11 validator. A residual short-of-target finding is
+    severity **warn** (not unsafe): never fail-safe to AUTO solely because the original target
+    was ambitious. Plans that would discharge below reserve remain unsafe via the separate
+    `projection_below_reserve` check."""
+    if (projection is None or plan.strategy != "winter"
+            or plan.target_soc is None or plan.deadline is None):
+        return plan
+    charge = _charge_slots(plan)
+    if not charge:
+        return plan
+
+    reserve = max(0.0, min_reserve_soc)
+    # Per-commitment reachable SoC (same grouping as validator check #6).
+    commitments = {(s.deadline or plan.deadline,
+                    s.target_soc if s.target_soc is not None else plan.target_soc)
+                   for s in charge}
+    lowered: dict[datetime, float] = {}
+    for deadline, target in commitments:
+        reached_values = [p.soc_pct for p in projection
+                          if p.start + timedelta(minutes=15) <= deadline]
+        if not reached_values:
+            continue
+        reached = reached_values[-1]
+        if reached >= target - margin_pp:
+            continue
+        # Honest: commit only to what's projected reachable, never below the reserve floor.
+        lowered[deadline] = max(reserve, min(target, reached))
+
+    if not lowered:
+        return plan
+
+    out: list[PlanSlot] = []
+    for s in plan.slots:
+        if s.intent is _CHARGE:
+            dl = s.deadline or plan.deadline
+            if dl in lowered:
+                new_t = lowered[dl]
+                orig = s.target_soc if s.target_soc is not None else plan.target_soc
+                note = (f"{s.reason} — honest partial: target lowered to {new_t:.0f}% "
+                        f"(projection short of {orig:.0f}%)")
+                out.append(PlanSlot(
+                    s.start, s.intent, note,
+                    target_soc=new_t, target_kwh=s.target_kwh, power_w=s.power_w,
+                    floor_soc=s.floor_soc, deadline=s.deadline, end=s.end,
+                ))
+                continue
+        out.append(s)
+
+    plan_target = plan.target_soc
+    if plan.deadline in lowered:
+        plan_target = lowered[plan.deadline]
+    else:
+        # Multi-peak without a plan-level deadline match: most conservative lowered claim.
+        plan_target = min(lowered.values())
+
+    return replace(
+        plan, slots=tuple(out), target_soc=plan_target,
+        version=int(plan.version) + 1,
     )
 
 

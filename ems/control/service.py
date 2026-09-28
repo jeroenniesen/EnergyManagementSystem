@@ -54,7 +54,13 @@ from ems.planner.adaptive import AdaptiveConfig
 from ems.planner.base import PlannerRequest
 from ems.planner.charge_need import compute_charge_need
 from ems.planner.factory import build_planner
-from ems.planner.recovery import NOT_APPLICABLE, CompletionStatus, recover_if_needed
+from ems.planner.projection import BatteryModel, project_energy
+from ems.planner.recovery import (
+    NOT_APPLICABLE,
+    CompletionStatus,
+    honest_partial_from_projection,
+    recover_if_needed,
+)
 from ems.planner.rule_based import PlannerConfig
 from ems.planner.strategy import HysteresisState, resolve_strategy_hysteretic
 from ems.planner.summer import SummerConfig
@@ -803,9 +809,12 @@ class ControlService:
         with SPEC §8.12 missed-window recovery folded in (BACKLOG B-16). Recovery is a PURE,
         deterministic reshape — when a committed grid-charge window is missed and the deadline is
         still ahead, it re-routes the charge to the cheapest REMAINING slots toward the SAME target;
-        otherwise it returns the plan untouched. Because it runs here, the recovered plan still
-        passes through `validate_plan_obj` (§8.11 incl. the B-22 projection gate) and the control
-        caps/dwell before any write — recovery bypasses nothing. Returns (now, prices, plan)."""
+        otherwise it returns the plan untouched. After recovery, an unreachable commitment is
+        resized via `honest_partial_from_projection` (#162): lower `target_soc` to the projected
+        reachable value, keep charging — never fail-safe to AUTO solely for short-of-target.
+        The plan still passes through `validate_plan_obj` (§8.11; B-22 short-of-target is **warn**)
+        and the control caps/dwell before any write — recovery bypasses nothing. Returns
+        (now, prices, plan, status, catch)."""
         pp = self.build_plan_now(now)
         if pp is None:
             return None
@@ -822,7 +831,38 @@ class ControlService:
             plan, now, soc_pct=soc, prices=prices,
             enabled=bool(self._settings["planner.recovery_enabled"]), **self.recovery_sizing(),
         )
+        # B-22/B-16 interaction (#162): if the forward projection still can't hit the committed
+        # target, lower target_soc to what's reachable and keep the charge slots (honest partial).
+        recovered = honest_partial_from_projection(
+            recovered, self._project_plan(recovered, now, soc),
+            min_reserve_soc=float(self._settings["battery.min_reserve_soc"]),
+        )
         return now, prices, recovered, status, catch
+
+    def _project_plan(self, plan, now: datetime, soc: float):
+        """Best-effort forward SoC projection for honest-partial sizing. Returns None when inputs
+        are missing — the validator then skips / warns without a reshape, and fail-safes still
+        cover reserve / stale data."""
+        if self._solar_forecast is None or not plan.slots:
+            return None
+        try:
+            solar_by = {f.start: f.p50_w for f in self._solar_forecast.slots()}
+            load_by = self._load_by([s.start for s in plan.slots])
+            s = self._settings
+            model = BatteryModel(
+                usable_kwh=s["battery.usable_kwh"],
+                max_charge_w=s["battery.max_charge_w"],
+                max_discharge_w=s["battery.max_discharge_w"],
+                round_trip_efficiency=s["planner.round_trip_efficiency"],
+                reserve_soc_pct=s["battery.min_reserve_soc"],
+            )
+            return project_energy(
+                plan.slots, start_soc_pct=soc, solar_w_by=solar_by, load_w_by=load_by,
+                model=model, charge_target_soc_pct=None,
+            )
+        except Exception:
+            _log.debug("honest-partial projection failed (non-fatal)", exc_info=True)
+            return None
 
     def current_plan(self, now: datetime | None = None):
         pp = self.plan_with_recovery(now)
