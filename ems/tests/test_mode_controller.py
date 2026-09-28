@@ -624,7 +624,7 @@ def test_idle_observation_during_confirmed_charge_is_idempotent_not_reapplied():
 
 
 def test_already_charging_observed_charge_is_idempotent_and_does_not_count():
-    # AC (c): desired CHARGE while the device already reports CHARGE → idempotent, counter untouched.
+    # AC (c): desired CHARGE while device already reports CHARGE → idempotent, counter untouched.
     d = MockBatteryDriver()
     ctl = ModeController(d, _controlling_lifecycle(), dry_run=False, min_dwell_seconds=0)
     t = T0 + timedelta(seconds=200)
