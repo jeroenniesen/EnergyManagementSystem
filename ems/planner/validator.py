@@ -69,9 +69,9 @@ def validate_plan(
     controller must hold AUTO. Each check appends at most one representative finding (not one per
     slot) so the result reads as a short, actionable list.
 
-    `validate_projection` (default on — the SPEC §8.5 "later step", BACKLOG B-22) adds the
-    projected-target reachability gate below. It is a pure safety net: a rejection just falls back
-    to AUTO, which is never worse than "no EMS", so it defaults on.
+    `validate_projection` (default on — the SPEC §8.5 gate, BACKLOG B-22 / #162) adds the
+    projected-target reachability check below. A shortfall is **warn** (plan stays applicable —
+    honest-partial / best-effort charge); only reserve breaches and unsafe inputs block control.
 
     `grid_limit_w` (SPEC §8.11 / #133) is the main-fuse ceiling. When set (>0), any grid-charge
     slot whose charge power + expected house load exceeds it is `unsafe`. Prefer per-slot
@@ -144,12 +144,14 @@ def validate_plan(
             findings.append(Finding(_WARN, "projection_overfill",
                                     "The plan is projected to overfill the battery."))
 
-    # 6. Projected-target reachability (SPEC §8.5 "later step", BACKLOG B-22): a plan that COMMITS
+    # 6. Projected-target reachability (SPEC §8.5 / B-22, honest-partial #162): a plan that COMMITS
     #    to grid-charging toward a target SoC by a deadline, but whose own forward projection can't
-    #    reach that target by a clear margin, is rejected → fail safe to AUTO. Scoped to grid-charge
-    #    plans (a summer solar plan's target is weather-hoped, not committed — that's the top-up
-    #    logic's job, not a hard reject). Data-quality-aware: only runs on `complete` inputs, so a
-    #    missing/stale forecast never triggers it — that path is the data fail-safe's, not ours.
+    #    reach that target by a clear margin, is flagged. Scoped to winter grid-charge plans (a
+    #    summer solar plan's target is weather-hoped, not committed). Data-quality-aware: only runs
+    #    on `complete` inputs. Severity is **warn** (not unsafe): rejecting to AUTO with zero charge
+    #    when the battery is already at the floor is a death spiral — prefer B-16 honest-partial
+    #    (lower target, keep charging). Reserve breaches stay unsafe via check #5; stale/missing
+    #    inputs stay unsafe via check #1.
     if (validate_projection and projection and data_quality == "complete"
             and plan.strategy == "winter"
             and plan.target_soc is not None and plan.deadline is not None
@@ -173,9 +175,10 @@ def validate_plan(
                     continue
                 when = deadline.strftime("%H:%M")
                 findings.append(Finding(
-                    _UNSAFE, "projection_short_of_target",
+                    _WARN, "projection_short_of_target",
                     f"Plan targets {target:.0f}% by {when} but projects only "
-                    f"{reached:.0f}% — the charge windows can't reach it in time."))
+                    f"{reached:.0f}% — charging best-effort toward what's reachable "
+                    f"(honest partial; not holding AUTO)."))
                 break
 
     # 7. Grid fuse / netlimiet (#133): charge power + expected house load must not exceed the

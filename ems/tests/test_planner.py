@@ -121,3 +121,32 @@ def test_negative_raw_price_stays_charge_eligible_with_import_fee():
                       import_fee_eur_per_kwh=0.01),
     )
     assert any(s.intent is BatteryIntent.GRID_CHARGE_TO_TARGET for s in plan.slots)
+
+
+def test_undercharge_commits_honest_partial_target_not_unreachable_shortfall():
+    """#162: when too few cheap slots remain before the peak, target_soc is what those slots
+    can store — not the full peak shortfall (which used to trip B-22 → AUTO with zero charge)."""
+    # Two cheap slots, then an expensive peak with high load; more cheap slots AFTER the peak
+    # (so breakeven stays low) but they cannot feed this peak — pool before peak = 2 only.
+    prices = []
+    for i in range(24):
+        if i < 2 or i >= 10:
+            price = 0.05
+        else:
+            price = 0.55
+        prices.append(PriceSlot(MIDNIGHT + timedelta(minutes=15 * i), price))
+    load = {
+        p.start: (4000.0 if 2 <= i < 10 else 300.0) for i, p in enumerate(prices)
+    }
+    plan = plan_rule_based(
+        prices, MIDNIGHT,
+        PlannerConfig(charge_slots=12, discharge_slots=12),
+        soc_pct=10.0, load_w_by=load, usable_kwh=10.0, reserve_soc_pct=10.0,
+        max_charge_w=4000.0,
+    )
+    charge = [s for s in plan.slots if s.intent is BatteryIntent.GRID_CHARGE_TO_TARGET]
+    assert len(charge) == 2, "must still schedule best-effort charge on the 2 pre-peak slots"
+    assert plan.target_soc is not None
+    # Full shortfall for the 8-slot peak @ 4 kW would need ~94% — honest partial is ~29%.
+    assert plan.target_soc < 40.0
+    assert all(abs((s.target_soc or 0) - plan.target_soc) < 1e-6 for s in charge)
