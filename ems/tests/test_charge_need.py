@@ -1,4 +1,8 @@
-from ems.planner.charge_need import compute_charge_need
+from ems.planner.charge_need import (
+    charge_need_from_target,
+    compute_charge_need,
+    ui_charge_need,
+)
 
 
 def _need(soc, **kw):
@@ -57,3 +61,38 @@ def test_efficiency_raises_target_to_cover_round_trip_losses():
     assert round(n.target_kwh, 2) == 8.78
     # The default efficiency (1.0) leaves the plain sum unchanged (back-compatible with callers).
     assert _need(50.0).target_kwh == 8.0
+
+
+def test_charge_need_from_committed_target_ignores_advisory_ceiling():
+    # #180: honest-partial plan target (e.g. 29%) must not re-inflate via overnight config (~80%).
+    n = charge_need_from_target(
+        soc_pct=10.0, usable_kwh=10.0, min_reserve_soc=10.0, target_soc_pct=29.0,
+    )
+    assert n.target_soc_pct == 29.0
+    assert n.target_kwh == 2.9
+    assert round(n.deficit_kwh, 1) == 1.9
+    assert n.on_track is False
+    assert "plan target" in n.reason
+
+
+def test_charge_need_from_target_on_track_when_soc_meets_commitment():
+    n = charge_need_from_target(
+        soc_pct=30.0, usable_kwh=10.0, min_reserve_soc=10.0, target_soc_pct=29.0,
+    )
+    assert n.on_track is True
+    assert n.deficit_kwh == 0.0
+
+
+def test_ui_charge_need_prefers_plan_target_over_advisory():
+    # Default overnight formula with these inputs → 80% advisory; plan commits 25%.
+    advisory = ui_charge_need(
+        soc_pct=5.0, usable_kwh=10.0, min_reserve_soc=10.0,
+        night_reserve_kwh=2.0, overnight_load_kwh=5.0, plan_target_soc=None,
+    )
+    assert advisory.target_soc_pct == 80.0
+    committed = ui_charge_need(
+        soc_pct=5.0, usable_kwh=10.0, min_reserve_soc=10.0,
+        night_reserve_kwh=2.0, overnight_load_kwh=5.0, plan_target_soc=25.0,
+    )
+    assert committed.target_soc_pct == 25.0
+    assert committed.deficit_kwh == 2.0
