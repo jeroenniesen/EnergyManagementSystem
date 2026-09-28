@@ -9,8 +9,9 @@ through its port as before.
 Pattern mirrors `ems/planner/factory.py` (#70): unknown or incomplete names fail safe to a
 baseline/mock. Duplicate `(domain, name)` registration raises.
 
-First consumer: `ems/sources/forecast_factory.py` (`domain="forecast"`). CO₂ and other domains
-follow in later #113 / epic slices — do not wire them here.
+Consumers: `ems/sources/forecast_factory.py` (`domain="forecast"`) and
+`ems/sources/price_factory.py` (`domain="price"`, #114 slice a). CO₂ and other domains follow in
+later #113 / epic slices — do not wire them here.
 """
 from __future__ import annotations
 

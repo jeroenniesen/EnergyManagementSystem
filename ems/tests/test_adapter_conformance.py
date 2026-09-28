@@ -3,6 +3,9 @@
 These tests deliberately inject every transport.  They exercise the public port methods and the
 fail-safe behavior used when an upstream is unavailable; no network request or battery write is
 allowed here.
+
+Price + forecast signature checks are parametrized from the adapter registry (#114 slice a).
+Battery / meter ports stay hard-coded here until #114 slices b/c.
 """
 
 from datetime import UTC, datetime
@@ -12,16 +15,22 @@ from zoneinfo import ZoneInfo
 
 import pytest
 
+# Side-effect imports so price/forecast adapters are present in the registry.
+import ems.sources.forecast_factory  # noqa: F401
+import ems.sources.price_factory  # noqa: F401
 from ems.domain import PhysicalMode
 from ems.sources.battery import MockBatteryDriver
 from ems.sources.forecast import ForecastSlot, MockSolarForecastSource
+from ems.sources.forecast_factory import FORECAST_DOMAIN
 from ems.sources.forecast_solar import ForecastSolarSource
 from ems.sources.indevolt import BatteryUnavailable, IndevoltReadClient
 from ems.sources.indevolt_driver import IndevoltBatteryDriver
 from ems.sources.live import HomeWizardMeter, LiveSource, ev_w, grid_w, solar_w
 from ems.sources.mock import MockSource
 from ems.sources.ports import BatteryDriver, PriceSource, SolarForecastSource, Source
-from ems.sources.prices import MockPriceSource, PriceSlot
+from ems.sources.price_factory import PRICE_DOMAIN
+from ems.sources.prices import PriceSlot
+from ems.sources.registry import get_builder, registered_adapters
 from ems.sources.solcast import SolcastSource
 from ems.sources.tibber import TibberPriceSource
 
@@ -60,6 +69,55 @@ def _assert_port_method(
     )
 
 
+_AMS = ZoneInfo("Europe/Amsterdam")
+_FIXED = datetime(2026, 7, 29, 10, tzinfo=UTC)
+
+
+def _site_eff() -> dict:
+    return {
+        "site.lat": 52.0,
+        "site.lon": 5.0,
+        "site.tilt": 35.0,
+        "site.azimuth": 0.0,
+        "site.kwp": 2.0,
+        "prices.tibber_token": "tok",
+        "solar.solcast_api_key": "tok",
+        "solar.solcast_resource_id": "rid",
+    }
+
+
+def _hermetic_price(name: str):
+    builder = get_builder(PRICE_DOMAIN, name)
+    assert builder is not None
+    http_post = (
+        (lambda *_: {"viewer": {"homes": [{"currentSubscription": {"priceInfo": {
+            "today": [{"total": 0.25, "startsAt": "2026-07-29T12:00:00+02:00"}],
+            "tomorrow": [],
+        }}}]}})
+        if name == "tibber"
+        else None
+    )
+    return builder(_site_eff(), _AMS, clock=lambda: _FIXED, http_post=http_post, horizon_slots=8)
+
+
+def _hermetic_forecast(name: str):
+    builder = get_builder(FORECAST_DOMAIN, name)
+    assert builder is not None
+    fallback = MockSolarForecastSource(_AMS, kwp=2.0, clock=lambda: _FIXED, horizon_slots=8)
+    if name == "solcast":
+        http_get = lambda _u, _h: {"forecasts": [{
+            "pv_estimate": 1.0, "pv_estimate10": 0.6, "pv_estimate90": 1.4,
+            "period_end": "2026-07-29T12:30:00.0000000Z", "period": "PT30M",
+        }]}
+    elif name == "forecast_solar":
+        http_get = lambda _u: {"result": {"watts": {"2026-07-29 12:00:00": 800.0}}}
+    else:
+        http_get = None
+    return builder(
+        _site_eff(), _AMS, clock=lambda: _FIXED, http_get=http_get,
+        horizon_slots=8, fallback=fallback,
+    )
+
 
 def test_all_current_adapters_match_port_signatures() -> None:
     """Keep structural ports honest even when an adapter does not inherit the protocol."""
@@ -90,11 +148,12 @@ def test_all_current_adapters_match_port_signatures() -> None:
                 expected = ()
             _assert_port_method(adapter, BatteryDriver, method, expected)
 
-    for adapter in (TibberPriceSource, MockPriceSource):
-        _assert_port_method(adapter, PriceSource, "slots")
+    # Price + forecast: discover classes from the registry (#114), not a hard-coded list.
+    for name in registered_adapters(PRICE_DOMAIN):
+        _assert_port_method(type(_hermetic_price(name)), PriceSource, "slots")
 
-    for adapter in (MockSolarForecastSource, ForecastSolarSource, SolcastSource):
-        _assert_port_method(adapter, SolarForecastSource, "slots")
+    for name in registered_adapters(FORECAST_DOMAIN):
+        _assert_port_method(type(_hermetic_forecast(name)), SolarForecastSource, "slots")
 
 
 def test_mock_source_conforms_and_returns_normalized_sample() -> None:
@@ -124,8 +183,10 @@ def test_tibber_conforms_and_transport_failure_is_empty() -> None:
 
 def test_forecast_adapters_conform_and_forecast_solar_falls_back() -> None:
     tz = ZoneInfo("Europe/Amsterdam")
+
     def clock() -> datetime:
         return datetime(2026, 7, 29, 10, tzinfo=UTC)
+
     mock = MockSolarForecastSource(tz, kwp=2.0, clock=clock, horizon_slots=8)
     assert isinstance(mock, SolarForecastSource)
     assert len(mock.slots()) == 8
