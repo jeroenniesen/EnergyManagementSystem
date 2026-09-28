@@ -1171,6 +1171,21 @@ def test_restart_pending_tracks_restart_tagged_setting_changes(tmp_path, monkeyp
         assert c.get("/api/auth/me", headers=h).json()["restart_pending"] is True
 
 
+def test_restart_pending_tracks_control_dry_run_toggle(tmp_path, monkeypatch):
+    """#171: flipping Settings control.dry_run marks restart_pending (restart-tagged apply path)."""
+    monkeypatch.setenv("EMS_SUPERVISED", "1")
+    db = str(tmp_path / "ems.sqlite")
+    _seed_user(db, "admin", "pw12345678", "admin")
+    app = _full_app(db)
+    with TestClient(app) as c:
+        h = _login(c, "admin", "pw12345678")
+        assert c.get("/api/auth/me", headers=h).json()["restart_pending"] is False
+        current = c.get("/api/settings", headers=h).json()["values"]["control.dry_run"]
+        saved = c.post("/api/settings", json={"control.dry_run": not current}, headers=h)
+        assert saved.json()["restart_required"] is True
+        assert c.get("/api/auth/me", headers=h).json()["restart_pending"] is True
+
+
 def test_restart_pending_ignores_live_tagged_setting_changes(tmp_path, monkeypatch):
     monkeypatch.setenv("EMS_SUPERVISED", "1")
     db = str(tmp_path / "ems.sqlite")

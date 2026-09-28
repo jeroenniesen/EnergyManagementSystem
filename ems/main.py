@@ -11,8 +11,9 @@ from ems.config import load_config
 from ems.connection import (
     build_carbon_source,
     build_wiring,
-    config_forced_dry_run_reason,
     effective_connection,
+    resolve_force_dry_run,
+    watch_only_block_reason,
 )
 from ems.control.mode_controller import ModeController
 from ems.freshness import FreshnessTracker
@@ -54,14 +55,19 @@ def build_app():
     freshness.register(*SIGNALS)
     tz = ZoneInfo(cfg.timezone)
     # Connection + run-mode come from the settings store (UI), seeded from config.yaml + env on
-    # first boot. dry_run stays True unless cfg.dry_run is false (needs control.dry_run: false AND
-    # dev.mode: live — mock/replay force dry_run) AND control.operational is on with a live
-    # Indevolt. Config dry_run wins over the UI toggle (#136).
+    # first boot. dry_run stays True unless config allows live (dev.mode: live AND yaml
+    # control.dry_run: false — mock/replay force dry_run), Settings control.dry_run is OFF,
+    # AND control.operational is on with a live Indevolt + live prices. Config dry_run always
+    # wins over Settings (#136); missing Settings value ⇒ watch-only (#171 fail-safe).
     eff = effective_connection(str(db_path), cfg)
+    force_dry_run = resolve_force_dry_run(eff, config_dry_run=cfg.dry_run)
     source, price_source, solar_forecast, battery_endpoint, controller_driver, dev_mode, dry_run = (
-        build_wiring(eff, tz, cache_store=cache_store, force_dry_run=cfg.dry_run)
+        build_wiring(
+            eff, tz, cache_store=cache_store,
+            force_dry_run=force_dry_run, config_dry_run=cfg.dry_run,
+        )
     )
-    dry_run_block_reason = config_forced_dry_run_reason(eff, force_dry_run=cfg.dry_run)
+    dry_run_block_reason = watch_only_block_reason(eff, config_dry_run=cfg.dry_run)
     # Register prices/forecast only when wired (issue #79) — avoids a permanent "missing" that
     # would force data_quality=degraded on a prices-less test harness.
     if price_source is not None:

@@ -123,17 +123,23 @@ test.describe("EMS settings", () => {
     await expect(page.getByTestId("field-prices.tibber_token")).toBeVisible();
   });
 
-  test("operational-mode toggle is present, off by default, and flagged restart", async ({
+  test("watch-only and operational toggles are present, fail-safe defaults, restart-tagged", async ({
     page,
   }) => {
     await page.goto("/");
     await page.getByTestId("nav-manage").click();
     await page.getByTestId("group-control").click();
+    const watch = page.getByTestId("field-control.dry_run");
+    await expect(watch).toBeVisible();
+    await expect(watch).toContainText("Watch only");
+    await expect(watch).toContainText("restart");
+    // Default ON (fail-safe watch-only) — #171.
+    await expect(watch.locator("#set-control\\.dry_run")).toBeChecked();
     const op = page.getByTestId("field-control.operational");
     await expect(op).toBeVisible();
     await expect(op).toContainText("control the battery");
     await expect(op).toContainText("restart");
-    // Default OFF (dry-run) — the switch is unchecked, so the battery is never commanded.
+    // Default OFF — the switch is unchecked, so the battery is never commanded.
     await expect(op.locator("#set-control\\.operational")).not.toBeChecked();
   });
 

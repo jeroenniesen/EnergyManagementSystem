@@ -75,18 +75,21 @@ it. In the shipped config the driver is built unarmed and `dry_run` stays on. `b
 `dry_run` **only when all of** these hold:
 1. **`dev.mode: live`** in `config.yaml` (shipped default is `mock`; mock/replay **force** dry-run
    via `load_config`, so `control.dry_run: false` alone does nothing until mode is live),
-2. **`control.dry_run: false`** in `config.yaml` (default is `true`; when true — or forced by
-   mock/replay — it **always wins** over the UI operational toggle — #136),
+2. **`control.dry_run: false`** in **both** `config.yaml` **and** Settings → Watch only
+   (yaml/mock always wins over Settings — #136; Settings is the daily ops toggle — #171;
+   missing store value ⇒ watch-only),
 3. **`control.operational` is enabled** (Settings → Control & safety; off by default),
 4. a live **Indevolt IP** is configured with live devices on, and
 5. a **live Tibber price source** is wired (`connection.use_live_prices` + `prices.tibber_token`).
    Mock/demo prices keep `dry_run` on (#126) — EMS never live-commands on synthetic prices.
 
 When any gate fails (the default), `apply()` refuses to write and `decide()` is never even reached
-in dry-run. If the UI operational toggle is ON while config still forces dry-run, startup logs a
-WARNING and the System **Run mode** row explains why writes stay off. Going live is therefore:
-turn on live devices (read-only sensing), configure Tibber, set `dev.mode: live` +
-`control.dry_run: false`, restart, then much later turn on operational control.
+in dry-run. If the UI operational toggle is ON while config or Settings still forces dry-run,
+startup logs a WARNING and the System **Run mode** row explains why writes stay off. Going live is
+therefore: turn on live devices (read-only sensing), configure Tibber, set `dev.mode: live` +
+yaml `control.dry_run: false` once, then use Settings **Watch only OFF** + **operational ON** and
+**Apply & restart**. A restart while charging can hand the battery back to AUTO
+(`shutdown_restore`) and abort an active cheap-charge window — prefer waiting until the window ends.
 
 ### Migration (pre-#136 installs)
 

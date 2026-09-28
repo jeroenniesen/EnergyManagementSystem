@@ -18,6 +18,23 @@ def test_defaults_cover_every_field():
     assert d["control.allow_export_discharge"] is False
 
 
+def test_control_dry_run_setting_defaults_fail_safe():
+    """#171: Settings control.dry_run defaults True (watch-only) and is restart-tagged."""
+    d = defaults()
+    assert d["control.dry_run"] is True
+    field = SETTINGS_BY_KEY["control.dry_run"]
+    assert field.type == "bool"
+    assert field.applies == "restart"
+    assert field.default is True
+    # Missing store key → effective True (fail-safe), never silently armed.
+    assert effective_settings({})["control.dry_run"] is True
+    clean, errors = validate_settings({"control.dry_run": False})
+    assert clean["control.dry_run"] is False and "control.dry_run" not in errors
+    # Non-bool is rejected by validate; effective_settings drops invalid → schema default True.
+    _c, err = validate_settings({"control.dry_run": "maybe"})
+    assert "control.dry_run" in err
+
+
 def test_anti_flap_control_knob_defaults():
     # The two guardrail-starvation knobs (07-12 incident): intent persistence + commitment reserve.
     d = defaults()

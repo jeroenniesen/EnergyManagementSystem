@@ -287,9 +287,9 @@ const RECOVERY: Record<string, string> = {
   "sensor.ev": "Non-critical — the car guard is paused until the meter returns.",
   "sensor.battery": "The battery power reading is delayed; SoC-based decisions may lag.",
   mode:
-    "Config is forcing watch-only while Settings → operational is ON. Set dev.mode: live and " +
-    "control.dry_run: false in config.yaml, then restart — or turn operational off if you meant " +
-    "to stay watching.",
+    "Watch-only is forced while Settings → operational is ON. Turn off Watch only under " +
+    "Control & safety (and ensure config.yaml has dev.mode: live and control.dry_run: false), " +
+    "then Apply & restart — or turn operational off if you meant to stay watching.",
 };
 
 export function SystemView({

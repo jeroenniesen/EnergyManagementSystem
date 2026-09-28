@@ -51,6 +51,8 @@ def test_schema_exposes_advanced_and_applies():
     assert by_key["planner.round_trip_efficiency"]["advanced"] is True
     assert by_key["battery.usable_kwh"]["advanced"] is False
     assert by_key["meters.p1_ip"]["applies"] == "restart"
+    assert by_key["control.dry_run"]["applies"] == "restart"
+    assert by_key["control.operational"]["applies"] == "restart"
     assert by_key["ui.theme"]["applies"] == "live"
     # every schema field is represented
     assert set(by_key) == set(SETTINGS_BY_KEY)
@@ -194,11 +196,65 @@ def test_config_dry_run_wins_over_operational():
     eff = effective_settings({
         "connection.use_live_devices": True, "meters.p1_ip": "192.0.2.10",
         "battery.indevolt_ip": "192.0.2.20", "control.operational": True,
+        "control.dry_run": False,  # Settings would allow live; config force still wins
         "connection.use_live_prices": True, "prices.tibber_token": "tok",
     })
     *_, driver, _dev_mode, dry_run = build_wiring(eff, AMS, force_dry_run=True)
     assert dry_run is True
     assert driver.armed is False  # config dry-run also keeps the writer unarmed
+
+
+def test_resolve_force_dry_run_settings_and_config_floors():
+    """#171: config wins; Settings is second floor; missing/uncertain ⇒ watch-only."""
+    from ems.connection import resolve_force_dry_run
+
+    eff_off = effective_settings({"control.dry_run": False})
+    eff_on = effective_settings({"control.dry_run": True})
+    assert resolve_force_dry_run(eff_off, config_dry_run=True) is True   # #136
+    assert resolve_force_dry_run(eff_off, config_dry_run=False) is False
+    assert resolve_force_dry_run(eff_on, config_dry_run=False) is True
+    # Schema default when key absent from raw dict passed through effective_settings:
+    assert resolve_force_dry_run(effective_settings({}), config_dry_run=False) is True
+    # Uncertain non-bool in a raw map (bypass validate) → fail-safe True.
+    assert resolve_force_dry_run({"control.dry_run": "maybe"}, config_dry_run=False) is True
+
+
+def test_watch_only_block_reason_distinguishes_config_vs_settings():
+    from ems.connection import (
+        CONFIG_FORCED_DRY_RUN_REASON,
+        SETTINGS_FORCED_DRY_RUN_REASON,
+        watch_only_block_reason,
+    )
+
+    live = {
+        "connection.use_live_devices": True, "meters.p1_ip": "192.0.2.10",
+        "battery.indevolt_ip": "192.0.2.20", "control.operational": True,
+        "connection.use_live_prices": True, "prices.tibber_token": "tok",
+    }
+    yaml_force = effective_settings({**live, "control.dry_run": False})
+    assert watch_only_block_reason(yaml_force, config_dry_run=True) == CONFIG_FORCED_DRY_RUN_REASON
+    settings_force = effective_settings({**live, "control.dry_run": True})
+    assert (
+        watch_only_block_reason(settings_force, config_dry_run=False)
+        == SETTINGS_FORCED_DRY_RUN_REASON
+    )
+    both_off = effective_settings({**live, "control.dry_run": False})
+    assert watch_only_block_reason(both_off, config_dry_run=False) is None
+
+
+def test_settings_watch_only_keeps_driver_unarmed_when_config_allows():
+    """#171: Settings dry_run True + force_dry_run True → unarmed even if operational ON."""
+    eff = effective_settings({
+        "connection.use_live_devices": True, "meters.p1_ip": "192.0.2.10",
+        "battery.indevolt_ip": "192.0.2.20", "control.operational": True,
+        "control.dry_run": True,
+        "connection.use_live_prices": True, "prices.tibber_token": "tok",
+    })
+    *_, driver, _dev_mode, dry_run = build_wiring(
+        eff, AMS, force_dry_run=True, config_dry_run=False,
+    )
+    assert dry_run is True
+    assert driver.armed is False
 
 
 def test_force_dry_run_default_is_fail_safe():

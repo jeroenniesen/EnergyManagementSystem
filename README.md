@@ -85,14 +85,16 @@ Nothing here needs an environment variable or a config file edit — it's all in
 ## Safety
 
 - Ships in **mock + dry-run**: the simulator runs with no devices, and the battery is never written.
-- **`control.dry_run` in `config.yaml` (default `true`) is authoritative:** while it is `true` —
-  or while `dev.mode` is `mock`/`replay` (those modes **force** dry-run) — the EMS stays watch-only
-  and **wins over** the UI **operational** toggle. Decisions are logged; the battery writer stays
-  unarmed. To allow live control set **`dev.mode: live`**, **`control.dry_run: false`**, enable
-  **operational** in the UI (plus a live Indevolt IP **and** live Tibber prices — #126), then restart.
+- **`control.dry_run` has two floors:** (1) **`config.yaml`** (default `true`) — while it is `true`,
+  or while `dev.mode` is `mock`/`replay`, the EMS stays watch-only and **wins over** Settings
+  (#136). (2) **Settings → Watch only** (runtime store, default `true`, seeded from yaml on first
+  boot) — daily enter/exit without editing yaml; takes effect after **Apply & restart** (#171).
+  Missing/uncertain store value ⇒ watch-only. To allow live control: **`dev.mode: live`**, yaml
+  **`control.dry_run: false`**, Settings **Watch only OFF** + **operational ON** (plus a live
+  Indevolt IP **and** live Tibber prices — #126), then Apply & restart.
 - Going live is therefore deliberate layers: live devices (read-only sensing) → live Tibber →
-  `dev.mode: live` + `dry_run: false` in config → **operational** in the UI — gated behind layered
-  readiness + a hard plan validator; operational stays off by default.
+  `dev.mode: live` + yaml `dry_run: false` → Settings Watch only off + **operational** — gated
+  behind layered readiness + a hard plan validator; both toggles stay fail-safe by default.
 - Reads always work for a guest; only *changes* can be protected by the access token.
 
 ### Migration note (upgrade from pre-#136)
