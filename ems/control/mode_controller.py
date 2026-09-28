@@ -297,14 +297,16 @@ class ModeController:
           fail-safe can never be blocked, or an expiring override/hold could leave the battery
           stuck in real-time).
         dry_run / not_controlling / idempotency still apply to everyone; idempotency means even a
-        bypassed write happens at most once per actual mode change (no device hammering).
+        bypassed write happens at most once per actual mode change (no device hammering). An
+        already-confirmed CHARGE request is also treated as idempotent when the vendor reports a
+        transient IDLE/AUTO (#163) — see the active-charge hold below.
 
         `force=True` skips ONLY the idempotency check (dry_run / not_controlling still apply). It
         exists for the car-charging discharge session (feat/car-charge-modes): the setpoint
         (power_w) can change while the physical mode stays DISCHARGE, and a mode-only idempotency
         check would otherwise swallow that re-command. The caller (control tick) sets it only when
         it has decided a bounded re-command is warranted (car_mode.recommand + a 10-min car dwell),
-        so it never re-introduces device hammering.
+        so it never re-introduces device hammering. `force=True` also skips the active-charge hold.
 
         `commitment=True` marks a deadline-bearing committed grid-charge: it draws from the FULL
         daily cap, while a routine (commitment=False) switch is additionally bounded by
@@ -324,6 +326,25 @@ class ModeController:
         current = observed_mode if observed_mode is not None else self.driver.current_mode()
         if desired == current and not force:
             return ActionDecision(intent, desired, False, "idempotent", f"already in {desired}")
+        # Active charge setpoint (#163): Indevolt often reports IDLE while a confirmed CHARGE
+        # command is still in effect. Treating that as a full mode-revert caused the 09-26 write
+        # storm (~26 applied charge commands in ~25 min, each from_mode=idle). While we still
+        # desire CHARGE and have already requested+confirmed it, an observed IDLE is HOLD without
+        # a re-write — outcome `idempotent` so the daily switch counter is not spent again.
+        # Observed AUTO after a confirmed charge is NOT held here (may be genuine vendor drift and
+        # still needs a dwell-gated retry). Unconfirmed charges are also excluded: dwell spaces
+        # their retries.
+        if (
+            not force
+            and desired is PhysicalMode.CHARGE
+            and current is PhysicalMode.IDLE
+            and self.last_requested_action is PhysicalMode.CHARGE
+            and self.last_confirmed_action is PhysicalMode.CHARGE
+        ):
+            return ActionDecision(
+                intent, desired, False, "idempotent",
+                "holding active charge request (observed idle; not re-commanding)",
+            )
         if manual or priority or desired is PhysicalMode.AUTO:
             return None  # operator command / safety hold / return-to-safe: never gated
         if self.last_switch_at is not None and now - self.last_switch_at < self.min_dwell:
@@ -391,10 +412,16 @@ class ModeController:
             # session's own gates and must not starve the planner's budget (F4). A committed
             # grid-charge also advances the commitment sub-count, so the routine budget it drew from
             # is tracked separately (07-12 starvation fix).
+            #
+            # Return-to-AUTO is always allowed (fail-safe) and must NOT burn the daily budget that
+            # commitment_reserve holds for grid-charge (#163 / 09-27): overnight idle↔auto flaps
+            # were each counting TWO switches (idle + auto), exhausting the cap before the cheap
+            # window. Stamp last_switch_at so dwell still spaces flaps; only skip the counter.
             if count_toward_cap:
-                self.switches_today += 1
-                if commitment:
-                    self.commitment_switches_today += 1
+                if desired is not PhysicalMode.AUTO:
+                    self.switches_today += 1
+                    if commitment:
+                        self.commitment_switches_today += 1
                 self.last_switch_at = now
 
         self._reset_counter_if_new_day(now)

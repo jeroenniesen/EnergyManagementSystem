@@ -575,3 +575,149 @@ def test_persist_failure_is_logged_not_swallowed(caplog):
     assert dec.outcome == "applied"                 # the decision still succeeded (non-fatal)
     assert d.current_mode() is PhysicalMode.CHARGE
     assert "persist failed" in caplog.text
+
+
+# ==================================================================================================
+# #163 — Stop idle→charge re-command thrash + protect charge commitments in the switch budget.
+# Vendor IDLE during an active confirmed CHARGE must not re-apply every cycle; return-to-AUTO must
+# not burn the daily counter that commitment_reserve holds for grid-charge.
+# ==================================================================================================
+
+
+class _IdleDuringChargeDriver(MockBatteryDriver):
+    """After a successful CHARGE apply, subsequent current_mode() reads report IDLE — the Indevolt
+    quirk behind the 09-26 write storm (applied charge commands with from_mode=idle)."""
+
+    def current_mode(self) -> PhysicalMode:
+        if self._mode is PhysicalMode.CHARGE:
+            return PhysicalMode.IDLE
+        return self._mode
+
+
+def test_idle_observation_during_confirmed_charge_is_idempotent_not_reapplied():
+    # AC (a)/(c): after one confirmed CHARGE, repeated IDLE observations must HOLD as idempotent —
+    # no storm of `applied`, and the daily counter must not grow.
+    d = _IdleDuringChargeDriver()
+    ctl = ModeController(d, _controlling_lifecycle(), dry_run=False, min_dwell_seconds=0)
+    t = T0 + timedelta(seconds=200)
+    first = ctl.decide(BatteryIntent.GRID_CHARGE_TO_TARGET, t, target_soc=90, commitment=True)
+    assert first.outcome == "applied"
+    assert ctl.switches_today == 1
+    assert ctl.last_requested_action is PhysicalMode.CHARGE
+    assert ctl.last_confirmed_action is PhysicalMode.CHARGE
+
+    applied = 0
+    for i in range(26):  # ~25 min of 1/min cycles (the live storm shape)
+        dec = ctl.decide(
+            BatteryIntent.GRID_CHARGE_TO_TARGET,
+            t + timedelta(seconds=60 * (i + 1)),
+            target_soc=90,
+            commitment=True,
+            observed_mode=PhysicalMode.IDLE,
+        )
+        assert dec.outcome == "idempotent", (i, dec.outcome, dec.reason)
+        assert dec.applied is False
+        assert "holding active charge" in dec.reason
+        applied += int(dec.outcome == "applied")
+    assert applied == 0
+    assert ctl.switches_today == 1  # idempotent path does not count
+
+
+def test_already_charging_observed_charge_is_idempotent_and_does_not_count():
+    # AC (c): desired CHARGE while the device already reports CHARGE → idempotent, counter untouched.
+    d = MockBatteryDriver()
+    ctl = ModeController(d, _controlling_lifecycle(), dry_run=False, min_dwell_seconds=0)
+    t = T0 + timedelta(seconds=200)
+    ctl.decide(BatteryIntent.GRID_CHARGE_TO_TARGET, t, target_soc=90, commitment=True)
+    assert ctl.switches_today == 1
+    again = ctl.decide(
+        BatteryIntent.GRID_CHARGE_TO_TARGET, t + timedelta(seconds=60),
+        target_soc=90, commitment=True, observed_mode=PhysicalMode.CHARGE,
+    )
+    assert again.outcome == "idempotent"
+    assert again.applied is False
+    assert ctl.switches_today == 1
+
+
+def test_return_to_auto_does_not_spend_the_daily_switch_budget():
+    # AUTO is always allowed, but counting it starved commitments when overnight idle↔auto flaps
+    # each burned two switches. Dwell still starts; only the counter is skipped.
+    d = MockBatteryDriver()
+    ctl = ModeController(d, _controlling_lifecycle(), dry_run=False, min_dwell_seconds=0)
+    t = T0 + timedelta(seconds=200)
+    ctl.decide(BatteryIntent.HOLD_RESERVE, t)  # AUTO → IDLE (counts)
+    assert ctl.switches_today == 1
+    back = ctl.decide(BatteryIntent.ALLOW_SELF_CONSUMPTION, t + timedelta(seconds=1))
+    assert back.outcome == "applied"
+    assert d.current_mode() is PhysicalMode.AUTO
+    assert ctl.switches_today == 1  # AUTO return did NOT increment
+    assert ctl.last_switch_at == t + timedelta(seconds=1)  # dwell still stamped
+
+
+def test_after_routine_idle_auto_flaps_commitment_charge_still_has_budget():
+    # AC (b): with commitment_reserve=3 and max=10, overnight idle↔auto flaps must leave room for
+    # a committed grid-charge. Previously each flap counted idle+auto (2); after 5 flaps the total
+    # hit 10 and cap_reached blocked the cheap window (09-27). AUTO no longer spends the counter,
+    # so N idle legs exhaust only the routine budget and the reserve remains for commitment.
+    d = MockBatteryDriver()
+    ctl = ModeController(
+        d, _controlling_lifecycle(), dry_run=False,
+        max_switches_per_day=10, min_dwell_seconds=0, commitment_reserve=3,
+    )
+    t = T0 + timedelta(seconds=200)
+    for _ in range(7):  # 7 routine IDLE applies (= full routine budget of 10-3)
+        # Start from AUTO each iteration so HOLD_RESERVE is a real switch.
+        if d.current_mode() is not PhysicalMode.AUTO:
+            auto = ctl.decide(BatteryIntent.ALLOW_SELF_CONSUMPTION, t)
+            assert auto.outcome == "applied"
+            t += timedelta(seconds=1)
+        idle = ctl.decide(BatteryIntent.HOLD_RESERVE, t)
+        assert idle.outcome == "applied", idle.reason
+        t += timedelta(seconds=1)
+    assert ctl.switches_today == 7
+    assert ctl.commitment_switches_today == 0
+    # Further ROUTINE idle is blocked (routine budget spent)...
+    if d.current_mode() is not PhysicalMode.AUTO:
+        ctl.decide(BatteryIntent.ALLOW_SELF_CONSUMPTION, t)
+        t += timedelta(seconds=1)
+    blocked = ctl.decide(BatteryIntent.HOLD_RESERVE, t)
+    assert blocked.outcome == "cap_reached"
+    assert "routine switch budget exhausted" in blocked.reason
+    t += timedelta(seconds=1)
+    # ...but a COMMITTED grid-charge still applies from the reserve.
+    if d.current_mode() is not PhysicalMode.AUTO:
+        ctl.decide(BatteryIntent.ALLOW_SELF_CONSUMPTION, t)
+        t += timedelta(seconds=1)
+    commit = ctl.decide(
+        BatteryIntent.GRID_CHARGE_TO_TARGET, t, target_soc=90, commitment=True,
+    )
+    assert commit.outcome == "applied"
+    assert ctl.switches_today == 8
+    assert ctl.commitment_switches_today == 1
+
+
+def test_leaving_charge_intent_allows_a_fresh_command_later():
+    # The active-charge hold is intent-scoped: once we leave CHARGE and later desire CHARGE again,
+    # a real write is allowed (subject to dwell/cap).
+    d = _IdleDuringChargeDriver()
+    ctl = ModeController(d, _controlling_lifecycle(), dry_run=False, min_dwell_seconds=0)
+    t = T0 + timedelta(seconds=200)
+    ctl.decide(BatteryIntent.GRID_CHARGE_TO_TARGET, t, target_soc=90, commitment=True)
+    hold = ctl.decide(
+        BatteryIntent.GRID_CHARGE_TO_TARGET, t + timedelta(seconds=60),
+        target_soc=90, commitment=True, observed_mode=PhysicalMode.IDLE,
+    )
+    assert hold.outcome == "idempotent"
+    # Leave the charge episode with observed=CHARGE so the gate sees a real change to IDLE.
+    leave = ctl.decide(
+        BatteryIntent.HOLD_RESERVE, t + timedelta(seconds=120),
+        observed_mode=PhysicalMode.CHARGE,
+    )
+    assert leave.outcome == "applied"
+    assert ctl.last_confirmed_action is PhysicalMode.IDLE
+    again = ctl.decide(
+        BatteryIntent.GRID_CHARGE_TO_TARGET, t + timedelta(seconds=180),
+        target_soc=90, commitment=True, observed_mode=PhysicalMode.IDLE,
+    )
+    assert again.outcome == "applied"
+    assert ctl.switches_today == 3  # initial charge + hold_reserve + re-charge
