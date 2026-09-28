@@ -1,8 +1,26 @@
+import json
 import threading
 import time
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
+from pathlib import Path
+from zoneinfo import ZoneInfo
 
-from ems.sources.tibber import TibberPriceSource, _serialize_slots, parse_price_info
+import pytest
+
+from ems.sources.tibber import (
+    TibberPriceSource,
+    _serialize_slots,
+    detect_price_resolution,
+    parse_price_info,
+)
+from ems.timeutil import day_slot_count
+
+AMS = ZoneInfo("Europe/Amsterdam")
+FIXTURES = Path(__file__).parent / "fixtures" / "tibber"
+
+
+def _load_fixture(name: str) -> dict:
+    return json.loads((FIXTURES / name).read_text())
 
 
 class _FakeCache:
@@ -34,39 +52,99 @@ class _Clock:
         self.t += timedelta(**kw)
 
 
-# Shape of a real Tibber priceInfo response (trimmed): hourly total in EUR/kWh + tz-aware startsAt.
-DATA = {
-    "viewer": {
-        "homes": [
-            {
-                "currentSubscription": {
-                    "priceInfo": {
-                        "today": [
-                            {"total": 0.2412, "startsAt": "2026-06-28T00:00:00+02:00"},
-                            {"total": 0.1987, "startsAt": "2026-06-28T01:00:00+02:00"},
-                        ],
-                        "tomorrow": [
-                            {"total": 0.3055, "startsAt": "2026-06-29T00:00:00+02:00"},
-                        ],
-                    }
-                }
-            }
-        ]
-    }
-}
+# Established format (#137): default priceInfo is HOURLY — committed fixture, not a live call.
+DATA = _load_fixture("price_info_hourly.json")
 
 
-def test_parse_expands_each_hour_into_four_15min_slots():
+def test_established_fixture_is_hourly_and_expands_without_duplicates():
+    """AC1: format established + fixture; AC2 N/A for hourly (expand once → unique starts)."""
+    today = DATA["viewer"]["homes"][0]["currentSubscription"]["priceInfo"]["today"]
+    assert detect_price_resolution(today) == "hourly"
+    assert all(datetime.fromisoformat(e["startsAt"]).minute == 0 for e in today)
+
     slots = parse_price_info(DATA)
-    assert len(slots) == 3 * 4  # 2 today + 1 tomorrow hours, each -> 4 quarter-hours
-    # First hour expands to :00/:15/:30/:45, all at the same price.
+    assert len(slots) == 3 * 4  # 2 today + 1 tomorrow hours → 12 quarters
+    starts = [s.start for s in slots]
+    assert len(starts) == len(set(starts))  # no duplicate quarter-hours
     first4 = slots[:4]
     assert [s.start.minute for s in first4] == [0, 15, 30, 45]
-    assert all(s.eur_per_kwh == 0.2412 for s in first4)
-    # tz-aware, sorted ascending, 15-min spacing.
+    assert all(s.eur_per_kwh == 0.20 for s in first4)
     assert all(s.start.tzinfo is not None for s in slots)
     assert slots == sorted(slots, key=lambda s: s.start)
     assert (slots[1].start - slots[0].start).total_seconds() == 900
+
+
+def test_quarter_hourly_fixture_does_not_re_expand():
+    """AC2: when Tibber already delivers quarters, parser must not duplicate them."""
+    data = _load_fixture("price_info_quarter_hourly.json")
+    today = data["viewer"]["homes"][0]["currentSubscription"]["priceInfo"]["today"]
+    assert detect_price_resolution(today) == "quarter_hourly"
+
+    slots = parse_price_info(data)
+    # Fixture: 8 today quarters + 4 tomorrow quarters — pass through 1:1.
+    assert len(slots) == 12
+    starts = [s.start for s in slots]
+    assert len(starts) == len(set(starts))
+    # Distinct totals prove we did not splat each quarter into four identical copies.
+    assert [s.eur_per_kwh for s in slots[:4]] == [0.24, 0.235, 0.23, 0.225]
+    assert (slots[1].start - slots[0].start).total_seconds() == 900
+
+
+def test_naive_expand_of_quarter_hourly_would_have_duplicated():
+    """Regression guard: old always-expand behaviour would 4× the quarter-hourly fixture."""
+    data = _load_fixture("price_info_quarter_hourly.json")
+    entries = (
+        data["viewer"]["homes"][0]["currentSubscription"]["priceInfo"]["today"]
+        + data["viewer"]["homes"][0]["currentSubscription"]["priceInfo"]["tomorrow"]
+    )
+    # 12 quarter entries × 4 = 48 if blindly expanded; parser must yield 12.
+    assert len(entries) == 12
+    assert len(parse_price_info(data)) == 12
+
+
+@pytest.mark.parametrize(
+    ("day", "expected", "hourly_fixture", "quarter_fixture"),
+    [
+        (date(2026, 6, 28), 96, "price_info_hourly_normal_96.json",
+         "price_info_quarter_hourly_normal_96.json"),
+        (date(2026, 3, 29), 92, "price_info_hourly_spring_forward_92.json",
+         "price_info_quarter_hourly_spring_forward_92.json"),
+        (date(2026, 10, 25), 100, "price_info_hourly_fall_back_100.json",
+         "price_info_quarter_hourly_fall_back_100.json"),
+    ],
+)
+def test_full_local_days_yield_dst_aware_quarter_counts(
+    day, expected, hourly_fixture, quarter_fixture
+):
+    """AC3: normal / spring-forward / fall-back → 96 / 92 / 100 unique quarter-hours."""
+    assert day_slot_count(day, AMS) == expected
+
+    hourly_slots = parse_price_info(_load_fixture(hourly_fixture))
+    assert len(hourly_slots) == expected
+    assert len({s.start for s in hourly_slots}) == expected
+    assert (hourly_slots[1].start - hourly_slots[0].start).total_seconds() == 900
+
+    quarter_slots = parse_price_info(_load_fixture(quarter_fixture))
+    assert len(quarter_slots) == expected
+    assert len({s.start for s in quarter_slots}) == expected
+    # Distinct prices in the quarter fixture — expand would have collapsed uniqueness.
+    assert len({s.eur_per_kwh for s in quarter_slots}) == expected
+
+
+def test_duplicate_starts_at_are_collapsed():
+    data = {
+        "viewer": {"homes": [{"currentSubscription": {"priceInfo": {"today": [
+            {"total": 0.10, "startsAt": "2026-06-28T00:00:00+02:00"},
+            {"total": 0.11, "startsAt": "2026-06-28T00:00:00+02:00"},  # dup
+            {"total": 0.20, "startsAt": "2026-06-28T00:15:00+02:00"},
+        ], "tomorrow": []}}}]}
+    }
+    slots = parse_price_info(data)
+    assert detect_price_resolution(
+        data["viewer"]["homes"][0]["currentSubscription"]["priceInfo"]["today"]
+    ) == "quarter_hourly"
+    assert len(slots) == 2
+    assert slots[0].eur_per_kwh == 0.11  # last write wins
 
 
 def test_parse_tolerates_missing_pieces():
