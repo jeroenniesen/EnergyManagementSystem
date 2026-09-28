@@ -54,10 +54,11 @@ One season-agnostic charger:
 | **total** | **€8.20** | **€2.32** | **€2.23** | |
 
 - Adaptive cuts 4-day grid cost **€8.20 → €2.32 (−72%)** and never discharges below reserve.
-- A **dynamic-programming optimizer** (`ems/planner/optimal.py`) computes the globally cheapest
-  schedule as a yardstick: adaptive is within **4% (€0.09)** of optimal — and keeps **higher
-  self-sufficiency** than the pure cost-optimizer (which trades autonomy for marginal arbitrage).
-  So we ship the simpler, interpretable, near-optimal heuristic; the DP stays as a yardstick.
+- A **dynamic-programming optimizer** (research yardstick; former `ems/planner/optimal.py`, removed
+  in B-27 / #76 as never dispatched) computed the globally cheapest schedule: adaptive was within
+  **4% (€0.09)** of optimal — and kept **higher self-sufficiency** than the pure cost-optimizer
+  (which trades autonomy for marginal arbitrage). So we ship the simpler, interpretable,
+  near-optimal heuristic; the DP numbers above remain historical evidence, not a live planner mode.
 - **Robust to forecast error:** with the forecast 40% too rosy, P10 sizing + replanning keep the
   battery above reserve on every day (the safety guarantee holds).
 
@@ -73,5 +74,6 @@ roof's forecast-vs-actual ratio) to sharpen the P10/P50 the charger sizes agains
 
 `plan_adaptive` is the live **summer** engine (`strategy.build_plan`); winter still uses the
 arbitrage planner. All planners emit the same `Plan` and pass the unchanged projection/validator.
-Tests: unit (`test_adaptive.py`, `test_optimal.py`) + backtest regressions (`test_sim.py`:
-adaptive ≤ current, adaptive within €0.50 of optimal, safe under a rosy forecast).
+Tests: unit (`test_adaptive.py`) + backtest regressions (`test_sim.py`: adaptive ≤ current, safe
+under a rosy forecast). The former DP yardstick (`test_optimal.py` / near-optimal gap assert) was
+retired with B-27 / #76 — evidence lives in the table above.

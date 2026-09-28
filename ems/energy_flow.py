@@ -120,6 +120,19 @@ def _allocate_slot(
                      grid_home, grid_car, grid_batt, batt_home, batt_car, batt_grid)
 
 
+def charge_kind(
+    battery_w: float, solar_w: float, home_w: float, car_w: float = 0.0,
+) -> str:
+    """Label a CHARGING slot by dominant source (solar-first split of `_allocate_slot`).
+
+    The grid only counts as charging the battery to the extent the charge is *not* covered by solar
+    left after home (then car). Equal solar/grid attribution → `solar_charge` (stable tie-break).
+    Callers that already reconstructed `non_ev_load` pass it as `home_w` with `car_w=0`.
+    """
+    bands = _allocate_slot(solar_w, 0.0, battery_w, home_w, car_w)
+    return "grid_charge" if bands.grid_batt > bands.solar_batt else "solar_charge"
+
+
 def build_flows(
     raw_rows: list[dict],
     derived_rows: list[dict],
