@@ -317,3 +317,96 @@ def test_battery_plan_full_cheap_window_keeps_normal_committed_target(tmp_path):
     if plan.get("target_soc") is None:
         return
     assert abs(body["target_soc_pct"] - plan["target_soc"]) < 0.6
+
+
+# --- B-74 / #84 slice 1: structured decision reason on /api/battery-plan ----------------------
+
+_REASON_KEYS = {
+    "chosen_window", "rejected_alternative", "expected_benefit", "risk",
+    "safety_constraint", "gates", "summary",
+}
+_GATE_KEYS = {"validator_code", "failsafe", "dwell", "cap_reached", "unconfirmed"}
+
+
+def test_battery_plan_carries_structured_reason_object(tmp_path):
+    with TestClient(_app(tmp_path)) as c:
+        body = c.get("/api/battery-plan").json()
+
+    reason = body["reason"]
+    assert set(reason) == _REASON_KEYS
+    assert set(reason["gates"]) == _GATE_KEYS
+    assert reason["summary"]
+    assert reason["safety_constraint"]["action"] in {"paused", "proceed"}
+    # Healthy mock path: no control-blocking finding → proceed (or paused only if no plan).
+    if body["status"] not in {"data_stale", "paused_safely"}:
+        assert reason["safety_constraint"]["action"] == "proceed"
+        assert reason["chosen_window"] is not None
+        assert reason["chosen_window"]["intent"]
+        assert reason["rejected_alternative"] is not None
+        assert reason["expected_benefit"] is not None
+        assert reason["risk"] is not None
+        assert "margin_eur_per_kwh" in reason["risk"]
+
+
+def test_battery_plan_reason_validator_unsafe_pauses_with_finding_code(tmp_path):
+    """Contract (#84): validator unsafe → safety_constraint.code == finding, action 'paused'."""
+    fresh = FreshnessTracker()
+    fresh.register(*SIGNALS)
+
+    with TestClient(_app(tmp_path, freshness=fresh)) as c:
+        body = c.get("/api/battery-plan").json()
+
+    assert body["current_action"] == "paused"
+    reason = body["reason"]
+    assert reason["safety_constraint"]["action"] == "paused"
+    # Finding code must be the factual validator code (stale_inputs when critical signals missing).
+    assert reason["safety_constraint"]["code"] == reason["gates"]["validator_code"]
+    assert reason["safety_constraint"]["code"] == "stale_inputs"
+    assert reason["gates"]["failsafe"] is True
+
+
+def test_battery_plan_reason_present_when_paused_safely_without_plan(tmp_path):
+    with TestClient(_app(tmp_path, with_forecast=False)) as c:
+        body = c.get("/api/battery-plan").json()
+
+    assert body["status"] == "paused_safely"
+    reason = body["reason"]
+    assert set(reason) == _REASON_KEYS
+    assert reason["safety_constraint"]["action"] == "paused"
+    assert reason["chosen_window"] is None
+
+
+def test_battery_plan_reason_comes_from_plan_with_recovery_path(tmp_path, monkeypatch):
+    """Explanation uses the same plan_with_recovery path as control (align with #87)."""
+    from ems.control import service as control_svc
+
+    calls = {"n": 0}
+    orig = control_svc.ControlService.plan_with_recovery
+
+    def _counting(self, now=None):
+        calls["n"] += 1
+        return orig(self, now)
+
+    monkeypatch.setattr(control_svc.ControlService, "plan_with_recovery", _counting)
+
+    with TestClient(_app(tmp_path)) as c:
+        body = c.get("/api/battery-plan").json()
+
+    assert calls["n"] >= 1, "battery-plan must build via plan_with_recovery"
+    assert "reason" in body
+    # When a plan exists, the structured reason's chosen window matches a real plan intent.
+    if body["status"] not in {"paused_safely"} and body["reason"]["chosen_window"]:
+        assert body["reason"]["chosen_window"]["intent"] in {
+            "grid_charge_to_target", "discharge_for_load", "hold_reserve",
+            "allow_self_consumption",
+        }
+
+
+def test_battery_plan_reason_gate_flags_default_false_without_controller(tmp_path):
+    # Default test app has no ModeController — dwell/cap/unconfirmed stay factual False.
+    with TestClient(_app(tmp_path)) as c:
+        body = c.get("/api/battery-plan").json()
+    gates = body["reason"]["gates"]
+    assert gates["dwell"] is False
+    assert gates["cap_reached"] is False
+    assert gates["unconfirmed"] is False
