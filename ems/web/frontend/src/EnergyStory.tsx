@@ -75,6 +75,39 @@ export type SavedToday =
   | { status: "measured"; eur: number }
   | { status: "measuring" };
 
+/** B-74 / #84 structured decision reason on /api/battery-plan (consumed by #85 waarom-UI). */
+export type BatteryPlanReason = {
+  chosen_window: {
+    start: string | null;
+    end: string | null;
+    intent: string | null;
+    label: string | null;
+    eur_per_kwh_min: number | null;
+    eur_per_kwh_max: number | null;
+  } | null;
+  rejected_alternative: {
+    intent: string | null;
+    reason: string;
+    window_start: string | null;
+    window_end: string | null;
+  } | null;
+  expected_benefit: { eur: number | null; summary: string } | null;
+  risk: { margin_eur_per_kwh: number | null; summary: string } | null;
+  safety_constraint: {
+    code: string | null;
+    message: string | null;
+    action: string;
+  };
+  gates: {
+    validator_code: string | null;
+    failsafe: boolean;
+    dwell: boolean;
+    cap_reached: boolean;
+    unconfirmed: boolean;
+  };
+  summary: string;
+};
+
 export type BatteryPlanData = {
   status: "on_track" | "needs_topup" | "behind_target" | "paused_safely" | "data_stale";
   summary: string;
@@ -114,4 +147,6 @@ export type BatteryPlanData = {
   };
   confidence?: PlanConfidence;
   provenance?: PlanProvenance;
+  /** B-74 / #84 — always present on a live API; optional here for older mocks. */
+  reason?: BatteryPlanReason;
 };
