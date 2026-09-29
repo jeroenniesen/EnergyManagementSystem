@@ -97,6 +97,7 @@ from ems.http_client import HttpRuntime, make_bytes_post, make_cloud_cover_get
 from ems.load_model import reconstruct
 from ems.notify import Notifier
 from ems.planner.charge_need import compute_charge_need, ui_charge_need
+from ems.planner.reason import build_decision_reason, empty_decision_reason
 from ems.planner.explain import (
     ExternalLlmExplainer,
     TemplateExplainer,
@@ -3169,7 +3170,10 @@ def create_app(
                     # the plan (or re-touch the seasonal-hysteresis counter) to know which planner
                     # ran.
                     "strategy": plan.strategy,
-                    "plan_target_soc": plan.target_soc}
+                    "plan_target_soc": plan.target_soc,
+                    # Same recovered Plan the control path acts on (#84) — reason schema must not
+                    # rebuild a divergent plan.
+                    "plan": plan}
 
         return await asyncio.to_thread(_compute)
 
@@ -3568,6 +3572,11 @@ def create_app(
                 # No plan exists yet, so there is no plan.strategy to read back — resolve it fresh
                 # (idempotent: see _resolve_strategy/apply_hysteresis) just for the provenance line.
                 "provenance": _plan_provenance(_active_strategy(now)),
+                # B-74 / #84: structured reason always present (empty/paused shape).
+                "reason": empty_decision_reason(
+                    summary="No current plan or forecast is available.",
+                    failsafe=quality == "unsafe",
+                ).to_dict(),
             }
 
         projected, price_by, need, deadline = (
@@ -3581,7 +3590,9 @@ def create_app(
         totals = _uslot_totals(slots)
         recent = await _recent_actuals(fp["now"])
         grid_charge_kwh = totals["grid_charge_kwh"]
-        _intent, reason, _override, _target, _power, validation, _ca = _effective_intent(fp["now"])
+        intent, reason, override_active, target_soc, power_w, validation, car_action = (
+            _effective_intent(fp["now"])
+        )
 
         # "Are we on track?" is derived from the ACTUAL plan (same engine as the story line), NOT a
         # compare of two actual SoC samples — so it measures the plan against target/reserve and
@@ -3628,6 +3639,43 @@ def create_app(
             summary = _next_headline(totals, need, grid_charge_kwh)
             current_reason = reason or "Battery is following the current plan."
 
+        # Factual gate outcomes from the same decide-path preview the control loop uses (#84).
+        decision_outcome: str | None = None
+        unconfirmed = False
+        if controller is not None and intent is not None:
+            car_session = car_action is not None and car_action.action == "discharge"
+            preview = controller.preview(
+                intent, fp["now"], target_soc=target_soc, power_w=power_w,
+                observed_mode=_current_mode(fp["now"]), manual=override_active,
+                priority=_car_charging(fp["now"]), car_session=car_session,
+                commitment=intent is BatteryIntent.GRID_CHARGE_TO_TARGET,
+            )
+            decision_outcome = preview.outcome
+            unconfirmed = bool(controller.last_command_unconfirmed)
+        failsafe_active = (
+            quality == "unsafe"
+            or (reason is not None and "fail-safe" in reason.lower())
+            or (reason is not None and "failsafe" in reason.lower())
+        )
+
+        structured = build_decision_reason(
+            fp.get("plan"),
+            price_by=price_by,
+            validation=validation,
+            plan_reason=current_reason,
+            risk_margin_eur_per_kwh=float(
+                settings_cache.get("planner.risk_margin_eur_per_kwh", 0.02)),
+            degradation_eur_per_kwh=float(
+                settings_cache.get("planner.degradation_eur_per_kwh", 0.05)),
+            round_trip_efficiency=float(
+                settings_cache.get("planner.round_trip_efficiency", 0.90)),
+            decision_outcome=decision_outcome,
+            failsafe=failsafe_active,
+            unconfirmed=unconfirmed,
+            paused=current_action == "paused",
+            summary=current_reason,
+        )
+
         # window_start must cover the recent ACTUAL history too, not just the forecast — otherwise
         # the actual-SoC line falls entirely left of the plotted domain (finding #2). recent is
         # oldest→now, slots is now→+24h, so the earliest sample is recent[0] when present.
@@ -3666,6 +3714,7 @@ def create_app(
             },
             "confidence": confidence,
             "provenance": _plan_provenance(fp["strategy"]),
+            "reason": structured.to_dict(),
         }
 
     async def _past_story(reserve_pct: float) -> dict:
