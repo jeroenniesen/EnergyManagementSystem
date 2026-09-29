@@ -11,6 +11,7 @@ from datetime import UTC, datetime, timedelta
 
 from fastapi import APIRouter
 
+from ems.calibration import attach_solar
 from ems.planner.load_profile import LoadProfile, build_load_profile
 from ems.reserve_advice import night_demand_kwh, recommend_night_reserve
 from ems.sky import sun_times
@@ -67,7 +68,16 @@ def build_router(ctx: AppContext) -> APIRouter:
                 rows = await ctx.store.derived_between(
                     start.isoformat(), now.isoformat(), limit=limit
                 )
-                profile = await asyncio.to_thread(build_load_profile, rows, ctx.site_tz)
+                raw = await ctx.store.raw_between(
+                    start.isoformat(), now.isoformat(), limit=limit
+                )
+                profile = await asyncio.to_thread(
+                    build_load_profile,
+                    attach_solar(rows, raw),
+                    ctx.site_tz,
+                    enhanced=True,
+                    as_of=now,
+                )
 
             if forecast_ok:
                 load_profile = profile or LoadProfile({}, ctx.site_tz)
