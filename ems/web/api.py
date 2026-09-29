@@ -38,6 +38,7 @@ from ems.application.services import (
     VerificationService,
 )
 from ems.battery_profile import BatteryTopology, normalize_tower_ips
+from ems.calibration import attach_solar
 from ems.cars import by_id as car_by_id
 from ems.clock import Clock, SystemClock
 from ems.confidence import plan_confidence
@@ -2209,8 +2210,16 @@ def create_app(
             except Exception:
                 _log.debug("canonical forecast dedupe pre-check failed (non-fatal)", exc_info=True)
         drows = await store.recent_derived(2016)  # ~7 days of derived history for the profile
+        rrows = await store.recent_raw(2016)
         fallback_w = settings_cache["battery.overnight_load_kwh"] * 1000.0 / 12.0
-        profile = build_load_profile(drows, site_tz, fallback_w=fallback_w)
+        # B-64: weekday/weekend + season (+ weather when solar is present on rows).
+        profile = build_load_profile(
+            attach_solar(drows, rrows),
+            site_tz,
+            fallback_w=fallback_w,
+            enhanced=True,
+            as_of=now,
+        )
         solar_slots = (await asyncio.to_thread(solar_forecast.slots)
                        if solar_forecast is not None else [])
         source_name = type(solar_forecast).__name__ if solar_forecast is not None else "none"
@@ -3103,6 +3112,7 @@ def create_app(
         freeze unrelated requests)."""
         # Learn the expected load from ~7 days of derived history (async DB read off the loop).
         drows = await store.recent_derived(2016) if store is not None else []
+        rrows = await store.recent_raw(2016) if store is not None else []
         # Warm EV daily history for winter exogenous sizing (#181) — fail-soft if store missing.
         await control.refresh_ev_daily(_now_utc())
 
@@ -3119,7 +3129,14 @@ def create_app(
             fc_slots = solar_forecast.slots()
             solar_by = {f.start: f.p50_w for f in fc_slots}
             fallback_w = settings_cache["battery.overnight_load_kwh"] * 1000.0 / 12.0
-            profile = build_load_profile(drows, site_tz, fallback_w=fallback_w)
+            # B-64: weekday/weekend + season (+ weather when solar is present on rows).
+            profile = build_load_profile(
+                attach_solar(drows, rrows),
+                site_tz,
+                fallback_w=fallback_w,
+                enhanced=True,
+                as_of=now,
+            )
             _load_profile_box["profile"] = profile  # share with the sync _current_plan (adaptive)
             load_by = {s.start: profile.expected_w(s.start) for s in plan.slots}
             # #180: on-track / behind_target / target line must use the plan's committed

@@ -1,12 +1,12 @@
 """Forecast/prediction-accuracy routes (BACKLOG B-72 slice, extracted from create_app).
 
-GET /api/accuracy (all three tracks + a synthesized B-76 `health` block) ·
+GET /api/accuracy (all three tracks + a synthesized B-76 `health` block + B-64 load_model) ·
 GET /api/advisor/solar-confidence (advisory hint).
 
 Both are read-only and gathered off the shared ctx helpers: `solar_forecast_skill` and
 `solar_confidence_advice` stay defined in api.py (they are reused by the control/notify path there)
 and are reached through the context; only the two extra tracks (`plan_execution_error`,
-`load_baseline_error`) and their store reads live here.
+`load_baseline_error`), the B-64 held-out load-model comparison, and their store reads live here.
 """
 from __future__ import annotations
 
@@ -15,6 +15,7 @@ from datetime import UTC, datetime, timedelta
 from fastapi import APIRouter
 
 from ems.analysis import load_baseline_error, model_health, plan_execution_error
+from ems.calibration import load_accuracy, rows_from_raw_samples
 from ems.web.context import AppContext, history_row_cap
 
 
@@ -39,6 +40,11 @@ def build_router(ctx: AppContext) -> APIRouter:
         their evidence minimums (deadlines are ~daily, day-of-week/hour baselines need several
         weeks), so those two are gathered over the last 60 days instead.
 
+        Also returns `load_model` (B-64 / #81): held-out MAE of the enhanced weekday/weekend +
+        season + weather load profile vs. the naive hour-of-day recent-average baseline (sliced
+        from draft PR #65's `load_accuracy`, without merging that PR). `available` is false until
+        there are seven training days and ≥24 scored held-out hours.
+
         The solar track (`ctx.solar_forecast_skill`) scores the prediction ledger's CANONICAL
         day-ahead rows (design §4.2/§4.3) — the SAME single scoring source the System page, the
         solar-confidence advisor and the export package all read, so this endpoint can never
@@ -53,6 +59,15 @@ def build_router(ctx: AppContext) -> APIRouter:
         solar_advice = None
         plan_execution = None
         load = None
+        load_model: dict | None = {
+            "available": False,
+            "hours_scored": 0,
+            "baseline_mae_w": None,
+            "enhanced_mae_w": None,
+            "improves_on_baseline": None,
+            "features": [],
+            "reason": "No history store — cannot score load-model accuracy.",
+        }
         if ctx.store is not None:
             now = datetime.now(UTC)
 
@@ -72,11 +87,15 @@ def build_router(ctx: AppContext) -> APIRouter:
             long_raw = await ctx.store.raw_between(
                 long_start.isoformat(), now.isoformat(), limit=long_limit)
             load = load_baseline_error(long_raw, tz=ctx.site_tz)
+            # B-64 held-out comparison: same raw window, reconstructed load + solar for weather.
+            load_model = load_accuracy(
+                rows_from_raw_samples(long_raw), now=now, tz=ctx.site_tz,
+            )
         # B-76: a synthesized ok/warn/unknown verdict per track for the System page's "Model
         # health" panel — pure synthesis of the three tracks above, no new measurement.
         health = model_health(solar=solar, load=load, plan_execution=plan_execution,
                               daytime_only=True)
         return {"solar": solar, "solar_advice": solar_advice, "plan_execution": plan_execution,
-                "load": load, "health": health}
+                "load": load, "load_model": load_model, "health": health}
 
     return router

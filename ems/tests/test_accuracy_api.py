@@ -101,6 +101,7 @@ def test_accuracy_endpoint_returns_nulls_without_enough_evidence(tmp_path):
     assert body["solar"]["n_slots"] == 0
     assert body["plan_execution"] is None
     assert body["load"] is None
+    assert body["load_model"]["available"] is False
     # B-76: no evidence anywhere yet reads as an honest 'unknown' per track, never alarming.
     assert body["health"] == {
         "solar": "unknown", "load": "unknown", "plan_execution": "unknown", "notes": [],
@@ -111,17 +112,52 @@ def test_accuracy_endpoint_returns_nulls_without_a_store():
     app = create_app(MockSource(), dry_run=True, dev_mode="mock", tz=AMS)
     with TestClient(app) as c:
         body = c.get("/api/accuracy").json()
-    assert body == {
-        "solar": None,
-        "solar_advice": None, "plan_execution": None, "load": None,
-        "health": {"solar": "unknown", "load": "unknown", "plan_execution": "unknown",
-                   "notes": []},
+    assert body["solar"] is None
+    assert body["solar_advice"] is None
+    assert body["plan_execution"] is None
+    assert body["load"] is None
+    assert body["load_model"]["available"] is False
+    assert body["health"] == {
+        "solar": "unknown", "load": "unknown", "plan_execution": "unknown", "notes": [],
     }
 
 
-def test_accuracy_endpoint_shape_has_exactly_the_five_keys(tmp_path):
+def test_accuracy_endpoint_shape_has_exactly_the_six_keys(tmp_path):
     db = str(tmp_path / "ems.sqlite")
     with TestClient(_app(db)) as c:
         body = c.get("/api/accuracy").json()
     # solar_advice rides along so the System page can name the suggested setting (advisor-trail fix)
-    assert set(body.keys()) == {"solar", "solar_advice", "plan_execution", "load", "health"}
+    # load_model is the B-64 held-out comparison (#81).
+    assert set(body.keys()) == {
+        "solar", "solar_advice", "plan_execution", "load", "load_model", "health",
+    }
+
+
+def test_accuracy_endpoint_load_model_beats_baseline_with_synthetic_history(tmp_path):
+    """Held-out evaluation visible via /api/accuracy (Klaar-als #81)."""
+    db = str(tmp_path / "ems.sqlite")
+    store = HistoryStore(db)
+    asyncio.run(store.init())
+    now = datetime.now(UTC).replace(minute=0, second=0, microsecond=0)
+    # ~6 weeks of weekday/weekend-differentiated load so enhanced beats hour-only baseline.
+    for days in range(1, 43):
+        day = now - timedelta(days=days)
+        load = 900.0 if day.weekday() >= 5 else 300.0
+        for hour in (0, 6, 12, 18):
+            ts = (day.replace(hour=hour)).isoformat()
+            raw = RawSample(
+                grid_power_w=load, solar_power_w=0.0, battery_power_w=0.0,
+                ev_power_w=0.0, soc_pct=50.0,
+            )
+            asyncio.run(store.record(ts, raw, reconstruct(raw)))
+
+    with TestClient(_app(db)) as c:
+        body = c.get("/api/accuracy").json()
+
+    model = body["load_model"]
+    assert model["available"] is True
+    assert model["hours_scored"] >= 24
+    assert model["improves_on_baseline"] is True
+    assert model["enhanced_mae_w"] < model["baseline_mae_w"]
+    assert "weekday_weekend" in model["features"]
+    assert "season" in model["features"]
