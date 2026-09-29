@@ -2147,6 +2147,27 @@ body {
 .strategy-why { color: var(--muted); font-size: 0.8rem; margin: 6px 0 0; font-style: italic; }
 /* Quiet success markers in the Energy Story — calm confirmation, deliberately understated. */
 .trust-markers { display: flex; flex-wrap: wrap; gap: 8px; margin: 4px 0 12px; }
+
+/* B-63 / #88: evening-peak coverage probability under the waarom strip. */
+.evening-peak-coverage {
+  margin: 0 0 12px;
+  padding: 10px 12px;
+  border-left: 3px solid var(--accent);
+  background: color-mix(in srgb, var(--accent) 8%, transparent);
+}
+.evening-peak-coverage-label {
+  margin: 0 0 4px;
+  font-size: 0.95rem;
+  font-weight: 600;
+  color: var(--text);
+}
+.evening-peak-coverage-detail {
+  margin: 0;
+  font-size: 0.85rem;
+  line-height: 1.4;
+  color: var(--muted);
+}
+.evening-peak-coverage-detail strong { color: var(--text); font-weight: 600; }
 .trust-marker {
   display: inline-flex; align-items: center; gap: 5px; font-size: 0.76rem;
   color: var(--green-text); padding: 3px 9px; border-radius: 999px;

@@ -1231,6 +1231,69 @@ test.describe("EMS dashboard", () => {
     });
   });
 
+  // --- B-63 / #88: evening peak coverage probability -----------------------------------------
+  test.describe("#88 evening peak coverage", () => {
+    test("shows calibrated chance the battery covers the evening peak", async ({ page }) => {
+      await routePlanStory(page);
+      await routeDashboardStatus(page);
+      await page.route("**/api/battery-plan", (route) => route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify(batteryPlanFixture(
+          { level: "high", reasons: ["Fresh data."] },
+          DEFAULT_PROVENANCE,
+          {
+            evening_peak_coverage: {
+              probability: 0.667,
+              available: true,
+              label: "Evening peak may be covered (~67%)",
+              reason: "2 of 3 scenarios cover the evening peak.",
+              calibrated: true,
+              scenarios_covering: 2,
+              scenarios_total: 3,
+              peak_kwh_expected: 3.2,
+              available_kwh: 4.1,
+            },
+          },
+        )),
+      }));
+      await page.goto("/");
+      const block = page.getByTestId("evening-peak-coverage");
+      await expect(block).toBeVisible();
+      await expect(block).toHaveAttribute("data-calibrated", "true");
+      await expect(page.getByTestId("evening-peak-coverage-label")).toContainText("67%");
+      await expect(page.getByTestId("evening-peak-coverage-detail")).toContainText("67%");
+    });
+
+    test("hides the coverage strip when the API marks it unavailable", async ({ page }) => {
+      await routePlanStory(page);
+      await routeDashboardStatus(page);
+      await page.route("**/api/battery-plan", (route) => route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify(batteryPlanFixture(
+          { level: "medium", reasons: ["Still learning."] },
+          DEFAULT_PROVENANCE,
+          {
+            evening_peak_coverage: {
+              probability: null,
+              available: false,
+              label: "Evening peak coverage unavailable",
+              reason: "No current plan or forecast is available.",
+              calibrated: false,
+              scenarios_covering: 0,
+              scenarios_total: 0,
+              peak_kwh_expected: null,
+              available_kwh: null,
+            },
+          },
+        )),
+      }));
+      await page.goto("/");
+      await expect(page.getByTestId("evening-peak-coverage")).toHaveCount(0);
+    });
+  });
+
   test("car advice stays in its own card instead of adding a sixth chart layer", async ({ page }) => {
     await routePlanStory(page);
     await routeDashboardStatus(page);

@@ -4,6 +4,7 @@ import { AcceptInvite } from "./AcceptInvite";
 import { apiFetch, setUnauthorizedHandler } from "./auth";
 import { BatteryActionWhy } from "./BatteryActionWhy";
 import { type Battery, BatteryChips } from "./BatteryChips";
+import { EveningPeakCoverageCard } from "./EveningPeakCoverage";
 import { EnergyDistribution } from "./EnergyDistribution";
 import type {
   BatteryPlanData,
@@ -1064,6 +1065,8 @@ export function App() {
             reason={batteryPlan?.reason as DecisionReason | undefined}
             dryRun={status?.dry_run ?? true}
           />
+          {/* B-63 / #88: how likely the battery covers tonight's evening peak. */}
+          <EveningPeakCoverageCard coverage={batteryPlan?.evening_peak_coverage} />
           <PlanStory
             story={story?.window === "next" ? story : null}
             provenance={batteryPlan?.provenance}

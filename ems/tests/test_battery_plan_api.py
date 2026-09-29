@@ -414,3 +414,42 @@ def test_battery_plan_reason_exposes_fields_for_web_waarom_slice1(tmp_path):
     assert body["current_action"] in {
         "grid_charge", "solar_charge", "hold", "discharge", "self_consume", "paused",
     }
+
+
+# --- B-63 / #88: evening peak coverage probability -------------------------------------------
+
+_PEAK_COVERAGE_KEYS = {
+    "probability", "available", "label", "reason", "calibrated",
+    "scenarios_covering", "scenarios_total", "peak_kwh_expected", "available_kwh",
+}
+
+
+def test_battery_plan_carries_evening_peak_coverage(tmp_path):
+    with TestClient(_app(tmp_path)) as c:
+        body = c.get("/api/battery-plan").json()
+
+    cov = body["evening_peak_coverage"]
+    assert set(cov) == _PEAK_COVERAGE_KEYS
+    assert isinstance(cov["available"], bool)
+    assert isinstance(cov["calibrated"], bool)
+    assert isinstance(cov["label"], str) and cov["label"]
+    assert isinstance(cov["reason"], str) and cov["reason"]
+    if cov["available"]:
+        assert cov["probability"] is not None
+        assert 0.0 <= cov["probability"] <= 1.0
+        assert cov["scenarios_total"] >= 1
+        assert 0 <= cov["scenarios_covering"] <= cov["scenarios_total"]
+    else:
+        assert cov["probability"] is None
+
+
+def test_battery_plan_evening_peak_coverage_present_when_paused(tmp_path):
+    with TestClient(_app(tmp_path, with_forecast=False)) as c:
+        body = c.get("/api/battery-plan").json()
+
+    assert body["status"] == "paused_safely"
+    cov = body["evening_peak_coverage"]
+    assert set(cov) == _PEAK_COVERAGE_KEYS
+    assert cov["available"] is False
+    assert cov["probability"] is None
+    assert "no current plan" in cov["reason"].lower() or "forecast" in cov["reason"].lower()
