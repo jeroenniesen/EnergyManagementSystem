@@ -125,6 +125,8 @@ A `Dockerfile` is included for container deployments (Raspberry Pi / server).
 **[`SPEC.md`](./SPEC.md)** is the single source of truth (architecture, APIs, decision logic,
 config, deployment). Supporting docs in **[`docs/`](./docs/)**:
 
+- [`docs/compatibility.md`](./docs/compatibility.md) — **does EMS fit your home?** Supported
+  battery, meters, tariffs, forecast providers, EV (advice-only), and honest limitations.
 - [`docs/control-model.md`](./docs/control-model.md) — P1-zeroing contract, `BatteryIntent`,
   target-SoC math, the `Plan` object + validator, ownership state machine.
 - [`docs/energy-model.md`](./docs/energy-model.md) — sign conventions, house-load reconstruction.
