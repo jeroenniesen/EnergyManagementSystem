@@ -97,7 +97,6 @@ from ems.http_client import HttpRuntime, make_bytes_post, make_cloud_cover_get
 from ems.load_model import reconstruct
 from ems.notify import Notifier
 from ems.planner.charge_need import compute_charge_need, ui_charge_need
-from ems.planner.reason import build_decision_reason, empty_decision_reason
 from ems.planner.explain import (
     ExternalLlmExplainer,
     TemplateExplainer,
@@ -108,6 +107,7 @@ from ems.planner.explain import (
 )
 from ems.planner.load_profile import build_load_profile
 from ems.planner.projection import BatteryModel, project_energy
+from ems.planner.reason import build_decision_reason, empty_decision_reason
 from ems.planner.recovery import check_charge_completion, recover_if_needed
 from ems.planner.rule_based import plan_rule_based
 from ems.planner.strategy import HysteresisState

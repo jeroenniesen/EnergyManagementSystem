@@ -311,7 +311,8 @@ def build_decision_reason(
     validator_code, validator_message = _top_unsafe_code(validation)
     validation_ok = True
     if validation is not None:
-        validation_ok = bool(getattr(validation, "ok", getattr(validation, "status", "") != "unsafe"))
+        default_ok = getattr(validation, "status", "") != "unsafe"
+        validation_ok = bool(getattr(validation, "ok", default_ok))
 
     dwell = decision_outcome == "dwell"
     cap_reached = decision_outcome == "cap_reached"
