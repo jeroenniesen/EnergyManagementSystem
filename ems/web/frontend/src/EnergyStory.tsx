@@ -149,4 +149,16 @@ export type BatteryPlanData = {
   provenance?: PlanProvenance;
   /** B-74 / #84 — always present on a live API; optional here for older mocks. */
   reason?: BatteryPlanReason;
+  /** B-63 / #88 — calibrated-band chance the battery covers tonight's evening peak. */
+  evening_peak_coverage?: {
+    probability: number | null;
+    available: boolean;
+    label: string;
+    reason: string;
+    calibrated: boolean;
+    scenarios_covering: number;
+    scenarios_total: number;
+    peak_kwh_expected: number | null;
+    available_kwh: number | null;
+  };
 };

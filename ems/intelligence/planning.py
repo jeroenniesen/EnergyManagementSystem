@@ -1,7 +1,8 @@
 """Probabilistic planning inputs for the adaptive battery planner.
 
 This is the first executable slice of E-08:
-- B-63: preserve solar forecast bands as named planning scenarios.
+- B-63: preserve solar forecast bands as named planning scenarios, calibrated from historical
+  forecast error when evidence is available (#88).
 - B-64: turn the learned household load profile into per-slot planning demand.
 - B-65: select a risk policy before delegating to the deterministic adaptive planner.
 
@@ -14,6 +15,12 @@ from dataclasses import dataclass, replace
 from datetime import datetime
 from enum import StrEnum
 
+from ems.intelligence.bands import (
+    BandCalibration,
+    apply_solar_calibration,
+    calibrate_bands,
+    load_band_w,
+)
 from ems.planner.adaptive import AdaptiveConfig, plan_adaptive
 from ems.planner.load_profile import LoadProfile
 from ems.planner.schedule import Plan
@@ -74,25 +81,42 @@ def build_planning_scenarios(
     load_profile: LoadProfile,
     *,
     horizon_slots: int,
-    load_uncertainty: float = 0.15,
+    load_uncertainty: float | None = None,
+    calibration: BandCalibration | None = None,
 ) -> tuple[PlanningScenario, PlanningScenario, PlanningScenario]:
     """Build pessimistic/expected/optimistic planning scenarios from solar bands + learned load.
 
-    Pessimistic = low solar (P10) + higher load. Expected = P50 + learned load. Optimistic = high
-    solar (P90) + lower load. This is intentionally simple and deterministic; historical forecast
-    error can later tune the band widths without changing the planner interface.
-    """
-    limited = forecast[: max(0, horizon_slots)]
-    uncertainty = max(0.0, load_uncertainty)
+    Pessimistic = low solar + higher load. Expected = P50 + learned load. Optimistic = high solar
+    + lower load.
 
-    expected_load = {slot.start: load_profile.expected_w(slot.start) for slot in limited}
+    When ``calibration`` is provided (from historical forecast residuals), solar P10/P90 are
+    rewritten around P50 and load half-width uses the calibrated uncertainty — unless the hour
+    already has an empirical ``LoadProfile.uncertainty`` band (PR #65 / B-64), which wins per slot.
+    Without calibration, provider P10/P50/P90 are kept and ``load_uncertainty`` defaults to 0.15.
+    """
+    cal = calibration or calibrate_bands()
+    uncertainty = (
+        float(load_uncertainty) if load_uncertainty is not None else cal.load_uncertainty
+    )
+    uncertainty = max(0.0, uncertainty)
+    calibrated_forecast = apply_solar_calibration(forecast, cal)
+    limited = calibrated_forecast[: max(0, horizon_slots)]
+
+    expected_load: dict[datetime, float] = {}
+    high_load: dict[datetime, float] = {}
+    low_load: dict[datetime, float] = {}
+    for slot in limited:
+        low, exp, high = load_band_w(load_profile, slot.start, uncertainty=uncertainty)
+        expected_load[slot.start] = exp
+        high_load[slot.start] = high
+        low_load[slot.start] = low
+
     return (
         PlanningScenario(
             name="pessimistic",
             confidence=0.10,
             solar_w_by={slot.start: max(0.0, slot.p10_w) for slot in limited},
-            load_w_by={start: watts * (1.0 + uncertainty)
-                       for start, watts in expected_load.items()},
+            load_w_by=high_load,
         ),
         PlanningScenario(
             name="expected",
@@ -104,8 +128,7 @@ def build_planning_scenarios(
             name="optimistic",
             confidence=0.90,
             solar_w_by={slot.start: max(0.0, slot.p90_w) for slot in limited},
-            load_w_by={start: max(0.0, watts * (1.0 - uncertainty))
-                       for start, watts in expected_load.items()},
+            load_w_by=low_load,
         ),
     )
 
@@ -119,7 +142,8 @@ def plan_risk_aware_adaptive(
     load_profile: LoadProfile,
     cfg: AdaptiveConfig,
     policy: RiskPolicy = RiskPolicy.EXPECTED,
-    load_uncertainty: float = 0.15,
+    load_uncertainty: float | None = None,
+    calibration: BandCalibration | None = None,
 ) -> Plan:
     """Plan against the scenario selected by `policy`, then delegate to the adaptive planner.
 
@@ -131,6 +155,7 @@ def plan_risk_aware_adaptive(
         load_profile,
         horizon_slots=cfg.horizon_slots,
         load_uncertainty=load_uncertainty,
+        calibration=calibration,
     )
     scenario_name = _POLICY_TO_SCENARIO[policy]
     scenario = next(s for s in scenarios if s.name == scenario_name)

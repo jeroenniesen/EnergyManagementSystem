@@ -27,6 +27,7 @@ from starlette.background import BackgroundTask
 from ems import export_package as expkg
 from ems.alerts import data_quality, derive_alerts, prices_ok_for_quality
 from ems.analysis import (
+    _matched_slots,
     forecast_error,
     recommend_solar_confidence,
 )
@@ -94,6 +95,10 @@ from ems.finance import (
 )
 from ems.freshness import FreshnessTracker
 from ems.http_client import HttpRuntime, make_bytes_post, make_cloud_cover_get
+from ems.intelligence import (
+    estimate_evening_peak_coverage,
+    unavailable_peak_coverage,
+)
 from ems.load_model import reconstruct
 from ems.notify import Notifier
 from ems.planner.charge_need import compute_charge_need, ui_charge_need
@@ -3530,6 +3535,92 @@ def create_app(
             "intelligence": _intelligence_status(),
         }
 
+    async def _evening_peak_coverage_for_plan(
+        fp: dict, planned_grid_topup_kwh: float,
+    ) -> dict:
+        """B-63 / #88: calibrated-band probability that the battery covers tonight's evening peak.
+
+        Reuses the load profile already learned inside `_forward_projection` (via
+        `_load_profile_box`) and the same 14-day canonical solar matches as forecast skill.
+        Fail-soft: any gather error returns an unavailable contract rather than breaking
+        `/api/battery-plan`. Never writes to the battery.
+        """
+        try:
+            if solar_forecast is None:
+                return unavailable_peak_coverage(reason="No solar forecast is available.")
+            profile = _load_profile_box.get("profile")
+            if profile is None:
+                return unavailable_peak_coverage(
+                    reason="Household load profile is not ready yet.",
+                )
+            now = fp["now"]
+            solar_matched: list[tuple[float, float, float, float]] = []
+            load_pairs: list[tuple[float, float]] = []
+            if store is not None:
+                start = now - timedelta(days=14)
+                limit = history_row_cap(
+                    (now - start).total_seconds(), _sample_cadence_seconds(),
+                )
+                raw = await store.raw_between(
+                    start.isoformat(), now.isoformat(), limit=limit,
+                )
+                forecasts = await store.ledger_canonical_between(
+                    "solar", start.isoformat(), now.isoformat(),
+                )
+                solar_matched = _matched_slots(forecasts, raw)
+                # In-sample relative errors vs the learned profile — enough to widen load bands
+                # from observed hour-of-day scatter until a dedicated held-out path is wired here.
+                for row in raw:
+                    ts = row.get("ts")
+                    if not isinstance(ts, str):
+                        continue
+                    try:
+                        dt = datetime.fromisoformat(ts)
+                        if dt.tzinfo is None:
+                            dt = dt.replace(tzinfo=UTC)
+                        if dt >= now:
+                            continue
+                        grid = float(row.get("grid_power_w", 0.0))
+                        solar = float(row.get("solar_power_w", 0.0))
+                        battery = float(row.get("battery_power_w", 0.0))
+                        ev = float(row.get("ev_power_w", 0.0))
+                        house = grid + solar + battery
+                        actual = house - (ev if ev > 200.0 else 0.0)
+                        if actual < 0.0:
+                            continue
+                        predicted = float(profile.expected_w(dt))
+                        load_pairs.append((actual, predicted))
+                    except (TypeError, ValueError):
+                        continue
+            # Only count planned top-up that lands before tonight's first evening-peak hour.
+            charge_before = 0.0
+            deadline = fp.get("deadline")
+            if deadline is not None and planned_grid_topup_kwh > 0:
+                local_deadline = deadline.astimezone(site_tz)
+                if local_deadline.hour <= 17:
+                    charge_before = float(planned_grid_topup_kwh)
+            coverage = estimate_evening_peak_coverage(
+                list(solar_forecast.slots()),
+                profile,
+                now=now,
+                tz=site_tz,
+                current_soc_pct=float(fp["current_soc"]),
+                reserve_soc_pct=float(settings_cache["battery.min_reserve_soc"]),
+                usable_kwh=float(settings_cache["battery.usable_kwh"]),
+                round_trip_efficiency=float(
+                    settings_cache.get("planner.round_trip_efficiency", 0.90),
+                ),
+                planned_charge_kwh_before_peak=charge_before,
+                solar_matched=solar_matched,
+                load_actual_predicted=load_pairs,
+            )
+            return coverage.to_dict()
+        except Exception:
+            _log.warning("B-63: evening peak coverage failed (non-fatal)", exc_info=True)
+            return unavailable_peak_coverage(
+                reason="Peak coverage could not be estimated from current evidence.",
+            )
+
     @app.get("/api/battery-plan")
     async def battery_plan() -> dict:
         """Homeowner-facing battery confidence contract: the answer first, then graph proof.
@@ -3577,6 +3668,10 @@ def create_app(
                     summary="No current plan or forecast is available.",
                     failsafe=quality == "unsafe",
                 ).to_dict(),
+                # B-63 / #88: stable empty peak-coverage contract when there is no plan yet.
+                "evening_peak_coverage": unavailable_peak_coverage(
+                    reason="No current plan or forecast is available.",
+                ),
             }
 
         projected, price_by, need, deadline = (
@@ -3686,6 +3781,7 @@ def create_app(
         plan_tgt = fp.get("plan_target_soc")
         target = round(plan_tgt if plan_tgt is not None else need.target_soc_pct, 1)
         reserve = round(reserve_pct, 1)
+        peak_coverage = await _evening_peak_coverage_for_plan(fp, grid_charge_kwh)
         return {
             "status": status,
             "summary": summary,
@@ -3715,6 +3811,8 @@ def create_app(
             "confidence": confidence,
             "provenance": _plan_provenance(fp["strategy"]),
             "reason": structured.to_dict(),
+            # B-63 / #88: calibrated-band probability that tonight's evening peak is covered.
+            "evening_peak_coverage": peak_coverage,
         }
 
     async def _past_story(reserve_pct: float) -> dict:
