@@ -93,9 +93,41 @@ const DEFAULT_PROVENANCE = {
 
 // B-68: a minimal-but-complete /api/battery-plan payload, so a test can mock just the
 // `confidence` or `provenance` block without hand-building the rest of the contract.
+function batteryPlanReasonFixture(overrides: Record<string, unknown> = {}) {
+  return {
+    chosen_window: {
+      start: "2026-01-15T02:00:00+00:00",
+      end: "2026-01-15T04:00:00+00:00",
+      intent: "grid_charge_to_target",
+      label: "cheap charge window",
+      eur_per_kwh_min: 0.08,
+      eur_per_kwh_max: 0.12,
+    },
+    rejected_alternative: {
+      intent: "allow_self_consumption",
+      reason: "self-consumption only — rejected",
+      window_start: null,
+      window_end: null,
+    },
+    expected_benefit: { eur: 1.25, summary: "Estimated net benefit ≈ €1.25 for this plan." },
+    risk: { margin_eur_per_kwh: 0.02, summary: "Risk margin €0.020/kWh." },
+    safety_constraint: { code: null, message: null, action: "proceed" },
+    gates: {
+      validator_code: null,
+      failsafe: false,
+      dwell: false,
+      cap_reached: false,
+      unconfirmed: false,
+    },
+    summary: "Grid top-up is planned to reach the battery target.",
+    ...overrides,
+  };
+}
+
 function batteryPlanFixture(
   confidence: { level: string; reasons: string[] },
   provenance: Record<string, unknown> = DEFAULT_PROVENANCE,
+  extras: Record<string, unknown> = {},
 ) {
   const now = new Date();
   return {
@@ -123,6 +155,8 @@ function batteryPlanFixture(
     },
     confidence,
     provenance,
+    reason: batteryPlanReasonFixture(),
+    ...extras,
   };
 }
 
@@ -1075,6 +1109,126 @@ test.describe("EMS dashboard", () => {
     await expect(line).toContainText("scenario intelligence: not active yet");
     await expect(page.getByTestId("plan-story-legend")).toBeVisible();
     await expect(page.getByTestId("story-footer")).toBeVisible();
+  });
+
+  // --- B-33 / #85 slice 1: waarom bij laden / vasthouden / ontladen ---------------------------
+  test.describe("#85 slice 1 battery action waarom", () => {
+    async function mockWhyPlan(
+      page: Page,
+      action: string,
+      reasonOverrides: Record<string, unknown> = {},
+      statusDryRun = true,
+    ) {
+      await routePlanStory(page);
+      await page.route("**/api/dashboard", (route) => route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          status: {
+            dry_run: statusDryRun,
+            dry_run_cause: statusDryRun ? "config_dry_run" : null,
+            dry_run_reason: statusDryRun ? "config.yaml forces dry_run" : null,
+            dev_mode: "mock",
+            soc_pct: 55,
+            grid_power_w: 1000,
+            solar_power_w: 0,
+            battery_power_w: 0,
+            house_load_w: 1000,
+            non_ev_load_w: 1000,
+          },
+          freshness: { battery: "fresh" },
+          alerts: { data_quality: "complete", alerts: [] },
+        }),
+      }));
+      await page.route("**/api/battery-plan", (route) => route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify(batteryPlanFixture(
+          { level: "high", reasons: ["Fresh data."] },
+          DEFAULT_PROVENANCE,
+          {
+            current_action: action,
+            reason: batteryPlanReasonFixture(reasonOverrides),
+          },
+        )),
+      }));
+    }
+
+    test("explanation is hidden until one tap on Waarom?", async ({ page }) => {
+      await mockWhyPlan(page, "grid_charge");
+      await page.goto("/");
+      const block = page.getByTestId("battery-action-why");
+      await expect(block).toBeVisible();
+      await expect(page.getByTestId("battery-action-label")).toContainText("Laden van het net");
+      const details = page.getByTestId("battery-action-why-details");
+      await expect(details).not.toHaveAttribute("open", "");
+      // Closed: the why text must not be the default visible explanation.
+      await expect(page.getByTestId("battery-action-why-text")).not.toBeVisible();
+      await page.getByTestId("battery-action-why-toggle").click();
+      await expect(details).toHaveAttribute("open", "");
+      await expect(page.getByTestId("battery-action-why-text")).toBeVisible();
+      await expect(page.getByTestId("battery-action-why-text")).toContainText("€1.25");
+    });
+
+    test("dry-run wording uses zou, not doet", async ({ page }) => {
+      await mockWhyPlan(page, "grid_charge");
+      await page.goto("/");
+      await page.getByTestId("battery-action-why-toggle").click();
+      const text = page.getByTestId("battery-action-why-text");
+      await expect(text).toContainText("zou");
+      await expect(text).not.toContainText(/doet/i);
+    });
+
+    test("hold shows euro benefit from reason after one tap", async ({ page }) => {
+      await mockWhyPlan(page, "hold", {
+        chosen_window: {
+          start: null, end: null, intent: "hold_reserve", label: "hold-reserve window",
+          eur_per_kwh_min: null, eur_per_kwh_max: null,
+        },
+        expected_benefit: { eur: 0.55, summary: "Estimated net benefit ≈ €0.55." },
+      });
+      await page.goto("/");
+      await expect(page.getByTestId("battery-action-label")).toContainText("Vasthouden");
+      await page.getByTestId("battery-action-why-toggle").click();
+      await expect(page.getByTestId("battery-action-why-text")).toContainText("€0.55");
+    });
+
+    test("discharge shows euro benefit from reason after one tap", async ({ page }) => {
+      await mockWhyPlan(page, "discharge", {
+        chosen_window: {
+          start: null, end: null, intent: "discharge_for_load",
+          label: "expensive discharge window",
+          eur_per_kwh_min: 0.4, eur_per_kwh_max: 0.5,
+        },
+        expected_benefit: { eur: 0.9, summary: "Estimated net benefit ≈ €0.90." },
+      });
+      await page.goto("/");
+      await expect(page.getByTestId("battery-action-label")).toContainText("Ontladen");
+      await page.getByTestId("battery-action-why-toggle").click();
+      await expect(page.getByTestId("battery-action-why-text")).toContainText("€0.90");
+      await expect(page.getByTestId("battery-action-why-text")).toContainText("zou");
+    });
+
+    test("honest safety wording when reason has no positive euro benefit", async ({ page }) => {
+      await mockWhyPlan(page, "hold", {
+        expected_benefit: { eur: 0, summary: "No positive arbitrage benefit." },
+      });
+      await page.goto("/");
+      await page.getByTestId("battery-action-why-toggle").click();
+      await expect(page.getByTestId("battery-action-why-text")).toContainText(/veiligheid/i);
+    });
+
+    test("slice-1 waarom is absent for paused (out of scope)", async ({ page }) => {
+      await mockWhyPlan(page, "paused");
+      await page.goto("/");
+      await expect(page.getByTestId("battery-action-why")).toHaveCount(0);
+    });
+
+    test("slice-1 waarom is absent for self_consume (out of scope)", async ({ page }) => {
+      await mockWhyPlan(page, "self_consume");
+      await page.goto("/");
+      await expect(page.getByTestId("battery-action-why")).toHaveCount(0);
+    });
   });
 
   test("car advice stays in its own card instead of adding a sixth chart layer", async ({ page }) => {

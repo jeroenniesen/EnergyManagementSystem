@@ -2621,6 +2621,47 @@ body {
 
 /* The live snapshot folded onto the story card (B-32): saved / battery / mode as one quiet row of
    label·value triplets, separated by a hairline from the plan above it. */
+/* B-33 / #85 slice 1: "Waarom?" disclosure for the current battery action. Not a
+   data-density-kind="disclosure" — that budget is reserved for home-more. */
+.battery-action-why {
+  margin: 0 0 12px;
+  padding: 10px 14px;
+  border-radius: 10px;
+  background: var(--panel);
+  border: 1px solid var(--line);
+}
+.battery-action-why-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 8px 16px;
+}
+.battery-action-why-label {
+  font-size: 0.9rem;
+  font-weight: 600;
+  color: var(--text);
+}
+.battery-action-why-details {
+  font-size: 0.85rem;
+  color: var(--muted);
+}
+.battery-action-why-toggle {
+  cursor: pointer;
+  color: var(--accent-text);
+  list-style: none;
+}
+.battery-action-why-toggle::-webkit-details-marker { display: none; }
+.battery-action-why-toggle:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+.battery-action-why-text {
+  margin: 8px 0 0;
+  max-width: 42rem;
+  line-height: 1.4;
+  color: var(--text);
+}
+
 .battery-plan-provenance {
   margin: 8px 0 0;
   font-size: 0.76rem;

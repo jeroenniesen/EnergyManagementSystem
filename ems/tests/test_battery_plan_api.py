@@ -402,11 +402,15 @@ def test_battery_plan_reason_comes_from_plan_with_recovery_path(tmp_path, monkey
         }
 
 
-def test_battery_plan_reason_gate_flags_default_false_without_controller(tmp_path):
-    # Default test app has no ModeController — dwell/cap/unconfirmed stay factual False.
+def test_battery_plan_reason_exposes_fields_for_web_waarom_slice1(tmp_path):
+    """#85 slice 1 consumes expected_benefit + safety_constraint from this reason object."""
     with TestClient(_app(tmp_path)) as c:
         body = c.get("/api/battery-plan").json()
-    gates = body["reason"]["gates"]
-    assert gates["dwell"] is False
-    assert gates["cap_reached"] is False
-    assert gates["unconfirmed"] is False
+
+    reason = body["reason"]
+    assert "eur" in reason["expected_benefit"]
+    assert "summary" in reason["expected_benefit"]
+    assert reason["safety_constraint"]["action"] in {"paused", "proceed"}
+    assert body["current_action"] in {
+        "grid_charge", "solar_charge", "hold", "discharge", "self_consume", "paused",
+    }

@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 
 import { AcceptInvite } from "./AcceptInvite";
 import { apiFetch, setUnauthorizedHandler } from "./auth";
+import { BatteryActionWhy } from "./BatteryActionWhy";
 import { type Battery, BatteryChips } from "./BatteryChips";
 import { EnergyDistribution } from "./EnergyDistribution";
 import type {
@@ -10,6 +11,7 @@ import type {
   PlanConfidence,
   SavedToday,
 } from "./EnergyStory";
+import type { DecisionReason } from "./decisionWhy";
 import { Icon, type IconName } from "./icons";
 import { DeviceHealthStrip } from "./DeviceHealth";
 import {
@@ -1054,6 +1056,13 @@ export function App() {
             onOpenFinance={() => navigate("insights")}
             onOpenBattery={batteryHasDetail ? () => setBatteryDetail("soc") : undefined}
             freshness={tileFreshness}
+          />
+          {/* B-33 / #85 slice 1: waarom voor laden / vasthouden / ontladen — één tik, niet
+              standaard open. Tekst uit battery-plan `reason` (#84), dry-run zegt "zou". */}
+          <BatteryActionWhy
+            currentAction={batteryPlan?.current_action}
+            reason={batteryPlan?.reason as DecisionReason | undefined}
+            dryRun={status?.dry_run ?? true}
           />
           <PlanStory
             story={story?.window === "next" ? story : null}
