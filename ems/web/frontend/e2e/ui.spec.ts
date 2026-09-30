@@ -1306,6 +1306,14 @@ test.describe("EMS dashboard", () => {
           ],
           decision_reason: batteryPlanReasonFixture({
             summary: "Diagnostics reason summary for export parity.",
+            // Gates row only renders when at least one chip is active — exercise that path.
+            gates: {
+              validator_code: null,
+              failsafe: false,
+              dwell: true,
+              cap_reached: false,
+              unconfirmed: false,
+            },
           }),
         }),
       }));
@@ -1314,10 +1322,11 @@ test.describe("EMS dashboard", () => {
       await expect(page.getByTestId("decision-reason-summary")).toContainText(
         "Diagnostics reason summary",
       );
-      await expect(page.getByTestId("decision-reason-safety")).toContainText(/proceed/i);
+      await expect(page.getByTestId("decision-reason-safety")).toContainText(/held by dwell/i);
       await expect(page.getByTestId("decision-reason-rejected")).toBeVisible();
       await expect(page.getByTestId("decision-reason-risk")).toBeVisible();
       await expect(page.getByTestId("decision-reason-gates")).toBeVisible();
+      await expect(page.getByTestId("decision-reason-gates")).toContainText("dwell");
     });
   });
 
