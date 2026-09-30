@@ -46,6 +46,21 @@ def overall_status(checks: list[Check]) -> str:
     return max((c.status for c in checks), key=lambda s: _RANK[s], default="ok")
 
 
+def _battery_check(*, battery_ok: bool, p1_paired: bool, battery_present: bool) -> Check:
+    """Battery-driver readiness: ok vs missing driver vs probe failure (do not conflate)."""
+    if battery_ok:
+        detail = f"probed; P1 {'paired' if p1_paired else 'not paired'}"
+        status = "ok"
+    elif battery_present:
+        # Driver object exists but probe() raised — Indevolt IP/power/network, not "no driver".
+        detail = "battery unreachable — probe failed (check Indevolt IP and power)"
+        status = "warn"
+    else:
+        detail = "no battery driver — read-only"
+        status = "warn"
+    return Check("battery", "Battery driver", status, detail)
+
+
 def build_diagnostics(
     *,
     dev_mode: str,
@@ -63,6 +78,7 @@ def build_diagnostics(
     freshness: dict[str, str] | None = None,
     ev_guard_blind: bool = False,
     dry_run_block_reason: str | None = None,
+    battery_present: bool | None = None,
 ) -> list[Check]:
     dq_status = {"complete": "ok", "degraded": "warn", "price_fallback": "warn"}.get(
         data_quality, "fail"
@@ -72,6 +88,10 @@ def build_diagnostics(
         mode_detail = f"{mode_detail} — {dry_run_block_reason}"
     # Config override of an ON operational toggle is warn so System shows why writes stay off.
     mode_status = "warn" if dry_run_block_reason else "ok"
+    # Default: if battery_ok then a driver was present; if not, treat as missing unless told.
+    # Callers that probe and catch failures must pass battery_present=True so we don't mislabel
+    # "unreachable" as "no battery driver".
+    present = battery_ok if battery_present is None else battery_present
     checks = [
         Check("mode", "Run mode", mode_status, mode_detail),
         Check("history_store", "History store", "ok" if store_ok else "fail",
@@ -82,9 +102,9 @@ def build_diagnostics(
               "price source configured" if prices_ok else "no price source — arbitrage disabled"),
         Check("forecast", "Solar forecast", "ok" if forecast_ok else "warn",
               "forecast source configured" if forecast_ok else "no forecast source"),
-        Check("battery", "Battery driver", "ok" if battery_ok else "warn",
-              (f"probed; P1 {'paired' if p1_paired else 'not paired'}") if battery_ok
-              else "no battery driver — read-only"),
+        _battery_check(
+            battery_ok=battery_ok, p1_paired=p1_paired, battery_present=present,
+        ),
         Check("data_quality", "Data quality", dq_status, data_quality),
         Check("planner", "Planner", "ok" if plan_ok else "warn",
               "producing a plan" if plan_ok else "no plan (missing prices?)"),

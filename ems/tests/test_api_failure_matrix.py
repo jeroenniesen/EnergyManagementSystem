@@ -61,6 +61,32 @@ def test_unavailable_sources_are_reported_not_raised():
         assert body.overall in {"warn", "degraded", "error", "fail", None}
         battery_check = next(check for check in body.checks or [] if check["key"] == "battery")
         assert battery_check["status"] == "warn"
+        # Probe raised → unreachable, NEVER the false "no battery driver" label.
+        assert "unreachable" in battery_check["detail"]
+        assert "no battery driver" not in battery_check["detail"]
+
+
+def test_diagnostics_uses_controller_driver_when_battery_kwarg_none():
+    """Live wiring used to pass battery=None while ModeController held the Indevolt driver —
+    System then always showed 'no battery driver' even with live SoC (father false positive)."""
+    from ems.control.mode_controller import ModeController
+    from ems.lifecycle import Lifecycle
+    from ems.sources.battery import MockBatteryDriver
+
+    driver = MockBatteryDriver()
+    controller = ModeController(driver, Lifecycle(dry_run=True), dry_run=True)
+    app = create_app(
+        MockSource(), dry_run=True, dev_mode="live", battery=None, controller=controller,
+    )
+    with TestClient(app) as client:
+        battery_check = next(
+            c for c in client.get("/api/diagnostics").json()["checks"] if c["key"] == "battery"
+        )
+        assert battery_check["status"] == "ok"
+        assert "probed" in battery_check["detail"]
+        body = client.get("/api/battery").json()
+        assert body["current_mode"] == "auto"
+        assert body["capabilities"]["p1_paired"] is True
 
 
 def test_reads_require_auth_when_enabled(tmp_path):

@@ -2706,11 +2706,18 @@ def create_app(
                 settings_ok = False
         # probe() is a SYNC, possibly-networked call — run it off the event loop and guard it so an
         # unreachable battery shows as a warn check, not a 500 (and never blocks the loop).
+        # Prefer create_app `battery`; fall back to controller.driver so live installs do not
+        # report "no battery driver" when ModeController already holds the Indevolt driver.
+        driver = battery
+        if driver is None and controller is not None:
+            driver = getattr(controller, "driver", None)
         p1_paired = False
-        battery_ok = battery is not None
-        if battery is not None:
+        battery_present = driver is not None
+        battery_ok = False
+        if driver is not None:
             try:
-                p1_paired = (await asyncio.to_thread(battery.probe)).p1_paired
+                p1_paired = (await asyncio.to_thread(driver.probe)).p1_paired
+                battery_ok = True
             except Exception:
                 _log.debug("diagnostics: battery probe failed (non-fatal)", exc_info=True)
                 battery_ok = False
@@ -2732,6 +2739,7 @@ def create_app(
             data_quality=dq,
             prices_ok=prices_ok, forecast_ok=forecast_ok,
             battery_ok=battery_ok, p1_paired=p1_paired,
+            battery_present=battery_present,
             plan_ok=plan_ok,
             store_ok=store_ok, settings_store_ok=settings_ok,
             auth_required=_effective_web_token() is not None,
@@ -3048,10 +3056,19 @@ def create_app(
             "label": topology.label,
             "configured": topology.is_configured,
         }
-        if battery is None:
+        # Same fallback as diagnostics: live wiring used to leave `battery` None while the
+        # ModeController held the real Indevolt driver — expose that driver here too.
+        batt = battery
+        if batt is None and controller is not None:
+            batt = getattr(controller, "driver", None)
+        if batt is None:
             return out
-        cap = battery.probe()
-        out["current_mode"] = battery.current_mode()
+        try:
+            cap = batt.probe()
+            out["current_mode"] = batt.current_mode()
+        except Exception:
+            _log.debug("/api/battery: probe failed (non-fatal)", exc_info=True)
+            return out
         out["capabilities"] = {
             "services": list(cap.services),
             "energy_mode_options": list(cap.energy_mode_options),

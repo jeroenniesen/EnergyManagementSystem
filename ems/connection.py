@@ -274,6 +274,9 @@ def build_wiring(
     over the UI ``control.operational`` toggle (#136 / #171). Mock/demo prices can never lift
     dry_run (#126). Default ``force_dry_run=True`` is fail-safe if a caller omits the kwarg.
 
+    ``battery_endpoint`` is the **same** object as ``controller_driver`` so `/api/battery` and
+    diagnostics probe the control path (live used to set it to None → false "no battery driver").
+
     Optional ``config_dry_run`` (raw ``cfg.dry_run``) refines the startup WARNING so config vs
     Settings watch-only can be told apart; when omitted, logging uses the combined force flag.
 
@@ -398,11 +401,15 @@ def build_wiring(
             controller_driver = IndevoltBatteryDriver(ip, armed=False, **driver_kwargs)
         else:
             controller_driver = MockBatteryDriver()
-        dev_mode, battery_endpoint = "live", None
+        # Same driver object for /api/battery + diagnostics probe AND the ModeController writer.
+        # Previously live set battery_endpoint=None, so System always showed "no battery driver"
+        # even when Indevolt was wired and controlling (energy-expert review #10 / father UI).
+        dev_mode, battery_endpoint = "live", controller_driver
     else:
         source = MockSource()
         controller_driver = MockBatteryDriver()
-        dev_mode, battery_endpoint = "mock", MockBatteryDriver()
+        # One mock instance for both the battery read surface and the controller (not two).
+        dev_mode, battery_endpoint = "mock", controller_driver
 
     # Prices via the adapter registry (#114 slice a). Live Tibber when use_live_prices + token;
     # otherwise the credential-free mock. Fail-safe incomplete Tibber → mock.
