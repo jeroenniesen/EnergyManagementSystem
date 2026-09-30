@@ -3157,6 +3157,36 @@ test.describe("EMS dashboard", () => {
     await expect(page.getByTestId("notif-item-2")).toContainText("Backup failed");
     await expect(page.getByTestId("notif-item-1")).toContainText("An earlier failure.");
 
+    // Stacking regression: the frosted .hero used to paint over the panel (topbar isolation
+    // trapped z-index). Sample an overlap point — the panel must win elementFromPoint.
+    const hero = page.getByTestId("home-state");
+    if (await hero.count()) {
+      await expect(hero).toBeVisible();
+      const stacking = await page.evaluate(() => {
+        const panelEl = document.querySelector<HTMLElement>("[data-testid='notif-panel']");
+        const heroEl = document.querySelector<HTMLElement>("[data-testid='home-state']");
+        if (!panelEl || !heroEl) return { ok: false, reason: "missing" };
+        const pr = panelEl.getBoundingClientRect();
+        const hr = heroEl.getBoundingClientRect();
+        const x = Math.min(pr.right, hr.right) - 8;
+        const y = Math.max(pr.top, hr.top) + 12;
+        const overlaps =
+          x >= pr.left && x <= pr.right && y >= pr.top && y <= pr.bottom &&
+          x >= hr.left && x <= hr.right && y >= hr.top && y <= hr.bottom;
+        if (!overlaps) {
+          // No geometric overlap (e.g. narrow layout) — still require the topbar context above hero.
+          const topbarZ = Number.parseInt(getComputedStyle(
+            document.querySelector(".topbar") as Element,
+          ).zIndex, 10);
+          return { ok: Number.isFinite(topbarZ) && topbarZ > 0, reason: "no-overlap", topbarZ };
+        }
+        const hit = document.elementFromPoint(x, y);
+        const panelWins = !!hit && !!hit.closest("[data-testid='notif-panel']");
+        return { ok: panelWins, reason: panelWins ? "panel-on-top" : "hero-on-top", x, y };
+      });
+      expect(stacking.ok, `notif panel stacking: ${JSON.stringify(stacking)}`).toBe(true);
+    }
+
     // Esc closes the dropdown.
     await page.keyboard.press("Escape");
     await expect(panel).toHaveCount(0);
