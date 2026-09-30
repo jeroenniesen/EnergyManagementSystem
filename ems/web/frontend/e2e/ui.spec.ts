@@ -1311,10 +1311,13 @@ test.describe("EMS dashboard", () => {
       }));
       await page.goto("/#manage/system");
       await expect(page.getByTestId("diagnostics-decision-reason")).toBeVisible();
-      await expect(page.getByTestId("diagnostics-reason-summary")).toContainText(
+      await expect(page.getByTestId("decision-reason-summary")).toContainText(
         "Diagnostics reason summary",
       );
-      await expect(page.getByTestId("diagnostics-reason-safety")).toContainText("proceed");
+      await expect(page.getByTestId("decision-reason-safety")).toContainText(/proceed/i);
+      await expect(page.getByTestId("decision-reason-rejected")).toBeVisible();
+      await expect(page.getByTestId("decision-reason-risk")).toBeVisible();
+      await expect(page.getByTestId("decision-reason-gates")).toBeVisible();
     });
   });
 

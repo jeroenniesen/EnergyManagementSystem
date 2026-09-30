@@ -599,6 +599,15 @@ def validation_summary(
         safety = reason.get("safety_constraint") or {}
         benefit = reason.get("expected_benefit") or {}
         chosen = reason.get("chosen_window") or {}
+        alt = reason.get("rejected_alternative") or {}
+        risk = reason.get("risk") or {}
+        gates = reason.get("gates") or {}
+        gate_bits = []
+        if gates.get("validator_code"):
+            gate_bits.append(f"validator={gates['validator_code']}")
+        for g in ("failsafe", "dwell", "cap_reached", "unconfirmed"):
+            if gates.get(g):
+                gate_bits.append(g)
         reason_lines = [
             "",
             "Decision reason (same object as /api/battery-plan)",
@@ -606,7 +615,10 @@ def validation_summary(
             f"  Safety action:  {safety.get('action') or '—'}"
             + (f" ({safety.get('code')})" if safety.get("code") else ""),
             f"  Chosen window:  {chosen.get('label') or chosen.get('intent') or '—'}",
+            f"  Rejected alt:   {alt.get('reason') or '—'}",
             f"  Expected €:     {benefit.get('eur') if benefit.get('eur') is not None else '—'}",
+            f"  Risk:           {risk.get('summary') or '—'}",
+            f"  Gates:          {', '.join(gate_bits) if gate_bits else 'none'}",
         ]
     lines = [
         "EMS export — validation summary",

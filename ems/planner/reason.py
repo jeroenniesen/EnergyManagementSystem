@@ -170,14 +170,15 @@ def format_reason_log_line(reason: dict[str, Any] | DecisionReason) -> str:
     benefit = d.get("expected_benefit") or {}
     chosen = d.get("chosen_window") or {}
     gates = d.get("gates") or {}
+    summary = str(d.get("summary") or "-").replace("\n", " ").strip()
     bits = [
         f"action={safety.get('action') or '-'}",
-        f"summary={d.get('summary') or '-'}",
+        f"summary={summary!r}",
     ]
     if chosen.get("intent"):
         bits.append(f"window={chosen.get('intent')}")
     if chosen.get("label"):
-        bits.append(f"label={chosen.get('label')}")
+        bits.append(f"label={chosen.get('label')!r}")
     eur = benefit.get("eur")
     if eur is not None:
         bits.append(f"benefit_eur={eur}")

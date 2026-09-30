@@ -1,5 +1,5 @@
 // B-33 / #85 slice 1: disclosure that shows a 1–2 sentence "waarom" for the current
-// battery action (laden / vasthouden / ontladen) after one tik. Hidden by default.
+// battery action (laden / vasthouden / ontladen) after one tap. Hidden by default.
 // B-74 / #84 slice 2: same disclosure also renders the structured reason fields so web,
 // logs and diagnostics tell one story from the /api/battery-plan reason object.
 import { DecisionReasonDetails } from "./DecisionReasonDetails";

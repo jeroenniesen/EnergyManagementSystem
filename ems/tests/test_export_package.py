@@ -406,6 +406,9 @@ def test_validation_summary_includes_decision_reason_section():
     assert "cheap charge window" in text
     assert "0.85" in text
     assert "proceed" in text
+    assert "Rejected alt:" in text
+    assert "Risk:" in text
+    assert "Gates:" in text
 
 
 # ---- validation_summary + _forecast_skill_lines: the solar_confidence advisory suggestion ----

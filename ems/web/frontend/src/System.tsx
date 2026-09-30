@@ -1,6 +1,8 @@
 import { useEffect, useState } from "react";
 
 import { apiFetch } from "./auth";
+import { DecisionReasonDetails } from "./DecisionReasonDetails";
+import type { DecisionReason } from "./decisionWhy";
 import {
   HEALTH_ROW_LABEL,
   HEALTH_STATUS,
@@ -52,19 +54,7 @@ type Diag = {
   recorder?: { clamped_samples: number } | null;
   control_loop?: ControlLoopCounters | null;
   // B-74 / #84 slice 2: same DecisionReason object as /api/battery-plan `reason`.
-  decision_reason?: {
-    summary?: string;
-    chosen_window?: { label?: string | null; intent?: string | null } | null;
-    expected_benefit?: { eur?: number | null; summary?: string } | null;
-    safety_constraint?: { action?: string; code?: string | null; message?: string | null };
-    gates?: {
-      validator_code?: string | null;
-      failsafe?: boolean;
-      dwell?: boolean;
-      cap_reached?: boolean;
-      unconfirmed?: boolean;
-    };
-  } | null;
+  decision_reason?: DecisionReason | null;
 };
 type IncidentRollup = {
   total: number;
@@ -689,33 +679,7 @@ export function SystemView({
             Same structured reason as the dashboard and the export-package manifest
             (<code>decision_reason</code>).
           </p>
-          <p data-testid="diagnostics-reason-summary">
-            {diag.decision_reason.summary || "—"}
-          </p>
-          {diag.decision_reason.chosen_window && (
-            <p data-testid="diagnostics-reason-window">
-              Window:{" "}
-              {diag.decision_reason.chosen_window.label
-                || diag.decision_reason.chosen_window.intent
-                || "—"}
-            </p>
-          )}
-          {diag.decision_reason.expected_benefit && (
-            <p data-testid="diagnostics-reason-benefit">
-              Expected benefit:{" "}
-              {typeof diag.decision_reason.expected_benefit.eur === "number"
-                ? `€${diag.decision_reason.expected_benefit.eur.toFixed(2)}`
-                : diag.decision_reason.expected_benefit.summary || "—"}
-            </p>
-          )}
-          {diag.decision_reason.safety_constraint && (
-            <p data-testid="diagnostics-reason-safety">
-              Safety: {diag.decision_reason.safety_constraint.action}
-              {diag.decision_reason.safety_constraint.code
-                ? ` (${diag.decision_reason.safety_constraint.code})`
-                : ""}
-            </p>
-          )}
+          <DecisionReasonDetails reason={diag.decision_reason} />
         </div>
       )}
 

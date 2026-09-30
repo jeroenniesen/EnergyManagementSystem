@@ -143,6 +143,7 @@ def test_format_reason_log_line_includes_key_facts():
     assert "action=proceed" in line
     assert "window=grid_charge_to_target" in line
     assert "benefit_eur=" in line
+    assert "summary='" in line or 'summary="' in line  # quoted so spaces don't break the line
     # Also accepts a plain dict (logs / export path).
     assert format_reason_log_line(r.to_dict()).startswith("decision.reason ")
 

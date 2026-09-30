@@ -1249,7 +1249,9 @@ def create_app(
                 # shown live per-tower on the dashboard battery card (and a non-following tower is
                 # the bug to look for on a cluster).
                 verb = "Would set" if dry_run else "Commanding"
-                structured = _decision_reason_dict(now)
+                # Plan + preview are CPU/IO bound — keep them off the event loop (same pattern as
+                # `_effective_intent` / `controller.preview` above).
+                structured = await asyncio.to_thread(_decision_reason_dict, now)
                 detail = {
                     "intent": str(intent), "desired_mode": mode, "reason": reason,
                     "override": override_active, "decided_only": True, "dry_run": dry_run,
@@ -1908,15 +1910,26 @@ def create_app(
     _active_strategy = control.active_strategy
 
     def _decision_reason_dict(now: datetime | None = None) -> dict:
-        """Same DecisionReason shape as `/api/battery-plan` `reason` (B-74 / #84 slice 2).
+        """Canonical DecisionReason dict — THE one assembler for battery-plan + diagnostics /
+        export / replay / audit (B-74 / #84 slice 2).
 
-        Built from the recovered plan + factual gate outcomes so decision / diagnostics / export /
-        audit logs tell the same story as the web UI — no parallel string schema.
+        Mirrors `/api/battery-plan` `reason` predicates: unknown SoC / missing forecast / empty
+        plan → empty paused shape (#134); validator-fail summaries use the finding text; paused
+        follows quality/validation (not a divergent `intent is None` gate). Callers must not
+        rebuild a parallel reason.
         """
         now = now or datetime.now(UTC)
         quality = _data_quality(now)
+        # Same empty gates as `_forward_projection` so dashboard + diagnostics never diverge
+        # when SoC is unknown/stale (#134) or there is no forecast/plan yet.
         pp = _current_plan()
-        if pp is None:
+        soc = _current_soc(now)
+        if (
+            pp is None
+            or solar_forecast is None
+            or not pp[2].slots
+            or soc is None
+        ):
             return empty_decision_reason(
                 summary="No current plan or forecast is available.",
                 failsafe=quality == "unsafe",
@@ -1926,6 +1939,23 @@ def create_app(
         intent, plan_reason, override_active, tgt, pw, validation, car_action = (
             _effective_intent(now)
         )
+        # Homeowner story predicates — same as /api/battery-plan (finding text on validator fail).
+        current_action = _action_from_intent(
+            plan.slots[0].intent, float(plan.slots[0].power_w or 0.0),
+        )
+        current_reason = plan_reason or "Battery is following the current plan."
+        if quality == "unsafe":
+            current_action = "paused"
+            current_reason = (
+                plan_reason or "Critical sensor, price or forecast data is stale."
+            )
+        elif validation is not None and not validation.ok:
+            current_action = "paused"
+            finding = (
+                validation.findings[0].message if validation.findings
+                else "Plan validation failed."
+            )
+            current_reason = finding
         decision_outcome: str | None = None
         unconfirmed = False
         if controller is not None and intent is not None:
@@ -1943,16 +1973,11 @@ def create_app(
             or (plan_reason is not None and "fail-safe" in plan_reason.lower())
             or (plan_reason is not None and "failsafe" in plan_reason.lower())
         )
-        paused = (
-            quality == "unsafe"
-            or (validation is not None and not validation.ok)
-            or intent is None
-        )
         return build_decision_reason(
             plan,
             price_by=price_by,
             validation=validation,
-            plan_reason=plan_reason,
+            plan_reason=current_reason,
             risk_margin_eur_per_kwh=float(
                 settings_cache.get("planner.risk_margin_eur_per_kwh", 0.02)),
             degradation_eur_per_kwh=float(
@@ -1962,9 +1987,13 @@ def create_app(
             decision_outcome=decision_outcome,
             failsafe=failsafe_active,
             unconfirmed=unconfirmed,
-            paused=paused,
-            summary=plan_reason,
+            paused=current_action == "paused",
+            summary=current_reason,
         ).to_dict()
+
+    # Wire the canonical reason into control-loop battery_decision audit rows (late bind:
+    # `_decision_reason_dict` needs the control aliases defined above).
+    control._decision_reason = _decision_reason_dict
 
     def _plan_snapshot(now: datetime) -> dict | None:
         """Plan/target history snapshot (observability-data): what the planner intended THIS
@@ -2580,12 +2609,14 @@ def create_app(
     async def decision_endpoint() -> dict:
         # What the controller would do right now, and why. An active override wins over the plan.
         if controller is None:
+            now = datetime.now(UTC)
+            # Still expose the canonical plan reason (same object as /api/battery-plan) even when
+            # there is no controller to preview a physical mode.
+            structured = await asyncio.to_thread(_decision_reason_dict, now)
             return {"intent": None, "desired_mode": None, "applied": False,
                     "outcome": "unconfigured", "reason": "no controller",
                     "plan_reason": None, "override_active": False,
-                    "decision_reason": empty_decision_reason(
-                        summary="no controller",
-                    ).to_dict()}
+                    "decision_reason": structured}
         now = datetime.now(UTC)
 
         # All the blocking/sync work (cached source/price/forecast reads + a read-only preview that
@@ -2743,7 +2774,15 @@ def create_app(
         from ems.control.loop_counters import LOOP_COUNTERS
         from ems.perf import build_perf_block
         # B-74 / #84 slice 2: structured reason on diagnostics (same object as /api/battery-plan).
-        decision_reason = await asyncio.to_thread(_decision_reason_dict, now)
+        # Guard like every other probe here — a planner exception must not 500 the System page.
+        decision_reason = None
+        try:
+            decision_reason = await asyncio.to_thread(_decision_reason_dict, now)
+        except Exception:
+            _log.debug("diagnostics: decision_reason failed (non-fatal)", exc_info=True)
+            decision_reason = empty_decision_reason(
+                summary="Decision reason unavailable.",
+            ).to_dict()
         return {
             "overall": overall_status(checks),
             "checks": [c.to_dict() for c in checks],
@@ -3768,7 +3807,7 @@ def create_app(
         totals = _uslot_totals(slots)
         recent = await _recent_actuals(fp["now"])
         grid_charge_kwh = totals["grid_charge_kwh"]
-        intent, reason, override_active, target_soc, power_w, validation, car_action = (
+        _intent, reason, _override_active, _target_soc, _power_w, validation, _car_action = (
             _effective_intent(fp["now"])
         )
 
@@ -3818,41 +3857,8 @@ def create_app(
             current_reason = reason or "Battery is following the current plan."
 
         # Factual gate outcomes from the same decide-path preview the control loop uses (#84).
-        decision_outcome: str | None = None
-        unconfirmed = False
-        if controller is not None and intent is not None:
-            car_session = car_action is not None and car_action.action == "discharge"
-            preview = controller.preview(
-                intent, fp["now"], target_soc=target_soc, power_w=power_w,
-                observed_mode=_current_mode(fp["now"]), manual=override_active,
-                priority=_car_charging(fp["now"]), car_session=car_session,
-                commitment=intent is BatteryIntent.GRID_CHARGE_TO_TARGET,
-            )
-            decision_outcome = preview.outcome
-            unconfirmed = bool(controller.last_command_unconfirmed)
-        failsafe_active = (
-            quality == "unsafe"
-            or (reason is not None and "fail-safe" in reason.lower())
-            or (reason is not None and "failsafe" in reason.lower())
-        )
-
-        structured = build_decision_reason(
-            fp.get("plan"),
-            price_by=price_by,
-            validation=validation,
-            plan_reason=current_reason,
-            risk_margin_eur_per_kwh=float(
-                settings_cache.get("planner.risk_margin_eur_per_kwh", 0.02)),
-            degradation_eur_per_kwh=float(
-                settings_cache.get("planner.degradation_eur_per_kwh", 0.05)),
-            round_trip_efficiency=float(
-                settings_cache.get("planner.round_trip_efficiency", 0.90)),
-            decision_outcome=decision_outcome,
-            failsafe=failsafe_active,
-            unconfirmed=unconfirmed,
-            paused=current_action == "paused",
-            summary=current_reason,
-        )
+        # Canonical assembler — identical object as diagnostics / export / replay / audit.
+        structured = _decision_reason_dict(fp["now"])
 
         # window_start must cover the recent ACTUAL history too, not just the forecast — otherwise
         # the actual-SoC line falls entirely left of the plotted domain (finding #2). recent is
@@ -3893,7 +3899,7 @@ def create_app(
             },
             "confidence": confidence,
             "provenance": _plan_provenance(fp["strategy"]),
-            "reason": structured.to_dict(),
+            "reason": structured,
             # B-63 / #88: calibrated-band probability that tonight's evening peak is covered.
             "evening_peak_coverage": peak_coverage,
         }

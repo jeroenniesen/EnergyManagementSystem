@@ -64,4 +64,16 @@ describe("DecisionReasonDetails (#84 slice 2)", () => {
     expect(html).toContain("stale_inputs");
     expect(html).toContain("failsafe");
   });
+
+  it("does not claim no safety hold when dwell/cap gates are active", () => {
+    const held: DecisionReason = {
+      ...REASON,
+      gates: { ...REASON.gates, dwell: true, cap_reached: true },
+    };
+    const html = renderToStaticMarkup(createElement(DecisionReasonDetails, { reason: held }));
+    expect(html).toContain("Proceed — held by dwell, daily cap");
+    expect(html).not.toContain("Proceed — no safety hold");
+    expect(html).toContain("dwell");
+    expect(html).toContain("cap reached");
+  });
 });

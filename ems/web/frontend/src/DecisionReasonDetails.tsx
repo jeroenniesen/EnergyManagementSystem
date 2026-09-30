@@ -25,6 +25,27 @@ function gateChips(gates: DecisionReason["gates"]): string[] {
   return chips;
 }
 
+function safetyLabel(
+  safety: DecisionReason["safety_constraint"],
+  gates: DecisionReason["gates"],
+): string {
+  if (safety.action === "paused") {
+    if (safety.message) {
+      return `${safety.message}${safety.code ? ` (${safety.code})` : ""}`;
+    }
+    return safety.code || "Paused safely";
+  }
+  // Dwell / cap / unconfirmed do not set action=paused — say so instead of "no safety hold".
+  const holds: string[] = [];
+  if (gates.dwell) holds.push("dwell");
+  if (gates.cap_reached) holds.push("daily cap");
+  if (gates.unconfirmed) holds.push("unconfirmed write");
+  if (holds.length > 0) {
+    return `Proceed — held by ${holds.join(", ")}`;
+  }
+  return "Proceed — no safety hold";
+}
+
 /** Structured reason detail — facts only from the DecisionReason object. */
 export function DecisionReasonDetails({
   reason,
@@ -73,7 +94,7 @@ export function DecisionReasonDetails({
           <dt>Expected benefit</dt>
           <dd>
             {typeof benefit.eur === "number" && Number.isFinite(benefit.eur)
-              ? `≈ ${eur(benefit.eur)}`
+              ? `≈ ${eur(benefit.eur)}${benefit.summary ? ` — ${benefit.summary}` : ""}`
               : benefit.summary}
           </dd>
         </div>
@@ -86,13 +107,7 @@ export function DecisionReasonDetails({
       )}
       <div className="decision-reason-row" data-testid="decision-reason-safety">
         <dt>Safety</dt>
-        <dd>
-          {safety.action === "paused"
-            ? safety.message
-              ? `${safety.message}${safety.code ? ` (${safety.code})` : ""}`
-              : safety.code || "Paused safely"
-            : "Proceed — no safety hold"}
-        </dd>
+        <dd>{safetyLabel(safety, reason.gates)}</dd>
       </div>
       {chips.length > 0 && (
         <div className="decision-reason-row" data-testid="decision-reason-gates">
