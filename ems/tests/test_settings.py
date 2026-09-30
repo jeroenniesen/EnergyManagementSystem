@@ -48,7 +48,7 @@ def test_anti_flap_control_knob_defaults():
 
 
 def test_grid_limit_setting_default():
-    """#133 / #197: watt ceiling defaults to 1×25 A; fuse choice defaults to unset (not confirmed)."""
+    """#133 / #197: watt ceiling defaults to 1×25 A; fuse defaults to unset."""
     d = defaults()
     assert d["control.grid_limit_w"] == 5750.0
     assert d["control.grid_fuse"] == "unset"
