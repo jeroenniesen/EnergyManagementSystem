@@ -133,7 +133,11 @@ body {
 
 .topbar {
   position: relative;
-  isolation: isolate; /* contain the scrim's z-index so it can sit behind the header, over the sky */
+  /* isolation contains the ::before scrim (z-index: -1) behind header chrome. z-index: 20 lifts
+     that whole stacking context above later siblings like .hero — without it, the notification
+     panel's z-index: 60 only competed inside the topbar and painted *under* the frosted hero. */
+  isolation: isolate;
+  z-index: 20;
   display: flex;
   align-items: center;
   flex-wrap: wrap;
@@ -250,12 +254,18 @@ body {
   z-index: 60;
   width: 320px;
   max-width: calc(100vw - 32px);
+  /* Opaque panel surface — never let the frosted .hero bleed through the feed. */
   background: var(--panel);
   border: 1px solid var(--line);
   border-radius: var(--radius);
   box-shadow: 0 12px 40px rgba(0, 0, 0, 0.35);
   padding: 12px;
   color: var(--text);
+  /* Keep the whole popover on-screen; the list scrolls inside when the feed is long. */
+  max-height: min(420px, calc(100dvh - 72px));
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
 }
 .notif-panel-head {
   display: flex;
@@ -263,6 +273,7 @@ body {
   justify-content: space-between;
   gap: 8px;
   margin-bottom: 8px;
+  flex: none;
 }
 .notif-mark-all { font-size: 0.72rem; padding: 4px 9px; }
 .notif-empty { color: var(--muted); font-size: 0.82rem; margin: 6px 0 2px; }
@@ -273,8 +284,10 @@ body {
   display: flex;
   flex-direction: column;
   gap: 8px;
-  max-height: 340px;
+  flex: 1 1 auto;
+  min-height: 0;
   overflow-y: auto;
+  overscroll-behavior: contain;
 }
 .notif-item {
   display: flex;
