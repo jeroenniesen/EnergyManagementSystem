@@ -1,12 +1,13 @@
-"""Structured decision-reason schema for optimization explainability (B-74 / #84 slice 1).
+"""Structured decision-reason schema for optimization explainability (B-74 / #84).
 
 Every plan decision carries the same factual object so web, iOS, logs and diagnostics can render
-one honest story later (slices 2/3). Slice 1 only defines the schema + exposes it on
-`/api/battery-plan`. Pure builders — no I/O, no device writes.
+one honest story. Slice 1 defines the schema + exposes it on `/api/battery-plan`. Slice 2 renders
+that same object in the web UI and includes it in logs / diagnostics export (no new schema).
+Slice 3 (iOS) is out of this module.
 
-The reason is assembled from the **same** recovered plan the control path acts on
-(`plan_with_recovery` / `current_plan`) plus the factual gate outcomes of the decide path
-(validator finding, failsafe, dwell, switch-cap, unconfirmed).
+Pure builders — no I/O, no device writes. The reason is assembled from the **same** recovered plan
+the control path acts on (`plan_with_recovery` / `current_plan`) plus the factual gate outcomes of
+the decide path (validator finding, failsafe, dwell, switch-cap, unconfirmed).
 """
 from __future__ import annotations
 
@@ -26,6 +27,15 @@ _SELF = BatteryIntent.ALLOW_SELF_CONSUMPTION
 # Homeowner-facing action vocabulary aligned with /api/battery-plan current_action.
 _ACTION_PAUSED = "paused"
 _ACTION_PROCEED = "proceed"
+
+# Stable top-level keys of DecisionReason.to_dict() — contract for web / logs / diagnostics (#84).
+REASON_DICT_KEYS = frozenset({
+    "chosen_window", "rejected_alternative", "expected_benefit", "risk",
+    "safety_constraint", "gates", "summary",
+})
+GATE_DICT_KEYS = frozenset({
+    "validator_code", "failsafe", "dwell", "cap_reached", "unconfirmed",
+})
 
 
 @dataclass(frozen=True)
@@ -151,6 +161,35 @@ class DecisionReason:
             "gates": self.gates.to_dict(),
             "summary": self.summary,
         }
+
+
+def format_reason_log_line(reason: dict[str, Any] | DecisionReason) -> str:
+    """One compact log line from the structured reason — same facts web/diagnostics render."""
+    d = reason.to_dict() if isinstance(reason, DecisionReason) else reason
+    safety = d.get("safety_constraint") or {}
+    benefit = d.get("expected_benefit") or {}
+    chosen = d.get("chosen_window") or {}
+    gates = d.get("gates") or {}
+    summary = str(d.get("summary") or "-").replace("\n", " ").strip()
+    bits = [
+        f"action={safety.get('action') or '-'}",
+        f"summary={summary!r}",
+    ]
+    if chosen.get("intent"):
+        bits.append(f"window={chosen.get('intent')}")
+    if chosen.get("label"):
+        bits.append(f"label={chosen.get('label')!r}")
+    eur = benefit.get("eur")
+    if eur is not None:
+        bits.append(f"benefit_eur={eur}")
+    if safety.get("code"):
+        bits.append(f"safety={safety.get('code')}")
+    if gates.get("validator_code"):
+        bits.append(f"validator={gates.get('validator_code')}")
+    for g in ("failsafe", "dwell", "cap_reached", "unconfirmed"):
+        if gates.get(g):
+            bits.append(f"{g}=1")
+    return "decision.reason " + " ".join(bits)
 
 
 def _slot_block(slots: tuple[PlanSlot, ...], intent: BatteryIntent) -> tuple[PlanSlot, ...] | None:

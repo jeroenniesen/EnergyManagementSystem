@@ -1,5 +1,8 @@
 // B-33 / #85 slice 1: disclosure that shows a 1–2 sentence "waarom" for the current
 // battery action (laden / vasthouden / ontladen) after one tap. Hidden by default.
+// B-74 / #84 slice 2: same disclosure also renders the structured reason fields so web,
+// logs and diagnostics tell one story from the /api/battery-plan reason object.
+import { DecisionReasonDetails } from "./DecisionReasonDetails";
 import {
   formatBatteryActionWhy,
   isSlice1BatteryAction,
@@ -17,21 +20,28 @@ export function BatteryActionWhy({
   reason: DecisionReason | null | undefined;
   dryRun: boolean;
 }) {
-  if (!currentAction || !isSlice1BatteryAction(currentAction)) return null;
-  const text = formatBatteryActionWhy(reason, currentAction, { dryRun });
-  if (!text) return null;
-  const action = currentAction as Slice1BatteryAction;
+  if (!reason) return null;
+
+  const slice1 = currentAction != null && isSlice1BatteryAction(currentAction);
+  const waarom = slice1
+    ? formatBatteryActionWhy(reason, currentAction, { dryRun })
+    : null;
+  const actionLabel = slice1
+    ? slice1ActionLabel(currentAction as Slice1BatteryAction)
+    : currentAction
+      ? currentAction.replace(/_/g, " ")
+      : "plan";
 
   return (
     <section
       className="battery-action-why"
       data-testid="battery-action-why"
-      data-action={action}
+      data-action={currentAction ?? "unknown"}
       data-dry-run={dryRun ? "true" : "false"}
     >
       <div className="battery-action-why-row">
         <span className="battery-action-why-label" data-testid="battery-action-label">
-          Nu: {slice1ActionLabel(action)}
+          Nu: {actionLabel}
         </span>
         <details className="battery-action-why-details" data-testid="battery-action-why-details">
           <summary
@@ -40,9 +50,12 @@ export function BatteryActionWhy({
           >
             Waarom?
           </summary>
-          <p className="battery-action-why-text" data-testid="battery-action-why-text">
-            {text}
-          </p>
+          {waarom && (
+            <p className="battery-action-why-text" data-testid="battery-action-why-text">
+              {waarom}
+            </p>
+          )}
+          <DecisionReasonDetails reason={reason} />
         </details>
       </div>
     </section>

@@ -1,6 +1,8 @@
 import { useEffect, useState } from "react";
 
 import { apiFetch } from "./auth";
+import { DecisionReasonDetails } from "./DecisionReasonDetails";
+import type { DecisionReason } from "./decisionWhy";
 import {
   HEALTH_ROW_LABEL,
   HEALTH_STATUS,
@@ -51,6 +53,8 @@ type Diag = {
   storage?: { backup?: BackupState | null } | null;
   recorder?: { clamped_samples: number } | null;
   control_loop?: ControlLoopCounters | null;
+  // B-74 / #84 slice 2: same DecisionReason object as /api/battery-plan `reason`.
+  decision_reason?: DecisionReason | null;
 };
 type IncidentRollup = {
   total: number;
@@ -665,6 +669,17 @@ export function SystemView({
             We collect more history before calling a forecast dependable. Detailed measurements
             are available in the export package.
           </p>
+        </div>
+      )}
+
+      {diag.decision_reason && (
+        <div className="decision-reason-panel" data-testid="diagnostics-decision-reason">
+          <span className="metric-label">Current decision reason</span>
+          <p className="settings-group-hint">
+            Same structured reason as the dashboard and the export-package manifest
+            (<code>decision_reason</code>).
+          </p>
+          <DecisionReasonDetails reason={diag.decision_reason} />
         </div>
       )}
 

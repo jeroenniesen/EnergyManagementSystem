@@ -481,6 +481,10 @@ class ControlService:
             safety=self._safety,
             validate_plan=self._validate_plan_obj,
         )
+        # B-74 / #84 slice 2: optional canonical DecisionReason builder (wired from api.py after
+        # create_app aliases exist). When set, control-loop battery_decision audit rows carry the
+        # same object as /api/battery-plan `reason`.
+        self._decision_reason: Callable[[datetime], dict] | None = None
 
     # --- coalesced live reads / config builders / strategy resolution (B-46 stage 2) -------------
     # Moved verbatim from api.py's create_app closures. Kept here because their primary caller is
@@ -1242,11 +1246,36 @@ class ControlService:
         records: list[dict] = []
         self._tick_outcome: str | None = None
         try:
-            records = self._control_tick_body(now)
+            records = self._enrich_decision_reason(now, self._control_tick_body(now))
             return records
         finally:
             latency_ms = (time.perf_counter() - t0) * 1000.0
             self._observe_cycle_counters(now, records, latency_ms=latency_ms)
+
+    def _enrich_decision_reason(self, now: datetime, records: list[dict]) -> list[dict]:
+        """Attach the canonical DecisionReason to control-loop battery_decision details (#84 s2).
+
+        Only rows with a decision `outcome` (command-sent / dwell / cap / unconfirmed / …) get the
+        object — cluster-drift / car-session event rows stay as before. Fail-soft: a reason-builder
+        exception never blocks the tick.
+        """
+        if not records or self._decision_reason is None:
+            return records
+        try:
+            structured = self._decision_reason(now)
+        except Exception:
+            _log.debug("decision_reason for audit failed (non-fatal)", exc_info=True)
+            return records
+        for rec in records:
+            detail = rec.get("detail")
+            if not isinstance(detail, dict):
+                continue
+            if detail.get("outcome") is None:
+                continue
+            if "decision_reason" in detail:
+                continue
+            detail["decision_reason"] = structured
+        return records
 
     def _observe_cycle_counters(
         self, now: datetime, records: list[dict], *, latency_ms: float,

@@ -408,6 +408,9 @@ health check of production operation. All timestamps are **UTC, ISO-8601**. All 
   same breakdown restricted to the trailing 7 days that `last_7_days` already counts (the same
   windowing the System page's dashboard panel uses, so its headline and its by-type rows always
   describe the same period).
+  `manifest.decision_reason` is the structured optimization reason (B-74 / #84) — the SAME object
+  `/api/battery-plan` exposes as `reason` and `/api/diagnostics` as `decision_reason` (chosen
+  window, rejected alternative, expected benefit, risk, safety constraint, gate outcomes).
   `manifest.ev` carries the config needed to replay the charging algorithm against
   `ev_sessions.csv`: the weekly `schedule`, `car_id`, `battery_kwh`, `charger_kw`,
   `charge_efficiency`, `advice_enabled`, and the manual `soc_anchor` (`{"pct", "ts"}` or `null` if
@@ -590,6 +593,33 @@ def validation_summary(
     by_type_7d = incidents.get("by_type_last_7_days") or {}
     by_type_7d_text = ", ".join(f"{k}={v}" for k, v in by_type_7d.items()) if by_type_7d else "none"
     saved = "—" if saved_total_eur is None else f"€{saved_total_eur:.2f}"
+    reason = validation.get("decision_reason") or {}
+    reason_lines: list[str] = []
+    if reason:
+        safety = reason.get("safety_constraint") or {}
+        benefit = reason.get("expected_benefit") or {}
+        chosen = reason.get("chosen_window") or {}
+        alt = reason.get("rejected_alternative") or {}
+        risk = reason.get("risk") or {}
+        gates = reason.get("gates") or {}
+        gate_bits = []
+        if gates.get("validator_code"):
+            gate_bits.append(f"validator={gates['validator_code']}")
+        for g in ("failsafe", "dwell", "cap_reached", "unconfirmed"):
+            if gates.get(g):
+                gate_bits.append(g)
+        reason_lines = [
+            "",
+            "Decision reason (same object as /api/battery-plan)",
+            f"  Summary:        {reason.get('summary') or '—'}",
+            f"  Safety action:  {safety.get('action') or '—'}"
+            + (f" ({safety.get('code')})" if safety.get("code") else ""),
+            f"  Chosen window:  {chosen.get('label') or chosen.get('intent') or '—'}",
+            f"  Rejected alt:   {alt.get('reason') or '—'}",
+            f"  Expected €:     {benefit.get('eur') if benefit.get('eur') is not None else '—'}",
+            f"  Risk:           {risk.get('summary') or '—'}",
+            f"  Gates:          {', '.join(gate_bits) if gate_bits else 'none'}",
+        ]
     lines = [
         "EMS export — validation summary",
         f"Generated: {generated_at}   App version: {app_version}",
@@ -623,6 +653,7 @@ def validation_summary(
         # exactly the trust bug this labelling fixes.
         f"  By type (full window):   {by_type_text}",
         f"  By type (last 7 days):   {by_type_7d_text}",
+        *reason_lines,
         *_forecast_skill_lines(forecast_skill, solar_confidence_advice),
         *_prediction_accuracy_lines(plan_execution_error, load_baseline_error),
         *_ev_charging_lines(ev_price_adherence),

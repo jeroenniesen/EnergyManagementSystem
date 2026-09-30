@@ -1218,16 +1218,115 @@ test.describe("EMS dashboard", () => {
       await expect(page.getByTestId("battery-action-why-text")).toContainText(/veiligheid/i);
     });
 
-    test("slice-1 waarom is absent for paused (out of scope)", async ({ page }) => {
+    test("slice-1 waarom sentence is absent for paused; structured reason still shows (#84 s2)", async ({ page }) => {
       await mockWhyPlan(page, "paused");
       await page.goto("/");
-      await expect(page.getByTestId("battery-action-why")).toHaveCount(0);
+      await expect(page.getByTestId("battery-action-why")).toBeVisible();
+      await expect(page.getByTestId("battery-action-why-text")).toHaveCount(0);
+      await page.getByTestId("battery-action-why-toggle").click();
+      await expect(page.getByTestId("decision-reason-details")).toBeVisible();
     });
 
-    test("slice-1 waarom is absent for self_consume (out of scope)", async ({ page }) => {
+    test("slice-1 waarom sentence is absent for self_consume; structured reason still shows (#84 s2)", async ({ page }) => {
       await mockWhyPlan(page, "self_consume");
       await page.goto("/");
-      await expect(page.getByTestId("battery-action-why")).toHaveCount(0);
+      await expect(page.getByTestId("battery-action-why")).toBeVisible();
+      await expect(page.getByTestId("battery-action-why-text")).toHaveCount(0);
+      await page.getByTestId("battery-action-why-toggle").click();
+      await expect(page.getByTestId("decision-reason-details")).toBeVisible();
+    });
+  });
+
+  // --- B-74 / #84 slice 2: structured reason in web + diagnostics ----------------------------
+  test.describe("#84 slice 2 structured reason web + diagnostics", () => {
+    test("Waarom disclosure shows structured reason fields from battery-plan", async ({ page }) => {
+      await routePlanStory(page);
+      await page.route("**/api/dashboard", (route) => route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          status: {
+            dry_run: true, dry_run_cause: "config_dry_run",
+            dry_run_reason: "config.yaml forces dry_run",
+            dev_mode: "mock", soc_pct: 55,
+            grid_power_w: 1000, solar_power_w: 0, battery_power_w: 0,
+            house_load_w: 1000, non_ev_load_w: 1000,
+          },
+          freshness: { battery: "fresh" },
+          alerts: { data_quality: "complete", alerts: [] },
+        }),
+      }));
+      await page.route("**/api/battery-plan", (route) => route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify(batteryPlanFixture(
+          { level: "high", reasons: ["Fresh data."] },
+          DEFAULT_PROVENANCE,
+          {
+            current_action: "grid_charge",
+            reason: batteryPlanReasonFixture({
+              summary: "Charging in the cheap night window.",
+              rejected_alternative: {
+                intent: "allow_self_consumption",
+                reason: "self-consumption only — rejected for this charge window",
+                window_start: null,
+                window_end: null,
+              },
+            }),
+          },
+        )),
+      }));
+      await page.goto("/");
+      await page.getByTestId("battery-action-why-toggle").click();
+      const details = page.getByTestId("decision-reason-details");
+      await expect(details).toBeVisible();
+      await expect(page.getByTestId("decision-reason-summary")).toContainText("cheap night window");
+      await expect(page.getByTestId("decision-reason-chosen")).toBeVisible();
+      await expect(page.getByTestId("decision-reason-rejected")).toContainText("self-consumption");
+      await expect(page.getByTestId("decision-reason-benefit")).toBeVisible();
+      await expect(page.getByTestId("decision-reason-safety")).toContainText(/proceed/i);
+    });
+
+    test("System diagnostics panel renders decision_reason from /api/diagnostics", async ({ page }) => {
+      await page.route("**/api/diagnostics", (route) => route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          overall: "ok",
+          checks: [
+            { key: "mode", label: "Run mode", status: "ok", detail: "mock, dry-run on" },
+            { key: "history_store", label: "History store", status: "ok", detail: "reachable" },
+            { key: "settings_store", label: "Settings store", status: "ok", detail: "reachable" },
+            { key: "prices", label: "Electricity prices", status: "ok", detail: "ok" },
+            { key: "forecast", label: "Solar forecast", status: "ok", detail: "ok" },
+            { key: "battery", label: "Battery driver", status: "ok", detail: "probed" },
+            { key: "data_quality", label: "Data quality", status: "ok", detail: "complete" },
+            { key: "planner", label: "Planner", status: "ok", detail: "producing a plan" },
+            { key: "auth", label: "Write protection", status: "ok", detail: "open" },
+          ],
+          decision_reason: batteryPlanReasonFixture({
+            summary: "Diagnostics reason summary for export parity.",
+            // Gates row only renders when at least one chip is active — exercise that path.
+            gates: {
+              validator_code: null,
+              failsafe: false,
+              dwell: true,
+              cap_reached: false,
+              unconfirmed: false,
+            },
+          }),
+        }),
+      }));
+      await page.goto("/#manage/system");
+      await expect(page.getByTestId("diagnostics-decision-reason")).toBeVisible();
+      await expect(page.getByTestId("decision-reason-summary")).toContainText(
+        "Diagnostics reason summary",
+      );
+      await expect(page.getByTestId("decision-reason-safety")).toContainText(/held by dwell/i);
+      await expect(page.getByTestId("decision-reason-rejected")).toBeVisible();
+      await expect(page.getByTestId("decision-reason-risk")).toBeVisible();
+      await expect(page.getByTestId("decision-reason-gates")).toBeVisible();
+      await expect(page.getByTestId("decision-reason-gates")).toContainText("dwell");
     });
   });
 

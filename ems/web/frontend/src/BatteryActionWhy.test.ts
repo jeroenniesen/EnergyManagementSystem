@@ -29,7 +29,7 @@ const REASON: DecisionReason = {
 };
 
 describe("BatteryActionWhy", () => {
-  it("renders nothing for non-slice-1 actions", () => {
+  it("still shows structured reason details for non-slice-1 actions (#84 slice 2)", () => {
     const html = renderToStaticMarkup(
       createElement(BatteryActionWhy, {
         currentAction: "paused",
@@ -37,7 +37,11 @@ describe("BatteryActionWhy", () => {
         dryRun: true,
       }),
     );
-    expect(html).toBe("");
+    expect(html).toContain('data-testid="battery-action-why"');
+    expect(html).toContain('data-testid="decision-reason-details"');
+    expect(html).toContain("cheap charge window");
+    // No Dutch waarom sentence for paused (that stays #85 slice 1 only).
+    expect(html).not.toContain('data-testid="battery-action-why-text"');
   });
 
   it("hides the explanation text until the details disclosure is opened (SSR closed)", () => {
@@ -54,6 +58,7 @@ describe("BatteryActionWhy", () => {
     // Closed <details> still contains the paragraph in markup, but the summary is the only
     // always-visible control — e2e asserts the open-state interaction.
     expect(html).toContain('data-testid="battery-action-why-text"');
+    expect(html).toContain('data-testid="decision-reason-details"');
     expect(html).toMatch(/zou.*laden/i);
     expect(html).toContain("€0.85");
     expect(html.toLowerCase()).not.toMatch(/\bdoet\b/);
