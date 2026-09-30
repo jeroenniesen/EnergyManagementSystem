@@ -2683,6 +2683,55 @@ body {
   color: var(--text);
 }
 
+/* B-74 / #84 slice 2: structured reason rows under the waarom sentence / System panel. */
+.decision-reason-details {
+  margin: 10px 0 0;
+  display: grid;
+  gap: 6px;
+  max-width: 42rem;
+}
+.decision-reason-row {
+  display: grid;
+  grid-template-columns: 9.5rem 1fr;
+  gap: 8px 12px;
+  font-size: 0.8rem;
+  line-height: 1.4;
+}
+.decision-reason-row dt {
+  color: var(--muted);
+  font-weight: 600;
+}
+.decision-reason-row dd {
+  margin: 0;
+  color: var(--text);
+}
+.decision-reason-gates {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 6px;
+}
+.decision-reason-chip {
+  font-size: 0.72rem;
+  padding: 2px 7px;
+  border-radius: 6px;
+  background: var(--panel-2);
+  border: 1px solid var(--line);
+  color: var(--muted);
+}
+.decision-reason-panel {
+  margin: 0 0 18px;
+  padding: 12px 14px;
+  border-radius: 10px;
+  background: var(--panel);
+  border: 1px solid var(--line);
+}
+.decision-reason-panel p {
+  margin: 6px 0 0;
+  font-size: 0.85rem;
+  color: var(--text);
+  line-height: 1.4;
+}
+
 .battery-plan-provenance {
   margin: 8px 0 0;
   font-size: 0.76rem;

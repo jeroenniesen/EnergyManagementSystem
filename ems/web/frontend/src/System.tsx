@@ -51,6 +51,20 @@ type Diag = {
   storage?: { backup?: BackupState | null } | null;
   recorder?: { clamped_samples: number } | null;
   control_loop?: ControlLoopCounters | null;
+  // B-74 / #84 slice 2: same DecisionReason object as /api/battery-plan `reason`.
+  decision_reason?: {
+    summary?: string;
+    chosen_window?: { label?: string | null; intent?: string | null } | null;
+    expected_benefit?: { eur?: number | null; summary?: string } | null;
+    safety_constraint?: { action?: string; code?: string | null; message?: string | null };
+    gates?: {
+      validator_code?: string | null;
+      failsafe?: boolean;
+      dwell?: boolean;
+      cap_reached?: boolean;
+      unconfirmed?: boolean;
+    };
+  } | null;
 };
 type IncidentRollup = {
   total: number;
@@ -665,6 +679,43 @@ export function SystemView({
             We collect more history before calling a forecast dependable. Detailed measurements
             are available in the export package.
           </p>
+        </div>
+      )}
+
+      {diag.decision_reason && (
+        <div className="decision-reason-panel" data-testid="diagnostics-decision-reason">
+          <span className="metric-label">Current decision reason</span>
+          <p className="settings-group-hint">
+            Same structured reason as the dashboard and the export-package manifest
+            (<code>decision_reason</code>).
+          </p>
+          <p data-testid="diagnostics-reason-summary">
+            {diag.decision_reason.summary || "—"}
+          </p>
+          {diag.decision_reason.chosen_window && (
+            <p data-testid="diagnostics-reason-window">
+              Window:{" "}
+              {diag.decision_reason.chosen_window.label
+                || diag.decision_reason.chosen_window.intent
+                || "—"}
+            </p>
+          )}
+          {diag.decision_reason.expected_benefit && (
+            <p data-testid="diagnostics-reason-benefit">
+              Expected benefit:{" "}
+              {typeof diag.decision_reason.expected_benefit.eur === "number"
+                ? `€${diag.decision_reason.expected_benefit.eur.toFixed(2)}`
+                : diag.decision_reason.expected_benefit.summary || "—"}
+            </p>
+          )}
+          {diag.decision_reason.safety_constraint && (
+            <p data-testid="diagnostics-reason-safety">
+              Safety: {diag.decision_reason.safety_constraint.action}
+              {diag.decision_reason.safety_constraint.code
+                ? ` (${diag.decision_reason.safety_constraint.code})`
+                : ""}
+            </p>
+          )}
         </div>
       )}
 

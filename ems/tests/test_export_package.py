@@ -379,6 +379,35 @@ def test_validation_summary_includes_incidents_section():
     assert "2026-06-26T09:00:00+00:00" in text
 
 
+def test_validation_summary_includes_decision_reason_section():
+    # B-74 / #84 slice 2: plain-language export summary names the same structured reason.
+    text = validation_summary(
+        generated_at="2026-06-28T12:00:00+00:00", app_version="0.0.1",
+        window={"start": "2026-05-28T00:00:00+00:00", "end": "2026-06-28T12:00:00+00:00"},
+        counts={"raw_samples": 1}, saved_total_eur=None,
+        validation={
+            "decision_reason": {
+                "summary": "Charging in the cheap night window.",
+                "chosen_window": {
+                    "label": "cheap charge window",
+                    "intent": "grid_charge_to_target",
+                },
+                "expected_benefit": {"eur": 0.85, "summary": "ok"},
+                "safety_constraint": {"action": "proceed", "code": None, "message": None},
+                "gates": {"validator_code": None, "failsafe": False, "dwell": False,
+                          "cap_reached": False, "unconfirmed": False},
+                "rejected_alternative": None,
+                "risk": None,
+            },
+        },
+    )
+    assert "Decision reason (same object as /api/battery-plan)" in text
+    assert "Charging in the cheap night window." in text
+    assert "cheap charge window" in text
+    assert "0.85" in text
+    assert "proceed" in text
+
+
 # ---- validation_summary + _forecast_skill_lines: the solar_confidence advisory suggestion ----
 
 _FORECAST_SKILL = {
@@ -724,6 +753,10 @@ def test_manifest_carries_validation_payload_and_no_secrets(tmp_path):
     blob = json.dumps(manifest).lower()
     for leak in ("token", "secret", "_ip", "\"ip\"", "lat", "lon", "password"):
         assert leak not in blob, f"manifest leaked a sensitive key: {leak}"
+    # B-74 / #84 slice 2: structured decision reason rides along (same shape as /api/battery-plan).
+    from ems.planner.reason import GATE_DICT_KEYS, REASON_DICT_KEYS
+    assert set(manifest["decision_reason"]) == REASON_DICT_KEYS
+    assert set(manifest["decision_reason"]["gates"]) == GATE_DICT_KEYS
 
 
 def test_manifest_ev_block_shape_default_settings_and_null_soc_anchor(tmp_path):

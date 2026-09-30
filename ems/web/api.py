@@ -112,7 +112,11 @@ from ems.planner.explain import (
 )
 from ems.planner.load_profile import build_load_profile
 from ems.planner.projection import BatteryModel, project_energy
-from ems.planner.reason import build_decision_reason, empty_decision_reason
+from ems.planner.reason import (
+    build_decision_reason,
+    empty_decision_reason,
+    format_reason_log_line,
+)
 from ems.planner.recovery import check_charge_completion, recover_if_needed
 from ems.planner.rule_based import plan_rule_based
 from ems.planner.strategy import HysteresisState
@@ -1245,12 +1249,19 @@ def create_app(
                 # shown live per-tower on the dashboard battery card (and a non-following tower is
                 # the bug to look for on a cluster).
                 verb = "Would set" if dry_run else "Commanding"
+                structured = _decision_reason_dict(now)
+                detail = {
+                    "intent": str(intent), "desired_mode": mode, "reason": reason,
+                    "override": override_active, "decided_only": True, "dry_run": dry_run,
+                    # B-74 / #84 slice 2: same reason object as /api/battery-plan.
+                    "decision_reason": structured,
+                }
                 await audit_store.append(
                     now.isoformat(), "battery_decision",
                     f"{verb} battery → {mode} — {reason}",
-                    {"intent": str(intent), "desired_mode": mode, "reason": reason,
-                     "override": override_active, "decided_only": True, "dry_run": dry_run},
+                    detail,
                 )
+                _log.info("%s", format_reason_log_line(structured))
             except Exception:
                 _log.exception("decision audit failed; will retry next cycle (fail-safe)")
 
@@ -1896,6 +1907,65 @@ def create_app(
     _resolve_strategy = control.resolve_strategy
     _active_strategy = control.active_strategy
 
+    def _decision_reason_dict(now: datetime | None = None) -> dict:
+        """Same DecisionReason shape as `/api/battery-plan` `reason` (B-74 / #84 slice 2).
+
+        Built from the recovered plan + factual gate outcomes so decision / diagnostics / export /
+        audit logs tell the same story as the web UI — no parallel string schema.
+        """
+        now = now or datetime.now(UTC)
+        quality = _data_quality(now)
+        pp = _current_plan()
+        if pp is None:
+            return empty_decision_reason(
+                summary="No current plan or forecast is available.",
+                failsafe=quality == "unsafe",
+            ).to_dict()
+        _n, prices, plan = pp
+        price_by = {p.start: p.eur_per_kwh for p in prices}
+        intent, plan_reason, override_active, tgt, pw, validation, car_action = (
+            _effective_intent(now)
+        )
+        decision_outcome: str | None = None
+        unconfirmed = False
+        if controller is not None and intent is not None:
+            car_session = car_action is not None and car_action.action == "discharge"
+            preview = controller.preview(
+                intent, now, target_soc=tgt, power_w=pw,
+                observed_mode=_current_mode(now), manual=override_active,
+                priority=_car_charging(now), car_session=car_session,
+                commitment=intent is BatteryIntent.GRID_CHARGE_TO_TARGET,
+            )
+            decision_outcome = preview.outcome
+            unconfirmed = bool(controller.last_command_unconfirmed)
+        failsafe_active = (
+            quality == "unsafe"
+            or (plan_reason is not None and "fail-safe" in plan_reason.lower())
+            or (plan_reason is not None and "failsafe" in plan_reason.lower())
+        )
+        paused = (
+            quality == "unsafe"
+            or (validation is not None and not validation.ok)
+            or intent is None
+        )
+        return build_decision_reason(
+            plan,
+            price_by=price_by,
+            validation=validation,
+            plan_reason=plan_reason,
+            risk_margin_eur_per_kwh=float(
+                settings_cache.get("planner.risk_margin_eur_per_kwh", 0.02)),
+            degradation_eur_per_kwh=float(
+                settings_cache.get("planner.degradation_eur_per_kwh", 0.05)),
+            round_trip_efficiency=float(
+                settings_cache.get("planner.round_trip_efficiency", 0.90)),
+            decision_outcome=decision_outcome,
+            failsafe=failsafe_active,
+            unconfirmed=unconfirmed,
+            paused=paused,
+            summary=plan_reason,
+        ).to_dict()
+
     def _plan_snapshot(now: datetime) -> dict | None:
         """Plan/target history snapshot (observability-data): what the planner intended THIS
         cycle — the same strategy/plan/intent/SoC computation /api/replay exposes, condensed to
@@ -2512,7 +2582,10 @@ def create_app(
         if controller is None:
             return {"intent": None, "desired_mode": None, "applied": False,
                     "outcome": "unconfigured", "reason": "no controller",
-                    "plan_reason": None, "override_active": False}
+                    "plan_reason": None, "override_active": False,
+                    "decision_reason": empty_decision_reason(
+                        summary="no controller",
+                    ).to_dict()}
         now = datetime.now(UTC)
 
         # All the blocking/sync work (cached source/price/forecast reads + a read-only preview that
@@ -2524,7 +2597,8 @@ def create_app(
                 return None, {"intent": None, "desired_mode": None, "applied": False,
                               "outcome": "no_plan", "reason": "no plan slot for now",
                               "plan_reason": None, "override_active": False,
-                              "car_charging": car_charging}
+                              "car_charging": car_charging,
+                              "decision_reason": _decision_reason_dict(now)}
             # preview() is read-only — a GET must never write to the battery or mutate counters.
             # Pass the coalesced observed mode so this poll doesn't read battery mode every cycle.
             # car_session keeps the previewed mode honest (DISCHARGE, not AUTO) in a car session.
@@ -2547,6 +2621,9 @@ def create_app(
         explained = await _explain(
             reason, {"intent": str(intent), "desired_mode": str(d.desired_mode)}
         )
+        # B-74 / #84 slice 2: structured reason alongside the legacy string fields (same object as
+        # /api/battery-plan) so web advanced/decision and logs can render one story.
+        structured = await asyncio.to_thread(_decision_reason_dict, now)
         return {
             "intent": d.intent,
             "desired_mode": d.desired_mode,
@@ -2556,6 +2633,7 @@ def create_app(
             "plan_reason": reason,
             "plan_reason_explained": explained["text"],
             "explanation_source": explained["source"],
+            "decision_reason": structured,
             "override_active": override_active,
             # Surfaced so the dashboard can show "car charging — battery held".
             "car_charging": car_charging,
@@ -2664,6 +2742,8 @@ def create_app(
                 }
         from ems.control.loop_counters import LOOP_COUNTERS
         from ems.perf import build_perf_block
+        # B-74 / #84 slice 2: structured reason on diagnostics (same object as /api/battery-plan).
+        decision_reason = await asyncio.to_thread(_decision_reason_dict, now)
         return {
             "overall": overall_status(checks),
             "checks": [c.to_dict() for c in checks],
@@ -2674,6 +2754,7 @@ def create_app(
             "perf": build_perf_block(),
             # Thin soak counters (#179) — diagnostics UI / structured logs only (no /metrics).
             "control_loop": LOOP_COUNTERS.snapshot(),
+            "decision_reason": decision_reason,
         }
 
     @app.get("/api/charge-need")
@@ -3045,7 +3126,9 @@ def create_app(
                 export_model=str(settings_cache.get("prices.export_price_model", "net_metering")),
             )],
             "decision": {"intent": str(intent) if intent else None, "reason": dreason,
-                         "override_active": override_active, "target_soc": tgt},
+                         "override_active": override_active, "target_soc": tgt,
+                         # B-74 / #84 slice 2: structured reason (same as /api/battery-plan).
+                         "decision_reason": _decision_reason_dict(now)},
         }
 
     @app.post("/api/plan-preview")
@@ -4733,6 +4816,7 @@ def create_app(
         audit_auth=_audit_auth,
         is_supervised=_is_supervised,
         restart_pending=_restart_pending,
+        decision_reason=_decision_reason_dict,
     )
     async def _application_finance_window(start, end, now_local):
         return await _finance_window(start, end, now_local) if store is not None else []

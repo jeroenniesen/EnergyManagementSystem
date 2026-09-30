@@ -128,3 +128,28 @@ def test_none_plan_returns_paused_empty_reason():
     assert r["chosen_window"] is None
     assert r["safety_constraint"]["action"] == "paused"
     assert r["summary"] == "gone"
+
+
+def test_format_reason_log_line_includes_key_facts():
+    from ems.planner.reason import format_reason_log_line
+
+    r = build_decision_reason(
+        _charge_plan(),
+        price_by={NOW: 0.10, NOW + SLOT: 0.11},
+        risk_margin_eur_per_kwh=0.02,
+    )
+    line = format_reason_log_line(r)
+    assert line.startswith("decision.reason ")
+    assert "action=proceed" in line
+    assert "window=grid_charge_to_target" in line
+    assert "benefit_eur=" in line
+    # Also accepts a plain dict (logs / export path).
+    assert format_reason_log_line(r.to_dict()).startswith("decision.reason ")
+
+
+def test_reason_dict_keys_constant_matches_to_dict():
+    from ems.planner.reason import GATE_DICT_KEYS, REASON_DICT_KEYS
+
+    r = empty_decision_reason().to_dict()
+    assert set(r) == REASON_DICT_KEYS
+    assert set(r["gates"]) == GATE_DICT_KEYS

@@ -345,3 +345,5 @@ class DiagnosticsResponse(APIResponseModel):
     recorder: RecorderHealth | None = None
     perf: PerformanceMetrics | None = None
     control_loop: ControlLoopCounters | None = None
+    # B-74 / #84 slice 2: structured DecisionReason (same shape as /api/battery-plan `reason`).
+    decision_reason: dict[str, object] | None = None

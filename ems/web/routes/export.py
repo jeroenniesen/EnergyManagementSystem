@@ -208,6 +208,8 @@ def build_router(ctx: AppContext) -> APIRouter:
                 "advice_enabled": s.get("ev.advice_enabled"),
                 "soc_anchor": ev_soc_anchor,
             },
+            # B-74 / #84 slice 2: structured decision reason (same object as /api/battery-plan).
+            "decision_reason": ctx.decision_reason(now),
         }
         counts = {"raw_samples": len(raw), "derived_samples": len(derived),
                   "prices": len(prices), "forecasts": len(forecasts),

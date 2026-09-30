@@ -99,3 +99,6 @@ class AppContext:
     # them). Both never raise; `restart_available` is derived from is_supervised + the principal.
     is_supervised: Callable[[], bool]
     restart_pending: Callable[[], bool]
+    # B-74 / #84 slice 2: structured DecisionReason dict (same shape as /api/battery-plan `reason`)
+    # for diagnostics export / support package — never raises; empty/paused shape when no plan.
+    decision_reason: Callable[[datetime | None], dict]
