@@ -96,3 +96,21 @@ def test_per_signal_sensor_checks_from_freshness():
 def test_no_sensor_checks_without_freshness():
     keys = {c.key for c in build_diagnostics(**_facts())}
     assert not any(k.startswith("sensor.") for k in keys)
+
+
+def test_battery_missing_vs_unreachable_detail():
+    """Probe failure must not be mislabeled as 'no battery driver' (father UI false positive)."""
+    missing = next(c for c in build_diagnostics(**_facts(battery_ok=False)) if c.key == "battery")
+    assert missing.status == "warn"
+    assert missing.detail == "no battery driver — read-only"
+    unreachable = next(
+        c for c in build_diagnostics(
+            **_facts(battery_ok=False), battery_present=True,
+        ) if c.key == "battery"
+    )
+    assert unreachable.status == "warn"
+    assert "unreachable" in unreachable.detail
+    assert "no battery driver" not in unreachable.detail
+    ok = next(c for c in build_diagnostics(**_facts(battery_ok=True)) if c.key == "battery")
+    assert ok.status == "ok"
+    assert "probed" in ok.detail

@@ -101,7 +101,9 @@ def test_build_wiring_live_devices_when_configured():
     # LiveSource composes the three meters; never touches hardware at construction.
     assert dev_mode == "live"
     assert hasattr(src, "read_sample")  # LiveSource
-    assert batt_ep is None  # /api/battery null until probe; driver is the unarmed Indevolt driver
+    # Same object as controller_driver so /api/battery + diagnostics probe the live Indevolt
+    # path (previously None → false "no battery driver" while SoC reads still worked).
+    assert batt_ep is driver
     assert driver.armed is False
     assert dry_run is True  # operational not enabled -> still dry-run
 

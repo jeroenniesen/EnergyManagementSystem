@@ -297,8 +297,9 @@ const RECOVERY: Record<string, string> = {
   settings_store: "Settings can't be read or written — restart the app.",
   prices: "Live prices are unavailable, so EMS uses a fallback curve and avoids price-based charging.",
   forecast: "Solar forecast unavailable — EMS falls back to its built-in model curve.",
+  // Default when detail is absent; prefer batteryRecovery() so "no driver" ≠ "unreachable".
   battery:
-    "Battery unreachable — check the Indevolt IP and power. Mode is unknown until it reconnects; EMS cannot confirm control.",
+    "Battery driver not ready — see the detail above. EMS will not command until a live Indevolt driver probes successfully.",
   data_quality:
     "Some data is stale — see the sensor rows. EMS aims for the battery's own self-use until it returns.",
   planner: "No plan yet — usually prices/forecast are still loading. EMS holds self-consumption.",
@@ -312,6 +313,24 @@ const RECOVERY: Record<string, string> = {
     "Control & safety (and ensure config.yaml has dev.mode: live and control.dry_run: false), " +
     "then Apply & restart — or turn operational off if you meant to stay watching.",
 };
+
+/** Recovery copy for the battery check — never call a working read path "unreachable". */
+export function batteryRecovery(detail: string): string {
+  const d = detail.toLowerCase();
+  if (d.includes("unreachable") || d.includes("probe failed")) {
+    return (
+      "Battery probe failed — check the Indevolt IP and power. Mode is unknown until it " +
+      "reconnects; EMS cannot confirm control. (Live SoC from meters can still look fine.)"
+    );
+  }
+  if (d.includes("no battery driver")) {
+    return (
+      "No write-capable battery driver is wired — enable Use live devices, set the Indevolt IP " +
+      "under Settings → Battery, then Apply & restart. Sensing can still show SoC without this."
+    );
+  }
+  return RECOVERY.battery;
+}
 
 export function SystemView({
   onNavigate,
@@ -478,9 +497,9 @@ export function SystemView({
                 <span className="check-status" data-status={c.status}>
                   {STATUS_LABEL[c.status] ?? c.status}
                 </span>
-                {c.status !== "ok" && RECOVERY[c.key] && (
+                {c.status !== "ok" && (c.key === "battery" || RECOVERY[c.key]) && (
                   <span className="check-recovery" data-testid={`recovery-${c.key}`}>
-                    {RECOVERY[c.key]}
+                    {c.key === "battery" ? batteryRecovery(c.detail) : RECOVERY[c.key]}
                   </span>
                 )}
               </li>
