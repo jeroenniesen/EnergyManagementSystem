@@ -57,6 +57,23 @@ test.describe("EMS settings", () => {
     await expect(field.locator("input[type=range]")).toBeVisible();
   });
 
+  // #197: main fuse must be chosen explicitly — unset shows a hint; custom reveals watts.
+  test("main fuse picker defaults to unset with a hint; custom reveals watts", async ({ page }) => {
+    await page.goto("/");
+    await page.getByTestId("nav-manage").click();
+    await page.getByTestId("group-control").click();
+    const fuse = page.getByTestId("field-control.grid_fuse");
+    await expect(fuse).toBeVisible();
+    await expect(fuse.locator("select")).toHaveValue("unset");
+    await expect(page.getByTestId("grid-fuse-unset-hint")).toBeVisible();
+    await expect(page.getByTestId("field-control.grid_limit_w")).toHaveCount(0);
+    await fuse.locator("select").selectOption("3x25");
+    await expect(page.getByTestId("grid-fuse-unset-hint")).toHaveCount(0);
+    await expect(page.getByTestId("field-control.grid_limit_w")).toHaveCount(0);
+    await fuse.locator("select").selectOption("custom");
+    await expect(page.getByTestId("field-control.grid_limit_w")).toBeVisible();
+  });
+
   // feat/ux-batch-3 (CLAUDE.md honesty ask): a read-only info callout under solar_confidence,
   // never a fake toggle — scenario-based planning isn't live yet.
   test("a read-only scenario-intelligence callout sits under solar confidence (no fake toggle)", async ({

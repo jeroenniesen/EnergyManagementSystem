@@ -194,3 +194,33 @@ def test_site_settings_reshape_the_forecast(tmp_path):
         rotated = c.get("/api/forecast").json()["today_kwh_p50"]
     assert bigger > base
     assert rotated < bigger  # same kWp, worse orientation
+
+
+def test_grid_fuse_preset_persists_watt_ceiling(tmp_path):
+    """#197: choosing 3×25 in Settings persists fuse + 17250 W and clears the diagnostics CHECK."""
+    with TestClient(_app(tmp_path)) as c:
+        assert c.get("/api/settings").json()["values"]["control.grid_fuse"] == "unset"
+        r = c.post("/api/settings", json={"control.grid_fuse": "3x25"})
+        assert r.status_code == 200
+        vals = r.json()["values"]
+        assert vals["control.grid_fuse"] == "3x25"
+        assert vals["control.grid_limit_w"] == 17250.0
+        # Survives reload from the same DB.
+    with TestClient(_app(tmp_path)) as c2:
+        vals = c2.get("/api/settings").json()["values"]
+        assert vals["control.grid_fuse"] == "3x25"
+        assert vals["control.grid_limit_w"] == 17250.0
+        checks = c2.get("/api/diagnostics").json()["checks"]
+        assert not any(x["key"] == "grid_fuse" for x in checks)
+
+
+def test_grid_fuse_custom_persists_watts(tmp_path):
+    with TestClient(_app(tmp_path)) as c:
+        r = c.post(
+            "/api/settings",
+            json={"control.grid_fuse": "custom", "control.grid_limit_w": 20000},
+        )
+        assert r.status_code == 200
+        vals = r.json()["values"]
+        assert vals["control.grid_fuse"] == "custom"
+        assert vals["control.grid_limit_w"] == 20000.0

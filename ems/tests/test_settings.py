@@ -48,17 +48,70 @@ def test_anti_flap_control_knob_defaults():
 
 
 def test_grid_limit_setting_default():
-    """#133: configurable hoofdzekering / netlimiet — default 1×25 A @ 230 V; 0 disables."""
+    """#133 / #197: watt ceiling defaults to 1×25 A; fuse choice defaults to unset (not confirmed)."""
     d = defaults()
     assert d["control.grid_limit_w"] == 5750.0
+    assert d["control.grid_fuse"] == "unset"
     field = SETTINGS_BY_KEY["control.grid_limit_w"]
     assert field.type == "number" and field.min == 0.0 and field.unit == "W"
+    assert field.visible_when == (("control.grid_fuse", "custom"),)
+    fuse = SETTINGS_BY_KEY["control.grid_fuse"]
+    assert fuse.type == "enum"
+    assert fuse.options == ("unset", "1x25", "1x35", "3x25", "3x35", "custom")
     clean, errors = validate_settings({"control.grid_limit_w": 0})
     assert clean["control.grid_limit_w"] == 0.0 and "control.grid_limit_w" not in errors
     clean, errors = validate_settings({"control.grid_limit_w": 17250})
     assert clean["control.grid_limit_w"] == 17250.0
     _clean, errors = validate_settings({"control.grid_limit_w": -1})
     assert "control.grid_limit_w" in errors
+
+
+def test_grid_fuse_preset_sets_watt_ceiling():
+    """#197: choosing a NL preset on save also writes the matching watt ceiling."""
+    from ems.settings import GRID_FUSE_PRESET_W
+
+    for token, watts in GRID_FUSE_PRESET_W.items():
+        clean, errors = validate_settings({"control.grid_fuse": token})
+        assert errors == {}
+        assert clean["control.grid_fuse"] == token
+        assert clean["control.grid_limit_w"] == watts
+    # unset keeps the conservative schema default watts.
+    clean, errors = validate_settings({"control.grid_fuse": "unset"})
+    assert errors == {} and clean["control.grid_fuse"] == "unset"
+    assert clean["control.grid_limit_w"] == 5750.0
+    # custom leaves watts alone unless submitted with the fuse.
+    clean, errors = validate_settings({"control.grid_fuse": "custom"})
+    assert errors == {} and clean == {"control.grid_fuse": "custom"}
+    clean, errors = validate_settings(
+        {"control.grid_fuse": "custom", "control.grid_limit_w": 20000},
+    )
+    assert errors == {}
+    assert clean["control.grid_fuse"] == "custom"
+    assert clean["control.grid_limit_w"] == 20000.0
+
+
+def test_effective_settings_infers_fuse_from_stored_watts():
+    """#197: an older install that already stored watts (no fuse key) is treated as confirmed."""
+    from ems.settings import fuse_from_watts
+
+    assert fuse_from_watts(17250.0) == "3x25"
+    assert fuse_from_watts(9999.0) == "custom"
+    # Stored watts only → infer fuse; do not leave unset.
+    eff = effective_settings({"control.grid_limit_w": 17250})
+    assert eff["control.grid_fuse"] == "3x25"
+    assert eff["control.grid_limit_w"] == 17250.0
+    # Custom stored watts → custom fuse.
+    eff = effective_settings({"control.grid_limit_w": 9000})
+    assert eff["control.grid_fuse"] == "custom"
+    assert eff["control.grid_limit_w"] == 9000.0
+    # Empty store → unset (do not pretend the 5750 default was chosen).
+    eff = effective_settings({})
+    assert eff["control.grid_fuse"] == "unset"
+    assert eff["control.grid_limit_w"] == 5750.0
+    # Explicit preset in store aligns watts even if an old mismatched watt row exists.
+    eff = effective_settings({"control.grid_fuse": "3x25", "control.grid_limit_w": 5750})
+    assert eff["control.grid_fuse"] == "3x25"
+    assert eff["control.grid_limit_w"] == 17250.0
 
 
 def test_schema_json_shape():

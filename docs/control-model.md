@@ -174,7 +174,7 @@ ActionDecision:         plan_id/version, desired_intent, mapped_command, reason,
 - projected SoC never **< reserve** or **> capacity**, and reserves enough for the evening peak (≥ `evening_reserve_kwh`, §4);
 - **no action is scheduled off stale inputs** (data_quality ≠ `unsafe`);
 - the plan's mode switches fit the **remaining same-day budget** (`max_mode_switches_per_day` − the persisted `switches_today`, §7) — not just the per-day total, so a mid-day replan can't schedule switches the runtime will then refuse;
-- **grid fuse / netlimiet (#133):** for each `GRID_CHARGE_TO_TARGET` slot, `charge_power_w + expected_house_load_w` ≤ `control.grid_limit_w` (default 5750 W ≈ 1×25 A @ 230 V; 0 disables). Conservative (no solar credit); `unsafe` ⇒ hold `ALLOW_SELF_CONSUMPTION`. Mode-switch gate only — never continuous power tracking.
+- **grid fuse / netlimiet (#133 / #197):** for each `GRID_CHARGE_TO_TARGET` slot, `charge_power_w + expected_house_load_w` ≤ `control.grid_limit_w` (schema default 5750 W ≈ 1×25 A @ 230 V while `control.grid_fuse` is `unset`; 0 disables). User must confirm fuse in Settings (`1x25` / `1x35` / `3x25` / `3x35` / `custom`) — System CHECK until set. Conservative (no solar credit); `unsafe` ⇒ hold `ALLOW_SELF_CONSUMPTION`. Mode-switch gate only — never continuous power tracking.
 
 **Plan confidence & data-quality badge (36, 50):** derived from forecast age, price completeness, per-signal sensor freshness, and forecast spread (P90−P10). Low confidence downgrades the badge; `unsafe` blocks all overriding actions (→ `ALLOW_SELF_CONSUMPTION`).
 

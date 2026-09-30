@@ -2733,6 +2733,8 @@ def create_app(
             and dev_mode == "live"
             and not (settings_cache.get("meters.car_ip") or "").strip()
         )
+        # #197: fuse choice still at schema default `unset` → System CHECK (do not pretend known).
+        grid_fuse_unset = settings_cache.get("control.grid_fuse", "unset") == "unset"
         checks = build_diagnostics(
             dev_mode=dev_mode, dry_run=dry_run,
             dry_run_block_reason=dry_run_block_reason,
@@ -2746,6 +2748,7 @@ def create_app(
             identity_auth=auth_store is not None,
             freshness=freshness.snapshot(now) if freshness is not None else None,
             ev_guard_blind=ev_guard_blind,
+            grid_fuse_unset=grid_fuse_unset,
         )
         # Observability: how much is currently cached (reused instead of refetched / re-spent).
         cache_stats = None

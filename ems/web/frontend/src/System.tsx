@@ -286,7 +286,7 @@ const OVERALL_DQ: Record<string, string> = { ok: "complete", warn: "degraded", f
 const GROUPS: { title: string; match: (key: string) => boolean }[] = [
   { title: "Your home's data", match: (k) => k.startsWith("sensor.") || k === "data_quality" },
   { title: "Forecast & prices", match: (k) => k === "prices" || k === "forecast" },
-  { title: "Battery & control", match: (k) => ["battery", "mode", "planner", "auth"].includes(k) },
+  { title: "Battery & control", match: (k) => ["battery", "mode", "planner", "auth", "grid_fuse"].includes(k) },
   { title: "App storage", match: (k) => k === "history_store" || k === "settings_store" },
 ];
 const groupOf = (key: string) => GROUPS.find((g) => g.match(key))?.title ?? "Other";
@@ -312,6 +312,9 @@ const RECOVERY: Record<string, string> = {
     "Watch-only is forced while Settings → operational is ON. Turn off Watch only under " +
     "Control & safety (and ensure config.yaml has dev.mode: live and control.dry_run: false), " +
     "then Apply & restart — or turn operational off if you meant to stay watching.",
+  grid_fuse:
+    "Open Settings → Control & safety and choose your main fuse (1×25 / 1×35 / 3×25 / 3×35, or " +
+    "custom watts). Until then EMS keeps the conservative 1×25 A (5750 W) ceiling.",
 };
 
 /** Recovery copy for the battery check — never call a working read path "unreachable". */

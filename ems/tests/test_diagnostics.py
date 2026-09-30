@@ -93,6 +93,26 @@ def test_per_signal_sensor_checks_from_freshness():
     assert stale["sensor.grid"].status == "fail"
 
 
+def test_car_guard_blind_warns():
+    checks = build_diagnostics(**_facts(), ev_guard_blind=True)
+    guard = next(c for c in checks if c.key == "car_guard")
+    assert guard.status == "warn"
+    assert "EV meter" in guard.detail
+
+
+def test_grid_fuse_unset_warns():
+    """#197: unconfirmed main fuse is a System CHECK — never present 1×25 default as known."""
+    checks = build_diagnostics(**_facts(), grid_fuse_unset=True)
+    fuse = next(c for c in checks if c.key == "grid_fuse")
+    assert fuse.status == "warn"
+    assert "not confirmed" in fuse.detail
+    assert "5750" in fuse.detail
+    assert overall_status(checks) == "warn"
+    # Confirmed (flag false) → no row.
+    keys = {c.key for c in build_diagnostics(**_facts(), grid_fuse_unset=False)}
+    assert "grid_fuse" not in keys
+
+
 def test_no_sensor_checks_without_freshness():
     keys = {c.key for c in build_diagnostics(**_facts())}
     assert not any(k.startswith("sensor.") for k in keys)

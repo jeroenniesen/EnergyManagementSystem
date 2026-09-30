@@ -56,10 +56,27 @@ def test_diagnostics_fully_wired_app_is_healthy(tmp_path):
             tz=ams,
         )
     with TestClient(app) as c:
+        # #197: confirm main fuse so overall can be ok (unset fuse is a setup CHECK).
+        assert c.post("/api/settings", json={"control.grid_fuse": "3x25"}).status_code == 200
         b = c.get("/api/diagnostics").json()
     assert b["overall"] == "ok"
     store = next(x for x in b["checks"] if x["key"] == "history_store")
     assert store["status"] == "ok"
+    assert not any(x["key"] == "grid_fuse" for x in b["checks"])
+
+
+def test_diagnostics_warns_when_grid_fuse_unset(tmp_path):
+    """#197: fresh install (no fuse chosen) surfaces a System CHECK for the main fuse."""
+    db = str(tmp_path / "ems.sqlite")
+    app = create_app(
+        MockSource(), dry_run=True, dev_mode="mock", store=HistoryStore(db),
+        settings_store=SettingsStore(db),
+    )
+    with TestClient(app) as c:
+        checks = c.get("/api/diagnostics").json()["checks"]
+    fuse = next((x for x in checks if x["key"] == "grid_fuse"), None)
+    assert fuse is not None and fuse["status"] == "warn"
+    assert "not confirmed" in fuse["detail"]
 
 
 def test_diagnostics_warns_when_car_guard_is_blind(tmp_path):

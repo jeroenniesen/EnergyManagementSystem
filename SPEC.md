@@ -617,6 +617,8 @@ control:
   min_replan_interval_seconds: 600   # cap replan churn (§8.11)
   soc_deviation_replan_pct: 10       # planned-vs-actual SoC gap that triggers a replan (§8.11)
   grid_limit_w: 5750                 # main fuse / netlimiet (W); charge+house load > this → unsafe (§8.11 / #133); 0 = off
+  # Runtime twin: Settings control.grid_fuse (unset|1x25|1x35|3x25|3x35|custom) must be user-confirmed (#197);
+  # unset keeps this conservative 1×25 default and surfaces a System CHECK.
                                      # NL: 1×25A≈5750, 1×35A≈8050, 3×25A≈17250 @ 230V
 
 homeassistant:
