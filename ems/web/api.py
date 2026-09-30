@@ -1991,6 +1991,17 @@ def create_app(
             summary=current_reason,
         ).to_dict()
 
+    async def _canonical_decision_reason(now: datetime | None = None) -> dict:
+        """Same reason object as /api/battery-plan: warm the load-profile path first (#84).
+
+        `_forward_projection` fills `_load_profile_box` before the planner rebuilds; calling the
+        sync assembler alone can yield a shorter `chosen_window` when diagnostics/decision/replay
+        are hit before any forecast endpoint. Late-binds `_forward_projection` (defined below).
+        """
+        fp = await _forward_projection()
+        use = (fp["now"] if fp is not None else None) or now or datetime.now(UTC)
+        return await asyncio.to_thread(_decision_reason_dict, use)
+
     # Wire the canonical reason into control-loop battery_decision audit rows (late bind:
     # `_decision_reason_dict` needs the control aliases defined above).
     control._decision_reason = _decision_reason_dict
@@ -2612,7 +2623,7 @@ def create_app(
             now = datetime.now(UTC)
             # Still expose the canonical plan reason (same object as /api/battery-plan) even when
             # there is no controller to preview a physical mode.
-            structured = await asyncio.to_thread(_decision_reason_dict, now)
+            structured = await _canonical_decision_reason(now)
             return {"intent": None, "desired_mode": None, "applied": False,
                     "outcome": "unconfigured", "reason": "no controller",
                     "plan_reason": None, "override_active": False,
@@ -2621,6 +2632,9 @@ def create_app(
 
         # All the blocking/sync work (cached source/price/forecast reads + a read-only preview that
         # may read battery mode) runs off the event loop, so a slow device can't freeze the loop.
+        # Warm load profile first so the no_plan reason matches battery-plan (#84).
+        await _forward_projection()
+
         def _snapshot():
             car_charging = _car_charging(now)
             intent, reason, override_active, tgt, pw, val, car_action = _effective_intent(now)
@@ -2788,7 +2802,7 @@ def create_app(
         # Guard like every other probe here — a planner exception must not 500 the System page.
         decision_reason = None
         try:
-            decision_reason = await asyncio.to_thread(_decision_reason_dict, now)
+            decision_reason = await _canonical_decision_reason(now)
         except Exception:
             _log.debug("diagnostics: decision_reason failed (non-fatal)", exc_info=True)
             decision_reason = empty_decision_reason(
@@ -3137,12 +3151,14 @@ def create_app(
     )
 
     @app.get("/api/replay")
-    def replay_endpoint() -> dict:
+    async def replay_endpoint() -> dict:
         """A reproducibility bundle (energy review P2.6): the exact inputs, plan, projection,
         validation and decision behind the current state, so any surprising decision can be replayed
         offline. REDACTED — only planning knobs + non-identifying values; never IPs/tokens/location.
         Download from the System tab."""
         now = datetime.now(UTC)
+        # Warm load profile before plan/reason so the bundle matches /api/battery-plan (#84).
+        await _forward_projection()
         pp = _current_plan()
         if pp is None:
             return {"generated_at": now.isoformat(), "plan": None,
@@ -4842,7 +4858,7 @@ def create_app(
         audit_auth=_audit_auth,
         is_supervised=_is_supervised,
         restart_pending=_restart_pending,
-        decision_reason=_decision_reason_dict,
+        decision_reason=_canonical_decision_reason,
     )
     async def _application_finance_window(start, end, now_local):
         return await _finance_window(start, end, now_local) if store is not None else []

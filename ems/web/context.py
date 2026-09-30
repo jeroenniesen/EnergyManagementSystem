@@ -101,4 +101,5 @@ class AppContext:
     restart_pending: Callable[[], bool]
     # B-74 / #84 slice 2: structured DecisionReason dict (same shape as /api/battery-plan `reason`)
     # for diagnostics export / support package — never raises; empty/paused shape when no plan.
-    decision_reason: Callable[[datetime | None], dict]
+    # Async: warms the load-profile path first so chosen_window matches battery-plan.
+    decision_reason: Callable[[datetime | None], Awaitable[dict]]
