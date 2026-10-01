@@ -1081,6 +1081,14 @@ export function App() {
             onOpenBattery={batteryHasDetail ? () => setBatteryDetail("soc") : undefined}
             freshness={tileFreshness}
           />
+          {/* B-101 / B-87: PlanStory is the first major visual after tiles — Nu/Waarom and
+              evening-peak sit below the chart, not between tiles and chart. */}
+          {/* B-97: SoC / Saved live in OutcomeTiles only — PlanStory no longer repeats them. */}
+          <PlanStory
+            story={story?.window === "next" ? story : null}
+            provenance={batteryPlan?.provenance}
+            recentReview={story?.recent_review?.message ?? null}
+          />
           {/* B-33 / #85 slice 1: waarom voor laden / vasthouden / zelfconsumptie — één tik, niet
               standaard open. Tekst uit battery-plan `reason` (#84), dry-run zegt "zou". */}
           <BatteryActionWhy
@@ -1093,12 +1101,6 @@ export function App() {
           <EveningPeakCoverageCard
             coverage={batteryPlan?.evening_peak_coverage}
             heroOwnsCoveredMarker={heroOwnsEveningPeakMarker}
-          />
-          {/* B-97: SoC / Saved live in OutcomeTiles only — PlanStory no longer repeats them. */}
-          <PlanStory
-            story={story?.window === "next" ? story : null}
-            provenance={batteryPlan?.provenance}
-            recentReview={story?.recent_review?.message ?? null}
           />
         </>
       )}

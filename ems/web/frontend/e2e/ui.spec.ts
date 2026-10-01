@@ -813,6 +813,7 @@ test.describe("EMS dashboard", () => {
       await expect(page.getByTestId(id), `panel ${id} should render`).toBeVisible();
     }
     await expect(page.getByTestId("data-quality")).toHaveCount(0);
+    // B-101 / B-87: hero → tiles → PlanStory chart → More (Waarom / evening-peak after chart).
     const ordered = await Promise.all(["home-state", "outcome-tiles", "plan-story", "home-more"]
       .map((id) => page.getByTestId(id).boundingBox()));
     expect(ordered.every(Boolean)).toBe(true);
@@ -839,6 +840,85 @@ test.describe("EMS dashboard", () => {
     await expect(page.getByTestId("score-card-self_consumption")).toHaveCount(0);
     await expect(page.getByTestId("error")).toHaveCount(0);
   });
+
+  // B-101: restore B-87 order — chart immediately after tiles; Nu/Waarom + evening-peak below.
+  for (const viewport of [
+    { name: "desktop", width: 1280, height: 900 },
+    { name: "phone", width: 390, height: 844 },
+  ]) {
+    test(`B-101: ${viewport.name} PlanStory sits before Waarom and evening-peak`, async ({ page }) => {
+      await page.setViewportSize(viewport);
+      await page.route("**/api/battery-plan", (route) => route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify(batteryPlanFixture(
+          { level: "high", reasons: ["Fresh data."] },
+          DEFAULT_PROVENANCE,
+          {
+            current_action: "grid_charge",
+            evening_peak_coverage: {
+              probability: 0.667,
+              available: true,
+              label: "Evening peak may be covered (~67%)",
+              reason: "2 of 3 scenarios cover the evening peak.",
+              calibrated: true,
+              scenarios_covering: 2,
+              scenarios_total: 3,
+              peak_kwh_expected: 3.2,
+              available_kwh: 4.1,
+            },
+          },
+        )),
+      }));
+      await page.goto("/");
+      for (const id of [
+        "home-state",
+        "outcome-tiles",
+        "plan-story",
+        "battery-action-why",
+        "evening-peak-coverage",
+        "home-more",
+      ]) {
+        await expect(page.getByTestId(id), `${viewport.name} ${id}`).toBeVisible();
+      }
+      // DOM document order (not just Y) — Nu/Waarom must not park between tiles and chart.
+      const domOrder = await page.evaluate((ids) => {
+        const nodes = ids.map((id) => document.querySelector(`[data-testid="${id}"]`));
+        if (nodes.some((node) => !node)) return null;
+        return ids.map((id, index) => {
+          const node = nodes[index]!;
+          const earlier = nodes.slice(0, index);
+          return earlier.every(
+            (prev) => !!(prev!.compareDocumentPosition(node) & Node.DOCUMENT_POSITION_FOLLOWING),
+          );
+        });
+      }, [
+        "outcome-tiles",
+        "plan-story",
+        "battery-action-why",
+        "evening-peak-coverage",
+        "home-more",
+      ]);
+      expect(domOrder, `${viewport.name} DOM order`).toEqual([true, true, true, true, true]);
+      const boxes = await Promise.all([
+        "outcome-tiles",
+        "plan-story",
+        "battery-action-why",
+        "evening-peak-coverage",
+        "home-more",
+      ].map((id) => page.getByTestId(id).boundingBox()));
+      expect(boxes.every(Boolean), `${viewport.name} geometry`).toBe(true);
+      for (let i = 0; i < boxes.length - 1; i++) {
+        expect(
+          boxes[i]!.y,
+          `${viewport.name}: surface ${i} above ${i + 1}`,
+        ).toBeLessThan(boxes[i + 1]!.y);
+      }
+      // Waarom? stays one disclosure deeper — closed by default.
+      await expect(page.getByTestId("battery-action-why-details")).not.toHaveAttribute("open", "");
+      await expect(page.getByTestId("battery-action-why-toggle")).toBeVisible();
+    });
+  }
 
   test("unavailable outcomes remain em dashes and only available drill-downs are actionable", async ({ page }) => {
     const reportMock = await mockRoute(page, "**/api/report**", (route) =>
