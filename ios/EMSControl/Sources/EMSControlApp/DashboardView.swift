@@ -47,6 +47,16 @@ struct DashboardView: View {
 
                             BatteryPlanPanel(plan: snapshot.batteryPlan, story: snapshot.energyStory, theme: theme)
 
+                            // B-74 / #84 slice 3: structured reason from `/api/battery-plan` — same
+                            // fields as web DecisionReasonDetails (chosen / rejected / benefit /
+                            // risk / safety / gates). Hidden behind one tap like web "Waarom?".
+                            if snapshot.batteryPlan.reason != nil {
+                                BatteryActionWhyPanel(
+                                    plan: snapshot.batteryPlan,
+                                    theme: theme
+                                )
+                            }
+
                             // 2. Today so far (scores)
                             ScoreStrip(scores: snapshot.report.scores, theme: theme)
 
@@ -438,6 +448,81 @@ private struct BatteryPlanFact: View {
     }
 }
 
+/// B-74 / #84 slice 3: compact "Now + Why?" disclosure for the structured DecisionReason.
+private struct BatteryActionWhyPanel: View {
+    let plan: BatteryPlanSnapshot
+    let theme: EMSTheme
+    @State private var whyExpanded = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(alignment: .firstTextBaseline, spacing: 10) {
+                Text("Now: \(DecisionReasonFormatting.actionLabel(plan.currentAction))")
+                    .font(.footnote.weight(.semibold))
+                    .foregroundStyle(themeColor(theme.text))
+                    .accessibilityIdentifier("battery-action-label")
+                Spacer(minLength: 8)
+                Button {
+                    whyExpanded.toggle()
+                } label: {
+                    Text(whyExpanded ? "Why ▲" : "Why?")
+                        .font(.footnote.weight(.semibold))
+                        .foregroundStyle(themeColor(theme.accent))
+                }
+                .buttonStyle(.plain)
+                .accessibilityIdentifier("battery-action-why-toggle")
+                .accessibilityLabel(whyExpanded ? "Hide why" : "Show why")
+            }
+
+            if whyExpanded {
+                DecisionReasonDetailsView(reason: plan.reason, theme: theme)
+            }
+        }
+        .padding(16)
+        .background(themeColor(theme.panel))
+        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .stroke(themeColor(theme.line), lineWidth: 1)
+        }
+        .accessibilityIdentifier("battery-action-why")
+    }
+}
+
+/// Fact rows from DecisionReason — parity with web `DecisionReasonDetails`.
+private struct DecisionReasonDetailsView: View {
+    let reason: DecisionReasonSnapshot?
+    let theme: EMSTheme
+
+    private var rows: [DecisionReasonRow] {
+        DecisionReasonFormatting.detailRows(from: reason)
+    }
+
+    var body: some View {
+        if rows.isEmpty {
+            EmptyView()
+        } else {
+            VStack(alignment: .leading, spacing: 8) {
+                ForEach(rows) { row in
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(row.title)
+                            .font(.caption2.weight(.semibold))
+                            .foregroundStyle(themeColor(theme.muted))
+                        Text(row.detail)
+                            .font(.footnote)
+                            .foregroundStyle(themeColor(theme.text))
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .accessibilityElement(children: .combine)
+                    .accessibilityLabel("\(row.title): \(row.detail)")
+                }
+            }
+            .accessibilityIdentifier("decision-reason-details")
+        }
+    }
+}
+
 private struct BatteryPlanDetailView: View {
     let plan: BatteryPlanSnapshot
     let story: EnergyStorySnapshot
@@ -513,6 +598,22 @@ private struct BatteryPlanDetailView: View {
                     .overlay {
                         RoundedRectangle(cornerRadius: 12, style: .continuous)
                             .stroke(themeColor(theme.line), lineWidth: 1)
+                    }
+
+                    if plan.reason != nil {
+                        VStack(alignment: .leading, spacing: 12) {
+                            Text("Why this plan")
+                                .font(.headline)
+                                .foregroundStyle(themeColor(theme.text))
+                            DecisionReasonDetailsView(reason: plan.reason, theme: theme)
+                        }
+                        .padding(16)
+                        .background(themeColor(theme.panel))
+                        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+                        .overlay {
+                            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                                .stroke(themeColor(theme.line), lineWidth: 1)
+                        }
                     }
 
                     VStack(alignment: .leading, spacing: 12) {

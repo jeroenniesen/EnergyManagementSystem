@@ -137,6 +137,71 @@ final class ModelsTests: XCTestCase {
         XCTAssertEqual(snapshot.batteryPlan.currentSocPct, 64.0)
         XCTAssertEqual(snapshot.batteryPlan.plannedGridTopupKwh, 2.5)
         XCTAssertEqual(snapshot.batteryPlan.graph.forecastSoc.count, 1)
+        XCTAssertNil(snapshot.batteryPlan.reason)
+    }
+
+    func testMobileDashboardSnapshotDecodesBatteryPlanReason() throws {
+        let json = """
+        {
+          "generated_at": "2026-07-05T12:00:00+00:00",
+          "server_name": "Home EMS",
+          "cache_ttl_seconds": 10,
+          "status": {
+            "dry_run": true,
+            "dev_mode": "mock",
+            "soc_pct": 64.0,
+            "grid_power_w": 0.0,
+            "solar_power_w": 1200.0,
+            "battery_power_w": 200.0,
+            "house_load_w": 900.0,
+            "non_ev_load_w": 900.0
+          },
+          "battery_plan": {
+            "status": "behind_target",
+            "summary": "Battery is behind.",
+            "current_action": "grid_charge",
+            "current_reason": "Cheap window.",
+            "window_start": "2026-07-05T12:00:00+02:00",
+            "window_end": "2026-07-06T12:00:00+02:00",
+            "current_soc_pct": 51.0,
+            "reserve_soc_pct": 10.0,
+            "target_soc_pct": 88.0,
+            "target_deadline": "2026-07-05T22:00:00+02:00",
+            "planned_grid_topup_kwh": 5.0,
+            "deviation": {"status": "behind_forecast", "message": "Behind."},
+            "warnings": [],
+            "graph": {},
+            "reason": {
+              "chosen_window": {
+                "start": "2026-09-30T01:00:00+00:00",
+                "end": "2026-09-30T04:00:00+00:00",
+                "intent": "grid_charge_to_target",
+                "label": "cheap charge window",
+                "eur_per_kwh_min": 0.05,
+                "eur_per_kwh_max": 0.08
+              },
+              "rejected_alternative": null,
+              "expected_benefit": {"eur": 0.85, "summary": "Estimated net benefit ≈ €0.85."},
+              "risk": {"margin_eur_per_kwh": 0.02, "summary": "Risk margin."},
+              "safety_constraint": {"code": null, "message": null, "action": "proceed"},
+              "gates": {
+                "validator_code": null,
+                "failsafe": false,
+                "dwell": false,
+                "cap_reached": false,
+                "unconfirmed": false
+              },
+              "summary": "Charging in the cheap night window."
+            }
+          }
+        }
+        """.data(using: .utf8)!
+
+        let snapshot = try JSONDecoder.ems.decode(MobileDashboardSnapshot.self, from: json)
+        XCTAssertEqual(snapshot.batteryPlan.reason?.summary, "Charging in the cheap night window.")
+        let rows = DecisionReasonFormatting.detailRows(from: snapshot.batteryPlan.reason)
+        XCTAssertTrue(rows.contains { $0.title == "Chosen window" && $0.detail.contains("cheap charge window") })
+        XCTAssertTrue(rows.contains { $0.title == "Safety" && $0.detail == "Proceed — no safety hold" })
     }
 
     func testBatteryPlanGraphToleratesMissingSubArrays() throws {

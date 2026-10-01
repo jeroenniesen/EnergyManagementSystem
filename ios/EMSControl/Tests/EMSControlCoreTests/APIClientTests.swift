@@ -64,6 +64,9 @@ final class APIClientTests: XCTestCase {
         XCTAssertEqual(response.graph.forecastSoc.count, 2)
         XCTAssertEqual(response.graph.plannedActions[0].action, "solar_charge")
         XCTAssertEqual(response.deviation.status, "ok")
+        XCTAssertEqual(response.reason?.summary, "Charging in the cheap night window.")
+        XCTAssertEqual(response.reason?.chosenWindow?.label, "cheap charge window")
+        XCTAssertEqual(response.reason?.safetyConstraint.action, "proceed")
         XCTAssertEqual(transport.lastRequest?.url?.path, "/api/battery-plan")
     }
 
@@ -473,6 +476,33 @@ private func batteryPlanJSON() -> Data {
         "solar": [
           {"ts": "2026-07-03T21:15:00+02:00", "forecast_w": 1500.0, "actual_w": null}
         ]
+      },
+      "reason": {
+        "chosen_window": {
+          "start": "2026-09-30T01:00:00+00:00",
+          "end": "2026-09-30T04:00:00+00:00",
+          "intent": "grid_charge_to_target",
+          "label": "cheap charge window",
+          "eur_per_kwh_min": 0.05,
+          "eur_per_kwh_max": 0.08
+        },
+        "rejected_alternative": {
+          "intent": "allow_self_consumption",
+          "reason": "self-consumption only — rejected in favour of the selected charge window",
+          "window_start": null,
+          "window_end": null
+        },
+        "expected_benefit": { "eur": 0.85, "summary": "Estimated net benefit ≈ €0.85." },
+        "risk": { "margin_eur_per_kwh": 0.02, "summary": "Risk margin €0.020/kWh applied to break-even." },
+        "safety_constraint": { "code": null, "message": null, "action": "proceed" },
+        "gates": {
+          "validator_code": null,
+          "failsafe": false,
+          "dwell": false,
+          "cap_reached": false,
+          "unconfirmed": false
+        },
+        "summary": "Charging in the cheap night window."
       }
     }
     """.data(using: .utf8)!
