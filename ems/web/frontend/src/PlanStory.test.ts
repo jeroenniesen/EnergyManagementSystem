@@ -84,18 +84,23 @@ describe("PlanStory rendering", () => {
 
     expect(html).toContain('data-testid="plan-story"');
     expect(html.indexOf("plan-story-prices")).toBeLessThan(html.indexOf("plan-story-solar"));
-    expect(html.indexOf("plan-story-solar")).toBeLessThan(html.indexOf("plan-story-soc"));
-    expect(html.indexOf("plan-story-soc")).toBeLessThan(html.indexOf("plan-story-references"));
+    expect(html.indexOf("plan-story-solar")).toBeLessThan(html.indexOf("plan-story-soc-scale"));
+    expect(html.indexOf("plan-story-soc-scale")).toBeLessThan(html.indexOf('data-testid="plan-story-soc"'));
+    expect(html.indexOf('data-testid="plan-story-soc"')).toBeLessThan(html.indexOf("plan-story-references"));
     expect(html.indexOf("plan-story-references")).toBeLessThan(html.indexOf("plan-story-now"));
     expect(html.indexOf("plan-story-now")).toBeLessThan(html.indexOf("plan-story-actions"));
+    expect(html).toContain('data-testid="plan-story-soc-scale"');
+    expect(html).toContain('data-testid="plan-story-soc-scale-100"');
+    expect(html).toContain('data-testid="plan-story-soc-scale-50"');
+    expect(html).toContain('data-testid="plan-story-soc-scale-0"');
     expect(html).toContain('data-testid="plan-story-soc-recorded-0"');
     expect(html).toContain('data-testid="plan-story-soc-forecast-1"');
     expect(html).toContain('data-testid="plan-story-target-label"');
     expect(html).toContain('data-testid="plan-story-reserve-label"');
     expect(html).toContain('data-testid="plan-story-action-segment"');
     expect(html).toContain('aria-hidden="true"');
-    expect(html).toContain("Powers the house");
-    expect(html).toContain("No recorded data");
+    expect(html).toContain("Voedt de woning");
+    expect(html).toContain("Geen gemeten data");
     expect(html).not.toContain("<h2");
     expect(html).not.toContain("warning");
   });
@@ -122,28 +127,43 @@ describe("PlanStory rendering", () => {
     expect(forecast).toContain('data-testid="plan-story-soc-dot-forecast-1"');
   });
 
-  test("footer keeps saved today, battery percentage, and the per-tower link only", () => {
+  // B-97: SoC / Saved live in OutcomeTiles — PlanStory must not repeat them as a footer KPI strip.
+  test("omits the footer KPI strip that duplicated OutcomeTiles SoC and Saved", () => {
     const html = renderToStaticMarkup(createElement(PlanStory, {
       story: storyData([], [storySlot(0)], 0),
-      savedToday: { status: "measured", eur: 2.84 },
-      socPct: 55,
-      onBatteryClick: () => undefined,
     }));
 
-    expect(html).toContain("Saved today");
-    expect(html).toContain("€2.84 measured");
-    expect(html).toContain("55%");
-    expect(html).toContain("see each battery →");
+    expect(html).toContain('data-testid="plan-story-plot"');
+    expect(html).toContain('data-testid="plan-story-legend"');
+    expect(html).not.toContain("story-footer");
+    expect(html).not.toContain("Saved today");
+    expect(html).not.toContain("see each battery");
     expect(html).not.toContain(">Mode<");
   });
 
-  test("renders a recorded idle action as Idle and never as Hold", () => {
+  test("B-96: recent review renders as a collapsed plan-header disclosure", () => {
+    const html = renderToStaticMarkup(createElement(PlanStory, {
+      story: storyData([], [storySlot(0)], 0),
+      recentReview: "Last 3h solar reached 80% of forecast.",
+    }));
+
+    expect(html).toContain('data-testid="recent-review"');
+    expect(html).toContain("Laatste 3 uur");
+    expect(html).toContain("Last 3h solar reached 80% of forecast.");
+    expect(html).toContain("<details");
+    // Chart still present — disclosure does not replace PlanStory.
+    expect(html).toContain('data-testid="plan-story-plot"');
+  });
+
+  test("renders a recorded idle action as Inactief and never as Vasthouden", () => {
     const html = renderToStaticMarkup(createElement(PlanStory, {
       story: storyData([storySlot(0, { action: "idle" })], [], 15),
     }));
 
-    expect(html).toContain(">Idle<");
-    expect(html).toContain("Idles");
+    expect(html).toContain(">Inactief<");
+    expect(html).toContain("Staat stil");
+    expect(html).not.toContain(">Vasthouden<");
+    expect(html).not.toContain("Houdt vast");
     expect(html).not.toContain(">Hold<");
     expect(html).not.toContain("Holds");
   });
@@ -235,7 +255,7 @@ describe("PlanStory rendering", () => {
     expect(html.match(/class="plan-story-ribbon-line"/g)).toHaveLength(6);
   });
 
-  test("renders available plan provenance clauses between the legend and footer", () => {
+  test("renders available plan provenance clauses after the legend without a KPI footer", () => {
     const provenance: PlanProvenance = {
       forecast_source: "Forecast.Solar",
       solar_confidence_pct: 100,
@@ -250,7 +270,6 @@ describe("PlanStory rendering", () => {
     const full = renderToStaticMarkup(createElement(PlanStory, {
       story: storyData([], [storySlot(0)], 0),
       provenance,
-      socPct: 55,
     }));
     const partial = renderToStaticMarkup(createElement(PlanStory, {
       story: storyData([], [storySlot(0)], 0),
@@ -258,7 +277,7 @@ describe("PlanStory rendering", () => {
     }));
 
     expect(full).toContain(
-      "Planned with <span title=\"The live solar forecast source feeding today&#x27;s plan.\">" +
+      "Gepland met <span title=\"The live solar forecast source feeding today&#x27;s plan.\">" +
       "Forecast.Solar at 100% confidence</span> · ",
     );
     expect(full).toContain("rule-based winter planner");
@@ -266,10 +285,8 @@ describe("PlanStory rendering", () => {
     expect(full.indexOf("battery-plan-provenance")).toBeGreaterThan(
       full.indexOf("plan-story-legend"),
     );
-    expect(full.indexOf("battery-plan-provenance")).toBeLessThan(
-      full.indexOf("story-footer"),
-    );
-    expect(partial).toContain("Planned with <span");
+    expect(full).not.toContain("story-footer");
+    expect(partial).toContain("Gepland met <span");
     expect(partial).toContain("adaptive summer planner");
     expect(partial).not.toContain("% confidence");
     expect(partial).not.toContain("scenario intelligence:");
@@ -281,8 +298,8 @@ describe("PlanStory rendering", () => {
       provenance: { planner: "rule_based" },
     }));
 
-    expect(html).toContain("Battery plan is unavailable.");
-    expect(html).toContain("Planned with");
+    expect(html).toContain("Batterijplan niet beschikbaar.");
+    expect(html).toContain("Gepland met");
     expect(html).toContain("rule-based winter planner");
   });
 
@@ -314,7 +331,8 @@ describe("PlanStory rendering", () => {
       expect(width).toBeCloseTo(237.6);
     }
     expect(bars.every((bar) => svgAttr(bar, "opacity") == null)).toBe(true);
-    expect(html).toContain("Price €-0.20–€-0.10");
+    expect(html).toContain("Prijs €-0.20–€-0.10");
+    expect(html).not.toContain("Prijs €-0.20–€0.00");
     expect(html).not.toContain("Price €-0.20–€0.00");
   });
 });

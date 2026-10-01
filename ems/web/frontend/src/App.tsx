@@ -4,7 +4,11 @@ import { AcceptInvite } from "./AcceptInvite";
 import { apiFetch, setUnauthorizedHandler } from "./auth";
 import { BatteryActionWhy } from "./BatteryActionWhy";
 import { type Battery, BatteryChips } from "./BatteryChips";
-import { EveningPeakCoverageCard } from "./EveningPeakCoverage";
+import {
+  EveningPeakCoverageCard,
+  applyEveningPeakTrustMarkerPolicy,
+  isEveningPeakCovered,
+} from "./EveningPeakCoverage";
 import { EnergyDistribution } from "./EnergyDistribution";
 import type {
   BatteryPlanData,
@@ -13,8 +17,10 @@ import type {
   SavedToday,
 } from "./EnergyStory";
 import type { DecisionReason } from "./decisionWhy";
+import { buildHeroSynthesis } from "./heroSynthesis";
 import { Icon, type IconName } from "./icons";
 import { DeviceHealthStrip } from "./DeviceHealth";
+import { showTopbarDataQuality, showTopbarDataSource } from "./topbarChips";
 import {
   CAR_BADGE_SUFFIX,
   CAR_BADGE_SUFFIX_DEFAULT,
@@ -24,16 +30,25 @@ import {
   EMS_UNREACHABLE,
   FRESHNESS_STATE,
   formatLaatstBekend,
+  HOME_ACT,
+  HOME_CONFIDENCE_CHIP,
+  HOME_HERO,
+  HOME_MORE_NEST,
+  HOME_MORE_TOGGLE,
+  homeConfidenceReasonNl,
+  homeHeadlineNl,
   humanize,
   OUTCOME_LABEL,
   pickDeviceHealthAlert,
   DRY_RUN_CAUSE_LABEL,
+  DRY_RUN_CAUSE_FALLBACK,
   RUN_MODE,
   SIGNAL_NAME,
 } from "./labels";
 import { Login } from "./Login";
 import { NotificationBell } from "./Notifications";
 import { Onboarding } from "./Onboarding";
+import { HomeMoreNest } from "./HomeMoreNest";
 import { OverrideCard } from "./Override";
 import { CarCard } from "./CarCard";
 import { CarView } from "./Car";
@@ -150,12 +165,8 @@ function todayStr(): string {
 const SEVERITY_RANK: Record<string, number> = { critical: 3, warning: 2, info: 1 };
 const VIEWS: ViewName[] = ["dashboard", "insights", "car", "chat", "manage"];
 const MANAGE_TABS: ManageTab[] = ["settings", "system", "audit"];
-// B-68: plain-language chip label for the plan-confidence score, keyed by the backend's level.
-const CONFIDENCE_CHIP_LABEL: Record<PlanConfidence["level"], string> = {
-  high: "High confidence",
-  medium: "Medium confidence",
-  low: "Low confidence",
-};
+// B-68 + B-98: plain-language confidence chip (Dutch-first Home).
+const CONFIDENCE_CHIP_LABEL: Record<PlanConfidence["level"], string> = HOME_CONFIDENCE_CHIP;
 
 // Hash → route. Canonical hashes: #dashboard #insights #car #chat #manage #manage/system
 // #manage/audit. LEGACY hashes still work so old bookmarks / deep-links don't break: bare
@@ -409,7 +420,7 @@ export function App() {
   const [chargeNeed, setChargeNeed] = useState<ChargeNeed | null>(null);
   const [reserveAdvice, setReserveAdvice] = useState<ReserveAdvice | null>(null);
   // B-03b: MEASURED (from /api/finance), not a plan estimate — null until the first successful
-  // fetch (then the footer stat stays hidden; a later failure just keeps the last-known value,
+  // fetch (OutcomeTiles show "—" / measuring; a later failure keeps the last-known value,
   // same best-effort convention as the other polled cards below).
   const [savedToday, setSavedToday] = useState<SavedToday | null>(null);
   const [report, setReport] = useState<Report | null>(null);
@@ -616,8 +627,8 @@ export function App() {
         if (!unreachableRef.current) setDecision(v);
       });
       // B-03b: the measured figure, not the old plan-estimate tile — never a fake €0.00. finance's
-      // totals.saved_eur is null until a day of prices has been recorded, in which case the footer
-      // shows "measuring" instead of inventing a number.
+      // totals.saved_eur is null until a day of prices has been recorded, in which case OutcomeTiles
+      // show measuring (—) instead of inventing a number.
       fill(
         `/api/finance?period=day&date=${todayStr()}`,
         (v: { totals?: { saved_eur: number | null } }) => {
@@ -697,24 +708,42 @@ export function App() {
   // The battery tile opens a per-tower breakdown only when there's a cluster to break down.
   const batteryHasDetail = !!(battery && (battery.aggregate || battery.towers.length > 0));
 
-  // --- Hero synthesis (B-32): one verdict, not three fragments. ---------------------------------
+  // --- Hero synthesis (B-32 + B-96): one verdict, one plain sentence, one act-line. ------------
   const home = decision?.home_state ?? null;
   const summary = report ? homeSummary(report.scores) : null;
   // B-68: the plan-confidence score rides on the already-polled /api/battery-plan response — no
   // extra fetch. Calm stays calm: the reason sub-line only renders when confidence isn't high.
   const confidence = batteryPlan?.confidence ?? null;
-  // The synthesis line stitches the existing on-track verdict and the existing day-score summary
-  // into ONE sentence — reusing the exact strings, inventing no number. Trailing punctuation is
-  // trimmed so the middot join reads cleanly ("…88% target · A solid energy day — keep it up").
-  const trimEnd = (s: string) => s.replace(/[.\s]+$/, "");
-  const synthesis = [batteryPlan?.current_reason, story?.on_track?.message, summary?.text]
-    .filter((s): s is string => !!s)
-    .map(trimEnd)
-    .join(" · ");
-  const trustMarkers = (story?.trust_markers ?? []).filter(
-    (marker) =>
-      !(story?.on_track?.status === "behind" && marker === "No grid top-up needed"),
+  // B-96: one human sentence only — planner jargon stays under Waarom? / DecisionReasonDetails.
+  const synthesis = buildHeroSynthesis({
+    currentReason: batteryPlan?.current_reason,
+    onTrackMessage: story?.on_track?.message,
+    scoreSummary: summary?.text,
+  });
+  // B-98 fix: confidence reason under the chip is Dutch-mapped; hide unmapped EN API copy.
+  const confidenceReasonNl = confidence?.reasons?.[0]
+    ? homeConfidenceReasonNl(confidence.reasons[0])
+    : null;
+  const confidenceTitleNl = confidence
+    ? confidence.reasons
+        .map((r) => homeConfidenceReasonNl(r))
+        .filter((r): r is string => !!r)
+        .join(" ")
+    : "";
+  // B-95: one evening-peak surface — covered → hero trust-marker; at-risk → risk banner
+  // only (strip the API's discharge-based "covers" chip so it never stacks with amber).
+  const eveningPeakCoverage = batteryPlan?.evening_peak_coverage;
+  const eveningPeakCovered = isEveningPeakCovered(eveningPeakCoverage?.probability);
+  const trustMarkers = applyEveningPeakTrustMarkerPolicy(
+    (story?.trust_markers ?? []).filter(
+      (marker) =>
+        !(story?.on_track?.status === "behind" && marker === "No grid top-up needed"),
+    ),
+    eveningPeakCoverage,
+    { injectCoveredMarker: !!home && eveningPeakCovered },
   );
+  // Hero owns the covered marker whenever the hero section can render (home present).
+  const heroOwnsEveningPeakMarker = !!home && eveningPeakCovered;
 
   // "Do I need to act?" — answered explicitly. Nothing to do unless an override is running, the
   // system is on unsafe data (self-use failsafe), or a warning/critical alert is live. Info
@@ -725,17 +754,15 @@ export function App() {
     .filter((a) => a.severity === "warning" || a.severity === "critical")
     .sort((a, b) => (SEVERITY_RANK[b.severity] ?? 0) - (SEVERITY_RANK[a.severity] ?? 0))[0];
   const actLine: { text: string; calm: boolean } = decision?.override_active
-    ? { text: "You're in manual control — it ends on its own, or clear it below.", calm: false }
+    ? { text: HOME_ACT.override, calm: false }
     : alertsData?.data_quality === "unsafe"
       ? {
-          text:
-            "EMS is switching the battery back to its own self-use until meter data is " +
-            "trustworthy again — nothing to do; it resumes on its own.",
+          text: HOME_ACT.unsafe,
           calm: false,
         }
       : topActionable
         ? { text: topActionable.action || topActionable.message, calm: false }
-        : { text: "Nothing needed from you.", calm: true };
+        : { text: HOME_ACT.calm, calm: true };
 
   // B-57: on demo/mock data, a persistent friendly nudge into real onboarding (Settings opens on
   // the Connection section by default). Dismissible for the session; back on next visit.
@@ -793,10 +820,11 @@ export function App() {
           >
             {status.dry_run_cause
               ? (DRY_RUN_CAUSE_LABEL[status.dry_run_cause] ?? status.dry_run_cause)
-              : "why"}
+              : DRY_RUN_CAUSE_FALLBACK}
           </span>
         )}
-        {status && (
+        {/* B-99: demote redundant "Live sensoren"; keep Demo/mock as attention. */}
+        {status && showTopbarDataSource(status.dev_mode) && (
           <span
             className="badge badge-muted"
             data-testid="data-source"
@@ -805,7 +833,8 @@ export function App() {
             {status.dev_mode === "live" ? DATA_SOURCE.live.label : DATA_SOURCE.sim.label}
           </span>
         )}
-        {alertsData && (
+        {/* B-99: data-quality chip only when not complete (DeviceHealth covers "Alles actueel"). */}
+        {alertsData && showTopbarDataQuality(alertsData.data_quality) && (
           <span
             className={`badge badge-dq dq-${alertsData.data_quality}`}
             data-testid="data-quality"
@@ -939,7 +968,7 @@ export function App() {
         >
           <div className="hero-verdict-row">
             <p className="hero-verdict" data-testid="hero-verdict">
-              {home.headline}
+              {homeHeadlineNl(home.headline)}
             </p>
             {confidence && (
               <span
@@ -947,25 +976,20 @@ export function App() {
                 data-testid="confidence-chip"
                 data-density-kind="badge"
                 data-level={confidence.level}
-                title={confidence.reasons.join(" ")}
+                title={confidenceTitleNl || undefined}
               >
                 {CONFIDENCE_CHIP_LABEL[confidence.level]}
               </span>
             )}
           </div>
-          {confidence && confidence.level !== "high" && (
+          {confidence && confidence.level !== "high" && confidenceReasonNl && (
             <p className="hero-confidence-reason" data-testid="hero-confidence-reason">
-              {confidence.reasons[0]}
+              {confidenceReasonNl}
             </p>
           )}
           {synthesis && (
             <p className="hero-synthesis" data-testid="hero-synthesis">
               {synthesis}
-            </p>
-          )}
-          {story?.recent_review?.message && (
-            <p className="story-review" data-testid="recent-review">
-              {story.recent_review.message}
             </p>
           )}
           {trustMarkers.length > 0 && (
@@ -987,21 +1011,21 @@ export function App() {
           {demoActive && (
             <div className="hero-demo-cta" data-testid="demo-cta">
               <span>
-                This is a demo home.{" "}
+                {HOME_HERO.demoLead}{" "}
                 <button
                   type="button"
                   className="hero-demo-link"
                   data-testid="demo-cta-link"
                   onClick={() => navigate("manage", "settings")}
                 >
-                  Use my real home →
+                  {HOME_HERO.demoLink}
                 </button>
               </span>
               <button
                 type="button"
                 className="hero-demo-dismiss"
                 data-testid="demo-cta-dismiss"
-                aria-label="Dismiss for now"
+                aria-label={HOME_HERO.demoDismissAria}
                 onClick={dismissDemoCta}
               >
                 ×
@@ -1011,7 +1035,8 @@ export function App() {
         </section>
       )}
 
-      {/* Issue #79: compact per-source freshness — visible without a click; System keeps detail. */}
+      {/* Issue #79 / B-94: DeviceHealth — full strip when attention needed; quiet one-line
+          disclosure when healthy so the first viewport keeps room for tiles + PlanStory. */}
       {view === "dashboard" && !error && (freshness || deviceHealth) && (
         <DeviceHealthStrip
           freshness={freshness}
@@ -1058,6 +1083,14 @@ export function App() {
             onOpenBattery={batteryHasDetail ? () => setBatteryDetail("soc") : undefined}
             freshness={tileFreshness}
           />
+          {/* B-101 / B-87: PlanStory is the first major visual after tiles — Nu/Waarom and
+              evening-peak sit below the chart, not between tiles and chart. */}
+          {/* B-97: SoC / Saved live in OutcomeTiles only — PlanStory no longer repeats them. */}
+          <PlanStory
+            story={story?.window === "next" ? story : null}
+            provenance={batteryPlan?.provenance}
+            recentReview={story?.recent_review?.message ?? null}
+          />
           {/* B-33 / #85 slice 1: waarom voor laden / vasthouden / zelfconsumptie — één tik, niet
               standaard open. Tekst uit battery-plan `reason` (#84), dry-run zegt "zou". */}
           <BatteryActionWhy
@@ -1065,14 +1098,11 @@ export function App() {
             reason={batteryPlan?.reason as DecisionReason | undefined}
             dryRun={status?.dry_run ?? true}
           />
-          {/* B-63 / #88: how likely the battery covers tonight's evening peak. */}
-          <EveningPeakCoverageCard coverage={batteryPlan?.evening_peak_coverage} />
-          <PlanStory
-            story={story?.window === "next" ? story : null}
-            provenance={batteryPlan?.provenance}
-            savedToday={savedToday}
-            socPct={status?.soc_pct ?? null}
-            onBatteryClick={batteryHasDetail ? () => setBatteryDetail("soc") : undefined}
+          {/* B-63 / #88 + B-95: risk banner only when coverage is below the covered
+              threshold; covered/100% is the hero trust-marker (one surface). */}
+          <EveningPeakCoverageCard
+            coverage={batteryPlan?.evening_peak_coverage}
+            heroOwnsCoveredMarker={heroOwnsEveningPeakMarker}
           />
         </>
       )}
@@ -1086,7 +1116,7 @@ export function App() {
           onToggle={(event) => setHomeMoreOpen(event.currentTarget.open)}
         >
           <summary className="home-more-toggle" data-testid="home-more-toggle" aria-expanded={homeMoreOpen}>
-            More from your home
+            {HOME_MORE_TOGGLE}
           </summary>
           <div className="home-more-body" data-testid="home-more-body">
             <HomeScores
@@ -1094,20 +1124,27 @@ export function App() {
               onOpenDetail={() => navigate("insights")}
               scoreKeys={["co2", "best_price"]}
             />
+            {/* B-102: nest Strategy / Manual / Car — scannable, not a flat dump. */}
             {strategy && (
-              <StrategyCard
-                strategy={strategy}
-                onChange={setStrategyMode}
-                onSetGridTopup={setGridTopup}
-                onTune={() => navigate("manage", "settings")}
-                canOperate={canOperate}
-              />
+              <HomeMoreNest kind="strategy" label={HOME_MORE_NEST.strategy}>
+                <StrategyCard
+                  strategy={strategy}
+                  onChange={setStrategyMode}
+                  onSetGridTopup={setGridTopup}
+                  onTune={() => navigate("manage", "settings")}
+                  canOperate={canOperate}
+                />
+              </HomeMoreNest>
             )}
             {status && (
-              <OverrideCard dataQuality={alertsData?.data_quality} canOperate={canOperate} />
+              <HomeMoreNest kind="manual" label={HOME_MORE_NEST.manual}>
+                <OverrideCard dataQuality={alertsData?.data_quality} canOperate={canOperate} />
+              </HomeMoreNest>
             )}
             {status && (
-              <CarCard compact onOpenCar={() => navigate("car")} canOperate={canOperate} />
+              <HomeMoreNest kind="car" label={HOME_MORE_NEST.car}>
+                <CarCard compact onOpenCar={() => navigate("car")} canOperate={canOperate} />
+              </HomeMoreNest>
             )}
             {status && (
         <Advanced>

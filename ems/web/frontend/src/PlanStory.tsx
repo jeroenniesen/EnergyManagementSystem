@@ -1,7 +1,7 @@
 import { Fragment, useState } from "react";
 
-import type { EnergyStoryData, PlanProvenance, SavedToday } from "./EnergyStory";
-import { INTELLIGENCE_COPY, PLANNER_PROVENANCE_LABEL } from "./labels";
+import type { EnergyStoryData, PlanProvenance } from "./EnergyStory";
+import { HOME_PLAN_STORY, INTELLIGENCE_COPY, PLANNER_PROVENANCE_LABEL } from "./labels";
 import {
   ACTION_META,
   buildPlanStoryModel,
@@ -38,10 +38,18 @@ type PlanStoryProvenance =
 export type PlanStoryProps = {
   story: EnergyStoryData | null;
   provenance?: PlanStoryProvenance | null;
-  savedToday?: SavedToday | null;
-  socPct?: number | null;
-  onBatteryClick?: () => void;
+  /** B-96: Last-3h review demoted behind a plan-header disclosure (not in the hero). */
+  recentReview?: string | null;
 };
+
+function RecentReviewDisclosure({ message }: { message: string }) {
+  return (
+    <details className="plan-story-recent-review" data-testid="recent-review">
+      <summary className="plan-story-recent-review-toggle">{HOME_PLAN_STORY.recentReview}</summary>
+      <p className="story-review plan-story-recent-review-body">{message}</p>
+    </details>
+  );
+}
 
 function ProvenanceCaption({
   provenance,
@@ -85,7 +93,7 @@ function ProvenanceCaption({
 
   return (
     <p className="battery-plan-provenance" data-testid="battery-plan-provenance">
-      Planned with{" "}
+      {HOME_PLAN_STORY.plannedWith}{" "}
       {clauses.map((clause, index) => (
         <Fragment key={clause.key}>
           {index > 0 && " · "}
@@ -96,52 +104,10 @@ function ProvenanceCaption({
   );
 }
 
-function Footer({
-  savedToday,
-  socPct,
-  onBatteryClick,
-}: Omit<PlanStoryProps, "story">) {
-  if (!savedToday && socPct == null) return null;
-  return (
-    <div className="battery-plan-footer" data-testid="story-footer">
-      {savedToday && (
-        <span className="bp-foot" data-testid="saved-today" title="Measured vs. a no-battery day.">
-          <span className="bp-foot-label">Saved today</span>
-          <span className="bp-foot-value">
-            {savedToday.status === "measured"
-              ? `€${savedToday.eur.toFixed(2)} measured`
-              : "€— · measuring"}
-          </span>
-        </span>
-      )}
-      {socPct != null && (onBatteryClick ? (
-        <button
-          type="button"
-          className="bp-foot bp-foot-btn"
-          data-testid="battery-tile"
-          onClick={onBatteryClick}
-          title="How full the home battery is — click to see each battery."
-        >
-          <span className="bp-foot-label">Battery</span>
-          <span className="bp-foot-value">{socPct.toFixed(0)}%</span>
-          <span className="bp-foot-more">see each battery →</span>
-        </button>
-      ) : (
-        <span className="bp-foot" data-testid="battery-tile" title="How full the home battery is right now.">
-          <span className="bp-foot-label">Battery</span>
-          <span className="bp-foot-value">{socPct.toFixed(0)}%</span>
-        </span>
-      ))}
-    </div>
-  );
-}
-
 export function PlanStory({
   story,
   provenance = null,
-  savedToday = null,
-  socPct = null,
-  onBatteryClick,
+  recentReview = null,
 }: PlanStoryProps) {
   const [hover, setHover] = useState<number | null>(null);
   const model = buildPlanStoryModel(story, PAD.l, PLOT_W);
@@ -149,9 +115,9 @@ export function PlanStory({
   if (!story || !model) {
     return (
       <section className="plan-story" data-testid="plan-story" data-density-kind="chart">
-        <p>Battery plan is unavailable.</p>
+        {recentReview && <RecentReviewDisclosure message={recentReview} />}
+        <p>{HOME_PLAN_STORY.unavailable}</p>
         <ProvenanceCaption provenance={provenance} />
-        <Footer savedToday={savedToday} socPct={socPct} onBatteryClick={onBatteryClick} />
       </section>
     );
   }
@@ -183,6 +149,7 @@ export function PlanStory({
       data-density-kind="chart"
       aria-label={model.label}
     >
+      {recentReview && <RecentReviewDisclosure message={recentReview} />}
       <p className="sr-only" data-testid="plan-story-summary">{model.summary}</p>
       <div className="plan-story-chart-wrap">
         <svg
@@ -245,7 +212,10 @@ export function PlanStory({
               ) : null;
             })}
             <text x={W - PAD.r} y={18} textAnchor="end">
-              Price €{model.minPrice.toFixed(2)}–€{model.maxPrice.toFixed(2)}
+              {HOME_PLAN_STORY.priceRange(
+                model.minPrice.toFixed(2),
+                model.maxPrice.toFixed(2),
+              )}
             </text>
           </g>
 
@@ -264,7 +234,24 @@ export function PlanStory({
                 />
               );
             })}
-            <text x={PAD.l} y={18}>Solar 0–{Math.round(model.maxSolar).toLocaleString()} W</text>
+            <text x={PAD.l} y={18}>
+              {HOME_PLAN_STORY.solarRange(Math.round(model.maxSolar).toLocaleString())}
+            </text>
+          </g>
+
+          {/* B-102: quiet left-gutter SoC % ticks for power users — not a second chart. */}
+          <g className="plan-story-soc-scale" data-testid="plan-story-soc-scale" aria-hidden="true">
+            {[100, 50, 0].map((pct) => (
+              <text
+                key={pct}
+                data-testid={`plan-story-soc-scale-${pct}`}
+                x={PAD.l - 8}
+                y={socY(pct) + 3}
+                textAnchor="end"
+              >
+                {HOME_PLAN_STORY.socScale(pct)}
+              </text>
+            ))}
           </g>
 
           <g className="plan-story-soc" data-testid="plan-story-soc">
@@ -300,7 +287,7 @@ export function PlanStory({
               y={socY(story.reserve_soc_pct) - 5}
               textAnchor="end"
             >
-              reserve {Math.round(story.reserve_soc_pct)}%
+              {HOME_PLAN_STORY.reserveLabel(Math.round(story.reserve_soc_pct))}
             </text>
             {story.target_soc_pct != null && (
               <>
@@ -317,7 +304,7 @@ export function PlanStory({
                   y={socY(story.target_soc_pct) - 5}
                   textAnchor="end"
                 >
-                  target {Math.round(story.target_soc_pct)}%
+                  {HOME_PLAN_STORY.targetLabel(Math.round(story.target_soc_pct))}
                 </text>
               </>
             )}
@@ -326,7 +313,7 @@ export function PlanStory({
           {model.nowX != null && (
             <g className="plan-story-now" data-testid="plan-story-now">
               <line x1={model.nowX} x2={model.nowX} y1={PAD.t} y2={PAD.t + PLOT_H} />
-              <text x={model.nowX + 5} y={PAD.t + 14}>now</text>
+              <text x={model.nowX + 5} y={PAD.t + 14}>{HOME_PLAN_STORY.now}</text>
             </g>
           )}
 
@@ -384,7 +371,10 @@ export function PlanStory({
             data-testid="plan-story-tip"
           >
             <div className="chart-tip-title">
-              {formatClock(hovered.startMs)} · {hovered.startMs < model.nowMs ? "recorded" : "forecast"}
+              {formatClock(hovered.startMs)} ·{" "}
+              {hovered.startMs < model.nowMs
+                ? HOME_PLAN_STORY.tipRecorded
+                : HOME_PLAN_STORY.tipForecast}
             </div>
             {slotTipRows(hovered).map((row) => (
               <div key={row.label} className="chart-tip-row">
@@ -401,8 +391,8 @@ export function PlanStory({
       </div>
 
       <div className="chart-legend" data-testid="plan-story-legend">
-        <span className="legend-item"><span className="legend-line plan-story-actual-key" />Recorded battery</span>
-        <span className="legend-item"><span className="legend-line plan-story-forecast-key" />Forecast battery</span>
+        <span className="legend-item"><span className="legend-line plan-story-actual-key" />{HOME_PLAN_STORY.recordedBattery}</span>
+        <span className="legend-item"><span className="legend-line plan-story-forecast-key" />{HOME_PLAN_STORY.forecastBattery}</span>
         {presentActions.map((action) => (
           <span className="legend-item" key={action} data-action-cue={action}>
             <span className={`legend-dot plan-story-legend-action action-${action}`} />
@@ -412,8 +402,6 @@ export function PlanStory({
       </div>
 
       <ProvenanceCaption provenance={provenance} />
-
-      <Footer savedToday={savedToday} socPct={socPct} onBatteryClick={onBatteryClick} />
     </section>
   );
 }

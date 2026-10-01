@@ -120,7 +120,6 @@ body {
 /* Elevation: lift the primary surfaces off the background so the layout reads as stacked cards. */
 .metric,
 .strategy-card,
-.story,
 .prices,
 .plandetail,
 .socchart,
@@ -360,11 +359,12 @@ body {
    without this they sit flush against the energy story above. */
 .status-grid { margin-top: 24px; }
 
+/* B-101 polish: single gap below tiles — PlanStory owns no extra top margin (was 20+18). */
 .outcome-tiles {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: 12px;
-  margin-bottom: 20px;
+  margin: 0 0 16px;
 }
 .outcome-tile {
   display: flex;
@@ -378,7 +378,16 @@ body {
   border: 1px solid var(--line);
   border-radius: var(--radius);
 }
-.outcome-tile-label { color: var(--muted); font-size: 0.78rem; font-weight: 600; }
+.outcome-tile-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  color: var(--muted);
+  font-size: 0.78rem;
+  font-weight: 600;
+}
+.outcome-tile-icon-wrap { display: inline-flex; flex: none; color: var(--muted); }
+.outcome-tile-icon { width: 14px; height: 14px; }
 .outcome-tile-value {
   font-size: 1.45rem;
   font-weight: 650;
@@ -386,6 +395,17 @@ body {
   letter-spacing: -0.02em;
   font-variant-numeric: tabular-nums;
 }
+/* B-100: measuring / ≤€0 savings — quiet honesty, never warn-amber or alarm-red.
+   Polish R3: mix muted toward text so calm copy stays AA on --panel. */
+.outcome-tile.is-calm { color: var(--text); }
+.outcome-tile.is-calm .outcome-tile-value,
+.outcome-tile-value.is-calm-copy {
+  color: color-mix(in srgb, var(--muted) 40%, var(--text));
+  font-size: 1.05rem;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+.outcome-tile.is-positive .outcome-tile-value { color: var(--text); }
 .outcome-tile-freshness { display:block; margin-top:0.25rem; color:var(--muted); font-size:0.68rem; }
 .outcome-tile-freshness.is-stale { color:var(--amber-text); font-weight:700; }
 .outcome-tile-action { font: inherit; cursor: pointer; }
@@ -420,7 +440,7 @@ body {
 .metric-accent .metric-value { color: var(--accent-text); }
 
 /* Tooltip affordance: anything carrying a hover explanation shows the help cursor. */
-.metric[title], .badge[title], .freshness-title[title], .story-stat[title] { cursor: help; }
+.metric[title], .badge[title], .freshness-title[title] { cursor: help; }
 
 /* A metric tile that opens detail (e.g. battery level → per-tower) behaves like a button. */
 .metric-clickable {
@@ -567,14 +587,43 @@ body {
 .legend-deadline { border-top-color: var(--summer); }
 .soc-mini-legend { margin-top: 8px; gap: 14px; }
 
-/* One continuous recorded → now → forecast story. */
+/* One continuous recorded → now → forecast story.
+   Polish R1: margin-top 0 — spacing from tiles comes from .outcome-tiles only. */
 .plan-story {
-  margin: 18px 0 0;
-  padding: 18px;
+  margin: 0 0 16px;
+  padding: 16px 18px;
   border: 1px solid var(--line);
   border-radius: var(--radius);
   background: var(--panel);
   box-shadow: var(--shadow);
+}
+/* B-96: Last-3h review lives under a plan-header disclosure, not the hero body. */
+.plan-story-recent-review {
+  margin: 0 0 12px;
+  color: var(--muted);
+  font-size: 0.85rem;
+}
+.plan-story-recent-review-toggle {
+  cursor: pointer;
+  list-style: none;
+  color: var(--muted);
+}
+.plan-story-recent-review-toggle:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+.plan-story-recent-review-toggle::-webkit-details-marker { display: none; }
+.plan-story-recent-review-toggle::before {
+  content: "›";
+  display: inline-block;
+  margin-right: 6px;
+}
+.plan-story-recent-review[open] > .plan-story-recent-review-toggle::before {
+  transform: rotate(90deg);
+}
+.plan-story-recent-review-body {
+  margin: 6px 0 0;
 }
 .plan-story-chart-wrap { position: relative; }
 .plan-story-svg { display: block; width: 100%; height: auto; }
@@ -582,9 +631,15 @@ body {
 .plan-story-solar text,
 .plan-story-references text,
 .plan-story-now text,
-.plan-story-axis text {
+.plan-story-axis text,
+.plan-story-soc-scale text {
   fill: var(--muted);
   font-size: 12px;
+}
+/* B-102: quieter than time-axis ticks — power-user SoC scale only. */
+.plan-story-soc-scale text {
+  font-size: 11px;
+  opacity: 0.72;
 }
 .plan-story-solar polygon {
   fill: var(--summer);
@@ -693,58 +748,16 @@ body {
   .plan-story-solar text,
   .plan-story-references text,
   .plan-story-now text,
-  .plan-story-axis text { font-size: 28px; }
+  .plan-story-axis text,
+  .plan-story-soc-scale text { font-size: 28px; }
 }
 @media (prefers-reduced-motion: reduce) {
   .plan-story * { transition: none !important; }
 }
 
 /* Energy story — one timeline, past or next */
-.story {
-  margin-top: 24px;
-  background: var(--panel);
-  border: 1px solid var(--line);
-  border-radius: var(--radius);
-  padding: 18px;
-}
-.story-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
-.story-head-right { display: inline-flex; align-items: center; gap: 10px; }
-.story-price { font-size: 0.95rem; font-weight: 600; color: var(--text); font-variant-numeric: tabular-nums; }
-.story-check {
-  display: flex; align-items: center; gap: 8px;
-  margin: 8px 0 0; font-size: 0.88rem; padding: 8px 12px; border-radius: 8px;
-  background: var(--panel-2);
-}
-.story-check svg { flex: none; }
-.story-check-ok { color: var(--green-text); border-left: 3px solid var(--green); }
-.story-check-warn { color: var(--amber-text); border-left: 3px solid var(--amber); }
-.story-insight { display: flex; align-items: center; gap: 7px; margin: 8px 0 0; font-size: 0.9rem; color: var(--muted); }
-.story-insight svg { flex: none; color: var(--amber); }
-.story-toggle {
-  display: inline-flex; gap: 4px; background: var(--panel-2);
-  border: 1px solid var(--line); border-radius: 12px; padding: 4px;
-}
-.story-tab {
-  border: 0; background: transparent; color: var(--muted); font: inherit; font-weight: 600;
-  padding: 8px 16px; border-radius: 9px; cursor: pointer; transition: background 0.15s, color 0.15s;
-}
-.story-tab:hover { color: var(--text); }
-.story-tab:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
-.story-tab-on { background: var(--panel); color: var(--text); box-shadow: 0 1px 3px rgba(0,0,0,0.18); }
-.story-headline {
-  margin: 14px 0 4px; font-size: 1.02rem; line-height: 1.45; color: var(--text);
-  border-left: 3px solid var(--accent); background: var(--panel-2);
-  border-radius: 6px; padding: 10px 14px;
-}
-.story-stats {
-  display: flex; flex-wrap: wrap; gap: 10px; margin: 14px 0 6px;
-}
-.story-stat {
-  display: flex; flex-direction: column; gap: 2px; flex: 1 1 120px; min-width: 110px;
-  background: var(--panel-2); border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px;
-}
-.story-stat-value { font-size: 1.25rem; font-weight: 600; font-variant-numeric: tabular-nums; }
-.story-stat-label { font-size: 0.7rem; color: var(--muted); text-transform: uppercase; letter-spacing: 0.03em; }
+.story-review { color: var(--muted); font-size: 0.8rem; margin: -4px 0 10px; }
+.plan-story-recent-review-body.story-review { margin: 6px 0 0; }
 
 /* Battery action colours + static hatches (shared by the band and legend swatches). The 2px
    text-colour stroke repeats every 7px, so it remains distinct across the strip's 10px height. */
@@ -935,22 +948,6 @@ body {
 .soc-deadline { stroke: var(--summer); stroke-width: 1; opacity: 0.45; }
 .soc-deadline-label { fill: var(--summer); font-size: 11px; opacity: 0.9; }
 .soc-now { stroke: var(--muted); stroke-width: 1; opacity: 0.6; }
-/* "Am I on track?" verdict under the headline. */
-.on-track {
-  display: inline-flex; align-items: center; gap: 6px; font-size: 0.85rem; font-weight: 550;
-  margin: 6px 0 10px; padding: 5px 11px; border-radius: 999px; border: 1px solid var(--border);
-}
-.on-track svg { width: 14px; height: 14px; flex: none; }
-.on-track-good {
-  color: var(--green-text); background: color-mix(in srgb, var(--accent) 10%, transparent);
-  border-color: color-mix(in srgb, var(--accent) 35%, transparent);
-}
-.on-track-warn {
-  color: var(--amber-text); background: color-mix(in srgb, var(--amber) 12%, transparent);
-  border-color: color-mix(in srgb, var(--amber) 40%, transparent);
-}
-.on-track-muted { color: var(--muted); }
-.story-review { color: var(--muted); font-size: 0.8rem; margin: -4px 0 10px; }
 .soc-now-label { fill: var(--muted); font-size: 11px; font-weight: 600; }
 .tick-now { color: var(--text); font-weight: 700; }
 /* Recent ACTUALS on the next-24h bar tracks read as "already happened" — faded vs. the plan. */
@@ -1270,10 +1267,47 @@ body {
 .chip-stale { color: var(--amber-text); border-color: rgba(224, 162, 58, 0.4); }
 .chip-missing { color: var(--error); border-color: rgba(220, 80, 80, 0.4); }
 
-/* Issue #79 — compact device / data-health strip (dashboard, no click). */
+/* Issue #79 — compact device / data-health strip (dashboard, no click).
+   B-94: healthy/ok collapses to a quiet one-line disclosure (no four-source card). */
 .device-health {
-  margin: 0.75rem 0 1rem;
+  margin: 0 0 14px;
   padding: 0.65rem 0.85rem;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--panel-2);
+}
+.device-health--quiet {
+  margin: 0 0 12px;
+  padding: 0;
+  border: none;
+  background: transparent;
+}
+.device-health-quiet > summary {
+  list-style: none;
+  cursor: pointer;
+}
+.device-health-quiet > summary:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+.device-health-quiet > summary::-webkit-details-marker { display: none; }
+.device-health-quiet > summary::after {
+  content: " ›";
+  color: var(--muted);
+  font-weight: 400;
+}
+.device-health-quiet[open] > summary::after { content: " ˅"; }
+.device-health--quiet .device-health-summary {
+  margin-bottom: 0;
+  font-size: 0.8rem;
+}
+.device-health-quiet[open] .device-health-summary {
+  margin-bottom: 0.45rem;
+}
+.device-health-quiet[open] .device-health-sources {
+  margin-top: 0.35rem;
+  padding: 0.55rem 0.75rem;
   border: 1px solid var(--line);
   border-radius: 10px;
   background: var(--panel-2);
@@ -2101,8 +2135,8 @@ body {
 /* The hero — the dashboard's single answer to "is my home doing the right thing, and do I need to
    act?". Frosted like the old banner, but now stacked: verdict, then synthesis, then the act line. */
 .hero {
-  display: flex; flex-direction: column; gap: 8px;
-  padding: 18px 22px; border-radius: 16px; margin: 4px 0 18px;
+  display: flex; flex-direction: column; gap: 6px;
+  padding: 16px 20px; border-radius: 16px; margin: 0 0 14px;
   background: color-mix(in srgb, var(--panel) 78%, transparent);
   -webkit-backdrop-filter: blur(16px) saturate(1.1);
   backdrop-filter: blur(16px) saturate(1.1);
@@ -2114,7 +2148,7 @@ body {
 }
 .hero-verdict {
   margin: 0; font-weight: 700; color: var(--text); letter-spacing: -0.01em;
-  font-size: clamp(1.25rem, 4.2vw, 1.7rem); line-height: 1.2;
+  font-size: clamp(1.2rem, 3.8vw, 1.55rem); line-height: 1.2;
 }
 /* B-68 plan-confidence chip — sits next to the verdict; tone-only (green/amber/red-tint), same
    pill shape as the topbar badges. Reasons live in the title tooltip + the muted sub-line below. */
@@ -2125,8 +2159,8 @@ body {
 .hero-confidence-reason { margin: 0; color: var(--muted); font-size: 0.82rem; line-height: 1.4; }
 .hero-synthesis { margin: 0; color: var(--muted); font-size: 0.95rem; line-height: 1.45; }
 .hero-act {
-  margin: 2px 0 0; display: inline-flex; align-items: flex-start; gap: 7px;
-  font-size: 0.92rem; line-height: 1.4; font-weight: 600;
+  margin: 0; display: inline-flex; align-items: flex-start; gap: 7px;
+  font-size: 0.9rem; line-height: 1.4; font-weight: 600;
 }
 .hero-act-calm { color: var(--muted); font-weight: 500; }
 .hero-act-attention { color: var(--amber-text); }
@@ -2158,15 +2192,19 @@ body {
 .home-attention { border-color: rgba(220, 80, 80, 0.55); }
 .decision-target { color: var(--muted); }
 .strategy-why { color: var(--muted); font-size: 0.8rem; margin: 6px 0 0; font-style: italic; }
-/* Quiet success markers in the Energy Story — calm confirmation, deliberately understated. */
-.trust-markers { display: flex; flex-wrap: wrap; gap: 8px; margin: 4px 0 12px; }
+/* Quiet success markers — hero gap owns vertical rhythm (no extra bottom margin). */
+.trust-markers { display: flex; flex-wrap: wrap; gap: 8px; margin: 0; }
 
-/* B-63 / #88: evening-peak coverage probability under the waarom strip. */
+/* B-63 / #88 + B-95: evening-peak coverage — risk banner only (covered lives on hero). */
 .evening-peak-coverage {
   margin: 0 0 12px;
   padding: 10px 12px;
   border-left: 3px solid var(--accent);
   background: color-mix(in srgb, var(--accent) 8%, transparent);
+}
+.evening-peak-coverage--risk {
+  border-left-color: var(--amber);
+  background: color-mix(in srgb, var(--amber) 10%, transparent);
 }
 .evening-peak-coverage-label {
   margin: 0 0 4px;
@@ -2658,7 +2696,7 @@ body {
 /* B-33 / #85 slice 1: "Waarom?" disclosure for the current battery action. Not a
    data-density-kind="disclosure" — that budget is reserved for home-more. */
 .battery-action-why {
-  margin: 0 0 12px;
+  margin: 0 0 14px;
   padding: 10px 14px;
   border-radius: 10px;
   background: var(--panel);
@@ -2757,24 +2795,6 @@ body {
   line-height: 1.5;
   color: var(--muted);
 }
-.battery-plan-footer {
-  display: flex; flex-wrap: wrap; gap: 8px 28px;
-  margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--line);
-}
-.bp-foot { display: inline-flex; align-items: baseline; gap: 7px; }
-.bp-foot-label {
-  font-size: 0.72rem; color: var(--muted);
-  text-transform: uppercase; letter-spacing: 0.03em;
-}
-.bp-foot-value {
-  font-size: 0.98rem; font-weight: 600; color: var(--text);
-  font-variant-numeric: tabular-nums;
-}
-/* When there's a cluster to break down, the battery figure is a button into the per-tower view. */
-.bp-foot-btn { border: 0; background: transparent; padding: 0; cursor: pointer; font: inherit; color: inherit; }
-.bp-foot-btn:hover .bp-foot-value { color: var(--accent-text); }
-.bp-foot-btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; border-radius: 6px; }
-.bp-foot-more { font-size: 0.72rem; color: var(--accent-text); font-weight: 600; }
 
 .home-more {
   margin: 4px 0 20px;
@@ -2788,11 +2808,79 @@ body {
   font-weight: 650;
   list-style: none;
 }
+.home-more-toggle:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+  border-radius: 4px;
+}
 .home-more-toggle::-webkit-details-marker { display: none; }
-.home-more-toggle::before { content: "›"; display: inline-block; margin-right: 9px; }
+.home-more-toggle::before {
+  content: "›";
+  display: inline-block;
+  margin-right: 9px;
+  transition: transform 0.15s ease;
+}
 .home-more[open] > .home-more-toggle::before { transform: rotate(90deg); }
 .home-more-body { display: flex; flex-direction: column; gap: 14px; padding-top: 4px; }
 .home-more-body > :last-child { margin-bottom: 0; }
+
+/* B-102: nested Strategy / Manual / Car — scannable sections inside More. */
+.home-more-nest {
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--panel);
+  padding: 0 12px;
+}
+/* Hide a nest whose body has no mounted card (e.g. compact Car when EV is off). */
+.home-more-nest:not(:has(.home-more-nest-body > *)) {
+  display: none;
+}
+.home-more-nest-toggle {
+  padding: 12px 2px;
+  color: var(--text);
+  cursor: pointer;
+  font-size: 0.84rem;
+  font-weight: 650;
+  list-style: none;
+}
+.home-more-nest-toggle:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+.home-more-nest-toggle::-webkit-details-marker { display: none; }
+.home-more-nest-toggle::before {
+  content: "›";
+  display: inline-block;
+  margin-right: 8px;
+  color: var(--muted);
+  transition: transform 0.15s ease;
+}
+.home-more-nest[open] > .home-more-nest-toggle::before { transform: rotate(90deg); }
+.home-more-nest-body {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 0 0 12px;
+}
+.home-more-nest-body > :last-child { margin-bottom: 0; }
+/* Nested cards already have their own panel chrome — drop the double frame. */
+.home-more-nest-body > .strategy-card,
+.home-more-nest-body > .override,
+.home-more-nest-body > .car-card {
+  margin: 0;
+  border: none;
+  background: transparent;
+  padding-left: 0;
+  padding-right: 0;
+}
+@media (prefers-reduced-motion: reduce) {
+  .home-more-toggle::before,
+  .home-more-nest-toggle::before,
+  .plan-story-recent-review-toggle::before {
+    transition: none;
+  }
+}
 
 /* --- Auth screens (Login/Onboarding/AcceptInvite) — Item A ------------------------------------
    These render BEFORE the styled app shell (App.tsx's early auth-gate returns, above the final

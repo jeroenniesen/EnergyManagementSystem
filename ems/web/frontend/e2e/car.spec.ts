@@ -252,6 +252,7 @@ test.describe("Car view", () => {
     await mockCars(page);
     await page.goto("/");
     await page.getByTestId("home-more-toggle").click();
+    await page.getByTestId("home-more-car-toggle").click();
 
     // Compact: SoC + deadline + advice + "Open Car →" — but NOT the windows or the 48h timeline.
     const card = page.getByTestId("car-card");

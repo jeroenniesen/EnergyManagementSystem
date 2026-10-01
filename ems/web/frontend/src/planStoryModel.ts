@@ -1,4 +1,5 @@
-import type { StorySlot } from "./EnergyStory";
+import type { EnergyStoryData, StorySlot } from "./EnergyStory";
+import { HOME_PLAN_STORY, PLAN_ACTION_META } from "./labels";
 
 export const SLOT_MS = 15 * 60 * 1000;
 
@@ -133,8 +134,6 @@ export function tickTimes(
   return ticks;
 }
 
-import type { EnergyStoryData } from "./EnergyStory";
-
 const GAP_LIMIT_MS = 1.5 * SLOT_MS;
 
 export type PlanAction =
@@ -150,33 +149,27 @@ export const ACTION_META: Record<
   { label: string; phrase: string; className: string }
 > = {
   solar_charge: {
-    label: "Charge from solar",
-    phrase: "Charges from solar",
+    ...PLAN_ACTION_META.solar_charge,
     className: "plan-story-legend-action action-solar_charge",
   },
   grid_charge: {
-    label: "Charge from grid",
-    phrase: "Charges from grid",
+    ...PLAN_ACTION_META.grid_charge,
     className: "plan-story-legend-action action-grid_charge",
   },
   discharge: {
-    label: "Power the house",
-    phrase: "Powers the house",
+    ...PLAN_ACTION_META.discharge,
     className: "plan-story-legend-action action-discharge",
   },
   self_consume: {
-    label: "Use solar first",
-    phrase: "Uses solar first",
+    ...PLAN_ACTION_META.self_consume,
     className: "plan-story-legend-action action-self_consume",
   },
   hold: {
-    label: "Hold",
-    phrase: "Holds",
+    ...PLAN_ACTION_META.hold,
     className: "plan-story-legend-action action-hold",
   },
   idle: {
-    label: "Idle",
-    phrase: "Idles",
+    ...PLAN_ACTION_META.idle,
     className: "plan-story-legend-action action-idle",
   },
 };
@@ -374,24 +367,38 @@ function watts(value: number): string {
 export function slotTipRows(slot: StorySlot): SlotTipRow[] {
   const rows: SlotTipRow[] = [];
   if (finiteNumber(slot.soc_pct)) {
-    rows.push({ label: "Battery level", value: `${Math.round(slot.soc_pct)}%`, color: "var(--accent)" });
+    rows.push({
+      label: HOME_PLAN_STORY.tipBattery,
+      value: `${Math.round(slot.soc_pct)}%`,
+      color: "var(--accent)",
+    });
   }
   if (finiteNumber(slot.eur_per_kwh)) {
-    rows.push({ label: "Price", value: `€${slot.eur_per_kwh.toFixed(2)}/kWh`, color: "var(--winter)" });
+    rows.push({
+      label: HOME_PLAN_STORY.tipPrice,
+      value: `€${slot.eur_per_kwh.toFixed(2)}/kWh`,
+      color: "var(--winter)",
+    });
   }
   if (finiteNumber(slot.solar_w)) {
-    rows.push({ label: "Solar", value: watts(slot.solar_w), color: "var(--summer)" });
+    rows.push({
+      label: HOME_PLAN_STORY.tipSolar,
+      value: watts(slot.solar_w),
+      color: "var(--summer)",
+    });
   }
   const action = canonicalAction(slot.action);
   rows.push({
-    label: "Action",
+    label: HOME_PLAN_STORY.tipAction,
     value: ACTION_META[action].label,
     className: ACTION_META[action].className,
   });
   if (finiteNumber(slot.grid_w)) {
     rows.push({
-      label: "Grid flow",
-      value: `${watts(slot.grid_w)} ${slot.grid_w >= 0 ? "import" : "export"}`,
+      label: HOME_PLAN_STORY.tipGridFlow,
+      value: `${watts(slot.grid_w)} ${
+        slot.grid_w >= 0 ? HOME_PLAN_STORY.tipImport : HOME_PLAN_STORY.tipExport
+      }`,
       color: "var(--winter)",
     });
   }
@@ -401,20 +408,23 @@ export function slotTipRows(slot: StorySlot): SlotTipRow[] {
 function actionSentence(window: ActionWindow): string {
   const boundary =
     window.startSocPct != null && window.endSocPct != null
-      ? `, battery ${Math.round(window.startSocPct)}%–${Math.round(window.endSocPct)}%`
+      ? `, batterij ${Math.round(window.startSocPct)}%–${Math.round(window.endSocPct)}%`
       : window.endSocPct == null
         ? ""
-        : `, ending near ${Math.round(window.endSocPct)}%`;
+        : `, eindigt rond ${Math.round(window.endSocPct)}%`;
   return `${ACTION_META[window.action].phrase} ${formatClock(window.start)}–${formatClock(window.end)}${boundary}.`;
 }
 
 function gapSentence(gap: GapWindow): string {
-  const source = gap.kind === "recorded" ? "recorded" : "forecast";
-  return `No ${source} data ${formatClock(gap.start)}–${formatClock(gap.end)}.`;
+  const prefix =
+    gap.kind === "recorded"
+      ? HOME_PLAN_STORY.noRecordedData
+      : HOME_PLAN_STORY.noForecastData;
+  return `${prefix} ${formatClock(gap.start)}–${formatClock(gap.end)}.`;
 }
 
 export function describeCombinedPlan(story: EnergyStoryData | null): string {
-  if (!story) return "Battery plan is loading.";
+  if (!story) return HOME_PLAN_STORY.loading;
   const slots = normaliseSlots(story.recent ?? [], story.slots);
   const nowMs = Date.parse(story.now);
   const current = story.current_soc_pct ?? slots.find((slot) => finiteNumber(slot.soc_pct))?.soc_pct;
@@ -423,23 +433,26 @@ export function describeCombinedPlan(story: EnergyStoryData | null): string {
     ...gapWindows(slots, nowMs).map((gap) => ({ start: gap.start, text: gapSentence(gap) })),
   ].sort((a, b) => a.start - b.start);
   const parts = [
-    finiteNumber(current) ? `Battery at ${Math.round(current)}% now.` : "Battery level is unavailable.",
+    finiteNumber(current)
+      ? HOME_PLAN_STORY.batteryAtNow(Math.round(current))
+      : HOME_PLAN_STORY.batteryUnavailable,
     ...events.map((event) => event.text),
   ];
   if (finiteNumber(story.target_soc_pct)) {
     const deadline = story.target_deadline ? Date.parse(story.target_deadline) : NaN;
     parts.push(
-      `Night target ${Math.round(story.target_soc_pct)}%${
-        Number.isFinite(deadline) ? ` by ${formatClock(deadline)}` : ""
-      }.`,
+      HOME_PLAN_STORY.nightTarget(
+        Math.round(story.target_soc_pct),
+        Number.isFinite(deadline) ? formatClock(deadline) : "",
+      ),
     );
   }
-  parts.push(`Minimum reserve ${Math.round(story.reserve_soc_pct)}%.`);
+  parts.push(HOME_PLAN_STORY.minReserve(Math.round(story.reserve_soc_pct)));
   return parts.join(" ");
 }
 
 export function describeCombinedPlanLabel(story: EnergyStoryData | null): string {
-  if (!story) return "Battery plan is loading.";
+  if (!story) return HOME_PLAN_STORY.loading;
   const slots = normaliseSlots(story.recent ?? [], story.slots);
   const nowMs = Date.parse(story.now);
   const events = [
@@ -449,10 +462,14 @@ export function describeCombinedPlanLabel(story: EnergyStoryData | null): string
     })),
     ...gapWindows(slots, nowMs).map((gap) => ({
       start: gap.start,
-      text: `no ${gap.kind} data ${formatClock(gap.start)}–${formatClock(gap.end)}`,
+      text: `${
+        gap.kind === "recorded"
+          ? HOME_PLAN_STORY.noRecordedData
+          : HOME_PLAN_STORY.noForecastData
+      } ${formatClock(gap.start)}–${formatClock(gap.end)}`,
     })),
   ].sort((a, b) => a.start - b.start);
-  return `Battery plan: ${events.map((event) => event.text).join("; ")}.`;
+  return `${HOME_PLAN_STORY.labelPrefix} ${events.map((event) => event.text).join("; ")}.`;
 }
 
 export function buildPlanStoryModel(

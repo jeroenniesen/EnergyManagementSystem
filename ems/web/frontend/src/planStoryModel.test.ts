@@ -318,22 +318,22 @@ describe("gaps and story semantics", () => {
       hour12: false,
     });
 
-    expect(summary).toContain(`Powers the house ${dischargeStart}`);
-    expect(summary).toContain("battery 52%–51%");
-    expect(summary).toContain(`Holds ${holdStart}`);
-    expect(summary).toContain("No recorded data");
-    expect(summary).toContain("Charges from solar");
-    expect(summary).toContain("Night target 88%");
+    expect(summary).toContain(`Voedt de woning ${dischargeStart}`);
+    expect(summary).toContain("batterij 52%–51%");
+    expect(summary).toContain(`Houdt vast ${holdStart}`);
+    expect(summary).toContain("Geen gemeten data");
+    expect(summary).toContain("Laadt van zonnepanelen");
+    expect(summary).toContain("Nachtdoel 88%");
   });
 
   test("tooltip rows omit null facts and never exceed five rows", () => {
     const rows = slotTipRows(
       storySlot(0, { soc_pct: null, eur_per_kwh: null, solar_w: 700, grid_w: -250 }),
     );
-    expect(rows.map((row) => row.label)).toEqual(["Solar", "Action", "Grid flow"]);
+    expect(rows.map((row) => row.label)).toEqual(["Zon", "Actie", "Netstroom"]);
     expect(rows).toHaveLength(3);
     expect(rows[1].className).toBe("plan-story-legend-action action-hold");
-    expect(rows[2].value).toContain("export");
+    expect(rows[2].value).toContain("uitvoer");
   });
 
   test("the complete model carries spans, now, ticks, gaps, and both summaries", () => {
@@ -342,8 +342,8 @@ describe("gaps and story semantics", () => {
     expect(model.spans).toHaveLength(3);
     expect(model.nowX).toBeCloseTo(model.scale.x(BASE + 30 * 60_000));
     expect(model.gaps).toHaveLength(1);
-    expect(model.summary).toContain("No forecast data");
-    expect(model.label).toContain("Hold");
+    expect(model.summary).toContain("Geen voorspelling");
+    expect(model.label).toContain("Vasthouden");
   });
 
   test("keeps observed price extrema while anchoring one-sided bar domains at zero", () => {

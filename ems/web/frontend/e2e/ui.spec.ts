@@ -71,6 +71,17 @@ async function openMore(page: Page) {
   await expect(page.getByTestId("home-more-body")).toBeVisible();
 }
 
+/** B-102: open a nested Strategy / Manual / Car disclosure inside More. */
+async function openMoreNest(page: Page, kind: "strategy" | "manual" | "car") {
+  await openMore(page);
+  const nest = page.getByTestId(`home-more-${kind}`);
+  await expect(nest).toBeVisible();
+  if ((await nest.getAttribute("open")) === null) {
+    await page.getByTestId(`home-more-${kind}-toggle`).click();
+  }
+  await expect(page.getByTestId(`home-more-${kind}-body`)).toBeVisible();
+}
+
 // The detailed panels (power tiles, Sankey, charge target, controller decision, AI note, data
 // status) now live in a collapsed "Advanced" section — open it before asserting on them.
 async function openAdvanced(page: Page) {
@@ -328,26 +339,26 @@ test.describe("EMS dashboard", () => {
     for (const line of await page.locator(".plan-story-soc-line").all()) {
       await expect(line).toHaveCSS("fill", "none");
     }
-    await expect(page.getByTestId("plan-story-now")).toContainText("now");
-    await expect(page.getByTestId("plan-story-target-label")).toHaveText("target 88%");
+    await expect(page.getByTestId("plan-story-now")).toContainText("nu");
+    await expect(page.getByTestId("plan-story-target-label")).toHaveText("doel 88%");
     await expect(page.getByTestId("plan-story-reserve-label")).toHaveText("reserve 10%");
     await expect(page.getByTestId("plan-story-action-segment")).toHaveCount(5);
     await expect(page.getByTestId("plan-story-action-segment").first()).toHaveAttribute("aria-hidden", "true");
     await expect(page.getByTestId("plan-story-action-segment").first()).not.toHaveAttribute("aria-label");
-    await expect(page.getByTestId("plan-story-legend")).toContainText("Power the house");
-    await expect(page.getByTestId("plan-story-legend")).toContainText("Idle");
-    await expect(page.getByTestId("plan-story-legend")).not.toContainText("Hold");
-    await expect(page.getByTestId("plan-story-legend")).toContainText("Charge from solar");
-    await expect(page.getByTestId("plan-story-legend")).toContainText("Charge from grid");
+    await expect(page.getByTestId("plan-story-legend")).toContainText("Zelfconsumptie");
+    await expect(page.getByTestId("plan-story-legend")).toContainText("Inactief");
+    await expect(page.getByTestId("plan-story-legend")).not.toContainText("Vasthouden");
+    await expect(page.getByTestId("plan-story-legend")).toContainText("Laden van zonnepanelen");
+    await expect(page.getByTestId("plan-story-legend")).toContainText("Laden van het net");
     await expect(chart).not.toContainText("The hero owns the only headline");
 
     const spoken = page.getByTestId("plan-story-summary");
-    await expect(spoken).toContainText("Powers the house 08:00–08:15");
-    await expect(spoken).toContainText("Idles 08:15–08:30");
-    await expect(spoken).not.toContainText("Holds");
-    await expect(spoken).toContainText("No recorded data 08:30–08:45");
-    await expect(spoken).toContainText("Charges from solar 09:15–09:30");
-    await expect(spoken).toContainText("Night target 88%");
+    await expect(spoken).toContainText("Voedt de woning 08:00–08:15");
+    await expect(spoken).toContainText("Staat stil 08:15–08:30");
+    await expect(spoken).not.toContainText("Houdt vast");
+    await expect(spoken).toContainText("Geen gemeten data 08:30–08:45");
+    await expect(spoken).toContainText("Laadt van zonnepanelen 09:15–09:30");
+    await expect(spoken).toContainText("Nachtdoel 88%");
   });
 
   test("PlanStory keeps signed price bars and solar paint in their subordinate channels", async ({
@@ -570,7 +581,7 @@ test.describe("EMS dashboard", () => {
     await expect(page.getByTestId("plan-story-plot")).toBeVisible();
 
     await moveToViewBoxX(page, 122);
-    await expect(page.getByTestId("plan-story-tip")).toContainText("08:00 · recorded");
+    await expect(page.getByTestId("plan-story-tip")).toContainText("08:00 · gemeten");
     await expect(page.getByTestId("plan-story-tip")).toContainText("52%");
     await expect(page.getByTestId("plan-story-crosshair")).toHaveAttribute("stroke-dasharray", "2 3");
 
@@ -578,12 +589,13 @@ test.describe("EMS dashboard", () => {
     await expect(page.getByTestId("plan-story-tip")).toHaveCount(0);
 
     await moveToViewBoxX(page, 738);
-    await expect(page.getByTestId("plan-story-tip")).toContainText("09:15 · forecast");
+    await expect(page.getByTestId("plan-story-tip")).toContainText("09:15 · voorspelling");
     await page.mouse.move(0, 0);
     await expect(page.getByTestId("plan-story-tip")).toHaveCount(0);
   });
 
-  test("PlanStory footer keeps savings, battery percentage, and the tower detail link", async ({ page }) => {
+  // B-97: SoC / Saved already live in OutcomeTiles — PlanStory must not repeat them.
+  test("PlanStory has no footer KPI strip duplicating OutcomeTiles SoC and Saved", async ({ page }) => {
     await routePlanStory(page);
     await routeDashboardStatus(page);
     await page.route("**/api/battery", (route) => route.fulfill({
@@ -626,12 +638,14 @@ test.describe("EMS dashboard", () => {
     }));
     await page.goto("/");
 
-    const footer = page.getByTestId("story-footer");
-    await expect(footer).toContainText("Saved today");
-    await expect(footer).toContainText("€2.84 measured");
-    await expect(footer).toContainText("55%");
-    await expect(footer).toContainText("see each battery →");
-    await expect(footer).not.toContainText("Mode");
+    await expect(page.getByTestId("plan-story-plot")).toBeVisible();
+    await expect(page.getByTestId("plan-story-legend")).toBeVisible();
+    await expect(page.getByTestId("story-footer")).toHaveCount(0);
+    await expect(page.getByTestId("plan-story")).not.toContainText("Saved today");
+    await expect(page.getByTestId("plan-story")).not.toContainText("Bespaard vandaag");
+    await expect(page.getByTestId("plan-story")).not.toContainText("see each battery");
+    await expect(page.getByTestId("outcome-soc")).toContainText("55%");
+    await expect(page.getByTestId("outcome-savings")).toContainText("€2.84");
   });
 
   test("cached outcome values become stale after a failed refresh", async ({ page }) => {
@@ -657,9 +671,9 @@ test.describe("EMS dashboard", () => {
     await expect(page.getByTestId("outcome-soc")).toContainText("55%");
     await expect(page.getByTestId("outcome-savings")).toContainText("€2.84");
     await page.waitForTimeout(10_500);
-    await expect(page.getByTestId("outcome-soc")).toContainText("Stale");
-    await expect(page.getByTestId("outcome-savings")).toContainText("Stale");
-    await expect(page.getByTestId("outcome-soc")).toContainText("Updated");
+    await expect(page.getByTestId("outcome-soc")).toContainText("Verouderd");
+    await expect(page.getByTestId("outcome-savings")).toContainText("Verouderd");
+    await expect(page.getByTestId("outcome-soc")).toContainText("Bijgewerkt");
     dashboardMock.assertRequested();
     fallbackStatusMock.assertRequested();
     financeMock.assertRequested();
@@ -676,7 +690,7 @@ test.describe("EMS dashboard", () => {
     });
     await page.goto("/");
     await expect(page.getByTestId("outcome-soc")).toContainText("55%");
-    await expect(page.getByTestId("outcome-soc")).toContainText("Stale");
+    await expect(page.getByTestId("outcome-soc")).toContainText("Verouderd");
     dashboardMock.assertRequested();
   });
 
@@ -798,17 +812,20 @@ test.describe("EMS dashboard", () => {
       body: JSON.stringify(story),
     }));
     await page.goto("/");
-    await expect(page.getByTestId("plan-story")).toContainText("Battery plan is unavailable.");
+    await expect(page.getByTestId("plan-story")).toContainText("Batterijplan niet beschikbaar.");
     await expect(page.getByTestId("plan-story-price")).toHaveCount(0);
     await expect(page.getByTestId("plan-story-action-segment")).toHaveCount(0);
   });
 
   test("approved dashboard hierarchy keeps four primary surfaces above one disclosure", async ({ page }) => {
     await page.goto("/");
-    for (const id of ["run-mode-badge", "data-quality", "home-state", "outcome-tiles",
+    // B-99: data-quality is attention-only (hidden when complete); run-mode stays.
+    for (const id of ["run-mode-badge", "home-state", "outcome-tiles",
       "plan-story", "home-more", "alerts"]) {
       await expect(page.getByTestId(id), `panel ${id} should render`).toBeVisible();
     }
+    await expect(page.getByTestId("data-quality")).toHaveCount(0);
+    // B-101 / B-87: hero → tiles → PlanStory chart → More (Waarom / evening-peak after chart).
     const ordered = await Promise.all(["home-state", "outcome-tiles", "plan-story", "home-more"]
       .map((id) => page.getByTestId(id).boundingBox()));
     expect(ordered.every(Boolean)).toBe(true);
@@ -816,7 +833,7 @@ test.describe("EMS dashboard", () => {
     expect(ordered[1]!.y).toBeLessThan(ordered[2]!.y);
     expect(ordered[2]!.y).toBeLessThan(ordered[3]!.y);
     const heroBox = ordered[0]!;
-    for (const id of ["run-mode-badge", "data-quality", "alerts"]) {
+    for (const id of ["run-mode-badge", "alerts"]) {
       const safetyBox = await page.getByTestId(id).boundingBox();
       expect(safetyBox, `${id} should have layout geometry`).not.toBeNull();
       expect(safetyBox!.y, `${id} should remain above the hero`).toBeLessThan(heroBox.y);
@@ -834,6 +851,274 @@ test.describe("EMS dashboard", () => {
     await expect(page.getByTestId("score-card-best_price")).toBeVisible();
     await expect(page.getByTestId("score-card-self_consumption")).toHaveCount(0);
     await expect(page.getByTestId("error")).toHaveCount(0);
+  });
+
+  // B-101: restore B-87 order — chart immediately after tiles; Nu/Waarom + evening-peak below.
+  for (const viewport of [
+    { name: "desktop", width: 1280, height: 900 },
+    { name: "phone", width: 390, height: 844 },
+  ]) {
+    test(`B-101: ${viewport.name} PlanStory sits before Waarom and evening-peak`, async ({ page }) => {
+      await page.setViewportSize(viewport);
+      await page.route("**/api/battery-plan", (route) => route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify(batteryPlanFixture(
+          { level: "high", reasons: ["Fresh data."] },
+          DEFAULT_PROVENANCE,
+          {
+            current_action: "grid_charge",
+            evening_peak_coverage: {
+              probability: 0.667,
+              available: true,
+              label: "Evening peak may be covered (~67%)",
+              reason: "2 of 3 scenarios cover the evening peak.",
+              calibrated: true,
+              scenarios_covering: 2,
+              scenarios_total: 3,
+              peak_kwh_expected: 3.2,
+              available_kwh: 4.1,
+            },
+          },
+        )),
+      }));
+      await page.goto("/");
+      for (const id of [
+        "home-state",
+        "outcome-tiles",
+        "plan-story",
+        "battery-action-why",
+        "evening-peak-coverage",
+        "home-more",
+      ]) {
+        await expect(page.getByTestId(id), `${viewport.name} ${id}`).toBeVisible();
+      }
+      // DOM document order (not just Y) — Nu/Waarom must not park between tiles and chart.
+      const domOrder = await page.evaluate((ids) => {
+        const nodes = ids.map((id) => document.querySelector(`[data-testid="${id}"]`));
+        if (nodes.some((node) => !node)) return null;
+        return ids.map((_id, index) => {
+          const node = nodes[index]!;
+          const earlier = nodes.slice(0, index);
+          return earlier.every(
+            (prev) => !!(prev!.compareDocumentPosition(node) & Node.DOCUMENT_POSITION_FOLLOWING),
+          );
+        });
+      }, [
+        "outcome-tiles",
+        "plan-story",
+        "battery-action-why",
+        "evening-peak-coverage",
+        "home-more",
+      ]);
+      expect(domOrder, `${viewport.name} DOM order`).toEqual([true, true, true, true, true]);
+      const boxes = await Promise.all([
+        "outcome-tiles",
+        "plan-story",
+        "battery-action-why",
+        "evening-peak-coverage",
+        "home-more",
+      ].map((id) => page.getByTestId(id).boundingBox()));
+      expect(boxes.every(Boolean), `${viewport.name} geometry`).toBe(true);
+      for (let i = 0; i < boxes.length - 1; i++) {
+        expect(
+          boxes[i]!.y,
+          `${viewport.name}: surface ${i} above ${i + 1}`,
+        ).toBeLessThan(boxes[i + 1]!.y);
+      }
+      // Waarom? stays one disclosure deeper — closed by default.
+      await expect(page.getByTestId("battery-action-why-details")).not.toHaveAttribute("open", "");
+      await expect(page.getByTestId("battery-action-why-toggle")).toBeVisible();
+    });
+  }
+
+  // Polish R4: one smoke group — fold order + ≤2 topbar chips + no PlanStory footer KPI.
+  test.describe("polish smoke: fold order / chips / no footer KPI", () => {
+    test("tiles → PlanStory → Waarom → More; ≤2 chips; no story-footer", async ({ page }) => {
+      await page.setViewportSize({ width: 1280, height: 900 });
+      const healthyLive = await mockRoute(page, "**/api/dashboard", async (route) => {
+        const response = await route.fetch();
+        const dashboard = await response.json();
+        const sources = ["battery", "grid", "prices", "forecast"].map((key) => ({
+          key,
+          label: key,
+          state: "fresh",
+          updated_hhmm: "12:00",
+        }));
+        await route.fulfill({
+          response,
+          json: {
+            ...dashboard,
+            status: {
+              ...dashboard.status,
+              dry_run: false,
+              dry_run_reason: null,
+              dry_run_cause: null,
+              dev_mode: "live",
+              soc_pct: 55,
+            },
+            freshness: {
+              battery: "fresh",
+              grid: "fresh",
+              prices: "fresh",
+              forecast: "fresh",
+            },
+            alerts: { data_quality: "complete", alerts: [] },
+            device_health: {
+              sources,
+              battery_reachable: true,
+              forecast_age_seconds: 120,
+              summary: {
+                badge: "current",
+                label: "Alles actueel",
+                detail: "Batterij, P1-meter, prijzen en zonvoorspelling zijn bijgewerkt.",
+                severity: "ok",
+              },
+            },
+          },
+        });
+      });
+      await page.route("**/api/battery-plan", (route) =>
+        route.fulfill({
+          status: 200,
+          contentType: "application/json",
+          body: JSON.stringify(
+            batteryPlanFixture(
+              { level: "high", reasons: ["Fresh data."] },
+              DEFAULT_PROVENANCE,
+              { current_action: "grid_charge" },
+            ),
+          ),
+        }),
+      );
+      await page.route("**/api/finance**", (route) =>
+        route.fulfill({
+          status: 200,
+          contentType: "application/json",
+          body: JSON.stringify({ totals: { saved_eur: 2.84 } }),
+        }),
+      );
+      await routePlanStory(page);
+      await page.goto("/");
+
+      // Fold order (DOM + geometry): tiles → chart → Waarom → More.
+      const foldIds = ["outcome-tiles", "plan-story", "battery-action-why", "home-more"] as const;
+      for (const id of foldIds) {
+        await expect(page.getByTestId(id), id).toBeVisible();
+      }
+      const domOrder = await page.evaluate((ids) => {
+        const nodes = ids.map((id) => document.querySelector(`[data-testid="${id}"]`));
+        if (nodes.some((node) => !node)) return null;
+        return ids.every((_id, index) => {
+          if (index === 0) return true;
+          const prev = nodes[index - 1]!;
+          const node = nodes[index]!;
+          return !!(prev.compareDocumentPosition(node) & Node.DOCUMENT_POSITION_FOLLOWING);
+        });
+      }, [...foldIds]);
+      expect(domOrder).toBe(true);
+      const boxes = await Promise.all(foldIds.map((id) => page.getByTestId(id).boundingBox()));
+      expect(boxes.every(Boolean)).toBe(true);
+      for (let i = 0; i < boxes.length - 1; i++) {
+        expect(boxes[i]!.y).toBeLessThan(boxes[i + 1]!.y);
+      }
+
+      // ≤2 healthy topbar status chips (B-99).
+      const statusChipIds = ["run-mode-badge", "run-mode-reason", "data-source", "data-quality"];
+      let visibleChips = 0;
+      for (const id of statusChipIds) {
+        visibleChips += await page.getByTestId(id).count();
+      }
+      expect(visibleChips).toBeLessThanOrEqual(2);
+      await expect(page.getByTestId("run-mode-badge")).toBeVisible();
+      await expect(page.getByTestId("data-quality")).toHaveCount(0);
+
+      // No PlanStory footer KPI strip (B-97) — SoC / Saved live on tiles only.
+      await expect(page.getByTestId("story-footer")).toHaveCount(0);
+      await expect(page.getByTestId("plan-story")).not.toContainText("Saved today");
+      await expect(page.getByTestId("plan-story")).not.toContainText("Bespaard vandaag");
+      await expect(page.getByTestId("outcome-soc")).toBeVisible();
+      await expect(page.getByTestId("outcome-savings")).toContainText("€2.84");
+
+      healthyLive.assertRequested();
+    });
+  });
+
+  // B-102: More nest + tile icons + PlanStory SoC scale hint (no second chart).
+  test("B-102: More nests Strategy / Manual / Car; tiles have icons; PlanStory SoC scale", async ({
+    page,
+  }) => {
+    const floor15 = (ms: number) => Math.floor(ms / (15 * 60000)) * (15 * 60000);
+    const now = Date.now();
+    const deadlineIso = new Date(floor15(now + 20 * 3600000)).toISOString();
+    await page.route("**/api/car/plan", (route) =>
+      route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          enabled: true,
+          car_meter_configured: true,
+          plan: {
+            soc: 40,
+            slots: [],
+            windows: [],
+            deadlines: [
+              {
+                ready_by: deadlineIso,
+                min_pct: 80,
+                required_kwh: 0,
+                planned_kwh: 0,
+                pending_kwh: 0,
+                shortfall_kwh: 0,
+                already_met: true,
+                feasible: true,
+              },
+            ],
+            advice: "Quiet day for the car.",
+            negative_price_hint: null,
+            total_est_cost_eur: 0,
+            total_planned_kwh: 0,
+          },
+          soc: {
+            soc_pct: 40,
+            anchor_pct: 40,
+            anchor_ts: new Date().toISOString(),
+            added_kwh: 0,
+            sessions_since_anchor: 0,
+            age_hours: 1,
+            stale: false,
+          },
+        }),
+      }),
+    );
+    await page.goto("/");
+    // Tile icons: solar / battery / grid always; savings when framed.
+    await expect(page.getByTestId("outcome-solar-score-icon")).toBeVisible();
+    await expect(page.getByTestId("outcome-soc-icon")).toBeVisible();
+    await expect(page.getByTestId("outcome-grid-import-icon")).toBeVisible();
+    // Single PlanStory chart + subtle SoC scale — no second chart.
+    await expect(page.locator('[data-density-kind="chart"]:visible')).toHaveCount(1);
+    await expect(page.getByTestId("plan-story-soc-scale")).toBeVisible();
+    await expect(page.getByTestId("plan-story-soc-scale-100")).toBeVisible();
+    await expect(page.getByTestId("plan-story-soc-scale-50")).toBeVisible();
+    await expect(page.getByTestId("plan-story-soc-scale-0")).toBeVisible();
+
+    await openMore(page);
+    // Nest summaries are scannable; bodies stay closed until opened.
+    for (const kind of ["strategy", "manual", "car"] as const) {
+      await expect(page.getByTestId(`home-more-${kind}`)).toBeVisible();
+      await expect(page.getByTestId(`home-more-${kind}`)).not.toHaveAttribute("open", "");
+    }
+    await expect(page.getByTestId("strategy-card")).not.toBeVisible();
+    await expect(page.getByTestId("override")).not.toBeVisible();
+    await expect(page.getByTestId("car-card")).not.toBeVisible();
+
+    await openMoreNest(page, "strategy");
+    await expect(page.getByTestId("strategy-card")).toBeVisible();
+    await openMoreNest(page, "manual");
+    await expect(page.getByTestId("override")).toBeVisible();
+    await openMoreNest(page, "car");
+    await expect(page.getByTestId("car-card")).toBeVisible();
   });
 
   test("unavailable outcomes remain em dashes and only available drill-downs are actionable", async ({ page }) => {
@@ -863,12 +1148,20 @@ test.describe("EMS dashboard", () => {
     const batteryResponse = page.waitForResponse((response) => response.url().endsWith("/api/battery"));
     await page.goto("/");
     await batteryResponse;
-    for (const id of ["outcome-solar-score", "outcome-soc", "outcome-savings", "outcome-grid-import"]) {
+    for (const id of ["outcome-solar-score", "outcome-soc", "outcome-grid-import"]) {
       await expect(page.getByTestId(id)).toContainText("—");
       await expect(page.getByTestId(id)).toHaveJSProperty("tagName", "DIV");
+      await expect(page.getByTestId(id)).not.toContainText("Bijgewerkt");
       await expect(page.getByTestId(id)).not.toContainText("Updated");
     }
-    await expect(page.getByTestId("outcome-savings")).toHaveAttribute("title", /still measuring/);
+    // B-100: measuring savings use calm "Nog meten", not a bare dash / €0.00.
+    await expect(page.getByTestId("outcome-savings")).toContainText("Nog meten");
+    await expect(page.getByTestId("outcome-savings")).toHaveJSProperty("tagName", "DIV");
+    await expect(page.getByTestId("outcome-savings")).toHaveAttribute("title", /nog meten/);
+    await expect(page.getByTestId("outcome-savings")).toHaveAttribute("data-tone", "calm");
+    await expect(page.getByTestId("outcome-savings")).not.toContainText("Bijgewerkt");
+    await expect(page.getByTestId("outcome-savings")).not.toContainText("Updated");
+    await expect(page.getByTestId("outcome-savings")).not.toContainText("€0.00");
     reportMock.assertRequested();
     dashboardMock.assertRequested();
     fallbackStatusMock.assertRequested();
@@ -946,42 +1239,107 @@ test.describe("EMS dashboard", () => {
       status: 200, contentType: "application/json",
       body: JSON.stringify(batteryPlanFixture({ level: "high", reasons: ["Fresh data."] })),
     }));
-    // The score copy asserted below ("brilliant day") is homeSummary()'s top band, which needs EVERY
-    // score >= 80 (see src/scoreCopy.ts). Live mock scores do not reliably clear that, so this test
-    // was non-hermetic in a second way: it read real /api/report values. Keep the real payload and
-    // raise only the score values, so the band is deterministic without inventing a whole report.
-    const reportMock = await mockRoute(page, "**/api/report**", async (route) => {
-      const response = await route.fetch();
-      const report = await response.json();
-      await route.fulfill({
-        response,
-        json: {
-          ...report,
-          scores: (report.scores ?? []).map((score: { value: number | null }) => ({
-            ...score,
-            value: score.value == null ? null : Math.max(score.value, 88),
-          })),
-        },
-      });
+    // B-96: hermetic on-track message so hero synthesis is one plain sentence (not score middots).
+    const story = planStoryFixture();
+    Object.assign(story, {
+      on_track: {
+        status: "on_track",
+        actual_soc_pct: 58,
+        target_soc_pct: 88,
+        deficit_kwh: 0,
+        message: "On track for tonight's target.",
+      },
     });
+    await page.route("**/api/energy-story?window=next", (route) => route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify(story),
+    }));
     await page.goto("/");
     const hero = page.getByTestId("home-state");
     await expect(hero).toBeVisible();
     await expect(hero).toHaveAttribute("data-tone", /good|watching|controlling|attention/);
-    // The verdict headline (the old status headline, absorbed into the hero).
-    await expect(page.getByTestId("hero-verdict")).toContainText("Watching");
-    // One synthesis line combines the truthful live explanation, on-track message, and score copy.
+    // The verdict headline (the old status headline, absorbed into the hero) — Dutch-first (B-98).
+    await expect(page.getByTestId("hero-verdict")).toContainText("Aan het kijken");
+    // One plain-language synthesis sentence (B-96) — Dutch on-track, not English API copy.
     const synth = page.getByTestId("hero-synthesis");
-    await expect(synth).toContainText("Battery is following the current plan");
-    await expect(synth).toContainText("On track");
-    await expect(synth).toContainText("brilliant day");
-    await expect(synth).toContainText("·"); // the two strings are joined into one line
+    await expect(synth).toHaveText("Op schema voor het nachtdoel vanavond");
+    await expect(synth).not.toContainText("·");
+    await expect(synth).not.toContainText("break-even");
     await expect(page.getByTestId("battery-plan")).not.toBeVisible();
     // The explicit answer to "do I need to act?" — calm, because nothing needs attention.
-    await expect(page.getByTestId("hero-act")).toHaveText("Nothing needed from you.");
+    await expect(page.getByTestId("hero-act")).toHaveText("Niets te doen.");
     dashboardMock.assertRequested();
     batteryPlanMock.assertRequested();
-    reportMock.assertRequested();
+  });
+
+  test("B-96: hero keeps jargon out while Waarom? still shows the planner summary", async ({ page }) => {
+    const jargon =
+      "self-consumption: €0.45/kWh > break-even €0.32 — EV load expected ~8 kWh";
+    await page.route("**/api/battery-plan", (route) =>
+      route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify(
+          batteryPlanFixture(
+            { level: "high", reasons: ["Fresh data."] },
+            undefined,
+            {
+              current_reason: jargon,
+              reason: batteryPlanReasonFixture({ summary: jargon }),
+              current_action: "discharge",
+            },
+          ),
+        ),
+      }),
+    );
+    const story = planStoryFixture();
+    Object.assign(story, {
+      on_track: {
+        status: "on_track",
+        actual_soc_pct: 58,
+        target_soc_pct: 88,
+        deficit_kwh: 0,
+        message: "Running the house on your battery tonight.",
+      },
+    });
+    await page.route("**/api/energy-story?window=next", (route) =>
+      route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify(story),
+      }),
+    );
+    await page.route("**/api/decision", (route) =>
+      route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          intent: null,
+          desired_mode: null,
+          applied: false,
+          outcome: "dry_run",
+          reason: jargon,
+          home_state: {
+            headline: "Running the house on your battery",
+            tone: "controlling",
+            simulated: true,
+          },
+        }),
+      }),
+    );
+    await page.goto("/");
+    const synth = page.getByTestId("hero-synthesis");
+    await expect(synth).toHaveText("De batterij voedt vanavond de woning");
+    await expect(synth).not.toContainText("break-even");
+    await expect(synth).not.toContainText("self-consumption:");
+    await expect(synth).not.toContainText("EV load expected");
+    await expect(page.getByTestId("hero-act")).toHaveText("Niets te doen.");
+    await expect(page.getByTestId("hero-verdict")).toHaveText("De batterij voedt de woning");
+    // Waarom? still carries full explainability (DecisionReasonDetails summary).
+    await page.getByTestId("battery-action-why-toggle").click();
+    await expect(page.getByTestId("decision-reason-summary")).toContainText("break-even");
+    await expect(page.getByTestId("decision-reason-summary")).toContainText("self-consumption");
   });
 
   test("B-68: a high-confidence plan shows a calm chip with no reason sub-line", async ({ page }) => {
@@ -998,7 +1356,7 @@ test.describe("EMS dashboard", () => {
     const chip = page.getByTestId("confidence-chip");
     await expect(chip).toBeVisible();
     await expect(chip).toHaveAttribute("data-level", "high");
-    await expect(chip).toHaveText("High confidence");
+    await expect(chip).toHaveText("Hoog vertrouwen");
     // Calm stays calm: high confidence needs no explanation beyond the chip.
     await expect(page.getByTestId("hero-confidence-reason")).toHaveCount(0);
   });
@@ -1016,10 +1374,10 @@ test.describe("EMS dashboard", () => {
     await page.goto("/");
     const chip = page.getByTestId("confidence-chip");
     await expect(chip).toHaveAttribute("data-level", "medium");
-    await expect(chip).toHaveText("Medium confidence");
+    await expect(chip).toHaveText("Gemiddeld vertrouwen");
     const reason = page.getByTestId("hero-confidence-reason");
     await expect(reason).toBeVisible();
-    await expect(reason).toContainText("Still learning your roof");
+    await expect(reason).toContainText("Nog je dak");
   });
 
   test("B-68: a low-confidence plan shows a red chip + the safety-fallback reason", async ({ page }) => {
@@ -1038,12 +1396,12 @@ test.describe("EMS dashboard", () => {
     await page.goto("/");
     const chip = page.getByTestId("confidence-chip");
     await expect(chip).toHaveAttribute("data-level", "low");
-    await expect(chip).toHaveText("Low confidence");
-    // The tooltip carries every reason, joined.
-    await expect(chip).toHaveAttribute("title", /Safety fallback active.*Some live data is stale/);
-    // Only the FIRST reason renders as the visible sub-line.
+    await expect(chip).toHaveText("Laag vertrouwen");
+    // The tooltip carries every translated reason, joined.
+    await expect(chip).toHaveAttribute("title", /Veiligheidsfallback.*verouderd/);
+    // Only the FIRST reason renders as the visible sub-line (Dutch).
     const reason = page.getByTestId("hero-confidence-reason");
-    await expect(reason).toHaveText("Safety fallback active — EMS is holding, not planning.");
+    await expect(reason).toHaveText("Veiligheidsfallback actief — EMS houdt vast, plant niet.");
   });
 
   test("battery-plan data still supplies the hero reason and confidence", async ({ page }) => {
@@ -1054,6 +1412,13 @@ test.describe("EMS dashboard", () => {
         level: "medium",
         reasons: ["Still learning your roof."],
       })),
+    }));
+    // No on_track message → hero falls through to Dutch calm fallback (not EN current_reason).
+    const story = planStoryFixture();
+    await page.route("**/api/energy-story?window=next", (route) => route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify(story),
     }));
     await page.route("**/api/decision", (route) => route.fulfill({
       status: 200,
@@ -1072,10 +1437,12 @@ test.describe("EMS dashboard", () => {
       }),
     }));
     await page.goto("/");
-    await expect(page.getByTestId("hero-synthesis")).toContainText(
-      "Battery is following the current plan",
+    await expect(page.getByTestId("hero-synthesis")).toHaveText(
+      "Batterij volgt het huidige plan",
     );
-    await expect(page.getByTestId("confidence-chip")).toHaveText("Medium confidence");
+    await expect(page.getByTestId("hero-verdict")).toContainText("Aan het kijken");
+    await expect(page.getByTestId("confidence-chip")).toHaveText("Gemiddeld vertrouwen");
+    await expect(page.getByTestId("hero-confidence-reason")).toContainText("Nog je dak");
     await expect(page.getByTestId("battery-plan")).toHaveCount(0);
   });
 
@@ -1108,7 +1475,7 @@ test.describe("EMS dashboard", () => {
     await expect(line).toContainText("rule-based winter planner");
     await expect(line).toContainText("scenario intelligence: not active yet");
     await expect(page.getByTestId("plan-story-legend")).toBeVisible();
-    await expect(page.getByTestId("story-footer")).toBeVisible();
+    await expect(page.getByTestId("story-footer")).toHaveCount(0);
   });
 
   // --- B-33 / #85 slice 1: waarom bij laden / vasthouden / zelfconsumptie ---------------------------
@@ -1332,9 +1699,9 @@ test.describe("EMS dashboard", () => {
     });
   });
 
-  // --- B-63 / #88: evening peak coverage probability -----------------------------------------
+  // --- B-63 / #88 + B-95: evening peak coverage (one reassurance surface) -------------------
   test.describe("#88 evening peak coverage", () => {
-    test("shows calibrated chance the battery covers the evening peak", async ({ page }) => {
+    test("shows risk banner when coverage is below the covered threshold", async ({ page }) => {
       await routePlanStory(page);
       await routeDashboardStatus(page);
       await page.route("**/api/battery-plan", (route) => route.fulfill({
@@ -1362,8 +1729,76 @@ test.describe("EMS dashboard", () => {
       const block = page.getByTestId("evening-peak-coverage");
       await expect(block).toBeVisible();
       await expect(block).toHaveAttribute("data-calibrated", "true");
+      await expect(block).toHaveAttribute("data-risk", "true");
       await expect(page.getByTestId("evening-peak-coverage-label")).toContainText("67%");
       await expect(page.getByTestId("evening-peak-coverage-detail")).toContainText("67%");
+    });
+
+    // B-95: API/energy-story may already append "Battery covers the evening peak" for any
+    // DISCHARGE_FOR_LOAD plan — that chip must not stack with the amber risk banner below 85%.
+    test("at-risk coverage strips the covers trust-marker and keeps only the risk banner", async ({ page }) => {
+      const story = planStoryFixture();
+      Object.assign(story, {
+        trust_markers: [
+          "Reserve respected",
+          "Battery covers the evening peak",
+          "No grid top-up needed",
+        ],
+      });
+      await page.route("**/api/energy-story?window=next", (route) => route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify(story),
+      }));
+      await routeDashboardStatus(page);
+      await page.route("**/api/decision", (route) => route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          intent: null,
+          desired_mode: null,
+          applied: false,
+          outcome: "dry_run",
+          reason: "Watching the current plan.",
+          home_state: {
+            headline: "Running the house on your battery",
+            tone: "on_battery",
+            simulated: true,
+          },
+        }),
+      }));
+      await page.route("**/api/battery-plan", (route) => route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify(batteryPlanFixture(
+          { level: "high", reasons: ["Fresh data."] },
+          DEFAULT_PROVENANCE,
+          {
+            evening_peak_coverage: {
+              probability: 0.667,
+              available: true,
+              label: "Evening peak may be covered (~67%)",
+              reason: "2 of 3 scenarios cover the evening peak.",
+              calibrated: true,
+              scenarios_covering: 2,
+              scenarios_total: 3,
+              peak_kwh_expected: 3.2,
+              available_kwh: 4.1,
+            },
+          },
+        )),
+      }));
+      await page.goto("/");
+
+      const block = page.getByTestId("evening-peak-coverage");
+      await expect(block).toBeVisible();
+      await expect(block).toHaveAttribute("data-risk", "true");
+      const markers = page.getByTestId("home-state").getByTestId("trust-markers");
+      await expect(markers).toContainText("Reserve respected");
+      await expect(markers).not.toContainText("Batterij dekt de avondpiek");
+      await expect(markers).not.toContainText("Battery covers the evening peak");
+      await expect(page.getByText("Batterij dekt de avondpiek")).toHaveCount(0);
+      await expect(page.getByText("Battery covers the evening peak")).toHaveCount(0);
     });
 
     test("hides the coverage strip when the API marks it unavailable", async ({ page }) => {
@@ -1392,6 +1827,67 @@ test.describe("EMS dashboard", () => {
       }));
       await page.goto("/");
       await expect(page.getByTestId("evening-peak-coverage")).toHaveCount(0);
+    });
+
+    // B-95: covered/100% → hero trust-marker only; full banner demoted (no double stack).
+    test("covered evening peak appears once as a hero trust-marker, not the banner", async ({ page }) => {
+      const story = planStoryFixture();
+      Object.assign(story, {
+        trust_markers: ["Reserve respected"],
+      });
+      await page.route("**/api/energy-story?window=next", (route) => route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify(story),
+      }));
+      await routeDashboardStatus(page);
+      await page.route("**/api/decision", (route) => route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          intent: null,
+          desired_mode: null,
+          applied: false,
+          outcome: "dry_run",
+          reason: "Watching the current plan.",
+          home_state: {
+            headline: "Running the house on your battery",
+            tone: "on_battery",
+            simulated: true,
+          },
+        }),
+      }));
+      await page.route("**/api/battery-plan", (route) => route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify(batteryPlanFixture(
+          { level: "high", reasons: ["Fresh data."] },
+          DEFAULT_PROVENANCE,
+          {
+            evening_peak_coverage: {
+              probability: 1,
+              available: true,
+              label: "Evening peak likely covered (~100%)",
+              reason: "All 3 calibrated scenarios stay above reserve through the evening peak.",
+              calibrated: true,
+              scenarios_covering: 3,
+              scenarios_total: 3,
+              peak_kwh_expected: 2.1,
+              available_kwh: 5.0,
+            },
+          },
+        )),
+      }));
+      await page.goto("/");
+
+      await expect(page.getByTestId("evening-peak-coverage")).toHaveCount(0);
+      const markers = page.getByTestId("home-state").getByTestId("trust-markers");
+      await expect(markers).toContainText("Batterij dekt de avondpiek");
+      await expect(markers).toContainText("Reserve respected");
+      // No second copy of the covered reassurance elsewhere on the dashboard.
+      await expect(page.getByText("Evening peak likely covered")).toHaveCount(0);
+      await expect(page.getByText("Batterij dekt de avondpiek")).toHaveCount(1);
+      await expect(page.getByText("Battery covers the evening peak")).toHaveCount(0);
     });
   });
 
@@ -1440,6 +1936,7 @@ test.describe("EMS dashboard", () => {
     await page.goto("/");
     await openMore(page);
     await expect(page.getByTestId("plan-story").locator('[data-testid="bp-car-window"]')).toHaveCount(0);
+    await openMoreNest(page, "car");
     await expect(page.getByTestId("car-card")).toBeVisible();
     await expect(page.getByTestId("car-advice")).toHaveText("Plug in later.");
   });
@@ -1449,15 +1946,14 @@ test.describe("EMS dashboard", () => {
     await openMore(page);
     await expect(page.getByRole("heading", { name: "Smart Energy Manager" })).toBeVisible();
 
-    // Run-mode badge in plain language (dry-run => "Watching only"; M0a is read-only).
-    await expect(page.getByTestId("run-mode-badge")).toHaveText("Watching only");
+    // Run-mode badge in plain language (dry-run => "Alleen kijken"; M0a is read-only).
+    await expect(page.getByTestId("run-mode-badge")).toHaveText("Alleen kijken");
 
-    // The live snapshot now rides the PlanStory footer: savings and battery level.
-    const footer = page.getByTestId("story-footer");
-    await expect(footer).toBeVisible();
-    await expect(footer).toContainText("55%");
-    await expect(footer).toContainText("Battery");
-    await expect(footer).toContainText("Saved today");
+    // Live snapshot KPIs live in OutcomeTiles (B-97) — not a PlanStory footer strip.
+    await expect(page.getByTestId("outcome-soc")).toContainText("55%");
+    await expect(page.getByTestId("outcome-soc")).toContainText("Batterij");
+    await expect(page.getByTestId("outcome-savings")).toBeVisible();
+    await expect(page.getByTestId("story-footer")).toHaveCount(0);
     // The reconstructed house-load value (1.00 kW) lives with the detail metrics behind Advanced.
     await openAdvanced(page);
     const detail = page.getByTestId("detail-grid");
@@ -1465,9 +1961,10 @@ test.describe("EMS dashboard", () => {
     await expect(detail).toContainText("1.00 kW");
   });
 
-  // B-03b: "Saved today" now derives from /api/finance (measured), never the old plan-estimate tile
-  // — and never a false "€0.00" before any price history exists.
-  test("B-03b: the story footer shows the MEASURED saved-today figure from /api/finance", async ({
+  // B-03b: Saved derives from /api/finance (measured), never the old plan-estimate tile
+  // — and never a false "€0.00" before any price history exists. Surfaced on OutcomeTiles (B-97).
+  // B-100: measuring / ≤€0 use calm Dutch copy + semantic icon — never alarm styling.
+  test("B-03b: OutcomeTiles show the MEASURED saved figure from /api/finance", async ({
     page,
   }) => {
     await page.route("**/api/finance**", (route) =>
@@ -1482,13 +1979,15 @@ test.describe("EMS dashboard", () => {
       }),
     );
     await page.goto("/");
-    await openMore(page);
-    const stat = page.getByTestId("saved-today");
-    await expect(stat).toBeVisible();
-    await expect(stat).toContainText("€2.34 measured");
+    const tile = page.getByTestId("outcome-savings");
+    await expect(tile).toBeVisible();
+    await expect(tile).toContainText("€2.34");
+    await expect(tile).toHaveAttribute("data-tone", "positive");
+    await expect(page.getByTestId("outcome-savings-icon")).toBeVisible();
+    await expect(page.getByTestId("saved-today")).toHaveCount(0);
   });
 
-  test("B-03b: no price history yet shows 'measuring', never a false €0.00", async ({ page }) => {
+  test("B-03b / B-100: no price history yet shows Nog meten, never a false €0.00", async ({ page }) => {
     await page.route("**/api/finance**", (route) =>
       route.fulfill({
         status: 200,
@@ -1501,11 +2000,79 @@ test.describe("EMS dashboard", () => {
       }),
     );
     await page.goto("/");
-    await openMore(page);
-    const stat = page.getByTestId("saved-today");
-    await expect(stat).toBeVisible();
-    await expect(stat).toContainText("measuring");
-    await expect(stat).not.toContainText("€0.00");
+    const tile = page.getByTestId("outcome-savings");
+    await expect(tile).toBeVisible();
+    await expect(tile).toContainText("Nog meten");
+    await expect(tile).toHaveAttribute("title", /nog meten/);
+    await expect(tile).toHaveAttribute("data-tone", "calm");
+    await expect(page.getByTestId("outcome-savings-icon")).toBeVisible();
+    await expect(tile).not.toContainText("€0.00");
+    // Calm muted value — never warn-amber / alarm-red family.
+    const valueColor = await tile.locator(".outcome-tile-value").evaluate((node) => getComputedStyle(node).color);
+    const amber = await page.evaluate(() => {
+      const el = document.createElement("span");
+      el.style.color = "var(--amber-text)";
+      document.body.appendChild(el);
+      const rgb = getComputedStyle(el).color;
+      el.remove();
+      return rgb;
+    });
+    const danger = await page.evaluate(() => {
+      const el = document.createElement("span");
+      el.style.color = "var(--danger, var(--red-text, #c0392b))";
+      document.body.appendChild(el);
+      const rgb = getComputedStyle(el).color;
+      el.remove();
+      return rgb;
+    });
+    expect(valueColor).not.toBe(amber);
+    expect(valueColor).not.toBe(danger);
+  });
+
+  test("B-100: negative measured savings show Nog geen voordeel, not −€ alarm", async ({
+    page,
+  }) => {
+    await page.route("**/api/finance**", (route) =>
+      route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          period: "day", label: "today", partial: true, days: [],
+          totals: { grid_cost_eur: 2.1, battery_cost_eur: 0.12, saved_eur: -1.39,
+                    days_with_prices: 1, days_with_data: 1 },
+        }),
+      }),
+    );
+    await page.goto("/");
+    const tile = page.getByTestId("outcome-savings");
+    await expect(tile).toBeVisible();
+    await expect(tile).toContainText("Nog geen voordeel");
+    await expect(tile).not.toContainText("−€1.39");
+    await expect(tile).not.toContainText("€-1.39");
+    await expect(tile).toHaveAttribute("title", /−€1\.39|€1\.39/);
+    await expect(tile).toHaveAttribute("data-tone", "calm");
+    await expect(page.getByTestId("outcome-savings-icon")).toBeVisible();
+  });
+
+  test("B-100: positive measured savings stay a plain euro amount", async ({ page }) => {
+    await page.route("**/api/finance**", (route) =>
+      route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          period: "day", label: "today", partial: false, days: [],
+          totals: { grid_cost_eur: 0.4, battery_cost_eur: 0.05, saved_eur: 2.84,
+                    days_with_prices: 1, days_with_data: 1 },
+        }),
+      }),
+    );
+    await page.goto("/");
+    const tile = page.getByTestId("outcome-savings");
+    await expect(tile).toContainText("€2.84");
+    await expect(tile).not.toContainText("Nog meten");
+    await expect(tile).not.toContainText("Nog geen voordeel");
+    await expect(tile).toHaveAttribute("data-tone", "positive");
+    await expect(page.getByTestId("outcome-savings-icon")).toBeVisible();
   });
 
   test("no API error banner when backend is up", async ({ page }) => {
@@ -1514,10 +2081,87 @@ test.describe("EMS dashboard", () => {
     await expect(page.getByTestId("error")).toHaveCount(0);
   });
 
-  test("shows a data-quality badge and the watch-only alert", async ({ page }) => {
+  // B-99: complete quality is quiet in the topbar; watch-only alert still surfaces.
+  test("hides complete data-quality chip; still shows the watch-only alert", async ({ page }) => {
+    await page.goto("/");
+    await expect(page.getByTestId("data-quality")).toHaveCount(0);
+    await expect(page.getByTestId("alerts")).toContainText("Watch-only");
+  });
+
+  test("B-99: degraded data-quality chip remains visible as attention", async ({ page }) => {
+    const degraded = await mockRoute(page, "**/api/dashboard", async (route) => {
+      const response = await route.fetch();
+      const dashboard = await response.json();
+      await route.fulfill({
+        response,
+        json: {
+          ...dashboard,
+          alerts: { data_quality: "degraded", alerts: dashboard.alerts?.alerts ?? [] },
+        },
+      });
+    });
     await page.goto("/");
     await expect(page.getByTestId("data-quality")).toBeVisible();
-    await expect(page.getByTestId("alerts")).toContainText("Watch-only");
+    await expect(page.getByTestId("data-quality")).toContainText("Deels verouderd");
+    degraded.assertRequested();
+  });
+
+  // B-99: healthy live topbar ≤2 meaningful status chips (run-mode / attention).
+  test("B-99: healthy live session shows ≤2 topbar status chips", async ({ page }) => {
+    const healthyLive = await mockRoute(page, "**/api/dashboard", async (route) => {
+      const response = await route.fetch();
+      const dashboard = await response.json();
+      const sources = ["battery", "grid", "prices", "forecast"].map((key) => ({
+        key,
+        label: key,
+        state: "fresh",
+        updated_hhmm: "12:00",
+      }));
+      await route.fulfill({
+        response,
+        json: {
+          ...dashboard,
+          status: {
+            ...dashboard.status,
+            dry_run: false,
+            dry_run_reason: null,
+            dry_run_cause: null,
+            dev_mode: "live",
+          },
+          freshness: {
+            battery: "fresh",
+            grid: "fresh",
+            prices: "fresh",
+            forecast: "fresh",
+          },
+          alerts: { data_quality: "complete", alerts: [] },
+          device_health: {
+            sources,
+            battery_reachable: true,
+            forecast_age_seconds: 120,
+            summary: {
+              badge: "current",
+              label: "Alles actueel",
+              detail: "Batterij, P1-meter, prijzen en zonvoorspelling zijn bijgewerkt.",
+              severity: "ok",
+            },
+          },
+        },
+      });
+    });
+    await page.goto("/");
+    await expect(page.getByTestId("run-mode-badge")).toBeVisible();
+    await expect(page.getByTestId("data-source")).toHaveCount(0);
+    await expect(page.getByTestId("data-quality")).toHaveCount(0);
+    await expect(page.getByTestId("run-mode-reason")).toHaveCount(0);
+    const statusChipIds = ["run-mode-badge", "run-mode-reason", "data-source", "data-quality"];
+    let visible = 0;
+    for (const id of statusChipIds) {
+      visible += await page.getByTestId(id).count();
+    }
+    expect(visible).toBeLessThanOrEqual(2);
+    expect(visible).toBe(1);
+    healthyLive.assertRequested();
   });
 
   test("shows the controller decision (dry-run) panel", async ({ page }) => {
@@ -1579,8 +2223,14 @@ test.describe("EMS dashboard", () => {
     await page.goto("/");
 
     const hero = page.getByTestId("home-state");
-    await expect(hero.getByTestId("hero-synthesis")).toContainText("no grid top-up planned");
-    await expect(hero.getByTestId("recent-review")).toContainText("80% of forecast");
+    await expect(hero.getByTestId("hero-synthesis")).toContainText("Nog niet op het doel");
+    // B-96: Last-3h review demoted to PlanStory plan-header disclosure (not hero body).
+    await expect(hero.getByTestId("recent-review")).toHaveCount(0);
+    const review = page.getByTestId("plan-story").getByTestId("recent-review");
+    await expect(review).toBeVisible();
+    await expect(review).toContainText("Laatste 3 uur");
+    await review.locator("summary").click();
+    await expect(review).toContainText("80% of forecast");
     await expect(hero.getByTestId("trust-markers")).toContainText("Reserve respected");
     await expect(hero.getByTestId("trust-markers")).not.toContainText("No grid top-up needed");
     await expect(page.getByText("No grid top-up needed")).toHaveCount(0);
@@ -1623,7 +2273,7 @@ test.describe("EMS dashboard", () => {
 
   test("shows the strategy card with a season picker and explanation", async ({ page }) => {
     await page.goto("/");
-    await openMore(page);
+    await openMoreNest(page, "strategy");
     const card = page.getByTestId("strategy-card");
     await expect(card).toBeVisible();
     await expect(page.getByTestId("strategy-auto")).toBeVisible();
@@ -1658,7 +2308,7 @@ test.describe("EMS dashboard", () => {
       }
     });
     await page.goto("/");
-    await openMore(page);
+    await openMoreNest(page, "strategy");
     await expect(page.getByTestId("strategy-summary")).toContainText("Solar-first");
     await page.getByTestId("strategy-winter").click();
     await expect(page.getByTestId("strategy-winter")).toHaveAttribute("aria-checked", "true");
@@ -1685,7 +2335,7 @@ test.describe("EMS dashboard", () => {
       }
     });
     await page.goto("/");
-    await openMore(page);
+    await openMoreNest(page, "strategy");
     await page.getByTestId("strategy-auto").focus();
     await page.keyboard.press("ArrowRight"); // Auto -> Summer
     await expect(page.getByTestId("strategy-summer")).toHaveAttribute("aria-checked", "true");
@@ -1714,7 +2364,7 @@ test.describe("EMS dashboard", () => {
       }
     });
     await page.goto("/");
-    await openMore(page);
+    await openMoreNest(page, "strategy");
     const sw = page.getByTestId("strategy-grid-topup");
     await expect(sw).toBeVisible();
     await expect(sw).toHaveAttribute("aria-label", "Top up from the grid if the sun falls short");
@@ -1725,7 +2375,7 @@ test.describe("EMS dashboard", () => {
 
   test("the strategy card's Advanced link opens Settings", async ({ page }) => {
     await page.goto("/");
-    await openMore(page);
+    await openMoreNest(page, "strategy");
     await page.getByTestId("strategy-more").click();
     await expect(page.getByTestId("settings")).toBeVisible();
     await expect(page.getByTestId("settings")).toContainText("Strategy");
@@ -1786,11 +2436,9 @@ test.describe("EMS dashboard", () => {
       }),
     );
     await page.goto("/");
-    await openMore(page);
-    // The per-tower breakdown lives behind the battery tile now; it becomes clickable once the
-    // cluster data loads (the hint switches to "see each battery").
-    const tile = page.getByTestId("battery-tile");
-    await expect(tile).toContainText("see each battery");
+    // B-97: per-tower breakdown opens from the OutcomeTiles battery level tile.
+    const tile = page.getByTestId("outcome-soc");
+    await expect(tile).toContainText("%");
     await tile.click();
     await expect(page.getByTestId("battery-modal")).toBeVisible();
     await expect(page.getByTestId("tower-chip-aggregate")).toContainText("cluster avg");
@@ -1907,7 +2555,7 @@ test.describe("EMS dashboard", () => {
     await openAdvanced(page);
     const fr = page.getByTestId("freshness");
     await expect(fr).toBeVisible();
-    await expect(fr).toContainText("Grid meter: up to date");
+    await expect(fr).toContainText("P1-meter: actueel");
   });
 
   // Issue #79 / B-38 — consumer device-health strip + Demo / Deels verouderd labels.
@@ -1917,6 +2565,7 @@ test.describe("EMS dashboard", () => {
     await page.goto("/");
     await expect(page.getByTestId("data-source")).toHaveText("Demo");
     await expect(page.getByTestId("device-health")).toBeVisible();
+    await expect(page.getByTestId("device-health")).toHaveAttribute("data-quiet", "false");
     await expect(page.getByTestId("device-health-summary")).toContainText("Demo");
     await expect(page.getByTestId("device-health-battery")).toBeVisible();
     await expect(page.getByTestId("device-health-grid")).toBeVisible();
@@ -1949,12 +2598,68 @@ test.describe("EMS dashboard", () => {
       });
     });
     await page.reload();
+    await expect(page.getByTestId("device-health")).toHaveAttribute("data-quiet", "false");
     await expect(page.getByTestId("device-health-summary")).toContainText("Deels verouderd");
     await expect(page.getByTestId("device-health-forecast")).toHaveAttribute("data-state", "stale");
     forecastStale.assertRequested();
   });
 
-  test("device health: stale P1 keeps unsafe header badge (Paused — self-use)", async ({
+  // B-94: healthy DeviceHealth collapses; outcome-tile timestamps only when stale.
+  test("device health: healthy collapses to quiet line; tiles omit Updated when fresh", async ({
+    page,
+  }) => {
+    const healthy = await mockRoute(page, "**/api/dashboard", async (route) => {
+      const response = await route.fetch();
+      const dashboard = await response.json();
+      const sources = ["battery", "grid", "prices", "forecast"].map((key) => ({
+        key,
+        label: key,
+        state: "fresh",
+        updated_hhmm: "12:00",
+      }));
+      await route.fulfill({
+        response,
+        json: {
+          ...dashboard,
+          status: { ...dashboard.status, dev_mode: "live", dry_run: true },
+          freshness: {
+            battery: "fresh",
+            grid: "fresh",
+            prices: "fresh",
+            forecast: "fresh",
+          },
+          device_health: {
+            sources,
+            battery_reachable: true,
+            forecast_age_seconds: 120,
+            summary: {
+              badge: "current",
+              label: "Alles actueel",
+              detail: "Batterij, P1-meter, prijzen en zonvoorspelling zijn bijgewerkt.",
+              severity: "ok",
+            },
+          },
+        },
+      });
+    });
+    await page.goto("/");
+    await expect(page.getByTestId("device-health")).toBeVisible();
+    await expect(page.getByTestId("device-health")).toHaveAttribute("data-quiet", "true");
+    await expect(page.getByTestId("device-health-summary")).toContainText("Alles actueel");
+    await expect(page.getByTestId("device-health-quiet")).toBeVisible();
+    // Four-source grid stays closed until the quiet disclosure is opened.
+    await expect(page.getByTestId("device-health-sources")).not.toBeVisible();
+    await page.getByTestId("device-health-summary").click();
+    await expect(page.getByTestId("device-health-sources")).toBeVisible();
+    await expect(page.getByTestId("device-health-battery")).toBeVisible();
+    for (const id of ["outcome-solar-score", "outcome-soc", "outcome-savings", "outcome-grid-import"]) {
+      await expect(page.getByTestId(id)).not.toContainText("Bijgewerkt");
+      await expect(page.getByTestId(id)).not.toContainText("Updated");
+    }
+    healthy.assertRequested();
+  });
+
+  test("device health: stale P1 keeps unsafe header badge (Gepauzeerd — zelfgebruik)", async ({
     page,
   }) => {
     const gridStale = await mockRoute(page, "**/api/dashboard", async (route) => {
@@ -1974,7 +2679,7 @@ test.describe("EMS dashboard", () => {
       });
     });
     await page.goto("/");
-    await expect(page.getByTestId("data-quality")).toContainText("Paused — self-use");
+    await expect(page.getByTestId("data-quality")).toContainText("Gepauzeerd — zelfgebruik");
     gridStale.assertRequested();
   });
 
@@ -2702,6 +3407,8 @@ test.describe("EMS dashboard", () => {
     await openMore(page);
     await expect(page.getByTestId("plan-story")).toBeVisible();
     await expect(page.getByTestId("car-card")).toHaveCount(0);
+    // B-102: empty Car nest stays hidden when compact CarCard returns null.
+    await expect(page.getByTestId("home-more-car")).not.toBeVisible();
   });
 
   test("the car card asks for the car's charge level when there's no SoC anchor yet", async ({ page }) => {
@@ -2723,7 +3430,7 @@ test.describe("EMS dashboard", () => {
       }),
     );
     await page.goto("/");
-    await openMore(page);
+    await openMoreNest(page, "car");
     const card = page.getByTestId("car-card");
     await expect(card).toBeVisible();
     await expect(card).toContainText("What's the car's charge now?");
@@ -2757,7 +3464,7 @@ test.describe("EMS dashboard", () => {
       }),
     );
     await page.goto("/");
-    await openMore(page);
+    await openMoreNest(page, "car");
     await expect(page.getByTestId("car-meter-missing")).toContainText("No EV meter");
     await expect(page.getByTestId("car-meter-missing")).toContainText("after driving or charging");
   });
@@ -2778,7 +3485,7 @@ test.describe("EMS dashboard", () => {
       }),
     );
     await page.goto("/");
-    await openMore(page);
+    await openMoreNest(page, "car");
     await expect(page.getByTestId("car-meter-missing")).toContainText("No EV meter");
     await expect(page.getByTestId("car-schedule-link")).toBeVisible();
   });
@@ -2861,7 +3568,7 @@ test.describe("EMS dashboard", () => {
     await page.goto("/");
     const cta = page.getByTestId("demo-cta");
     await expect(cta).toBeVisible();
-    await expect(cta).toContainText("demo home");
+    await expect(cta).toContainText("demo-huis");
     // The link opens Manage → Settings (which lands on the Connection section by default).
     await page.getByTestId("demo-cta-link").click();
     await expect(page.getByTestId("nav-manage")).toHaveClass(/nav-active/);
@@ -3067,7 +3774,7 @@ test.describe("EMS dashboard", () => {
     await expect(banner).toBeVisible();
     const unreachable = page.getByTestId("alert-ems_unreachable");
     await expect(unreachable).toBeVisible();
-    await expect(unreachable.getByTestId("alert-ems-doing")).toContainText("watch-only");
+    await expect(unreachable.getByTestId("alert-ems-doing")).toContainText("kijkmodus");
     await expect(unreachable.getByTestId("alert-ems-doing")).not.toContainText("network loss");
     // Cold fail: phrase present, no invented clock.
     await expect(page.getByTestId("alert-laatst-bekend")).toHaveText("Laatst bekend —");
