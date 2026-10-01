@@ -27,7 +27,7 @@ import threading
 import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from ems.clock import Clock, SystemClock
@@ -323,6 +323,23 @@ class ControlContext:
     tower_cache: dict[str, Any] = field(default_factory=lambda: {"towers": None, "at": None})
     sample_lock: threading.Lock = field(default_factory=threading.Lock)
     tower_lock: threading.Lock = field(default_factory=threading.Lock)
+    # B-48 / #87: plan_with_recovery + forward-projection memoized per quantized coalesce
+    # window so a dashboard poll (many endpoints × many clients) builds the plan/projection
+    # once, not ~6–16×. `key` is the quantized datetime; only successful (non-None) results
+    # are published — a failed/`None` build must miss again so the next caller (incl. the
+    # control tick) can retry when prices/SoC arrive. Forward also carries `generation`,
+    # bumped on invalidate so an in-flight projection cannot republish a pre-clear bundle.
+    # Single-slot cache: any caller whose quantized key differs (replay / historical `now`)
+    # evicts the live entry — fine for wall-clock UTC production callers.
+    plan_cache: dict[str, Any] = field(
+        default_factory=lambda: {"key": None, "result": None, "at": None, "builds": 0})
+    plan_lock: threading.Lock = field(default_factory=threading.Lock)
+    forward_cache: dict[str, Any] = field(
+        default_factory=lambda: {
+            "key": None, "result": None, "at": None, "builds": 0, "generation": 0,
+        })
+    forward_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+    forward_clear_lock: threading.Lock = field(default_factory=threading.Lock)
     # Cluster-drift dedup: the signature of towers currently NOT in the commanded mode family, so a
     # mismatch (or its resolution) is audited ONCE per episode. Also read by /api/diagnostics.
     drift_box: dict[str, Any] = field(default_factory=lambda: {"sig": None})
@@ -505,13 +522,69 @@ class ControlService:
     def _coalesce_s(self) -> float:
         """How long a live read is reused before re-reading the hardware (UI-tunable, eases load on
         a battery shared with Home Assistant + the Indevolt app); falls back to the module
-        default."""
+        default. Also the B-48 / #87 plan + forward-projection memoization window."""
         try:
             return float(self._settings.get("control.live_read_seconds")
                          or _LIVE_SAMPLE_COALESCE_SECONDS)
         except (TypeError, ValueError):
             _log.debug("invalid control.live_read_seconds; default (non-fatal)", exc_info=True)
             return _LIVE_SAMPLE_COALESCE_SECONDS
+
+    def quantize_now(self, now: datetime) -> datetime:
+        """Floor `now` to the coalesce window so plan/projection share one key per cycle (#87).
+
+        Same window as `_current_sample` / `_current_towers` (`control.live_read_seconds`). A window
+        ≤0 disables quantization (every call is its own key — tests / misconfig fail-soft).
+        """
+        window = self._coalesce_s()
+        if window <= 0:
+            return now
+        epoch = now.timestamp()
+        floored = (epoch // window) * window
+        tz = now.tzinfo or UTC
+        return datetime.fromtimestamp(floored, tz=tz)
+
+    def invalidate_plan_cache(self) -> None:
+        """Drop the memoized plan (e.g. after a settings change).
+
+        Shares `plan_lock` with `plan_with_recovery`, so an in-flight build cannot publish
+        after this clear. Load-profile warm must NOT call this (#87/#180): endpoints keep
+        sharing an already-built plan for the cycle; the profile feeds the next miss.
+        """
+        with self._ctx.plan_lock:
+            cache = self._ctx.plan_cache
+            cache["key"] = None
+            cache["result"] = None
+            cache["at"] = None
+
+    def invalidate_forward_cache(self) -> None:
+        """Drop the memoized forward-projection bundle (settings change / profile rebuild).
+
+        Bumps `generation` under `forward_clear_lock` so an in-flight `_forward_projection`
+        that started before this clear discards its result instead of republishing a
+        pre-change bundle for the rest of the coalesce window.
+        """
+        with self._ctx.forward_clear_lock:
+            cache = self._ctx.forward_cache
+            cache["key"] = None
+            cache["result"] = None
+            cache["at"] = None
+            cache["generation"] = int(cache.get("generation") or 0) + 1
+
+    def invalidate_cycle_caches(self) -> None:
+        """Clear plan + forward memoization together (POST /api/settings)."""
+        self.invalidate_plan_cache()
+        self.invalidate_forward_cache()
+
+    @property
+    def plan_builds(self) -> int:
+        """How many times plan_with_recovery actually computed (cache misses). Test/diagnostics."""
+        return int(self._ctx.plan_cache.get("builds") or 0)
+
+    @property
+    def forward_builds(self) -> int:
+        """How many times the forward-projection bundle was computed (cache misses)."""
+        return int(self._ctx.forward_cache.get("builds") or 0)
 
     def _sample_max_age_s(self) -> float:
         """How long a freshly-observed SoC may still be treated as known (#134). Beyond this
@@ -865,7 +938,34 @@ class ControlService:
         reachable value, keep charging — never fail-safe to AUTO solely for short-of-target.
         The plan still passes through `validate_plan_obj` (§8.11; B-22 short-of-target is **warn**)
         and the control caps/dwell before any write — recovery bypasses nothing. Returns
-        (now, prices, plan, status, catch)."""
+        (now, prices, plan, status, catch).
+
+        B-48 / #87: memoized per quantized coalesce window (same pattern as current_sample /
+        current_towers) so dashboard fan-out + control share one build; Explain/DecisionReason
+        reuse this path and must not rebuild a divergent plan just for explain.
+        """
+        now = self._clock.now_utc() if now is None else now
+        key = self.quantize_now(now)
+        cache = self._ctx.plan_cache
+        if cache["key"] == key:  # fast path: no lock when this cycle's plan is warm
+            return cache["result"]
+        with self._ctx.plan_lock:  # single-flight: one thread builds, others reuse
+            if cache["key"] == key:
+                return cache["result"]
+            result = self._plan_with_recovery_uncached(now)
+            cache["builds"] = int(cache.get("builds") or 0) + 1
+            # Only successful plans occupy the slot — a None (no prices / SoC unknown) must
+            # miss again so the control tick can retry within the same coalesce window.
+            if result is not None:
+                # Publish payload before the key (same order as `_current_sample`) so a
+                # lock-free reader never sees the new key with a previous bucket's result.
+                cache["result"] = result
+                cache["at"] = now
+                cache["key"] = key
+            return result
+
+    def _plan_with_recovery_uncached(self, now: datetime):
+        """Compute plan + recovery without touching the memoization cache."""
         pp = self.build_plan_now(now)
         if pp is None:
             return None

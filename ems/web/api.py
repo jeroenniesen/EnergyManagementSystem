@@ -1222,10 +1222,12 @@ def create_app(
         """Seed an enhanced load profile before cold `_current_plan` calls (diagnostics / reason).
 
         `/api/battery-plan` learns the profile inside `_forward_projection` and only then builds
-        `decision_reason` via `_decision_reason_dict`, which rebuilds the plan with that profile.
-        Cold `/api/diagnostics` used to plan with `profile=None` (flat overnight fallback), so
-        `chosen_window` could disagree between the two surfaces on the same tick. Seed the same
-        enhanced builder (empty history → fallback shape) before planning when nothing is cached.
+        `decision_reason` via `_decision_reason_dict`, which reuses the memoized plan (#87) with
+        that profile. Cold `/api/diagnostics` used to plan with `profile=None` (flat overnight
+        fallback), so `chosen_window` could disagree between the two surfaces on the same tick.
+        Seed the same enhanced builder (empty history → fallback shape) before planning when
+        nothing is cached. Does **not** invalidate the plan memo: if a plan was already built
+        this cycle, endpoints must keep sharing it (#87 / #180); the profile feeds the next miss.
         """
         existing = _load_profile_box.get("profile")
         if existing is not None:
@@ -1239,6 +1241,8 @@ def create_app(
             as_of=now,
         )
         _load_profile_box["profile"] = profile
+        # Do not invalidate a memoized plan here: if a plan was already built this cycle,
+        # endpoints must keep sharing it (#87 / #180). Profile feeds the next cache miss.
         return profile
 
     async def _audit_decision_loop(stop: asyncio.Event) -> None:
@@ -1945,9 +1949,8 @@ def create_app(
         quality = _data_quality(now)
         # Same empty gates as `_forward_projection` so dashboard + diagnostics never diverge
         # when SoC is unknown/stale (#134) or there is no forecast/plan yet.
-        # Match battery-plan's reason path: it rebuilds the plan after `_forward_projection`
-        # caches an enhanced load profile. Seed that profile on cold diagnostics so the two
-        # surfaces don't disagree on `chosen_window`.
+        # Match battery-plan's reason path: warm the load profile, then reuse the memoized
+        # `plan_with_recovery` result (#87) — never rebuild a divergent plan just for explain.
         _ensure_load_profile(now)
         pp = _current_plan()
         soc = _current_soc(now)
@@ -2021,9 +2024,10 @@ def create_app(
     async def _canonical_decision_reason(now: datetime | None = None) -> dict:
         """Same reason object as /api/battery-plan: warm the load-profile path first (#84).
 
-        `_forward_projection` fills `_load_profile_box` before the planner rebuilds; calling the
-        sync assembler alone can yield a shorter `chosen_window` when diagnostics/decision/replay
-        are hit before any forecast endpoint. Late-binds `_forward_projection` (defined below).
+        `_forward_projection` fills `_load_profile_box` then builds (and memoizes) the plan (#87);
+        calling the sync assembler alone can yield a shorter `chosen_window` when
+        diagnostics/decision/replay are hit before any forecast endpoint. Late-binds
+        `_forward_projection` (defined below).
         """
         fp = await _forward_projection()
         use = (fp["now"] if fp is not None else None) or now or datetime.now(UTC)
@@ -3297,75 +3301,118 @@ def create_app(
 
     async def _forward_projection():
         """The forward plan + projection bundle (or None if there's no plan yet). Shared by
-        /api/energy-forecast and /api/energy-story so they never drift. The async history read
-        happens here; the blocking source/price/forecast reads + CPU projection run in a worker
-        thread so this never stalls the event loop (a slow meter/Tibber/Forecast.Solar must not
-        freeze unrelated requests)."""
-        # Learn the expected load from ~7 days of derived history (async DB read off the loop).
-        drows = await store.recent_derived(2016) if store is not None else []
-        rrows = await store.recent_raw(2016) if store is not None else []
-        # Warm EV daily history for winter exogenous sizing (#181) — fail-soft if store missing.
-        await control.refresh_ev_daily(_now_utc())
+        /api/energy-forecast, /api/energy-story, /api/battery-plan and decision/diagnostics so they
+        never drift. The async history read happens here; the blocking source/price/forecast reads
+        + CPU projection run in a worker thread so this never stalls the event loop (a slow
+        meter/Tibber/Forecast.Solar must not freeze unrelated requests).
 
-        def _compute():
-            pp = _current_plan()  # touches price_source/solar_forecast/source.read (all cached)
-            if pp is None or solar_forecast is None:
-                return None
-            now, prices_, plan = pp
-            if not plan.slots:
-                return None
-            soc = _current_soc(now)
-            if soc is None:
-                return None  # unknown/stale SoC (#134)
-            fc_slots = solar_forecast.slots()
-            solar_by = {f.start: f.p50_w for f in fc_slots}
-            fallback_w = settings_cache["battery.overnight_load_kwh"] * 1000.0 / 12.0
-            # B-64: weekday/weekend + season (+ weather when solar is present on rows).
-            profile = build_load_profile(
-                attach_solar(drows, rrows),
-                site_tz,
-                fallback_w=fallback_w,
-                enhanced=True,
-                as_of=now,
-            )
-            _load_profile_box["profile"] = profile  # share with the sync _current_plan (adaptive)
-            load_by = {s.start: profile.expected_w(s.start) for s in plan.slots}
-            # #180: on-track / behind_target / target line must use the plan's committed
-            # target_soc (required kWh / honest partial from #162), not the separate advisory
-            # overnight config ceiling (~88% with defaults) — otherwise UI screams behind while
-            # the plan honestly scheduled 0 kWh top-up.
-            need = ui_charge_need(
-                soc_pct=soc, usable_kwh=settings_cache["battery.usable_kwh"],
-                min_reserve_soc=settings_cache["battery.min_reserve_soc"],
-                night_reserve_kwh=settings_cache["battery.night_reserve_kwh"],
-                overnight_load_kwh=settings_cache["battery.overnight_load_kwh"],
-                round_trip_efficiency=settings_cache["planner.round_trip_efficiency"],
-                plan_target_soc=plan.target_soc,
-            )
-            # Both seasons use the adaptive charger, which sizes its own charge slots — the
-            # projection must NOT cap them at the night target (undoing demand-aware peak-shaving).
-            projected = project_energy(
-                plan.slots, start_soc_pct=soc, solar_w_by=solar_by,
-                load_w_by=load_by, model=_battery_model(),
-                charge_target_soc_pct=None,
-            )
-            # Prefer the plan deadline (first peak / catch-up) when the planner set one; sunset
-            # remains the advisory fallback when the plan has no commitment deadline.
-            deadline = plan.deadline if plan.deadline is not None else sunset_after(fc_slots, now)
-            return {"now": now, "current_soc": soc, "projected": projected, "need": need,
-                    "deadline": deadline,
-                    "price_by": {p.start: p.eur_per_kwh for p in prices_},
-                    # The resolved season ('summer'/'winter') the ACTIVE plan was built with —
-                    # carried through so /api/battery-plan's provenance line never has to rebuild
-                    # the plan (or re-touch the seasonal-hysteresis counter) to know which planner
-                    # ran.
-                    "strategy": plan.strategy,
-                    "plan_target_soc": plan.target_soc,
-                    # Same recovered Plan the control path acts on (#84) — reason schema must not
-                    # rebuild a divergent plan.
-                    "plan": plan}
+        B-48 / #87: memoized per quantized coalesce window (same window as `_current_sample` /
+        `plan_with_recovery`) — one projection build per cycle shared across endpoints/clients.
+        Learns the load profile FIRST, then builds the plan, so Explain/DecisionReason reuse the
+        same memoized `plan_with_recovery` result (no explain-only rebuild). Only successful
+        (non-None) bundles are cached; a generation token discards publishes after
+        `invalidate_forward_cache` so settings saves cannot leave a pre-change UI bundle sticky.
+        """
+        now_wall = _now_utc()
+        key = control.quantize_now(now_wall)
+        # ControlService's ControlContext — create_app later rebinds `ctx` to AppContext.
+        cctx = control._ctx
+        cache = cctx.forward_cache
+        if cache["key"] == key:  # fast path
+            return cache["result"]
+        async with cctx.forward_lock:  # single-flight across concurrent async callers
+            if cache["key"] == key:
+                return cache["result"]
+            # Capture generation under clear-lock so a settings invalidate mid-flight is visible
+            # when we decide whether to publish.
+            with cctx.forward_clear_lock:
+                generation = int(cache.get("generation") or 0)
+            # Learn the expected load from ~7 days of derived history (async DB read off the loop).
+            drows = await store.recent_derived(2016) if store is not None else []
+            rrows = await store.recent_raw(2016) if store is not None else []
+            # Warm EV daily history for winter exogenous sizing (#181) — fail-soft if store missing.
+            await control.refresh_ev_daily(now_wall)
 
-        return await asyncio.to_thread(_compute)
+            def _compute():
+                # Profile BEFORE plan: adaptive charger needs expected load; reason/control share
+                # the memoized plan (#87) — invalidate any cold plan built without the profile.
+                fallback_w = settings_cache["battery.overnight_load_kwh"] * 1000.0 / 12.0
+                as_of = now_wall
+                profile = build_load_profile(
+                    attach_solar(drows, rrows),
+                    site_tz,
+                    fallback_w=fallback_w,
+                    enhanced=True,
+                    as_of=as_of,
+                )
+                _load_profile_box["profile"] = profile
+                # Profile before plan on a cold miss; never drop an already-memoized plan for
+                # this cycle — /api/plan and /api/battery-plan must share one target (#87/#180).
+
+                pp = _current_plan()  # touches price_source/solar_forecast/source.read (all cached)
+                if pp is None or solar_forecast is None:
+                    return None
+                now, prices_, plan = pp
+                if not plan.slots:
+                    return None
+                soc = _current_soc(now)
+                if soc is None:
+                    return None  # unknown/stale SoC (#134)
+                fc_slots = solar_forecast.slots()
+                solar_by = {f.start: f.p50_w for f in fc_slots}
+                load_by = {s.start: profile.expected_w(s.start) for s in plan.slots}
+                # #180: on-track / behind_target / target line must use the plan's committed
+                # target_soc (required kWh / honest partial from #162), not the separate advisory
+                # overnight config ceiling (~88% with defaults) — otherwise UI screams behind while
+                # the plan honestly scheduled 0 kWh top-up.
+                need = ui_charge_need(
+                    soc_pct=soc, usable_kwh=settings_cache["battery.usable_kwh"],
+                    min_reserve_soc=settings_cache["battery.min_reserve_soc"],
+                    night_reserve_kwh=settings_cache["battery.night_reserve_kwh"],
+                    overnight_load_kwh=settings_cache["battery.overnight_load_kwh"],
+                    round_trip_efficiency=settings_cache["planner.round_trip_efficiency"],
+                    plan_target_soc=plan.target_soc,
+                )
+                # Both seasons use the adaptive charger, which sizes its own charge slots — the
+                # projection must NOT cap them at the night target (undoing demand-aware
+                # peak-shaving).
+                projected = project_energy(
+                    plan.slots, start_soc_pct=soc, solar_w_by=solar_by,
+                    load_w_by=load_by, model=_battery_model(),
+                    charge_target_soc_pct=None,
+                )
+                # Prefer the plan deadline (first peak / catch-up) when the planner set one; sunset
+                # remains the advisory fallback when the plan has no commitment deadline.
+                if plan.deadline is not None:
+                    deadline = plan.deadline
+                else:
+                    deadline = sunset_after(fc_slots, now)
+                return {"now": now, "current_soc": soc, "projected": projected, "need": need,
+                        "deadline": deadline,
+                        "price_by": {p.start: p.eur_per_kwh for p in prices_},
+                        # Resolved season ('summer'/'winter') the ACTIVE plan was built with —
+                        # so /api/battery-plan provenance never rebuilds the plan (or re-touches
+                        # seasonal-hysteresis) to know which planner ran.
+                        "strategy": plan.strategy,
+                        "plan_target_soc": plan.target_soc,
+                        # Same recovered Plan the control path acts on (#84) — reason must not
+                        # rebuild a divergent plan.
+                        "plan": plan}
+
+            result = await asyncio.to_thread(_compute)
+            with cctx.forward_clear_lock:
+                cache["builds"] = int(cache.get("builds") or 0) + 1
+                # Discard if settings (or another clear) bumped generation during this flight —
+                # otherwise the UI would keep a pre-change plan until the coalesce window rolls.
+                if int(cache.get("generation") or 0) != generation:
+                    return result
+                # Only successful bundles occupy the slot (None must miss again when SoC arrives).
+                if result is not None:
+                    # Payload before key so a lock-free reader never sees a new key + stale result.
+                    cache["result"] = result
+                    cache["at"] = now_wall
+                    cache["key"] = key
+            return result
 
     @app.get("/api/energy-forecast")
     async def energy_forecast() -> dict:
@@ -4625,6 +4672,9 @@ def create_app(
         _apply_site_settings()
         _apply_explainer_settings()
         await _apply_battery_power_settings()
+        # B-48 / #87: settings can change planner knobs — drop memoized plan/projection so the
+        # next poll rebuilds once with the new values (still through the validator).
+        control.invalidate_cycle_caches()
         if audit_store is not None and clean:
             # Record WHICH settings changed — keys only, never values (so a token/secret is never
             # written to the audit log). Secret keys are flagged so the entry reads sensibly.

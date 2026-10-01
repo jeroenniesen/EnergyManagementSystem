@@ -7,6 +7,12 @@ exceeded.
 
 Output is human-readable. Not consumed by CI (per B-80's design decision:
 local command only).
+
+Honesty note (#87 / B-48): this tool times each hot route once and does **not**
+prove plan/projection memoization (p95 of `api.hot` is dominated by first
+uncached calls). After the workload it prints `plan_builds` / `forward_builds`
+for one poll as a diagnostic hint; the real “16 → 1” evidence lives in
+`ems/tests/test_plan_memoization.py`.
 """
 
 from __future__ import annotations
@@ -51,8 +57,11 @@ async def _sample_rss_once(sampler: RssSampler) -> None:
         await sampler.stop()
 
 
-def _run_workload() -> None:
-    """Exercise the canned perf workload. Pushes samples into the singleton REGISTRY."""
+def _run_workload() -> tuple[int, int]:
+    """Exercise the canned perf workload. Pushes samples into the singleton REGISTRY.
+
+    Returns (plan_builds, forward_builds) after one hot-path poll for memoization diagnostics.
+    """
     from fastapi.testclient import TestClient
 
     from ems.sources.mock import MockSource
@@ -93,6 +102,10 @@ def _run_workload() -> None:
                 pass
             REGISTRY.push("api.batch", (time.perf_counter() - t0) * 1000)
 
+    svc = getattr(app.state, "control_service", None)
+    plan_builds = int(getattr(svc, "plan_builds", 0) or 0) if svc is not None else 0
+    forward_builds = int(getattr(svc, "forward_builds", 0) or 0) if svc is not None else 0
+
     async def fake_cycle() -> None:
         async with atimed("control.cycle"):
             await asyncio.sleep(0.05)
@@ -104,9 +117,10 @@ def _run_workload() -> None:
 
     sampler = RssSampler(interval_seconds=0.05)
     asyncio.run(_sample_rss_once(sampler))
+    return plan_builds, forward_builds
 
 
-def _print_report() -> int:
+def _print_report(*, plan_builds: int, forward_builds: int) -> int:
     print()
     print("| name                | tier | p50 (ms)  | p95 (ms) | max (ms) |   n | budget | pass |")
     print("|---------------------|------|-----------|----------|----------|-----|--------|------|")
@@ -145,6 +159,12 @@ def _print_report() -> int:
         failures += 1
 
     print()
+    print(
+        f"Memoization diagnostic (one hot poll): plan_builds={plan_builds} "
+        f"forward_builds={forward_builds}. Budgets do not prove the #87 win — "
+        f"see ems/tests/test_plan_memoization.py."
+    )
+    print()
     if failures == 0:
         print("All budgets green.")
         return 0
@@ -153,8 +173,8 @@ def _print_report() -> int:
 
 
 def main() -> int:
-    _run_workload()
-    return _print_report()
+    plan_builds, forward_builds = _run_workload()
+    return _print_report(plan_builds=plan_builds, forward_builds=forward_builds)
 
 
 if __name__ == "__main__":
