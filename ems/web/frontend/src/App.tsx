@@ -20,6 +20,7 @@ import type { DecisionReason } from "./decisionWhy";
 import { buildHeroSynthesis } from "./heroSynthesis";
 import { Icon, type IconName } from "./icons";
 import { DeviceHealthStrip } from "./DeviceHealth";
+import { showTopbarDataQuality, showTopbarDataSource } from "./topbarChips";
 import {
   CAR_BADGE_SUFFIX,
   CAR_BADGE_SUFFIX_DEFAULT,
@@ -820,7 +821,8 @@ export function App() {
               : DRY_RUN_CAUSE_FALLBACK}
           </span>
         )}
-        {status && (
+        {/* B-99: demote redundant "Live sensoren"; keep Demo/mock as attention. */}
+        {status && showTopbarDataSource(status.dev_mode) && (
           <span
             className="badge badge-muted"
             data-testid="data-source"
@@ -829,7 +831,8 @@ export function App() {
             {status.dev_mode === "live" ? DATA_SOURCE.live.label : DATA_SOURCE.sim.label}
           </span>
         )}
-        {alertsData && (
+        {/* B-99: data-quality chip only when not complete (DeviceHealth covers "Alles actueel"). */}
+        {alertsData && showTopbarDataQuality(alertsData.data_quality) && (
           <span
             className={`badge badge-dq dq-${alertsData.data_quality}`}
             data-testid="data-quality"

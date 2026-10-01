@@ -807,10 +807,12 @@ test.describe("EMS dashboard", () => {
 
   test("approved dashboard hierarchy keeps four primary surfaces above one disclosure", async ({ page }) => {
     await page.goto("/");
-    for (const id of ["run-mode-badge", "data-quality", "home-state", "outcome-tiles",
+    // B-99: data-quality is attention-only (hidden when complete); run-mode stays.
+    for (const id of ["run-mode-badge", "home-state", "outcome-tiles",
       "plan-story", "home-more", "alerts"]) {
       await expect(page.getByTestId(id), `panel ${id} should render`).toBeVisible();
     }
+    await expect(page.getByTestId("data-quality")).toHaveCount(0);
     const ordered = await Promise.all(["home-state", "outcome-tiles", "plan-story", "home-more"]
       .map((id) => page.getByTestId(id).boundingBox()));
     expect(ordered.every(Boolean)).toBe(true);
@@ -818,7 +820,7 @@ test.describe("EMS dashboard", () => {
     expect(ordered[1]!.y).toBeLessThan(ordered[2]!.y);
     expect(ordered[2]!.y).toBeLessThan(ordered[3]!.y);
     const heroBox = ordered[0]!;
-    for (const id of ["run-mode-badge", "data-quality", "alerts"]) {
+    for (const id of ["run-mode-badge", "alerts"]) {
       const safetyBox = await page.getByTestId(id).boundingBox();
       expect(safetyBox, `${id} should have layout geometry`).not.toBeNull();
       expect(safetyBox!.y, `${id} should remain above the hero`).toBeLessThan(heroBox.y);
@@ -1719,10 +1721,87 @@ test.describe("EMS dashboard", () => {
     await expect(page.getByTestId("error")).toHaveCount(0);
   });
 
-  test("shows a data-quality badge and the watch-only alert", async ({ page }) => {
+  // B-99: complete quality is quiet in the topbar; watch-only alert still surfaces.
+  test("hides complete data-quality chip; still shows the watch-only alert", async ({ page }) => {
+    await page.goto("/");
+    await expect(page.getByTestId("data-quality")).toHaveCount(0);
+    await expect(page.getByTestId("alerts")).toContainText("Watch-only");
+  });
+
+  test("B-99: degraded data-quality chip remains visible as attention", async ({ page }) => {
+    const degraded = await mockRoute(page, "**/api/dashboard", async (route) => {
+      const response = await route.fetch();
+      const dashboard = await response.json();
+      await route.fulfill({
+        response,
+        json: {
+          ...dashboard,
+          alerts: { data_quality: "degraded", alerts: dashboard.alerts?.alerts ?? [] },
+        },
+      });
+    });
     await page.goto("/");
     await expect(page.getByTestId("data-quality")).toBeVisible();
-    await expect(page.getByTestId("alerts")).toContainText("Watch-only");
+    await expect(page.getByTestId("data-quality")).toContainText("Deels verouderd");
+    degraded.assertRequested();
+  });
+
+  // B-99: healthy live topbar ≤2 meaningful status chips (run-mode / attention).
+  test("B-99: healthy live session shows ≤2 topbar status chips", async ({ page }) => {
+    const healthyLive = await mockRoute(page, "**/api/dashboard", async (route) => {
+      const response = await route.fetch();
+      const dashboard = await response.json();
+      const sources = ["battery", "grid", "prices", "forecast"].map((key) => ({
+        key,
+        label: key,
+        state: "fresh",
+        updated_hhmm: "12:00",
+      }));
+      await route.fulfill({
+        response,
+        json: {
+          ...dashboard,
+          status: {
+            ...dashboard.status,
+            dry_run: false,
+            dry_run_reason: null,
+            dry_run_cause: null,
+            dev_mode: "live",
+          },
+          freshness: {
+            battery: "fresh",
+            grid: "fresh",
+            prices: "fresh",
+            forecast: "fresh",
+          },
+          alerts: { data_quality: "complete", alerts: [] },
+          device_health: {
+            sources,
+            battery_reachable: true,
+            forecast_age_seconds: 120,
+            summary: {
+              badge: "current",
+              label: "Alles actueel",
+              detail: "Batterij, P1-meter, prijzen en zonvoorspelling zijn bijgewerkt.",
+              severity: "ok",
+            },
+          },
+        },
+      });
+    });
+    await page.goto("/");
+    await expect(page.getByTestId("run-mode-badge")).toBeVisible();
+    await expect(page.getByTestId("data-source")).toHaveCount(0);
+    await expect(page.getByTestId("data-quality")).toHaveCount(0);
+    await expect(page.getByTestId("run-mode-reason")).toHaveCount(0);
+    const statusChipIds = ["run-mode-badge", "run-mode-reason", "data-source", "data-quality"];
+    let visible = 0;
+    for (const id of statusChipIds) {
+      visible += await page.getByTestId(id).count();
+    }
+    expect(visible).toBeLessThanOrEqual(2);
+    expect(visible).toBe(1);
+    healthyLive.assertRequested();
   });
 
   test("shows the controller decision (dry-run) panel", async ({ page }) => {
