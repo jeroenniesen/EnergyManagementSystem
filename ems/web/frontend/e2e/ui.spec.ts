@@ -1009,7 +1009,7 @@ test.describe("EMS dashboard", () => {
       const domOrder = await page.evaluate((ids) => {
         const nodes = ids.map((id) => document.querySelector(`[data-testid="${id}"]`));
         if (nodes.some((node) => !node)) return null;
-        return ids.every((id, index) => {
+        return ids.every((_id, index) => {
           if (index === 0) return true;
           const prev = nodes[index - 1]!;
           const node = nodes[index]!;
