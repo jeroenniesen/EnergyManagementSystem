@@ -624,9 +624,15 @@ body {
 .plan-story-solar text,
 .plan-story-references text,
 .plan-story-now text,
-.plan-story-axis text {
+.plan-story-axis text,
+.plan-story-soc-scale text {
   fill: var(--muted);
   font-size: 12px;
+}
+/* B-102: quieter than time-axis ticks — power-user SoC scale only. */
+.plan-story-soc-scale text {
+  font-size: 11px;
+  opacity: 0.72;
 }
 .plan-story-solar polygon {
   fill: var(--summer);
@@ -735,7 +741,8 @@ body {
   .plan-story-solar text,
   .plan-story-references text,
   .plan-story-now text,
-  .plan-story-axis text { font-size: 28px; }
+  .plan-story-axis text,
+  .plan-story-soc-scale text { font-size: 28px; }
 }
 @media (prefers-reduced-motion: reduce) {
   .plan-story * { transition: none !important; }
@@ -2854,6 +2861,51 @@ body {
 .home-more[open] > .home-more-toggle::before { transform: rotate(90deg); }
 .home-more-body { display: flex; flex-direction: column; gap: 14px; padding-top: 4px; }
 .home-more-body > :last-child { margin-bottom: 0; }
+
+/* B-102: nested Strategy / Manual / Car — scannable sections inside More. */
+.home-more-nest {
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--panel);
+  padding: 0 12px;
+}
+/* Hide a nest whose body has no mounted card (e.g. compact Car when EV is off). */
+.home-more-nest:not(:has(.home-more-nest-body > *)) {
+  display: none;
+}
+.home-more-nest-toggle {
+  padding: 12px 2px;
+  color: var(--text);
+  cursor: pointer;
+  font-size: 0.84rem;
+  font-weight: 650;
+  list-style: none;
+}
+.home-more-nest-toggle::-webkit-details-marker { display: none; }
+.home-more-nest-toggle::before {
+  content: "›";
+  display: inline-block;
+  margin-right: 8px;
+  color: var(--muted);
+}
+.home-more-nest[open] > .home-more-nest-toggle::before { transform: rotate(90deg); }
+.home-more-nest-body {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 0 0 12px;
+}
+.home-more-nest-body > :last-child { margin-bottom: 0; }
+/* Nested cards already have their own panel chrome — drop the double frame. */
+.home-more-nest-body > .strategy-card,
+.home-more-nest-body > .override,
+.home-more-nest-body > .car-card {
+  margin: 0;
+  border: none;
+  background: transparent;
+  padding-left: 0;
+  padding-right: 0;
+}
 
 /* --- Auth screens (Login/Onboarding/AcceptInvite) — Item A ------------------------------------
    These render BEFORE the styled app shell (App.tsx's early auth-gate returns, above the final

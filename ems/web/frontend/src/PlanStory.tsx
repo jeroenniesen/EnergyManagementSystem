@@ -239,6 +239,21 @@ export function PlanStory({
             </text>
           </g>
 
+          {/* B-102: quiet left-gutter SoC % ticks for power users — not a second chart. */}
+          <g className="plan-story-soc-scale" data-testid="plan-story-soc-scale" aria-hidden="true">
+            {[100, 50, 0].map((pct) => (
+              <text
+                key={pct}
+                data-testid={`plan-story-soc-scale-${pct}`}
+                x={PAD.l - 8}
+                y={socY(pct) + 3}
+                textAnchor="end"
+              >
+                {HOME_PLAN_STORY.socScale(pct)}
+              </text>
+            ))}
+          </g>
+
           <g className="plan-story-soc" data-testid="plan-story-soc">
             {model.soc.map((run, index) => {
               const points = run.points.map((point) =>

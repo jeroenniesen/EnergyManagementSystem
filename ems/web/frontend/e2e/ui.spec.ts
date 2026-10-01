@@ -71,6 +71,17 @@ async function openMore(page: Page) {
   await expect(page.getByTestId("home-more-body")).toBeVisible();
 }
 
+/** B-102: open a nested Strategy / Manual / Car disclosure inside More. */
+async function openMoreNest(page: Page, kind: "strategy" | "manual" | "car") {
+  await openMore(page);
+  const nest = page.getByTestId(`home-more-${kind}`);
+  await expect(nest).toBeVisible();
+  if ((await nest.getAttribute("open")) === null) {
+    await page.getByTestId(`home-more-${kind}-toggle`).click();
+  }
+  await expect(page.getByTestId(`home-more-${kind}-body`)).toBeVisible();
+}
+
 // The detailed panels (power tiles, Sankey, charge target, controller decision, AI note, data
 // status) now live in a collapsed "Advanced" section — open it before asserting on them.
 async function openAdvanced(page: Page) {
@@ -885,7 +896,7 @@ test.describe("EMS dashboard", () => {
       const domOrder = await page.evaluate((ids) => {
         const nodes = ids.map((id) => document.querySelector(`[data-testid="${id}"]`));
         if (nodes.some((node) => !node)) return null;
-        return ids.map((id, index) => {
+        return ids.map((_id, index) => {
           const node = nodes[index]!;
           const earlier = nodes.slice(0, index);
           return earlier.every(
@@ -919,6 +930,67 @@ test.describe("EMS dashboard", () => {
       await expect(page.getByTestId("battery-action-why-toggle")).toBeVisible();
     });
   }
+
+  // B-102: More nest + tile icons + PlanStory SoC scale hint (no second chart).
+  test("B-102: More nests Strategy / Manual / Car; tiles have icons; PlanStory SoC scale", async ({
+    page,
+  }) => {
+    await page.route("**/api/car/plan", (route) =>
+      route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          enabled: true,
+          plan: {
+            slots: [],
+            windows: [],
+            deadlines: [],
+            advice: "Quiet day for the car.",
+            negative_price_hint: null,
+            total_est_cost_eur: 0,
+            total_planned_kwh: 0,
+          },
+          soc: {
+            soc_pct: 40,
+            anchor_pct: 40,
+            anchor_ts: new Date().toISOString(),
+            added_kwh: 0,
+            sessions_since_anchor: 0,
+            age_hours: 1,
+            stale: false,
+          },
+        }),
+      }),
+    );
+    await page.goto("/");
+    // Tile icons: solar / battery / grid always; savings when framed.
+    await expect(page.getByTestId("outcome-solar-score-icon")).toBeVisible();
+    await expect(page.getByTestId("outcome-soc-icon")).toBeVisible();
+    await expect(page.getByTestId("outcome-grid-import-icon")).toBeVisible();
+    // Single PlanStory chart + subtle SoC scale — no second chart.
+    await expect(page.locator('[data-density-kind="chart"]:visible')).toHaveCount(1);
+    await expect(page.getByTestId("plan-story-soc-scale")).toBeVisible();
+    await expect(page.getByTestId("plan-story-soc-scale-100")).toBeVisible();
+    await expect(page.getByTestId("plan-story-soc-scale-50")).toBeVisible();
+    await expect(page.getByTestId("plan-story-soc-scale-0")).toBeVisible();
+
+    await openMore(page);
+    // Nest summaries are scannable; bodies stay closed until opened.
+    for (const kind of ["strategy", "manual", "car"] as const) {
+      await expect(page.getByTestId(`home-more-${kind}`)).toBeVisible();
+      await expect(page.getByTestId(`home-more-${kind}`)).not.toHaveAttribute("open", "");
+    }
+    await expect(page.getByTestId("strategy-card")).not.toBeVisible();
+    await expect(page.getByTestId("override")).not.toBeVisible();
+    await expect(page.getByTestId("car-card")).not.toBeVisible();
+
+    await openMoreNest(page, "strategy");
+    await expect(page.getByTestId("strategy-card")).toBeVisible();
+    await openMoreNest(page, "manual");
+    await expect(page.getByTestId("override")).toBeVisible();
+    await openMoreNest(page, "car");
+    await expect(page.getByTestId("car-card")).toBeVisible();
+  });
 
   test("unavailable outcomes remain em dashes and only available drill-downs are actionable", async ({ page }) => {
     const reportMock = await mockRoute(page, "**/api/report**", (route) =>
@@ -1735,6 +1807,7 @@ test.describe("EMS dashboard", () => {
     await page.goto("/");
     await openMore(page);
     await expect(page.getByTestId("plan-story").locator('[data-testid="bp-car-window"]')).toHaveCount(0);
+    await openMoreNest(page, "car");
     await expect(page.getByTestId("car-card")).toBeVisible();
     await expect(page.getByTestId("car-advice")).toHaveText("Plug in later.");
   });
@@ -1781,7 +1854,7 @@ test.describe("EMS dashboard", () => {
     await expect(tile).toBeVisible();
     await expect(tile).toContainText("€2.34");
     await expect(tile).toHaveAttribute("data-tone", "positive");
-    await expect(page.getByTestId("outcome-savings-icon")).toHaveCount(0);
+    await expect(page.getByTestId("outcome-savings-icon")).toBeVisible();
     await expect(page.getByTestId("saved-today")).toHaveCount(0);
   });
 
@@ -1870,7 +1943,7 @@ test.describe("EMS dashboard", () => {
     await expect(tile).not.toContainText("Nog meten");
     await expect(tile).not.toContainText("Vandaag nog geen voordeel");
     await expect(tile).toHaveAttribute("data-tone", "positive");
-    await expect(page.getByTestId("outcome-savings-icon")).toHaveCount(0);
+    await expect(page.getByTestId("outcome-savings-icon")).toBeVisible();
   });
 
   test("no API error banner when backend is up", async ({ page }) => {
@@ -2071,7 +2144,7 @@ test.describe("EMS dashboard", () => {
 
   test("shows the strategy card with a season picker and explanation", async ({ page }) => {
     await page.goto("/");
-    await openMore(page);
+    await openMoreNest(page, "strategy");
     const card = page.getByTestId("strategy-card");
     await expect(card).toBeVisible();
     await expect(page.getByTestId("strategy-auto")).toBeVisible();
@@ -2106,7 +2179,7 @@ test.describe("EMS dashboard", () => {
       }
     });
     await page.goto("/");
-    await openMore(page);
+    await openMoreNest(page, "strategy");
     await expect(page.getByTestId("strategy-summary")).toContainText("Solar-first");
     await page.getByTestId("strategy-winter").click();
     await expect(page.getByTestId("strategy-winter")).toHaveAttribute("aria-checked", "true");
@@ -2133,7 +2206,7 @@ test.describe("EMS dashboard", () => {
       }
     });
     await page.goto("/");
-    await openMore(page);
+    await openMoreNest(page, "strategy");
     await page.getByTestId("strategy-auto").focus();
     await page.keyboard.press("ArrowRight"); // Auto -> Summer
     await expect(page.getByTestId("strategy-summer")).toHaveAttribute("aria-checked", "true");
@@ -2162,7 +2235,7 @@ test.describe("EMS dashboard", () => {
       }
     });
     await page.goto("/");
-    await openMore(page);
+    await openMoreNest(page, "strategy");
     const sw = page.getByTestId("strategy-grid-topup");
     await expect(sw).toBeVisible();
     await expect(sw).toHaveAttribute("aria-label", "Top up from the grid if the sun falls short");
@@ -2173,7 +2246,7 @@ test.describe("EMS dashboard", () => {
 
   test("the strategy card's Advanced link opens Settings", async ({ page }) => {
     await page.goto("/");
-    await openMore(page);
+    await openMoreNest(page, "strategy");
     await page.getByTestId("strategy-more").click();
     await expect(page.getByTestId("settings")).toBeVisible();
     await expect(page.getByTestId("settings")).toContainText("Strategy");
@@ -3205,6 +3278,8 @@ test.describe("EMS dashboard", () => {
     await openMore(page);
     await expect(page.getByTestId("plan-story")).toBeVisible();
     await expect(page.getByTestId("car-card")).toHaveCount(0);
+    // B-102: empty Car nest stays hidden when compact CarCard returns null.
+    await expect(page.getByTestId("home-more-car")).not.toBeVisible();
   });
 
   test("the car card asks for the car's charge level when there's no SoC anchor yet", async ({ page }) => {
@@ -3226,7 +3301,7 @@ test.describe("EMS dashboard", () => {
       }),
     );
     await page.goto("/");
-    await openMore(page);
+    await openMoreNest(page, "car");
     const card = page.getByTestId("car-card");
     await expect(card).toBeVisible();
     await expect(card).toContainText("What's the car's charge now?");
@@ -3260,7 +3335,7 @@ test.describe("EMS dashboard", () => {
       }),
     );
     await page.goto("/");
-    await openMore(page);
+    await openMoreNest(page, "car");
     await expect(page.getByTestId("car-meter-missing")).toContainText("No EV meter");
     await expect(page.getByTestId("car-meter-missing")).toContainText("after driving or charging");
   });
@@ -3281,7 +3356,7 @@ test.describe("EMS dashboard", () => {
       }),
     );
     await page.goto("/");
-    await openMore(page);
+    await openMoreNest(page, "car");
     await expect(page.getByTestId("car-meter-missing")).toContainText("No EV meter");
     await expect(page.getByTestId("car-schedule-link")).toBeVisible();
   });

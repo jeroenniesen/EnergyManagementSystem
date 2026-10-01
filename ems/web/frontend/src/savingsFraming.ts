@@ -66,7 +66,8 @@ export function frameSavedToday(savedToday: SavedToday | null): SavingsFrame {
     value: eur(amount),
     title: HOME_TILE.savings.title,
     tone: "positive",
-    icon: null,
+    // B-102: quiet € glyph on every savings tile (semantic recognition, not calm-only).
+    icon: "euro",
     openFinance: true,
   };
 }

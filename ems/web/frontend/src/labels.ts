@@ -545,6 +545,13 @@ export function homeConfidenceReasonNl(reason: string | null | undefined): strin
 
 export const HOME_MORE_TOGGLE = "Meer van je huis";
 
+/** B-102: nested More-body sections — scannable, not a dump. */
+export const HOME_MORE_NEST = {
+  strategy: "Strategie",
+  manual: "Handmatig",
+  car: "Auto",
+} as const;
+
 export const HOME_TILE = {
   sectionAria: "Tot nu toe vandaag",
   staleUpdated: "Verouderd · Bijgewerkt",
@@ -611,6 +618,8 @@ export const HOME_PLAN_STORY = {
   solarRange: (maxW: string) => `Zon 0–${maxW} W`,
   reserveLabel: (pct: number) => `reserve ${pct}%`,
   targetLabel: (pct: number) => `doel ${pct}%`,
+  /** B-102: subtle left-gutter SoC scale hint (not a second chart). */
+  socScale: (pct: number) => `${pct}%`,
 } as const;
 
 /**

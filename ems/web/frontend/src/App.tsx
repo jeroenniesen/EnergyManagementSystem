@@ -33,6 +33,7 @@ import {
   HOME_ACT,
   HOME_CONFIDENCE_CHIP,
   HOME_HERO,
+  HOME_MORE_NEST,
   HOME_MORE_TOGGLE,
   homeConfidenceReasonNl,
   homeHeadlineNl,
@@ -47,6 +48,7 @@ import {
 import { Login } from "./Login";
 import { NotificationBell } from "./Notifications";
 import { Onboarding } from "./Onboarding";
+import { HomeMoreNest } from "./HomeMoreNest";
 import { OverrideCard } from "./Override";
 import { CarCard } from "./CarCard";
 import { CarView } from "./Car";
@@ -1122,20 +1124,27 @@ export function App() {
               onOpenDetail={() => navigate("insights")}
               scoreKeys={["co2", "best_price"]}
             />
+            {/* B-102: nest Strategy / Manual / Car — scannable, not a flat dump. */}
             {strategy && (
-              <StrategyCard
-                strategy={strategy}
-                onChange={setStrategyMode}
-                onSetGridTopup={setGridTopup}
-                onTune={() => navigate("manage", "settings")}
-                canOperate={canOperate}
-              />
+              <HomeMoreNest kind="strategy" label={HOME_MORE_NEST.strategy}>
+                <StrategyCard
+                  strategy={strategy}
+                  onChange={setStrategyMode}
+                  onSetGridTopup={setGridTopup}
+                  onTune={() => navigate("manage", "settings")}
+                  canOperate={canOperate}
+                />
+              </HomeMoreNest>
             )}
             {status && (
-              <OverrideCard dataQuality={alertsData?.data_quality} canOperate={canOperate} />
+              <HomeMoreNest kind="manual" label={HOME_MORE_NEST.manual}>
+                <OverrideCard dataQuality={alertsData?.data_quality} canOperate={canOperate} />
+              </HomeMoreNest>
             )}
             {status && (
-              <CarCard compact onOpenCar={() => navigate("car")} canOperate={canOperate} />
+              <HomeMoreNest kind="car" label={HOME_MORE_NEST.car}>
+                <CarCard compact onOpenCar={() => navigate("car")} canOperate={canOperate} />
+              </HomeMoreNest>
             )}
             {status && (
         <Advanced>

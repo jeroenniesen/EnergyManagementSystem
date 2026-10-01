@@ -40,12 +40,12 @@ describe("frameSavedToday", () => {
     expect(frame.icon).toBe("euro");
   });
 
-  test("positive measured savings stay a plain € amount without calm icon", () => {
+  test("positive measured savings stay a plain € amount with a quiet euro icon", () => {
     const frame = frameSavedToday({ status: "measured", eur: 2.84 });
     expect(frame.value).toBe("€2.84");
     expect(frame.title).toBe(HOME_TILE.savings.title);
     expect(frame.tone).toBe("positive");
-    expect(frame.icon).toBeNull();
+    expect(frame.icon).toBe("euro");
     expect(frame.openFinance).toBe(true);
   });
 

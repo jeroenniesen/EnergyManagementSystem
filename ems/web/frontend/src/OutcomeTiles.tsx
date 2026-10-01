@@ -1,9 +1,17 @@
 import type { ReactNode } from "react";
 import type { SavedToday } from "./EnergyStory";
 import type { Report } from "./HomeScores";
-import { Icon } from "./icons";
+import { Icon, type IconName } from "./icons";
 import { HOME_TILE } from "./labels";
 import { frameSavedToday } from "./savingsFraming";
+
+function TileIcon({ name, testId }: { name: IconName; testId: string }) {
+  return (
+    <span className="outcome-tile-icon-wrap" data-testid={testId}>
+      <Icon name={name} className="outcome-tile-icon" />
+    </span>
+  );
+}
 
 function OutcomeTile({
   testId,
@@ -106,11 +114,11 @@ export function OutcomeTiles({
       : savings.tone === "positive"
         ? "positive"
         : null;
+  // B-102: subtle semantic icons on every tile (recognition without pill chrome).
+  // Savings keeps the framing icon when present; otherwise no glyph for unavailable.
   const savingsIcon =
     savings.icon != null ? (
-      <span className="outcome-tile-icon-wrap" data-testid="outcome-savings-icon">
-        <Icon name={savings.icon} className="outcome-tile-icon" />
-      </span>
+      <TileIcon name={savings.icon} testId="outcome-savings-icon" />
     ) : null;
 
   return (
@@ -122,6 +130,7 @@ export function OutcomeTiles({
         title={solarScore?.value == null ? HOME_TILE.solarScore.unavailable : HOME_TILE.solarScore.title}
         onOpen={solarScore?.value == null ? undefined : onOpenInsights}
         freshness={freshness.report}
+        icon={<TileIcon name="solar" testId="outcome-solar-score-icon" />}
       />
       <OutcomeTile
         testId="outcome-soc"
@@ -130,6 +139,7 @@ export function OutcomeTiles({
         title={socPct == null ? HOME_TILE.soc.unavailable : HOME_TILE.soc.title}
         onOpen={socPct == null ? undefined : onOpenBattery}
         freshness={freshness.status}
+        icon={<TileIcon name="battery-level" testId="outcome-soc-icon" />}
       />
       <OutcomeTile
         testId="outcome-savings"
@@ -150,6 +160,7 @@ export function OutcomeTiles({
         }
         onOpen={gridImport == null ? undefined : onOpenInsights}
         freshness={freshness.report}
+        icon={<TileIcon name="grid" testId="outcome-grid-import-icon" />}
       />
     </section>
   );

@@ -84,10 +84,15 @@ describe("PlanStory rendering", () => {
 
     expect(html).toContain('data-testid="plan-story"');
     expect(html.indexOf("plan-story-prices")).toBeLessThan(html.indexOf("plan-story-solar"));
-    expect(html.indexOf("plan-story-solar")).toBeLessThan(html.indexOf("plan-story-soc"));
-    expect(html.indexOf("plan-story-soc")).toBeLessThan(html.indexOf("plan-story-references"));
+    expect(html.indexOf("plan-story-solar")).toBeLessThan(html.indexOf("plan-story-soc-scale"));
+    expect(html.indexOf("plan-story-soc-scale")).toBeLessThan(html.indexOf('data-testid="plan-story-soc"'));
+    expect(html.indexOf('data-testid="plan-story-soc"')).toBeLessThan(html.indexOf("plan-story-references"));
     expect(html.indexOf("plan-story-references")).toBeLessThan(html.indexOf("plan-story-now"));
     expect(html.indexOf("plan-story-now")).toBeLessThan(html.indexOf("plan-story-actions"));
+    expect(html).toContain('data-testid="plan-story-soc-scale"');
+    expect(html).toContain('data-testid="plan-story-soc-scale-100"');
+    expect(html).toContain('data-testid="plan-story-soc-scale-50"');
+    expect(html).toContain('data-testid="plan-story-soc-scale-0"');
     expect(html).toContain('data-testid="plan-story-soc-recorded-0"');
     expect(html).toContain('data-testid="plan-story-soc-forecast-1"');
     expect(html).toContain('data-testid="plan-story-target-label"');

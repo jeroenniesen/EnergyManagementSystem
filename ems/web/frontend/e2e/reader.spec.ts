@@ -51,6 +51,7 @@ test.describe("reader read-only mode", () => {
 
     // Override: no mutating controls — a read-only hint stands in for them (the head/badge, a
     // plain read, stays visible).
+    await page.getByTestId("home-more-manual-toggle").click();
     await expect(page.getByTestId("override")).toBeVisible();
     await expect(page.getByTestId("override-intent")).toHaveCount(0);
     await expect(page.getByTestId("override-apply")).toHaveCount(0);
@@ -58,6 +59,7 @@ test.describe("reader read-only mode", () => {
 
     // Strategy: season switch + grid-topup toggle are disabled (not removed — the current choice
     // stays visible, it just can't be changed), with a hint explaining why.
+    await page.getByTestId("home-more-strategy-toggle").click();
     const summerBtn = page.getByTestId("strategy-summer");
     await expect(summerBtn).toBeVisible();
     await expect(summerBtn).toBeDisabled();
