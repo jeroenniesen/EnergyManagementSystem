@@ -322,7 +322,7 @@ describe("gaps and story semantics", () => {
     expect(summary).toContain("batterij 52%–51%");
     expect(summary).toContain(`Houdt vast ${holdStart}`);
     expect(summary).toContain("Geen gemeten data");
-    expect(summary).toContain("Laadt van zon");
+    expect(summary).toContain("Laadt van zonnepanelen");
     expect(summary).toContain("Nachtdoel 88%");
   });
 

@@ -1,6 +1,6 @@
 import { describe, expect, test } from "vitest";
 
-import { buildHeroSynthesis, isPlannerJargon } from "./heroSynthesis";
+import { buildHeroSynthesis, isPlannerJargon, localizeHeroPhrase } from "./heroSynthesis";
 
 describe("isPlannerJargon", () => {
   test("flags break-even and raw self-consumption operator forms", () => {
@@ -27,31 +27,56 @@ describe("isPlannerJargon", () => {
   });
 });
 
+describe("localizeHeroPhrase", () => {
+  test("maps English on-track / behind / battery-plan phrases to Dutch", () => {
+    expect(localizeHeroPhrase("On track for tonight's target.")).toBe(
+      "Op schema voor het nachtdoel vanavond",
+    );
+    expect(localizeHeroPhrase("On track — projected to reach the 88% plan target.")).toBe(
+      "Op schema voor het nachtdoel vanavond",
+    );
+    expect(localizeHeroPhrase("Short of the 88% target with no grid top-up planned.")).toBe(
+      "Nog niet op het doel",
+    );
+    expect(localizeHeroPhrase("Battery is following the current plan.")).toBe(
+      "Batterij volgt het huidige plan",
+    );
+    expect(localizeHeroPhrase("Running the house on your battery tonight.")).toBe(
+      "De batterij voedt vanavond de woning",
+    );
+  });
+
+  test("rejects English score summaries so the hero falls through", () => {
+    expect(localizeHeroPhrase("A brilliant day for clean energy")).toBeNull();
+    expect(localizeHeroPhrase("A solid energy day — keep it up")).toBeNull();
+  });
+});
+
 describe("buildHeroSynthesis", () => {
-  test("prefers the on-track story message when present", () => {
+  test("prefers Dutch on-track phrasing when the API sends English", () => {
     expect(
       buildHeroSynthesis({
-        currentReason: "Batterij volgt het huidige plan.",
+        currentReason: "Battery is following the current plan.",
         onTrackMessage: "On track for tonight's target.",
         scoreSummary: "A brilliant day for clean energy",
       }),
-    ).toBe("On track for tonight's target");
+    ).toBe("Op schema voor het nachtdoel vanavond");
   });
 
-  test("skips jargon current_reason and falls through to score summary", () => {
+  test("skips jargon current_reason and English score — calm Dutch fallback", () => {
     expect(
       buildHeroSynthesis({
         currentReason: "self-consumption: €0.45/kWh > break-even €0.32",
         onTrackMessage: null,
         scoreSummary: "A solid energy day — keep it up",
       }),
-    ).toBe("A solid energy day — keep it up");
+    ).toBe("Batterij volgt het huidige plan.");
   });
 
-  test("uses a plain current_reason when no on-track message", () => {
+  test("maps plain English current_reason to Dutch fallback", () => {
     expect(
       buildHeroSynthesis({
-        currentReason: "Batterij volgt het huidige plan.",
+        currentReason: "Battery is following the current plan.",
         onTrackMessage: null,
         scoreSummary: null,
       }),
@@ -60,12 +85,12 @@ describe("buildHeroSynthesis", () => {
 
   test("never joins middot fragments — one sentence only", () => {
     const text = buildHeroSynthesis({
-      currentReason: "Batterij volgt het huidige plan.",
+      currentReason: "Battery is following the current plan.",
       onTrackMessage: "On track.",
       scoreSummary: "A brilliant day for clean energy",
     });
     expect(text).not.toContain("·");
-    expect(text).toBe("On track");
+    expect(text).toBe("Op schema voor het nachtdoel vanavond");
   });
 
   test("calm fallback when every candidate is jargon or missing", () => {

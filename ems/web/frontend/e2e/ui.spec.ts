@@ -337,7 +337,7 @@ test.describe("EMS dashboard", () => {
     await expect(page.getByTestId("plan-story-legend")).toContainText("Zelfconsumptie");
     await expect(page.getByTestId("plan-story-legend")).toContainText("Inactief");
     await expect(page.getByTestId("plan-story-legend")).not.toContainText("Vasthouden");
-    await expect(page.getByTestId("plan-story-legend")).toContainText("Laden van zon");
+    await expect(page.getByTestId("plan-story-legend")).toContainText("Laden van zonnepanelen");
     await expect(page.getByTestId("plan-story-legend")).toContainText("Laden van het net");
     await expect(chart).not.toContainText("The hero owns the only headline");
 
@@ -346,7 +346,7 @@ test.describe("EMS dashboard", () => {
     await expect(spoken).toContainText("Staat stil 08:15–08:30");
     await expect(spoken).not.toContainText("Houdt vast");
     await expect(spoken).toContainText("Geen gemeten data 08:30–08:45");
-    await expect(spoken).toContainText("Laadt van zon 09:15–09:30");
+    await expect(spoken).toContainText("Laadt van zonnepanelen 09:15–09:30");
     await expect(spoken).toContainText("Nachtdoel 88%");
   });
 
@@ -969,11 +969,11 @@ test.describe("EMS dashboard", () => {
     const hero = page.getByTestId("home-state");
     await expect(hero).toBeVisible();
     await expect(hero).toHaveAttribute("data-tone", /good|watching|controlling|attention/);
-    // The verdict headline (the old status headline, absorbed into the hero).
-    await expect(page.getByTestId("hero-verdict")).toContainText("Watching");
-    // One plain-language synthesis sentence (B-96) — not a middot-joined jargon wall.
+    // The verdict headline (the old status headline, absorbed into the hero) — Dutch-first (B-98).
+    await expect(page.getByTestId("hero-verdict")).toContainText("Aan het kijken");
+    // One plain-language synthesis sentence (B-96) — Dutch on-track, not English API copy.
     const synth = page.getByTestId("hero-synthesis");
-    await expect(synth).toHaveText("On track for tonight's target");
+    await expect(synth).toHaveText("Op schema voor het nachtdoel vanavond");
     await expect(synth).not.toContainText("·");
     await expect(synth).not.toContainText("break-even");
     await expect(page.getByTestId("battery-plan")).not.toBeVisible();
@@ -1040,11 +1040,12 @@ test.describe("EMS dashboard", () => {
     );
     await page.goto("/");
     const synth = page.getByTestId("hero-synthesis");
-    await expect(synth).toHaveText("Running the house on your battery tonight");
+    await expect(synth).toHaveText("De batterij voedt vanavond de woning");
     await expect(synth).not.toContainText("break-even");
     await expect(synth).not.toContainText("self-consumption:");
     await expect(synth).not.toContainText("EV load expected");
     await expect(page.getByTestId("hero-act")).toHaveText("Niets nodig van jou.");
+    await expect(page.getByTestId("hero-verdict")).toHaveText("De batterij voedt de woning");
     // Waarom? still carries full explainability (DecisionReasonDetails summary).
     await page.getByTestId("battery-action-why-toggle").click();
     await expect(page.getByTestId("decision-reason-summary")).toContainText("break-even");
@@ -1086,7 +1087,7 @@ test.describe("EMS dashboard", () => {
     await expect(chip).toHaveText("Middelmatig vertrouwen");
     const reason = page.getByTestId("hero-confidence-reason");
     await expect(reason).toBeVisible();
-    await expect(reason).toContainText("Still learning your roof");
+    await expect(reason).toContainText("Nog je dak");
   });
 
   test("B-68: a low-confidence plan shows a red chip + the safety-fallback reason", async ({ page }) => {
@@ -1106,11 +1107,11 @@ test.describe("EMS dashboard", () => {
     const chip = page.getByTestId("confidence-chip");
     await expect(chip).toHaveAttribute("data-level", "low");
     await expect(chip).toHaveText("Laag vertrouwen");
-    // The tooltip carries every reason, joined.
-    await expect(chip).toHaveAttribute("title", /Safety fallback active.*Some live data is stale/);
-    // Only the FIRST reason renders as the visible sub-line.
+    // The tooltip carries every translated reason, joined.
+    await expect(chip).toHaveAttribute("title", /Veiligheidsfallback.*verouderd/);
+    // Only the FIRST reason renders as the visible sub-line (Dutch).
     const reason = page.getByTestId("hero-confidence-reason");
-    await expect(reason).toHaveText("Safety fallback active — EMS is holding, not planning.");
+    await expect(reason).toHaveText("Veiligheidsfallback actief — EMS houdt vast, plant niet.");
   });
 
   test("battery-plan data still supplies the hero reason and confidence", async ({ page }) => {
@@ -1122,7 +1123,7 @@ test.describe("EMS dashboard", () => {
         reasons: ["Still learning your roof."],
       })),
     }));
-    // No on_track message → hero falls through to the plain battery-plan current_reason.
+    // No on_track message → hero falls through to Dutch calm fallback (not EN current_reason).
     const story = planStoryFixture();
     await page.route("**/api/energy-story?window=next", (route) => route.fulfill({
       status: 200,
@@ -1147,9 +1148,11 @@ test.describe("EMS dashboard", () => {
     }));
     await page.goto("/");
     await expect(page.getByTestId("hero-synthesis")).toHaveText(
-      "Battery is following the current plan",
+      "Batterij volgt het huidige plan",
     );
+    await expect(page.getByTestId("hero-verdict")).toContainText("Aan het kijken");
     await expect(page.getByTestId("confidence-chip")).toHaveText("Middelmatig vertrouwen");
+    await expect(page.getByTestId("hero-confidence-reason")).toContainText("Nog je dak");
     await expect(page.getByTestId("battery-plan")).toHaveCount(0);
   });
 

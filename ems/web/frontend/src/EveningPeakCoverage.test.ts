@@ -172,6 +172,28 @@ describe("B-95 evening-peak single surface", () => {
     ).toEqual(["Reserve respected", EVENING_PEAK_TRUST_MARKER]);
   });
 
+  it("collapses EN+NL covers chips to one Dutch marker when inject is off", () => {
+    expect(
+      applyEveningPeakTrustMarkerPolicy(
+        ["Reserve respected", "Battery covers the evening peak", EVENING_PEAK_TRUST_MARKER],
+        covered,
+        { injectCoveredMarker: false },
+      ),
+    ).toEqual(["Reserve respected", EVENING_PEAK_TRUST_MARKER]);
+    expect(
+      applyEveningPeakTrustMarkerPolicy(
+        ["Reserve respected", "Battery covers the evening peak"],
+        covered,
+        { injectCoveredMarker: false },
+      ),
+    ).toEqual(["Reserve respected", EVENING_PEAK_TRUST_MARKER]);
+    expect(
+      applyEveningPeakTrustMarkerPolicy(["Reserve respected"], covered, {
+        injectCoveredMarker: false,
+      }),
+    ).toEqual(["Reserve respected"]);
+  });
+
   it("leaves markers alone when coverage is unavailable", () => {
     const markers = ["Reserve respected", EVENING_PEAK_TRUST_MARKER];
     expect(

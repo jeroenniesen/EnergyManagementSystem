@@ -96,15 +96,14 @@ export function applyEveningPeakTrustMarkerPolicy(
     return out;
   }
   if (isEveningPeakCovered(coverage.probability)) {
-    if (opts.injectCoveredMarker) {
-      const withoutLegacy = out.filter((marker) => !isEveningPeakCoversChip(marker));
+    const hadChip = out.some(isEveningPeakCoversChip);
+    const withoutLegacy = out.filter((marker) => !isEveningPeakCoversChip(marker));
+    // Always collapse EN/NL covers chips to a single Dutch marker. When inject is on,
+    // append even if the API omitted the chip so the hero owns one reassurance surface.
+    if (opts.injectCoveredMarker || hadChip) {
       withoutLegacy.push(EVENING_PEAK_TRUST_MARKER);
-      return withoutLegacy;
     }
-    // Replace any EN API chip with the Dutch-first product string.
-    return out.map((marker) =>
-      marker === EVENING_PEAK_TRUST_MARKER_EN ? EVENING_PEAK_TRUST_MARKER : marker,
-    );
+    return withoutLegacy;
   }
   // At risk: risk banner only — never keep the discharge-based "covers" chip (EN or NL).
   return out.filter((marker) => !isEveningPeakCoversChip(marker));

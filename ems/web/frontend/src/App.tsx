@@ -33,10 +33,13 @@ import {
   HOME_CONFIDENCE_CHIP,
   HOME_HERO,
   HOME_MORE_TOGGLE,
+  homeConfidenceReasonNl,
+  homeHeadlineNl,
   humanize,
   OUTCOME_LABEL,
   pickDeviceHealthAlert,
   DRY_RUN_CAUSE_LABEL,
+  DRY_RUN_CAUSE_FALLBACK,
   RUN_MODE,
   SIGNAL_NAME,
 } from "./labels";
@@ -714,6 +717,16 @@ export function App() {
     onTrackMessage: story?.on_track?.message,
     scoreSummary: summary?.text,
   });
+  // B-98 fix: confidence reason under the chip is Dutch-mapped; hide unmapped EN API copy.
+  const confidenceReasonNl = confidence?.reasons?.[0]
+    ? homeConfidenceReasonNl(confidence.reasons[0])
+    : null;
+  const confidenceTitleNl = confidence
+    ? confidence.reasons
+        .map((r) => homeConfidenceReasonNl(r))
+        .filter((r): r is string => !!r)
+        .join(" ")
+    : "";
   // B-95: one evening-peak surface — covered → hero trust-marker; at-risk → risk banner
   // only (strip the API's discharge-based "covers" chip so it never stacks with amber).
   const eveningPeakCoverage = batteryPlan?.evening_peak_coverage;
@@ -804,7 +817,7 @@ export function App() {
           >
             {status.dry_run_cause
               ? (DRY_RUN_CAUSE_LABEL[status.dry_run_cause] ?? status.dry_run_cause)
-              : "why"}
+              : DRY_RUN_CAUSE_FALLBACK}
           </span>
         )}
         {status && (
@@ -950,7 +963,7 @@ export function App() {
         >
           <div className="hero-verdict-row">
             <p className="hero-verdict" data-testid="hero-verdict">
-              {home.headline}
+              {homeHeadlineNl(home.headline)}
             </p>
             {confidence && (
               <span
@@ -958,15 +971,15 @@ export function App() {
                 data-testid="confidence-chip"
                 data-density-kind="badge"
                 data-level={confidence.level}
-                title={confidence.reasons.join(" ")}
+                title={confidenceTitleNl || undefined}
               >
                 {CONFIDENCE_CHIP_LABEL[confidence.level]}
               </span>
             )}
           </div>
-          {confidence && confidence.level !== "high" && (
+          {confidence && confidence.level !== "high" && confidenceReasonNl && (
             <p className="hero-confidence-reason" data-testid="hero-confidence-reason">
-              {confidence.reasons[0]}
+              {confidenceReasonNl}
             </p>
           )}
           {synthesis && (
