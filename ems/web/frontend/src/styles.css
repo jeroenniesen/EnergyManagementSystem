@@ -2193,12 +2193,16 @@ body {
 /* Quiet success markers in the Energy Story — calm confirmation, deliberately understated. */
 .trust-markers { display: flex; flex-wrap: wrap; gap: 8px; margin: 4px 0 12px; }
 
-/* B-63 / #88: evening-peak coverage probability under the waarom strip. */
+/* B-63 / #88 + B-95: evening-peak coverage — risk banner only (covered lives on hero). */
 .evening-peak-coverage {
   margin: 0 0 12px;
   padding: 10px 12px;
   border-left: 3px solid var(--accent);
   background: color-mix(in srgb, var(--accent) 8%, transparent);
+}
+.evening-peak-coverage--risk {
+  border-left-color: var(--amber);
+  background: color-mix(in srgb, var(--amber) 10%, transparent);
 }
 .evening-peak-coverage-label {
   margin: 0 0 4px;

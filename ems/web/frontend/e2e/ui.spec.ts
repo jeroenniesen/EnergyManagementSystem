@@ -1332,9 +1332,9 @@ test.describe("EMS dashboard", () => {
     });
   });
 
-  // --- B-63 / #88: evening peak coverage probability -----------------------------------------
+  // --- B-63 / #88 + B-95: evening peak coverage (one reassurance surface) -------------------
   test.describe("#88 evening peak coverage", () => {
-    test("shows calibrated chance the battery covers the evening peak", async ({ page }) => {
+    test("shows risk banner when coverage is below the covered threshold", async ({ page }) => {
       await routePlanStory(page);
       await routeDashboardStatus(page);
       await page.route("**/api/battery-plan", (route) => route.fulfill({
@@ -1362,6 +1362,7 @@ test.describe("EMS dashboard", () => {
       const block = page.getByTestId("evening-peak-coverage");
       await expect(block).toBeVisible();
       await expect(block).toHaveAttribute("data-calibrated", "true");
+      await expect(block).toHaveAttribute("data-risk", "true");
       await expect(page.getByTestId("evening-peak-coverage-label")).toContainText("67%");
       await expect(page.getByTestId("evening-peak-coverage-detail")).toContainText("67%");
     });
@@ -1392,6 +1393,66 @@ test.describe("EMS dashboard", () => {
       }));
       await page.goto("/");
       await expect(page.getByTestId("evening-peak-coverage")).toHaveCount(0);
+    });
+
+    // B-95: covered/100% → hero trust-marker only; full banner demoted (no double stack).
+    test("covered evening peak appears once as a hero trust-marker, not the banner", async ({ page }) => {
+      const story = planStoryFixture();
+      Object.assign(story, {
+        trust_markers: ["Reserve respected"],
+      });
+      await page.route("**/api/energy-story?window=next", (route) => route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify(story),
+      }));
+      await routeDashboardStatus(page);
+      await page.route("**/api/decision", (route) => route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          intent: null,
+          desired_mode: null,
+          applied: false,
+          outcome: "dry_run",
+          reason: "Watching the current plan.",
+          home_state: {
+            headline: "Running the house on your battery",
+            tone: "on_battery",
+            simulated: true,
+          },
+        }),
+      }));
+      await page.route("**/api/battery-plan", (route) => route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify(batteryPlanFixture(
+          { level: "high", reasons: ["Fresh data."] },
+          DEFAULT_PROVENANCE,
+          {
+            evening_peak_coverage: {
+              probability: 1,
+              available: true,
+              label: "Evening peak likely covered (~100%)",
+              reason: "All 3 calibrated scenarios stay above reserve through the evening peak.",
+              calibrated: true,
+              scenarios_covering: 3,
+              scenarios_total: 3,
+              peak_kwh_expected: 2.1,
+              available_kwh: 5.0,
+            },
+          },
+        )),
+      }));
+      await page.goto("/");
+
+      await expect(page.getByTestId("evening-peak-coverage")).toHaveCount(0);
+      const markers = page.getByTestId("home-state").getByTestId("trust-markers");
+      await expect(markers).toContainText("Battery covers the evening peak");
+      await expect(markers).toContainText("Reserve respected");
+      // No second copy of the covered reassurance elsewhere on the dashboard.
+      await expect(page.getByText("Evening peak likely covered")).toHaveCount(0);
+      await expect(page.getByText("Battery covers the evening peak")).toHaveCount(1);
     });
   });
 

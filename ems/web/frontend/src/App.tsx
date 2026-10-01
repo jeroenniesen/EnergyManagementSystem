@@ -4,7 +4,11 @@ import { AcceptInvite } from "./AcceptInvite";
 import { apiFetch, setUnauthorizedHandler } from "./auth";
 import { BatteryActionWhy } from "./BatteryActionWhy";
 import { type Battery, BatteryChips } from "./BatteryChips";
-import { EveningPeakCoverageCard } from "./EveningPeakCoverage";
+import {
+  EveningPeakCoverageCard,
+  EVENING_PEAK_TRUST_MARKER,
+  isEveningPeakCovered,
+} from "./EveningPeakCoverage";
 import { EnergyDistribution } from "./EnergyDistribution";
 import type {
   BatteryPlanData,
@@ -711,10 +715,28 @@ export function App() {
     .filter((s): s is string => !!s)
     .map(trimEnd)
     .join(" · ");
-  const trustMarkers = (story?.trust_markers ?? []).filter(
-    (marker) =>
-      !(story?.on_track?.status === "behind" && marker === "No grid top-up needed"),
+  // B-95: covered evening-peak reassurance lives once on the hero trust-marker.
+  // When battery-plan coverage is covered (≥85%), ensure that marker is present so we
+  // can demote the full EveningPeakCoverageCard banner (no marker + banner stack).
+  const eveningPeakCovered = isEveningPeakCovered(
+    batteryPlan?.evening_peak_coverage?.probability,
   );
+  const trustMarkers = (() => {
+    const markers = (story?.trust_markers ?? []).filter(
+      (marker) =>
+        !(story?.on_track?.status === "behind" && marker === "No grid top-up needed"),
+    );
+    if (
+      eveningPeakCovered &&
+      home &&
+      !markers.includes(EVENING_PEAK_TRUST_MARKER)
+    ) {
+      return [...markers, EVENING_PEAK_TRUST_MARKER];
+    }
+    return markers;
+  })();
+  // Hero owns the covered marker whenever the hero section can render (home present).
+  const heroOwnsEveningPeakMarker = !!home && eveningPeakCovered;
 
   // "Do I need to act?" — answered explicitly. Nothing to do unless an override is running, the
   // system is on unsafe data (self-use failsafe), or a warning/critical alert is live. Info
@@ -1066,8 +1088,12 @@ export function App() {
             reason={batteryPlan?.reason as DecisionReason | undefined}
             dryRun={status?.dry_run ?? true}
           />
-          {/* B-63 / #88: how likely the battery covers tonight's evening peak. */}
-          <EveningPeakCoverageCard coverage={batteryPlan?.evening_peak_coverage} />
+          {/* B-63 / #88 + B-95: risk banner only when coverage is below the covered
+              threshold; covered/100% is the hero trust-marker (one surface). */}
+          <EveningPeakCoverageCard
+            coverage={batteryPlan?.evening_peak_coverage}
+            heroOwnsCoveredMarker={heroOwnsEveningPeakMarker}
+          />
           <PlanStory
             story={story?.window === "next" ? story : null}
             provenance={batteryPlan?.provenance}
