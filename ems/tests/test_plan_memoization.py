@@ -8,6 +8,7 @@ and concurrent clients. Mocks only — no real Indevolt / HomeWizard / Tibber.
 from __future__ import annotations
 
 import asyncio
+from datetime import UTC, datetime, timedelta
 from zoneinfo import ZoneInfo
 
 import httpx
@@ -53,7 +54,7 @@ def _app(tmp_path, *, live_read_seconds: float = 60.0):
 
 
 def test_hot_endpoints_share_one_plan_build_per_cycle(tmp_path):
-    """One dashboard-like poll → ≤1 plan_with_recovery compute (cache miss)."""
+    """One dashboard-like poll → exactly 1 plan_with_recovery compute (cache miss)."""
     app = _app(tmp_path)
     builds_before = app.state.control_service.plan_builds
 
@@ -62,7 +63,7 @@ def test_hot_endpoints_share_one_plan_build_per_cycle(tmp_path):
             assert client.get(path).status_code == 200
 
     builds = app.state.control_service.plan_builds - builds_before
-    assert builds <= 1, f"expected ≤1 plan build per cycle, got {builds}"
+    assert builds == 1, f"expected exactly 1 plan build per cycle, got {builds}"
 
 
 def test_hot_endpoints_share_one_forward_projection_per_cycle(tmp_path):
@@ -80,7 +81,7 @@ def test_hot_endpoints_share_one_forward_projection_per_cycle(tmp_path):
             assert client.get(path).status_code == 200
 
     builds = app.state.control_service.forward_builds - before
-    assert builds <= 1, f"expected ≤1 forward projection per cycle, got {builds}"
+    assert builds == 1, f"expected exactly 1 forward projection per cycle, got {builds}"
 
 
 def test_plan_build_counter_increments_only_on_cache_miss(tmp_path):
@@ -90,12 +91,33 @@ def test_plan_build_counter_increments_only_on_cache_miss(tmp_path):
     with TestClient(app) as client:
         assert client.get("/api/plan-detail").status_code == 200
         after_first = svc.plan_builds
-        assert after_first >= 1
+        assert after_first == 1
 
         # Same quantized window → no extra build.
         assert client.get("/api/plan-detail").status_code == 200
         assert client.get("/api/alerts").status_code == 200
         assert svc.plan_builds == after_first
+
+
+def test_plan_rebuilds_after_bucket_boundary(tmp_path):
+    """Crossing the coalesce window must miss and rebuild (not stay sticky forever)."""
+    app = _app(tmp_path, live_read_seconds=30.0)
+    svc = app.state.control_service
+    # Anchor near wall-clock so MockPriceSource / horizon validation still succeed,
+    # then floor to the start of a 30 s bucket so +20s stays inside and +35s crosses.
+    wall = svc._clock.now_utc()
+    t0 = svc.quantize_now(wall)
+
+    assert svc.plan_with_recovery(now=t0) is not None
+    assert svc.plan_builds == 1
+
+    # Still inside the same 30 s bucket.
+    assert svc.plan_with_recovery(now=t0 + timedelta(seconds=20)) is not None
+    assert svc.plan_builds == 1
+
+    # Past the bucket boundary → second build.
+    assert svc.plan_with_recovery(now=t0 + timedelta(seconds=35)) is not None
+    assert svc.plan_builds == 2
 
 
 def test_decision_reason_reuses_plan_with_recovery_path(tmp_path, monkeypatch):
@@ -116,20 +138,21 @@ def test_decision_reason_reuses_plan_with_recovery_path(tmp_path, monkeypatch):
 
     assert calls["n"] >= 1, "battery-plan must use plan_with_recovery"
     assert "reason" in body
-    # Cache misses (actual builds) ≤1 even though the method is entered multiple times.
     builds = app.state.control_service.plan_builds - before
-    assert builds <= 1, f"reason must reuse memoized plan; got {builds} builds"
+    assert builds == 1, f"reason must reuse memoized plan; got {builds} builds"
 
 
-def test_settings_change_invalidates_plan_cache(tmp_path):
+def test_settings_change_invalidates_plan_and_forward_cache(tmp_path):
     app = _app(tmp_path)
     svc = app.state.control_service
 
     # Lifespan opens the settings SQLite schema (same as test_settings_api).
     with TestClient(app) as client:
-        assert client.get("/api/plan-detail").status_code == 200
-        mid = svc.plan_builds
-        assert mid >= 1
+        assert client.get("/api/battery-plan").status_code == 200
+        mid_plan = svc.plan_builds
+        mid_fwd = svc.forward_builds
+        assert mid_plan == 1
+        assert mid_fwd == 1
 
         resp = client.post(
             "/api/settings",
@@ -137,13 +160,130 @@ def test_settings_change_invalidates_plan_cache(tmp_path):
         )
         assert resp.status_code == 200, resp.text
 
-        assert client.get("/api/plan-detail").status_code == 200
-        assert svc.plan_builds == mid + 1
+        assert client.get("/api/battery-plan").status_code == 200
+        assert svc.plan_builds == mid_plan + 1
+        assert svc.forward_builds == mid_fwd + 1
+
+
+def test_none_plan_is_not_sticky_cached(tmp_path, monkeypatch):
+    """A failed/`None` plan must miss again — do not pin AUTO for the rest of the bucket."""
+    app = _app(tmp_path)
+    svc = app.state.control_service
+    calls = {"n": 0}
+    # First call fails (e.g. SoC unknown / prices missing); later calls succeed.
+    real = svc._plan_with_recovery_uncached
+
+    def _flaky(now):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return None
+        return real(now)
+
+    monkeypatch.setattr(svc, "_plan_with_recovery_uncached", _flaky)
+
+    assert svc.plan_with_recovery() is None
+    assert svc.plan_builds == 1
+    # Same bucket: must retry, not treat None as a hit.
+    second = svc.plan_with_recovery()
+    assert second is not None
+    assert svc.plan_builds == 2
+    # Third call: successful cache hit.
+    third = svc.plan_with_recovery()
+    assert third is second
+    assert svc.plan_builds == 2
+
+
+def test_none_forward_bundle_is_not_sticky_cached(tmp_path, monkeypatch):
+    """A None forward bundle must miss again once SoC/plan is available."""
+    app = _app(tmp_path)
+    svc = app.state.control_service
+    cctx = svc._ctx
+    gate = {"fail": True}
+
+    async def go():
+        async with app.router.lifespan_context(app):
+            # Patch _current_plan via the control path used inside forward compute.
+            real_pwr = svc.plan_with_recovery
+
+            def _gated(now=None):
+                if gate["fail"]:
+                    return None
+                return real_pwr(now)
+
+            monkeypatch.setattr(svc, "plan_with_recovery", _gated)
+
+            transport = httpx.ASGITransport(app=app)
+            async with httpx.AsyncClient(transport=transport, base_url="http://t") as c:
+                before = svc.forward_builds
+                r1 = await c.get("/api/energy-forecast")
+                assert r1.status_code == 200
+                assert svc.forward_builds == before + 1
+                # None must not occupy the slot.
+                assert cctx.forward_cache["key"] is None
+
+                gate["fail"] = False
+                r2 = await c.get("/api/energy-forecast")
+                assert r2.status_code == 200
+                assert svc.forward_builds == before + 2
+                assert cctx.forward_cache["key"] is not None
+
+                # Hit: no third build.
+                r3 = await c.get("/api/energy-forecast")
+                assert r3.status_code == 200
+                assert svc.forward_builds == before + 2
+
+    asyncio.run(go())
+
+
+def test_invalidate_discards_in_flight_forward_publish(tmp_path, monkeypatch):
+    """Settings clear mid-flight must not republish a pre-change forward bundle."""
+    app = _app(tmp_path)
+    svc = app.state.control_service
+    cctx = svc._ctx
+    started = asyncio.Event()
+    release = asyncio.Event()
+
+    async def go():
+        async with app.router.lifespan_context(app):
+            # Block inside the single-flight after generation is captured, before publish —
+            # refresh_ev_daily runs after the generation snapshot in _forward_projection.
+            real_refresh = svc.refresh_ev_daily
+
+            async def _blocked(now=None):
+                started.set()
+                await release.wait()
+                return await real_refresh(now)
+
+            monkeypatch.setattr(svc, "refresh_ev_daily", _blocked)
+
+            transport = httpx.ASGITransport(app=app)
+            async with httpx.AsyncClient(transport=transport, base_url="http://t") as c:
+                before = svc.forward_builds
+                task = asyncio.create_task(c.get("/api/energy-forecast"))
+                await asyncio.wait_for(started.wait(), timeout=5.0)
+
+                # Simulate POST /api/settings clearing caches while projection is in-flight.
+                svc.invalidate_cycle_caches()
+                gen_after = int(cctx.forward_cache.get("generation") or 0)
+                assert gen_after >= 1
+
+                release.set()
+                r1 = await task
+                assert r1.status_code == 200
+                # In-flight build counted but discarded — slot still empty.
+                assert svc.forward_builds == before + 1
+                assert cctx.forward_cache["key"] is None
+
+                # Next call must rebuild with post-invalidate state.
+                r2 = await c.get("/api/energy-forecast")
+                assert r2.status_code == 200
+                assert svc.forward_builds == before + 2
+                assert cctx.forward_cache["key"] is not None
+
+    asyncio.run(go())
 
 
 def test_quantize_now_floors_to_coalesce_window(tmp_path):
-    from datetime import UTC, datetime, timedelta
-
     app = _app(tmp_path, live_read_seconds=30.0)
     svc = app.state.control_service
     t0 = datetime(2026, 6, 15, 12, 0, 7, tzinfo=UTC)
@@ -154,7 +294,7 @@ def test_quantize_now_floors_to_coalesce_window(tmp_path):
 
 
 def test_concurrent_poll_single_flight_plan_build(tmp_path):
-    """Many concurrent clients in one coalesce window → one plan compute."""
+    """Many concurrent clients in one coalesce window → exactly one plan compute."""
     app = _app(tmp_path)
     svc = app.state.control_service
 
@@ -173,4 +313,4 @@ def test_concurrent_poll_single_flight_plan_build(tmp_path):
     before, results = asyncio.run(go())
     assert all(r.status_code == 200 for r in results)
     builds = svc.plan_builds - before
-    assert builds <= 1, f"single-flight failed: {builds} plan builds under concurrent load"
+    assert builds == 1, f"single-flight failed: {builds} plan builds under concurrent load"

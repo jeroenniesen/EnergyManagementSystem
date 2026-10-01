@@ -1226,7 +1226,8 @@ def create_app(
         that profile. Cold `/api/diagnostics` used to plan with `profile=None` (flat overnight
         fallback), so `chosen_window` could disagree between the two surfaces on the same tick.
         Seed the same enhanced builder (empty history → fallback shape) before planning when
-        nothing is cached — and invalidate the plan memo so the next build sees the profile.
+        nothing is cached. Does **not** invalidate the plan memo: if a plan was already built
+        this cycle, endpoints must keep sharing it (#87 / #180); the profile feeds the next miss.
         """
         existing = _load_profile_box.get("profile")
         if existing is not None:
@@ -3308,7 +3309,9 @@ def create_app(
         B-48 / #87: memoized per quantized coalesce window (same window as `_current_sample` /
         `plan_with_recovery`) — one projection build per cycle shared across endpoints/clients.
         Learns the load profile FIRST, then builds the plan, so Explain/DecisionReason reuse the
-        same memoized `plan_with_recovery` result (no explain-only rebuild).
+        same memoized `plan_with_recovery` result (no explain-only rebuild). Only successful
+        (non-None) bundles are cached; a generation token discards publishes after
+        `invalidate_forward_cache` so settings saves cannot leave a pre-change UI bundle sticky.
         """
         now_wall = _now_utc()
         key = control.quantize_now(now_wall)
@@ -3320,6 +3323,10 @@ def create_app(
         async with cctx.forward_lock:  # single-flight across concurrent async callers
             if cache["key"] == key:
                 return cache["result"]
+            # Capture generation under clear-lock so a settings invalidate mid-flight is visible
+            # when we decide whether to publish.
+            with cctx.forward_clear_lock:
+                generation = int(cache.get("generation") or 0)
             # Learn the expected load from ~7 days of derived history (async DB read off the loop).
             drows = await store.recent_derived(2016) if store is not None else []
             rrows = await store.recent_raw(2016) if store is not None else []
@@ -3394,10 +3401,17 @@ def create_app(
 
             result = await asyncio.to_thread(_compute)
             with cctx.forward_clear_lock:
-                cache["key"] = key
-                cache["result"] = result
-                cache["at"] = now_wall
                 cache["builds"] = int(cache.get("builds") or 0) + 1
+                # Discard if settings (or another clear) bumped generation during this flight —
+                # otherwise the UI would keep a pre-change plan until the coalesce window rolls.
+                if int(cache.get("generation") or 0) != generation:
+                    return result
+                # Only successful bundles occupy the slot (None must miss again when SoC arrives).
+                if result is not None:
+                    # Payload before key so a lock-free reader never sees a new key + stale result.
+                    cache["result"] = result
+                    cache["at"] = now_wall
+                    cache["key"] = key
             return result
 
     @app.get("/api/energy-forecast")
