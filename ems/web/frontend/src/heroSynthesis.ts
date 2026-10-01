@@ -1,8 +1,11 @@
 // B-96: hero synthesis is one plain-language sentence + the act-line.
 // Planner jargon (break-even, raw self-consumption:…, EV-load operator prose) stays under
 // Waarom? / DecisionReasonDetails — never in the hero body.
+// B-98: Dutch-first calm fallback via labels.ts.
 
-const FALLBACK = "Battery is following the current plan.";
+import { HOME_HERO } from "./labels";
+
+const FALLBACK = HOME_HERO.fallback;
 
 /** Operator / planner-internal copy that must not appear in the hero synthesis. */
 export function isPlannerJargon(text: string): boolean {

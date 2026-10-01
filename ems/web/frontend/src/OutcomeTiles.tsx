@@ -1,5 +1,6 @@
 import type { SavedToday } from "./EnergyStory";
 import type { Report } from "./HomeScores";
+import { HOME_TILE } from "./labels";
 
 function OutcomeTile({
   testId,
@@ -24,7 +25,7 @@ function OutcomeTile({
           "Updated …" under all four tiles when healthy. */}
       {freshness.stale && freshness.updatedAt != null && (
         <span className="outcome-tile-freshness is-stale" data-testid={`${testId}-freshness`}>
-          Stale · Updated{" "}
+          {HOME_TILE.staleUpdated}{" "}
           {new Date(freshness.updatedAt).toLocaleTimeString([], {
             hour: "2-digit",
             minute: "2-digit",
@@ -76,42 +77,44 @@ export function OutcomeTiles({
   const savings = savedToday?.status === "measured" ? `€${savedToday.eur.toFixed(2)}` : "—";
 
   return (
-    <section className="outcome-tiles" data-testid="outcome-tiles" aria-label="Today so far">
+    <section className="outcome-tiles" data-testid="outcome-tiles" aria-label={HOME_TILE.sectionAria}>
       <OutcomeTile
         testId="outcome-solar-score"
-        label="Solar score"
+        label={HOME_TILE.solarScore.label}
         value={solarScore?.value == null ? "—" : String(solarScore.value)}
-        title={solarScore?.value == null ? "Solar score not available" : "Solar score today so far"}
+        title={solarScore?.value == null ? HOME_TILE.solarScore.unavailable : HOME_TILE.solarScore.title}
         onOpen={solarScore?.value == null ? undefined : onOpenInsights}
         freshness={freshness.report}
       />
       <OutcomeTile
         testId="outcome-soc"
-        label="Battery level"
+        label={HOME_TILE.soc.label}
         value={socPct == null ? "—" : `${Math.round(socPct)}%`}
-        title={socPct == null ? "Live battery level not available" : "Live battery level"}
+        title={socPct == null ? HOME_TILE.soc.unavailable : HOME_TILE.soc.title}
         onOpen={socPct == null ? undefined : onOpenBattery}
         freshness={freshness.status}
       />
       <OutcomeTile
         testId="outcome-savings"
-        label="Saved"
+        label={HOME_TILE.savings.label}
         value={savings}
         title={
           savedToday?.status === "measured"
-            ? "Savings today so far"
+            ? HOME_TILE.savings.title
             : savedToday?.status === "measuring"
-              ? "Savings today so far: still measuring"
-              : "Savings today so far not available"
+              ? HOME_TILE.savings.measuring
+              : HOME_TILE.savings.unavailable
         }
         onOpen={savedToday?.status === "measured" ? onOpenFinance : undefined}
         freshness={freshness.finance}
       />
       <OutcomeTile
         testId="outcome-grid-import"
-        label="Grid import"
+        label={HOME_TILE.gridImport.label}
         value={gridImport == null ? "—" : `${gridImport.toFixed(1)} kWh`}
-        title={gridImport == null ? "Grid import today so far not available" : "Grid import today so far"}
+        title={
+          gridImport == null ? HOME_TILE.gridImport.unavailable : HOME_TILE.gridImport.title
+        }
         onOpen={gridImport == null ? undefined : onOpenInsights}
         freshness={freshness.report}
       />

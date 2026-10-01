@@ -94,8 +94,8 @@ describe("PlanStory rendering", () => {
     expect(html).toContain('data-testid="plan-story-reserve-label"');
     expect(html).toContain('data-testid="plan-story-action-segment"');
     expect(html).toContain('aria-hidden="true"');
-    expect(html).toContain("Powers the house");
-    expect(html).toContain("No recorded data");
+    expect(html).toContain("Voedt de woning");
+    expect(html).toContain("Geen gemeten data");
     expect(html).not.toContain("<h2");
     expect(html).not.toContain("warning");
   });
@@ -143,20 +143,22 @@ describe("PlanStory rendering", () => {
     }));
 
     expect(html).toContain('data-testid="recent-review"');
-    expect(html).toContain("Last 3 hours");
+    expect(html).toContain("Laatste 3 uur");
     expect(html).toContain("Last 3h solar reached 80% of forecast.");
     expect(html).toContain("<details");
     // Chart still present — disclosure does not replace PlanStory.
     expect(html).toContain('data-testid="plan-story-plot"');
   });
 
-  test("renders a recorded idle action as Idle and never as Hold", () => {
+  test("renders a recorded idle action as Inactief and never as Vasthouden", () => {
     const html = renderToStaticMarkup(createElement(PlanStory, {
       story: storyData([storySlot(0, { action: "idle" })], [], 15),
     }));
 
-    expect(html).toContain(">Idle<");
-    expect(html).toContain("Idles");
+    expect(html).toContain(">Inactief<");
+    expect(html).toContain("Staat stil");
+    expect(html).not.toContain(">Vasthouden<");
+    expect(html).not.toContain("Houdt vast");
     expect(html).not.toContain(">Hold<");
     expect(html).not.toContain("Holds");
   });
@@ -270,7 +272,7 @@ describe("PlanStory rendering", () => {
     }));
 
     expect(full).toContain(
-      "Planned with <span title=\"The live solar forecast source feeding today&#x27;s plan.\">" +
+      "Gepland met <span title=\"The live solar forecast source feeding today&#x27;s plan.\">" +
       "Forecast.Solar at 100% confidence</span> · ",
     );
     expect(full).toContain("rule-based winter planner");
@@ -279,7 +281,7 @@ describe("PlanStory rendering", () => {
       full.indexOf("plan-story-legend"),
     );
     expect(full).not.toContain("story-footer");
-    expect(partial).toContain("Planned with <span");
+    expect(partial).toContain("Gepland met <span");
     expect(partial).toContain("adaptive summer planner");
     expect(partial).not.toContain("% confidence");
     expect(partial).not.toContain("scenario intelligence:");
@@ -291,8 +293,8 @@ describe("PlanStory rendering", () => {
       provenance: { planner: "rule_based" },
     }));
 
-    expect(html).toContain("Battery plan is unavailable.");
-    expect(html).toContain("Planned with");
+    expect(html).toContain("Batterijplan niet beschikbaar.");
+    expect(html).toContain("Gepland met");
     expect(html).toContain("rule-based winter planner");
   });
 
@@ -324,7 +326,8 @@ describe("PlanStory rendering", () => {
       expect(width).toBeCloseTo(237.6);
     }
     expect(bars.every((bar) => svgAttr(bar, "opacity") == null)).toBe(true);
-    expect(html).toContain("Price €-0.20–€-0.10");
+    expect(html).toContain("Prijs €-0.20–€-0.10");
+    expect(html).not.toContain("Prijs €-0.20–€0.00");
     expect(html).not.toContain("Price €-0.20–€0.00");
   });
 });

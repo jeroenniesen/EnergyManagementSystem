@@ -68,7 +68,7 @@ const ACTION_LABEL_NL: Record<string, string> = {
   self_consumption: "Zelfconsumptie",
   solar_charge: "Laden van zonnepanelen",
   paused: "Gepauzeerd",
-  idle: "Idle",
+  idle: "Inactief",
 };
 
 /** Short Dutch label for the current action chip (slice-1 and beyond). */

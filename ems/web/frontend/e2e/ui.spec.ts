@@ -328,26 +328,26 @@ test.describe("EMS dashboard", () => {
     for (const line of await page.locator(".plan-story-soc-line").all()) {
       await expect(line).toHaveCSS("fill", "none");
     }
-    await expect(page.getByTestId("plan-story-now")).toContainText("now");
-    await expect(page.getByTestId("plan-story-target-label")).toHaveText("target 88%");
+    await expect(page.getByTestId("plan-story-now")).toContainText("nu");
+    await expect(page.getByTestId("plan-story-target-label")).toHaveText("doel 88%");
     await expect(page.getByTestId("plan-story-reserve-label")).toHaveText("reserve 10%");
     await expect(page.getByTestId("plan-story-action-segment")).toHaveCount(5);
     await expect(page.getByTestId("plan-story-action-segment").first()).toHaveAttribute("aria-hidden", "true");
     await expect(page.getByTestId("plan-story-action-segment").first()).not.toHaveAttribute("aria-label");
-    await expect(page.getByTestId("plan-story-legend")).toContainText("Power the house");
-    await expect(page.getByTestId("plan-story-legend")).toContainText("Idle");
-    await expect(page.getByTestId("plan-story-legend")).not.toContainText("Hold");
-    await expect(page.getByTestId("plan-story-legend")).toContainText("Charge from solar");
-    await expect(page.getByTestId("plan-story-legend")).toContainText("Charge from grid");
+    await expect(page.getByTestId("plan-story-legend")).toContainText("Zelfconsumptie");
+    await expect(page.getByTestId("plan-story-legend")).toContainText("Inactief");
+    await expect(page.getByTestId("plan-story-legend")).not.toContainText("Vasthouden");
+    await expect(page.getByTestId("plan-story-legend")).toContainText("Laden van zon");
+    await expect(page.getByTestId("plan-story-legend")).toContainText("Laden van het net");
     await expect(chart).not.toContainText("The hero owns the only headline");
 
     const spoken = page.getByTestId("plan-story-summary");
-    await expect(spoken).toContainText("Powers the house 08:00–08:15");
-    await expect(spoken).toContainText("Idles 08:15–08:30");
-    await expect(spoken).not.toContainText("Holds");
-    await expect(spoken).toContainText("No recorded data 08:30–08:45");
-    await expect(spoken).toContainText("Charges from solar 09:15–09:30");
-    await expect(spoken).toContainText("Night target 88%");
+    await expect(spoken).toContainText("Voedt de woning 08:00–08:15");
+    await expect(spoken).toContainText("Staat stil 08:15–08:30");
+    await expect(spoken).not.toContainText("Houdt vast");
+    await expect(spoken).toContainText("Geen gemeten data 08:30–08:45");
+    await expect(spoken).toContainText("Laadt van zon 09:15–09:30");
+    await expect(spoken).toContainText("Nachtdoel 88%");
   });
 
   test("PlanStory keeps signed price bars and solar paint in their subordinate channels", async ({
@@ -570,7 +570,7 @@ test.describe("EMS dashboard", () => {
     await expect(page.getByTestId("plan-story-plot")).toBeVisible();
 
     await moveToViewBoxX(page, 122);
-    await expect(page.getByTestId("plan-story-tip")).toContainText("08:00 · recorded");
+    await expect(page.getByTestId("plan-story-tip")).toContainText("08:00 · gemeten");
     await expect(page.getByTestId("plan-story-tip")).toContainText("52%");
     await expect(page.getByTestId("plan-story-crosshair")).toHaveAttribute("stroke-dasharray", "2 3");
 
@@ -578,7 +578,7 @@ test.describe("EMS dashboard", () => {
     await expect(page.getByTestId("plan-story-tip")).toHaveCount(0);
 
     await moveToViewBoxX(page, 738);
-    await expect(page.getByTestId("plan-story-tip")).toContainText("09:15 · forecast");
+    await expect(page.getByTestId("plan-story-tip")).toContainText("09:15 · voorspelling");
     await page.mouse.move(0, 0);
     await expect(page.getByTestId("plan-story-tip")).toHaveCount(0);
   });
@@ -659,9 +659,9 @@ test.describe("EMS dashboard", () => {
     await expect(page.getByTestId("outcome-soc")).toContainText("55%");
     await expect(page.getByTestId("outcome-savings")).toContainText("€2.84");
     await page.waitForTimeout(10_500);
-    await expect(page.getByTestId("outcome-soc")).toContainText("Stale");
-    await expect(page.getByTestId("outcome-savings")).toContainText("Stale");
-    await expect(page.getByTestId("outcome-soc")).toContainText("Updated");
+    await expect(page.getByTestId("outcome-soc")).toContainText("Verouderd");
+    await expect(page.getByTestId("outcome-savings")).toContainText("Verouderd");
+    await expect(page.getByTestId("outcome-soc")).toContainText("Bijgewerkt");
     dashboardMock.assertRequested();
     fallbackStatusMock.assertRequested();
     financeMock.assertRequested();
@@ -678,7 +678,7 @@ test.describe("EMS dashboard", () => {
     });
     await page.goto("/");
     await expect(page.getByTestId("outcome-soc")).toContainText("55%");
-    await expect(page.getByTestId("outcome-soc")).toContainText("Stale");
+    await expect(page.getByTestId("outcome-soc")).toContainText("Verouderd");
     dashboardMock.assertRequested();
   });
 
@@ -800,7 +800,7 @@ test.describe("EMS dashboard", () => {
       body: JSON.stringify(story),
     }));
     await page.goto("/");
-    await expect(page.getByTestId("plan-story")).toContainText("Battery plan is unavailable.");
+    await expect(page.getByTestId("plan-story")).toContainText("Batterijplan niet beschikbaar.");
     await expect(page.getByTestId("plan-story-price")).toHaveCount(0);
     await expect(page.getByTestId("plan-story-action-segment")).toHaveCount(0);
   });
@@ -868,9 +868,10 @@ test.describe("EMS dashboard", () => {
     for (const id of ["outcome-solar-score", "outcome-soc", "outcome-savings", "outcome-grid-import"]) {
       await expect(page.getByTestId(id)).toContainText("—");
       await expect(page.getByTestId(id)).toHaveJSProperty("tagName", "DIV");
+      await expect(page.getByTestId(id)).not.toContainText("Bijgewerkt");
       await expect(page.getByTestId(id)).not.toContainText("Updated");
     }
-    await expect(page.getByTestId("outcome-savings")).toHaveAttribute("title", /still measuring/);
+    await expect(page.getByTestId("outcome-savings")).toHaveAttribute("title", /nog meten/);
     reportMock.assertRequested();
     dashboardMock.assertRequested();
     fallbackStatusMock.assertRequested();
@@ -977,7 +978,7 @@ test.describe("EMS dashboard", () => {
     await expect(synth).not.toContainText("break-even");
     await expect(page.getByTestId("battery-plan")).not.toBeVisible();
     // The explicit answer to "do I need to act?" — calm, because nothing needs attention.
-    await expect(page.getByTestId("hero-act")).toHaveText("Nothing needed from you.");
+    await expect(page.getByTestId("hero-act")).toHaveText("Niets nodig van jou.");
     dashboardMock.assertRequested();
     batteryPlanMock.assertRequested();
   });
@@ -1043,7 +1044,7 @@ test.describe("EMS dashboard", () => {
     await expect(synth).not.toContainText("break-even");
     await expect(synth).not.toContainText("self-consumption:");
     await expect(synth).not.toContainText("EV load expected");
-    await expect(page.getByTestId("hero-act")).toHaveText("Nothing needed from you.");
+    await expect(page.getByTestId("hero-act")).toHaveText("Niets nodig van jou.");
     // Waarom? still carries full explainability (DecisionReasonDetails summary).
     await page.getByTestId("battery-action-why-toggle").click();
     await expect(page.getByTestId("decision-reason-summary")).toContainText("break-even");
@@ -1064,7 +1065,7 @@ test.describe("EMS dashboard", () => {
     const chip = page.getByTestId("confidence-chip");
     await expect(chip).toBeVisible();
     await expect(chip).toHaveAttribute("data-level", "high");
-    await expect(chip).toHaveText("High confidence");
+    await expect(chip).toHaveText("Hoog vertrouwen");
     // Calm stays calm: high confidence needs no explanation beyond the chip.
     await expect(page.getByTestId("hero-confidence-reason")).toHaveCount(0);
   });
@@ -1082,7 +1083,7 @@ test.describe("EMS dashboard", () => {
     await page.goto("/");
     const chip = page.getByTestId("confidence-chip");
     await expect(chip).toHaveAttribute("data-level", "medium");
-    await expect(chip).toHaveText("Medium confidence");
+    await expect(chip).toHaveText("Middelmatig vertrouwen");
     const reason = page.getByTestId("hero-confidence-reason");
     await expect(reason).toBeVisible();
     await expect(reason).toContainText("Still learning your roof");
@@ -1104,7 +1105,7 @@ test.describe("EMS dashboard", () => {
     await page.goto("/");
     const chip = page.getByTestId("confidence-chip");
     await expect(chip).toHaveAttribute("data-level", "low");
-    await expect(chip).toHaveText("Low confidence");
+    await expect(chip).toHaveText("Laag vertrouwen");
     // The tooltip carries every reason, joined.
     await expect(chip).toHaveAttribute("title", /Safety fallback active.*Some live data is stale/);
     // Only the FIRST reason renders as the visible sub-line.
@@ -1148,7 +1149,7 @@ test.describe("EMS dashboard", () => {
     await expect(page.getByTestId("hero-synthesis")).toHaveText(
       "Battery is following the current plan",
     );
-    await expect(page.getByTestId("confidence-chip")).toHaveText("Medium confidence");
+    await expect(page.getByTestId("confidence-chip")).toHaveText("Middelmatig vertrouwen");
     await expect(page.getByTestId("battery-plan")).toHaveCount(0);
   });
 
@@ -1501,7 +1502,9 @@ test.describe("EMS dashboard", () => {
       await expect(block).toHaveAttribute("data-risk", "true");
       const markers = page.getByTestId("home-state").getByTestId("trust-markers");
       await expect(markers).toContainText("Reserve respected");
+      await expect(markers).not.toContainText("Batterij dekt de avondpiek");
       await expect(markers).not.toContainText("Battery covers the evening peak");
+      await expect(page.getByText("Batterij dekt de avondpiek")).toHaveCount(0);
       await expect(page.getByText("Battery covers the evening peak")).toHaveCount(0);
     });
 
@@ -1586,11 +1589,12 @@ test.describe("EMS dashboard", () => {
 
       await expect(page.getByTestId("evening-peak-coverage")).toHaveCount(0);
       const markers = page.getByTestId("home-state").getByTestId("trust-markers");
-      await expect(markers).toContainText("Battery covers the evening peak");
+      await expect(markers).toContainText("Batterij dekt de avondpiek");
       await expect(markers).toContainText("Reserve respected");
       // No second copy of the covered reassurance elsewhere on the dashboard.
       await expect(page.getByText("Evening peak likely covered")).toHaveCount(0);
-      await expect(page.getByText("Battery covers the evening peak")).toHaveCount(1);
+      await expect(page.getByText("Batterij dekt de avondpiek")).toHaveCount(1);
+      await expect(page.getByText("Battery covers the evening peak")).toHaveCount(0);
     });
   });
 
@@ -1648,12 +1652,12 @@ test.describe("EMS dashboard", () => {
     await openMore(page);
     await expect(page.getByRole("heading", { name: "Smart Energy Manager" })).toBeVisible();
 
-    // Run-mode badge in plain language (dry-run => "Watching only"; M0a is read-only).
-    await expect(page.getByTestId("run-mode-badge")).toHaveText("Watching only");
+    // Run-mode badge in plain language (dry-run => "Alleen kijken"; M0a is read-only).
+    await expect(page.getByTestId("run-mode-badge")).toHaveText("Alleen kijken");
 
     // Live snapshot KPIs live in OutcomeTiles (B-97) — not a PlanStory footer strip.
     await expect(page.getByTestId("outcome-soc")).toContainText("55%");
-    await expect(page.getByTestId("outcome-soc")).toContainText("Battery");
+    await expect(page.getByTestId("outcome-soc")).toContainText("Batterij");
     await expect(page.getByTestId("outcome-savings")).toBeVisible();
     await expect(page.getByTestId("story-footer")).toHaveCount(0);
     // The reconstructed house-load value (1.00 kW) lives with the detail metrics behind Advanced.
@@ -1702,7 +1706,7 @@ test.describe("EMS dashboard", () => {
     const tile = page.getByTestId("outcome-savings");
     await expect(tile).toBeVisible();
     await expect(tile).toContainText("—");
-    await expect(tile).toHaveAttribute("title", /still measuring/);
+    await expect(tile).toHaveAttribute("title", /nog meten/);
     await expect(tile).not.toContainText("€0.00");
   });
 
@@ -1782,7 +1786,7 @@ test.describe("EMS dashboard", () => {
     await expect(hero.getByTestId("recent-review")).toHaveCount(0);
     const review = page.getByTestId("plan-story").getByTestId("recent-review");
     await expect(review).toBeVisible();
-    await expect(review).toContainText("Last 3 hours");
+    await expect(review).toContainText("Laatste 3 uur");
     await review.locator("summary").click();
     await expect(review).toContainText("80% of forecast");
     await expect(hero.getByTestId("trust-markers")).toContainText("Reserve respected");
@@ -2109,7 +2113,7 @@ test.describe("EMS dashboard", () => {
     await openAdvanced(page);
     const fr = page.getByTestId("freshness");
     await expect(fr).toBeVisible();
-    await expect(fr).toContainText("Grid meter: up to date");
+    await expect(fr).toContainText("P1-meter: actueel");
   });
 
   // Issue #79 / B-38 — consumer device-health strip + Demo / Deels verouderd labels.
@@ -2207,12 +2211,13 @@ test.describe("EMS dashboard", () => {
     await expect(page.getByTestId("device-health-sources")).toBeVisible();
     await expect(page.getByTestId("device-health-battery")).toBeVisible();
     for (const id of ["outcome-solar-score", "outcome-soc", "outcome-savings", "outcome-grid-import"]) {
+      await expect(page.getByTestId(id)).not.toContainText("Bijgewerkt");
       await expect(page.getByTestId(id)).not.toContainText("Updated");
     }
     healthy.assertRequested();
   });
 
-  test("device health: stale P1 keeps unsafe header badge (Paused — self-use)", async ({
+  test("device health: stale P1 keeps unsafe header badge (Gepauzeerd — zelfgebruik)", async ({
     page,
   }) => {
     const gridStale = await mockRoute(page, "**/api/dashboard", async (route) => {
@@ -2232,7 +2237,7 @@ test.describe("EMS dashboard", () => {
       });
     });
     await page.goto("/");
-    await expect(page.getByTestId("data-quality")).toContainText("Paused — self-use");
+    await expect(page.getByTestId("data-quality")).toContainText("Gepauzeerd — zelfgebruik");
     gridStale.assertRequested();
   });
 
@@ -3119,7 +3124,7 @@ test.describe("EMS dashboard", () => {
     await page.goto("/");
     const cta = page.getByTestId("demo-cta");
     await expect(cta).toBeVisible();
-    await expect(cta).toContainText("demo home");
+    await expect(cta).toContainText("demo-huis");
     // The link opens Manage → Settings (which lands on the Connection section by default).
     await page.getByTestId("demo-cta-link").click();
     await expect(page.getByTestId("nav-manage")).toHaveClass(/nav-active/);
@@ -3325,7 +3330,7 @@ test.describe("EMS dashboard", () => {
     await expect(banner).toBeVisible();
     const unreachable = page.getByTestId("alert-ems_unreachable");
     await expect(unreachable).toBeVisible();
-    await expect(unreachable.getByTestId("alert-ems-doing")).toContainText("watch-only");
+    await expect(unreachable.getByTestId("alert-ems-doing")).toContainText("kijkmodus");
     await expect(unreachable.getByTestId("alert-ems-doing")).not.toContainText("network loss");
     // Cold fail: phrase present, no invented clock.
     await expect(page.getByTestId("alert-laatst-bekend")).toHaveText("Laatst bekend —");

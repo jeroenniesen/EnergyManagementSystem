@@ -1,7 +1,7 @@
 import { Fragment, useState } from "react";
 
 import type { EnergyStoryData, PlanProvenance } from "./EnergyStory";
-import { INTELLIGENCE_COPY, PLANNER_PROVENANCE_LABEL } from "./labels";
+import { HOME_PLAN_STORY, INTELLIGENCE_COPY, PLANNER_PROVENANCE_LABEL } from "./labels";
 import {
   ACTION_META,
   buildPlanStoryModel,
@@ -45,7 +45,7 @@ export type PlanStoryProps = {
 function RecentReviewDisclosure({ message }: { message: string }) {
   return (
     <details className="plan-story-recent-review" data-testid="recent-review">
-      <summary className="plan-story-recent-review-toggle">Last 3 hours</summary>
+      <summary className="plan-story-recent-review-toggle">{HOME_PLAN_STORY.recentReview}</summary>
       <p className="story-review plan-story-recent-review-body">{message}</p>
     </details>
   );
@@ -93,7 +93,7 @@ function ProvenanceCaption({
 
   return (
     <p className="battery-plan-provenance" data-testid="battery-plan-provenance">
-      Planned with{" "}
+      {HOME_PLAN_STORY.plannedWith}{" "}
       {clauses.map((clause, index) => (
         <Fragment key={clause.key}>
           {index > 0 && " · "}
@@ -116,7 +116,7 @@ export function PlanStory({
     return (
       <section className="plan-story" data-testid="plan-story" data-density-kind="chart">
         {recentReview && <RecentReviewDisclosure message={recentReview} />}
-        <p>Battery plan is unavailable.</p>
+        <p>{HOME_PLAN_STORY.unavailable}</p>
         <ProvenanceCaption provenance={provenance} />
       </section>
     );
@@ -212,7 +212,10 @@ export function PlanStory({
               ) : null;
             })}
             <text x={W - PAD.r} y={18} textAnchor="end">
-              Price €{model.minPrice.toFixed(2)}–€{model.maxPrice.toFixed(2)}
+              {HOME_PLAN_STORY.priceRange(
+                model.minPrice.toFixed(2),
+                model.maxPrice.toFixed(2),
+              )}
             </text>
           </g>
 
@@ -231,7 +234,9 @@ export function PlanStory({
                 />
               );
             })}
-            <text x={PAD.l} y={18}>Solar 0–{Math.round(model.maxSolar).toLocaleString()} W</text>
+            <text x={PAD.l} y={18}>
+              {HOME_PLAN_STORY.solarRange(Math.round(model.maxSolar).toLocaleString())}
+            </text>
           </g>
 
           <g className="plan-story-soc" data-testid="plan-story-soc">
@@ -267,7 +272,7 @@ export function PlanStory({
               y={socY(story.reserve_soc_pct) - 5}
               textAnchor="end"
             >
-              reserve {Math.round(story.reserve_soc_pct)}%
+              {HOME_PLAN_STORY.reserveLabel(Math.round(story.reserve_soc_pct))}
             </text>
             {story.target_soc_pct != null && (
               <>
@@ -284,7 +289,7 @@ export function PlanStory({
                   y={socY(story.target_soc_pct) - 5}
                   textAnchor="end"
                 >
-                  target {Math.round(story.target_soc_pct)}%
+                  {HOME_PLAN_STORY.targetLabel(Math.round(story.target_soc_pct))}
                 </text>
               </>
             )}
@@ -293,7 +298,7 @@ export function PlanStory({
           {model.nowX != null && (
             <g className="plan-story-now" data-testid="plan-story-now">
               <line x1={model.nowX} x2={model.nowX} y1={PAD.t} y2={PAD.t + PLOT_H} />
-              <text x={model.nowX + 5} y={PAD.t + 14}>now</text>
+              <text x={model.nowX + 5} y={PAD.t + 14}>{HOME_PLAN_STORY.now}</text>
             </g>
           )}
 
@@ -351,7 +356,10 @@ export function PlanStory({
             data-testid="plan-story-tip"
           >
             <div className="chart-tip-title">
-              {formatClock(hovered.startMs)} · {hovered.startMs < model.nowMs ? "recorded" : "forecast"}
+              {formatClock(hovered.startMs)} ·{" "}
+              {hovered.startMs < model.nowMs
+                ? HOME_PLAN_STORY.tipRecorded
+                : HOME_PLAN_STORY.tipForecast}
             </div>
             {slotTipRows(hovered).map((row) => (
               <div key={row.label} className="chart-tip-row">
@@ -368,8 +376,8 @@ export function PlanStory({
       </div>
 
       <div className="chart-legend" data-testid="plan-story-legend">
-        <span className="legend-item"><span className="legend-line plan-story-actual-key" />Recorded battery</span>
-        <span className="legend-item"><span className="legend-line plan-story-forecast-key" />Forecast battery</span>
+        <span className="legend-item"><span className="legend-line plan-story-actual-key" />{HOME_PLAN_STORY.recordedBattery}</span>
+        <span className="legend-item"><span className="legend-line plan-story-forecast-key" />{HOME_PLAN_STORY.forecastBattery}</span>
         {presentActions.map((action) => (
           <span className="legend-item" key={action} data-action-cue={action}>
             <span className={`legend-dot plan-story-legend-action action-${action}`} />

@@ -48,7 +48,7 @@ describe("issue #79 device-health labels", () => {
   });
 
   it("keeps unsafe header vocabulary on DATA_QUALITY", () => {
-    expect(DATA_QUALITY.unsafe.label).toBe("Paused — self-use");
+    expect(DATA_QUALITY.unsafe.label).toBe("Gepauzeerd — zelfgebruik");
   });
 
   it("prices row prefers #148 live-price alert keys over freshness", () => {

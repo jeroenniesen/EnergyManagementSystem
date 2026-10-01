@@ -4,9 +4,9 @@ import { EMS_UNREACHABLE, formatLaatstBekend } from "./labels";
 
 describe("B-09 EMS unreachable copy (#73)", () => {
   test("three-line contract: message + failsafe + Laatst bekend helper", () => {
-    expect(EMS_UNREACHABLE.message).toMatch(/unreachable/i);
-    expect(EMS_UNREACHABLE.ems_doing.toLowerCase()).toContain("watch-only");
-    expect(EMS_UNREACHABLE.ems_doing.toLowerCase()).toContain("self-use");
+    expect(EMS_UNREACHABLE.message).toMatch(/niet bereikbaar/i);
+    expect(EMS_UNREACHABLE.ems_doing.toLowerCase()).toContain("kijkmodus");
+    expect(EMS_UNREACHABLE.ems_doing.toLowerCase()).toContain("zelfgebruik");
     // Never over-claim failsafe without confirmed AUTO; no viewer-network claim.
     const blob = `${EMS_UNREACHABLE.message} ${EMS_UNREACHABLE.ems_doing}`.toLowerCase();
     expect(blob).not.toContain("the battery is safe");
@@ -32,6 +32,6 @@ describe("B-09 EMS unreachable copy (#73)", () => {
     const blob = `${DATA_QUALITY.unsafe.label} ${DATA_QUALITY.unsafe.title} ${CONFIDENCE.unsafe}`.toLowerCase();
     expect(blob).not.toContain("safe mode");
     expect(blob).not.toContain("the battery is safe");
-    expect(blob).toContain("self-use");
+    expect(blob).toContain("zelfgebruik");
   });
 });

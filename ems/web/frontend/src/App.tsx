@@ -29,6 +29,10 @@ import {
   EMS_UNREACHABLE,
   FRESHNESS_STATE,
   formatLaatstBekend,
+  HOME_ACT,
+  HOME_CONFIDENCE_CHIP,
+  HOME_HERO,
+  HOME_MORE_TOGGLE,
   humanize,
   OUTCOME_LABEL,
   pickDeviceHealthAlert,
@@ -155,12 +159,8 @@ function todayStr(): string {
 const SEVERITY_RANK: Record<string, number> = { critical: 3, warning: 2, info: 1 };
 const VIEWS: ViewName[] = ["dashboard", "insights", "car", "chat", "manage"];
 const MANAGE_TABS: ManageTab[] = ["settings", "system", "audit"];
-// B-68: plain-language chip label for the plan-confidence score, keyed by the backend's level.
-const CONFIDENCE_CHIP_LABEL: Record<PlanConfidence["level"], string> = {
-  high: "High confidence",
-  medium: "Medium confidence",
-  low: "Low confidence",
-};
+// B-68 + B-98: plain-language confidence chip (Dutch-first Home).
+const CONFIDENCE_CHIP_LABEL: Record<PlanConfidence["level"], string> = HOME_CONFIDENCE_CHIP;
 
 // Hash → route. Canonical hashes: #dashboard #insights #car #chat #manage #manage/system
 // #manage/audit. LEGACY hashes still work so old bookmarks / deep-links don't break: bare
@@ -738,17 +738,15 @@ export function App() {
     .filter((a) => a.severity === "warning" || a.severity === "critical")
     .sort((a, b) => (SEVERITY_RANK[b.severity] ?? 0) - (SEVERITY_RANK[a.severity] ?? 0))[0];
   const actLine: { text: string; calm: boolean } = decision?.override_active
-    ? { text: "You're in manual control — it ends on its own, or clear it below.", calm: false }
+    ? { text: HOME_ACT.override, calm: false }
     : alertsData?.data_quality === "unsafe"
       ? {
-          text:
-            "EMS is switching the battery back to its own self-use until meter data is " +
-            "trustworthy again — nothing to do; it resumes on its own.",
+          text: HOME_ACT.unsafe,
           calm: false,
         }
       : topActionable
         ? { text: topActionable.action || topActionable.message, calm: false }
-        : { text: "Nothing needed from you.", calm: true };
+        : { text: HOME_ACT.calm, calm: true };
 
   // B-57: on demo/mock data, a persistent friendly nudge into real onboarding (Settings opens on
   // the Connection section by default). Dismissible for the session; back on next visit.
@@ -995,21 +993,21 @@ export function App() {
           {demoActive && (
             <div className="hero-demo-cta" data-testid="demo-cta">
               <span>
-                This is a demo home.{" "}
+                {HOME_HERO.demoLead}{" "}
                 <button
                   type="button"
                   className="hero-demo-link"
                   data-testid="demo-cta-link"
                   onClick={() => navigate("manage", "settings")}
                 >
-                  Use my real home →
+                  {HOME_HERO.demoLink}
                 </button>
               </span>
               <button
                 type="button"
                 className="hero-demo-dismiss"
                 data-testid="demo-cta-dismiss"
-                aria-label="Dismiss for now"
+                aria-label={HOME_HERO.demoDismissAria}
                 onClick={dismissDemoCta}
               >
                 ×
@@ -1098,7 +1096,7 @@ export function App() {
           onToggle={(event) => setHomeMoreOpen(event.currentTarget.open)}
         >
           <summary className="home-more-toggle" data-testid="home-more-toggle" aria-expanded={homeMoreOpen}>
-            More from your home
+            {HOME_MORE_TOGGLE}
           </summary>
           <div className="home-more-body" data-testid="home-more-body">
             <HomeScores

@@ -129,12 +129,13 @@ describe("B-95 evening-peak single surface", () => {
   });
 
   it("exports the hero trust-marker string used by App", () => {
-    expect(EVENING_PEAK_TRUST_MARKER).toBe("Battery covers the evening peak");
+    expect(EVENING_PEAK_TRUST_MARKER).toBe("Batterij dekt de avondpiek");
   });
 
   it("strips the covers chip when coverage is at risk (no stack with risk banner)", () => {
     const withApiChip = [
       "Reserve respected",
+      "Battery covers the evening peak",
       EVENING_PEAK_TRUST_MARKER,
       "No grid top-up needed",
     ];
@@ -154,6 +155,13 @@ describe("B-95 evening-peak single surface", () => {
       applyEveningPeakTrustMarkerPolicy(["Reserve respected"], covered, {
         injectCoveredMarker: true,
       }),
+    ).toEqual(["Reserve respected", EVENING_PEAK_TRUST_MARKER]);
+    expect(
+      applyEveningPeakTrustMarkerPolicy(
+        ["Reserve respected", "Battery covers the evening peak"],
+        covered,
+        { injectCoveredMarker: true },
+      ),
     ).toEqual(["Reserve respected", EVENING_PEAK_TRUST_MARKER]);
     expect(
       applyEveningPeakTrustMarkerPolicy(

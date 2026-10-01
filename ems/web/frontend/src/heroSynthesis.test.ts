@@ -18,7 +18,7 @@ describe("isPlannerJargon", () => {
   });
 
   test("allows plain homeowner sentences", () => {
-    expect(isPlannerJargon("Battery is following the current plan.")).toBe(false);
+    expect(isPlannerJargon("Batterij volgt het huidige plan.")).toBe(false);
     expect(isPlannerJargon("On track for tonight's target.")).toBe(false);
     expect(isPlannerJargon("A brilliant day for clean energy")).toBe(false);
     expect(
@@ -31,7 +31,7 @@ describe("buildHeroSynthesis", () => {
   test("prefers the on-track story message when present", () => {
     expect(
       buildHeroSynthesis({
-        currentReason: "Battery is following the current plan.",
+        currentReason: "Batterij volgt het huidige plan.",
         onTrackMessage: "On track for tonight's target.",
         scoreSummary: "A brilliant day for clean energy",
       }),
@@ -51,16 +51,16 @@ describe("buildHeroSynthesis", () => {
   test("uses a plain current_reason when no on-track message", () => {
     expect(
       buildHeroSynthesis({
-        currentReason: "Battery is following the current plan.",
+        currentReason: "Batterij volgt het huidige plan.",
         onTrackMessage: null,
         scoreSummary: null,
       }),
-    ).toBe("Battery is following the current plan");
+    ).toBe("Batterij volgt het huidige plan");
   });
 
   test("never joins middot fragments — one sentence only", () => {
     const text = buildHeroSynthesis({
-      currentReason: "Battery is following the current plan.",
+      currentReason: "Batterij volgt het huidige plan.",
       onTrackMessage: "On track.",
       scoreSummary: "A brilliant day for clean energy",
     });
@@ -75,6 +75,6 @@ describe("buildHeroSynthesis", () => {
         onTrackMessage: null,
         scoreSummary: null,
       }),
-    ).toBe("Battery is following the current plan.");
+    ).toBe("Batterij volgt het huidige plan.");
   });
 });

@@ -1,14 +1,24 @@
 // B-63 / #88: show how likely the battery is to cover tonight's evening peak.
 // Reads `/api/battery-plan`.evening_peak_coverage — hidden when unavailable.
 //
-// B-95: covered evening peak appears once above the fold via the **hero trust-marker**
-// ("Battery covers the evening peak"). The full banner is only for at-risk coverage
-// (probability below the covered threshold). When coverage is covered/≥85% and the hero
-// can show trust markers, the banner is suppressed so we never stack marker + banner.
-// When coverage is at risk, strip any API "covers" chip so only the amber banner remains.
+// B-95: covered evening peak appears once above the fold via the **hero trust-marker**.
+// The full banner is only for at-risk coverage (probability below the covered threshold).
+// When coverage is covered/≥85% and the hero can show trust markers, the banner is
+// suppressed so we never stack marker + banner. When coverage is at risk, strip any API
+// "covers" chip so only the amber banner remains.
+// B-98: Dutch-first chrome via labels.ts (API trust-marker strings may still be EN).
 
-/** Matches api.py `_trust_markers` / energy-story copy. */
-export const EVENING_PEAK_TRUST_MARKER = "Battery covers the evening peak";
+import { HOME_EVENING_PEAK } from "./labels";
+
+/** Hero trust-marker when evening peak is covered (B-95 + B-98 Dutch-first). */
+export const EVENING_PEAK_TRUST_MARKER = HOME_EVENING_PEAK.trustMarker;
+
+/** Legacy EN string still emitted by energy-story / api `_trust_markers` — strip or replace. */
+const EVENING_PEAK_TRUST_MARKER_EN = "Battery covers the evening peak";
+
+function isEveningPeakCoversChip(marker: string): boolean {
+  return marker === EVENING_PEAK_TRUST_MARKER || marker === EVENING_PEAK_TRUST_MARKER_EN;
+}
 
 /**
  * Same band as backend `_label_for` "Evening peak likely covered" (≥85%).
@@ -86,13 +96,18 @@ export function applyEveningPeakTrustMarkerPolicy(
     return out;
   }
   if (isEveningPeakCovered(coverage.probability)) {
-    if (opts.injectCoveredMarker && !out.includes(EVENING_PEAK_TRUST_MARKER)) {
-      out.push(EVENING_PEAK_TRUST_MARKER);
+    if (opts.injectCoveredMarker) {
+      const withoutLegacy = out.filter((marker) => !isEveningPeakCoversChip(marker));
+      withoutLegacy.push(EVENING_PEAK_TRUST_MARKER);
+      return withoutLegacy;
     }
-    return out;
+    // Replace any EN API chip with the Dutch-first product string.
+    return out.map((marker) =>
+      marker === EVENING_PEAK_TRUST_MARKER_EN ? EVENING_PEAK_TRUST_MARKER : marker,
+    );
   }
-  // At risk: risk banner only — never keep the discharge-based "covers" chip.
-  return out.filter((marker) => marker !== EVENING_PEAK_TRUST_MARKER);
+  // At risk: risk banner only — never keep the discharge-based "covers" chip (EN or NL).
+  return out.filter((marker) => !isEveningPeakCoversChip(marker));
 }
 
 export function EveningPeakCoverageCard({
@@ -125,8 +140,8 @@ export function EveningPeakCoverageCard({
         {c.label}
       </p>
       <p className="evening-peak-coverage-detail" data-testid="evening-peak-coverage-detail">
-        Chance the battery covers the evening peak: <strong>{pct}</strong>
-        {c.calibrated ? "" : " (default bands until more forecast history)"}
+        {HOME_EVENING_PEAK.chancePrefix} <strong>{pct}</strong>
+        {c.calibrated ? "" : HOME_EVENING_PEAK.uncalibratedSuffix}
       </p>
     </section>
   );
