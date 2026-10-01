@@ -20,11 +20,17 @@ function OutcomeTile({
     <>
       <span className="outcome-tile-label">{label}</span>
       <span className="outcome-tile-value" data-density-kind="number">{value}</span>
-      {freshness.updatedAt != null && <span className={`outcome-tile-freshness${freshness.stale ? " is-stale" : ""}`}>
-        {freshness.stale ? "Stale · " : ""}Updated {new Date(freshness.updatedAt).toLocaleTimeString([], {
-          hour: "2-digit", minute: "2-digit",
-        })}
-      </span>}
+      {/* B-94: show freshness only when this tile's signal is stale — never identical
+          "Updated …" under all four tiles when healthy. */}
+      {freshness.stale && freshness.updatedAt != null && (
+        <span className="outcome-tile-freshness is-stale" data-testid={`${testId}-freshness`}>
+          Stale · Updated{" "}
+          {new Date(freshness.updatedAt).toLocaleTimeString([], {
+            hour: "2-digit",
+            minute: "2-digit",
+          })}
+        </span>
+      )}
     </>
   );
 

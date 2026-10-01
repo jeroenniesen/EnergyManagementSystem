@@ -1270,10 +1270,42 @@ body {
 .chip-stale { color: var(--amber-text); border-color: rgba(224, 162, 58, 0.4); }
 .chip-missing { color: var(--error); border-color: rgba(220, 80, 80, 0.4); }
 
-/* Issue #79 — compact device / data-health strip (dashboard, no click). */
+/* Issue #79 — compact device / data-health strip (dashboard, no click).
+   B-94: healthy/ok collapses to a quiet one-line disclosure (no four-source card). */
 .device-health {
   margin: 0.75rem 0 1rem;
   padding: 0.65rem 0.85rem;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--panel-2);
+}
+.device-health--quiet {
+  margin: 0.35rem 0 0.55rem;
+  padding: 0;
+  border: none;
+  background: transparent;
+}
+.device-health-quiet > summary {
+  list-style: none;
+  cursor: pointer;
+}
+.device-health-quiet > summary::-webkit-details-marker { display: none; }
+.device-health-quiet > summary::after {
+  content: " ›";
+  color: var(--muted);
+  font-weight: 400;
+}
+.device-health-quiet[open] > summary::after { content: " ˅"; }
+.device-health--quiet .device-health-summary {
+  margin-bottom: 0;
+  font-size: 0.8rem;
+}
+.device-health-quiet[open] .device-health-summary {
+  margin-bottom: 0.45rem;
+}
+.device-health-quiet[open] .device-health-sources {
+  margin-top: 0.35rem;
+  padding: 0.55rem 0.75rem;
   border: 1px solid var(--line);
   border-radius: 10px;
   background: var(--panel-2);

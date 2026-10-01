@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 
+import { isDeviceHealthQuiet } from "./DeviceHealth";
 import {
   DATA_QUALITY,
   DATA_SOURCE,
@@ -63,5 +64,40 @@ describe("issue #79 device-health labels", () => {
     expect(
       pickDeviceHealthAlert("prices", [{ key: "tibber_prices_unavailable", message: "x" }])?.key,
     ).toBe("tibber_prices_unavailable");
+  });
+
+  // B-94: quiet first-viewport when overall health is ok.
+  it("isDeviceHealthQuiet only for severity ok", () => {
+    expect(
+      isDeviceHealthQuiet({
+        badge: "current",
+        label: "Alles actueel",
+        detail: "Batterij, P1-meter, prijzen en zonvoorspelling zijn bijgewerkt.",
+        severity: "ok",
+      }),
+    ).toBe(true);
+    expect(
+      isDeviceHealthQuiet({
+        badge: "demo",
+        label: "Demo",
+        detail: "Cijfers komen niet van jouw huis — dit is demodata.",
+        severity: "warning",
+      }),
+    ).toBe(false);
+    expect(
+      isDeviceHealthQuiet({
+        badge: "partially_stale",
+        label: "Deels verouderd",
+        detail: "zonvoorspelling van 08:00",
+        severity: "warning",
+      }),
+    ).toBe(false);
+    const liveOk = summarizeDeviceHealth(
+      { battery: "fresh", grid: "fresh", prices: "fresh", forecast: "fresh" },
+      null,
+      false,
+    );
+    expect(liveOk.severity).toBe("ok");
+    expect(isDeviceHealthQuiet(liveOk)).toBe(true);
   });
 });

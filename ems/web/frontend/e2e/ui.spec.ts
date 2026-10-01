@@ -1917,6 +1917,7 @@ test.describe("EMS dashboard", () => {
     await page.goto("/");
     await expect(page.getByTestId("data-source")).toHaveText("Demo");
     await expect(page.getByTestId("device-health")).toBeVisible();
+    await expect(page.getByTestId("device-health")).toHaveAttribute("data-quiet", "false");
     await expect(page.getByTestId("device-health-summary")).toContainText("Demo");
     await expect(page.getByTestId("device-health-battery")).toBeVisible();
     await expect(page.getByTestId("device-health-grid")).toBeVisible();
@@ -1949,9 +1950,64 @@ test.describe("EMS dashboard", () => {
       });
     });
     await page.reload();
+    await expect(page.getByTestId("device-health")).toHaveAttribute("data-quiet", "false");
     await expect(page.getByTestId("device-health-summary")).toContainText("Deels verouderd");
     await expect(page.getByTestId("device-health-forecast")).toHaveAttribute("data-state", "stale");
     forecastStale.assertRequested();
+  });
+
+  // B-94: healthy DeviceHealth collapses; outcome-tile timestamps only when stale.
+  test("device health: healthy collapses to quiet line; tiles omit Updated when fresh", async ({
+    page,
+  }) => {
+    const healthy = await mockRoute(page, "**/api/dashboard", async (route) => {
+      const response = await route.fetch();
+      const dashboard = await response.json();
+      const sources = ["battery", "grid", "prices", "forecast"].map((key) => ({
+        key,
+        label: key,
+        state: "fresh",
+        updated_hhmm: "12:00",
+      }));
+      await route.fulfill({
+        response,
+        json: {
+          ...dashboard,
+          status: { ...dashboard.status, dev_mode: "live", dry_run: true },
+          freshness: {
+            battery: "fresh",
+            grid: "fresh",
+            prices: "fresh",
+            forecast: "fresh",
+          },
+          device_health: {
+            sources,
+            battery_reachable: true,
+            forecast_age_seconds: 120,
+            summary: {
+              badge: "current",
+              label: "Alles actueel",
+              detail: "Batterij, P1-meter, prijzen en zonvoorspelling zijn bijgewerkt.",
+              severity: "ok",
+            },
+          },
+        },
+      });
+    });
+    await page.goto("/");
+    await expect(page.getByTestId("device-health")).toBeVisible();
+    await expect(page.getByTestId("device-health")).toHaveAttribute("data-quiet", "true");
+    await expect(page.getByTestId("device-health-summary")).toContainText("Alles actueel");
+    await expect(page.getByTestId("device-health-quiet")).toBeVisible();
+    // Four-source grid stays closed until the quiet disclosure is opened.
+    await expect(page.getByTestId("device-health-sources")).not.toBeVisible();
+    await page.getByTestId("device-health-summary").click();
+    await expect(page.getByTestId("device-health-sources")).toBeVisible();
+    await expect(page.getByTestId("device-health-battery")).toBeVisible();
+    for (const id of ["outcome-solar-score", "outcome-soc", "outcome-savings", "outcome-grid-import"]) {
+      await expect(page.getByTestId(id)).not.toContainText("Updated");
+    }
+    healthy.assertRequested();
   });
 
   test("device health: stale P1 keeps unsafe header badge (Paused — self-use)", async ({

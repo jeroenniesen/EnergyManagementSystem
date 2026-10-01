@@ -1011,7 +1011,8 @@ export function App() {
         </section>
       )}
 
-      {/* Issue #79: compact per-source freshness — visible without a click; System keeps detail. */}
+      {/* Issue #79 / B-94: DeviceHealth — full strip when attention needed; quiet one-line
+          disclosure when healthy so the first viewport keeps room for tiles + PlanStory. */}
       {view === "dashboard" && !error && (freshness || deviceHealth) && (
         <DeviceHealthStrip
           freshness={freshness}
