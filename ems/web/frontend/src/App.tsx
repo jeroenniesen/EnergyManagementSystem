@@ -17,6 +17,7 @@ import type {
   SavedToday,
 } from "./EnergyStory";
 import type { DecisionReason } from "./decisionWhy";
+import { buildHeroSynthesis } from "./heroSynthesis";
 import { Icon, type IconName } from "./icons";
 import { DeviceHealthStrip } from "./DeviceHealth";
 import {
@@ -701,20 +702,18 @@ export function App() {
   // The battery tile opens a per-tower breakdown only when there's a cluster to break down.
   const batteryHasDetail = !!(battery && (battery.aggregate || battery.towers.length > 0));
 
-  // --- Hero synthesis (B-32): one verdict, not three fragments. ---------------------------------
+  // --- Hero synthesis (B-32 + B-96): one verdict, one plain sentence, one act-line. ------------
   const home = decision?.home_state ?? null;
   const summary = report ? homeSummary(report.scores) : null;
   // B-68: the plan-confidence score rides on the already-polled /api/battery-plan response — no
   // extra fetch. Calm stays calm: the reason sub-line only renders when confidence isn't high.
   const confidence = batteryPlan?.confidence ?? null;
-  // The synthesis line stitches the existing on-track verdict and the existing day-score summary
-  // into ONE sentence — reusing the exact strings, inventing no number. Trailing punctuation is
-  // trimmed so the middot join reads cleanly ("…88% target · A solid energy day — keep it up").
-  const trimEnd = (s: string) => s.replace(/[.\s]+$/, "");
-  const synthesis = [batteryPlan?.current_reason, story?.on_track?.message, summary?.text]
-    .filter((s): s is string => !!s)
-    .map(trimEnd)
-    .join(" · ");
+  // B-96: one human sentence only — planner jargon stays under Waarom? / DecisionReasonDetails.
+  const synthesis = buildHeroSynthesis({
+    currentReason: batteryPlan?.current_reason,
+    onTrackMessage: story?.on_track?.message,
+    scoreSummary: summary?.text,
+  });
   // B-95: one evening-peak surface — covered → hero trust-marker; at-risk → risk banner
   // only (strip the API's discharge-based "covers" chip so it never stacks with amber).
   const eveningPeakCoverage = batteryPlan?.evening_peak_coverage;
@@ -977,11 +976,6 @@ export function App() {
               {synthesis}
             </p>
           )}
-          {story?.recent_review?.message && (
-            <p className="story-review" data-testid="recent-review">
-              {story.recent_review.message}
-            </p>
-          )}
           {trustMarkers.length > 0 && (
             <div className="trust-markers" data-testid="trust-markers">
               {trustMarkers.map((marker) => (
@@ -1092,6 +1086,7 @@ export function App() {
             savedToday={savedToday}
             socPct={status?.soc_pct ?? null}
             onBatteryClick={batteryHasDetail ? () => setBatteryDetail("soc") : undefined}
+            recentReview={story?.recent_review?.message ?? null}
           />
         </>
       )}

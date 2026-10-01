@@ -137,6 +137,20 @@ describe("PlanStory rendering", () => {
     expect(html).not.toContain(">Mode<");
   });
 
+  test("B-96: recent review renders as a collapsed plan-header disclosure", () => {
+    const html = renderToStaticMarkup(createElement(PlanStory, {
+      story: storyData([], [storySlot(0)], 0),
+      recentReview: "Last 3h solar reached 80% of forecast.",
+    }));
+
+    expect(html).toContain('data-testid="recent-review"');
+    expect(html).toContain("Last 3 hours");
+    expect(html).toContain("Last 3h solar reached 80% of forecast.");
+    expect(html).toContain("<details");
+    // Chart still present — disclosure does not replace PlanStory.
+    expect(html).toContain('data-testid="plan-story-plot"');
+  });
+
   test("renders a recorded idle action as Idle and never as Hold", () => {
     const html = renderToStaticMarkup(createElement(PlanStory, {
       story: storyData([storySlot(0, { action: "idle" })], [], 15),

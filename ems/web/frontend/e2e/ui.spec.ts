@@ -946,42 +946,106 @@ test.describe("EMS dashboard", () => {
       status: 200, contentType: "application/json",
       body: JSON.stringify(batteryPlanFixture({ level: "high", reasons: ["Fresh data."] })),
     }));
-    // The score copy asserted below ("brilliant day") is homeSummary()'s top band, which needs EVERY
-    // score >= 80 (see src/scoreCopy.ts). Live mock scores do not reliably clear that, so this test
-    // was non-hermetic in a second way: it read real /api/report values. Keep the real payload and
-    // raise only the score values, so the band is deterministic without inventing a whole report.
-    const reportMock = await mockRoute(page, "**/api/report**", async (route) => {
-      const response = await route.fetch();
-      const report = await response.json();
-      await route.fulfill({
-        response,
-        json: {
-          ...report,
-          scores: (report.scores ?? []).map((score: { value: number | null }) => ({
-            ...score,
-            value: score.value == null ? null : Math.max(score.value, 88),
-          })),
-        },
-      });
+    // B-96: hermetic on-track message so hero synthesis is one plain sentence (not score middots).
+    const story = planStoryFixture();
+    Object.assign(story, {
+      on_track: {
+        status: "on_track",
+        actual_soc_pct: 58,
+        target_soc_pct: 88,
+        deficit_kwh: 0,
+        message: "On track for tonight's target.",
+      },
     });
+    await page.route("**/api/energy-story?window=next", (route) => route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify(story),
+    }));
     await page.goto("/");
     const hero = page.getByTestId("home-state");
     await expect(hero).toBeVisible();
     await expect(hero).toHaveAttribute("data-tone", /good|watching|controlling|attention/);
     // The verdict headline (the old status headline, absorbed into the hero).
     await expect(page.getByTestId("hero-verdict")).toContainText("Watching");
-    // One synthesis line combines the truthful live explanation, on-track message, and score copy.
+    // One plain-language synthesis sentence (B-96) — not a middot-joined jargon wall.
     const synth = page.getByTestId("hero-synthesis");
-    await expect(synth).toContainText("Battery is following the current plan");
-    await expect(synth).toContainText("On track");
-    await expect(synth).toContainText("brilliant day");
-    await expect(synth).toContainText("·"); // the two strings are joined into one line
+    await expect(synth).toHaveText("On track for tonight's target");
+    await expect(synth).not.toContainText("·");
+    await expect(synth).not.toContainText("break-even");
     await expect(page.getByTestId("battery-plan")).not.toBeVisible();
     // The explicit answer to "do I need to act?" — calm, because nothing needs attention.
     await expect(page.getByTestId("hero-act")).toHaveText("Nothing needed from you.");
     dashboardMock.assertRequested();
     batteryPlanMock.assertRequested();
-    reportMock.assertRequested();
+  });
+
+  test("B-96: hero keeps jargon out while Waarom? still shows the planner summary", async ({ page }) => {
+    const jargon =
+      "self-consumption: €0.45/kWh > break-even €0.32 — EV load expected ~8 kWh";
+    await page.route("**/api/battery-plan", (route) =>
+      route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify(
+          batteryPlanFixture(
+            { level: "high", reasons: ["Fresh data."] },
+            undefined,
+            {
+              current_reason: jargon,
+              reason: batteryPlanReasonFixture({ summary: jargon }),
+              current_action: "discharge",
+            },
+          ),
+        ),
+      }),
+    );
+    const story = planStoryFixture();
+    Object.assign(story, {
+      on_track: {
+        status: "on_track",
+        actual_soc_pct: 58,
+        target_soc_pct: 88,
+        deficit_kwh: 0,
+        message: "Running the house on your battery tonight.",
+      },
+    });
+    await page.route("**/api/energy-story?window=next", (route) =>
+      route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify(story),
+      }),
+    );
+    await page.route("**/api/decision", (route) =>
+      route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          intent: null,
+          desired_mode: null,
+          applied: false,
+          outcome: "dry_run",
+          reason: jargon,
+          home_state: {
+            headline: "Running the house on your battery",
+            tone: "controlling",
+            simulated: true,
+          },
+        }),
+      }),
+    );
+    await page.goto("/");
+    const synth = page.getByTestId("hero-synthesis");
+    await expect(synth).toHaveText("Running the house on your battery tonight");
+    await expect(synth).not.toContainText("break-even");
+    await expect(synth).not.toContainText("self-consumption:");
+    await expect(synth).not.toContainText("EV load expected");
+    await expect(page.getByTestId("hero-act")).toHaveText("Nothing needed from you.");
+    // Waarom? still carries full explainability (DecisionReasonDetails summary).
+    await page.getByTestId("battery-action-why-toggle").click();
+    await expect(page.getByTestId("decision-reason-summary")).toContainText("break-even");
+    await expect(page.getByTestId("decision-reason-summary")).toContainText("self-consumption");
   });
 
   test("B-68: a high-confidence plan shows a calm chip with no reason sub-line", async ({ page }) => {
@@ -1055,6 +1119,13 @@ test.describe("EMS dashboard", () => {
         reasons: ["Still learning your roof."],
       })),
     }));
+    // No on_track message → hero falls through to the plain battery-plan current_reason.
+    const story = planStoryFixture();
+    await page.route("**/api/energy-story?window=next", (route) => route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify(story),
+    }));
     await page.route("**/api/decision", (route) => route.fulfill({
       status: 200,
       contentType: "application/json",
@@ -1072,7 +1143,7 @@ test.describe("EMS dashboard", () => {
       }),
     }));
     await page.goto("/");
-    await expect(page.getByTestId("hero-synthesis")).toContainText(
+    await expect(page.getByTestId("hero-synthesis")).toHaveText(
       "Battery is following the current plan",
     );
     await expect(page.getByTestId("confidence-chip")).toHaveText("Medium confidence");
@@ -1706,7 +1777,13 @@ test.describe("EMS dashboard", () => {
 
     const hero = page.getByTestId("home-state");
     await expect(hero.getByTestId("hero-synthesis")).toContainText("no grid top-up planned");
-    await expect(hero.getByTestId("recent-review")).toContainText("80% of forecast");
+    // B-96: Last-3h review demoted to PlanStory plan-header disclosure (not hero body).
+    await expect(hero.getByTestId("recent-review")).toHaveCount(0);
+    const review = page.getByTestId("plan-story").getByTestId("recent-review");
+    await expect(review).toBeVisible();
+    await expect(review).toContainText("Last 3 hours");
+    await review.locator("summary").click();
+    await expect(review).toContainText("80% of forecast");
     await expect(hero.getByTestId("trust-markers")).toContainText("Reserve respected");
     await expect(hero.getByTestId("trust-markers")).not.toContainText("No grid top-up needed");
     await expect(page.getByText("No grid top-up needed")).toHaveCount(0);

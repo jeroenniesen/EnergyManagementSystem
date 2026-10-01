@@ -576,6 +576,29 @@ body {
   background: var(--panel);
   box-shadow: var(--shadow);
 }
+/* B-96: Last-3h review lives under a plan-header disclosure, not the hero body. */
+.plan-story-recent-review {
+  margin: 0 0 12px;
+  color: var(--muted);
+  font-size: 0.85rem;
+}
+.plan-story-recent-review-toggle {
+  cursor: pointer;
+  list-style: none;
+  color: var(--muted);
+}
+.plan-story-recent-review-toggle::-webkit-details-marker { display: none; }
+.plan-story-recent-review-toggle::before {
+  content: "›";
+  display: inline-block;
+  margin-right: 6px;
+}
+.plan-story-recent-review[open] > .plan-story-recent-review-toggle::before {
+  transform: rotate(90deg);
+}
+.plan-story-recent-review-body {
+  margin: 6px 0 0;
+}
 .plan-story-chart-wrap { position: relative; }
 .plan-story-svg { display: block; width: 100%; height: auto; }
 .plan-story-prices text,
@@ -951,6 +974,7 @@ body {
 }
 .on-track-muted { color: var(--muted); }
 .story-review { color: var(--muted); font-size: 0.8rem; margin: -4px 0 10px; }
+.plan-story-recent-review-body.story-review { margin: 6px 0 0; }
 .soc-now-label { fill: var(--muted); font-size: 11px; font-weight: 600; }
 .tick-now { color: var(--text); font-weight: 700; }
 /* Recent ACTUALS on the next-24h bar tracks read as "already happened" — faded vs. the plan. */

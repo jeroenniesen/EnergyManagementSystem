@@ -41,7 +41,18 @@ export type PlanStoryProps = {
   savedToday?: SavedToday | null;
   socPct?: number | null;
   onBatteryClick?: () => void;
+  /** B-96: Last-3h review demoted behind a plan-header disclosure (not in the hero). */
+  recentReview?: string | null;
 };
+
+function RecentReviewDisclosure({ message }: { message: string }) {
+  return (
+    <details className="plan-story-recent-review" data-testid="recent-review">
+      <summary className="plan-story-recent-review-toggle">Last 3 hours</summary>
+      <p className="story-review plan-story-recent-review-body">{message}</p>
+    </details>
+  );
+}
 
 function ProvenanceCaption({
   provenance,
@@ -142,6 +153,7 @@ export function PlanStory({
   savedToday = null,
   socPct = null,
   onBatteryClick,
+  recentReview = null,
 }: PlanStoryProps) {
   const [hover, setHover] = useState<number | null>(null);
   const model = buildPlanStoryModel(story, PAD.l, PLOT_W);
@@ -149,6 +161,7 @@ export function PlanStory({
   if (!story || !model) {
     return (
       <section className="plan-story" data-testid="plan-story" data-density-kind="chart">
+        {recentReview && <RecentReviewDisclosure message={recentReview} />}
         <p>Battery plan is unavailable.</p>
         <ProvenanceCaption provenance={provenance} />
         <Footer savedToday={savedToday} socPct={socPct} onBatteryClick={onBatteryClick} />
@@ -183,6 +196,7 @@ export function PlanStory({
       data-density-kind="chart"
       aria-label={model.label}
     >
+      {recentReview && <RecentReviewDisclosure message={recentReview} />}
       <p className="sr-only" data-testid="plan-story-summary">{model.summary}</p>
       <div className="plan-story-chart-wrap">
         <svg
