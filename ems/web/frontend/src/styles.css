@@ -378,7 +378,16 @@ body {
   border: 1px solid var(--line);
   border-radius: var(--radius);
 }
-.outcome-tile-label { color: var(--muted); font-size: 0.78rem; font-weight: 600; }
+.outcome-tile-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  color: var(--muted);
+  font-size: 0.78rem;
+  font-weight: 600;
+}
+.outcome-tile-icon-wrap { display: inline-flex; flex: none; color: var(--muted); }
+.outcome-tile-icon { width: 14px; height: 14px; }
 .outcome-tile-value {
   font-size: 1.45rem;
   font-weight: 650;
@@ -386,6 +395,16 @@ body {
   letter-spacing: -0.02em;
   font-variant-numeric: tabular-nums;
 }
+/* B-100: measuring / ≤€0 savings — quiet honesty, never warn-amber or alarm-red. */
+.outcome-tile.is-calm { color: var(--text); }
+.outcome-tile.is-calm .outcome-tile-value,
+.outcome-tile-value.is-calm-copy {
+  color: var(--muted);
+  font-size: 1.05rem;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+.outcome-tile.is-positive .outcome-tile-value { color: var(--text); }
 .outcome-tile-freshness { display:block; margin-top:0.25rem; color:var(--muted); font-size:0.68rem; }
 .outcome-tile-freshness.is-stale { color:var(--amber-text); font-weight:700; }
 .outcome-tile-action { font: inherit; cursor: pointer; }

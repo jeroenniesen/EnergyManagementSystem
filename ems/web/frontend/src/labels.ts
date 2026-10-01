@@ -561,7 +561,11 @@ export const HOME_TILE = {
   savings: {
     label: "Bespaard",
     title: "Besparing tot nu toe vandaag",
+    /** B-100: calm measuring value on the tile (not a bare em dash). */
+    measuringShort: "Nog meten",
     measuring: "Besparing tot nu toe vandaag: nog meten",
+    /** B-100: calm framing when measured savings are ≤ €0 — never alarm copy. */
+    noBenefit: "Vandaag nog geen voordeel",
     unavailable: "Besparing tot nu toe vandaag niet beschikbaar",
   },
   gridImport: {

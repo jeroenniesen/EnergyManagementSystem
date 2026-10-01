@@ -867,13 +867,20 @@ test.describe("EMS dashboard", () => {
     const batteryResponse = page.waitForResponse((response) => response.url().endsWith("/api/battery"));
     await page.goto("/");
     await batteryResponse;
-    for (const id of ["outcome-solar-score", "outcome-soc", "outcome-savings", "outcome-grid-import"]) {
+    for (const id of ["outcome-solar-score", "outcome-soc", "outcome-grid-import"]) {
       await expect(page.getByTestId(id)).toContainText("—");
       await expect(page.getByTestId(id)).toHaveJSProperty("tagName", "DIV");
       await expect(page.getByTestId(id)).not.toContainText("Bijgewerkt");
       await expect(page.getByTestId(id)).not.toContainText("Updated");
     }
+    // B-100: measuring savings use calm "Nog meten", not a bare dash / €0.00.
+    await expect(page.getByTestId("outcome-savings")).toContainText("Nog meten");
+    await expect(page.getByTestId("outcome-savings")).toHaveJSProperty("tagName", "DIV");
     await expect(page.getByTestId("outcome-savings")).toHaveAttribute("title", /nog meten/);
+    await expect(page.getByTestId("outcome-savings")).toHaveAttribute("data-tone", "calm");
+    await expect(page.getByTestId("outcome-savings")).not.toContainText("Bijgewerkt");
+    await expect(page.getByTestId("outcome-savings")).not.toContainText("Updated");
+    await expect(page.getByTestId("outcome-savings")).not.toContainText("€0.00");
     reportMock.assertRequested();
     dashboardMock.assertRequested();
     fallbackStatusMock.assertRequested();
@@ -1674,6 +1681,7 @@ test.describe("EMS dashboard", () => {
 
   // B-03b: Saved derives from /api/finance (measured), never the old plan-estimate tile
   // — and never a false "€0.00" before any price history exists. Surfaced on OutcomeTiles (B-97).
+  // B-100: measuring / ≤€0 use calm Dutch copy + semantic icon — never alarm styling.
   test("B-03b: OutcomeTiles show the MEASURED saved figure from /api/finance", async ({
     page,
   }) => {
@@ -1692,10 +1700,12 @@ test.describe("EMS dashboard", () => {
     const tile = page.getByTestId("outcome-savings");
     await expect(tile).toBeVisible();
     await expect(tile).toContainText("€2.34");
+    await expect(tile).toHaveAttribute("data-tone", "positive");
+    await expect(page.getByTestId("outcome-savings-icon")).toHaveCount(0);
     await expect(page.getByTestId("saved-today")).toHaveCount(0);
   });
 
-  test("B-03b: no price history yet shows measuring dash, never a false €0.00", async ({ page }) => {
+  test("B-03b / B-100: no price history yet shows Nog meten, never a false €0.00", async ({ page }) => {
     await page.route("**/api/finance**", (route) =>
       route.fulfill({
         status: 200,
@@ -1710,9 +1720,77 @@ test.describe("EMS dashboard", () => {
     await page.goto("/");
     const tile = page.getByTestId("outcome-savings");
     await expect(tile).toBeVisible();
-    await expect(tile).toContainText("—");
+    await expect(tile).toContainText("Nog meten");
     await expect(tile).toHaveAttribute("title", /nog meten/);
+    await expect(tile).toHaveAttribute("data-tone", "calm");
+    await expect(page.getByTestId("outcome-savings-icon")).toBeVisible();
     await expect(tile).not.toContainText("€0.00");
+    // Calm muted value — never warn-amber / alarm-red family.
+    const valueColor = await tile.locator(".outcome-tile-value").evaluate((node) => getComputedStyle(node).color);
+    const amber = await page.evaluate(() => {
+      const el = document.createElement("span");
+      el.style.color = "var(--amber-text)";
+      document.body.appendChild(el);
+      const rgb = getComputedStyle(el).color;
+      el.remove();
+      return rgb;
+    });
+    const danger = await page.evaluate(() => {
+      const el = document.createElement("span");
+      el.style.color = "var(--danger, var(--red-text, #c0392b))";
+      document.body.appendChild(el);
+      const rgb = getComputedStyle(el).color;
+      el.remove();
+      return rgb;
+    });
+    expect(valueColor).not.toBe(amber);
+    expect(valueColor).not.toBe(danger);
+  });
+
+  test("B-100: negative measured savings show Vandaag nog geen voordeel, not −€ alarm", async ({
+    page,
+  }) => {
+    await page.route("**/api/finance**", (route) =>
+      route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          period: "day", label: "today", partial: true, days: [],
+          totals: { grid_cost_eur: 2.1, battery_cost_eur: 0.12, saved_eur: -1.39,
+                    days_with_prices: 1, days_with_data: 1 },
+        }),
+      }),
+    );
+    await page.goto("/");
+    const tile = page.getByTestId("outcome-savings");
+    await expect(tile).toBeVisible();
+    await expect(tile).toContainText("Vandaag nog geen voordeel");
+    await expect(tile).not.toContainText("−€1.39");
+    await expect(tile).not.toContainText("€-1.39");
+    await expect(tile).toHaveAttribute("title", /−€1\.39|€1\.39/);
+    await expect(tile).toHaveAttribute("data-tone", "calm");
+    await expect(page.getByTestId("outcome-savings-icon")).toBeVisible();
+  });
+
+  test("B-100: positive measured savings stay a plain euro amount", async ({ page }) => {
+    await page.route("**/api/finance**", (route) =>
+      route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          period: "day", label: "today", partial: false, days: [],
+          totals: { grid_cost_eur: 0.4, battery_cost_eur: 0.05, saved_eur: 2.84,
+                    days_with_prices: 1, days_with_data: 1 },
+        }),
+      }),
+    );
+    await page.goto("/");
+    const tile = page.getByTestId("outcome-savings");
+    await expect(tile).toContainText("€2.84");
+    await expect(tile).not.toContainText("Nog meten");
+    await expect(tile).not.toContainText("Vandaag nog geen voordeel");
+    await expect(tile).toHaveAttribute("data-tone", "positive");
+    await expect(page.getByTestId("outcome-savings-icon")).toHaveCount(0);
   });
 
   test("no API error banner when backend is up", async ({ page }) => {
