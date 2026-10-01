@@ -6,7 +6,7 @@ import { BatteryActionWhy } from "./BatteryActionWhy";
 import { type Battery, BatteryChips } from "./BatteryChips";
 import {
   EveningPeakCoverageCard,
-  EVENING_PEAK_TRUST_MARKER,
+  applyEveningPeakTrustMarkerPolicy,
   isEveningPeakCovered,
 } from "./EveningPeakCoverage";
 import { EnergyDistribution } from "./EnergyDistribution";
@@ -715,26 +715,18 @@ export function App() {
     .filter((s): s is string => !!s)
     .map(trimEnd)
     .join(" · ");
-  // B-95: covered evening-peak reassurance lives once on the hero trust-marker.
-  // When battery-plan coverage is covered (≥85%), ensure that marker is present so we
-  // can demote the full EveningPeakCoverageCard banner (no marker + banner stack).
-  const eveningPeakCovered = isEveningPeakCovered(
-    batteryPlan?.evening_peak_coverage?.probability,
-  );
-  const trustMarkers = (() => {
-    const markers = (story?.trust_markers ?? []).filter(
+  // B-95: one evening-peak surface — covered → hero trust-marker; at-risk → risk banner
+  // only (strip the API's discharge-based "covers" chip so it never stacks with amber).
+  const eveningPeakCoverage = batteryPlan?.evening_peak_coverage;
+  const eveningPeakCovered = isEveningPeakCovered(eveningPeakCoverage?.probability);
+  const trustMarkers = applyEveningPeakTrustMarkerPolicy(
+    (story?.trust_markers ?? []).filter(
       (marker) =>
         !(story?.on_track?.status === "behind" && marker === "No grid top-up needed"),
-    );
-    if (
-      eveningPeakCovered &&
-      home &&
-      !markers.includes(EVENING_PEAK_TRUST_MARKER)
-    ) {
-      return [...markers, EVENING_PEAK_TRUST_MARKER];
-    }
-    return markers;
-  })();
+    ),
+    eveningPeakCoverage,
+    { injectCoveredMarker: !!home && eveningPeakCovered },
+  );
   // Hero owns the covered marker whenever the hero section can render (home present).
   const heroOwnsEveningPeakMarker = !!home && eveningPeakCovered;
 

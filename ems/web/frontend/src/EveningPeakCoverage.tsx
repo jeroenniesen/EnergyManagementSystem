@@ -5,6 +5,7 @@
 // ("Battery covers the evening peak"). The full banner is only for at-risk coverage
 // (probability below the covered threshold). When coverage is covered/≥85% and the hero
 // can show trust markers, the banner is suppressed so we never stack marker + banner.
+// When coverage is at risk, strip any API "covers" chip so only the amber banner remains.
 
 /** Matches api.py `_trust_markers` / energy-story copy. */
 export const EVENING_PEAK_TRUST_MARKER = "Battery covers the evening peak";
@@ -60,6 +61,38 @@ export function shouldShowEveningPeakCoverageCard(
     return false;
   }
   return true;
+}
+
+/**
+ * B-95: keep evening-peak reassurance to one surface.
+ *
+ * The energy-story API appends {@link EVENING_PEAK_TRUST_MARKER} whenever any projected
+ * slot is DISCHARGE_FOR_LOAD — that does **not** mean coverage ≥85%. When calibrated
+ * coverage is available and below the covered threshold, strip that chip so it cannot
+ * stack with the amber risk banner. When covered, optionally inject the marker so the
+ * hero owns the single calm reassurance surface.
+ */
+export function applyEveningPeakTrustMarkerPolicy(
+  markers: readonly string[],
+  coverage: EveningPeakCoverage | null | undefined,
+  opts: { injectCoveredMarker?: boolean } = {},
+): string[] {
+  const out = [...markers];
+  if (
+    !coverage?.available ||
+    coverage.probability == null ||
+    !Number.isFinite(coverage.probability)
+  ) {
+    return out;
+  }
+  if (isEveningPeakCovered(coverage.probability)) {
+    if (opts.injectCoveredMarker && !out.includes(EVENING_PEAK_TRUST_MARKER)) {
+      out.push(EVENING_PEAK_TRUST_MARKER);
+    }
+    return out;
+  }
+  // At risk: risk banner only — never keep the discharge-based "covers" chip.
+  return out.filter((marker) => marker !== EVENING_PEAK_TRUST_MARKER);
 }
 
 export function EveningPeakCoverageCard({

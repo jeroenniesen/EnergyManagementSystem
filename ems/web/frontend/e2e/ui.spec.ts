@@ -1367,6 +1367,71 @@ test.describe("EMS dashboard", () => {
       await expect(page.getByTestId("evening-peak-coverage-detail")).toContainText("67%");
     });
 
+    // B-95: API/energy-story may already append "Battery covers the evening peak" for any
+    // DISCHARGE_FOR_LOAD plan — that chip must not stack with the amber risk banner below 85%.
+    test("at-risk coverage strips the covers trust-marker and keeps only the risk banner", async ({ page }) => {
+      const story = planStoryFixture();
+      Object.assign(story, {
+        trust_markers: [
+          "Reserve respected",
+          "Battery covers the evening peak",
+          "No grid top-up needed",
+        ],
+      });
+      await page.route("**/api/energy-story?window=next", (route) => route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify(story),
+      }));
+      await routeDashboardStatus(page);
+      await page.route("**/api/decision", (route) => route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          intent: null,
+          desired_mode: null,
+          applied: false,
+          outcome: "dry_run",
+          reason: "Watching the current plan.",
+          home_state: {
+            headline: "Running the house on your battery",
+            tone: "on_battery",
+            simulated: true,
+          },
+        }),
+      }));
+      await page.route("**/api/battery-plan", (route) => route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify(batteryPlanFixture(
+          { level: "high", reasons: ["Fresh data."] },
+          DEFAULT_PROVENANCE,
+          {
+            evening_peak_coverage: {
+              probability: 0.667,
+              available: true,
+              label: "Evening peak may be covered (~67%)",
+              reason: "2 of 3 scenarios cover the evening peak.",
+              calibrated: true,
+              scenarios_covering: 2,
+              scenarios_total: 3,
+              peak_kwh_expected: 3.2,
+              available_kwh: 4.1,
+            },
+          },
+        )),
+      }));
+      await page.goto("/");
+
+      const block = page.getByTestId("evening-peak-coverage");
+      await expect(block).toBeVisible();
+      await expect(block).toHaveAttribute("data-risk", "true");
+      const markers = page.getByTestId("home-state").getByTestId("trust-markers");
+      await expect(markers).toContainText("Reserve respected");
+      await expect(markers).not.toContainText("Battery covers the evening peak");
+      await expect(page.getByText("Battery covers the evening peak")).toHaveCount(0);
+    });
+
     test("hides the coverage strip when the API marks it unavailable", async ({ page }) => {
       await routePlanStory(page);
       await routeDashboardStatus(page);

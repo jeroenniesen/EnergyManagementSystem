@@ -5,6 +5,7 @@ import {
   EveningPeakCoverageCard,
   EVENING_PEAK_COVERED_THRESHOLD,
   EVENING_PEAK_TRUST_MARKER,
+  applyEveningPeakTrustMarkerPolicy,
   formatPeakCoveragePct,
   isEveningPeakCovered,
   shouldShowEveningPeakCoverageCard,
@@ -129,5 +130,48 @@ describe("B-95 evening-peak single surface", () => {
 
   it("exports the hero trust-marker string used by App", () => {
     expect(EVENING_PEAK_TRUST_MARKER).toBe("Battery covers the evening peak");
+  });
+
+  it("strips the covers chip when coverage is at risk (no stack with risk banner)", () => {
+    const withApiChip = [
+      "Reserve respected",
+      EVENING_PEAK_TRUST_MARKER,
+      "No grid top-up needed",
+    ];
+    expect(applyEveningPeakTrustMarkerPolicy(withApiChip, atRisk)).toEqual([
+      "Reserve respected",
+      "No grid top-up needed",
+    ]);
+    expect(
+      applyEveningPeakTrustMarkerPolicy(withApiChip, atRisk, {
+        injectCoveredMarker: true,
+      }),
+    ).toEqual(["Reserve respected", "No grid top-up needed"]);
+  });
+
+  it("injects the covers chip once when covered and the hero owns it", () => {
+    expect(
+      applyEveningPeakTrustMarkerPolicy(["Reserve respected"], covered, {
+        injectCoveredMarker: true,
+      }),
+    ).toEqual(["Reserve respected", EVENING_PEAK_TRUST_MARKER]);
+    expect(
+      applyEveningPeakTrustMarkerPolicy(
+        ["Reserve respected", EVENING_PEAK_TRUST_MARKER],
+        covered,
+        { injectCoveredMarker: true },
+      ),
+    ).toEqual(["Reserve respected", EVENING_PEAK_TRUST_MARKER]);
+  });
+
+  it("leaves markers alone when coverage is unavailable", () => {
+    const markers = ["Reserve respected", EVENING_PEAK_TRUST_MARKER];
+    expect(
+      applyEveningPeakTrustMarkerPolicy(markers, {
+        ...atRisk,
+        available: false,
+        probability: null,
+      }),
+    ).toEqual(markers);
   });
 });
