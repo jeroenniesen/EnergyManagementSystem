@@ -44,6 +44,7 @@
 		D26583CB40FD4B9525AF4F6A /* CarStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7AE8E5DCF24A00DA770185CB /* CarStore.swift */; };
 		E4324AC3E37934CFA4C5AE74 /* CarTab.swift in Sources */ = {isa = PBXBuildFile; fileRef = 666215802737C6356279F9E7 /* CarTab.swift */; };
 		EEC0E74D439A37CB1C2D9F6C /* APIClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = 720F711D71B00AC0F6976700 /* APIClient.swift */; };
+		B2C3D4E5F60718293A4B5C6D /* DecisionReason.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D4E5F60718293A4B5C /* DecisionReason.swift */; };
 		EF963FF881BB7743E2130B73 /* AppShellView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 24CB1980979D24B5EA49FBE4 /* AppShellView.swift */; };
 		F9D6B9F8ED1B8F823AE35213 /* EMSWidgetViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = FCEB78668E11698B72193C5B /* EMSWidgetViews.swift */; };
 /* End PBXBuildFile section */
@@ -104,6 +105,7 @@
 		033DDC49ECE87F18564D3288 /* ServerDiscovery.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ServerDiscovery.swift; sourceTree = "<group>"; };
 		0888EA444AB57461568AD1F4 /* demo-dashboard.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = "demo-dashboard.json"; sourceTree = "<group>"; };
 		13253B7C77956C58739FA336 /* Models.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Models.swift; sourceTree = "<group>"; };
+		A1B2C3D4E5F60718293A4B5C /* DecisionReason.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DecisionReason.swift; sourceTree = "<group>"; };
 		14BCF6378F4A63CC1232715D /* EMSWidget.appex */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = "wrapper.app-extension"; path = EMSWidget.appex; sourceTree = BUILT_PRODUCTS_DIR; };
 		24CB1980979D24B5EA49FBE4 /* AppShellView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppShellView.swift; sourceTree = "<group>"; };
 		257B061EB9A96671DDB32DC5 /* InsightsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = InsightsView.swift; sourceTree = "<group>"; };
@@ -204,6 +206,7 @@
 				BC6937650BBFD71CE57B8BF5 /* ChatStore.swift */,
 				851FDA73182D3541A3039A9A /* DashboardStore.swift */,
 				3699F1E6706AE136B68AB1C8 /* DemoDataStore.swift */,
+				A1B2C3D4E5F60718293A4B5C /* DecisionReason.swift */,
 				AE96D50A9EC3DC4FEC64185B /* InsightsStore.swift */,
 				2DC5EEC3A04E938FD71E41C8 /* ISOTimestamp.swift */,
 				F931E1AEC5676B6174B3A76F /* KeychainCredentialStore.swift */,
@@ -397,6 +400,7 @@
 				B73C5305189929545FF315BF /* ChatStore.swift in Sources */,
 				51B466CD33164832C83EA6F1 /* DashboardStore.swift in Sources */,
 				15F7E1D2E299E702BCF34E68 /* DemoDataStore.swift in Sources */,
+				B2C3D4E5F60718293A4B5C6D /* DecisionReason.swift in Sources */,
 				1A13A3975BE7484B3E9D2185 /* ISOTimestamp.swift in Sources */,
 				042F4F18CFE0650AA449CAAC /* InsightsStore.swift in Sources */,
 				C32DD176D4AC4B7979994319 /* KeychainCredentialStore.swift in Sources */,

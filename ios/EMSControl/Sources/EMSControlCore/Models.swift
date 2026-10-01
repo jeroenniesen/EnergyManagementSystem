@@ -824,6 +824,8 @@ public struct BatteryPlanSnapshot: Codable, Equatable, Sendable {
     public let deviation: BatteryPlanDeviation
     public let warnings: [String]
     public let graph: BatteryPlanGraph
+    /// B-74 / #84: structured decision reason from `/api/battery-plan` (same object as web).
+    public let reason: DecisionReasonSnapshot?
 
     public init(
         status: String,
@@ -839,7 +841,8 @@ public struct BatteryPlanSnapshot: Codable, Equatable, Sendable {
         plannedGridTopupKwh: Double? = nil,
         deviation: BatteryPlanDeviation,
         warnings: [String],
-        graph: BatteryPlanGraph
+        graph: BatteryPlanGraph,
+        reason: DecisionReasonSnapshot? = nil
     ) {
         self.status = status
         self.summary = summary
@@ -855,6 +858,27 @@ public struct BatteryPlanSnapshot: Codable, Equatable, Sendable {
         self.deviation = deviation
         self.warnings = warnings
         self.graph = graph
+        self.reason = reason
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        status = try c.decode(String.self, forKey: .status)
+        summary = try c.decode(String.self, forKey: .summary)
+        currentAction = try c.decode(String.self, forKey: .currentAction)
+        currentReason = try c.decode(String.self, forKey: .currentReason)
+        windowStart = try c.decode(String.self, forKey: .windowStart)
+        windowEnd = try c.decode(String.self, forKey: .windowEnd)
+        currentSocPct = try c.decodeIfPresent(Double.self, forKey: .currentSocPct)
+        reserveSocPct = try c.decode(Double.self, forKey: .reserveSocPct)
+        targetSocPct = try c.decodeIfPresent(Double.self, forKey: .targetSocPct)
+        targetDeadline = try c.decodeIfPresent(String.self, forKey: .targetDeadline)
+        plannedGridTopupKwh = try c.decodeIfPresent(Double.self, forKey: .plannedGridTopupKwh)
+        deviation = try c.decode(BatteryPlanDeviation.self, forKey: .deviation)
+        warnings = try c.decodeIfPresent([String].self, forKey: .warnings) ?? []
+        graph = try c.decodeIfPresent(BatteryPlanGraph.self, forKey: .graph) ?? .empty
+        // Missing `reason` (older server) → nil; never fail the whole plan decode.
+        reason = try c.decodeIfPresent(DecisionReasonSnapshot.self, forKey: .reason)
     }
 
     public static let empty = BatteryPlanSnapshot(
@@ -871,7 +895,8 @@ public struct BatteryPlanSnapshot: Codable, Equatable, Sendable {
         plannedGridTopupKwh: nil,
         deviation: BatteryPlanDeviation(status: "missing", message: "No data yet."),
         warnings: [],
-        graph: BatteryPlanGraph.empty
+        graph: BatteryPlanGraph.empty,
+        reason: nil
     )
 
     public static let demoScenarios: [BatteryPlanSnapshot] = [
@@ -894,7 +919,32 @@ public struct BatteryPlanSnapshot: Codable, Equatable, Sendable {
                 targetSocPct: 88
             ),
             warnings: [],
-            graph: .demoOnTrack
+            graph: .demoOnTrack,
+            reason: DecisionReasonSnapshot(
+                chosenWindow: DecisionChosenWindow(
+                    start: "2026-07-05T18:00:00+02:00",
+                    end: "2026-07-05T22:00:00+02:00",
+                    intent: "discharge_for_load",
+                    label: "expensive discharge window",
+                    eurPerKwhMin: 0.32,
+                    eurPerKwhMax: 0.45
+                ),
+                rejectedAlternative: DecisionRejectedAlternative(
+                    intent: "grid_charge_to_target",
+                    reason: "grid charge — not selected for this horizon"
+                ),
+                expectedBenefit: DecisionExpectedBenefit(
+                    eur: 0.42,
+                    summary: "Estimated net benefit ≈ €0.42."
+                ),
+                risk: DecisionRisk(
+                    marginEurPerKwh: 0.02,
+                    summary: "Risk margin €0.020/kWh applied to break-even."
+                ),
+                safetyConstraint: DecisionSafetyConstraint(action: "proceed"),
+                gates: DecisionGateOutcomes(),
+                summary: "Solar covers the house now; EMS saves the battery for the pricey evening hours."
+            )
         ),
         BatteryPlanSnapshot(
             status: "behind_target",
@@ -915,7 +965,8 @@ public struct BatteryPlanSnapshot: Codable, Equatable, Sendable {
                 targetSocPct: 88
             ),
             warnings: ["Behind the 88% target; expect a grid top-up in the cheapest window."],
-            graph: .demoBehindTarget
+            graph: .demoBehindTarget,
+            reason: .demoCharge
         ),
         BatteryPlanSnapshot(
             status: "paused_safely",
@@ -935,7 +986,27 @@ public struct BatteryPlanSnapshot: Codable, Equatable, Sendable {
                 actualSocPct: 58
             ),
             warnings: ["Live price or battery data is stale; EMS is holding safe mode."],
-            graph: .demoPausedSafely
+            graph: .demoPausedSafely,
+            reason: DecisionReasonSnapshot(
+                expectedBenefit: DecisionExpectedBenefit(
+                    eur: nil,
+                    summary: "No plan to estimate yet."
+                ),
+                risk: DecisionRisk(
+                    marginEurPerKwh: nil,
+                    summary: "No plan risk margin yet."
+                ),
+                safetyConstraint: DecisionSafetyConstraint(
+                    code: "stale_inputs",
+                    message: "Critical inputs are stale.",
+                    action: "paused"
+                ),
+                gates: DecisionGateOutcomes(
+                    validatorCode: "stale_inputs",
+                    failsafe: true
+                ),
+                summary: "EMS is missing fresh inputs, so it keeps the battery above reserve instead of changing modes."
+            )
         )
     ]
 }
