@@ -935,16 +935,32 @@ test.describe("EMS dashboard", () => {
   test("B-102: More nests Strategy / Manual / Car; tiles have icons; PlanStory SoC scale", async ({
     page,
   }) => {
+    const floor15 = (ms: number) => Math.floor(ms / (15 * 60000)) * (15 * 60000);
+    const now = Date.now();
+    const deadlineIso = new Date(floor15(now + 20 * 3600000)).toISOString();
     await page.route("**/api/car/plan", (route) =>
       route.fulfill({
         status: 200,
         contentType: "application/json",
         body: JSON.stringify({
           enabled: true,
+          car_meter_configured: true,
           plan: {
+            soc: 40,
             slots: [],
             windows: [],
-            deadlines: [],
+            deadlines: [
+              {
+                ready_by: deadlineIso,
+                min_pct: 80,
+                required_kwh: 0,
+                planned_kwh: 0,
+                pending_kwh: 0,
+                shortfall_kwh: 0,
+                already_met: true,
+                feasible: true,
+              },
+            ],
             advice: "Quiet day for the car.",
             negative_price_hint: null,
             total_est_cost_eur: 0,
