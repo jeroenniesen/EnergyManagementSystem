@@ -140,6 +140,24 @@ def test_discharge_plan_labels_self_consumption_not_forced_dump():
     assert "discharging" not in alt["reason"].lower()
 
 
+def test_summary_rewrites_bare_discharge_slot_reason():
+    """Expanded why Summary must not show planner-internal `discharge: €…`."""
+    slots = (
+        _slot(0, BatteryIntent.DISCHARGE_FOR_LOAD,
+              "discharge: €0.40/kWh > break-even €0.20"),
+    )
+    plan = Plan(created_at=NOW, slots=slots, strategy="winter")
+    price_by = {slots[0].start: 0.40}
+    r = build_decision_reason(
+        plan, price_by=price_by,
+        summary="discharge: €0.40/kWh > break-even €0.20",
+    ).to_dict()
+    assert not r["summary"].lower().startswith("discharge:")
+    assert "self-consumption" in r["summary"].lower()
+    assert "€0.40" in r["summary"]
+    assert "break-even" in r["summary"].lower()
+
+
 def test_none_plan_returns_paused_empty_reason():
     r = build_decision_reason(None, plan_reason="gone").to_dict()
     assert r["chosen_window"] is None

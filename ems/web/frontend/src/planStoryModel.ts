@@ -182,6 +182,9 @@ export const ACTION_META: Record<
 };
 
 export function canonicalAction(action: string): PlanAction {
+  // Max-power export uses the same amber ribbon as house-power discharge; Nu/waarom keep the
+  // distinct `full_speed_discharge` token via batteryActionLabel / formatBatteryActionWhy.
+  if (action === "full_speed_discharge") return "discharge";
   if (action in ACTION_META) return action as PlanAction;
   // Unknown values fall back to "idle", never "hold". `action` is typed `string`
   // server-side, so an unrecognised value is possible. "Hold" is a deliberate

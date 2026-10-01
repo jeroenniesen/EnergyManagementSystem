@@ -19,7 +19,10 @@ from ems.storage.settings import SettingsStore
 from ems.web.api import create_app
 
 AMS = ZoneInfo("Europe/Amsterdam")
-UNIFIED_ACTIONS = {"grid_charge", "solar_charge", "discharge", "hold", "self_consume", "paused"}
+UNIFIED_ACTIONS = {
+    "grid_charge", "solar_charge", "discharge", "full_speed_discharge",
+    "hold", "self_consume", "paused",
+}
 
 _DEFAULT_FRESHNESS = object()
 
@@ -412,7 +415,8 @@ def test_battery_plan_reason_exposes_fields_for_web_waarom_slice1(tmp_path):
     assert "summary" in reason["expected_benefit"]
     assert reason["safety_constraint"]["action"] in {"paused", "proceed"}
     assert body["current_action"] in {
-        "grid_charge", "solar_charge", "hold", "discharge", "self_consume", "paused",
+        "grid_charge", "solar_charge", "hold", "discharge", "full_speed_discharge",
+        "self_consume", "paused",
     }
 
 

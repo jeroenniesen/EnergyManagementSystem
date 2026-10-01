@@ -2340,14 +2340,16 @@ private struct FlowLayout: View {
 }
 
 // Turn a raw battery-mode/intent code into a short homeowner word; empty/unknown → "Auto".
-// discharge_for_load / AUTO self-use = self-consumption; physical forced discharge = full-speed.
+// Physical `discharge` (car cover / forced DISCHARGE) = Powering the house — not full-speed.
+// Reserve "Full-speed discharge" for the API action `full_speed_discharge` (export path).
 private func humanizeMode(_ raw: String?) -> String {
     guard let raw, !raw.isEmpty, raw != "--" else { return "Auto" }
     switch raw {
     case "self_consumption", "auto", "allow_self_consumption", "discharge_for_load", "self_consume":
         return "Self-consumption"
     case "grid_charge", "grid_charge_to_target", "charge": return "Grid charge"
-    case "discharge", "full_speed_discharge": return "Full-speed discharge"
+    case "discharge": return "Powering the house"
+    case "full_speed_discharge": return "Full-speed discharge"
     case "hold", "hold_reserve": return "Holding"
     case "idle": return "Idle"
     default: return raw.replacingOccurrences(of: "_", with: " ").capitalized

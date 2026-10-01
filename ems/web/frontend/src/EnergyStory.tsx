@@ -116,6 +116,7 @@ export type BatteryPlanData = {
     | "solar_charge"
     | "hold"
     | "discharge"
+    | "full_speed_discharge"
     | "self_consume"
     | "paused";
   current_reason: string;

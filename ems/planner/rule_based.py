@@ -208,7 +208,10 @@ def _plan_winter(
             reason = f"self-consumption: cheap but no peak ahead (€{p.eur_per_kwh:.2f}/kWh)"
         elif p.start in discharge_set:
             intent = BatteryIntent.DISCHARGE_FOR_LOAD
-            reason = f"discharge: €{p.eur_per_kwh:.2f}/kWh > break-even €{breakeven:.2f}"
+            # Homeowner-facing: DISCHARGE_FOR_LOAD is vendor self-consumption, not a dump.
+            reason = (
+                f"self-consumption: €{p.eur_per_kwh:.2f}/kWh > break-even €{breakeven:.2f}"
+            )
             if ev_reason:
                 reason = f"{reason}; {ev_reason}"
         elif has_later_discharge and any(c < p.start for c in charge_set):

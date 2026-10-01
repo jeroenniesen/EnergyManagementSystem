@@ -120,6 +120,8 @@ public enum WidgetVerdictBuilder {
     /// Map a battery mode / planner intent code to the homeowner-facing verdict word. Prefers the
     /// physical `mode` (from /api/battery, available to every widget size) and falls back to the
     /// planner `intent` (only fetched for the medium size). Mirrors the app's `humanizeMode`.
+    /// Physical `discharge` = Powering the house (car cover / forced DISCHARGE); only the API
+    /// action `full_speed_discharge` is labelled Full-speed discharge (export path).
     public static func word(mode: String?, intent: String? = nil) -> String {
         let raw = firstNonEmpty(mode, intent)
         guard let raw, raw != "--" else { return "Auto" }
@@ -130,7 +132,9 @@ public enum WidgetVerdictBuilder {
             return "Self-consumption"
         case "hold", "hold_reserve":
             return "Holding"
-        case "discharge", "full_speed_discharge":
+        case "discharge":
+            return "Powering the house"
+        case "full_speed_discharge":
             return "Full-speed discharge"
         case "idle":
             return "Idle"

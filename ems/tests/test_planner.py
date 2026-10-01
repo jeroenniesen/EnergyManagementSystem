@@ -23,6 +23,10 @@ def test_arbitrage_day_has_charge_discharge_and_hold():
     assert BatteryIntent.GRID_CHARGE_TO_TARGET in intents
     assert BatteryIntent.DISCHARGE_FOR_LOAD in intents
     assert BatteryIntent.HOLD_RESERVE in intents
+    # Peak serve-load slots use homeowner "self-consumption:" — not bare "discharge:".
+    peak = [s for s in plan.slots if s.intent is BatteryIntent.DISCHARGE_FOR_LOAD]
+    assert peak and all(s.reason.lower().startswith("self-consumption:") for s in peak)
+    assert all(not s.reason.lower().startswith("discharge:") for s in peak)
 
 
 def test_flat_prices_is_no_trade():
