@@ -7,7 +7,7 @@ import { frameSavedToday } from "./savingsFraming";
 
 function TileIcon({ name, testId }: { name: IconName; testId: string }) {
   return (
-    <span className="outcome-tile-icon-wrap" data-testid={testId}>
+    <span className="outcome-tile-icon-wrap" data-testid={testId} aria-hidden="true">
       <Icon name={name} className="outcome-tile-icon" />
     </span>
   );
@@ -69,6 +69,7 @@ function OutcomeTile({
       data-tone={tone ?? undefined}
       data-density-kind="tile"
       title={title}
+      aria-label={`${label}: ${value}. ${title}`}
       onClick={onOpen}
     >
       {content}
@@ -80,6 +81,8 @@ function OutcomeTile({
       data-tone={tone ?? undefined}
       data-density-kind="tile"
       title={title}
+      role="group"
+      aria-label={`${label}: ${value}. ${title}`}
     >
       {content}
     </div>

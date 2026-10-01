@@ -34,6 +34,7 @@ export function BatteryActionWhy({
       data-testid="battery-action-why"
       data-action={currentAction ?? "unknown"}
       data-dry-run={dryRun ? "true" : "false"}
+      aria-label={`Nu: ${actionLabel}`}
     >
       <div className="battery-action-why-row">
         <span className="battery-action-why-label" data-testid="battery-action-label">
@@ -43,6 +44,7 @@ export function BatteryActionWhy({
           <summary
             className="battery-action-why-toggle"
             data-testid="battery-action-why-toggle"
+            aria-label={`Waarom ${actionLabel}?`}
           >
             Waarom?
           </summary>

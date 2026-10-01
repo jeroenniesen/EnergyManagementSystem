@@ -22,10 +22,16 @@ export function HomeMoreNest({
       <summary
         className="home-more-nest-toggle"
         data-testid={`home-more-${kind}-toggle`}
+        aria-label={label}
       >
         {label}
       </summary>
-      <div className="home-more-nest-body" data-testid={`home-more-${kind}-body`}>
+      <div
+        className="home-more-nest-body"
+        data-testid={`home-more-${kind}-body`}
+        role="group"
+        aria-label={label}
+      >
         {children}
       </div>
     </details>

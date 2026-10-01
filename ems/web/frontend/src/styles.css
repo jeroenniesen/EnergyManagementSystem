@@ -396,11 +396,12 @@ body {
   letter-spacing: -0.02em;
   font-variant-numeric: tabular-nums;
 }
-/* B-100: measuring / ≤€0 savings — quiet honesty, never warn-amber or alarm-red. */
+/* B-100: measuring / ≤€0 savings — quiet honesty, never warn-amber or alarm-red.
+   Polish R3: mix muted toward text so calm copy stays AA on --panel. */
 .outcome-tile.is-calm { color: var(--text); }
 .outcome-tile.is-calm .outcome-tile-value,
 .outcome-tile-value.is-calm-copy {
-  color: var(--muted);
+  color: color-mix(in srgb, var(--muted) 40%, var(--text));
   font-size: 1.05rem;
   font-weight: 600;
   letter-spacing: -0.01em;
@@ -607,6 +608,11 @@ body {
   cursor: pointer;
   list-style: none;
   color: var(--muted);
+}
+.plan-story-recent-review-toggle:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+  border-radius: 4px;
 }
 .plan-story-recent-review-toggle::-webkit-details-marker { display: none; }
 .plan-story-recent-review-toggle::before {
@@ -1340,6 +1346,11 @@ body {
 .device-health-quiet > summary {
   list-style: none;
   cursor: pointer;
+}
+.device-health-quiet > summary:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+  border-radius: 4px;
 }
 .device-health-quiet > summary::-webkit-details-marker { display: none; }
 .device-health-quiet > summary::after {
@@ -2858,8 +2869,18 @@ body {
   font-weight: 650;
   list-style: none;
 }
+.home-more-toggle:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+  border-radius: 4px;
+}
 .home-more-toggle::-webkit-details-marker { display: none; }
-.home-more-toggle::before { content: "›"; display: inline-block; margin-right: 9px; }
+.home-more-toggle::before {
+  content: "›";
+  display: inline-block;
+  margin-right: 9px;
+  transition: transform 0.15s ease;
+}
 .home-more[open] > .home-more-toggle::before { transform: rotate(90deg); }
 .home-more-body { display: flex; flex-direction: column; gap: 14px; padding-top: 4px; }
 .home-more-body > :last-child { margin-bottom: 0; }
@@ -2883,12 +2904,18 @@ body {
   font-weight: 650;
   list-style: none;
 }
+.home-more-nest-toggle:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+  border-radius: 4px;
+}
 .home-more-nest-toggle::-webkit-details-marker { display: none; }
 .home-more-nest-toggle::before {
   content: "›";
   display: inline-block;
   margin-right: 8px;
   color: var(--muted);
+  transition: transform 0.15s ease;
 }
 .home-more-nest[open] > .home-more-nest-toggle::before { transform: rotate(90deg); }
 .home-more-nest-body {
@@ -2907,6 +2934,13 @@ body {
   background: transparent;
   padding-left: 0;
   padding-right: 0;
+}
+@media (prefers-reduced-motion: reduce) {
+  .home-more-toggle::before,
+  .home-more-nest-toggle::before,
+  .plan-story-recent-review-toggle::before {
+    transition: none;
+  }
 }
 
 /* --- Auth screens (Login/Onboarding/AcceptInvite) — Item A ------------------------------------
