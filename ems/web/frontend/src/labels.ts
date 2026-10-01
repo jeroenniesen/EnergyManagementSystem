@@ -518,7 +518,7 @@ export function homeConfidenceReasonNl(reason: string | null | undefined): strin
     return "Live prijzen ontbreken — het plan draait op een fallback-prijssignaal.";
   }
   if (r.startsWith("Some sensor or forecast data is stale")) {
-    return "Sommige sensor- of voorspellingsdata is verouderd — plankwaliteit is lager.";
+    return "Sommige sensor- of voorspellingsdata is verouderd — kwaliteit van het plan is lager.";
   }
   if (r.startsWith("There's no live price signal") || r.startsWith("There is no live price signal")) {
     return "Geen live prijssignaal — het plan draait alleen op de voorspelling.";

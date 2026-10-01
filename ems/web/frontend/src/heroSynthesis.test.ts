@@ -38,6 +38,11 @@ describe("localizeHeroPhrase", () => {
     expect(localizeHeroPhrase("Short of the 88% target with no grid top-up planned.")).toBe(
       "Nog niet op het doel",
     );
+    expect(
+      localizeHeroPhrase(
+        "Behind the 88% target — EMS tops up 2.4 kWh from the grid in the cheapest window before the deadline.",
+      ),
+    ).toBe("Nog niet op het doel");
     expect(localizeHeroPhrase("Battery is following the current plan.")).toBe(
       "Batterij volgt het huidige plan",
     );
@@ -49,6 +54,14 @@ describe("localizeHeroPhrase", () => {
   test("rejects English score summaries so the hero falls through", () => {
     expect(localizeHeroPhrase("A brilliant day for clean energy")).toBeNull();
     expect(localizeHeroPhrase("A solid energy day — keep it up")).toBeNull();
+  });
+
+  test("fails closed on unmapped English current_reason strings", () => {
+    expect(localizeHeroPhrase("No current plan or forecast is available.")).toBeNull();
+    expect(
+      localizeHeroPhrase("Critical sensor, price or forecast data is stale."),
+    ).toBeNull();
+    expect(localizeHeroPhrase("Plan validation failed.")).toBeNull();
   });
 });
 
@@ -101,5 +114,33 @@ describe("buildHeroSynthesis", () => {
         scoreSummary: null,
       }),
     ).toBe("Batterij volgt het huidige plan.");
+  });
+
+  test("unmapped English current_reason falls through to calm Dutch fallback", () => {
+    expect(
+      buildHeroSynthesis({
+        currentReason: "No current plan or forecast is available.",
+        onTrackMessage: null,
+        scoreSummary: null,
+      }),
+    ).toBe("Batterij volgt het huidige plan.");
+    expect(
+      buildHeroSynthesis({
+        currentReason: "Plan validation failed.",
+        onTrackMessage: null,
+        scoreSummary: "Critical sensor, price or forecast data is stale.",
+      }),
+    ).toBe("Batterij volgt het huidige plan.");
+  });
+
+  test("Behind the N% target maps to Dutch behind line", () => {
+    expect(
+      buildHeroSynthesis({
+        currentReason: "Battery is following the current plan.",
+        onTrackMessage:
+          "Behind the 88% target — EMS tops up 2.4 kWh from the grid in the cheapest window before the deadline.",
+        scoreSummary: null,
+      }),
+    ).toBe("Nog niet op het doel");
   });
 });

@@ -1784,7 +1784,7 @@ test.describe("EMS dashboard", () => {
     await page.goto("/");
 
     const hero = page.getByTestId("home-state");
-    await expect(hero.getByTestId("hero-synthesis")).toContainText("no grid top-up planned");
+    await expect(hero.getByTestId("hero-synthesis")).toContainText("Nog niet op het doel");
     // B-96: Last-3h review demoted to PlanStory plan-header disclosure (not hero body).
     await expect(hero.getByTestId("recent-review")).toHaveCount(0);
     const review = page.getByTestId("plan-story").getByTestId("recent-review");

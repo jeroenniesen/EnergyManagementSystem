@@ -61,6 +61,19 @@ describe("homeConfidenceReasonNl", () => {
   test("hides unmapped English rather than flip-flopping locale", () => {
     expect(homeConfidenceReasonNl("Completely novel English reason about the battery.")).toBeNull();
   });
+
+  test("stale sensor/forecast line uses kwaliteit van het plan", () => {
+    expect(
+      homeConfidenceReasonNl(
+        "Some sensor or forecast data is stale — plan quality is reduced.",
+      ),
+    ).toBe(
+      "Sommige sensor- of voorspellingsdata is verouderd — kwaliteit van het plan is lager.",
+    );
+    expect(
+      homeConfidenceReasonNl("Some sensor or forecast data is stale — plan quality is reduced."),
+    ).not.toMatch(/plankwaliteit/);
+  });
 });
 
 describe("B-98 fix nits", () => {

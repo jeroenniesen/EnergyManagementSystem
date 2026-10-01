@@ -56,6 +56,8 @@ export function localizeHeroPhrase(candidate: string | null | undefined): string
   // English on-track / behind story messages from energy-story.
   if (/^on track\b/i.test(trimmed)) return stripTrail(HOME_HERO.onTrack);
   if (/^short of\b/i.test(trimmed)) return stripTrail(HOME_HERO.behind);
+  // Behind + grid top-up planned (api.py on_track when grid_charge_kwh > 0).
+  if (/^behind the\b/i.test(trimmed)) return stripTrail(HOME_HERO.behind);
 
   // Plain battery-plan current_reason (EN) → Dutch fallback.
   if (/^battery is following the current plan\b/i.test(trimmed)) {
@@ -65,17 +67,9 @@ export function localizeHeroPhrase(candidate: string | null | undefined): string
     return stripTrail(HOME_HERO.runningTonight);
   }
 
-  // Score-summary English ("A brilliant day…") and any other EN API copy stay out.
-  if (
-    /\b(the|your|for|with|from|battery|track|short|following|learning|safety|fresh|solar|tonight|target|house|running|watching|needs|attention|brilliant|solid|energy|day|keep|clean)\b/i.test(
-      trimmed,
-    )
-  ) {
-    return null;
-  }
-
-  // Allow unexpected already-Dutch copy through.
-  return trimmed;
+  // Fail closed: unmapped English (and unknown copy) never enters the hero fold.
+  // Do not treat unknown strings as "already Dutch" — fall through to HOME_HERO.fallback.
+  return null;
 }
 
 /**
