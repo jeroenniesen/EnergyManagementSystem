@@ -642,6 +642,7 @@ test.describe("EMS dashboard", () => {
     await expect(page.getByTestId("plan-story-legend")).toBeVisible();
     await expect(page.getByTestId("story-footer")).toHaveCount(0);
     await expect(page.getByTestId("plan-story")).not.toContainText("Saved today");
+    await expect(page.getByTestId("plan-story")).not.toContainText("Bespaard vandaag");
     await expect(page.getByTestId("plan-story")).not.toContainText("see each battery");
     await expect(page.getByTestId("outcome-soc")).toContainText("55%");
     await expect(page.getByTestId("outcome-savings")).toContainText("€2.84");
@@ -930,6 +931,118 @@ test.describe("EMS dashboard", () => {
       await expect(page.getByTestId("battery-action-why-toggle")).toBeVisible();
     });
   }
+
+  // Polish R4: one smoke group — fold order + ≤2 topbar chips + no PlanStory footer KPI.
+  test.describe("polish smoke: fold order / chips / no footer KPI", () => {
+    test("tiles → PlanStory → Waarom → More; ≤2 chips; no story-footer", async ({ page }) => {
+      await page.setViewportSize({ width: 1280, height: 900 });
+      const healthyLive = await mockRoute(page, "**/api/dashboard", async (route) => {
+        const response = await route.fetch();
+        const dashboard = await response.json();
+        const sources = ["battery", "grid", "prices", "forecast"].map((key) => ({
+          key,
+          label: key,
+          state: "fresh",
+          updated_hhmm: "12:00",
+        }));
+        await route.fulfill({
+          response,
+          json: {
+            ...dashboard,
+            status: {
+              ...dashboard.status,
+              dry_run: false,
+              dry_run_reason: null,
+              dry_run_cause: null,
+              dev_mode: "live",
+              soc_pct: 55,
+            },
+            freshness: {
+              battery: "fresh",
+              grid: "fresh",
+              prices: "fresh",
+              forecast: "fresh",
+            },
+            alerts: { data_quality: "complete", alerts: [] },
+            device_health: {
+              sources,
+              battery_reachable: true,
+              forecast_age_seconds: 120,
+              summary: {
+                badge: "current",
+                label: "Alles actueel",
+                detail: "Batterij, P1-meter, prijzen en zonvoorspelling zijn bijgewerkt.",
+                severity: "ok",
+              },
+            },
+          },
+        });
+      });
+      await page.route("**/api/battery-plan", (route) =>
+        route.fulfill({
+          status: 200,
+          contentType: "application/json",
+          body: JSON.stringify(
+            batteryPlanFixture(
+              { level: "high", reasons: ["Fresh data."] },
+              DEFAULT_PROVENANCE,
+              { current_action: "grid_charge" },
+            ),
+          ),
+        }),
+      );
+      await page.route("**/api/finance**", (route) =>
+        route.fulfill({
+          status: 200,
+          contentType: "application/json",
+          body: JSON.stringify({ totals: { saved_eur: 2.84 } }),
+        }),
+      );
+      await routePlanStory(page);
+      await page.goto("/");
+
+      // Fold order (DOM + geometry): tiles → chart → Waarom → More.
+      const foldIds = ["outcome-tiles", "plan-story", "battery-action-why", "home-more"] as const;
+      for (const id of foldIds) {
+        await expect(page.getByTestId(id), id).toBeVisible();
+      }
+      const domOrder = await page.evaluate((ids) => {
+        const nodes = ids.map((id) => document.querySelector(`[data-testid="${id}"]`));
+        if (nodes.some((node) => !node)) return null;
+        return ids.every((id, index) => {
+          if (index === 0) return true;
+          const prev = nodes[index - 1]!;
+          const node = nodes[index]!;
+          return !!(prev.compareDocumentPosition(node) & Node.DOCUMENT_POSITION_FOLLOWING);
+        });
+      }, [...foldIds]);
+      expect(domOrder).toBe(true);
+      const boxes = await Promise.all(foldIds.map((id) => page.getByTestId(id).boundingBox()));
+      expect(boxes.every(Boolean)).toBe(true);
+      for (let i = 0; i < boxes.length - 1; i++) {
+        expect(boxes[i]!.y).toBeLessThan(boxes[i + 1]!.y);
+      }
+
+      // ≤2 healthy topbar status chips (B-99).
+      const statusChipIds = ["run-mode-badge", "run-mode-reason", "data-source", "data-quality"];
+      let visibleChips = 0;
+      for (const id of statusChipIds) {
+        visibleChips += await page.getByTestId(id).count();
+      }
+      expect(visibleChips).toBeLessThanOrEqual(2);
+      await expect(page.getByTestId("run-mode-badge")).toBeVisible();
+      await expect(page.getByTestId("data-quality")).toHaveCount(0);
+
+      // No PlanStory footer KPI strip (B-97) — SoC / Saved live on tiles only.
+      await expect(page.getByTestId("story-footer")).toHaveCount(0);
+      await expect(page.getByTestId("plan-story")).not.toContainText("Saved today");
+      await expect(page.getByTestId("plan-story")).not.toContainText("Bespaard vandaag");
+      await expect(page.getByTestId("outcome-soc")).toBeVisible();
+      await expect(page.getByTestId("outcome-savings")).toContainText("€2.84");
+
+      healthyLive.assertRequested();
+    });
+  });
 
   // B-102: More nest + tile icons + PlanStory SoC scale hint (no second chart).
   test("B-102: More nests Strategy / Manual / Car; tiles have icons; PlanStory SoC scale", async ({
