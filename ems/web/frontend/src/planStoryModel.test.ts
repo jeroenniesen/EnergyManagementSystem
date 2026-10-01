@@ -342,7 +342,7 @@ describe("gaps and story semantics", () => {
     expect(model.spans).toHaveLength(3);
     expect(model.nowX).toBeCloseTo(model.scale.x(BASE + 30 * 60_000));
     expect(model.gaps).toHaveLength(1);
-    expect(model.summary).toContain("Geen voorspellingsdata");
+    expect(model.summary).toContain("Geen voorspelling");
     expect(model.label).toContain("Vasthouden");
   });
 

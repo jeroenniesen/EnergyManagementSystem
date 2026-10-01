@@ -393,17 +393,15 @@ export const INTELLIGENCE_COPY: Record<string, { label: string; detail: string; 
  * productized NL. Operator/planner tokens under Waarom? or provenance may stay English.
  */
 export const HOME_ACT = {
-  calm: "Niets nodig van jou.",
-  override:
-    "Je bent handmatig aan het sturen — het stopt vanzelf, of wis het hieronder.",
+  calm: "Niets te doen.",
+  override: "Handmatig sturen — stopt vanzelf, of wis hieronder.",
   unsafe:
-    "EMS zet de batterij terug naar zelfgebruik tot de meterdata weer betrouwbaar is — " +
-    "niets te doen; het hervat vanzelf.",
+    "EMS zet terug naar zelfgebruik tot meters weer kloppen — niets te doen.",
 } as const;
 
 export const HOME_CONFIDENCE_CHIP: Record<"high" | "medium" | "low", string> = {
   high: "Hoog vertrouwen",
-  medium: "Middelmatig vertrouwen",
+  medium: "Gemiddeld vertrouwen",
   low: "Laag vertrouwen",
 };
 
@@ -425,8 +423,8 @@ export const HOME_HERO = {
  * calm by preferring a short Dutch watching/attention line over raw EN.
  */
 export const HOME_HEADLINE = {
-  needsAttention: "Aandacht nodig — batterij- of meterdata ontbreekt",
-  manualControl: "Je hebt handmatige controle",
+  needsAttention: "Aandacht nodig — meter- of batterijdata ontbreekt",
+  manualControl: "Handmatige controle",
   allGood: "Alles goed",
   watching: "Aan het kijken",
   toppingUp: "Batterij bijladen",
@@ -557,28 +555,28 @@ export const HOME_TILE = {
   staleUpdated: "Verouderd · Bijgewerkt",
   solarScore: {
     label: "Zonnescore",
-    title: "Zonnescore tot nu toe vandaag",
+    title: "Zonnescore vandaag",
     unavailable: "Zonnescore niet beschikbaar",
   },
   soc: {
     label: "Batterijniveau",
-    title: "Actueel batterijniveau",
-    unavailable: "Actueel batterijniveau niet beschikbaar",
+    title: "Batterijniveau nu",
+    unavailable: "Batterijniveau niet beschikbaar",
   },
   savings: {
     label: "Bespaard",
-    title: "Besparing tot nu toe vandaag",
+    title: "Besparing vandaag",
     /** B-100: calm measuring value on the tile (not a bare em dash). */
     measuringShort: "Nog meten",
-    measuring: "Besparing tot nu toe vandaag: nog meten",
+    measuring: "Besparing vandaag: nog meten",
     /** B-100: calm framing when measured savings are ≤ €0 — never alarm copy. */
-    noBenefit: "Vandaag nog geen voordeel",
-    unavailable: "Besparing tot nu toe vandaag niet beschikbaar",
+    noBenefit: "Nog geen voordeel",
+    unavailable: "Besparing vandaag niet beschikbaar",
   },
   gridImport: {
     label: "Netinvoer",
-    title: "Netinvoer tot nu toe vandaag",
-    unavailable: "Netinvoer tot nu toe vandaag niet beschikbaar",
+    title: "Netinvoer vandaag",
+    unavailable: "Netinvoer vandaag niet beschikbaar",
   },
 } as const;
 
@@ -591,8 +589,8 @@ export const HOME_EVENING_PEAK = {
 /** PlanStory legend / header / axis / tip chrome (B-98). Chart geometry unchanged. */
 export const HOME_PLAN_STORY = {
   recentReview: "Laatste 3 uur",
-  recordedBattery: "Gemeten batterij",
-  forecastBattery: "Voorspelde batterij",
+  recordedBattery: "Gemeten",
+  forecastBattery: "Voorspelling",
   unavailable: "Batterijplan niet beschikbaar.",
   plannedWith: "Gepland met",
   now: "nu",
@@ -608,7 +606,7 @@ export const HOME_PLAN_STORY = {
   loading: "Batterijplan wordt geladen.",
   labelPrefix: "Batterijplan:",
   noRecordedData: "Geen gemeten data",
-  noForecastData: "Geen voorspellingsdata",
+  noForecastData: "Geen voorspelling",
   batteryAtNow: (pct: number) => `Batterij nu op ${pct}%.`,
   batteryUnavailable: "Batterijniveau niet beschikbaar.",
   nightTarget: (pct: number, by: string) =>

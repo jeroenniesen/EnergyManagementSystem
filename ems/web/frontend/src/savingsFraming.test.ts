@@ -22,10 +22,10 @@ describe("frameSavedToday", () => {
     expect(frame.value).not.toContain("€");
   });
 
-  test("negative measured savings use Vandaag nog geen voordeel, keep amount in title", () => {
+  test("negative measured savings use Nog geen voordeel, keep amount in title", () => {
     const frame = frameSavedToday({ status: "measured", eur: -1.39 });
     expect(frame.value).toBe(HOME_TILE.savings.noBenefit);
-    expect(frame.value).toBe("Vandaag nog geen voordeel");
+    expect(frame.value).toBe("Nog geen voordeel");
     expect(frame.title).toContain("−€1.39");
     expect(frame.tone).toBe("none");
     expect(frame.icon).toBe("euro");
@@ -34,7 +34,7 @@ describe("frameSavedToday", () => {
 
   test("zero measured savings also calm-frame (never dominate with €0.00)", () => {
     const frame = frameSavedToday({ status: "measured", eur: 0 });
-    expect(frame.value).toBe("Vandaag nog geen voordeel");
+    expect(frame.value).toBe("Nog geen voordeel");
     expect(frame.title).toContain("€0.00");
     expect(frame.tone).toBe("none");
     expect(frame.icon).toBe("euro");

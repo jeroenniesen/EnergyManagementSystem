@@ -1155,7 +1155,7 @@ test.describe("EMS dashboard", () => {
     await expect(synth).not.toContainText("break-even");
     await expect(page.getByTestId("battery-plan")).not.toBeVisible();
     // The explicit answer to "do I need to act?" — calm, because nothing needs attention.
-    await expect(page.getByTestId("hero-act")).toHaveText("Niets nodig van jou.");
+    await expect(page.getByTestId("hero-act")).toHaveText("Niets te doen.");
     dashboardMock.assertRequested();
     batteryPlanMock.assertRequested();
   });
@@ -1221,7 +1221,7 @@ test.describe("EMS dashboard", () => {
     await expect(synth).not.toContainText("break-even");
     await expect(synth).not.toContainText("self-consumption:");
     await expect(synth).not.toContainText("EV load expected");
-    await expect(page.getByTestId("hero-act")).toHaveText("Niets nodig van jou.");
+    await expect(page.getByTestId("hero-act")).toHaveText("Niets te doen.");
     await expect(page.getByTestId("hero-verdict")).toHaveText("De batterij voedt de woning");
     // Waarom? still carries full explainability (DecisionReasonDetails summary).
     await page.getByTestId("battery-action-why-toggle").click();
@@ -1261,7 +1261,7 @@ test.describe("EMS dashboard", () => {
     await page.goto("/");
     const chip = page.getByTestId("confidence-chip");
     await expect(chip).toHaveAttribute("data-level", "medium");
-    await expect(chip).toHaveText("Middelmatig vertrouwen");
+    await expect(chip).toHaveText("Gemiddeld vertrouwen");
     const reason = page.getByTestId("hero-confidence-reason");
     await expect(reason).toBeVisible();
     await expect(reason).toContainText("Nog je dak");
@@ -1328,7 +1328,7 @@ test.describe("EMS dashboard", () => {
       "Batterij volgt het huidige plan",
     );
     await expect(page.getByTestId("hero-verdict")).toContainText("Aan het kijken");
-    await expect(page.getByTestId("confidence-chip")).toHaveText("Middelmatig vertrouwen");
+    await expect(page.getByTestId("confidence-chip")).toHaveText("Gemiddeld vertrouwen");
     await expect(page.getByTestId("hero-confidence-reason")).toContainText("Nog je dak");
     await expect(page.getByTestId("battery-plan")).toHaveCount(0);
   });
@@ -1916,7 +1916,7 @@ test.describe("EMS dashboard", () => {
     expect(valueColor).not.toBe(danger);
   });
 
-  test("B-100: negative measured savings show Vandaag nog geen voordeel, not −€ alarm", async ({
+  test("B-100: negative measured savings show Nog geen voordeel, not −€ alarm", async ({
     page,
   }) => {
     await page.route("**/api/finance**", (route) =>
@@ -1933,7 +1933,7 @@ test.describe("EMS dashboard", () => {
     await page.goto("/");
     const tile = page.getByTestId("outcome-savings");
     await expect(tile).toBeVisible();
-    await expect(tile).toContainText("Vandaag nog geen voordeel");
+    await expect(tile).toContainText("Nog geen voordeel");
     await expect(tile).not.toContainText("−€1.39");
     await expect(tile).not.toContainText("€-1.39");
     await expect(tile).toHaveAttribute("title", /−€1\.39|€1\.39/);
@@ -1957,7 +1957,7 @@ test.describe("EMS dashboard", () => {
     const tile = page.getByTestId("outcome-savings");
     await expect(tile).toContainText("€2.84");
     await expect(tile).not.toContainText("Nog meten");
-    await expect(tile).not.toContainText("Vandaag nog geen voordeel");
+    await expect(tile).not.toContainText("Nog geen voordeel");
     await expect(tile).toHaveAttribute("data-tone", "positive");
     await expect(page.getByTestId("outcome-savings-icon")).toBeVisible();
   });
