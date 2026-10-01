@@ -360,11 +360,12 @@ body {
    without this they sit flush against the energy story above. */
 .status-grid { margin-top: 24px; }
 
+/* B-101 polish: single gap below tiles — PlanStory owns no extra top margin (was 20+18). */
 .outcome-tiles {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: 12px;
-  margin-bottom: 20px;
+  margin: 0 0 16px;
 }
 .outcome-tile {
   display: flex;
@@ -586,10 +587,11 @@ body {
 .legend-deadline { border-top-color: var(--summer); }
 .soc-mini-legend { margin-top: 8px; gap: 14px; }
 
-/* One continuous recorded → now → forecast story. */
+/* One continuous recorded → now → forecast story.
+   Polish R1: margin-top 0 — spacing from tiles comes from .outcome-tiles only. */
 .plan-story {
-  margin: 18px 0 0;
-  padding: 18px;
+  margin: 0 0 16px;
+  padding: 16px 18px;
   border: 1px solid var(--line);
   border-radius: var(--radius);
   background: var(--panel);
@@ -1323,14 +1325,14 @@ body {
 /* Issue #79 — compact device / data-health strip (dashboard, no click).
    B-94: healthy/ok collapses to a quiet one-line disclosure (no four-source card). */
 .device-health {
-  margin: 0.75rem 0 1rem;
+  margin: 0 0 14px;
   padding: 0.65rem 0.85rem;
   border: 1px solid var(--line);
   border-radius: 10px;
   background: var(--panel-2);
 }
 .device-health--quiet {
-  margin: 0.35rem 0 0.55rem;
+  margin: 0 0 12px;
   padding: 0;
   border: none;
   background: transparent;
@@ -2183,8 +2185,8 @@ body {
 /* The hero — the dashboard's single answer to "is my home doing the right thing, and do I need to
    act?". Frosted like the old banner, but now stacked: verdict, then synthesis, then the act line. */
 .hero {
-  display: flex; flex-direction: column; gap: 8px;
-  padding: 18px 22px; border-radius: 16px; margin: 4px 0 18px;
+  display: flex; flex-direction: column; gap: 6px;
+  padding: 16px 20px; border-radius: 16px; margin: 0 0 14px;
   background: color-mix(in srgb, var(--panel) 78%, transparent);
   -webkit-backdrop-filter: blur(16px) saturate(1.1);
   backdrop-filter: blur(16px) saturate(1.1);
@@ -2196,7 +2198,7 @@ body {
 }
 .hero-verdict {
   margin: 0; font-weight: 700; color: var(--text); letter-spacing: -0.01em;
-  font-size: clamp(1.25rem, 4.2vw, 1.7rem); line-height: 1.2;
+  font-size: clamp(1.2rem, 3.8vw, 1.55rem); line-height: 1.2;
 }
 /* B-68 plan-confidence chip — sits next to the verdict; tone-only (green/amber/red-tint), same
    pill shape as the topbar badges. Reasons live in the title tooltip + the muted sub-line below. */
@@ -2207,8 +2209,8 @@ body {
 .hero-confidence-reason { margin: 0; color: var(--muted); font-size: 0.82rem; line-height: 1.4; }
 .hero-synthesis { margin: 0; color: var(--muted); font-size: 0.95rem; line-height: 1.45; }
 .hero-act {
-  margin: 2px 0 0; display: inline-flex; align-items: flex-start; gap: 7px;
-  font-size: 0.92rem; line-height: 1.4; font-weight: 600;
+  margin: 0; display: inline-flex; align-items: flex-start; gap: 7px;
+  font-size: 0.9rem; line-height: 1.4; font-weight: 600;
 }
 .hero-act-calm { color: var(--muted); font-weight: 500; }
 .hero-act-attention { color: var(--amber-text); }
@@ -2240,8 +2242,8 @@ body {
 .home-attention { border-color: rgba(220, 80, 80, 0.55); }
 .decision-target { color: var(--muted); }
 .strategy-why { color: var(--muted); font-size: 0.8rem; margin: 6px 0 0; font-style: italic; }
-/* Quiet success markers in the Energy Story — calm confirmation, deliberately understated. */
-.trust-markers { display: flex; flex-wrap: wrap; gap: 8px; margin: 4px 0 12px; }
+/* Quiet success markers — hero gap owns vertical rhythm (no extra bottom margin). */
+.trust-markers { display: flex; flex-wrap: wrap; gap: 8px; margin: 0; }
 
 /* B-63 / #88 + B-95: evening-peak coverage — risk banner only (covered lives on hero). */
 .evening-peak-coverage {
@@ -2744,7 +2746,7 @@ body {
 /* B-33 / #85 slice 1: "Waarom?" disclosure for the current battery action. Not a
    data-density-kind="disclosure" — that budget is reserved for home-more. */
 .battery-action-why {
-  margin: 0 0 12px;
+  margin: 0 0 14px;
   padding: 10px 14px;
   border-radius: 10px;
   background: var(--panel);
