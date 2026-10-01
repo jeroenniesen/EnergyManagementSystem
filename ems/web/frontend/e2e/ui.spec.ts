@@ -1111,7 +1111,7 @@ test.describe("EMS dashboard", () => {
     await expect(page.getByTestId("story-footer")).toBeVisible();
   });
 
-  // --- B-33 / #85 slice 1: waarom bij laden / vasthouden / ontladen ---------------------------
+  // --- B-33 / #85 slice 1: waarom bij laden / vasthouden / zelfconsumptie ---------------------------
   test.describe("#85 slice 1 battery action waarom", () => {
     async function mockWhyPlan(
       page: Page,
@@ -1193,20 +1193,22 @@ test.describe("EMS dashboard", () => {
       await expect(page.getByTestId("battery-action-why-text")).toContainText("€0.55");
     });
 
-    test("discharge shows euro benefit from reason after one tap", async ({ page }) => {
+    test("discharge(=zelfconsumptie) shows euro benefit from reason after one tap", async ({ page }) => {
       await mockWhyPlan(page, "discharge", {
         chosen_window: {
           start: null, end: null, intent: "discharge_for_load",
-          label: "expensive discharge window",
+          label: "expensive self-consumption window",
           eur_per_kwh_min: 0.4, eur_per_kwh_max: 0.5,
         },
         expected_benefit: { eur: 0.9, summary: "Estimated net benefit ≈ €0.90." },
       });
       await page.goto("/");
-      await expect(page.getByTestId("battery-action-label")).toContainText("Ontladen");
+      await expect(page.getByTestId("battery-action-label")).toContainText("Zelfconsumptie");
+      await expect(page.getByTestId("battery-action-label")).not.toContainText("Ontladen");
       await page.getByTestId("battery-action-why-toggle").click();
       await expect(page.getByTestId("battery-action-why-text")).toContainText("€0.90");
       await expect(page.getByTestId("battery-action-why-text")).toContainText("zou");
+      await expect(page.getByTestId("battery-action-why-text")).toContainText(/zelfconsumptie/i);
     });
 
     test("honest safety wording when reason has no positive euro benefit", async ({ page }) => {

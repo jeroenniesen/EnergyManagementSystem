@@ -341,13 +341,15 @@ public enum DecisionReasonFormatting {
     }
 
     /// Short homeowner action label for the "Now:" chip (web BatteryActionWhy parity).
+    /// `discharge` (discharge_for_load → vendor AUTO) is self-consumption, not a forced dump;
+    /// `full_speed_discharge` is true forced discharge.
     public static func actionLabel(_ action: String?) -> String {
         guard let action, !action.isEmpty else { return "plan" }
         switch action {
         case "grid_charge", "charge": return "Grid charge"
         case "hold": return "Hold"
-        case "discharge": return "Discharge"
-        case "self_consumption", "self_consume": return "Self-use"
+        case "discharge", "self_consumption", "self_consume": return "Self-consumption"
+        case "full_speed_discharge": return "Full-speed discharge"
         case "solar_charge": return "Solar charge"
         case "paused": return "Paused"
         default: return action.replacingOccurrences(of: "_", with: " ")

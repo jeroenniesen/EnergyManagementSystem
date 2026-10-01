@@ -229,7 +229,8 @@ def _chosen_window(plan: Plan, price_by: dict[datetime, float]) -> ChosenWindow 
         return None
     for intent, label in (
         (_CHARGE, "cheap charge window"),
-        (_DISCHARGE, "expensive discharge window"),
+        # DISCHARGE_FOR_LOAD is vendor self-consumption serving the house — not forced dump.
+        (_DISCHARGE, "expensive self-consumption window"),
         (_HOLD, "hold-reserve window"),
     ):
         block = _slot_block(plan.slots, intent)
@@ -265,7 +266,10 @@ def _rejected_alternative(plan: Plan) -> RejectedAlternative | None:
     if discharge:
         return RejectedAlternative(
             intent=str(_SELF),
-            reason="holding through the peak — rejected in favour of discharging for load",
+            reason=(
+                "holding through the peak — rejected in favour of self-consumption "
+                "to serve house load"
+            ),
             window_start=discharge[0].start,
             window_end=discharge[-1].slot_end,
         )
@@ -289,6 +293,31 @@ def _top_unsafe_code(validation: Any | None) -> tuple[str | None, str | None]:
         f0 = findings[0]
         return getattr(f0, "code", None), getattr(f0, "message", None)
     return None, None
+
+
+def _homeowner_summary(raw: str | None, chosen: ChosenWindow | None) -> str:
+    """Turn planner-internal slot reasons into homeowner Summary copy.
+
+    Winter peak slots used to say ``discharge: €… > break-even €…`` — that reads as a forced
+    dump next to the ``expensive self-consumption window`` label. Rewrite the bare ``discharge:``
+    prefix; leave other reasons (manual override, car cover, fail-safe) untouched.
+    """
+    if raw:
+        text = raw.strip()
+        low = text.lower()
+        if low.startswith("discharge:"):
+            rest = text.split(":", 1)[1].strip()
+            if rest:
+                return f"Self-consumption while {rest}"
+            return (
+                chosen.label
+                if chosen and chosen.label
+                else "Self-consumption to serve house load"
+            )
+        return text
+    if chosen and chosen.label:
+        return chosen.label
+    return "Following the current plan."
 
 
 def empty_decision_reason(
@@ -417,7 +446,7 @@ def build_decision_reason(
         cap_reached=cap_reached,
         unconfirmed=unconfirmed,
     )
-    text = summary or plan_reason or (chosen.label if chosen else "Following the current plan.")
+    text = _homeowner_summary(summary or plan_reason, chosen)
     return DecisionReason(
         chosen_window=chosen,
         rejected_alternative=rejected,

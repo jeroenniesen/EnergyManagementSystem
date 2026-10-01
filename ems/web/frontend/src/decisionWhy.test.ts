@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  batteryActionLabel,
   formatBatteryActionWhy,
   isSlice1BatteryAction,
   type DecisionReason,
@@ -37,11 +38,30 @@ function reason(overrides: Partial<DecisionReason> = {}): DecisionReason {
   };
 }
 
+describe("batteryActionLabel (zelfconsumptie vs volle snelheid)", () => {
+  it("maps discharge_for_load action to zelfconsumptie, not ontladen", () => {
+    expect(batteryActionLabel("discharge")).toBe("Zelfconsumptie");
+    expect(batteryActionLabel("self_consume")).toBe("Zelfconsumptie");
+    expect(batteryActionLabel("self_consumption")).toBe("Zelfconsumptie");
+    expect(batteryActionLabel("discharge").toLowerCase()).not.toMatch(/ontladen/);
+  });
+
+  it("maps forced dump to op volle snelheid ontladen", () => {
+    expect(batteryActionLabel("full_speed_discharge")).toBe("Op volle snelheid ontladen");
+  });
+
+  it("keeps charge / hold labels", () => {
+    expect(batteryActionLabel("grid_charge")).toBe("Laden van het net");
+    expect(batteryActionLabel("hold")).toBe("Vasthouden");
+  });
+});
+
 describe("isSlice1BatteryAction", () => {
-  it("accepts only laden / vasthouden / ontladen", () => {
+  it("accepts laden / vasthouden / zelfconsumptie / volle-snelheid", () => {
     expect(isSlice1BatteryAction("grid_charge")).toBe(true);
     expect(isSlice1BatteryAction("hold")).toBe(true);
     expect(isSlice1BatteryAction("discharge")).toBe(true);
+    expect(isSlice1BatteryAction("full_speed_discharge")).toBe(true);
     expect(isSlice1BatteryAction("paused")).toBe(false);
     expect(isSlice1BatteryAction("self_consume")).toBe(false);
     expect(isSlice1BatteryAction("solar_charge")).toBe(false);
@@ -69,7 +89,7 @@ describe("formatBatteryActionWhy (#85 slice 1)", () => {
     expect(other).not.toContain("€1.25");
   });
 
-  it("explains hold and discharge in one or two sentences", () => {
+  it("explains hold and discharge(=zelfconsumptie) without calling it ontladen", () => {
     const hold = formatBatteryActionWhy(
       reason({
         chosen_window: {
@@ -93,7 +113,7 @@ describe("formatBatteryActionWhy (#85 slice 1)", () => {
           start: null,
           end: null,
           intent: "discharge_for_load",
-          label: "expensive discharge window",
+          label: "expensive self-consumption window",
           eur_per_kwh_min: 0.4,
           eur_per_kwh_max: 0.5,
         },
@@ -101,12 +121,19 @@ describe("formatBatteryActionWhy (#85 slice 1)", () => {
       "discharge",
       { dryRun: false },
     );
-    expect(discharge).toMatch(/ontlaadt/i);
+    expect(discharge).toMatch(/zelfconsumptie/i);
+    expect(discharge!.toLowerCase()).not.toMatch(/ontlaadt|ontladen/);
     expect(discharge).toContain("€1.25");
   });
 
+  it("explains full-speed discharge as op volle snelheid ontladen", () => {
+    const text = formatBatteryActionWhy(reason(), "full_speed_discharge", { dryRun: false });
+    expect(text).toMatch(/volle snelheid/i);
+    expect(text).toMatch(/ontlaadt/i);
+  });
+
   it("in dry-run uses 'zou' and never 'doet'", () => {
-    for (const action of ["grid_charge", "hold", "discharge"] as const) {
+    for (const action of ["grid_charge", "hold", "discharge", "full_speed_discharge"] as const) {
       const text = formatBatteryActionWhy(reason(), action, { dryRun: true });
       expect(text, action).toMatch(/\bzou\b/);
       expect(text!.toLowerCase(), action).not.toMatch(/\bdoet\b/);
@@ -150,6 +177,7 @@ describe("formatBatteryActionWhy (#85 slice 1)", () => {
       { dryRun: false },
     );
     expect(failsafe).toMatch(/veiligheid/i);
+    expect(failsafe).toMatch(/zelfconsumptie/i);
   });
 
   it("uses chosen_window price from the reason object when charging", () => {

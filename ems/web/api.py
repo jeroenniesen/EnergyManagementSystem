@@ -750,8 +750,23 @@ _INTENT_ACTION = {
 }
 
 
-def _action_from_intent(intent: object, battery_w: float) -> str:
+def _action_from_intent(
+    intent: object,
+    battery_w: float,
+    *,
+    allow_export_discharge: bool = False,
+) -> str:
+    """Map planner intent → homeowner action token for Nu/Now + energy-story slots.
+
+    Default `discharge_for_load` is vendor AUTO self-consumption → `"discharge"`.
+    When `allow_export_discharge` is on, the same intent commands PhysicalMode.DISCHARGE at
+    max power (deliberate grid export) → `"full_speed_discharge"`. Car-session DISCHARGE is
+    bounded to ~house load and must NOT use this flag (callers demote or omit it).
+    """
     action = _INTENT_ACTION.get(str(intent), "self_consume")
+    # Deliberate max-power export path (SPEC §7.1) — distinct from vendor self-consumption.
+    if action == "discharge" and allow_export_discharge:
+        return "full_speed_discharge"
     # In self-consumption the battery only ever charges from solar surplus (the vendor never
     # grid-charges in this mode — that needs GRID_CHARGE_TO_TARGET), so a charging slot here is a
     # SOLAR charge. Surface it as its own block instead of the generic "use solar first".
@@ -1970,8 +1985,12 @@ def create_app(
             _effective_intent(now)
         )
         # Homeowner story predicates — same as /api/battery-plan (finding text on validator fail).
+        # Car-session DISCHARGE is house-load cover, not max-power export → never full_speed.
+        car_cover = car_action is not None and car_action.action == "discharge"
+        export = bool(settings_cache.get("control.allow_export_discharge")) and not car_cover
         current_action = _action_from_intent(
             plan.slots[0].intent, float(plan.slots[0].power_w or 0.0),
+            allow_export_discharge=export,
         )
         current_reason = plan_reason or "Battery is following the current plan."
         if quality == "unsafe":
@@ -3666,9 +3685,13 @@ def create_app(
         if fp is None:
             return _empty_story("next", reserve_pct, "No plan yet.")
         price_by, need, deadline = fp["price_by"], fp["need"], fp["deadline"]
+        export = bool(settings_cache.get("control.allow_export_discharge"))
         slots = [
             _uslot(p.start, p.soc_pct, p.grid_w, p.solar_w, p.battery_w, p.load_w,
-                   price_by.get(p.start), _action_from_intent(p.intent, p.battery_w))
+                   price_by.get(p.start),
+                   _action_from_intent(
+                       p.intent, p.battery_w, allow_export_discharge=export,
+                   ))
             for p in fp["projected"]
         ]
         totals = _uslot_totals(slots)
@@ -3909,17 +3932,24 @@ def create_app(
         projected, price_by, need, deadline = (
             fp["projected"], fp["price_by"], fp["need"], fp["deadline"]
         )
+        _intent, reason, _override_active, _target_soc, _power_w, validation, _car_action = (
+            _effective_intent(fp["now"])
+        )
+        # Export ON → planned discharge_for_load slots are full-speed (max-power DISCHARGE).
+        # Active car cover is bounded house-load DISCHARGE — keep Nu as zelfconsumptie/`discharge`.
+        car_cover = _car_action is not None and _car_action.action == "discharge"
+        export = bool(settings_cache.get("control.allow_export_discharge"))
         slots = [
             _uslot(p.start, p.soc_pct, p.grid_w, p.solar_w, p.battery_w, p.load_w,
-                   price_by.get(p.start), _action_from_intent(p.intent, p.battery_w))
+                   price_by.get(p.start),
+                   _action_from_intent(
+                       p.intent, p.battery_w, allow_export_discharge=export,
+                   ))
             for p in projected
         ]
         totals = _uslot_totals(slots)
         recent = await _recent_actuals(fp["now"])
         grid_charge_kwh = totals["grid_charge_kwh"]
-        _intent, reason, _override_active, _target_soc, _power_w, validation, _car_action = (
-            _effective_intent(fp["now"])
-        )
 
         # "Are we on track?" is derived from the ACTUAL plan (same engine as the story line), NOT a
         # compare of two actual SoC samples — so it measures the plan against target/reserve and
@@ -3933,6 +3963,10 @@ def create_app(
             "target_soc_pct": verdict["target_soc_pct"],
         }
         current_action = slots[0]["action"] if slots else "paused"
+        # Car cover is bounded house-load DISCHARGE — Nu/graph strip must not say full-speed.
+        if car_cover and slots and slots[0]["action"] == "full_speed_discharge":
+            slots[0] = {**slots[0], "action": "discharge"}
+            current_action = "discharge"
 
         warnings: list[str] = []
         if quality == "unsafe":

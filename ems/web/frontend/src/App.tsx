@@ -1058,7 +1058,7 @@ export function App() {
             onOpenBattery={batteryHasDetail ? () => setBatteryDetail("soc") : undefined}
             freshness={tileFreshness}
           />
-          {/* B-33 / #85 slice 1: waarom voor laden / vasthouden / ontladen — één tik, niet
+          {/* B-33 / #85 slice 1: waarom voor laden / vasthouden / zelfconsumptie — één tik, niet
               standaard open. Tekst uit battery-plan `reason` (#84), dry-run zegt "zou". */}
           <BatteryActionWhy
             currentAction={batteryPlan?.current_action}

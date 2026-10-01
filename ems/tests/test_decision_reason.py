@@ -123,6 +123,41 @@ def test_gate_outcomes_reflect_dwell_cap_failsafe_unconfirmed():
     assert r2["gates"]["dwell"] is False
 
 
+def test_discharge_plan_labels_self_consumption_not_forced_dump():
+    """DISCHARGE_FOR_LOAD is vendor self-consumption — reason copy must not say 'discharging'."""
+    slots = (
+        _slot(0, BatteryIntent.DISCHARGE_FOR_LOAD, "serve house at peak €0.40/kWh"),
+        _slot(1, BatteryIntent.DISCHARGE_FOR_LOAD, "serve house at peak €0.42/kWh"),
+    )
+    plan = Plan(created_at=NOW, slots=slots, strategy="winter")
+    price_by = {slots[0].start: 0.40, slots[1].start: 0.42}
+    r = build_decision_reason(plan, price_by=price_by).to_dict()
+    assert r["chosen_window"]["label"] == "expensive self-consumption window"
+    assert "discharge" not in (r["chosen_window"]["label"] or "").lower()
+    alt = r["rejected_alternative"]
+    assert alt is not None
+    assert "self-consumption" in alt["reason"].lower()
+    assert "discharging" not in alt["reason"].lower()
+
+
+def test_summary_rewrites_bare_discharge_slot_reason():
+    """Expanded why Summary must not show planner-internal `discharge: €…`."""
+    slots = (
+        _slot(0, BatteryIntent.DISCHARGE_FOR_LOAD,
+              "discharge: €0.40/kWh > break-even €0.20"),
+    )
+    plan = Plan(created_at=NOW, slots=slots, strategy="winter")
+    price_by = {slots[0].start: 0.40}
+    r = build_decision_reason(
+        plan, price_by=price_by,
+        summary="discharge: €0.40/kWh > break-even €0.20",
+    ).to_dict()
+    assert not r["summary"].lower().startswith("discharge:")
+    assert "self-consumption" in r["summary"].lower()
+    assert "€0.40" in r["summary"]
+    assert "break-even" in r["summary"].lower()
+
+
 def test_none_plan_returns_paused_empty_reason():
     r = build_decision_reason(None, plan_reason="gone").to_dict()
     assert r["chosen_window"] is None

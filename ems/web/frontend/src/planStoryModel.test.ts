@@ -4,6 +4,7 @@ import type { EnergyStoryData, StorySlot, StoryTotals } from "./EnergyStory";
 import {
   actionWindows,
   buildPlanStoryModel,
+  canonicalAction,
   createTimeScale,
   describeCombinedPlan,
   findSlotAtTime,
@@ -377,5 +378,10 @@ describe("gaps and story semantics", () => {
       observed: [-0.12, -0.04],
       display: [-0.12, 0],
     });
+  });
+
+  test("full_speed_discharge ribbon maps to discharge (Nu keeps the distinct token)", () => {
+    expect(canonicalAction("full_speed_discharge")).toBe("discharge");
+    expect(canonicalAction("discharge")).toBe("discharge");
   });
 });

@@ -120,18 +120,22 @@ public enum WidgetVerdictBuilder {
     /// Map a battery mode / planner intent code to the homeowner-facing verdict word. Prefers the
     /// physical `mode` (from /api/battery, available to every widget size) and falls back to the
     /// planner `intent` (only fetched for the medium size). Mirrors the app's `humanizeMode`.
+    /// Physical `discharge` = Powering the house (car cover / forced DISCHARGE); only the API
+    /// action `full_speed_discharge` is labelled Full-speed discharge (export path).
     public static func word(mode: String?, intent: String? = nil) -> String {
         let raw = firstNonEmpty(mode, intent)
         guard let raw, raw != "--" else { return "Auto" }
         switch raw {
         case "charge", "grid_charge", "grid_charge_to_target", "solar_charge":
             return "Charging"
-        case "self_consumption", "auto", "allow_self_consumption":
-            return "Self-use"
+        case "self_consumption", "auto", "allow_self_consumption", "self_consume", "discharge_for_load":
+            return "Self-consumption"
         case "hold", "hold_reserve":
             return "Holding"
-        case "discharge", "discharge_for_load":
-            return "Discharging"
+        case "discharge":
+            return "Powering the house"
+        case "full_speed_discharge":
+            return "Full-speed discharge"
         case "idle":
             return "Idle"
         default:
@@ -207,7 +211,7 @@ public struct WidgetRenderData: Codable, Equatable, Sendable {
     /// Gallery / placeholder sample so Xcode previews and the widget picker have plausible content.
     public static let sample = WidgetRenderData(
         socPct: 63,
-        verdict: WidgetVerdict(word: "Self-use", live: true),
+        verdict: WidgetVerdict(word: "Self-consumption", live: true),
         headline: "Running the house on your own sun — saving the battery for the evening peak.",
         carLine: "Car: Mon 23:00 · 9.5 kWh",
         asOf: Date(timeIntervalSince1970: 1_783_000_000)

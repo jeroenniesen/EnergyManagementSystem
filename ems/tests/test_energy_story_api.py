@@ -56,6 +56,13 @@ def test_charge_actions_split_solar_from_grid():
     assert _action_from_intent("allow_self_consumption", battery_w=-1000.0) == "solar_charge"
     assert _action_from_intent("allow_self_consumption", battery_w=300.0) == "self_consume"
     assert _action_from_intent("discharge_for_load", battery_w=1000.0) == "discharge"
+    assert _action_from_intent(
+        "discharge_for_load", battery_w=1000.0, allow_export_discharge=True,
+    ) == "full_speed_discharge"
+    # Export flag must not affect non-discharge intents.
+    assert _action_from_intent(
+        "allow_self_consumption", battery_w=300.0, allow_export_discharge=True,
+    ) == "self_consume"
 
 
 def test_totals_split_charge_into_grid_and_solar(tmp_path):
@@ -76,7 +83,9 @@ def test_next_story_has_the_unified_shape_and_a_headline(tmp_path):
     assert len(b["slots"]) > 0
     assert _SLOT_KEYS <= set(b["slots"][0])
     assert b["slots"][0]["action"] in {
-        "grid_charge", "solar_charge", "discharge", "hold", "self_consume", "idle"}
+        "grid_charge", "solar_charge", "discharge", "full_speed_discharge",
+        "hold", "self_consume", "idle",
+    }
     assert _TOTAL_KEYS <= set(b["totals"])
     assert isinstance(b["headline"], str) and "Next 24h" in b["headline"]
     assert b["target_soc_pct"] is not None
