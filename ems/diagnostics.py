@@ -79,6 +79,7 @@ def build_diagnostics(
     ev_guard_blind: bool = False,
     dry_run_block_reason: str | None = None,
     battery_present: bool | None = None,
+    grid_fuse_unset: bool = False,
 ) -> list[Check]:
     dq_status = {"complete": "ok", "degraded": "warn", "price_fallback": "warn"}.get(
         data_quality, "fail"
@@ -125,6 +126,13 @@ def build_diagnostics(
             "car_guard", "Car-charging guard", "warn",
             "on, but no EV meter is configured — it can't detect the car. Set the EV meter IP in "
             "Settings → Meters, or the battery may discharge into the car."))
+    # #197: main fuse must be user-entered — never present the unintentional 1×25 schema default
+    # as a known connection size.
+    if grid_fuse_unset:
+        checks.append(Check(
+            "grid_fuse", "Main fuse (hoofdzekering)", "warn",
+            "not confirmed — EMS is using the conservative 1×25 A (5750 W) default. Set your real "
+            "fuse under Settings → Control & safety (common NL: 1×25 / 1×35 / 3×25 / 3×35)."))
     # Per-signal live sensor visibility: shows exactly which devices are reporting (the "senses").
     for sig, state in (freshness or {}).items():
         if state == "fresh":

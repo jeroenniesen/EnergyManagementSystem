@@ -14,6 +14,20 @@ const SETTING_OPTION_LABEL: Record<string, string> = {
   rule_based: "Rule-based",
   ml: "ML (arrives in M6)",
   advisory: "Advisory (arrives in M6)",
+  unset: "Not set yet — choose your fuse",
+  "1x25": "1×25 A ≈ 5750 W",
+  "1x35": "1×35 A ≈ 8050 W",
+  "3x25": "3×25 A ≈ 17250 W",
+  "3x35": "3×35 A ≈ 24150 W",
+  custom: "Custom (watts)",
+};
+
+/** Preset fuse → watt ceiling (mirrors `GRID_FUSE_PRESET_W` in ems/settings.py). */
+const GRID_FUSE_PRESET_W: Record<string, number> = {
+  "1x25": 5750,
+  "1x35": 8050,
+  "3x25": 17250,
+  "3x35": 24150,
 };
 
 export type SettingField = {
@@ -124,9 +138,10 @@ const GROUP_HINT: Record<string, string> = {
   prices: "Your Tibber token for live day-ahead prices.",
   site: "Location & array — these drive the solar forecast.",
   control:
-    "Safety limits and arming. Watch only / Let the system control need Apply & restart — "
-    + "saved ≠ live until then. config.yaml dry_run / mock still always wins over these toggles. "
-    + "Other control knobs apply as soon as you save (active now).",
+    "Safety limits and arming. Set your main fuse here — until confirmed, System shows a Check "
+    + "and EMS keeps the conservative 1×25 A ceiling. Watch only / Let the system control need "
+    + "Apply & restart — saved ≠ live until then. config.yaml dry_run / mock still always wins "
+    + "over these toggles. Other control knobs apply as soon as you save (active now).",
   planner: "Arbitrage maths — these apply as soon as you save; the next plan uses them (active now).",
   ai: "Optional. Off by default. Turn on to get natural-language explanations and the chat — a tiny, "
     + "redacted summary is sent to MiniMax; never your address, history or tokens.",
@@ -877,11 +892,34 @@ export function Settings({
           secretSet={Boolean(values[`${f.key}.__set`])}
           restartPending={restartPendingKeys.has(f.key)}
           onChange={(v) => {
+            if (f.key === "control.grid_fuse" && typeof v === "string") {
+              // Keep the watt field aligned in the draft so Save posts a consistent pair and the
+              // custom number input (when shown) matches the preset (#197).
+              const nextW =
+                v in GRID_FUSE_PRESET_W
+                  ? GRID_FUSE_PRESET_W[v]
+                  : v === "unset"
+                    ? 5750
+                    : null;
+              setEdited((prev) => ({
+                ...prev,
+                [f.key]: v,
+                ...(nextW != null ? { "control.grid_limit_w": nextW } : {}),
+              }));
+              setStatus("idle");
+              return;
+            }
             set(f.key, v);
             // A manual edit (drag/type) after an "Apply" tap returns the hint to normal.
             if (f.key === "planner.solar_confidence") setSolarAdviceApplied(false);
           }}
         />
+        {f.key === "control.grid_fuse" && edited["control.grid_fuse"] === "unset" && (
+          <p className="advisor-hint" role="status" data-testid="grid-fuse-unset-hint">
+            Not confirmed yet — EMS is using the conservative 1×25 A (5750 W) default until you
+            choose your real main fuse. Three-phase homes are usually 3×25 or 3×35.
+          </p>
+        )}
         {f.key === "planner.solar_confidence" && solarAdvice && (
           <SolarConfidenceHint
             advice={solarAdvice}

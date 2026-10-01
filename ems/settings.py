@@ -351,13 +351,24 @@ SETTINGS_SCHEMA: tuple[SettingsField, ...] = (
         "read interval so a single coalesced read doesn't look stale.",
         min=300.0, max=3600.0, step=60.0, unit="s", slider=True, advanced=True,
     ),
+    # Main fuse must be user-confirmed (#197). Default fuse=unset keeps the conservative 1×25 W
+    # ceiling for the validator without pretending the connection size is known — System shows a
+    # CHECK until the household picks a common NL size or custom watts.
     SettingsField(
-        "control.grid_limit_w", "Grid fuse limit (netlimiet)", "number", 5750.0, "control",
-        help="Main fuse / hoofdzekering ceiling in watts. A grid-charge plan whose charge power "
-        "plus expected house load would exceed this is rejected as unsafe (hold self-use) so the "
-        "EMS never trips the fuse. Common NL sizes at 230 V: 1×25 A ≈ 5750 W, 1×35 A ≈ 8050 W, "
-        "3×25 A ≈ 17250 W. Set 0 to disable the check.",
+        "control.grid_fuse", "Main fuse (hoofdzekering)", "enum", "unset", "control",
+        help="Your home's main fuse / netlimiet. EMS rejects a grid-charge plan whose charge "
+        "power plus expected house load would exceed this ceiling (hold self-use) so it never "
+        "trips the fuse. Pick a common Dutch size, or Custom to enter watts. Until you choose, "
+        "EMS keeps the conservative 1×25 A default and flags this as not confirmed on System.",
+        options=("unset", "1x25", "1x35", "3x25", "3x35", "custom"),
+    ),
+    SettingsField(
+        "control.grid_limit_w", "Custom fuse limit", "number", 5750.0, "control",
+        help="Main fuse ceiling in watts when Main fuse is Custom. Common NL sizes at 230 V: "
+        "1×25 A ≈ 5750 W, 1×35 A ≈ 8050 W, 3×25 A ≈ 17250 W, 3×35 A ≈ 24150 W. Set 0 to disable "
+        "the check. Preset fuse choices set this automatically.",
         min=0.0, max=50000.0, step=50.0, unit="W",
+        visible_when=(("control.grid_fuse", "custom"),),
     ),
     # --- Planner economics (advanced — change these and /api/plan recomputes, SPEC §8.3) ---
     SettingsField(
@@ -631,6 +642,21 @@ SETTINGS_SCHEMA: tuple[SettingsField, ...] = (
 SETTINGS_BY_KEY: dict[str, SettingsField] = {f.key: f for f in SETTINGS_SCHEMA}
 SECRET_KEYS: frozenset[str] = frozenset(f.key for f in SETTINGS_SCHEMA if f.type == "secret")
 
+# NL main-fuse presets @ 230 V → total watts (`control.grid_limit_w`). `unset` / `custom` are not
+# listed: unset keeps the conservative 5750 W schema default; custom uses the number field.
+GRID_FUSE_PRESET_W: dict[str, float] = {
+    "1x25": 5750.0,
+    "1x35": 8050.0,
+    "3x25": 17250.0,
+    "3x35": 24150.0,
+}
+_GRID_W_TO_FUSE: dict[float, str] = {w: k for k, w in GRID_FUSE_PRESET_W.items()}
+
+
+def fuse_from_watts(watts: float) -> str:
+    """Map a stored watt ceiling to a fuse token (exact preset match, else `custom`)."""
+    return _GRID_W_TO_FUSE.get(float(watts), "custom")
+
 
 def defaults() -> dict[str, Any]:
     """The default value of every setting (the config.yaml-equivalent baseline)."""
@@ -734,14 +760,32 @@ def validate_settings(partial: Any) -> tuple[dict[str, Any], dict[str, str]]:
         if field.type == "secret" and result == "":
             continue  # blank secret = keep the existing value
         clean[key] = result
+    # Fuse presets own the watt ceiling — keep `control.grid_limit_w` aligned on save so the
+    # validator and UI never disagree with the chosen size (#197).
+    if "control.grid_fuse" in clean:
+        fuse = clean["control.grid_fuse"]
+        if fuse in GRID_FUSE_PRESET_W:
+            clean["control.grid_limit_w"] = GRID_FUSE_PRESET_W[fuse]
+        elif fuse == "unset":
+            clean["control.grid_limit_w"] = float(SETTINGS_BY_KEY["control.grid_limit_w"].default)
     return clean, errors
 
 
 def effective_settings(stored: Any) -> dict[str, Any]:
     """Defaults overlaid by the valid subset of `stored`. Invalid/unknown stored values are
-    silently dropped on read (tolerant) — a bad persisted row must never break the dashboard."""
+    silently dropped on read (tolerant) — a bad persisted row must never break the dashboard.
+
+    #197: an install that already stored `control.grid_limit_w` without `control.grid_fuse` is
+    treated as confirmed (infer preset or custom from watts). A missing watts row stays `unset`
+    so we never pretend the unintentional 1×25 schema default was a deliberate choice.
+    """
     eff = defaults()
     clean, _errors = validate_settings(stored if isinstance(stored, dict) else {})
+    if "control.grid_fuse" not in clean and "control.grid_limit_w" in clean:
+        clean["control.grid_fuse"] = fuse_from_watts(float(clean["control.grid_limit_w"]))
+    fuse = clean.get("control.grid_fuse", eff["control.grid_fuse"])
+    if fuse in GRID_FUSE_PRESET_W:
+        clean["control.grid_limit_w"] = GRID_FUSE_PRESET_W[fuse]
     eff.update(clean)
     from ems.battery_profile import apply_topology_defaults
     return apply_topology_defaults(eff)
