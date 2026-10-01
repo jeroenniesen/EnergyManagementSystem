@@ -1218,6 +1218,29 @@ def create_app(
     # by the projection endpoint below.
     _load_profile_box = ctx.load_profile_box
 
+    def _ensure_load_profile(now: datetime) -> object:
+        """Seed an enhanced load profile before cold `_current_plan` calls (diagnostics / reason).
+
+        `/api/battery-plan` learns the profile inside `_forward_projection` and only then builds
+        `decision_reason` via `_decision_reason_dict`, which rebuilds the plan with that profile.
+        Cold `/api/diagnostics` used to plan with `profile=None` (flat overnight fallback), so
+        `chosen_window` could disagree between the two surfaces on the same tick. Seed the same
+        enhanced builder (empty history → fallback shape) before planning when nothing is cached.
+        """
+        existing = _load_profile_box.get("profile")
+        if existing is not None:
+            return existing
+        fallback_w = settings_cache["battery.overnight_load_kwh"] * 1000.0 / 12.0
+        profile = build_load_profile(
+            [],
+            site_tz,
+            fallback_w=fallback_w,
+            enhanced=True,
+            as_of=now,
+        )
+        _load_profile_box["profile"] = profile
+        return profile
+
     async def _audit_decision_loop(stop: asyncio.Event) -> None:
         """Record a plan/mode decision whenever it CHANGES (deduped) — a faithful, compact history
         in ANY mode. Advisory + off the control path: it only reads/previews, never writes the
@@ -1922,6 +1945,10 @@ def create_app(
         quality = _data_quality(now)
         # Same empty gates as `_forward_projection` so dashboard + diagnostics never diverge
         # when SoC is unknown/stale (#134) or there is no forecast/plan yet.
+        # Match battery-plan's reason path: it rebuilds the plan after `_forward_projection`
+        # caches an enhanced load profile. Seed that profile on cold diagnostics so the two
+        # surfaces don't disagree on `chosen_window`.
+        _ensure_load_profile(now)
         pp = _current_plan()
         soc = _current_soc(now)
         if (
