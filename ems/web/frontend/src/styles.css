@@ -2817,24 +2817,6 @@ body {
   line-height: 1.5;
   color: var(--muted);
 }
-.battery-plan-footer {
-  display: flex; flex-wrap: wrap; gap: 8px 28px;
-  margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--line);
-}
-.bp-foot { display: inline-flex; align-items: baseline; gap: 7px; }
-.bp-foot-label {
-  font-size: 0.72rem; color: var(--muted);
-  text-transform: uppercase; letter-spacing: 0.03em;
-}
-.bp-foot-value {
-  font-size: 0.98rem; font-weight: 600; color: var(--text);
-  font-variant-numeric: tabular-nums;
-}
-/* When there's a cluster to break down, the battery figure is a button into the per-tower view. */
-.bp-foot-btn { border: 0; background: transparent; padding: 0; cursor: pointer; font: inherit; color: inherit; }
-.bp-foot-btn:hover .bp-foot-value { color: var(--accent-text); }
-.bp-foot-btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; border-radius: 6px; }
-.bp-foot-more { font-size: 0.72rem; color: var(--accent-text); font-weight: 600; }
 
 .home-more {
   margin: 4px 0 20px;

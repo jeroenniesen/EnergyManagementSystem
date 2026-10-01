@@ -583,7 +583,8 @@ test.describe("EMS dashboard", () => {
     await expect(page.getByTestId("plan-story-tip")).toHaveCount(0);
   });
 
-  test("PlanStory footer keeps savings, battery percentage, and the tower detail link", async ({ page }) => {
+  // B-97: SoC / Saved already live in OutcomeTiles — PlanStory must not repeat them.
+  test("PlanStory has no footer KPI strip duplicating OutcomeTiles SoC and Saved", async ({ page }) => {
     await routePlanStory(page);
     await routeDashboardStatus(page);
     await page.route("**/api/battery", (route) => route.fulfill({
@@ -626,12 +627,13 @@ test.describe("EMS dashboard", () => {
     }));
     await page.goto("/");
 
-    const footer = page.getByTestId("story-footer");
-    await expect(footer).toContainText("Saved today");
-    await expect(footer).toContainText("€2.84 measured");
-    await expect(footer).toContainText("55%");
-    await expect(footer).toContainText("see each battery →");
-    await expect(footer).not.toContainText("Mode");
+    await expect(page.getByTestId("plan-story-plot")).toBeVisible();
+    await expect(page.getByTestId("plan-story-legend")).toBeVisible();
+    await expect(page.getByTestId("story-footer")).toHaveCount(0);
+    await expect(page.getByTestId("plan-story")).not.toContainText("Saved today");
+    await expect(page.getByTestId("plan-story")).not.toContainText("see each battery");
+    await expect(page.getByTestId("outcome-soc")).toContainText("55%");
+    await expect(page.getByTestId("outcome-savings")).toContainText("€2.84");
   });
 
   test("cached outcome values become stale after a failed refresh", async ({ page }) => {
@@ -1179,7 +1181,7 @@ test.describe("EMS dashboard", () => {
     await expect(line).toContainText("rule-based winter planner");
     await expect(line).toContainText("scenario intelligence: not active yet");
     await expect(page.getByTestId("plan-story-legend")).toBeVisible();
-    await expect(page.getByTestId("story-footer")).toBeVisible();
+    await expect(page.getByTestId("story-footer")).toHaveCount(0);
   });
 
   // --- B-33 / #85 slice 1: waarom bij laden / vasthouden / zelfconsumptie ---------------------------
@@ -1649,12 +1651,11 @@ test.describe("EMS dashboard", () => {
     // Run-mode badge in plain language (dry-run => "Watching only"; M0a is read-only).
     await expect(page.getByTestId("run-mode-badge")).toHaveText("Watching only");
 
-    // The live snapshot now rides the PlanStory footer: savings and battery level.
-    const footer = page.getByTestId("story-footer");
-    await expect(footer).toBeVisible();
-    await expect(footer).toContainText("55%");
-    await expect(footer).toContainText("Battery");
-    await expect(footer).toContainText("Saved today");
+    // Live snapshot KPIs live in OutcomeTiles (B-97) — not a PlanStory footer strip.
+    await expect(page.getByTestId("outcome-soc")).toContainText("55%");
+    await expect(page.getByTestId("outcome-soc")).toContainText("Battery");
+    await expect(page.getByTestId("outcome-savings")).toBeVisible();
+    await expect(page.getByTestId("story-footer")).toHaveCount(0);
     // The reconstructed house-load value (1.00 kW) lives with the detail metrics behind Advanced.
     await openAdvanced(page);
     const detail = page.getByTestId("detail-grid");
@@ -1662,9 +1663,9 @@ test.describe("EMS dashboard", () => {
     await expect(detail).toContainText("1.00 kW");
   });
 
-  // B-03b: "Saved today" now derives from /api/finance (measured), never the old plan-estimate tile
-  // — and never a false "€0.00" before any price history exists.
-  test("B-03b: the story footer shows the MEASURED saved-today figure from /api/finance", async ({
+  // B-03b: Saved derives from /api/finance (measured), never the old plan-estimate tile
+  // — and never a false "€0.00" before any price history exists. Surfaced on OutcomeTiles (B-97).
+  test("B-03b: OutcomeTiles show the MEASURED saved figure from /api/finance", async ({
     page,
   }) => {
     await page.route("**/api/finance**", (route) =>
@@ -1679,13 +1680,13 @@ test.describe("EMS dashboard", () => {
       }),
     );
     await page.goto("/");
-    await openMore(page);
-    const stat = page.getByTestId("saved-today");
-    await expect(stat).toBeVisible();
-    await expect(stat).toContainText("€2.34 measured");
+    const tile = page.getByTestId("outcome-savings");
+    await expect(tile).toBeVisible();
+    await expect(tile).toContainText("€2.34");
+    await expect(page.getByTestId("saved-today")).toHaveCount(0);
   });
 
-  test("B-03b: no price history yet shows 'measuring', never a false €0.00", async ({ page }) => {
+  test("B-03b: no price history yet shows measuring dash, never a false €0.00", async ({ page }) => {
     await page.route("**/api/finance**", (route) =>
       route.fulfill({
         status: 200,
@@ -1698,11 +1699,11 @@ test.describe("EMS dashboard", () => {
       }),
     );
     await page.goto("/");
-    await openMore(page);
-    const stat = page.getByTestId("saved-today");
-    await expect(stat).toBeVisible();
-    await expect(stat).toContainText("measuring");
-    await expect(stat).not.toContainText("€0.00");
+    const tile = page.getByTestId("outcome-savings");
+    await expect(tile).toBeVisible();
+    await expect(tile).toContainText("—");
+    await expect(tile).toHaveAttribute("title", /still measuring/);
+    await expect(tile).not.toContainText("€0.00");
   });
 
   test("no API error banner when backend is up", async ({ page }) => {
@@ -1989,11 +1990,9 @@ test.describe("EMS dashboard", () => {
       }),
     );
     await page.goto("/");
-    await openMore(page);
-    // The per-tower breakdown lives behind the battery tile now; it becomes clickable once the
-    // cluster data loads (the hint switches to "see each battery").
-    const tile = page.getByTestId("battery-tile");
-    await expect(tile).toContainText("see each battery");
+    // B-97: per-tower breakdown opens from the OutcomeTiles battery level tile.
+    const tile = page.getByTestId("outcome-soc");
+    await expect(tile).toContainText("%");
     await tile.click();
     await expect(page.getByTestId("battery-modal")).toBeVisible();
     await expect(page.getByTestId("tower-chip-aggregate")).toContainText("cluster avg");

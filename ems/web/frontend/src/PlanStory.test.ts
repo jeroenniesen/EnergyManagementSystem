@@ -122,18 +122,17 @@ describe("PlanStory rendering", () => {
     expect(forecast).toContain('data-testid="plan-story-soc-dot-forecast-1"');
   });
 
-  test("footer keeps saved today, battery percentage, and the per-tower link only", () => {
+  // B-97: SoC / Saved live in OutcomeTiles — PlanStory must not repeat them as a footer KPI strip.
+  test("omits the footer KPI strip that duplicated OutcomeTiles SoC and Saved", () => {
     const html = renderToStaticMarkup(createElement(PlanStory, {
       story: storyData([], [storySlot(0)], 0),
-      savedToday: { status: "measured", eur: 2.84 },
-      socPct: 55,
-      onBatteryClick: () => undefined,
     }));
 
-    expect(html).toContain("Saved today");
-    expect(html).toContain("€2.84 measured");
-    expect(html).toContain("55%");
-    expect(html).toContain("see each battery →");
+    expect(html).toContain('data-testid="plan-story-plot"');
+    expect(html).toContain('data-testid="plan-story-legend"');
+    expect(html).not.toContain("story-footer");
+    expect(html).not.toContain("Saved today");
+    expect(html).not.toContain("see each battery");
     expect(html).not.toContain(">Mode<");
   });
 
@@ -249,7 +248,7 @@ describe("PlanStory rendering", () => {
     expect(html.match(/class="plan-story-ribbon-line"/g)).toHaveLength(6);
   });
 
-  test("renders available plan provenance clauses between the legend and footer", () => {
+  test("renders available plan provenance clauses after the legend without a KPI footer", () => {
     const provenance: PlanProvenance = {
       forecast_source: "Forecast.Solar",
       solar_confidence_pct: 100,
@@ -264,7 +263,6 @@ describe("PlanStory rendering", () => {
     const full = renderToStaticMarkup(createElement(PlanStory, {
       story: storyData([], [storySlot(0)], 0),
       provenance,
-      socPct: 55,
     }));
     const partial = renderToStaticMarkup(createElement(PlanStory, {
       story: storyData([], [storySlot(0)], 0),
@@ -280,9 +278,7 @@ describe("PlanStory rendering", () => {
     expect(full.indexOf("battery-plan-provenance")).toBeGreaterThan(
       full.indexOf("plan-story-legend"),
     );
-    expect(full.indexOf("battery-plan-provenance")).toBeLessThan(
-      full.indexOf("story-footer"),
-    );
+    expect(full).not.toContain("story-footer");
     expect(partial).toContain("Planned with <span");
     expect(partial).toContain("adaptive summer planner");
     expect(partial).not.toContain("% confidence");

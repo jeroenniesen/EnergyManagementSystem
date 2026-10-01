@@ -414,7 +414,7 @@ export function App() {
   const [chargeNeed, setChargeNeed] = useState<ChargeNeed | null>(null);
   const [reserveAdvice, setReserveAdvice] = useState<ReserveAdvice | null>(null);
   // B-03b: MEASURED (from /api/finance), not a plan estimate — null until the first successful
-  // fetch (then the footer stat stays hidden; a later failure just keeps the last-known value,
+  // fetch (OutcomeTiles show "—" / measuring; a later failure keeps the last-known value,
   // same best-effort convention as the other polled cards below).
   const [savedToday, setSavedToday] = useState<SavedToday | null>(null);
   const [report, setReport] = useState<Report | null>(null);
@@ -621,8 +621,8 @@ export function App() {
         if (!unreachableRef.current) setDecision(v);
       });
       // B-03b: the measured figure, not the old plan-estimate tile — never a fake €0.00. finance's
-      // totals.saved_eur is null until a day of prices has been recorded, in which case the footer
-      // shows "measuring" instead of inventing a number.
+      // totals.saved_eur is null until a day of prices has been recorded, in which case OutcomeTiles
+      // show measuring (—) instead of inventing a number.
       fill(
         `/api/finance?period=day&date=${todayStr()}`,
         (v: { totals?: { saved_eur: number | null } }) => {
@@ -1080,12 +1080,10 @@ export function App() {
             coverage={batteryPlan?.evening_peak_coverage}
             heroOwnsCoveredMarker={heroOwnsEveningPeakMarker}
           />
+          {/* B-97: SoC / Saved live in OutcomeTiles only — PlanStory no longer repeats them. */}
           <PlanStory
             story={story?.window === "next" ? story : null}
             provenance={batteryPlan?.provenance}
-            savedToday={savedToday}
-            socPct={status?.soc_pct ?? null}
-            onBatteryClick={batteryHasDetail ? () => setBatteryDetail("soc") : undefined}
             recentReview={story?.recent_review?.message ?? null}
           />
         </>

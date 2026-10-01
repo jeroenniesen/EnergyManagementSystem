@@ -1,6 +1,6 @@
 import { Fragment, useState } from "react";
 
-import type { EnergyStoryData, PlanProvenance, SavedToday } from "./EnergyStory";
+import type { EnergyStoryData, PlanProvenance } from "./EnergyStory";
 import { INTELLIGENCE_COPY, PLANNER_PROVENANCE_LABEL } from "./labels";
 import {
   ACTION_META,
@@ -38,9 +38,6 @@ type PlanStoryProvenance =
 export type PlanStoryProps = {
   story: EnergyStoryData | null;
   provenance?: PlanStoryProvenance | null;
-  savedToday?: SavedToday | null;
-  socPct?: number | null;
-  onBatteryClick?: () => void;
   /** B-96: Last-3h review demoted behind a plan-header disclosure (not in the hero). */
   recentReview?: string | null;
 };
@@ -107,52 +104,9 @@ function ProvenanceCaption({
   );
 }
 
-function Footer({
-  savedToday,
-  socPct,
-  onBatteryClick,
-}: Omit<PlanStoryProps, "story">) {
-  if (!savedToday && socPct == null) return null;
-  return (
-    <div className="battery-plan-footer" data-testid="story-footer">
-      {savedToday && (
-        <span className="bp-foot" data-testid="saved-today" title="Measured vs. a no-battery day.">
-          <span className="bp-foot-label">Saved today</span>
-          <span className="bp-foot-value">
-            {savedToday.status === "measured"
-              ? `€${savedToday.eur.toFixed(2)} measured`
-              : "€— · measuring"}
-          </span>
-        </span>
-      )}
-      {socPct != null && (onBatteryClick ? (
-        <button
-          type="button"
-          className="bp-foot bp-foot-btn"
-          data-testid="battery-tile"
-          onClick={onBatteryClick}
-          title="How full the home battery is — click to see each battery."
-        >
-          <span className="bp-foot-label">Battery</span>
-          <span className="bp-foot-value">{socPct.toFixed(0)}%</span>
-          <span className="bp-foot-more">see each battery →</span>
-        </button>
-      ) : (
-        <span className="bp-foot" data-testid="battery-tile" title="How full the home battery is right now.">
-          <span className="bp-foot-label">Battery</span>
-          <span className="bp-foot-value">{socPct.toFixed(0)}%</span>
-        </span>
-      ))}
-    </div>
-  );
-}
-
 export function PlanStory({
   story,
   provenance = null,
-  savedToday = null,
-  socPct = null,
-  onBatteryClick,
   recentReview = null,
 }: PlanStoryProps) {
   const [hover, setHover] = useState<number | null>(null);
@@ -164,7 +118,6 @@ export function PlanStory({
         {recentReview && <RecentReviewDisclosure message={recentReview} />}
         <p>Battery plan is unavailable.</p>
         <ProvenanceCaption provenance={provenance} />
-        <Footer savedToday={savedToday} socPct={socPct} onBatteryClick={onBatteryClick} />
       </section>
     );
   }
@@ -426,8 +379,6 @@ export function PlanStory({
       </div>
 
       <ProvenanceCaption provenance={provenance} />
-
-      <Footer savedToday={savedToday} socPct={socPct} onBatteryClick={onBatteryClick} />
     </section>
   );
 }
