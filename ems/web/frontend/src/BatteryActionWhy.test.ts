@@ -83,7 +83,32 @@ describe("BatteryActionWhy", () => {
       }),
     );
     expect(live).toContain('data-dry-run="false"');
-    expect(live).toMatch(/ontlaadt/);
+    expect(live).toMatch(/zelfconsumptie/i);
+    expect(live.toLowerCase()).not.toMatch(/ontlaadt|ontladen/);
     expect(live).not.toMatch(/\bzou\b/);
+  });
+
+  it("shows Zelfconsumptie for self_consume Nu label (not raw snake_case)", () => {
+    const html = renderToStaticMarkup(
+      createElement(BatteryActionWhy, {
+        currentAction: "self_consume",
+        reason: REASON,
+        dryRun: true,
+      }),
+    );
+    expect(html).toContain("Zelfconsumptie");
+    expect(html).not.toContain("self consume");
+  });
+
+  it("shows Op volle snelheid ontladen for forced dump", () => {
+    const html = renderToStaticMarkup(
+      createElement(BatteryActionWhy, {
+        currentAction: "full_speed_discharge",
+        reason: REASON,
+        dryRun: false,
+      }),
+    );
+    expect(html).toContain("Op volle snelheid ontladen");
+    expect(html).toMatch(/volle snelheid/i);
   });
 });

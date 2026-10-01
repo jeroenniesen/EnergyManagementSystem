@@ -96,11 +96,11 @@ final class WidgetSupportTests: XCTestCase {
     func testVerdictWordMapping() {
         XCTAssertEqual(WidgetVerdictBuilder.word(mode: "grid_charge"), "Charging")
         XCTAssertEqual(WidgetVerdictBuilder.word(mode: "solar_charge"), "Charging")
-        XCTAssertEqual(WidgetVerdictBuilder.word(mode: "self_consumption"), "Self-use")
-        XCTAssertEqual(WidgetVerdictBuilder.word(mode: "auto"), "Self-use")
+        XCTAssertEqual(WidgetVerdictBuilder.word(mode: "self_consumption"), "Self-consumption")
+        XCTAssertEqual(WidgetVerdictBuilder.word(mode: "auto"), "Self-consumption")
         XCTAssertEqual(WidgetVerdictBuilder.word(mode: "hold"), "Holding")
         XCTAssertEqual(WidgetVerdictBuilder.word(mode: "hold_reserve"), "Holding")
-        XCTAssertEqual(WidgetVerdictBuilder.word(mode: "discharge"), "Discharging")
+        XCTAssertEqual(WidgetVerdictBuilder.word(mode: "discharge"), "Full-speed discharge")
         XCTAssertEqual(WidgetVerdictBuilder.word(mode: "idle"), "Idle")
         XCTAssertEqual(WidgetVerdictBuilder.word(mode: nil), "Auto")
         XCTAssertEqual(WidgetVerdictBuilder.word(mode: "--"), "Auto")
@@ -108,7 +108,7 @@ final class WidgetSupportTests: XCTestCase {
 
     func testVerdictFallsBackToIntentThenTitleCases() {
         XCTAssertEqual(WidgetVerdictBuilder.word(mode: nil, intent: "grid_charge_to_target"), "Charging")
-        XCTAssertEqual(WidgetVerdictBuilder.word(mode: "", intent: "discharge_for_load"), "Discharging")
+        XCTAssertEqual(WidgetVerdictBuilder.word(mode: "", intent: "discharge_for_load"), "Self-consumption")
         XCTAssertEqual(WidgetVerdictBuilder.word(mode: "some_new_mode"), "Some New Mode")
     }
 

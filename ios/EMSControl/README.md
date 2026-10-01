@@ -16,7 +16,7 @@ Use Demo mode from first launch. It shows synthetic data and does not require a 
 ## Home-screen widget (B-59)
 
 The `EMSWidget` app-extension target adds a WidgetKit widget (systemSmall + systemMedium) showing
-battery SoC, the verdict word (Charging / Self-use / Holding) with a LIVE/WATCHING dot, and — on
+battery SoC, the verdict word (Charging / Self-consumption / Holding) with a LIVE/WATCHING dot, and — on
 medium — the status headline and the next planned car-charge window.
 
 - **Shared config:** on a successful connect the app mirrors `{baseURL, token}` into the App Group

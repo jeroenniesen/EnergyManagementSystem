@@ -229,7 +229,8 @@ def _chosen_window(plan: Plan, price_by: dict[datetime, float]) -> ChosenWindow 
         return None
     for intent, label in (
         (_CHARGE, "cheap charge window"),
-        (_DISCHARGE, "expensive discharge window"),
+        # DISCHARGE_FOR_LOAD is vendor self-consumption serving the house — not forced dump.
+        (_DISCHARGE, "expensive self-consumption window"),
         (_HOLD, "hold-reserve window"),
     ):
         block = _slot_block(plan.slots, intent)
@@ -265,7 +266,10 @@ def _rejected_alternative(plan: Plan) -> RejectedAlternative | None:
     if discharge:
         return RejectedAlternative(
             intent=str(_SELF),
-            reason="holding through the peak — rejected in favour of discharging for load",
+            reason=(
+                "holding through the peak — rejected in favour of self-consumption "
+                "to serve house load"
+            ),
             window_start=discharge[0].start,
             window_end=discharge[-1].slot_end,
         )

@@ -407,15 +407,7 @@ private struct BatteryPlanPanel: View {
     }
 
     private var actionLabel: String {
-        switch plan.currentAction {
-        case "charge", "grid_charge": "Charge"
-        case "solar_charge": "Solar charge"
-        case "hold": "Hold"
-        case "discharge": "Discharge"
-        case "self_consumption", "self_consume": "Self-use"
-        case "paused": "Paused"
-        default: plan.currentAction.replacingOccurrences(of: "_", with: " ").capitalized
-        }
+        DecisionReasonFormatting.actionLabel(plan.currentAction)
     }
 }
 
@@ -791,15 +783,7 @@ private struct BatteryPlanDetailView: View {
     }
 
     private var actionLabel: String {
-        switch plan.currentAction {
-        case "charge", "grid_charge": "Charge"
-        case "solar_charge": "Solar charge"
-        case "hold": "Hold"
-        case "discharge": "Discharge"
-        case "self_consumption", "self_consume": "Self-use"
-        case "paused": "Paused"
-        default: plan.currentAction.replacingOccurrences(of: "_", with: " ").capitalized
-        }
+        DecisionReasonFormatting.actionLabel(plan.currentAction)
     }
 
     private func formattedTime(_ timestamp: String?) -> String? {
@@ -2356,12 +2340,14 @@ private struct FlowLayout: View {
 }
 
 // Turn a raw battery-mode/intent code into a short homeowner word; empty/unknown → "Auto".
+// discharge_for_load / AUTO self-use = self-consumption; physical forced discharge = full-speed.
 private func humanizeMode(_ raw: String?) -> String {
     guard let raw, !raw.isEmpty, raw != "--" else { return "Auto" }
     switch raw {
-    case "self_consumption", "auto", "allow_self_consumption": return "Self-use"
+    case "self_consumption", "auto", "allow_self_consumption", "discharge_for_load", "self_consume":
+        return "Self-consumption"
     case "grid_charge", "grid_charge_to_target", "charge": return "Grid charge"
-    case "discharge", "discharge_for_load": return "Discharging"
+    case "discharge", "full_speed_discharge": return "Full-speed discharge"
     case "hold", "hold_reserve": return "Holding"
     case "idle": return "Idle"
     default: return raw.replacingOccurrences(of: "_", with: " ").capitalized

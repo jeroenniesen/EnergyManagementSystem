@@ -158,6 +158,16 @@ final class DecisionReasonTests: XCTestCase {
         XCTAssertEqual(DecisionReasonFormatting.actionLabel(plan.currentAction), "Grid charge")
     }
 
+    func testActionLabelMapsDischargeToSelfConsumptionNotDump() {
+        XCTAssertEqual(DecisionReasonFormatting.actionLabel("discharge"), "Self-consumption")
+        XCTAssertEqual(DecisionReasonFormatting.actionLabel("self_consume"), "Self-consumption")
+        XCTAssertEqual(
+            DecisionReasonFormatting.actionLabel("full_speed_discharge"),
+            "Full-speed discharge"
+        )
+        XCTAssertNotEqual(DecisionReasonFormatting.actionLabel("discharge"), "Discharge")
+    }
+
     func testBatteryPlanToleratesMissingReason() throws {
         let json = """
         {

@@ -1,12 +1,22 @@
 // B-33 / #85 slice 1: turn the /api/battery-plan DecisionReason into a 1–2 sentence Dutch
-// "waarom" line for grid charge / hold / discharge. Facts come from the reason object (#84);
-// wording is assembled here so dry-run can say "zou" instead of claiming a live write.
+// "waarom" line for grid charge / hold / discharge(=zelfconsumptie) / full-speed discharge.
+// Facts come from the reason object (#84); wording is assembled here so dry-run can say "zou"
+// instead of claiming a live write.
 // Slice 2/3 (reserve/pause/EV) stay out of this module.
+//
+// Terminology (product language):
+// - `discharge` (from discharge_for_load → vendor AUTO) = **zelfconsumptie**, not forced dump.
+// - `full_speed_discharge` = true forced discharge = **op volle snelheid ontladen**.
 
 import { eur } from "./format";
 
-/** Slice-1 battery actions only — laden / vasthouden / ontladen. */
-export const SLICE1_BATTERY_ACTIONS = ["grid_charge", "hold", "discharge"] as const;
+/** Slice-1 battery actions that get a Dutch waarom sentence. */
+export const SLICE1_BATTERY_ACTIONS = [
+  "grid_charge",
+  "hold",
+  "discharge",
+  "full_speed_discharge",
+] as const;
 export type Slice1BatteryAction = (typeof SLICE1_BATTERY_ACTIONS)[number];
 
 export function isSlice1BatteryAction(action: string): action is Slice1BatteryAction {
@@ -45,15 +55,31 @@ export type DecisionReason = {
   summary: string;
 };
 
-const ACTION_LABEL_NL: Record<Slice1BatteryAction, string> = {
+/**
+ * Homeowner "Nu: …" labels. `discharge` is self-consumption (Indevolt covering house load),
+ * not a forced full-power dump — that is `full_speed_discharge`.
+ */
+const ACTION_LABEL_NL: Record<string, string> = {
   grid_charge: "Laden van het net",
   hold: "Vasthouden",
-  discharge: "Ontladen",
+  discharge: "Zelfconsumptie",
+  full_speed_discharge: "Op volle snelheid ontladen",
+  self_consume: "Zelfconsumptie",
+  self_consumption: "Zelfconsumptie",
+  solar_charge: "Laden van zonnepanelen",
+  paused: "Gepauzeerd",
+  idle: "Idle",
 };
 
-/** Short Dutch label for the current slice-1 action chip. */
+/** Short Dutch label for the current action chip (slice-1 and beyond). */
+export function batteryActionLabel(action: string | null | undefined): string {
+  if (!action) return "plan";
+  return ACTION_LABEL_NL[action] ?? action.replace(/_/g, " ");
+}
+
+/** @deprecated Prefer batteryActionLabel — kept for slice-1 call sites. */
 export function slice1ActionLabel(action: Slice1BatteryAction): string {
-  return ACTION_LABEL_NL[action];
+  return batteryActionLabel(action);
 }
 
 function actionSentence(action: Slice1BatteryAction, dryRun: boolean, reason: DecisionReason): string {
@@ -70,7 +96,9 @@ function actionSentence(action: Slice1BatteryAction, dryRun: boolean, reason: De
       case "hold":
         return "EMS zou de batterij vasthouden tot een beter moment.";
       case "discharge":
-        return "EMS zou ontladen om dure netstroom te vermijden.";
+        return "EMS zou in zelfconsumptie de woning voeden om dure netstroom te vermijden.";
+      case "full_speed_discharge":
+        return "EMS zou nu op volle snelheid ontladen.";
     }
   }
   switch (action) {
@@ -79,7 +107,9 @@ function actionSentence(action: Slice1BatteryAction, dryRun: boolean, reason: De
     case "hold":
       return "EMS houdt de batterij vast tot een beter moment.";
     case "discharge":
-      return "EMS ontlaadt om dure netstroom te vermijden.";
+      return "EMS laat de batterij in zelfconsumptie de woning voeden om dure netstroom te vermijden.";
+    case "full_speed_discharge":
+      return "EMS ontlaadt nu op volle snelheid.";
   }
 }
 

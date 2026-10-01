@@ -925,7 +925,7 @@ public struct BatteryPlanSnapshot: Codable, Equatable, Sendable {
                     start: "2026-07-05T18:00:00+02:00",
                     end: "2026-07-05T22:00:00+02:00",
                     intent: "discharge_for_load",
-                    label: "expensive discharge window",
+                    label: "expensive self-consumption window",
                     eurPerKwhMin: 0.32,
                     eurPerKwhMax: 0.45
                 ),
