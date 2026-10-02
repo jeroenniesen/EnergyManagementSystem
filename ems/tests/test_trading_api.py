@@ -6,6 +6,7 @@ from zoneinfo import ZoneInfo
 from fastapi.testclient import TestClient
 
 from ems.control.mode_controller import ModeController
+from ems.control.override import NONE as OVERRIDE_NONE
 from ems.domain import RawSample
 from ems.lifecycle import Lifecycle
 from ems.sources.battery import MockBatteryDriver
@@ -20,21 +21,40 @@ AMS = ZoneInfo("Europe/Amsterdam")
 
 
 class _Source:
+    def __init__(self, *, ev_power_w: float = 0.0) -> None:
+        self.ev_power_w = ev_power_w
+
     def read(self) -> RawSample:
         return RawSample(
             grid_power_w=0.0, solar_power_w=0.0, battery_power_w=0.0,
-            ev_power_w=0.0, soc_pct=70.0,
+            ev_power_w=self.ev_power_w, soc_pct=70.0,
         )
 
 
-def _app(tmp_path, *, dry_run: bool = True, operational: bool = False):
+def _app(
+    tmp_path,
+    *,
+    dry_run: bool = True,
+    operational: bool = False,
+    ev_power_w: float = 0.0,
+    with_override_store: bool = False,
+):
+    del operational  # applied via settings POST when needed; create_app floor is dry_run
     db = str(tmp_path / "ems.sqlite")
     driver = MockBatteryDriver(armed=True)
     controller = ModeController(driver, Lifecycle(dry_run=dry_run), dry_run=dry_run)
+    kwargs: dict = {
+        "price_source": MockPriceSource(AMS),
+        "solar_forecast": MockSolarForecastSource(AMS),
+        "controller": controller,
+        "settings_store": SettingsStore(db),
+        "cache_store": CacheStore(db),
+    }
+    if with_override_store:
+        kwargs["override_store"] = SettingsStore(db, table="runtime_state")
     app = create_app(
-        _Source(), dry_run=dry_run, dev_mode="mock", tz=AMS,
-        price_source=MockPriceSource(AMS), solar_forecast=MockSolarForecastSource(AMS),
-        controller=controller, settings_store=SettingsStore(db), cache_store=CacheStore(db),
+        _Source(ev_power_w=ev_power_w), dry_run=dry_run, dev_mode="mock", tz=AMS,
+        **kwargs,
     )
     return app, controller
 
@@ -132,3 +152,53 @@ def test_export_probe_does_not_flip_arm_flag():
     ctl.clear_export_probe()
     assert ctl.export_probe_active(now) is False
     assert ctl._desired(BatteryIntent.EXPORT_FOR_PROFIT, now=now) is PhysicalMode.AUTO
+
+
+def test_test_battery_refuses_when_car_charging(tmp_path):
+    """B-107: probe must not force DISCHARGE while the car is charging."""
+    from datetime import UTC, datetime
+
+    app, controller = _app(
+        tmp_path, dry_run=False, ev_power_w=5000.0, with_override_store=True,
+    )
+    with TestClient(app) as c:
+        c.post("/api/settings", json={"control.operational": True})
+        r = c.post("/api/trading/test-battery", json={})
+        assert r.status_code == 409
+        body = r.json()
+        assert body["ok"] is False
+        assert "car" in body["detail"].lower()
+        assert controller.allow_export_discharge is False
+        assert controller.export_probe_active(datetime.now(UTC)) is False
+        assert app.state.trading_probe_active is False
+        assert app.state.control_service._ctx.override_box["ov"] == OVERRIDE_NONE
+
+
+def test_test_battery_failed_decide_leaves_no_override(tmp_path, monkeypatch):
+    """B-107: 409/failure path must not leave an EXPORT override or probe window."""
+    from datetime import UTC, datetime
+
+    from ems.control.mode_controller import ActionDecision
+    from ems.domain import BatteryIntent, PhysicalMode
+
+    app, controller = _app(tmp_path, dry_run=False, with_override_store=True)
+    with TestClient(app) as c:
+        c.post("/api/settings", json={"control.operational": True})
+
+        def _boom(*_a, **_k):
+            return ActionDecision(
+                intent=BatteryIntent.EXPORT_FOR_PROFIT,
+                desired_mode=PhysicalMode.AUTO,
+                applied=False,
+                outcome="rejected",
+                reason="forced failure for test",
+            )
+
+        monkeypatch.setattr(controller, "decide", _boom)
+        r = c.post("/api/trading/test-battery", json={})
+        assert r.status_code == 409
+        assert r.json()["ok"] is False
+        assert controller.export_probe_active(datetime.now(UTC)) is False
+        assert controller.allow_export_discharge is False
+        assert app.state.trading_probe_active is False
+        assert app.state.control_service._ctx.override_box["ov"] == OVERRIDE_NONE

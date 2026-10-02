@@ -277,7 +277,7 @@ export function TradingView({ canOperate = true }: { canOperate?: boolean }) {
             </label>
           </div>
 
-          <div className="trading-card" data-testid="trading-arm">
+          <div className="trading-card" data-testid="trading-arm-card">
             <h3>Live arming</h3>
             <p>
               Until you arm live export, the planner may still emit{" "}
