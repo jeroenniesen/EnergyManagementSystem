@@ -44,6 +44,7 @@ observability (B-24); numbered date-less sprints, Issues+Milestones on GitHub.
 | **E-08 · Predictive optimization intelligence** | | | | B-63 B-64 B-65 B-66 B-67 B-68 B-69 B-70 B-71 B-72 B-73 B-74 B-75 B-76 B-77 B-78 |
 | **E-09 · ISO 25010 quality engineering** | | | | **P1:** ✅ B-79 ✅ B-80 ✅ B-81 ✅ B-82 ✅ B-83 · ✅ B-84 B-85 |
 | **E-10 · Web UI redesign: dense → calm** | | | | ✅ B-86 ✅ B-87 B-88 |
+| **E-11 · Trading / export-arbitrage** | | | | B-103 B-104 B-105 B-106 B-107 B-108 B-109 |
 | *Big levers (pool)* | | | | B-17 B-18 B-19 B-20 B-23 |
 | *Refactoring (pool)* | | | | B-24 B-25 B-26 B-27 B-28 B-29 |
 | *Architecture & platform (pool)* | | | | **P1:** 🔄 SAF-01 B-42 B-43 B-44 B-52 · B-45 🟨 B-46 B-47 B-48 B-49 B-50 B-51 B-53 B-54 |
@@ -419,6 +420,48 @@ Apply the budget to the two heaviest surfaces. The **Next-24h/plan** screen toda
 Carry the same hierarchy across the remaining surfaces, and extract shared chart / stat-tile / card primitives so the density language stays consistent by construction and the bundle stays within budget.
 **Done when:** every surface shares one density language and stays within its B-86 budget; chart/tile primitives are deduped (pairs with the B-28 frontend consolidation).
 **Track:** Pool · E-10 · ⬜
+
+
+## EPIC E-11 · Trading / export-arbitrage
+*Goal: opt-in trading/net-export arbitrage — day T-vs-Z analysis (incl. buy-to-sell); forced DISCHARGE only when trading beats self-consumption by a configurable margin; 2027-ready `spot_minus_tax`; dry-run until manually armed.* (€/Trust)
+
+**Provenance:** product checklist completed 2026-10-02. Decisions win over outdated design notes (year-round, buy-to-sell in v1, no fixed N-day soak, Trading menu, optional Test batterij, planner-chosen `peak_slice`).
+**GitHub:** [E-11 · #216](https://github.com/jeroenniesen/EnergyManagementSystem/issues/216) (native sub-issues + task list).
+
+### B-103 · Spec lock: trading mode + EXPORT_FOR_PROFIT + config keys — Docs/Feature · S
+Lock checklist decisions into SPEC §7–8 + config/settings keys (opt-in default off, €0.50 T−Z threshold, uncapped default export kWh, `spot_minus_tax`, shared 1.5 cycles, trading strategy mode, arming semantics narrowed to `EXPORT_FOR_PROFIT`).
+**Done when:** SPEC/config stubs match locked decisions; no behaviour change required beyond docs/schema.
+**Track:** Pool · E-11 · [GitHub #209](https://github.com/jeroenniesen/EnergyManagementSystem/issues/209) · ⬜
+
+### B-104 · Planner T-vs-Z + buy-to-sell + peak_slice (dry-run) — Feature · L
+Trading-mode planner: compare path T vs Z; emit export/trade slots only when extra € ≥ threshold; buy-to-sell + planner-chosen `peak_slice`/dump; year-round; dry-run only in this slice.
+**Done when:** versioned plans with T-vs-Z rationale; no live forced-discharge writes; shared cycle + whole-day `daily_min_savings` behaviour.
+**Track:** Pool · E-11 · [GitHub #210](https://github.com/jeroenniesen/EnergyManagementSystem/issues/210) · ⬜
+
+### B-105 · Intent EXPORT_FOR_PROFIT + mode mapping + validator/guardrails — Feature · M
+New intent → forced `DISCHARGE` when armed+capable; `DISCHARGE_FOR_LOAD` stays `AUTO`; §8.11 validator (reserve, dwell, switches, shared cycles, capability).
+**Done when:** mapping + validator unit-tested; fail-safe AUTO; single battery writer.
+**Track:** Pool · E-11 · [GitHub #211](https://github.com/jeroenniesen/EnergyManagementSystem/issues/211) · ⬜
+
+### B-106 · Trading portal menu + settings (threshold, cap, arm, dry-run) — Feature + UX · M
+Portal **Trading** menu: opt-in, € threshold, optional kWh cap, dry-run status, manual arm control; acting/not-acting reasons.
+**Done when:** menu live; defaults off; settings persist; floors (#171) still honourable.
+**Track:** Pool · E-11 · [GitHub #212](https://github.com/jeroenniesen/EnergyManagementSystem/issues/212) · ⬜
+
+### B-107 · Optional Test batterij forced-DISCHARGE probe — Feature · S
+Settings/Trading **Test batterij** button for a bounded manual discharge/export probe. Recommended before live arming; **not** a hard gate.
+**Done when:** confirm + bounded write via single writer when floors allow; clear no-op reason when Watch only.
+**Track:** Pool · E-11 · [GitHub #213](https://github.com/jeroenniesen/EnergyManagementSystem/issues/213) · ⬜
+
+### B-108 · Live arming path (dry-run until user arms) — Feature · S–M
+End-to-end live apply of `EXPORT_FOR_PROFIT` only when trading armed **and** yaml/Watch-only/operational floors allow writes.
+**Done when:** unarmed = log-only; armed+floors green = confirmed mode switches; disarm/fail-safe to AUTO.
+**Track:** Pool · E-11 · [GitHub #214](https://github.com/jeroenniesen/EnergyManagementSystem/issues/214) · ⬜
+
+### B-109 · Trading/export planner tests with canned prices — Test · M
+Regression suite: T>Z threshold, buy-to-sell, spot_minus_tax, daily_min whole-day, shared cycles, reserve, peak_slice, summer OK, flag-off mapping.
+**Done when:** canned-price CI tests green; no hardware.
+**Track:** Pool · E-11 · [GitHub #215](https://github.com/jeroenniesen/EnergyManagementSystem/issues/215) · ⬜
 
 ## Pool — big levers (each with a trigger)
 
