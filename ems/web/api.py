@@ -2999,16 +2999,27 @@ def create_app(
             "z_eur": 0.0,
             "extra_eur": 0.0,
         }
-        built = _build_plan_now(now)
-        if built is not None:
-            _now, prices, plan = built
-            soc = _current_soc(now)
-            if soc is None:
-                soc = float(s.get("battery.min_reserve_soc", 10.0))
-            load_by = _load_by([p.start for p in prices]) if prices else {}
-            evaluation = evaluate_trading(
-                plan, prices, now, cfg, soc_pct=float(soc), load_w_by=load_by,
-            )
+        try:
+            built = _build_plan_now(now)
+            if built is not None:
+                _now, prices, plan = built
+                soc = _current_soc(now)
+                if soc is None:
+                    soc = float(s.get("battery.min_reserve_soc", 10.0))
+                load_by = _load_by([p.start for p in prices]) if prices else {}
+                evaluation = evaluate_trading(
+                    plan, prices, now, cfg, soc_pct=float(soc), load_w_by=load_by,
+                )
+        except Exception:
+            _log.debug("GET /api/trading evaluation failed (non-fatal)", exc_info=True)
+            evaluation = {
+                "enabled": cfg.enabled,
+                "would_trade": False,
+                "reason": "T-vs-Z evaluatie mislukt — instellingen blijven beschikbaar.",
+                "t_eur": 0.0,
+                "z_eur": 0.0,
+                "extra_eur": 0.0,
+            }
         return {
             "trading_enabled": bool(s.get("planner.trading_enabled", False)),
             "min_extra_eur": float(s.get("planner.trading_min_extra_eur", 0.50)),

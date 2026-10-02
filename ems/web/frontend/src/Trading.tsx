@@ -49,6 +49,9 @@ export function TradingView({ canOperate = true }: { canOperate?: boolean }) {
   const [armConfirm, setArmConfirm] = useState(false);
   const [testConfirm, setTestConfirm] = useState(false);
   const [testMsg, setTestMsg] = useState<string | null>(null);
+  // Raw draft strings so typing "1." does not snap to 1 (Settings NumberInput pattern).
+  const [thresholdDraft, setThresholdDraft] = useState<string | null>(null);
+  const [capDraft, setCapDraft] = useState<string | null>(null);
 
   async function load() {
     try {
@@ -210,16 +213,15 @@ export function TradingView({ canOperate = true }: { canOperate?: boolean }) {
                 min={0}
                 max={20}
                 step={0.05}
-                value={s.min_extra_eur}
+                value={thresholdDraft ?? String(s.min_extra_eur)}
                 disabled={!canOperate || busy}
-                onChange={(e) => {
-                  const v = Number(e.target.value);
+                onChange={(e) => setThresholdDraft(e.target.value)}
+                onBlur={() => {
+                  const v = Number(thresholdDraft ?? s.min_extra_eur);
+                  setThresholdDraft(null);
                   if (!Number.isFinite(v)) return;
-                  setStatus({ ...s, min_extra_eur: v });
+                  void patchSettings({ "planner.trading_min_extra_eur": v });
                 }}
-                onBlur={() =>
-                  patchSettings({ "planner.trading_min_extra_eur": s.min_extra_eur })
-                }
               />
             </label>
             <label className="trading-row">
@@ -230,18 +232,15 @@ export function TradingView({ canOperate = true }: { canOperate?: boolean }) {
                 min={0}
                 max={50}
                 step={0.5}
-                value={s.max_export_kwh_per_day}
+                value={capDraft ?? String(s.max_export_kwh_per_day)}
                 disabled={!canOperate || busy}
-                onChange={(e) => {
-                  const v = Number(e.target.value);
+                onChange={(e) => setCapDraft(e.target.value)}
+                onBlur={() => {
+                  const v = Number(capDraft ?? s.max_export_kwh_per_day);
+                  setCapDraft(null);
                   if (!Number.isFinite(v)) return;
-                  setStatus({ ...s, max_export_kwh_per_day: v });
+                  void patchSettings({ "planner.max_export_kwh_per_day": v });
                 }}
-                onBlur={() =>
-                  patchSettings({
-                    "planner.max_export_kwh_per_day": s.max_export_kwh_per_day,
-                  })
-                }
               />
             </label>
             <label className="trading-row">
