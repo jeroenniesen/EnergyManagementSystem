@@ -249,4 +249,6 @@ def build_plan(
     # The resolved strategy is authoritative on the returned plan (whichever planner ran).
     plan = replace(plan, strategy=strategy)
     # Trading overlay (path T vs Z) — may replace strategy with 'trading' when T wins.
-    return maybe_apply_trading(plan, prices, now, trading_cfg, soc_pct=soc_pct)
+    return maybe_apply_trading(
+        plan, prices, now, trading_cfg, soc_pct=soc_pct, load_w_by=load_w_by,
+    )

@@ -67,6 +67,8 @@ def _cfg(**kw) -> TradingConfig:
         degradation_eur_per_kwh=0.05,
         risk_margin_eur_per_kwh=0.02,
         round_trip_efficiency=0.90,
+        # Empty house → Z opportunity on stored kWh is ~0; buy-to-sell can clear €0.50.
+        assumed_house_load_w=0.0,
     )
     base.update(kw)
     return TradingConfig(**base)
@@ -82,23 +84,21 @@ def test_trading_off_returns_z_unchanged():
 
 
 def test_t_beats_z_emits_export_and_buy_to_sell():
-    """Case 1+3: wide spread under spot_minus_tax → EXPORT_FOR_PROFIT + cheap charge."""
+    """Wide spread + empty house → EXPORT_FOR_PROFIT + cheap charge when T clears €0.50."""
     prices = _spread_day(cheap=0.04, peak=0.60)
     z = _z_auto(prices, T0)
-    cfg = _cfg(enabled=True, min_extra_eur=0.50)
+    cfg = _cfg(enabled=True, min_extra_eur=0.50, assumed_house_load_w=0.0)
     out = maybe_apply_trading(z, prices, T0, cfg, soc_pct=40.0)
     assert out.strategy == "trading"
     intents = {s.intent for s in out.slots}
     assert BatteryIntent.EXPORT_FOR_PROFIT in intents
     assert BatteryIntent.GRID_CHARGE_TO_TARGET in intents
-    # Buy-to-sell: charge slots cheaper than export slots.
     price_by = {p.start: p.eur_per_kwh for p in prices}
     charge_p = [price_by[s.start] for s in out.slots
                 if s.intent is BatteryIntent.GRID_CHARGE_TO_TARGET]
     export_p = [price_by[s.start] for s in out.slots
                 if s.intent is BatteryIntent.EXPORT_FOR_PROFIT]
     assert charge_p and export_p and max(charge_p) < min(export_p)
-    # Export slots carry power + floor at reserve.
     for s in out.slots:
         if s.intent is BatteryIntent.EXPORT_FOR_PROFIT:
             assert s.power_w == cfg.max_discharge_w
@@ -107,71 +107,96 @@ def test_t_beats_z_emits_export_and_buy_to_sell():
     assert diag["would_trade"] is True and diag["extra_eur"] >= 0.50
 
 
-def test_under_threshold_keeps_z():
-    """Case 2: T−Z under €0.50 → no export."""
-    prices = _spread_day(cheap=0.10, peak=0.28)  # thin after spot_minus_tax
+def test_summer_auto_with_house_load_does_not_treat_z_as_zero():
+    """BLOCKER fix: summer AUTO + house load → Z values avoided import (not €0).
+
+    Heavy evening load absorbs stored kWh at full import; under spot_minus_tax that
+    opportunity cost keeps T from beating Z by €0.50.
+    """
+    prices = _spread_day(cheap=0.04, peak=0.60)
     z = _z_auto(prices, T0)
-    cfg = _cfg(enabled=True, min_extra_eur=0.50)
+    # Peak hours: 2 kW house load so Z can soak the stored surplus at import prices.
+    load = {
+        p.start: 2000.0 for p in prices if 17 <= p.start.hour < 21
+    }
+    cfg = _cfg(enabled=True, min_extra_eur=0.50, assumed_house_load_w=800.0)
+    diag = evaluate_trading(z, prices, T0, cfg, soc_pct=90.0, load_w_by=load)
+    assert diag["z_eur"] > 0.0
+    out = maybe_apply_trading(z, prices, T0, cfg, soc_pct=90.0, load_w_by=load)
+    assert out.strategy == "summer"
+    assert not any(s.intent is BatteryIntent.EXPORT_FOR_PROFIT for s in out.slots)
+
+
+def test_under_threshold_keeps_z():
+    """Thin spread after spot_minus_tax → no export."""
+    prices = _spread_day(cheap=0.10, peak=0.28)
+    z = _z_auto(prices, T0)
+    cfg = _cfg(enabled=True, min_extra_eur=0.50, assumed_house_load_w=800.0)
     out = maybe_apply_trading(z, prices, T0, cfg, soc_pct=50.0)
-    assert out.strategy != "trading" or not any(
-        s.intent is BatteryIntent.EXPORT_FOR_PROFIT for s in out.slots
-    )
-    # When T loses, seasonal Z is returned (strategy preserved).
     assert out.strategy == "summer"
     assert not any(s.intent is BatteryIntent.EXPORT_FOR_PROFIT for s in out.slots)
 
 
 def test_no_buy_to_sell_charge_when_t_loses():
-    """Case 3b: when T loses, Z has no trading charge add-on."""
     prices = _flat(price=0.20)
     z = plan_rule_based(prices, T0, PlannerConfig())
     out = maybe_apply_trading(z, prices, T0, _cfg(enabled=True), soc_pct=50.0)
-    assert out.strategy == "winter" or out.strategy == z.strategy
     assert not any(s.intent is BatteryIntent.EXPORT_FOR_PROFIT for s in out.slots)
 
 
 def test_spot_minus_tax_blocks_thin_or_negative_export():
-    """Case 4: low peak after tax → no dump."""
-    # peak 0.20 − 0.13 tax = 0.07 << breakeven on cheap 0.10
     prices = _spread_day(cheap=0.10, peak=0.20)
     z = _z_auto(prices, T0)
     cfg = _cfg(enabled=True, export_price_model="spot_minus_tax", energy_tax_eur_per_kwh=0.13)
     diag = evaluate_trading(z, prices, T0, cfg, soc_pct=80.0)
     assert diag["would_trade"] is False
-    assert "feed-in" in diag["reason"].lower() or "break-even" in diag["reason"].lower() \
-        or "handel" in diag["reason"].lower()
+    assert "handel" in diag["reason"].lower()
     out = maybe_apply_trading(z, prices, T0, cfg, soc_pct=80.0)
     assert not any(s.intent is BatteryIntent.EXPORT_FOR_PROFIT for s in out.slots)
 
 
-def test_daily_min_savings_fail_whole_day_no_trade():
-    """Case 5: daily_min_savings fail → no trading plan."""
+def test_daily_min_savings_fail_whole_day_auto():
+    """Decision 9: daily_min fail → whole-day AUTO, not seasonal Z with load-arb."""
     prices = _spread_day(cheap=0.05, peak=0.50)
     z = _z_auto(prices, T0)
-    # Absurdly high daily_min so even a good T fails the absolute floor.
-    cfg = _cfg(enabled=True, daily_min_savings_eur=50.0, min_extra_eur=0.01)
+    z = Plan(
+        created_at=T0,
+        slots=tuple(
+            PlanSlot(p.start, BatteryIntent.DISCHARGE_FOR_LOAD, "peak")
+            if 17 <= p.start.hour < 21
+            else PlanSlot(p.start, BatteryIntent.ALLOW_SELF_CONSUMPTION, "self")
+            for p in prices if p.start + SLOT > T0
+        ),
+        strategy="winter",
+    )
+    cfg = _cfg(
+        enabled=True, daily_min_savings_eur=50.0, min_extra_eur=0.01,
+        assumed_house_load_w=0.0,
+    )
     diag = evaluate_trading(z, prices, T0, cfg, soc_pct=40.0)
     assert diag["would_trade"] is False
-    assert "daily_min" in diag["reason"] or "no-trade" in diag["reason"].lower()
+    assert diag.get("whole_day_auto") is True or "daily_min" in diag["reason"]
     out = maybe_apply_trading(z, prices, T0, cfg, soc_pct=40.0)
+    assert out.strategy == "auto"
+    assert all(s.intent is BatteryIntent.ALLOW_SELF_CONSUMPTION for s in out.slots)
+    assert not any(s.intent is BatteryIntent.DISCHARGE_FOR_LOAD for s in out.slots)
     assert not any(s.intent is BatteryIntent.EXPORT_FOR_PROFIT for s in out.slots)
 
 
-def test_cycle_budget_exhausted_blocks_trade():
-    """Case 6: shared 1.5 EFC — tiny budget refuses trade."""
+def test_cycle_budget_trims_or_blocks_trade():
+    """Tiny cycle budget trims; if under min export → no trade."""
     prices = _spread_day(cheap=0.04, peak=0.60)
     z = _z_auto(prices, T0)
-    cfg = _cfg(enabled=True, max_cycles_per_day=0.01, min_extra_eur=0.01)
+    cfg = _cfg(enabled=True, max_cycles_per_day=0.01, min_extra_eur=0.01, assumed_house_load_w=0.0)
     diag = evaluate_trading(z, prices, T0, cfg, soc_pct=40.0)
     assert diag["would_trade"] is False
     assert "cycle" in diag["reason"].lower() or "handel" in diag["reason"].lower()
 
 
 def test_reserve_floor_on_export_slots():
-    """Case 7: export slots never set floor below reserve."""
     prices = _spread_day(cheap=0.04, peak=0.60)
     z = _z_auto(prices, T0)
-    cfg = _cfg(enabled=True, reserve_soc_pct=15.0)
+    cfg = _cfg(enabled=True, reserve_soc_pct=15.0, assumed_house_load_w=0.0)
     out = maybe_apply_trading(z, prices, T0, cfg, soc_pct=50.0)
     if out.strategy == "trading":
         for s in out.slots:
@@ -180,8 +205,6 @@ def test_reserve_floor_on_export_slots():
 
 
 def test_peak_slice_picks_expensive_slots_not_fixed_clock():
-    """Case 8: peak_slice chooses highest-value export windows."""
-    # Two peaks: morning mild, evening huge — peak_slice should prefer evening.
     start = T0
     prices = []
     for i in range(96):
@@ -196,14 +219,16 @@ def test_peak_slice_picks_expensive_slots_not_fixed_clock():
             price = 0.15
         prices.append(PriceSlot(start + i * SLOT, price))
     z = _z_auto(prices, T0)
-    cfg = _cfg(enabled=True, export_mode="peak_slice", discharge_slots=8, min_extra_eur=0.10)
+    cfg = _cfg(
+        enabled=True, export_mode="peak_slice", discharge_slots=8,
+        min_extra_eur=0.10, assumed_house_load_w=0.0,
+    )
     out = maybe_apply_trading(z, prices, T0, cfg, soc_pct=40.0)
     assert out.strategy == "trading"
     export_hours = [
         s.start.hour for s in out.slots if s.intent is BatteryIntent.EXPORT_FOR_PROFIT
     ]
     assert export_hours
-    # Majority of export slots should be in the evening peak, not morning.
     evening = sum(1 for h in export_hours if 17 <= h < 21)
     morning = sum(1 for h in export_hours if 7 <= h < 9)
     assert evening >= morning
@@ -213,11 +238,15 @@ def test_full_dump_uses_more_slots_than_peak_slice():
     prices = _spread_day(cheap=0.04, peak=0.60)
     z = _z_auto(prices, T0)
     slice_plan = maybe_apply_trading(
-        z, prices, T0, _cfg(export_mode="peak_slice", discharge_slots=4, min_extra_eur=0.10),
+        z, prices, T0,
+        _cfg(export_mode="peak_slice", discharge_slots=4, min_extra_eur=0.10,
+             assumed_house_load_w=0.0),
         soc_pct=80.0,
     )
     dump_plan = maybe_apply_trading(
-        z, prices, T0, _cfg(export_mode="full_dump", discharge_slots=4, min_extra_eur=0.10),
+        z, prices, T0,
+        _cfg(export_mode="full_dump", discharge_slots=4, min_extra_eur=0.10,
+             assumed_house_load_w=0.0),
         soc_pct=80.0,
     )
     if slice_plan.strategy == "trading" and dump_plan.strategy == "trading":
@@ -227,32 +256,26 @@ def test_full_dump_uses_more_slots_than_peak_slice():
 
 
 def test_flag_off_no_export_intent():
-    """Case 9: trading disabled → no EXPORT_FOR_PROFIT."""
     prices = _spread_day(cheap=0.04, peak=0.60)
     z = _z_auto(prices, T0)
     out = maybe_apply_trading(z, prices, T0, _cfg(enabled=False), soc_pct=80.0)
     assert not any(s.intent is BatteryIntent.EXPORT_FOR_PROFIT for s in out.slots)
 
 
-def test_summer_day_with_spread_allows_trading():
-    """Case 10: year-round — summer calendar day still trades when economics pass."""
+def test_summer_day_with_spread_allows_trading_when_house_empty():
+    """Year-round: summer calendar day trades when economics pass (empty house)."""
     prices = _spread_day(cheap=0.04, peak=0.60, start=SUMMER)
-    z = _z_auto(prices, SUMMER)
-    z = Plan(created_at=SUMMER, slots=z.slots, strategy="summer")
-    cfg = _cfg(enabled=True, min_extra_eur=0.50)
+    z = Plan(created_at=SUMMER, slots=_z_auto(prices, SUMMER).slots, strategy="summer")
+    cfg = _cfg(enabled=True, min_extra_eur=0.50, assumed_house_load_w=0.0)
     out = maybe_apply_trading(z, prices, SUMMER, cfg, soc_pct=40.0)
     assert out.strategy == "trading"
     assert any(s.intent is BatteryIntent.EXPORT_FOR_PROFIT for s in out.slots)
 
 
 def test_build_plan_wires_trading_overlay():
-    """Integration: build_plan with trading_cfg.enabled overlays on seasonal dispatch.
-
-    Use summer as path Z (low Z score) so T can clear the €0.50 bar under spot_minus_tax —
-    winter load-arbitrage Z often beats export T on avoided-import valuation, which is correct.
-    """
+    """build_plan with empty-house trading_cfg overlays on summer Z."""
     prices = _spread_day(cheap=0.04, peak=0.60)
-    cfg = _cfg(enabled=True, min_extra_eur=0.50)
+    cfg = _cfg(enabled=True, min_extra_eur=0.50, assumed_house_load_w=0.0)
     plan = build_plan(
         "summer",
         prices=prices,
@@ -286,11 +309,12 @@ def test_build_plan_trading_disabled_keeps_seasonal():
 def test_nl_reasons_on_acting_export_slots():
     prices = _spread_day(cheap=0.04, peak=0.60)
     out = maybe_apply_trading(
-        _z_auto(prices, T0), prices, T0, _cfg(enabled=True), soc_pct=40.0,
+        _z_auto(prices, T0), prices, T0,
+        _cfg(enabled=True, assumed_house_load_w=0.0), soc_pct=40.0,
     )
     assert out.strategy == "trading"
     export = [s for s in out.slots if s.intent is BatteryIntent.EXPORT_FOR_PROFIT]
-    assert export and all("handelen" in s.reason.lower() or "exporteren" in s.reason.lower()
-                          for s in export)
-    # Plan-level T-vs-Z win reason on first slot.
+    assert export and all(
+        "handelen" in s.reason.lower() or "exporteren" in s.reason.lower() for s in export
+    )
     assert "pad T" in out.slots[0].reason or "Handelen" in out.slots[0].reason

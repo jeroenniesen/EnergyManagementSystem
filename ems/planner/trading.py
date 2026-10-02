@@ -4,6 +4,10 @@ When `TradingConfig.enabled` is on, compare a buy-to-sell / forced-export plan (
 against the seasonal house-first plan (path **Z**). Emit T only when projected extra €
 (T − Z) ≥ `min_extra_eur` (default €0.50). Year-round; mode-switching only; no watt-tracking.
 
+Path Z values **self-consumption / house-serve** for the already-stored kWh that T would export
+(avoided import at peak), so summer AUTO is not treated as €0 under `spot_minus_tax`. Incremental
+buy-to-sell kWh has no Z opportunity cost (Z would not buy to sell).
+
 Dry-run / arming floors live outside this module — the planner only emits a `Plan`. Live forced
 `DISCHARGE` still needs `control.allow_export_discharge` + the existing Watch-only floors (B-108).
 """
@@ -11,6 +15,7 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass
+from datetime import datetime
 
 from ems.domain import BatteryIntent
 from ems.planner import economics
@@ -20,6 +25,10 @@ from ems.sources.prices import PriceSlot
 
 _DH = 0.25  # hours per 15-min slot
 _EXPORT_MODES = frozenset({"peak_slice", "full_dump"})
+_EXPORT_PRICE_MODELS = frozenset(economics.EXPORT_MODELS)
+# When no load profile is supplied, assume the house can absorb exported energy at peak
+# (conservative Z opportunity — T must still clear the €0.50 bar under spot_minus_tax).
+_ASSUMED_HOUSE_LOAD_W = 800.0
 
 
 @dataclass(frozen=True)
@@ -48,6 +57,7 @@ class TradingConfig:
     reserve_soc_pct: float = 10.0
     import_fee_eur_per_kwh: float = 0.0
     tibber_total_includes_all: bool = False
+    assumed_house_load_w: float = _ASSUMED_HOUSE_LOAD_W
 
 
 def trading_config_from_settings(s: dict) -> TradingConfig:
@@ -55,6 +65,9 @@ def trading_config_from_settings(s: dict) -> TradingConfig:
     mode = str(s.get("planner.export_mode", "peak_slice") or "peak_slice")
     if mode not in _EXPORT_MODES:
         mode = "peak_slice"
+    export_model = str(s.get("prices.export_price_model", "spot_minus_tax") or "spot_minus_tax")
+    if export_model not in _EXPORT_PRICE_MODELS:
+        export_model = "spot_minus_tax"
     return TradingConfig(
         enabled=bool(s.get("planner.trading_enabled", False)),
         min_extra_eur=float(s.get("planner.trading_min_extra_eur", 0.50)),
@@ -63,7 +76,7 @@ def trading_config_from_settings(s: dict) -> TradingConfig:
         export_mode=mode,
         max_cycles_per_day=float(s.get("planner.max_cycles_per_day", 1.5)),
         daily_min_savings_eur=float(s.get("planner.daily_min_savings_eur", 0.20)),
-        export_price_model=str(s.get("prices.export_price_model", "spot_minus_tax")),
+        export_price_model=export_model,
         energy_tax_eur_per_kwh=float(s.get("prices.energy_tax_eur_per_kwh", 0.13)),
         fixed_feed_in_eur_per_kwh=float(s.get("prices.fixed_feed_in_eur_per_kwh", 0.01)),
         round_trip_efficiency=float(s.get("planner.round_trip_efficiency", 0.90)),
@@ -89,9 +102,10 @@ def _import_price(p: PriceSlot, cfg: TradingConfig) -> float:
     return p.eur_per_kwh + cfg.import_fee_eur_per_kwh
 
 
-def _export_credit(price: float, cfg: TradingConfig) -> float:
+def _export_credit(spot: float, cfg: TradingConfig) -> float:
+    """Feed-in credit from the raw spot (never import-adjusted)."""
     return economics.export_value(
-        price,
+        spot,
         model=cfg.export_price_model,
         energy_tax_eur_per_kwh=cfg.energy_tax_eur_per_kwh,
         fixed_feed_in_eur_per_kwh=cfg.fixed_feed_in_eur_per_kwh,
@@ -106,68 +120,148 @@ def _slot_charge_dc_kwh(cfg: TradingConfig) -> float:
     return stored_kwh_per_slot(cfg.max_charge_w, cfg.round_trip_efficiency)
 
 
-def score_z_plan(z_plan: Plan, prices: list[PriceSlot], cfg: TradingConfig) -> float:
-    """Projected € for path Z (house-first / load-arbitrage) vs doing nothing.
+def _eta_discharge(cfg: TradingConfig) -> float:
+    return math.sqrt(max(1e-6, min(1.0, cfg.round_trip_efficiency)))
 
-    Credits avoided import on DISCHARGE_FOR_LOAD slots at (import − breakeven), using the
-    plan's own charge window as the opportunity cost. Pure export is never credited here.
+
+def _house_kwh_at(
+    start: datetime,
+    cfg: TradingConfig,
+    load_w_by: dict[datetime, float] | None,
+) -> float:
+    if load_w_by is not None and start in load_w_by:
+        return max(0.0, float(load_w_by[start])) * _DH / 1000.0
+    if load_w_by is not None:
+        # Profile present but this slot missing — no house demand assumed.
+        return 0.0
+    return max(0.0, cfg.assumed_house_load_w) * _DH / 1000.0
+
+
+def score_z_house_opportunity(
+    prices: list[PriceSlot],
+    cfg: TradingConfig,
+    *,
+    existing_ac_kwh: float,
+    load_w_by: dict[datetime, float] | None,
+    exclude_starts: set | None = None,
+) -> float:
+    """€ value of serving the house with already-stored energy (path Z opportunity cost).
+
+    Ranks slots by import price and serves up to `existing_ac_kwh` into house load. Wear is
+    subtracted so T/Z compare on the same delivered-energy basis. Buy-to-sell kWh is NOT included —
+    Z would not buy that energy.
     """
+    if existing_ac_kwh <= 1e-9:
+        return 0.0
+    exclude = exclude_starts or set()
+    slot_ac = _slot_export_ac_kwh(cfg)
+    ranked = sorted(
+        (p for p in prices if p.start not in exclude),
+        key=lambda p: (-_import_price(p, cfg), p.start),
+    )
+    remaining = existing_ac_kwh
+    total = 0.0
+    wear = cfg.degradation_eur_per_kwh
+    for p in ranked:
+        if remaining <= 1e-9:
+            break
+        house = _house_kwh_at(p.start, cfg, load_w_by)
+        if house <= 1e-9:
+            continue
+        take = min(remaining, house, slot_ac)
+        if take <= 1e-9:
+            continue
+        # Avoided import minus wear (charge cost is sunk for already-stored energy).
+        total += (_import_price(p, cfg) - wear) * take
+        remaining -= take
+    return total
+
+
+def score_z_plan(
+    z_plan: Plan,
+    prices: list[PriceSlot],
+    cfg: TradingConfig,
+    *,
+    existing_ac_kwh: float = 0.0,
+    load_w_by: dict[datetime, float] | None = None,
+) -> float:
+    """Path Z €: max of seasonal load-arb intents and house-serve on stored kWh."""
     price_by = {p.start: _import_price(p, cfg) for p in prices}
     charge = [s for s in z_plan.slots if s.intent is BatteryIntent.GRID_CHARGE_TO_TARGET]
     discharge = [s for s in z_plan.slots if s.intent is BatteryIntent.DISCHARGE_FOR_LOAD]
-    if not discharge:
-        return 0.0
-    if charge:
-        charge_price = max(price_by.get(s.start, 0.0) for s in charge)
-    else:
-        charge_price = min(price_by.values(), default=0.0)
-    be = economics.breakeven(
-        charge_price,
-        round_trip_efficiency=cfg.round_trip_efficiency,
-        degradation_eur_per_kwh=cfg.degradation_eur_per_kwh,
-        risk_margin_eur_per_kwh=cfg.risk_margin_eur_per_kwh,
+    arb = 0.0
+    if discharge:
+        if charge:
+            charge_price = max(price_by.get(s.start, 0.0) for s in charge)
+        else:
+            charge_price = min(price_by.values(), default=0.0)
+        be = economics.breakeven(
+            charge_price,
+            round_trip_efficiency=cfg.round_trip_efficiency,
+            degradation_eur_per_kwh=cfg.degradation_eur_per_kwh,
+            risk_margin_eur_per_kwh=cfg.risk_margin_eur_per_kwh,
+        )
+        slot_ac = _slot_export_ac_kwh(cfg)
+        for s in discharge:
+            kwh = float(s.target_kwh) if s.target_kwh is not None else slot_ac
+            benefit = price_by.get(s.start, 0.0) - be
+            if benefit > 0:
+                arb += benefit * kwh
+    house = score_z_house_opportunity(
+        prices, cfg, existing_ac_kwh=existing_ac_kwh, load_w_by=load_w_by,
     )
-    slot_ac = _slot_export_ac_kwh(cfg)
-    total = 0.0
-    for s in discharge:
-        kwh = float(s.target_kwh) if s.target_kwh is not None else slot_ac
-        price = price_by.get(s.start, 0.0)
-        benefit = price - be
-        if benefit > 0:
-            total += benefit * kwh
-    return total
+    return max(arb, house)
 
 
 def score_t_plan(
     charge_starts: set,
     export_starts: set,
-    price_by: dict,
+    spot_by: dict,
+    import_by: dict,
     cfg: TradingConfig,
     *,
     export_ac_kwh: float,
     charge_dc_kwh: float,
 ) -> float:
-    """Projected net € for path T (buy-to-sell + export) after wear."""
+    """Projected net € for path T (buy-to-sell + export) after wear.
+
+    Export credits use raw spot; charge cost uses import-adjusted prices.
+    """
     if not export_starts or export_ac_kwh <= 1e-9:
         return 0.0
-    # Average charge price (import) weighted equally across charge slots used.
     if charge_starts:
-        avg_charge = sum(price_by[t] for t in charge_starts) / len(charge_starts)
+        avg_charge = sum(import_by[t] for t in charge_starts) / len(charge_starts)
     else:
-        avg_charge = min(price_by.values(), default=0.0)
+        avg_charge = min(import_by.values(), default=0.0)
     be = economics.breakeven(
         avg_charge,
         round_trip_efficiency=cfg.round_trip_efficiency,
         degradation_eur_per_kwh=cfg.degradation_eur_per_kwh,
         risk_margin_eur_per_kwh=cfg.risk_margin_eur_per_kwh,
     )
-    # Revenue from export credits minus the delivered-energy cost of the charged kWh.
-    # Spread evenly across export slots for the credit side.
     per_slot = export_ac_kwh / len(export_starts)
-    revenue = sum(_export_credit(price_by[t], cfg) * per_slot for t in export_starts)
-    # Cost of energy delivered: breakeven already includes wear+risk per delivered kWh.
-    cost = be * export_ac_kwh
+    revenue = sum(_export_credit(spot_by[t], cfg) * per_slot for t in export_starts)
+    # Bought portion priced at breakeven; already-stored portion only pays wear (sunk charge).
+    eta = _eta_discharge(cfg)
+    bought_ac = min(export_ac_kwh, charge_dc_kwh * eta)
+    from_store_ac = max(0.0, export_ac_kwh - bought_ac)
+    cost = be * bought_ac + cfg.degradation_eur_per_kwh * from_store_ac
     return revenue - cost
+
+
+def _all_auto_plan(prices: list[PriceSlot], now, cfg: TradingConfig, *, reason: str) -> Plan:
+    """Whole-day no-trade AUTO (decision 9) — no load-arbitrage, no export."""
+    horizon = [p for p in prices if p.start + SLOT > now][: cfg.horizon_slots]
+    floor = cfg.reserve_soc_pct
+    slots = tuple(
+        PlanSlot(
+            p.start, BatteryIntent.ALLOW_SELF_CONSUMPTION,
+            f"{reason} (€{p.eur_per_kwh:.2f}/kWh)",
+            floor_soc=floor,
+        )
+        for p in horizon
+    )
+    return Plan(created_at=now, slots=slots, strategy="auto")
 
 
 def _build_path_t(
@@ -176,14 +270,19 @@ def _build_path_t(
     cfg: TradingConfig,
     *,
     soc_pct: float,
-) -> tuple[Plan | None, float, str]:
-    """Build a candidate trading plan. Returns (plan|None, projected_T_eur, skip_reason)."""
+) -> tuple[Plan | None, float, float, str]:
+    """Build a candidate trading plan.
+
+    Returns (plan|None, projected_T_eur, existing_ac_exported, skip_reason).
+    `existing_ac_exported` is the portion of export from already-stored energy (Z opportunity).
+    """
     horizon = [p for p in prices if p.start + SLOT > now][: cfg.horizon_slots]
     if not horizon:
-        return None, 0.0, "Geen handel: geen prijsvensters over."
+        return None, 0.0, 0.0, "Geen handel: geen prijsvensters over."
 
-    price_by = {p.start: _import_price(p, cfg) for p in horizon}
-    eta = math.sqrt(max(1e-6, min(1.0, cfg.round_trip_efficiency)))
+    spot_by = {p.start: p.eur_per_kwh for p in horizon}
+    import_by = {p.start: _import_price(p, cfg) for p in horizon}
+    eta = _eta_discharge(cfg)
     reserve_kwh = cfg.reserve_soc_pct / 100.0 * cfg.usable_kwh
     avail_now = max(0.0, soc_pct / 100.0 * cfg.usable_kwh - reserve_kwh)
     headroom = max(0.0, cfg.usable_kwh - reserve_kwh - avail_now)
@@ -191,12 +290,11 @@ def _build_path_t(
     slot_export_ac = _slot_export_ac_kwh(cfg)
     slot_charge_dc = _slot_charge_dc_kwh(cfg)
     if slot_export_ac <= 1e-9 or cfg.max_discharge_w <= 0:
-        return None, 0.0, "Geen handel: geen ontlaadvermogen (probe)."
+        return None, 0.0, 0.0, "Geen handel: geen ontlaadvermogen (probe)."
 
-    # Charge candidates: cheapest first.
-    by_cheap = sorted(horizon, key=lambda p: (_import_price(p, cfg), p.start))
+    by_cheap = sorted(horizon, key=lambda p: (import_by[p.start], p.start))
     charge_pool = by_cheap[: cfg.charge_slots]
-    charge_price = max((_import_price(p, cfg) for p in charge_pool), default=0.0)
+    charge_price = max((import_by[p.start] for p in charge_pool), default=0.0)
     be = economics.breakeven(
         charge_price,
         round_trip_efficiency=cfg.round_trip_efficiency,
@@ -204,7 +302,6 @@ def _build_path_t(
         risk_margin_eur_per_kwh=cfg.risk_margin_eur_per_kwh,
     )
 
-    # Export candidates: rank by export credit (spot_minus_tax), require credit > breakeven and > 0.
     def export_net(p: PriceSlot) -> float:
         return _export_credit(p.eur_per_kwh, cfg) - be
 
@@ -214,20 +311,17 @@ def _build_path_t(
         if export_net(p) > 1e-9 and _export_credit(p.eur_per_kwh, cfg) > 0
     ]
     if not profitable:
-        return None, 0.0, (
+        return None, 0.0, 0.0, (
             f"Geen handel: feed-in na model ({cfg.export_price_model}) ≤ break-even "
             f"€{be:.2f}/kWh."
         )
 
-    # Slot budget by policy.
     if cfg.export_mode == "full_dump":
-        export_candidates = profitable  # empty surplus across all profitable peaks
+        export_candidates = profitable
     else:
         export_candidates = profitable[: cfg.discharge_slots]
 
-    # Energy budget: available now + what we may buy (headroom), capped by cycle + day export cap.
-    cycle_kwh_budget = cfg.max_cycles_per_day * 2.0 * cfg.usable_kwh  # charge+discharge sum
-    # Reserve half the cycle budget conceptually for each direction; clamp by headroom/avail.
+    cycle_kwh_budget = cfg.max_cycles_per_day * 2.0 * cfg.usable_kwh
     max_export_from_cycles = cycle_kwh_budget / 2.0
     day_cap = (
         cfg.max_export_kwh_per_day
@@ -235,8 +329,6 @@ def _build_path_t(
         else float("inf")
     )
 
-    # Buy-to-sell: charge enough DC so after η we can export the planned AC, within headroom.
-    # First pick export slots greedily, then size charge to match.
     export_starts: list = []
     export_ac = 0.0
     for p in export_candidates:
@@ -244,8 +336,6 @@ def _build_path_t(
             break
         if export_ac + slot_export_ac > max_export_from_cycles + 1e-9:
             break
-        # Need enough energy: avail_now + charged, converted to AC (×η for discharge side ≈ √η).
-        # Delivered AC from DC store ≈ dc * η_discharge = dc * √rte.
         needed_dc = (export_ac + slot_export_ac) / eta
         if needed_dc > avail_now + headroom + 1e-9:
             break
@@ -253,53 +343,61 @@ def _build_path_t(
         export_ac += slot_export_ac
 
     if export_ac < cfg.min_export_kwh - 1e-9:
-        return None, 0.0, (
+        return None, 0.0, 0.0, (
             f"Geen handel: exportbare surplus {export_ac:.1f} kWh < drempel "
             f"{cfg.min_export_kwh:.1f} kWh."
         )
 
     needed_dc = export_ac / eta
-    buy_dc = max(0.0, needed_dc - avail_now)
-    buy_dc = min(buy_dc, headroom)
+    buy_dc = max(0.0, min(needed_dc - avail_now, headroom))
     n_charge = math.ceil(buy_dc / slot_charge_dc) if slot_charge_dc > 1e-9 and buy_dc > 1e-9 else 0
-    # Only charge before the first export slot.
     first_export = min(export_starts)
     charge_pool_pre = [p for p in charge_pool if p.start < first_export]
     charge_starts = {p.start for p in charge_pool_pre[:n_charge]}
     stored_dc = min(buy_dc, len(charge_starts) * slot_charge_dc) if charge_starts else 0.0
-    # If we couldn't buy enough and avail_now alone can't cover min export, skip.
     total_dc = avail_now + stored_dc
     deliverable_ac = total_dc * eta
     if deliverable_ac < cfg.min_export_kwh - 1e-9:
-        return None, 0.0, (
+        return None, 0.0, 0.0, (
             f"Geen handel: onvoldoende energie boven reserve "
             f"(~{deliverable_ac:.1f} kWh leverbaar)."
         )
-    # Trim export to what we can actually deliver.
     while export_starts and len(export_starts) * slot_export_ac > deliverable_ac + 1e-9:
         export_starts.pop()
     if not export_starts:
-        return None, 0.0, "Geen handel: geen exportslots na energiebudget."
+        return None, 0.0, 0.0, "Geen handel: geen exportslots na energiebudget."
     export_ac = len(export_starts) * slot_export_ac
     export_set = set(export_starts)
 
-    # Cycle check on actual volumes.
-    charge_ac_equiv = stored_dc  # DC into pack
-    if cfg.usable_kwh > 0:
-        efc = (charge_ac_equiv + export_ac / eta) / (2.0 * cfg.usable_kwh)
-    else:
-        efc = 0.0
-    if efc > cfg.max_cycles_per_day + 1e-9:
-        return None, 0.0, (
-            f"Geen handel: cycle-budget op ({efc:.2f} > {cfg.max_cycles_per_day:.1f} EFC)."
+    # Trim to cycle budget instead of abandoning (Grok nit).
+    while export_starts and cfg.usable_kwh > 0:
+        efc = (stored_dc + export_ac / eta) / (2.0 * cfg.usable_kwh)
+        if efc <= cfg.max_cycles_per_day + 1e-9:
+            break
+        export_starts.pop()
+        export_ac = len(export_starts) * slot_export_ac
+        export_set = set(export_starts)
+    if not export_starts or export_ac < cfg.min_export_kwh - 1e-9:
+        return None, 0.0, 0.0, (
+            f"Geen handel: cycle-budget op (>{cfg.max_cycles_per_day:.1f} EFC) "
+            f"na trim onder min export."
         )
 
+    # Re-size buy after trim.
+    needed_dc = export_ac / eta
+    buy_dc = max(0.0, min(needed_dc - avail_now, headroom))
+    n_charge = math.ceil(buy_dc / slot_charge_dc) if slot_charge_dc > 1e-9 and buy_dc > 1e-9 else 0
+    charge_starts = {p.start for p in charge_pool_pre[:n_charge]}
+    stored_dc = min(buy_dc, len(charge_starts) * slot_charge_dc) if charge_starts else 0.0
+
     t_eur = score_t_plan(
-        charge_starts, export_set, price_by, cfg,
+        charge_starts, export_set, spot_by, import_by, cfg,
         export_ac_kwh=export_ac, charge_dc_kwh=stored_dc,
     )
+    existing_ac = min(export_ac, avail_now * eta)
+
     if t_eur < cfg.daily_min_savings_eur - 1e-9:
-        return None, t_eur, (
+        return None, t_eur, existing_ac, (
             f"Geen handel: geprojecteerde besparing €{t_eur:.2f} < "
             f"daily_min €{cfg.daily_min_savings_eur:.2f} — hele dag no-trade."
         )
@@ -343,17 +441,11 @@ def _build_path_t(
                 floor_soc=floor,
             ))
 
-    note = (
-        f"pad T: ~{export_ac:.1f} kWh export, {cfg.export_mode}, "
-        f"geprojecteerd €{t_eur:.2f}"
-    )
     plan = Plan(
         created_at=now, slots=tuple(out), strategy="trading",
         target_soc=target_soc, deadline=first_export,
     )
-    # Stamp a plan-level hint via first slot reason prefix is enough; callers use strategy=.
-    _ = note
-    return plan, t_eur, ""
+    return plan, t_eur, existing_ac, ""
 
 
 def maybe_apply_trading(
@@ -363,23 +455,26 @@ def maybe_apply_trading(
     cfg: TradingConfig | None,
     *,
     soc_pct: float,
+    load_w_by: dict[datetime, float] | None = None,
 ) -> Plan:
     """Overlay trading when enabled and path T beats path Z by ≥ min_extra_eur.
 
-    Returns `z_plan` unchanged when trading is off, T loses, or T is unbuildable. When returning
-    Z after a failed gate, prepends a not-acting reason onto ALLOW_SELF_CONSUMPTION slots is
-    avoided (keep Z byte-stable); the skip reason is available via `evaluate_trading` for tests/UI.
+    On `daily_min` failure → whole-day AUTO (decision 9). On T-vs-Z loss / unbuildable T
+    (except daily_min) → keep seasonal Z unchanged.
     """
     if cfg is None or not cfg.enabled:
         return z_plan
-    t_plan, t_eur, skip = _build_path_t(prices, now, cfg, soc_pct=soc_pct)
+    t_plan, t_eur, existing_ac, skip = _build_path_t(prices, now, cfg, soc_pct=soc_pct)
     if t_plan is None:
+        if "hele dag no-trade" in skip:
+            return _all_auto_plan(prices, now, cfg, reason=skip)
         return z_plan
-    z_eur = score_z_plan(z_plan, prices, cfg)
+    z_eur = score_z_plan(
+        z_plan, prices, cfg, existing_ac_kwh=existing_ac, load_w_by=load_w_by,
+    )
     extra = t_eur - z_eur
     if extra < cfg.min_extra_eur - 1e-9:
         return z_plan
-    # Annotate plan: rewrite first slot reason to name the T-vs-Z win (explainability).
     if t_plan.slots:
         head = t_plan.slots[0]
         win = (
@@ -409,6 +504,7 @@ def evaluate_trading(
     cfg: TradingConfig,
     *,
     soc_pct: float,
+    load_w_by: dict[datetime, float] | None = None,
 ) -> dict:
     """Diagnostics for tests / UI: whether T would win and why not."""
     if not cfg.enabled:
@@ -417,12 +513,15 @@ def evaluate_trading(
             "reason": "Geen handel: trading staat uit (alleen huis/zelfconsumptie).",
             "t_eur": 0.0, "z_eur": 0.0, "extra_eur": 0.0,
         }
-    t_plan, t_eur, skip = _build_path_t(prices, now, cfg, soc_pct=soc_pct)
-    z_eur = score_z_plan(z_plan, prices, cfg)
+    t_plan, t_eur, existing_ac, skip = _build_path_t(prices, now, cfg, soc_pct=soc_pct)
+    z_eur = score_z_plan(
+        z_plan, prices, cfg, existing_ac_kwh=existing_ac, load_w_by=load_w_by,
+    )
     if t_plan is None:
         return {
             "enabled": True, "would_trade": False, "reason": skip,
             "t_eur": t_eur, "z_eur": z_eur, "extra_eur": t_eur - z_eur,
+            "whole_day_auto": "hele dag no-trade" in skip,
         }
     extra = t_eur - z_eur
     if extra < cfg.min_extra_eur - 1e-9:
