@@ -70,6 +70,7 @@ from ems.planner.recovery import (
 from ems.planner.rule_based import PlannerConfig
 from ems.planner.strategy import HysteresisState, resolve_strategy_hysteretic
 from ems.planner.summer import SummerConfig
+from ems.planner.trading import trading_config_from_settings
 from ems.planner.validator import PlanValidation
 from ems.price_quality import PriceHorizonStatus, validate_price_horizon
 from ems.sources.battery import BatteryWriteUnconfirmed, intent_to_mode
@@ -918,6 +919,7 @@ class ControlService:
             load_w_by=load_by,
             adaptive_cfg=self._adaptive_cfg(),
             expected_ev_kwh=expected_ev_kwh,
+            trading_cfg=trading_config_from_settings(self._settings),
             planner_mode=mode,
             price_provenance=type(self._price_source).__name__,
             forecast_provider=forecast_provider,
