@@ -23,6 +23,7 @@ from ems.planner.adaptive import AdaptiveConfig, plan_adaptive
 from ems.planner.rule_based import PlannerConfig, plan_rule_based
 from ems.planner.schedule import Plan
 from ems.planner.summer import SummerConfig, plan_summer
+from ems.planner.trading import TradingConfig, maybe_apply_trading
 from ems.sources.forecast import ForecastSlot
 from ems.sources.prices import PriceSlot
 
@@ -213,6 +214,7 @@ def build_plan(
     load_w_by: dict[datetime, float] | None = None,
     adaptive_cfg: AdaptiveConfig | None = None,
     expected_ev_kwh: float = 0.0,
+    trading_cfg: TradingConfig | None = None,
 ) -> Plan:
     """Dispatch to the chosen strategy's planner. `strategy` is already resolved (not 'auto').
 
@@ -224,7 +226,12 @@ def build_plan(
     discharge-peaks character so the season choice still changes the plan.
 
     `expected_ev_kwh` (#181) is winter-only exogenous EV load (SPEC §4.5 re-add); summer ignores it.
-    Fail-soft when 0 / missing — never charger control."""
+    Fail-soft when 0 / missing — never charger control.
+
+    `trading_cfg` (E-11 / B-104): optional year-round T-vs-Z overlay. When enabled and path T beats
+    path Z by ≥ min_extra_eur, the returned plan has strategy='trading' with EXPORT_FOR_PROFIT
+    slots; otherwise the seasonal plan (path Z) is returned unchanged. Default off.
+    """
     if strategy == "summer":
         if adaptive_cfg is not None and load_w_by is not None:
             plan = plan_adaptive(prices, forecast or [], now, soc_pct=soc_pct,
@@ -240,4 +247,8 @@ def build_plan(
     else:
         plan = plan_rule_based(prices, now, winter_cfg, expected_ev_kwh=expected_ev_kwh)
     # The resolved strategy is authoritative on the returned plan (whichever planner ran).
-    return replace(plan, strategy=strategy)
+    plan = replace(plan, strategy=strategy)
+    # Trading overlay (path T vs Z) — may replace strategy with 'trading' when T wins.
+    return maybe_apply_trading(
+        plan, prices, now, trading_cfg, soc_pct=soc_pct, load_w_by=load_w_by,
+    )

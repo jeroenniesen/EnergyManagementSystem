@@ -18,6 +18,7 @@ from ems.planner.rule_based import PlannerConfig
 from ems.planner.schedule import Plan
 from ems.planner.strategy import build_plan
 from ems.planner.summer import SummerConfig
+from ems.planner.trading import TradingConfig
 from ems.sources.forecast import ForecastSlot
 from ems.sources.prices import PriceSlot
 
@@ -42,6 +43,8 @@ class PlannerRequest:
     # Winter-only (#181 / SPEC §4.5): expected EV import (AC kWh) re-added as exogenous load.
     # 0 / missing = fail-soft (no EV day signal). Advice/forecast only — never charger control.
     expected_ev_kwh: float = 0.0
+    # E-11 / B-104: optional trading overlay (default None/disabled).
+    trading_cfg: TradingConfig | None = None
     planner_mode: PlannerMode | str = PlannerMode.RULE_BASED
     price_provenance: str | None = None
     forecast_provider: str | None = None
@@ -67,6 +70,7 @@ def config_hash_for_request(request: PlannerRequest, *, strategy: str) -> str:
         "winter_cfg": asdict(request.winter_cfg),
         "summer_cfg": asdict(request.summer_cfg),
         "adaptive_cfg": asdict(request.adaptive_cfg) if request.adaptive_cfg is not None else None,
+        "trading_cfg": asdict(request.trading_cfg) if request.trading_cfg is not None else None,
         # Include EV exogenous so a change of day-hint / history estimate invalidates plan identity.
         "expected_ev_kwh": round(max(0.0, float(request.expected_ev_kwh or 0.0)), 3),
     }
@@ -162,6 +166,7 @@ class RuleBasedPlanner:
             load_w_by=request.load_w_by,
             adaptive_cfg=request.adaptive_cfg,
             expected_ev_kwh=request.expected_ev_kwh,
+            trading_cfg=request.trading_cfg,
         )
         strategy = plan.strategy or request.strategy
         snapshot = build_input_snapshot(request, strategy=strategy)
