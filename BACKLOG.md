@@ -3,7 +3,7 @@
 *Product-owner backlog, 2026-07-02; multi-level since 2026-07-03 (see
 [`docs/superpowers/specs/2026-07-03-backlog-sync-design.md`](./docs/superpowers/specs/2026-07-03-backlog-sync-design.md)).
 Owner: Jeroen. Groom by editing this file, then run `/backlog-sync` to mirror to GitHub.
-**Status verified against `main` + merged PRs on 2026-07-26** — PRs through #51 merged; several items marked ✅ below.*
+**Status verified against `main` + merged PRs on 2026-09-27** — B-14 ✅ via [#68](https://github.com/jeroenniesen/EnergyManagementSystem/pull/68); SAF-01 ✅ via [#52](https://github.com/jeroenniesen/EnergyManagementSystem/pull/52) (was stale 🔄). Other glyphs unchanged this sync.*
 
 **Product goals every item must serve at least one of:**
 **€** lower energy bill · **CO₂** lower footprint · **Motivation** the household sees progress and is nudged to improve · **Trust** the system is honest, safe, and explains itself.
@@ -46,7 +46,7 @@ observability (B-24); numbered date-less sprints, Issues+Milestones on GitHub.
 | **E-10 · Web UI redesign: dense → calm** | | | | ✅ B-86 ✅ B-87 B-88 |
 | *Big levers (pool)* | | | | B-17 B-18 B-19 B-20 B-23 |
 | *Refactoring (pool)* | | | | B-24 B-25 B-26 B-27 B-28 B-29 |
-| *Architecture & platform (pool)* | | | | **P1:** 🔄 SAF-01 B-42 B-43 B-44 B-52 · B-45 🟨 B-46 B-47 B-48 B-49 B-50 B-51 B-53 B-54 |
+| *Architecture & platform (pool)* | | | | **P1:** ✅ SAF-01 B-42 B-43 B-44 B-52 · B-45 🟨 B-46 B-47 B-48 B-49 B-50 B-51 B-53 B-54 |
 
 ---
 
@@ -444,7 +444,7 @@ ntfy/HA-companion pushes for genuine wins and warnings. **Trigger:** B-07 shows 
 
 ### B-14 · Solcast forecast provider — Feature · S
 Real P10/P50/P90 percentiles (SPEC's primary provider, unbuilt) instead of derived 0.6×/1.15× bands. Improves risk-aware grid-charge sizing.
-**Track:** 🟨 in PR — see open draft for B-14 Solcast (awaiting merge + backlog-sync).
+**Track:** ✅ done — [PR #68](https://github.com/jeroenniesen/EnergyManagementSystem/pull/68) (merged 2026-09-27). `SolcastSource` + budget ledger + Forecast.Solar/model fallback; real P10/P50/P90.
 
 ### B-23 · Deferred with roadmap triggers — Feature · L
 ML layer (accelerator-gated); hybrid heat-pump switchover (**trigger:** heat pump installed); OCPP wallbox (**trigger:** wallbox purchased); ToU/peak-aware planning (**trigger:** NL ToU tariffs ~2029).
@@ -506,7 +506,7 @@ confirmed recovery AUTO; newer overrides are never overwritten by older recovery
 admission and queues a bounded final safe restore even while a prior command is unconfirmed; ticket
 ownership survives cancellation and is released only on real worker completion; deterministic race,
 shutdown, dry-run, and persistence regressions pass.
-**Track:** 🔄 PR open — [PR #52](https://github.com/jeroenniesen/EnergyManagementSystem/pull/52).
+**Track:** ✅ done — [PR #52](https://github.com/jeroenniesen/EnergyManagementSystem/pull/52) (merged 2026-07-26).
 Implementation and verification complete. Design:
 [`docs/superpowers/specs/2026-07-26-saf01-writer-fencing-design.md`](docs/superpowers/specs/2026-07-26-saf01-writer-fencing-design.md).
 
