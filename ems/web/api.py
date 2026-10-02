@@ -3108,43 +3108,58 @@ def create_app(
         until = now + timedelta(seconds=_TEST_BATTERY_SECONDS)
         armed_before = bool(controller.allow_export_discharge)
         app.state.trading_probe_active = True
-        controller.begin_export_probe(until)
         decision = None
+        mode = None
+        failure: JSONResponse | None = None
         try:
-            # Decide first — do NOT publish override until DISCHARGE actually lands.
+            # Hold the control lock across the probe window, decide, and any failure clear so a
+            # queued cycle cannot observe an EXPORT probe that this request is about to roll back.
             async with control._ctx.control_lock:
-                decision = controller.decide(
-                    BatteryIntent.EXPORT_FOR_PROFIT,
-                    now,
-                    target_soc=floor,
-                    power_w=power,
-                    manual=True,
-                )
-                mode = getattr(decision.desired_mode, "value", None)
-                ok = (
-                    decision.outcome in ("applied", "unconfirmed")
-                    and decision.desired_mode is PhysicalMode.DISCHARGE
-                )
-                if not ok:
+                try:
+                    # Window must be open before decide so unarmed EXPORT maps to DISCHARGE.
+                    controller.begin_export_probe(until)
+                    # Decide first — do NOT publish override until DISCHARGE actually lands.
+                    decision = controller.decide(
+                        BatteryIntent.EXPORT_FOR_PROFIT,
+                        now,
+                        target_soc=floor,
+                        power_w=power,
+                        manual=True,
+                    )
+                    mode = getattr(decision.desired_mode, "value", None)
+                    ok = (
+                        decision.outcome in ("applied", "unconfirmed")
+                        and decision.desired_mode is PhysicalMode.DISCHARGE
+                    )
+                    if not ok:
+                        await _clear_trading_probe_override()
+                        failure = JSONResponse({
+                            "ok": False,
+                            "detail": decision.reason or f"probe not applied ({decision.outcome})",
+                            "outcome": decision.outcome,
+                            "mode": mode,
+                        }, status_code=409)
+                    else:
+                        await override_store.set_many({
+                            _OV_INTENT: BatteryIntent.EXPORT_FOR_PROFIT.value,
+                            _OV_EXP: until.isoformat(),
+                        })
+                        override_box["ov"] = Override(
+                            intent=BatteryIntent.EXPORT_FOR_PROFIT, expires_at=until,
+                        )
+                except Exception as exc:
                     await _clear_trading_probe_override()
-                    return JSONResponse({
-                        "ok": False,
-                        "detail": decision.reason or f"probe not applied ({decision.outcome})",
-                        "outcome": decision.outcome,
-                        "mode": mode,
-                    }, status_code=409)
-                await override_store.set_many({
-                    _OV_INTENT: BatteryIntent.EXPORT_FOR_PROFIT.value,
-                    _OV_EXP: until.isoformat(),
-                })
-                override_box["ov"] = Override(
-                    intent=BatteryIntent.EXPORT_FOR_PROFIT, expires_at=until,
-                )
+                    failure = JSONResponse(
+                        {"ok": False, "detail": f"probe failed: {exc}"}, status_code=500,
+                    )
         except Exception as exc:
+            # Lock itself failed — nothing is inside the critical section to race the clear.
             await _clear_trading_probe_override()
             return JSONResponse(
                 {"ok": False, "detail": f"probe failed: {exc}"}, status_code=500,
             )
+        if failure is not None:
+            return failure
         assert decision is not None
         mode = getattr(decision.desired_mode, "value", None)
         if audit_store is not None:

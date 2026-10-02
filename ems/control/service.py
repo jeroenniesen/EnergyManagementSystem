@@ -1063,45 +1063,8 @@ class ControlService:
             reserve_holding=bool(self._ctx.car_session.get("reserve_hold")),
         )
 
-    def _car_guard(self, now: datetime, intent, reason):
-        """Never let the home battery FEED the car — the final guardrail over the plan AND a manual
-        override. While the car is charging (and the master switch is on) it consults the operator's
-        chosen behaviour via `decide_car_mode_action`:
-
-        * ``hold``            → force HOLD_RESERVE (today's behaviour, byte-for-byte): the battery
-                                idles so it can't discharge into the car; solar + grid cover it.
-        * ``static_discharge``/``match_home_load`` → force DISCHARGE_FOR_LOAD at the decided,
-                                bounded setpoint (carried out via `car_action.power_w` below) so the
-                                battery covers the (predicted) HOUSE while the grid feeds the car.
-
-        Returns ``(intent, reason, car_action)``; `car_action` is the CarModeAction (or None when
-        car-mode is dormant / the plan intent isn't discharge-shaped). GRID_CHARGE/HOLD plan intents
-        pass through untouched, exactly as before. FAIL-SAFE: a discharge is suppressed to a HOLD
-        when data quality is `unsafe` — an untrusted SoC must never drive a discharge (CLAUDE)."""
-        if intent is None or intent not in (
-                BatteryIntent.DISCHARGE_FOR_LOAD, BatteryIntent.ALLOW_SELF_CONSUMPTION):
-            return intent, reason, None
-        car_action = self._car_mode_action(
-            now, current_setpoint_w=self._ctx.car_session["setpoint_w"])
-        if car_action is None:
-            return intent, reason, None
-        if car_action.action == "discharge":
-            if self._data_quality(now) == "unsafe":
-                return (BatteryIntent.HOLD_RESERVE,
-                        "car charging — holding the battery so it won't discharge into the car "
-                        "(sensor data is unsafe, so EMS won't discharge on an untrusted level)",
-                        None)
-            return BatteryIntent.DISCHARGE_FOR_LOAD, car_action.reason, car_action
-        if car_action.action == "hold":
-            # F2: a RESERVE-floor hold that interrupts an ACTIVE discharge session is surfaced (the
-            # car_action, not None) so the control tick keeps the session alive across the sticky,
-            # hysteretic hold instead of ending+restarting it (which flapped on floor noise). Every
-            # other hold (the master "hold" behaviour, or a reserve hold with no session) returns
-            # None — today's behaviour byte-for-byte, a plain HOLD_RESERVE.
-            if car_action.reserve_hold and self._ctx.car_session["active"]:
-                return BatteryIntent.HOLD_RESERVE, car_action.reason, car_action
-            return BatteryIntent.HOLD_RESERVE, car_action.reason, None
-        return intent, reason, None  # "none" — defensive (car_charging was True), unchanged
+    # Car-charging intent resolution lives on ControlDecisionEngine._car_guard (includes
+    # EXPORT_FOR_PROFIT). The old ControlService copy omitted export and had no callers.
 
     # --- effective intent ------------------------------------------------------------------------
     def _prices_unavailable_since(self):

@@ -407,8 +407,9 @@ class ModeController:
         `manual` / `priority` so the preview matches decide()'s gate bypass (see _gate);
         `car_session` so the previewed mode matches the car-charging discharge mapping (DISCHARGE
         rather than AUTO), keeping the dashboard/audit honest about what would run; `commitment` so
-        the previewed cap outcome matches decide()'s routine-vs-commitment budget."""
-        desired = self._desired(intent, car_session=car_session)
+        the previewed cap outcome matches decide()'s routine-vs-commitment budget. `now` is passed
+        to `_desired` so an open Test-batterij probe maps EXPORT to DISCHARGE, same as decide()."""
+        desired = self._desired(intent, car_session=car_session, now=now)
         blocked = self._gate(intent, now, desired, observed_mode=observed_mode, manual=manual,
                              priority=priority, commitment=commitment)
         if blocked is not None:

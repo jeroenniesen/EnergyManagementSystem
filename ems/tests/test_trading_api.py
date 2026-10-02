@@ -159,6 +159,32 @@ def test_export_probe_does_not_flip_arm_flag():
     assert ctl._desired(BatteryIntent.EXPORT_FOR_PROFIT, now=now) is PhysicalMode.AUTO
 
 
+def test_preview_during_probe_matches_discharge():
+    """Dashboard preview must pass `now` so an open probe shows DISCHARGE, not AUTO."""
+    from datetime import UTC, datetime, timedelta
+
+    from ems.domain import BatteryIntent, PhysicalMode
+
+    driver = MockBatteryDriver(armed=True)
+    ctl = ModeController(driver, Lifecycle(dry_run=True), dry_run=True)
+    now = datetime.now(UTC)
+    before = ctl.preview(
+        BatteryIntent.EXPORT_FOR_PROFIT, now, observed_mode=PhysicalMode.AUTO,
+    )
+    assert before.desired_mode is PhysicalMode.AUTO
+    ctl.begin_export_probe(now + timedelta(seconds=60))
+    during = ctl.preview(
+        BatteryIntent.EXPORT_FOR_PROFIT, now, observed_mode=PhysicalMode.AUTO,
+    )
+    assert during.desired_mode is PhysicalMode.DISCHARGE
+    assert ctl.allow_export_discharge is False
+    ctl.clear_export_probe()
+    after = ctl.preview(
+        BatteryIntent.EXPORT_FOR_PROFIT, now, observed_mode=PhysicalMode.AUTO,
+    )
+    assert after.desired_mode is PhysicalMode.AUTO
+
+
 def test_test_battery_refuses_when_car_charging(tmp_path):
     """B-107: probe must not force DISCHARGE while the car is charging."""
     from datetime import UTC, datetime
