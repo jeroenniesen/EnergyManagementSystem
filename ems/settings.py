@@ -43,6 +43,9 @@ class SettingsField:
     # Enum tokens that appear in the UI (greyed) but cannot be selected or saved. Used e.g. to
     # preview future planner.mode values (ml / advisory) until M6 ships adapters.
     disabled_options: tuple[str, ...] = ()
+    # When False, the key stays valid and persisted but is omitted from schema_json() so the
+    # Settings form does not render a second editor. Trading owns live export arming.
+    show_in_settings: bool = True
 
 
 # The editable surface. Keep keys stable — they are persisted and consumed by the UI.
@@ -294,8 +297,10 @@ SETTINGS_SCHEMA: tuple[SettingsField, ...] = (
         help="Arm live forced DISCHARGE for EXPORT_FOR_PROFIT (trading / deliberate grid export) "
         "only. Off (default) = never dump to the grid for profit. Does not change "
         "DISCHARGE_FOR_LOAD (house-serve stays vendor AUTO). Still needs Watch only off + "
-        "operational on, and yaml dry_run / live mode floors.",
+        "operational on, and yaml dry_run / live mode floors. Edited on the Trading page "
+        "(confirm-to-arm); omitted from Manage so there is one arming control.",
         advanced=True,
+        show_in_settings=False,
     ),
     SettingsField(
         "control.hold_battery_when_car_charging", "Special battery behaviour while the car charges",
@@ -437,7 +442,7 @@ SETTINGS_SCHEMA: tuple[SettingsField, ...] = (
         "export on peaks) vs path Z (self-consumption / house-first). Trading actions run only "
         "when T beats Z by at least the extra-€ threshold below. Off (default) = summer/winter "
         "only — energy stays for the house. Year-round; no watt-tracking. Live forced discharge "
-        "still needs Allow export discharge + the usual Watch-only / operational floors.",
+        "still needs the Trading page live-export arm + the usual Watch-only / operational floors.",
     ),
     SettingsField(
         "planner.trading_min_extra_eur", "Trading: min extra €/day", "number", 0.50, "planner",
@@ -717,7 +722,11 @@ def defaults() -> dict[str, Any]:
 
 
 def schema_json() -> list[dict]:
-    """Serialize the schema for the UI to render a form generically."""
+    """Serialize the schema for the UI to render a form generically.
+
+    Keys with `show_in_settings=False` stay in SETTINGS_SCHEMA (defaults, validation, POST)
+    but are omitted here so Manage does not render a duplicate control.
+    """
     return [
         {
             "key": f.key, "label": f.label, "type": f.type, "default": f.default,
@@ -728,6 +737,7 @@ def schema_json() -> list[dict]:
             "disabled_options": list(f.disabled_options) if f.disabled_options else [],
         }
         for f in SETTINGS_SCHEMA
+        if f.show_in_settings
     ]
 
 

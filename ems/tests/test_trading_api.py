@@ -71,6 +71,11 @@ def test_trading_get_defaults_off(tmp_path):
         assert body["max_export_kwh_per_day"] == 0.0
         assert body["export_price_model"] == "spot_minus_tax"
         assert "evaluation" in body and "reason" in body["evaluation"]
+        ev = body["evaluation"]
+        assert ev["projection"] is True
+        assert "not the act decision" in ev["projection_note"]
+        assert isinstance(ev["data_quality"], str) and ev["data_quality"]
+        assert ev["validator"] in (None, "valid", "warn", "unsafe")
         assert body["copy"]["house"]
         assert body["copy"]["sell"]
 

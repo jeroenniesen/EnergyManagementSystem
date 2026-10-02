@@ -23,6 +23,10 @@ type TradingStatus = {
     extra_eur?: number;
     export_slots?: number;
     charge_slots?: number;
+    projection?: boolean;
+    projection_note?: string;
+    data_quality?: string | null;
+    validator?: string | null;
   };
   copy: {
     house: string;
@@ -197,6 +201,16 @@ export function TradingView({ canOperate = true }: { canOperate?: boolean }) {
               </dl>
             )}
             <p data-testid="trading-eval-reason">{s.evaluation.reason}</p>
+            <p className="muted" data-testid="trading-eval-projection">
+              {s.evaluation.projection_note
+                ?? "T−Z is a projection of the plan, not the act decision."}
+              {s.evaluation.data_quality
+                ? ` Data quality: ${s.evaluation.data_quality}.`
+                : ""}
+              {s.evaluation.validator
+                ? ` Plan validator: ${s.evaluation.validator}.`
+                : ""}
+            </p>
             <p className="muted">
               {s.copy.house} · {s.copy.sell}
             </p>
@@ -282,7 +296,8 @@ export function TradingView({ canOperate = true }: { canOperate?: boolean }) {
             <p>
               Until you arm live export, the planner may still emit{" "}
               <code>EXPORT_FOR_PROFIT</code> but the battery stays on vendor AUTO (no
-              forced grid dump). Arming does not bypass Watch only / dry-run floors.
+              forced grid dump). Live export is armed from this page. Arming does not
+              bypass Watch only / dry-run floors.
             </p>
             {!canOperate ? (
               <p className="muted">Operate permission required to arm.</p>

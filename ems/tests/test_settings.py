@@ -3,6 +3,7 @@ import json
 from ems.ev_schedule import default_schedule
 from ems.settings import (
     SETTINGS_BY_KEY,
+    SETTINGS_SCHEMA,
     defaults,
     effective_settings,
     schema_json,
@@ -142,7 +143,11 @@ def test_effective_settings_infers_fuse_from_stored_watts():
 
 def test_schema_json_shape():
     rows = schema_json()
-    assert {r["key"] for r in rows} == set(SETTINGS_BY_KEY)
+    shown = {f.key for f in SETTINGS_SCHEMA if f.show_in_settings}
+    assert {r["key"] for r in rows} == shown
+    # Trading owns confirm-to-arm; the key stays valid but is not a Manage checkbox.
+    assert "control.allow_export_discharge" in SETTINGS_BY_KEY
+    assert "control.allow_export_discharge" not in shown
     theme = next(r for r in rows if r["key"] == "ui.theme")
     assert theme["type"] == "enum"
     assert theme["options"] == ["auto", "dark", "light"]

@@ -22,6 +22,11 @@ const TRADING_RESP = {
     t_eur: 0,
     z_eur: 0,
     extra_eur: 0,
+    projection: true,
+    projection_note:
+      "T−Z is a projection of today's plan, not the act decision.",
+    data_quality: "complete",
+    validator: "valid",
   },
   copy: {
     house: "Pad Z = energie voor het huis (zelfconsumptie).",
@@ -43,9 +48,40 @@ test.describe("Trading view", () => {
     await expect(page.getByTestId("nav-trading")).toHaveAttribute("aria-current", "page");
     await expect(page.getByTestId("trading-live-label")).toContainText("Writes blocked");
     await expect(page.getByTestId("trading-eval-reason")).toContainText("trading staat uit");
+    await expect(page.getByTestId("trading-eval-projection")).toContainText("not the act decision");
+    await expect(page.getByTestId("trading-eval-projection")).toContainText("Data quality: complete");
+    await expect(page.getByTestId("trading-eval-projection")).toContainText("Plan validator: valid");
     await expect(page.getByTestId("trading-enabled")).toBeVisible();
     await expect(page.getByTestId("trading-arm")).toBeVisible();
     await expect(page.getByTestId("trading-test-blocked")).toBeVisible();
     trading.assertRequested();
+  });
+
+  test("arm confirm posts allow_export_discharge", async ({ page }) => {
+    let posted: Record<string, unknown> | null = null;
+    await mockRoute(page, "**/api/trading", (route) =>
+      route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify(TRADING_RESP),
+      }),
+    );
+    await page.route("**/api/settings", async (route) => {
+      if (route.request().method() !== "POST") {
+        await route.fallback();
+        return;
+      }
+      posted = JSON.parse(route.request().postData() || "{}");
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({ values: posted }),
+      });
+    });
+    await page.goto("/#trading");
+    await page.getByTestId("trading-arm").click();
+    await expect(page.getByTestId("trading-arm-confirm")).toBeVisible();
+    await page.getByTestId("trading-arm-confirm").click();
+    await expect.poll(() => posted?.["control.allow_export_discharge"]).toBe(true);
   });
 });

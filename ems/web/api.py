@@ -2999,6 +2999,8 @@ def create_app(
             "z_eur": 0.0,
             "extra_eur": 0.0,
         }
+        quality = _data_quality(now)
+        validator_status: str | None = None
         try:
             built = _build_plan_now(now)
             if built is not None:
@@ -3010,6 +3012,12 @@ def create_app(
                 evaluation = evaluate_trading(
                     plan, prices, now, cfg, soc_pct=float(soc), load_w_by=load_by,
                 )
+                try:
+                    validator_status = _validate_plan_obj(plan, _now).status
+                except Exception:
+                    _log.debug(
+                        "GET /api/trading validator badge failed (non-fatal)", exc_info=True,
+                    )
         except Exception:
             _log.debug("GET /api/trading evaluation failed (non-fatal)", exc_info=True)
             evaluation = {
@@ -3020,6 +3028,19 @@ def create_app(
                 "z_eur": 0.0,
                 "extra_eur": 0.0,
             }
+        # T-vs-Z is a projection for the card. The act path still runs the §8.11 validator
+        # and the dry-run floors; `validator` is that badge on the plan just built.
+        evaluation = {
+            **evaluation,
+            "projection": True,
+            "projection_note": (
+                "T−Z is a projection of today's plan, not the act decision. "
+                "The control loop still applies the validator and the dry-run floors "
+                "before any mode switch."
+            ),
+            "data_quality": quality,
+            "validator": validator_status,
+        }
         return {
             "trading_enabled": bool(s.get("planner.trading_enabled", False)),
             "min_extra_eur": float(s.get("planner.trading_min_extra_eur", 0.50)),
