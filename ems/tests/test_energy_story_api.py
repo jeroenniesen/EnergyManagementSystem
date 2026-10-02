@@ -58,7 +58,8 @@ def test_charge_actions_split_solar_from_grid():
     assert _action_from_intent("discharge_for_load", battery_w=1000.0) == "discharge"
     assert _action_from_intent(
         "discharge_for_load", battery_w=1000.0, allow_export_discharge=True,
-    ) == "full_speed_discharge"
+    ) == "discharge"  # flag no longer promotes DFL (E-11 / B-105)
+    assert _action_from_intent("export_for_profit", battery_w=1000.0) == "full_speed_discharge"
     # Export flag must not affect non-discharge intents.
     assert _action_from_intent(
         "allow_self_consumption", battery_w=300.0, allow_export_discharge=True,

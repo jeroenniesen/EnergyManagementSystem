@@ -18,6 +18,32 @@ def test_defaults_cover_every_field():
     assert d["control.allow_export_discharge"] is False
 
 
+def test_trading_settings_defaults_match_e11_lock():
+    """B-103 / #209: trading keys exist, default OFF / spot_minus_tax / €0.50 / uncapped."""
+    d = defaults()
+    assert d["planner.trading_enabled"] is False
+    assert d["planner.trading_min_extra_eur"] == 0.50
+    assert d["planner.max_export_kwh_per_day"] == 0.0
+    assert d["planner.min_export_kwh"] == 0.5
+    assert d["planner.export_mode"] == "peak_slice"
+    assert d["planner.max_cycles_per_day"] == 1.5
+    assert d["planner.daily_min_savings_eur"] == 0.20
+    assert d["prices.export_price_model"] == "spot_minus_tax"
+    assert d["control.allow_export_discharge"] is False
+    field = SETTINGS_BY_KEY["planner.export_mode"]
+    assert field.options == ("peak_slice", "full_dump")
+    clean, errors = validate_settings({
+        "planner.trading_enabled": True,
+        "planner.trading_min_extra_eur": 0.75,
+        "planner.max_export_kwh_per_day": 3.0,
+        "planner.export_mode": "full_dump",
+    })
+    assert errors == {}
+    assert clean["planner.trading_enabled"] is True
+    assert clean["planner.export_mode"] == "full_dump"
+    _c, err = validate_settings({"planner.export_mode": "surplus_fill"})
+    assert "planner.export_mode" in err
+
 def test_control_dry_run_setting_defaults_fail_safe():
     """#171: Settings control.dry_run defaults True (watch-only) and is restart-tagged."""
     d = defaults()

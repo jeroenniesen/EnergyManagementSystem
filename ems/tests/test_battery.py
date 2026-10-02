@@ -6,11 +6,11 @@ from ems.sources.battery import (
 )
 
 
-def test_discharge_mapping_is_fail_safe_across_control_contexts():
-    """The only contexts that may request forced export are explicit and enumerable."""
+def test_discharge_for_load_mapping_is_always_auto_except_car_session():
+    """DISCHARGE_FOR_LOAD → AUTO; allow_export_discharge does not promote it (E-11 / B-105)."""
     cases = (
         (False, False, PhysicalMode.AUTO),
-        (True, False, PhysicalMode.DISCHARGE),
+        (True, False, PhysicalMode.AUTO),
         (False, True, PhysicalMode.DISCHARGE),
         (True, True, PhysicalMode.DISCHARGE),
     )
@@ -25,16 +25,24 @@ def test_discharge_mapping_is_fail_safe_across_control_contexts():
         )
 
 
+def test_export_for_profit_requires_arming():
+    assert intent_to_mode(BatteryIntent.EXPORT_FOR_PROFIT) is PhysicalMode.AUTO
+    assert (
+        intent_to_mode(BatteryIntent.EXPORT_FOR_PROFIT, allow_export_discharge=True)
+        is PhysicalMode.DISCHARGE
+    )
+
+
 def test_intent_to_mode_covers_all_intents():
     assert intent_to_mode(BatteryIntent.ALLOW_SELF_CONSUMPTION) is PhysicalMode.AUTO
     assert intent_to_mode(BatteryIntent.GRID_CHARGE_TO_TARGET) is PhysicalMode.CHARGE
     assert intent_to_mode(BatteryIntent.HOLD_RESERVE) is PhysicalMode.IDLE
-    # serve-load defaults to AUTO (no export); forced discharge only when explicitly allowed
     assert intent_to_mode(BatteryIntent.DISCHARGE_FOR_LOAD) is PhysicalMode.AUTO
     assert (
         intent_to_mode(BatteryIntent.DISCHARGE_FOR_LOAD, allow_export_discharge=True)
-        is PhysicalMode.DISCHARGE
+        is PhysicalMode.AUTO
     )
+    assert intent_to_mode(BatteryIntent.EXPORT_FOR_PROFIT) is PhysicalMode.AUTO
     # every intent maps to something
     assert {intent_to_mode(i) for i in BatteryIntent} <= set(PhysicalMode)
 

@@ -110,7 +110,8 @@ class ControlDecisionEngine:
             if intent is BatteryIntent.GRID_CHARGE_TO_TARGET:
                 override_target_soc = 100.0
                 override_power_w = float(self._settings["battery.max_charge_w"])
-            elif intent is BatteryIntent.DISCHARGE_FOR_LOAD and self._allow_export_discharge():
+            elif intent is BatteryIntent.EXPORT_FOR_PROFIT and self._allow_export_discharge():
+                # E-11: forced export sizing arms EXPORT_FOR_PROFIT only — not DISCHARGE_FOR_LOAD.
                 override_target_soc = floor
                 override_power_w = float(self._settings["battery.max_discharge_w"])
             # Same §8.11 gate as an automatic plan (#135): materialise the override as a Plan
@@ -191,6 +192,6 @@ class ControlDecisionEngine:
         elif cur is not None and intent is cur.intent:
             if intent is BatteryIntent.GRID_CHARGE_TO_TARGET:
                 target_soc, power_w = cur.target_soc, cur.power_w
-            elif intent is BatteryIntent.DISCHARGE_FOR_LOAD and self._allow_export_discharge():
+            elif intent is BatteryIntent.EXPORT_FOR_PROFIT and self._allow_export_discharge():
                 target_soc, power_w = cur.floor_soc, cur.power_w
         return intent, reason, override_active, target_soc, power_w, val, car_action

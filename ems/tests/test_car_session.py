@@ -50,8 +50,11 @@ def test_car_session_maps_discharge_for_load_to_discharge_even_without_export():
                           car_session=True) is PhysicalMode.DISCHARGE
     # ...but the DEFAULT (no car session, no export) is unchanged: DISCHARGE_FOR_LOAD → AUTO.
     assert intent_to_mode(DFL, allow_export_discharge=False) is PhysicalMode.AUTO
-    # ...and the pre-existing export path is untouched.
-    assert intent_to_mode(DFL, allow_export_discharge=True) is PhysicalMode.DISCHARGE
+    # allow_export_discharge no longer promotes DFL — EXPORT_FOR_PROFIT only (E-11 / B-105).
+    assert intent_to_mode(DFL, allow_export_discharge=True) is PhysicalMode.AUTO
+    assert intent_to_mode(
+        BatteryIntent.EXPORT_FOR_PROFIT, allow_export_discharge=True,
+    ) is PhysicalMode.DISCHARGE
 
 
 def test_car_session_flag_does_not_disturb_other_intents():
@@ -59,6 +62,7 @@ def test_car_session_flag_does_not_disturb_other_intents():
         (BatteryIntent.ALLOW_SELF_CONSUMPTION, PhysicalMode.AUTO),
         (BatteryIntent.GRID_CHARGE_TO_TARGET, PhysicalMode.CHARGE),
         (BatteryIntent.HOLD_RESERVE, PhysicalMode.IDLE),
+        (BatteryIntent.EXPORT_FOR_PROFIT, PhysicalMode.AUTO),  # still needs arming
     ):
         assert intent_to_mode(intent, car_session=True) is mode
 

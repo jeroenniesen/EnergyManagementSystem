@@ -37,18 +37,18 @@ The Smart Energy Manager ("EMS") is a small Python service that decides, a few t
 ### Goals
 - **Explainable & configurable.** You always know *what* it will do and *why* — including why it is **not** charging/discharging right now. Strategy lives in a single well-commented config file.
 - **Mode-switching, not power-tracking.** Respect the Indevolt API: change mode infrequently (target: a handful of writes per day), never a tight control loop. A **minimum dwell time** per mode backs up the per-day cap.
-- **Indevolt owns P1 zeroing — don't fight vendor control.** When paired with the P1 meter the battery runs its **own** fast self-consumption controller (modulating power to keep grid flow ≈ 0). The EMS sets *intent/mode* and lets that controller do the instantaneous tracking; it **never** repeatedly corrects minor live-power deviations. The EMS outputs a high-level **`BatteryIntent`** ("allow self-consumption", "grid-charge to target", "hold reserve", "discharge for load"), not low-level power behaviour (§7). *Whether P1 zeroing stays active in each mode is hardware behaviour we **verify and store at M1**, not assume (§6.5, §17).*
-- **Two seasonal strategies** that switch automatically (or manually), with **hysteresis** so the strategy does not flip daily around the threshold:
+- **Indevolt owns P1 zeroing — don't fight vendor control.** When paired with the P1 meter the battery runs its **own** fast self-consumption controller (modulating power to keep grid flow ≈ 0). The EMS sets *intent/mode* and lets that controller do the instantaneous tracking; it **never** repeatedly corrects minor live-power deviations. The EMS outputs a high-level **`BatteryIntent`** ("allow self-consumption", "grid-charge to target", "hold reserve", "discharge for load", **"export for profit"**), not low-level power behaviour (§7). *Whether P1 zeroing stays active in each mode is hardware behaviour we **verify and store at M1**, not assume (§6.5, §17).*
+- **Two seasonal strategies** that switch automatically (or manually), with **hysteresis** so the strategy does not flip daily around the threshold — plus an **opt-in trading mode** (§7.3 / §8.3a) that may run year-round:
   - **Summer:** charge the battery from solar surplus during the day so the house runs the *full night* on battery (+ a configurable reserve).
-  - **Winter:** buy electricity at the daily price *dip* and discharge it during price *peaks* (price arbitrage), because solar is too small to fill the battery.
+  - **Winter:** buy electricity at the daily price *dip* and discharge it during price *peaks* (load arbitrage — serve the house, not dump to the grid), because solar is too small to fill the battery.
+  - **Trading (opt-in, default off):** day comparison of path **T** (buy-to-sell / forced export on expensive slots) vs path **Z** (self-consumption / house-first). Only when T beats Z by a configurable €/day threshold does the planner emit `EXPORT_FOR_PROFIT` → forced `DISCHARGE` at max power. Mode-switching only — no watt-tracking.
 - **Free data only** for forecasting and prices (no paid subscriptions required to run the core).
 - **Runs on a Raspberry Pi**, survives reboots, recovers cleanly, **fails *safe*** (if unsure, fall back to the battery's own self-consumption mode). The system must never be worse than "no EMS".
-- **Economically honest.** Arbitrage is only taken when the spread beats round-trip losses **plus** a degradation allowance **plus** a risk margin **plus** any grid fees — not a fixed magic number (§8.3).
+- **Economically honest.** Arbitrage is only taken when the spread beats round-trip losses **plus** a degradation allowance **plus** a risk margin **plus** any grid fees — not a fixed magic number (§8.3). Trading values export with `prices.export_price_model = spot_minus_tax` by default (2027-ready; may undervalue under today's saldering on purpose).
 
 ### Non-goals (v1 — YAGNI)
-- No second-by-second power optimisation / no model-predictive control loop.
+- No second-by-second power optimisation / no model-predictive control loop (**no continuous watt-tracking** — trading is still mode-switching only).
 - **No automatic EV charging *control* in v1** — the Tesla is **read-only** input (its charging is a load we plan around, measured by the HomeWizard car meter). EV charge *control* is deferred to a **separate v2 specification** ([`docs/v2-ev-control.md`](docs/v2-ev-control.md), currently a placeholder stub), because it carries its own auth, safety, and UX complexity (§16).
-- No selling/trading optimisation beyond simple price-window arbitrage.
 - **No ML in the *core* path.** The baseline always runs without ML: a rolling historical average for consumption and the rule-based planner. An **optional ML layer** (learned load forecasting, a learned planner, and a local-LLM explainer) is a **documented, GPU-gated Jetson extension** — *additive, never required, and it never bypasses the safety layer* (§8.11). It is selected by a runtime **planner-mode switch** (`rule_based` | `ml` | `advisory`) and specified in [`docs/ml-layer.md`](docs/ml-layer.md). On a plain Pi it is simply off.
 
 ---
@@ -318,7 +318,7 @@ Indevolt is a German brand (Power Genius GmbH). Your system is a **SolidFlex 200
 **Control hygiene (new, fail-safe):**
 - **Min dwell per mode** (`min_mode_dwell_seconds`, e.g. 600 s) in addition to `max_mode_switches_per_day` — backs up the write cap and prevents flapping (§8.8).
 - **Idempotency.** Never resend a command if the battery's *current* state already matches the desired mode. Only (re)write when observed state contradicts intent.
-- **Export gating.** Serving house load during expensive windows is done via **self-consumption (`AUTO`)**, not forced discharge (§8.3). The EMS issues a **forced `DISCHARGE` only when `allow_export_discharge` is on** (deliberate grid export); when it's off (default) the EMS never force-discharges, so it can't dump power to the grid for free.
+- **Export gating.** Serving house load during expensive windows is done via **self-consumption (`AUTO`)**, not forced discharge (§8.3). The EMS issues a **forced `DISCHARGE` only for `EXPORT_FOR_PROFIT`** when `control.allow_export_discharge` is on (deliberate grid export / trading); when it's off (default) the EMS never force-discharges for profit, so it can't dump power to the grid by accident. **`allow_export_discharge` does not arm `DISCHARGE_FOR_LOAD`** — that intent always maps to `AUTO` (house-serve). See §7.1 / §8.3a.
 - **Command confirmation.** After a write, **poll HA/RPC state** for a few cycles and record whether the battery actually entered the desired mode. If not confirmed → it counts as a failure.
 - **Failure behaviour.** On a failed/unconfirmed command: **retry once with backoff** → if still failing, command **`AUTO`** (safe) → raise the `battery_write_failed` alert (§9.3). Never leave the battery in an unknown forced state.
 - **Manual-change tracking.** If the battery's mode changes **outside** the EMS (you flipped it in the app/HA, or it's in a vendor schedule), detect the divergence. Default policy: **respect a manual override** for `manual_override_respect_minutes` and surface it in the UI; after that, resume planning (configurable: `respect` vs `reassert`).
@@ -341,19 +341,21 @@ The planner outputs *intent*, not raw commands. Each intent carries the data it 
 | `ALLOW_SELF_CONSUMPTION` | — | `AUTO` | energy-mode select → self-consumption | **YES** — vendor controller runs; EMS does nothing per-cycle |
 | `GRID_CHARGE_TO_TARGET` | `target_soc`, `deadline`, `power` | `CHARGE` | `indevolt.charge {power, target_soc}` | **NO** — forced charge |
 | `HOLD_RESERVE` | `allow_solar_charge` | `IDLE` | standby button / floor = current SoC | **N/A / partial** |
-| `DISCHARGE_FOR_LOAD` | `floor_soc`, `deadline` | `AUTO` (serve load) **/** `DISCHARGE` (export) | **`AUTO`/self-consumption if P1-zeroing serves load** (the normal case); **forced `indevolt.discharge` only when export is explicitly allowed** (`allow_export_discharge`) | **YES** (serving load) **/ NO** (forced export) |
+| `DISCHARGE_FOR_LOAD` | `floor_soc`, `deadline` | `AUTO` (serve load) | **`AUTO`/self-consumption** — house-serve only; **never** armed by `allow_export_discharge` | **YES** (serving load) |
+| `EXPORT_FOR_PROFIT` | `floor_soc`, `deadline`, `power_w` (≤ probed `max_discharge_w`), optional `target_export_kwh` | `DISCHARGE` (when armed) | **`indevolt.discharge`** only when `control.allow_export_discharge` **and** capability `discharge` present; otherwise **do not emit** / degrade slot → `ALLOW_SELF_CONSUMPTION` + reason | **NO** (forced export; CONFIRM@M1) |
 
-- **`DISCHARGE_FOR_LOAD` is *not* a fixed-watt dump.** Serving the house during an expensive window is done by the vendor's self-consumption (`AUTO`) drawing down storage — *not* by the EMS tracking power every cycle (which §2 forbids). Force-discharge is reserved for deliberate grid export. See §8.3 step 4 and §6.5.
+- **`DISCHARGE_FOR_LOAD` is *not* a fixed-watt dump.** Serving the house during an expensive window is done by the vendor's self-consumption (`AUTO`) drawing down storage — *not* by the EMS tracking power every cycle (which §2 forbids). See §8.3 step 4 and §6.5.
+- **`EXPORT_FOR_PROFIT` is the only planner intent that force-discharges for grid export** (Optie A — E-11 / #209). It is emitted only by the **trading** path (§8.3a) when path T beats path Z. **`control.allow_export_discharge` arms this intent alone** — it must **not** turn every `DISCHARGE_FOR_LOAD` into a dump. Default off; Live writes still need the existing dry-run floors (yaml `control.dry_run` / Watch only + `control.operational`).
 - **`HOLD_RESERVE.allow_solar_charge`** (config) decides whether holding reserve still lets *solar* charge the battery (summer "build toward sunset") or blocks all charge (pure freeze).
 - **Narrow `car_session` exception (feat/car-charge-modes, §4.5).** `DISCHARGE_FOR_LOAD` also becomes a forced `DISCHARGE` when the caller passes `car_session=True` (`intent_to_mode`, `ems/sources/battery.py`) — **independent of `allow_export_discharge`** — for the two car-charging discharge behaviours (`static_discharge`/`match_home_load`). This is safe-enough *only* because the setpoint stays bounded to ~the predicted non-EV house load (not a fixed export dump) and the session is re-evaluated every control cycle; see §4.5 for the full rationale, the reserve floor, and the write-bound (dwell + cap + recommand) rules.
-- **Preconditions (checked before any *overriding* intent — charge/discharge/hold):** battery online; control path enabled (probe ok); **grid charging allowed** (charge intents); **P1 linked to Indevolt** (paired-meter check, §6.5); **SoC valid** (plausible+fresh, §4.7); not inside the startup grace period (§13.4). If any fails → fall back to `ALLOW_SELF_CONSUMPTION` + alert.
+- **Preconditions (checked before any *overriding* intent — charge/discharge/hold/export):** battery online; control path enabled (probe ok); **grid charging allowed** (charge intents); **P1 linked to Indevolt** (paired-meter check, §6.5); **SoC valid** (plausible+fresh, §4.7); not inside the startup grace period (§13.4); for `EXPORT_FOR_PROFIT` also **`discharge` in `CapabilityReport.services`** and `max_discharge_w > 0`. If any fails → fall back to `ALLOW_SELF_CONSUMPTION` + alert.
 
 ### 7.2 Physical battery modes (what the controller actually commands)
 | Physical mode | Battery behaviour | Driven by intent |
 |---|---|---|
-| `AUTO` | Self-consumption (vendor P1-zeroing controller runs) | `ALLOW_SELF_CONSUMPTION` |
+| `AUTO` | Self-consumption (vendor P1-zeroing controller runs) | `ALLOW_SELF_CONSUMPTION`, `DISCHARGE_FOR_LOAD` |
 | `CHARGE` | Force charge to a **target SoC** | `GRID_CHARGE_TO_TARGET` |
-| `DISCHARGE` | Force discharge for **deliberate export only** (when `allow_export_discharge`) — serving load uses `AUTO`, not this | `DISCHARGE_FOR_LOAD` only when exporting |
+| `DISCHARGE` | Force discharge for **deliberate export** (when `allow_export_discharge`) — serving load uses `AUTO`, not this | `EXPORT_FOR_PROFIT` (armed); narrow `car_session` on `DISCHARGE_FOR_LOAD` (§4.5) |
 | `IDLE` | Hold SoC (no charge/discharge) | `HOLD_RESERVE` |
 
 > **IDLE validation & emulation (made precise).** A true hold requires either the **standby button** (if the probe confirms it holds SoC without dumping) or RPC `47015=0`. **If neither truly holds**, emulate IDLE by: (a) commanding `CHARGE` with `power≈0` / `target_soc = current SoC`, or (b) setting the **discharge floor (min SoC) to the current SoC** so `AUTO` cannot discharge below it, then `AUTO`. **Distinguish standby/hold from "self-consumption disabled"** if the battery exposes both — prefer the one that holds SoC without exporting. The probe (§6.5) records which is available; the chosen strategy is logged in the decision reason. **CONFIRM@M1.**
@@ -362,10 +364,11 @@ The planner outputs *intent*, not raw commands. Each intent carries the data it 
 | Strategy mode | Meaning | Default trigger |
 |---|---|---|
 | `SUMMER_SOLAR` | Fill battery from solar surplus; run the night on battery | Forecast daily solar ≥ threshold for N days, or month in Apr–Sep |
-| `WINTER_ARBITRAGE` | Charge at price dip, discharge at price peak | Forecast solar low, or month in Oct–Mar |
+| `WINTER_ARBITRAGE` | Charge at price dip, **serve house load** at price peak (`DISCHARGE_FOR_LOAD` → `AUTO`) | Forecast solar low, or month in Oct–Mar |
+| `TRADING` | Day **T vs Z**: buy-to-sell / forced export only when T beats Z by ≥ `planner.trading_min_extra_eur`. **Not** a `strategy.mode` enum value — entered via opt-in overlay `planner.trading_enabled` (default **off**); when T loses, the seasonal summer/winter plan (path Z) runs | Opt-in overlay; **year-round** (including summer) — not winter-only |
 | `MANUAL` | You pin a specific behaviour | Set by you in HA / web UI |
 
-Selection is **configurable** (calendar month, rolling solar-forecast threshold, or manual). **Transition hysteresis** (§8.4) prevents the strategy flipping daily around the threshold.
+Seasonal selection (`auto` / `summer` / `winter`) is **configurable** (calendar month, rolling solar-forecast threshold, or manual). **Transition hysteresis** (§8.4) prevents the strategy flipping daily around the threshold. **Trading** is a separate opt-in overlay (portal **Trading** menu — E-11 / B-106): when `planner.trading_enabled` is on, each day compares path T vs path Z (§8.3a); if T does not clear the € threshold, the seasonal summer/winter plan (path Z) runs unchanged. Do **not** add `trading` to `strategy.mode` in v1.
 
 ---
 
@@ -414,17 +417,36 @@ Selection is **configurable** (calendar month, rolling solar-forecast threshold,
    ```
    Trade only slots where `net_benefit_per_kwh > 0`. The old `arbitrage_min_spread_eur` remains as a coarse floor / sanity bound.
 3. **Charge sizing → a target SoC by a morning deadline.** Compute the `required_kwh` to serve the profitable windows and convert it to a **`target_soc`** (§8.9); schedule `CHARGE` in the cheapest slots **before the first expensive period** (the morning-peak deadline). **Do not fill to 95% by default in winter** — charge to the computed `target_soc` (≤ the season ceiling), not a fixed ceiling.
-4. **Discharge = serve load during expensive periods, *via the vendor's own self-consumption*** — not a per-cycle power-tracking loop (which §2 forbids). "Serve exactly the load" is achieved by letting the battery self-consume from storage (`DISCHARGE_FOR_LOAD` relies on P1-zeroing staying active in discharge — **CONFIRM@M1**, §6.5). The **force-discharge service is reserved for deliberate export** (`allow_export_discharge`). If the probe finds the vendor does *not* serve-load in forced discharge, "discharge during the peak" degrades to keeping the battery in self-consumption (`AUTO`) drawing down storage, never a fixed-watt grid dump.
+4. **Discharge = serve load during expensive periods, *via the vendor's own self-consumption*** — not a per-cycle power-tracking loop (which §2 forbids). "Serve exactly the load" is achieved by letting the battery self-consume from storage (`DISCHARGE_FOR_LOAD` → `AUTO`; P1-zeroing — **CONFIRM@M1**, §6.5). **Forced discharge for grid export is a separate intent** (`EXPORT_FOR_PROFIT`, §8.3a), armed only by `control.allow_export_discharge`. If the probe finds the vendor does *not* serve-load in forced discharge, "discharge during the peak" degrades to keeping the battery in self-consumption (`AUTO`) drawing down storage, never a fixed-watt grid dump via `DISCHARGE_FOR_LOAD`.
 5. **SoC reservation before the evening peak.** The morning-peak discharge floor is **computed, not a magic number**: `evening_reserve_kwh` = the energy the evening windows must serve (their `required_kwh`), so the projected SoC entering the evening peak ≥ `evening_reserve_kwh` above the reserve floor. Enforced via the **projected-SoC curve** (§8.5) and checked by the validator (§8.11). (Definition in [`docs/control-model.md`](docs/control-model.md) §4.)
-6. **Cycle budget.** Respect `max_cycles_per_day` / `max_cycles_per_month` for arbitrage, where **one equivalent full cycle = (kWh charged + kWh discharged) / (2 × `usable_kwh`)** (definition in [`docs/control-model.md`](docs/control-model.md) §4); once exhausted, stop trading for the period.
-7. **Hysteresis & no-trade mode.** On "barely profitable" days apply hysteresis (don't flip on a 1-cent wobble). If projected daily savings `< daily_min_savings_eur`, enter **no-trade mode** (`AUTO` all day) — the cycles aren't worth the wear.
+6. **Cycle budget.** Respect `max_cycles_per_day` / `max_cycles_per_month` for arbitrage **and trading** (shared budget), where **one equivalent full cycle = (kWh charged + kWh discharged) / (2 × `usable_kwh`)** (definition in [`docs/control-model.md`](docs/control-model.md) §4); once exhausted, stop trading for the period. Default `max_cycles_per_day` = **1.5**.
+7. **Hysteresis & no-trade mode.** On "barely profitable" days apply hysteresis (don't flip on a 1-cent wobble). If projected daily savings `< daily_min_savings_eur`, enter **no-trade mode** (`AUTO` all day) — the cycles aren't worth the wear. **Whole-day no-trade** applies to load-arbitrage **and** the trading overlay alike (no special "keep load, skip export" exception).
 8. Add forecast solar on top (reduces how much must be bought).
+
+### 8.3a Trading strategy — path T vs path Z (opt-in, year-round)
+
+> **Product lock (E-11, checklist 2026-10-02).** Decisions in the export-arbitrage checklist **supersede** earlier design notes that treated export as winter-only surplus-fill without buy-to-sell. Trading is a **third strategy mode** alongside summer/winter — not a bolt-on that overloads `DISCHARGE_FOR_LOAD`.
+
+**Objective:** on an opt-in day, decide whether **trading** (path **T**: charge cheap → forced export / buy-to-sell on expensive slots) earns enough **extra** € vs **self-consumption / house-first** (path **Z**). Only then emit `EXPORT_FOR_PROFIT` → physical `DISCHARGE` at ≤ probed `max_discharge_w`. Still **mode-switching only** — never a watt-tracking loop.
+
+1. **Master opt-in:** `planner.trading_enabled` default **false**. When off, behaviour = today's summer/winter planners; no `EXPORT_FOR_PROFIT` slots.
+2. **Year-round:** T-vs-Z may run in summer and winter; no seasonal ban on export.
+3. **Day comparison:** project path T vs path Z for the local day. Emit trading actions only if
+   `projected_T_eur − projected_Z_eur ≥ planner.trading_min_extra_eur` (default **€0.50**/day, configurable). Below threshold → run path Z (seasonal plan) and publish a not-acting reason.
+4. **Buy-to-sell in v1:** under trading mode, charge sizing **may** include energy intended for later export (not load-only). Still respect reserve floor, evening reserve where applicable, shared cycle budget, and the optional kWh cap.
+5. **Export valuation:** gate and projection use `export_value(..., prices.export_price_model)`. **Default model = `spot_minus_tax`** (2027-ready). Negative export value ⇒ never dump that slot.
+6. **Slot policy `planner.export_mode`:** `peak_slice` (default) — planner picks discharge slots the same way it picks charge slots (optimal expensive windows, dwell-aware); `full_dump` — empty available surplus down to the SoC reserve across the peak window. Both are mode switches at `power_w`, not continuous control.
+7. **Caps:** `planner.max_export_kwh_per_day` — **0 / empty = no hard cap** (export down to SoC reserve only). `planner.min_export_kwh` skips tiny dumps (default 0.5). Shared `planner.max_cycles_per_day` (default 1.5) with load arbitrage.
+8. **Arming / dry-run:** planning may log `EXPORT_FOR_PROFIT` in dry-run; **live forced `DISCHARGE` writes** require `control.allow_export_discharge` **and** the existing two floors (`config.yaml`/`dev.mode` dry-run + Settings Watch only / `control.operational`). No fixed N-day gate — user arms when ready (portal **Trading** menu; optional **Test batterij**, §9.1 / B-107).
+9. **Fail-safe:** `daily_min_savings` fail → whole-day no-trade (`AUTO`). Unsafe/stale data, missing `discharge` capability, or flag off → no export intent.
+
+> **Implemented status:** config/schema lock (B-103 / #209); intent + mapping + validator (B-105 / #211); planner T-vs-Z (B-104 / #210); UI/arming (B-106…B-108). Until those land, runtime behaviour remains summer/winter only.
 
 > **Implemented — post-2027 economics (`ems/planner/economics.py`).** Two shared, pure money functions back both live planners *and* the finance/savings math, so the arbitrage gate and the reported benefit never drift apart:
 > - `breakeven(charge_price, …)` — the sell price a stored kWh must beat (charge price grossed up for round-trip losses + wear + risk margin). This is the profitability test in step 2, factored out.
 > - `export_value(price, model, …)` — what one **exported** kWh is worth under a configurable feed-in model (`prices.export_price_model`):
->   - **`net_metering`** (default) — the full retail price (today's Dutch *saldering*: export nets against import at the full price);
->   - **`spot_minus_tax`** — spot price **−** energy tax (post-2027 dynamic export). This **may be negative** on a negative-spot slot — exporting can *cost* money — and is deliberately **not** clamped (§2 "negative prices & export tariffs are real");
+>   - **`spot_minus_tax`** (**default**, 2027-ready) — spot price **−** energy tax. This **may be negative** on a negative-spot slot — exporting can *cost* money — and is deliberately **not** clamped (§2 "negative prices & export tariffs are real");
+>   - **`net_metering`** — the full retail price (today's Dutch *saldering*: export nets against import at the full price);
 >   - **`fixed`** — a flat feed-in tariff, independent of spot.
 >
 >   `day_finance` credits export via the selected model in **both** the actual and the no-battery baseline cost, so under a low feed-in the battery's measured benefit grows honestly rather than assuming export is free. The consume-side counterpart is the **negative-price soak** (`planner.negative_price_soak`, §8.2 step 5): charge when the price is below €0.
@@ -544,7 +566,7 @@ battery:
   min_reserve_soc: 10      # %
   round_trip_efficiency: 0.90
   min_mode_dwell_seconds: 600        # backs up max-switches/day; anti-flap
-  allow_export_discharge: false      # if false, serve load via AUTO; never force-discharge to export (§7.1/§8.3)
+  allow_export_discharge: false      # arms EXPORT_FOR_PROFIT → forced DISCHARGE only (§7.1/§8.3a); does NOT arm DISCHARGE_FOR_LOAD
   manual_override_policy: respect    # respect | reassert
   manual_override_respect_minutes: 120
   takeover_policy: stand_down        # stand_down | override  (if battery already in a vendor schedule)
@@ -573,7 +595,7 @@ prices:
     tibber_total_includes_all: false  # CONFIRM@M0 for your tariff
     import_fee_eur_per_kwh: 0.0       # added on top if above is false
     export_fee_eur_per_kwh: 0.0
-  export_price_model: net_metering    # net_metering (default, today's saldering) | spot_minus_tax (post-2027) | fixed
+  export_price_model: spot_minus_tax  # spot_minus_tax (default, 2027-ready) | net_metering (saldering) | fixed
   energy_tax_eur_per_kwh: 0.13        # subtracted from spot when export = spot_minus_tax
   fixed_feed_in_eur_per_kwh: 0.01     # flat €/kWh paid per export when export = fixed
   export_tariff_eur_per_kwh: 0.0      # (legacy) flat export value; superseded by export_price_model
@@ -582,8 +604,8 @@ arbitrage:
   degradation_cost_eur_per_kwh: 0.05  # battery wear allowance per kWh cycled
   risk_margin_eur_per_kwh: 0.02
   arbitrage_min_spread_eur: 0.12      # coarse floor / sanity bound (NOT the only test)
-  daily_min_savings_eur: 0.20         # below this projected saving -> no-trade mode
-  max_cycles_per_day: 1.5             # equivalent full cycles for arbitrage
+  daily_min_savings_eur: 0.20         # below this projected saving -> whole-day no-trade (load + trading)
+  max_cycles_per_day: 1.5             # equivalent full cycles — SHARED by load-arbitrage + trading
   max_cycles_per_month: 30
   min_grid_charge_kwh: 0.5            # never schedule tiny inefficient grid charges (§8.10)
   max_daily_grid_charge_kwh: 12       # hard cap on grid energy bought/day (§8.10)
@@ -651,6 +673,14 @@ web:
 
 planner:
   mode: rule_based         # rule_based | ml | advisory  (UI-editable; §8). ml/advisory need the ML layer.
+  # --- Trading / export-arbitrage (E-11; defaults OFF / conservative) ---
+  trading_enabled: false              # opt-in T-vs-Z overlay (§8.3a); off = summer/winter only
+  trading_min_extra_eur: 0.50         # T must beat Z by ≥ this €/day before EXPORT_FOR_PROFIT
+  max_export_kwh_per_day: 0           # 0 = no hard cap (empty to SoC reserve); >0 = AC kWh/day ceiling
+  min_export_kwh: 0.5                 # skip tiny dumps below this
+  export_mode: peak_slice             # peak_slice (planner picks slots) | full_dump (empty to reserve)
+  max_cycles_per_day: 1.5             # CANONICAL runtime cycle budget (overlays arbitrage.max_cycles_per_day)
+  daily_min_savings_eur: 0.20         # CANONICAL runtime twin (overlays arbitrage.daily_min_savings_eur); fail → whole-day no-trade
 
 ml:                        # OPTIONAL forecaster/optimizer layer — off on a plain Pi; full schema in docs/ml-layer.md
   enabled: false           # master switch; auto-true when a supported accelerator is detected
@@ -1117,7 +1147,7 @@ Each milestone is independently useful and testable.
 - **Iteration 7 — Accelerators + external explainer (this revision).**
   - **Accelerator-agnostic ML:** generalized the GPU gate from CUDA-only to **any supported accelerator** — CUDA (Jetson), **Metal/CoreML/MLX (Apple Silicon)**, CPU fallback. `require_gpu` → **`require_accelerator`**; runtimes set to `auto`; `capabilities.py` detects the best backend. Apple Silicon is now a first-class ML dev host (§11.6), with the caveat that Docker-on-macOS has no GPU passthrough → the ML sidecar runs **natively** (same localhost-sidecar pattern as the Jetson).
   - **Explainer decoupled + external option:** the **`Explainer`** is its own top-level config block with three backends — `template` (offline, default), `local_llm` (accelerator), and **`external_llm`** (a cloud LLM API, e.g. MiniMax) which **works on a plain Pi**. `external_llm` is **off by default, opt-in**, sends a **minimal redacted payload**, never touches control, falls back to the template, and its API key is a secret (privacy/security §12). Touched §2, §6.5/§7.1, §9 config, §9.1/§9.3, §11.6, §12, §13, §15, ml-layer.md, jetson-deployment.md, config-reference.md, CLAUDE.md, README.md, GOAL.md.
-- **Iteration 8 — Post-2027 economics pass.** Export-price-aware valuation in the new pure `ems/planner/economics.py`: shared `breakeven()` (factored out of the arbitrage gate, both planners behaviour-identical) + `export_value()` with `net_metering` (default, today's *saldering*) / `spot_minus_tax` (post-2027, may go negative, unclamped) / `fixed` models; `day_finance` credits export per model in **both** the actual and the no-battery baseline. Added the opt-in **negative-price soak** (`planner.negative_price_soak`, default **off**) across the winter, adaptive and summer planners — charge when the price is below €0, with a plain "you are paid to charge" reason and a plan-level "+N negative-price slots" note. Replaced the old `midday_negative_price_action` sketch with the implemented bool. Touched §8.2/§8.3, §9 config, config-reference.md.
+- **Iteration 8 — Post-2027 economics pass.** Export-price-aware valuation in the new pure `ems/planner/economics.py`: shared `breakeven()` (factored out of the arbitrage gate, both planners behaviour-identical) + `export_value()` with `spot_minus_tax` (**product default**, 2027-ready, may go negative, unclamped) / `net_metering` (today's *saldering*) / `fixed` models; `day_finance` credits export per model in **both** the actual and the no-battery baseline. Added the opt-in **negative-price soak** (`planner.negative_price_soak`, default **off**) across the winter, adaptive and summer planners — charge when the price is below €0, with a plain "you are paid to charge" reason and a plan-level "+N negative-price slots" note. Replaced the old `midday_negative_price_action` sketch with the implemented bool. Touched §8.2/§8.3, §9 config, config-reference.md. **E-11 / B-103 later locked the settings default to `spot_minus_tax` and added trading mode (`EXPORT_FOR_PROFIT`, §8.3a).**
 - **Iteration 9 — EV charging advice pass.** Shipped the v1 EV-charging-advice feature (design [`docs/superpowers/specs/2026-07-12-ev-charging-design.md`](docs/superpowers/specs/2026-07-12-ev-charging-design.md)): a static EU car database (`ems/cars.py`), a weekly per-day minimum-SoC schedule (`ems/ev_schedule.py`), charging-session detection + a manual-anchor SoC estimate (`ems/ev_session.py`), and a pure deadline-driven, cheapest-slot-first charge planner (`ems/ev_planner.py`) — new `GET /api/cars`/`GET /api/car/plan`/`POST /api/car/soc`, a dashboard + iOS Car card, and an `ev_sessions.csv` export line. Advisory/visual only, no charger/car control (§16, `docs/v2-ev-control.md` updated from a placeholder to reflect the v1 advisory layer); the existing car-guard (§4.5) is untouched, pinned by a dedicated regression test. Touched §9.1, §16, config-reference.md, v2-ev-control.md.
 - **Iteration 10 — Winter-proofing (B-15 + B-22 + B-16).** **Seasonal-transition hysteresis** (§8.4): the `auto` season pick is now dampened by `resolve_strategy_hysteretic`/`HysteresisState` — a change must hold `strategy.hysteresis_days` (default 3; 0 disables) consecutive daily evaluations before it commits, so shoulder-month days can't flap; fresh/absent state behaves exactly like the prior instantaneous pick, the counter is KV-persisted (restart-safe) and threaded through `replay.py`; the summer **sunset deadline** was confirmed already forecast-derived (`sunset_after`, deliberately not `astral`). **Projected-SoC gate** (§8.5/§8.11): the pre-apply validator now reuses `projection.py` to reject an unreachable grid-charge plan (>5 pp short of `target_soc` by `deadline`) — `unsafe` ⇒ fail safe to `AUTO`; conservative, data-quality-aware (`complete` only), behind `planner.validate_projection` (default on). **Missed-window recovery** (§8.12): new pure `planner/recovery.py` catches up a missed cheap charge window in the cheapest remaining slots before the deadline (honest partial when the hours run out), folded into `_current_plan` so it passes the same §8.11 validator + control caps and never fights the hysteresis, behind `planner.recovery_enabled` (default on); audited + calmly notified, one recovery per window per day. Touched §8.4, §8.5, §8.11, §8.12, config-reference.md.
 - **Iteration 11 — Car-charging battery modes, UI (this revision, feat/car-charge-modes).** The car-guard (§4.5) now offers three operator-chosen behaviours instead of only holding — `hold` (default, unchanged) / `static_discharge` (fixed W, names the physics when it overshoots the house load) / `match_home_load` (battery covers the predicted non-EV house load) — via `control.car_charging_battery_mode` + `control.car_discharge_w`, routed through the narrow `car_session` `DISCHARGE` mapping (§7.1) with a bounded recommand rule, a ≥10-minute dwell and a 6-command session cap so it stays a mode-switch, not a power-tracking loop. Shipped a Car-tab "While the car charges" section (three keyboard-accessible radio cards + the reworded master toggle, moved out of Settings, immediate-save) and a mode-aware dashboard badge (previously a static "battery held" regardless of mode). Touched §4.5, §7.1, config-reference.md.

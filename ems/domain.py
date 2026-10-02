@@ -11,6 +11,7 @@ class BatteryIntent(StrEnum):
     GRID_CHARGE_TO_TARGET = "grid_charge_to_target"
     HOLD_RESERVE = "hold_reserve"
     DISCHARGE_FOR_LOAD = "discharge_for_load"
+    EXPORT_FOR_PROFIT = "export_for_profit"  # E-11 trading: forced DISCHARGE when armed
 
 
 class PlannerMode(StrEnum):

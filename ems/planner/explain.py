@@ -68,6 +68,7 @@ _INTENT_LABEL = {
     BatteryIntent.GRID_CHARGE_TO_TARGET: "charge",
     BatteryIntent.HOLD_RESERVE: "hold",
     BatteryIntent.DISCHARGE_FOR_LOAD: "discharge",
+    BatteryIntent.EXPORT_FOR_PROFIT: "export",
 }
 
 

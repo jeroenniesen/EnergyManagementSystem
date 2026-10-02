@@ -21,6 +21,8 @@ from ems.planner.schedule import Plan, PlanSlot
 # Severity order: unsafe (control-blocking) > warn (degraded, still usable) > (none).
 _UNSAFE, _WARN = "unsafe", "warn"
 _CHARGE_INTENTS = (BatteryIntent.GRID_CHARGE_TO_TARGET,)
+_EXPORT_INTENTS = (BatteryIntent.EXPORT_FOR_PROFIT,)
+_DISCHARGE_POWER_INTENTS = (BatteryIntent.DISCHARGE_FOR_LOAD, BatteryIntent.EXPORT_FOR_PROFIT)
 
 
 @dataclass(frozen=True)
@@ -119,6 +121,10 @@ def clamp_plan_power(
         if limit is None or s.power_w <= limit + 1e-6:
             new_slots.append(s)
             continue
+        # Only clamp charge / export / DFL power requests — never invent power on idle/auto.
+        if s.intent not in _CHARGE_INTENTS and s.intent not in _DISCHARGE_POWER_INTENTS:
+            new_slots.append(s)
+            continue
         new_slots.append(replace(s, power_w=float(limit)))
         changed = True
         if not any(f.code == "power_clamped_to_capability" for f in findings):
@@ -151,6 +157,8 @@ def validate_plan(
     load_w_by: dict | None = None,
     settings_max_charge_w: float | None = None,
     settings_max_discharge_w: float | None = None,
+    max_export_kwh_per_day: float | None = None,
+    allow_export_discharge: bool = False,
 ) -> PlanValidation:
     """Validate `plan` against the current conditions. Returns a PlanValidation; `unsafe` ⇒ the
     controller must hold AUTO. Each check appends at most one representative finding (not one per
@@ -165,7 +173,11 @@ def validate_plan(
     `load_w_by`; fall back to scalar `expected_load_w`. Zero/None disables the check.
 
     Optional `settings_max_*_w` enrich the power-exceeds finding when settings and capability
-    diverge (#164) — callers that already ran `clamp_plan_power` normally won't hit that check."""
+    diverge (#164) — callers that already ran `clamp_plan_power` normally won't hit that check.
+
+    E-11 / B-105: `EXPORT_FOR_PROFIT` requires discharge capability + reserve floor; optional
+    `max_export_kwh_per_day` (>0) caps planned export; `allow_export_discharge=False` warns
+    (writes stay dry-run / AUTO via intent_to_mode)."""
     findings: list[Finding] = []
     slots = plan.slots[:slot_horizon]
 
@@ -311,6 +323,68 @@ def validate_plan(
                     f"{demand_w:.0f} W exceeds the grid fuse limit "
                     f"{grid_limit_w:.0f} W — holding self-use."))
                 break
+
+    # 8. EXPORT_FOR_PROFIT guardrails (E-11 / B-105 / SPEC §7.1 §8.3a / §8.11).
+    export = [s for s in slots if s.intent in _EXPORT_INTENTS]
+    if export:
+        if not allow_export_discharge:
+            findings.append(Finding(
+                _WARN, "export_not_armed",
+                "Plan includes EXPORT_FOR_PROFIT but allow_export_discharge is off — "
+                "forced DISCHARGE writes will not run (dry-run / watch-only safe).",
+            ))
+        if capability is None or "discharge" not in capability.services:
+            findings.append(Finding(
+                _UNSAFE, "export_capability_missing",
+                "Export-for-profit needs a probed discharge service — holding self-use.",
+            ))
+        elif capability.max_discharge_w <= 0:
+            findings.append(Finding(
+                _UNSAFE, "export_no_discharge_power",
+                "Export-for-profit needs max_discharge_w > 0 from the capability probe.",
+            ))
+        elif not capability.p1_paired:
+            findings.append(Finding(
+                _WARN, "export_p1_unpaired",
+                "P1 is not paired on the battery probe — export behaviour is less certain.",
+            ))
+        for s in export:
+            floor = s.floor_soc if s.floor_soc is not None else min_reserve_soc
+            if floor < min_reserve_soc - 1e-6:
+                findings.append(Finding(
+                    _UNSAFE, "export_floor_below_reserve",
+                    f"Export floor {floor:.0f}% is below reserve {min_reserve_soc:.0f}% — "
+                    "impossible/contradictory.",
+                ))
+                break
+        # Optional day cap (0 / None = uncapped within reserve).
+        if max_export_kwh_per_day is not None and max_export_kwh_per_day > 0:
+            planned_kwh = 0.0
+            for s in export:
+                if s.target_kwh is not None:
+                    planned_kwh += float(s.target_kwh)
+                elif s.power_w is not None:
+                    planned_kwh += float(s.power_w) * 0.25 / 1000.0
+            if planned_kwh > max_export_kwh_per_day + 1e-6:
+                findings.append(Finding(
+                    _UNSAFE, "export_day_cap_exceeded",
+                    f"Planned export ~{planned_kwh:.1f} kWh exceeds the day cap "
+                    f"{max_export_kwh_per_day:.1f} kWh.",
+                ))
+        # Charge and export must not share a 15-min slot (Plan is exclusive per start, but
+        # also reject adjacent same-start duplicates if a buggy planner emits them).
+        starts = {}
+        for s in slots:
+            if s.start in starts and (
+                starts[s.start] in _CHARGE_INTENTS and s.intent in _EXPORT_INTENTS
+                or starts[s.start] in _EXPORT_INTENTS and s.intent in _CHARGE_INTENTS
+            ):
+                findings.append(Finding(
+                    _UNSAFE, "export_charge_overlap",
+                    "Export and grid-charge overlap in the same slot — holding self-use.",
+                ))
+                break
+            starts[s.start] = s.intent
 
     status = (_UNSAFE if any(f.severity == _UNSAFE for f in findings)
               else _WARN if findings else "valid")

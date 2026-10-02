@@ -745,6 +745,7 @@ _INTELLIGENCE_REASONS = {
 _INTENT_ACTION = {
     "grid_charge_to_target": "grid_charge",
     "discharge_for_load": "discharge",
+    "export_for_profit": "full_speed_discharge",
     "hold_reserve": "hold",
     "allow_self_consumption": "self_consume",
 }
@@ -758,15 +759,13 @@ def _action_from_intent(
 ) -> str:
     """Map planner intent → homeowner action token for Nu/Now + energy-story slots.
 
-    Default `discharge_for_load` is vendor AUTO self-consumption → `"discharge"`.
-    When `allow_export_discharge` is on, the same intent commands PhysicalMode.DISCHARGE at
-    max power (deliberate grid export) → `"full_speed_discharge"`. Car-session DISCHARGE is
-    bounded to ~house load and must NOT use this flag (callers demote or omit it).
+    `discharge_for_load` is always vendor AUTO self-consumption → `"discharge"`.
+    `export_for_profit` is deliberate max-power grid export → `"full_speed_discharge"`
+    (E-11 / SPEC §7.1). `allow_export_discharge` is retained for callers but no longer
+    promotes DISCHARGE_FOR_LOAD to full-speed export.
     """
+    del allow_export_discharge  # kept for call-site compat; DFL is never promoted
     action = _INTENT_ACTION.get(str(intent), "self_consume")
-    # Deliberate max-power export path (SPEC §7.1) — distinct from vendor self-consumption.
-    if action == "discharge" and allow_export_discharge:
-        return "full_speed_discharge"
     # In self-consumption the battery only ever charges from solar surplus (the vendor never
     # grid-charges in this mode — that needs GRID_CHARGE_TO_TARGET), so a charging slot here is a
     # SOLAR charge. Surface it as its own block instead of the generic "use solar first".
@@ -1903,6 +1902,10 @@ def create_app(
             load_w_by=load_by,
             settings_max_charge_w=settings_charge,
             settings_max_discharge_w=settings_discharge,
+            max_export_kwh_per_day=float(
+                settings_cache.get("planner.max_export_kwh_per_day", 0.0)),
+            allow_export_discharge=bool(
+                settings_cache.get("control.allow_export_discharge", False)),
         )
         if not clamp_findings:
             return val
@@ -3149,7 +3152,7 @@ def create_app(
 
     def _savings_snapshot(now: datetime) -> dict:
         policy = policy_from_settings(settings_cache)
-        export_model = str(settings_cache.get("prices.export_price_model", "net_metering"))
+        export_model = str(settings_cache.get("prices.export_price_model", "spot_minus_tax"))
         snapshot = EconomicSnapshot.from_tariff_policy(
             policy, export_model=export_model,
             round_trip_efficiency=float(settings_cache.get("planner.round_trip_efficiency", 0.90)),
@@ -3170,7 +3173,7 @@ def create_app(
                 "tariff_warnings": [w.to_dict() for w in validate_tariff_policy(
                     policy,
                     export_model=str(settings_cache.get(
-                        "prices.export_price_model", "net_metering")),
+                        "prices.export_price_model", "spot_minus_tax")),
                 )],
             }
         _now, prices, plan = pp
@@ -3185,7 +3188,7 @@ def create_app(
             "economic_snapshot": snapshot_metadata,
             "tariff_warnings": [w.to_dict() for w in validate_tariff_policy(
                 policy,
-                export_model=str(settings_cache.get("prices.export_price_model", "net_metering")),
+                export_model=str(settings_cache.get("prices.export_price_model", "spot_minus_tax")),
             )],
         }
 
@@ -3248,7 +3251,7 @@ def create_app(
             "tariff_policy": policy_to_dict(policy_from_settings(settings_cache)),
             "tariff_warnings": [w.to_dict() for w in validate_tariff_policy(
                 policy_from_settings(settings_cache),
-                export_model=str(settings_cache.get("prices.export_price_model", "net_metering")),
+                export_model=str(settings_cache.get("prices.export_price_model", "spot_minus_tax")),
             )],
             "decision": {"intent": str(intent) if intent else None, "reason": dreason,
                          "override_active": override_active, "target_soc": tgt,
@@ -4193,7 +4196,7 @@ def create_app(
         tariff_policy = policy_from_settings(settings_cache)
         economic_snapshot_metadata = EconomicSnapshot.from_tariff_policy(
             tariff_policy,
-            export_model=str(settings_cache.get("prices.export_price_model", "net_metering")),
+            export_model=str(settings_cache.get("prices.export_price_model", "spot_minus_tax")),
             round_trip_efficiency=float(settings_cache.get("planner.round_trip_efficiency", 0.90)),
             degradation_eur_per_kwh=float(
                 settings_cache.get("planner.degradation_eur_per_kwh", 0.05)),
@@ -4223,7 +4226,7 @@ def create_app(
             resp["economic_snapshot"] = economic_snapshot_metadata
             resp["tariff_warnings"] = [w.to_dict() for w in validate_tariff_policy(
                 tariff_policy,
-                export_model=str(settings_cache.get("prices.export_price_model", "net_metering")),
+                export_model=str(settings_cache.get("prices.export_price_model", "spot_minus_tax")),
             )]
             return resp
         q_end = min(end, now_local + timedelta(minutes=1))  # never query the future
@@ -4278,7 +4281,7 @@ def create_app(
             resp["economic_snapshot"] = economic_snapshot_metadata
             resp["tariff_warnings"] = [w.to_dict() for w in validate_tariff_policy(
                 tariff_policy,
-                export_model=str(settings_cache.get("prices.export_price_model", "net_metering")),
+                export_model=str(settings_cache.get("prices.export_price_model", "spot_minus_tax")),
             )]
             return resp
 
@@ -4354,7 +4357,7 @@ def create_app(
             departure=departure_local,  # kept in site_tz so the reason shows local wall-clock time
             kwh_needed=float(settings_cache["ev.charge_kwh"]),
             charger_kw=float(settings_cache["ev.charger_kw"]),
-            export_model=str(settings_cache.get("prices.export_price_model", "net_metering")),
+            export_model=str(settings_cache.get("prices.export_price_model", "spot_minus_tax")),
             energy_tax_eur_per_kwh=float(settings_cache.get("prices.energy_tax_eur_per_kwh", 0.13)),
             fixed_feed_in_eur_per_kwh=float(
                 settings_cache.get("prices.fixed_feed_in_eur_per_kwh", 0.01)),
@@ -4379,7 +4382,9 @@ def create_app(
             degradation_eur_per_kwh=float(
                 settings_cache.get("planner.degradation_eur_per_kwh", 0.05)
             ),
-            export_price_model=str(settings_cache.get("prices.export_price_model", "net_metering")),
+            export_price_model=str(
+                settings_cache.get("prices.export_price_model", "spot_minus_tax")
+            ),
             energy_tax_eur_per_kwh=float(
                 settings_cache.get("prices.energy_tax_eur_per_kwh", 0.13)
             ),
@@ -4432,7 +4437,7 @@ def create_app(
         nxt = cur + timedelta(days=1)
         completed = nxt <= now_local
         degradation = float(settings_cache.get("planner.degradation_eur_per_kwh", 0.05))
-        export_model = str(settings_cache.get("prices.export_price_model", "net_metering"))
+        export_model = str(settings_cache.get("prices.export_price_model", "spot_minus_tax"))
         energy_tax = float(settings_cache.get("prices.energy_tax_eur_per_kwh", 0.13))
         fixed_feed_in = float(settings_cache.get("prices.fixed_feed_in_eur_per_kwh", 0.01))
         includes_all = bool(settings_cache.get("grid_fees.tibber_total_includes_all", False))
@@ -4497,7 +4502,7 @@ def create_app(
         price_by_day = price_rows_by_local_day(price_rows, start, end, site_tz)
 
         degradation = float(settings_cache.get("planner.degradation_eur_per_kwh", 0.05))
-        export_model = str(settings_cache.get("prices.export_price_model", "net_metering"))
+        export_model = str(settings_cache.get("prices.export_price_model", "spot_minus_tax"))
         energy_tax = float(settings_cache.get("prices.energy_tax_eur_per_kwh", 0.13))
         fixed_feed_in = float(settings_cache.get("prices.fixed_feed_in_eur_per_kwh", 0.01))
         includes_all = bool(settings_cache.get("grid_fees.tibber_total_includes_all", False))
@@ -4594,7 +4599,7 @@ def create_app(
         raw_by_day = raw_rows_by_local_day(raw, start, end, site_tz)
         price_by_day = price_rows_by_local_day(price_rows, start, end, site_tz)
         degradation = float(settings_cache.get("planner.degradation_eur_per_kwh", 0.05))
-        export_model = str(settings_cache.get("prices.export_price_model", "net_metering"))
+        export_model = str(settings_cache.get("prices.export_price_model", "spot_minus_tax"))
         energy_tax = float(settings_cache.get("prices.energy_tax_eur_per_kwh", 0.13))
         fixed_feed_in = float(settings_cache.get("prices.fixed_feed_in_eur_per_kwh", 0.01))
         includes_all = bool(settings_cache.get("grid_fees.tibber_total_includes_all", False))
@@ -5001,7 +5006,7 @@ def create_app(
         policy=lambda s: policy_to_dict(policy_from_settings(s)),
         tariff_warnings=lambda s: [w.to_dict() for w in validate_tariff_policy(
             policy_from_settings(s),
-            export_model=str(s.get("prices.export_price_model", "net_metering")),
+            export_model=str(s.get("prices.export_price_model", "spot_minus_tax")),
         )],
         report_for_window=_report_for_window,
         finance_window=_application_finance_window,

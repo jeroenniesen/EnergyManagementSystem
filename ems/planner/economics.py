@@ -47,7 +47,10 @@ def export_value(
       negative-spot slot — exporting can cost money — so it is deliberately NOT clamped.
     - fixed          → a flat feed-in tariff, independent of spot.
 
-    An unknown model falls back to net_metering (fail-safe — never raise in the hot path)."""
+    Product default for settings key `prices.export_price_model` is `spot_minus_tax` (E-11 /
+    B-103). This *function* still defaults to `net_metering` so direct library callers stay
+    stable; live paths must pass the settings value. Unknown model → net_metering.
+    """
     snapshot = EconomicSnapshot(
         import_price_eur_per_kwh=price_eur_per_kwh,
         export_price_eur_per_kwh=price_eur_per_kwh,

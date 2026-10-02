@@ -103,13 +103,13 @@ SETTINGS_SCHEMA: tuple[SettingsField, ...] = (
         "current value.", applies="restart",
     ),
     SettingsField(
-        "prices.export_price_model", "Export (feed-in) value", "enum", "net_metering", "prices",
-        help="How much each kWh you export (feed back to the grid) is worth. Until 2027, Dutch "
-        "net-metering (saldering) nets your export against your import at the FULL price — that's "
-        "net-metering, today's behaviour. Switch to spot-minus-tax when saldering ends (2027), or "
-        "if your dynamic contract already pays the spot price minus energy tax for export; pick "
-        "fixed if your contract pays a flat feed-in tariff regardless of the spot price.",
-        options=("net_metering", "spot_minus_tax", "fixed"),
+        "prices.export_price_model", "Export (feed-in) value", "enum", "spot_minus_tax", "prices",
+        help="How much each kWh you export (feed back to the grid) is worth. Default is "
+        "spot-minus-tax (2027-ready: spot price minus energy tax — may be low or negative). "
+        "Switch to net-metering only if you still want today's Dutch saldering valuation "
+        "(export nets against import at the FULL price). Pick fixed if your contract pays a "
+        "flat feed-in tariff regardless of the spot price.",
+        options=("spot_minus_tax", "net_metering", "fixed"),
     ),
     SettingsField(
         "prices.energy_tax_eur_per_kwh", "Export energy tax", "number", 0.13, "prices",
@@ -291,7 +291,10 @@ SETTINGS_SCHEMA: tuple[SettingsField, ...] = (
     ),
     SettingsField(
         "control.allow_export_discharge", "Allow export discharge", "bool", False, "control",
-        help="Permit forced DISCHARGE for export. Off = serve load via vendor AUTO (fail-safe).",
+        help="Arm live forced DISCHARGE for EXPORT_FOR_PROFIT (trading / deliberate grid export) "
+        "only. Off (default) = never dump to the grid for profit. Does not change "
+        "DISCHARGE_FOR_LOAD (house-serve stays vendor AUTO). Still needs Watch only off + "
+        "operational on, and yaml dry_run / live mode floors.",
         advanced=True,
     ),
     SettingsField(
@@ -427,6 +430,56 @@ SETTINGS_SCHEMA: tuple[SettingsField, ...] = (
         "the planner adds negative-price slots as battery-charge slots (up to battery headroom), "
         "even outside normal charge windows and even when summer grid top-up is off. Off = today's "
         "behaviour.",
+    ),
+    SettingsField(
+        "planner.trading_enabled", "Trading (export / buy-to-sell)", "bool", False, "planner",
+        help="Opt-in trading mode (E-11). When on, each day compares path T (buy cheap → sell/"
+        "export on peaks) vs path Z (self-consumption / house-first). Trading actions run only "
+        "when T beats Z by at least the extra-€ threshold below. Off (default) = summer/winter "
+        "only — energy stays for the house. Year-round; no watt-tracking. Live forced discharge "
+        "still needs Allow export discharge + the usual Watch-only / operational floors.",
+    ),
+    SettingsField(
+        "planner.trading_min_extra_eur", "Trading: min extra €/day", "number", 0.50, "planner",
+        help="Path T must project at least this many euros more than path Z before the planner "
+        "emits EXPORT_FOR_PROFIT. Default €0.50.",
+        min=0.0, max=20.0, step=0.05, unit="€/day",
+    ),
+    SettingsField(
+        "planner.max_export_kwh_per_day", "Trading: max export kWh/day", "number", 0.0, "planner",
+        help="Hard cap on deliberate export AC kWh per day. 0 = no hard cap (may empty down to "
+        "the SoC reserve). Set a positive value to limit dumps while arming live.",
+        min=0.0, max=50.0, step=0.5, unit="kWh",
+    ),
+    SettingsField(
+        "planner.min_export_kwh", "Trading: min export kWh", "number", 0.5, "planner",
+        help="Skip export when available surplus is below this — avoids tiny mode switches.",
+        min=0.0, max=10.0, step=0.1, unit="kWh", advanced=True,
+    ),
+    SettingsField(
+        "planner.export_mode", "Trading: export slot policy", "enum", "peak_slice", "planner",
+        help="How export discharge slots are chosen. Peak slice: the planner picks the best "
+        "expensive windows (same style as charge slots). Full dump: empty available surplus "
+        "to the SoC reserve across the peak window. Both are mode switches at max power — "
+        "not continuous watt-tracking.",
+        options=("peak_slice", "full_dump"),
+    ),
+    SettingsField(
+        "planner.max_cycles_per_day", "Max battery cycles / day", "number", 1.5, "planner",
+        help=(
+            "Canonical runtime cycle budget (overrides the SPEC sample "
+            "arbitrage.max_cycles_per_day). Equivalent full cycles per day shared by "
+            "load-arbitrage and trading ((kWh charged + kWh discharged) / (2 × usable kWh)). "
+            "When exhausted, no more trade that day."
+        ),
+        min=0.0, max=5.0, step=0.1, unit="EFC", advanced=True,
+    ),
+    SettingsField(
+        "planner.daily_min_savings_eur", "Min projected savings / day", "number", 0.20, "planner",
+        help="Canonical runtime twin of arbitrage.daily_min_savings_eur (this key wins when set). "
+        "If projected daily savings are below this, enter whole-day no-trade (AUTO) — "
+        "applies to load-arbitrage and trading alike.",
+        min=0.0, max=10.0, step=0.05, unit="€", advanced=True,
     ),
     SettingsField(
         "planner.validate_projection", "Keep plans honest about reachability", "bool", True,

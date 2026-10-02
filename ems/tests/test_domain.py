@@ -12,6 +12,7 @@ def test_battery_intent_values():
         "grid_charge_to_target",
         "hold_reserve",
         "discharge_for_load",
+        "export_for_profit",
     }
 
 

@@ -107,7 +107,7 @@ async def gather_car_plan(ctx: AppContext, now: datetime) -> dict:
         battery_net_kwh=float(s["ev.battery_kwh"]),
         charge_efficiency=float(s["ev.charge_efficiency"]),
         power_kw=effective_kw,
-        export_model=str(s.get("prices.export_price_model", "net_metering")),
+        export_model=str(s.get("prices.export_price_model", "spot_minus_tax")),
         energy_tax_eur_per_kwh=float(s.get("prices.energy_tax_eur_per_kwh", 0.13)),
         fixed_feed_in_eur_per_kwh=float(s.get("prices.fixed_feed_in_eur_per_kwh", 0.01)),
     )
