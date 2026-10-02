@@ -4382,7 +4382,9 @@ def create_app(
             degradation_eur_per_kwh=float(
                 settings_cache.get("planner.degradation_eur_per_kwh", 0.05)
             ),
-            export_price_model=str(settings_cache.get("prices.export_price_model", "spot_minus_tax")),
+            export_price_model=str(
+                settings_cache.get("prices.export_price_model", "spot_minus_tax")
+            ),
             energy_tax_eur_per_kwh=float(
                 settings_cache.get("prices.energy_tax_eur_per_kwh", 0.13)
             ),

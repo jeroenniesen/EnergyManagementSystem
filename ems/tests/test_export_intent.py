@@ -1,5 +1,5 @@
 """B-105 / #211: EXPORT_FOR_PROFIT mapping + validator guardrails."""
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 
 from ems.domain import BatteryIntent, CapabilityReport, PhysicalMode
 from ems.planner.schedule import SLOT, Plan, PlanSlot

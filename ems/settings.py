@@ -466,10 +466,12 @@ SETTINGS_SCHEMA: tuple[SettingsField, ...] = (
     ),
     SettingsField(
         "planner.max_cycles_per_day", "Max battery cycles / day", "number", 1.5, "planner",
-        help="Canonical runtime cycle budget (overrides the SPEC sample arbitrage.max_cycles_per_day). "
-        "Equivalent full cycles per day shared by load-arbitrage and trading "
-        "((kWh charged + kWh discharged) / (2 × usable kWh)). When exhausted, no more trade "
-        "that day.",
+        help=(
+            "Canonical runtime cycle budget (overrides the SPEC sample "
+            "arbitrage.max_cycles_per_day). Equivalent full cycles per day shared by "
+            "load-arbitrage and trading ((kWh charged + kWh discharged) / (2 × usable kWh)). "
+            "When exhausted, no more trade that day."
+        ),
         min=0.0, max=5.0, step=0.1, unit="EFC", advanced=True,
     ),
     SettingsField(

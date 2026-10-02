@@ -77,7 +77,9 @@ export function ChatPanel({ canOperate = true }: { canOperate?: boolean } = {}) 
       </div>
 
       {faq.length > 0 && (
-        <div className="faq" data-testid="faq" data-density-kind="subordinate">
+        {/* FAQ is interior content of the chat card — not a separate density island
+            (remaining-surface inventory: chat subordinate budget 0). */}
+        <div className="faq" data-testid="faq">
           <p className="chat-suggest-lead">
             Quick answers{active === false ? " — these work without AI" : ""}:
           </p>
