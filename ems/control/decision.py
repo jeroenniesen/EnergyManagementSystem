@@ -194,4 +194,16 @@ class ControlDecisionEngine:
                 target_soc, power_w = cur.target_soc, cur.power_w
             elif intent is BatteryIntent.EXPORT_FOR_PROFIT and self._allow_export_discharge():
                 target_soc, power_w = cur.floor_soc, cur.power_w
+        # B-108: plan may emit EXPORT_FOR_PROFIT while live forced discharge is still off —
+        # keep the intent for explainability, but say clearly that writes stay plan-only.
+        if (
+            intent is BatteryIntent.EXPORT_FOR_PROFIT
+            and not self._allow_export_discharge()
+            and reason is not None
+            and "plan-only" not in reason
+        ):
+            reason = (
+                f"{reason} — export plan-only (live forced discharge not armed); "
+                "holding vendor AUTO"
+            )
         return intent, reason, override_active, target_soc, power_w, val, car_action

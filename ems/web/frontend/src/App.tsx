@@ -56,6 +56,7 @@ import { Manage, type ManageTab } from "./Manage";
 import { type Strategy, StrategyCard } from "./StrategyCard";
 import { AiValidationCard } from "./AiValidationCard";
 import { ChatPanel } from "./ChatPanel";
+import { TradingView } from "./Trading";
 import { Insights } from "./Insights";
 import { HomeScores, type Report } from "./HomeScores";
 import { OutcomeTiles, type TileFreshness } from "./OutcomeTiles";
@@ -143,7 +144,7 @@ type AlertsResp = { data_quality: string; alerts: AlertItem[] };
 // The nav restructure (feat/ux-batch-3): five top-level views. Settings/System/Audit are no longer
 // top-level — they are sub-tabs of "manage" (see Manage.tsx + `ManageTab`). "car" is a first-class
 // view because the weekly schedule changes often and car config/insight was scattered before.
-type ViewName = "dashboard" | "insights" | "car" | "chat" | "manage";
+type ViewName = "dashboard" | "insights" | "car" | "chat" | "trading" | "manage";
 // A route is the top-level view plus, for "manage", which sub-tab is showing. The manage tab is
 // carried even on other views so returning to Manage can be deterministic, and so the hash router
 // (below) can round-trip `#manage/system` etc.
@@ -163,12 +164,12 @@ function todayStr(): string {
 }
 // Alert hierarchy: control-blocking (critical) above degraded (warning) above info (energy review).
 const SEVERITY_RANK: Record<string, number> = { critical: 3, warning: 2, info: 1 };
-const VIEWS: ViewName[] = ["dashboard", "insights", "car", "chat", "manage"];
+const VIEWS: ViewName[] = ["dashboard", "insights", "car", "chat", "trading", "manage"];
 const MANAGE_TABS: ManageTab[] = ["settings", "system", "audit"];
 // B-68 + B-98: plain-language confidence chip (Dutch-first Home).
 const CONFIDENCE_CHIP_LABEL: Record<PlanConfidence["level"], string> = HOME_CONFIDENCE_CHIP;
 
-// Hash → route. Canonical hashes: #dashboard #insights #car #chat #manage #manage/system
+// Hash → route. Canonical hashes: #dashboard #insights #car #chat #trading #manage #manage/system
 // #manage/audit. LEGACY hashes still work so old bookmarks / deep-links don't break: bare
 // #settings|#system|#audit redirect to the matching Manage sub-tab. Anything unknown falls back to
 // the dashboard (loop-2's finding — a mistyped hash must never blank the app).
@@ -881,6 +882,14 @@ export function App() {
           >
             Chat
           </button>
+          <button
+            className={`nav-btn${view === "trading" ? " nav-active" : ""}`}
+            onClick={() => navigate("trading")}
+            data-testid="nav-trading"
+            aria-current={view === "trading" ? "page" : undefined}
+          >
+            Trading
+          </button>
           {/* Manage folds the three ops surfaces (Settings · System · Audit) — "often used
               together and eat menu space" — behind one item with its own segmented sub-nav. */}
           <button
@@ -1065,6 +1074,8 @@ export function App() {
       {view === "insights" && <Insights canOperate={canOperate} />}
 
       {view === "chat" && <ChatPanel canOperate={canOperate} />}
+
+      {view === "trading" && <TradingView canOperate={canOperate} />}
 
       {view === "car" && (
         // Lands on the Car section of Settings (feat/ux-batch-3's "ev" group) rather than just the

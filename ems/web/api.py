@@ -121,6 +121,7 @@ from ems.planner.recovery import check_charge_completion, recover_if_needed
 from ems.planner.rule_based import plan_rule_based
 from ems.planner.strategy import HysteresisState
 from ems.planner.summer import sunset_after
+from ems.planner.trading import evaluate_trading, trading_config_from_settings
 from ems.planner.validator import PlanValidation, clamp_plan_power, validate_plan
 from ems.readiness import Readiness, compute_readiness, home_state
 from ems.reporting import (
@@ -2961,6 +2962,146 @@ def create_app(
         if not dry_run:
             _spawn_override_cycle()
         return JSONResponse(get_override())
+
+    # --- E-11 Trading portal (B-106 / B-107 / B-108) ---------------------------------------------
+    _TEST_BATTERY_SECONDS = 120
+    _trading_probe_tasks: set[asyncio.Task] = set()
+
+    def _trading_write_block_reason() -> str | None:
+        """Why live battery writes (incl. Test batterij / armed export) are blocked."""
+        if dry_run:
+            return "yaml/control dry-run or mock/replay floor — no battery writes"
+        if not bool(settings_cache.get("control.operational", False)):
+            return "Watch only / control.operational off — no battery writes"
+        if controller is None:
+            return "no battery controller configured"
+        if not getattr(controller.driver, "armed", False):
+            return "battery driver not armed"
+        return None
+
+    @app.get("/api/trading")
+    def get_trading() -> dict:
+        """Trading portal snapshot: settings, floors, T-vs-Z evaluation (B-106)."""
+        now = datetime.now(UTC)
+        s = settings_cache
+        cfg = trading_config_from_settings(s)
+        block = _trading_write_block_reason()
+        armed = bool(s.get("control.allow_export_discharge", False))
+        evaluation = {
+            "enabled": cfg.enabled,
+            "would_trade": False,
+            "reason": "Geen prijs/plan — kan T-vs-Z nu niet beoordelen.",
+            "t_eur": 0.0,
+            "z_eur": 0.0,
+            "extra_eur": 0.0,
+        }
+        built = _build_plan_now(now)
+        if built is not None:
+            _now, prices, plan = built
+            soc = _current_soc(now)
+            if soc is None:
+                soc = float(s.get("battery.min_reserve_soc", 10.0))
+            load_by = _load_by([p.start for p in prices]) if prices else {}
+            evaluation = evaluate_trading(
+                plan, prices, now, cfg, soc_pct=float(soc), load_w_by=load_by,
+            )
+        return {
+            "trading_enabled": bool(s.get("planner.trading_enabled", False)),
+            "min_extra_eur": float(s.get("planner.trading_min_extra_eur", 0.50)),
+            "max_export_kwh_per_day": float(s.get("planner.max_export_kwh_per_day", 0.0)),
+            "export_mode": str(s.get("planner.export_mode", "peak_slice")),
+            "export_price_model": str(s.get("prices.export_price_model", "spot_minus_tax")),
+            "allow_export_discharge": armed,
+            "dry_run": bool(dry_run),
+            "operational": bool(s.get("control.operational", False)),
+            "writes_allowed": block is None,
+            "block_reason": block,
+            "evaluation": evaluation,
+            "copy": {
+                "house": "Pad Z = energie voor het huis (zelfconsumptie).",
+                "sell": "Pad T = goedkoop laden / duur verkopen aan het net.",
+            },
+        }
+
+    @app.post("/api/trading/test-battery")
+    async def trading_test_battery(request: Request) -> JSONResponse:
+        """Bounded forced-DISCHARGE probe (B-107). Optional; not a gate for arming.
+
+        Temporarily arms export mapping on the controller for the probe write only, commands
+        EXPORT_FOR_PROFIT at max discharge toward the reserve floor, then returns to AUTO after
+        a short dwell. Refuses when dry-run / Watch-only floors block writes.
+        """
+        del request  # auth via middleware
+        block = _trading_write_block_reason()
+        if block is not None:
+            return JSONResponse({"ok": False, "detail": block}, status_code=409)
+        assert controller is not None
+        now = datetime.now(UTC)
+        floor = float(settings_cache["battery.min_reserve_soc"])
+        power = float(settings_cache["battery.max_discharge_w"])
+        prev_arm = bool(controller.allow_export_discharge)
+        controller.allow_export_discharge = True
+        try:
+            decision = controller.decide(
+                BatteryIntent.EXPORT_FOR_PROFIT,
+                now,
+                target_soc=floor,
+                power_w=power,
+                manual=True,
+            )
+        except Exception as exc:
+            controller.allow_export_discharge = prev_arm
+            return JSONResponse(
+                {"ok": False, "detail": f"probe failed: {exc}"}, status_code=500,
+            )
+        if audit_store is not None:
+            await audit_store.append(
+                now.isoformat(), "trading_test_battery",
+                f"Test batterij: {decision.outcome} → {decision.desired_mode}",
+                {
+                    "outcome": decision.outcome,
+                    "desired": getattr(
+                        decision.desired_mode, "value", str(decision.desired_mode)),
+                    "applied": decision.applied,
+                    "reason": decision.reason,
+                    "restore_after_s": _TEST_BATTERY_SECONDS,
+                },
+            )
+
+        async def _restore() -> None:
+            try:
+                await asyncio.sleep(_TEST_BATTERY_SECONDS)
+                if controller is None:
+                    return
+                t = datetime.now(UTC)
+                controller.decide(
+                    BatteryIntent.ALLOW_SELF_CONSUMPTION, t, manual=True, priority=True,
+                )
+            finally:
+                if controller is not None:
+                    controller.allow_export_discharge = prev_arm
+
+        task = asyncio.create_task(_restore())
+        _trading_probe_tasks.add(task)
+        task.add_done_callback(_trading_probe_tasks.discard)
+        mode = getattr(decision.desired_mode, "value", None)
+        if decision.applied or decision.outcome in ("idempotent", "unconfirmed"):
+            return JSONResponse({
+                "ok": True,
+                "detail": (
+                    f"Test batterij gestart ({decision.outcome}): forced discharge "
+                    f"~{_TEST_BATTERY_SECONDS // 60} min, daarna terug naar AUTO."
+                ),
+                "outcome": decision.outcome,
+                "mode": mode,
+            })
+        controller.allow_export_discharge = prev_arm
+        return JSONResponse({
+            "ok": False,
+            "detail": decision.reason or f"probe not applied ({decision.outcome})",
+            "outcome": decision.outcome,
+            "mode": mode,
+        }, status_code=409)
 
     # --- I2 refuse-when-busy self-restart --------------------------------------------------------
     def _restart_pending() -> bool:
