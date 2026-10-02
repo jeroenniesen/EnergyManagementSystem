@@ -559,10 +559,21 @@ def test_report_year_scores_use_full_year_rollup_not_purged_raw(tmp_path):
     assert month["flows"].get("window_note") is None
 
 
+def _pin_net_metering(db: str) -> None:
+    """Hand-computed finance € below assume saldering; pin past E-11 spot_minus_tax default."""
+    async def go():
+        store = SettingsStore(db)
+        await store.init()
+        await store.set_many({"prices.export_price_model": "net_metering"})
+        await store.close()
+    asyncio.run(go())
+
+
 def test_finance_endpoint_computes_and_persists_rollup(tmp_path):
     db = str(tmp_path / "ems.sqlite")
     _seed(db)
     _seed_prices(db)
+    _pin_net_metering(db)
     with TestClient(_app(db)) as c:
         b = c.get("/api/finance?period=day&date=2026-06-28").json()
     assert len(b["days"]) == 1
@@ -586,6 +597,7 @@ def test_finance_endpoint_week_totals_and_empty_days(tmp_path):
     db = str(tmp_path / "ems.sqlite")
     _seed(db)
     _seed_prices(db)
+    _pin_net_metering(db)
     with TestClient(_app(db)) as c:
         b = c.get("/api/finance?period=week&date=2026-06-28").json()
     assert len(b["days"]) == 7  # Mon..Sun of that week (all in the past)

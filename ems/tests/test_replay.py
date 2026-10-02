@@ -47,6 +47,9 @@ _BASE = {
     "battery.max_discharge_w": 4000.0,
     "battery.min_reserve_soc": 0.0,
     "planner.round_trip_efficiency": 1.0,
+    # Hand-computed costs below assume saldering credit; pin so E-11's product default
+    # (spot_minus_tax) does not rewrite every identity. Spot-minus-tax has its own tests.
+    "prices.export_price_model": "net_metering",
 }
 
 
@@ -253,8 +256,10 @@ def test_export_credited_under_spot_minus_tax():
     #   6.0 kWh × 0.07 = 0.42  →  cost 2.05 − 0.42 = 1.63  (vs 0.85 under net_metering).
     assert abs(nb.cost_eur - 1.63) < 1e-9
     assert abs(nb.export_kwh - 6.0) < 1e-9
-    # It differs deterministically from the default net_metering credit.
-    nb_net = replay_day(raw, prices, [], cfg=_cfg()).scenarios["no_battery"]
+    # It differs deterministically from explicit net_metering credit.
+    nb_net = replay_day(
+        raw, prices, [], cfg=_cfg(**{"prices.export_price_model": "net_metering"})
+    ).scenarios["no_battery"]
     assert nb.cost_eur > nb_net.cost_eur
 
 
