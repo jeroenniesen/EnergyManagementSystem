@@ -1902,6 +1902,10 @@ def create_app(
             load_w_by=load_by,
             settings_max_charge_w=settings_charge,
             settings_max_discharge_w=settings_discharge,
+            max_export_kwh_per_day=float(
+                settings_cache.get("planner.max_export_kwh_per_day", 0.0)),
+            allow_export_discharge=bool(
+                settings_cache.get("control.allow_export_discharge", False)),
         )
         if not clamp_findings:
             return val
