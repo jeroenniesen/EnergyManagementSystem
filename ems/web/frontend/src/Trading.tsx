@@ -9,6 +9,7 @@ type TradingStatus = {
   export_mode: string;
   export_price_model: string;
   allow_export_discharge: boolean;
+  probe_active?: boolean;
   dry_run: boolean;
   operational: boolean;
   writes_allowed: boolean;
@@ -135,7 +136,9 @@ export function TradingView({ canOperate = true }: { canOperate?: boolean }) {
   const s = status;
   const liveLabel = s?.allow_export_discharge
     ? "Live export armed"
-    : "Dry-run / plan-only (not armed)";
+    : s?.dry_run || !s?.operational
+      ? "Writes blocked (dry-run / Watch only) — export plan-only"
+      : "Not armed — export plan-only (vendor AUTO)";
 
   return (
     <section className="trading-view" data-testid="trading-view">
@@ -332,11 +335,19 @@ export function TradingView({ canOperate = true }: { canOperate?: boolean }) {
             )}
             {!canOperate ? (
               <p className="muted">Operate permission required.</p>
+            ) : !s.writes_allowed ? (
+              <p className="muted" data-testid="trading-test-blocked">
+                {s.block_reason || "Writes blocked — test unavailable."}
+              </p>
+            ) : s.probe_active ? (
+              <p className="muted" data-testid="trading-test-running">
+                Test batterij running…
+              </p>
             ) : testConfirm ? (
               <div className="trading-confirm">
                 <p>
                   Start a ~2 minute max-power discharge toward the reserve floor, then
-                  return to AUTO?
+                  return to AUTO? Does not arm live trading.
                 </p>
                 <button
                   type="button"

@@ -78,6 +78,9 @@ class ModeController:
         self.lifecycle = lifecycle
         self.dry_run = dry_run
         self.allow_export_discharge = allow_export_discharge
+        # B-107 Test batterij: bounded window where EXPORT_FOR_PROFIT maps to DISCHARGE without
+        # flipping the operator arming flag (`control.allow_export_discharge`). None = inactive.
+        self._export_probe_until: datetime | None = None
         self.max_switches_per_day = max_switches_per_day
         # Anti-starvation split of the daily switch cap (07-12 guardrail-starvation incident: 13
         # routine auto<->idle flaps burned the 10-switch cap by 09:48, then 5 cap_reached blocks
@@ -229,9 +232,31 @@ class ModeController:
                 # swallow it silently (a broken store must be visible in the logs).
                 log.warning("persist failed: %s", e)
 
-    def _desired(self, intent: BatteryIntent, *, car_session: bool = False) -> PhysicalMode:
-        return intent_to_mode(intent, allow_export_discharge=self.allow_export_discharge,
-                              car_session=car_session)
+    def export_probe_active(self, now: datetime) -> bool:
+        """True while a B-107 Test batterij probe window is open (does not imply armed)."""
+        until = self._export_probe_until
+        return until is not None and now < until
+
+    def begin_export_probe(self, until: datetime) -> None:
+        """Open a temporary EXPORT→DISCHARGE mapping window (B-107). Does not set arming."""
+        self._export_probe_until = until
+
+    def clear_export_probe(self) -> None:
+        """End the B-107 probe window; arming flag is untouched."""
+        self._export_probe_until = None
+
+    def _desired(
+        self, intent: BatteryIntent, *, car_session: bool = False, now: datetime | None = None,
+    ) -> PhysicalMode:
+        allow = self.allow_export_discharge
+        if (
+            not allow
+            and intent is BatteryIntent.EXPORT_FOR_PROFIT
+            and now is not None
+            and self.export_probe_active(now)
+        ):
+            allow = True
+        return intent_to_mode(intent, allow_export_discharge=allow, car_session=car_session)
 
     # F3: re-log a still-stuck episode at most this often, so a long outage still leaves periodic
     # evidence in the incident trail (not one row for hours, not a row every cycle).
@@ -420,7 +445,7 @@ class ModeController:
         `commitment=True` marks a committed grid-charge so it draws from the full daily cap and its
         write is accounted against the commitment budget (see _cap_block); routine planner writes
         leave it False and are bounded by (max_switches_per_day - commitment_reserve)."""
-        desired = self._desired(intent, car_session=car_session)
+        desired = self._desired(intent, car_session=car_session, now=now)
         blocked = self._gate(intent, now, desired, observed_mode=observed_mode, manual=manual,
                              priority=priority, force=force, commitment=commitment)
         if blocked is not None:

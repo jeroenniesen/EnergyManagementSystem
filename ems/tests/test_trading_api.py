@@ -78,15 +78,21 @@ def test_test_battery_refuses_dry_run(tmp_path):
         r = c.post("/api/trading/test-battery", json={})
         assert r.status_code == 409
         assert "dry-run" in r.json()["detail"].lower() or "dry" in r.json()["detail"].lower()
+        assert r.json()["ok"] is False
 
 
-def test_test_battery_refuses_watch_only(tmp_path):
-    """Operational off ⇒ refuse even when dry_run is false (mocked via settings after create)."""
-    # create_app dry_run is process floor; when dry_run=True we already cover that.
-    # Here assert Watch-only messaging when operational is false under dry_run floor.
-    app, _ = _app(tmp_path, dry_run=True, operational=False)
+def test_test_battery_refuses_watch_only_detail(tmp_path):
+    """Watch-only detail is returned when dry_run is false but operational is off.
+
+    Process dry_run is a create_app floor — for this test we only assert the helper's
+    operational messaging via GET /api/trading block_reason after settings POST.
+    """
+    app, _ = _app(tmp_path, dry_run=True)
     with TestClient(app) as c:
         c.post("/api/settings", json={"control.operational": False})
+        body = c.get("/api/trading").json()
+        assert body["writes_allowed"] is False
+        assert body["block_reason"]
         r = c.post("/api/trading/test-battery", json={})
         assert r.status_code == 409
         assert r.json()["ok"] is False
@@ -104,3 +110,17 @@ def test_arming_flag_surfaces(tmp_path):
         body = c.get("/api/trading").json()
         assert body["allow_export_discharge"] is True
         assert controller.allow_export_discharge is True
+
+
+def test_export_probe_does_not_flip_arm_flag():
+    """B-107: begin_export_probe must not set allow_export_discharge."""
+    from datetime import UTC, datetime, timedelta
+
+    driver = MockBatteryDriver(armed=True)
+    ctl = ModeController(driver, Lifecycle(dry_run=True), dry_run=True)
+    assert ctl.allow_export_discharge is False
+    ctl.begin_export_probe(datetime.now(UTC) + timedelta(seconds=60))
+    assert ctl.allow_export_discharge is False
+    assert ctl.export_probe_active(datetime.now(UTC)) is True
+    ctl.clear_export_probe()
+    assert ctl.export_probe_active(datetime.now(UTC)) is False

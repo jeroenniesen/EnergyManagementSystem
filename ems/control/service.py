@@ -494,7 +494,10 @@ class ControlService:
             settings=self._settings,
             site_tz=self._site_tz,
             allow_export_discharge=lambda: bool(
-                self._controller is not None and self._controller.allow_export_discharge
+                self._controller is not None and (
+                    self._controller.allow_export_discharge
+                    or self._controller.export_probe_active(self._clock.now_utc())
+                )
             ),
             safety=self._safety,
             validate_plan=self._validate_plan_obj,
@@ -1614,7 +1617,12 @@ class ControlService:
         # switch is actually PENDING (desired differs from the observed mode) is it worth holding.
         cycles = self._intent_persistence_cycles()
         desired = intent_to_mode(
-            intent, allow_export_discharge=self._controller.allow_export_discharge)
+            intent,
+            allow_export_discharge=(
+                self._controller.allow_export_discharge
+                or self._controller.export_probe_active(now)
+            ),
+        )
         routine_pending = (
             cycles > 1 and not override_active and not priority and not commitment
             and desired is not PhysicalMode.AUTO

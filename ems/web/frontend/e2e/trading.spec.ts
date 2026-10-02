@@ -10,6 +10,7 @@ const TRADING_RESP = {
   export_mode: "peak_slice",
   export_price_model: "spot_minus_tax",
   allow_export_discharge: false,
+  probe_active: false,
   dry_run: true,
   operational: false,
   writes_allowed: false,
@@ -40,11 +41,11 @@ test.describe("Trading view", () => {
     await page.goto("/#trading");
     await expect(page.getByTestId("trading-view")).toBeVisible();
     await expect(page.getByTestId("nav-trading")).toHaveAttribute("aria-current", "page");
-    await expect(page.getByTestId("trading-live-label")).toContainText("Dry-run");
+    await expect(page.getByTestId("trading-live-label")).toContainText("Writes blocked");
     await expect(page.getByTestId("trading-eval-reason")).toContainText("trading staat uit");
     await expect(page.getByTestId("trading-enabled")).toBeVisible();
     await expect(page.getByTestId("trading-arm")).toBeVisible();
-    await expect(page.getByTestId("trading-test-btn")).toBeVisible();
+    await expect(page.getByTestId("trading-test-blocked")).toBeVisible();
     trading.assertRequested();
   });
 });
