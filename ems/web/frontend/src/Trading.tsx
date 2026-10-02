@@ -357,7 +357,7 @@ export function TradingView({ canOperate = true }: { canOperate?: boolean }) {
             <p>
               Optional short forced-DISCHARGE probe to confirm the cluster can export.
               Recommended before arming; not a hard gate. Refuses when Watch only / dry-run
-              blocks writes.
+              blocks writes, or while the car is charging.
             </p>
             {testMsg && (
               <p data-testid="trading-test-msg">{testMsg}</p>
@@ -376,7 +376,8 @@ export function TradingView({ canOperate = true }: { canOperate?: boolean }) {
               <div className="trading-confirm">
                 <p>
                   Start a ~2 minute max-power discharge toward the reserve floor, then
-                  return to AUTO? Does not arm live trading.
+                  return to AUTO? Does not arm live trading. Refused if the car starts
+                  charging before you confirm.
                 </p>
                 <button
                   type="button"
