@@ -3,9 +3,9 @@
 
 `intent_to_mode` maps a planner BatteryIntent to the physical mode the controller commands.
 Per SPEC §8.3, "serve load during a peak" is really vendor self-consumption, so DISCHARGE_FOR_LOAD
-maps to AUTO by **default**; the forced DISCHARGE mode is reserved for deliberate grid export and is
-only used when `allow_export_discharge=True`. P1-zeroing stays the vendor's job (SPEC §2) — the EMS
-never tries to track instantaneous power.
+maps to AUTO **always**. Forced DISCHARGE for deliberate grid export is reserved for
+`EXPORT_FOR_PROFIT` and only when `allow_export_discharge=True` (E-11 / B-105). P1-zeroing stays
+the vendor's job (SPEC §2) — the EMS never tries to track instantaneous power.
 """
 from __future__ import annotations
 
@@ -37,6 +37,7 @@ _INTENT_TO_MODE: dict[BatteryIntent, PhysicalMode] = {
     BatteryIntent.ALLOW_SELF_CONSUMPTION: PhysicalMode.AUTO,
     BatteryIntent.GRID_CHARGE_TO_TARGET: PhysicalMode.CHARGE,
     BatteryIntent.HOLD_RESERVE: PhysicalMode.IDLE,
+    BatteryIntent.DISCHARGE_FOR_LOAD: PhysicalMode.AUTO,
 }
 
 
@@ -45,10 +46,13 @@ def intent_to_mode(
 ) -> PhysicalMode:
     """Map a planner intent to the physical mode to command.
 
-    DISCHARGE_FOR_LOAD serves the house via vendor self-consumption (AUTO) by default; it only
-    becomes a forced DISCHARGE (deliberate grid export) when `allow_export_discharge` is set.
-    Defaulting to AUTO keeps it fail-safe so a control loop can't export by accident
-    (SPEC §7.1/§8.3). KeyError on any unmapped intent is intentional (loud failure).
+    DISCHARGE_FOR_LOAD always serves the house via vendor self-consumption (AUTO). It never
+    becomes a forced DISCHARGE via `allow_export_discharge` — that flag arms **EXPORT_FOR_PROFIT
+    only** (SPEC §7.1 / E-11). Defaulting DFL to AUTO keeps load-arbitrage fail-safe so a control
+    loop can't export by accident.
+
+    EXPORT_FOR_PROFIT → DISCHARGE only when `allow_export_discharge` is set; otherwise AUTO
+    (planner should not emit it when disarmed; mapping still fail-safes).
 
     `car_session=True` is the ONE narrow, deliberate exception (feat/car-charge-modes): while the
     car is charging and the operator picked a discharge behaviour, DISCHARGE_FOR_LOAD becomes a real
@@ -64,9 +68,11 @@ def intent_to_mode(
         stay in force. (SPEC §7.1's note on this was updated in iteration 3; not touched here.)
     """
     if intent is BatteryIntent.DISCHARGE_FOR_LOAD:
-        if allow_export_discharge or car_session:
+        if car_session:
             return PhysicalMode.DISCHARGE
         return PhysicalMode.AUTO
+    if intent is BatteryIntent.EXPORT_FOR_PROFIT:
+        return PhysicalMode.DISCHARGE if allow_export_discharge else PhysicalMode.AUTO
     return _INTENT_TO_MODE[intent]
 
 

@@ -16,6 +16,7 @@ const INTENT_LABEL: Record<string, string> = {
   grid_charge_to_target: "Charge the battery now",
   hold_reserve: "Hold the battery (don't charge or use it)",
   discharge_for_load: "Power the house from the battery",
+  export_for_profit: "Sell to the grid (forced discharge)",
 };
 // What each action will actually do — so the choice is understood, not hidden behind friendly words.
 const CONSEQUENCE: Record<string, string> = {
@@ -23,9 +24,10 @@ const CONSEQUENCE: Record<string, string> = {
   grid_charge_to_target: "This may buy power from the grid now, even if it isn't the cheapest time.",
   hold_reserve: "The battery will neither charge nor discharge — it just holds what it has.",
   discharge_for_load: "This runs the house from the battery now, which may empty it sooner.",
+  export_for_profit: "Forces the battery to discharge at full power into the grid — only when export is armed.",
 };
 // Charge/discharge meaningfully change cost or comfort → confirm first. Hold / return-to-plan don't.
-const RISKY = new Set(["grid_charge_to_target", "discharge_for_load"]);
+const RISKY = new Set(["grid_charge_to_target", "discharge_for_load", "export_for_profit"]);
 const intentLabel = (intent: string): string => INTENT_LABEL[intent] ?? humanize(intent);
 const DURATIONS = [
   { label: "30 min", minutes: 30 },

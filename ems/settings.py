@@ -459,20 +459,23 @@ SETTINGS_SCHEMA: tuple[SettingsField, ...] = (
     SettingsField(
         "planner.export_mode", "Trading: export slot policy", "enum", "peak_slice", "planner",
         help="How export discharge slots are chosen. Peak slice: the planner picks the best "
-        "expensive windows (same style as charge slots). Surplus fill: fill ranked surplus into "
-        "export slots. Both are mode switches at max power — not continuous watt-tracking.",
-        options=("peak_slice", "surplus_fill"),
+        "expensive windows (same style as charge slots). Full dump: empty available surplus "
+        "to the SoC reserve across the peak window. Both are mode switches at max power — "
+        "not continuous watt-tracking.",
+        options=("peak_slice", "full_dump"),
     ),
     SettingsField(
         "planner.max_cycles_per_day", "Max battery cycles / day", "number", 1.5, "planner",
-        help="Equivalent full cycles per day shared by load-arbitrage and trading "
+        help="Canonical runtime cycle budget (overrides the SPEC sample arbitrage.max_cycles_per_day). "
+        "Equivalent full cycles per day shared by load-arbitrage and trading "
         "((kWh charged + kWh discharged) / (2 × usable kWh)). When exhausted, no more trade "
         "that day.",
         min=0.0, max=5.0, step=0.1, unit="EFC", advanced=True,
     ),
     SettingsField(
         "planner.daily_min_savings_eur", "Min projected savings / day", "number", 0.20, "planner",
-        help="If projected daily savings are below this, enter whole-day no-trade (AUTO) — "
+        help="Canonical runtime twin of arbitrage.daily_min_savings_eur (this key wins when set). "
+        "If projected daily savings are below this, enter whole-day no-trade (AUTO) — "
         "applies to load-arbitrage and trading alike.",
         min=0.0, max=10.0, step=0.05, unit="€", advanced=True,
     ),

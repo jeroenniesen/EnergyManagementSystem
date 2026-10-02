@@ -365,10 +365,10 @@ The planner outputs *intent*, not raw commands. Each intent carries the data it 
 |---|---|---|
 | `SUMMER_SOLAR` | Fill battery from solar surplus; run the night on battery | Forecast daily solar ≥ threshold for N days, or month in Apr–Sep |
 | `WINTER_ARBITRAGE` | Charge at price dip, **serve house load** at price peak (`DISCHARGE_FOR_LOAD` → `AUTO`) | Forecast solar low, or month in Oct–Mar |
-| `TRADING` | Day **T vs Z**: buy-to-sell / forced export only when T beats Z by ≥ `planner.trading_min_extra_eur` | Opt-in (`planner.trading_enabled`, default **off**); **year-round** (including summer) — not winter-only |
+| `TRADING` | Day **T vs Z**: buy-to-sell / forced export only when T beats Z by ≥ `planner.trading_min_extra_eur`. **Not** a `strategy.mode` enum value — entered via opt-in overlay `planner.trading_enabled` (default **off**); when T loses, the seasonal summer/winter plan (path Z) runs | Opt-in overlay; **year-round** (including summer) — not winter-only |
 | `MANUAL` | You pin a specific behaviour | Set by you in HA / web UI |
 
-Seasonal selection (`auto` / `summer` / `winter`) is **configurable** (calendar month, rolling solar-forecast threshold, or manual). **Transition hysteresis** (§8.4) prevents the strategy flipping daily around the threshold. **Trading** is a separate opt-in overlay (portal **Trading** menu — E-11 / B-106): when enabled, each day compares path T vs path Z (§8.3a); if T does not clear the € threshold, the seasonal summer/winter plan (path Z) runs unchanged.
+Seasonal selection (`auto` / `summer` / `winter`) is **configurable** (calendar month, rolling solar-forecast threshold, or manual). **Transition hysteresis** (§8.4) prevents the strategy flipping daily around the threshold. **Trading** is a separate opt-in overlay (portal **Trading** menu — E-11 / B-106): when `planner.trading_enabled` is on, each day compares path T vs path Z (§8.3a); if T does not clear the € threshold, the seasonal summer/winter plan (path Z) runs unchanged. Do **not** add `trading` to `strategy.mode` in v1.
 
 ---
 
@@ -435,7 +435,7 @@ Seasonal selection (`auto` / `summer` / `winter`) is **configurable** (calendar 
    `projected_T_eur − projected_Z_eur ≥ planner.trading_min_extra_eur` (default **€0.50**/day, configurable). Below threshold → run path Z (seasonal plan) and publish a not-acting reason.
 4. **Buy-to-sell in v1:** under trading mode, charge sizing **may** include energy intended for later export (not load-only). Still respect reserve floor, evening reserve where applicable, shared cycle budget, and the optional kWh cap.
 5. **Export valuation:** gate and projection use `export_value(..., prices.export_price_model)`. **Default model = `spot_minus_tax`** (2027-ready). Negative export value ⇒ never dump that slot.
-6. **Slot policy `planner.export_mode`:** `peak_slice` (default) — planner picks discharge slots the same way it picks charge slots (optimal expensive windows, dwell-aware); `surplus_fill` — fill remaining surplus into ranked export slots. Both are mode switches at `power_w`, not continuous control.
+6. **Slot policy `planner.export_mode`:** `peak_slice` (default) — planner picks discharge slots the same way it picks charge slots (optimal expensive windows, dwell-aware); `full_dump` — empty available surplus down to the SoC reserve across the peak window. Both are mode switches at `power_w`, not continuous control.
 7. **Caps:** `planner.max_export_kwh_per_day` — **0 / empty = no hard cap** (export down to SoC reserve only). `planner.min_export_kwh` skips tiny dumps (default 0.5). Shared `planner.max_cycles_per_day` (default 1.5) with load arbitrage.
 8. **Arming / dry-run:** planning may log `EXPORT_FOR_PROFIT` in dry-run; **live forced `DISCHARGE` writes** require `control.allow_export_discharge` **and** the existing two floors (`config.yaml`/`dev.mode` dry-run + Settings Watch only / `control.operational`). No fixed N-day gate — user arms when ready (portal **Trading** menu; optional **Test batterij**, §9.1 / B-107).
 9. **Fail-safe:** `daily_min_savings` fail → whole-day no-trade (`AUTO`). Unsafe/stale data, missing `discharge` capability, or flag off → no export intent.
@@ -678,9 +678,9 @@ planner:
   trading_min_extra_eur: 0.50         # T must beat Z by ≥ this €/day before EXPORT_FOR_PROFIT
   max_export_kwh_per_day: 0           # 0 = no hard cap (empty to SoC reserve); >0 = AC kWh/day ceiling
   min_export_kwh: 0.5                 # skip tiny dumps below this
-  export_mode: peak_slice             # peak_slice (planner picks slots) | surplus_fill
-  max_cycles_per_day: 1.5             # runtime twin of arbitrage.max_cycles_per_day (shared budget)
-  daily_min_savings_eur: 0.20         # runtime twin; fail → whole-day no-trade
+  export_mode: peak_slice             # peak_slice (planner picks slots) | full_dump (empty to reserve)
+  max_cycles_per_day: 1.5             # CANONICAL runtime cycle budget (overlays arbitrage.max_cycles_per_day)
+  daily_min_savings_eur: 0.20         # CANONICAL runtime twin (overlays arbitrage.daily_min_savings_eur); fail → whole-day no-trade
 
 ml:                        # OPTIONAL forecaster/optimizer layer — off on a plain Pi; full schema in docs/ml-layer.md
   enabled: false           # master switch; auto-true when a supported accelerator is detected

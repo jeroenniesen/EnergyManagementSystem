@@ -31,17 +31,17 @@ def test_trading_settings_defaults_match_e11_lock():
     assert d["prices.export_price_model"] == "spot_minus_tax"
     assert d["control.allow_export_discharge"] is False
     field = SETTINGS_BY_KEY["planner.export_mode"]
-    assert field.options == ("peak_slice", "surplus_fill")
+    assert field.options == ("peak_slice", "full_dump")
     clean, errors = validate_settings({
         "planner.trading_enabled": True,
         "planner.trading_min_extra_eur": 0.75,
         "planner.max_export_kwh_per_day": 3.0,
-        "planner.export_mode": "surplus_fill",
+        "planner.export_mode": "full_dump",
     })
     assert errors == {}
     assert clean["planner.trading_enabled"] is True
-    assert clean["planner.export_mode"] == "surplus_fill"
-    _c, err = validate_settings({"planner.export_mode": "full_dump"})
+    assert clean["planner.export_mode"] == "full_dump"
+    _c, err = validate_settings({"planner.export_mode": "surplus_fill"})
     assert "planner.export_mode" in err
 
 def test_control_dry_run_setting_defaults_fail_safe():

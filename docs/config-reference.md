@@ -97,7 +97,7 @@ The car's SoC itself is **not** a config key — it's a runtime-store anchor (%,
 ## `strategy`
 | Key | Type | Default | Effect |
 |---|---|---|---|
-| `mode` | enum | auto | auto/summer/winter (seasonal). Trading is a separate opt-in overlay (`planner.trading_enabled`, §8.3a), not a fourth `strategy.mode` value in v1. **UI** |
+| `mode` | enum | auto | auto/summer/winter (seasonal). Trading is a separate opt-in overlay (`planner.trading_enabled`, §7.3/§8.3a) — **not** a fourth `strategy.mode` value in v1. **UI** |
 | `summer_months` | list[int] | [4..9] | calendar coarse override |
 | `summer_solar_threshold_kwh` | kWh | 12 · **CALIBRATE** | rolling forecast to count as summer |
 | `strategy_switch_hysteresis_days` | int | 3 | consecutive days the signal must lean the other way before `auto` switches season (0 = instant); runtime key `strategy.hysteresis_days`. Damps shoulder-month flip-flop (§8.4/B-15); fresh state = today's instantaneous pick; KV-persisted, restart-safe. **UI** |
@@ -174,9 +174,9 @@ The car's SoC itself is **not** a config key — it's a runtime-store anchor (%,
 | `trading_min_extra_eur` | € | 0.50 | Minimum extra projected €/day (T − Z) before trading actions. **UI** (Trading) |
 | `max_export_kwh_per_day` | kWh | 0 | Hard cap on export AC kWh/day. **0 = no hard cap** (empty to SoC reserve). **UI** (Trading) |
 | `min_export_kwh` | kWh | 0.5 | Skip export when surplus below this (no tiny dumps). **UI** (Trading, advanced) |
-| `export_mode` | enum | `peak_slice`\|`surplus_fill` = peak_slice | How export slots are chosen: `peak_slice` = planner picks discharge windows like charge slots; `surplus_fill` = fill ranked surplus slots. Mode-switching only. **UI** (Trading) |
-| `max_cycles_per_day` | float | 1.5 | Runtime twin of `arbitrage.max_cycles_per_day` — shared EFC budget for load + trading. **UI** (advanced) |
-| `daily_min_savings_eur` | € | 0.20 | Runtime twin; fail ⇒ whole-day no-trade. **UI** (advanced) |
+| `export_mode` | enum | `peak_slice`\|`full_dump` = peak_slice | How export slots are chosen: `peak_slice` = planner picks discharge windows like charge slots; `full_dump` = empty available surplus to SoC reserve across the peak. Mode-switching only. **UI** (Trading) |
+| `max_cycles_per_day` | float | 1.5 | **Canonical** runtime cycle budget (overlays SPEC-sample `arbitrage.max_cycles_per_day` when both exist). Shared EFC for load + trading. **UI** (advanced) |
+| `daily_min_savings_eur` | € | 0.20 | **Canonical** runtime twin of `arbitrage.daily_min_savings_eur` (this key wins). Fail ⇒ whole-day no-trade. **UI** (advanced) |
 | `negative_price_soak` | bool | false | opt-in: charge on sub-zero-priced slots (you're PAID to consume), up to headroom — even outside a normal cheap window and with summer grid top-up off. Off = today's behaviour (§8.2 step 5). Applies to the winter, adaptive and summer planners. **UI** |
 | `validate_projection` | bool | true | pre-apply projected-SoC gate (§8.5/§8.11/B-22 / #162): flag a grid-charge plan whose forward projection can't reach its `target_soc` by its `deadline` (>5 pp short) as **`warn`** (not `unsafe`→AUTO); the plan path lowers the target to the projected reachable value and keeps best-effort charging (honest partial). Projection below reserve and unsafe data-quality still fail safe to `AUTO`. Default on; skipped when data-quality ≠ `complete`. **UI** |
 | `recovery_enabled` | bool | true | missed-window recovery (§8.12/B-16): if a committed cheap charge window is missed (outage, held decisions, price spike) and the deadline is still ahead, top up in the cheapest REMAINING slots toward the SAME target (honest partial when too few hours remain; projection-based re-lower when still short — #162). Default on — it only ADDS charging through the same §8.11 validator + control caps (bypasses nothing) and prevents the costly "woke up short before the morning peak"; audited + calmly notified, one recovery per window per day. Off = a missed window is left as-is. **UI** |

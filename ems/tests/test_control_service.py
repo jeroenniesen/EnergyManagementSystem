@@ -114,8 +114,8 @@ def test_control_service_constructs_and_runs_a_tick_standalone():
     assert controller.driver.current_mode() is PhysicalMode.CHARGE
 
 
-def test_forced_discharge_sizing_requires_export_capability():
-    """The extracted decision engine must retain the export-discharge safety gate."""
+def test_forced_discharge_sizing_requires_export_intent_and_arming():
+    """E-11 / B-105: export sizing arms EXPORT_FOR_PROFIT only — not DISCHARGE_FOR_LOAD."""
     controller = _controlling_controller()
     svc, ctx = _service(controller)
     ctx.override_box["ov"] = Override(
@@ -128,7 +128,15 @@ def test_forced_discharge_sizing_requires_export_capability():
 
     controller.allow_export_discharge = True
     intent, _, _, target, power, _, _ = svc.effective_intent(NOW)
+    # DFL still has no export setpoint even when the arming flag is on.
     assert intent is BatteryIntent.DISCHARGE_FOR_LOAD
+    assert target is None and power is None
+
+    ctx.override_box["ov"] = Override(
+        intent=BatteryIntent.EXPORT_FOR_PROFIT, expires_at=NOW + timedelta(hours=1)
+    )
+    intent, _, _, target, power, _, _ = svc.effective_intent(NOW)
+    assert intent is BatteryIntent.EXPORT_FOR_PROFIT
     assert target == svc._settings["battery.min_reserve_soc"]
     assert power == svc._settings["battery.max_discharge_w"]
 

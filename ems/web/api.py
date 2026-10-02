@@ -745,6 +745,7 @@ _INTELLIGENCE_REASONS = {
 _INTENT_ACTION = {
     "grid_charge_to_target": "grid_charge",
     "discharge_for_load": "discharge",
+    "export_for_profit": "full_speed_discharge",
     "hold_reserve": "hold",
     "allow_self_consumption": "self_consume",
 }
@@ -758,15 +759,13 @@ def _action_from_intent(
 ) -> str:
     """Map planner intent → homeowner action token for Nu/Now + energy-story slots.
 
-    Default `discharge_for_load` is vendor AUTO self-consumption → `"discharge"`.
-    When `allow_export_discharge` is on, the same intent commands PhysicalMode.DISCHARGE at
-    max power (deliberate grid export) → `"full_speed_discharge"`. Car-session DISCHARGE is
-    bounded to ~house load and must NOT use this flag (callers demote or omit it).
+    `discharge_for_load` is always vendor AUTO self-consumption → `"discharge"`.
+    `export_for_profit` is deliberate max-power grid export → `"full_speed_discharge"`
+    (E-11 / SPEC §7.1). `allow_export_discharge` is retained for callers but no longer
+    promotes DISCHARGE_FOR_LOAD to full-speed export.
     """
+    del allow_export_discharge  # kept for call-site compat; DFL is never promoted
     action = _INTENT_ACTION.get(str(intent), "self_consume")
-    # Deliberate max-power export path (SPEC §7.1) — distinct from vendor self-consumption.
-    if action == "discharge" and allow_export_discharge:
-        return "full_speed_discharge"
     # In self-consumption the battery only ever charges from solar surplus (the vendor never
     # grid-charges in this mode — that needs GRID_CHARGE_TO_TARGET), so a charging slot here is a
     # SOLAR charge. Surface it as its own block instead of the generic "use solar first".
