@@ -84,4 +84,25 @@ test.describe("Trading view", () => {
     await page.getByTestId("trading-arm-confirm").click();
     await expect.poll(() => posted?.["control.allow_export_discharge"]).toBe(true);
   });
+
+  test("hides Test battery button while a probe is running", async ({ page }) => {
+    await mockRoute(page, "**/api/trading", (route) =>
+      route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          ...TRADING_RESP,
+          dry_run: false,
+          operational: true,
+          writes_allowed: true,
+          block_reason: null,
+          probe_active: true,
+        }),
+      }),
+    );
+    await page.goto("/#trading");
+    await expect(page.getByTestId("trading-test-running")).toBeVisible();
+    await expect(page.getByTestId("trading-test-btn")).toHaveCount(0);
+    await expect(page.getByTestId("trading-test-confirm")).toHaveCount(0);
+  });
 });

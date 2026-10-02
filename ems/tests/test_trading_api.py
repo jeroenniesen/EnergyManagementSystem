@@ -38,17 +38,21 @@ def _app(
     operational: bool = False,
     ev_power_w: float = 0.0,
     with_override_store: bool = False,
+    controller: ModeController | None = None,
+    control_cycle_seconds: float = 3600.0,
 ):
     del operational  # applied via settings POST when needed; create_app floor is dry_run
     db = str(tmp_path / "ems.sqlite")
-    driver = MockBatteryDriver(armed=True)
-    controller = ModeController(driver, Lifecycle(dry_run=dry_run), dry_run=dry_run)
+    if controller is None:
+        driver = MockBatteryDriver(armed=True)
+        controller = ModeController(driver, Lifecycle(dry_run=dry_run), dry_run=dry_run)
     kwargs: dict = {
         "price_source": MockPriceSource(AMS),
         "solar_forecast": MockSolarForecastSource(AMS),
         "controller": controller,
         "settings_store": SettingsStore(db),
         "cache_store": CacheStore(db),
+        "control_cycle_seconds": control_cycle_seconds,
     }
     if with_override_store:
         kwargs["override_store"] = SettingsStore(db, table="runtime_state")
@@ -107,20 +111,18 @@ def test_test_battery_refuses_dry_run(tmp_path):
 
 
 def test_test_battery_refuses_watch_only_detail(tmp_path):
-    """Watch-only detail is returned when dry_run is false but operational is off.
-
-    Process dry_run is a create_app floor — for this test we only assert the helper's
-    operational messaging via GET /api/trading block_reason after settings POST.
-    """
-    app, _ = _app(tmp_path, dry_run=True)
+    """Watch only is the 409 when dry-run is off and control.operational is off."""
+    app, _ = _app(tmp_path, dry_run=False)
     with TestClient(app) as c:
         c.post("/api/settings", json={"control.operational": False})
         body = c.get("/api/trading").json()
         assert body["writes_allowed"] is False
-        assert body["block_reason"]
+        assert body["dry_run"] is False
+        assert "watch only" in (body["block_reason"] or "").lower()
         r = c.post("/api/trading/test-battery", json={})
         assert r.status_code == 409
         assert r.json()["ok"] is False
+        assert "watch only" in r.json()["detail"].lower()
 
 
 def test_test_battery_operate_gated():
@@ -233,3 +235,81 @@ def test_test_battery_failed_decide_leaves_no_override(tmp_path, monkeypatch):
         assert controller.allow_export_discharge is False
         assert app.state.trading_probe_active is False
         assert app.state.control_service._ctx.override_box["ov"] == OVERRIDE_NONE
+
+
+def test_test_battery_success_discharges_then_restores(tmp_path, monkeypatch):
+    """CONTROLLING probe writes DISCHARGE, leaves the arm flag off, then restores AUTO."""
+    import asyncio
+    import threading
+    import time
+    from datetime import UTC, datetime, timedelta
+
+    from ems.domain import BatteryIntent, PhysicalMode
+    from ems.lifecycle import OwnershipState
+
+    driver = MockBatteryDriver(armed=True)
+    started = datetime.now(UTC)
+    lc = Lifecycle(dry_run=False, startup_grace_seconds=0)
+    lc.start(started - timedelta(seconds=1))
+    lc.mark_sensors_validated()
+    lc.mark_probe_ok()
+    lc.mark_plan_loaded()
+    lc.tick(datetime.now(UTC))
+    assert lc.state is OwnershipState.CONTROLLING
+    controller = ModeController(driver, lc, dry_run=False)
+
+    release = threading.Event()
+    real_sleep = asyncio.sleep
+
+    async def _gated(delay, result=None):
+        if delay >= 60:
+            while not release.is_set():
+                await real_sleep(0.01)
+            return result
+        return await real_sleep(delay, result)
+
+    monkeypatch.setattr(asyncio, "sleep", _gated)
+    app, bound = _app(
+        tmp_path, dry_run=False, with_override_store=True, controller=controller,
+    )
+    assert bound is controller
+    try:
+        with TestClient(app) as c:
+            c.post("/api/settings", json={"control.operational": True})
+            r = c.post("/api/trading/test-battery", json={})
+            assert r.status_code == 200, r.text
+            body = r.json()
+            assert body["ok"] is True
+            assert body["mode"] == "discharge"
+            assert body["allow_export_discharge"] is False
+            assert controller.allow_export_discharge is False
+            assert lc.state is OwnershipState.CONTROLLING
+            assert driver.current_mode() is PhysicalMode.DISCHARGE
+            assert driver.last_power_w == 4000.0
+            assert driver.last_target_soc == 10.0
+            ov = app.state.control_service._ctx.override_box["ov"]
+            assert ov.intent is BatteryIntent.EXPORT_FOR_PROFIT
+            assert controller.export_probe_active(datetime.now(UTC)) is True
+
+            release.set()
+            deadline = time.monotonic() + 3.0
+            restored = False
+            while time.monotonic() < deadline:
+                ov = app.state.control_service._ctx.override_box["ov"]
+                if (
+                    driver.current_mode() is PhysicalMode.AUTO
+                    and ov == OVERRIDE_NONE
+                    and not app.state.trading_probe_active
+                    and not controller.export_probe_active(datetime.now(UTC))
+                ):
+                    restored = True
+                    break
+                time.sleep(0.02)
+            assert restored, (
+                driver.current_mode(),
+                app.state.trading_probe_active,
+                app.state.control_service._ctx.override_box["ov"],
+            )
+            assert controller.allow_export_discharge is False
+    finally:
+        release.set()
