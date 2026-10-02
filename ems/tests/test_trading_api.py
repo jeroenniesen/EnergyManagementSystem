@@ -116,11 +116,19 @@ def test_export_probe_does_not_flip_arm_flag():
     """B-107: begin_export_probe must not set allow_export_discharge."""
     from datetime import UTC, datetime, timedelta
 
+    from ems.domain import BatteryIntent, PhysicalMode
+
     driver = MockBatteryDriver(armed=True)
     ctl = ModeController(driver, Lifecycle(dry_run=True), dry_run=True)
     assert ctl.allow_export_discharge is False
-    ctl.begin_export_probe(datetime.now(UTC) + timedelta(seconds=60))
+    now = datetime.now(UTC)
+    ctl.begin_export_probe(now + timedelta(seconds=60))
     assert ctl.allow_export_discharge is False
-    assert ctl.export_probe_active(datetime.now(UTC)) is True
+    assert ctl.export_probe_active(now) is True
+    # Mapping under the probe window must allow DISCHARGE without arming.
+    assert (
+        ctl._desired(BatteryIntent.EXPORT_FOR_PROFIT, now=now) is PhysicalMode.DISCHARGE
+    )
     ctl.clear_export_probe()
-    assert ctl.export_probe_active(datetime.now(UTC)) is False
+    assert ctl.export_probe_active(now) is False
+    assert ctl._desired(BatteryIntent.EXPORT_FOR_PROFIT, now=now) is PhysicalMode.AUTO

@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 import { apiFetch } from "./auth";
 
@@ -52,8 +52,12 @@ export function TradingView({ canOperate = true }: { canOperate?: boolean }) {
   // Raw draft strings so typing "1." does not snap to 1 (Settings NumberInput pattern).
   const [thresholdDraft, setThresholdDraft] = useState<string | null>(null);
   const [capDraft, setCapDraft] = useState<string | null>(null);
+  const editingRef = useRef(false);
+  editingRef.current = thresholdDraft !== null || capDraft !== null;
 
-  async function load() {
+  async function load(opts?: { force?: boolean }) {
+    // Skip polling while the operator is mid-edit so a 15s refresh does not wipe drafts.
+    if (!opts?.force && editingRef.current) return;
     try {
       const r = await apiFetch("/api/trading");
       if (!r.ok) throw new Error(`HTTP ${r.status}`);
@@ -137,11 +141,20 @@ export function TradingView({ canOperate = true }: { canOperate?: boolean }) {
   }
 
   const s = status;
-  const liveLabel = s?.allow_export_discharge
-    ? "Live export armed"
-    : s?.dry_run || !s?.operational
-      ? "Writes blocked (dry-run / Watch only) — export plan-only"
-      : "Not armed — export plan-only (vendor AUTO)";
+  const liveLabel = !s
+    ? ""
+    : s.allow_export_discharge && s.writes_allowed
+      ? "Live export armed — writes allowed"
+      : s.allow_export_discharge
+        ? "Armed in settings — writes still blocked by floors"
+        : s.dry_run || !s.operational
+          ? "Writes blocked (dry-run / Watch only) — export plan-only"
+          : "Not armed — export plan-only (vendor AUTO)";
+  const showScores =
+    !!s?.evaluation.enabled &&
+    (s.evaluation.would_trade ||
+      (s.evaluation.t_eur ?? 0) !== 0 ||
+      (s.evaluation.z_eur ?? 0) !== 0);
 
   return (
     <section className="trading-view" data-testid="trading-view">
@@ -167,20 +180,22 @@ export function TradingView({ canOperate = true }: { canOperate?: boolean }) {
               <strong>{liveLabel}</strong>
               {s.block_reason ? ` — ${s.block_reason}` : ""}
             </p>
-            <dl className="trading-metrics">
-              <div>
-                <dt>Path T</dt>
-                <dd>€{(s.evaluation.t_eur ?? 0).toFixed(2)}</dd>
-              </div>
-              <div>
-                <dt>Path Z (house)</dt>
-                <dd>€{(s.evaluation.z_eur ?? 0).toFixed(2)}</dd>
-              </div>
-              <div>
-                <dt>Extra T−Z</dt>
-                <dd>€{(s.evaluation.extra_eur ?? 0).toFixed(2)}</dd>
-              </div>
-            </dl>
+            {showScores && (
+              <dl className="trading-metrics" data-testid="trading-scores">
+                <div>
+                  <dt>Path T</dt>
+                  <dd>€{(s.evaluation.t_eur ?? 0).toFixed(2)}</dd>
+                </div>
+                <div>
+                  <dt>Path Z (house)</dt>
+                  <dd>€{(s.evaluation.z_eur ?? 0).toFixed(2)}</dd>
+                </div>
+                <div>
+                  <dt>Extra T−Z</dt>
+                  <dd>€{(s.evaluation.extra_eur ?? 0).toFixed(2)}</dd>
+                </div>
+              </dl>
+            )}
             <p data-testid="trading-eval-reason">{s.evaluation.reason}</p>
             <p className="muted">
               {s.copy.house} · {s.copy.sell}
