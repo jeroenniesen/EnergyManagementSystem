@@ -23,13 +23,15 @@ The planner emits **`BatteryIntent`**, never a raw vendor command. The mode cont
 | `ALLOW_SELF_CONSUMPTION` | — | `AUTO` | energy-mode select → self-consumption | **YES** (vendor tracks P1) |
 | `GRID_CHARGE_TO_TARGET` | `target_soc`, `deadline`, `power` | `CHARGE` | `indevolt.charge {power, target_soc}` | **NO** (forced charge) |
 | `HOLD_RESERVE` | `allow_solar_charge` | `IDLE` | standby button / discharge-floor = current SoC + AUTO | **N/A / partial** |
-| `DISCHARGE_FOR_LOAD` | `floor_soc`, `deadline` | `DISCHARGE` | `indevolt.discharge {…}`, capped at house load | **partial / NO** |
+| `DISCHARGE_FOR_LOAD` | `floor_soc`, `deadline` | `AUTO` | vendor self-consumption (house-serve) | **YES** |
+| `EXPORT_FOR_PROFIT` | `floor_soc`, `deadline`, `power_w`, optional `target_export_kwh` | `DISCHARGE` when `control.allow_export_discharge` | `indevolt.discharge {…}` ≤ `max_discharge_w`; else do not emit / degrade to AUTO | **NO** (forced export) |
 
 Notes:
 - **`HOLD_RESERVE.allow_solar_charge`** (an intent field; set from the config key **`hold_reserve_blocks_solar_charge`** — note the **inverse polarity**) decides whether holding reserve still lets *solar* top the battery up (summer "build toward sunset") or blocks all charge (pure freeze). See `SPEC §7`.
 - **Standby vs. self-consumption-disabled:** if the probe finds the battery exposes *both* a true standby/hold *and* a "self-consumption off" state, prefer the one that holds SoC without exporting; record which in the `CapabilityReport`.
 - **IDLE-emulation caveats** (when no true standby — `SPEC §7.2`): the *discharge-floor = current SoC + AUTO* emulation only **blocks discharge** — with `allow_solar_charge` true, solar can still drift SoC *up* (fine for "build toward sunset", wrong for a pure freeze → then also block charging). The *charge-to-current-SoC* emulation may **not latch** (a charge that's "already complete" can revert to the prior mode), so prefer the standby button when the probe confirms it holds.
-- **`DISCHARGE_FOR_LOAD` is not a power-tracking loop.** Serving "exactly the load" is done by the vendor's self-consumption controller (P1-zeroing in discharge — **CONFIRM@M1**), not by the EMS rewriting power each cycle (which `SPEC §2` forbids). The force-discharge *service* is for deliberate export only; if the vendor won't serve-load in forced discharge, "discharge during the peak" degrades to leaving the battery in self-consumption drawing down storage.
+- **`DISCHARGE_FOR_LOAD` is not a power-tracking loop** and is **never** armed by `allow_export_discharge`. Serving "exactly the load" is done by the vendor's self-consumption controller (P1-zeroing — **CONFIRM@M1**), not by the EMS rewriting power each cycle (which `SPEC §2` forbids).
+- **`EXPORT_FOR_PROFIT` (E-11 / Optie A)** is the only planner intent that force-discharges for grid export / trading. `control.allow_export_discharge` arms **this intent alone**. Planner emits it only from the trading T-vs-Z path (`SPEC §8.3a`) when armed + capable; otherwise degrade with a reason. Clamp `power_w` to probed `max_discharge_w`.
 - **Floor anti-flap (#165 / SPEC §8.8):** when SoC is **at or below `min_reserve_soc`**, the runtime **must not** oscillate `HOLD_RESERVE` ↔ `ALLOW_SELF_CONSUMPTION` (idle↔AUTO) every control cycle — that pattern burned the daily switch budget overnight on live data. Behaviour (`resolve_floor_anti_flap` in `ems/control/safety.py`):
   1. If the device is already in **AUTO or IDLE**, **stay** in that mode (remap the planner intent to match) — zero writes, clear "why not acting" reason (`floor_anti_flap`).
   2. If entering from a non-safe mode (e.g. charge just ended while still at the floor), prefer **`ALLOW_SELF_CONSUMPTION` → AUTO** over `HOLD_RESERVE` → IDLE: at the floor both are discharge-safe, AUTO matches the fail-safe ("never worse than vendor self-consumption") and still lets solar fill, and forcing IDLE would spend a switch for no SoC-protection gain. (SPEC §7.1 still maps `HOLD_RESERVE`→IDLE *above* the floor / when not latched.)
@@ -37,7 +39,7 @@ Notes:
 
 ## 3. Preconditions (checked before every overriding action)
 
-A `GRID_CHARGE_TO_TARGET` / `DISCHARGE_FOR_LOAD` / `HOLD_RESERVE` action is only issued if **all** hold (else fall back to `ALLOW_SELF_CONSUMPTION` and raise the relevant alert):
+A `GRID_CHARGE_TO_TARGET` / `DISCHARGE_FOR_LOAD` / `EXPORT_FOR_PROFIT` / `HOLD_RESERVE` action is only issued if **all** hold (else fall back to `ALLOW_SELF_CONSUMPTION` and raise the relevant alert):
 
 - battery **online** and reachable;
 - local API / HA control path **enabled** (probe succeeded);

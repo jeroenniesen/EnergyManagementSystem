@@ -19,7 +19,7 @@ Legend: **UI** = also editable from the web UI (overlays the file). **CONFIRM** 
 | `min_reserve_soc` | % | 10 | never discharge below |
 | `round_trip_efficiency` | 0–1 | 0.90 | arbitrage economics + SoC projection |
 | `min_mode_dwell_seconds` | int | 600 | min time in a mode (anti-flap) |
-| `allow_export_discharge` | bool | false | if false, serve load via `AUTO`; never force-discharge to export (§7.1/§8.3) |
+| `allow_export_discharge` | bool | false | **Master arming for `EXPORT_FOR_PROFIT` only** (§7.1/§8.3a). When false, never force-discharge for trading/export. Does **not** change `DISCHARGE_FOR_LOAD` → `AUTO`. Live writes still need yaml/`dev.mode` dry-run floor + Watch only OFF + operational ON. **UI** (Trading) |
 | `manual_override_policy` | enum | `respect`\|`reassert` = respect | how to treat out-of-EMS changes |
 | `manual_override_respect_minutes` | int | 120 | how long to respect a manual change |
 | `takeover_policy` | enum | `stand_down`\|`override` = stand_down | if battery already in a vendor schedule |
@@ -50,7 +50,7 @@ Legend: **UI** = also editable from the web UI (overlays the file). **CONFIRM** 
 | `grid_fees.tibber_total_includes_all` | bool | false · **CONFIRM** | whether to add extra fees |
 | `grid_fees.import_fee_eur_per_kwh` | €/kWh | 0.0 | added to import price when the provider total excludes it |
 | `grid_fees.export_fee_eur_per_kwh` | €/kWh | 0.0 | deducted from export value in reporting/planning diagnostics |
-| `export_price_model` | enum | `net_metering`\|`spot_minus_tax`\|`fixed` = net_metering | how each exported kWh is valued (`economics.export_value`, §8.3): `net_metering`=full price (today's saldering); `spot_minus_tax`=post-2027 (may go negative, unclamped); `fixed`=flat feed-in. **UI** |
+| `export_price_model` | enum | `spot_minus_tax`\|`net_metering`\|`fixed` = **spot_minus_tax** | how each exported kWh is valued (`economics.export_value`, §8.3/§8.3a): `spot_minus_tax`=default 2027-ready (may go negative, unclamped); `net_metering`=full price (today's saldering); `fixed`=flat feed-in. **UI** |
 | `energy_tax_eur_per_kwh` | €/kWh | 0.13 | subtracted from spot when export = `spot_minus_tax`. **UI** |
 | `fixed_feed_in_eur_per_kwh` | €/kWh | 0.01 | flat export value when export = `fixed`. **UI** |
 | `export_tariff_eur_per_kwh` | €/kWh | 0.0 | (legacy) flat export value; superseded by `export_price_model` |
@@ -61,8 +61,8 @@ Legend: **UI** = also editable from the web UI (overlays the file). **CONFIRM** 
 | `degradation_cost_eur_per_kwh` | €/kWh | 0.05 | wear allowance in profitability test |
 | `risk_margin_eur_per_kwh` | €/kWh | 0.02 | safety margin in profitability test |
 | `arbitrage_min_spread_eur` | €/kWh | 0.12 | coarse floor (not the only test) |
-| `daily_min_savings_eur` | € | 0.20 | below ⇒ no-trade mode |
-| `max_cycles_per_day` | float | 1.5 | equivalent full cycles for arbitrage |
+| `daily_min_savings_eur` | € | 0.20 | below ⇒ **whole-day** no-trade (load arbitrage **and** trading) |
+| `max_cycles_per_day` | float | 1.5 | equivalent full cycles — **shared** by load-arbitrage + trading |
 | `max_cycles_per_month` | float | 30 | monthly cycle budget |
 | `min_grid_charge_kwh` | kWh | 0.5 | don't schedule tiny grid charges |
 | `max_daily_grid_charge_kwh` | kWh | 12 | hard cap on grid energy bought/day |
@@ -97,7 +97,7 @@ The car's SoC itself is **not** a config key — it's a runtime-store anchor (%,
 ## `strategy`
 | Key | Type | Default | Effect |
 |---|---|---|---|
-| `mode` | enum | auto | auto/summer_solar/winter_arbitrage/manual. **UI** |
+| `mode` | enum | auto | auto/summer/winter (seasonal). Trading is a separate opt-in overlay (`planner.trading_enabled`, §8.3a), not a fourth `strategy.mode` value in v1. **UI** |
 | `summer_months` | list[int] | [4..9] | calendar coarse override |
 | `summer_solar_threshold_kwh` | kWh | 12 · **CALIBRATE** | rolling forecast to count as summer |
 | `strategy_switch_hysteresis_days` | int | 3 | consecutive days the signal must lean the other way before `auto` switches season (0 = instant); runtime key `strategy.hysteresis_days`. Damps shoulder-month flip-flop (§8.4/B-15); fresh state = today's instantaneous pick; KV-persisted, restart-safe. **UI** |
@@ -170,6 +170,13 @@ The car's SoC itself is **not** a config key — it's a runtime-store anchor (%,
 | Key | Type | Default | Effect |
 |---|---|---|---|
 | `mode` | enum | `rule_based`\|`ml`\|`advisory` = rule_based | which planner produces the executed `Plan` (`SPEC §8`). **UI-editable.** `ml`/`advisory` require the ML layer |
+| `trading_enabled` | bool | false | **Opt-in trading / export-arbitrage** (§8.3a / E-11). Off = summer/winter only; no `EXPORT_FOR_PROFIT`. On = day T-vs-Z (year-round); emit export only if T beats Z by ≥ `trading_min_extra_eur`. **UI** (Trading) |
+| `trading_min_extra_eur` | € | 0.50 | Minimum extra projected €/day (T − Z) before trading actions. **UI** (Trading) |
+| `max_export_kwh_per_day` | kWh | 0 | Hard cap on export AC kWh/day. **0 = no hard cap** (empty to SoC reserve). **UI** (Trading) |
+| `min_export_kwh` | kWh | 0.5 | Skip export when surplus below this (no tiny dumps). **UI** (Trading, advanced) |
+| `export_mode` | enum | `peak_slice`\|`surplus_fill` = peak_slice | How export slots are chosen: `peak_slice` = planner picks discharge windows like charge slots; `surplus_fill` = fill ranked surplus slots. Mode-switching only. **UI** (Trading) |
+| `max_cycles_per_day` | float | 1.5 | Runtime twin of `arbitrage.max_cycles_per_day` — shared EFC budget for load + trading. **UI** (advanced) |
+| `daily_min_savings_eur` | € | 0.20 | Runtime twin; fail ⇒ whole-day no-trade. **UI** (advanced) |
 | `negative_price_soak` | bool | false | opt-in: charge on sub-zero-priced slots (you're PAID to consume), up to headroom — even outside a normal cheap window and with summer grid top-up off. Off = today's behaviour (§8.2 step 5). Applies to the winter, adaptive and summer planners. **UI** |
 | `validate_projection` | bool | true | pre-apply projected-SoC gate (§8.5/§8.11/B-22 / #162): flag a grid-charge plan whose forward projection can't reach its `target_soc` by its `deadline` (>5 pp short) as **`warn`** (not `unsafe`→AUTO); the plan path lowers the target to the projected reachable value and keeps best-effort charging (honest partial). Projection below reserve and unsafe data-quality still fail safe to `AUTO`. Default on; skipped when data-quality ≠ `complete`. **UI** |
 | `recovery_enabled` | bool | true | missed-window recovery (§8.12/B-16): if a committed cheap charge window is missed (outage, held decisions, price spike) and the deadline is still ahead, top up in the cheapest REMAINING slots toward the SAME target (honest partial when too few hours remain; projection-based re-lower when still short — #162). Default on — it only ADDS charging through the same §8.11 validator + control caps (bypasses nothing) and prevents the costly "woke up short before the morning peak"; audited + calmly notified, one recovery per window per day. Off = a missed window is left as-is. **UI** |

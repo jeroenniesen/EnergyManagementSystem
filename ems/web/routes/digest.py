@@ -143,7 +143,7 @@ async def gather_digest(ctx: AppContext, anchor: date_cls) -> dict:
         audit_rows = await ctx.audit_store.between(
             start.astimezone(UTC).isoformat(), end.astimezone(UTC).isoformat())
     advice = await ctx.solar_confidence_advice(datetime.now(UTC))
-    export_model = str(ctx.settings_cache.get("prices.export_price_model", "net_metering"))
+    export_model = str(ctx.settings_cache.get("prices.export_price_model", "spot_minus_tax"))
     return build_digest(
         finance_rows=finance_rows, flows=report["flows"], scores=report["scores"],
         audit_rows=audit_rows, advice=advice, week_label=label,
