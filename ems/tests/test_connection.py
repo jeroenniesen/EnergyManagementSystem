@@ -54,8 +54,11 @@ def test_schema_exposes_advanced_and_applies():
     assert by_key["control.dry_run"]["applies"] == "restart"
     assert by_key["control.operational"]["applies"] == "restart"
     assert by_key["ui.theme"]["applies"] == "live"
-    # every schema field is represented
-    assert set(by_key) == set(SETTINGS_BY_KEY)
+    # Every Settings-form field is represented. Trading-owned keys stay in SETTINGS_BY_KEY
+    # (validation + POST) but are omitted from the form schema.
+    shown = {k for k, f in SETTINGS_BY_KEY.items() if f.show_in_settings}
+    assert set(by_key) == shown
+    assert "control.allow_export_discharge" not in by_key
 
 
 def test_build_wiring_returns_namedtuple_unpackable_as_legacy_7tuple():

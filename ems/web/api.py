@@ -121,6 +121,7 @@ from ems.planner.recovery import check_charge_completion, recover_if_needed
 from ems.planner.rule_based import plan_rule_based
 from ems.planner.strategy import HysteresisState
 from ems.planner.summer import sunset_after
+from ems.planner.trading import evaluate_trading, trading_config_from_settings
 from ems.planner.validator import PlanValidation, clamp_plan_power, validate_plan
 from ems.readiness import Readiness, compute_readiness, home_state
 from ems.reporting import (
@@ -2961,6 +2962,261 @@ def create_app(
         if not dry_run:
             _spawn_override_cycle()
         return JSONResponse(get_override())
+
+    # --- E-11 Trading portal (B-106 / B-107 / B-108) ---------------------------------------------
+    _TEST_BATTERY_SECONDS = 120
+    _trading_probe_tasks: set[asyncio.Task] = set()
+    app.state.trading_probe_active = False
+
+    def _trading_write_block_reason() -> str | None:
+        """Why live battery writes (incl. Test batterij / armed export) are blocked."""
+        if dry_run:
+            return "yaml/control dry-run or mock/replay floor — no battery writes"
+        if not bool(settings_cache.get("control.operational", False)):
+            return "Watch only / control.operational off — no battery writes"
+        if controller is None:
+            return "no battery controller configured"
+        if not controller.driver.armed:
+            return "battery driver not armed"
+        return None
+
+    @app.get("/api/trading")
+    def get_trading() -> dict:
+        """Trading portal snapshot: settings, floors, T-vs-Z evaluation (B-106)."""
+        now = datetime.now(UTC)
+        s = settings_cache
+        cfg = trading_config_from_settings(s)
+        block = _trading_write_block_reason()
+        armed = bool(s.get("control.allow_export_discharge", False))
+        probe_active = bool(getattr(app.state, "trading_probe_active", False))
+        if controller is not None and controller.export_probe_active(now):
+            probe_active = True
+        evaluation = {
+            "enabled": cfg.enabled,
+            "would_trade": False,
+            "reason": "Geen prijs/plan — kan T-vs-Z nu niet beoordelen.",
+            "t_eur": 0.0,
+            "z_eur": 0.0,
+            "extra_eur": 0.0,
+        }
+        quality = _data_quality(now)
+        validator_status: str | None = None
+        try:
+            built = _build_plan_now(now)
+            if built is not None:
+                _now, prices, plan = built
+                soc = _current_soc(now)
+                if soc is None:
+                    soc = float(s.get("battery.min_reserve_soc", 10.0))
+                load_by = _load_by([p.start for p in prices]) if prices else {}
+                evaluation = evaluate_trading(
+                    plan, prices, now, cfg, soc_pct=float(soc), load_w_by=load_by,
+                )
+                try:
+                    validator_status = _validate_plan_obj(plan, _now).status
+                except Exception:
+                    _log.debug(
+                        "GET /api/trading validator badge failed (non-fatal)", exc_info=True,
+                    )
+        except Exception:
+            _log.debug("GET /api/trading evaluation failed (non-fatal)", exc_info=True)
+            evaluation = {
+                "enabled": cfg.enabled,
+                "would_trade": False,
+                "reason": "T-vs-Z evaluatie mislukt — instellingen blijven beschikbaar.",
+                "t_eur": 0.0,
+                "z_eur": 0.0,
+                "extra_eur": 0.0,
+            }
+        # T-vs-Z is a projection for the card. The act path still runs the §8.11 validator
+        # and the dry-run floors; `validator` is that badge on the plan just built.
+        evaluation = {
+            **evaluation,
+            "projection": True,
+            "projection_note": (
+                "T−Z is a projection of today's plan, not the act decision. "
+                "The control loop still applies the validator and the dry-run floors "
+                "before any mode switch."
+            ),
+            "data_quality": quality,
+            "validator": validator_status,
+        }
+        return {
+            "trading_enabled": bool(s.get("planner.trading_enabled", False)),
+            "min_extra_eur": float(s.get("planner.trading_min_extra_eur", 0.50)),
+            "max_export_kwh_per_day": float(s.get("planner.max_export_kwh_per_day", 0.0)),
+            "export_mode": str(s.get("planner.export_mode", "peak_slice")),
+            "export_price_model": str(s.get("prices.export_price_model", "spot_minus_tax")),
+            "allow_export_discharge": armed,
+            "probe_active": probe_active,
+            "dry_run": bool(dry_run),
+            "operational": bool(s.get("control.operational", False)),
+            "writes_allowed": block is None,
+            "block_reason": block,
+            "evaluation": evaluation,
+            "copy": {
+                "house": "Pad Z = energie voor het huis (zelfconsumptie).",
+                "sell": "Pad T = goedkoop laden / duur verkopen aan het net.",
+            },
+        }
+
+    async def _clear_trading_probe_override() -> None:
+        """Best-effort clear of Test-batterij override + probe window (never touches arm flag)."""
+        if controller is not None:
+            controller.clear_export_probe()
+        app.state.trading_probe_active = False
+        try:
+            if override_store is not None:
+                await override_store.delete(_OV_INTENT, _OV_EXP)
+        except Exception:
+            _log.debug("trading probe clear override store failed", exc_info=True)
+        override_box["ov"] = OVERRIDE_NONE
+
+    @app.post("/api/trading/test-battery")
+    async def trading_test_battery(request: Request) -> JSONResponse:
+        """Bounded forced-DISCHARGE probe (B-107). Optional; not a gate for arming.
+
+        Uses a ModeController export-probe window (does NOT flip `allow_export_discharge`) plus a
+        short manual override so the control loop holds DISCHARGE until the window ends. Serialised
+        on `control_lock`. Override is published only after a successful decide. Refuses when
+        dry-run / Watch-only floors block writes, or when the car is charging.
+        """
+        del request  # auth via middleware
+        block = _trading_write_block_reason()
+        if block is not None:
+            return JSONResponse({"ok": False, "detail": block}, status_code=409)
+        if override_store is None:
+            return JSONResponse(
+                {"ok": False, "detail": "override store not configured"}, status_code=503,
+            )
+        assert controller is not None
+        now = datetime.now(UTC)
+        if _car_charging(now):
+            return JSONResponse(
+                {
+                    "ok": False,
+                    "detail": "Car is charging — Test batterij refused (no forced export)",
+                },
+                status_code=409,
+            )
+        if app.state.trading_probe_active or controller.export_probe_active(now):
+            return JSONResponse(
+                {"ok": False, "detail": "Test batterij already running"}, status_code=409,
+            )
+        floor = float(settings_cache["battery.min_reserve_soc"])
+        power = float(settings_cache["battery.max_discharge_w"])
+        until = now + timedelta(seconds=_TEST_BATTERY_SECONDS)
+        armed_before = bool(controller.allow_export_discharge)
+        app.state.trading_probe_active = True
+        decision = None
+        mode = None
+        failure: JSONResponse | None = None
+        try:
+            # Hold the control lock across the probe window, decide, and any failure clear so a
+            # queued cycle cannot observe an EXPORT probe that this request is about to roll back.
+            async with control._ctx.control_lock:
+                try:
+                    # Window must be open before decide so unarmed EXPORT maps to DISCHARGE.
+                    controller.begin_export_probe(until)
+                    # Decide first — do NOT publish override until DISCHARGE actually lands.
+                    decision = controller.decide(
+                        BatteryIntent.EXPORT_FOR_PROFIT,
+                        now,
+                        target_soc=floor,
+                        power_w=power,
+                        manual=True,
+                    )
+                    mode = getattr(decision.desired_mode, "value", None)
+                    ok = (
+                        decision.outcome in ("applied", "unconfirmed")
+                        and decision.desired_mode is PhysicalMode.DISCHARGE
+                    )
+                    if not ok:
+                        await _clear_trading_probe_override()
+                        failure = JSONResponse({
+                            "ok": False,
+                            "detail": decision.reason or f"probe not applied ({decision.outcome})",
+                            "outcome": decision.outcome,
+                            "mode": mode,
+                        }, status_code=409)
+                    else:
+                        await override_store.set_many({
+                            _OV_INTENT: BatteryIntent.EXPORT_FOR_PROFIT.value,
+                            _OV_EXP: until.isoformat(),
+                        })
+                        override_box["ov"] = Override(
+                            intent=BatteryIntent.EXPORT_FOR_PROFIT, expires_at=until,
+                        )
+                except Exception as exc:
+                    await _clear_trading_probe_override()
+                    failure = JSONResponse(
+                        {"ok": False, "detail": f"probe failed: {exc}"}, status_code=500,
+                    )
+        except Exception as exc:
+            # Lock itself failed — nothing is inside the critical section to race the clear.
+            await _clear_trading_probe_override()
+            return JSONResponse(
+                {"ok": False, "detail": f"probe failed: {exc}"}, status_code=500,
+            )
+        if failure is not None:
+            return failure
+        assert decision is not None
+        mode = getattr(decision.desired_mode, "value", None)
+        if audit_store is not None:
+            try:
+                await audit_store.append(
+                    now.isoformat(), "trading_test_battery",
+                    f"Test batterij: {decision.outcome} → {decision.desired_mode} "
+                    f"(probe window {_TEST_BATTERY_SECONDS}s; arm flag unchanged={armed_before}; "
+                    "manual dwell/cap bypass)",
+                    {
+                        "outcome": decision.outcome,
+                        "desired": mode,
+                        "applied": decision.applied,
+                        "reason": decision.reason,
+                        "restore_after_s": _TEST_BATTERY_SECONDS,
+                        "allow_export_unchanged": armed_before,
+                    },
+                )
+            except Exception:
+                _log.debug("trading_test_battery audit failed (non-fatal)", exc_info=True)
+
+        async def _restore() -> None:
+            try:
+                await asyncio.sleep(_TEST_BATTERY_SECONDS)
+                if controller is None:
+                    return
+                t = datetime.now(UTC)
+                try:
+                    if override_store is not None:
+                        await override_store.delete(_OV_INTENT, _OV_EXP)
+                        override_box["ov"] = OVERRIDE_NONE
+                except Exception:
+                    _log.debug("trading probe clear override failed", exc_info=True)
+                async with control._ctx.control_lock:
+                    controller.decide(
+                        BatteryIntent.ALLOW_SELF_CONSUMPTION, t, manual=True, priority=True,
+                    )
+            finally:
+                if controller is not None:
+                    controller.clear_export_probe()
+                    # Never touch allow_export_discharge — restore from settings is N/A.
+                app.state.trading_probe_active = False
+
+        task = asyncio.create_task(_restore())
+        _trading_probe_tasks.add(task)
+        task.add_done_callback(_trading_probe_tasks.discard)
+        return JSONResponse({
+            "ok": True,
+            "detail": (
+                f"Test batterij gestart ({decision.outcome}): forced discharge "
+                f"~{_TEST_BATTERY_SECONDS // 60} min, daarna terug naar AUTO. "
+                "Live export arming flag unchanged."
+            ),
+            "outcome": decision.outcome,
+            "mode": mode,
+            "allow_export_discharge": armed_before,
+        })
 
     # --- I2 refuse-when-busy self-restart --------------------------------------------------------
     def _restart_pending() -> bool:

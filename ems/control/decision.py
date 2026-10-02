@@ -61,11 +61,21 @@ class ControlDecisionEngine:
         if intent is None or intent not in (
             BatteryIntent.DISCHARGE_FOR_LOAD,
             BatteryIntent.ALLOW_SELF_CONSUMPTION,
+            # B-108: armed export must not dump into the car / grid during a charge session.
+            BatteryIntent.EXPORT_FOR_PROFIT,
         ):
             return intent, reason, None
         action = self._car_mode_action(now, current_setpoint_w=current_setpoint_w)
         if action is None:
             return intent, reason, None
+        if intent is BatteryIntent.EXPORT_FOR_PROFIT:
+            # Pause deliberate grid export while the car charges — never promote export to a
+            # car-session DISCHARGE_FOR_LOAD (that would still force-discharge into the EV).
+            return (
+                BatteryIntent.HOLD_RESERVE,
+                "car charging — holding the battery (export paused so it won't feed the car)",
+                None,
+            )
         if action.action == "discharge":
             if self._data_quality(now) == "unsafe":
                 return (
@@ -194,4 +204,14 @@ class ControlDecisionEngine:
                 target_soc, power_w = cur.target_soc, cur.power_w
             elif intent is BatteryIntent.EXPORT_FOR_PROFIT and self._allow_export_discharge():
                 target_soc, power_w = cur.floor_soc, cur.power_w
+        # B-108: plan may emit EXPORT_FOR_PROFIT while live forced discharge is still off —
+        # keep the intent for explainability, but say clearly that writes stay plan-only.
+        if intent is BatteryIntent.EXPORT_FOR_PROFIT and not self._allow_export_discharge():
+            suffix = (
+                "export plan-only (live forced discharge not armed); holding vendor AUTO"
+            )
+            if reason is None or not reason:
+                reason = suffix
+            elif "plan-only" not in reason:
+                reason = f"{reason} — {suffix}"
         return intent, reason, override_active, target_soc, power_w, val, car_action

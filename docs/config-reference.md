@@ -19,7 +19,7 @@ Legend: **UI** = also editable from the web UI (overlays the file). **CONFIRM** 
 | `min_reserve_soc` | % | 10 | never discharge below |
 | `round_trip_efficiency` | 0–1 | 0.90 | arbitrage economics + SoC projection |
 | `min_mode_dwell_seconds` | int | 600 | min time in a mode (anti-flap) |
-| `allow_export_discharge` | bool | false | **Master arming for `EXPORT_FOR_PROFIT` only** (§7.1/§8.3a). When false, never force-discharge for trading/export. Does **not** change `DISCHARGE_FOR_LOAD` → `AUTO`. Live writes still need yaml/`dev.mode` dry-run floor + Watch only OFF + operational ON. **UI** (Trading) |
+| `allow_export_discharge` | bool | false | **Master arming for `EXPORT_FOR_PROFIT` only** (§7.1/§8.3a). When false, never force-discharge for trading/export. Does **not** change `DISCHARGE_FOR_LOAD` → `AUTO`. Live writes still need yaml/`dev.mode` dry-run floor + Watch only OFF + operational ON. **UI** (Trading page confirm-to-arm; omitted from Manage → Control advanced) |
 | `manual_override_policy` | enum | `respect`\|`reassert` = respect | how to treat out-of-EMS changes |
 | `manual_override_respect_minutes` | int | 120 | how long to respect a manual change |
 | `takeover_policy` | enum | `stand_down`\|`override` = stand_down | if battery already in a vendor schedule |

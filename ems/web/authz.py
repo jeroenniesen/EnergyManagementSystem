@@ -27,6 +27,7 @@ OPERATE_PATHS = frozenset({
     "/api/chat",
     "/api/car/soc",
     "/api/notifications/read",
+    "/api/trading/test-battery",
 })
 # Mutating HTTP verbs — only these can require OPERATE on an OPERATE_PATHS member; reads (GET/
 # HEAD/OPTIONS) of the same path are VIEW (mirrors api.py's own _WRITE_METHODS).

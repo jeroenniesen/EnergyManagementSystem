@@ -2924,3 +2924,17 @@ body {
 .auth-card p { margin: 0; color: var(--muted); font-size: 0.88rem; line-height: 1.5; }
 .auth-card form { display: flex; flex-direction: column; gap: 14px; }
 .auth-card .btn-primary { width: 100%; margin-top: 4px; }
+
+/* E-11 Trading portal */
+.trading-view { display: flex; flex-direction: column; gap: 16px; max-width: 720px; }
+.trading-card { padding: 16px 0; border-top: 1px solid var(--line); }
+.trading-card h2, .trading-card h3 { margin: 0 0 8px; }
+.trading-card p { margin: 0 0 8px; line-height: 1.45; }
+.trading-metrics { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; margin: 12px 0; }
+.trading-metrics dt { font-size: 0.75rem; color: var(--muted); }
+.trading-metrics dd { margin: 2px 0 0; font-size: 1.15rem; font-weight: 600; }
+.trading-row { display: flex; justify-content: space-between; align-items: center; gap: 12px; margin: 10px 0; font-size: 0.92rem; }
+.trading-row input[type="number"], .trading-row select { width: 9rem; }
+.trading-confirm { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-top: 8px; }
+.trading-confirm p { flex: 1 1 100%; margin: 0; }
+.trading-view .muted { color: var(--muted); font-size: 0.88rem; }
