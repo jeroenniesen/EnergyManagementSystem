@@ -2975,7 +2975,7 @@ def create_app(
             return "Watch only / control.operational off — no battery writes"
         if controller is None:
             return "no battery controller configured"
-        if not getattr(controller.driver, "armed", False):
+        if not controller.driver.armed:
             return "battery driver not armed"
         return None
 
