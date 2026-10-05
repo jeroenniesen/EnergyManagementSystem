@@ -2,7 +2,8 @@ from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
 from ems.domain import BatteryIntent
-from ems.planner.rule_based import PlannerConfig, plan_rule_based
+from ems.planner.rule_based import PlannerConfig, late_pack_charge_starts, plan_rule_based
+from ems.planner.schedule import SLOT
 from ems.sources.prices import MockPriceSource, PriceSlot
 
 AMS = ZoneInfo("Europe/Amsterdam")
@@ -204,3 +205,92 @@ def test_winter_ev_alone_does_not_invent_peak_discharge():
         expected_ev_kwh=30.0,
     )
     assert all(s.intent is BatteryIntent.ALLOW_SELF_CONSUMPTION for s in plan.slots)
+
+
+def test_late_pack_prefers_later_equal_cost_window():
+    """Pure helper: equal-cost contiguous windows tie-break toward the deadline (later)."""
+    t0 = datetime(2026, 10, 5, 12, 0, tzinfo=AMS)
+    # Two equal valleys of 4 slots separated by a dearer shoulder — both cost the same.
+    prices = (
+        [PriceSlot(t0 + i * SLOT, 0.20) for i in range(4)]
+        + [PriceSlot(t0 + (4 + i) * SLOT, 0.35) for i in range(4)]
+        + [PriceSlot(t0 + (8 + i) * SLOT, 0.20) for i in range(4)]
+    )
+    starts = late_pack_charge_starts(
+        prices, 4, price_of=lambda p: p.eur_per_kwh, max_buy=0.30,
+    )
+    assert starts == {p.start for p in prices[8:12]}, (
+        "equal-cost windows must late-pack toward the later valley"
+    )
+
+
+def test_late_pack_prefers_strictly_cheaper_early_window():
+    """Pure helper: a unique cheaper early valley beats a later plateau (cost order, not always-late)."""
+    t0 = datetime(2026, 10, 5, 8, 0, tzinfo=AMS)
+    prices = (
+        [PriceSlot(t0 + i * SLOT, 0.10) for i in range(4)]
+        + [PriceSlot(t0 + (4 + i) * SLOT, 0.20) for i in range(12)]
+    )
+    starts = late_pack_charge_starts(
+        prices, 4, price_of=lambda p: p.eur_per_kwh, max_buy=0.30,
+    )
+    assert starts == {p.start for p in prices[:4]}, (
+        "strictly cheaper early window must win over a later plateau"
+    )
+
+
+def test_winter_late_pack_shifts_charge_past_early_medium_cheap():
+    """Live pattern 2026-10-05: early medium-cheap (€0.23) + deeper midday valley (€0.17).
+
+    Cheapest-first marks both; execution then starts at 12:00 @ max_charge_w and finishes
+    before the deepest hour is fully used. Late-pack must choose the cost-minimal contiguous
+    ~10-slot window 12:30–14:45 (slot-price sum minimum on this curve). No battery I/O.
+    """
+    day = datetime(2026, 10, 5, 8, 0, tzinfo=AMS)  # morning replan, before the valley
+
+    def block(hour: int, n: int, price: float) -> list[PriceSlot]:
+        start = datetime(2026, 10, 5, hour, 0, tzinfo=AMS)
+        return [PriceSlot(start + i * SLOT, price) for i in range(n)]
+
+    prices = (
+        block(8, 16, 0.32)   # morning shoulder (above useful buy)
+        + block(12, 4, 0.228)  # early "cheap" — 12:00/12:15 must stay out of the window
+        + block(13, 4, 0.172)  # deepest valley
+        + block(14, 4, 0.182)  # second valley
+        + block(15, 8, 0.239)  # afternoon shoulder (still buyable vs peak)
+        + block(17, 8, 0.30)   # pre-peak
+        + block(19, 8, 0.449)  # evening peak
+    )
+    # Peak load sized for demand-sized n_charge == 10 (~2.5 h @ 4 kW / ~9.5 kWh DC shortfall)
+    # — locks the live early-start bug shape (not the weaker 5-slot / 13:00-only case).
+    load = {
+        p.start: (4500.0 if p.eur_per_kwh >= 0.40 else 400.0) for p in prices
+    }
+    plan = plan_rule_based(
+        prices, day, PlannerConfig(charge_slots=12, discharge_slots=24),
+        soc_pct=8.0, load_w_by=load, usable_kwh=10.8, reserve_soc_pct=10.0,
+        max_charge_w=4000.0,
+    )
+    charge = [s for s in plan.slots if s.intent is BatteryIntent.GRID_CHARGE_TO_TARGET]
+    assert len(charge) == 10, f"expected 10-slot late-pack window, got {len(charge)}"
+    first = min(s.start for s in charge)
+    last = max(s.start for s in charge)
+    expect_first = datetime(2026, 10, 5, 12, 30, tzinfo=AMS)
+    expect_last = datetime(2026, 10, 5, 14, 45, tzinfo=AMS)
+    assert first == expect_first, (
+        f"10-slot cost-min window must start 12:30 (not 12:00/13:00), got {first:%H:%M}"
+    )
+    assert last == expect_last, (
+        f"10-slot cost-min window must end 14:45, got {last:%H:%M}"
+    )
+    # 12:00 and 12:15 stay ALLOW_SELF_CONSUMPTION (outside the packed window).
+    by_start = {s.start: s for s in plan.slots}
+    for hhmm in ((12, 0), (12, 15)):
+        t = datetime(2026, 10, 5, hhmm[0], hhmm[1], tzinfo=AMS)
+        assert by_start[t].intent is BatteryIntent.ALLOW_SELF_CONSUMPTION, (
+            f"{t:%H:%M} must not be GRID_CHARGE (early medium-cheap left out)"
+        )
+    # Contiguous window (mode-switch model still: intent + target + deadline, no power loop).
+    starts = sorted(s.start for s in charge)
+    assert all(starts[i] + SLOT == starts[i + 1] for i in range(len(starts) - 1))
+    assert all(s.deadline is not None and s.target_soc is not None for s in charge)
