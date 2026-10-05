@@ -1,14 +1,16 @@
 """Rule-based winter-arbitrage planner (SPEC §8.3, simplified first cut).
 
-Charge the cheapest window, discharge the expensive peaks — but ONLY when the spread beats
-round-trip losses + degradation + a risk margin (the profitability test). On a flat/low-spread
-day it returns no-trade (all ALLOW_SELF_CONSUMPTION). M-later will add target-SoC, deadlines,
-the projected-SoC curve, and the ML planner behind the same Plan interface.
+Charge a cost-minimal late-packed window before the peak, discharge the expensive peaks — but
+ONLY when the spread beats round-trip losses + degradation + a risk margin (the profitability
+test). On a flat/low-spread day it returns no-trade (all ALLOW_SELF_CONSUMPTION). M-later will
+add target-SoC, deadlines, the projected-SoC curve, and the ML planner behind the same Plan
+interface.
 """
 from __future__ import annotations
 
 import logging
 import math
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime
 
@@ -21,6 +23,63 @@ from ems.sources.prices import PriceSlot
 
 _log = logging.getLogger("ems.planner.rule_based")
 _DH = 0.25  # hours per 15-min slot
+
+
+def late_pack_charge_starts(
+    pre_peak: list[PriceSlot],
+    n_charge: int,
+    *,
+    price_of: Callable[[PriceSlot], float],
+    max_buy: float,
+) -> set[datetime]:
+    """Pick a contiguous pre-peak charge window of length ``n_charge`` that minimises cost.
+
+    Cheapest-first slot *selection* alone is not enough: the controller starts ``GRID_CHARGE`` at
+    the earliest marked slot and pumps at ``max_charge_w`` until the target, so marking an early
+    medium-cheap hour plus a later deep valley still fills the early hour first. Late-pack instead
+    chooses the **cost-minimal contiguous window** before the peak (tie → later window), so
+    charging packs toward the deeper valley / deadline.
+
+    Only slots with ``price_of(p) <= max_buy`` may enter a window (same buy-pool gate as before).
+    If no full-length buyable contiguous window exists, falls back to the cheapest ``n_charge``
+    buyable slots (honest-partial / sparse-valley cases).
+    """
+    if n_charge <= 0 or not pre_peak:
+        return set()
+    # Sliding windows over chronological pre-peak slots; require time-contiguous + buyable.
+    best_starts: set[datetime] | None = None
+    best_cost = float("inf")
+    best_end: datetime | None = None
+    limit = len(pre_peak) - n_charge + 1
+    for i in range(max(0, limit)):
+        window = pre_peak[i : i + n_charge]
+        if len(window) < n_charge:
+            break
+        contiguous = all(
+            window[j].start + SLOT == window[j + 1].start for j in range(n_charge - 1)
+        )
+        if not contiguous:
+            continue
+        prices = [price_of(p) for p in window]
+        if any(pr > max_buy for pr in prices):
+            continue
+        cost = sum(prices)
+        end = window[-1].start
+        # Prefer lower cost; on a tie prefer the later window (pack toward the deadline).
+        if cost < best_cost - 1e-12 or (
+            abs(cost - best_cost) <= 1e-12 and (best_end is None or end > best_end)
+        ):
+            best_cost = cost
+            best_starts = {p.start for p in window}
+            best_end = end
+    if best_starts is not None:
+        return best_starts
+    # Fallback: sparse buyable slots (gaps / under-charge) — cheapest-first, unchanged economics.
+    pool = sorted(
+        (p for p in pre_peak if price_of(p) <= max_buy),
+        key=lambda p: (price_of(p), p.start),
+    )
+    return {p.start for p in pool[:n_charge]}
 
 
 @dataclass(frozen=True)
@@ -159,7 +218,9 @@ def _plan_winter(
         # displace. NOT just the window before the FIRST peak: replanned while a peak is already
         # in progress that window is empty, and a profitable valley BETWEEN peaks (buy €0.14
         # midday, cover the €0.30 evening) would be skipped entirely (B-30, seen live 2026-07-02).
-        # n_charge caps the result; cheapest-first keeps the buys in the valley floor.
+        # n_charge caps the result; late-pack picks the cost-minimal contiguous window (not
+        # earliest-of-cheapest-set) so max-power execution does not fill early medium-cheap hours
+        # when a deeper valley still lies ahead of the peak deadline.
         last_need = max(discharge_set)
         peak_min = min(_effective_import_price(p, cfg) for p in horizon if p.start in discharge_set)
         # Inverse of economics.breakeven: solved for the highest charge price that still undercuts
@@ -167,10 +228,13 @@ def _plan_winter(
         # buy pool), not the forward break-even gate above.
         max_buy = (peak_min - cfg.degradation_eur_per_kwh
                    - cfg.risk_margin_eur_per_kwh) * cfg.round_trip_efficiency
-        pool = sorted((p for p in horizon if p.start < last_need
-                       and _effective_import_price(p, cfg) <= max_buy),
-                      key=lambda p: (_effective_import_price(p, cfg), p.start))
-        charge_set = {p.start for p in pool[:n_charge]}
+        pre_peak = [p for p in horizon if p.start < last_need]
+        pool = [p for p in pre_peak if _effective_import_price(p, cfg) <= max_buy]
+        charge_set = late_pack_charge_starts(
+            pre_peak, n_charge,
+            price_of=lambda p: _effective_import_price(p, cfg),
+            max_buy=max_buy,
+        )
         # Honest partial (#162): commit only to the DC the chosen cheap slots can actually store.
         # A full shortfall target with too few slots trips B-22 and used to fail-safe to AUTO —
         # leaving an empty battery uncharged. Prefer best-effort charge to a reachable target.
