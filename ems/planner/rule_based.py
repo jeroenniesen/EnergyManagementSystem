@@ -1,10 +1,10 @@
-"""Rule-based winter-arbitrage planner (SPEC §8.3, simplified first cut).
+"""Rule-based winter-arbitrage planner (SPEC §8.3).
 
-Charge a cost-minimal late-packed window before the peak, discharge the expensive peaks — but
-ONLY when the spread beats round-trip losses + degradation + a risk margin (the profitability
-test). On a flat/low-spread day it returns no-trade (all ALLOW_SELF_CONSUMPTION). M-later will
-add target-SoC, deadlines, the projected-SoC curve, and the ML planner behind the same Plan
-interface.
+Charge a cost-minimal late-packed contiguous window before the peak, discharge the expensive
+peaks — but ONLY when the spread beats round-trip losses + degradation + a risk margin (the
+profitability test). On a flat/low-spread day it returns no-trade (all ALLOW_SELF_CONSUMPTION).
+Demand-sized plans carry target SoC + deadline on each charge slot; the fixed-count path (no
+load profile) keeps the original count-based behaviour without targets.
 """
 from __future__ import annotations
 
@@ -160,7 +160,7 @@ def _plan_winter(
     max_charge_w: float,
     expected_ev_kwh: float = 0.0,
 ) -> Plan:
-    """The base winter arbitrage plan (no soak) — the original logic, unchanged."""
+    """Base winter arbitrage plan (no soak): profitability gate, demand- or fixed-count charge."""
     horizon = [p for p in prices if p.start + SLOT > now][: cfg.horizon_slots]
     if not horizon:
         return Plan(created_at=now, slots=(), strategy="winter")
