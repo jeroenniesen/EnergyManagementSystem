@@ -225,7 +225,8 @@ def test_late_pack_prefers_later_equal_cost_window():
 
 
 def test_late_pack_prefers_strictly_cheaper_early_window():
-    """Pure helper: a unique cheaper early valley beats a later plateau (cost order, not always-late)."""
+    """Pure helper: a unique cheaper early valley beats a later plateau
+    (cost order, not always-late)."""
     t0 = datetime(2026, 10, 5, 8, 0, tzinfo=AMS)
     prices = (
         [PriceSlot(t0 + i * SLOT, 0.10) for i in range(4)]
