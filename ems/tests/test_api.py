@@ -199,6 +199,12 @@ def test_battery_endpoint_returns_mode_and_capabilities():
     assert "charge" in b["capabilities"]["services"]
     assert b["capabilities"]["p1_paired"] is True
     assert b["capabilities"]["max_charge_w"] == 4000.0
+    # #112 slice b — vendor-neutral capability fields on the public battery payload.
+    assert b["capabilities"]["supports_discharge_control"] is True
+    assert b["capabilities"]["supports_grid_charge"] is True
+    assert b["capabilities"]["supports_standby"] is True
+    assert b["capabilities"]["min_power_w"] == 50.0
+    assert b["capabilities"]["min_target_soc"] == 5.0
     assert b["topology"]["tower_count"] == 0
     assert b["topology"]["configured"] is False
 

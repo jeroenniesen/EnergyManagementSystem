@@ -10,6 +10,7 @@ the vendor's job (SPEC §2) — the EMS never tries to track instantaneous power
 from __future__ import annotations
 
 from collections.abc import Callable
+from dataclasses import replace
 from typing import Any
 
 from ems.domain import BatteryIntent, CapabilityReport, PhysicalMode
@@ -98,6 +99,8 @@ class MockBatteryDriver:
         self._mode = PhysicalMode.AUTO
         self.last_target_soc: float | None = None
         self.last_power_w: float | None = None
+        # Fake Indevolt: same OpenData floors (50 W / 5% SoC); mock ceiling stays 4 kW for
+        # ModeController suite power budgets (#112b vendor-neutral fields).
         self._capabilities = CapabilityReport(
             services=("charge", "discharge"),
             energy_mode_options=("self_consumed_prioritized", "real_time_control"),
@@ -106,6 +109,11 @@ class MockBatteryDriver:
             p1_paired=True,
             max_charge_w=4000.0,
             max_discharge_w=4000.0,
+            supports_discharge_control=True,
+            supports_grid_charge=True,
+            supports_standby=True,
+            min_power_w=50.0,
+            min_target_soc=5.0,
         )
 
     @property
@@ -116,12 +124,8 @@ class MockBatteryDriver:
         return self._capabilities
 
     def configure_power_limits(self, *, max_charge_w: float, max_discharge_w: float) -> None:
-        self._capabilities = CapabilityReport(
-            services=self._capabilities.services,
-            energy_mode_options=self._capabilities.energy_mode_options,
-            has_standby=self._capabilities.has_standby,
-            has_grid_charge_switch=self._capabilities.has_grid_charge_switch,
-            p1_paired=self._capabilities.p1_paired,
+        self._capabilities = replace(
+            self._capabilities,
             max_charge_w=float(max_charge_w),
             max_discharge_w=float(max_discharge_w),
         )

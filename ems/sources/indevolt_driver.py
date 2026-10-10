@@ -220,6 +220,12 @@ class IndevoltBatteryDriver:
             p1_paired=data.get(str(K_METER_CONN)) == 1000,
             max_charge_w=max_charge,
             max_discharge_w=max_discharge,
+            # Vendor-neutral floors/flags (#112b): SolidFlex OpenData 50–2400 W, SoC ≥ 5 %.
+            supports_discharge_control=True,
+            supports_grid_charge=True,
+            supports_standby=True,
+            min_power_w=float(_MIN_POWER_W),
+            min_target_soc=float(_MIN_SOC),
         )
 
     def current_mode(self) -> PhysicalMode:

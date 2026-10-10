@@ -209,6 +209,12 @@ def test_apply_retries_a_transient_timeout_then_succeeds():
 def test_probe_reports_capabilities_else_unavailable():
     cap = _driver(FakeIndevolt()).probe()
     assert "charge" in cap.services and cap.p1_paired is True
+    # #112 slice b — SolidFlex OpenData floors advertised as vendor-neutral capabilities.
+    assert cap.supports_discharge_control is True
+    assert cap.supports_grid_charge is True
+    assert cap.supports_standby is True
+    assert cap.min_power_w == 50.0
+    assert cap.min_target_soc == 5.0
     empty = IndevoltBatteryDriver("x", reader=type("E", (), {"read_keys": lambda s, k: {}})())
     with pytest.raises(BatteryUnavailable):
         empty.probe()

@@ -179,6 +179,25 @@ def test_clamp_uses_higher_capability_when_gen2_exceeds_settings_floor():
     assert aligned.slots[0].power_w == 6000.0
 
 
+def test_target_below_capability_min_soc_is_unsafe():
+    """#112 slice b: charge target under device min_target_soc is control-blocking."""
+    from dataclasses import replace
+
+    cap = replace(CAP, min_target_soc=5.0)
+    v = validate_plan(
+        _plan(_charge(0, target_soc=3.0, floor=0.0)),
+        **_ctx(capability=cap, min_reserve_soc=0.0),
+    )
+    assert v.ok is False
+    assert any(f.code == "target_below_capability_min" for f in v.findings)
+    ok = validate_plan(
+        _plan(_charge(0, target_soc=5.0, floor=0.0)),
+        **_ctx(capability=cap, min_reserve_soc=0.0),
+    )
+    assert ok.ok is True
+    assert not any(f.code == "target_below_capability_min" for f in ok.findings)
+
+
 def test_projection_below_reserve_is_unsafe():
     proj = [ProjectedSlot(T0, BatteryIntent.DISCHARGE_FOR_LOAD, 5.0, 0, 0, 0, 0)]
     v = validate_plan(_plan(_self(0)), projection=proj, **_ctx())
