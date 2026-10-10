@@ -66,9 +66,34 @@ def test_unsized_charge_target_is_a_warning_not_blocking():
     assert any(f.code == "charge_target_unsized" for f in v.findings)
 
 
-def test_power_above_capability_warns():
+def test_power_above_capability_pauses():
+    """#85: known power exceedance is control-blocking (pause), not a soft warn."""
     v = validate_plan(_plan(_charge(0, power=9000.0)), **_ctx())
-    assert any(f.code == "power_exceeds_capability" for f in v.findings) and v.ok is True
+    assert any(f.code == "power_exceeds_capability" for f in v.findings)
+    assert v.ok is False and v.status == "unsafe"
+
+
+def test_unknown_capability_clamps_to_one_unit():
+    """#85 criterion 6: no capability probe → cautious one-unit clamp, plan still applies."""
+    from ems.planner.validator import clamp_plan_power
+
+    plan = _plan(_charge(0, power=4800.0))
+    aligned, findings = clamp_plan_power(plan, capability=None)
+    assert aligned.slots[0].power_w == 2400.0
+    assert any(f.code == "capability_unknown_conservative" for f in findings)
+    v = validate_plan(aligned, **_ctx(capability=None))
+    assert v.ok is True
+    assert not any(f.code == "power_exceeds_capability" for f in v.findings)
+
+
+def test_unknown_capability_fills_unsized_charge_slot():
+    """#85 criterion 6: None power_w must not fall through to full settings default."""
+    from ems.planner.validator import clamp_plan_power
+
+    plan = _plan(_charge(0, power=None))
+    aligned, findings = clamp_plan_power(plan, capability=None)
+    assert aligned.slots[0].power_w == 2400.0
+    assert any(f.code == "capability_unknown_conservative" for f in findings)
 
 
 def test_power_exceeds_names_settings_vs_capability_divergence():
@@ -86,6 +111,7 @@ def test_power_exceeds_names_settings_vs_capability_divergence():
     f = next(f for f in v.findings if f.code == "power_exceeds_capability")
     assert "4800" in f.message and "2400" in f.message
     assert "Settings advertise" in f.message
+    assert f.severity == "unsafe" and v.ok is False
 
 
 def test_clamp_plan_power_before_validate_avoids_reject_path():
@@ -110,6 +136,29 @@ def test_clamp_plan_power_before_validate_avoids_reject_path():
     )
     assert not any(f.code == "power_exceeds_capability" for f in v.findings)
     assert v.ok is True
+
+
+def test_trusted_capability_overask_is_not_clamped_so_validate_can_pause():
+    """#85 criterion 5: when settings ≤ capability, leave over-ask for unsafe pause."""
+    from ems.planner.validator import clamp_plan_power
+
+    trusted = CapabilityReport(
+        services=("charge", "discharge"), energy_mode_options=(),
+        has_standby=True, has_grid_charge_switch=True, p1_paired=True,
+        max_charge_w=4000.0, max_discharge_w=4000.0,
+    )
+    plan = _plan(_charge(0, power=9000.0))
+    aligned, clamp_findings = clamp_plan_power(
+        plan, capability=trusted, settings_max_charge_w=4000.0, settings_max_discharge_w=4000.0,
+    )
+    assert aligned.slots[0].power_w == 9000.0
+    assert not any(f.code == "power_clamped_to_capability" for f in clamp_findings)
+    v = validate_plan(
+        aligned, **_ctx(capability=trusted),
+        settings_max_charge_w=4000.0, settings_max_discharge_w=4000.0,
+    )
+    assert any(f.code == "power_exceeds_capability" for f in v.findings)
+    assert v.ok is False
 
 
 def test_clamp_uses_higher_capability_when_gen2_exceeds_settings_floor():

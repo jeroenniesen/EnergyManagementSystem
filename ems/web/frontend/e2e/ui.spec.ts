@@ -1555,7 +1555,7 @@ test.describe("EMS dashboard", () => {
         expected_benefit: { eur: 0.55, summary: "Estimated net benefit ≈ €0.55." },
       });
       await page.goto("/");
-      await expect(page.getByTestId("battery-action-label")).toContainText("Vasthouden");
+      await expect(page.getByTestId("battery-action-label")).toContainText("Reservebescherming");
       await page.getByTestId("battery-action-why-toggle").click();
       await expect(page.getByTestId("battery-action-why-text")).toContainText("€0.55");
     });
@@ -1587,22 +1587,198 @@ test.describe("EMS dashboard", () => {
       await expect(page.getByTestId("battery-action-why-text")).toContainText(/veiligheid/i);
     });
 
-    test("slice-1 waarom sentence is absent for paused; structured reason still shows (#84 s2)", async ({ page }) => {
-      await mockWhyPlan(page, "paused");
-      await page.goto("/");
-      await expect(page.getByTestId("battery-action-why")).toBeVisible();
-      await expect(page.getByTestId("battery-action-why-text")).toHaveCount(0);
-      await page.getByTestId("battery-action-why-toggle").click();
-      await expect(page.getByTestId("decision-reason-details")).toBeVisible();
-    });
-
-    test("slice-1 waarom sentence is absent for self_consume; structured reason still shows (#84 s2)", async ({ page }) => {
+    test("self_consume waarom uses zelfconsumptie wording (#85 slice 2)", async ({ page }) => {
       await mockWhyPlan(page, "self_consume");
       await page.goto("/");
       await expect(page.getByTestId("battery-action-why")).toBeVisible();
-      await expect(page.getByTestId("battery-action-why-text")).toHaveCount(0);
       await page.getByTestId("battery-action-why-toggle").click();
+      await expect(page.getByTestId("battery-action-why-text")).toContainText(/zelfconsumptie/i);
       await expect(page.getByTestId("decision-reason-details")).toBeVisible();
+    });
+  });
+
+  // --- B-33 / #85 slice 2: reserve / pause / vermogensgrens waarom --------------------------------
+  test.describe("#85 slice 2 pause reserve power waarom", () => {
+    async function mockWhyPlan(
+      page: Page,
+      action: string,
+      reasonOverrides: Record<string, unknown> = {},
+      statusDryRun = true,
+      decisionOverrides: Record<string, unknown> = {},
+    ) {
+      await routePlanStory(page);
+      await page.route("**/api/dashboard", (route) => route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          status: {
+            dry_run: statusDryRun,
+            dry_run_cause: statusDryRun ? "config_dry_run" : null,
+            dry_run_reason: statusDryRun ? "config.yaml forces dry_run" : null,
+            dev_mode: "mock",
+            soc_pct: 55,
+            grid_power_w: 1000,
+            solar_power_w: 0,
+            battery_power_w: 0,
+            house_load_w: 1000,
+            non_ev_load_w: 1000,
+          },
+          freshness: { battery: "fresh" },
+          alerts: { data_quality: "complete", alerts: [] },
+        }),
+      }));
+      await page.route("**/api/battery-plan", (route) => route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify(batteryPlanFixture(
+          { level: "high", reasons: ["Fresh data."] },
+          DEFAULT_PROVENANCE,
+          {
+            current_action: action,
+            reason: batteryPlanReasonFixture(reasonOverrides),
+          },
+        )),
+      }));
+      await page.route("**/api/decision", (route) => route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          intent: null,
+          desired_mode: null,
+          applied: false,
+          outcome: "dry_run",
+          reason: "mock",
+          override_active: false,
+          home_state: { headline: "Mock", tone: "watching", simulated: true },
+          ...decisionOverrides,
+        }),
+      }));
+    }
+
+    test("data_stale pause waarom after one tap", async ({ page }) => {
+      await mockWhyPlan(page, "paused", {
+        safety_constraint: { code: "stale_inputs", message: "stale", action: "paused" },
+        expected_benefit: { eur: null, summary: "No plan." },
+      });
+      await page.goto("/");
+      await page.getByTestId("battery-action-why-toggle").click();
+      await expect(page.getByTestId("battery-action-why-text")).toContainText(/meetgegevens/i);
+      await expect(page.getByTestId("battery-action-why-text")).toContainText(/zou pauzeren/i);
+    });
+
+    test("validator unsafe pause waarom after one tap", async ({ page }) => {
+      await mockWhyPlan(page, "paused", {
+        safety_constraint: {
+          code: "target_out_of_range",
+          message: "bad target",
+          action: "paused",
+        },
+      }, false);
+      await page.goto("/");
+      await page.getByTestId("battery-action-why-toggle").click();
+      const text = page.getByTestId("battery-action-why-text");
+      await expect(text).toContainText(/niet veilig/i);
+      await expect(text).not.toContainText(/\bzou\b/);
+    });
+
+    test("incomplete prices pause waarom after one tap", async ({ page }) => {
+      await mockWhyPlan(page, "paused", {
+        safety_constraint: {
+          code: "incomplete_prices",
+          message: "prices incomplete",
+          action: "paused",
+        },
+      });
+      await page.goto("/");
+      await page.getByTestId("battery-action-why-toggle").click();
+      await expect(page.getByTestId("battery-action-why-text")).toContainText(/prijzen onvolledig/i);
+    });
+
+    test("dry-run grid charge zegt zou, niet doet", async ({ page }) => {
+      await mockWhyPlan(page, "grid_charge");
+      await page.goto("/");
+      await page.getByTestId("battery-action-why-toggle").click();
+      const text = page.getByTestId("battery-action-why-text");
+      await expect(text).toContainText("zou");
+      await expect(text).not.toContainText(/doet/i);
+    });
+
+    test("override waarom after one tap", async ({ page }) => {
+      await mockWhyPlan(
+        page,
+        "hold",
+        {
+          chosen_window: {
+            start: null, end: null, intent: "hold_reserve", label: "hold-reserve window",
+            eur_per_kwh_min: null, eur_per_kwh_max: null,
+          },
+        },
+        false,
+        { override_active: true },
+      );
+      await page.goto("/");
+      await page.getByTestId("battery-action-why-toggle").click();
+      await expect(page.getByTestId("battery-action-why-text")).toContainText(/override/i);
+      await expect(page.getByTestId("battery-action-why-text")).toContainText(/jouw keuze/i);
+    });
+
+    test("known power exceedance uses literal pause copy", async ({ page }) => {
+      await mockWhyPlan(page, "paused", {
+        safety_constraint: {
+          code: "power_exceeds_capability",
+          message: "too much power",
+          action: "paused",
+        },
+      }, false);
+      await page.goto("/");
+      await page.getByTestId("battery-action-why-toggle").click();
+      await expect(page.getByTestId("battery-action-why-text")).toHaveText(
+        "Gepauzeerd. Het plan vroeg meer vermogen dan je batterij aankan, daarom houdt de batterij haar eigen stand aan.",
+      );
+    });
+
+    test("unknown capability uses literal slower-charge copy (dry-run)", async ({ page }) => {
+      await mockWhyPlan(page, "grid_charge", {
+        safety_constraint: {
+          code: "capability_unknown_conservative",
+          message: "unknown capability",
+          action: "proceed",
+        },
+      }, true);
+      await page.goto("/");
+      await page.getByTestId("battery-action-why-toggle").click();
+      await expect(page.getByTestId("battery-action-why-text")).toHaveText(
+        "Zou langzamer laden dan gepland. EMS weet nu niet zeker hoeveel je batterij aankan en zou daarom voorzichtig laden.",
+      );
+    });
+
+    test("unknown capability live wording without zou", async ({ page }) => {
+      await mockWhyPlan(page, "grid_charge", {
+        safety_constraint: {
+          code: "capability_unknown_conservative",
+          message: "unknown capability",
+          action: "proceed",
+        },
+      }, false);
+      await page.goto("/");
+      await page.getByTestId("battery-action-why-toggle").click();
+      await expect(page.getByTestId("battery-action-why-text")).toHaveText(
+        "Laadt langzamer dan gepland. EMS weet nu niet zeker hoeveel je batterij aankan en laadt daarom voorzichtig.",
+      );
+    });
+
+    test("reserve hold waarom mentions reserve protection", async ({ page }) => {
+      await mockWhyPlan(page, "hold", {
+        chosen_window: {
+          start: null, end: null, intent: "hold_reserve", label: "hold-reserve window",
+          eur_per_kwh_min: null, eur_per_kwh_max: null,
+        },
+        expected_benefit: { eur: 0, summary: "safety" },
+      }, false);
+      await page.goto("/");
+      await expect(page.getByTestId("battery-action-label")).toContainText("Reservebescherming");
+      await page.getByTestId("battery-action-why-toggle").click();
+      await expect(page.getByTestId("battery-action-why-text")).toContainText(/reserve/i);
     });
   });
 

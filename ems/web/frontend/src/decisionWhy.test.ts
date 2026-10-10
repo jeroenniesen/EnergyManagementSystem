@@ -2,8 +2,10 @@ import { describe, expect, it } from "vitest";
 
 import {
   batteryActionLabel,
+  capabilityUnknownWhy,
   formatBatteryActionWhy,
   isSlice1BatteryAction,
+  POWER_EXCEEDS_WHY,
   type DecisionReason,
 } from "./decisionWhy";
 
@@ -50,9 +52,29 @@ describe("batteryActionLabel (zelfconsumptie vs volle snelheid)", () => {
     expect(batteryActionLabel("full_speed_discharge")).toBe("Op volle snelheid ontladen");
   });
 
-  it("keeps charge / hold labels", () => {
+  it("keeps charge / hold / paused labels", () => {
     expect(batteryActionLabel("grid_charge")).toBe("Laden van het net");
-    expect(batteryActionLabel("hold")).toBe("Vasthouden");
+    // hold action token ≡ hold_reserve → Reservebescherming (not generic Vasthouden).
+    expect(batteryActionLabel("hold")).toBe("Reservebescherming");
+    expect(batteryActionLabel("paused")).toBe("Gepauzeerd");
+  });
+
+  it("labels hold as Reservebescherming even when chosen_window is a charge block", () => {
+    expect(
+      batteryActionLabel(
+        "hold",
+        reason({
+          chosen_window: {
+            start: null,
+            end: null,
+            intent: "grid_charge_to_target",
+            label: "cheap charge window",
+            eur_per_kwh_min: 0.1,
+            eur_per_kwh_max: 0.2,
+          },
+        }),
+      ),
+    ).toBe("Reservebescherming");
   });
 });
 
@@ -69,8 +91,7 @@ describe("isSlice1BatteryAction", () => {
 });
 
 describe("formatBatteryActionWhy (#85 slice 1)", () => {
-  it("returns null for out-of-scope actions and missing reason", () => {
-    expect(formatBatteryActionWhy(reason(), "paused", { dryRun: true })).toBeNull();
+  it("returns null for missing reason", () => {
     expect(formatBatteryActionWhy(null, "grid_charge", { dryRun: true })).toBeNull();
   });
 
@@ -79,7 +100,6 @@ describe("formatBatteryActionWhy (#85 slice 1)", () => {
     expect(text).toMatch(/van het net/i);
     expect(text).toContain("€1.25");
     expect(text).toMatch(/voordeel/i);
-    // Benefit figure comes from reason.expected_benefit.eur, not a hardcoded constant.
     const other = formatBatteryActionWhy(
       reason({ expected_benefit: { eur: 0.42, summary: "other" } }),
       "grid_charge",
@@ -104,7 +124,7 @@ describe("formatBatteryActionWhy (#85 slice 1)", () => {
       "hold",
       { dryRun: false },
     );
-    expect(hold).toMatch(/vasthouden|vast/i);
+    expect(hold).toMatch(/reserve/i);
     expect(hold!.split(/(?<=[.!?])\s+/).length).toBeLessThanOrEqual(2);
 
     const discharge = formatBatteryActionWhy(
@@ -161,7 +181,7 @@ describe("formatBatteryActionWhy (#85 slice 1)", () => {
       "grid_charge",
       { dryRun: true },
     );
-    expect(paused).toMatch(/veiligheid/i);
+    expect(paused).toMatch(/pauzeren|gepauzeerd/i);
 
     const failsafe = formatBatteryActionWhy(
       reason({
@@ -183,5 +203,134 @@ describe("formatBatteryActionWhy (#85 slice 1)", () => {
   it("uses chosen_window price from the reason object when charging", () => {
     const text = formatBatteryActionWhy(reason(), "grid_charge", { dryRun: true });
     expect(text).toContain("€0.08");
+  });
+});
+
+describe("formatBatteryActionWhy (#85 slice 2)", () => {
+  it("uses the literal known-power-exceedance pause copy", () => {
+    const text = formatBatteryActionWhy(
+      reason({
+        safety_constraint: {
+          code: "power_exceeds_capability",
+          message: "too much power",
+          action: "paused",
+        },
+      }),
+      "paused",
+      { dryRun: false },
+    );
+    expect(text).toBe(POWER_EXCEEDS_WHY);
+  });
+
+  it("uses the literal unknown-capability slower-charge copy (live + dry-run)", () => {
+    const live = formatBatteryActionWhy(
+      reason({
+        safety_constraint: {
+          code: "capability_unknown_conservative",
+          message: "unknown",
+          action: "proceed",
+        },
+      }),
+      "grid_charge",
+      { dryRun: false },
+    );
+    expect(live).toBe(capabilityUnknownWhy(false));
+    expect(live).toMatch(/^Laadt langzamer/);
+
+    const dry = formatBatteryActionWhy(
+      reason({
+        safety_constraint: {
+          code: "capability_unknown_conservative",
+          message: "unknown",
+          action: "proceed",
+        },
+      }),
+      "grid_charge",
+      { dryRun: true },
+    );
+    expect(dry).toBe(capabilityUnknownWhy(true, "grid_charge"));
+    expect(dry!.toLowerCase()).toContain("zou langzamer laden");
+    expect(dry!.toLowerCase()).toContain("zou daarom voorzichtig laden");
+  });
+
+  it("does not rewrite hold waarom when capability is unknown", () => {
+    const text = formatBatteryActionWhy(
+      reason({
+        safety_constraint: {
+          code: "capability_unknown_conservative",
+          message: "unknown",
+          action: "proceed",
+        },
+      }),
+      "hold",
+      { dryRun: false },
+    );
+    expect(text).toMatch(/reserve/i);
+    expect(text).not.toMatch(/langzamer/i);
+  });
+
+  it("explains data_stale / validator-unsafe pauses", () => {
+    const stale = formatBatteryActionWhy(
+      reason({
+        safety_constraint: { code: "stale_inputs", message: "stale", action: "paused" },
+      }),
+      "paused",
+      { dryRun: false },
+    );
+    expect(stale).toMatch(/meetgegevens/i);
+    expect(stale).toMatch(/eigen stand/i);
+
+    const unsafe = formatBatteryActionWhy(
+      reason({
+        safety_constraint: { code: "target_out_of_range", message: "bad", action: "paused" },
+      }),
+      "paused",
+      { dryRun: true },
+    );
+    expect(unsafe).toMatch(/\bzou\b/);
+    expect(unsafe).toMatch(/niet veilig/i);
+  });
+
+  it("explains incomplete prices pause", () => {
+    const text = formatBatteryActionWhy(
+      reason({
+        safety_constraint: { code: "incomplete_prices", message: "prices", action: "paused" },
+      }),
+      "paused",
+      { dryRun: false },
+    );
+    expect(text).toMatch(/prijzen onvolledig/i);
+  });
+
+  it("accepted override beats incomplete_prices copy", () => {
+    const text = formatBatteryActionWhy(
+      reason({
+        safety_constraint: {
+          code: "incomplete_prices",
+          message: "prices",
+          action: "proceed",
+        },
+      }),
+      "grid_charge",
+      { dryRun: false, overrideActive: true },
+    );
+    expect(text).toMatch(/jouw keuze/i);
+    expect(text).not.toMatch(/prijzen onvolledig/i);
+  });
+
+  it("explains manual override", () => {
+    const text = formatBatteryActionWhy(reason(), "hold", {
+      dryRun: false,
+      overrideActive: true,
+    });
+    expect(text).toMatch(/override/i);
+    expect(text).toMatch(/jouw keuze/i);
+  });
+
+  it("explains self_consume as zelfconsumptie with benefit", () => {
+    const text = formatBatteryActionWhy(reason(), "self_consume", { dryRun: true });
+    expect(text).toMatch(/zelfconsumptie/i);
+    expect(text).toMatch(/\bzou\b/);
+    expect(text).toContain("€1.25");
   });
 });

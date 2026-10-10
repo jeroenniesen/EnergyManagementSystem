@@ -295,6 +295,28 @@ def _top_unsafe_code(validation: Any | None) -> tuple[str | None, str | None]:
     return None, None
 
 
+# Warn codes the waarom-UI (#85 slice 2) keys off while control still proceeds.
+_WHY_WARN_CODES = frozenset({
+    "capability_unknown_conservative",
+    "power_clamped_to_capability",
+    "settings_capability_power_mismatch",
+})
+
+
+def _top_why_warn_code(validation: Any | None) -> tuple[str | None, str | None]:
+    """Return (code, message) of the first waarom-relevant warn finding, if any."""
+    if validation is None:
+        return None, None
+    findings = getattr(validation, "findings", None) or ()
+    for f in findings:
+        if getattr(f, "severity", None) != "warn":
+            continue
+        code = getattr(f, "code", None)
+        if code in _WHY_WARN_CODES:
+            return code, getattr(f, "message", None)
+    return None, None
+
+
 def _homeowner_summary(raw: str | None, chosen: ChosenWindow | None) -> str:
     """Turn planner-internal slot reasons into homeowner Summary copy.
 
@@ -329,8 +351,13 @@ def empty_decision_reason(
     cap_reached: bool = False,
     unconfirmed: bool = False,
     safety_message: str | None = None,
+    action: str = _ACTION_PAUSED,
 ) -> DecisionReason:
-    """Paused / empty contract — same shape so clients never see a missing `reason` key."""
+    """Empty contract — same shape so clients never see a missing `reason` key.
+
+    Default action is paused (no plan). Pass ``action="proceed"`` for an accepted
+    override that still commands without a built plan (#85).
+    """
     code = validator_code
     return DecisionReason(
         chosen_window=None,
@@ -340,7 +367,7 @@ def empty_decision_reason(
         safety_constraint=SafetyConstraint(
             code=code,
             message=safety_message or summary,
-            action=_ACTION_PAUSED,
+            action=action,
         ),
         gates=GateOutcomes(
             validator_code=code,
@@ -387,12 +414,19 @@ def build_decision_reason(
     if decision_outcome == "unconfirmed":
         unconfirmed = True
 
-    is_paused = paused or not validation_ok or failsafe
+    # Incomplete prices hold self-use without a validator finding (#85 slice 2 waarom).
+    incomplete_prices = bool(
+        plan_reason and "incomplete prices" in plan_reason.lower()
+    ) or bool(
+        summary and "incomplete prices" in summary.lower()
+    )
+
+    is_paused = paused or not validation_ok or failsafe or incomplete_prices
     if plan is None:
         return empty_decision_reason(
             summary=summary or plan_reason or "No plan is available yet.",
-            validator_code=validator_code,
-            failsafe=failsafe,
+            validator_code=validator_code or ("incomplete_prices" if incomplete_prices else None),
+            failsafe=failsafe or incomplete_prices,
             dwell=dwell,
             cap_reached=cap_reached,
             unconfirmed=unconfirmed,
@@ -427,15 +461,19 @@ def build_decision_reason(
     )
 
     if is_paused:
+        pause_code = validator_code or ("incomplete_prices" if incomplete_prices else None)
         safety = SafetyConstraint(
-            code=validator_code,
+            code=pause_code,
             message=validator_message or plan_reason or summary or "Plan paused safely.",
             action=_ACTION_PAUSED,
         )
     else:
+        # Surface cautious-continue warn codes for the waarom UI (#85 slice 2) while
+        # keeping action=proceed — unknown capability / clamped power are not pauses.
+        warn_code, warn_message = _top_why_warn_code(validation)
         safety = SafetyConstraint(
-            code=None,
-            message=None,
+            code=warn_code,
+            message=warn_message,
             action=_ACTION_PROCEED,
         )
 

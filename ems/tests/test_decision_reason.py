@@ -189,3 +189,45 @@ def test_reason_dict_keys_constant_matches_to_dict():
     r = empty_decision_reason().to_dict()
     assert set(r) == REASON_DICT_KEYS
     assert set(r["gates"]) == GATE_DICT_KEYS
+
+
+def test_capability_unknown_warn_surfaces_on_proceed_safety_constraint():
+    """#85 slice 2: waarom-UI keys off safety_constraint.code while control still proceeds."""
+    plan = _charge_plan()
+    val = PlanValidation(
+        status="warn",
+        findings=(Finding(
+            "warn", "capability_unknown_conservative",
+            "Battery capability unknown — proceeding cautiously at 2400 W (one unit).",
+        ),),
+    )
+    r = build_decision_reason(plan, validation=val).to_dict()
+    assert r["safety_constraint"]["action"] == "proceed"
+    assert r["safety_constraint"]["code"] == "capability_unknown_conservative"
+    assert "2400" in (r["safety_constraint"]["message"] or "")
+
+
+def test_power_exceeds_unsafe_pauses_with_finding_code():
+    """#85 criterion 5: known power exceedance → paused + code for literal waarom copy."""
+    plan = _charge_plan()
+    val = PlanValidation(
+        status="unsafe",
+        findings=(Finding(
+            "unsafe", "power_exceeds_capability",
+            "A slot requests 9000 W, above the battery's 2400 W rated power.",
+        ),),
+    )
+    r = build_decision_reason(plan, validation=val, paused=True).to_dict()
+    assert r["safety_constraint"]["action"] == "paused"
+    assert r["safety_constraint"]["code"] == "power_exceeds_capability"
+
+
+def test_incomplete_prices_reason_surfaces_code_as_paused():
+    """#85: incomplete-prices hold self-use → paused + waarom-keyable safety code."""
+    plan = _charge_plan()
+    r = build_decision_reason(
+        plan,
+        plan_reason="holding self-consumption — incomplete prices: horizon short",
+    ).to_dict()
+    assert r["safety_constraint"]["action"] == "paused"
+    assert r["safety_constraint"]["code"] == "incomplete_prices"
