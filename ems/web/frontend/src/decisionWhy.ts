@@ -95,8 +95,15 @@ const ACTION_LABEL_NL: Record<string, string> = {
 };
 
 /** Short Dutch label for the current action chip (slice-1 and beyond). */
-export function batteryActionLabel(action: string | null | undefined): string {
+export function batteryActionLabel(
+  action: string | null | undefined,
+  reason?: DecisionReason | null,
+): string {
   if (!action) return "plan";
+  // Slice 2: hold_reserve reads as reservebescherming, not generic "vasthouden".
+  if (action === "hold" && reason?.chosen_window?.intent === "hold_reserve") {
+    return "Reservebescherming";
+  }
   return ACTION_LABEL_NL[action] ?? action.replace(/_/g, " ");
 }
 

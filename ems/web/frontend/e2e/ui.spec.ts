@@ -1776,6 +1776,7 @@ test.describe("EMS dashboard", () => {
         expected_benefit: { eur: 0, summary: "safety" },
       }, false);
       await page.goto("/");
+      await expect(page.getByTestId("battery-action-label")).toContainText("Reservebescherming");
       await page.getByTestId("battery-action-why-toggle").click();
       await expect(page.getByTestId("battery-action-why-text")).toContainText(/reserve/i);
     });

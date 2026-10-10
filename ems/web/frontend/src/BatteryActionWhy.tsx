@@ -28,7 +28,7 @@ export function BatteryActionWhy({
     currentAction != null
       ? formatBatteryActionWhy(reason, currentAction, { dryRun, overrideActive })
       : formatBatteryActionWhy(reason, "paused", { dryRun, overrideActive });
-  const actionLabel = batteryActionLabel(currentAction);
+  const actionLabel = batteryActionLabel(currentAction, reason);
 
   return (
     <section

@@ -57,6 +57,24 @@ describe("batteryActionLabel (zelfconsumptie vs volle snelheid)", () => {
     expect(batteryActionLabel("hold")).toBe("Vasthouden");
     expect(batteryActionLabel("paused")).toBe("Gepauzeerd");
   });
+
+  it("labels hold_reserve as Reservebescherming when reason intent matches", () => {
+    expect(
+      batteryActionLabel(
+        "hold",
+        reason({
+          chosen_window: {
+            start: null,
+            end: null,
+            intent: "hold_reserve",
+            label: "hold-reserve window",
+            eur_per_kwh_min: null,
+            eur_per_kwh_max: null,
+          },
+        }),
+      ),
+    ).toBe("Reservebescherming");
+  });
 });
 
 describe("isSlice1BatteryAction", () => {
