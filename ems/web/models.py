@@ -364,7 +364,6 @@ class StatusResponse(APIResponseModel):
     dry_run: bool | None = None
     dry_run_reason: str | None = None
     dry_run_cause: str | None = None
-    dry_run_block_reason: str | None = None
     dev_mode: str | None = None
     soc_pct: float | None = None
     grid_power_w: float | None = None
@@ -382,7 +381,7 @@ class DashboardResponse(APIResponseModel):
     api_version: int | None = None
     generated_at: str | None = None
     degraded_sections: list[str] | None = None
-    status: StatusResponse | dict[str, object] | None = None
+    status: StatusResponse | None = None
     freshness: dict[str, object] | None = None
     prices: dict[str, object] | None = None
     alerts: dict[str, object] | None = None
@@ -435,11 +434,22 @@ class BatteryPlanConfidence(APIResponseModel):
     reasons: list[str] | None = None
 
 
+class IntelligenceStatus(APIResponseModel):
+    """B-79 runtime-proven scenario/ML capability status on plan provenance."""
+
+    state: str | None = None
+    last_evaluated_at: str | None = None
+    last_result: str | None = None
+    reason: str | None = None
+
+
 class BatteryPlanProvenance(APIResponseModel):
-    strategy: str | None = None
-    strategy_source: str | None = None
+    """Matches `_plan_provenance` on /api/battery-plan (forecast + planner + intelligence)."""
+
     forecast_source: str | None = None
-    planner_mode: str | None = None
+    solar_confidence_pct: float | None = None
+    planner: str | None = None
+    intelligence: IntelligenceStatus | None = None
 
 
 class EveningPeakCoverage(APIResponseModel):
@@ -471,9 +481,9 @@ class BatteryPlanResponse(APIResponseModel):
     deviation: BatteryPlanDeviation | None = None
     warnings: list[str] | None = None
     graph: BatteryPlanGraph | None = None
-    confidence: BatteryPlanConfidence | dict[str, object] | None = None
-    provenance: BatteryPlanProvenance | dict[str, object] | None = None
+    confidence: BatteryPlanConfidence | None = None
+    provenance: BatteryPlanProvenance | None = None
     # Structured DecisionReason (#84) — kept as dict so nested schema can evolve without
     # duplicating every field here; still present on the OpenAPI surface via this key.
     reason: dict[str, object] | None = None
-    evening_peak_coverage: EveningPeakCoverage | dict[str, object] | None = None
+    evening_peak_coverage: EveningPeakCoverage | None = None

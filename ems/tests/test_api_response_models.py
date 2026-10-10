@@ -89,6 +89,10 @@ def test_openapi_documents_hot_endpoint_response_models():
     status_ref = schema["paths"]["/api/status"]["get"]["responses"]["200"]["content"][
         "application/json"]["schema"]
     assert status_ref.get("$ref", "").endswith("StatusResponse")
+    provenance = components["BatteryPlanProvenance"]["properties"]
+    for key in ("forecast_source", "solar_confidence_pct", "planner", "intelligence"):
+        assert key in provenance, key
+    assert "dry_run_block_reason" not in components["StatusResponse"].get("properties", {})
 
 
 def test_nested_report_contract_covers_empty_stale_and_unavailable_values():
