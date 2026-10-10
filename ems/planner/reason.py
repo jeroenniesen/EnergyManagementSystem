@@ -409,12 +409,19 @@ def build_decision_reason(
     if decision_outcome == "unconfirmed":
         unconfirmed = True
 
-    is_paused = paused or not validation_ok or failsafe
+    # Incomplete prices hold self-use without a validator finding (#85 slice 2 waarom).
+    incomplete_prices = bool(
+        plan_reason and "incomplete prices" in plan_reason.lower()
+    ) or bool(
+        summary and "incomplete prices" in summary.lower()
+    )
+
+    is_paused = paused or not validation_ok or failsafe or incomplete_prices
     if plan is None:
         return empty_decision_reason(
             summary=summary or plan_reason or "No plan is available yet.",
-            validator_code=validator_code,
-            failsafe=failsafe,
+            validator_code=validator_code or ("incomplete_prices" if incomplete_prices else None),
+            failsafe=failsafe or incomplete_prices,
             dwell=dwell,
             cap_reached=cap_reached,
             unconfirmed=unconfirmed,
@@ -448,24 +455,12 @@ def build_decision_reason(
         ),
     )
 
-    # Incomplete prices hold self-use without a validator finding (#85 slice 2 waarom).
-    incomplete_prices = bool(
-        plan_reason and "incomplete prices" in plan_reason.lower()
-    ) or bool(
-        summary and "incomplete prices" in summary.lower()
-    )
-
     if is_paused:
+        pause_code = validator_code or ("incomplete_prices" if incomplete_prices else None)
         safety = SafetyConstraint(
-            code=validator_code,
+            code=pause_code,
             message=validator_message or plan_reason or summary or "Plan paused safely.",
             action=_ACTION_PAUSED,
-        )
-    elif incomplete_prices:
-        safety = SafetyConstraint(
-            code="incomplete_prices",
-            message=plan_reason or summary or "Incomplete prices.",
-            action=_ACTION_PROCEED,
         )
     else:
         # Surface cautious-continue warn codes for the waarom UI (#85 slice 2) while

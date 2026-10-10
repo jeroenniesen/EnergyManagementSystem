@@ -54,11 +54,12 @@ describe("batteryActionLabel (zelfconsumptie vs volle snelheid)", () => {
 
   it("keeps charge / hold / paused labels", () => {
     expect(batteryActionLabel("grid_charge")).toBe("Laden van het net");
-    expect(batteryActionLabel("hold")).toBe("Vasthouden");
+    // hold action token ≡ hold_reserve → Reservebescherming (not generic Vasthouden).
+    expect(batteryActionLabel("hold")).toBe("Reservebescherming");
     expect(batteryActionLabel("paused")).toBe("Gepauzeerd");
   });
 
-  it("labels hold_reserve as Reservebescherming when reason intent matches", () => {
+  it("labels hold as Reservebescherming even when chosen_window is a charge block", () => {
     expect(
       batteryActionLabel(
         "hold",
@@ -66,10 +67,10 @@ describe("batteryActionLabel (zelfconsumptie vs volle snelheid)", () => {
           chosen_window: {
             start: null,
             end: null,
-            intent: "hold_reserve",
-            label: "hold-reserve window",
-            eur_per_kwh_min: null,
-            eur_per_kwh_max: null,
+            intent: "grid_charge_to_target",
+            label: "cheap charge window",
+            eur_per_kwh_min: 0.1,
+            eur_per_kwh_max: 0.2,
           },
         }),
       ),
@@ -250,6 +251,22 @@ describe("formatBatteryActionWhy (#85 slice 2)", () => {
     expect(dry).toBe(capabilityUnknownWhy(true, "grid_charge"));
     expect(dry!.toLowerCase()).toContain("zou langzamer laden");
     expect(dry!.toLowerCase()).toContain("zou daarom voorzichtig laden");
+  });
+
+  it("does not rewrite hold waarom when capability is unknown", () => {
+    const text = formatBatteryActionWhy(
+      reason({
+        safety_constraint: {
+          code: "capability_unknown_conservative",
+          message: "unknown",
+          action: "proceed",
+        },
+      }),
+      "hold",
+      { dryRun: false },
+    );
+    expect(text).toMatch(/reserve/i);
+    expect(text).not.toMatch(/langzamer/i);
   });
 
   it("explains data_stale / validator-unsafe pauses", () => {

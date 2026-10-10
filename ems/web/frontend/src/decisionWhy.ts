@@ -109,8 +109,10 @@ export function batteryActionLabel(
   reason?: DecisionReason | null,
 ): string {
   if (!action) return "plan";
-  // Slice 2: hold_reserve reads as reservebescherming, not generic "vasthouden".
-  if (action === "hold" && reason?.chosen_window?.intent === "hold_reserve") {
+  // `hold` is only emitted for hold_reserve (_INTENT_ACTION) — always Reservebescherming,
+  // even when chosen_window still points at a charge block in a mixed winter plan.
+  void reason;
+  if (action === "hold") {
     return "Reservebescherming";
   }
   return ACTION_LABEL_NL[action] ?? action.replace(/_/g, " ");
@@ -127,16 +129,15 @@ function actionSentence(action: Slice1BatteryAction, dryRun: boolean, reason: De
     window?.eur_per_kwh_min != null && Number.isFinite(window.eur_per_kwh_min)
       ? ` (vanaf ${eur(window.eur_per_kwh_min)}/kWh)`
       : "";
-  const reserveHold = window?.intent === "hold_reserve";
+  // `hold` action token ≡ hold_reserve — always reserve-protection copy.
+  void window?.intent;
 
   if (dryRun) {
     switch (action) {
       case "grid_charge":
         return `EMS zou nu laden van het net${priceHint}.`;
       case "hold":
-        return reserveHold
-          ? "EMS zou de reserve beschermen en de batterij niet verder ontladen."
-          : "EMS zou de batterij vasthouden tot een beter moment.";
+        return "EMS zou de reserve beschermen en de batterij niet verder ontladen.";
       case "discharge":
         return "EMS zou in zelfconsumptie de woning voeden om dure netstroom te vermijden.";
       case "full_speed_discharge":
@@ -147,9 +148,7 @@ function actionSentence(action: Slice1BatteryAction, dryRun: boolean, reason: De
     case "grid_charge":
       return `EMS laadt nu van het net${priceHint}.`;
     case "hold":
-      return reserveHold
-        ? "EMS beschermt de reserve: de batterij blijft boven je minimumreserve."
-        : "EMS houdt de batterij vast tot een beter moment.";
+      return "EMS beschermt de reserve: de batterij blijft boven je minimumreserve.";
     case "discharge":
       return "EMS laat de batterij in zelfconsumptie de woning voeden om dure netstroom te vermijden.";
     case "full_speed_discharge":
@@ -220,8 +219,12 @@ export function formatBatteryActionWhy(
   if (code === "power_exceeds_capability" && reason.safety_constraint.action === "paused") {
     return POWER_EXCEEDS_WHY;
   }
-  // Criterion 6 — exact literal when capability is unknown and we proceed cautiously.
-  if (code === "capability_unknown_conservative") {
+  // Criterion 6 — charge-path literal only. Hold / zelfconsumptie keep their own waarom;
+  // the warn is plan-scoped and must not rewrite every hour's sentence.
+  if (
+    code === "capability_unknown_conservative"
+    && (action === "grid_charge" || action === "solar_charge")
+  ) {
     return capabilityUnknownWhy(opts.dryRun, action);
   }
   // Incomplete prices: hold self-use; waarom even when action is not "paused".

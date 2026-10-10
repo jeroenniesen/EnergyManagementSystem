@@ -207,10 +207,15 @@ class ControlDecisionEngine:
                 target_soc, power_w = cur.floor_soc, cur.power_w
         # #85: when validate clamped for unknown capability, command the cautious one-unit
         # ceiling — the waarom copy must match the write (not the unclamped slot).
-        if power_w is not None and val is not None:
+        if val is not None:
             findings = getattr(val, "findings", None) or ()
             if any(getattr(f, "code", None) == "capability_unknown_conservative" for f in findings):
-                power_w = min(float(power_w), ONE_UNIT_POWER_W)
+                if power_w is None and intent is BatteryIntent.GRID_CHARGE_TO_TARGET:
+                    power_w = float(self._settings["battery.max_charge_w"])
+                elif power_w is None and intent is BatteryIntent.EXPORT_FOR_PROFIT:
+                    power_w = float(self._settings["battery.max_discharge_w"])
+                if power_w is not None:
+                    power_w = min(float(power_w), ONE_UNIT_POWER_W)
         # B-108: plan may emit EXPORT_FOR_PROFIT while live forced discharge is still off —
         # keep the intent for explainability, but say clearly that writes stay plan-only.
         if intent is BatteryIntent.EXPORT_FOR_PROFIT and not self._allow_export_discharge():

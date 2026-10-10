@@ -88,16 +88,15 @@ def clamp_plan_power(
     findings: list[Finding] = []
     if capability is None:
         # Unknown capability: proceed cautiously at one-unit power (#85 criterion 6).
+        # Unsized (None) charge/export slots get an explicit one-unit setpoint so the
+        # controller cannot fall through to the full settings default.
         new_slots: list[PlanSlot] = []
         changed = False
         for s in plan.slots:
-            if s.power_w is None:
-                new_slots.append(s)
-                continue
             if s.intent not in _CHARGE_INTENTS and s.intent not in _DISCHARGE_POWER_INTENTS:
                 new_slots.append(s)
                 continue
-            if s.power_w <= _ONE_UNIT_POWER_W + 1e-6:
+            if s.power_w is not None and s.power_w <= _ONE_UNIT_POWER_W + 1e-6:
                 new_slots.append(s)
                 continue
             new_slots.append(replace(s, power_w=_ONE_UNIT_POWER_W))

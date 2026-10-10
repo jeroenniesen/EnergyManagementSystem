@@ -86,6 +86,16 @@ def test_unknown_capability_clamps_to_one_unit():
     assert not any(f.code == "power_exceeds_capability" for f in v.findings)
 
 
+def test_unknown_capability_fills_unsized_charge_slot():
+    """#85 criterion 6: None power_w must not fall through to full settings default."""
+    from ems.planner.validator import clamp_plan_power
+
+    plan = _plan(_charge(0, power=None))
+    aligned, findings = clamp_plan_power(plan, capability=None)
+    assert aligned.slots[0].power_w == 2400.0
+    assert any(f.code == "capability_unknown_conservative" for f in findings)
+
+
 def test_power_exceeds_names_settings_vs_capability_divergence():
     """#164: when settings and capability disagree, the finding names both figures."""
     under = CapabilityReport(

@@ -1979,6 +1979,17 @@ def create_app(
             or not pp[2].slots
             or soc is None
         ):
+            # Incomplete price horizon → build_plan_now returns None; surface the waarom
+            # code the web UI keys off (#85 slice 2), not a blank empty reason.
+            horizon = control.price_horizon_status
+            if pp is None and horizon is not None and not horizon.ok:
+                msg = f"Incomplete prices: {horizon.reason}"
+                return empty_decision_reason(
+                    summary=msg,
+                    validator_code="incomplete_prices",
+                    failsafe=True,
+                    safety_message=msg,
+                ).to_dict()
             return empty_decision_reason(
                 summary="No current plan or forecast is available.",
                 failsafe=quality == "unsafe",
@@ -4178,10 +4189,25 @@ def create_app(
                 # (idempotent: see _resolve_strategy/apply_hysteresis) just for the provenance line.
                 "provenance": _plan_provenance(_active_strategy(now)),
                 # B-74 / #84: structured reason always present (empty/paused shape).
-                "reason": empty_decision_reason(
-                    summary="No current plan or forecast is available.",
-                    failsafe=quality == "unsafe",
-                ).to_dict(),
+                # Incomplete prices are the common cause of fp is None after a horizon fail.
+                "reason": (
+                    empty_decision_reason(
+                        summary=f"Incomplete prices: {control.price_horizon_status.reason}",
+                        validator_code="incomplete_prices",
+                        failsafe=True,
+                        safety_message=(
+                            f"Incomplete prices: {control.price_horizon_status.reason}"
+                        ),
+                    ).to_dict()
+                    if (
+                        control.price_horizon_status is not None
+                        and not control.price_horizon_status.ok
+                    )
+                    else empty_decision_reason(
+                        summary="No current plan or forecast is available.",
+                        failsafe=quality == "unsafe",
+                    ).to_dict()
+                ),
                 # B-63 / #88: stable empty peak-coverage contract when there is no plan yet.
                 "evening_peak_coverage": unavailable_peak_coverage(
                     reason="No current plan or forecast is available.",
