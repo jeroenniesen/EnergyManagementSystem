@@ -22,7 +22,10 @@ from __future__ import annotations
 import logging
 from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
-from typing import Protocol
+
+# Port lives in sources.ports (#113); re-exported here for existing `from ems.sources.carbon import
+# CarbonSource` call sites.
+from ems.sources.ports import CarbonSource as CarbonSource
 
 _log = logging.getLogger("ems.sources.carbon")
 
@@ -38,12 +41,6 @@ _TIMEOUT_SECONDS = 10.0
 
 def _utcnow() -> datetime:
     return datetime.now(UTC)
-
-
-class CarbonSource(Protocol):
-    async def current_intensity(self) -> float | None:
-        """Current grid CO₂ intensity in kg per kWh, or None if unavailable."""
-        ...
 
 
 class StaticCarbonSource:

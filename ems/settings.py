@@ -219,8 +219,12 @@ SETTINGS_SCHEMA: tuple[SettingsField, ...] = (
         "solar.forecast_provider", "Solar forecast provider", "enum", "forecast_solar", "site",
         help="Forecast.Solar is keyless (default). Choose Solcast Hobbyist for real P10/P50/P90 "
         "percentiles — then enter the API key and rooftop resource id below. Solcast falls back "
-        "to Forecast.Solar automatically when stale, unreachable, or over budget.",
-        options=("forecast_solar", "solcast"), applies="restart",
+        "to Forecast.Solar automatically when stale, unreachable, or over budget. Options come "
+        "from the forecast adapter registry (#113); `mock` is for EMS_SOURCES=mock / demos.",
+        # Baseline list — schema_json / validation overlay live registry names via
+        # `_registry_enum_options` so a new `@register_forecast_provider` appears without a
+        # second hard-coded enum here.
+        options=("forecast_solar", "solcast", "mock"), applies="restart",
     ),
     SettingsField(
         "solar.solcast_api_key", "Solcast API key", "secret", "", "site",
@@ -721,24 +725,50 @@ def defaults() -> dict[str, Any]:
     return {f.key: f.default for f in SETTINGS_SCHEMA}
 
 
+def _registry_enum_options(key: str, fallback: tuple[str, ...] | None) -> tuple[str, ...] | None:
+    """Overlay hard-coded enum options with live adapter-registry names (#113).
+
+    Lazy imports keep `settings` import-time pure (no vendor network). Unknown domains keep the
+    schema fallback so a missing registration never blanks the UI.
+    """
+    if key == "solar.forecast_provider":
+        try:
+            # Importing the factory registers adapters (lazy builders — no I/O).
+            from ems.sources.forecast_factory import registered_providers
+        except Exception:  # pragma: no cover — defensive; schema must still render
+            return fallback
+        names = registered_providers()
+        return names if names else fallback
+    if key == "reporting.carbon_signal":
+        try:
+            from ems.sources.carbon_factory import registered_providers
+        except Exception:  # pragma: no cover
+            return fallback
+        names = registered_providers()
+        return names if names else fallback
+    return fallback
+
+
 def schema_json() -> list[dict]:
     """Serialize the schema for the UI to render a form generically.
 
     Keys with `show_in_settings=False` stay in SETTINGS_SCHEMA (defaults, validation, POST)
     but are omitted here so Manage does not render a duplicate control.
     """
-    return [
-        {
+    rows: list[dict] = []
+    for f in SETTINGS_SCHEMA:
+        if not f.show_in_settings:
+            continue
+        opts = _registry_enum_options(f.key, f.options)
+        rows.append({
             "key": f.key, "label": f.label, "type": f.type, "default": f.default,
             "group": f.group, "help": f.help, "min": f.min, "max": f.max,
-            "options": list(f.options) if f.options else None, "step": f.step, "unit": f.unit,
+            "options": list(opts) if opts else None, "step": f.step, "unit": f.unit,
             "advanced": f.advanced, "applies": f.applies, "slider": f.slider,
             "visible_when": {k: v for k, v in f.visible_when} if f.visible_when else None,
             "disabled_options": list(f.disabled_options) if f.disabled_options else [],
-        }
-        for f in SETTINGS_SCHEMA
-        if f.show_in_settings
-    ]
+        })
+    return rows
 
 
 def field_visible(field: SettingsField | dict[str, Any], values: dict[str, Any]) -> bool:
@@ -771,7 +801,7 @@ def _coerce(field: SettingsField, value: Any) -> tuple[bool, Any]:
             return False, "must be text"
         return True, value.strip()
     if field.type == "enum":
-        opts = field.options or ()
+        opts = _registry_enum_options(field.key, field.options) or ()
         if value not in opts:
             return False, f"must be one of: {', '.join(opts)}"
         if value in field.disabled_options:

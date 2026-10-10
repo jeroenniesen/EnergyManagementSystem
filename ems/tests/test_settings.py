@@ -158,6 +158,30 @@ def test_default_forecast_provider_is_forecast_solar():
     assert SETTINGS_BY_KEY["solar.forecast_provider"].options[0] == "forecast_solar"
 
 
+def test_forecast_provider_schema_options_come_from_registry():
+    """#113: UI enum is the live forecast adapter registry, not a second hard-coded list."""
+    from ems.sources.forecast_factory import registered_providers
+
+    row = next(r for r in schema_json() if r["key"] == "solar.forecast_provider")
+    assert tuple(row["options"]) == registered_providers()
+    assert "forecast_solar" in row["options"]
+    assert "solcast" in row["options"]
+
+
+def test_carbon_signal_schema_options_come_from_registry():
+    from ems.sources.carbon_factory import registered_providers
+
+    row = next(r for r in schema_json() if r["key"] == "reporting.carbon_signal")
+    assert tuple(row["options"]) == registered_providers()
+    assert set(row["options"]) >= {"static", "electricitymaps"}
+
+
+def test_validate_accepts_registry_forecast_provider_mock():
+    clean, errors = validate_settings({"solar.forecast_provider": "mock"})
+    assert errors == {}
+    assert clean["solar.forecast_provider"] == "mock"
+
+
 def test_default_planner_mode_is_rule_based():
     assert defaults()["planner.mode"] == "rule_based"
     assert SETTINGS_BY_KEY["planner.mode"].options == ("rule_based", "ml", "advisory")
