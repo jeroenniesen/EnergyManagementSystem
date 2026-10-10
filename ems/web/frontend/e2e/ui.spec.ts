@@ -1555,7 +1555,7 @@ test.describe("EMS dashboard", () => {
         expected_benefit: { eur: 0.55, summary: "Estimated net benefit ≈ €0.55." },
       });
       await page.goto("/");
-      await expect(page.getByTestId("battery-action-label")).toContainText("Vasthouden");
+      await expect(page.getByTestId("battery-action-label")).toContainText("Reservebescherming");
       await page.getByTestId("battery-action-why-toggle").click();
       await expect(page.getByTestId("battery-action-why-text")).toContainText("€0.55");
     });
@@ -1748,7 +1748,7 @@ test.describe("EMS dashboard", () => {
       await page.goto("/");
       await page.getByTestId("battery-action-why-toggle").click();
       await expect(page.getByTestId("battery-action-why-text")).toHaveText(
-        "Zou langzamer laden dan gepland. EMS weet nu niet zeker hoeveel je batterij aankan en laadt daarom voorzichtig.",
+        "Zou langzamer laden dan gepland. EMS weet nu niet zeker hoeveel je batterij aankan en zou daarom voorzichtig laden.",
       );
     });
 

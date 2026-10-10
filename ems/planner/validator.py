@@ -24,7 +24,8 @@ _CHARGE_INTENTS = (BatteryIntent.GRID_CHARGE_TO_TARGET,)
 _EXPORT_INTENTS = (BatteryIntent.EXPORT_FOR_PROFIT,)
 _DISCHARGE_POWER_INTENTS = (BatteryIntent.DISCHARGE_FOR_LOAD, BatteryIntent.EXPORT_FOR_PROFIT)
 # SolidFlex OpenData per-tower ceiling — used when capability is unknown (#85 / Jeroen 2026-09-27).
-_ONE_UNIT_POWER_W = 2400.0
+ONE_UNIT_POWER_W = 2400.0
+_ONE_UNIT_POWER_W = ONE_UNIT_POWER_W  # private alias for call sites in this module
 
 
 @dataclass(frozen=True)
@@ -135,6 +136,18 @@ def clamp_plan_power(
             f"{discharge_limit:.0f} W (the lower figure).",
         ))
 
+    # #164 clamp only when settings advertise *more* than the probe (under-reported capability).
+    # When settings and capability agree (or settings are lower), leave an over-ask alone so
+    # validate_plan can mark power_exceeds_capability unsafe and pause (#85 criterion 5).
+    charge_underreported = (
+        settings_max_charge_w is not None
+        and float(settings_max_charge_w) > capability.max_charge_w + 1e-6
+    )
+    discharge_underreported = (
+        settings_max_discharge_w is not None
+        and float(settings_max_discharge_w) > capability.max_discharge_w + 1e-6
+    )
+
     new_slots: list[PlanSlot] = []
     changed = False
     for s in plan.slots:
@@ -147,6 +160,13 @@ def clamp_plan_power(
             continue
         # Only clamp charge / export / DFL power requests — never invent power on idle/auto.
         if s.intent not in _CHARGE_INTENTS and s.intent not in _DISCHARGE_POWER_INTENTS:
+            new_slots.append(s)
+            continue
+        underreported = (
+            charge_underreported if s.intent in _CHARGE_INTENTS else discharge_underreported
+        )
+        if not underreported:
+            # Trusted known limit — do not silently shrink; validate will pause (#85).
             new_slots.append(s)
             continue
         new_slots.append(replace(s, power_w=float(limit)))

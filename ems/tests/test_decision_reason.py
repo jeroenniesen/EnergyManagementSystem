@@ -220,3 +220,14 @@ def test_power_exceeds_unsafe_pauses_with_finding_code():
     r = build_decision_reason(plan, validation=val, paused=True).to_dict()
     assert r["safety_constraint"]["action"] == "paused"
     assert r["safety_constraint"]["code"] == "power_exceeds_capability"
+
+
+def test_incomplete_prices_reason_surfaces_code_while_proceeding():
+    """#85: incomplete-prices hold self-use still gets a waarom-keyable safety code."""
+    plan = _charge_plan()
+    r = build_decision_reason(
+        plan,
+        plan_reason="holding self-consumption — incomplete prices: horizon short",
+    ).to_dict()
+    assert r["safety_constraint"]["action"] == "proceed"
+    assert r["safety_constraint"]["code"] == "incomplete_prices"

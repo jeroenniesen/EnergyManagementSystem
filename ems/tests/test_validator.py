@@ -128,6 +128,29 @@ def test_clamp_plan_power_before_validate_avoids_reject_path():
     assert v.ok is True
 
 
+def test_trusted_capability_overask_is_not_clamped_so_validate_can_pause():
+    """#85 criterion 5: when settings ≤ capability, leave over-ask for unsafe pause."""
+    from ems.planner.validator import clamp_plan_power
+
+    trusted = CapabilityReport(
+        services=("charge", "discharge"), energy_mode_options=(),
+        has_standby=True, has_grid_charge_switch=True, p1_paired=True,
+        max_charge_w=4000.0, max_discharge_w=4000.0,
+    )
+    plan = _plan(_charge(0, power=9000.0))
+    aligned, clamp_findings = clamp_plan_power(
+        plan, capability=trusted, settings_max_charge_w=4000.0, settings_max_discharge_w=4000.0,
+    )
+    assert aligned.slots[0].power_w == 9000.0
+    assert not any(f.code == "power_clamped_to_capability" for f in clamp_findings)
+    v = validate_plan(
+        aligned, **_ctx(capability=trusted),
+        settings_max_charge_w=4000.0, settings_max_discharge_w=4000.0,
+    )
+    assert any(f.code == "power_exceeds_capability" for f in v.findings)
+    assert v.ok is False
+
+
 def test_clamp_uses_higher_capability_when_gen2_exceeds_settings_floor():
     """#164: capability-driven clamp must not hardcode 2400 when capability is higher."""
     from ems.planner.validator import clamp_plan_power, effective_power_limit_w

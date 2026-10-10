@@ -14,11 +14,20 @@ import { eur } from "./format";
 export const POWER_EXCEEDS_WHY =
   "Gepauzeerd. Het plan vroeg meer vermogen dan je batterij aankan, daarom houdt de batterij haar eigen stand aan.";
 
-/** Literal #85 criterion 6 — unknown capability, cautious continue. */
-export function capabilityUnknownWhy(dryRun: boolean): string {
+/** Literal #85 criterion 6 — unknown capability, cautious continue (charge vs discharge). */
+export function capabilityUnknownWhy(dryRun: boolean, action?: string): string {
+  const charging =
+    action == null
+    || action === "grid_charge"
+    || action === "solar_charge";
+  if (charging) {
+    return dryRun
+      ? "Zou langzamer laden dan gepland. EMS weet nu niet zeker hoeveel je batterij aankan en zou daarom voorzichtig laden."
+      : "Laadt langzamer dan gepland. EMS weet nu niet zeker hoeveel je batterij aankan en laadt daarom voorzichtig.";
+  }
   return dryRun
-    ? "Zou langzamer laden dan gepland. EMS weet nu niet zeker hoeveel je batterij aankan en laadt daarom voorzichtig."
-    : "Laadt langzamer dan gepland. EMS weet nu niet zeker hoeveel je batterij aankan en laadt daarom voorzichtig.";
+    ? "Zou langzamer ontladen dan gepland. EMS weet nu niet zeker hoeveel je batterij aankan en zou daarom voorzichtig ontladen."
+    : "Ontlaadt langzamer dan gepland. EMS weet nu niet zeker hoeveel je batterij aankan en ontlaadt daarom voorzichtig.";
 }
 
 /** Slice-1 battery actions that get a Dutch waarom sentence. */
@@ -181,12 +190,6 @@ function pausedWhy(reason: DecisionReason, dryRun: boolean): string {
       : "EMS is gepauzeerd omdat meetgegevens ontbreken of te oud zijn.";
     return `${first} De batterij houdt haar eigen stand aan.`;
   }
-  if (code === "incomplete_prices" || code === "prices_incomplete") {
-    const first = dryRun
-      ? "EMS zou pauzeren omdat de stroomprijzen onvolledig zijn."
-      : "EMS is gepauzeerd omdat de stroomprijzen onvolledig zijn.";
-    return `${first} Zonder actuele prijzen stuurt EMS niet live.`;
-  }
   // Generic validator-unsafe / failsafe pause.
   const first = dryRun
     ? "EMS zou pauzeren omdat het plan niet veilig genoeg is."
@@ -217,12 +220,24 @@ export function formatBatteryActionWhy(
   if (code === "power_exceeds_capability" && reason.safety_constraint.action === "paused") {
     return POWER_EXCEEDS_WHY;
   }
-  // Criterion 6 — exact literal when capability is unknown and we charge cautiously.
+  // Criterion 6 — exact literal when capability is unknown and we proceed cautiously.
   if (code === "capability_unknown_conservative") {
-    return capabilityUnknownWhy(opts.dryRun);
+    return capabilityUnknownWhy(opts.dryRun, action);
+  }
+  // Incomplete prices: hold self-use; waarom even when action is not "paused".
+  if (code === "incomplete_prices" || code === "prices_incomplete") {
+    const first = opts.dryRun
+      ? "EMS zou pauzeren omdat de stroomprijzen onvolledig zijn."
+      : "EMS is gepauzeerd omdat de stroomprijzen onvolledig zijn.";
+    return `${first} Zonder actuele prijzen stuurt EMS niet live.`;
   }
 
-  if (opts.overrideActive) {
+  // Override copy only when the override was accepted (not held by validation).
+  if (
+    opts.overrideActive
+    && action !== "paused"
+    && reason.safety_constraint.action !== "paused"
+  ) {
     return overrideWhy(opts.dryRun);
   }
 

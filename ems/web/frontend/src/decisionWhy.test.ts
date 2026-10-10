@@ -247,8 +247,9 @@ describe("formatBatteryActionWhy (#85 slice 2)", () => {
       "grid_charge",
       { dryRun: true },
     );
-    expect(dry).toBe(capabilityUnknownWhy(true));
+    expect(dry).toBe(capabilityUnknownWhy(true, "grid_charge"));
     expect(dry!.toLowerCase()).toContain("zou langzamer laden");
+    expect(dry!.toLowerCase()).toContain("zou daarom voorzichtig laden");
   });
 
   it("explains data_stale / validator-unsafe pauses", () => {

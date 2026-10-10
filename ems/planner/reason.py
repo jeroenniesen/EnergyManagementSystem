@@ -448,11 +448,24 @@ def build_decision_reason(
         ),
     )
 
+    # Incomplete prices hold self-use without a validator finding (#85 slice 2 waarom).
+    incomplete_prices = bool(
+        plan_reason and "incomplete prices" in plan_reason.lower()
+    ) or bool(
+        summary and "incomplete prices" in summary.lower()
+    )
+
     if is_paused:
         safety = SafetyConstraint(
             code=validator_code,
             message=validator_message or plan_reason or summary or "Plan paused safely.",
             action=_ACTION_PAUSED,
+        )
+    elif incomplete_prices:
+        safety = SafetyConstraint(
+            code="incomplete_prices",
+            message=plan_reason or summary or "Incomplete prices.",
+            action=_ACTION_PROCEED,
         )
     else:
         # Surface cautious-continue warn codes for the waarom UI (#85 slice 2) while
