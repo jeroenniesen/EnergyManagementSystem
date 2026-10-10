@@ -3425,6 +3425,13 @@ def create_app(
             "p1_paired": cap.p1_paired,
             "max_charge_w": cap.max_charge_w,
             "max_discharge_w": cap.max_discharge_w,
+            # Vendor-neutral capability model (#112 slice b); Indevolt-flavoured keys stay
+            # until slice d moves them into adapter `details`.
+            "supports_discharge_control": cap.supports_discharge_control,
+            "supports_grid_charge": cap.supports_grid_charge,
+            "supports_standby": cap.supports_standby,
+            "min_power_w": cap.min_power_w,
+            "min_target_soc": cap.min_target_soc,
         }
         return out
 

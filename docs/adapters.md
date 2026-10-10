@@ -67,6 +67,24 @@ dry-run ⇒ **0** spy-transport calls. `armed` as a port member and the shutdown
 removal are owned by [#127](https://github.com/jeroenniesen/EnergyManagementSystem/issues/127)
 (already landed); this slice does not reopen them.
 
+### CapabilityReport — vendor-neutral fields (#112 slice b)
+
+`CapabilityReport` stays additive (PO 27-09): Indevolt-flavoured keys remain until slice d.
+New vendor-neutral fields on every probe:
+
+| Field | Role |
+|---|---|
+| `supports_discharge_control` | Forced discharge / export control is available |
+| `supports_grid_charge` | Forced grid-charge control is available |
+| `supports_standby` | Idle / hold-SoC control is available |
+| `min_power_w` / `max_charge_w` / `max_discharge_w` | Power envelope (Indevolt: 50–2400 W per tower) |
+| `min_target_soc` | Lowest charge/discharge target the device accepts (Indevolt: 5 %) |
+
+`IndevoltBatteryDriver.probe` and `MockBatteryDriver.probe` fill these from device limits.
+`/api/battery` surfaces them next to the legacy keys. `validate_plan` marks a charge target
+below `min_target_soc` as `unsafe` (`target_below_capability_min`). Central pre-`apply` clamp
+(I4) and moving Indevolt keys into `details` are **out of scope** here (slices c / d).
+
 ## Adapter registry (#140)
 
 Generic registry: `ems/sources/registry.py`. Register with

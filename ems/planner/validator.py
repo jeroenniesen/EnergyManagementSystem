@@ -245,6 +245,15 @@ def validate_plan(
             findings.append(Finding(_UNSAFE, "target_out_of_range",
                                     f"Charge target {t:.0f}% is outside 0–100%."))
             break
+        # Device floor from capability probe (#112b): Indevolt rejects SoC < 5 %.
+        if (capability is not None and capability.min_target_soc > 0
+                and t < capability.min_target_soc - 1e-6):
+            findings.append(Finding(
+                _UNSAFE, "target_below_capability_min",
+                f"Charge target {t:.0f}% is below the battery's minimum "
+                f"{capability.min_target_soc:.0f}% — device would reject the write.",
+            ))
+            break
         floor = s.floor_soc if s.floor_soc is not None else min_reserve_soc
         if t < floor:
             findings.append(Finding(_UNSAFE, "target_below_reserve",

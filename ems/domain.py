@@ -73,7 +73,13 @@ class PhysicalMode(StrEnum):
 
 @dataclass(frozen=True)
 class CapabilityReport:
-    """Result of the M1a capability probe (SPEC §6.5)."""
+    """Result of the M1a capability probe (SPEC §6.5).
+
+    Vendor-neutral control limits (#112 slice b) sit beside the existing Indevolt-flavoured
+    fields. Defaults keep older call sites compiling; production drivers set the new fields
+    explicitly from device limits. Slice d moves `energy_mode_options` /
+    `has_grid_charge_switch` / `p1_paired` into adapter-specific `details`.
+    """
 
     services: tuple[str, ...]  # e.g. ("charge", "discharge")
     energy_mode_options: tuple[str, ...]
@@ -82,6 +88,13 @@ class CapabilityReport:
     p1_paired: bool  # is the Indevolt reading the P1 meter?
     max_charge_w: float
     max_discharge_w: float
+    # Vendor-neutral capability flags / floors (#112b). Fail-soft defaults: unknown adapters
+    # advertise no forced control until the probe fills these in.
+    supports_discharge_control: bool = False
+    supports_grid_charge: bool = False
+    supports_standby: bool = False
+    min_power_w: float = 0.0
+    min_target_soc: float = 0.0
 
 
 @dataclass(frozen=True)

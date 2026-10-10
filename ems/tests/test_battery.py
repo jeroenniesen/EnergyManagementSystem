@@ -60,6 +60,21 @@ def test_probe_returns_capabilities():
     assert "charge" in cap.services and "discharge" in cap.services
     assert cap.p1_paired is True
     assert cap.max_charge_w == 4000.0
+    # #112 slice b — vendor-neutral floors/flags (Fake Indevolt OpenData envelope).
+    assert cap.supports_discharge_control is True
+    assert cap.supports_grid_charge is True
+    assert cap.supports_standby is True
+    assert cap.min_power_w == 50.0
+    assert cap.min_target_soc == 5.0
+
+
+def test_configure_power_limits_preserves_vendor_neutral_floors():
+    d = MockBatteryDriver()
+    d.configure_power_limits(max_charge_w=2000.0, max_discharge_w=1800.0)
+    cap = d.probe()
+    assert cap.max_charge_w == 2000.0 and cap.max_discharge_w == 1800.0
+    assert cap.min_power_w == 50.0 and cap.min_target_soc == 5.0
+    assert cap.supports_grid_charge is True
 
 
 def test_apply_changes_mode_and_is_idempotent():
