@@ -20,7 +20,11 @@ class APIResponseModel(BaseModel):
 
 
 Intent = Literal[
-    "allow_self_consumption", "grid_charge_to_target", "hold_reserve", "discharge_for_load"
+    "allow_self_consumption",
+    "grid_charge_to_target",
+    "hold_reserve",
+    "discharge_for_load",
+    "export_for_profit",
 ]
 Period = Literal["day", "week", "month", "year"]
 CheckStatus = Literal["ok", "warn", "fail"]
@@ -347,3 +351,139 @@ class DiagnosticsResponse(APIResponseModel):
     control_loop: ControlLoopCounters | None = None
     # B-74 / #84 slice 2: structured DecisionReason (same shape as /api/battery-plan `reason`).
     decision_reason: dict[str, object] | None = None
+
+
+# --- Hot homeowner endpoints (#92 / B-45 slice 1): status, dashboard, battery-plan ---------------
+# Additive `extra="allow"` so newer fields do not break older clients; required keys stay optional
+# so empty / paused / degraded payloads still validate.
+
+
+class StatusResponse(APIResponseModel):
+    """`GET /api/status` — live SoC / powers + watching-only cause (#178)."""
+
+    dry_run: bool | None = None
+    dry_run_reason: str | None = None
+    dry_run_cause: str | None = None
+    dev_mode: str | None = None
+    soc_pct: float | None = None
+    grid_power_w: float | None = None
+    solar_power_w: float | None = None
+    battery_power_w: float | None = None
+    house_load_w: float | None = None
+    non_ev_load_w: float | None = None
+    battery_reachable: bool | None = None
+    prices_kind: str | None = None
+
+
+class DashboardResponse(APIResponseModel):
+    """`GET /api/dashboard` — one timestamped snapshot for the SPA home poll."""
+
+    api_version: int | None = None
+    generated_at: str | None = None
+    degraded_sections: list[str] | None = None
+    status: StatusResponse | None = None
+    freshness: dict[str, object] | None = None
+    prices: dict[str, object] | None = None
+    alerts: dict[str, object] | None = None
+    device_health: dict[str, object] | None = None
+
+
+class BatteryPlanDeviation(APIResponseModel):
+    status: str | None = None
+    message: str | None = None
+    actual_soc_pct: float | None = None
+    target_soc_pct: float | None = None
+
+
+class BatteryPlanGraphPoint(APIResponseModel):
+    ts: str | None = None
+    soc_pct: float | None = None
+
+
+class BatteryPlanActionBlock(APIResponseModel):
+    start: str | None = None
+    end: str | None = None
+    action: str | None = None
+
+
+class BatteryPlanPriceWindow(APIResponseModel):
+    start: str | None = None
+    end: str | None = None
+    min_eur_per_kwh: float | None = None
+    max_eur_per_kwh: float | None = None
+
+
+class BatteryPlanSolarPoint(APIResponseModel):
+    ts: str | None = None
+    forecast_w: float | None = None
+    actual_w: float | None = None
+
+
+class BatteryPlanGraph(APIResponseModel):
+    forecast_soc: list[BatteryPlanGraphPoint] | None = None
+    actual_soc: list[BatteryPlanGraphPoint] | None = None
+    reserve_line: list[BatteryPlanGraphPoint] | None = None
+    target_line: list[BatteryPlanGraphPoint] | None = None
+    planned_actions: list[BatteryPlanActionBlock] | None = None
+    price_windows: list[BatteryPlanPriceWindow] | None = None
+    solar: list[BatteryPlanSolarPoint] | None = None
+
+
+class BatteryPlanConfidence(APIResponseModel):
+    level: str | None = None
+    reasons: list[str] | None = None
+
+
+class IntelligenceStatus(APIResponseModel):
+    """B-79 runtime-proven scenario/ML capability status on plan provenance."""
+
+    state: str | None = None
+    last_evaluated_at: str | None = None
+    last_result: str | None = None
+    reason: str | None = None
+
+
+class BatteryPlanProvenance(APIResponseModel):
+    """Matches `_plan_provenance` on /api/battery-plan (forecast + planner + intelligence)."""
+
+    forecast_source: str | None = None
+    solar_confidence_pct: float | None = None
+    planner: str | None = None
+    intelligence: IntelligenceStatus | None = None
+
+
+class EveningPeakCoverage(APIResponseModel):
+    probability: float | None = None
+    available: bool | None = None
+    label: str | None = None
+    reason: str | None = None
+    calibrated: bool | None = None
+    scenarios_covering: int | None = None
+    scenarios_total: int | None = None
+    peak_kwh_expected: float | None = None
+    available_kwh: float | None = None
+
+
+class BatteryPlanResponse(APIResponseModel):
+    """`GET /api/battery-plan` — homeowner confidence contract + graph proof."""
+
+    status: str | None = None
+    summary: str | None = None
+    current_action: str | None = None
+    current_reason: str | None = None
+    window_start: str | None = None
+    window_end: str | None = None
+    current_soc_pct: float | None = None
+    reserve_soc_pct: float | None = None
+    target_soc_pct: float | None = None
+    target_deadline: str | None = None
+    planned_grid_topup_kwh: float | None = None
+    deviation: BatteryPlanDeviation | None = None
+    warnings: list[str] | None = None
+    graph: BatteryPlanGraph | None = None
+    confidence: BatteryPlanConfidence | None = None
+    provenance: BatteryPlanProvenance | None = None
+    # Structured DecisionReason (#84) — kept as dict so nested schema can evolve without
+    # duplicating every field here; still present on the OpenAPI surface via this key.
+    reason: dict[str, object] | None = None
+    evening_peak_coverage: EveningPeakCoverage | None = None
