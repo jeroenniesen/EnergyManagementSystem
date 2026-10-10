@@ -443,29 +443,15 @@ def build_wiring(
 
 
 def build_carbon_source(eff: dict, *, http: object | None = None):
-    """Build the CarbonSource (roadmap F3, Insights reporting only — never touches control) per
-    `reporting.carbon_signal`: `static` (default) is the flat `reporting.grid_co2_factor`, always
-    available; `electricitymaps` is the optional live signal, only when a personal API key is set —
-    a configured-but-keyless live signal falls back to static with a one-line warning rather than
-    silently doing nothing. Kept OUT of `build_wiring`'s return tuple deliberately: several callers
-    unpack that tuple by fixed position/arity, and this is wired into the Recorder only, not the
-    battery/price/forecast read paths.
+    """Build the CarbonSource (roadmap F3, Insights reporting only — never touches control).
+
+    Delegates to `ems.sources.carbon_factory` (#113): `static` (default) is the flat
+    `reporting.grid_co2_factor`; `electricitymaps` is the optional live signal when a personal API
+    key is set — keyless/unknown names fail safe to static. Kept OUT of `build_wiring`'s return
+    tuple deliberately: several callers unpack that tuple by fixed position/arity, and this is
+    wired into the Recorder only, not the battery/price/forecast read paths.
 
     Optional ``http`` (``HttpRuntime``) injects a shared-client GET for ElectricityMaps."""
-    from ems.sources.carbon import ElectricityMapsCarbonSource, StaticCarbonSource
+    from ems.sources.carbon_factory import build_carbon_source as _build
 
-    factor = float(eff.get("reporting.grid_co2_factor") or 0.27)
-    if eff.get("reporting.carbon_signal") == "electricitymaps":
-        api_key = eff.get("reporting.electricitymaps_api_key") or ""
-        if api_key:
-            client = None
-            if http is not None:
-                from ems.http_client import make_json_get_headers
-
-                client = make_json_get_headers(http, "best_effort")  # type: ignore[arg-type]
-            return ElectricityMapsCarbonSource(api_key, client=client)
-        _log.warning(
-            "reporting.carbon_signal=electricitymaps but no API key is set; "
-            "using the flat grid CO2 factor instead"
-        )
-    return StaticCarbonSource(factor)
+    return _build(eff, http=http)

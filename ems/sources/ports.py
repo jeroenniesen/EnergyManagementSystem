@@ -50,3 +50,10 @@ class PriceSource(Protocol):
 @runtime_checkable
 class SolarForecastSource(Protocol):
     def slots(self) -> list[ForecastSlot]: ...
+
+
+@runtime_checkable
+class CarbonSource(Protocol):
+    """Async grid CO₂ intensity for Insights reporting only (#113) — never feeds control."""
+
+    async def current_intensity(self) -> float | None: ...

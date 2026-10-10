@@ -9,7 +9,13 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Protocol, runtime_checkable
 
-from ems.sources.ports import BatteryDriver, PriceSource, SolarForecastSource, Source
+from ems.sources.ports import (
+    BatteryDriver,
+    CarbonSource,
+    PriceSource,
+    SolarForecastSource,
+    Source,
+)
 
 if TYPE_CHECKING:
     from ems.planner.base import PlannerRequest
@@ -20,6 +26,7 @@ __all__ = [
     "BatteryDriver",
     "PriceSource",
     "SolarForecastSource",
+    "CarbonSource",
     "Planner",
 ]
 
