@@ -302,6 +302,22 @@ describe("formatBatteryActionWhy (#85 slice 2)", () => {
     expect(text).toMatch(/prijzen onvolledig/i);
   });
 
+  it("accepted override beats incomplete_prices copy", () => {
+    const text = formatBatteryActionWhy(
+      reason({
+        safety_constraint: {
+          code: "incomplete_prices",
+          message: "prices",
+          action: "proceed",
+        },
+      }),
+      "grid_charge",
+      { dryRun: false, overrideActive: true },
+    );
+    expect(text).toMatch(/jouw keuze/i);
+    expect(text).not.toMatch(/prijzen onvolledig/i);
+  });
+
   it("explains manual override", () => {
     const text = formatBatteryActionWhy(reason(), "hold", {
       dryRun: false,

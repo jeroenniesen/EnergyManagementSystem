@@ -1979,6 +1979,17 @@ def create_app(
             or not pp[2].slots
             or soc is None
         ):
+            # Override still commands without a plan — don't claim an incomplete-prices pause
+            # when the homeowner's manual choice is actually driving writes.
+            _intent, plan_reason, override_active, _tgt, _pw, _val, _car = (
+                _effective_intent(now)
+            )
+            if override_active and plan_reason:
+                return empty_decision_reason(
+                    summary=plan_reason,
+                    failsafe=False,
+                    action="proceed",
+                ).to_dict()
             # Incomplete price horizon → build_plan_now returns None; surface the waarom
             # code the web UI keys off (#85 slice 2), not a blank empty reason.
             horizon = control.price_horizon_status
@@ -4168,11 +4179,49 @@ def create_app(
         )
         fp = await _forward_projection()
         if fp is None:
+            intent, plan_reason, override_active, _tgt, _pw, _val, _car = (
+                await asyncio.to_thread(_effective_intent, now)
+            )
+            if override_active and intent is not None:
+                export = bool(settings_cache.get("control.allow_export_discharge"))
+                ov_action = _action_from_intent(intent, 0.0, allow_export_discharge=export)
+                ov_reason = plan_reason or "manual override active"
+                return {
+                    "status": "ok",
+                    "summary": ov_reason,
+                    "current_action": ov_action,
+                    "current_reason": ov_reason,
+                    "window_start": now.isoformat(),
+                    "window_end": (now + timedelta(hours=24)).isoformat(),
+                    "current_soc_pct": None,
+                    "reserve_soc_pct": reserve_pct,
+                    "target_soc_pct": None,
+                    "target_deadline": None,
+                    "deviation": {"status": "missing", "message": "No forecast to compare yet."},
+                    "warnings": ["No plan is available yet — following manual override."],
+                    "graph": {"forecast_soc": [], "actual_soc": [], "reserve_line": [],
+                              "target_line": [], "planned_actions": [],
+                              "price_windows": [], "solar": []},
+                    "confidence": confidence,
+                    "provenance": _plan_provenance(_active_strategy(now)),
+                    "reason": empty_decision_reason(
+                        summary=ov_reason, failsafe=False, action="proceed",
+                    ).to_dict(),
+                    "evening_peak_coverage": unavailable_peak_coverage(
+                        reason="No current plan or forecast is available.",
+                    ),
+                }
+            horizon = control.price_horizon_status
+            incomplete = horizon is not None and not horizon.ok
+            empty_summary = (
+                f"Incomplete prices: {horizon.reason}" if incomplete
+                else "No current plan or forecast is available."
+            )
             return {
                 "status": "paused_safely",
                 "summary": "Plan paused safely — no battery plan is available yet.",
                 "current_action": "paused",
-                "current_reason": "No current plan or forecast is available.",
+                "current_reason": empty_summary,
                 "window_start": now.isoformat(),
                 "window_end": (now + timedelta(hours=24)).isoformat(),
                 "current_soc_pct": None,
@@ -4189,25 +4238,12 @@ def create_app(
                 # (idempotent: see _resolve_strategy/apply_hysteresis) just for the provenance line.
                 "provenance": _plan_provenance(_active_strategy(now)),
                 # B-74 / #84: structured reason always present (empty/paused shape).
-                # Incomplete prices are the common cause of fp is None after a horizon fail.
-                "reason": (
-                    empty_decision_reason(
-                        summary=f"Incomplete prices: {control.price_horizon_status.reason}",
-                        validator_code="incomplete_prices",
-                        failsafe=True,
-                        safety_message=(
-                            f"Incomplete prices: {control.price_horizon_status.reason}"
-                        ),
-                    ).to_dict()
-                    if (
-                        control.price_horizon_status is not None
-                        and not control.price_horizon_status.ok
-                    )
-                    else empty_decision_reason(
-                        summary="No current plan or forecast is available.",
-                        failsafe=quality == "unsafe",
-                    ).to_dict()
-                ),
+                "reason": empty_decision_reason(
+                    summary=empty_summary,
+                    validator_code="incomplete_prices" if incomplete else None,
+                    failsafe=True if incomplete else quality == "unsafe",
+                    safety_message=empty_summary if incomplete else None,
+                ).to_dict(),
                 # B-63 / #88: stable empty peak-coverage contract when there is no plan yet.
                 "evening_peak_coverage": unavailable_peak_coverage(
                     reason="No current plan or forecast is available.",

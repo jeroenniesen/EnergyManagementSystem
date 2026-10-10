@@ -351,8 +351,13 @@ def empty_decision_reason(
     cap_reached: bool = False,
     unconfirmed: bool = False,
     safety_message: str | None = None,
+    action: str = _ACTION_PAUSED,
 ) -> DecisionReason:
-    """Paused / empty contract — same shape so clients never see a missing `reason` key."""
+    """Empty contract — same shape so clients never see a missing `reason` key.
+
+    Default action is paused (no plan). Pass ``action="proceed"`` for an accepted
+    override that still commands without a built plan (#85).
+    """
     code = validator_code
     return DecisionReason(
         chosen_window=None,
@@ -362,7 +367,7 @@ def empty_decision_reason(
         safety_constraint=SafetyConstraint(
             code=code,
             message=safety_message or summary,
-            action=_ACTION_PAUSED,
+            action=action,
         ),
         gates=GateOutcomes(
             validator_code=code,

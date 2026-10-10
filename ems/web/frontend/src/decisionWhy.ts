@@ -227,21 +227,22 @@ export function formatBatteryActionWhy(
   ) {
     return capabilityUnknownWhy(opts.dryRun, action);
   }
-  // Incomplete prices: hold self-use; waarom even when action is not "paused".
-  if (code === "incomplete_prices" || code === "prices_incomplete") {
-    const first = opts.dryRun
-      ? "EMS zou pauzeren omdat de stroomprijzen onvolledig zijn."
-      : "EMS is gepauzeerd omdat de stroomprijzen onvolledig zijn.";
-    return `${first} Zonder actuele prijzen stuurt EMS niet live.`;
-  }
-
   // Override copy only when the override was accepted (not held by validation).
+  // Checked before incomplete_prices: an accepted override still commands without a plan.
   if (
     opts.overrideActive
     && action !== "paused"
     && reason.safety_constraint.action !== "paused"
   ) {
     return overrideWhy(opts.dryRun);
+  }
+
+  // Incomplete prices: hold self-use; waarom even when action is not "paused".
+  if (code === "incomplete_prices" || code === "prices_incomplete") {
+    const first = opts.dryRun
+      ? "EMS zou pauzeren omdat de stroomprijzen onvolledig zijn."
+      : "EMS is gepauzeerd omdat de stroomprijzen onvolledig zijn.";
+    return `${first} Zonder actuele prijzen stuurt EMS niet live.`;
   }
 
   if (action === "paused" || reason.safety_constraint.action === "paused") {
