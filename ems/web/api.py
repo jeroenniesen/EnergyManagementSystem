@@ -174,6 +174,7 @@ from ems.web.authz import (
     requires_session,
 )
 from ems.web.context import AppContext, history_row_cap
+from ems.web.models import BatteryPlanResponse, DashboardResponse, StatusResponse
 from ems.web.ratelimit import FixedWindowRateLimiter
 from ems.web.routes.accuracy import build_router as build_accuracy_router
 from ems.web.routes.auth import build_router as build_auth_router
@@ -2544,7 +2545,11 @@ def create_app(
         """Consumer-facing per-source freshness + summary badge (B-38 / issue #79)."""
         return _device_health_payload(datetime.now(UTC))
 
-    @app.get("/api/dashboard")
+    @app.get(
+        "/api/dashboard",
+        response_model=DashboardResponse,
+        response_model_exclude_unset=True,
+    )
     def dashboard_snapshot(api_version: int = Query(default=1, ge=1)) -> dict:
         """Return one timestamped dashboard snapshot for clients that need a coherent read."""
         if api_version != 1:
@@ -4157,7 +4162,11 @@ def create_app(
                 reason="Peak coverage could not be estimated from current evidence.",
             )
 
-    @app.get("/api/battery-plan")
+    @app.get(
+        "/api/battery-plan",
+        response_model=BatteryPlanResponse,
+        response_model_exclude_unset=True,
+    )
     async def battery_plan() -> dict:
         """Homeowner-facing battery confidence contract: the answer first, then graph proof.
 
@@ -5051,7 +5060,7 @@ def create_app(
             {"values": public_values(dict(settings_cache)), "restart_required": restart_required}
         )
 
-    @app.get("/api/status")
+    @app.get("/api/status", response_model=StatusResponse, response_model_exclude_unset=True)
     def status() -> dict:
         # Coalesced read (shared 30 s window) so the 5–10 s dashboard poll doesn't read the battery
         # cluster on every refresh. Fall back to a direct read only if nothing's cached yet (cold

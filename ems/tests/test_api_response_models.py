@@ -5,11 +5,14 @@ from fastapi.testclient import TestClient
 from ems.sources.mock import MockSource
 from ems.web.api import create_app
 from ems.web.models import (
+    BatteryPlanResponse,
+    DashboardResponse,
     DiagnosticsResponse,
     FinanceResponse,
     PlanResponse,
     ReportResponse,
     SavingsResponse,
+    StatusResponse,
     VerificationResponse,
 )
 
@@ -23,10 +26,14 @@ def test_routes_validate_representative_payloads():
         "/api/finance": FinanceResponse,
         "/api/savings": SavingsResponse,
         "/api/diagnostics": DiagnosticsResponse,
+        # #92 / B-45 slice 1 — hot homeowner endpoints
+        "/api/status": StatusResponse,
+        "/api/dashboard": DashboardResponse,
+        "/api/battery-plan": BatteryPlanResponse,
     }
     for path, model in endpoints.items():
         response = client.get(path)
-        assert response.status_code == 200
+        assert response.status_code == 200, path
         model.model_validate(response.json())
 
 
@@ -38,11 +45,21 @@ def test_models_accept_representative_payloads_and_preserve_additive_fields():
         (FinanceResponse, {"period": "day", "days": [], "total_eur": None}),
         (SavingsResponse, {"today_eur": None, "week_eur": 0.0}),
         (DiagnosticsResponse, {"status": "degraded", "checks": []}),
+        (StatusResponse, {"dry_run": True, "soc_pct": 55.0, "extra_field": 1}),
+        (DashboardResponse, {"api_version": 1, "status": {"dry_run": True}, "new": True}),
+        (BatteryPlanResponse, {
+            "status": "on_track", "current_action": "self_consume",
+            "reason": {"summary": "ok"}, "additive": "x",
+        }),
     ]
     for model, payload in payloads:
         parsed = model.model_validate(payload)
         if model is PlanResponse:
             assert parsed.model_dump(exclude_none=False)["new"] == 1
+        if model is StatusResponse:
+            assert parsed.model_dump(exclude_none=False)["extra_field"] == 1
+        if model is BatteryPlanResponse:
+            assert parsed.model_dump(exclude_none=False)["additive"] == "x"
 
 
 def test_models_allow_empty_and_unavailable_payloads():
@@ -53,8 +70,25 @@ def test_models_allow_empty_and_unavailable_payloads():
         FinanceResponse,
         SavingsResponse,
         DiagnosticsResponse,
+        StatusResponse,
+        DashboardResponse,
+        BatteryPlanResponse,
     ):
         assert model.model_validate({}).model_dump(exclude_unset=True) == {}
+
+
+def test_openapi_documents_hot_endpoint_response_models():
+    """#92 slice 1: OpenAPI names Status/Dashboard/BatteryPlan response models."""
+    client = TestClient(create_app(MockSource(), dry_run=True, dev_mode="mock"))
+    schema = client.get("/openapi.json").json()
+    components = schema.get("components", {}).get("schemas", {})
+    for name in (
+        "StatusResponse", "DashboardResponse", "BatteryPlanResponse", "ReportResponse",
+    ):
+        assert name in components, name
+    status_ref = schema["paths"]["/api/status"]["get"]["responses"]["200"]["content"][
+        "application/json"]["schema"]
+    assert status_ref.get("$ref", "").endswith("StatusResponse")
 
 
 def test_nested_report_contract_covers_empty_stale_and_unavailable_values():
