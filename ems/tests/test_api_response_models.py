@@ -86,12 +86,23 @@ def test_openapi_documents_hot_endpoint_response_models():
         "StatusResponse", "DashboardResponse", "BatteryPlanResponse", "ReportResponse",
     ):
         assert name in components, name
-    status_ref = schema["paths"]["/api/status"]["get"]["responses"]["200"]["content"][
-        "application/json"]["schema"]
-    assert status_ref.get("$ref", "").endswith("StatusResponse")
+    for path, model_name in (
+        ("/api/status", "StatusResponse"),
+        ("/api/dashboard", "DashboardResponse"),
+        ("/api/battery-plan", "BatteryPlanResponse"),
+    ):
+        ref = schema["paths"][path]["get"]["responses"]["200"]["content"][
+            "application/json"]["schema"]
+        assert ref.get("$ref", "").endswith(model_name), path
     provenance = components["BatteryPlanProvenance"]["properties"]
     for key in ("forecast_source", "solar_confidence_pct", "planner", "intelligence"):
         assert key in provenance, key
+    intelligence = components["IntelligenceStatus"]["properties"]
+    for key in ("state", "last_evaluated_at", "last_result", "reason"):
+        assert key in intelligence, key
+    plan_props = components["BatteryPlanResponse"]["properties"]
+    for key in ("graph", "confidence", "provenance", "evening_peak_coverage", "reason"):
+        assert key in plan_props, key
     assert "dry_run_block_reason" not in components["StatusResponse"].get("properties", {})
 
 
