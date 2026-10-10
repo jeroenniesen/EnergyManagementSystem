@@ -3,7 +3,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 
 import { BatteryActionWhy } from "./BatteryActionWhy";
-import type { DecisionReason } from "./decisionWhy";
+import { POWER_EXCEEDS_WHY, type DecisionReason } from "./decisionWhy";
 
 const REASON: DecisionReason = {
   chosen_window: {
@@ -29,19 +29,43 @@ const REASON: DecisionReason = {
 };
 
 describe("BatteryActionWhy", () => {
-  it("still shows structured reason details for non-slice-1 actions (#84 slice 2)", () => {
+  it("shows Dutch waarom for paused states (#85 slice 2)", () => {
     const html = renderToStaticMarkup(
       createElement(BatteryActionWhy, {
         currentAction: "paused",
-        reason: REASON,
+        reason: {
+          ...REASON,
+          safety_constraint: {
+            code: "stale_inputs",
+            message: "stale",
+            action: "paused",
+          },
+        },
         dryRun: true,
       }),
     );
     expect(html).toContain('data-testid="battery-action-why"');
     expect(html).toContain('data-testid="decision-reason-details"');
-    expect(html).toContain("cheap charge window");
-    // No Dutch waarom sentence for paused (that stays #85 slice 1 only).
-    expect(html).not.toContain('data-testid="battery-action-why-text"');
+    expect(html).toContain('data-testid="battery-action-why-text"');
+    expect(html).toMatch(/zou pauzeren/i);
+  });
+
+  it("shows literal power-exceedance pause copy", () => {
+    const html = renderToStaticMarkup(
+      createElement(BatteryActionWhy, {
+        currentAction: "paused",
+        reason: {
+          ...REASON,
+          safety_constraint: {
+            code: "power_exceeds_capability",
+            message: "too much",
+            action: "paused",
+          },
+        },
+        dryRun: false,
+      }),
+    );
+    expect(html).toContain(POWER_EXCEEDS_WHY);
   });
 
   it("hides the explanation text until the details disclosure is opened (SSR closed)", () => {
@@ -98,6 +122,7 @@ describe("BatteryActionWhy", () => {
     );
     expect(html).toContain("Zelfconsumptie");
     expect(html).not.toContain("self consume");
+    expect(html).toContain('data-testid="battery-action-why-text"');
   });
 
   it("shows Op volle snelheid ontladen for forced dump", () => {

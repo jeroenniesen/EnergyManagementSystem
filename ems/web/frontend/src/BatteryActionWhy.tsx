@@ -1,13 +1,13 @@
-// B-33 / #85 slice 1: disclosure that shows a 1–2 sentence "waarom" for the current
-// battery action (laden / vasthouden / zelfconsumptie / volle-snelheid ontladen) after one
-// tap. Hidden by default.
+// B-33 / #85: disclosure that shows a 1–2 sentence "waarom" for the current battery action
+// after one tap. Hidden by default.
+// Slice 1: laden / vasthouden / zelfconsumptie / volle-snelheid.
+// Slice 2: reserve, gepauzeerde staten, vermogensgrens-varianten.
 // B-74 / #84 slice 2: same disclosure also renders the structured reason fields so web,
 // logs and diagnostics tell one story from the /api/battery-plan reason object.
 import { DecisionReasonDetails } from "./DecisionReasonDetails";
 import {
   batteryActionLabel,
   formatBatteryActionWhy,
-  isSlice1BatteryAction,
   type DecisionReason,
 } from "./decisionWhy";
 
@@ -15,17 +15,19 @@ export function BatteryActionWhy({
   currentAction,
   reason,
   dryRun,
+  overrideActive = false,
 }: {
   currentAction: string | null | undefined;
   reason: DecisionReason | null | undefined;
   dryRun: boolean;
+  overrideActive?: boolean;
 }) {
   if (!reason) return null;
 
-  const slice1 = currentAction != null && isSlice1BatteryAction(currentAction);
-  const waarom = slice1
-    ? formatBatteryActionWhy(reason, currentAction, { dryRun })
-    : null;
+  const waarom =
+    currentAction != null
+      ? formatBatteryActionWhy(reason, currentAction, { dryRun, overrideActive })
+      : formatBatteryActionWhy(reason, "paused", { dryRun, overrideActive });
   const actionLabel = batteryActionLabel(currentAction);
 
   return (

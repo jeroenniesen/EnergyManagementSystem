@@ -295,6 +295,28 @@ def _top_unsafe_code(validation: Any | None) -> tuple[str | None, str | None]:
     return None, None
 
 
+# Warn codes the waarom-UI (#85 slice 2) keys off while control still proceeds.
+_WHY_WARN_CODES = frozenset({
+    "capability_unknown_conservative",
+    "power_clamped_to_capability",
+    "settings_capability_power_mismatch",
+})
+
+
+def _top_why_warn_code(validation: Any | None) -> tuple[str | None, str | None]:
+    """Return (code, message) of the first waarom-relevant warn finding, if any."""
+    if validation is None:
+        return None, None
+    findings = getattr(validation, "findings", None) or ()
+    for f in findings:
+        if getattr(f, "severity", None) != "warn":
+            continue
+        code = getattr(f, "code", None)
+        if code in _WHY_WARN_CODES:
+            return code, getattr(f, "message", None)
+    return None, None
+
+
 def _homeowner_summary(raw: str | None, chosen: ChosenWindow | None) -> str:
     """Turn planner-internal slot reasons into homeowner Summary copy.
 
@@ -433,9 +455,12 @@ def build_decision_reason(
             action=_ACTION_PAUSED,
         )
     else:
+        # Surface cautious-continue warn codes for the waarom UI (#85 slice 2) while
+        # keeping action=proceed — unknown capability / clamped power are not pauses.
+        warn_code, warn_message = _top_why_warn_code(validation)
         safety = SafetyConstraint(
-            code=None,
-            message=None,
+            code=warn_code,
+            message=warn_message,
             action=_ACTION_PROCEED,
         )
 

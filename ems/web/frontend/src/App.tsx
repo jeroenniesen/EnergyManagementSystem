@@ -1102,12 +1102,13 @@ export function App() {
             provenance={batteryPlan?.provenance}
             recentReview={story?.recent_review?.message ?? null}
           />
-          {/* B-33 / #85 slice 1: waarom voor laden / vasthouden / zelfconsumptie — één tik, niet
+          {/* B-33 / #85: waarom voor batterij-acties + pauze/reserve (slice 1–2) — één tik, niet
               standaard open. Tekst uit battery-plan `reason` (#84), dry-run zegt "zou". */}
           <BatteryActionWhy
             currentAction={batteryPlan?.current_action}
             reason={batteryPlan?.reason as DecisionReason | undefined}
             dryRun={status?.dry_run ?? true}
+            overrideActive={Boolean(decision?.override_active)}
           />
           {/* B-63 / #88 + B-95: risk banner only when coverage is below the covered
               threshold; covered/100% is the hero trust-marker (one surface). */}

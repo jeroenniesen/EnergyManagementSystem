@@ -23,6 +23,8 @@ _UNSAFE, _WARN = "unsafe", "warn"
 _CHARGE_INTENTS = (BatteryIntent.GRID_CHARGE_TO_TARGET,)
 _EXPORT_INTENTS = (BatteryIntent.EXPORT_FOR_PROFIT,)
 _DISCHARGE_POWER_INTENTS = (BatteryIntent.DISCHARGE_FOR_LOAD, BatteryIntent.EXPORT_FOR_PROFIT)
+# SolidFlex OpenData per-tower ceiling — used when capability is unknown (#85 / Jeroen 2026-09-27).
+_ONE_UNIT_POWER_W = 2400.0
 
 
 @dataclass(frozen=True)
@@ -84,7 +86,29 @@ def clamp_plan_power(
     slot was clamped. Pure — no I/O."""
     findings: list[Finding] = []
     if capability is None:
-        return plan, ()
+        # Unknown capability: proceed cautiously at one-unit power (#85 criterion 6).
+        new_slots: list[PlanSlot] = []
+        changed = False
+        for s in plan.slots:
+            if s.power_w is None:
+                new_slots.append(s)
+                continue
+            if s.intent not in _CHARGE_INTENTS and s.intent not in _DISCHARGE_POWER_INTENTS:
+                new_slots.append(s)
+                continue
+            if s.power_w <= _ONE_UNIT_POWER_W + 1e-6:
+                new_slots.append(s)
+                continue
+            new_slots.append(replace(s, power_w=_ONE_UNIT_POWER_W))
+            changed = True
+        if not changed:
+            return plan, ()
+        findings.append(Finding(
+            _WARN, "capability_unknown_conservative",
+            f"Battery capability unknown — proceeding cautiously at "
+            f"{_ONE_UNIT_POWER_W:.0f} W (one unit).",
+        ))
+        return replace(plan, slots=tuple(new_slots)), tuple(findings)
 
     charge_limit = effective_power_limit_w(
         capability_w=capability.max_charge_w, settings_w=settings_max_charge_w,
@@ -213,6 +237,8 @@ def validate_plan(
     #    DIRECTION-appropriate limit — a charge slot vs max_charge_w, otherwise max_discharge_w.
     #    Prefer min(settings, capability) when settings are supplied so a divergent pair is named
     #    in the finding (#164) rather than a bare capability number.
+    #    Known exceedance is control-blocking (#85 / Jeroen 2026-09-27): pause rather than fight
+    #    the device. Callers that already ran clamp_plan_power normally won't hit this check.
     if capability is not None:
         for s in slots:
             if s.power_w is None:
@@ -231,7 +257,7 @@ def validate_plan(
                         and abs(float(settings_w) - float(cap_limit)) > 1e-6):
                     msg += (f" Settings advertise {float(settings_w):.0f} W vs capability "
                             f"{cap_limit:.0f} W.")
-                findings.append(Finding(_WARN, "power_exceeds_capability", msg))
+                findings.append(Finding(_UNSAFE, "power_exceeds_capability", msg))
                 break
 
     # 4. Excessive mode switches / sub-dwell churn — protect the battery from thrash.
