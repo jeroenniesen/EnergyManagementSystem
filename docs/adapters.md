@@ -77,7 +77,8 @@ New vendor-neutral fields on every probe:
 | `supports_discharge_control` | Forced discharge / export control is available |
 | `supports_grid_charge` | Forced grid-charge control is available |
 | `supports_standby` | Idle / hold-SoC control is available |
-| `min_power_w` / `max_charge_w` / `max_discharge_w` | Power envelope (Indevolt: 50–2400 W per tower) |
+| `min_power_w` | Lowest commanded watts the device accepts (Indevolt OpenData floor: 50 W) |
+| `max_charge_w` / `max_discharge_w` | Advertised charge/discharge ceiling (one tower capped at 2400 W; multi-tower = configured cluster watts) |
 | `min_target_soc` | Lowest charge/discharge target the device accepts (Indevolt: 5 %) |
 
 `IndevoltBatteryDriver.probe` and `MockBatteryDriver.probe` fill these from device limits.

@@ -194,6 +194,7 @@ def test_target_below_capability_min_soc_is_unsafe():
         _plan(_charge(0, target_soc=5.0, floor=0.0)),
         **_ctx(capability=cap, min_reserve_soc=0.0),
     )
+    assert ok.ok is True
     assert not any(f.code == "target_below_capability_min" for f in ok.findings)
 
 
