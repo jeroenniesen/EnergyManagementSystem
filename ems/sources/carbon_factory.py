@@ -50,7 +50,12 @@ def register_carbon_provider(
 
 
 def registered_providers() -> tuple[str, ...]:
-    return registered_adapters(CARBON_DOMAIN)
+    """Adapter names for Settings — `static` first (default), then the rest sorted."""
+    names = list(registered_adapters(CARBON_DOMAIN))
+    if "static" in names:
+        names.remove("static")
+        return ("static", *sorted(names))
+    return tuple(sorted(names))
 
 
 @register_carbon_provider(
@@ -96,10 +101,7 @@ def _build_electricitymaps(
 ) -> ElectricityMapsCarbonSource | None:
     api_key = (eff.get("reporting.electricitymaps_api_key") or "").strip()
     if not api_key:
-        _log.warning(
-            "reporting.carbon_signal=electricitymaps but no API key is set; "
-            "using the flat grid CO2 factor instead"
-        )
+        # Return None → build_adapter logs a single incomplete-config fallback warning.
         return None
     client = None
     if http is not None:

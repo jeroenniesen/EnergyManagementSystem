@@ -16,8 +16,9 @@ from ems.sources.registry import get_metadata, registered_adapters
 
 
 def test_registered_providers_match_registry_domain():
-    assert registered_providers() == registered_adapters(CARBON_DOMAIN)
-    assert "static" in registered_providers()
+    assert set(registered_providers()) == set(registered_adapters(CARBON_DOMAIN))
+    # Settings order: static (default) first, then remaining names sorted.
+    assert registered_providers()[0] == "static"
     assert "electricitymaps" in registered_providers()
 
 

@@ -94,11 +94,15 @@ classes lightly. Pre-#140 settings DBs need no migration.
 Registered names: `mock`, `tibber`. Live Tibber still requires `connection.use_live_prices` +
 token; incomplete config fails safe to mock. Dry-run / arming rules are unchanged.
 
-CO₂ via the registry and enum options sourced from the registry are **not** in this slice
-([#113](https://github.com/jeroenniesen/EnergyManagementSystem/issues/113) slice b).
+**CO₂** (`ems/sources/carbon_factory.py`, [#113](https://github.com/jeroenniesen/EnergyManagementSystem/issues/113) slice b):
+`@register_carbon_provider` / `build_carbon_source`; delegates to `register_adapter("carbon", …)`.
+Registered names: `static`, `electricitymaps`. Keyless / unknown → static fail-safe.
+`ems/connection.py::build_carbon_source` is a thin delegate. Settings enums for
+`solar.forecast_provider` and `reporting.carbon_signal` overlay live registry names via
+`ems/settings.py::_registry_enum_options`.
 
 Guard tests: `ems/tests/test_adapter_registry.py`, `ems/tests/test_forecast_factory.py`,
-`ems/tests/test_price_factory.py`.
+`ems/tests/test_price_factory.py`, `ems/tests/test_carbon_factory.py`.
 
 ## Behaviour contracts (#114 slice a)
 
@@ -120,6 +124,6 @@ reads the registry instead of a hard-coded adapter list.
 ## Related
 
 - Ports: `ems/sources/ports.py` (re-exported from `ems/ports.py` and `ems/application/protocols.py`)
-- Registry: `ems/sources/registry.py` (forecast + price factories)
+- Registry: `ems/sources/registry.py` (forecast + price + carbon factories)
 - Composition root: `ems/connection.py::build_wiring` → `Wiring`
 - Design note: `docs/superpowers/specs/2026-07-29-source-ports-design.md`

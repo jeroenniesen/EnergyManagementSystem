@@ -220,7 +220,8 @@ SETTINGS_SCHEMA: tuple[SettingsField, ...] = (
         help="Forecast.Solar is keyless (default). Choose Solcast Hobbyist for real P10/P50/P90 "
         "percentiles — then enter the API key and rooftop resource id below. Solcast falls back "
         "to Forecast.Solar automatically when stale, unreachable, or over budget. Options come "
-        "from the forecast adapter registry (#113); `mock` is for EMS_SOURCES=mock / demos.",
+        "from the forecast adapter registry (#113). `mock` is the built-in synthetic daylight "
+        "curve (also used when live devices are off).",
         # Baseline list — schema_json / validation overlay live registry names via
         # `_registry_enum_options` so a new `@register_forecast_provider` appears without a
         # second hard-coded enum here.
