@@ -197,6 +197,12 @@ def _seed_from_config(cfg) -> dict:
     st_pat = os.environ.get("SMARTTHINGS_PAT")
     if st_pat:
         seed["consumers.smartthings.pat"] = st_pat
+    ha_url = os.environ.get("HA_URL")
+    if ha_url:
+        seed["consumers.ha.url"] = ha_url
+    ha_token = os.environ.get("HA_TOKEN")
+    if ha_token:
+        seed["consumers.ha.token"] = ha_token
     solcast_key = os.environ.get("SOLCAST_API_KEY")
     if solcast_key:
         seed["solar.solcast_api_key"] = solcast_key

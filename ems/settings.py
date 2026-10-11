@@ -719,10 +719,28 @@ SETTINGS_SCHEMA: tuple[SettingsField, ...] = (
         show_in_settings=False,
     ),
     SettingsField(
-        "consumers.ha.device_ids", "Home Assistant devices (opt-in)", "text",
+        "consumers.ha.enabled", "Home Assistant appliances", "bool", False, "consumers",
+        help="Turn on the Home Assistant appliance adapter (read-only entity status). "
+        "Needs URL + long-lived access token. Takes effect after Apply & restart.",
+        show_in_settings=False, applies="restart",
+    ),
+    SettingsField(
+        "consumers.ha.url", "Home Assistant URL", "text", "", "consumers",
+        help="Base URL of Home Assistant, e.g. http://homeassistant.local:8123. "
+        "Env: HA_URL. Takes effect after Apply & restart.",
+        show_in_settings=False, applies="restart",
+    ),
+    SettingsField(
+        "consumers.ha.token", "Home Assistant access token", "secret", "", "consumers",
+        help="Long-lived access token (HA profile → Security). Stored locally; never logged. "
+        "Env: HA_TOKEN. Takes effect after Apply & restart.",
+        show_in_settings=False, applies="restart",
+    ),
+    SettingsField(
+        "consumers.ha.device_ids", "Home Assistant entities (opt-in)", "text",
         default_device_ids_json(), "consumers",
-        help="JSON list of Home Assistant entity/device ids that may participate. "
-        "Default [] = none. Edited when the consumers UI lands (#224).",
+        help="JSON list of HA entity ids that may participate (e.g. switch.washer). "
+        "Default [] = none. Opt-in selection for the appliances insight.",
         show_in_settings=False,
     ),
     SettingsField(
@@ -887,6 +905,30 @@ def validate_settings(partial: Any) -> tuple[dict[str, Any], dict[str, str]]:
             if parsed.scheme not in ("http", "https") or not parsed.netloc:
                 errors[key] = "must be an http(s) URL with a host"
                 continue
+        if key == "consumers.ha.url" and result:
+            # #266 / #261: HA is typically LAN — allow private hosts, but require a sane
+            # http(s) base (no file:, empty host, userinfo, or path/query smuggling).
+            from urllib.parse import urlparse
+
+            parsed = urlparse(str(result).strip())
+            path = (parsed.path or "").rstrip("/")
+            if (
+                parsed.scheme not in ("http", "https")
+                or not parsed.netloc
+                or parsed.username is not None
+                or parsed.password is not None
+                or path not in ("",)
+                or parsed.query
+                or parsed.fragment
+            ):
+                errors[key] = (
+                    "must be an http(s) URL with a host only "
+                    "(no path, query, fragment, or credentials)"
+                )
+                continue
+            # Canonical base without trailing slash (adapter joins `/api/states`).
+            clean[key] = f"{parsed.scheme}://{parsed.netloc}"
+            continue
         if field.type == "secret" and result == "":
             continue  # blank secret = keep the existing value
         clean[key] = result
