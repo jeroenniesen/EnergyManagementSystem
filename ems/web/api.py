@@ -142,6 +142,7 @@ from ems.settings import (
     effective_settings,
     public_values,
     schema_json,
+    settings_migration_writes,
     validate_settings,
 )
 from ems.sky import sun_times
@@ -1485,7 +1486,12 @@ def create_app(
             # FULL keyset (defaults ∪ valid overrides), so no key ever disappears and a threadpool
             # GET can never observe a missing key. clear()+update() briefly exposed an empty dict
             # between the two statements → KeyError/500 for a concurrent reader.
-            settings_cache.update(effective_settings(await settings_store.all()))
+            stored_settings = await settings_store.all()
+            migration_writes = settings_migration_writes(stored_settings)
+            if migration_writes:
+                await settings_store.set_many(migration_writes)
+                stored_settings = await settings_store.all()
+            settings_cache.update(effective_settings(stored_settings))
             _apply_control_settings()
             _apply_site_settings()
             _apply_explainer_settings()
@@ -4737,8 +4743,8 @@ def create_app(
             fixed_feed_in_eur_per_kwh=float(
                 settings_cache.get("prices.fixed_feed_in_eur_per_kwh", 0.01)
             ),
-            tibber_total_includes_all=bool(
-                settings_cache.get("grid_fees.tibber_total_includes_all", False)
+            price_includes_all_fees=bool(
+                settings_cache.get("grid_fees.price_includes_all_fees", False)
             ),
             import_fee_eur_per_kwh=float(
                 settings_cache.get("grid_fees.import_fee_eur_per_kwh", 0.0)
@@ -4786,7 +4792,7 @@ def create_app(
         export_model = str(settings_cache.get("prices.export_price_model", "spot_minus_tax"))
         energy_tax = float(settings_cache.get("prices.energy_tax_eur_per_kwh", 0.13))
         fixed_feed_in = float(settings_cache.get("prices.fixed_feed_in_eur_per_kwh", 0.01))
-        includes_all = bool(settings_cache.get("grid_fees.tibber_total_includes_all", False))
+        includes_all = bool(settings_cache.get("grid_fees.price_includes_all_fees", False))
         import_fee = float(settings_cache.get("grid_fees.import_fee_eur_per_kwh", 0.0))
         export_fee = float(settings_cache.get("grid_fees.export_fee_eur_per_kwh", 0.0))
         q_end = min(nxt, now_local + timedelta(minutes=1))
@@ -4812,7 +4818,7 @@ def create_app(
                         export_price_model=export_model,
                         energy_tax_eur_per_kwh=energy_tax,
                         fixed_feed_in_eur_per_kwh=fixed_feed_in,
-                        tibber_total_includes_all=includes_all,
+                        price_includes_all_fees=includes_all,
                         import_fee_eur_per_kwh=import_fee,
                         export_fee_eur_per_kwh=export_fee,
                         window_start=cur, window_end=q_end,
@@ -4851,7 +4857,7 @@ def create_app(
         export_model = str(settings_cache.get("prices.export_price_model", "spot_minus_tax"))
         energy_tax = float(settings_cache.get("prices.energy_tax_eur_per_kwh", 0.13))
         fixed_feed_in = float(settings_cache.get("prices.fixed_feed_in_eur_per_kwh", 0.01))
-        includes_all = bool(settings_cache.get("grid_fees.tibber_total_includes_all", False))
+        includes_all = bool(settings_cache.get("grid_fees.price_includes_all_fees", False))
         import_fee = float(settings_cache.get("grid_fees.import_fee_eur_per_kwh", 0.0))
         export_fee = float(settings_cache.get("grid_fees.export_fee_eur_per_kwh", 0.0))
         batt_kw = {
@@ -4885,7 +4891,7 @@ def create_app(
                         day=day_label, degradation_eur_per_kwh=degradation,
                         export_price_model=export_model, energy_tax_eur_per_kwh=energy_tax,
                         fixed_feed_in_eur_per_kwh=fixed_feed_in,
-                        tibber_total_includes_all=includes_all,
+                        price_includes_all_fees=includes_all,
                         import_fee_eur_per_kwh=import_fee,
                         export_fee_eur_per_kwh=export_fee,
                         window_start=cur, window_end=min(nxt, q_end),
@@ -4902,7 +4908,7 @@ def create_app(
                         export_price_model=export_model,
                         energy_tax_eur_per_kwh=energy_tax,
                         fixed_feed_in_eur_per_kwh=fixed_feed_in,
-                        tibber_total_includes_all=includes_all,
+                        price_includes_all_fees=includes_all,
                         import_fee_eur_per_kwh=import_fee,
                         export_fee_eur_per_kwh=export_fee,
                         **batt_kw,
@@ -4948,7 +4954,7 @@ def create_app(
         export_model = str(settings_cache.get("prices.export_price_model", "spot_minus_tax"))
         energy_tax = float(settings_cache.get("prices.energy_tax_eur_per_kwh", 0.13))
         fixed_feed_in = float(settings_cache.get("prices.fixed_feed_in_eur_per_kwh", 0.01))
-        includes_all = bool(settings_cache.get("grid_fees.tibber_total_includes_all", False))
+        includes_all = bool(settings_cache.get("grid_fees.price_includes_all_fees", False))
         import_fee = float(settings_cache.get("grid_fees.import_fee_eur_per_kwh", 0.0))
         export_fee = float(settings_cache.get("grid_fees.export_fee_eur_per_kwh", 0.0))
         batt_kw = {
@@ -4973,7 +4979,7 @@ def create_app(
                         export_price_model=export_model,
                         energy_tax_eur_per_kwh=energy_tax,
                         fixed_feed_in_eur_per_kwh=fixed_feed_in,
-                        tibber_total_includes_all=includes_all,
+                        price_includes_all_fees=includes_all,
                         import_fee_eur_per_kwh=import_fee,
                         export_fee_eur_per_kwh=export_fee,
                         **batt_kw,

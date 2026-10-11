@@ -153,7 +153,7 @@ class EconomicSnapshotModel(APIResponseModel):
 
 
 class TariffPolicyModel(APIResponseModel):
-    tibber_total_includes_all: bool | None = None
+    price_includes_all_fees: bool | None = None
     import_fee_eur_per_kwh: float | None = None
     export_fee_eur_per_kwh: float | None = None
     basis: str | None = None

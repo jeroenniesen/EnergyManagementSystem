@@ -22,6 +22,7 @@ from ems.planner import economics
 from ems.planner.charge_need import stored_kwh_per_slot
 from ems.planner.schedule import SLOT, Plan, PlanSlot
 from ems.sources.prices import PriceSlot
+from ems.tariffs import setting_price_includes_all_fees
 
 _DH = 0.25  # hours per 15-min slot
 _EXPORT_MODES = frozenset({"peak_slice", "full_dump"})
@@ -56,7 +57,7 @@ class TradingConfig:
     usable_kwh: float = 10.0
     reserve_soc_pct: float = 10.0
     import_fee_eur_per_kwh: float = 0.0
-    tibber_total_includes_all: bool = False
+    price_includes_all_fees: bool = False
     assumed_house_load_w: float = _ASSUMED_HOUSE_LOAD_W
 
 
@@ -90,14 +91,14 @@ def trading_config_from_settings(s: dict) -> TradingConfig:
         reserve_soc_pct=float(s.get("battery.min_reserve_soc", 10.0)),
         import_fee_eur_per_kwh=(
             float(s.get("grid_fees.import_fee_eur_per_kwh", 0.0))
-            if not s.get("grid_fees.tibber_total_includes_all", False) else 0.0
+            if not setting_price_includes_all_fees(s) else 0.0
         ),
-        tibber_total_includes_all=bool(s.get("grid_fees.tibber_total_includes_all", False)),
+        price_includes_all_fees=setting_price_includes_all_fees(s),
     )
 
 
 def _import_price(p: PriceSlot, cfg: TradingConfig) -> float:
-    if cfg.tibber_total_includes_all:
+    if cfg.price_includes_all_fees:
         return p.eur_per_kwh
     return p.eur_per_kwh + cfg.import_fee_eur_per_kwh
 

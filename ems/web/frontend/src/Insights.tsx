@@ -50,7 +50,7 @@ type GasSummary = {
 type TariffPolicy = {
   import_fee_eur_per_kwh: number;
   export_fee_eur_per_kwh: number;
-  tibber_total_includes_all: boolean;
+  price_includes_all_fees: boolean;
 };
 type TariffWarning = { code: string; severity: string; message: string };
 
@@ -430,7 +430,7 @@ export function Insights({ canOperate = true }: { canOperate?: boolean } = {}) {
           )}
           {report.tariff_policy && (
             <p className="insights-tariff-note" data-testid="tariff-policy-note">
-              2027 tariff assumptions: import fees {report.tariff_policy.tibber_total_includes_all
+              2027 tariff assumptions: import fees {report.tariff_policy.price_includes_all_fees
                 ? "included in the provider total"
                 : `+€${report.tariff_policy.import_fee_eur_per_kwh.toFixed(3)}/kWh`}; export fees
               {` −€${report.tariff_policy.export_fee_eur_per_kwh.toFixed(3)}/kWh`}.

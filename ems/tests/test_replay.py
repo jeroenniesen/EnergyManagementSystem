@@ -560,7 +560,7 @@ def test_day_vs_auto_includes_import_fee_replay_cost_misses():
         raw, prices, day="2026-01-15",
         usable_kwh=10.0, max_charge_w=4000.0, max_discharge_w=4000.0,
         min_reserve_soc=0.0, degradation_eur_per_kwh=0.0,
-        tibber_total_includes_all=False, import_fee_eur_per_kwh=0.10,
+        price_includes_all_fees=False, import_fee_eur_per_kwh=0.10,
     )
     assert vs.auto_grid_cost_eur is not None and auto.cost_eur is not None
     assert vs.auto_grid_cost_eur > auto.cost_eur + 0.01  # fee visibly increases finance-priced cost

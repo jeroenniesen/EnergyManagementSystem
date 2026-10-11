@@ -127,9 +127,13 @@ SETTINGS_SCHEMA: tuple[SettingsField, ...] = (
         min=0.0, max=0.5, step=0.005, unit="€/kWh", advanced=True,
     ),
     SettingsField(
-        "grid_fees.tibber_total_includes_all", "Price includes all grid fees", "bool", False,
-        "prices", help="Enable when the provider's price already includes every import fee. "
-        "When off, the configured import fee is added for planning and reporting.", advanced=True,
+        "grid_fees.price_includes_all_fees", "Price includes all grid fees", "bool", False,
+        "prices",
+        help="Enable when the price provider's total already includes every import fee "
+        "(Tibber `total` usually does; a fixed tariff often does not). When off, the configured "
+        "import fee is added for planning and reporting. Legacy key "
+        "`grid_fees.tibber_total_includes_all` is accepted for one release (#119).",
+        advanced=True,
     ),
     SettingsField(
         "grid_fees.import_fee_eur_per_kwh", "Import grid fee", "number", 0.0, "prices",
@@ -907,16 +911,36 @@ def validate_settings(partial: Any) -> tuple[dict[str, Any], dict[str, str]]:
     """Validate a partial settings dict. Returns (clean, errors): only valid keys land in `clean`,
     every rejected key gets a human-readable message in `errors`. Unknown keys are errors.
 
-    A secret submitted as "" means "leave unchanged" — it is dropped from `clean` (not stored)."""
+    A secret submitted as "" means "leave unchanged" — it is dropped from `clean` (not stored).
+    Legacy ``grid_fees.tibber_total_includes_all`` is accepted as an alias for
+    ``grid_fees.price_includes_all_fees`` for one release (#119); the canonical key wins if both
+    are present."""
     if not isinstance(partial, dict):
         return {}, {"_": "expected a JSON object of setting keys to values"}
+    from ems.tariffs import (
+        LEGACY_PRICE_INCLUDES_ALL_FEES_KEY,
+        PRICE_INCLUDES_ALL_FEES_KEY,
+    )
+
     clean: dict[str, Any] = {}
     errors: dict[str, str] = {}
     for key, value in partial.items():
-        field = SETTINGS_BY_KEY.get(key)
+        canonical = (
+            PRICE_INCLUDES_ALL_FEES_KEY
+            if key == LEGACY_PRICE_INCLUDES_ALL_FEES_KEY
+            else key
+        )
+        # Canonical already set from the new key — ignore a redundant legacy write.
+        if (
+            key == LEGACY_PRICE_INCLUDES_ALL_FEES_KEY
+            and PRICE_INCLUDES_ALL_FEES_KEY in clean
+        ):
+            continue
+        field = SETTINGS_BY_KEY.get(canonical)
         if field is None:
             errors[key] = "unknown setting"
             continue
+        key = canonical
         ok, result = _coerce(field, value)
         if not ok:
             errors[key] = result
@@ -966,6 +990,23 @@ def validate_settings(partial: Any) -> tuple[dict[str, Any], dict[str, str]]:
     return clean, errors
 
 
+def settings_migration_writes(stored: Any) -> dict[str, Any]:
+    """Persist-side migrations for renamed keys. Empty when nothing to write (#119)."""
+    if not isinstance(stored, dict):
+        return {}
+    from ems.tariffs import (
+        LEGACY_PRICE_INCLUDES_ALL_FEES_KEY,
+        PRICE_INCLUDES_ALL_FEES_KEY,
+    )
+
+    if (
+        PRICE_INCLUDES_ALL_FEES_KEY not in stored
+        and LEGACY_PRICE_INCLUDES_ALL_FEES_KEY in stored
+    ):
+        return {PRICE_INCLUDES_ALL_FEES_KEY: stored[LEGACY_PRICE_INCLUDES_ALL_FEES_KEY]}
+    return {}
+
+
 def effective_settings(stored: Any) -> dict[str, Any]:
     """Defaults overlaid by the valid subset of `stored`. Invalid/unknown stored values are
     silently dropped on read (tolerant) — a bad persisted row must never break the dashboard.
@@ -973,9 +1014,13 @@ def effective_settings(stored: Any) -> dict[str, Any]:
     #197: an install that already stored `control.grid_limit_w` without `control.grid_fuse` is
     treated as confirmed (infer preset or custom from watts). A missing watts row stays `unset`
     so we never pretend the unintentional 1×25 schema default was a deliberate choice.
+
+    #119: legacy ``grid_fees.tibber_total_includes_all`` overlays the neutral key when present.
     """
     eff = defaults()
-    clean, _errors = validate_settings(stored if isinstance(stored, dict) else {})
+    raw = dict(stored) if isinstance(stored, dict) else {}
+    raw.update(settings_migration_writes(raw))
+    clean, _errors = validate_settings(raw)
     if "control.grid_fuse" not in clean and "control.grid_limit_w" in clean:
         clean["control.grid_fuse"] = fuse_from_watts(float(clean["control.grid_limit_w"]))
     fuse = clean.get("control.grid_fuse", eff["control.grid_fuse"])

@@ -33,7 +33,7 @@ energy-flow solar-first intuition. Comparison baseline stays "without a battery"
 **EMS vs battery AUTO (#131).** `day_vs_auto` answers "is EMS worth it vs the vendor default?" by
 simulating Indevolt self-consumption (`auto_selfuse`) on the same reconstructed load + solar, then
 pricing BOTH the measured meter and the simulation on the same quarter-hour basis via
-`EconomicSnapshot.from_tariff_policy` (import fee / `tibber_total_includes_all` included) — not via
+`EconomicSnapshot.from_tariff_policy` (import fee / `price_includes_all_fees` included) — not via
 replay's simpler spot×kWh cost. The simulation is a model (fixed η=0.90, no 50 W floor, no dead
 zone or standby loss); EV charging sits inside reconstructed load while EMS would hold the battery.
 Computed per request only — never written into `daily_finance`.
@@ -130,7 +130,7 @@ def day_finance(
     export_price_model: str = "net_metering",
     energy_tax_eur_per_kwh: float = 0.13,
     fixed_feed_in_eur_per_kwh: float = 0.01,
-    tibber_total_includes_all: bool = False,
+    price_includes_all_fees: bool = False,
     import_fee_eur_per_kwh: float = 0.0,
     export_fee_eur_per_kwh: float = 0.0,
     window_start: datetime | None = None,
@@ -184,7 +184,7 @@ def day_finance(
     # Keep all measured cost calculations on the same normalized economic boundary used by
     # planning and savings.  Tibber totals already include the import fee, so suppress it here.
     tariff_policy = TariffPolicy(
-        import_fee_eur_per_kwh=0.0 if tibber_total_includes_all else import_fee_eur_per_kwh,
+        import_fee_eur_per_kwh=0.0 if price_includes_all_fees else import_fee_eur_per_kwh,
         export_fee_eur_per_kwh=export_fee_eur_per_kwh,
     )
     for segment in segments:
@@ -332,7 +332,7 @@ def _price_grid_cost(
     export_price_model: str,
     energy_tax_eur_per_kwh: float,
     fixed_feed_in_eur_per_kwh: float,
-    tibber_total_includes_all: bool,
+    price_includes_all_fees: bool,
     import_fee_eur_per_kwh: float,
     export_fee_eur_per_kwh: float,
 ) -> tuple[float | None, float]:
@@ -342,7 +342,7 @@ def _price_grid_cost(
     discharge total (priced-window discharge for honesty with day_finance's `dis_priced` basis when
     the caller passes only priced-slot discharge)."""
     tariff_policy = TariffPolicy(
-        import_fee_eur_per_kwh=0.0 if tibber_total_includes_all else import_fee_eur_per_kwh,
+        import_fee_eur_per_kwh=0.0 if price_includes_all_fees else import_fee_eur_per_kwh,
         export_fee_eur_per_kwh=export_fee_eur_per_kwh,
     )
     cost = 0.0
@@ -450,7 +450,7 @@ def day_vs_auto(
     export_price_model: str = "net_metering",
     energy_tax_eur_per_kwh: float = 0.13,
     fixed_feed_in_eur_per_kwh: float = 0.01,
-    tibber_total_includes_all: bool = False,
+    price_includes_all_fees: bool = False,
     import_fee_eur_per_kwh: float = 0.0,
     export_fee_eur_per_kwh: float = 0.0,
 ) -> DayVsAuto:
@@ -490,7 +490,7 @@ def day_vs_auto(
         export_price_model=export_price_model,
         energy_tax_eur_per_kwh=energy_tax_eur_per_kwh,
         fixed_feed_in_eur_per_kwh=fixed_feed_in_eur_per_kwh,
-        tibber_total_includes_all=tibber_total_includes_all,
+        price_includes_all_fees=price_includes_all_fees,
         import_fee_eur_per_kwh=import_fee_eur_per_kwh,
         export_fee_eur_per_kwh=export_fee_eur_per_kwh,
     )
@@ -514,7 +514,7 @@ def day_vs_auto(
         export_price_model=export_price_model,
         energy_tax_eur_per_kwh=energy_tax_eur_per_kwh,
         fixed_feed_in_eur_per_kwh=fixed_feed_in_eur_per_kwh,
-        tibber_total_includes_all=tibber_total_includes_all,
+        price_includes_all_fees=price_includes_all_fees,
         import_fee_eur_per_kwh=import_fee_eur_per_kwh,
         export_fee_eur_per_kwh=export_fee_eur_per_kwh,
     )

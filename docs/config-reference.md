@@ -47,7 +47,7 @@ Legend: **UI** = also editable from the web UI (overlays the file). **CONFIRM** 
 | `resolution` | enum | quarter_hourly | planner granularity (auto-expands hourly→4×15min) |
 | `cache_immutable_slots` | bool | true | never re-fetch past slots |
 | `tomorrow_required_by` | HH:MM | 15:00 | after this, missing tomorrow ⇒ stale |
-| `grid_fees.tibber_total_includes_all` | bool | false · **CONFIRM** | whether to add extra fees |
+| `grid_fees.price_includes_all_fees` | bool | false · **CONFIRM** | provider total already includes import fees (legacy alias: `grid_fees.tibber_total_includes_all`, one release) |
 | `grid_fees.import_fee_eur_per_kwh` | €/kWh | 0.0 | added to import price when the provider total excludes it |
 | `grid_fees.export_fee_eur_per_kwh` | €/kWh | 0.0 | deducted from export value in reporting/planning diagnostics |
 | `export_price_model` | enum | `spot_minus_tax`\|`net_metering`\|`fixed` = **spot_minus_tax** | how each exported kWh is valued (`economics.export_value`, §8.3/§8.3a): `spot_minus_tax`=default 2027-ready (may go negative, unclamped); `net_metering`=full price (today's saldering); `fixed`=flat feed-in. **UI** |

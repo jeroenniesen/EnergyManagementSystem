@@ -592,7 +592,7 @@ prices:
   cache_immutable_slots: true         # past slots never re-fetched (Tibber prices are immutable)
   tomorrow_required_by: "15:00"       # if tomorrow missing past this -> stale -> fallback
   grid_fees:
-    tibber_total_includes_all: false  # CONFIRM@M0 for your tariff
+    price_includes_all_fees: false  # CONFIRM@M0 for your tariff
     import_fee_eur_per_kwh: 0.0       # added on top if above is false
     export_fee_eur_per_kwh: 0.0
   export_price_model: spot_minus_tax  # spot_minus_tax (default, 2027-ready) | net_metering (saldering) | fixed

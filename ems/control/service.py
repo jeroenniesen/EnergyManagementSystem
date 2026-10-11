@@ -74,6 +74,7 @@ from ems.planner.trading import trading_config_from_settings
 from ems.planner.validator import PlanValidation
 from ems.price_quality import PriceHorizonStatus, validate_price_horizon
 from ems.sources.battery import BatteryWriteUnconfirmed, intent_to_mode
+from ems.tariffs import setting_price_includes_all_fees
 
 _log = logging.getLogger("ems.recorder")
 
@@ -737,9 +738,11 @@ class ControlService:
             charge_slots=s["planner.charge_slots"],
             discharge_slots=s["planner.discharge_slots"],
             negative_price_soak=s["planner.negative_price_soak"],
-            import_fee_eur_per_kwh=s.get("grid_fees.import_fee_eur_per_kwh", 0.0)
-            if not s.get("grid_fees.tibber_total_includes_all", False) else 0.0,
-            tibber_total_includes_all=s.get("grid_fees.tibber_total_includes_all", False),
+            import_fee_eur_per_kwh=(
+                s.get("grid_fees.import_fee_eur_per_kwh", 0.0)
+                if not setting_price_includes_all_fees(s) else 0.0
+            ),
+            price_includes_all_fees=setting_price_includes_all_fees(s),
         )
 
     def planner_cfg(self) -> PlannerConfig:

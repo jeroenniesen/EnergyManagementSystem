@@ -535,11 +535,11 @@ def test_day_vs_auto_prices_import_fee_like_day_finance_not_replay_spot():
     prices = _prices({12: 0.20})
     vs_fee = day_vs_auto(
         idle, prices, day="2026-06-28", min_reserve_soc=0.0,
-        tibber_total_includes_all=False, import_fee_eur_per_kwh=0.05,
+        price_includes_all_fees=False, import_fee_eur_per_kwh=0.05,
     )
     vs_spot = day_vs_auto(
         idle, prices, day="2026-06-28", min_reserve_soc=0.0,
-        tibber_total_includes_all=False, import_fee_eur_per_kwh=0.0,
+        price_includes_all_fees=False, import_fee_eur_per_kwh=0.0,
     )
     assert vs_fee.has_sim and vs_spot.has_sim
     # Idle both worlds → saved ≈ 0 either way; fee path still builds snapshots (no crash).
@@ -548,12 +548,12 @@ def test_day_vs_auto_prices_import_fee_like_day_finance_not_replay_spot():
     # Non-idle import day: fee increases actual AND auto grid cost (replay would miss this).
     vs_imp = day_vs_auto(
         rows, prices, day="2026-06-28", min_reserve_soc=100.0,  # reserve blocks AUTO discharge
-        tibber_total_includes_all=False, import_fee_eur_per_kwh=0.05,
+        price_includes_all_fees=False, import_fee_eur_per_kwh=0.05,
         degradation_eur_per_kwh=0.0,
     )
     vs_imp0 = day_vs_auto(
         rows, prices, day="2026-06-28", min_reserve_soc=100.0,
-        tibber_total_includes_all=False, import_fee_eur_per_kwh=0.0,
+        price_includes_all_fees=False, import_fee_eur_per_kwh=0.0,
         degradation_eur_per_kwh=0.0,
     )
     assert vs_imp.actual_cost_eur is not None and vs_imp0.actual_cost_eur is not None
