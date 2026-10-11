@@ -1185,7 +1185,7 @@ test.describe("Insights: sticky in-page section nav", () => {
 
     await page.mouse.wheel(0, 900);
     await expect(nav).toBeVisible();
-    for (const id of ["week", "scores", "energy", "money", "whatif"]) {
+    for (const id of ["week", "scores", "energy", "money", "appliances", "whatif"]) {
       await expect(page.getByTestId(`insights-nav-${id}`)).toBeVisible();
     }
     // REPORT (the base fixture) has no gas data -> no Gas link even though the nav is showing.

@@ -351,10 +351,13 @@ export function Insights({ canOperate = true }: { canOperate?: boolean } = {}) {
     sections.push({ id: "insights-sec-energy", label: "Energy" });
     if (report.gas) sections.push({ id: "insights-sec-gas", label: "Gas" });
     sections.push({ id: "insights-sec-money", label: "Money" });
+  }
+  // #224: after Insights h2 (heading-order a11y); before What-if so sticky nav
+  // still treats What-if as the last section when data is present.
+  sections.push({ id: "insights-sec-appliances", label: "Appliances" });
+  if (report && hasData && f) {
     sections.push({ id: "insights-sec-whatif", label: "What-if" });
   }
-  // #224: after Insights h2 so heading-order stays h2→h3 (a11y). Always present.
-  sections.push({ id: "insights-sec-appliances", label: "Appliances" });
   const { activeId, visible } = useSectionNav(sections);
 
   return (
