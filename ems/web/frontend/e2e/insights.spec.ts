@@ -53,6 +53,53 @@ function shiftDay(d: string, delta: number): string {
 }
 
 test.describe("Insights", () => {
+  // #224 / epic #222: read-only appliances card (mock API — no start/stop controls).
+  test("shows a read-only appliances card with selected device status", async ({ page }) => {
+    await page.route("**/api/report**", (route) =>
+      route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(REPORT) }),
+    );
+    await page.route("**/api/consumers**", (route) =>
+      route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          title: "Appliances",
+          summary: "1 selected appliance.",
+          read_only: true,
+          devices: [
+            {
+              id: "mock-washer-1",
+              name: "Mock washer",
+              kind: "washer",
+              integration: "mock",
+              opted_in: true,
+              status: {
+                state: "idle",
+                state_label: "Idle — ready when you are",
+                power_w: 450,
+                energy_kwh: 1.25,
+                can_start: true,
+                observed_at: null,
+                detail: null,
+              },
+            },
+          ],
+        }),
+      }),
+    );
+    await page.goto("/");
+    await page.getByTestId("nav-insights").click();
+    const card = page.getByTestId("consumers-card");
+    await expect(card).toBeVisible();
+    const row = page.getByTestId("consumer-mock-washer-1");
+    await expect(row).toBeVisible();
+    await expect(row).toContainText("Washing machine");
+    await expect(page.getByTestId("consumer-mock-washer-1-state")).toContainText("Idle");
+    await expect(page.getByTestId("consumer-mock-washer-1-power")).toContainText("450 W");
+    await expect(page.getByTestId("consumer-mock-washer-1-energy")).toContainText("1.25 kWh");
+    await expect(card.getByRole("button", { name: /start|stop/i })).toHaveCount(0);
+  });
+
   test("shows the three scores and the energy-flow amounts", async ({ page }) => {
     await page.route("**/api/report**", (route) =>
       route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(REPORT) }),
@@ -1141,6 +1188,9 @@ test.describe("Insights: sticky in-page section nav", () => {
     for (const id of ["week", "scores", "energy", "money", "whatif"]) {
       await expect(page.getByTestId(`insights-nav-${id}`)).toBeVisible();
     }
+    // #224 Appliances card is on the page but not a sticky-nav chip (short last
+    // section would steal aria-current from What-if at the bottom).
+    await expect(page.getByTestId("insights-nav-appliances")).toHaveCount(0);
     // REPORT (the base fixture) has no gas data -> no Gas link even though the nav is showing.
     await expect(page.getByTestId("insights-nav-gas")).toHaveCount(0);
 

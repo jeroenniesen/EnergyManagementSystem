@@ -5,6 +5,7 @@
 import { useEffect, useState } from "react";
 
 import { apiFetch } from "./auth";
+import { ConsumersCard } from "./ConsumersCard";
 import { EnergyBehavior, type SeriesBucket } from "./EnergyBehavior";
 import { FinanceSection } from "./FinanceSection";
 import { HeatingAdvice } from "./HeatingAdvice";
@@ -352,6 +353,9 @@ export function Insights({ canOperate = true }: { canOperate?: boolean } = {}) {
     sections.push({ id: "insights-sec-money", label: "Money" });
     sections.push({ id: "insights-sec-whatif", label: "What-if" });
   }
+  // #224 Appliances card stays on the page (below Insights h2 for heading-order) but is
+  // intentionally omitted from sticky nav: a short last section steals aria-current at the
+  // bottom (useSectionNav bottom rule) so What-if can never become current.
   const { activeId, visible } = useSectionNav(sections);
 
   return (
@@ -555,11 +559,18 @@ export function Insights({ canOperate = true }: { canOperate?: boolean } = {}) {
           <div id="insights-sec-money">
             <FinanceSection period={period} anchor={anchor} />
           </div>
-
-          <div id="insights-sec-whatif">
-            <WhatIf />
-          </div>
         </>
+      )}
+
+      {/* After Insights h2 (heading-order); before What-if when present (#224). */}
+      <div id="insights-sec-appliances">
+        <ConsumersCard />
+      </div>
+
+      {report && hasData && f && (
+        <div id="insights-sec-whatif">
+          <WhatIf />
+        </div>
       )}
     </section>
   );
