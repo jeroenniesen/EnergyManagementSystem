@@ -80,22 +80,26 @@ def propose_start_window(
     start, finish = window[0].start, window[-1].start + SLOT
     avg = best_sum / duration_slots
     duration_label = _fmt_duration(duration_slots)
-    reason = (
-        f"Cheapest {duration_label} window from the day-ahead prices "
-        f"(avg €{avg:.2f}/kWh)."
-    )
     out: dict = {
         "start": start.isoformat(),
         "end": finish.isoformat(),
         "slots": duration_slots,
         "avg_eur_per_kwh": round(avg, 4),
-        "reason": reason,
+        "reason": (
+            f"Cheapest {duration_label} window from the day-ahead prices "
+            f"(avg €{avg:.2f}/kWh)."
+        ),
     }
     if assumed_kwh is not None and assumed_kwh > 0:
         # Spread assumed energy evenly across the window (same as EV advisor).
+        # Assumed kWh is a fixed homeowner guess — disclose it in the reason.
         kwh_per_slot = assumed_kwh / duration_slots
         out["est_cost_eur"] = round(best_sum * kwh_per_slot, 2)
         out["assumed_kwh"] = assumed_kwh
+        out["reason"] = (
+            f"Cheapest {duration_label} window from the day-ahead prices "
+            f"(avg €{avg:.2f}/kWh, assuming {assumed_kwh:g} kWh)."
+        )
     return out
 
 

@@ -76,11 +76,18 @@ function formatEnergy(kwh: number | null): string | null {
   return `${kwh.toFixed(2)} kWh`;
 }
 
+/** Weekday + 24h clock — windows reach up to 24h ahead (same shape as CarCard). */
 function formatWindowTime(iso: string): string {
   try {
     const d = new Date(iso);
     if (Number.isNaN(d.getTime())) return iso;
-    return d.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" });
+    const day = d.toLocaleDateString([], { weekday: "short" });
+    const time = d.toLocaleTimeString([], {
+      hour: "2-digit",
+      minute: "2-digit",
+      hour12: false,
+    });
+    return `${day} ${time}`;
   } catch {
     return iso;
   }
@@ -197,8 +204,11 @@ export function ConsumersCard() {
                       <strong>{formatWindowTime(win.start)}</strong>
                       {" – "}
                       <strong>{formatWindowTime(win.end)}</strong>
+                      {win.assumed_kwh != null && Number.isFinite(win.assumed_kwh) && (
+                        <> · {win.assumed_kwh} kWh</>
+                      )}
                       {win.est_cost_eur != null && (
-                        <> · ~€{win.est_cost_eur.toFixed(2)}</>
+                        <> · ≈€{win.est_cost_eur.toFixed(2)}</>
                       )}
                     </p>
                     <p className="consumers-advice-reason">{win.reason}</p>
@@ -225,7 +235,6 @@ export function ConsumersCard() {
       <p className="consumers-footnote" data-testid="consumers-footnote">
         {advice?.footnote
           ?? "Read-only view of selected appliances. EMS does not control them from this page."}
-        {advice?.dry_run && " Watch only is on."}
       </p>
     </section>
   );

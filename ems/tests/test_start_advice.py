@@ -39,7 +39,9 @@ def test_cheapest_contiguous_window_beats_lone_cheap_slot():
     assert advice["end"] == (BASE + timedelta(minutes=60)).isoformat()
     assert advice["avg_eur_per_kwh"] == 0.20
     assert advice["est_cost_eur"] == 0.20  # (0.20+0.20) * 0.5 kWh/slot
+    assert advice["assumed_kwh"] == 1.0
     assert "Cheapest" in advice["reason"]
+    assert "assuming 1 kWh" in advice["reason"]
 
 
 def test_earliest_window_wins_ties():
@@ -162,13 +164,44 @@ def test_api_start_advice_dry_run_default(tmp_path):
     assert body["dry_run"] is True
     assert body["live_armed"] is False
     footnote = body["footnote"].lower()
-    assert "won’t start" in footnote or "wont start" in footnote
+    assert "advice only" in footnote
+    assert "nothing changes automatically" in footnote
+    assert "arm" not in footnote
     assert body["enabled"] is True
     assert len(body["advice"]) == 1
     tip = body["advice"][0]
     assert tip["eligible"] is True
     assert tip["window"] is not None
     assert tip["window"]["slots"] == 4
+    assert tip["window"]["assumed_kwh"] == 1.0
+    assert "assuming 1 kwh" in tip["window"]["reason"].lower()
+
+
+def test_api_start_advice_dry_run_off_still_unarmed(tmp_path):
+    """Turning consumers.dry_run off must not arm live start or invent a start path."""
+    db = str(tmp_path / "ems.sqlite")
+    app = create_app(
+        MockSource(),
+        dry_run=True,
+        config_dry_run=False,
+        dev_mode="mock",
+        store=HistoryStore(db),
+        settings_store=SettingsStore(db),
+        consumer_sources=[MockConsumerSource()],
+    )
+    with TestClient(app) as c:
+        assert c.post(
+            "/api/settings",
+            json={
+                MOCK_DEVICE_IDS_KEY: '["mock-washer-1"]',
+                "consumers.dry_run": False,
+            },
+        ).status_code == 200
+        body = c.get("/api/consumers/start-advice").json()
+    assert body["dry_run"] is False
+    assert body["live_armed"] is False
+    assert "arm" not in body["footnote"].lower()
+    assert not hasattr(MockConsumerSource(), "start")
 
 
 def test_api_start_advice_respects_disabled_flag(tmp_path):

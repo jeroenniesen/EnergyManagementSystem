@@ -82,13 +82,14 @@ test.describe("Insights", () => {
                 avg_eur_per_kwh: 0.08,
                 est_cost_eur: 0.08,
                 assumed_kwh: 1.0,
-                reason: "Cheapest 1h window from the day-ahead prices (avg €0.08/kWh).",
+                reason:
+                  "Cheapest 1h window from the day-ahead prices (avg €0.08/kWh, assuming 1 kWh).",
               },
               skip_reason: null,
             },
           ],
           footnote:
-            "Advice only — EMS won’t start your appliance until you turn off watch-only and arm live delayed start.",
+            "Advice only — nothing changes automatically. EMS does not start or stop appliances from this page.",
         }),
       }),
     );
@@ -134,10 +135,14 @@ test.describe("Insights", () => {
     await expect(page.getByTestId("consumer-mock-washer-1-state")).toContainText("Idle");
     await expect(page.getByTestId("consumer-mock-washer-1-power")).toContainText("450 W");
     await expect(page.getByTestId("consumer-mock-washer-1-energy")).toContainText("1.25 kWh");
-    await expect(page.getByTestId("consumer-mock-washer-1-start-advice")).toContainText(
-      "Suggested start",
+    const tip = page.getByTestId("consumer-mock-washer-1-start-advice");
+    await expect(tip).toContainText("Suggested start");
+    await expect(tip).toContainText("1 kWh");
+    await expect(tip).toContainText("≈€0.08");
+    await expect(page.getByTestId("consumers-footnote")).toContainText(
+      "nothing changes automatically",
     );
-    await expect(page.getByTestId("consumers-footnote")).toContainText("Advice only");
+    await expect(page.getByTestId("consumers-footnote")).not.toContainText(/arm live/i);
     await expect(card.getByRole("button", { name: /start|stop/i })).toHaveCount(0);
   });
 

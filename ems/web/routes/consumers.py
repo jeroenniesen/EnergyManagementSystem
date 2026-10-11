@@ -161,8 +161,8 @@ def gather_start_advice(
             "summary": "Start-window advice is turned off in settings.",
             "advice": [],
             "footnote": (
-                "Advice only — EMS won’t start your appliance until you turn off "
-                "watch-only and arm live delayed start."
+                "Advice only — nothing changes automatically. "
+                "EMS does not start or stop appliances from this page."
             ),
         }
 
@@ -231,8 +231,8 @@ def gather_start_advice(
         "summary": summary,
         "advice": advice_out,
         "footnote": (
-            "Advice only — EMS won’t start your appliance until you turn off "
-            "watch-only and arm live delayed start."
+            "Advice only — nothing changes automatically. "
+            "EMS does not start or stop appliances from this page."
         ),
     }
 
