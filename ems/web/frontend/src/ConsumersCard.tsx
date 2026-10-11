@@ -28,6 +28,35 @@ type ConsumersResp = {
   devices: ConsumerDevice[];
 };
 
+type StartWindow = {
+  start: string;
+  end: string;
+  slots: number;
+  avg_eur_per_kwh: number;
+  est_cost_eur?: number;
+  assumed_kwh?: number;
+  reason: string;
+};
+
+type StartAdviceEntry = {
+  device_id: string;
+  device_name: string;
+  kind: string;
+  eligible: boolean;
+  window: StartWindow | null;
+  skip_reason: string | null;
+};
+
+type StartAdviceResp = {
+  title: string;
+  enabled: boolean;
+  dry_run: boolean;
+  live_armed: boolean;
+  summary: string;
+  advice: StartAdviceEntry[];
+  footnote: string;
+};
+
 const KIND_LABEL: Record<string, string> = {
   washer: "Washing machine",
   dryer: "Dryer",
@@ -47,20 +76,46 @@ function formatEnergy(kwh: number | null): string | null {
   return `${kwh.toFixed(2)} kWh`;
 }
 
-/** Read-only appliances insight for Insights (#224 / epic #222). No start/stop. */
+/** Weekday + 24h clock — windows reach up to 24h ahead (same shape as CarCard). */
+function formatWindowTime(iso: string): string {
+  try {
+    const d = new Date(iso);
+    if (Number.isNaN(d.getTime())) return iso;
+    const day = d.toLocaleDateString([], { weekday: "short" });
+    const time = d.toLocaleTimeString([], {
+      hour: "2-digit",
+      minute: "2-digit",
+      hour12: false,
+    });
+    return `${day} ${time}`;
+  } catch {
+    return iso;
+  }
+}
+
+/** Appliances insight + dry-run start-window advice (#224 / #227 / epic #222). */
 export function ConsumersCard() {
   const [data, setData] = useState<ConsumersResp | null>(null);
+  const [advice, setAdvice] = useState<StartAdviceResp | null>(null);
   const [error, setError] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
     (async () => {
       try {
-        const r = await apiFetch("/api/consumers");
-        if (!r.ok) throw new Error(`HTTP ${r.status}`);
-        const body = (await r.json()) as ConsumersResp;
+        const [rDevices, rAdvice] = await Promise.all([
+          apiFetch("/api/consumers"),
+          apiFetch("/api/consumers/start-advice"),
+        ]);
+        if (!rDevices.ok) throw new Error(`HTTP ${rDevices.status}`);
+        const body = (await rDevices.json()) as ConsumersResp;
+        let adviceBody: StartAdviceResp | null = null;
+        if (rAdvice.ok) {
+          adviceBody = (await rAdvice.json()) as StartAdviceResp;
+        }
         if (!cancelled) {
           setData(body);
+          setAdvice(adviceBody);
           setError(false);
         }
       } catch {
@@ -91,6 +146,10 @@ export function ConsumersCard() {
     );
   }
 
+  const adviceById = new Map(
+    (advice?.advice ?? []).map((a) => [a.device_id, a] as const),
+  );
+
   return (
     <section className="consumers-card" data-testid="consumers-card">
       <h3 className="card-title flow-title">{data.title}</h3>
@@ -107,6 +166,8 @@ export function ConsumersCard() {
             const st = d.status;
             const power = formatPower(st?.power_w ?? null);
             const energy = formatEnergy(st?.energy_kwh ?? null);
+            const tip = adviceById.get(d.id);
+            const win = tip?.window;
             return (
               <li
                 key={d.id}
@@ -133,13 +194,47 @@ export function ConsumersCard() {
                 {st?.detail && (
                   <p className="consumers-detail">{st.detail}</p>
                 )}
+                {win && (
+                  <div
+                    className="consumers-advice"
+                    data-testid={`consumer-${d.id}-start-advice`}
+                  >
+                    <p className="consumers-advice-window">
+                      Suggested start{" "}
+                      <strong>{formatWindowTime(win.start)}</strong>
+                      {" – "}
+                      <strong>{formatWindowTime(win.end)}</strong>
+                      {win.assumed_kwh != null && Number.isFinite(win.assumed_kwh) && (
+                        <> · {win.assumed_kwh} kWh</>
+                      )}
+                      {win.est_cost_eur != null && (
+                        <> · ≈€{win.est_cost_eur.toFixed(2)}</>
+                      )}
+                    </p>
+                    <p className="consumers-advice-reason">{win.reason}</p>
+                  </div>
+                )}
+                {!win && tip?.skip_reason && (
+                  <p
+                    className="consumers-advice-skip"
+                    data-testid={`consumer-${d.id}-start-skip`}
+                  >
+                    {tip.skip_reason}
+                  </p>
+                )}
               </li>
             );
           })}
         </ul>
       )}
-      <p className="consumers-footnote">
-        Read-only view of selected appliances. EMS does not control them from this page.
+      {advice?.summary && data.devices.length > 0 && (
+        <p className="consumers-advice-summary" data-testid="consumers-advice-summary">
+          {advice.summary}
+        </p>
+      )}
+      <p className="consumers-footnote" data-testid="consumers-footnote">
+        {advice?.footnote
+          ?? "Read-only view of selected appliances. EMS does not control them from this page."}
       </p>
     </section>
   );

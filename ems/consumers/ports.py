@@ -14,9 +14,8 @@ from ems.consumers.models import ConsumerDevice, ConsumerStatus
 class ConsumerPort(Protocol):
     """List / status / optional power-energy / delayed-start capability.
 
-    ``start`` is optional on the port for later slices (#227); this slice only exposes
-    whether delayed start is available via status/capabilities. Concrete start methods
-    land with the planner dry-run slice — not here.
+    ``start`` stays off this Protocol until live delayed-start arming ships. #227 adds
+    advisory start-window proposals only (dry-run default) — never calls a vendor start.
     """
 
     @property
