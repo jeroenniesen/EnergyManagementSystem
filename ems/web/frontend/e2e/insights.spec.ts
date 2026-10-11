@@ -53,13 +53,50 @@ function shiftDay(d: string, delta: number): string {
 }
 
 test.describe("Insights", () => {
-  // #224 / epic #222: read-only appliances card (mock API — no start/stop controls).
+  // #224 / #227 / epic #222: appliances card + dry-run start-window advice (no start/stop).
   test("shows a read-only appliances card with selected device status", async ({ page }) => {
     await page.route("**/api/report**", (route) =>
       route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(REPORT) }),
     );
-    await page.route("**/api/consumers**", (route) =>
+    // Register start-advice before the broader /api/consumers mock so Playwright matches it first.
+    await page.route("**/api/consumers/start-advice**", (route) =>
       route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          title: "Start window advice",
+          enabled: true,
+          dry_run: true,
+          live_armed: false,
+          summary: "1 start window from day-ahead prices.",
+          advice: [
+            {
+              device_id: "mock-washer-1",
+              device_name: "Mock washer",
+              kind: "washer",
+              eligible: true,
+              window: {
+                start: "2026-07-11T02:00:00+00:00",
+                end: "2026-07-11T03:00:00+00:00",
+                slots: 4,
+                avg_eur_per_kwh: 0.08,
+                est_cost_eur: 0.08,
+                assumed_kwh: 1.0,
+                reason: "Cheapest 1h window from the day-ahead prices (avg €0.08/kWh).",
+              },
+              skip_reason: null,
+            },
+          ],
+          footnote:
+            "Advice only — EMS won’t start your appliance until you turn off watch-only and arm live delayed start.",
+        }),
+      }),
+    );
+    await page.route("**/api/consumers**", (route) => {
+      if (route.request().url().includes("/start-advice")) {
+        return route.fallback();
+      }
+      return route.fulfill({
         status: 200,
         contentType: "application/json",
         body: JSON.stringify({
@@ -85,8 +122,8 @@ test.describe("Insights", () => {
             },
           ],
         }),
-      }),
-    );
+      });
+    });
     await page.goto("/");
     await page.getByTestId("nav-insights").click();
     const card = page.getByTestId("consumers-card");
@@ -97,6 +134,10 @@ test.describe("Insights", () => {
     await expect(page.getByTestId("consumer-mock-washer-1-state")).toContainText("Idle");
     await expect(page.getByTestId("consumer-mock-washer-1-power")).toContainText("450 W");
     await expect(page.getByTestId("consumer-mock-washer-1-energy")).toContainText("1.25 kWh");
+    await expect(page.getByTestId("consumer-mock-washer-1-start-advice")).toContainText(
+      "Suggested start",
+    );
+    await expect(page.getByTestId("consumers-footnote")).toContainText("Advice only");
     await expect(card.getByRole("button", { name: /start|stop/i })).toHaveCount(0);
   });
 
