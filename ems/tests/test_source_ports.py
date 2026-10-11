@@ -5,6 +5,9 @@ drifting away from the composition contracts.
 """
 from zoneinfo import ZoneInfo
 
+from ems.consumers.mock import MockConsumerSource
+from ems.consumers.ports import ConsumerPort
+from ems.ports import ConsumerPort as CatalogConsumerPort
 from ems.sources.base import Source as LegacySource
 from ems.sources.battery import BatteryDriver as LegacyBatteryDriver
 from ems.sources.battery import MockBatteryDriver
@@ -33,3 +36,5 @@ def test_current_mocks_conform_to_source_ports() -> None:
     assert isinstance(MockBatteryDriver(), BatteryDriver)
     assert isinstance(MockPriceSource(tz), PriceSource)
     assert isinstance(MockSolarForecastSource(tz), SolarForecastSource)
+    assert isinstance(MockConsumerSource(), ConsumerPort)
+    assert CatalogConsumerPort is ConsumerPort
