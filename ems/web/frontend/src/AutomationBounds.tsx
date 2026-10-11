@@ -22,7 +22,7 @@ type BoundsResp = {
 };
 
 /** Read-only "What EMS may do" card for Settings → Control (#246 / B-35 slice 1). */
-export function AutomationBoundsCard() {
+export function AutomationBoundsCard({ refreshKey = 0 }: { refreshKey?: number }) {
   const [data, setData] = useState<BoundsResp | null>(null);
   const [error, setError] = useState<string | null>(null);
 
@@ -47,7 +47,7 @@ export function AutomationBoundsCard() {
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [refreshKey]);
 
   if (error) {
     return (
@@ -92,8 +92,8 @@ export function AutomationBoundsCard() {
         ))}
       </ul>
       <p className="automation-bounds-footnote">
-        Read-only overview of your current limits. Change values in the fields below
-        (or on Trading for export arming).
+        Read-only overview. Change reserve and power under Battery, fuse and watch-only
+        below, and export arming on Trading.
       </p>
     </section>
   );

@@ -11,6 +11,27 @@ from ems.connection import watching_only_primary_reason
 from ems.domain import CapabilityReport
 from ems.settings import GRID_FUSE_PRESET_W, SETTINGS_BY_KEY
 
+# Homeowner-facing copy for Watching-only cause codes (#178) — no config.yaml / arming jargon.
+_HOMEOWNER_CAUSE: dict[str, str] = {
+    "mock": "Demo mode is on — EMS will not change the battery.",
+    "config_dry_run": (
+        "This install is set to watch-only in the server config. "
+        "Ask whoever set up EMS to enable live control, then restart."
+    ),
+    "settings_dry_run": (
+        "Watch only is on — EMS plans and explains, but will not change the battery. "
+        "Turn it off under Control & safety, then Apply & restart."
+    ),
+    "unarmed": (
+        "“Let the system control the battery” is off — turn it on under Control & safety, "
+        "then Apply & restart."
+    ),
+    "no_live_devices": "Live meters or battery are not connected yet — EMS stays watch-only.",
+    "no_live_prices": "Live electricity prices are not connected yet — EMS stays watch-only.",
+    "observing": "EMS is still starting up and checking sensors — not writing to the battery yet.",
+    "dry_run": "Battery writes are currently disabled.",
+}
+
 
 def _num(settings: dict[str, Any], key: str) -> float | None:
     raw = settings.get(key, SETTINGS_BY_KEY[key].default if key in SETTINGS_BY_KEY else None)
@@ -45,6 +66,12 @@ def _bound(
     }
 
 
+def _homeowner_block_reason(cause: str | None, fallback: str | None) -> str | None:
+    if cause and cause in _HOMEOWNER_CAUSE:
+        return _HOMEOWNER_CAUSE[cause]
+    return fallback
+
+
 def build_automation_bounds(
     settings: dict[str, Any],
     *,
@@ -52,17 +79,39 @@ def build_automation_bounds(
     config_dry_run: bool,
     dev_mode: str,
     capability: CapabilityReport | None = None,
+    probe_ok: bool | None = None,
     lifecycle_state: str | None = None,
 ) -> dict[str, Any]:
-    """Assemble the read-only bounds payload for GET /api/automation-bounds."""
-    cause, reason = watching_only_primary_reason(
+    """Assemble the read-only bounds payload for GET /api/automation-bounds.
+
+    ``probe_ok``: True when a capability probe succeeded, False when it failed,
+    None when no battery driver is wired (settings-only power rows stay ``known``).
+    """
+    cause, raw_reason = watching_only_primary_reason(
         settings,
         config_dry_run=config_dry_run,
         dry_run=dry_run,
         dev_mode=dev_mode,
         lifecycle_state=lifecycle_state,
     )
-    writes_allowed = not dry_run and cause is None
+    reason = _homeowner_block_reason(cause, raw_reason)
+
+    # Writes only while the lifecycle is actively controlling (not override / observing).
+    if dry_run:
+        writes_allowed: bool | None = False
+    elif lifecycle_state == "controlling":
+        writes_allowed = True
+        cause, reason = None, None
+    elif lifecycle_state in (None, ""):
+        writes_allowed = None  # unknown — no controller / lifecycle not read
+    else:
+        writes_allowed = False
+        if cause is None:
+            cause = "lifecycle"
+            reason = (
+                "EMS is not in live control right now "
+                f"(state: {lifecycle_state.replace('_', ' ')}) — not writing to the battery."
+            )
 
     watch = bool(settings.get("control.dry_run", True))
     operational = bool(settings.get("control.operational", False))
@@ -70,8 +119,7 @@ def build_automation_bounds(
 
     bounds: list[dict[str, Any]] = []
 
-    # --- Effective write permission (runtime floors, not a single setting) -------------------
-    if writes_allowed:
+    if writes_allowed is True:
         bounds.append(_bound(
             id="battery_writes",
             label="Battery writes",
@@ -80,7 +128,7 @@ def build_automation_bounds(
             display="Allowed",
             value=True,
         ))
-    else:
+    elif writes_allowed is False:
         bounds.append(_bound(
             id="battery_writes",
             label="Battery writes",
@@ -89,13 +137,23 @@ def build_automation_bounds(
             display="Blocked",
             value=False,
         ))
+    else:
+        bounds.append(_bound(
+            id="battery_writes",
+            label="Battery writes",
+            explanation="Live control state is not available yet — cannot say if writes are allowed.",
+            status="unknown",
+            display="Unknown",
+            value=None,
+        ))
 
     bounds.append(_bound(
         id="watch_only",
         label="Watch only",
         explanation=(
-            "When on, EMS plans and explains but does not write to the battery. "
-            "Config or mock mode can still force watch-only even if this is off."
+            "When on, EMS plans and explains but does not change the battery. "
+            "A server install in demo or fixed watch-only mode can still block writes "
+            "even if this toggle is off."
         ),
         status="known",
         display="On" if watch else "Off",
@@ -106,7 +164,8 @@ def build_automation_bounds(
         id="operational",
         label="Let the system control the battery",
         explanation=(
-            "Master arming switch. Off means EMS stays unarmed even when Watch only is off."
+            "Main on/off for live control. Off means EMS will not write to the battery "
+            "even when Watch only is off."
         ),
         status="known",
         display="On" if operational else "Off",
@@ -114,12 +173,11 @@ def build_automation_bounds(
         setting_key="control.operational",
     ))
 
-    # --- Reserve / power --------------------------------------------------------------------
     min_reserve = _num(settings, "battery.min_reserve_soc")
     bounds.append(_bound(
         id="min_reserve_soc",
         label="Minimum battery reserve",
-        explanation="EMS will not plan to empty the battery below this state of charge.",
+        explanation="EMS will not plan to empty the battery below this state of charge. Edit under Battery.",
         status="known" if min_reserve is not None else "unknown",
         display=f"{min_reserve:.0f}%" if min_reserve is not None else "Unknown",
         value=min_reserve,
@@ -131,7 +189,7 @@ def build_automation_bounds(
     bounds.append(_bound(
         id="night_reserve_kwh",
         label="Night reserve",
-        explanation="Energy kept aside so the house can run overnight on the battery.",
+        explanation="Energy kept aside so the house can run overnight on the battery. Edit under Battery.",
         status="known" if night_reserve is not None else "unknown",
         display=f"{night_reserve:.1f} kWh" if night_reserve is not None else "Unknown",
         value=night_reserve,
@@ -144,23 +202,44 @@ def build_automation_bounds(
             "battery.max_charge_w",
             "max_charge_w",
             "Max charge power",
-            "Upper limit when EMS asks the battery to charge from the grid.",
+            "Upper limit when EMS asks the battery to charge from the grid. Edit under Battery.",
         ),
         (
             "battery.max_discharge_w",
             "max_discharge_w",
             "Max discharge power",
-            "Upper limit when EMS asks the battery to discharge for the house or export.",
+            "Upper limit when EMS asks the battery to discharge for the house or export. Edit under Battery.",
         ),
     ):
         settings_w = _num(settings, key)
         cap_w = None
-        if capability is not None:
+        if capability is not None and probe_ok is not False:
             cap_w = (
                 float(capability.max_charge_w) if id_ == "max_charge_w"
                 else float(capability.max_discharge_w)
             )
-        if settings_w is None and cap_w is None:
+
+        if probe_ok is False:
+            # Probe failed — do not present the setting as a confirmed device limit.
+            if settings_w is None:
+                bounds.append(_bound(
+                    id=id_, label=label, explanation=explain,
+                    status="unknown", display="Unknown", setting_key=key,
+                ))
+            else:
+                bounds.append(_bound(
+                    id=id_, label=label,
+                    explanation=(
+                        f"{explain} The battery did not report its limit just now — "
+                        f"your setting is {settings_w:.0f} W, but that is unconfirmed."
+                    ),
+                    status="unknown",
+                    display="Unknown",
+                    value=None,
+                    unit="W",
+                    setting_key=key,
+                ))
+        elif settings_w is None and cap_w is None:
             bounds.append(_bound(
                 id=id_, label=label, explanation=explain,
                 status="unknown", display="Unknown", setting_key=key,
@@ -168,7 +247,7 @@ def build_automation_bounds(
         elif cap_w is None:
             bounds.append(_bound(
                 id=id_, label=label,
-                explanation=f"{explain} Device limit not probed — showing your setting only.",
+                explanation=explain,
                 status="known",
                 display=f"{settings_w:.0f} W",
                 value=settings_w,
@@ -178,7 +257,7 @@ def build_automation_bounds(
         elif settings_w is None:
             bounds.append(_bound(
                 id=id_, label=label,
-                explanation=f"{explain} From the battery probe.",
+                explanation=f"{explain} From the battery.",
                 status="known",
                 display=f"{cap_w:.0f} W",
                 value=cap_w,
@@ -200,7 +279,6 @@ def build_automation_bounds(
                 setting_key=key,
             ))
 
-    # --- Grid fuse --------------------------------------------------------------------------
     fuse = str(settings.get("control.grid_fuse", "unset") or "unset")
     limit_w = _num(settings, "control.grid_limit_w")
     if fuse == "unset":
@@ -209,14 +287,13 @@ def build_automation_bounds(
             label="Main fuse",
             explanation=(
                 "Not confirmed yet. EMS keeps a conservative ceiling until you choose "
-                "your real main fuse in Settings."
+                "your real main fuse below."
             ),
             status="unknown",
             display="Not confirmed",
             value=None,
             setting_key="control.grid_fuse",
         ))
-        # Still show the watt ceiling in use, honestly tagged.
         ceiling = limit_w if limit_w is not None else 5750.0
         bounds.append(_bound(
             id="grid_limit_w",
@@ -279,7 +356,6 @@ def build_automation_bounds(
                 setting_key="control.grid_limit_w",
             ))
 
-    # --- Mode thrash guards -----------------------------------------------------------------
     switches = _num(settings, "control.max_switches_per_day")
     bounds.append(_bound(
         id="max_switches_per_day",
@@ -302,7 +378,6 @@ def build_automation_bounds(
         setting_key="control.min_dwell_seconds",
     ))
 
-    # --- Export arm (Trading) ---------------------------------------------------------------
     bounds.append(_bound(
         id="export_armed",
         label="Sell to the grid (export)",
@@ -316,10 +391,12 @@ def build_automation_bounds(
         setting_key="control.allow_export_discharge",
     ))
 
-    if writes_allowed:
+    if writes_allowed is True:
         summary = "EMS may write to the battery within the limits below."
-    else:
+    elif writes_allowed is False:
         summary = reason or "EMS is not writing to the battery right now."
+    else:
+        summary = "Live control state is not available — limits below are from your settings."
 
     return {
         "title": "What EMS may do",

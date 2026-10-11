@@ -475,6 +475,8 @@ export function Settings({
   const [edited, setEdited] = useState<Values>({});
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [status, setStatus] = useState<"idle" | "saving" | "saved" | "error">("idle");
+  // #246: bump after a successful save so the read-only bounds card refetches.
+  const [boundsRefreshKey, setBoundsRefreshKey] = useState(0);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [auth, setAuth] = useState<{ required: boolean; authenticated: boolean } | null>(null);
   const [impact, setImpact] = useState<Impact | null>(null);
@@ -826,6 +828,7 @@ export function Settings({
       setEdited(b.values);
       setSolarAdviceApplied(false);
       setStatus("saved");
+      setBoundsRefreshKey((k) => k + 1);
       if (restartGroups.length) {
         setRestartPending((prev) => new Set([...prev, ...restartGroups]));
         setRestartPendingKeys((prev) => new Set([...prev, ...restartKeys]));
@@ -1189,7 +1192,7 @@ export function Settings({
               {active === "access" && isAdmin && <AdminAccess />}
 
               {/* #246 / B-35 slice 1: read-only "what EMS may do" before editable control fields. */}
-              {active === "control" && <AutomationBoundsCard />}
+              {active === "control" && <AutomationBoundsCard refreshKey={boundsRefreshKey} />}
 
               <div className="settings-section-fields">
                 {basicFields.map((f) => renderField(f))}

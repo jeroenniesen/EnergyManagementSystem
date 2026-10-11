@@ -6,11 +6,13 @@ Never writes settings or calls ModeController.decide / battery apply.
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
 from typing import Any
 
 from fastapi import APIRouter
 
 from ems.automation_bounds import build_automation_bounds
+from ems.domain import CapabilityReport
 from ems.web.context import AppContext
 
 _log = logging.getLogger(__name__)
@@ -22,22 +24,40 @@ def build_router(
     battery: Any | None = None,
     controller: Any | None = None,
     config_dry_run: bool = False,
+    capability_getter: Callable[[], CapabilityReport | None] | None = None,
 ) -> APIRouter:
     router = APIRouter()
 
     @router.get("/api/automation-bounds")
     def automation_bounds() -> dict:
         """What EMS may do — read-only snapshot of existing settings + write floors."""
-        capability = None
-        batt = battery
-        if batt is None and controller is not None:
-            batt = getattr(controller, "driver", None)
-        if batt is not None:
+        capability: CapabilityReport | None = None
+        probe_ok: bool | None = None
+
+        if capability_getter is not None:
             try:
-                capability = batt.probe()
+                capability = capability_getter()
             except Exception:
-                _log.debug("automation-bounds: battery probe failed (non-fatal)", exc_info=True)
+                _log.debug("automation-bounds: capability cache read failed", exc_info=True)
                 capability = None
+            # Cache hit ⇒ known; miss means we may try a soft probe below.
+            if capability is not None:
+                probe_ok = True
+
+        if capability is None:
+            batt = battery
+            if batt is None and controller is not None:
+                batt = getattr(controller, "driver", None)
+            if batt is None:
+                probe_ok = None
+            else:
+                try:
+                    capability = batt.probe()
+                    probe_ok = True
+                except Exception:
+                    _log.debug("automation-bounds: battery probe failed (non-fatal)", exc_info=True)
+                    capability = None
+                    probe_ok = False
 
         lifecycle_state = None
         if controller is not None:
@@ -52,6 +72,7 @@ def build_router(
             config_dry_run=bool(config_dry_run),
             dev_mode=str(ctx.dev_mode),
             capability=capability,
+            probe_ok=probe_ok,
             lifecycle_state=lifecycle_state,
         )
 

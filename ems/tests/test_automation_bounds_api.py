@@ -102,5 +102,30 @@ def test_automation_bounds_survives_failed_probe(tmp_path):
         r = c.get("/api/automation-bounds")
         assert r.status_code == 200
         charge = next(b for b in r.json()["bounds"] if b["id"] == "max_charge_w")
-    assert charge["status"] == "known"  # settings-only fallback
-    assert "not probed" in charge["explanation"].lower() or "setting" in charge["explanation"].lower()
+    assert charge["status"] == "unknown"
+    assert charge["display"] == "Unknown"
+    assert "did not report" in charge["explanation"].lower()
+
+
+def test_automation_bounds_homeowner_summary_no_config_jargon(tmp_path):
+    with TestClient(_app(tmp_path, dry_run=True)) as c:
+        body = c.get("/api/automation-bounds").json()
+    assert "config.yaml" not in body["summary"].lower()
+    assert "dev.mode" not in body["summary"].lower()
+
+
+def test_build_automation_bounds_manual_override_blocks_writes():
+    from ems.automation_bounds import build_automation_bounds
+    from ems.settings import defaults
+
+    body = build_automation_bounds(
+        defaults(),
+        dry_run=False,
+        config_dry_run=False,
+        dev_mode="live",
+        lifecycle_state="manual_override",
+        probe_ok=None,
+    )
+    assert body["writes_allowed"] is False
+    writes = next(b for b in body["bounds"] if b["id"] == "battery_writes")
+    assert writes["display"] == "Blocked"
