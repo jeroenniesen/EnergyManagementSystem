@@ -15,6 +15,7 @@ import json
 from dataclasses import dataclass
 from typing import Any
 
+from ems.consumers.selection import default_device_ids_json
 from ems.ev_schedule import default_schedule
 
 
@@ -694,6 +695,27 @@ SETTINGS_SCHEMA: tuple[SettingsField, ...] = (
     SettingsField(
         "ev.schedule", "Weekly charge schedule", "text", json.dumps(default_schedule()), "ev",
         help="Weekly minimum charge schedule — edited with the schedule editor below.",
+    ),
+    # --- Consumers (appliances) — #223 / epic #222; opt-in device ids, UI in later slices ---
+    SettingsField(
+        "consumers.smartthings.device_ids", "SmartThings devices (opt-in)", "text",
+        default_device_ids_json(), "consumers",
+        help="JSON list of SmartThings device ids that may participate. Default [] = none. "
+        "Edited when the consumers UI lands (#224); not a battery write path.",
+        show_in_settings=False,
+    ),
+    SettingsField(
+        "consumers.ha.device_ids", "Home Assistant devices (opt-in)", "text",
+        default_device_ids_json(), "consumers",
+        help="JSON list of Home Assistant entity/device ids that may participate. "
+        "Default [] = none. Edited when the consumers UI lands (#224).",
+        show_in_settings=False,
+    ),
+    SettingsField(
+        "consumers.mock.device_ids", "Mock consumer devices (opt-in)", "text",
+        default_device_ids_json(), "consumers",
+        help="JSON list of mock appliance ids for tests/dev. Default [] = none.",
+        show_in_settings=False, advanced=True,
     ),
     # --- Appearance ---
     SettingsField(
