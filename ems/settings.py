@@ -719,10 +719,28 @@ SETTINGS_SCHEMA: tuple[SettingsField, ...] = (
         show_in_settings=False,
     ),
     SettingsField(
-        "consumers.ha.device_ids", "Home Assistant devices (opt-in)", "text",
+        "consumers.ha.enabled", "Home Assistant appliances", "bool", False, "consumers",
+        help="Turn on the Home Assistant appliance adapter (read-only entity status). "
+        "Needs URL + long-lived access token. Takes effect after Apply & restart.",
+        show_in_settings=False, applies="restart",
+    ),
+    SettingsField(
+        "consumers.ha.url", "Home Assistant URL", "text", "", "consumers",
+        help="Base URL of Home Assistant, e.g. http://homeassistant.local:8123. "
+        "Env: HA_URL. Takes effect after Apply & restart.",
+        show_in_settings=False, applies="restart",
+    ),
+    SettingsField(
+        "consumers.ha.token", "Home Assistant access token", "secret", "", "consumers",
+        help="Long-lived access token (HA profile → Security). Stored locally; never logged. "
+        "Env: HA_TOKEN. Takes effect after Apply & restart.",
+        show_in_settings=False, applies="restart",
+    ),
+    SettingsField(
+        "consumers.ha.device_ids", "Home Assistant entities (opt-in)", "text",
         default_device_ids_json(), "consumers",
-        help="JSON list of Home Assistant entity/device ids that may participate. "
-        "Default [] = none. Edited when the consumers UI lands (#224).",
+        help="JSON list of HA entity ids that may participate (e.g. switch.washer). "
+        "Default [] = none. Opt-in selection for the appliances insight.",
         show_in_settings=False,
     ),
     SettingsField(
