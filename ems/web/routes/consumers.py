@@ -71,6 +71,7 @@ def gather_consumers(
 ) -> dict[str, Any]:
     """Pure gather used by the route and tests — no I/O beyond the ports."""
     devices_out: list[dict[str, Any]] = []
+    list_failures = 0
     for src in sources:
         try:
             set_settings = getattr(src, "set_settings", None)
@@ -78,7 +79,8 @@ def gather_consumers(
                 set_settings(settings)
             catalog = src.list_devices()
         except Exception:
-            _log.debug(
+            list_failures += 1
+            _log.warning(
                 "consumers: list_devices failed for %s",
                 getattr(src, "integration", "?"),
                 exc_info=True,
@@ -100,11 +102,13 @@ def gather_consumers(
 
     if not sources:
         summary = "No appliance integrations are connected yet."
-    elif not devices_out:
+    elif not devices_out and list_failures:
         summary = (
-            "No appliances selected yet. When an integration is wired, choose which "
-            "devices may participate — until then this list stays empty."
+            "EMS can’t reach your appliance integration right now — "
+            "try again in a moment."
         )
+    elif not devices_out:
+        summary = "No appliances selected yet."
     else:
         n = len(devices_out)
         summary = f"{n} selected appliance{'s' if n != 1 else ''}."

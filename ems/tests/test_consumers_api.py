@@ -34,7 +34,7 @@ def test_consumers_empty_when_nothing_opted_in(tmp_path):
     assert body["read_only"] is True
     assert body["title"] == "Appliances"
     assert body["devices"] == []
-    assert "selected" in body["summary"].lower() or "empty" in body["summary"].lower()
+    assert "selected" in body["summary"].lower()
 
 
 def test_consumers_lists_opted_in_mock_devices(tmp_path):
@@ -98,3 +98,38 @@ def test_consumers_path_has_no_write_methods():
     src = MockConsumerSource()
     assert not hasattr(src, "apply")
     assert not hasattr(src, "start")
+
+
+def test_consumers_live_defaults_to_empty_sources(tmp_path):
+    db = str(tmp_path / "ems.sqlite")
+    app = create_app(
+        MockSource(),
+        dry_run=True,
+        config_dry_run=False,
+        dev_mode="live",
+        store=HistoryStore(db),
+        settings_store=SettingsStore(db),
+    )
+    with TestClient(app) as c:
+        body = c.get("/api/consumers").json()
+    assert body["devices"] == []
+    assert "connected" in body["summary"].lower()
+
+
+def test_gather_list_failure_honest_summary():
+    class _Boom:
+        integration = "mock"
+
+        def list_devices(self):
+            raise RuntimeError("cloud down")
+
+        def get_status(self, device_id: str):
+            return None
+
+        def set_settings(self, settings):
+            return None
+
+    body = gather_consumers([_Boom()], {})  # type: ignore[list-item]
+    assert body["devices"] == []
+    assert "can’t reach" in body["summary"].lower() or "cant reach" in body["summary"].lower() \
+        or "reach" in body["summary"].lower()

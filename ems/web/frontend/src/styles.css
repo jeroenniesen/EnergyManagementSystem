@@ -2692,7 +2692,7 @@ body {
 .consumers-card {
   margin: 0 0 1.25rem;
   padding: 14px 16px;
-  border: 1px solid var(--border);
+  border: 1px solid var(--line);
   border-radius: 10px;
   background: var(--panel);
 }
@@ -2712,7 +2712,7 @@ body {
 }
 .consumers-row {
   padding: 10px 0;
-  border-top: 1px solid var(--border);
+  border-top: 1px solid var(--line);
 }
 .consumers-row:first-child { border-top: none; padding-top: 0; }
 .consumers-row-head {

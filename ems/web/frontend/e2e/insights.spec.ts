@@ -76,8 +76,8 @@ test.describe("Insights", () => {
               status: {
                 state: "idle",
                 state_label: "Idle — ready when you are",
-                power_w: 0,
-                energy_kwh: null,
+                power_w: 450,
+                energy_kwh: 1.25,
                 can_start: true,
                 observed_at: null,
                 detail: null,
@@ -91,8 +91,12 @@ test.describe("Insights", () => {
     await page.getByTestId("nav-insights").click();
     const card = page.getByTestId("consumers-card");
     await expect(card).toBeVisible();
-    await expect(page.getByTestId("consumer-mock-washer-1")).toBeVisible();
+    const row = page.getByTestId("consumer-mock-washer-1");
+    await expect(row).toBeVisible();
+    await expect(row).toContainText("Washing machine");
     await expect(page.getByTestId("consumer-mock-washer-1-state")).toContainText("Idle");
+    await expect(page.getByTestId("consumer-mock-washer-1-power")).toContainText("450 W");
+    await expect(page.getByTestId("consumer-mock-washer-1-energy")).toContainText("1.25 kWh");
     await expect(card.getByRole("button", { name: /start|stop/i })).toHaveCount(0);
   });
 
