@@ -1,7 +1,9 @@
 """Read-only automation bounds for Settings (#246 / B-35 slice 1).
 
 GET /api/automation-bounds — curated homeowner overview of existing limits.
-Never writes settings or calls ModeController.decide / battery apply.
+Never writes settings, never calls ModeController.decide / battery apply, and
+**never probes the battery** — device power ceilings come only from the
+control-loop ``CapabilityReport`` cache (Indevolt OpenData is write-sensitive).
 """
 from __future__ import annotations
 
@@ -21,7 +23,6 @@ _log = logging.getLogger(__name__)
 def build_router(
     ctx: AppContext,
     *,
-    battery: Any | None = None,
     controller: Any | None = None,
     config_dry_run: bool = False,
     capability_getter: Callable[[], CapabilityReport | None] | None = None,
@@ -40,24 +41,8 @@ def build_router(
             except Exception:
                 _log.debug("automation-bounds: capability cache read failed", exc_info=True)
                 capability = None
-            # Cache hit ⇒ known; miss means we may try a soft probe below.
-            if capability is not None:
-                probe_ok = True
-
-        if capability is None:
-            batt = battery
-            if batt is None and controller is not None:
-                batt = getattr(controller, "driver", None)
-            if batt is None:
-                probe_ok = None
-            else:
-                try:
-                    capability = batt.probe()
-                    probe_ok = True
-                except Exception:
-                    _log.debug("automation-bounds: battery probe failed (non-fatal)", exc_info=True)
-                    capability = None
-                    probe_ok = False
+            # Cache hit only. Miss ⇒ probe_ok=None; power rows stay unknown (no RPC).
+            probe_ok = True if capability is not None else None
 
         lifecycle_state = None
         if controller is not None:

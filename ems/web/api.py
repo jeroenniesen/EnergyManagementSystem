@@ -5357,9 +5357,9 @@ def create_app(
                   build_notify_router, build_export_router, build_accuracy_router,
                   build_whatif_router, build_reserve_advice_router):
         app.include_router(build(ctx))
-    # #246 / B-35 slice 1: needs battery/controller + cached CapabilityReport (not on AppContext).
+    # #246 / B-35 slice 1: controller lifecycle + cached CapabilityReport only (no probe-on-GET).
     app.include_router(build_automation_bounds_router(
-        ctx, battery=battery, controller=controller, config_dry_run=config_dry_run,
+        ctx, controller=controller, config_dry_run=config_dry_run,
         capability_getter=lambda: _capability_box.get("cap"),
     ))
     app.include_router(build_plan_router(ctx, plan_service))

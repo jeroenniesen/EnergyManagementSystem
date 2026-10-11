@@ -16,7 +16,8 @@ type BoundRow = {
 type BoundsResp = {
   title: string;
   summary: string;
-  writes_allowed: boolean;
+  /** true | false | null when lifecycle / live-control state is unavailable. */
+  writes_allowed: boolean | null;
   block_reason: string | null;
   bounds: BoundRow[];
 };

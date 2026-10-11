@@ -28,7 +28,9 @@ _HOMEOWNER_CAUSE: dict[str, str] = {
     ),
     "no_live_devices": "Live meters or battery are not connected yet — EMS stays watch-only.",
     "no_live_prices": "Live electricity prices are not connected yet — EMS stays watch-only.",
-    "observing": "EMS is still starting up and checking sensors — not writing to the battery yet.",
+    "observing": (
+        "EMS is still starting up and checking sensors — not writing to the battery yet."
+    ),
     "dry_run": "Battery writes are currently disabled.",
 }
 
@@ -146,7 +148,10 @@ def build_automation_bounds(
         bounds.append(_bound(
             id="battery_writes",
             label="Battery writes",
-            explanation="Live control state is not available yet — cannot say if writes are allowed.",
+            explanation=(
+                "Live control state is not available yet — "
+                "cannot say if writes are allowed."
+            ),
             status="unknown",
             display="Unknown",
             value=None,
@@ -182,7 +187,10 @@ def build_automation_bounds(
     bounds.append(_bound(
         id="min_reserve_soc",
         label="Minimum battery reserve",
-        explanation="EMS will not plan to empty the battery below this state of charge. Edit under Battery.",
+        explanation=(
+            "EMS will not plan to empty the battery below this state of charge. "
+            "Edit under Battery."
+        ),
         status="known" if min_reserve is not None else "unknown",
         display=f"{min_reserve:.0f}%" if min_reserve is not None else "Unknown",
         value=min_reserve,
@@ -194,7 +202,10 @@ def build_automation_bounds(
     bounds.append(_bound(
         id="night_reserve_kwh",
         label="Night reserve",
-        explanation="Energy kept aside so the house can run overnight on the battery. Edit under Battery.",
+        explanation=(
+            "Energy kept aside so the house can run overnight on the battery. "
+            "Edit under Battery."
+        ),
         status="known" if night_reserve is not None else "unknown",
         display=f"{night_reserve:.1f} kWh" if night_reserve is not None else "Unknown",
         value=night_reserve,
@@ -207,58 +218,51 @@ def build_automation_bounds(
             "battery.max_charge_w",
             "max_charge_w",
             "Max charge power",
-            "Upper limit when EMS asks the battery to charge from the grid. Edit under Battery.",
+            (
+                "Upper limit when EMS asks the battery to charge from the grid. "
+                "Edit under Battery."
+            ),
         ),
         (
             "battery.max_discharge_w",
             "max_discharge_w",
             "Max discharge power",
-            "Upper limit when EMS asks the battery to discharge for the house or export. Edit under Battery.",
+            (
+                "Upper limit when EMS asks the battery to discharge for the house "
+                "or export. Edit under Battery."
+            ),
         ),
     ):
         settings_w = _num(settings, key)
+        # Device watts only from a cached CapabilityReport (control-loop probe).
+        # Never invent a confirmed device limit when the cache is empty.
         cap_w = None
-        if capability is not None and probe_ok is not False:
+        if capability is not None and probe_ok is True:
             cap_w = (
                 float(capability.max_charge_w) if id_ == "max_charge_w"
                 else float(capability.max_discharge_w)
             )
 
-        if probe_ok is False:
-            # Probe failed — do not present the setting as a confirmed device limit.
+        if cap_w is None:
             if settings_w is None:
                 bounds.append(_bound(
                     id=id_, label=label, explanation=explain,
                     status="unknown", display="Unknown", setting_key=key,
                 ))
             else:
+                note = (
+                    "Device limit not in the capability cache yet — "
+                    f"your setting is {settings_w:.0f} W, unconfirmed against the battery."
+                )
                 bounds.append(_bound(
                     id=id_, label=label,
-                    explanation=(
-                        f"{explain} The battery did not report its limit just now — "
-                        f"your setting is {settings_w:.0f} W, but that is unconfirmed."
-                    ),
+                    explanation=f"{explain} {note}",
                     status="unknown",
                     display="Unknown",
                     value=None,
                     unit="W",
                     setting_key=key,
                 ))
-        elif settings_w is None and cap_w is None:
-            bounds.append(_bound(
-                id=id_, label=label, explanation=explain,
-                status="unknown", display="Unknown", setting_key=key,
-            ))
-        elif cap_w is None:
-            bounds.append(_bound(
-                id=id_, label=label,
-                explanation=explain,
-                status="known",
-                display=f"{settings_w:.0f} W",
-                value=settings_w,
-                unit="W",
-                setting_key=key,
-            ))
         elif settings_w is None:
             bounds.append(_bound(
                 id=id_, label=label,

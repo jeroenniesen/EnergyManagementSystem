@@ -1,6 +1,8 @@
 """#246 / B-35 slice 1: GET /api/automation-bounds contract."""
 from fastapi.testclient import TestClient
 
+from ems.automation_bounds import build_automation_bounds
+from ems.settings import defaults
 from ems.sources.battery import MockBatteryDriver
 from ems.sources.mock import MockSource
 from ems.storage.history import HistoryStore
@@ -63,15 +65,20 @@ def test_automation_bounds_fuse_confirmed_is_known(tmp_path):
     assert limit["value"] == 17250.0
 
 
-def test_automation_bounds_power_uses_capability_min(tmp_path):
-    """Mock probe advertises 4000 W; settings lower → effective is settings."""
-    with TestClient(_app(tmp_path)) as c:
-        assert c.post("/api/settings", json={
-            "battery.max_charge_w": 2000,
-            "battery.max_discharge_w": 1800,
-            "control.grid_fuse": "3x25",
-        }).status_code == 200
-        body = c.get("/api/automation-bounds").json()
+def test_build_automation_bounds_power_uses_capability_min():
+    """Cached capability 4000 W + lower settings → effective is settings."""
+    cap = MockBatteryDriver().probe()
+    settings = defaults()
+    settings["battery.max_charge_w"] = 2000.0
+    settings["battery.max_discharge_w"] = 1800.0
+    body = build_automation_bounds(
+        settings,
+        dry_run=True,
+        config_dry_run=False,
+        dev_mode="mock",
+        capability=cap,
+        probe_ok=True,
+    )
     charge = next(b for b in body["bounds"] if b["id"] == "max_charge_w")
     assert charge["status"] == "effective"
     assert charge["value"] == 2000.0
@@ -79,9 +86,13 @@ def test_automation_bounds_power_uses_capability_min(tmp_path):
     assert discharge["value"] == 1800.0
 
 
-def test_automation_bounds_survives_failed_probe(tmp_path):
-    class _Bad:
+def test_automation_bounds_get_does_not_probe_battery(tmp_path):
+    """Read endpoint must not hit Indevolt OpenData — cache miss stays unknown."""
+    probes = {"n": 0}
+
+    class _Counting:
         def probe(self):
+            probes["n"] += 1
             raise RuntimeError("offline")
 
         @property
@@ -98,13 +109,16 @@ def test_automation_bounds_survives_failed_probe(tmp_path):
         def apply(self, mode, *, target_soc=None, power_w=None):
             return False
 
-    with TestClient(_app(tmp_path, battery=_Bad())) as c:
+    with TestClient(_app(tmp_path, battery=_Counting())) as c:
+        before = probes["n"]
         r = c.get("/api/automation-bounds")
         assert r.status_code == 200
+        after = probes["n"]
         charge = next(b for b in r.json()["bounds"] if b["id"] == "max_charge_w")
+    assert after == before  # GET must not call probe
     assert charge["status"] == "unknown"
     assert charge["display"] == "Unknown"
-    assert "did not report" in charge["explanation"].lower()
+    assert "capability cache" in charge["explanation"].lower()
 
 
 def test_automation_bounds_homeowner_summary_no_config_jargon(tmp_path):
@@ -115,9 +129,6 @@ def test_automation_bounds_homeowner_summary_no_config_jargon(tmp_path):
 
 
 def test_build_automation_bounds_manual_override_blocks_writes():
-    from ems.automation_bounds import build_automation_bounds
-    from ems.settings import defaults
-
     body = build_automation_bounds(
         defaults(),
         dry_run=False,
