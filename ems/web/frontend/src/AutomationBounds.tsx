@@ -70,7 +70,7 @@ export function AutomationBoundsCard({ refreshKey = 0 }: { refreshKey?: number }
     <section className="automation-bounds" data-testid="automation-bounds">
       <h3 className="automation-bounds-title">{data.title}</h3>
       <p
-        className={`automation-bounds-summary${data.writes_allowed ? "" : " blocked"}`}
+        className={`automation-bounds-summary${data.writes_allowed === false ? " blocked" : ""}`}
         data-testid="automation-bounds-summary"
       >
         {data.summary}
@@ -93,7 +93,7 @@ export function AutomationBoundsCard({ refreshKey = 0 }: { refreshKey?: number }
       </ul>
       <p className="automation-bounds-footnote">
         Read-only overview. Change reserve and power under Battery, fuse and watch-only
-        below, and export arming on Trading.
+        below, and “Sell to the grid” on Trading.
       </p>
     </section>
   );

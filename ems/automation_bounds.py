@@ -108,10 +108,15 @@ def build_automation_bounds(
         writes_allowed = False
         if cause is None:
             cause = "lifecycle"
-            reason = (
-                "EMS is not in live control right now "
-                f"(state: {lifecycle_state.replace('_', ' ')}) — not writing to the battery."
-            )
+            if lifecycle_state == "manual_override":
+                reason = (
+                    "Someone took manual control — EMS will not write to the battery "
+                    "until that override ends."
+                )
+            else:
+                reason = (
+                    "EMS is not in live control right now — not writing to the battery."
+                )
 
     watch = bool(settings.get("control.dry_run", True))
     operational = bool(settings.get("control.operational", False))
@@ -386,7 +391,7 @@ def build_automation_bounds(
             "Off by default."
         ),
         status="known",
-        display="Armed" if export_armed else "Not armed",
+        display="On" if export_armed else "Off",
         value=export_armed,
         setting_key="control.allow_export_discharge",
     ))
