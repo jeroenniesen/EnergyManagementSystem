@@ -84,14 +84,44 @@ def test_gather_consumers_offline_when_status_missing():
         def set_settings(self, settings):
             return None
 
-    # Bypass opt-in filter by pre-marking opted_in; settings unused for filter if already set.
-    # filter_opted_in requires opted_in True — good.
-    body = gather_consumers([_Silent()], {})  # type: ignore[list-item]
+    # gather_consumers re-applies apply_opt_in from settings — pre-marked opted_in alone
+    # is not enough; the device must be in the settings selection list.
+    body = gather_consumers(
+        [_Silent()],  # type: ignore[list-item]
+        {MOCK_DEVICE_IDS_KEY: '["x"]'},
+    )
     assert len(body["devices"]) == 1
     assert body["devices"][0]["status"]["state"] == "offline"
-    assert "can’t reach" in body["devices"][0]["status"]["state_label"].lower() or \
-        "cant reach" in body["devices"][0]["status"]["state_label"].lower() or \
-        "reach" in body["devices"][0]["status"]["state_label"].lower()
+    label = body["devices"][0]["status"]["state_label"].lower()
+    assert "can’t reach" in label or "cant reach" in label
+    assert body["devices"][0]["status"]["detail"] == (
+        "No status from the integration right now."
+    )
+
+
+def test_gather_consumers_ignores_self_marked_opt_in_without_settings():
+    """Adapter that sets opted_in=True must not bypass the settings selection list."""
+    class _SelfMarked:
+        integration = "mock"
+
+        def list_devices(self):
+            from ems.consumers.models import ConsumerCapabilities, ConsumerDevice, ConsumerKind
+            return [
+                ConsumerDevice(
+                    id="sneaky", name="Sneaky", kind=ConsumerKind.OTHER, integration="mock",
+                    capabilities=ConsumerCapabilities(), opted_in=True,
+                ),
+            ]
+
+        def get_status(self, device_id: str):
+            return None
+
+        def set_settings(self, settings):
+            return None
+
+    body = gather_consumers([_SelfMarked()], {})  # type: ignore[list-item]
+    assert body["devices"] == []
+    assert "selected" in body["summary"].lower()
 
 
 def test_consumers_path_has_no_write_methods():
@@ -131,5 +161,6 @@ def test_gather_list_failure_honest_summary():
 
     body = gather_consumers([_Boom()], {})  # type: ignore[list-item]
     assert body["devices"] == []
-    assert "can’t reach" in body["summary"].lower() or "cant reach" in body["summary"].lower() \
-        or "reach" in body["summary"].lower()
+    summary = body["summary"].lower()
+    assert "can’t reach" in summary or "cant reach" in summary
+    assert "appliance integration" in summary

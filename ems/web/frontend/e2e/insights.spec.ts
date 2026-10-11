@@ -1185,9 +1185,12 @@ test.describe("Insights: sticky in-page section nav", () => {
 
     await page.mouse.wheel(0, 900);
     await expect(nav).toBeVisible();
-    for (const id of ["week", "scores", "energy", "money", "appliances", "whatif"]) {
+    for (const id of ["week", "scores", "energy", "money", "whatif"]) {
       await expect(page.getByTestId(`insights-nav-${id}`)).toBeVisible();
     }
+    // #224 Appliances card is on the page but not a sticky-nav chip (short last
+    // section would steal aria-current from What-if at the bottom).
+    await expect(page.getByTestId("insights-nav-appliances")).toHaveCount(0);
     // REPORT (the base fixture) has no gas data -> no Gas link even though the nav is showing.
     await expect(page.getByTestId("insights-nav-gas")).toHaveCount(0);
 

@@ -13,7 +13,7 @@ from fastapi import APIRouter
 
 from ems.consumers.models import ConsumerState, ConsumerStatus
 from ems.consumers.ports import ConsumerPort
-from ems.consumers.selection import filter_opted_in
+from ems.consumers.selection import apply_opt_in, filter_opted_in
 from ems.web.context import AppContext
 
 _log = logging.getLogger(__name__)
@@ -43,7 +43,11 @@ def _status_dict(status: ConsumerStatus | None) -> dict[str, Any] | None:
         "energy_kwh": status.energy_kwh,
         "can_start": bool(status.can_start),
         "observed_at": status.observed_at.isoformat() if status.observed_at else None,
-        "detail": status.detail,
+        # Never pass through vendor/adapter detail strings — only our synthetic offline copy.
+        "detail": status.detail if (
+            status.state == ConsumerState.OFFLINE
+            and status.detail == "No status from the integration right now."
+        ) else None,
     }
 
 
@@ -86,7 +90,9 @@ def gather_consumers(
                 exc_info=True,
             )
             continue
-        for device in filter_opted_in(catalog):
+        # Re-apply settings opt-in here so adapters that self-set opted_in cannot bypass
+        # the homeowner selection list (mock already calls apply_opt_in; this is the belt).
+        for device in filter_opted_in(apply_opt_in(catalog, settings)):
             try:
                 status = src.get_status(device.id)
             except Exception:

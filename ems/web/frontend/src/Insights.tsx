@@ -351,13 +351,11 @@ export function Insights({ canOperate = true }: { canOperate?: boolean } = {}) {
     sections.push({ id: "insights-sec-energy", label: "Energy" });
     if (report.gas) sections.push({ id: "insights-sec-gas", label: "Gas" });
     sections.push({ id: "insights-sec-money", label: "Money" });
-  }
-  // #224: after Insights h2 (heading-order a11y); before What-if so sticky nav
-  // still treats What-if as the last section when data is present.
-  sections.push({ id: "insights-sec-appliances", label: "Appliances" });
-  if (report && hasData && f) {
     sections.push({ id: "insights-sec-whatif", label: "What-if" });
   }
+  // #224 Appliances card stays on the page (below Insights h2 for heading-order) but is
+  // intentionally omitted from sticky nav: a short last section steals aria-current at the
+  // bottom (useSectionNav bottom rule) so What-if can never become current.
   const { activeId, visible } = useSectionNav(sections);
 
   return (
