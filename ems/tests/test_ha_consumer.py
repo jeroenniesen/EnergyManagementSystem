@@ -153,6 +153,59 @@ def test_ha_settings_require_restart():
     assert SETTINGS_BY_KEY["consumers.ha.token"].applies == "restart"
 
 
+def test_ha_url_must_be_http_https_host_only():
+    """#266: reject file:/credentials/path smuggling; allow LAN hosts."""
+    from ems.settings import validate_settings
+
+    clean, errors = validate_settings({"consumers.ha.url": "http://192.168.1.10:8123"})
+    assert errors == {}
+    assert clean["consumers.ha.url"] == "http://192.168.1.10:8123"
+
+    clean2, err2 = validate_settings({"consumers.ha.url": "https://ha.local/"})
+    assert err2 == {}
+    assert clean2["consumers.ha.url"] == "https://ha.local"
+
+    for bad in (
+        "file:///etc/passwd",
+        "http://",
+        "ftp://ha.local",
+        "http://user:pass@ha.local",
+        "http://ha.local/api",
+        "http://ha.local?x=1",
+        "not-a-url",
+    ):
+        _c, e = validate_settings({"consumers.ha.url": bad})
+        assert "consumers.ha.url" in e, bad
+
+    # Empty stays allowed (clear / unset).
+    c3, e3 = validate_settings({"consumers.ha.url": ""})
+    assert c3 == {"consumers.ha.url": ""} and e3 == {}
+
+
+def test_factory_ha_uses_lan_read_profile(monkeypatch):
+    """#266: HA GETs should use lan_read timeouts, not cloud."""
+    profiles: list[str] = []
+
+    def capture(http, profile):
+        profiles.append(profile)
+        return lambda url, headers: []
+
+    import ems.http_client as http_client
+
+    monkeypatch.setattr(http_client, "make_json_get_headers", capture)
+    full = {
+        **defaults(),
+        "consumers.ha.enabled": True,
+        "consumers.ha.url": "http://192.168.1.5:8123",
+        "consumers.ha.token": "secret",
+        "consumers.smartthings.enabled": True,
+        "consumers.smartthings.pat": "st-pat",
+    }
+    sources = build_consumer_sources(full, http=object(), dev_mode="live")
+    assert {s.integration for s in sources} == {"ha", "smartthings"}
+    assert profiles == ["cloud", "lan_read"]
+
+
 def test_no_battery_or_ha_write_surface():
     src = HomeAssistantConsumerSource("http://ha", "t", http_get=_fake_get)
     assert not hasattr(src, "apply")

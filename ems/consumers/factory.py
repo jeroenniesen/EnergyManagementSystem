@@ -12,14 +12,18 @@ from ems.consumers.smartthings import SmartThingsConsumerSource
 _log = logging.getLogger(__name__)
 
 
-def _http_get(http: Any | None):
+def _http_get(http: Any | None, profile: str):
     if http is None:
         return None
     try:
         from ems.http_client import make_json_get_headers
-        return make_json_get_headers(http, "cloud")
+        return make_json_get_headers(http, profile)
     except Exception:
-        _log.debug("consumers: HttpRuntime inject failed; using default httpx", exc_info=True)
+        _log.debug(
+            "consumers: HttpRuntime inject failed (profile=%s); using default httpx",
+            profile,
+            exc_info=True,
+        )
         return None
 
 
@@ -31,17 +35,16 @@ def build_consumer_sources(
 ) -> list[ConsumerPort]:
     """Return wired consumer adapters. Empty when nothing is enabled/configured.
 
-    SmartThings / HA are added only when enabled and credentials are present.
-    Mock catalog is appended in mock/replay so Insights keeps a dry path.
+    SmartThings uses the ``cloud`` HTTP profile; Home Assistant uses ``lan_read``
+    (typical LAN install — #266). Mock catalog is appended in mock/replay.
     """
     out: list[ConsumerPort] = []
-    http_get = _http_get(http)
 
     enabled = bool(settings.get("consumers.smartthings.enabled", False))
     token = str(settings.get("consumers.smartthings.pat") or "").strip()
     if enabled and token:
         out.append(SmartThingsConsumerSource(
-            token, http_get=http_get, settings=settings,
+            token, http_get=_http_get(http, "cloud"), settings=settings,
         ))
     elif enabled and not token:
         _log.info(
@@ -54,7 +57,7 @@ def build_consumer_sources(
     ha_token = str(settings.get("consumers.ha.token") or "").strip()
     if ha_enabled and ha_url and ha_token:
         out.append(HomeAssistantConsumerSource(
-            ha_url, ha_token, http_get=http_get, settings=settings,
+            ha_url, ha_token, http_get=_http_get(http, "lan_read"), settings=settings,
         ))
     elif ha_enabled:
         _log.info(

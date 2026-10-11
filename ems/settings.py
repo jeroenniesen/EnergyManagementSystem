@@ -905,6 +905,30 @@ def validate_settings(partial: Any) -> tuple[dict[str, Any], dict[str, str]]:
             if parsed.scheme not in ("http", "https") or not parsed.netloc:
                 errors[key] = "must be an http(s) URL with a host"
                 continue
+        if key == "consumers.ha.url" and result:
+            # #266 / #261: HA is typically LAN — allow private hosts, but require a sane
+            # http(s) base (no file:, empty host, userinfo, or path/query smuggling).
+            from urllib.parse import urlparse
+
+            parsed = urlparse(str(result).strip())
+            path = (parsed.path or "").rstrip("/")
+            if (
+                parsed.scheme not in ("http", "https")
+                or not parsed.netloc
+                or parsed.username is not None
+                or parsed.password is not None
+                or path not in ("",)
+                or parsed.query
+                or parsed.fragment
+            ):
+                errors[key] = (
+                    "must be an http(s) URL with a host only "
+                    "(no path, query, fragment, or credentials)"
+                )
+                continue
+            # Canonical base without trailing slash (adapter joins `/api/states`).
+            clean[key] = f"{parsed.scheme}://{parsed.netloc}"
+            continue
         if field.type == "secret" and result == "":
             continue  # blank secret = keep the existing value
         clean[key] = result
