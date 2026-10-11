@@ -9,6 +9,7 @@ from ems.consumers.models import (
     ConsumerCapabilities,
     ConsumerDevice,
     ConsumerKind,
+    ConsumerState,
     ConsumerStatus,
 )
 from ems.consumers.ports import ConsumerPort
@@ -26,6 +27,7 @@ __all__ = [
     "ConsumerDevice",
     "ConsumerKind",
     "ConsumerPort",
+    "ConsumerState",
     "ConsumerStatus",
     "HA_DEVICE_IDS_KEY",
     "SMARTTHINGS_DEVICE_IDS_KEY",

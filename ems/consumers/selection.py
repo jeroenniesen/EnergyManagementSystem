@@ -58,9 +58,10 @@ def parse_device_ids(raw: Any) -> tuple[str, ...]:
     seen: set[str] = set()
     out: list[str] = []
     for item in items:
-        if item is None:
+        # Opt-in ids must be real strings — never coerce numbers/bools into ids.
+        if not isinstance(item, str):
             continue
-        device_id = str(item).strip()
+        device_id = item.strip()
         if not device_id or device_id in seen:
             continue
         seen.add(device_id)

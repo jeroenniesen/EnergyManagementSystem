@@ -8,6 +8,7 @@ from ems.consumers.models import (
     ConsumerCapabilities,
     ConsumerDevice,
     ConsumerKind,
+    ConsumerState,
     ConsumerStatus,
 )
 from ems.consumers.selection import apply_opt_in
@@ -47,7 +48,7 @@ class MockConsumerSource:
         device = next(d for d in self._devices if d.id == device_id)
         return ConsumerStatus(
             device_id=device_id,
-            state="idle",
+            state=ConsumerState.IDLE,
             power_w=0.0 if device.capabilities.reports_power else None,
             energy_kwh=None,
             can_start=device.capabilities.supports_delayed_start,
@@ -56,9 +57,9 @@ class MockConsumerSource:
 
 
 def _default_catalog() -> list[ConsumerDevice]:
-    caps_power = ConsumerCapabilities(
+    caps = ConsumerCapabilities(
         reports_power=True,
-        reports_energy=True,
+        reports_energy=False,  # mock status does not invent cumulative kWh
         reports_status=True,
         supports_delayed_start=True,
     )
@@ -68,13 +69,13 @@ def _default_catalog() -> list[ConsumerDevice]:
             name="Mock washer",
             kind=ConsumerKind.WASHER,
             integration="mock",
-            capabilities=caps_power,
+            capabilities=caps,
         ),
         ConsumerDevice(
             id="mock-dryer-1",
             name="Mock dryer",
             kind=ConsumerKind.DRYER,
             integration="mock",
-            capabilities=caps_power,
+            capabilities=caps,
         ),
     ]

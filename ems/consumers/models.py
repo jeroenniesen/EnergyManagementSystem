@@ -19,6 +19,16 @@ class ConsumerKind(StrEnum):
     UNKNOWN = "unknown"
 
 
+class ConsumerState(StrEnum):
+    """Vendor-neutral runtime state tokens for ``ConsumerStatus.state``."""
+
+    IDLE = "idle"
+    RUNNING = "running"
+    DELAYED = "delayed"
+    OFFLINE = "offline"
+    UNKNOWN = "unknown"
+
+
 @dataclass(frozen=True)
 class ConsumerCapabilities:
     """What this device can report / do. Start = delayed start only (epic #222)."""
@@ -50,7 +60,7 @@ class ConsumerStatus:
     """Point-in-time status for a consumer. Missing telemetry stays None (honest)."""
 
     device_id: str
-    state: str  # vendor-neutral token: idle | running | delayed | offline | unknown
+    state: ConsumerState
     power_w: float | None = None
     energy_kwh: float | None = None
     can_start: bool = False

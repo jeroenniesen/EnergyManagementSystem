@@ -25,7 +25,11 @@ class ConsumerPort(Protocol):
         ...
 
     def list_devices(self) -> list[ConsumerDevice]:
-        """Discover / list devices. Opt-in flag may already be applied by the adapter."""
+        """Full discovered catalog with ``opted_in`` set from settings (via ``apply_opt_in``).
+
+        Adapters must not pre-filter to opted-in only — callers use ``filter_opted_in``
+        when they need participants.
+        """
         ...
 
     def get_status(self, device_id: str) -> ConsumerStatus | None:

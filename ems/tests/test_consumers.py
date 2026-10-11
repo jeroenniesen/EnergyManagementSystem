@@ -28,8 +28,10 @@ def test_parse_device_ids_tolerant() -> None:
     assert parse_device_ids("[]") == ()
     assert parse_device_ids('["a", "b"]') == ("a", "b")
     assert parse_device_ids(["a", "a", " b "]) == ("a", "b")
+    assert parse_device_ids([1, "ok", True]) == ("ok",)  # non-strings dropped
     assert parse_device_ids("a, b, a") == ("a", "b")
     assert parse_device_ids("{not-json") == ()
+    assert parse_device_ids('{"x":1}') == ()  # object ≠ list
     assert parse_device_ids(42) == ()
 
 
@@ -88,8 +90,10 @@ def test_mock_consumer_port_conformance_and_status() -> None:
     assert [d.id for d in devices if d.opted_in] == ["mock-washer-1"]
     status = src.get_status("mock-washer-1")
     assert status is not None
-    assert status.state == "idle"
+    from ems.consumers import ConsumerState
+    assert status.state is ConsumerState.IDLE
     assert status.can_start is True
+    assert status.energy_kwh is None
     assert src.get_status("nope") is None
 
 
