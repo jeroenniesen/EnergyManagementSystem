@@ -5,6 +5,7 @@ Concrete SmartThings / HA clients and web UI arrive in later slices.
 """
 from __future__ import annotations
 
+from ems.consumers.factory import build_consumer_sources
 from ems.consumers.models import (
     ConsumerCapabilities,
     ConsumerDevice,
@@ -32,6 +33,7 @@ __all__ = [
     "HA_DEVICE_IDS_KEY",
     "SMARTTHINGS_DEVICE_IDS_KEY",
     "apply_opt_in",
+    "build_consumer_sources",
     "filter_opted_in",
     "opted_in_ids",
     "parse_device_ids",

@@ -84,6 +84,11 @@ def build_app():
     # Roadmap F3 (Insights reporting only — never touches control): static flat factor by default,
     # or the live ElectricityMaps signal when configured with a key. See build_carbon_source.
     carbon_source = build_carbon_source(eff, http=http_runtime)
+    # #225 / epic #222: appliance adapters (SmartThings when enabled+PAT; mock in mock/replay).
+    from ems.consumers.factory import build_consumer_sources
+    consumer_sources = build_consumer_sources(
+        eff, http=http_runtime, dev_mode=dev_mode,
+    )
     recorder = Recorder(source, store, freshness, cycle_seconds=cfg.cycle_seconds,
                         price_source=price_source, solar_forecast=solar_forecast,
                         carbon_source=carbon_source)
@@ -125,6 +130,7 @@ def build_app():
         web_auth_token=os.environ.get("EMS_WEB_TOKEN") or None,
         static_dir=_STATIC_DIR,
         http_runtime=http_runtime,
+        consumer_sources=consumer_sources,
     )
     return app, cfg
 

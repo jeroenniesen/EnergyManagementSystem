@@ -194,6 +194,9 @@ def _seed_from_config(cfg) -> dict:
     token = os.environ.get("TIBBER_TOKEN")
     if token:
         seed["prices.tibber_token"] = token
+    st_pat = os.environ.get("SMARTTHINGS_PAT")
+    if st_pat:
+        seed["consumers.smartthings.pat"] = st_pat
     solcast_key = os.environ.get("SOLCAST_API_KEY")
     if solcast_key:
         seed["solar.solcast_api_key"] = solcast_key
