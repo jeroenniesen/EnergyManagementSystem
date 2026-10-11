@@ -157,26 +157,46 @@ def build_automation_bounds(
             value=None,
         ))
 
+    # Saved toggles apply after Apply & restart — say so, and note lag vs live dry_run.
+    watch_explain = (
+        "Saved setting (after Apply & restart): when on, EMS plans and explains "
+        "but does not change the battery. A server install in demo or fixed "
+        "watch-only mode can still block writes even if this toggle is off."
+    )
+    if watch and not dry_run:
+        watch_explain += (
+            " This process still allows writes until you Apply & restart."
+        )
+    elif not watch and dry_run:
+        watch_explain += (
+            " This process is still watch-only until you Apply & restart."
+        )
     bounds.append(_bound(
         id="watch_only",
         label="Watch only",
-        explanation=(
-            "When on, EMS plans and explains but does not change the battery. "
-            "A server install in demo or fixed watch-only mode can still block writes "
-            "even if this toggle is off."
-        ),
+        explanation=watch_explain,
         status="known",
         display="On" if watch else "Off",
         value=watch,
         setting_key="control.dry_run",
     ))
+    op_explain = (
+        "Saved setting (after Apply & restart): main on/off for live control. "
+        "Off means EMS will not write to the battery even when Watch only is off."
+    )
+    if operational and writes_allowed is False and not dry_run:
+        op_explain += (
+            " Battery writes stay blocked until live control is active "
+            "(see Battery writes above)."
+        )
+    elif not operational and writes_allowed is True:
+        op_explain += (
+            " This process still allows writes until you Apply & restart."
+        )
     bounds.append(_bound(
         id="operational",
         label="Let the system control the battery",
-        explanation=(
-            "Main on/off for live control. Off means EMS will not write to the battery "
-            "even when Watch only is off."
-        ),
+        explanation=op_explain,
         status="known",
         display="On" if operational else "Off",
         value=operational,
@@ -303,13 +323,14 @@ def build_automation_bounds(
             value=None,
             setting_key="control.grid_fuse",
         ))
-        ceiling = limit_w if limit_w is not None else 5750.0
+        default_limit = float(SETTINGS_BY_KEY["control.grid_limit_w"].default)
+        ceiling = limit_w if limit_w is not None else default_limit
         bounds.append(_bound(
             id="grid_limit_w",
-            label="Grid charge ceiling (while fuse unset)",
+            label="Grid import ceiling (while fuse unset)",
             explanation=(
-                "Temporary watt limit used until the main fuse is confirmed. "
-                "Not your real fuse rating."
+                "Temporary watt limit for charge plus expected house load until "
+                "the main fuse is confirmed. Not your real fuse rating."
             ),
             status="effective",
             display=f"{ceiling:.0f} W",
@@ -327,7 +348,10 @@ def build_automation_bounds(
         bounds.append(_bound(
             id="grid_fuse",
             label="Main fuse",
-            explanation="House main fuse. EMS will not plan grid-charge above this ceiling.",
+            explanation=(
+                "House main fuse. EMS plans so grid charge plus expected house "
+                "load stays within this ceiling."
+            ),
             status="known",
             display=display_fuse,
             value=fuse,
@@ -336,7 +360,7 @@ def build_automation_bounds(
         if limit_w is not None and limit_w <= 0:
             bounds.append(_bound(
                 id="grid_limit_w",
-                label="Grid charge ceiling",
+                label="Grid import ceiling",
                 explanation="Fuse check disabled (0 W means no watt ceiling from the fuse).",
                 status="known",
                 display="Disabled",
@@ -347,8 +371,11 @@ def build_automation_bounds(
         elif limit_w is not None:
             bounds.append(_bound(
                 id="grid_limit_w",
-                label="Grid charge ceiling",
-                explanation="Maximum grid-charge power EMS will plan against the main fuse.",
+                label="Grid import ceiling",
+                explanation=(
+                    "Watt ceiling for planned grid charge plus expected house load "
+                    "(not charge-only). Matches the main fuse check."
+                ),
                 status="known",
                 display=f"{limit_w:.0f} W",
                 value=limit_w,
@@ -358,7 +385,7 @@ def build_automation_bounds(
         else:
             bounds.append(_bound(
                 id="grid_limit_w",
-                label="Grid charge ceiling",
+                label="Grid import ceiling",
                 explanation="Grid watt ceiling is not available.",
                 status="unknown",
                 display="Unknown",
@@ -369,7 +396,10 @@ def build_automation_bounds(
     bounds.append(_bound(
         id="max_switches_per_day",
         label="Max mode changes per day",
-        explanation="Soft budget so the battery is not switched too often in one day.",
+        explanation=(
+            "Hard daily limit so the battery is not switched too often in one day "
+            "(manual and priority actions can still skip it)."
+        ),
         status="known" if switches is not None else "unknown",
         display=f"{switches:.0f}" if switches is not None else "Unknown",
         value=switches,
@@ -391,8 +421,8 @@ def build_automation_bounds(
         id="export_armed",
         label="Sell to the grid (export)",
         explanation=(
-            "Forced export to the grid stays off until you arm it on the Trading page. "
-            "Off by default."
+            "Forced export to the grid only when armed on the Trading page. "
+            + ("Currently armed." if export_armed else "Off by default.")
         ),
         status="known",
         display="On" if export_armed else "Off",
