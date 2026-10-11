@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 
 import { AccountTokens } from "./AccountTokens";
 import { AdminAccess } from "./Admin";
+import { AutomationBoundsCard } from "./AutomationBounds";
 import { apiFetch, clearToken } from "./auth";
 import { type CarModel, type CarsResp } from "./ev";
 import { humanize } from "./labels";
@@ -1186,6 +1187,9 @@ export function Settings({
               </header>
 
               {active === "access" && isAdmin && <AdminAccess />}
+
+              {/* #246 / B-35 slice 1: read-only "what EMS may do" before editable control fields. */}
+              {active === "control" && <AutomationBoundsCard />}
 
               <div className="settings-section-fields">
                 {basicFields.map((f) => renderField(f))}

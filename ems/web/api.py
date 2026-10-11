@@ -178,6 +178,7 @@ from ems.web.models import BatteryPlanResponse, DashboardResponse, StatusRespons
 from ems.web.ratelimit import FixedWindowRateLimiter
 from ems.web.routes.accuracy import build_router as build_accuracy_router
 from ems.web.routes.auth import build_router as build_auth_router
+from ems.web.routes.automation_bounds import build_router as build_automation_bounds_router
 from ems.web.routes.car import build_router as build_car_router
 from ems.web.routes.car import gather_car_plan
 from ems.web.routes.diagnostics import build_router as build_diagnostics_router
@@ -5356,6 +5357,10 @@ def create_app(
                   build_notify_router, build_export_router, build_accuracy_router,
                   build_whatif_router, build_reserve_advice_router):
         app.include_router(build(ctx))
+    # #246 / B-35 slice 1: needs battery/controller for probe + lifecycle (not on AppContext).
+    app.include_router(build_automation_bounds_router(
+        ctx, battery=battery, controller=controller, config_dry_run=config_dry_run,
+    ))
     app.include_router(build_plan_router(ctx, plan_service))
     app.include_router(build_report_router(ctx, report_service))
     app.include_router(build_verification_router(ctx, verification_service))

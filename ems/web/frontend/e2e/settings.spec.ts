@@ -57,6 +57,20 @@ test.describe("EMS settings", () => {
     await expect(field.locator("input[type=range]")).toBeVisible();
   });
 
+  // #246 / B-35 slice 1: read-only "What EMS may do" card atop Control & safety.
+  test("control section shows a read-only automation-bounds overview", async ({ page }) => {
+    await page.goto("/");
+    await page.getByTestId("nav-manage").click();
+    await page.getByTestId("group-control").click();
+    const card = page.getByTestId("automation-bounds");
+    await expect(card).toBeVisible();
+    await expect(card.getByTestId("automation-bounds-summary")).toBeVisible();
+    await expect(page.getByTestId("automation-bound-grid_fuse")).toBeVisible();
+    await expect(page.getByTestId("automation-bound-min_reserve_soc")).toBeVisible();
+    // Unset fuse must say so honestly — never invent a confirmed fuse.
+    await expect(page.getByTestId("automation-bound-grid_fuse")).toContainText("Not confirmed");
+  });
+
   // #197: main fuse must be chosen explicitly — unset shows a hint; custom reveals watts.
   test("main fuse picker defaults to unset with a hint; custom reveals watts", async ({ page }) => {
     await page.goto("/");

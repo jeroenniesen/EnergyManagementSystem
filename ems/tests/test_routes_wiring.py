@@ -86,6 +86,7 @@ EXTRACTED_GET_ROUTES = [
     "/api/accuracy",                   # accuracy
     "/api/advisor/solar-confidence",   # accuracy
     "/api/advisor/reserve",            # reserve advice (B-67 / #74)
+    "/api/automation-bounds",          # what EMS may do (#246 / B-35 slice 1)
     "/api/counterfactual",             # whatif (B-69)
 ]
 EXTRACTED_WRITE_ROUTES = [
