@@ -700,14 +700,16 @@ SETTINGS_SCHEMA: tuple[SettingsField, ...] = (
     SettingsField(
         "consumers.smartthings.enabled", "SmartThings integration", "bool", False, "consumers",
         help="Turn on the Samsung SmartThings appliance adapter (washer/dryer). "
-        "Needs a personal access token below. Read-only — EMS does not start cycles yet.",
-        show_in_settings=False,
+        "Needs a personal access token below. Read-only — EMS does not start cycles yet. "
+        "Takes effect after Apply & restart (same as other connection tokens).",
+        show_in_settings=False, applies="restart",
     ),
     SettingsField(
         "consumers.smartthings.pat", "SmartThings personal access token", "secret", "", "consumers",
         help="Personal access token from https://account.smartthings.com/tokens "
-        "(devices:read). Stored locally; never logged. Env: SMARTTHINGS_PAT.",
-        show_in_settings=False,
+        "(devices:read). Stored locally; never logged. Env: SMARTTHINGS_PAT. "
+        "Takes effect after Apply & restart.",
+        show_in_settings=False, applies="restart",
     ),
     SettingsField(
         "consumers.smartthings.device_ids", "SmartThings devices (opt-in)", "text",

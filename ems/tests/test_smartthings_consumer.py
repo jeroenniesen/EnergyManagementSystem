@@ -166,3 +166,82 @@ def test_no_battery_write_surface():
     assert not hasattr(src, "apply")
     assert not hasattr(src, "start")
     assert not hasattr(src, "armed")
+
+
+def test_power_consumption_report_wh_to_kwh():
+    """Samsung PCR.energy is Wh — expose kWh to the UI."""
+    payload = {
+        "items": [{
+            "deviceId": WASHER_ID,
+            "label": "Washer",
+            "deviceTypeName": "Washer",
+            "components": [{
+                "id": "main",
+                "capabilities": [
+                    {"id": "washerOperatingState"},
+                    {"id": "powerConsumptionReport"},
+                ],
+            }],
+        }],
+    }
+    status = {
+        "components": {
+            "main": {
+                "washerOperatingState": {"machineState": {"value": "run"}},
+                "powerConsumptionReport": {
+                    "powerConsumption": {
+                        "value": {"power": 380, "energy": 2500},  # Wh
+                    }
+                },
+            }
+        }
+    }
+
+    def get(url: str, headers: dict[str, str]) -> dict:
+        if url.endswith("/devices"):
+            return payload
+        return status
+
+    # Nested under .value in some firmware — also accept direct dict on attribute.
+    # Our parser reads attribute.value; reshape to ST common shape:
+    status["components"]["main"]["powerConsumptionReport"] = {
+        "powerConsumption": {"value": json.dumps({"power": 380, "energy": 2500})},
+    }
+    src = SmartThingsConsumerSource("pat", http_get=get)
+    st = src.get_status(WASHER_ID)
+    assert st is not None
+    assert st.power_w == 380.0
+    assert st.energy_kwh == 2.5
+
+
+def test_list_failure_retries_next_call():
+    calls = {"n": 0}
+
+    def flaky(url: str, headers: dict[str, str]) -> dict:
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise RuntimeError("down")
+        return DEVICES_PAYLOAD
+
+    src = SmartThingsConsumerSource("pat", http_get=flaky)
+    try:
+        src.list_devices()
+        raise AssertionError("expected raise")
+    except RuntimeError:
+        pass
+    devices = src.list_devices()
+    assert {d.id for d in devices} == {WASHER_ID, DRYER_ID}
+
+
+def test_classify_ignores_label_only():
+    assert classify_laundry({
+        "deviceId": "x",
+        "label": "Washer room light",
+        "components": [{"id": "main", "capabilities": [{"id": "switch"}]}],
+    }) is None
+
+
+def test_smartthings_settings_require_restart():
+    from ems.settings import SETTINGS_BY_KEY
+    assert SETTINGS_BY_KEY["consumers.smartthings.enabled"].applies == "restart"
+    assert SETTINGS_BY_KEY["consumers.smartthings.pat"].applies == "restart"

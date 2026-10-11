@@ -34,8 +34,9 @@ _STATE_MAP: dict[str, ConsumerState] = {
     "ready": ConsumerState.IDLE,
     "stop": ConsumerState.IDLE,
     "stopped": ConsumerState.IDLE,
-    "pause": ConsumerState.IDLE,
-    "paused": ConsumerState.IDLE,
+    # Paused mid-cycle — not "ready when you are".
+    "pause": ConsumerState.UNKNOWN,
+    "paused": ConsumerState.UNKNOWN,
     "run": ConsumerState.RUNNING,
     "running": ConsumerState.RUNNING,
     "wash": ConsumerState.RUNNING,
@@ -63,7 +64,11 @@ def _capability_ids(device: dict[str, Any]) -> set[str]:
 
 
 def classify_laundry(device: dict[str, Any]) -> ConsumerKind | None:
-    """Return washer/dryer when the device looks like laundry; else None."""
+    """Return washer/dryer when the device looks like laundry; else None.
+
+    Prefer capability ids; fall back only to vendor type fields (not free-form
+    label/name — those false-positive on e.g. \"Washer room light\").
+    """
     caps = _capability_ids(device)
     if caps & _WASHER_CAPS:
         return ConsumerKind.WASHER
@@ -71,7 +76,7 @@ def classify_laundry(device: dict[str, Any]) -> ConsumerKind | None:
         return ConsumerKind.DRYER
     blob = " ".join(
         str(device.get(k) or "")
-        for k in ("deviceTypeName", "ocfDeviceType", "name", "label")
+        for k in ("deviceTypeName", "ocfDeviceType")
     ).lower()
     if "washer" in blob or "washing" in blob:
         return ConsumerKind.WASHER
@@ -121,31 +126,67 @@ def _operating_state(status_payload: dict[str, Any], kind: ConsumerKind) -> Cons
     return ConsumerState.UNKNOWN
 
 
+def _parse_power_consumption(raw: Any) -> dict[str, Any] | None:
+    """Samsung often returns powerConsumption as a dict or a JSON string."""
+    if isinstance(raw, dict):
+        return raw
+    if isinstance(raw, str) and raw.strip().startswith("{"):
+        import json
+        try:
+            parsed = json.loads(raw)
+        except (TypeError, ValueError, json.JSONDecodeError):
+            return None
+        return parsed if isinstance(parsed, dict) else None
+    return None
+
+
 def _power_w(status_payload: dict[str, Any]) -> float | None:
-    for cap, attr in (("powerMeter", "power"), ("powerConsumptionReport", "power")):
-        raw = _cap_value(status_payload, cap, attr)
-        if raw is None:
-            continue
+    raw = _cap_value(status_payload, "powerMeter", "power")
+    if raw is not None:
         try:
             return float(raw)
         except (TypeError, ValueError):
-            continue
+            pass
+    pcr = _parse_power_consumption(
+        _cap_value(status_payload, "powerConsumptionReport", "powerConsumption")
+    )
+    if pcr is not None and pcr.get("power") is not None:
+        try:
+            return float(pcr["power"])
+        except (TypeError, ValueError):
+            pass
     return None
 
 
 def _energy_kwh(status_payload: dict[str, Any]) -> float | None:
-    raw = _cap_value(status_payload, "energyMeter", "energy")
-    if raw is None:
-        # Some devices nest energy under powerConsumptionReport.energy
-        pcr = _cap_value(status_payload, "powerConsumptionReport", "powerConsumption")
-        if isinstance(pcr, dict) and pcr.get("energy") is not None:
-            raw = pcr.get("energy")
-    if raw is None:
-        return None
-    try:
-        return float(raw)
-    except (TypeError, ValueError):
-        return None
+    """Energy in kWh. ``energyMeter`` is typically kWh; PCR ``energy`` is Wh."""
+    em = _cap_value(status_payload, "energyMeter", "energy")
+    if em is not None:
+        try:
+            value = float(em)
+        except (TypeError, ValueError):
+            value = None
+        else:
+            unit = _cap_value(status_payload, "energyMeter", "unit")
+            if unit is None:
+                # ST energyMeter attribute often nests unit beside value.
+                comps = (status_payload.get("components") or {}).get("main") or {}
+                attr = (comps.get("energyMeter") or {}).get("energy") or {}
+                if isinstance(attr, dict):
+                    unit = attr.get("unit")
+            if str(unit or "").lower() in ("wh", "watt-hour", "watthour"):
+                return value / 1000.0
+            return value
+    pcr = _parse_power_consumption(
+        _cap_value(status_payload, "powerConsumptionReport", "powerConsumption")
+    )
+    if pcr is not None and pcr.get("energy") is not None:
+        try:
+            # Samsung powerConsumptionReport.energy is watt-hours.
+            return float(pcr["energy"]) / 1000.0
+        except (TypeError, ValueError):
+            pass
+    return None
 
 
 class SmartThingsConsumerSource:
@@ -165,6 +206,8 @@ class SmartThingsConsumerSource:
         self._base = base_url.rstrip("/")
         self._timeout = timeout
         self._get = http_get or self._default_get
+        # None = not fetched yet; list = last successful discovery (may be empty).
+        # A failed fetch leaves this None so the next call retries.
         self._catalog: list[tuple[ConsumerDevice, dict[str, Any]]] | None = None
 
     @property
@@ -181,12 +224,20 @@ class SmartThingsConsumerSource:
 
     def list_devices(self) -> list[ConsumerDevice]:
         self._ensure_catalog()
-        assert self._catalog is not None
+        if self._catalog is None:
+            # Surface failure to gather_consumers (honest “can’t reach” summary).
+            raise RuntimeError("SmartThings device list unavailable")
         return [d for d, _ in self._catalog]
 
     def get_status(self, device_id: str) -> ConsumerStatus | None:
         self._ensure_catalog()
-        assert self._catalog is not None
+        if self._catalog is None:
+            return ConsumerStatus(
+                device_id=device_id,
+                state=ConsumerState.OFFLINE,
+                detail="SmartThings did not return the device list just now.",
+                observed_at=datetime.now(UTC),
+            )
         match = next(((d, r) for d, r in self._catalog if d.id == device_id), None)
         if match is None:
             return None
@@ -235,11 +286,11 @@ class SmartThingsConsumerSource:
             payload = self._get(f"{self._base}/devices", self._headers())
         except Exception:
             _log.warning("SmartThings device list failed", exc_info=True)
-            self._catalog = []
+            # Leave _catalog None so the next list/status call retries.
             return
         items = payload.get("items") if isinstance(payload, dict) else None
         if not isinstance(items, list):
-            self._catalog = []
+            _log.warning("SmartThings device list: unexpected payload shape")
             return
         built: list[tuple[ConsumerDevice, dict[str, Any]]] = []
         for item in items:
