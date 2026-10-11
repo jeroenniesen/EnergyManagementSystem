@@ -308,7 +308,8 @@ class SmartThingsConsumerSource:
                 reports_power="powerMeter" in caps_ids or "powerConsumptionReport" in caps_ids,
                 reports_energy="energyMeter" in caps_ids or "powerConsumptionReport" in caps_ids,
                 reports_status=True,
-                supports_delayed_start=False,  # live start is out of scope (#227)
+                # ST delayed-start API not wired yet; #227 advice is dry-run only.
+                supports_delayed_start=False,
             )
             built.append((
                 ConsumerDevice(

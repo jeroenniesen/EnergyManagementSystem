@@ -1,12 +1,15 @@
-"""Read-only consumers (appliances) insight API (#224 / epic #222).
+"""Read-only consumers (appliances) insight API (#224 / #227 / epic #222).
 
-GET /api/consumers — opted-in devices + status. Never starts appliances and never
-writes to the battery.
+GET /api/consumers — opted-in devices + status.
+GET /api/consumers/start-advice — cheapest contiguous start windows (dry-run default).
+
+Never starts appliances and never writes to the battery.
 """
 from __future__ import annotations
 
 import logging
 from collections.abc import Sequence
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from fastapi import APIRouter
@@ -14,6 +17,7 @@ from fastapi import APIRouter
 from ems.consumers.models import ConsumerState, ConsumerStatus
 from ems.consumers.ports import ConsumerPort
 from ems.consumers.selection import apply_opt_in, filter_opted_in
+from ems.consumers.start_advice import assumed_kwh_for_kind, propose_start_window
 from ems.web.context import AppContext
 
 _log = logging.getLogger(__name__)
@@ -26,6 +30,8 @@ _STATE_LABEL: dict[str, str] = {
     "offline": "Offline — EMS can’t reach this appliance",
     "unknown": "Status unknown",
 }
+
+_HORIZON = timedelta(hours=24)
 
 
 def _state_label(state: str) -> str:
@@ -127,6 +133,110 @@ def gather_consumers(
     }
 
 
+def gather_start_advice(
+    sources: Sequence[ConsumerPort],
+    settings: dict[str, Any],
+    price_slots: Sequence[Any],
+    *,
+    now: datetime,
+) -> dict[str, Any]:
+    """Cheapest start windows for eligible opted-in appliances (#227). Advice only."""
+    dry_run = bool(settings.get("consumers.dry_run", True))
+    enabled = bool(settings.get("consumers.start_advice_enabled", True))
+    try:
+        duration_slots = int(settings.get("consumers.default_duration_slots", 4))
+    except (TypeError, ValueError):
+        duration_slots = 4
+    duration_slots = max(1, min(32, duration_slots))
+
+    # Live delayed-start is not wired yet — always report unarmed.
+    live_armed = False
+
+    if not enabled:
+        return {
+            "title": "Start window advice",
+            "enabled": False,
+            "dry_run": dry_run,
+            "live_armed": live_armed,
+            "summary": "Start-window advice is turned off in settings.",
+            "advice": [],
+            "footnote": (
+                "Advice only — EMS won’t start your appliance until you turn off "
+                "watch-only and arm live delayed start."
+            ),
+        }
+
+    catalog = gather_consumers(sources, settings)
+    horizon_end = now + _HORIZON
+    advice_out: list[dict[str, Any]] = []
+
+    for device in catalog["devices"]:
+        caps = device.get("capabilities") or {}
+        status = device.get("status") or {}
+        eligible = bool(
+            caps.get("supports_delayed_start")
+            and status.get("can_start")
+            and status.get("state") == "idle"
+        )
+        entry: dict[str, Any] = {
+            "device_id": device["id"],
+            "device_name": device["name"],
+            "kind": device["kind"],
+            "eligible": eligible,
+            "window": None,
+            "skip_reason": None,
+        }
+        if not eligible:
+            if not caps.get("supports_delayed_start"):
+                entry["skip_reason"] = "This appliance doesn’t support delayed start yet."
+            elif status.get("state") == "running":
+                entry["skip_reason"] = "Already running — no start window needed."
+            elif status.get("state") == "offline":
+                entry["skip_reason"] = "Offline — can’t propose a start window."
+            else:
+                entry["skip_reason"] = "Not ready to start right now."
+            advice_out.append(entry)
+            continue
+
+        window = propose_start_window(
+            list(price_slots),
+            duration_slots=duration_slots,
+            now=now,
+            horizon_end=horizon_end,
+            assumed_kwh=assumed_kwh_for_kind(device["kind"]),
+        )
+        if window is None:
+            entry["skip_reason"] = "Not enough day-ahead prices for a full cycle window."
+        else:
+            entry["window"] = window
+        advice_out.append(entry)
+
+    with_window = sum(1 for a in advice_out if a.get("window"))
+    if not advice_out:
+        summary = "No selected appliances to advise on."
+    elif with_window == 0:
+        summary = "No start window available right now."
+    else:
+        summary = (
+            f"{with_window} start window{'s' if with_window != 1 else ''} "
+            f"from day-ahead prices."
+        )
+
+    return {
+        "title": "Start window advice",
+        "enabled": True,
+        "dry_run": dry_run,
+        "live_armed": live_armed,
+        "duration_slots": duration_slots,
+        "summary": summary,
+        "advice": advice_out,
+        "footnote": (
+            "Advice only — EMS won’t start your appliance until you turn off "
+            "watch-only and arm live delayed start."
+        ),
+    }
+
+
 def build_router(
     ctx: AppContext,
     *,
@@ -139,5 +249,20 @@ def build_router(
     def get_consumers() -> dict:
         """Selected appliances + status — insight only, no start/stop."""
         return gather_consumers(wired, ctx.settings_cache)
+
+    @router.get("/api/consumers/start-advice")
+    def get_start_advice() -> dict:
+        """Cheapest delayed-start windows — dry-run advice only (#227)."""
+        now = datetime.now(UTC)
+        prices: list[Any] = []
+        if ctx.price_source is not None:
+            try:
+                prices = list(ctx.price_source.slots())
+            except Exception:
+                _log.debug("consumers start-advice: price slots failed", exc_info=True)
+                prices = []
+        return gather_start_advice(
+            wired, ctx.settings_cache, prices, now=now,
+        )
 
     return router

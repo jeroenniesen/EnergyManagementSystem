@@ -696,7 +696,30 @@ SETTINGS_SCHEMA: tuple[SettingsField, ...] = (
         "ev.schedule", "Weekly charge schedule", "text", json.dumps(default_schedule()), "ev",
         help="Weekly minimum charge schedule — edited with the schedule editor below.",
     ),
-    # --- Consumers (appliances) — #223 / epic #222; opt-in device ids, UI in later slices ---
+    # --- Consumers (appliances) — #223 / epic #222; opt-in device ids + start advice (#227) ---
+    SettingsField(
+        "consumers.dry_run", "Watch only (no appliance starts)", "bool", True, "consumers",
+        help="ON (safe default): show start-window advice only — EMS never starts an appliance. "
+        "OFF alone does not start anything either; live delayed-start needs an explicit arming "
+        "control that is not shipped yet (#227). Same safety feel as battery Watch only / trading.",
+        show_in_settings=False,
+    ),
+    SettingsField(
+        "consumers.start_advice_enabled",
+        "Appliance start-window advice",
+        "bool",
+        True,
+        "consumers",
+        help="When on, Insights shows the cheapest contiguous price window for opted-in appliances "
+        "that support delayed start and are idle. Advice only — never starts a cycle.",
+        show_in_settings=False,
+    ),
+    SettingsField(
+        "consumers.default_duration_slots", "Default cycle length", "int", 4, "consumers",
+        help="How long a typical wash/dry/dish cycle is assumed to run, in 15-minute slots. "
+        "Default 4 = 1 hour. Used only for start-window advice sizing.",
+        min=1.0, max=32.0, unit="slots", show_in_settings=False, advanced=True,
+    ),
     SettingsField(
         "consumers.smartthings.enabled", "SmartThings integration", "bool", False, "consumers",
         help="Turn on the Samsung SmartThings appliance adapter (washer/dryer). "

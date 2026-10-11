@@ -2752,6 +2752,34 @@ body {
   font-size: 0.78rem;
   color: var(--muted);
 }
+.consumers-advice {
+  margin: 8px 0 0;
+  padding: 8px 10px;
+  border-left: 3px solid var(--accent, var(--line));
+  background: color-mix(in srgb, var(--panel) 88%, var(--accent, var(--line)) 12%);
+}
+.consumers-advice-window {
+  margin: 0;
+  font-size: 0.85rem;
+  color: var(--text);
+}
+.consumers-advice-reason {
+  margin: 4px 0 0;
+  font-size: 0.78rem;
+  color: var(--muted);
+  line-height: 1.4;
+}
+.consumers-advice-skip {
+  margin: 6px 0 0;
+  font-size: 0.78rem;
+  color: var(--muted);
+  font-style: italic;
+}
+.consumers-advice-summary {
+  margin: 10px 0 0;
+  font-size: 0.8rem;
+  color: var(--muted);
+}
 .consumers-footnote {
   margin: 12px 0 0;
   font-size: 0.74rem;
