@@ -346,8 +346,6 @@ export function Insights({ canOperate = true }: { canOperate?: boolean } = {}) {
   // today — see the "no reordering" note below) so the active-section scan and each tap's
   // direction stay sane.
   const sections: NavSection[] = [{ id: "insights-sec-week", label: "Week" }];
-  // #224: appliances insight is independent of the energy report window.
-  sections.push({ id: "insights-sec-appliances", label: "Appliances" });
   if (report && hasData && f) {
     sections.push({ id: "insights-sec-scores", label: "Scores" });
     sections.push({ id: "insights-sec-energy", label: "Energy" });
@@ -355,6 +353,8 @@ export function Insights({ canOperate = true }: { canOperate?: boolean } = {}) {
     sections.push({ id: "insights-sec-money", label: "Money" });
     sections.push({ id: "insights-sec-whatif", label: "What-if" });
   }
+  // #224: after Insights h2 so heading-order stays h2→h3 (a11y). Always present.
+  sections.push({ id: "insights-sec-appliances", label: "Appliances" });
   const { activeId, visible } = useSectionNav(sections);
 
   return (
@@ -362,9 +362,6 @@ export function Insights({ canOperate = true }: { canOperate?: boolean } = {}) {
       {visible && sections.length > 1 && <SectionNav sections={sections} activeId={activeId} />}
       <div id="insights-sec-week">
         <WeekDigest />
-      </div>
-      <div id="insights-sec-appliances">
-        <ConsumersCard />
       </div>
       <div className="insights-head">
         <div>
@@ -567,6 +564,11 @@ export function Insights({ canOperate = true }: { canOperate?: boolean } = {}) {
           </div>
         </>
       )}
+
+      {/* After Insights h2 — heading-order a11y (#224 CI). */}
+      <div id="insights-sec-appliances">
+        <ConsumersCard />
+      </div>
     </section>
   );
 }
