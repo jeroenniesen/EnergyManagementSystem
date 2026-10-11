@@ -29,27 +29,35 @@ JsonGet = Callable[[str, dict[str, str]], Any]
 
 def _kind_from_text(*parts: str) -> ConsumerKind | None:
     blob = " ".join(p for p in parts if p).lower().replace(" ", "_")
-    if "dishwasher" in blob:
+    if "dishwasher" in blob or "vaatwasser" in blob:
         return ConsumerKind.DISHWASHER
-    if "dryer" in blob or "tumble" in blob:
+    if "dryer" in blob or "tumble" in blob or "droger" in blob:
         return ConsumerKind.DRYER
-    if "washer" in blob or "washing" in blob:
+    if "washer" in blob or "washing" in blob or "wasmachine" in blob:
         return ConsumerKind.WASHER
     return None
 
 
 def classify_ha_entity(entity: dict[str, Any]) -> ConsumerKind | None:
-    """Heuristic laundry classification from entity_id / friendly_name / device_class."""
+    """Heuristic laundry classification from entity_id / friendly_name.
+
+    Power/energy sensors are never appliances themselves — they are sibling metrics
+    for a switch/binary_sensor primary entity.
+    """
     eid = str(entity.get("entity_id") or "")
     attrs = entity.get("attributes") if isinstance(entity.get("attributes"), dict) else {}
+    device_class = str(attrs.get("device_class") or "").lower()
+    if device_class in ("power", "energy", "current", "voltage"):
+        return None
+    domain = eid.split(".", 1)[0] if "." in eid else ""
+    # Bare power/energy sensors often share the laundry name — keep them as siblings only.
+    if domain == "sensor" and (
+        eid.endswith("_power") or eid.endswith("_energy")
+        or eid.endswith("_power_w") or eid.endswith("_energy_kwh")
+    ):
+        return None
     name = str(attrs.get("friendly_name") or "")
-    device_class = str(attrs.get("device_class") or "")
-    kind = _kind_from_text(eid, name)
-    if kind is not None:
-        return kind
-    # Power sensors alone are not laundry unless the name hints at it (handled above).
-    _ = device_class
-    return None
+    return _kind_from_text(eid, name)
 
 
 def _state_from_ha(raw_state: str) -> ConsumerState:
@@ -146,7 +154,12 @@ class HomeAssistantConsumerSource:
         return "ha"
 
     def set_settings(self, settings: dict[str, Any]) -> None:
+        prev = opted_in_ids(self._settings, "ha")
         self._settings = settings
+        # Opt-in set may add entities the heuristic missed — rediscover next list.
+        if opted_in_ids(self._settings, "ha") != prev:
+            self._catalog = None
+            return
         if self._catalog is not None:
             self._catalog = apply_opt_in(self._catalog, self._settings)
 
@@ -191,11 +204,11 @@ class HomeAssistantConsumerSource:
         state = _state_from_ha(str(entity.get("state") or ""))
         power = _power_from_entity(entity) if device.capabilities.reports_power else None
         energy = _energy_from_entity(entity) if device.capabilities.reports_energy else None
-        # Sibling sensors in the cached snapshot (same list fetch) when primary has no power.
+        # Fresh sibling reads each status call (do not reuse the list-time snapshot).
         if power is None and device.capabilities.reports_power:
-            power = self._sibling_metric(device_id, "power")
+            power = self._fetch_sibling_metric(device_id, "power")
         if energy is None and device.capabilities.reports_energy:
-            energy = self._sibling_metric(device_id, "energy")
+            energy = self._fetch_sibling_metric(device_id, "energy")
         return ConsumerStatus(
             device_id=device_id,
             state=state,
@@ -205,21 +218,22 @@ class HomeAssistantConsumerSource:
             observed_at=datetime.now(UTC),
         )
 
-    def _sibling_metric(self, device_id: str, kind: str) -> float | None:
-        """Best-effort: sensor.<stem>_power / _energy next to switch.<stem>."""
+    def _sibling_ids(self, device_id: str, kind: str) -> tuple[str, ...]:
         stem = device_id.split(".", 1)[-1]
-        candidates = [
-            f"sensor.{stem}_{kind}",
-            f"sensor.{stem}_{kind}_w" if kind == "power" else f"sensor.{stem}_{kind}_kwh",
-        ]
-        for cid in candidates:
-            ent = self._by_id.get(cid)
+        if kind == "power":
+            return (f"sensor.{stem}_power", f"sensor.{stem}_power_w")
+        return (f"sensor.{stem}_energy", f"sensor.{stem}_energy_kwh")
+
+    def _fetch_sibling_metric(self, device_id: str, kind: str) -> float | None:
+        """Best-effort live read of sensor.<stem>_power / _energy next to switch.<stem>."""
+        for cid in self._sibling_ids(device_id, kind):
+            try:
+                ent = self._get(f"{self._base}/api/states/{cid}", self._headers())
+            except Exception:
+                continue
             if not isinstance(ent, dict):
                 continue
-            if kind == "power":
-                val = _power_from_entity(ent)
-            else:
-                val = _energy_from_entity(ent)
+            val = _power_from_entity(ent) if kind == "power" else _energy_from_entity(ent)
             if val is not None:
                 return val
         return None
@@ -282,15 +296,16 @@ class HomeAssistantConsumerSource:
     ) -> ConsumerDevice:
         attrs = entity.get("attributes") if isinstance(entity.get("attributes"), dict) else {}
         name = str(attrs.get("friendly_name") or eid)
+        stem = eid.split(".", 1)[-1]
         reports_power = (
             _power_from_entity(entity) is not None
-            or str(attrs.get("device_class") or "").lower() == "power"
-            or f"sensor.{eid.split('.', 1)[-1]}_power" in self._by_id
+            or f"sensor.{stem}_power" in self._by_id
+            or f"sensor.{stem}_power_w" in self._by_id
         )
         reports_energy = (
             _energy_from_entity(entity) is not None
-            or str(attrs.get("device_class") or "").lower() == "energy"
-            or f"sensor.{eid.split('.', 1)[-1]}_energy" in self._by_id
+            or f"sensor.{stem}_energy" in self._by_id
+            or f"sensor.{stem}_energy_kwh" in self._by_id
         )
         return ConsumerDevice(
             id=eid,

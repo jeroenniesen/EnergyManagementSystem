@@ -82,7 +82,19 @@ def test_ha_port_discovers_laundry_and_opt_in():
     ids = {d.id for d in devices}
     assert WASHER in ids and DRYER in ids
     assert TV not in ids
+    # Power/energy sensors are siblings — never listed as appliances.
+    assert POWER not in ids and ENERGY not in ids
     assert [d.id for d in devices if d.opted_in] == [WASHER]
+
+
+def test_set_settings_rediscovers_new_opt_in():
+    src = HomeAssistantConsumerSource(
+        "http://ha.local:8123", "tok", http_get=_fake_get, settings={},
+    )
+    assert all(not d.opted_in for d in src.list_devices())
+    src.set_settings({HA_DEVICE_IDS_KEY: json.dumps([WASHER])})
+    opted = [d.id for d in src.list_devices() if d.opted_in]
+    assert opted == [WASHER]
 
 
 def test_ha_status_maps_running_and_sibling_power_energy():
