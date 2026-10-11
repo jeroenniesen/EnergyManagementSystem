@@ -561,17 +561,19 @@ export function Insights({ canOperate = true }: { canOperate?: boolean } = {}) {
           <div id="insights-sec-money">
             <FinanceSection period={period} anchor={anchor} />
           </div>
-
-          <div id="insights-sec-whatif">
-            <WhatIf />
-          </div>
         </>
       )}
 
-      {/* After Insights h2 — heading-order a11y (#224 CI). */}
+      {/* After Insights h2 (heading-order); before What-if when present (#224). */}
       <div id="insights-sec-appliances">
         <ConsumersCard />
       </div>
+
+      {report && hasData && f && (
+        <div id="insights-sec-whatif">
+          <WhatIf />
+        </div>
+      )}
     </section>
   );
 }
