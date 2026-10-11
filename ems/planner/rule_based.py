@@ -92,7 +92,7 @@ class PlannerConfig:
     horizon_slots: int = 96  # next ~24h
     negative_price_soak: bool = False  # opt-in: charge on sub-zero slots (paid to consume)
     import_fee_eur_per_kwh: float = 0.0
-    tibber_total_includes_all: bool = False
+    price_includes_all_fees: bool = False
 
 
 def _all_auto(prices: list[PriceSlot], now: datetime, note: str) -> Plan:
@@ -108,7 +108,7 @@ def _all_auto(prices: list[PriceSlot], now: datetime, note: str) -> Plan:
 
 
 def _effective_import_price(p: PriceSlot, cfg: PlannerConfig) -> float:
-    if cfg.tibber_total_includes_all:
+    if cfg.price_includes_all_fees:
         return p.eur_per_kwh
     return p.eur_per_kwh + cfg.import_fee_eur_per_kwh
 

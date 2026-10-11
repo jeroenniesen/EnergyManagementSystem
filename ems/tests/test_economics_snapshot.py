@@ -41,7 +41,7 @@ def test_delivered_cost_and_break_even_match_existing_formula():
 def test_policy_fees_and_metadata_are_serializable():
     snap = EconomicSnapshot.from_tariff_policy(
         TariffPolicy(
-            tibber_total_includes_all=False,
+            price_includes_all_fees=False,
             import_fee_eur_per_kwh=0.04,
             export_fee_eur_per_kwh=0.01,
         ),

@@ -30,7 +30,7 @@ def validate_tariff_policy(
             "missing_export_fee", "info",
             "Post-2027 export valuation has no export fee configured; check the supplier contract.",
         ))
-    if not policy.tibber_total_includes_all and policy.import_fee_eur_per_kwh == 0.0:
+    if not policy.price_includes_all_fees and policy.import_fee_eur_per_kwh == 0.0:
         warnings.append(TariffWarning(
             "missing_import_fee", "info",
             "Provider total is marked incomplete but no import fee is configured; savings may be "
