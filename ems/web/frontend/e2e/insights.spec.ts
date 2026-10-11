@@ -53,6 +53,49 @@ function shiftDay(d: string, delta: number): string {
 }
 
 test.describe("Insights", () => {
+  // #224 / epic #222: read-only appliances card (mock API — no start/stop controls).
+  test("shows a read-only appliances card with selected device status", async ({ page }) => {
+    await page.route("**/api/report**", (route) =>
+      route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(REPORT) }),
+    );
+    await page.route("**/api/consumers**", (route) =>
+      route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          title: "Appliances",
+          summary: "1 selected appliance.",
+          read_only: true,
+          devices: [
+            {
+              id: "mock-washer-1",
+              name: "Mock washer",
+              kind: "washer",
+              integration: "mock",
+              opted_in: true,
+              status: {
+                state: "idle",
+                state_label: "Idle — ready when you are",
+                power_w: 0,
+                energy_kwh: null,
+                can_start: true,
+                observed_at: null,
+                detail: null,
+              },
+            },
+          ],
+        }),
+      }),
+    );
+    await page.goto("/");
+    await page.getByTestId("nav-insights").click();
+    const card = page.getByTestId("consumers-card");
+    await expect(card).toBeVisible();
+    await expect(page.getByTestId("consumer-mock-washer-1")).toBeVisible();
+    await expect(page.getByTestId("consumer-mock-washer-1-state")).toContainText("Idle");
+    await expect(card.getByRole("button", { name: /start|stop/i })).toHaveCount(0);
+  });
+
   test("shows the three scores and the energy-flow amounts", async ({ page }) => {
     await page.route("**/api/report**", (route) =>
       route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(REPORT) }),

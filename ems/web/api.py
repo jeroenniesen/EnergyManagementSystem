@@ -181,6 +181,7 @@ from ems.web.routes.auth import build_router as build_auth_router
 from ems.web.routes.automation_bounds import build_router as build_automation_bounds_router
 from ems.web.routes.car import build_router as build_car_router
 from ems.web.routes.car import gather_car_plan
+from ems.web.routes.consumers import build_router as build_consumers_router
 from ems.web.routes.diagnostics import build_router as build_diagnostics_router
 from ems.web.routes.digest import (
     _last_completed_week_monday,  # noqa: F401 — re-exported for tests (test_digest_api)
@@ -964,6 +965,8 @@ def create_app(
     audit_store: AuditStore | None = None,
     auth_store: AuthStore | None = None,
     cache_store: CacheStore | None = None,
+    # #224 / epic #222: optional ConsumerPort adapters (mock in tests/dev; ST/HA later).
+    consumer_sources: list | None = None,
     control_cycle_seconds: float = 300.0,
     history_retention_days: int = 90,
     history_purge_enabled: bool = True,
@@ -974,6 +977,14 @@ def create_app(
     http_runtime: HttpRuntime | None = None,
 ) -> FastAPI:
     application_clock = clock or SystemClock()
+
+    # Appliances insight (#224): mock catalog in mock/replay so the UI has a dry path;
+    # live installs stay empty until SmartThings/HA adapters (#225/#226) are wired.
+    if consumer_sources is None and dev_mode in ("mock", "replay"):
+        from ems.consumers.mock import MockConsumerSource
+        consumer_sources = [MockConsumerSource()]
+    elif consumer_sources is None:
+        consumer_sources = []
 
     def _now_utc() -> datetime:
         return application_clock.now_utc()
@@ -5362,6 +5373,8 @@ def create_app(
         ctx, controller=controller, config_dry_run=config_dry_run,
         capability_getter=lambda: _capability_box.get("cap"),
     ))
+    # #224: read-only appliances insight (ConsumerPort list; no start, no battery writes).
+    app.include_router(build_consumers_router(ctx, sources=consumer_sources))
     app.include_router(build_plan_router(ctx, plan_service))
     app.include_router(build_report_router(ctx, report_service))
     app.include_router(build_verification_router(ctx, verification_service))

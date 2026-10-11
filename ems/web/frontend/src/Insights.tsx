@@ -5,6 +5,7 @@
 import { useEffect, useState } from "react";
 
 import { apiFetch } from "./auth";
+import { ConsumersCard } from "./ConsumersCard";
 import { EnergyBehavior, type SeriesBucket } from "./EnergyBehavior";
 import { FinanceSection } from "./FinanceSection";
 import { HeatingAdvice } from "./HeatingAdvice";
@@ -345,6 +346,8 @@ export function Insights({ canOperate = true }: { canOperate?: boolean } = {}) {
   // today — see the "no reordering" note below) so the active-section scan and each tap's
   // direction stay sane.
   const sections: NavSection[] = [{ id: "insights-sec-week", label: "Week" }];
+  // #224: appliances insight is independent of the energy report window.
+  sections.push({ id: "insights-sec-appliances", label: "Appliances" });
   if (report && hasData && f) {
     sections.push({ id: "insights-sec-scores", label: "Scores" });
     sections.push({ id: "insights-sec-energy", label: "Energy" });
@@ -359,6 +362,9 @@ export function Insights({ canOperate = true }: { canOperate?: boolean } = {}) {
       {visible && sections.length > 1 && <SectionNav sections={sections} activeId={activeId} />}
       <div id="insights-sec-week">
         <WeekDigest />
+      </div>
+      <div id="insights-sec-appliances">
+        <ConsumersCard />
       </div>
       <div className="insights-head">
         <div>
