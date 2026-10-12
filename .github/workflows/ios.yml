@@ -56,6 +56,20 @@ jobs:
           grep -q 'A251COREPRIVACYINFO000001' ios/EMSControl/EMSControl.xcodeproj/project.pbxproj
           grep -q 'A251WDGTPRIVACYINFO000001' ios/EMSControl/EMSControl.xcodeproj/project.pbxproj
 
+      # #252: export compliance — no manual ASC prompt on TestFlight upload.
+      - name: Check ITSAppUsesNonExemptEncryption
+        run: |
+          set -euo pipefail
+          for f in \
+            ios/EMSControl/Sources/EMSControlApp/Info.plist \
+            ios/EMSControl/Sources/EMSWidget/Info.plist
+          do
+            echo "check $f"
+            plutil -lint "$f"
+            plutil -extract ITSAppUsesNonExemptEncryption raw -o - "$f" | grep -qx 'false'
+          done
+          grep -q 'ITSAppUsesNonExemptEncryption' ios/EMSControl/project.yml
+
       # SPM `swift test` only — no xcodegen (not guaranteed to be installed
       # on the runner) and no xcodebuild (app target isn't part of this
       # gate). The runner's default DEVELOPER_DIR already points at a full
