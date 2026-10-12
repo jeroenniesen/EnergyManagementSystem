@@ -13,8 +13,12 @@ targets:
     deploymentTarget: "17.0"
     sources:
       - path: Sources/EMSControlCore
+        excludes:
+          - PrivacyInfo.xcprivacy
     resources:
       - path: Resources
+      # Required-reason API declaration for App Group UserDefaults (#251).
+      - path: Sources/EMSControlCore/PrivacyInfo.xcprivacy
     settings:
       base:
         PRODUCT_NAME: EMSControlCore
@@ -28,10 +32,14 @@ targets:
     deploymentTarget: "17.0"
     sources:
       - path: Sources/EMSControlApp
+        excludes:
+          - PrivacyInfo.xcprivacy
       - path: Resources
         buildPhase: resources
     resources:
       - path: Sources/EMSControlApp/Assets.xcassets
+      # Privacy manifest for UserDefaults / App Group (#251).
+      - path: Sources/EMSControlApp/PrivacyInfo.xcprivacy
     dependencies:
       - target: EMSControlCore
       - target: EMSWidget
@@ -62,6 +70,11 @@ targets:
     deploymentTarget: "17.0"
     sources:
       - path: Sources/EMSWidget
+        excludes:
+          - PrivacyInfo.xcprivacy
+    resources:
+      # Privacy manifest for App Group UserDefaults used by the widget (#251).
+      - path: Sources/EMSWidget/PrivacyInfo.xcprivacy
     dependencies:
       - target: EMSControlCore
         embed: false
