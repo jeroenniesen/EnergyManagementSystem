@@ -49,14 +49,12 @@ jobs:
           done
           # Packaging: committed Xcode project must Copy Bundle each manifest (#251).
           echo "check project.pbxproj membership"
-          for path in             Sources/EMSControlApp/PrivacyInfo.xcprivacy             Sources/EMSWidget/PrivacyInfo.xcprivacy             Sources/EMSControlCore/PrivacyInfo.xcprivacy
-          do
-            # File refs use basename; require three resource build entries + three file refs.
-            :
-          done
           count=$(grep -c 'PrivacyInfo.xcprivacy in Resources' ios/EMSControl/EMSControl.xcodeproj/project.pbxproj)
+          # 3 PBXBuildFile rows + 3 Resources-phase file entries.
           test "$count" -ge 6
-          grep -q 'PrivacyInfo.xcprivacy' ios/EMSControl/EMSControl.xcodeproj/project.pbxproj
+          grep -q 'A251APP0PRIVACYINFO000001' ios/EMSControl/EMSControl.xcodeproj/project.pbxproj
+          grep -q 'A251COREPRIVACYINFO000001' ios/EMSControl/EMSControl.xcodeproj/project.pbxproj
+          grep -q 'A251WDGTPRIVACYINFO000001' ios/EMSControl/EMSControl.xcodeproj/project.pbxproj
 
       # SPM `swift test` only — no xcodegen (not guaranteed to be installed
       # on the runner) and no xcodebuild (app target isn't part of this
