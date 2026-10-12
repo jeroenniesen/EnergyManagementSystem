@@ -27,6 +27,27 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # #251: privacy manifests must be well-formed plists (TestFlight required-reason APIs).
+      - name: Lint PrivacyInfo.xcprivacy
+        run: |
+          set -euo pipefail
+          for f in \
+            ios/EMSControl/Sources/EMSControlApp/PrivacyInfo.xcprivacy \
+            ios/EMSControl/Sources/EMSWidget/PrivacyInfo.xcprivacy \
+            ios/EMSControl/Sources/EMSControlCore/PrivacyInfo.xcprivacy
+          do
+            echo "lint $f"
+            plutil -lint "$f"
+            # NSPrivacyTracking false; UserDefaults reasons CA92.1 (app) + 1C8F.1 (App Group).
+            grep -q 'NSPrivacyTracking' "$f"
+            grep -q '<false/>' "$f"
+            grep -q 'NSPrivacyAccessedAPICategoryUserDefaults' "$f"
+            grep -q 'CA92.1' "$f"
+            grep -q '1C8F.1' "$f"
+            grep -q 'NSPrivacyTrackingDomains' "$f"
+            grep -q 'NSPrivacyCollectedDataTypes' "$f"
+          done
+
       # SPM `swift test` only — no xcodegen (not guaranteed to be installed
       # on the runner) and no xcodebuild (app target isn't part of this
       # gate). The runner's default DEVELOPER_DIR already points at a full

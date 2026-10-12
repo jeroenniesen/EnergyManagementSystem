@@ -10,7 +10,11 @@ let package = Package(
     targets: [
         .target(
             name: "EMSControlCore",
-            resources: [.process("../../Resources")]
+            // Demo JSON fixtures + privacy manifest for App Group UserDefaults (#251).
+            resources: [
+                .process("../../Resources"),
+                .copy("PrivacyInfo.xcprivacy"),
+            ]
         ),
         .testTarget(
             name: "EMSControlCoreTests",
