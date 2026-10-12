@@ -256,11 +256,6 @@ export function HaWizard({ values, canOperate = true, onSaved }: Props) {
             {" "}(<code>https://….ui.nabu.casa</code>).
           </p>
           {urlHint && <p className="ha-wizard-error">{urlHint}</p>}
-          {httpWarn && (
-            <p className="ha-wizard-warn" data-testid="ha-wizard-http-warn">
-              You’re using http:// with a non-local host. Prefer https:// outside your home network.
-            </p>
-          )}
           <div className="ha-wizard-actions">
             <button
               type="button"
@@ -277,6 +272,12 @@ export function HaWizard({ values, canOperate = true, onSaved }: Props) {
 
       {step === "create_token" && (
         <div className="ha-wizard-panel" data-testid="ha-wizard-step-create">
+          {httpWarn && (
+            <p className="ha-wizard-warn" data-testid="ha-wizard-http-warn">
+              You’re using http:// with a non-local host. Prefer https:// outside your home
+              network — the long-lived token would otherwise travel in cleartext.
+            </p>
+          )}
           <ol className="ha-wizard-steps">
             <li>
               Open{" "}
@@ -318,6 +319,12 @@ export function HaWizard({ values, canOperate = true, onSaved }: Props) {
 
       {step === "paste_token" && (
         <div className="ha-wizard-panel" data-testid="ha-wizard-step-paste">
+          {httpWarn && (
+            <p className="ha-wizard-warn" data-testid="ha-wizard-http-warn">
+              You’re using http:// with a non-local host. Prefer https:// outside your home
+              network — the long-lived token would otherwise travel in cleartext.
+            </p>
+          )}
           <label className="ha-wizard-label" htmlFor="ha-token">
             Long-lived access token
           </label>
@@ -368,6 +375,12 @@ export function HaWizard({ values, canOperate = true, onSaved }: Props) {
 
       {step === "test" && (
         <div className="ha-wizard-panel" data-testid="ha-wizard-step-test">
+          {httpWarn && (
+            <p className="ha-wizard-warn" data-testid="ha-wizard-http-warn">
+              You’re using http:// with a non-local host. Prefer https:// outside your home
+              network — the long-lived token would otherwise travel in cleartext.
+            </p>
+          )}
           <p>EMS will ask Home Assistant for appliance entities (read-only).</p>
           <div className="ha-wizard-actions">
             <button

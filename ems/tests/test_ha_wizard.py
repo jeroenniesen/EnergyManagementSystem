@@ -150,6 +150,33 @@ def test_api_test_connection_and_disconnect(tmp_path, monkeypatch):
         assert values["consumers.ha.token"] == ""
         assert values["consumers.ha.token.__set"] is True
 
+        # Stored token must not follow a different URL (SSRF / credential redirect).
+        hijack = c.post(
+            "/api/consumers/ha/test-connection",
+            json={"url": "http://evil.example:8123", "use_stored_token": True},
+        )
+        assert hijack.status_code == 200
+        assert hijack.json()["ok"] is False
+        assert hijack.json()["error"] == "url_mismatch"
+        assert "evil" not in hijack.text.lower() or "url_mismatch" in hijack.json()["error"]
+
+        # String "false" must not enable the stored-token path.
+        fake_flag = c.post(
+            "/api/consumers/ha/test-connection",
+            json={"url": "http://evil.example:8123", "use_stored_token": "false"},
+        )
+        assert fake_flag.status_code == 200
+        assert fake_flag.json()["ok"] is False
+
+        # Same stored URL + use_stored_token is allowed.
+        ok_reuse = c.post(
+            "/api/consumers/ha/test-connection",
+            json={"url": "http://ha.local:8123", "use_stored_token": True},
+        )
+        assert ok_reuse.status_code == 200
+        assert ok_reuse.json()["ok"] is True
+        assert "secret-token" not in ok_reuse.text
+
         d = c.post("/api/consumers/ha/disconnect")
         assert d.status_code == 200
         assert d.json()["ok"] is True

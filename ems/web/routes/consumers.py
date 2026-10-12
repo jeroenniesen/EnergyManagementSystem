@@ -9,6 +9,7 @@ Never starts appliances and never writes to the battery.
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 from collections.abc import Sequence
 from datetime import UTC, datetime, timedelta
@@ -22,7 +23,7 @@ from ems.consumers.models import ConsumerState, ConsumerStatus
 from ems.consumers.ports import ConsumerPort
 from ems.consumers.selection import apply_opt_in, default_device_ids_json, filter_opted_in
 from ems.consumers.start_advice import assumed_kwh_for_kind, propose_start_window
-from ems.settings import effective_settings
+from ems.settings import effective_settings, normalize_ha_url
 from ems.web.context import AppContext
 
 _log = logging.getLogger(__name__)
@@ -282,13 +283,46 @@ def build_router(
         if not isinstance(body, dict):
             body = {}
         url = str(body.get("url") or "").strip()
-        use_stored = bool(body.get("use_stored_token"))
+        # Strict true only — string "false" must not enable the stored-token path.
+        use_stored = body.get("use_stored_token") is True
         token = str(body.get("token") or "").strip()
         if use_stored and not token:
-            token = str(ctx.settings_cache.get("consumers.ha.token") or "").strip()
-            if not url:
-                url = str(ctx.settings_cache.get("consumers.ha.url") or "").strip()
-        result = probe_ha_connection(url, token, http_get=http_get)
+            stored_token = str(ctx.settings_cache.get("consumers.ha.token") or "").strip()
+            stored_url = str(ctx.settings_cache.get("consumers.ha.url") or "").strip()
+            if not stored_token:
+                return {
+                    "ok": False,
+                    "error": "invalid_token",
+                    "message": "No Home Assistant token is saved yet. Paste a token to test.",
+                }
+            # Stored token may only go to the stored URL — never to a caller-chosen host.
+            if url:
+                try:
+                    want = normalize_ha_url(url)
+                    have = normalize_ha_url(stored_url) if stored_url else ""
+                except ValueError:
+                    return {
+                        "ok": False,
+                        "error": "invalid_url",
+                        "message": "That Home Assistant address isn’t valid.",
+                    }
+                if not have or want != have:
+                    return {
+                        "ok": False,
+                        "error": "url_mismatch",
+                        "message": (
+                            "To reuse the saved token, the address must match the one "
+                            "already saved. Paste the token again to test a new address."
+                        ),
+                    }
+                url = want
+            else:
+                url = stored_url
+            token = stored_token
+        # Keep the control-loop event loop free — probe does sync HTTP.
+        result = await asyncio.to_thread(
+            lambda: probe_ha_connection(url, token, http_get=http_get),
+        )
         # Never echo secrets — strip any accidental key.
         result.pop("token", None)
         return result
