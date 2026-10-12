@@ -132,6 +132,33 @@ jobs:
             grep -q 'group.com.jeroenniesen.emscontrol' "$f"
           done
 
+
+      # #254: honest local-network permission copy (no Bonjour / "search" claim).
+      - name: Check NSLocalNetworkUsageDescription
+        run: |
+          set -euo pipefail
+          app=ios/EMSControl/Sources/EMSControlApp/Info.plist
+          widget=ios/EMSControl/Sources/EMSWidget/Info.plist
+          plutil -lint "$app"
+          desc=$(plutil -extract NSLocalNetworkUsageDescription raw -o - "$app")
+          echo "desc=$desc"
+          # Must mention connect + user-entered server; must not claim network search/discovery.
+          echo "$desc" | grep -qi 'connect'
+          echo "$desc" | grep -Eqi 'enter|configur|you (set|provide|type)'
+          echo "$desc" | grep -Eivq 'search|discover|scan|bonjour|find your'
+          # No Bonjour services key on app or widget; local networking ATS stays on.
+          # Note: `! cmd` under `set -e` does NOT fail the step when cmd succeeds — use if/exit.
+          if plutil -extract NSBonjourServices raw -o /dev/null "$app" 2>/dev/null; then
+            echo "NSBonjourServices must not be present in $app" >&2
+            exit 1
+          fi
+          if plutil -extract NSBonjourServices raw -o /dev/null "$widget" 2>/dev/null; then
+            echo "NSBonjourServices must not be present in $widget" >&2
+            exit 1
+          fi
+          plutil -extract NSAppTransportSecurity.NSAllowsLocalNetworking raw -o - "$app" | grep -qx 'true'
+          plutil -extract NSAppTransportSecurity.NSAllowsLocalNetworking raw -o - "$widget" | grep -qx 'true'
+
       # SPM `swift test` only — no xcodegen (not guaranteed to be installed
       # on the runner) and no xcodebuild (app target isn't part of this
       # gate). The runner's default DEVELOPER_DIR already points at a full

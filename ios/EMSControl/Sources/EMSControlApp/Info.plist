@@ -24,7 +24,7 @@
 		<true/>
 	</dict>
 	<key>NSLocalNetworkUsageDescription</key>
-	<string>EMS Control searches your local network only to find your own Energy Management System server.</string>
+	<string>EMS Control connects to the Energy Management System server address you enter on your home network.</string>
 	<key>UILaunchScreen</key>
 	<dict/>
 	<key>UISupportedInterfaceOrientations</key>
