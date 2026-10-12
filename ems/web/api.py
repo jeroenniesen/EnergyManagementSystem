@@ -5059,18 +5059,24 @@ def create_app(
         # long-lived token — otherwise an operate client can retarget the credential via
         # settings then POST /api/consumers/ha/test-connection with use_stored_token.
         clear_ha_token = False
-        if "consumers.ha.url" in clean:
-            try:
-                from ems.settings import normalize_ha_url
+        if "consumers.ha.url" in clean and "consumers.ha.token" not in clean:
+            from ems.settings import normalize_ha_url
 
-                old_ha = str(settings_cache.get("consumers.ha.url") or "").strip()
-                new_ha = str(clean.get("consumers.ha.url") or "").strip()
+            old_ha = str(settings_cache.get("consumers.ha.url") or "").strip()
+            new_ha = str(clean.get("consumers.ha.url") or "").strip()
+            try:
                 old_n = normalize_ha_url(old_ha) if old_ha else ""
+            except ValueError:
+                old_n = old_ha
+            try:
                 new_n = normalize_ha_url(new_ha) if new_ha else ""
             except ValueError:
-                old_n, new_n = old_ha, new_ha
-            if new_n != old_n and "consumers.ha.token" not in clean:
+                new_n = new_ha
+            if new_n != old_n:
                 clear_ha_token = True
+        if clear_ha_token:
+            # Disable the adapter until the homeowner re-saves URL+token together.
+            clean = {**clean, "consumers.ha.enabled": False}
         await settings_store.set_many(clean)
         if clear_ha_token:
             await settings_store.delete("consumers.ha.token")

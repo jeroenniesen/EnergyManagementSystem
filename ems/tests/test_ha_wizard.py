@@ -184,12 +184,23 @@ def test_api_test_connection_and_disconnect(tmp_path, monkeypatch):
         after_url = c.get("/api/settings").json()["values"]
         assert after_url["consumers.ha.url"] == "http://evil.example:8123"
         assert after_url.get("consumers.ha.token.__set") is False
+        assert after_url["consumers.ha.enabled"] is False
         retarget = c.post(
             "/api/consumers/ha/test-connection",
             json={"use_stored_token": True},
         )
         assert retarget.status_code == 200
         assert retarget.json()["ok"] is False
+        # Env HA_TOKEN must not re-bind to the hostile URL on the next seed pass.
+        from ems.connection import _read_store, _seed_store
+
+        _seed_store(db, {
+            "consumers.ha.token": "secret-token",
+            "consumers.ha.url": "http://ha.local:8123",
+        })
+        store_after = _read_store(db)
+        assert "consumers.ha.token" not in store_after
+        assert store_after.get("consumers.ha.url") == "http://evil.example:8123"
         # Restore a saved connection for the disconnect assertion below.
         assert c.post("/api/settings", json={
             "consumers.ha.url": "http://ha.local:8123",

@@ -242,10 +242,16 @@ def _seed_store(db_path: str, seed: dict) -> None:
         )
         existing = {r[0] for r in con.execute("SELECT key FROM settings").fetchall()}
         for key, value in seed.items():
-            if key not in existing:
-                con.execute(
-                    "INSERT INTO settings (key, value) VALUES (?, ?)", (key, json.dumps(value))
-                )
+            if key in existing:
+                continue
+            # #263: never re-seed HA_TOKEN onto a store that already has a URL — a URL-only
+            # settings change clears the token row; re-inserting the env token would bind it
+            # to whatever URL is left (including a hostile host) on the next restart.
+            if key == "consumers.ha.token" and "consumers.ha.url" in existing:
+                continue
+            con.execute(
+                "INSERT INTO settings (key, value) VALUES (?, ?)", (key, json.dumps(value))
+            )
         con.commit()
     finally:
         con.close()
