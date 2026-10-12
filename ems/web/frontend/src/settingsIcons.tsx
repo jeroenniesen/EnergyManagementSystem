@@ -36,6 +36,14 @@ const SECTION_PATHS: Record<string, ReactNode> = {
       <path d="M5 14h6" />
     </>
   ),
+  // Appliances (consumers) — washing-machine drum.
+  consumers: (
+    <>
+      <rect x="5" y="4" width="14" height="16" rx="2" />
+      <circle cx="12" cy="13" r="4" />
+      <path d="M8 7h2" />
+    </>
+  ),
   // Site — map pin (location + array).
   site: (
     <>

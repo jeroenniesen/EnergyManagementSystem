@@ -1,23 +1,29 @@
-"""Read-only consumers (appliances) insight API (#224 / #227 / epic #222).
+"""Consumers (appliances) insight + HA wizard API (#224 / #227 / #263 / epic #222).
 
 GET /api/consumers — opted-in devices + status.
 GET /api/consumers/start-advice — cheapest contiguous start windows (dry-run default).
+POST /api/consumers/ha/test-connection — wizard probe (token in body, never logged).
+POST /api/consumers/ha/disconnect — clear HA token / disable adapter.
 
 Never starts appliances and never writes to the battery.
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 from collections.abc import Sequence
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Request
+from fastapi.responses import JSONResponse
 
+from ems.consumers.ha_probe import probe_ha_connection
 from ems.consumers.models import ConsumerState, ConsumerStatus
 from ems.consumers.ports import ConsumerPort
-from ems.consumers.selection import apply_opt_in, filter_opted_in
+from ems.consumers.selection import apply_opt_in, default_device_ids_json, filter_opted_in
 from ems.consumers.start_advice import assumed_kwh_for_kind, propose_start_window
+from ems.settings import effective_settings, normalize_ha_url
 from ems.web.context import AppContext
 
 _log = logging.getLogger(__name__)
@@ -241,6 +247,8 @@ def build_router(
     ctx: AppContext,
     *,
     sources: Sequence[ConsumerPort] | None = None,
+    settings_store: Any | None = None,
+    http_get: Any | None = None,
 ) -> APIRouter:
     router = APIRouter()
     wired: tuple[ConsumerPort, ...] = tuple(sources or ())
@@ -264,5 +272,81 @@ def build_router(
         return gather_start_advice(
             wired, ctx.settings_cache, prices, now=now,
         )
+
+    @router.post("/api/consumers/ha/test-connection")
+    async def ha_test_connection(request: Request) -> dict:
+        """Wizard probe: URL + token in body → candidate laundry entities (#263)."""
+        try:
+            body = await request.json()
+        except Exception:
+            body = {}
+        if not isinstance(body, dict):
+            body = {}
+        url = str(body.get("url") or "").strip()
+        # Strict true only — string "false" must not enable the stored-token path.
+        use_stored = body.get("use_stored_token") is True
+        token = str(body.get("token") or "").strip()
+        if use_stored and not token:
+            stored_token = str(ctx.settings_cache.get("consumers.ha.token") or "").strip()
+            stored_url = str(ctx.settings_cache.get("consumers.ha.url") or "").strip()
+            if not stored_token:
+                return {
+                    "ok": False,
+                    "error": "invalid_token",
+                    "message": "No Home Assistant token is saved yet. Paste a token to test.",
+                }
+            # Stored token may only go to the stored URL — never to a caller-chosen host.
+            if url:
+                try:
+                    want = normalize_ha_url(url)
+                    have = normalize_ha_url(stored_url) if stored_url else ""
+                except ValueError:
+                    return {
+                        "ok": False,
+                        "error": "invalid_url",
+                        "message": "That Home Assistant address isn’t valid.",
+                    }
+                if not have or want != have:
+                    return {
+                        "ok": False,
+                        "error": "url_mismatch",
+                        "message": (
+                            "To reuse the saved token, the address must match the one "
+                            "already saved. Paste the token again to test a new address."
+                        ),
+                    }
+                url = want
+            else:
+                url = stored_url
+            token = stored_token
+        # Keep the control-loop event loop free — probe does sync HTTP.
+        result = await asyncio.to_thread(
+            lambda: probe_ha_connection(url, token, http_get=http_get),
+        )
+        # Never echo secrets — strip any accidental key.
+        result.pop("token", None)
+        return result
+
+    @router.post("/api/consumers/ha/disconnect")
+    async def ha_disconnect() -> JSONResponse:
+        """Clear HA token, disable adapter, empty device opt-in (#263)."""
+        if settings_store is None:
+            return JSONResponse(
+                {"ok": False, "error": "settings_unavailable",
+                 "message": "Settings store is not available."},
+                status_code=503,
+            )
+        await settings_store.delete("consumers.ha.token")
+        await settings_store.set_many({
+            "consumers.ha.enabled": False,
+            "consumers.ha.device_ids": default_device_ids_json(),
+        })
+        # Full keyset overlay (never clear()+update — concurrent readers).
+        ctx.settings_cache.update(effective_settings(await settings_store.all()))
+        return JSONResponse({
+            "ok": True,
+            "restart_required": True,
+            "summary": "Home Assistant disconnected. Apply & restart to stop using it.",
+        })
 
     return router
