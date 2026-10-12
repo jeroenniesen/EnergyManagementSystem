@@ -5055,7 +5055,25 @@ def create_app(
             return JSONResponse(
                 {"detail": "invalid settings", "errors": errors}, status_code=422
             )
+        # #263: changing the HA base URL without posting a new token must drop the stored
+        # long-lived token — otherwise an operate client can retarget the credential via
+        # settings then POST /api/consumers/ha/test-connection with use_stored_token.
+        clear_ha_token = False
+        if "consumers.ha.url" in clean:
+            try:
+                from ems.settings import normalize_ha_url
+
+                old_ha = str(settings_cache.get("consumers.ha.url") or "").strip()
+                new_ha = str(clean.get("consumers.ha.url") or "").strip()
+                old_n = normalize_ha_url(old_ha) if old_ha else ""
+                new_n = normalize_ha_url(new_ha) if new_ha else ""
+            except ValueError:
+                old_n, new_n = old_ha, new_ha
+            if new_n != old_n and "consumers.ha.token" not in clean:
+                clear_ha_token = True
         await settings_store.set_many(clean)
+        if clear_ha_token:
+            await settings_store.delete("consumers.ha.token")
         # In-place update ONLY (never clear()+update): the effective set is always the full keyset,
         # so a concurrent threadpool GET never observes a missing key (the KeyError/500 race).
         settings_cache.update(effective_settings(await settings_store.all()))

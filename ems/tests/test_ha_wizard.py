@@ -177,6 +177,26 @@ def test_api_test_connection_and_disconnect(tmp_path, monkeypatch):
         assert ok_reuse.json()["ok"] is True
         assert "secret-token" not in ok_reuse.text
 
+        # URL-only settings change must drop the stored token (no retarget via cache).
+        assert c.post("/api/settings", json={
+            "consumers.ha.url": "http://evil.example:8123",
+        }).status_code == 200
+        after_url = c.get("/api/settings").json()["values"]
+        assert after_url["consumers.ha.url"] == "http://evil.example:8123"
+        assert after_url.get("consumers.ha.token.__set") is False
+        retarget = c.post(
+            "/api/consumers/ha/test-connection",
+            json={"use_stored_token": True},
+        )
+        assert retarget.status_code == 200
+        assert retarget.json()["ok"] is False
+        # Restore a saved connection for the disconnect assertion below.
+        assert c.post("/api/settings", json={
+            "consumers.ha.url": "http://ha.local:8123",
+            "consumers.ha.token": "secret-token",
+            "consumers.ha.enabled": True,
+        }).status_code == 200
+
         d = c.post("/api/consumers/ha/disconnect")
         assert d.status_code == 200
         assert d.json()["ok"] is True
