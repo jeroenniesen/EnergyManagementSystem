@@ -70,6 +70,68 @@ jobs:
           done
           grep -q 'ITSAppUsesNonExemptEncryption' ios/EMSControl/project.yml
 
+      # #253: Debug keeps .dev side-by-side; Release uses App Store bundle ids.
+      # CURRENT_PROJECT_VERSION stays overridable from CI (xcodebuild var).
+      - name: Check Debug/Release bundle identifiers
+        run: |
+          set -euo pipefail
+          yml=ios/EMSControl/project.yml
+          pbx=ios/EMSControl/EMSControl.xcodeproj/project.pbxproj
+          # project.yml config blocks
+          grep -A2 'Debug:' "$yml" | grep -q 'com.jeroenniesen.emscontrol.dev$'
+          grep -A2 'Release:' "$yml" | grep -q 'com.jeroenniesen.emscontrol$'
+          grep -A2 'Debug:' "$yml" | grep -q 'com.jeroenniesen.emscontrol.dev.widget$'
+          grep -A2 'Release:' "$yml" | grep -q 'com.jeroenniesen.emscontrol.widget$'
+          # Committed pbxproj Release configs (xcodegen may be absent on the runner).
+          # App Release must not still carry .dev; widget Release must use .widget.
+          python3 - <<'PY'
+          from pathlib import Path
+          text = Path("ios/EMSControl/EMSControl.xcodeproj/project.pbxproj").read_text()
+          # Split into named XCBuildConfiguration blocks; assert Release IDs.
+          import re
+          blocks = re.findall(
+              r"/\* (Debug|Release) \*/ = \{\s*isa = XCBuildConfiguration;\s*buildSettings = \{(.*?)\};\s*name = \1;",
+              text,
+              flags=re.S,
+          )
+          app_release = widget_release = app_debug = widget_debug = None
+          for name, body in blocks:
+              if "PRODUCT_NAME = EMSControl;" in body and "PRODUCT_BUNDLE_IDENTIFIER" in body:
+                  m = re.search(r"PRODUCT_BUNDLE_IDENTIFIER = ([^;]+);", body)
+                  assert m, body
+                  if name == "Release":
+                      app_release = m.group(1).strip()
+                  else:
+                      app_debug = m.group(1).strip()
+              if "PRODUCT_NAME = EMSWidget;" in body and "PRODUCT_BUNDLE_IDENTIFIER" in body:
+                  m = re.search(r"PRODUCT_BUNDLE_IDENTIFIER = ([^;]+);", body)
+                  assert m, body
+                  if name == "Release":
+                      widget_release = m.group(1).strip()
+                  else:
+                      widget_debug = m.group(1).strip()
+          assert app_debug == "com.jeroenniesen.emscontrol.dev", app_debug
+          assert app_release == "com.jeroenniesen.emscontrol", app_release
+          assert widget_debug == "com.jeroenniesen.emscontrol.dev.widget", widget_debug
+          assert widget_release == "com.jeroenniesen.emscontrol.widget", widget_release
+          print("bundle ids OK", app_debug, app_release, widget_debug, widget_release)
+          PY
+          # Version keys must come from build settings so CI can bump build number.
+          for f in \
+            ios/EMSControl/Sources/EMSControlApp/Info.plist \
+            ios/EMSControl/Sources/EMSWidget/Info.plist
+          do
+            plutil -extract CFBundleShortVersionString raw -o - "$f" | grep -qx '$(MARKETING_VERSION)'
+            plutil -extract CFBundleVersion raw -o - "$f" | grep -qx '$(CURRENT_PROJECT_VERSION)'
+          done
+          # Shared App Group in both entitlements (Debug + Release).
+          for f in \
+            ios/EMSControl/Sources/EMSControlApp/EMSControl.entitlements \
+            ios/EMSControl/Sources/EMSWidget/EMSWidget.entitlements
+          do
+            grep -q 'group.com.jeroenniesen.emscontrol' "$f"
+          done
+
       # SPM `swift test` only — no xcodegen (not guaranteed to be installed
       # on the runner) and no xcodebuild (app target isn't part of this
       # gate). The runner's default DEVELOPER_DIR already points at a full
