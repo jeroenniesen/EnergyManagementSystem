@@ -47,6 +47,9 @@
 		B2C3D4E5F60718293A4B5C6D /* DecisionReason.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D4E5F60718293A4B5C /* DecisionReason.swift */; };
 		EF963FF881BB7743E2130B73 /* AppShellView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 24CB1980979D24B5EA49FBE4 /* AppShellView.swift */; };
 		F9D6B9F8ED1B8F823AE35213 /* EMSWidgetViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = FCEB78668E11698B72193C5B /* EMSWidgetViews.swift */; };
+		B251APP0PRIVACYINFO000001 /* PrivacyInfo.xcprivacy in Resources */ = {isa = PBXBuildFile; fileRef = A251APP0PRIVACYINFO000001 /* PrivacyInfo.xcprivacy */; };
+		B251COREPRIVACYINFO000001 /* PrivacyInfo.xcprivacy in Resources */ = {isa = PBXBuildFile; fileRef = A251COREPRIVACYINFO000001 /* PrivacyInfo.xcprivacy */; };
+		B251WDGTPRIVACYINFO000001 /* PrivacyInfo.xcprivacy in Resources */ = {isa = PBXBuildFile; fileRef = A251WDGTPRIVACYINFO000001 /* PrivacyInfo.xcprivacy */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -142,6 +145,9 @@
 		E720AFC468AEF7CC68D269FB /* demo-faq.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = "demo-faq.json"; sourceTree = "<group>"; };
 		F931E1AEC5676B6174B3A76F /* KeychainCredentialStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeychainCredentialStore.swift; sourceTree = "<group>"; };
 		FCEB78668E11698B72193C5B /* EMSWidgetViews.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EMSWidgetViews.swift; sourceTree = "<group>"; };
+		A251APP0PRIVACYINFO000001 /* PrivacyInfo.xcprivacy */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = PrivacyInfo.xcprivacy; sourceTree = "<group>"; };
+		A251COREPRIVACYINFO000001 /* PrivacyInfo.xcprivacy */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = PrivacyInfo.xcprivacy; sourceTree = "<group>"; };
+		A251WDGTPRIVACYINFO000001 /* PrivacyInfo.xcprivacy */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = PrivacyInfo.xcprivacy; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -183,6 +189,7 @@
 				81C65C37F0360A3E36856B3C /* EMSWidgetBundle.swift */,
 				FCEB78668E11698B72193C5B /* EMSWidgetViews.swift */,
 				A516714D923D0B43BA82A7CA /* Info.plist */,
+				A251WDGTPRIVACYINFO000001 /* PrivacyInfo.xcprivacy */,
 			);
 			path = EMSWidget;
 			sourceTree = "<group>";
@@ -218,6 +225,7 @@
 				033DDC49ECE87F18564D3288 /* ServerDiscovery.swift */,
 				4D90E4C3625F5CBBBB665180 /* Theme.swift */,
 				3115F953EFDB46663E1E7408 /* WidgetSupport.swift */,
+				A251COREPRIVACYINFO000001 /* PrivacyInfo.xcprivacy */,
 			);
 			path = EMSControlCore;
 			sourceTree = "<group>";
@@ -237,6 +245,7 @@
 				001C06DC7E770182FD4B1DBB /* Info.plist */,
 				257B061EB9A96671DDB32DC5 /* InsightsView.swift */,
 				2B9061823F17E42906990E53 /* NotificationsView.swift */,
+				A251APP0PRIVACYINFO000001 /* PrivacyInfo.xcprivacy */,
 			);
 			path = EMSControlApp;
 			sourceTree = "<group>";
@@ -269,6 +278,7 @@
 			buildConfigurationList = 2A653E1C3B72FF9EFB1BCCB4 /* Build configuration list for PBXNativeTarget "EMSWidget" */;
 			buildPhases = (
 				7200BF5BF96964FD752A8408 /* Sources */,
+				C251WDGTRESOURCESPHASE01 /* Resources */,
 				C28A7393C6100C85D8B585EA /* Frameworks */,
 			);
 			buildRules = (
@@ -288,6 +298,7 @@
 			buildConfigurationList = D9207E08DA00D2FCD3402FFF /* Build configuration list for PBXNativeTarget "EMSControlCore" */;
 			buildPhases = (
 				B2059C6CC475C1E7AEB9F72C /* Sources */,
+				C251CORERESOURCESPHASE01 /* Resources */,
 			);
 			buildRules = (
 			);
@@ -373,6 +384,23 @@
 				211D0CD0F3242A3EF71BD8AE /* demo-dashboard.json in Resources */,
 				A93F94C222669DFBD1867493 /* demo-explainer.json in Resources */,
 				C9F13CEE37D770D72BFECADC /* demo-faq.json in Resources */,
+				B251APP0PRIVACYINFO000001 /* PrivacyInfo.xcprivacy in Resources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		C251CORERESOURCESPHASE01 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				B251COREPRIVACYINFO000001 /* PrivacyInfo.xcprivacy in Resources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		C251WDGTRESOURCESPHASE01 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				B251WDGTPRIVACYINFO000001 /* PrivacyInfo.xcprivacy in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
