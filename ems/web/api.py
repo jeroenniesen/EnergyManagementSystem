@@ -5379,8 +5379,10 @@ def create_app(
         ctx, controller=controller, config_dry_run=config_dry_run,
         capability_getter=lambda: _capability_box.get("cap"),
     ))
-    # #224: read-only appliances insight (ConsumerPort list; no start, no battery writes).
-    app.include_router(build_consumers_router(ctx, sources=consumer_sources))
+    # #224 / #263: appliances insight + HA connection wizard (no battery writes).
+    app.include_router(build_consumers_router(
+        ctx, sources=consumer_sources, settings_store=settings_store,
+    ))
     app.include_router(build_plan_router(ctx, plan_service))
     app.include_router(build_report_router(ctx, report_service))
     app.include_router(build_verification_router(ctx, verification_service))

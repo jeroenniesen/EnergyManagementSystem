@@ -5,6 +5,7 @@ import { AdminAccess } from "./Admin";
 import { AutomationBoundsCard } from "./AutomationBounds";
 import { apiFetch, clearToken } from "./auth";
 import { type CarModel, type CarsResp } from "./ev";
+import { HaWizard } from "./HaWizard";
 import { humanize } from "./labels";
 import { SectionIcon } from "./settingsIcons";
 
@@ -111,7 +112,10 @@ function restartPollConfig(): { intervalMs: number; timeoutMs: number } {
 // Two-pane menu: sidebar sections grouped under three intent headers. This order REPLACES the old
 // flat GROUP_ORDER for navigation; any unknown/future group appends under "App" (see below).
 const NAV_GROUPS: { header: string; sections: string[] }[] = [
-  { header: "Your setup", sections: ["connection", "meters", "battery", "prices", "site"] },
+  {
+    header: "Your setup",
+    sections: ["connection", "meters", "battery", "prices", "consumers", "site"],
+  },
   { header: "How it runs", sections: ["strategy", "planner", "control", "ev"] },
   { header: "App", sections: ["ai", "reporting", "notify", "access", "ui"] },
 ];
@@ -121,6 +125,7 @@ const GROUP_TITLE: Record<string, string> = {
   meters: "Energy meters (HomeWizard)",
   battery: "Battery (Indevolt)",
   prices: "Electricity prices (Tibber)",
+  consumers: "Appliances",
   site: "Solar & location",
   control: "Control & safety",
   planner: "Planner economics",
@@ -137,6 +142,9 @@ const GROUP_HINT: Record<string, string> = {
   meters: "Local IP addresses of your HomeWizard meters.",
   battery: "Battery address, capacity and reserves.",
   prices: "Your Tibber token for live day-ahead prices.",
+  consumers:
+    "Link washers and dryers from Home Assistant (read-only). URL and token need Apply & restart; "
+    + "which appliances you select apply as soon as you save.",
   site: "Location & array — these drive the solar forecast.",
   control:
     "Safety limits and arming. Set your main fuse here — until confirmed, System shows a Check "
@@ -863,8 +871,10 @@ export function Settings({
   if (!schema) return <div className="loading">Loading settings…</div>;
 
   // Build the navigation: known sections under their headers + any unknown/future group appended
-  // under "App". Only sections actually present in the schema are shown.
+  // under "App". Only sections actually present in the schema are shown —
+  // except Appliances (#263): wizard-only, no schema fields, always listed.
   const present = new Set(schema.map((f) => f.group));
+  present.add("consumers");
   const known = new Set(NAV_GROUPS.flatMap((g) => g.sections));
   const unknown = [...present].filter((g) => !known.has(g));
   const navGroups = NAV_GROUPS.map((g, i) => ({
@@ -1193,6 +1203,27 @@ export function Settings({
 
               {/* #246 / B-35 slice 1: read-only "what EMS may do" before editable control fields. */}
               {active === "control" && <AutomationBoundsCard refreshKey={boundsRefreshKey} />}
+              {active === "consumers" && (
+                <HaWizard
+                  values={values}
+                  canOperate={canOperate}
+                  onSaved={() => {
+                    void (async () => {
+                      try {
+                        const r = await apiFetch("/api/settings");
+                        if (r.ok) {
+                          const b = (await r.json()) as SettingsResp;
+                          setValues(b.values);
+                          setEdited(b.values);
+                        }
+                      } catch {
+                        /* ignore */
+                      }
+                      void refreshRestartCapability();
+                    })();
+                  }}
+                />
+              )}
 
               <div className="settings-section-fields">
                 {basicFields.map((f) => renderField(f))}

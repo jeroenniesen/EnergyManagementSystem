@@ -807,6 +807,32 @@ def defaults() -> dict[str, Any]:
     return {f.key: f.default for f in SETTINGS_SCHEMA}
 
 
+def normalize_ha_url(raw: str) -> str:
+    """Canonical Home Assistant base URL for settings + wizard (#266 / #263).
+
+    Requires http/https + host; rejects credentials, path, query, fragment.
+    Strips trailing slash. Raises ``ValueError`` with a homeowner-facing message.
+    """
+    from urllib.parse import urlparse
+
+    parsed = urlparse(str(raw).strip())
+    path = (parsed.path or "").rstrip("/")
+    if (
+        parsed.scheme not in ("http", "https")
+        or not parsed.netloc
+        or parsed.username is not None
+        or parsed.password is not None
+        or path not in ("",)
+        or parsed.query
+        or parsed.fragment
+    ):
+        raise ValueError(
+            "must be an http(s) URL with a host only "
+            "(no path, query, fragment, or credentials)"
+        )
+    return f"{parsed.scheme}://{parsed.netloc}"
+
+
 def _registry_enum_options(key: str, fallback: tuple[str, ...] | None) -> tuple[str, ...] | None:
     """Overlay hard-coded enum options with live adapter-registry names (#113).
 
@@ -953,28 +979,12 @@ def validate_settings(partial: Any) -> tuple[dict[str, Any], dict[str, str]]:
                 errors[key] = "must be an http(s) URL with a host"
                 continue
         if key == "consumers.ha.url" and result:
-            # #266 / #261: HA is typically LAN — allow private hosts, but require a sane
-            # http(s) base (no file:, empty host, userinfo, or path/query smuggling).
-            from urllib.parse import urlparse
-
-            parsed = urlparse(str(result).strip())
-            path = (parsed.path or "").rstrip("/")
-            if (
-                parsed.scheme not in ("http", "https")
-                or not parsed.netloc
-                or parsed.username is not None
-                or parsed.password is not None
-                or path not in ("",)
-                or parsed.query
-                or parsed.fragment
-            ):
-                errors[key] = (
-                    "must be an http(s) URL with a host only "
-                    "(no path, query, fragment, or credentials)"
-                )
-                continue
-            # Canonical base without trailing slash (adapter joins `/api/states`).
-            clean[key] = f"{parsed.scheme}://{parsed.netloc}"
+            # #266 / #261 / #263: HA is typically LAN — allow private hosts, but require a
+            # sane http(s) base (no file:, empty host, userinfo, or path/query smuggling).
+            try:
+                clean[key] = normalize_ha_url(str(result))
+            except ValueError as exc:
+                errors[key] = str(exc)
             continue
         if field.type == "secret" and result == "":
             continue  # blank secret = keep the existing value
