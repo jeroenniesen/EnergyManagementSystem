@@ -161,12 +161,15 @@ def prices_ok_for_quality(
 
     A missing source is never OK. Mock/demo prices are OK only while operational control is
     *not* requested — operational + mock must not report `complete`. A live Tibber source that
-    reports `unavailable_since()` is not OK either.
+    reports `unavailable_since()` is not OK either. Fixed-tariff backup slots (#118) also force
+    ``price_fallback`` so a flat backup curve never looks like a healthy live horizon.
     """
     if price_source is None:
         return False
     if isinstance(price_source, MockPriceSource):
         return not operational_requested
+    if bool(getattr(price_source, "serving_fixed_backup", False)):
+        return False
     unavailable = getattr(price_source, "unavailable_since", None)
     if callable(unavailable) and unavailable() is not None:
         return False

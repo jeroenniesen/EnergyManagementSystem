@@ -107,6 +107,13 @@ SETTINGS_SCHEMA: tuple[SettingsField, ...] = (
         "current value.", applies="restart",
     ),
     SettingsField(
+        "prices.backup_fixed_eur_per_kwh", "Backup fixed import price", "number", 0.0, "prices",
+        help="When Tibber is unreachable and no last-good cache exists, use this flat €/kWh for "
+        "display/reporting (#118). 0 = disabled (empty prices). Never used to drive live "
+        "grid-charge — EMS stays in self-use while the backup is active.",
+        min=0.0, max=2.0, step=0.005, unit="€/kWh", advanced=True, applies="restart",
+    ),
+    SettingsField(
         "prices.export_price_model", "Export (feed-in) value", "enum", "spot_minus_tax", "prices",
         help="How much each kWh you export (feed back to the grid) is worth. Default is "
         "spot-minus-tax (2027-ready: spot price minus energy tax — may be low or negative). "

@@ -25,6 +25,9 @@ __all__ = [
 class PriceSlot:
     start: datetime  # tz-aware, start of the 15-min slot
     eur_per_kwh: float
+    # Provenance for quality/UI (#118): live Tibber, last-good cache, or fixed backup tariff.
+    # Default keeps existing call sites / serialized caches as "live".
+    origin: str = "live"
 
 
 def _utcnow() -> datetime:
