@@ -21,6 +21,7 @@ from ems.consumers.models import (
     ConsumerStatus,
 )
 from ems.consumers.selection import apply_opt_in, opted_in_ids
+from ems.ha_url import normalize_ha_url
 
 _log = logging.getLogger(__name__)
 
@@ -140,7 +141,7 @@ class HomeAssistantConsumerSource:
         settings: dict[str, Any] | None = None,
         timeout: float = 8.0,
     ) -> None:
-        self._base = base_url.rstrip("/")
+        self._base = normalize_ha_url(base_url)
         self._token = token.strip()
         self._settings = settings or {}
         self._timeout = timeout

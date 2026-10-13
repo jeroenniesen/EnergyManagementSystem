@@ -8,6 +8,7 @@ from ems.consumers.homeassistant import HomeAssistantConsumerSource
 from ems.consumers.mock import MockConsumerSource
 from ems.consumers.ports import ConsumerPort
 from ems.consumers.smartthings import SmartThingsConsumerSource
+from ems.ha_url import normalize_ha_url
 
 _log = logging.getLogger(__name__)
 
@@ -56,9 +57,20 @@ def build_consumer_sources(
     ha_url = str(settings.get("consumers.ha.url") or "").strip()
     ha_token = str(settings.get("consumers.ha.token") or "").strip()
     if ha_enabled and ha_url and ha_token:
-        out.append(HomeAssistantConsumerSource(
-            ha_url, ha_token, http_get=_http_get(http, "lan_read"), settings=settings,
-        ))
+        try:
+            ha_base = normalize_ha_url(ha_url)
+        except ValueError:
+            _log.info(
+                "consumers.ha.enabled is on but consumers.ha.url is invalid — "
+                "Home Assistant adapter not started"
+            )
+        else:
+            out.append(HomeAssistantConsumerSource(
+                ha_base,
+                ha_token,
+                http_get=_http_get(http, "lan_read"),
+                settings=settings,
+            ))
     elif ha_enabled:
         _log.info(
             "consumers.ha.enabled is on but URL/token incomplete — "

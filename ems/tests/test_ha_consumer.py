@@ -3,6 +3,8 @@ from __future__ import annotations
 
 import json
 
+import pytest
+
 from ems.consumers import ConsumerPort, build_consumer_sources
 from ems.consumers.homeassistant import (
     HomeAssistantConsumerSource,
@@ -168,6 +170,7 @@ def test_ha_url_must_be_http_https_host_only():
     for bad in (
         "file:///etc/passwd",
         "http://",
+        "http://:8123",
         "ftp://ha.local",
         "http://user:pass@ha.local",
         "http://ha.local/api",
@@ -180,6 +183,32 @@ def test_ha_url_must_be_http_https_host_only():
     # Empty stays allowed (clear / unset).
     c3, e3 = validate_settings({"consumers.ha.url": ""})
     assert c3 == {"consumers.ha.url": ""} and e3 == {}
+
+
+def test_factory_ha_skips_invalid_url_before_gets():
+    """#266: factory must not wire HA when the base URL fails validation."""
+    full = {
+        **defaults(),
+        "consumers.ha.enabled": True,
+        "consumers.ha.url": "http://ha.local/api",
+        "consumers.ha.token": "secret",
+    }
+    sources = build_consumer_sources(full, dev_mode="live")
+    assert all(s.integration != "ha" for s in sources)
+
+
+def test_ha_consumer_normalizes_base_url():
+    src = HomeAssistantConsumerSource(
+        "https://192.168.0.50:8123/",
+        "tok",
+        http_get=_fake_get,
+    )
+    assert src._base == "https://192.168.0.50:8123"
+
+
+def test_ha_consumer_rejects_path_smuggling_base():
+    with pytest.raises(ValueError, match="http\\(s\\) URL"):
+        HomeAssistantConsumerSource("http://ha.local/api", "tok", http_get=_fake_get)
 
 
 def test_factory_ha_uses_lan_read_profile(monkeypatch):
