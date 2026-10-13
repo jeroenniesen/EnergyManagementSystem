@@ -202,6 +202,87 @@ def test_charge_commitment_aborts_on_price_fallback():
     assert ABORT_PRICE_FALLBACK in v.reason
 
 
+def test_leaving_backup_via_plan_with_recovery_does_not_deadlock():
+    """#118: build_plan_now must not re-lock plan_lock while plan_with_recovery holds it."""
+    import threading
+
+    from ems.clock import FrozenClock
+    from ems.control.service import ControlContext, ControlService
+    from ems.planner.adaptive import AdaptiveConfig
+    from ems.planner.rule_based import PlannerConfig
+    from ems.planner.summer import SummerConfig
+    from ems.planner.validator import PlanValidation
+    from ems.settings import effective_settings
+
+    backup = FixedTariffPriceSource(0.22, tz=AMS, clock=lambda: FIXED_NOW, horizon_slots=16)
+
+    class _FlipSource:
+        """Starts on fixed backup, then serves live Tibber-shaped slots."""
+
+        def __init__(self):
+            self.serving_fixed_backup = True
+            self._live = [
+                PriceSlot(
+                    FIXED_NOW.astimezone(AMS).replace(
+                        hour=0, minute=0, second=0, microsecond=0,
+                    ) + timedelta(minutes=15 * i),
+                    0.25,
+                    origin="live",
+                )
+                for i in range(192)
+            ]
+
+        def slots(self):
+            if self.serving_fixed_backup:
+                return backup.slots()
+            return self._live
+
+        def unavailable_since(self):
+            return FIXED_NOW if self.serving_fixed_backup else None
+
+    src = _FlipSource()
+    svc = ControlService(
+        ctx=ControlContext(),
+        settings=effective_settings({}),
+        controller=None,
+        store=None,
+        audit_store=None,
+        price_source=src,
+        solar_forecast=None,
+        site_tz=AMS,
+        dry_run=True,
+        clock=FrozenClock(FIXED_NOW),
+        current_soc=lambda now: 50.0,
+        data_quality=lambda now: "price_fallback" if src.serving_fixed_backup else "complete",
+        validate_plan_obj=lambda plan, now: PlanValidation(status="valid"),
+        load_by=lambda starts: {s: 0.0 for s in starts},
+        active_strategy=lambda now: "winter",
+        planner_cfg=lambda: PlannerConfig(),
+        summer_cfg=lambda soc: SummerConfig(usable_kwh=10.0, target_soc_pct=80.0),
+        adaptive_cfg=lambda: AdaptiveConfig(usable_kwh=10.0),
+    )
+    # First call: backup → horizon reject → None (latches _prev_serving_fixed_backup).
+    assert svc.plan_with_recovery(FIXED_NOW) is None
+    assert svc._prev_serving_fixed_backup is True
+
+    src.serving_fixed_backup = False
+    done = threading.Event()
+    outcome: list[object] = []
+
+    def _recover():
+        try:
+            outcome.append(("ok", svc.plan_with_recovery(FIXED_NOW)))
+        except Exception as exc:  # pragma: no cover - must not hang either way
+            outcome.append(("err", exc))
+        finally:
+            done.set()
+
+    t = threading.Thread(target=_recover, daemon=True)
+    t.start()
+    assert done.wait(timeout=3.0), "plan_with_recovery deadlocked leaving fixed-tariff backup"
+    assert outcome and outcome[0][0] == "ok"
+
+
 def test_sense_does_not_persist_or_freshen_fixed_backup(tmp_path):
     store = HistoryStore(str(tmp_path / "ems.sqlite"))
     fresh = FreshnessTracker()

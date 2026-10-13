@@ -549,6 +549,13 @@ class ControlService:
         tz = now.tzinfo or UTC
         return datetime.fromtimestamp(floored, tz=tz)
 
+    def _clear_plan_cache_unlocked(self) -> None:
+        """Clear plan memo fields. Caller must already hold ``plan_lock`` or accept a race."""
+        cache = self._ctx.plan_cache
+        cache["key"] = None
+        cache["result"] = None
+        cache["at"] = None
+
     def invalidate_plan_cache(self) -> None:
         """Drop the memoized plan (e.g. after a settings change).
 
@@ -557,10 +564,7 @@ class ControlService:
         sharing an already-built plan for the cycle; the profile feeds the next miss.
         """
         with self._ctx.plan_lock:
-            cache = self._ctx.plan_cache
-            cache["key"] = None
-            cache["result"] = None
-            cache["at"] = None
+            self._clear_plan_cache_unlocked()
 
     def invalidate_forward_cache(self) -> None:
         """Drop the memoized forward-projection bundle (settings change / profile rebuild).
@@ -888,9 +892,11 @@ class ControlService:
         now = self._clock.now_utc() if now is None else now
         prices = self._price_source.slots()
         # #118: drop a memoized backup-era plan as soon as Tibber recovers.
+        # Clear in place — do NOT call invalidate_plan_cache() here: plan_with_recovery already
+        # holds the non-reentrant plan_lock across this stack (deadlock).
         serving_backup = bool(getattr(self._price_source, "serving_fixed_backup", False))
         if getattr(self, "_prev_serving_fixed_backup", False) and not serving_backup:
-            self.invalidate_plan_cache()
+            self._clear_plan_cache_unlocked()
         self._prev_serving_fixed_backup = serving_backup
         self._price_horizon_status = validate_price_horizon(
             prices, now=now, site_tz=self._site_tz)
