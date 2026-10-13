@@ -5062,7 +5062,7 @@ def create_app(
     def get_settings() -> dict:
         # The UI renders a form from `schema` and fills it from `values` (effective config).
         # Secrets are masked (a parallel "<key>.__set" flag tells the UI whether one is stored).
-        return {"schema": schema_json(), "values": public_values(settings_cache)}
+        return {"schema": schema_json(dev_mode), "values": public_values(settings_cache)}
 
     @app.post("/api/settings")
     async def post_settings(request: Request, body: dict | None = None) -> JSONResponse:
@@ -5073,7 +5073,7 @@ def create_app(
             )
         # Pass body straight through: validate_settings guards non-dict, so a missing/None body
         # becomes a 422 ("expected a JSON object") rather than a silent 200 no-op.
-        clean, errors = validate_settings(body)
+        clean, errors = validate_settings(body, dev_mode=dev_mode)
         if errors:
             # Reject the whole payload if ANY key is invalid — partial saves are confusing.
             return JSONResponse(

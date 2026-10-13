@@ -182,6 +182,32 @@ def test_validate_accepts_registry_forecast_provider_mock():
     assert clean["solar.forecast_provider"] == "mock"
 
 
+def test_live_schema_disables_mock_forecast_provider():
+    """#242: live installs must not offer mock as a selectable solar provider."""
+    row = next(r for r in schema_json(dev_mode="live") if r["key"] == "solar.forecast_provider")
+    assert "mock" in row["options"]
+    assert "mock" in row["disabled_options"]
+
+
+def test_mock_dev_mode_schema_allows_mock_forecast_provider():
+    row = next(r for r in schema_json(dev_mode="mock") if r["key"] == "solar.forecast_provider")
+    assert "mock" in row["options"]
+    assert "mock" not in row["disabled_options"]
+
+
+def test_validate_rejects_mock_forecast_provider_when_live():
+    clean, errors = validate_settings({"solar.forecast_provider": "mock"}, dev_mode="live")
+    assert "solar.forecast_provider" not in clean
+    assert "solar.forecast_provider" in errors
+    assert "mock" in errors["solar.forecast_provider"].lower()
+
+
+def test_validate_accepts_mock_forecast_provider_in_mock_dev_mode():
+    clean, errors = validate_settings({"solar.forecast_provider": "mock"}, dev_mode="mock")
+    assert errors == {}
+    assert clean["solar.forecast_provider"] == "mock"
+
+
 def test_default_planner_mode_is_rule_based():
     assert defaults()["planner.mode"] == "rule_based"
     assert SETTINGS_BY_KEY["planner.mode"].options == ("rule_based", "ml", "advisory")

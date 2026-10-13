@@ -808,6 +808,47 @@ def defaults() -> dict[str, Any]:
     return {f.key: f.default for f in SETTINGS_SCHEMA}
 
 
+def _normalise_dev_mode(dev_mode: str | None) -> str | None:
+    if dev_mode is None:
+        return None
+    return str(dev_mode).strip().lower()
+
+
+def _mock_forecast_provider_disabled(dev_mode: str | None) -> bool:
+    """#242: synthetic mock forecast is demo-only — grey out / reject in live Settings.
+
+    ``dev_mode=None`` is intentionally permissive (tolerant read paths such as
+    ``effective_settings``) — HTTP boundaries must pass the real ``dev.mode``.
+    """
+    mode = _normalise_dev_mode(dev_mode)
+    if mode is None:
+        return False
+    return mode not in ("mock", "replay")
+
+
+def live_mock_forecast_provider_active(values: dict[str, Any], dev_mode: str | None) -> bool:
+    """True when a live/replay-excluded install still has mock persisted as the solar provider."""
+    if not _mock_forecast_provider_disabled(dev_mode):
+        return False
+    return values.get("solar.forecast_provider") == "mock"
+
+
+# Call sites that validate settings without ``dev_mode`` (must stay tolerant / internal-only).
+VALIDATE_SETTINGS_WITHOUT_DEV_MODE = frozenset({
+    "effective_settings",
+    "plan_preview",
+    "replay",
+    "whatif",
+})
+
+
+def _schema_disabled_options(field: SettingsField, dev_mode: str | None) -> tuple[str, ...]:
+    extra: tuple[str, ...] = ()
+    if field.key == "solar.forecast_provider" and _mock_forecast_provider_disabled(dev_mode):
+        extra = ("mock",)
+    return tuple(dict.fromkeys(field.disabled_options + extra))
+
+
 def _registry_enum_options(key: str, fallback: tuple[str, ...] | None) -> tuple[str, ...] | None:
     """Overlay hard-coded enum options with live adapter-registry names (#113).
 
@@ -832,24 +873,27 @@ def _registry_enum_options(key: str, fallback: tuple[str, ...] | None) -> tuple[
     return fallback
 
 
-def schema_json() -> list[dict]:
+def schema_json(dev_mode: str | None = None) -> list[dict]:
     """Serialize the schema for the UI to render a form generically.
 
     Keys with `show_in_settings=False` stay in SETTINGS_SCHEMA (defaults, validation, POST)
     but are omitted here so Manage does not render a duplicate control.
+
+    ``dev_mode`` (mock/replay vs live) gates demo-only enum tokens such as ``mock`` forecast (#242).
     """
     rows: list[dict] = []
     for f in SETTINGS_SCHEMA:
         if not f.show_in_settings:
             continue
         opts = _registry_enum_options(f.key, f.options)
+        disabled = _schema_disabled_options(f, dev_mode)
         rows.append({
             "key": f.key, "label": f.label, "type": f.type, "default": f.default,
             "group": f.group, "help": f.help, "min": f.min, "max": f.max,
             "options": list(opts) if opts else None, "step": f.step, "unit": f.unit,
             "advanced": f.advanced, "applies": f.applies, "slider": f.slider,
             "visible_when": {k: v for k, v in f.visible_when} if f.visible_when else None,
-            "disabled_options": list(f.disabled_options) if f.disabled_options else [],
+            "disabled_options": list(disabled),
         })
     return rows
 
@@ -873,7 +917,9 @@ def field_visible(field: SettingsField | dict[str, Any], values: dict[str, Any])
     return True
 
 
-def _coerce(field: SettingsField, value: Any) -> tuple[bool, Any]:
+def _coerce(
+    field: SettingsField, value: Any, *, dev_mode: str | None = None,
+) -> tuple[bool, Any]:
     """Validate+coerce one value against its field. Returns (ok, coerced_value | error_message)."""
     if field.type == "bool":
         if not isinstance(value, bool):
@@ -887,7 +933,13 @@ def _coerce(field: SettingsField, value: Any) -> tuple[bool, Any]:
         opts = _registry_enum_options(field.key, field.options) or ()
         if value not in opts:
             return False, f"must be one of: {', '.join(opts)}"
-        if value in field.disabled_options:
+        disabled = _schema_disabled_options(field, dev_mode)
+        if value in disabled:
+            if field.key == "solar.forecast_provider" and value == "mock":
+                return False, (
+                    f"{value!r} is only for demo/mock run mode "
+                    f"(use {field.default!r} or solcast)"
+                )
             return False, (f"{value!r} is not available yet "
                            f"(arrives in a later release; use {field.default!r})")
         return True, value
@@ -908,7 +960,9 @@ def _coerce(field: SettingsField, value: Any) -> tuple[bool, Any]:
     return False, "unsupported setting type"  # pragma: no cover - guards a bad schema entry
 
 
-def validate_settings(partial: Any) -> tuple[dict[str, Any], dict[str, str]]:
+def validate_settings(
+    partial: Any, *, dev_mode: str | None = None,
+) -> tuple[dict[str, Any], dict[str, str]]:
     """Validate a partial settings dict. Returns (clean, errors): only valid keys land in `clean`,
     every rejected key gets a human-readable message in `errors`. Unknown keys are errors.
 
@@ -942,7 +996,7 @@ def validate_settings(partial: Any) -> tuple[dict[str, Any], dict[str, str]]:
             errors[key] = "unknown setting"
             continue
         key = canonical
-        ok, result = _coerce(field, value)
+        ok, result = _coerce(field, value, dev_mode=dev_mode)
         if not ok:
             errors[key] = result
             continue
