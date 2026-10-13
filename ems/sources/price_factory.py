@@ -168,7 +168,12 @@ def _build_fixed(
     return FixedTariffPriceSource(rate, **kwargs)
 
 
-def _backup_fixed(eff: dict, tz: ZoneInfo, *, clock: Callable[[], datetime] | None = None) -> Any | None:
+def _backup_fixed(
+    eff: dict,
+    tz: ZoneInfo,
+    *,
+    clock: Callable[[], datetime] | None = None,
+) -> Any | None:
     builder = get_builder(PRICE_DOMAIN, "fixed")
     if builder is None:  # pragma: no cover
         return None
