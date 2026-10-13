@@ -133,14 +133,19 @@ def _collect_all_alerts() -> list[Alert]:
         tibber_unavailable_since=TIBBER_SINCE, confirmed_auto=True,
     ):
         seen[a.key] = a
+    for a in derive_alerts(
+        ALL_FRESH, dry_run=False, decision_outcome=None,
+        live_mock_forecast_provider=True,
+    ):
+        seen[a.key] = a
     return list(seen.values())
 
 
 def test_every_alert_has_non_empty_safe_action_and_ems_doing():
     alerts = _collect_all_alerts()
     # dry_run + 3 battery-write outcomes + 5 signals×2 states + price_horizon + overrun
-    # + no_live_prices + tibber_prices_unavailable = 18.
-    assert len(alerts) == 18
+    # + no_live_prices + tibber_prices_unavailable + live_mock_forecast_provider = 19.
+    assert len(alerts) == 19
     for a in alerts:
         assert a.safe.strip(), f"{a.key} has no safe answer"
         assert a.action.strip(), f"{a.key} has no action"

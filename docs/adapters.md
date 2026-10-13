@@ -118,7 +118,9 @@ token; incomplete config fails safe to mock. Dry-run / arming rules are unchange
 Registered names: `static`, `electricitymaps`. Keyless / unknown → static fail-safe.
 `ems/connection.py::build_carbon_source` is a thin delegate. Settings enums for
 `solar.forecast_provider` and `reporting.carbon_signal` overlay live registry names via
-`ems/settings.py::_registry_enum_options`.
+`ems/settings.py::_registry_enum_options`. On `dev.mode: live`, `mock` stays in the registry
+list but is greyed out in Settings and rejected on POST (#242); a previously saved `mock` value
+still runs until changed and surfaces a degraded data-quality badge.
 
 Guard tests: `ems/tests/test_adapter_registry.py`, `ems/tests/test_forecast_factory.py`,
 `ems/tests/test_price_factory.py`, `ems/tests/test_carbon_factory.py`.

@@ -31,7 +31,7 @@ Legend: **UI** = also editable from the web UI (overlays the file). **CONFIRM** 
 |---|---|---|---|
 | `kwp` | float | 3.0 | forecast scaling |
 | `tilt` / `azimuth` | deg | 35 / 0 (0=south) · **CONFIRM** | forecast geometry. **UI** |
-| `forecast_provider` | enum | `solcast`\|`forecast_solar` = solcast | primary forecast |
+| `forecast_provider` | enum | `forecast_solar` (registry also lists `solcast`, `mock`; `mock` live-gated #242) | primary forecast |
 | `forecast_fallback` | enum | forecast_solar | used when primary stale/down (rate-limited ~12/hr) |
 | `forecast_refresh_owner` | enum | `ems`\|`ha` = ems | single owner of the Solcast budget |
 | `solcast_daily_call_budget` | int | 10 | hard ledger cap/day |

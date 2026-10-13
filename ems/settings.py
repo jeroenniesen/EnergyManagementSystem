@@ -227,7 +227,7 @@ SETTINGS_SCHEMA: tuple[SettingsField, ...] = (
         "percentiles — then enter the API key and rooftop resource id below. Solcast falls back "
         "to Forecast.Solar automatically when stale, unreachable, or over budget. Options come "
         "from the forecast adapter registry (#113). `mock` is the built-in synthetic daylight "
-        "curve (also used when live devices are off).",
+        "curve (demo/mock run mode only; also used automatically when live devices are off).",
         # Baseline list — schema_json / validation overlay live registry names via
         # `_registry_enum_options` so a new `@register_forecast_provider` appears without a
         # second hard-coded enum here.
@@ -814,6 +814,15 @@ def _normalise_dev_mode(dev_mode: str | None) -> str | None:
     return str(dev_mode).strip().lower()
 
 
+<<<<<<< HEAD
+=======
+def _normalise_dev_mode(dev_mode: str | None) -> str | None:
+    if dev_mode is None:
+        return None
+    return str(dev_mode).strip().lower()
+
+
+>>>>>>> cb36a7a (fix(settings): surface persisted mock forecast on live installs (#242))
 def _mock_forecast_provider_disabled(dev_mode: str | None) -> bool:
     """#242: synthetic mock forecast is demo-only — grey out / reject in live Settings.
 
@@ -936,9 +945,10 @@ def _coerce(
         disabled = _schema_disabled_options(field, dev_mode)
         if value in disabled:
             if field.key == "solar.forecast_provider" and value == "mock":
+                allowed = [o for o in opts if o not in disabled]
+                hint = " or ".join(repr(o) for o in allowed) if allowed else repr(field.default)
                 return False, (
-                    f"{value!r} is only for demo/mock run mode "
-                    f"(use {field.default!r} or solcast)"
+                    f"{value!r} is only for demo/mock run mode (use {hint})"
                 )
             return False, (f"{value!r} is not available yet "
                            f"(arrives in a later release; use {field.default!r})")

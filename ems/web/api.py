@@ -1492,6 +1492,13 @@ def create_app(
                 await settings_store.set_many(migration_writes)
                 stored_settings = await settings_store.all()
             settings_cache.update(effective_settings(stored_settings))
+            from ems.settings import live_mock_forecast_provider_active
+
+            if live_mock_forecast_provider_active(settings_cache, dev_mode):
+                _log.warning(
+                    "solar.forecast_provider is mock on a live install — "
+                    "switch to Forecast.Solar or Solcast in Settings (#242)"
+                )
             _apply_control_settings()
             _apply_site_settings()
             _apply_explainer_settings()
@@ -1821,6 +1828,16 @@ def create_app(
             operational_requested=bool(settings_cache.get("control.operational")),
         )
 
+    def _forecast_ok_for_quality() -> bool:
+        """False when no forecast source, or live install uses persisted mock (#242)."""
+        from ems.settings import live_mock_forecast_provider_active
+
+        if solar_forecast is None:
+            return False
+        if live_mock_forecast_provider_active(settings_cache, dev_mode):
+            return False
+        return True
+
     def _prices_live() -> bool:
         """True only for a non-mock price source (Tibber). MockPriceSource is demoprijzen (#79)."""
         return price_source is not None and not isinstance(price_source, MockPriceSource)
@@ -1858,7 +1875,7 @@ def create_app(
         """Single source of the current data-quality level (SPEC §8.11)."""
         snap = freshness.snapshot(now) if freshness is not None else {}
         return data_quality(
-            snap, prices_ok=_prices_ok(), forecast_ok=solar_forecast is not None
+            snap, prices_ok=_prices_ok(), forecast_ok=_forecast_ok_for_quality()
         )
 
     def _freshness_ok(now: datetime) -> bool:
@@ -2619,7 +2636,7 @@ def create_app(
         # they can never disagree (a second snapshot could shift if the recorder marks a signal).
         snap = freshness.snapshot(now) if freshness is not None else {}
         dq = data_quality(
-            snap, prices_ok=_prices_ok(), forecast_ok=solar_forecast is not None
+            snap, prices_ok=_prices_ok(), forecast_ok=_forecast_ok_for_quality()
         )
         # Override banner needs effective intent; write-failure alerts do NOT use preview() —
         # preview/_gate never emit unconfirmed/failed_* (B-09 / #73). Sticky decide() outcome +
@@ -2661,6 +2678,8 @@ def create_app(
             unavail = getattr(price_source, "unavailable_since", None)
             if callable(unavail):
                 tibber_since = unavail()
+        from ems.settings import live_mock_forecast_provider_active
+
         alerts = derive_alerts(
             snap, dry_run=dry_run, decision_outcome=outcome,
             confirmed_auto=confirmed_auto, last_command_unconfirmed=last_unconfirmed,
@@ -2668,6 +2687,9 @@ def create_app(
             mock_prices_blocked_operational=mock_blocked,
             tibber_unavailable_since=tibber_since,
             site_tz=site_tz,
+            live_mock_forecast_provider=live_mock_forecast_provider_active(
+                settings_cache, dev_mode,
+            ),
         )
         out = [{"key": a.key, "severity": a.severity, "message": a.message,
                 "safe": a.safe, "action": a.action, "ems_doing": a.ems_doing} for a in alerts]
@@ -2799,7 +2821,7 @@ def create_app(
 
     async def _diagnostics_snapshot(now: datetime) -> dict:
         prices_ok = _prices_ok()
-        forecast_ok = solar_forecast is not None
+        forecast_ok = _forecast_ok_for_quality()
         # Actually probe the stores so a broken DB shows as a failed check, not a silent pass.
         store_ok = False
         if store is not None:
