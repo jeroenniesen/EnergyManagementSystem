@@ -14,6 +14,8 @@ type TradingStatus = {
   operational: boolean;
   writes_allowed: boolean;
   block_reason: string | null;
+  test_battery_allowed?: boolean;
+  test_battery_block_reason?: string | null;
   evaluation: {
     enabled: boolean;
     would_trade: boolean;
@@ -357,16 +359,18 @@ export function TradingView({ canOperate = true }: { canOperate?: boolean }) {
             <p>
               Optional short forced-DISCHARGE probe to confirm the cluster can export.
               Recommended before arming; not a hard gate. Refuses when Watch only / dry-run
-              blocks writes, or while the car is charging.
+              blocks writes, sensor data is unsafe, or while the car is charging.
             </p>
             {testMsg && (
               <p data-testid="trading-test-msg">{testMsg}</p>
             )}
             {!canOperate ? (
               <p className="muted">Operate permission required.</p>
-            ) : !s.writes_allowed ? (
+            ) : s.test_battery_allowed === false || (!s.writes_allowed && s.test_battery_allowed === undefined) ? (
               <p className="muted" data-testid="trading-test-blocked">
-                {s.block_reason || "Writes blocked — test unavailable."}
+                {s.test_battery_block_reason
+                  || s.block_reason
+                  || "Test unavailable — writes or sensor data blocked."}
               </p>
             ) : s.probe_active ? (
               <p className="muted" data-testid="trading-test-running">
