@@ -17,7 +17,7 @@ from ems.planner.adaptive import AdaptiveConfig, plan_adaptive
 from ems.planner.rule_based import PlannerConfig, plan_rule_based
 from ems.planner.summer import SummerConfig, plan_summer
 from ems.price_quality import validate_price_horizon
-from ems.sense import Recorder, SIGNALS
+from ems.sense import SIGNALS, Recorder
 from ems.settings import SETTINGS_BY_KEY, effective_settings
 from ems.sources.fixed_tariff import FixedTariffPriceSource
 from ems.sources.forecast import ForecastSlot
@@ -158,7 +158,7 @@ def test_serving_backup_marks_prices_unavailable_for_control():
 
 
 def test_backup_horizon_rejected_so_adaptive_cannot_drive_control():
-    """Cheap flat backup + night deficit would GRID_CHARGE via plan_adaptive — horizon must refuse."""
+    """Cheap flat backup + night deficit would GRID_CHARGE — horizon must refuse."""
     rate = 0.18  # under summer max_topup default (€0.30)
     backup = FixedTariffPriceSource(rate, tz=AMS, clock=lambda: FIXED_NOW)
     prices = backup.slots()
