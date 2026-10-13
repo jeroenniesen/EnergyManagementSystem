@@ -2,7 +2,7 @@
 
 **App:** EMS Control (iOS)  
 **EMS server:** self-hosted Energy Management System (open-source software in this repository)  
-**Last updated:** 2026-10-13  
+**Last updated:** 2026-10-14  
 **Languages:** [Nederlands](#privacybeleid-nederlands) · [English](#privacy-policy-english)
 
 This document describes how the **EMS Control** iOS app handles data, and how that app relates to your **own** EMS server. It is written for hosting as a public URL (for example GitHub Pages) and for App Store Connect.
@@ -19,8 +19,7 @@ This document describes how the **EMS Control** iOS app handles data, and how th
 
 **Contact voor privacyvragen over EMS Control:**
 
-<!-- TODO: contactadres invullen door EMS Product Owner vóór publicatie in App Store Connect -->
-[contactadres]
+Voor privacyvragen over EMS Control kun je een issue openen op [GitHub Issues](https://github.com/jeroenniesen/EnergyManagementSystem/issues).
 
 ### 2. Welke gegevens verwerkt de iOS-app?
 
@@ -31,8 +30,9 @@ De app toont energie-informatie en stuurt alleen verzoeken naar het **serveradre
 | EMS-server-URL | iOS Keychain (`last-base-url`) | Laatste verbinding herstellen |
 | API-token (sessie) | iOS Keychain | Authenticatie bij je EMS-server |
 | Widget-token (alleen-lezen) | iOS Keychain + App Group `UserDefaults` | Home-schermwidget praat met dezelfde server |
+| Laatste widget-weergave (accu-%, statuswoord, laadregel auto, tijdstempel) | App Group `UserDefaults` (`widget.last_render`) | Laatst bekende data tonen als een verversing mislukt |
 | Demo-modus | Alleen lokaal gebundelde JSON-fixtures | App Store-review / uitproberen zonder server |
-| Inhoud van schermen | Geheugen tijdens gebruik | Dashboard, inzichten, chat-antwoorden van **jouw** server |
+| Inhoud van schermen | Geheugen tijdens gebruik (behalve de widget-cache hierboven) | Dashboard, inzichten, chat-antwoorden van **jouw** server |
 
 Bij inloggen met gebruikersnaam/wachtwoord stuurt de app die gegevens **alleen** naar jouw EMS-server om een bearer-token te verkrijgen; het wachtwoord wordt **niet** permanent op het toestel opgeslagen (alleen het token in de Keychain).
 
@@ -60,10 +60,11 @@ De app **weerspiegelt** data die **jouw server** verzamelt. Als je live apparate
 | **Forecast.Solar** | Standaard zonforecast | Lat/lon, tilt, azimuth, kWp in de API-URL |
 | **Solcast** (optioneel) | Zonforecast | API-sleutel + site-id |
 | **Open-Meteo** | Bewolking (hulp voor forecast) | Breedtegraad/lengtegraad |
-| **Electricity Maps** (optioneel) | CO₂-inzichten (rapportage) | API-sleutel; locatie voor intensiteit |
+| **Electricity Maps** (optioneel) | CO₂-inzichten (rapportage) | API-sleutel + netzone-code (standaard `NL`) — geen coördinaten |
 | **ntfy** (optioneel) | Pushmeldingen | Door jou gekozen server (bijv. ntfy.sh) + topic; titel/tekst van meldingen |
 | **Externe LLM** (optioneel, standaard **uit**) | Uitleg / chat | Minimale, geredigeerde tekst (beslissingsreden + genoemde feiten of chat-context); **geen** tokens/locatie in die payload volgens serverlogica |
-| **SmartThings** / **Home Assistant** (optioneel) | Consumentenapparaten | Alleen als jij dit inschakelt in instellingen |
+| **SmartThings** (optioneel, **cloud**) | Consumentenapparaten | Jouw Personal Access Token naar `api.smartthings.com`; apparaatlijst + apparaatstatus |
+| **Home Assistant** (optioneel, LAN) | Consumentenapparaten | De HA-URL + token die jij invult; alleen-lezen entiteitsstatus |
 | **OpenStreetMap-tiles** | Web-UI kaart (setup) | Kaarttiles bij locatiekeuze in de **browser-UI** van de server, niet in de iOS-app |
 
 De iOS-app **configureert** deze serverkoppelingen niet; die staan in de EMS-web-UI op je server. Chat en “AI”-antwoorden in de app zijn **server-side**: als jij `external_llm` inschakelt, verwerkt **jouw gekozen** LLM-aanbieder (standaard endpoint in instellingen: MiniMax) de door de server opgestuurde, begrensde tekst.
@@ -101,8 +102,7 @@ Dit document kan worden bijgewerkt in de repository; de datum bovenaan geldt als
 
 **Contact for privacy questions about EMS Control:**
 
-<!-- TODO: contact address to be filled by EMS Product Owner before App Store Connect publication -->
-[contact address]
+For privacy questions about EMS Control, open an issue on [GitHub Issues](https://github.com/jeroenniesen/EnergyManagementSystem/issues).
 
 ### 2. What data does the iOS app process?
 
@@ -113,8 +113,9 @@ The app displays energy information and only sends requests to the **server addr
 | EMS server URL | iOS Keychain (`last-base-url`) | Restore last connection |
 | API token (session) | iOS Keychain | Authenticate to your EMS server |
 | Widget token (read-only) | iOS Keychain + App Group `UserDefaults` | Home-screen widget uses the same server |
+| Last widget render (battery %, verdict word, car line, timestamp) | App Group `UserDefaults` (`widget.last_render`) | Show last-known data when a refresh fails |
 | Demo mode | Bundled JSON fixtures only | App Store review / try without a server |
-| On-screen content | In-memory while in use | Dashboard, insights, chat replies from **your** server |
+| On-screen content | In-memory while in use (apart from the widget cache above) | Dashboard, insights, chat replies from **your** server |
 
 When you sign in with username/password, the app sends those credentials **only** to your EMS server to obtain a bearer token; the password is **not** stored on the device (only the token in the Keychain).
 
@@ -142,10 +143,11 @@ The app **reflects** data your **server** collects. When you enable live devices
 | **Forecast.Solar** | Default solar forecast | Lat/lon, tilt, azimuth, kWp in the API URL |
 | **Solcast** (optional) | Solar forecast | API key + site id |
 | **Open-Meteo** | Cloud cover (forecast helper) | Latitude/longitude |
-| **Electricity Maps** (optional) | CO₂ insights (reporting) | API key; location for intensity |
+| **Electricity Maps** (optional) | CO₂ insights (reporting) | API key + grid zone code (default `NL`) — no coordinates |
 | **ntfy** (optional) | Push notifications | Your chosen server (e.g. ntfy.sh) + topic; notification title/body |
 | **External LLM** (optional, **off** by default) | Explanations / chat | Minimal redacted text (decision reason + cited facts, or chat context); server logic avoids sending tokens/location in that payload |
-| **SmartThings** / **Home Assistant** (optional) | Consumer devices | Only if enabled in your settings |
+| **SmartThings** (optional, **cloud**) | Consumer devices | Your Personal Access Token to `api.smartthings.com`; device list + device status |
+| **Home Assistant** (optional, LAN) | Consumer devices | The HA URL + token you enter; read-only entity state |
 | **OpenStreetMap tiles** | Web UI map (setup) | Map tiles when picking location in the server **browser UI**, not in the iOS app |
 
 The iOS app does **not** configure these server integrations; they are set in the EMS web UI on your server. Chat and “AI” answers in the app are **server-side**: if you enable `external_llm`, **your chosen** LLM provider (default settings point at MiniMax) processes the bounded text the server sends.
