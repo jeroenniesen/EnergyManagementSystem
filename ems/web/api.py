@@ -3013,8 +3013,8 @@ def create_app(
     _trading_probe_tasks: set[asyncio.Task] = set()
     app.state.trading_probe_active = False
 
-    def _trading_write_block_reason() -> str | None:
-        """Why live battery writes (incl. Test batterij / armed export) are blocked."""
+    def _trading_floor_block_reason() -> str | None:
+        """Why yaml/operational/arming floors block live battery writes (not data quality)."""
         if dry_run:
             return "yaml/control dry-run or mock/replay floor — no battery writes"
         if not bool(settings_cache.get("control.operational", False)):
@@ -3025,13 +3025,26 @@ def create_app(
             return "battery driver not armed"
         return None
 
+    def _test_battery_block_reason(now: datetime) -> str | None:
+        """Why Test batterij must refuse — floors first, then §8.11 unsafe (override parity)."""
+        block = _trading_floor_block_reason()
+        if block is not None:
+            return block
+        if _data_quality(now) == "unsafe":
+            return (
+                "Critical sensor data is unsafe — Test batterij refused "
+                "(no forced discharge until grid/SoC inputs are fresh; §8.11 fail-safe)"
+            )
+        return None
+
     @app.get("/api/trading")
     def get_trading() -> dict:
         """Trading portal snapshot: settings, floors, T-vs-Z evaluation (B-106)."""
         now = datetime.now(UTC)
         s = settings_cache
         cfg = trading_config_from_settings(s)
-        block = _trading_write_block_reason()
+        block = _trading_floor_block_reason()
+        test_block = _test_battery_block_reason(now)
         armed = bool(s.get("control.allow_export_discharge", False))
         probe_active = bool(getattr(app.state, "trading_probe_active", False))
         if controller is not None and controller.export_probe_active(now):
@@ -3098,6 +3111,8 @@ def create_app(
             "operational": bool(s.get("control.operational", False)),
             "writes_allowed": block is None,
             "block_reason": block,
+            "test_battery_allowed": test_block is None,
+            "test_battery_block_reason": test_block,
             "evaluation": evaluation,
             "copy": {
                 "house": "Pad Z = energie voor het huis (zelfconsumptie).",
@@ -3127,7 +3142,8 @@ def create_app(
         dry-run / Watch-only floors block writes, or when the car is charging.
         """
         del request  # auth via middleware
-        block = _trading_write_block_reason()
+        now = datetime.now(UTC)
+        block = _test_battery_block_reason(now)
         if block is not None:
             return JSONResponse({"ok": False, "detail": block}, status_code=409)
         if override_store is None:
@@ -3135,7 +3151,6 @@ def create_app(
                 {"ok": False, "detail": "override store not configured"}, status_code=503,
             )
         assert controller is not None
-        now = datetime.now(UTC)
         if _car_charging(now):
             return JSONResponse(
                 {
@@ -3161,37 +3176,46 @@ def create_app(
             # queued cycle cannot observe an EXPORT probe that this request is about to roll back.
             async with control._ctx.control_lock:
                 try:
-                    # Window must be open before decide so unarmed EXPORT maps to DISCHARGE.
-                    controller.begin_export_probe(until)
-                    # Decide first — do NOT publish override until DISCHARGE actually lands.
-                    decision = controller.decide(
-                        BatteryIntent.EXPORT_FOR_PROFIT,
-                        now,
-                        target_soc=floor,
-                        power_w=power,
-                        manual=True,
-                    )
-                    mode = getattr(decision.desired_mode, "value", None)
-                    ok = (
-                        decision.outcome in ("applied", "unconfirmed")
-                        and decision.desired_mode is PhysicalMode.DISCHARGE
-                    )
-                    if not ok:
-                        await _clear_trading_probe_override()
-                        failure = JSONResponse({
-                            "ok": False,
-                            "detail": decision.reason or f"probe not applied ({decision.outcome})",
-                            "outcome": decision.outcome,
-                            "mode": mode,
-                        }, status_code=409)
-                    else:
-                        await override_store.set_many({
-                            _OV_INTENT: BatteryIntent.EXPORT_FOR_PROFIT.value,
-                            _OV_EXP: until.isoformat(),
-                        })
-                        override_box["ov"] = Override(
-                            intent=BatteryIntent.EXPORT_FOR_PROFIT, expires_at=until,
+                    late_block = _test_battery_block_reason(now)
+                    if late_block is not None:
+                        app.state.trading_probe_active = False
+                        failure = JSONResponse(
+                            {"ok": False, "detail": late_block}, status_code=409,
                         )
+                    else:
+                        # Window must be open before decide so unarmed EXPORT maps to DISCHARGE.
+                        controller.begin_export_probe(until)
+                        # Decide first — do NOT publish override until DISCHARGE actually lands.
+                        decision = controller.decide(
+                            BatteryIntent.EXPORT_FOR_PROFIT,
+                            now,
+                            target_soc=floor,
+                            power_w=power,
+                            manual=True,
+                        )
+                        mode = getattr(decision.desired_mode, "value", None)
+                        ok = (
+                            decision.outcome in ("applied", "unconfirmed")
+                            and decision.desired_mode is PhysicalMode.DISCHARGE
+                        )
+                        if not ok:
+                            await _clear_trading_probe_override()
+                            failure = JSONResponse({
+                                "ok": False,
+                                "detail": decision.reason or (
+                                    f"probe not applied ({decision.outcome})"
+                                ),
+                                "outcome": decision.outcome,
+                                "mode": mode,
+                            }, status_code=409)
+                        else:
+                            await override_store.set_many({
+                                _OV_INTENT: BatteryIntent.EXPORT_FOR_PROFIT.value,
+                                _OV_EXP: until.isoformat(),
+                            })
+                            override_box["ov"] = Override(
+                                intent=BatteryIntent.EXPORT_FOR_PROFIT, expires_at=until,
+                            )
                 except Exception as exc:
                     await _clear_trading_probe_override()
                     failure = JSONResponse(

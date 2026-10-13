@@ -1,6 +1,7 @@
 """E-11 PR C: Trading portal API (B-106 / B-107 / B-108)."""
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from zoneinfo import ZoneInfo
 
 from fastapi.testclient import TestClient
@@ -8,7 +9,9 @@ from fastapi.testclient import TestClient
 from ems.control.mode_controller import ModeController
 from ems.control.override import NONE as OVERRIDE_NONE
 from ems.domain import RawSample
+from ems.freshness import FreshnessTracker
 from ems.lifecycle import Lifecycle
+from ems.sense import SIGNALS
 from ems.sources.battery import MockBatteryDriver
 from ems.sources.forecast import MockSolarForecastSource
 from ems.sources.prices import MockPriceSource
@@ -18,6 +21,15 @@ from ems.web.api import create_app
 from ems.web.authz import Tier, required_tier
 
 AMS = ZoneInfo("Europe/Amsterdam")
+
+
+def _fresh_tracker() -> FreshnessTracker:
+    now = datetime.now(UTC)
+    fresh = FreshnessTracker()
+    fresh.register(*SIGNALS)
+    for signal in SIGNALS:
+        fresh.mark(signal, now)
+    return fresh
 
 
 class _Source:
@@ -40,6 +52,7 @@ def _app(
     with_override_store: bool = False,
     controller: ModeController | None = None,
     control_cycle_seconds: float = 3600.0,
+    freshness: FreshnessTracker | None = None,
 ):
     del operational  # applied via settings POST when needed; create_app floor is dry_run
     db = str(tmp_path / "ems.sqlite")
@@ -56,6 +69,8 @@ def _app(
     }
     if with_override_store:
         kwargs["override_store"] = SettingsStore(db, table="runtime_state")
+    if freshness is not None:
+        kwargs["freshness"] = freshness
     app = create_app(
         _Source(ev_power_w=ev_power_w), dry_run=dry_run, dev_mode="mock", tz=AMS,
         **kwargs,
@@ -187,12 +202,62 @@ def test_preview_during_probe_matches_discharge():
     assert after.desired_mode is PhysicalMode.AUTO
 
 
+def test_test_battery_refuses_when_data_unsafe(tmp_path, monkeypatch):
+    """§8.11: unsafe sensors → refuse Test batterij; never call ModeController.decide."""
+    app, controller = _app(tmp_path, dry_run=False, with_override_store=True)
+    decide_calls = 0
+    real_decide = controller.decide
+
+    def _counting_decide(*args, **kwargs):
+        nonlocal decide_calls
+        decide_calls += 1
+        return real_decide(*args, **kwargs)
+
+    monkeypatch.setattr(controller, "decide", _counting_decide)
+    with TestClient(app) as c:
+        c.post("/api/settings", json={"control.operational": True})
+        trading = c.get("/api/trading").json()
+        assert trading["evaluation"]["data_quality"] == "unsafe"
+        assert trading["writes_allowed"] is True
+        assert trading["test_battery_allowed"] is False
+        assert "unsafe" in (trading["test_battery_block_reason"] or "").lower()
+        r = c.post("/api/trading/test-battery", json={})
+        assert r.status_code == 409
+        body = r.json()
+        assert body["ok"] is False
+        assert "unsafe" in body["detail"].lower()
+        assert decide_calls == 0
+        assert controller.export_probe_active(datetime.now(UTC)) is False
+        assert app.state.trading_probe_active is False
+
+
+def test_test_battery_allowed_when_data_degraded_not_unsafe(tmp_path):
+    """Only `unsafe` blocks the probe — degraded / price_fallback must still be offered."""
+    from datetime import timedelta
+
+    fresh = _fresh_tracker()
+    now = datetime.now(UTC)
+    fresh.register("prices")
+    fresh.mark("prices", now - timedelta(hours=6))
+    app, _ = _app(tmp_path, dry_run=False, with_override_store=True, freshness=fresh)
+    with TestClient(app) as c:
+        c.post("/api/settings", json={"control.operational": True})
+        trading = c.get("/api/trading").json()
+        assert trading["evaluation"]["data_quality"] != "unsafe"
+        assert trading["test_battery_allowed"] is True
+        assert trading["test_battery_block_reason"] is None
+
+
 def test_test_battery_refuses_when_car_charging(tmp_path):
     """B-107: probe must not force DISCHARGE while the car is charging."""
     from datetime import UTC, datetime
 
     app, controller = _app(
-        tmp_path, dry_run=False, ev_power_w=5000.0, with_override_store=True,
+        tmp_path,
+        dry_run=False,
+        ev_power_w=5000.0,
+        with_override_store=True,
+        freshness=_fresh_tracker(),
     )
     with TestClient(app) as c:
         c.post("/api/settings", json={"control.operational": True})
@@ -201,6 +266,7 @@ def test_test_battery_refuses_when_car_charging(tmp_path):
         body = r.json()
         assert body["ok"] is False
         assert "car" in body["detail"].lower()
+        assert "unsafe" not in body["detail"].lower()
         assert controller.allow_export_discharge is False
         assert controller.export_probe_active(datetime.now(UTC)) is False
         assert app.state.trading_probe_active is False
@@ -214,7 +280,9 @@ def test_test_battery_failed_decide_leaves_no_override(tmp_path, monkeypatch):
     from ems.control.mode_controller import ActionDecision
     from ems.domain import BatteryIntent, PhysicalMode
 
-    app, controller = _app(tmp_path, dry_run=False, with_override_store=True)
+    app, controller = _app(
+        tmp_path, dry_run=False, with_override_store=True, freshness=_fresh_tracker(),
+    )
     with TestClient(app) as c:
         c.post("/api/settings", json={"control.operational": True})
 
@@ -270,7 +338,11 @@ def test_test_battery_success_discharges_then_restores(tmp_path, monkeypatch):
 
     monkeypatch.setattr(asyncio, "sleep", _gated)
     app, bound = _app(
-        tmp_path, dry_run=False, with_override_store=True, controller=controller,
+        tmp_path,
+        dry_run=False,
+        with_override_store=True,
+        controller=controller,
+        freshness=_fresh_tracker(),
     )
     assert bound is controller
     try:
