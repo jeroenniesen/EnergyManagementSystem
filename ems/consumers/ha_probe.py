@@ -10,7 +10,7 @@ from collections.abc import Callable
 from typing import Any
 
 from ems.consumers.homeassistant import classify_ha_entity
-from ems.settings import normalize_ha_url
+from ems.ha_url import normalize_ha_url
 
 _log = logging.getLogger(__name__)
 

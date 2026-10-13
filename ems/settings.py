@@ -17,6 +17,7 @@ from typing import Any
 
 from ems.consumers.selection import default_device_ids_json
 from ems.ev_schedule import default_schedule
+from ems.ha_url import normalize_ha_url
 
 
 @dataclass(frozen=True)
@@ -805,32 +806,6 @@ def fuse_from_watts(watts: float) -> str:
 def defaults() -> dict[str, Any]:
     """The default value of every setting (the config.yaml-equivalent baseline)."""
     return {f.key: f.default for f in SETTINGS_SCHEMA}
-
-
-def normalize_ha_url(raw: str) -> str:
-    """Canonical Home Assistant base URL for settings + wizard (#266 / #263).
-
-    Requires http/https + host; rejects credentials, path, query, fragment.
-    Strips trailing slash. Raises ``ValueError`` with a homeowner-facing message.
-    """
-    from urllib.parse import urlparse
-
-    parsed = urlparse(str(raw).strip())
-    path = (parsed.path or "").rstrip("/")
-    if (
-        parsed.scheme not in ("http", "https")
-        or not parsed.netloc
-        or parsed.username is not None
-        or parsed.password is not None
-        or path not in ("",)
-        or parsed.query
-        or parsed.fragment
-    ):
-        raise ValueError(
-            "must be an http(s) URL with a host only "
-            "(no path, query, fragment, or credentials)"
-        )
-    return f"{parsed.scheme}://{parsed.netloc}"
 
 
 def _registry_enum_options(key: str, fallback: tuple[str, ...] | None) -> tuple[str, ...] | None:
