@@ -34,6 +34,9 @@ def validate_price_horizon(
         return _invalid("price horizon is empty", slots)
     if now.tzinfo is None:
         return _invalid("current time is timezone-naive", slots)
+    # #118 / Jeroen 2026-09-27: fixed-tariff backup is display-only — never a control horizon.
+    if any(getattr(s, "origin", "live") == "fixed_backup" for s in slots):
+        return _invalid("fixed-tariff backup is display-only (not a control horizon)", slots)
 
     starts: list[datetime] = []
     previous: datetime | None = None

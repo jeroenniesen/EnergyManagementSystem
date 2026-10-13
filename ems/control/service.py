@@ -887,6 +887,11 @@ class ControlService:
             return None
         now = self._clock.now_utc() if now is None else now
         prices = self._price_source.slots()
+        # #118: drop a memoized backup-era plan as soon as Tibber recovers.
+        serving_backup = bool(getattr(self._price_source, "serving_fixed_backup", False))
+        if getattr(self, "_prev_serving_fixed_backup", False) and not serving_backup:
+            self.invalidate_plan_cache()
+        self._prev_serving_fixed_backup = serving_backup
         self._price_horizon_status = validate_price_horizon(
             prices, now=now, site_tz=self._site_tz)
         if not self._price_horizon_status.ok:

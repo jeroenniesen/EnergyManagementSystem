@@ -132,6 +132,7 @@ def test_prices_endpoint_without_source():
     b = _client().get("/api/prices").json()
     assert b["slots"] == []
     assert b["current_eur_per_kwh"] is None
+    assert b.get("serving_fixed_backup") is False
 
 
 def test_forecast_endpoint_returns_slots_and_today_kwh():

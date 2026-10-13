@@ -12,6 +12,7 @@ from zoneinfo import ZoneInfo
 from ems.control.charge_commitment import (
     ABORT_DRY_RUN,
     ABORT_EXPIRED,
+    ABORT_PRICE_FALLBACK,
     ABORT_TARGET_REACHED,
     ABORT_UNARMED,
     ABORT_UNSAFE,
@@ -121,6 +122,16 @@ def test_evaluate_abort_unsafe():
         data_quality="unsafe", grace_elapsed=True)
     assert v.action == "abort"
     assert ABORT_UNSAFE in v.reason
+
+
+def test_evaluate_abort_price_fallback():
+    """#118: never resume GRID_CHARGE while badge is price_fallback (fixed backup)."""
+    v = evaluate_commitment(
+        _commitment(),
+        now=NOW, soc_pct=20.0, dry_run=False, armed=True,
+        data_quality="price_fallback", grace_elapsed=True)
+    assert v.action == "abort"
+    assert ABORT_PRICE_FALLBACK in v.reason
 
 
 def test_evaluate_hold_during_grace():
