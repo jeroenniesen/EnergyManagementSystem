@@ -25,6 +25,11 @@
 	</dict>
 	<key>NSLocalNetworkUsageDescription</key>
 	<string>EMS Control connects to the Energy Management System server address you enter on your home network.</string>
+	<!-- #257: App Review privacy/support links (override per build without code changes). -->
+	<key>EMSPrivacyPolicyURL</key>
+	<string>https://github.com/jeroenniesen/EnergyManagementSystem/blob/main/docs/privacy-policy.md</string>
+	<key>EMSSupportURL</key>
+	<string>https://github.com/jeroenniesen/EnergyManagementSystem/issues/new/choose</string>
 	<key>UILaunchScreen</key>
 	<dict/>
 	<key>UISupportedInterfaceOrientations</key>

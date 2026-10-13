@@ -6,6 +6,7 @@ struct DashboardView: View {
     @Environment(\.colorScheme) private var colorScheme
     let notificationsStore: NotificationsStore
     @State private var showsDetails = false
+    @State private var showsSettings = false
 
     private var theme: EMSTheme {
         colorScheme == .dark ? .dark : .light
@@ -114,10 +115,16 @@ struct DashboardView: View {
             .navigationTitle("Dashboard")
             .toolbar {
                 if dashboardStore.snapshot != nil {
-                    Button(dashboardStore.snapshot?.isDemo == true ? "Connect" : "Forget") {
-                        dashboardStore.forgetServer()
+                    Button {
+                        showsSettings = true
+                    } label: {
+                        Label("Settings", systemImage: "gearshape")
                     }
+                    .accessibilityIdentifier("dashboard.settings")
                 }
+            }
+            .sheet(isPresented: $showsSettings) {
+                SettingsView(showsSignOut: true)
             }
             .refreshable {
                 await dashboardStore.refresh()
