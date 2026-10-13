@@ -21,6 +21,8 @@
 		4E695D73A60245B409F24E62 /* ActivityStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 00F8B1F9E78007B8E6F45047 /* ActivityStore.swift */; };
 		51B466CD33164832C83EA6F1 /* DashboardStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 851FDA73182D3541A3039A9A /* DashboardStore.swift */; };
 		54D20C7D5F03A7096EA28D35 /* ConnectionView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 378862CC33548C4C96596B8A /* ConnectionView.swift */; };
+		73B73EDC18922C65B2C41939 /* AppLinks.swift in Sources */ = {isa = PBXBuildFile; fileRef = 23082EDF9E7CE5DAF6B0B2F6 /* AppLinks.swift */; };
+		C339BB8CC9A1CAB04E419EF0 /* SettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 09EF4207BE0345D9E1B1A2C1 /* SettingsView.swift */; };
 		58F3D814DBFE8DE2988FC32A /* ChatView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 922974D3E5EFAB723E1B86D9 /* ChatView.swift */; };
 		5D3E676405A9AC5E9B819120 /* Theme.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4D90E4C3625F5CBBBB665180 /* Theme.swift */; };
 		71EE4BF19B1AE73BBF143945 /* WidgetSupport.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3115F953EFDB46663E1E7408 /* WidgetSupport.swift */; };
@@ -130,6 +132,8 @@
 		7AE8E5DCF24A00DA770185CB /* CarStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CarStore.swift; sourceTree = "<group>"; };
 		81C65C37F0360A3E36856B3C /* EMSWidgetBundle.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EMSWidgetBundle.swift; sourceTree = "<group>"; };
 		851FDA73182D3541A3039A9A /* DashboardStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DashboardStore.swift; sourceTree = "<group>"; };
+		23082EDF9E7CE5DAF6B0B2F6 /* AppLinks.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppLinks.swift; sourceTree = "<group>"; };
+		09EF4207BE0345D9E1B1A2C1 /* SettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsView.swift; sourceTree = "<group>"; };
 		922974D3E5EFAB723E1B86D9 /* ChatView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatView.swift; sourceTree = "<group>"; };
 		93334206BA35A14EC4153324 /* EMSControl.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = EMSControl.entitlements; sourceTree = "<group>"; };
 		994E14FBDEF1C0F89AC9E28C /* demo-chat.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = "demo-chat.json"; sourceTree = "<group>"; };
@@ -208,6 +212,7 @@
 			children = (
 				00F8B1F9E78007B8E6F45047 /* ActivityStore.swift */,
 				720F711D71B00AC0F6976700 /* APIClient.swift */,
+				23082EDF9E7CE5DAF6B0B2F6 /* AppLinks.swift */,
 				7AE8E5DCF24A00DA770185CB /* CarStore.swift */,
 				666215802737C6356279F9E7 /* CarTab.swift */,
 				BC6937650BBFD71CE57B8BF5 /* ChatStore.swift */,
@@ -245,6 +250,7 @@
 				001C06DC7E770182FD4B1DBB /* Info.plist */,
 				257B061EB9A96671DDB32DC5 /* InsightsView.swift */,
 				2B9061823F17E42906990E53 /* NotificationsView.swift */,
+				09EF4207BE0345D9E1B1A2C1 /* SettingsView.swift */,
 				A251APP0PRIVACYINFO000001 /* PrivacyInfo.xcprivacy */,
 			);
 			path = EMSControlApp;
@@ -423,6 +429,7 @@
 			files = (
 				EEC0E74D439A37CB1C2D9F6C /* APIClient.swift in Sources */,
 				4E695D73A60245B409F24E62 /* ActivityStore.swift in Sources */,
+				73B73EDC18922C65B2C41939 /* AppLinks.swift in Sources */,
 				D26583CB40FD4B9525AF4F6A /* CarStore.swift in Sources */,
 				E4324AC3E37934CFA4C5AE74 /* CarTab.swift in Sources */,
 				B73C5305189929545FF315BF /* ChatStore.swift in Sources */,
@@ -456,6 +463,7 @@
 				729A10730EAAE407CCC4638B /* EMSControlApp.swift in Sources */,
 				03BCFFC4E5ACF67ED5DA059F /* InsightsView.swift in Sources */,
 				145FB2DA6CB9ACB0352B4CED /* NotificationsView.swift in Sources */,
+				C339BB8CC9A1CAB04E419EF0 /* SettingsView.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

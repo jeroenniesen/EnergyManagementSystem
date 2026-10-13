@@ -13,6 +13,7 @@ struct ConnectionView: View {
     @State private var isConnecting = false
     @State private var validationError: String?
     @State private var didPrefill = false
+    @State private var showsSettings = false
 
     private let discovery = ServerDiscovery()
     private let credentialStore = KeychainCredentialStore()
@@ -140,11 +141,28 @@ struct ConnectionView: View {
                                         .stroke(themeColor(theme.error).opacity(0.35), lineWidth: 1)
                                 }
                         }
+
+                        // #257: privacy/support reachable before sign-in (App Review).
+                        VStack(alignment: .leading, spacing: 10) {
+                            Link("Privacy Policy", destination: AppLinks.privacyPolicyURL())
+                                .font(.footnote.weight(.semibold))
+                            Link("Support", destination: AppLinks.supportURL())
+                                .font(.footnote.weight(.semibold))
+                            Button("Settings") {
+                                showsSettings = true
+                            }
+                            .font(.footnote.weight(.semibold))
+                        }
+                        .foregroundStyle(themeColor(theme.accent))
+                        .padding(.top, 8)
                     }
                     .padding(20)
                 }
             }
             .navigationTitle("EMS Server")
+            .sheet(isPresented: $showsSettings) {
+                SettingsView(showsSignOut: false)
+            }
         }
         .onAppear(perform: prefillSavedServer)
     }

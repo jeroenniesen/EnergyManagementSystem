@@ -128,6 +128,34 @@ final class DashboardStoreTests: XCTestCase {
         XCTAssertNil(store.snapshot)
     }
 
+    func testForgetServerClearsWidgetKeychainAndAppGroup() throws {
+        // #257: sign-out must wipe widget Keychain slot + App Group config.
+        let credentials = RecordingCredentialStore()
+        let url = URL(string: "http://ems.local:8080")!
+        credentials.savedWidgetTokens[url] = "widget-access"
+        let suite = "test.forget.widget.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suite)!
+        defaults.removePersistentDomain(forName: suite)
+        let widgetConfig = AppGroupConfigStore(defaults: defaults)
+        widgetConfig.save(WidgetServerConfig(baseURL: url, token: "widget-access"))
+        XCTAssertNotNil(widgetConfig.load())
+        let store = DashboardStore(
+            client: APIClient(baseURL: url, token: "session"),
+            credentialStore: credentials,
+            widgetConfig: widgetConfig
+        )
+
+        store.forgetServer()
+
+        XCTAssertEqual(credentials.deletedURLs, [url])
+        XCTAssertEqual(credentials.deletedWidgetURLs, [url])
+        XCTAssertTrue(credentials.deletedLastBaseURL)
+        XCTAssertNil(widgetConfig.load())
+        XCTAssertNil(store.client)
+        XCTAssertNil(store.snapshot)
+        XCTAssertFalse(store.authFailed)
+    }
+
     func testSaveAndRestoreConnectedServerUsesCredentialStore() throws {
         let credentials = RecordingCredentialStore()
         let url = URL(string: "http://ems.local:8080")!

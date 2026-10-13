@@ -159,6 +159,19 @@ jobs:
           plutil -extract NSAppTransportSecurity.NSAllowsLocalNetworking raw -o - "$app" | grep -qx 'true'
           plutil -extract NSAppTransportSecurity.NSAllowsLocalNetworking raw -o - "$widget" | grep -qx 'true'
 
+      # #257: configurable privacy/support URLs for Settings + connection footer.
+      - name: Check EMS privacy/support Info.plist URLs
+        run: |
+          set -euo pipefail
+          app=ios/EMSControl/Sources/EMSControlApp/Info.plist
+          for key in EMSPrivacyPolicyURL EMSSupportURL; do
+            val=$(plutil -extract "$key" raw -o - "$app")
+            echo "$key=$val"
+            echo "$val" | grep -Eq '^https://'
+          done
+          grep -q 'AppLinks.swift' ios/EMSControl/EMSControl.xcodeproj/project.pbxproj
+          grep -q 'SettingsView.swift' ios/EMSControl/EMSControl.xcodeproj/project.pbxproj
+
       # SPM `swift test` only — no xcodegen (not guaranteed to be installed
       # on the runner) and no xcodebuild (app target isn't part of this
       # gate). The runner's default DEVELOPER_DIR already points at a full
