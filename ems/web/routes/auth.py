@@ -49,7 +49,7 @@ from ems.storage.auth import UsernameTaken
 from ems.web.authz import role_rank, tier_rank
 from ems.web.context import AppContext
 from ems.web.ratelimit import LoginRateLimiter
-from ems.web_bind import onboarding_client_allowed
+from ems.web_bind import normalize_shared_token, onboarding_client_allowed
 
 # P2 security review: cap what a login-failure/lockout audit event stores. Login itself accepts
 # (and rate-limits/looks up) the submitted username at whatever length it arrives — this cap only
@@ -154,7 +154,7 @@ def build_router(ctx: AppContext) -> APIRouter:
         if err is not None:
             return err
         password = str(body.get("password", ""))
-        shared = ctx.effective_web_token()
+        shared = normalize_shared_token(ctx.effective_web_token())
         client = request.scope.get("client")
         host = client[0] if client else None
         if not onboarding_client_allowed(host, shared_token=shared):

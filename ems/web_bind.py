@@ -10,7 +10,6 @@ import asyncio
 import ipaddress
 import logging
 import os
-from pathlib import Path
 
 from ems.storage.auth import AuthStore
 from ems.storage.settings import SettingsStore
@@ -19,10 +18,28 @@ _log = logging.getLogger(__name__)
 
 _LOOPBACK_HOSTS = frozenset({"127.0.0.1", "::1"})
 
+# Committed / sample secrets must never unlock open bind or skip the IP onboard guard.
+_INSECURE_DEFAULT_TOKENS = frozenset({
+    "dev-bootstrap-change-me",
+    "legacy",
+    "changeme",
+    "secret",
+})
+
+
+def normalize_shared_token(token: str | None) -> str | None:
+    """Return a usable shared token, or None for blank / known-insecure defaults."""
+    if token is None:
+        return None
+    cleaned = token.strip()
+    if not cleaned or cleaned in _INSECURE_DEFAULT_TOKENS:
+        return None
+    return cleaned
+
 
 def onboarding_client_allowed(host: str | None, *, shared_token: str | None) -> bool:
     """Whether POST /api/auth/onboard may proceed from this client IP."""
-    if shared_token is not None:
+    if normalize_shared_token(shared_token) is not None:
         return True
     return is_loopback_client(host)
 
@@ -38,17 +55,17 @@ def is_loopback_client(host: str | None) -> bool:
         return False
 
 
-def _in_container() -> bool:
-    return Path("/.dockerenv").is_file()
-
-
 def resolve_bind_host(
     *,
     configured: str,
     users_exist: bool,
     shared_token_configured: bool,
 ) -> str:
-    """Host address for uvicorn to bind."""
+    """Host address for uvicorn to bind.
+
+    Containers follow the same rule as bare metal: loopback until an admin or a real
+    shared token exists. Use ``EMS_WEB_BIND`` only as an explicit escape hatch (logged).
+    """
     override = (os.environ.get("EMS_WEB_BIND") or "").strip()
     if override:
         if not users_exist and not shared_token_configured:
@@ -61,8 +78,6 @@ def resolve_bind_host(
         return override
     if users_exist or shared_token_configured:
         return configured
-    if _in_container():
-        return configured
     return "127.0.0.1"
 
 
@@ -72,15 +87,27 @@ async def _boot_onboarding_posture_async(
     config_web_token: str | None,
 ) -> tuple[bool, bool]:
     auth = AuthStore(db_path)
-    await auth.init()
-    users_exist = (await auth.user_count()) > 0
-    if (env_web_token or "").strip() or (config_web_token or "").strip():
-        return users_exist, True
-    settings = SettingsStore(db_path)
-    await settings.init()
-    stored = await settings.all()
-    ui_tok = (stored.get("web.auth_token") or "").strip()
-    return users_exist, bool(ui_tok)
+    settings: SettingsStore | None = None
+    try:
+        await auth.init()
+        users_exist = (await auth.user_count()) > 0
+        if normalize_shared_token(env_web_token) or normalize_shared_token(config_web_token):
+            return users_exist, True
+        settings = SettingsStore(db_path)
+        await settings.init()
+        stored = await settings.all()
+        ui_tok = normalize_shared_token(stored.get("web.auth_token"))
+        return users_exist, ui_tok is not None
+    finally:
+        if settings is not None:
+            try:
+                await settings.close()
+            except Exception:
+                pass
+        try:
+            await auth.close()
+        except Exception:
+            pass
 
 
 def boot_onboarding_posture(
@@ -112,8 +139,6 @@ def log_bind_choice(
     reason = "onboarded_or_token"
     if (os.environ.get("EMS_WEB_BIND") or "").strip():
         reason = "EMS_WEB_BIND"
-    elif _in_container() and not users_exist and not shared_token_configured:
-        reason = "container_default_bind"
     _log.info(
         "Web UI listening on %s (%s; users_exist=%s shared_token=%s configured_bind=%s)",
         host,

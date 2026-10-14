@@ -28,7 +28,12 @@ from ems.storage.control_state import ControlStateStore
 from ems.storage.history import HistoryStore
 from ems.storage.settings import SettingsStore
 from ems.web.api import create_app
-from ems.web_bind import boot_onboarding_posture, log_bind_choice, resolve_bind_host
+from ems.web_bind import (
+    boot_onboarding_posture,
+    log_bind_choice,
+    normalize_shared_token,
+    resolve_bind_host,
+)
 
 _REPO_ROOT = Path(__file__).parent.parent
 # Built SPA (ems/web/static/dist) — present after `npm run build`; absent in pure-API dev.
@@ -128,7 +133,7 @@ def build_app():
         control_cycle_seconds=cfg.control_cycle_seconds,
         history_retention_days=cfg.retention_days,
         history_backup_keep=cfg.backup_keep,
-        web_auth_token=(
+        web_auth_token=normalize_shared_token(
             (os.environ.get("EMS_WEB_TOKEN") or "").strip()
             or (cfg.web_auth_token or "").strip()
             or None

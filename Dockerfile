@@ -27,6 +27,7 @@ RUN uv sync --frozen --no-dev
 
 COPY ems ./ems
 COPY config.yaml ./config.yaml
+COPY scripts ./scripts
 COPY --from=frontend /app/ems/web/static/dist ./ems/web/static/dist
 
 ENV PATH="/app/.venv/bin:$PATH"
