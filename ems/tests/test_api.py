@@ -19,12 +19,36 @@ def test_health_live():
     assert r.json()["status"] == "alive"
 
 
-def test_health_ready_reports_mode():
+def test_health_ready_public_probe_hides_mode():
     r = _client().get("/health/ready")
     assert r.status_code == 200
     body = r.json()
+    assert body["status"] in ("ready", "starting")
+    assert "dry_run" not in body and "dev_mode" not in body and "readiness" not in body
+
+
+def test_health_ready_includes_mode_when_authenticated(tmp_path):
+    from ems.storage.auth import AuthStore
+    from ems.storage.settings import SettingsStore
+
+    db = str(tmp_path / "ems.sqlite")
+    client = TestClient(
+        create_app(
+            MockSource(),
+            dry_run=True,
+            dev_mode="mock",
+            settings_store=SettingsStore(db),
+            auth_store=AuthStore(db),
+            web_auth_token="probe-token",
+        )
+    )
+    public = client.get("/health/ready")
+    assert "dry_run" not in public.json()
+    authed = client.get("/health/ready", headers={"Authorization": "Bearer probe-token"})
+    body = authed.json()
     assert body["dry_run"] is True
     assert body["dev_mode"] == "mock"
+    assert "readiness" in body
 
 
 def test_status_reconstructs_house_load():

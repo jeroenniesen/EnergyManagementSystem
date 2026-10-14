@@ -90,7 +90,7 @@ explainer:                 # SEPARATE from ml: — selected regardless of ml.ena
     provider: minimax      # example; any OpenAI-compatible chat endpoint
     base_url: https://api.minimax.io/v1
     model: <model-id>
-    api_key: !secret llm_api_key   # secret only; never logged/stored (SPEC §12)
+    api_key: !secret llm_api_key   # secret — UI stores as explainer.api_key (masked); never logged (SPEC §12)
     max_tokens: 200
     timeout_seconds: 8
     share: reason_and_facts        # minimal redacted payload (see §7); never raw history/secrets

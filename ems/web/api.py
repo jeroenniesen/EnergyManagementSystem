@@ -2538,11 +2538,34 @@ def create_app(
             capability_ok=_capability_box["cap"] is not None,
         )
 
+    async def _health_detail_allowed(request: Request) -> bool:
+        """Full readiness (dry_run, dev_mode, layers) only for an authenticated caller — public
+        probes (Docker, iOS, LAN scanners) get status only (#237)."""
+        required = _effective_web_token()
+        if required is not None:
+            scheme, _, token = request.headers.get("authorization", "").partition(" ")
+            try:
+                if scheme == "Bearer" and secrets.compare_digest(token, required):
+                    return True
+            except TypeError:
+                pass
+        if auth_store is not None:
+            try:
+                if await _resolve_principal(request) is not None:
+                    return True
+            except Exception:
+                _log.debug("health/ready: principal resolve failed (non-fatal)", exc_info=True)
+        return False
+
     @app.get("/health/ready")
-    def ready() -> dict:
+    async def ready(request: Request) -> dict:
         r = _readiness(datetime.now(UTC))
-        return {"status": "ready" if r.dashboard_ready else "starting",
-                "dry_run": dry_run, "dev_mode": dev_mode, "readiness": r.to_dict()}
+        payload: dict = {"status": "ready" if r.dashboard_ready else "starting"}
+        if await _health_detail_allowed(request):
+            payload["dry_run"] = dry_run
+            payload["dev_mode"] = dev_mode
+            payload["readiness"] = r.to_dict()
+        return payload
 
     @app.get("/api/auth")
     async def auth_status(request: Request) -> dict:

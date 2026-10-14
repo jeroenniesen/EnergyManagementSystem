@@ -61,6 +61,16 @@ def _capped_for_audit(username: str) -> str:
     return username[:_AUDITED_USERNAME_MAX]
 
 
+def _password_policy_error(password: str) -> JSONResponse | None:
+    """New/changed passwords only — existing logins are not re-checked (#237)."""
+    if len(password) < 8:
+        return JSONResponse({"detail": "password too short (min 8)"}, status_code=422)
+    if not any(c.isalpha() for c in password) or not any(c.isdigit() for c in password):
+        return JSONResponse(
+            {"detail": "password must include a letter and a number"}, status_code=422)
+    return None
+
+
 def _validate_new_account(username: str, password: str) -> tuple[str, JSONResponse | None]:
     """Shared new-account validation for onboard + accept_invite: strip the username FIRST (a
     whitespace-only submission must not slip past the length check — that was the bug this helper
@@ -69,9 +79,12 @@ def _validate_new_account(username: str, password: str) -> tuple[str, JSONRespon
     username (callers must use this value, not their own unstripped copy) plus an error response
     or None."""
     stripped = username.strip()
-    if len(stripped) < 1 or len(password) < 8:
+    if len(stripped) < 1:
         return stripped, JSONResponse(
             {"detail": "username required; password min 8"}, status_code=422)
+    pw_err = _password_policy_error(password)
+    if pw_err is not None:
+        return stripped, pw_err
     return stripped, None
 
 
@@ -220,8 +233,9 @@ def build_router(ctx: AppContext) -> APIRouter:
         if not verify_password(user["password_hash"], str(body.get("old", ""))):
             return JSONResponse({"detail": "invalid credentials"}, status_code=403)
         new = str(body.get("new", ""))
-        if len(new) < 8:
-            return JSONResponse({"detail": "password too short (min 8)"}, status_code=422)
+        pw_err = _password_policy_error(new)
+        if pw_err is not None:
+            return pw_err
         await auth_store.set_password(p.user_id, hash_password(new))
         await ctx.audit_auth("password_changed", f"Password changed: {p.username}",
                              username=p.username, user_id=p.user_id)

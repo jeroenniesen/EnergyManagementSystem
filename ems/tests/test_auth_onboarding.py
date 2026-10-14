@@ -32,6 +32,14 @@ def test_onboard_creates_admin_then_gates_reopen(tmp_path):
         assert r3.status_code == 409
 
 
+def test_onboard_rejects_password_without_letter_and_digit(tmp_path):
+    db = str(tmp_path / "ems.sqlite")
+    with _client(_app(db)) as c:
+        r = c.post("/api/auth/onboard", json={"username": "admin", "password": "12345678"})
+        assert r.status_code == 422
+        assert r.json()["detail"] == "password must include a letter and a number"
+
+
 def test_onboard_rejects_whitespace_only_username(tmp_path):
     # Review fix: onboard() used to check len(username) BEFORE stripping, so a whitespace-only
     # username slipped past the length check (accept_invite already stripped first). Both now go

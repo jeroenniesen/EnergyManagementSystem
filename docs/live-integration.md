@@ -27,7 +27,7 @@ devices:
   indevolt_ips_extra: ""       # Optional comma-separated additional towers
 ```
 
-Secrets are env-only, never committed: `TIBBER_TOKEN`, `INDEVOLT_KEY`, `EMS_WEB_TOKEN`.
+Secrets are never committed. Bootstrap via env (`TIBBER_TOKEN`, `INDEVOLT_KEY`, `EMS_WEB_TOKEN`) or set in **Settings** (stored in SQLite, masked on API reads) — same keys as `ems/settings.py` `secret` fields.
 
 ## Status (verified 2026-06-28)
 
