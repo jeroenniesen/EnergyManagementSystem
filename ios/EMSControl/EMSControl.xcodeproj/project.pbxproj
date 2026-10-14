@@ -9,20 +9,23 @@
 /* Begin PBXBuildFile section */
 		00308D987E6218B59EE31A64 /* EMSControlCore.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 62C0D3FEB8DD96AF4F3CAD8C /* EMSControlCore.framework */; };
 		00AE97E9ADF30CA0D9CCD42D /* EMSControlCore.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 62C0D3FEB8DD96AF4F3CAD8C /* EMSControlCore.framework */; };
+		022C3F5AE75E9FFB6CCA9005 /* DemoModeUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 06EC1C3C24D57B8D8236CC2F /* DemoModeUITests.swift */; };
 		03BCFFC4E5ACF67ED5DA059F /* InsightsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 257B061EB9A96671DDB32DC5 /* InsightsView.swift */; };
 		042F4F18CFE0650AA449CAAC /* InsightsStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = AE96D50A9EC3DC4FEC64185B /* InsightsStore.swift */; };
+		04B675AEAA6CC693F51243AB /* PrivacyInfo.xcprivacy in Resources */ = {isa = PBXBuildFile; fileRef = C29A56A2AA2FCDB54F5C870D /* PrivacyInfo.xcprivacy */; };
 		0D0F6681CE829F1EC4356E68 /* EMSControlCore.framework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = 62C0D3FEB8DD96AF4F3CAD8C /* EMSControlCore.framework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 		0D87044D1DD83D7B05AC4069 /* EMSTimelineProvider.swift in Sources */ = {isa = PBXBuildFile; fileRef = 00226AD26ECD7A7800E34475 /* EMSTimelineProvider.swift */; };
 		145FB2DA6CB9ACB0352B4CED /* NotificationsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2B9061823F17E42906990E53 /* NotificationsView.swift */; };
 		15F7E1D2E299E702BCF34E68 /* DemoDataStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3699F1E6706AE136B68AB1C8 /* DemoDataStore.swift */; };
 		1A13A3975BE7484B3E9D2185 /* ISOTimestamp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2DC5EEC3A04E938FD71E41C8 /* ISOTimestamp.swift */; };
 		211D0CD0F3242A3EF71BD8AE /* demo-dashboard.json in Resources */ = {isa = PBXBuildFile; fileRef = 0888EA444AB57461568AD1F4 /* demo-dashboard.json */; };
+		3725F052C45F31EDA8CD9CB0 /* WidgetTimelineReloader.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8B33CD611BCD0228D1039CC1 /* WidgetTimelineReloader.swift */; };
 		4721E13236179397CD0A8943 /* CarView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 25C474902F0FBA9F9478CE8D /* CarView.swift */; };
+		47540E41529D561F9824A439 /* FailureCopy.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2F83049FC45D1B2AD10CBC19 /* FailureCopy.swift */; };
+		4B351738F06D0BB6B022CC2D /* AppLinks.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1D3B16B76FC1CFD5E7268D3F /* AppLinks.swift */; };
 		4E695D73A60245B409F24E62 /* ActivityStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 00F8B1F9E78007B8E6F45047 /* ActivityStore.swift */; };
 		51B466CD33164832C83EA6F1 /* DashboardStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 851FDA73182D3541A3039A9A /* DashboardStore.swift */; };
 		54D20C7D5F03A7096EA28D35 /* ConnectionView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 378862CC33548C4C96596B8A /* ConnectionView.swift */; };
-		73B73EDC18922C65B2C41939 /* AppLinks.swift in Sources */ = {isa = PBXBuildFile; fileRef = 23082EDF9E7CE5DAF6B0B2F6 /* AppLinks.swift */; };
-		C339BB8CC9A1CAB04E419EF0 /* SettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 09EF4207BE0345D9E1B1A2C1 /* SettingsView.swift */; };
 		58F3D814DBFE8DE2988FC32A /* ChatView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 922974D3E5EFAB723E1B86D9 /* ChatView.swift */; };
 		5D3E676405A9AC5E9B819120 /* Theme.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4D90E4C3625F5CBBBB665180 /* Theme.swift */; };
 		71EE4BF19B1AE73BBF143945 /* WidgetSupport.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3115F953EFDB46663E1E7408 /* WidgetSupport.swift */; };
@@ -37,21 +40,23 @@
 		9AA655D073E01E5E13F7FFA5 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = C4315BE65439DFDF4D4C0BA1 /* Assets.xcassets */; };
 		A4AC7F65FDFA22E829A9B1EC /* NotificationsModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = BE34CB449C6E2540E29A004B /* NotificationsModels.swift */; };
 		A4C345A7479078FBB7CD3D55 /* DashboardView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 78E410739D2A3710496D0625 /* DashboardView.swift */; };
+		A6051AC0D594B0A546FEC823 /* DashboardFailureState.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6DB935CCB5A775854090C566 /* DashboardFailureState.swift */; };
 		A93F94C222669DFBD1867493 /* demo-explainer.json in Resources */ = {isa = PBXBuildFile; fileRef = A447D414CC4B7CC4F68D91D0 /* demo-explainer.json */; };
+		A9D364C633E4B45CE88CE158 /* DecisionReason.swift in Sources */ = {isa = PBXBuildFile; fileRef = C09418F4FB7664B14B1A0C2F /* DecisionReason.swift */; };
 		B1C9A8640321DD1AA1C7D313 /* ServerAddressValidator.swift in Sources */ = {isa = PBXBuildFile; fileRef = C10928FD46649449E9D7A9F3 /* ServerAddressValidator.swift */; };
 		B73C5305189929545FF315BF /* ChatStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = BC6937650BBFD71CE57B8BF5 /* ChatStore.swift */; };
+		B89A9A0ED173E773CA085069 /* PrivacyInfo.xcprivacy in Resources */ = {isa = PBXBuildFile; fileRef = C9BC38018F31F080573338FD /* PrivacyInfo.xcprivacy */; };
 		C32DD176D4AC4B7979994319 /* KeychainCredentialStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = F931E1AEC5676B6174B3A76F /* KeychainCredentialStore.swift */; };
 		C9F13CEE37D770D72BFECADC /* demo-faq.json in Resources */ = {isa = PBXBuildFile; fileRef = E720AFC468AEF7CC68D269FB /* demo-faq.json */; };
 		CE05537D943C4DEF4E95F80E /* demo-chat.json in Resources */ = {isa = PBXBuildFile; fileRef = 994E14FBDEF1C0F89AC9E28C /* demo-chat.json */; };
+		CFDAE5E01BD52A55AF0DCD9D /* SettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = D8D66C2A3F09E4F8B07BA96B /* SettingsView.swift */; };
 		D26583CB40FD4B9525AF4F6A /* CarStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7AE8E5DCF24A00DA770185CB /* CarStore.swift */; };
 		E4324AC3E37934CFA4C5AE74 /* CarTab.swift in Sources */ = {isa = PBXBuildFile; fileRef = 666215802737C6356279F9E7 /* CarTab.swift */; };
+		EDDA8DBD9BE38004CAF9859F /* PrivacyInfo.xcprivacy in Resources */ = {isa = PBXBuildFile; fileRef = A610212BA3E911A4FC417B88 /* PrivacyInfo.xcprivacy */; };
 		EEC0E74D439A37CB1C2D9F6C /* APIClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = 720F711D71B00AC0F6976700 /* APIClient.swift */; };
-		B2C3D4E5F60718293A4B5C6D /* DecisionReason.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D4E5F60718293A4B5C /* DecisionReason.swift */; };
 		EF963FF881BB7743E2130B73 /* AppShellView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 24CB1980979D24B5EA49FBE4 /* AppShellView.swift */; };
+		F1353BCF968E5BDD8B22A049 /* UnreachableFailureBanner.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3DFA2D5DABDD9516CC1FFA4B /* UnreachableFailureBanner.swift */; };
 		F9D6B9F8ED1B8F823AE35213 /* EMSWidgetViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = FCEB78668E11698B72193C5B /* EMSWidgetViews.swift */; };
-		B251APP0PRIVACYINFO000001 /* PrivacyInfo.xcprivacy in Resources */ = {isa = PBXBuildFile; fileRef = A251APP0PRIVACYINFO000001 /* PrivacyInfo.xcprivacy */; };
-		B251COREPRIVACYINFO000001 /* PrivacyInfo.xcprivacy in Resources */ = {isa = PBXBuildFile; fileRef = A251COREPRIVACYINFO000001 /* PrivacyInfo.xcprivacy */; };
-		B251WDGTPRIVACYINFO000001 /* PrivacyInfo.xcprivacy in Resources */ = {isa = PBXBuildFile; fileRef = A251WDGTPRIVACYINFO000001 /* PrivacyInfo.xcprivacy */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -61,6 +66,13 @@
 			proxyType = 1;
 			remoteGlobalIDString = BB6417FD6F2B09B0BC890CF0;
 			remoteInfo = EMSControlCore;
+		};
+		2BF616078B8EE2F7A1731639 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 0E967F17294F64F826481382 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = D99448F1F17CA649D8252AD6;
+			remoteInfo = EMSControl;
 		};
 		5BE434F50C0360EB9A4C5D6E /* PBXContainerItemProxy */ = {
 			isa = PBXContainerItemProxy;
@@ -108,50 +120,56 @@
 		00226AD26ECD7A7800E34475 /* EMSTimelineProvider.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EMSTimelineProvider.swift; sourceTree = "<group>"; };
 		00F8B1F9E78007B8E6F45047 /* ActivityStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ActivityStore.swift; sourceTree = "<group>"; };
 		033DDC49ECE87F18564D3288 /* ServerDiscovery.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ServerDiscovery.swift; sourceTree = "<group>"; };
+		06EC1C3C24D57B8D8236CC2F /* DemoModeUITests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DemoModeUITests.swift; sourceTree = "<group>"; };
 		0888EA444AB57461568AD1F4 /* demo-dashboard.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = "demo-dashboard.json"; sourceTree = "<group>"; };
 		13253B7C77956C58739FA336 /* Models.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Models.swift; sourceTree = "<group>"; };
-		A1B2C3D4E5F60718293A4B5C /* DecisionReason.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DecisionReason.swift; sourceTree = "<group>"; };
 		14BCF6378F4A63CC1232715D /* EMSWidget.appex */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = "wrapper.app-extension"; path = EMSWidget.appex; sourceTree = BUILT_PRODUCTS_DIR; };
+		1D3B16B76FC1CFD5E7268D3F /* AppLinks.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppLinks.swift; sourceTree = "<group>"; };
 		24CB1980979D24B5EA49FBE4 /* AppShellView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppShellView.swift; sourceTree = "<group>"; };
 		257B061EB9A96671DDB32DC5 /* InsightsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = InsightsView.swift; sourceTree = "<group>"; };
 		25C474902F0FBA9F9478CE8D /* CarView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CarView.swift; sourceTree = "<group>"; };
 		2B9061823F17E42906990E53 /* NotificationsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NotificationsView.swift; sourceTree = "<group>"; };
 		2DC5EEC3A04E938FD71E41C8 /* ISOTimestamp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ISOTimestamp.swift; sourceTree = "<group>"; };
+		2F83049FC45D1B2AD10CBC19 /* FailureCopy.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FailureCopy.swift; sourceTree = "<group>"; };
 		3115F953EFDB46663E1E7408 /* WidgetSupport.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WidgetSupport.swift; sourceTree = "<group>"; };
 		34964B0AB73A0E2AEB2C4350 /* EMSControl.app */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.application; path = EMSControl.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		3699F1E6706AE136B68AB1C8 /* DemoDataStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DemoDataStore.swift; sourceTree = "<group>"; };
 		378862CC33548C4C96596B8A /* ConnectionView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConnectionView.swift; sourceTree = "<group>"; };
 		3CB11B9536D721D347D9429D /* ActivityView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ActivityView.swift; sourceTree = "<group>"; };
+		3DFA2D5DABDD9516CC1FFA4B /* UnreachableFailureBanner.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UnreachableFailureBanner.swift; sourceTree = "<group>"; };
 		4D90E4C3625F5CBBBB665180 /* Theme.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Theme.swift; sourceTree = "<group>"; };
 		62C0D3FEB8DD96AF4F3CAD8C /* EMSControlCore.framework */ = {isa = PBXFileReference; explicitFileType = wrapper.framework; includeInIndex = 0; path = EMSControlCore.framework; sourceTree = BUILT_PRODUCTS_DIR; };
 		6489F114C4BCA73DEAF39933 /* SeriesGeometry.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SeriesGeometry.swift; sourceTree = "<group>"; };
 		666215802737C6356279F9E7 /* CarTab.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CarTab.swift; sourceTree = "<group>"; };
 		6945AC6CBCB3CA4B93980458 /* EMSWidget.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = EMSWidget.entitlements; sourceTree = "<group>"; };
+		6DB935CCB5A775854090C566 /* DashboardFailureState.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DashboardFailureState.swift; sourceTree = "<group>"; };
 		720F711D71B00AC0F6976700 /* APIClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = APIClient.swift; sourceTree = "<group>"; };
 		78E410739D2A3710496D0625 /* DashboardView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DashboardView.swift; sourceTree = "<group>"; };
 		7AE8E5DCF24A00DA770185CB /* CarStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CarStore.swift; sourceTree = "<group>"; };
 		81C65C37F0360A3E36856B3C /* EMSWidgetBundle.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EMSWidgetBundle.swift; sourceTree = "<group>"; };
 		851FDA73182D3541A3039A9A /* DashboardStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DashboardStore.swift; sourceTree = "<group>"; };
-		23082EDF9E7CE5DAF6B0B2F6 /* AppLinks.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppLinks.swift; sourceTree = "<group>"; };
-		09EF4207BE0345D9E1B1A2C1 /* SettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsView.swift; sourceTree = "<group>"; };
+		8B33CD611BCD0228D1039CC1 /* WidgetTimelineReloader.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WidgetTimelineReloader.swift; sourceTree = "<group>"; };
 		922974D3E5EFAB723E1B86D9 /* ChatView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatView.swift; sourceTree = "<group>"; };
 		93334206BA35A14EC4153324 /* EMSControl.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = EMSControl.entitlements; sourceTree = "<group>"; };
 		994E14FBDEF1C0F89AC9E28C /* demo-chat.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = "demo-chat.json"; sourceTree = "<group>"; };
 		A447D414CC4B7CC4F68D91D0 /* demo-explainer.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = "demo-explainer.json"; sourceTree = "<group>"; };
 		A516714D923D0B43BA82A7CA /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
+		A610212BA3E911A4FC417B88 /* PrivacyInfo.xcprivacy */ = {isa = PBXFileReference; path = PrivacyInfo.xcprivacy; sourceTree = "<group>"; };
 		AE96D50A9EC3DC4FEC64185B /* InsightsStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = InsightsStore.swift; sourceTree = "<group>"; };
 		BC6937650BBFD71CE57B8BF5 /* ChatStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatStore.swift; sourceTree = "<group>"; };
 		BE34CB449C6E2540E29A004B /* NotificationsModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NotificationsModels.swift; sourceTree = "<group>"; };
+		C09418F4FB7664B14B1A0C2F /* DecisionReason.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DecisionReason.swift; sourceTree = "<group>"; };
 		C10928FD46649449E9D7A9F3 /* ServerAddressValidator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ServerAddressValidator.swift; sourceTree = "<group>"; };
+		C29A56A2AA2FCDB54F5C870D /* PrivacyInfo.xcprivacy */ = {isa = PBXFileReference; path = PrivacyInfo.xcprivacy; sourceTree = "<group>"; };
 		C4315BE65439DFDF4D4C0BA1 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		C44D90E919EBD89422A67BCB /* NotificationsStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NotificationsStore.swift; sourceTree = "<group>"; };
+		C9BC38018F31F080573338FD /* PrivacyInfo.xcprivacy */ = {isa = PBXFileReference; path = PrivacyInfo.xcprivacy; sourceTree = "<group>"; };
+		D8D66C2A3F09E4F8B07BA96B /* SettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsView.swift; sourceTree = "<group>"; };
 		DFE9CA097DB9BAA988D849E2 /* EMSControlApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EMSControlApp.swift; sourceTree = "<group>"; };
 		E720AFC468AEF7CC68D269FB /* demo-faq.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = "demo-faq.json"; sourceTree = "<group>"; };
+		EF375253F30C14F1CEE19648 /* EMSControlUITests.xctest */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.cfbundle; path = EMSControlUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		F931E1AEC5676B6174B3A76F /* KeychainCredentialStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeychainCredentialStore.swift; sourceTree = "<group>"; };
 		FCEB78668E11698B72193C5B /* EMSWidgetViews.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EMSWidgetViews.swift; sourceTree = "<group>"; };
-		A251APP0PRIVACYINFO000001 /* PrivacyInfo.xcprivacy */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = PrivacyInfo.xcprivacy; sourceTree = "<group>"; };
-		A251COREPRIVACYINFO000001 /* PrivacyInfo.xcprivacy */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = PrivacyInfo.xcprivacy; sourceTree = "<group>"; };
-		A251WDGTPRIVACYINFO000001 /* PrivacyInfo.xcprivacy */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = PrivacyInfo.xcprivacy; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -193,7 +211,7 @@
 				81C65C37F0360A3E36856B3C /* EMSWidgetBundle.swift */,
 				FCEB78668E11698B72193C5B /* EMSWidgetViews.swift */,
 				A516714D923D0B43BA82A7CA /* Info.plist */,
-				A251WDGTPRIVACYINFO000001 /* PrivacyInfo.xcprivacy */,
+				C9BC38018F31F080573338FD /* PrivacyInfo.xcprivacy */,
 			);
 			path = EMSWidget;
 			sourceTree = "<group>";
@@ -203,8 +221,17 @@
 			children = (
 				11C4C229488C3DFDC0FAC6EF /* Resources */,
 				CE893D1AEC75C12BD3BC34F8 /* Sources */,
+				4E6C62CD5B2C3E447FB9F210 /* Tests */,
 				CD134DA6A092DCF6C535ECDF /* Products */,
 			);
+			sourceTree = "<group>";
+		};
+		38F2FED56B6A4FF6B8908150 /* EMSControlUITests */ = {
+			isa = PBXGroup;
+			children = (
+				06EC1C3C24D57B8D8236CC2F /* DemoModeUITests.swift */,
+			);
+			path = EMSControlUITests;
 			sourceTree = "<group>";
 		};
 		3A701C06A9893D6080B34E77 /* EMSControlCore */ = {
@@ -212,27 +239,37 @@
 			children = (
 				00F8B1F9E78007B8E6F45047 /* ActivityStore.swift */,
 				720F711D71B00AC0F6976700 /* APIClient.swift */,
-				23082EDF9E7CE5DAF6B0B2F6 /* AppLinks.swift */,
+				1D3B16B76FC1CFD5E7268D3F /* AppLinks.swift */,
 				7AE8E5DCF24A00DA770185CB /* CarStore.swift */,
 				666215802737C6356279F9E7 /* CarTab.swift */,
 				BC6937650BBFD71CE57B8BF5 /* ChatStore.swift */,
+				6DB935CCB5A775854090C566 /* DashboardFailureState.swift */,
 				851FDA73182D3541A3039A9A /* DashboardStore.swift */,
+				C09418F4FB7664B14B1A0C2F /* DecisionReason.swift */,
 				3699F1E6706AE136B68AB1C8 /* DemoDataStore.swift */,
-				A1B2C3D4E5F60718293A4B5C /* DecisionReason.swift */,
+				2F83049FC45D1B2AD10CBC19 /* FailureCopy.swift */,
 				AE96D50A9EC3DC4FEC64185B /* InsightsStore.swift */,
 				2DC5EEC3A04E938FD71E41C8 /* ISOTimestamp.swift */,
 				F931E1AEC5676B6174B3A76F /* KeychainCredentialStore.swift */,
 				13253B7C77956C58739FA336 /* Models.swift */,
 				BE34CB449C6E2540E29A004B /* NotificationsModels.swift */,
 				C44D90E919EBD89422A67BCB /* NotificationsStore.swift */,
+				A610212BA3E911A4FC417B88 /* PrivacyInfo.xcprivacy */,
 				6489F114C4BCA73DEAF39933 /* SeriesGeometry.swift */,
 				C10928FD46649449E9D7A9F3 /* ServerAddressValidator.swift */,
 				033DDC49ECE87F18564D3288 /* ServerDiscovery.swift */,
 				4D90E4C3625F5CBBBB665180 /* Theme.swift */,
 				3115F953EFDB46663E1E7408 /* WidgetSupport.swift */,
-				A251COREPRIVACYINFO000001 /* PrivacyInfo.xcprivacy */,
 			);
 			path = EMSControlCore;
+			sourceTree = "<group>";
+		};
+		4E6C62CD5B2C3E447FB9F210 /* Tests */ = {
+			isa = PBXGroup;
+			children = (
+				38F2FED56B6A4FF6B8908150 /* EMSControlUITests */,
+			);
+			path = Tests;
 			sourceTree = "<group>";
 		};
 		7A0F099619ACAF2BCBBB4207 /* EMSControlApp */ = {
@@ -250,8 +287,10 @@
 				001C06DC7E770182FD4B1DBB /* Info.plist */,
 				257B061EB9A96671DDB32DC5 /* InsightsView.swift */,
 				2B9061823F17E42906990E53 /* NotificationsView.swift */,
-				09EF4207BE0345D9E1B1A2C1 /* SettingsView.swift */,
-				A251APP0PRIVACYINFO000001 /* PrivacyInfo.xcprivacy */,
+				C29A56A2AA2FCDB54F5C870D /* PrivacyInfo.xcprivacy */,
+				D8D66C2A3F09E4F8B07BA96B /* SettingsView.swift */,
+				3DFA2D5DABDD9516CC1FFA4B /* UnreachableFailureBanner.swift */,
+				8B33CD611BCD0228D1039CC1 /* WidgetTimelineReloader.swift */,
 			);
 			path = EMSControlApp;
 			sourceTree = "<group>";
@@ -261,6 +300,7 @@
 			children = (
 				34964B0AB73A0E2AEB2C4350 /* EMSControl.app */,
 				62C0D3FEB8DD96AF4F3CAD8C /* EMSControlCore.framework */,
+				EF375253F30C14F1CEE19648 /* EMSControlUITests.xctest */,
 				14BCF6378F4A63CC1232715D /* EMSWidget.appex */,
 			);
 			name = Products;
@@ -284,7 +324,7 @@
 			buildConfigurationList = 2A653E1C3B72FF9EFB1BCCB4 /* Build configuration list for PBXNativeTarget "EMSWidget" */;
 			buildPhases = (
 				7200BF5BF96964FD752A8408 /* Sources */,
-				C251WDGTRESOURCESPHASE01 /* Resources */,
+				7F6149FD56EA5DB49D8F234E /* Resources */,
 				C28A7393C6100C85D8B585EA /* Frameworks */,
 			);
 			buildRules = (
@@ -299,12 +339,30 @@
 			productReference = 14BCF6378F4A63CC1232715D /* EMSWidget.appex */;
 			productType = "com.apple.product-type.app-extension";
 		};
+		82A961705956DE73FF37BDCD /* EMSControlUITests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 341B1CE3EEA839A31D89BF6D /* Build configuration list for PBXNativeTarget "EMSControlUITests" */;
+			buildPhases = (
+				72E5743B389BD4EDEDBEB175 /* Sources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				04B2ABBD0448FD10757899E3 /* PBXTargetDependency */,
+			);
+			name = EMSControlUITests;
+			packageProductDependencies = (
+			);
+			productName = EMSControlUITests;
+			productReference = EF375253F30C14F1CEE19648 /* EMSControlUITests.xctest */;
+			productType = "com.apple.product-type.bundle.ui-testing";
+		};
 		BB6417FD6F2B09B0BC890CF0 /* EMSControlCore */ = {
 			isa = PBXNativeTarget;
 			buildConfigurationList = D9207E08DA00D2FCD3402FFF /* Build configuration list for PBXNativeTarget "EMSControlCore" */;
 			buildPhases = (
 				B2059C6CC475C1E7AEB9F72C /* Sources */,
-				C251CORERESOURCESPHASE01 /* Resources */,
+				A477D9F39F744A7862F7E34B /* Resources */,
 			);
 			buildRules = (
 			);
@@ -353,6 +411,11 @@
 						DevelopmentTeam = C32G3GV975;
 						ProvisioningStyle = Automatic;
 					};
+					82A961705956DE73FF37BDCD = {
+						DevelopmentTeam = C32G3GV975;
+						ProvisioningStyle = Automatic;
+						TestTargetID = D99448F1F17CA649D8252AD6;
+					};
 					D99448F1F17CA649D8252AD6 = {
 						DevelopmentTeam = C32G3GV975;
 						ProvisioningStyle = Automatic;
@@ -373,40 +436,41 @@
 			projectDirPath = "";
 			projectRoot = "";
 			targets = (
-				D99448F1F17CA649D8252AD6 /* EMSControl */,
 				BB6417FD6F2B09B0BC890CF0 /* EMSControlCore */,
+				D99448F1F17CA649D8252AD6 /* EMSControl */,
 				2ABADC3354F0EE1A72EEF101 /* EMSWidget */,
+				82A961705956DE73FF37BDCD /* EMSControlUITests */,
 			);
 		};
 /* End PBXProject section */
 
 /* Begin PBXResourcesBuildPhase section */
+		7F6149FD56EA5DB49D8F234E /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				B89A9A0ED173E773CA085069 /* PrivacyInfo.xcprivacy in Resources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		A477D9F39F744A7862F7E34B /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				EDDA8DBD9BE38004CAF9859F /* PrivacyInfo.xcprivacy in Resources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 		B7C4B7EE1DC4EFEFFA23A5C3 /* Resources */ = {
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
 				9AA655D073E01E5E13F7FFA5 /* Assets.xcassets in Resources */,
+				04B675AEAA6CC693F51243AB /* PrivacyInfo.xcprivacy in Resources */,
 				CE05537D943C4DEF4E95F80E /* demo-chat.json in Resources */,
 				211D0CD0F3242A3EF71BD8AE /* demo-dashboard.json in Resources */,
 				A93F94C222669DFBD1867493 /* demo-explainer.json in Resources */,
 				C9F13CEE37D770D72BFECADC /* demo-faq.json in Resources */,
-				B251APP0PRIVACYINFO000001 /* PrivacyInfo.xcprivacy in Resources */,
-			);
-			runOnlyForDeploymentPostprocessing = 0;
-		};
-		C251CORERESOURCESPHASE01 /* Resources */ = {
-			isa = PBXResourcesBuildPhase;
-			buildActionMask = 2147483647;
-			files = (
-				B251COREPRIVACYINFO000001 /* PrivacyInfo.xcprivacy in Resources */,
-			);
-			runOnlyForDeploymentPostprocessing = 0;
-		};
-		C251WDGTRESOURCESPHASE01 /* Resources */ = {
-			isa = PBXResourcesBuildPhase;
-			buildActionMask = 2147483647;
-			files = (
-				B251WDGTPRIVACYINFO000001 /* PrivacyInfo.xcprivacy in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -423,19 +487,29 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		72E5743B389BD4EDEDBEB175 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				022C3F5AE75E9FFB6CCA9005 /* DemoModeUITests.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 		B2059C6CC475C1E7AEB9F72C /* Sources */ = {
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
 				EEC0E74D439A37CB1C2D9F6C /* APIClient.swift in Sources */,
 				4E695D73A60245B409F24E62 /* ActivityStore.swift in Sources */,
-				73B73EDC18922C65B2C41939 /* AppLinks.swift in Sources */,
+				4B351738F06D0BB6B022CC2D /* AppLinks.swift in Sources */,
 				D26583CB40FD4B9525AF4F6A /* CarStore.swift in Sources */,
 				E4324AC3E37934CFA4C5AE74 /* CarTab.swift in Sources */,
 				B73C5305189929545FF315BF /* ChatStore.swift in Sources */,
+				A6051AC0D594B0A546FEC823 /* DashboardFailureState.swift in Sources */,
 				51B466CD33164832C83EA6F1 /* DashboardStore.swift in Sources */,
+				A9D364C633E4B45CE88CE158 /* DecisionReason.swift in Sources */,
 				15F7E1D2E299E702BCF34E68 /* DemoDataStore.swift in Sources */,
-				B2C3D4E5F60718293A4B5C6D /* DecisionReason.swift in Sources */,
+				47540E41529D561F9824A439 /* FailureCopy.swift in Sources */,
 				1A13A3975BE7484B3E9D2185 /* ISOTimestamp.swift in Sources */,
 				042F4F18CFE0650AA449CAAC /* InsightsStore.swift in Sources */,
 				C32DD176D4AC4B7979994319 /* KeychainCredentialStore.swift in Sources */,
@@ -463,13 +537,20 @@
 				729A10730EAAE407CCC4638B /* EMSControlApp.swift in Sources */,
 				03BCFFC4E5ACF67ED5DA059F /* InsightsView.swift in Sources */,
 				145FB2DA6CB9ACB0352B4CED /* NotificationsView.swift in Sources */,
-				C339BB8CC9A1CAB04E419EF0 /* SettingsView.swift in Sources */,
+				CFDAE5E01BD52A55AF0DCD9D /* SettingsView.swift in Sources */,
+				F1353BCF968E5BDD8B22A049 /* UnreachableFailureBanner.swift in Sources */,
+				3725F052C45F31EDA8CD9CB0 /* WidgetTimelineReloader.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
 /* End PBXSourcesBuildPhase section */
 
 /* Begin PBXTargetDependency section */
+		04B2ABBD0448FD10757899E3 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = D99448F1F17CA649D8252AD6 /* EMSControl */;
+			targetProxy = 2BF616078B8EE2F7A1731639 /* PBXContainerItemProxy */;
+		};
 		347F4568BC440CF7A06CA5EE /* PBXTargetDependency */ = {
 			isa = PBXTargetDependency;
 			target = 2ABADC3354F0EE1A72EEF101 /* EMSWidget */;
@@ -500,6 +581,7 @@
 				DEVELOPMENT_TEAM = C32G3GV975;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = Sources/EMSControlApp/Info.plist;
+				INFOPLIST_KEY_ITSAppUsesNonExemptEncryption = NO;
 				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
@@ -728,6 +810,25 @@
 			};
 			name = Release;
 		};
+		BC0105C2960E47D68194D3AF /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_STYLE = Automatic;
+				DEVELOPMENT_TEAM = C32G3GV975;
+				GENERATE_INFOPLIST_FILE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@loader_path/Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = com.jeroenniesen.emscontrol.uitests;
+				SDKROOT = iphoneos;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_TARGET_NAME = EMSControl;
+			};
+			name = Release;
+		};
 		DFEBD9C395A4BC6201A67592 /* Release */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
@@ -740,6 +841,7 @@
 				DEVELOPMENT_TEAM = C32G3GV975;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = Sources/EMSControlApp/Info.plist;
+				INFOPLIST_KEY_ITSAppUsesNonExemptEncryption = NO;
 				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
@@ -753,6 +855,25 @@
 			};
 			name = Release;
 		};
+		F68D928A1DF70009D98A55D8 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_STYLE = Automatic;
+				DEVELOPMENT_TEAM = C32G3GV975;
+				GENERATE_INFOPLIST_FILE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@loader_path/Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = com.jeroenniesen.emscontrol.uitests;
+				SDKROOT = iphoneos;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_TARGET_NAME = EMSControl;
+			};
+			name = Debug;
+		};
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
@@ -761,6 +882,15 @@
 			buildConfigurations = (
 				46F8131123E63130FA0FCF10 /* Debug */,
 				229C11A56BD69AD30E0B5F42 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+		341B1CE3EEA839A31D89BF6D /* Build configuration list for PBXNativeTarget "EMSControlUITests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				F68D928A1DF70009D98A55D8 /* Debug */,
+				BC0105C2960E47D68194D3AF /* Release */,
 			);
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Debug;

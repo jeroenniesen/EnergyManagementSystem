@@ -11,7 +11,19 @@ Native SwiftUI iOS app for the Energy Management System.
 
 ## App Store Review
 
-Use Demo mode from first launch. It shows synthetic data and does not require a private EMS server.
+Use **View Demo** on the connection screen (no account or EMS server required). It shows synthetic data across all tabs and updates the home-screen widget with a **DEMO** badge.
+
+## UI tests (Xcode + Simulator)
+
+The `EMSControl` shared scheme runs **UI tests only** — not the SPM unit-test gate. GitHub Actions CI runs `swift test` (EMSControlCore) only; it does **not** run this Simulator walkthrough. Run the UI demo walkthrough locally:
+
+```bash
+xcodebuild -project EMSControl.xcodeproj -scheme EMSControl \
+  -destination 'platform=iOS Simulator,name=iPhone 16' \
+  -only-testing:EMSControlUITests/DemoModeUITests/testDemoModeWalksAllTabs test
+```
+
+Pass `-UITestingReset` via `app.launchArguments` in the test (clears saved server state before demo).
 
 ## Home-screen widget (B-59)
 

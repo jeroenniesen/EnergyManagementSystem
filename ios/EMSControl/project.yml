@@ -15,10 +15,8 @@ targets:
       - path: Sources/EMSControlCore
         excludes:
           - PrivacyInfo.xcprivacy
-    resources:
-      - path: Resources
-      # Required-reason API declaration for App Group UserDefaults (#251).
       - path: Sources/EMSControlCore/PrivacyInfo.xcprivacy
+        buildPhase: resources
     settings:
       base:
         PRODUCT_NAME: EMSControlCore
@@ -34,12 +32,13 @@ targets:
       - path: Sources/EMSControlApp
         excludes:
           - PrivacyInfo.xcprivacy
+          - Assets.xcassets
+      - path: Sources/EMSControlApp/PrivacyInfo.xcprivacy
+        buildPhase: resources
+      - path: Sources/EMSControlApp/Assets.xcassets
+        buildPhase: resources
       - path: Resources
         buildPhase: resources
-    resources:
-      - path: Sources/EMSControlApp/Assets.xcassets
-      # Privacy manifest for UserDefaults / App Group (#251).
-      - path: Sources/EMSControlApp/PrivacyInfo.xcprivacy
     dependencies:
       - target: EMSControlCore
       - target: EMSWidget
@@ -81,9 +80,8 @@ targets:
       - path: Sources/EMSWidget
         excludes:
           - PrivacyInfo.xcprivacy
-    resources:
-      # Privacy manifest for App Group UserDefaults used by the widget (#251).
       - path: Sources/EMSWidget/PrivacyInfo.xcprivacy
+        buildPhase: resources
     dependencies:
       - target: EMSControlCore
         embed: false
@@ -91,6 +89,8 @@ targets:
       path: Sources/EMSWidget/Info.plist
       properties:
         CFBundleDisplayName: EMS Status
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
         # #252: skip App Store Connect export-compliance prompt (HTTPS/OS crypto only).
         ITSAppUsesNonExemptEncryption: false
         NSExtension:
@@ -121,3 +121,29 @@ targets:
           PRODUCT_BUNDLE_IDENTIFIER: com.jeroenniesen.emscontrol.dev.widget
         Release:
           PRODUCT_BUNDLE_IDENTIFIER: com.jeroenniesen.emscontrol.widget
+  EMSControlUITests:
+    type: bundle.ui-testing
+    platform: iOS
+    deploymentTarget: "17.0"
+    sources:
+      - path: Tests/EMSControlUITests
+    dependencies:
+      - target: EMSControl
+    settings:
+      base:
+        GENERATE_INFOPLIST_FILE: YES
+        PRODUCT_BUNDLE_IDENTIFIER: com.jeroenniesen.emscontrol.uitests
+        TEST_TARGET_NAME: EMSControl
+        CODE_SIGN_STYLE: Automatic
+        DEVELOPMENT_TEAM: C32G3GV975
+schemes:
+  EMSControl:
+    build:
+      targets:
+        EMSControl: all
+    run:
+      config: Debug
+    test:
+      config: Debug
+      targets:
+        - EMSControlUITests

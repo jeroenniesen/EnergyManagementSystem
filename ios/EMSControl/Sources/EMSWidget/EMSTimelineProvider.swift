@@ -83,11 +83,28 @@ struct EMSTimelineProvider: TimelineProvider {
     // MARK: - Loading
 
     private func load(family: WidgetFamily) async -> EMSEntry {
-        guard let config = AppGroupConfigStore().load() else {
-            return EMSEntry(date: Date(), content: .needsSetup)
+        let appGroup = AppGroupConfigStore()
+        let cache = WidgetSnapshotCache()
+
+        if appGroup.isDemoModeActive {
+            if let cached = cache.load() {
+                // Force DEMO labeling even if an older live blob is still in the cache.
+                let demoPayload = cached.isDemo ? cached : WidgetRenderData(
+                    socPct: cached.socPct,
+                    verdict: WidgetVerdict(word: cached.verdict.word, live: false),
+                    headline: cached.headline,
+                    carLine: cached.carLine,
+                    asOf: cached.asOf,
+                    isDemo: true
+                )
+                return EMSEntry(date: Date(), content: .ready(demoPayload, stale: false))
+            }
+            return EMSEntry(date: Date(), content: .ready(.demoSample, stale: false))
         }
 
-        let cache = WidgetSnapshotCache()
+        guard let config = appGroup.load() else {
+            return EMSEntry(date: Date(), content: .needsSetup)
+        }
         do {
             let data = try await fetch(config: config, family: family)
             cache.save(data)

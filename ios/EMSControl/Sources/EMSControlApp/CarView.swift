@@ -39,6 +39,7 @@ struct CarView: View {
                     VStack(alignment: .leading, spacing: 16) {
                         if carPlan.enabled {
                             CarPanel(carPlan: carPlan, theme: theme, variant: .full)
+                                .accessibilityIdentifier("car.tab.content")
                         } else {
                             CarChargingOffCard(theme: theme)
                         }

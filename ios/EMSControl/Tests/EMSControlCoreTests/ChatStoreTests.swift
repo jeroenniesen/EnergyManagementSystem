@@ -92,6 +92,38 @@ final class ChatStoreTests: XCTestCase {
         XCTAssertEqual(store.faqItems.map(\.key), ["faq-2"])
     }
 
+    func testInFlightLiveSessionDoesNotClobberDemo() async throws {
+        let transport = ChatRecordingTransport(
+            responses: [
+                .json(#"{ "mode": "external_llm", "active": false, "language": "en" }"#),
+                .json(#"{ "ai_on": true, "items": [{ "key": "live", "question": "Live Q", "answer": "Live A" }] }"#),
+            ]
+        )
+        var openGate: AsyncStream<Void>.Continuation?
+        transport.explainerGate = AsyncStream { openGate = $0 }
+        let arrived = expectation(description: "explainer GET reached the transport")
+        transport.onExplainerArrived = { arrived.fulfill() }
+
+        let client = APIClient(
+            baseURL: URL(string: "http://ems.local:8080")!,
+            transport: transport
+        )
+        let store = ChatStore(client: nil, demoData: DemoDataStore(bundle: .module))
+        let liveTask = Task { await store.updateSession(client: client, mode: .live) }
+        await fulfillment(of: [arrived], timeout: 2)
+        await store.updateSession(client: nil, mode: .demo)
+        let demoFAQ = store.faqItems
+        let demoExplainer = store.explainerStatus
+        openGate?.yield()
+        openGate?.finish()
+        await liveTask.value
+
+        XCTAssertTrue(store.isDemoMode)
+        XCTAssertEqual(store.faqItems, demoFAQ)
+        XCTAssertEqual(store.explainerStatus, demoExplainer)
+        XCTAssertNotEqual(store.explainerStatus?.active, false)
+    }
+
     func testClearSessionRemovesMessagesAndFAQ() throws {
         let store = ChatStore(client: nil, demoData: DemoDataStore(bundle: .module))
         try store.useDemoFAQ()
@@ -108,13 +140,20 @@ private final class ChatRecordingTransport: HTTPTransport, @unchecked Sendable {
 
     private(set) var requestedPaths: [String] = []
     private var responses: [Response]
+    var explainerGate: AsyncStream<Void>?
+    var onExplainerArrived: (@Sendable () -> Void)?
 
     init(responses: [Response]) {
         self.responses = responses
     }
 
     func data(for request: URLRequest) async throws -> (Data, HTTPURLResponse) {
-        requestedPaths.append(request.url?.path ?? "")
+        let path = request.url?.path ?? ""
+        requestedPaths.append(path)
+        if path == "/api/explainer", let gate = explainerGate {
+            onExplainerArrived?()
+            for await _ in gate { break }
+        }
         guard !responses.isEmpty else {
             throw URLError(.badServerResponse)
         }

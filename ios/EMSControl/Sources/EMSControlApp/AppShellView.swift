@@ -41,6 +41,11 @@ struct AppShellView: View {
                         .tabItem { Label("Chat", systemImage: "message") }
                         .tag(AppTab.chat)
                 }
+                .safeAreaInset(edge: .top, spacing: 0) {
+                    if dashboardStore.demoSessionActive {
+                        DemoModeBanner(theme: theme)
+                    }
+                }
             }
         }
         .tint(themeColor(theme.accent))
@@ -49,11 +54,17 @@ struct AppShellView: View {
         .task {
             // UI-screenshot / preview hook: land straight on the demo dashboard when launched
             // with EMS_UI_DEMO=1 in the environment. Never fires on a normal launch.
+            if ProcessInfo.processInfo.arguments.contains("-UITestingReset") {
+                dashboardStore.forgetServer()
+            }
             if ProcessInfo.processInfo.environment["EMS_UI_DEMO"] == "1" {
                 dashboardStore.loadDemo()
                 return
             }
             dashboardStore.restoreSavedServer()
+            if dashboardStore.snapshot == nil, dashboardStore.client == nil {
+                dashboardStore.clearOrphanedWidgetDemoStateIfDisconnected()
+            }
             await dashboardStore.refresh()
         }
         .task(id: refreshLoopKey) {
@@ -92,32 +103,32 @@ struct AppShellView: View {
     }
 
     private var chatSessionKey: String {
-        let mode = dashboardStore.snapshot?.isDemo == true ? "demo" : (dashboardStore.client == nil ? "disconnected" : "live")
+        let mode = dashboardStore.demoSessionActive ? "demo" : (dashboardStore.client == nil ? "disconnected" : "live")
         return "\(mode)-\(dashboardStore.client?.baseURL.absoluteString ?? "none")"
     }
 
     private var insightsSessionKey: String {
-        let mode = dashboardStore.snapshot?.isDemo == true ? "demo" : (dashboardStore.client == nil ? "disconnected" : "live")
+        let mode = dashboardStore.demoSessionActive ? "demo" : (dashboardStore.client == nil ? "disconnected" : "live")
         return "\(mode)-\(dashboardStore.client?.baseURL.absoluteString ?? "none")-\(dashboardStore.snapshot?.generatedAt.timeIntervalSince1970 ?? 0)"
     }
 
     private var activitySessionKey: String {
-        let mode = dashboardStore.snapshot?.isDemo == true ? "demo" : (dashboardStore.client == nil ? "disconnected" : "live")
+        let mode = dashboardStore.demoSessionActive ? "demo" : (dashboardStore.client == nil ? "disconnected" : "live")
         return "\(mode)-\(dashboardStore.client?.baseURL.absoluteString ?? "none")-\(dashboardStore.snapshot?.generatedAt.timeIntervalSince1970 ?? 0)"
     }
 
     private var carSessionKey: String {
-        let mode = dashboardStore.snapshot?.isDemo == true ? "demo" : (dashboardStore.client == nil ? "disconnected" : "live")
+        let mode = dashboardStore.demoSessionActive ? "demo" : (dashboardStore.client == nil ? "disconnected" : "live")
         return "\(mode)-\(dashboardStore.client?.baseURL.absoluteString ?? "none")"
     }
 
     private var notificationsSessionKey: String {
-        let mode = dashboardStore.snapshot?.isDemo == true ? "demo" : (dashboardStore.client == nil ? "disconnected" : "live")
+        let mode = dashboardStore.demoSessionActive ? "demo" : (dashboardStore.client == nil ? "disconnected" : "live")
         return "\(mode)-\(dashboardStore.client?.baseURL.absoluteString ?? "none")"
     }
 
     private func syncChatSession() async {
-        if dashboardStore.snapshot?.isDemo == true {
+        if dashboardStore.demoSessionActive {
             await chatStore.updateSession(client: nil, mode: .demo)
         } else if let client = dashboardStore.client {
             await chatStore.updateSession(client: client, mode: .live)
@@ -127,7 +138,7 @@ struct AppShellView: View {
     }
 
     private func syncInsightsSession() async {
-        if let snapshot = dashboardStore.snapshot, snapshot.isDemo {
+        if dashboardStore.demoSessionActive, let snapshot = dashboardStore.snapshot {
             insightsStore.setDemo(report: snapshot.report, finance: snapshot.finance)
         } else if let client = dashboardStore.client {
             insightsStore.setClient(client)
@@ -137,9 +148,8 @@ struct AppShellView: View {
     }
 
     private func syncActivitySession() async {
-        if dashboardStore.snapshot?.isDemo == true {
-            // Activity has no demo fixture data — show the empty state in demo mode.
-            activityStore.setClient(nil)
+        if dashboardStore.demoSessionActive {
+            activityStore.setDemo()
         } else if let client = dashboardStore.client {
             activityStore.setClient(client)
         } else {
@@ -148,7 +158,7 @@ struct AppShellView: View {
     }
 
     private func syncCarSession() async {
-        if dashboardStore.snapshot?.isDemo == true {
+        if dashboardStore.demoSessionActive {
             carStore.setDemo()
         } else if let client = dashboardStore.client {
             carStore.setClient(client)
@@ -158,7 +168,7 @@ struct AppShellView: View {
     }
 
     private func syncNotificationsSession() async {
-        if dashboardStore.snapshot?.isDemo == true {
+        if dashboardStore.demoSessionActive {
             notificationsStore.setDemo()
         } else if let client = dashboardStore.client {
             notificationsStore.setClient(client)
@@ -189,6 +199,28 @@ private enum AppTab {
     case car
     case activity
     case chat
+}
+
+private struct DemoModeBanner: View {
+    let theme: EMSTheme
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "play.rectangle.on.rectangle")
+            Text("Demo")
+                .font(.subheadline.weight(.semibold))
+            Text("— sample data only, no live EMS connection")
+                .font(.caption)
+                .lineLimit(2)
+        }
+        .foregroundStyle(themeColor(theme.background))
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.horizontal, 16)
+        .padding(.vertical, 8)
+        .background(themeColor(theme.amber))
+        .accessibilityIdentifier("demo.mode.banner")
+        .accessibilityLabel("Demo mode active")
+    }
 }
 
 func themeColor(_ color: HexColor) -> Color {

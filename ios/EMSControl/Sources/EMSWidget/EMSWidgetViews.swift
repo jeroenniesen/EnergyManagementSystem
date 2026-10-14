@@ -72,7 +72,7 @@ private struct SmallStatusView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            LiveBadge(verdict: data.verdict, stale: stale, theme: theme)
+            LiveBadge(verdict: data.verdict, isDemo: data.isDemo, stale: stale, theme: theme)
             Spacer(minLength: 0)
             HStack {
                 Spacer(minLength: 0)
@@ -122,7 +122,7 @@ private struct MediumStatusView: View {
             .frame(width: 96)
 
             VStack(alignment: .leading, spacing: 8) {
-                LiveBadge(verdict: data.verdict, stale: stale, theme: theme)
+                LiveBadge(verdict: data.verdict, isDemo: data.isDemo, stale: stale, theme: theme)
 
                 if let headline = data.headline {
                     Text(headline)
@@ -201,11 +201,13 @@ private struct SoCRing: View {
 
 private struct LiveBadge: View {
     let verdict: WidgetVerdict
+    let isDemo: Bool
     let stale: Bool
     let theme: EMSTheme
 
     private var label: String {
         if stale { return "STALE" }
+        if isDemo { return "DEMO" }
         return verdict.live ? "LIVE" : "WATCHING"
     }
 

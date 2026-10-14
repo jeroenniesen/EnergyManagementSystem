@@ -1,5 +1,10 @@
 import Foundation
 
+extension Notification.Name {
+    /// Posted when widget timelines should reload (handled in the app target via WidgetKit).
+    public static let emsWidgetTimelinesShouldReload = Notification.Name("ems.widget.reloadTimelines")
+}
+
 // Shared, Foundation-only support for the home-screen widget (BACKLOG B-59). Everything here is
 // deliberately UI-framework-free so it (a) links cleanly into the WidgetKit app extension and
 // (b) stays unit-testable in EMSControlCoreTests without WidgetKit/SwiftUI. The widget target
@@ -37,6 +42,7 @@ public struct AppGroupConfigStore {
 
     private static let baseURLKey = "widget.base_url"
     private static let tokenKey = "widget.token"
+    private static let demoModeKey = "widget.demo_mode"
 
     private let defaults: UserDefaults
 
@@ -71,6 +77,19 @@ public struct AppGroupConfigStore {
     public func clear() {
         defaults.removeObject(forKey: Self.baseURLKey)
         defaults.removeObject(forKey: Self.tokenKey)
+    }
+
+    /// When true, the widget reads bundled demo render data from `WidgetSnapshotCache` (no network).
+    public var isDemoModeActive: Bool {
+        defaults.bool(forKey: Self.demoModeKey)
+    }
+
+    public func setDemoModeActive(_ active: Bool) {
+        if active {
+            defaults.set(true, forKey: Self.demoModeKey)
+        } else {
+            defaults.removeObject(forKey: Self.demoModeKey)
+        }
     }
 }
 
@@ -193,19 +212,33 @@ public struct WidgetRenderData: Codable, Equatable, Sendable {
     public let headline: String?
     public let carLine: String?
     public let asOf: Date
+    /// True when this render payload is sample/demo data (not live EMS telemetry).
+    public let isDemo: Bool
 
     public init(
         socPct: Double?,
         verdict: WidgetVerdict,
         headline: String?,
         carLine: String?,
-        asOf: Date
+        asOf: Date,
+        isDemo: Bool = false
     ) {
         self.socPct = socPct
         self.verdict = verdict
         self.headline = headline
         self.carLine = carLine
         self.asOf = asOf
+        self.isDemo = isDemo
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        socPct = try container.decodeIfPresent(Double.self, forKey: .socPct)
+        verdict = try container.decode(WidgetVerdict.self, forKey: .verdict)
+        headline = try container.decodeIfPresent(String.self, forKey: .headline)
+        carLine = try container.decodeIfPresent(String.self, forKey: .carLine)
+        asOf = try container.decode(Date.self, forKey: .asOf)
+        isDemo = try container.decodeIfPresent(Bool.self, forKey: .isDemo) ?? false
     }
 
     /// Gallery / placeholder sample so Xcode previews and the widget picker have plausible content.
@@ -216,6 +249,51 @@ public struct WidgetRenderData: Codable, Equatable, Sendable {
         carLine: "Car: Mon 23:00 · 9.5 kWh",
         asOf: Date(timeIntervalSince1970: 1_783_000_000)
     )
+
+    /// Offline demo fallback when the demo flag is on but the cache is empty (#256).
+    public static let demoSample = WidgetRenderData(
+        socPct: 63,
+        verdict: WidgetVerdict(word: "Self-consumption", live: false),
+        headline: "Running the house on your own sun — saving the battery for the evening peak.",
+        carLine: "Car: Mon 23:00 · 9.5 kWh",
+        asOf: Date(timeIntervalSince1970: 1_783_000_000),
+        isDemo: true
+    )
+
+    /// Offline demo render payload for the home-screen widget (App Store review / demo mode).
+    public static func make(
+        from snapshot: MobileDashboardSnapshot,
+        asOf: Date = Date(),
+        demo: Bool = false
+    ) -> WidgetRenderData {
+        let mode = snapshot.battery.currentMode ?? snapshot.decision.desiredMode
+        let verdictWord = WidgetVerdictBuilder.word(
+            mode: mode,
+            intent: snapshot.decision.intent
+        )
+        let verdict = WidgetVerdict(word: verdictWord, live: false)
+        let soc = snapshot.battery.aggregate?.socPct ?? snapshot.status.socPct
+        let headline = Self.headline(from: snapshot.decision)
+        let carLine = WidgetCarLine.text(from: snapshot.carPlan)
+        return WidgetRenderData(
+            socPct: soc,
+            verdict: verdict,
+            headline: headline,
+            carLine: carLine,
+            asOf: asOf,
+            isDemo: demo
+        )
+    }
+
+    private static func headline(from decision: DecisionSnapshot) -> String? {
+        let candidate = decision.homeState?.headline
+            ?? decision.planReasonExplained
+            ?? decision.reason
+        guard let candidate, !candidate.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            return nil
+        }
+        return candidate
+    }
 }
 
 /// Persists the last good `WidgetRenderData` in the app group for graceful stale rendering.

@@ -12,6 +12,7 @@ public final class ActivityStore {
     public private(set) var lastUpdatedAt: Date?
     /// True when a refresh failed but previously-loaded entries are still on screen.
     public private(set) var isStale = false
+    public private(set) var isDemo = false
 
     private let now: () -> Date
     /// Identity of the server whose entries are cached; a switch to a different server/token wipes
@@ -47,12 +48,24 @@ public final class ActivityStore {
         let changed = nextKey != serverKey
         self.client = client
         serverKey = nextKey
+        isDemo = false
         if changed {
             entries = []
             errorMessage = nil
             lastUpdatedAt = nil
             isStale = false
         }
+    }
+
+    // Populate from coded demo fixtures — no server to read.
+    public func setDemo() {
+        client = nil
+        serverKey = "demo"
+        isDemo = true
+        entries = AuditEntry.demoEntries
+        errorMessage = nil
+        lastUpdatedAt = now()
+        isStale = false
     }
 
     private static func serverKey(_ client: APIClient?) -> String {

@@ -17,7 +17,7 @@ struct ChatView: View {
         if let client = dashboardStore.client {
             return .live(client)
         }
-        if dashboardStore.snapshot?.isDemo == true {
+        if dashboardStore.demoSessionActive {
             return .demo
         }
         return .disconnected
@@ -156,6 +156,7 @@ struct ChatView: View {
 
             HStack(spacing: 12) {
                 TextField("Ask the EMS why", text: $input, axis: .vertical)
+                    .accessibilityIdentifier("chat.question.field")
                     .textInputAutocapitalization(.sentences)
                     .autocorrectionDisabled(false)
                     .disabled(!store.canSendFreeform || store.isBusy)

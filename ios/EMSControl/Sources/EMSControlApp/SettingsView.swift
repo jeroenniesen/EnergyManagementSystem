@@ -16,7 +16,7 @@ struct SettingsView: View {
     }
 
     private var isDemo: Bool {
-        dashboardStore.snapshot?.isDemo == true
+        dashboardStore.demoSessionActive
     }
 
     var body: some View {
@@ -45,6 +45,7 @@ struct SettingsView: View {
                                 systemImage: "rectangle.portrait.and.arrow.right"
                             )
                         }
+                        .accessibilityIdentifier(isDemo ? "settings.leaveDemo" : "settings.forgetServer")
                     } header: {
                         Text("Server")
                     } footer: {

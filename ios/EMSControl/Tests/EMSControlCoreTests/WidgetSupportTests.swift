@@ -54,6 +54,15 @@ final class WidgetSupportTests: XCTestCase {
         XCTAssertNil(store.load())
     }
 
+    func testDemoModeFlagRoundTrip() {
+        let store = AppGroupConfigStore(defaults: defaults)
+        XCTAssertFalse(store.isDemoModeActive)
+        store.setDemoModeActive(true)
+        XCTAssertTrue(store.isDemoModeActive)
+        store.setDemoModeActive(false)
+        XCTAssertFalse(store.isDemoModeActive)
+    }
+
     // MARK: - Snapshot cache
 
     func testSnapshotCacheRoundTrip() {
@@ -69,6 +78,18 @@ final class WidgetSupportTests: XCTestCase {
         XCTAssertEqual(cache.load(), data)
         cache.clear()
         XCTAssertNil(cache.load())
+    }
+
+    func testWidgetRenderDataMakeFromDemoDashboard() throws {
+        let snapshot = try DemoDataStore(bundle: .module).dashboardSnapshot()
+        let data = WidgetRenderData.make(from: snapshot, asOf: Date(timeIntervalSince1970: 1_780_000_000))
+
+        XCTAssertEqual(data.socPct, snapshot.status.socPct)
+        XCTAssertFalse(data.verdict.live)
+        XCTAssertNotNil(data.headline)
+        XCTAssertFalse(data.isDemo)
+        let demoData = WidgetRenderData.make(from: snapshot, asOf: Date(timeIntervalSince1970: 1_780_000_000), demo: true)
+        XCTAssertTrue(demoData.isDemo)
     }
 
     // MARK: - Widget access-token name

@@ -46,6 +46,19 @@ final class ActivityStoreTests: XCTestCase {
         XCTAssertFalse(store.isStale)
     }
 
+    func testSetDemoLoadsFixtureEntries() {
+        let fixed = Date(timeIntervalSince1970: 1_780_000_000)
+        let store = ActivityStore(client: nil, now: { fixed })
+
+        store.setDemo()
+
+        XCTAssertTrue(store.isDemo)
+        XCTAssertEqual(store.entries, AuditEntry.demoEntries)
+        XCTAssertEqual(store.lastUpdatedAt, fixed)
+        XCTAssertFalse(store.isStale)
+        XCTAssertNil(store.errorMessage)
+    }
+
     func testDisconnectingClearsEntries() async {
         let transport = AuditTransport()
         let store = ActivityStore(client: APIClient(baseURL: URL(string: "http://ems.local:8080")!, transport: transport))

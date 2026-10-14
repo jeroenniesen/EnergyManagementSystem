@@ -56,16 +56,17 @@ public final class NotificationsStore {
             // sessions handling. A failure keeps whatever digest was already shown.
             async let digestResult = client.fetchDigest(week: digestWeek)
             let response = try await feed
-            if generation == readGeneration {
-                items = response.items
-                unread = response.unread
+            let nextDigest = try? await digestResult
+            guard generation == readGeneration, !isDemo else { return }
+            items = response.items
+            unread = response.unread
+            if let nextDigest {
+                digest = nextDigest
             }
-            // else: mark-all-read landed while this GET was in flight, so the response predates
-            // the read POST — keep the optimistic state; the next refresh brings the truth.
-            digest = (try? await digestResult) ?? digest
             errorMessage = nil
             loaded = true
         } catch {
+            guard generation == readGeneration, !isDemo else { return }
             // Keep the last-known feed visible (web-bell behaviour) and surface the error.
             errorMessage = String(describing: error)
         }
@@ -75,7 +76,10 @@ public final class NotificationsStore {
     /// (last completed Mon-Sun week). A failure keeps the currently shown digest.
     public func loadDigest(week: String?) async {
         guard let client else { return }
-        if let fresh = try? await client.fetchDigest(week: week) {
+        let generation = readGeneration
+        let fresh = try? await client.fetchDigest(week: week)
+        guard generation == readGeneration, !isDemo else { return }
+        if let fresh {
             digest = fresh
             digestWeek = week  // anchor only on success, so digest + anchor never desync
         }
@@ -105,7 +109,10 @@ public final class NotificationsStore {
         }
         unread = 0
         guard let client else { return }  // demo / disconnected: keep the optimistic state
-        if let fresh = try? await client.markNotificationsRead() {
+        let generation = readGeneration
+        let fresh = try? await client.markNotificationsRead()
+        guard generation == readGeneration, !isDemo else { return }
+        if let fresh {
             unread = fresh
         }
     }
@@ -128,6 +135,7 @@ public final class NotificationsStore {
 
     // Populate from coded demo fixtures (EMS_UI_DEMO=1) — no server to read/write.
     public func setDemo() {
+        readGeneration += 1  // drop any in-flight live refresh
         client = nil
         serverKey = "demo"
         isDemo = true
