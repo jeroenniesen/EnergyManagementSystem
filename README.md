@@ -134,6 +134,8 @@ config, deployment). Supporting docs in **[`docs/`](./docs/)**:
 - [`docs/live-integration.md`](./docs/live-integration.md) — wiring real HomeWizard/Tibber/Indevolt.
 - [`docs/operator-runbook.md`](./docs/operator-runbook.md) — disable EMS, force AUTO, restore.
 - [`docs/ml-layer.md`](./docs/ml-layer.md) — the optional, accelerator-gated ML layer.
+- [`docs/legacy-retirement.md`](./docs/legacy-retirement.md) — retirement register for
+  compatibility shims (owner / reason / usage signal / removal trigger).
 
 Project conventions are in [`CLAUDE.md`](./CLAUDE.md); the north-star vision in [`GOAL.md`](./GOAL.md).
 

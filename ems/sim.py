@@ -1,5 +1,8 @@
 """Backtest harness for the charging algorithm (research/validation, SPEC §8 / §14 acceptance).
 
+B-85 / docs/legacy-retirement.md · sim-backtest-harness: offline research only — not on the
+control path. Imported by tests/docs; see the retirement register before deleting.
+
 A `Scenario` bundles a realised day in the Netherlands — the solar that actually arrives, the house
 load, the day-ahead prices, and (separately) the P10/P50/P90 *forecast* the planner gets to see. The
 planner plans on the forecast; `simulate` then runs the resulting plan through the energy model
