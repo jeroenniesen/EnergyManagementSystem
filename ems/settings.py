@@ -840,6 +840,27 @@ def live_mock_forecast_provider_active(values: dict[str, Any], dev_mode: str | N
     return values.get("solar.forecast_provider") == "mock"
 
 
+def live_mock_forecast_in_use(
+    solar_forecast: object | None,
+    values: dict[str, Any],
+    dev_mode: str | None,
+) -> bool:
+    """True while a live install is still planning on the built-in demo solar curve (#242).
+
+    Covers (a) persisted ``solar.forecast_provider=mock`` and (b) the restart window after the
+    operator saved Forecast.Solar/Solcast but ``build_wiring`` has not rebuilt the source yet —
+    ``settings_cache`` already shows the new provider while ``slots()`` is still mock.
+    """
+    if live_mock_forecast_provider_active(values, dev_mode):
+        return True
+    if not _mock_forecast_provider_disabled(dev_mode):
+        return False
+    # Lazy import: settings stays import-pure; forecast module registers adapters.
+    from ems.sources.forecast import MockSolarForecastSource
+
+    return isinstance(solar_forecast, MockSolarForecastSource)
+
+
 # Call sites that validate settings without ``dev_mode`` (must stay tolerant / internal-only).
 VALIDATE_SETTINGS_WITHOUT_DEV_MODE = frozenset({
     "effective_settings",

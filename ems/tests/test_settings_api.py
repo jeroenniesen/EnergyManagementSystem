@@ -62,12 +62,57 @@ def test_live_persisted_mock_forecast_degrades_alerts(tmp_path):
     with TestClient(
         create_app(
             MockSource(), dry_run=True, dev_mode="live", settings_store=store,
+            solar_forecast=MockSolarForecastSource(ZoneInfo("Europe/Amsterdam")),
         ),
     ) as c:
         body = c.get("/api/alerts").json()
     keys = {a["key"] for a in body["alerts"]}
     assert "live_mock_forecast_provider" in keys
     assert body["data_quality"] != "complete"
+
+
+def test_live_mock_forecast_stays_gated_after_provider_save_until_restart(tmp_path):
+    """#242 high: save Forecast.Solar clears the key but not the running Mock source."""
+    from datetime import UTC, datetime
+
+    from ems.freshness import FreshnessTracker
+    from ems.sense import SIGNALS
+
+    store = SettingsStore(str(tmp_path / "ems.sqlite"))
+    import asyncio
+
+    async def _seed():
+        await store.init()
+        await store.set_many({"solar.forecast_provider": "mock"})
+
+    asyncio.run(_seed())
+    now = datetime(2026, 7, 29, 10, 0, tzinfo=UTC)
+    fresh = FreshnessTracker()
+    for sig in (*SIGNALS, "prices", "forecast"):
+        fresh.register(sig)
+        fresh.mark(sig, now)
+    with TestClient(
+        create_app(
+            MockSource(),
+            dry_run=True,
+            dev_mode="live",
+            settings_store=store,
+            solar_forecast=MockSolarForecastSource(ZoneInfo("Europe/Amsterdam")),
+            freshness=fresh,
+        ),
+    ) as c:
+        # Operator follows the alert and picks a real provider (restart_pending).
+        r = c.post("/api/settings", json={"solar.forecast_provider": "forecast_solar"})
+        assert r.status_code == 200
+        assert r.json()["values"]["solar.forecast_provider"] == "forecast_solar"
+        body = c.get("/api/alerts").json()
+        keys = {a["key"] for a in body["alerts"]}
+        assert "live_mock_forecast_provider" in keys
+        assert body["data_quality"] != "complete"
+        diag = c.get("/api/diagnostics").json()
+        forecast_row = next(x for x in diag["checks"] if x["key"] == "forecast")
+        assert forecast_row["status"] == "warn"
+        assert "demo curve" in forecast_row["detail"].lower()
 
 
 def test_post_settings_persists_and_is_reflected(tmp_path):
