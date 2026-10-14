@@ -11,7 +11,7 @@ ownership state machine and guardrails.
 
 ```bash
 # read the real devices defined in config.yaml (devices: block)
-EMS_SOURCES=live uv run uvicorn ems.main:app --host 0.0.0.0 --port 8080
+EMS_SOURCES=live uv run python -m ems.main
 ```
 
 `config.yaml` holds the LAN addresses (not secrets):

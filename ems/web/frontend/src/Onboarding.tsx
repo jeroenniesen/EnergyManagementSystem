@@ -1,7 +1,7 @@
 import { useState } from "react";
 
 import { AuthLayout } from "./AuthLayout";
-import { setToken } from "./auth";
+import { apiFetch, setToken } from "./auth";
 
 // Forced onboarding (auth slice 1, Task 10): the identity gate serves ONLY this screen until the
 // first admin exists (`GET /api/auth`'s `onboarding_needed`). `sharedTokenRequired` comes from that
@@ -20,6 +20,9 @@ export function Onboarding({
   const [shared, setShared] = useState("");
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
+  const [created, setCreated] = useState(false);
+  const [restartBusy, setRestartBusy] = useState(false);
+  const [restartHint, setRestartHint] = useState("");
 
   async function submit(e: React.FormEvent) {
     e.preventDefault();
@@ -38,12 +41,62 @@ export function Onboarding({
         return;
       }
       setToken((await r.json()).token);
-      onDone();
+      setCreated(true);
     } catch {
       setError("Couldn't reach the server — try again.");
     } finally {
       setBusy(false);
     }
+  }
+
+  async function applyRestart() {
+    setRestartHint("");
+    setRestartBusy(true);
+    try {
+      const r = await apiFetch("/api/system/restart", { method: "POST" });
+      const b = await r.json().catch(() => ({}));
+      if (r.status === 202) {
+        setRestartHint("Restarting… reload this page in a few seconds for LAN access.");
+        return;
+      }
+      if (r.status === 409 && b.reason === "not_supervised") {
+        setRestartHint(
+          "Restart the EMS process manually (install script service or your supervisor) to open LAN access.",
+        );
+        return;
+      }
+      setRestartHint(b.detail ?? "Could not restart — try again or restart the process manually.");
+    } catch {
+      setRestartHint("Could not reach the server — restart the EMS process manually for LAN access.");
+    } finally {
+      setRestartBusy(false);
+    }
+  }
+
+  if (created) {
+    return (
+      <AuthLayout title="Admin account created">
+        <p>
+          The web UI may still be listening on localhost only until the process restarts. Use{" "}
+          <strong>Apply &amp; restart</strong> below (when supervised) or restart the service, then
+          open the dashboard from other devices on your LAN.
+        </p>
+        <div className="field" style={{ display: "flex", gap: "0.75rem", flexWrap: "wrap" }}>
+          <button type="button" className="btn-primary" onClick={() => onDone()}>
+            Continue to dashboard
+          </button>
+          <button
+            type="button"
+            className="btn-secondary"
+            disabled={restartBusy}
+            onClick={() => applyRestart()}
+          >
+            Apply &amp; restart
+          </button>
+        </div>
+        {restartHint && <p role="status">{restartHint}</p>}
+      </AuthLayout>
+    );
   }
 
   return (

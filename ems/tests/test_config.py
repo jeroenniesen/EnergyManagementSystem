@@ -26,6 +26,15 @@ def test_load_defaults_when_minimal(tmp_path: Path, monkeypatch):
     )
 
 
+def test_load_web_bind_from_yaml(tmp_path: Path, monkeypatch):
+    _no_source_env(monkeypatch)
+    p = tmp_path / "config.yaml"
+    p.write_text("web:\n  bind: 127.0.0.1\n  port: 9090\n")
+    cfg = load_config(p)
+    assert cfg.web_bind == "127.0.0.1"
+    assert cfg.web_port == 9090
+
+
 def test_cycle_seconds_env_override_and_retention(tmp_path: Path, monkeypatch):
     # Production cadence is 300 s by default; EMS_CYCLE_SECONDS lets a dev sample faster without
     # editing the file. retention_days comes from the history section (default 90).

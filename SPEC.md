@@ -662,8 +662,12 @@ mqtt:
 
 web:
   enabled: true
-  bind: 0.0.0.0
+  bind: 0.0.0.0            # effective LAN listen address AFTER first admin or shared token
   port: 8080
+  # Fresh install (no users, no EMS_WEB_TOKEN / auth_token): process binds 127.0.0.1 until onboarded,
+  # then restart to open LAN. Override bind at start with EMS_WEB_BIND (Docker dev compose sets
+  # EMS_WEB_BIND + EMS_WEB_TOKEN for host-browser onboarding). POST /api/auth/onboard rejects
+  # non-loopback clients unless a shared token is configured (defense in depth).
   auth: bearer             # bearer | basic  (LAN-only by default; never expose to internet)
   auth_token: !secret ems_web_token
   guest_readonly: true     # optional read-only dashboard without control

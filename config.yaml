@@ -26,6 +26,7 @@ history:
   backup_keep: 7       # daily VACUUM-INTO snapshots kept in <db_dir>/backups (0 = off, max 60)
 web:
   port: 8080
+  # bind: 0.0.0.0   # LAN listen address after first admin (or shared token); fresh installs use 127.0.0.1
 
 # Telemetry sources. Ships 'mock' so the app runs credential-free out of the box. Everything below
 # is just a first-boot SEED — set your devices, prices, location, tokens and keys in the web UI

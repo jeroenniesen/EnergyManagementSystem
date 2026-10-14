@@ -10,14 +10,14 @@ import asyncio
 import ipaddress
 import logging
 import os
+from pathlib import Path
 
 from ems.storage.auth import AuthStore
 from ems.storage.settings import SettingsStore
 
 _log = logging.getLogger(__name__)
 
-# Starlette TestClient uses host "testclient" (in-process ASGI).
-_TRUSTED_ONBOARD_HOSTS = frozenset({"127.0.0.1", "::1", "testclient"})
+_LOOPBACK_HOSTS = frozenset({"127.0.0.1", "::1"})
 
 
 def onboarding_client_allowed(host: str | None, *, shared_token: str | None) -> bool:
@@ -30,12 +30,16 @@ def onboarding_client_allowed(host: str | None, *, shared_token: str | None) -> 
 def is_loopback_client(host: str | None) -> bool:
     if not host:
         return False
-    if host in _TRUSTED_ONBOARD_HOSTS:
+    if host in _LOOPBACK_HOSTS:
         return True
     try:
         return ipaddress.ip_address(host).is_loopback
     except ValueError:
         return False
+
+
+def _in_container() -> bool:
+    return Path("/.dockerenv").is_file()
 
 
 def resolve_bind_host(
@@ -47,19 +51,30 @@ def resolve_bind_host(
     """Host address for uvicorn to bind."""
     override = (os.environ.get("EMS_WEB_BIND") or "").strip()
     if override:
+        if not users_exist and not shared_token_configured:
+            _log.warning(
+                "EMS_WEB_BIND=%s while no admin and no shared token are configured — "
+                "onboarding may be reachable from the LAN (POST /api/auth/onboard still "
+                "requires loopback unless a shared token is set).",
+                override,
+            )
         return override
     if users_exist or shared_token_configured:
+        return configured
+    if _in_container():
         return configured
     return "127.0.0.1"
 
 
 async def _boot_onboarding_posture_async(
-    db_path: str, env_web_token: str | None,
+    db_path: str,
+    env_web_token: str | None,
+    config_web_token: str | None,
 ) -> tuple[bool, bool]:
     auth = AuthStore(db_path)
     await auth.init()
     users_exist = (await auth.user_count()) > 0
-    if (env_web_token or "").strip():
+    if (env_web_token or "").strip() or (config_web_token or "").strip():
         return users_exist, True
     settings = SettingsStore(db_path)
     await settings.init()
@@ -68,15 +83,42 @@ async def _boot_onboarding_posture_async(
     return users_exist, bool(ui_tok)
 
 
-def boot_onboarding_posture(db_path: str, env_web_token: str | None) -> tuple[bool, bool]:
+def boot_onboarding_posture(
+    db_path: str,
+    env_web_token: str | None,
+    config_web_token: str | None = None,
+) -> tuple[bool, bool]:
     """Return (users_exist, shared_token_configured) for bind resolution at process start."""
-    return asyncio.run(_boot_onboarding_posture_async(db_path, env_web_token))
+    return asyncio.run(
+        _boot_onboarding_posture_async(db_path, env_web_token, config_web_token),
+    )
 
 
-def log_bind_choice(host: str, *, users_exist: bool, shared_token_configured: bool) -> None:
+def log_bind_choice(
+    host: str,
+    *,
+    users_exist: bool,
+    shared_token_configured: bool,
+    configured: str,
+) -> None:
     if host == "127.0.0.1" and not users_exist and not shared_token_configured:
-        _log.info(
+        _log.warning(
             "Web UI listening on 127.0.0.1 only until the first admin is created "
-            "(or set EMS_WEB_TOKEN / web.auth_token, then restart). Restart after onboarding "
-            "to enable LAN access."
+            "(or set EMS_WEB_TOKEN / web.auth_token in config or settings, then restart). "
+            "Restart after onboarding to enable LAN access (configured bind=%s).",
+            configured,
         )
+        return
+    reason = "onboarded_or_token"
+    if (os.environ.get("EMS_WEB_BIND") or "").strip():
+        reason = "EMS_WEB_BIND"
+    elif _in_container() and not users_exist and not shared_token_configured:
+        reason = "container_default_bind"
+    _log.info(
+        "Web UI listening on %s (%s; users_exist=%s shared_token=%s configured_bind=%s)",
+        host,
+        reason,
+        users_exist,
+        shared_token_configured,
+        configured,
+    )

@@ -158,9 +158,9 @@ The car's SoC itself is **not** a config key — it's a runtime-store anchor (%,
 | Key | Type | Default | Effect |
 |---|---|---|---|
 | `enabled` | bool | true | serve the UI |
-| `bind` / `port` | str/int | 0.0.0.0 / 8080 | listen address after onboarding (**LAN only; never expose to internet**). Fresh installs with no admin and no `EMS_WEB_TOKEN` / `web.auth_token` bind **127.0.0.1** until the first admin exists (restart to open LAN). Override with `EMS_WEB_BIND`. |
+| `bind` / `port` | str/int | 0.0.0.0 / 8080 | listen address after onboarding (**LAN only; never expose to internet**). Fresh installs with no admin and no shared token bind **127.0.0.1** until the first admin exists (restart to open LAN). Shared token = `EMS_WEB_TOKEN`, `web.auth_token` here, or UI-set `web.auth_token` in settings. Override bind with `EMS_WEB_BIND` (logs a warning when it would expose onboarding). Docker: `docker-compose.dev.yml` sets `EMS_WEB_BIND` + `EMS_WEB_TOKEN` for host-browser onboarding. |
 | `auth` | enum | `bearer`\|`basic` = bearer | auth scheme |
-| `auth_token` | secret | `!secret` | UI auth |
+| `auth_token` | secret | `!secret` | bootstrap shared token (counts for bind posture and onboarding anti-seizure; migrated to the first admin's access token on onboard) |
 | `guest_readonly` | bool | true | optional read-only dashboard |
 | `theme` | enum | `auto`\|`light`\|`dark` = auto | UI theme |
 

@@ -37,6 +37,8 @@ class Config:
     # 0 disables the check (tokens never idle-expire); clamped >= 0 on load.
     access_token_idle_days: int = 90
     web_bind: str = "0.0.0.0"
+    # Optional bootstrap shared token in config.yaml (web.auth_token); runtime UI token overrides.
+    web_auth_token: str = ""
 
 
 def load_config(path: str | Path) -> Config:
@@ -76,6 +78,7 @@ def load_config(path: str | Path) -> Config:
         dry_run=dry_run,
         web_port=int(web.get("port", 8080)),
         web_bind=str(web.get("bind", "0.0.0.0")),
+        web_auth_token=str(web.get("auth_token", "") or ""),
         db_path=db_path,
         cycle_seconds=cycle_seconds,
         retention_days=int(history.get("retention_days", 90)),

@@ -162,7 +162,25 @@ for _ in $(seq 1 40); do
     fi
     printf '\n\033[1;32m✅ Smart Energy Manager is running.\033[0m\n'
     printf '   %s:  http://localhost:%s\n' "$LOCAL_LABEL" "$PORT"
-    [ -n "$LAN_IP" ] && printf '   On your LAN:  http://%s:%s\n' "$LAN_IP" "$PORT"
+    if "$UV" run python -c "
+from pathlib import Path
+import os
+from ems.config import load_config
+from ems.web_bind import boot_onboarding_posture, resolve_bind_host
+cfg = load_config('config.yaml')
+db = Path(cfg.db_path)
+if not db.is_absolute():
+    db = Path('$REPO') / db
+env_tok = os.environ.get('EMS_WEB_TOKEN')
+yaml_tok = (cfg.web_auth_token or '').strip() or None
+u, t = boot_onboarding_posture(str(db), env_tok, yaml_tok)
+host = resolve_bind_host(configured=cfg.web_bind, users_exist=u, shared_token_configured=t)
+raise SystemExit(0 if host != '127.0.0.1' else 1)
+" 2>/dev/null; then
+      [ -n "$LAN_IP" ] && printf '   On your LAN:  http://%s:%s\n' "$LAN_IP" "$PORT"
+    else
+      printf '   LAN access: create the first admin here, then restart the service (or set EMS_WEB_TOKEN before start).\n'
+    fi
     printf '   Next: open it and set up your devices, prices and location in the UI.\n'
     printf '   Logs: %s/ems/data/server.log    Stop/remove: ./scripts/uninstall.sh\n\n' "$REPO"
     exit 0

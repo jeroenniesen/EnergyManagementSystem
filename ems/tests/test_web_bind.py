@@ -26,6 +26,13 @@ def test_resolve_bind_host_loopback_until_onboarded_or_token():
                              shared_token_configured=True) == "0.0.0.0"
 
 
+def test_resolve_bind_host_env_override(monkeypatch):
+    monkeypatch.setenv("EMS_WEB_BIND", "192.0.2.1")
+    assert resolve_bind_host(configured="0.0.0.0", users_exist=False,
+                             shared_token_configured=False) == "192.0.2.1"
+    monkeypatch.delenv("EMS_WEB_BIND", raising=False)
+
+
 def test_onboarding_client_allowed():
     assert onboarding_client_allowed("198.51.100.10", shared_token=None) is False
     assert onboarding_client_allowed("127.0.0.1", shared_token=None) is True
@@ -36,15 +43,48 @@ def test_is_loopback_client():
     assert is_loopback_client("127.0.0.1")
     assert is_loopback_client("::1")
     assert not is_loopback_client("192.168.1.5")
-    assert is_loopback_client("testclient")
+    assert not is_loopback_client("testclient")
+
+
+def _fresh_app(tmp_path, **kwargs):
+    db = str(tmp_path / "ems.sqlite")
+    return create_app(
+        MockSource(),
+        dry_run=True,
+        dev_mode="mock",
+        settings_store=SettingsStore(db),
+        auth_store=AuthStore(db),
+        **kwargs,
+    )
 
 
 def test_onboard_still_works_via_testclient_without_token(tmp_path):
-    db = str(tmp_path / "ems.sqlite")
-    with TestClient(create_app(MockSource(), dry_run=True, dev_mode="mock",
-                              settings_store=SettingsStore(db), auth_store=AuthStore(db))) as c:
+    with TestClient(_fresh_app(tmp_path), client=("127.0.0.1", 0)) as c:
         assert c.post("/api/auth/onboard",
                       json={"username": "admin", "password": "pw12345678"}).status_code == 200
+
+
+def test_onboard_remote_forbidden_without_shared_token(tmp_path):
+    with TestClient(_fresh_app(tmp_path), client=("203.0.113.7", 0)) as c:
+        r = c.post("/api/auth/onboard",
+                   json={"username": "admin", "password": "pw12345678"})
+        assert r.status_code == 403
+        assert "localhost" in r.json()["detail"]
+
+
+def test_onboard_remote_ok_with_shared_token(tmp_path):
+    with TestClient(_fresh_app(tmp_path, web_auth_token="bootstrap-secret"),
+                     client=("203.0.113.7", 0)) as c:
+        r = c.post(
+            "/api/auth/onboard",
+            json={
+                "username": "admin",
+                "password": "pw12345678",
+                "shared_token": "bootstrap-secret",
+            },
+        )
+        assert r.status_code == 200
+        assert r.json()["user"]["role"] == "admin"
 
 
 def test_boot_shared_token_from_settings(tmp_path):
@@ -61,3 +101,10 @@ def test_boot_shared_token_from_settings(tmp_path):
     assert token is True
     assert resolve_bind_host(configured="0.0.0.0", users_exist=users,
                              shared_token_configured=token) == "0.0.0.0"
+
+
+def test_boot_shared_token_from_config_yaml(tmp_path):
+    db = str(tmp_path / "ems.sqlite")
+    users, token = boot_onboarding_posture(db, env_web_token=None, config_web_token="yaml-secret")
+    assert users is False
+    assert token is True

@@ -128,7 +128,11 @@ def build_app():
         control_cycle_seconds=cfg.control_cycle_seconds,
         history_retention_days=cfg.retention_days,
         history_backup_keep=cfg.backup_keep,
-        web_auth_token=os.environ.get("EMS_WEB_TOKEN") or None,
+        web_auth_token=(
+            (os.environ.get("EMS_WEB_TOKEN") or "").strip()
+            or (cfg.web_auth_token or "").strip()
+            or None
+        ),
         static_dir=_STATIC_DIR,
         http_runtime=http_runtime,
         consumer_sources=consumer_sources,
@@ -145,14 +149,28 @@ def main() -> None:
     if not db_path.is_absolute():
         db_path = _REPO_ROOT / db_path
     env_token = os.environ.get("EMS_WEB_TOKEN") or None
-    users_exist, token_configured = boot_onboarding_posture(str(db_path), env_token)
+    yaml_token = (_cfg.web_auth_token or "").strip() or None
+    users_exist, token_configured = boot_onboarding_posture(
+        str(db_path), env_token, yaml_token,
+    )
     host = resolve_bind_host(
         configured=_cfg.web_bind,
         users_exist=users_exist,
         shared_token_configured=token_configured,
     )
-    log_bind_choice(host, users_exist=users_exist, shared_token_configured=token_configured)
-    uvicorn.run("ems.main:app", host=host, port=_cfg.web_port)
+    log_bind_choice(
+        host,
+        users_exist=users_exist,
+        shared_token_configured=token_configured,
+        configured=_cfg.web_bind,
+    )
+    uvicorn.run(
+        app,
+        host=host,
+        port=_cfg.web_port,
+        access_log=False,
+        proxy_headers=False,
+    )
 
 
 if __name__ == "__main__":
