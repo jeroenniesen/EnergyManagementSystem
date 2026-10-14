@@ -275,6 +275,7 @@ def honest_partial_from_projection(
     projection: list[ProjectedSlot] | None,
     *,
     min_reserve_soc: float,
+    min_target_soc: float = 0.0,
     margin_pp: float = 5.0,
 ) -> Plan:
     """Lower unreachable winter grid-charge targets to the projected reachable SoC (#162).
@@ -297,6 +298,8 @@ def honest_partial_from_projection(
         return plan
 
     reserve = max(0.0, min_reserve_soc)
+    if min_target_soc > 0:
+        reserve = max(reserve, float(min_target_soc))
     # Per-commitment reachable SoC (same grouping as validator check #6).
     commitments = {(s.deadline or plan.deadline,
                     s.target_soc if s.target_soc is not None else plan.target_soc)

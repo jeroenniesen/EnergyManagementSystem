@@ -447,6 +447,7 @@ class ControlService:
         planner_cfg: Callable[[], Any] | None = None,
         summer_cfg: Callable[[float], Any] | None = None,
         adaptive_cfg: Callable[[], Any] | None = None,
+        device_min_target_soc: Callable[[], float] = lambda: 0.0,
     ) -> None:
         self._ctx = ctx
         self._clock = clock if clock is not None else SystemClock()
@@ -488,6 +489,7 @@ class ControlService:
         self._planner_cfg = planner_cfg if planner_cfg is not None else self.planner_cfg
         self._summer_cfg = summer_cfg if summer_cfg is not None else self.summer_cfg
         self._adaptive_cfg = adaptive_cfg if adaptive_cfg is not None else self.adaptive_cfg
+        self._device_min_target_soc = device_min_target_soc
         self._decision_engine = ControlDecisionEngine(
             data_quality=self._data_quality,
             car_mode_action=self._car_mode_action,
@@ -1006,6 +1008,7 @@ class ControlService:
         recovered = honest_partial_from_projection(
             recovered, self._project_plan(recovered, now, soc),
             min_reserve_soc=float(self._settings["battery.min_reserve_soc"]),
+            min_target_soc=float(self._device_min_target_soc()),
         )
         return now, prices, recovered, status, catch
 

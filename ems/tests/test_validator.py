@@ -1,8 +1,10 @@
 """Plan validator (SPEC §8.11): unsafe ⇒ control-blocking (hold AUTO); warn ⇒ degraded/usable."""
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 
 from ems.domain import BatteryIntent, CapabilityReport
 from ems.planner.projection import ProjectedSlot
+from ems.planner.recovery import honest_partial_from_projection
 from ems.planner.schedule import SLOT, Plan, PlanSlot
 from ems.planner.validator import validate_plan
 
@@ -179,23 +181,41 @@ def test_clamp_uses_higher_capability_when_gen2_exceeds_settings_floor():
     assert aligned.slots[0].power_w == 6000.0
 
 
-def test_target_below_capability_min_soc_is_unsafe():
-    """#112 slice b: charge target under device min_target_soc is control-blocking."""
-    from dataclasses import replace
-
+def test_target_below_capability_min_soc_warns_not_unsafe():
+    """#112b / #245: sub-min charge targets match Indevolt clamp-at-apply — warn, not unsafe."""
     cap = replace(CAP, min_target_soc=5.0)
     v = validate_plan(
         _plan(_charge(0, target_soc=3.0, floor=0.0)),
         **_ctx(capability=cap, min_reserve_soc=0.0),
     )
-    assert v.ok is False
-    assert any(f.code == "target_below_capability_min" for f in v.findings)
+    assert v.ok is True and v.status == "warn"
+    cap_f = next(f for f in v.findings if f.code == "target_below_capability_min")
+    assert cap_f.severity == "warn"
     ok = validate_plan(
         _plan(_charge(0, target_soc=5.0, floor=0.0)),
         **_ctx(capability=cap, min_reserve_soc=0.0),
     )
     assert ok.ok is True
     assert not any(f.code == "target_below_capability_min" for f in ok.findings)
+
+
+def test_honest_partial_target_below_device_min_with_low_reserve_is_applicable():
+    """#245: reserve 0–4% + Indevolt 5% floor must not falsely unsafe a floored charge."""
+    cap = replace(CAP, min_target_soc=5.0)
+    plan = Plan(
+        created_at=T0, slots=(_charge(0, target_soc=88.0, floor=0.0),), strategy="winter",
+        target_soc=88.0, deadline=T0 + 4 * SLOT,
+    )
+    proj = [ProjectedSlot(T0, BatteryIntent.GRID_CHARGE_TO_TARGET, 3.0, 0, 0, 0, 0)]
+    resized = honest_partial_from_projection(
+        plan, proj, min_reserve_soc=0.0, min_target_soc=5.0,
+    )
+    assert resized.target_soc == 5.0
+    v = validate_plan(
+        resized, **_ctx(capability=cap, min_reserve_soc=0.0, soc_pct=5.0),
+        projection=[ProjectedSlot(T0, BatteryIntent.GRID_CHARGE_TO_TARGET, 5.0, 0, 0, 0, 0)],
+    )
+    assert v.ok is True
 
 
 def test_projection_below_reserve_is_unsafe():

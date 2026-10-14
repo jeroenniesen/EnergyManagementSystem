@@ -14,6 +14,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field, replace
 from datetime import timedelta
 
+from ems.battery_profile import effective_plan_reserve_soc
 from ems.domain import BatteryIntent, CapabilityReport
 from ems.planner.projection import ProjectedSlot
 from ems.planner.schedule import Plan, PlanSlot
@@ -223,6 +224,7 @@ def validate_plan(
     (writes stay dry-run / AUTO via intent_to_mode)."""
     findings: list[Finding] = []
     slots = plan.slots[:slot_horizon]
+    effective_reserve = effective_plan_reserve_soc(min_reserve_soc, capability)
 
     # 1. Stale/missing critical inputs make any non-self-consumption action unsafe (matches the
     #    per-slot fail-safe, lifted to a plan-level gate). Unknown SoC (#134) is the same class of
@@ -245,16 +247,17 @@ def validate_plan(
             findings.append(Finding(_UNSAFE, "target_out_of_range",
                                     f"Charge target {t:.0f}% is outside 0–100%."))
             break
-        # Device floor from capability probe (#112b): Indevolt rejects SoC < 5 %.
+        # Device floor from capability probe (#112b / #245): Indevolt floors sub-min writes to
+        # min_target_soc at apply time — warn only so honest-partial plans are not falsely unsafe.
         if (capability is not None and capability.min_target_soc > 0
                 and t < capability.min_target_soc - 1e-6):
             findings.append(Finding(
-                _UNSAFE, "target_below_capability_min",
+                _WARN, "target_below_capability_min",
                 f"Charge target {t:.1f}% is below the battery's minimum "
-                f"{capability.min_target_soc:.1f}% — device would reject the write.",
+                f"{capability.min_target_soc:.1f}% — the writer will clamp to the device floor.",
             ))
             break
-        floor = s.floor_soc if s.floor_soc is not None else min_reserve_soc
+        floor = s.floor_soc if s.floor_soc is not None else effective_reserve
         if t < floor:
             findings.append(Finding(_UNSAFE, "target_below_reserve",
                                     f"Charge target {t:.0f}% is below the reserve floor "
@@ -303,7 +306,7 @@ def validate_plan(
     # battery is already below reserve, don't turn that starting condition into a false unsafe
     # finding; only block plans that make it worse. Skipped when SoC is unknown (#134).
     if projection and soc_pct is not None:
-        floor = min(min_reserve_soc, soc_pct)
+        floor = min(effective_reserve, soc_pct)
         if any(p.soc_pct < floor - 1e-6 for p in projection):
             findings.append(Finding(_UNSAFE, "projection_below_reserve",
                                     "The plan is projected to discharge below the reserve floor."))

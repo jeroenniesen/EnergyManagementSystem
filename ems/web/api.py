@@ -1968,6 +1968,12 @@ def create_app(
         source=source, cache_store=cache_store,
         data_quality=_data_quality, validate_plan_obj=_validate_plan_obj,
         clock=application_clock,
+        device_min_target_soc=lambda: (
+            float(_capability_box["cap"].min_target_soc)
+            if _capability_box.get("cap") is not None
+            and float(_capability_box["cap"].min_target_soc) > 0
+            else 0.0
+        ),
     )
     # I2: the restart handler + tests reach the control brain's outstanding-write registry and the
     # idle-and-safe read through here (the single owner of the command-fence snapshot).
@@ -5108,7 +5114,19 @@ def create_app(
     def get_settings() -> dict:
         # The UI renders a form from `schema` and fills it from `values` (effective config).
         # Secrets are masked (a parallel "<key>.__set" flag tells the UI whether one is stored).
-        return {"schema": schema_json(dev_mode), "values": public_values(settings_cache)}
+        schema = schema_json(dev_mode)
+        cap = _capability_box.get("cap")
+        if cap is not None and float(cap.min_target_soc) > 0:
+            device_min = float(cap.min_target_soc)
+            for row in schema:
+                if row.get("key") == "battery.min_reserve_soc":
+                    row["min"] = max(float(row.get("min") or 0), device_min)
+                    row["help"] = (
+                        f"{row['help']} When the battery is probed, values below "
+                        f"{device_min:.0f}% are raised to the device minimum at plan/apply time."
+                    )
+                    break
+        return {"schema": schema, "values": public_values(settings_cache)}
 
     @app.post("/api/settings")
     async def post_settings(request: Request, body: dict | None = None) -> JSONResponse:
@@ -5120,6 +5138,16 @@ def create_app(
         # Pass body straight through: validate_settings guards non-dict, so a missing/None body
         # becomes a 422 ("expected a JSON object") rather than a silent 200 no-op.
         clean, errors = validate_settings(body, dev_mode=dev_mode)
+        cap = _capability_box.get("cap")
+        if cap is not None and "battery.min_reserve_soc" in clean:
+            device_min = float(cap.min_target_soc)
+            if device_min > 0 and float(clean["battery.min_reserve_soc"]) < device_min:
+                errors = {
+                    **errors,
+                    "battery.min_reserve_soc": (
+                        f"must be >= {device_min:.0f}% (battery device minimum)"
+                    ),
+                }
         if errors:
             # Reject the whole payload if ANY key is invalid — partial saves are confusing.
             return JSONResponse(

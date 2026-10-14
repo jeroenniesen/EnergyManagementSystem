@@ -1,4 +1,21 @@
-from ems.battery_profile import BatteryTopology, apply_topology_defaults, normalize_tower_ips
+from ems.battery_profile import (
+    BatteryTopology,
+    apply_topology_defaults,
+    effective_plan_reserve_soc,
+    normalize_tower_ips,
+)
+from ems.domain import CapabilityReport
+
+
+def test_effective_plan_reserve_soc_overlays_device_min():
+    cap = CapabilityReport(
+        services=(), energy_mode_options=(), has_standby=False,
+        has_grid_charge_switch=False, p1_paired=False,
+        max_charge_w=2400.0, max_discharge_w=2400.0, min_target_soc=5.0,
+    )
+    assert effective_plan_reserve_soc(3.0, cap) == 5.0
+    assert effective_plan_reserve_soc(10.0, cap) == 10.0
+    assert effective_plan_reserve_soc(3.0, None) == 3.0
 
 
 def test_normalize_tower_ips_supports_single_tower():
