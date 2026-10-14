@@ -1163,11 +1163,11 @@ def settings_migration_writes(stored: Any) -> dict[str, Any]:
             host = (urlparse(str(stored["notify.ntfy_url"])).hostname or "").lower()
         except ValueError:
             host = ""
-        if host and (
+        # Only true home-LAN forms — not cloud ``.internal`` / metadata names (#232 Grok M2).
+        if host and host not in ("localhost", "metadata", "instance-data") and (
             hostname_is_private_ip(host)
-            or host.endswith((".local", ".lan", ".internal", ".localhost"))
-            or host == "localhost"
-        ):
+            or host.endswith((".local", ".lan", ".localhost"))
+        ) and not host.endswith(".internal"):
             out["notify.allow_lan_url"] = True
     return out
 

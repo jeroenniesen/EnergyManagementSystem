@@ -79,6 +79,7 @@ def make_setdata_post(
     import json as _json
 
     from ems.http_client import request as http_request
+    from ems.url_safety import prepare_outbound_request
 
     url = f"http://{ip}:{port}/rpc/Indevolt.SetData"
     _timeout = timeout
@@ -86,9 +87,12 @@ def make_setdata_post(
 
     def post(point: int, values: list[int]) -> object:
         config = _json.dumps({"f": 16, "t": point, "v": list(values)}).replace(" ", "")
+        # #232: pin + reject loopback/metadata even for LAN device writes.
+        pinned, extra = prepare_outbound_request(url, allow_private=True)
         r = http_request(
-            "POST", url, profile="lan_write", params={"config": config},
+            "POST", pinned, profile="lan_write", params={"config": config},
             timeout=_timeout, client=_client,  # type: ignore[arg-type]
+            headers=extra,
         )
         r.raise_for_status()
         return r.json()

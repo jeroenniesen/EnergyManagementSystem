@@ -72,7 +72,9 @@ token so the browser can show its Access box — but every datum it renders come
 Settings that make the EMS host open an HTTP connection are SSRF-hardened:
 
 - **`notify.ntfy_url`** / **`explainer.base_url`**: http(s) only; no credentials/query/fragment;
-  link-local and cloud-metadata hosts always rejected. Private/LAN targets are rejected for ntfy
+  link-local and cloud-metadata hosts always rejected (including alternate IPv4 encodings and
+  DNS names that resolve to those ranges — checked again at connect time). Private/LAN targets
+  are rejected for ntfy
   unless **Allow LAN ntfy server** (`notify.allow_lan_url`) is on; the AI endpoint never allows
   private targets.
 - **Meter / battery IP fields**: IP or hostname only — not a full URL with a path.

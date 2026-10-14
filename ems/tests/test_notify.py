@@ -63,11 +63,11 @@ def test_send_ntfy_url_trailing_slash_is_normalised(tmp_path):
         captured["url"] = url
 
     notifier = Notifier(
-        store, {"notify.ntfy_url": "https://ntfy.example.com/", "notify.ntfy_topic": "t"},
+        store, {"notify.ntfy_url": "https://example.com/", "notify.ntfy_topic": "t"},
         post=fake_post,
     )
     asyncio.run(notifier.send("k", "title", "body"))
-    assert captured["url"] == "https://ntfy.example.com/t"
+    assert captured["url"] == "https://example.com/t"
 
 
 def test_send_ntfy_failure_is_logged_not_raised_and_channel_absent(tmp_path):

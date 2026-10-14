@@ -96,8 +96,15 @@ class Notifier:
         try:
             import asyncio
 
+            from ems.url_safety import prepare_outbound_request
+
             target = f"{url.rstrip('/')}/{topic}"
-            await asyncio.to_thread(self._post, target, body.encode(), {"Title": title})
+            pinned, extra = prepare_outbound_request(
+                target, allow_private=bool(cfg.get("notify.allow_lan_url")),
+            )
+            await asyncio.to_thread(
+                self._post, pinned, body.encode(), {**extra, "Title": title},
+            )
             if row_id is not None:  # skip when the store write failed (no row to mark delivered)
                 await self.store.set_notification_delivered(row_id, ["in_app", "ntfy"])
         except Exception as exc:

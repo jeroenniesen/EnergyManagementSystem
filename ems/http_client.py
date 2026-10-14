@@ -307,13 +307,16 @@ def make_indevolt_getdata_post(
     """``(keys) -> dict`` matching ``IndevoltReadClient``'s ``GetDataPost``."""
     import json
 
+    from ems.url_safety import prepare_outbound_request
+
     url = f"http://{ip}:{port}/rpc/Indevolt.GetData"
 
     def post(keys: Any) -> dict:
         config = json.dumps({"t": list(keys)}).replace(" ", "")
+        pinned, extra = prepare_outbound_request(url, allow_private=True)
         r = request(
-            "POST", url, profile=profile, timeout=timeout, runtime=runtime,
-            params={"config": config},
+            "POST", pinned, profile=profile, timeout=timeout, runtime=runtime,
+            params={"config": config}, headers=extra,
         )
         r.raise_for_status()
         return r.json()

@@ -24,8 +24,10 @@ JsonGet = Callable[[str], dict]
 
 def _httpx_get(url: str, timeout: float) -> dict:
     from ems.http_client import request as http_request
+    from ems.url_safety import prepare_outbound_request
 
-    r = http_request("GET", url, profile="lan_read", timeout=timeout)
+    pinned, extra = prepare_outbound_request(url, allow_private=True)
+    r = http_request("GET", pinned, profile="lan_read", timeout=timeout, headers=extra)
     r.raise_for_status()
     return r.json()
 
