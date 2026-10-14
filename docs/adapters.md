@@ -83,7 +83,10 @@ New vendor-neutral fields on every probe:
 
 `IndevoltBatteryDriver.probe` and `MockBatteryDriver.probe` fill these from device limits.
 `/api/battery` surfaces them next to the legacy keys. `validate_plan` marks a charge target
-below `min_target_soc` as `unsafe` (`target_below_capability_min`). Central pre-`apply` clamp
+below `min_target_soc` as `unsafe` (`target_below_capability_min`) — product choice vs Indevolt's
+silent floor-to-5% write behaviour: EMS keeps plans honest rather than mirroring the silent clamp
+(#245). Settings `battery.min_reserve_soc` therefore cannot be set below 5%, and honest-partial
+recovery floors targets with `max(reserve, min_target_soc)`. Central pre-`apply` clamp
 (I4) and moving Indevolt keys into `details` are **out of scope** here (slices c / d).
 
 ## Adapter registry (#140)

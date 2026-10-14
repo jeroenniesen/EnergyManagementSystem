@@ -1003,9 +1003,20 @@ class ControlService:
         )
         # B-22/B-16 interaction (#162): if the forward projection still can't hit the committed
         # target, lower target_soc to what's reachable and keep the charge slots (honest partial).
+        # #245: never honest-partial below the device SoC write floor (Indevolt 5%). Prefer a
+        # cached CapabilityReport on the driver; fall back to DEFAULT_MIN_TARGET_SOC_PCT.
+        from ems.battery_limits import device_min_target_soc
+        from ems.domain import CapabilityReport
+
+        cap = None
+        driver = getattr(self._controller, "driver", None) if self._controller is not None else None
+        cached = getattr(driver, "_capabilities", None) if driver is not None else None
+        if isinstance(cached, CapabilityReport):
+            cap = cached
         recovered = honest_partial_from_projection(
             recovered, self._project_plan(recovered, now, soc),
             min_reserve_soc=float(self._settings["battery.min_reserve_soc"]),
+            min_target_soc=device_min_target_soc(cap),
         )
         return now, prices, recovered, status, catch
 

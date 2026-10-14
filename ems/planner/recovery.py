@@ -275,20 +275,26 @@ def honest_partial_from_projection(
     projection: list[ProjectedSlot] | None,
     *,
     min_reserve_soc: float,
+    min_target_soc: float = 0.0,
     margin_pp: float = 5.0,
 ) -> Plan:
     """Lower unreachable winter grid-charge targets to the projected reachable SoC (#162).
 
     When the forward projection falls more than `margin_pp` short of a committed charge target by
     its deadline, keep every `GRID_CHARGE_TO_TARGET` slot (best-effort charge) but rewrite
-    plan- and slot-level `target_soc` to `max(reserve, projected_reached)`. Returns `plan`
+    plan- and slot-level `target_soc` to `max(floor, projected_reached)`. Returns `plan`
     unchanged when there is nothing to resize (no projection, non-winter, no charge commitment,
     or already reachable within the margin).
 
     Pure — the caller still runs the §8.11 validator. A residual short-of-target finding is
     severity **warn** (not unsafe): never fail-safe to AUTO solely because the original target
     was ambitious. Plans that would discharge below reserve remain unsafe via the separate
-    `projection_below_reserve` check."""
+    `projection_below_reserve` check.
+
+    #245: ``min_target_soc`` (device capability floor) is folded into the commit floor so an
+    honest-partial cannot land in 0–4% and trip ``target_below_capability_min`` while the
+    Indevolt writer would have silently floored the write.
+    """
     if (projection is None or plan.strategy != "winter"
             or plan.target_soc is None or plan.deadline is None):
         return plan
@@ -296,7 +302,9 @@ def honest_partial_from_projection(
     if not charge:
         return plan
 
-    reserve = max(0.0, min_reserve_soc)
+    from ems.battery_limits import soc_control_floor
+
+    floor = soc_control_floor(min_reserve_soc, min_target_soc=min_target_soc)
     # Per-commitment reachable SoC (same grouping as validator check #6).
     commitments = {(s.deadline or plan.deadline,
                     s.target_soc if s.target_soc is not None else plan.target_soc)
@@ -310,8 +318,8 @@ def honest_partial_from_projection(
         reached = reached_values[-1]
         if reached >= target - margin_pp:
             continue
-        # Honest: commit only to what's projected reachable, never below the reserve floor.
-        lowered[deadline] = max(reserve, min(target, reached))
+        # Honest: commit only to what's projected reachable, never below reserve/device floor.
+        lowered[deadline] = max(floor, min(target, reached))
 
     if not lowered:
         return plan
