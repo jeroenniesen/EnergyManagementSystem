@@ -173,3 +173,39 @@ def test_guard_rejects_dns_to_metadata_even_with_lan(monkeypatch):
         prepare_outbound_request(
             "http://169.254.169.254.nip.io/latest", allow_private=True,
         )
+
+
+def test_homewizard_make_json_get_path_does_not_dial_ssrf_hosts(monkeypatch):
+    """Production wiring injects ``make_json_get``; meter ``read()`` must not create_connection."""
+    import socket
+
+    from ems.http_client import HttpRuntime, make_json_get
+    from ems.sources.live import HomeWizardMeter
+
+    dialed: list[tuple] = []
+    real_cc = socket.create_connection
+
+    def spy_cc(address, *args, **kwargs):
+        dialed.append(address)
+        raise OSError("ssrf-test-block")
+
+    monkeypatch.setattr(socket, "create_connection", spy_cc)
+
+    import httpx
+
+    with HttpRuntime(client=httpx.Client()) as rt:
+        getter = make_json_get(rt, "lan_read")
+        for host in (
+            "127.0.0.1.nip.io",
+            "localtest.me",
+            "169.254.169.254.nip.io",
+            "ip6-localhost",
+        ):
+            dialed.clear()
+            meter = HomeWizardMeter(host, http_get=getter)
+            with pytest.raises(ValueError):
+                meter.read()
+            assert dialed == [], f"{host} reached create_connection: {dialed}"
+
+    # Restore unused binding for linters / clarity (spy already via monkeypatch).
+    assert real_cc is not None
