@@ -126,6 +126,7 @@ struct ConnectionView: View {
                                 dashboardStore.loadDemo()
                             }
                             .buttonStyle(SecondaryEMSButtonStyle(theme: theme))
+                            .accessibilityIdentifier("connection.viewDemo")
                         }
 
                         if let error = errorMessage, !dashboardStore.failureState.showUnreachableBanner {

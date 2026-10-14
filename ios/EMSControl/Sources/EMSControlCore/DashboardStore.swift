@@ -34,6 +34,7 @@ public final class DashboardStore {
     private let demoData: DemoDataStore
     private let credentialStore: CredentialStore
     private let widgetConfig: AppGroupConfigStore
+    private let widgetSnapshotCache: WidgetSnapshotCache
     private let transport: any HTTPTransport
     private let refreshFailureRetryDelay: TimeInterval = 15
 
@@ -42,12 +43,14 @@ public final class DashboardStore {
         demoData: DemoDataStore = DemoDataStore(),
         credentialStore: CredentialStore = KeychainCredentialStore(),
         widgetConfig: AppGroupConfigStore = AppGroupConfigStore(),
+        widgetSnapshotCache: WidgetSnapshotCache = WidgetSnapshotCache(),
         transport: HTTPTransport = URLSessionTransport()
     ) {
         self.client = client
         self.demoData = demoData
         self.credentialStore = credentialStore
         self.widgetConfig = widgetConfig
+        self.widgetSnapshotCache = widgetSnapshotCache
         self.transport = transport
     }
 
@@ -118,6 +121,7 @@ public final class DashboardStore {
             try? credentialStore.saveWidgetToken(accessToken, for: baseURL)
         }
         let widgetToken = accessToken ?? ((try? credentialStore.widgetToken(for: baseURL)) ?? nil)
+        widgetConfig.setDemoModeActive(false)
         widgetConfig.save(WidgetServerConfig(baseURL: baseURL, token: widgetToken))
 
         authFailed = false
@@ -162,6 +166,7 @@ public final class DashboardStore {
         try? credentialStore.saveWidgetToken(widgetAccessToken, for: client.baseURL)
         // Mirror {baseURL, token} into the shared app group so the home-screen widget can reach the
         // same server without its own onboarding (B-59). Best-effort: never fail a connect over it.
+        widgetConfig.setDemoModeActive(false)
         widgetConfig.save(WidgetServerConfig(baseURL: client.baseURL, token: widgetAccessToken))
     }
 
@@ -179,10 +184,17 @@ public final class DashboardStore {
         snapshot = try demoData.dashboardSnapshot()
         if let snapshot {
             nextRefreshAt = snapshot.generatedAt.addingTimeInterval(TimeInterval(snapshot.cacheTTLSeconds))
+            publishDemoWidget(from: snapshot)
         }
         isStale = false
         lastUpdatedAt = Date()
         lastError = nil
+    }
+
+    private func publishDemoWidget(from snapshot: MobileDashboardSnapshot) {
+        widgetConfig.clear()
+        widgetConfig.setDemoModeActive(true)
+        widgetSnapshotCache.save(WidgetRenderData.make(from: snapshot))
     }
 
     public func loadDemo() {
@@ -206,7 +218,8 @@ public final class DashboardStore {
         try? credentialStore.deleteLastBaseURL()
         // Drop the widget's shared config + cached render too, so it returns to "Open EMS to connect".
         widgetConfig.clear()
-        WidgetSnapshotCache().clear()
+        widgetConfig.setDemoModeActive(false)
+        widgetSnapshotCache.clear()
         client = nil
         snapshot = nil
         nextRefreshAt = nil

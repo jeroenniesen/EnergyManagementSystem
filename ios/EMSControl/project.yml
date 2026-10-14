@@ -121,3 +121,29 @@ targets:
           PRODUCT_BUNDLE_IDENTIFIER: com.jeroenniesen.emscontrol.dev.widget
         Release:
           PRODUCT_BUNDLE_IDENTIFIER: com.jeroenniesen.emscontrol.widget
+  EMSControlUITests:
+    type: bundle.ui-testing
+    platform: iOS
+    deploymentTarget: "17.0"
+    sources:
+      - path: Tests/EMSControlUITests
+    dependencies:
+      - target: EMSControl
+    settings:
+      base:
+        GENERATE_INFOPLIST_FILE: YES
+        PRODUCT_BUNDLE_IDENTIFIER: com.jeroenniesen.emscontrol.uitests
+        TEST_TARGET_NAME: EMSControl
+        CODE_SIGN_STYLE: Automatic
+        DEVELOPMENT_TEAM: C32G3GV975
+schemes:
+  EMSControl:
+    build:
+      targets:
+        EMSControl: all
+    run:
+      config: Debug
+    test:
+      config: Debug
+      targets:
+        - EMSControlUITests

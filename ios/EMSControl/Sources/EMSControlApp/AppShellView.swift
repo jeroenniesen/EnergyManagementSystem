@@ -41,6 +41,11 @@ struct AppShellView: View {
                         .tabItem { Label("Chat", systemImage: "message") }
                         .tag(AppTab.chat)
                 }
+                .safeAreaInset(edge: .top, spacing: 0) {
+                    if dashboardStore.snapshot?.isDemo == true {
+                        DemoModeBanner(theme: theme)
+                    }
+                }
             }
         }
         .tint(themeColor(theme.accent))
@@ -138,8 +143,7 @@ struct AppShellView: View {
 
     private func syncActivitySession() async {
         if dashboardStore.snapshot?.isDemo == true {
-            // Activity has no demo fixture data — show the empty state in demo mode.
-            activityStore.setClient(nil)
+            activityStore.setDemo()
         } else if let client = dashboardStore.client {
             activityStore.setClient(client)
         } else {
@@ -189,6 +193,30 @@ private enum AppTab {
     case car
     case activity
     case chat
+}
+
+private struct DemoModeBanner: View {
+    let theme: EMSTheme
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "play.rectangle.on.rectangle")
+            Text("Demo")
+                .font(.subheadline.weight(.semibold))
+            Text("— sample data only, no live EMS connection")
+                .font(.caption)
+                .lineLimit(1)
+                .minimumScaleFactor(0.8)
+        }
+        .foregroundStyle(themeColor(theme.background))
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.horizontal, 16)
+        .padding(.vertical, 8)
+        .background(themeColor(theme.amber))
+        .accessibilityIdentifier("demo.mode.banner")
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("Demo mode active")
+    }
 }
 
 func themeColor(_ color: HexColor) -> Color {

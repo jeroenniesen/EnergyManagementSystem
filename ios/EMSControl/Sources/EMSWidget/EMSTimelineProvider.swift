@@ -83,11 +83,19 @@ struct EMSTimelineProvider: TimelineProvider {
     // MARK: - Loading
 
     private func load(family: WidgetFamily) async -> EMSEntry {
-        guard let config = AppGroupConfigStore().load() else {
-            return EMSEntry(date: Date(), content: .needsSetup)
+        let appGroup = AppGroupConfigStore()
+        let cache = WidgetSnapshotCache()
+
+        if appGroup.isDemoModeActive {
+            if let demo = cache.load() {
+                return EMSEntry(date: Date(), content: .ready(demo, stale: false))
+            }
+            return EMSEntry(date: Date(), content: .ready(.sample, stale: false))
         }
 
-        let cache = WidgetSnapshotCache()
+        guard let config = appGroup.load() else {
+            return EMSEntry(date: Date(), content: .needsSetup)
+        }
         do {
             let data = try await fetch(config: config, family: family)
             cache.save(data)

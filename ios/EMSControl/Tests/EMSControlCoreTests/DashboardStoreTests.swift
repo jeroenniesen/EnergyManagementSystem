@@ -245,6 +245,28 @@ final class DashboardStoreTests: XCTestCase {
         XCTAssertTrue(store.snapshot?.isDemo == true)
     }
 
+    func testUseDemoPublishesWidgetDemoCacheAndFlag() throws {
+        let suite = "test.demo.widget.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suite)!
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let widgetConfig = AppGroupConfigStore(defaults: defaults)
+        let widgetCache = WidgetSnapshotCache(defaults: defaults)
+        let store = DashboardStore(
+            client: nil,
+            demoData: DemoDataStore(bundle: .module),
+            widgetConfig: widgetConfig,
+            widgetSnapshotCache: widgetCache
+        )
+
+        try store.useDemo()
+
+        XCTAssertTrue(widgetConfig.isDemoModeActive)
+        XCTAssertNil(widgetConfig.load())
+        let cached = try XCTUnwrap(widgetCache.load())
+        XCTAssertEqual(cached.socPct, store.snapshot?.status.socPct)
+        XCTAssertFalse(cached.verdict.live)
+    }
+
     func testLoadDemoRecordsErrorWhenDemoDataIsMissing() {
         let store = DashboardStore(
             client: APIClient(baseURL: URL(string: "http://ems.local:8080")!),

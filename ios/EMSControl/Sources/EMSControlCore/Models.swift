@@ -1729,6 +1729,28 @@ public struct AuditEntry: Codable, Equatable, Sendable, Identifiable {
         self.category = category
         self.summary = summary
     }
+
+    /// Coded demo fixtures — a short, realistic audit trail for offline demo mode.
+    public static let demoEntries: [AuditEntry] = [
+        AuditEntry(
+            id: 3,
+            ts: "2026-07-04T06:15:00+02:00",
+            category: "mode_change",
+            summary: "Set battery to self-consumption (solar covering the house)."
+        ),
+        AuditEntry(
+            id: 2,
+            ts: "2026-07-04T02:30:00+02:00",
+            category: "plan",
+            summary: "Overnight plan validated — on track for evening peak."
+        ),
+        AuditEntry(
+            id: 1,
+            ts: "2026-07-03T23:05:00+02:00",
+            category: "car",
+            summary: "Car charge window scheduled for 23:00 (demo)."
+        ),
+    ]
 }
 
 public struct AuditResponse: Codable, Equatable, Sendable {

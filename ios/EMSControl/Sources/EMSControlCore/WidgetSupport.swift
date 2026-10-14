@@ -37,6 +37,7 @@ public struct AppGroupConfigStore {
 
     private static let baseURLKey = "widget.base_url"
     private static let tokenKey = "widget.token"
+    private static let demoModeKey = "widget.demo_mode"
 
     private let defaults: UserDefaults
 
@@ -71,6 +72,19 @@ public struct AppGroupConfigStore {
     public func clear() {
         defaults.removeObject(forKey: Self.baseURLKey)
         defaults.removeObject(forKey: Self.tokenKey)
+    }
+
+    /// When true, the widget reads bundled demo render data from `WidgetSnapshotCache` (no network).
+    public var isDemoModeActive: Bool {
+        defaults.bool(forKey: Self.demoModeKey)
+    }
+
+    public func setDemoModeActive(_ active: Bool) {
+        if active {
+            defaults.set(true, forKey: Self.demoModeKey)
+        } else {
+            defaults.removeObject(forKey: Self.demoModeKey)
+        }
     }
 }
 
@@ -216,6 +230,36 @@ public struct WidgetRenderData: Codable, Equatable, Sendable {
         carLine: "Car: Mon 23:00 · 9.5 kWh",
         asOf: Date(timeIntervalSince1970: 1_783_000_000)
     )
+
+    /// Offline demo render payload for the home-screen widget (App Store review / demo mode).
+    public static func make(from snapshot: MobileDashboardSnapshot, asOf: Date = Date()) -> WidgetRenderData {
+        let mode = snapshot.battery.currentMode ?? snapshot.decision.desiredMode
+        let verdictWord = WidgetVerdictBuilder.word(
+            mode: mode,
+            intent: snapshot.decision.intent
+        )
+        let verdict = WidgetVerdict(word: verdictWord, live: false)
+        let soc = snapshot.battery.aggregate?.socPct ?? snapshot.status.socPct
+        let headline = Self.headline(from: snapshot.decision)
+        let carLine = WidgetCarLine.text(from: snapshot.carPlan)
+        return WidgetRenderData(
+            socPct: soc,
+            verdict: verdict,
+            headline: headline,
+            carLine: carLine,
+            asOf: asOf
+        )
+    }
+
+    private static func headline(from decision: DecisionSnapshot) -> String? {
+        let candidate = decision.homeState?.headline
+            ?? decision.planReasonExplained
+            ?? decision.reason
+        guard let candidate, !candidate.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            return nil
+        }
+        return candidate
+    }
 }
 
 /// Persists the last good `WidgetRenderData` in the app group for graceful stale rendering.
