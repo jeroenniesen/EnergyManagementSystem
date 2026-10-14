@@ -41,7 +41,8 @@ def test_meter_read_uses_injected_getter():
 
 
 def _meter(payload):
-    return HomeWizardMeter("x", http_get=lambda _u: payload)
+    # Documentation IP — connect-time SSRF guard (#232) must resolve before the stub runs.
+    return HomeWizardMeter("192.0.2.92", http_get=lambda _u: payload)
 
 
 def test_live_source_composes_meters_into_sample():
@@ -74,7 +75,7 @@ def test_failed_meter_keeps_last_value_and_drops_from_fresh():
             return {"active_power_w": 1500}  # first read OK
         raise OSError("unreachable")  # later reads fail
 
-    p1 = HomeWizardMeter("x", http_get=flaky)
+    p1 = HomeWizardMeter("192.0.2.92", http_get=flaky)
     src = LiveSource(p1=p1, solar=_meter(SOLAR), car=_meter(CAR))
     s1, f1 = src.read_sample()
     assert s1.grid_power_w == 1500.0 and "grid" in f1
