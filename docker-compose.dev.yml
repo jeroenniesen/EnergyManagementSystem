@@ -2,11 +2,16 @@
 services:
   ems:
     build: .
-    ports: ["8080:8080"]
+    # Host loopback only — do not publish 8080 on the LAN (#234 / Grok High).
+    ports: ["127.0.0.1:8080:8080"]
     volumes:
       - ./ems/data:/app/ems/data   # SQLite history persists (matches history.db_path)
+    entrypoint: ["/bin/sh", "/app/scripts/docker-dev-entrypoint.sh"]
     environment:
       # `restart: unless-stopped` (below) is the supervisor, so a self-SIGTERM comes back up. This
       # arms the in-app "Apply & restart" endpoint; without it the endpoint refuses (fail-safe).
       EMS_SUPERVISED: "1"
+      # docker-proxy reaches the container via the bridge, not lo — bind open *inside* the
+      # container only. Host publish is 127.0.0.1; entrypoint mints EMS_WEB_TOKEN (not in git).
+      EMS_WEB_BIND: "0.0.0.0"
     restart: unless-stopped

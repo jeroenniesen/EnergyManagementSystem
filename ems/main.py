@@ -28,6 +28,12 @@ from ems.storage.control_state import ControlStateStore
 from ems.storage.history import HistoryStore
 from ems.storage.settings import SettingsStore
 from ems.web.api import create_app
+from ems.web_bind import (
+    boot_onboarding_posture,
+    log_bind_choice,
+    normalize_shared_token,
+    resolve_bind_host,
+)
 
 _REPO_ROOT = Path(__file__).parent.parent
 # Built SPA (ems/web/static/dist) — present after `npm run build`; absent in pure-API dev.
@@ -127,7 +133,11 @@ def build_app():
         control_cycle_seconds=cfg.control_cycle_seconds,
         history_retention_days=cfg.retention_days,
         history_backup_keep=cfg.backup_keep,
-        web_auth_token=os.environ.get("EMS_WEB_TOKEN") or None,
+        web_auth_token=normalize_shared_token(
+            (os.environ.get("EMS_WEB_TOKEN") or "").strip()
+            or (cfg.web_auth_token or "").strip()
+            or None
+        ),
         static_dir=_STATIC_DIR,
         http_runtime=http_runtime,
         consumer_sources=consumer_sources,
@@ -140,7 +150,32 @@ app, _cfg = build_app()
 
 def main() -> None:
     # Reuse the already-built config; don't rebuild the app (which would make a 2nd store/recorder).
-    uvicorn.run("ems.main:app", host="0.0.0.0", port=_cfg.web_port)
+    db_path = Path(_cfg.db_path)
+    if not db_path.is_absolute():
+        db_path = _REPO_ROOT / db_path
+    env_token = os.environ.get("EMS_WEB_TOKEN") or None
+    yaml_token = (_cfg.web_auth_token or "").strip() or None
+    users_exist, token_configured = boot_onboarding_posture(
+        str(db_path), env_token, yaml_token,
+    )
+    host = resolve_bind_host(
+        configured=_cfg.web_bind,
+        users_exist=users_exist,
+        shared_token_configured=token_configured,
+    )
+    log_bind_choice(
+        host,
+        users_exist=users_exist,
+        shared_token_configured=token_configured,
+        configured=_cfg.web_bind,
+    )
+    uvicorn.run(
+        app,
+        host=host,
+        port=_cfg.web_port,
+        access_log=False,
+        proxy_headers=False,
+    )
 
 
 if __name__ == "__main__":

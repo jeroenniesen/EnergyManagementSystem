@@ -69,7 +69,7 @@ COPY requirements.txt ./
 RUN pip install --no-cache-dir -r requirements.txt
 COPY ems/ ./ems/
 COPY --from=ui-build /ui/dist ./ems/web/static/dist
-CMD ["uvicorn", "ems.main:app", "--host", "0.0.0.0", "--port", "8080"]
+CMD ["python", "-m", "ems.main"]
 ```
 
 `requirements.txt` contains **no GPU packages**. The `ml` image carries all GPU deps in a separate `requirements-ml.txt`.

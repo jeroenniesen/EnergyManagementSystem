@@ -14,9 +14,13 @@ def _app(db, *, token=None):
                       web_auth_token=token)
 
 
+def _client(app):
+    return TestClient(app, client=("127.0.0.1", 0))
+
+
 def test_onboard_creates_admin_then_gates_reopen(tmp_path):
     db = str(tmp_path / "ems.sqlite")
-    with TestClient(_app(db)) as c:
+    with _client(_app(db)) as c:
         assert c.get("/api/status").status_code == 409
         r = c.post("/api/auth/onboard", json={"username": "admin", "password": "pw12345678"})
         assert r.status_code == 200
@@ -33,7 +37,7 @@ def test_onboard_rejects_whitespace_only_username(tmp_path):
     # username slipped past the length check (accept_invite already stripped first). Both now go
     # through the shared `_validate_new_account` helper.
     db = str(tmp_path / "ems.sqlite")
-    with TestClient(_app(db)) as c:
+    with _client(_app(db)) as c:
         r = c.post("/api/auth/onboard", json={"username": "   ", "password": "pw12345678"})
         assert r.status_code == 422
         assert r.json()["detail"] == "username required; password min 8"
@@ -43,7 +47,7 @@ def test_onboard_rejects_whitespace_only_username(tmp_path):
 
 def test_onboard_requires_shared_token_and_migrates_it(tmp_path):
     db = str(tmp_path / "ems.sqlite")
-    with TestClient(_app(db, token="legacy-shared")) as c:
+    with _client(_app(db, token="legacy-shared")) as c:
         no_token = c.post("/api/auth/onboard",
                           json={"username": "a", "password": "pw12345678"})
         assert no_token.status_code == 403
