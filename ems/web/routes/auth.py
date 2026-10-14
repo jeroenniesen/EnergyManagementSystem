@@ -61,17 +61,30 @@ def _capped_for_audit(username: str) -> str:
     return username[:_AUDITED_USERNAME_MAX]
 
 
+# New passwords only (#237): length ≥10 with at least one letter and one digit. Existing accounts
+# keep working at login with whatever they already have — this gate is onboard / invite / change.
+_PASSWORD_MIN = 10
+_PASSWORD_POLICY_DETAIL = "password min 10; need a letter and a digit"
+_NEW_ACCOUNT_POLICY_DETAIL = f"username required; {_PASSWORD_POLICY_DETAIL}"
+
+
+def _password_meets_policy(password: str) -> bool:
+    if len(password) < _PASSWORD_MIN:
+        return False
+    return any(c.isalpha() for c in password) and any(c.isdigit() for c in password)
+
+
 def _validate_new_account(username: str, password: str) -> tuple[str, JSONResponse | None]:
     """Shared new-account validation for onboard + accept_invite: strip the username FIRST (a
     whitespace-only submission must not slip past the length check — that was the bug this helper
-    fixes for onboard), then require a non-empty username and an 8+ char password, both behind the
-    SAME generic 422 message the two callers already used independently. Returns the stripped
-    username (callers must use this value, not their own unstripped copy) plus an error response
-    or None."""
+    fixes for onboard), then require a non-empty username and a policy-compliant password, both
+    behind the SAME generic 422 message the two callers already used independently. Returns the
+    stripped username (callers must use this value, not their own unstripped copy) plus an error
+    response or None."""
     stripped = username.strip()
-    if len(stripped) < 1 or len(password) < 8:
+    if len(stripped) < 1 or not _password_meets_policy(password):
         return stripped, JSONResponse(
-            {"detail": "username required; password min 8"}, status_code=422)
+            {"detail": _NEW_ACCOUNT_POLICY_DETAIL}, status_code=422)
     return stripped, None
 
 
@@ -220,8 +233,8 @@ def build_router(ctx: AppContext) -> APIRouter:
         if not verify_password(user["password_hash"], str(body.get("old", ""))):
             return JSONResponse({"detail": "invalid credentials"}, status_code=403)
         new = str(body.get("new", ""))
-        if len(new) < 8:
-            return JSONResponse({"detail": "password too short (min 8)"}, status_code=422)
+        if not _password_meets_policy(new):
+            return JSONResponse({"detail": _PASSWORD_POLICY_DETAIL}, status_code=422)
         await auth_store.set_password(p.user_id, hash_password(new))
         await ctx.audit_auth("password_changed", f"Password changed: {p.username}",
                              username=p.username, user_id=p.user_id)

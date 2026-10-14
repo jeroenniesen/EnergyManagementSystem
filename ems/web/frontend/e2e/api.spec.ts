@@ -51,7 +51,10 @@ test.describe("EMS API", () => {
     const ready = await request.get("/health/ready");
     expect(ready.ok()).toBeTruthy();
     const rb = await ready.json();
-    expect(rb).toMatchObject({ status: "ready", dry_run: true, dev_mode: "mock" });
+    expect(rb.status).toBe("ready");
+    expect(rb.readiness).toBeTruthy();
+    expect(rb).not.toHaveProperty("dry_run");
+    expect(rb).not.toHaveProperty("dev_mode");
   });
 
   test("status reconstructs house load", async ({ request }) => {

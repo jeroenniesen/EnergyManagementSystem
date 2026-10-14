@@ -1,6 +1,6 @@
 # Configuration reference
 
-> Companion to `../SPEC.md` §9. The spec shows a *sample* `config.yaml`; this is the **per-key reference** (type, range, default, effect). `config.yaml` holds read-only **defaults**; UI-editable keys are overlaid from the runtime settings store in `/data` (**effective = defaults + runtime**). Secrets use `!secret`/env and are **never** persisted to the settings store or logs. For **yaml vs store-key vs apply (hot / restart / boot-only)** on control/planner keys, see `operator-runbook.md` → **Config authority** (#178).
+> Companion to `../SPEC.md` §9. The spec shows a *sample* `config.yaml`; this is the **per-key reference** (type, range, default, effect). `config.yaml` holds read-only **defaults**; UI-editable keys are overlaid from the runtime settings store in `/data` (**effective = defaults + runtime**). Secrets typed in the Settings UI are **stored in that SQLite settings store** (API responses mask them); yaml may still bootstrap with `!secret`/env. Never commit secrets or log them in plaintext. For **yaml vs store-key vs apply (hot / restart / boot-only)** on control/planner keys, see `operator-runbook.md` → **Config authority** (#178).
 
 Legend: **UI** = also editable from the web UI (overlays the file). **CONFIRM** = needs M0/M1 hardware validation.
 
@@ -197,7 +197,7 @@ The car's SoC itself is **not** a config key — it's a runtime-store anchor (%,
 | `mode` | enum | `template`\|`local_llm`\|`external_llm` = template | `template`=offline strings (any device); `local_llm`=on-device, needs an accelerator; `external_llm`=cloud API, works on a Pi |
 | `local.runtime` / `.model_path` / `.timeout_seconds` / `.max_tokens` | enum/path/int/int | auto / … / 8 / 200 | on-device LLM (`auto`→llama_cpp·metal\|ollama\|mlx) |
 | `external.provider` / `.base_url` / `.model` | str/url/str | minimax / … | example: any OpenAI-compatible chat endpoint |
-| `external.api_key` | secret | `!secret` | **secret only** — never logged/stored (§12) |
+| `external.api_key` | secret | `!secret` or Settings UI | stored locally (SQLite when set in UI); masked in API; never logged plaintext (§12) |
 | `external.timeout_seconds` / `.max_tokens` | int/int | 8 / 200 | per-call limits; on failure ⇒ `template` |
 | `external.share` | enum | `reason_and_facts` | **minimal redacted payload** — the deterministic reason + the few numbers it cites; never raw history/secrets (privacy, §12) |
 

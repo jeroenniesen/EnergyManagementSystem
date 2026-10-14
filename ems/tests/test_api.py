@@ -19,12 +19,15 @@ def test_health_live():
     assert r.json()["status"] == "alive"
 
 
-def test_health_ready_reports_mode():
+def test_health_ready_is_minimal_public_probe():
+    # #237: unauthenticated /health/ready must not disclose dry_run / dev_mode.
     r = _client().get("/health/ready")
     assert r.status_code == 200
     body = r.json()
-    assert body["dry_run"] is True
-    assert body["dev_mode"] == "mock"
+    assert body["status"] in ("ready", "starting")
+    assert "readiness" in body
+    assert "dry_run" not in body
+    assert "dev_mode" not in body
 
 
 def test_status_reconstructs_house_load():

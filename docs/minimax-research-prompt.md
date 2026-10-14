@@ -118,7 +118,7 @@ Reject or redesign any idea that fails any of these:
 8. **Cost-proportionate.** This is a single household with < 10 control actions/day and infrequent
    explanations. Quantify expected monthly token/character/audio volume and cost; reject features
    whose cost or complexity dwarfs their value.
-9. **Secrets discipline.** API keys via secret/env only — never logged or stored in SQLite.
+9. **Secrets discipline.** API keys via Settings UI (SQLite, masked) or secret/env bootstrap — never logged in plaintext or committed.
 
 ## 5. Candidate opportunity areas (a seed list — confirm, expand, or reject each)
 

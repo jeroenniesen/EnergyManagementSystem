@@ -122,7 +122,9 @@ export function Onboarding({
             value={password}
             onChange={(e) => setPassword(e.target.value)}
             autoComplete="new-password"
+            minLength={10}
           />
+          <p className="field-help">At least 10 characters, with a letter and a digit.</p>
         </div>
         {sharedTokenRequired && (
           <div className="field">

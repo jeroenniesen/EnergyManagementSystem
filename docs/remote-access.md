@@ -60,9 +60,10 @@ Auth posture summary:
 | **on** (for VPN/remote) | require the token | require the token |
 
 Always open regardless: `GET /api/auth` (so the app can discover a token is needed) and
-`/health/live` · `/health/ready` (liveness probes). The SPA shell and static assets load without a
-token so the browser can show its Access box — but every datum it renders comes from a gated
-`/api/*` read.
+`/health/live` · `/health/ready` (liveness/readiness probes). `/health/ready` returns only
+`status` + layered `readiness` — not `dry_run` / `dev_mode` (those stay on authenticated operator
+surfaces). The SPA shell and static assets load without a token so the browser can show its Access
+box — but every datum it renders comes from a gated `/api/*` read.
 
 > With **no** token configured, `require_auth` cannot lock anything — you can't require a credential
 > that doesn't exist. Set a token first.
