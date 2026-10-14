@@ -1,6 +1,6 @@
 # Configuration reference
 
-> Companion to `../SPEC.md` §9. The spec shows a *sample* `config.yaml`; this is the **per-key reference** (type, range, default, effect). `config.yaml` holds read-only **defaults**; UI-editable keys are overlaid from the runtime settings store in `/data` (**effective = defaults + runtime**). Secrets typed in the Settings UI are **stored in that SQLite settings store** (API responses mask them); yaml may still bootstrap with `!secret`/env. Never commit secrets or log them in plaintext. For **yaml vs store-key vs apply (hot / restart / boot-only)** on control/planner keys, see `operator-runbook.md` → **Config authority** (#178).
+> Companion to `../SPEC.md` §9. The spec shows a *sample* `config.yaml`; this is the **per-key reference** (type, range, default, effect). `config.yaml` holds read-only **defaults**; UI-editable keys are overlaid from the runtime settings store in `/data` (**effective = defaults + runtime**). Secrets typed in the Settings UI are **stored in that SQLite settings store** (API responses mask them). First-boot bootstrap is env vars (e.g. `TIBBER_TOKEN`, `EMS_WEB_TOKEN`) or a plain-string `web.auth_token` in yaml — there is **no** `!secret` yaml tag. Never commit secrets or log them in plaintext. For **yaml vs store-key vs apply (hot / restart / boot-only)** on control/planner keys, see `operator-runbook.md` → **Config authority** (#178).
 
 Legend: **UI** = also editable from the web UI (overlays the file). **CONFIRM** = needs M0/M1 hardware validation.
 
@@ -43,7 +43,7 @@ Legend: **UI** = also editable from the web UI (overlays the file). **CONFIRM** 
 | Key | Type | Default | Effect |
 |---|---|---|---|
 | `provider` | enum | `tibber`\|`energyzero` = tibber | price source |
-| `tibber_token` | secret | `!secret` | GraphQL auth |
+| `tibber_token` | secret | (Settings / `TIBBER_TOKEN`) | GraphQL auth — Settings store or env bootstrap |
 | `resolution` | enum | quarter_hourly | planner granularity (auto-expands hourly→4×15min) |
 | `cache_immutable_slots` | bool | true | never re-fetch past slots |
 | `tomorrow_required_by` | HH:MM | 15:00 | after this, missing tomorrow ⇒ stale |
@@ -131,7 +131,7 @@ The car's SoC itself is **not** a config key — it's a runtime-store anchor (%,
 | Key | Type | Default | Effect |
 |---|---|---|---|
 | `base_url` | url | http://homeassistant.local:8123 | HA endpoint |
-| `token` | secret | `!secret` | long-lived token |
+| `token` | secret | (Settings / `HA_TOKEN`) | long-lived token — planned path; env bootstrap exists today |
 | `entity_map` | map | — | role→entity id (pin; validated at startup) |
 
 > None of these keys are read by the shipped control path. `ems/sources/ha.py` is a **read-only skeleton** (not wired into config / `sense` / startup validation). The real `config.yaml` has no `homeassistant:` block. Devices are read/written **directly** (`SPEC §5.2`). Current production: Mac Mini LaunchAgent, no required HA.
@@ -160,7 +160,7 @@ The car's SoC itself is **not** a config key — it's a runtime-store anchor (%,
 | `enabled` | bool | true | serve the UI |
 | `bind` / `port` | str/int | 0.0.0.0 / 8080 | listen address after onboarding (**LAN only; never expose to internet**). Fresh installs with no admin and no shared token bind **127.0.0.1** until the first admin exists (restart to open LAN). Shared token = `EMS_WEB_TOKEN`, `web.auth_token` here, or UI-set `web.auth_token` in settings. Override bind with `EMS_WEB_BIND` (logs a warning when it would expose onboarding). Docker: `docker-compose.dev.yml` publishes `127.0.0.1:8080` and mints `EMS_WEB_TOKEN` at start (entrypoint); never commit a bootstrap secret. |
 | `auth` | enum | `bearer`\|`basic` = bearer | auth scheme |
-| `auth_token` | secret | `!secret` | bootstrap shared token (counts for bind posture and onboarding anti-seizure; migrated to the first admin's access token on onboard) |
+| `auth_token` | secret | (plain string / `EMS_WEB_TOKEN`) | bootstrap shared token (counts for bind posture and onboarding anti-seizure; migrated to the first admin's access token on onboard). Literal yaml string or env — **not** a `!secret` tag |
 | `guest_readonly` | bool | true | optional read-only dashboard |
 | `theme` | enum | `auto`\|`light`\|`dark` = auto | UI theme |
 
@@ -197,7 +197,7 @@ The car's SoC itself is **not** a config key — it's a runtime-store anchor (%,
 | `mode` | enum | `template`\|`local_llm`\|`external_llm` = template | `template`=offline strings (any device); `local_llm`=on-device, needs an accelerator; `external_llm`=cloud API, works on a Pi |
 | `local.runtime` / `.model_path` / `.timeout_seconds` / `.max_tokens` | enum/path/int/int | auto / … / 8 / 200 | on-device LLM (`auto`→llama_cpp·metal\|ollama\|mlx) |
 | `external.provider` / `.base_url` / `.model` | str/url/str | minimax / … | example: any OpenAI-compatible chat endpoint |
-| `external.api_key` | secret | `!secret` or Settings UI | stored locally (SQLite when set in UI); masked in API; never logged plaintext (§12) |
+| `external.api_key` | secret | Settings UI only | stored in SQLite settings store; masked in API; never logged plaintext (§12). No yaml/env bootstrap today |
 | `external.timeout_seconds` / `.max_tokens` | int/int | 8 / 200 | per-call limits; on failure ⇒ `template` |
 | `external.share` | enum | `reason_and_facts` | **minimal redacted payload** — the deterministic reason + the few numbers it cites; never raw history/secrets (privacy, §12) |
 

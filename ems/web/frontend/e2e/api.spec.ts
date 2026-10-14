@@ -52,9 +52,7 @@ test.describe("EMS API", () => {
     expect(ready.ok()).toBeTruthy();
     const rb = await ready.json();
     expect(rb.status).toBe("ready");
-    expect(rb.readiness).toBeTruthy();
-    expect(rb).not.toHaveProperty("dry_run");
-    expect(rb).not.toHaveProperty("dev_mode");
+    expect(Object.keys(rb)).toEqual(["status"]);
   });
 
   test("status reconstructs house load", async ({ request }) => {

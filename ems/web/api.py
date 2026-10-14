@@ -2540,11 +2540,11 @@ def create_app(
 
     @app.get("/health/ready")
     def ready() -> dict:
-        # Public probe (#237): status + readiness layers only — do not disclose dry_run / dev_mode
-        # (those stay on authenticated operator surfaces: /api/status, diagnostics, settings).
+        # Public probe (#237): status only — no dry_run/dev_mode and no readiness layers that
+        # encode armed-vs-watching (control_ready / summary). Full readiness stays on
+        # authenticated surfaces (/api/status, diagnostics).
         r = _readiness(datetime.now(UTC))
-        return {"status": "ready" if r.dashboard_ready else "starting",
-                "readiness": r.to_dict()}
+        return {"status": "ready" if r.dashboard_ready else "starting"}
 
     @app.get("/api/auth")
     async def auth_status(request: Request) -> dict:

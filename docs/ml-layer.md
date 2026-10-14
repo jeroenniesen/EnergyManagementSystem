@@ -90,7 +90,7 @@ explainer:                 # SEPARATE from ml: — selected regardless of ml.ena
     provider: minimax      # example; any OpenAI-compatible chat endpoint
     base_url: https://api.minimax.io/v1
     model: <model-id>
-    api_key: !secret llm_api_key   # or Settings UI → SQLite (masked); never logged plaintext (SPEC §12)
+    # api_key: set in Settings UI only (SQLite, masked) — no yaml !secret loader
     max_tokens: 200
     timeout_seconds: 8
     share: reason_and_facts        # minimal redacted payload (see §7); never raw history/secrets
@@ -145,7 +145,7 @@ Their **only job** is to rephrase the deterministic reason into more natural pro
 - **Minimal redacted payload** (`share: reason_and_facts`): only the deterministic reason + the few numbers it cites; **never** raw history, location, tokens, or secrets.
 - **Never on the control path:** explanations are cosmetic; control is unaffected whether the call succeeds, is slow, or fails.
 - **Graceful fallback:** any network error / timeout / quota / suspect output → the offline `TemplateExplainer` string, verbatim.
-- The **API key is a secret** — Settings UI stores it in the local SQLite settings store (masked on read), or yaml may bootstrap via env/`!secret`; never logged in plaintext (`../SPEC.md` §12).
+- The **API key is a secret** — Settings UI stores it in the local SQLite settings store (masked on read); there is no yaml `!secret` / env bootstrap for `explainer.api_key` today. Never logged in plaintext (`../SPEC.md` §12).
 
 **Pi default:** `explainer.mode: template`. No LLM dependency enters the Pi image; `external_llm` adds only an HTTP client (no GPU/ML deps).
 

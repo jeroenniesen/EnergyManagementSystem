@@ -20,14 +20,12 @@ def test_health_live():
 
 
 def test_health_ready_is_minimal_public_probe():
-    # #237: unauthenticated /health/ready must not disclose dry_run / dev_mode.
+    # #237: unauthenticated /health/ready is status-only (no armed-vs-watching leak).
     r = _client().get("/health/ready")
     assert r.status_code == 200
     body = r.json()
     assert body["status"] in ("ready", "starting")
-    assert "readiness" in body
-    assert "dry_run" not in body
-    assert "dev_mode" not in body
+    assert set(body) == {"status"}
 
 
 def test_status_reconstructs_house_load():

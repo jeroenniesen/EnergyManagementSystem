@@ -587,7 +587,7 @@ solar:
 
 prices:
   provider: tibber                    # tibber | energyzero (free no-key fallback/cross-check)
-  tibber_token: !secret tibber_token
+  # tibber_token: set via Settings UI or TIBBER_TOKEN env (no yaml !secret loader)
   resolution: quarter_hourly          # quarter_hourly | hourly (auto-expands hourly→4×15min)
   cache_immutable_slots: true         # past slots never re-fetched (Tibber prices are immutable)
   tomorrow_required_by: "15:00"       # if tomorrow missing past this -> stale -> fallback
@@ -645,7 +645,7 @@ control:
 
 homeassistant:
   base_url: http://homeassistant.local:8123
-  token: !secret ha_long_lived_token
+  # token: set via Settings UI or HA_TOKEN env when the HA path ships (no yaml !secret loader)
   entity_map:              # explicit role->entity mapping (don't rely on discovery names)
     grid_power: sensor.p1_meter_active_power
     solar_power: sensor.solar_kwh_meter_active_power
@@ -669,7 +669,7 @@ web:
   # EMS_WEB_BIND + EMS_WEB_TOKEN for host-browser onboarding). POST /api/auth/onboard rejects
   # non-loopback clients unless a shared token is configured (defense in depth).
   auth: bearer             # bearer | basic  (LAN-only by default; never expose to internet)
-  auth_token: !secret ems_web_token
+  # auth_token: plain string or EMS_WEB_TOKEN env (do not commit); no yaml !secret loader
   guest_readonly: true     # optional read-only dashboard without control
   # Frontend is React + Vite, built at image-build time and served by FastAPI (§9.1).
   # No runtime CDN: all deps (charts, Leaflet, fonts, icons) are bundled/self-hosted.
@@ -704,7 +704,7 @@ explainer:                 # how the "why" text is phrased — INDEPENDENT of th
     provider: minimax              # example; any OpenAI-compatible chat endpoint
     base_url: https://api.minimax.io/v1
     model: <model-id>
-    api_key: !secret llm_api_key   # or Settings UI → SQLite (masked); never logged plaintext (§12)
+    # api_key: Settings UI only → SQLite (masked); never logged plaintext (§12)
     timeout_seconds: 8
     max_tokens: 200
     share: reason_and_facts        # minimal redacted payload — the deterministic reason + the few numbers it cites; NEVER raw history/secrets
@@ -909,7 +909,7 @@ You can run the whole app on a laptop (e.g. a **Mac**) with **no Home Assistant,
 ## 12. Security
 
 - **Auth:** a **bearer token over LAN**. Writes (override / settings / control) **always** require the token when one is set; reads are open on the LAN by default (guest read-only) but can be locked with **`web.require_auth`**, which requires the token for **every `/api/*` read too** — turn it on before reaching the app over a VPN or from outside the home. Auth is one pure-ASGI choke point in front of the whole JSON API (no per-endpoint guards; no forwarded/proxy headers trusted). **Do not expose the EMS port to the internet.** **Remote access = the LAN over a VPN** (never a public proxy) — see [`docs/remote-access.md`](docs/remote-access.md) for the supported model, trust boundaries, token rotation, logging and control permissions.
-- **Secrets** (Tibber/Solcast/HA/web tokens, **external-LLM API key**): operators usually paste them in the Settings UI, where they are **stored in the local SQLite settings store** (API responses mask values and expose only a `__set` flag). Yaml bootstrap may still use **env / `!secret`** for first-boot defaults. **Never** commit secrets to git, and **never** log plaintext tokens.
+- **Secrets** (Tibber/Solcast/HA/web tokens, **external-LLM API key**): operators usually paste them in the Settings UI, where they are **stored in the local SQLite settings store** (API responses mask values and expose only a `__set` flag). First-boot bootstrap is **env vars** (`TIBBER_TOKEN`, `SOLCAST_API_KEY`, `EMS_WEB_TOKEN`, `HA_TOKEN`, …) or a plain-string `web.auth_token` in yaml (never commit it). There is **no** yaml `!secret` constructor — `config.yaml` is loaded with `yaml.safe_load`. **Never** commit secrets to git, and **never** log plaintext tokens.
 - **Redaction:** tokens/keys are **redacted from any debug dump, export, or log line**.
 - **CSRF / same-origin:** settings `POST`s require a same-origin check or CSRF token (the UI is browser-accessible).
 - **Guest mode (optional):** `web.guest_readonly` serves a **read-only dashboard** (no control, no settings) for sharing.
