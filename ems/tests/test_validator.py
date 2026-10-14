@@ -218,6 +218,30 @@ def test_honest_partial_target_below_device_min_with_low_reserve_is_applicable()
     assert v.ok is True
 
 
+def test_projection_at_device_floor_with_stored_subfloor_reserve_stays_applicable():
+    """#245: projection built with effective reserve must not false-unsafe discharge plans."""
+    from ems.planner.projection import BatteryModel, project_energy
+
+    cap = replace(CAP, min_target_soc=5.0)
+    slots = [_self(0), _self(1), _self(2)]
+    model = BatteryModel(
+        usable_kwh=10.0, max_charge_w=4000.0, max_discharge_w=4000.0,
+        round_trip_efficiency=1.0, reserve_soc_pct=5.0,
+    )
+    load_by = {s.start: 4000.0 for s in slots}
+    proj = project_energy(
+        slots, start_soc_pct=40.0, solar_w_by={}, load_w_by=load_by,
+        model=model, charge_target_soc_pct=None,
+    )
+    assert min(p.soc_pct for p in proj) >= 5.0 - 1e-6
+    v = validate_plan(
+        _plan(*slots), **_ctx(capability=cap, min_reserve_soc=3.0, soc_pct=40.0),
+        projection=proj,
+    )
+    assert v.ok
+    assert not any(f.code == "projection_below_reserve" for f in v.findings)
+
+
 def test_projection_below_reserve_is_unsafe():
     proj = [ProjectedSlot(T0, BatteryIntent.DISCHARGE_FOR_LOAD, 5.0, 0, 0, 0, 0)]
     v = validate_plan(_plan(_self(0)), projection=proj, **_ctx())

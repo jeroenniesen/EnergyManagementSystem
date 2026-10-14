@@ -54,14 +54,21 @@ class BatteryTopology:
 def effective_plan_reserve_soc(
     min_reserve_soc: float,
     capability: CapabilityReport | None = None,
+    *,
+    device_min_target_soc: float = 0.0,
 ) -> float:
     """Planner/validator reserve floor: operator setting overlaid with probed device minimum (#245).
 
     Stored `battery.min_reserve_soc` may stay below the device floor for backward compatibility;
     control and validation use this effective value so plans match what the writer will command."""
     reserve = max(0.0, float(min_reserve_soc))
+    device_min = 0.0
     if capability is not None and capability.min_target_soc > 0:
-        reserve = max(reserve, float(capability.min_target_soc))
+        device_min = float(capability.min_target_soc)
+    elif device_min_target_soc > 0:
+        device_min = float(device_min_target_soc)
+    if device_min > 0:
+        reserve = max(reserve, device_min)
     return reserve
 
 

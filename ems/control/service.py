@@ -30,6 +30,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
+from ems.battery_profile import effective_plan_reserve_soc
 from ems.clock import Clock, SystemClock
 from ems.control.car_mode import (
     _RESERVE_ENTER_PP,
@@ -495,6 +496,7 @@ class ControlService:
             car_mode_action=self._car_mode_action,
             car_session_active=lambda: bool(self._ctx.car_session["active"]),
             settings=self._settings,
+            device_min_target_soc=self._device_min_target_soc,
             site_tz=self._site_tz,
             allow_export_discharge=lambda: bool(
                 self._controller is not None and (
@@ -754,6 +756,12 @@ class ControlService:
     def planner_cfg(self) -> PlannerConfig:
         return self.planner_cfg_from(self._settings)
 
+    def _effective_min_reserve_soc(self) -> float:
+        return effective_plan_reserve_soc(
+            float(self._settings["battery.min_reserve_soc"]),
+            device_min_target_soc=float(self._device_min_target_soc()),
+        )
+
     def night_target_soc(self, soc_pct: float):
         """The night-carry target (overnight load + reserve + floor), via compute_charge_need."""
         s = self._settings
@@ -763,6 +771,7 @@ class ControlService:
             night_reserve_kwh=s["battery.night_reserve_kwh"],
             overnight_load_kwh=s["battery.overnight_load_kwh"],
             round_trip_efficiency=s["planner.round_trip_efficiency"],
+            device_min_target_soc=float(self._device_min_target_soc()),
         )
 
     def summer_cfg(self, soc_pct: float) -> SummerConfig:
@@ -1027,7 +1036,7 @@ class ControlService:
                 max_charge_w=s["battery.max_charge_w"],
                 max_discharge_w=s["battery.max_discharge_w"],
                 round_trip_efficiency=s["planner.round_trip_efficiency"],
-                reserve_soc_pct=s["battery.min_reserve_soc"],
+                reserve_soc_pct=self._effective_min_reserve_soc(),
             )
             return project_energy(
                 plan.slots, start_soc_pct=soc, solar_w_by=solar_by, load_w_by=load_by,
@@ -1070,7 +1079,7 @@ class ControlService:
         return decide_car_mode_action(
             self._settings["control.car_charging_battery_mode"],
             car_charging=True, soc_pct=soc,
-            min_reserve_soc=self._settings["battery.min_reserve_soc"],
+            min_reserve_soc=self._effective_min_reserve_soc(),
             max_discharge_w=self._settings["battery.max_discharge_w"],
             static_w=self._settings["control.car_discharge_w"],
             predicted_house_w=self._car_predicted_house_w(now),
@@ -1572,7 +1581,7 @@ class ControlService:
             intent, floor_note, holding = resolve_floor_anti_flap(
                 intent,
                 soc_pct=self._current_soc(now),
-                min_reserve_soc=float(self._settings["battery.min_reserve_soc"]),
+                min_reserve_soc=self._effective_min_reserve_soc(),
                 observed_mode=observed,
                 holding=bool(box.get("holding")),
             )

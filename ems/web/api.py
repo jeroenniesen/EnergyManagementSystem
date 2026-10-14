@@ -38,7 +38,11 @@ from ems.application.services import (
     ReportService,
     VerificationService,
 )
-from ems.battery_profile import BatteryTopology, normalize_tower_ips
+from ems.battery_profile import (
+    BatteryTopology,
+    effective_plan_reserve_soc,
+    normalize_tower_ips,
+)
 from ems.calibration import attach_solar
 from ems.cars import by_id as car_by_id
 from ems.clock import Clock, SystemClock
@@ -2222,6 +2226,7 @@ def create_app(
                         night_reserve_kwh=settings_cache["battery.night_reserve_kwh"],
                         overnight_load_kwh=settings_cache["battery.overnight_load_kwh"],
                         round_trip_efficiency=settings_cache["planner.round_trip_efficiency"],
+                        device_min_target_soc=_device_min_target_soc(),
                     )
                     target_pct = need.target_soc_pct
                 lines.append(
@@ -2989,6 +2994,7 @@ def create_app(
             night_reserve_kwh=s["battery.night_reserve_kwh"],
             overnight_load_kwh=s["battery.overnight_load_kwh"],
             round_trip_efficiency=s["planner.round_trip_efficiency"],
+            device_min_target_soc=_device_min_target_soc(),
         ).to_dict()
 
     def _spawn_override_cycle() -> None:
@@ -3695,6 +3701,18 @@ def create_app(
             "max_topup_price": settings_cache["strategy.summer_max_topup_price"],
         }
 
+    def _device_min_target_soc() -> float:
+        cap = _capability_box.get("cap")
+        if cap is not None and float(cap.min_target_soc) > 0:
+            return float(cap.min_target_soc)
+        return 0.0
+
+    def _effective_reserve_soc_pct() -> float:
+        return effective_plan_reserve_soc(
+            float(settings_cache["battery.min_reserve_soc"]),
+            _capability_box.get("cap"),
+        )
+
     def _battery_model() -> BatteryModel:
         s = settings_cache
         return BatteryModel(
@@ -3702,7 +3720,7 @@ def create_app(
             max_charge_w=s["battery.max_charge_w"],
             max_discharge_w=s["battery.max_discharge_w"],
             round_trip_efficiency=s["planner.round_trip_efficiency"],
-            reserve_soc_pct=s["battery.min_reserve_soc"],
+            reserve_soc_pct=_effective_reserve_soc_pct(),
         )
 
     async def _forward_projection():
@@ -4247,7 +4265,7 @@ def create_app(
                 now=now,
                 tz=site_tz,
                 current_soc_pct=float(fp["current_soc"]),
-                reserve_soc_pct=float(settings_cache["battery.min_reserve_soc"]),
+                reserve_soc_pct=_effective_reserve_soc_pct(),
                 usable_kwh=float(settings_cache["battery.usable_kwh"]),
                 round_trip_efficiency=float(
                     settings_cache.get("planner.round_trip_efficiency", 0.90),
@@ -5118,13 +5136,22 @@ def create_app(
         cap = _capability_box.get("cap")
         if cap is not None and float(cap.min_target_soc) > 0:
             device_min = float(cap.min_target_soc)
+            stored_reserve = float(settings_cache.get("battery.min_reserve_soc", 10.0))
             for row in schema:
                 if row.get("key") == "battery.min_reserve_soc":
-                    row["min"] = max(float(row.get("min") or 0), device_min)
-                    row["help"] = (
-                        f"{row['help']} When the battery is probed, values below "
-                        f"{device_min:.0f}% are raised to the device minimum at plan/apply time."
+                    suffix = (
+                        f" When the battery is probed, values below {device_min:.0f}% are raised "
+                        f"to the device minimum at plan/apply time."
                     )
+                    if stored_reserve < device_min - 1e-6:
+                        row["help"] = (
+                            f"{row['help']} Stored {stored_reserve:.0f}% is below the probed "
+                            f"device minimum ({device_min:.0f}%); control uses the device floor "
+                            f"until you raise this setting.{suffix}"
+                        )
+                    else:
+                        row["min"] = max(float(row.get("min") or 0), device_min)
+                        row["help"] = f"{row['help']}{suffix}"
                     break
         return {"schema": schema, "values": public_values(settings_cache)}
 

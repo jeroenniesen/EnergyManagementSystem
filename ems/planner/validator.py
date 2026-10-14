@@ -257,7 +257,8 @@ def validate_plan(
                 f"{capability.min_target_soc:.1f}% — the writer will clamp to the device floor.",
             ))
             break
-        floor = s.floor_soc if s.floor_soc is not None else effective_reserve
+        floor = (max(effective_reserve, float(s.floor_soc))
+                 if s.floor_soc is not None else effective_reserve)
         if t < floor:
             findings.append(Finding(_UNSAFE, "target_below_reserve",
                                     f"Charge target {t:.0f}% is below the reserve floor "
@@ -406,12 +407,12 @@ def validate_plan(
                 "P1 is not paired on the battery probe — export behaviour is less certain.",
             ))
         for s in export:
-            floor = s.floor_soc if s.floor_soc is not None else min_reserve_soc
-            if floor < min_reserve_soc - 1e-6:
+            if (s.floor_soc is not None
+                    and float(s.floor_soc) < effective_reserve - 1e-6):
                 findings.append(Finding(
                     _UNSAFE, "export_floor_below_reserve",
-                    f"Export floor {floor:.0f}% is below reserve {min_reserve_soc:.0f}% — "
-                    "impossible/contradictory.",
+                    f"Export floor {s.floor_soc:.0f}% is below reserve "
+                    f"{effective_reserve:.0f}% — impossible/contradictory.",
                 ))
                 break
         # Optional day cap (0 / None = uncapped within reserve).

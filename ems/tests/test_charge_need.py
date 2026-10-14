@@ -63,6 +63,11 @@ def test_efficiency_raises_target_to_cover_round_trip_losses():
     assert _need(50.0).target_kwh == 8.0
 
 
+def test_charge_need_reserve_kwh_uses_device_min_overlay():
+    n = _need(50.0, min_reserve_soc=3.0, device_min_target_soc=5.0, usable_kwh=10.0)
+    assert n.reserve_kwh == 0.5  # 5% of 10 kWh
+
+
 def test_charge_need_from_committed_target_ignores_advisory_ceiling():
     # #180: honest-partial plan target (e.g. 29%) must not re-inflate via overnight config (~80%).
     n = charge_need_from_target(
