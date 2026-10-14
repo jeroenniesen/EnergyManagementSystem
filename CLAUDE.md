@@ -80,6 +80,7 @@ docker-compose.yml # target Pi/dev sketches
 - **Testing:** planners must be unit-testable with canned prices/forecasts and a mocked battery — no hardware in tests. Add tests with planner logic.
 - **Dry-run:** new control logic ships behind dry-run (log decisions, no writes) before going live — honour both yaml and Settings floors above.
 - **Secrets:** Tibber/Solcast tokens, HA token, web auth token — Settings UI stores them in the local SQLite settings store (masked on read). First-boot bootstrap is **env vars** (`TIBBER_TOKEN`, `SOLCAST_API_KEY`, `EMS_WEB_TOKEN`, …) or a plain-string `web.auth_token` in yaml (do not commit it). There is **no** yaml `!secret` tag loader (`yaml.safe_load`). Never commit secrets or log plaintext tokens.
+- **Legacy paths:** before keeping or deleting a compatibility shim, update `ems/legacy_registry.py` / `docs/legacy-retirement.md` (B-85).
 
 ## Build order
 

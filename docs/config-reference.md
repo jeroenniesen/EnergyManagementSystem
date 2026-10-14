@@ -86,7 +86,7 @@ Legend: **UI** = also editable from the web UI (overlays the file). **CONFIRM** 
 | `charger_kw` | kW | 11.0 | home wallbox power; effective charge rate is `min(charger_kw, car.max_ac_kw)`. **UI** |
 | `schedule` | JSON (per-day) | all days off, 80%/07:30 | the weekly minimum-charge schedule (`enabled`/`min_pct`/`ready_by` per day-of-week), edited via the schedule editor; parsed tolerantly by `ems/ev_schedule.parse_schedule`. **UI** |
 | `charge_kwh` | kWh | 20.0 | **legacy** for the deprecated quick-advice endpoint (`GET /api/advisor/ev-charge`). Also the typical size used by winter EV-exogenous sizing (#181) when `day_hint` or today's schedule day is on. Not read by `GET /api/car/plan`. |
-| `departure_time` | HH:MM | 07:30 | **legacy** — a single daily departure time. Superseded by `schedule`'s per-day `ready_by`; used by the deprecated quick-advice endpoint only (`GET /api/advisor/ev-charge`). Not read by `GET /api/car/plan`. |
+| `departure_time` | HH:MM | 07:30 | **legacy** (B-85 / [`legacy-retirement.md`](./legacy-retirement.md)) — a single daily departure time. Superseded by `schedule`'s per-day `ready_by`; used by the deprecated quick-advice endpoint only (`GET /api/advisor/ev-charge`). Not read by `GET /api/car/plan`. |
 | `day_hint` | bool | false | Manual "EV day" for winter battery sizing (#181). When on, re-adds ~`charge_kwh` as exogenous load into winter top-up / peak readiness with reason `EV load expected ~X kWh`. **Advice only — no charger writes.** Does not unblock B-17 / #105. **UI** |
 | `expected_day_kwh` | kWh | 0 | Optional manual override for today's expected car import. When > 0, wins over day hint / schedule / history for winter exogenous sizing (#181). 0 = auto. Advanced. **UI** |
 

@@ -4759,8 +4759,9 @@ def create_app(
         `ev.advice_enabled` is on; needs live prices. Reuses the same price/forecast access as
         /api/plan (price_source.slots() + solar_forecast.slots()).
 
-        DEPRECATED: superseded by GET /api/car/plan (schedule-aware, multi-deadline, SoC-anchored).
-        Kept unchanged for compatibility with any existing client; do not extend it."""
+        DEPRECATED (B-85 / docs/legacy-retirement.md · ev-quick-advice-endpoint): superseded by
+        GET /api/car/plan (schedule-aware, multi-deadline, SoC-anchored). Kept for compatibility
+        with any existing client; do not extend it."""
         if not settings_cache.get("ev.advice_enabled") or price_source is None:
             return {"advice": None}
         now = datetime.now(UTC)

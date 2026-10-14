@@ -990,8 +990,9 @@ class HistoryStore:
     async def upsert_forecast_snapshot(
         self, issued_date: str, slots: list[tuple[str, float, float, float]]
     ) -> None:
-        """DEPRECATED (reconciliation iteration, design §3.3): nothing writes this anymore — the
-        recorder now appends solar forecasts to the prediction ledger exclusively (see
+        """DEPRECATED (B-85 / docs/legacy-retirement.md · forecast-snapshots-upsert-helper;
+        reconciliation design §3.3): nothing writes this anymore — the recorder now appends solar
+        forecasts to the prediction ledger exclusively (see
         `ems.sense.Recorder._persist_forecast` / `ledger_append`). Kept only so the migration v3
         backfill (`_migrate_v3_forecast_ledger`) and direct tests of the legacy table still work;
         do not call this from new code.

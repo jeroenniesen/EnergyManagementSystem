@@ -690,8 +690,11 @@ SETTINGS_SCHEMA: tuple[SettingsField, ...] = (
         min=0.7, max=1.0, step=0.01, advanced=True,
     ),
     SettingsField(
-        "ev.departure_time", "Usual departure time", "text", "07:30", "ev",
-        help="When the car usually needs to be ready (24h HH:MM).",
+        "ev.departure_time", "Usual departure time (legacy)", "text", "07:30", "ev",
+        help="Legacy single daily departure for the deprecated GET /api/advisor/ev-charge only. "
+        "The Car plan uses each schedule day's ready_by instead. See docs/legacy-retirement.md "
+        "(B-85).",
+        advanced=True,
     ),
     SettingsField(
         "ev.charge_kwh", "Typical energy to add", "number", 20.0, "ev",

@@ -42,7 +42,7 @@ observability (B-24); numbered date-less sprints, Issues+Milestones on GitHub.
 | **E-06 · Trust & guidance** | | ⬜ B-31 marker | | B-09 B-12 B-21 |
 | **E-07 · Consumer-ready commercial product** | 🟨 B-55 settings menu | | | B-32 B-33 B-34 B-35 🟨 B-36 B-37 🟨 B-38 B-39 ✅ B-40 B-41 B-56 B-57 B-58 B-59 B-60 B-61 B-62 ✅ B-89 |
 | **E-08 · Predictive optimization intelligence** | | | | B-63 B-64 B-65 B-66 B-67 B-68 B-69 B-70 B-71 B-72 B-73 B-74 B-75 B-76 B-77 B-78 |
-| **E-09 · ISO 25010 quality engineering** | | | | **P1:** ✅ B-79 ✅ B-80 ✅ B-81 ✅ B-82 ✅ B-83 · ✅ B-84 B-85 |
+| **E-09 · ISO 25010 quality engineering** | | | | **P1:** ✅ B-79 ✅ B-80 ✅ B-81 ✅ B-82 ✅ B-83 · ✅ B-84 ✅ B-85 |
 | **E-10 · Web UI redesign: dense → calm** | | | | ✅ B-86 ✅ B-87 B-88 |
 | *Big levers (pool)* | | | | B-17 B-18 B-19 B-20 B-23 |
 | *Refactoring (pool)* | | | | B-24 B-25 B-26 B-27 B-28 B-29 |
@@ -396,7 +396,7 @@ Add property-based or exhaustive invariant tests for reserve-floor preservation,
 ### B-85 · Stale-code and compatibility retirement — Refactor · S–M · P2
 Create a retirement register for legacy `forecast_snapshots` reads, deprecated EV quick-advice settings, test-only simulation modules, stale EV documentation, temporary browser artifacts, and research-only intelligence code. Add usage evidence and removal versions before deleting compatibility paths.
 **Done when:** every retained legacy path has an owner, reason, usage signal, and removal trigger; temporary artifacts are ignored or removed.
-**Track:** Pool · E-09 · ⬜
+**Track:** ✅ done — [#83](https://github.com/jeroenniesen/EnergyManagementSystem/issues/83): `ems/legacy_registry.py` + [`docs/legacy-retirement.md`](docs/legacy-retirement.md) + `test_legacy_registry.py`; root scratch PNG/report patterns gitignored.
 
 ---
 

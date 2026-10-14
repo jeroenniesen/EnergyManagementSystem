@@ -57,8 +57,10 @@ ios/**/.build/
 **/xcuserdata/
 *.xcuserstate
 
-# Ad-hoc validation screenshots / agent scratch reports at repo root
+# Ad-hoc validation screenshots / agent scratch reports at repo root (B-85 / #83)
 /behavior-panels.png
 /ems-dashboard-validation.png
 /ems-dashboard-mobile-validation.png
+/ems-*-validation.png
 /task-1-report.md
+/task-*-report.md
