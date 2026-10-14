@@ -15,7 +15,7 @@ Use **View Demo** on the connection screen (no account or EMS server required). 
 
 ## UI tests (Xcode + Simulator)
 
-The `EMSControl` shared scheme runs **UI tests only** — not the SPM unit-test gate. Unit tests: `swift test` in this directory. UI demo walkthrough:
+The `EMSControl` shared scheme runs **UI tests only** — not the SPM unit-test gate. GitHub Actions CI runs `swift test` (EMSControlCore) only; it does **not** run this Simulator walkthrough. Run the UI demo walkthrough locally:
 
 ```bash
 xcodebuild -project EMSControl.xcodeproj -scheme EMSControl \

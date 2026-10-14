@@ -42,7 +42,7 @@ struct AppShellView: View {
                         .tag(AppTab.chat)
                 }
                 .safeAreaInset(edge: .top, spacing: 0) {
-                    if dashboardStore.snapshot?.isDemo == true {
+                    if dashboardStore.demoSessionActive {
                         DemoModeBanner(theme: theme)
                     }
                 }
@@ -103,32 +103,32 @@ struct AppShellView: View {
     }
 
     private var chatSessionKey: String {
-        let mode = dashboardStore.snapshot?.isDemo == true ? "demo" : (dashboardStore.client == nil ? "disconnected" : "live")
+        let mode = dashboardStore.demoSessionActive ? "demo" : (dashboardStore.client == nil ? "disconnected" : "live")
         return "\(mode)-\(dashboardStore.client?.baseURL.absoluteString ?? "none")"
     }
 
     private var insightsSessionKey: String {
-        let mode = dashboardStore.snapshot?.isDemo == true ? "demo" : (dashboardStore.client == nil ? "disconnected" : "live")
+        let mode = dashboardStore.demoSessionActive ? "demo" : (dashboardStore.client == nil ? "disconnected" : "live")
         return "\(mode)-\(dashboardStore.client?.baseURL.absoluteString ?? "none")-\(dashboardStore.snapshot?.generatedAt.timeIntervalSince1970 ?? 0)"
     }
 
     private var activitySessionKey: String {
-        let mode = dashboardStore.snapshot?.isDemo == true ? "demo" : (dashboardStore.client == nil ? "disconnected" : "live")
+        let mode = dashboardStore.demoSessionActive ? "demo" : (dashboardStore.client == nil ? "disconnected" : "live")
         return "\(mode)-\(dashboardStore.client?.baseURL.absoluteString ?? "none")-\(dashboardStore.snapshot?.generatedAt.timeIntervalSince1970 ?? 0)"
     }
 
     private var carSessionKey: String {
-        let mode = dashboardStore.snapshot?.isDemo == true ? "demo" : (dashboardStore.client == nil ? "disconnected" : "live")
+        let mode = dashboardStore.demoSessionActive ? "demo" : (dashboardStore.client == nil ? "disconnected" : "live")
         return "\(mode)-\(dashboardStore.client?.baseURL.absoluteString ?? "none")"
     }
 
     private var notificationsSessionKey: String {
-        let mode = dashboardStore.snapshot?.isDemo == true ? "demo" : (dashboardStore.client == nil ? "disconnected" : "live")
+        let mode = dashboardStore.demoSessionActive ? "demo" : (dashboardStore.client == nil ? "disconnected" : "live")
         return "\(mode)-\(dashboardStore.client?.baseURL.absoluteString ?? "none")"
     }
 
     private func syncChatSession() async {
-        if dashboardStore.snapshot?.isDemo == true {
+        if dashboardStore.demoSessionActive {
             await chatStore.updateSession(client: nil, mode: .demo)
         } else if let client = dashboardStore.client {
             await chatStore.updateSession(client: client, mode: .live)
@@ -138,7 +138,7 @@ struct AppShellView: View {
     }
 
     private func syncInsightsSession() async {
-        if let snapshot = dashboardStore.snapshot, snapshot.isDemo {
+        if dashboardStore.demoSessionActive, let snapshot = dashboardStore.snapshot {
             insightsStore.setDemo(report: snapshot.report, finance: snapshot.finance)
         } else if let client = dashboardStore.client {
             insightsStore.setClient(client)
@@ -148,7 +148,7 @@ struct AppShellView: View {
     }
 
     private func syncActivitySession() async {
-        if dashboardStore.snapshot?.isDemo == true {
+        if dashboardStore.demoSessionActive {
             activityStore.setDemo()
         } else if let client = dashboardStore.client {
             activityStore.setClient(client)
@@ -158,7 +158,7 @@ struct AppShellView: View {
     }
 
     private func syncCarSession() async {
-        if dashboardStore.snapshot?.isDemo == true {
+        if dashboardStore.demoSessionActive {
             carStore.setDemo()
         } else if let client = dashboardStore.client {
             carStore.setClient(client)
@@ -168,7 +168,7 @@ struct AppShellView: View {
     }
 
     private func syncNotificationsSession() async {
-        if dashboardStore.snapshot?.isDemo == true {
+        if dashboardStore.demoSessionActive {
             notificationsStore.setDemo()
         } else if let client = dashboardStore.client {
             notificationsStore.setClient(client)

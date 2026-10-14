@@ -166,7 +166,7 @@ private struct HomeStatePanel: View {
                         .foregroundStyle(themeColor(theme.muted))
                 }
                 Spacer(minLength: 8)
-                if !snapshot.isDemo {
+                if !dashboardStore.demoSessionActive {
                     StatusBadge(text: badgeText, color: badgeColor, theme: theme)
                 }
             }
@@ -192,7 +192,7 @@ private struct HomeStatePanel: View {
     private var badgeText: String {
         // isSimulatedServer is label-only (#79) — never drives forgetServer / setDemo sessions.
         // Bare "Stale" badge removed by #145 — unreachable/stale uses UnreachableFailureBanner.
-        if snapshot.isDemo || snapshot.isSimulatedServer { return "Demo" }
+        if dashboardStore.demoSessionActive || snapshot.isSimulatedServer { return "Demo" }
         if snapshot.decision.planValidation?.ok == false { return "Holding" }
         if snapshot.status.dryRun { return "Watch-only" }
         return "Live"

@@ -17,7 +17,7 @@ struct ChatView: View {
         if let client = dashboardStore.client {
             return .live(client)
         }
-        if dashboardStore.snapshot?.isDemo == true {
+        if dashboardStore.demoSessionActive {
             return .demo
         }
         return .disconnected

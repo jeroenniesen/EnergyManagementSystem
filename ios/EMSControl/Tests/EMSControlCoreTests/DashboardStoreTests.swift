@@ -242,7 +242,66 @@ final class DashboardStoreTests: XCTestCase {
         try store.useDemo()
 
         XCTAssertNil(store.client)
+        XCTAssertTrue(store.demoSessionActive)
         XCTAssertTrue(store.snapshot?.isDemo == true)
+    }
+
+    func testInFlightRefreshDoesNotClobberDemoSession() async throws {
+        let transport = RoutingDashboardTransport()
+        var openGate: AsyncStream<Void>.Continuation?
+        transport.statusGate = AsyncStream { openGate = $0 }
+        let arrived = expectation(description: "status GET reached the transport")
+        transport.onStatusArrived = { arrived.fulfill() }
+
+        let store = DashboardStore(
+            client: APIClient(
+                baseURL: URL(string: "http://ems.local:8080")!,
+                transport: transport
+            ),
+            demoData: DemoDataStore(bundle: .module)
+        )
+
+        let refreshTask = Task { await store.refresh() }
+        await fulfillment(of: [arrived], timeout: 2)
+        try store.useDemo()
+        let demoSoc = store.snapshot?.status.socPct
+        openGate?.yield()
+        openGate?.finish()
+        await refreshTask.value
+
+        XCTAssertTrue(store.demoSessionActive)
+        XCTAssertNil(store.client)
+        XCTAssertEqual(store.snapshot?.status.socPct, demoSoc)
+        XCTAssertFalse(store.isStale)
+        XCTAssertFalse(store.authFailed)
+    }
+
+    func testRestoreSavedServerClearsWidgetDemoFlag() throws {
+        let suite = "test.restore.clears.demo.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suite)!
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let widgetConfig = AppGroupConfigStore(defaults: defaults)
+        let widgetCache = WidgetSnapshotCache(defaults: defaults)
+        let credentials = RecordingCredentialStore()
+        let baseURL = URL(string: "http://ems.local:8080")!
+        try credentials.saveLastBaseURL(baseURL)
+        try credentials.saveToken("session-token", for: baseURL)
+        widgetConfig.setDemoModeActive(true)
+        widgetCache.save(.demoSample)
+
+        let store = DashboardStore(
+            client: nil,
+            demoData: DemoDataStore(bundle: .module),
+            credentialStore: credentials,
+            widgetConfig: widgetConfig,
+            widgetSnapshotCache: widgetCache
+        )
+        store.restoreSavedServer()
+
+        XCTAssertNotNil(store.client)
+        XCTAssertFalse(store.demoSessionActive)
+        XCTAssertFalse(widgetConfig.isDemoModeActive)
+        XCTAssertNil(widgetCache.load())
     }
 
     func testUseDemoPublishesWidgetDemoCacheAndFlag() throws {
@@ -509,6 +568,8 @@ private struct FailingTransport: HTTPTransport {
 private final class RoutingDashboardTransport: HTTPTransport, @unchecked Sendable {
     private let lock = NSLock()
     private var requestedPaths: [String] = []
+    var statusGate: AsyncStream<Void>?
+    var onStatusArrived: (@Sendable () -> Void)?
     var dashboardRefreshCount: Int {
         lock.withLock {
             requestedPaths.filter { $0 == "/api/status" }.count
@@ -523,6 +584,10 @@ private final class RoutingDashboardTransport: HTTPTransport, @unchecked Sendabl
         let data: Data
         switch path {
         case "/api/status":
+            if let gate = statusGate {
+                onStatusArrived?()
+                for await _ in gate { break }
+            }
             data = statusJSON()
         case "/api/freshness":
             data = #"{"battery":"fresh","ev":"fresh","grid":"fresh","soc":"fresh","solar":"fresh"}"#.data(using: .utf8)!

@@ -56,16 +56,16 @@ public final class NotificationsStore {
             // sessions handling. A failure keeps whatever digest was already shown.
             async let digestResult = client.fetchDigest(week: digestWeek)
             let response = try await feed
-            if generation == readGeneration {
-                items = response.items
-                unread = response.unread
-            }
-            // else: mark-all-read landed while this GET was in flight, so the response predates
-            // the read POST — keep the optimistic state; the next refresh brings the truth.
+            guard generation == readGeneration, !isDemo else { return }
+            items = response.items
+            unread = response.unread
+            // else: mark-all-read / setDemo landed while this GET was in flight.
             digest = (try? await digestResult) ?? digest
+            guard generation == readGeneration, !isDemo else { return }
             errorMessage = nil
             loaded = true
         } catch {
+            guard generation == readGeneration, !isDemo else { return }
             // Keep the last-known feed visible (web-bell behaviour) and surface the error.
             errorMessage = String(describing: error)
         }
@@ -128,6 +128,7 @@ public final class NotificationsStore {
 
     // Populate from coded demo fixtures (EMS_UI_DEMO=1) — no server to read/write.
     public func setDemo() {
+        readGeneration += 1  // drop any in-flight live refresh
         client = nil
         serverKey = "demo"
         isDemo = true

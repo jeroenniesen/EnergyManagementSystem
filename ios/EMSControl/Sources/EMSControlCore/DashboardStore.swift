@@ -17,6 +17,11 @@ public final class DashboardStore {
     /// the "your session expired — log in again" prompt on the connection screen. Cleared on any
     /// successful login / demo / forget.
     public private(set) var authFailed = false
+    /// True while the reviewer offline demo session is active (`useDemo()`). Not derived from
+    /// the snapshot host name — a live host containing "demo" must not look like offline demo.
+    public private(set) var demoSessionActive = false
+    /// Bumped when leaving a live session (demo / forget / 401) so in-flight fetches cannot apply.
+    private var sessionGeneration = 0
 
     /// B-09 presentation flags — hide live status card / alerts under the outage banner; cold fail
     /// (saved client, no snapshot) surfaces the same banner with `Laatst bekend —`.
@@ -60,14 +65,17 @@ public final class DashboardStore {
         isLoading = true
         defer { isLoading = false }
 
+        let generation = sessionGeneration
         do {
             let response = try await client.fetchDashboard()
+            guard generation == sessionGeneration, !demoSessionActive else { return }
             snapshot = response
             nextRefreshAt = response.generatedAt.addingTimeInterval(TimeInterval(response.cacheTTLSeconds))
             isStale = false
             lastUpdatedAt = Date()
             lastError = nil
         } catch APIClientError.httpStatus(401) {
+            guard generation == sessionGeneration, !demoSessionActive else { return }
             // The session/token is no longer valid. Bounce back to the login screen rather than
             // showing stale data behind a dead token. Keep the saved server URL (do NOT forget it)
             // so re-login can prefill it; drop the live client + snapshot so AppShellView shows
@@ -82,7 +90,9 @@ public final class DashboardStore {
             isStale = false
             lastUpdatedAt = nil
             lastError = nil
+            invalidateLiveSession()
         } catch {
+            guard generation == sessionGeneration, !demoSessionActive else { return }
             // Keep lastUpdatedAt from the prior success so "Laatst bekend hh:mm" stays honest.
             isStale = snapshot != nil
             lastError = String(describing: error)
@@ -121,12 +131,12 @@ public final class DashboardStore {
             try? credentialStore.saveWidgetToken(accessToken, for: baseURL)
         }
         let widgetToken = accessToken ?? ((try? credentialStore.widgetToken(for: baseURL)) ?? nil)
-        widgetConfig.setDemoModeActive(false)
-        widgetSnapshotCache.clear()
+        clearWidgetDemoState()
         widgetConfig.save(WidgetServerConfig(baseURL: baseURL, token: widgetToken))
         requestWidgetTimelineReload()
 
         authFailed = false
+        demoSessionActive = false
         lastUpdatedAt = nil
         client = liveClient
         await refresh()
@@ -161,17 +171,20 @@ public final class DashboardStore {
         }
         guard let widgetAccessToken, !widgetAccessToken.isEmpty else {
             // No token here is known to be a dedicated access token — never mirror an
-            // interactive/session token to the widget. Leave its Keychain slot and the app-group
-            // config exactly as they were.
+            // interactive/session token to the widget. Still clear leftover demo widget state so
+            // a live reconnect does not keep a DEMO badge (#256 / Grok Medium 1).
+            clearWidgetDemoState()
+            requestWidgetTimelineReload()
+            demoSessionActive = false
             return
         }
         try? credentialStore.saveWidgetToken(widgetAccessToken, for: client.baseURL)
         // Mirror {baseURL, token} into the shared app group so the home-screen widget can reach the
         // same server without its own onboarding (B-59). Best-effort: never fail a connect over it.
-        widgetConfig.setDemoModeActive(false)
-        widgetSnapshotCache.clear()
+        clearWidgetDemoState()
         widgetConfig.save(WidgetServerConfig(baseURL: client.baseURL, token: widgetAccessToken))
         requestWidgetTimelineReload()
+        demoSessionActive = false
     }
 
     public func restoreSavedServer() {
@@ -179,12 +192,18 @@ public final class DashboardStore {
               let baseURL = try? credentialStore.lastBaseURL()
         else { return }
         let token = try? credentialStore.token(for: baseURL)
+        // Live client is back — drop any widget demo flag left after a force-quit in demo.
+        clearWidgetDemoState()
+        requestWidgetTimelineReload()
+        demoSessionActive = false
         client = APIClient(baseURL: baseURL, token: token ?? nil)
     }
 
     public func useDemo() throws {
+        invalidateLiveSession()
         client = nil
         authFailed = false
+        demoSessionActive = true
         snapshot = try demoData.dashboardSnapshot()
         if let snapshot {
             nextRefreshAt = nil
@@ -200,6 +219,15 @@ public final class DashboardStore {
         widgetConfig.setDemoModeActive(true)
         widgetSnapshotCache.save(WidgetRenderData.make(from: snapshot, demo: true))
         requestWidgetTimelineReload()
+    }
+
+    private func clearWidgetDemoState() {
+        widgetConfig.setDemoModeActive(false)
+        widgetSnapshotCache.clear()
+    }
+
+    private func invalidateLiveSession() {
+        sessionGeneration &+= 1
     }
 
     /// Clears widget demo state left after a force-quit while the in-memory demo session is gone.
@@ -229,6 +257,7 @@ public final class DashboardStore {
     }
 
     public func forgetServer() {
+        invalidateLiveSession()
         if let client {
             try? credentialStore.deleteToken(for: client.baseURL)
             try? credentialStore.deleteWidgetToken(for: client.baseURL)
@@ -236,8 +265,7 @@ public final class DashboardStore {
         try? credentialStore.deleteLastBaseURL()
         // Drop the widget's shared config + cached render too, so it returns to "Open EMS to connect".
         widgetConfig.clear()
-        widgetConfig.setDemoModeActive(false)
-        widgetSnapshotCache.clear()
+        clearWidgetDemoState()
         client = nil
         snapshot = nil
         nextRefreshAt = nil
@@ -245,6 +273,7 @@ public final class DashboardStore {
         lastUpdatedAt = nil
         lastError = nil
         authFailed = false
+        demoSessionActive = false
         requestWidgetTimelineReload()
     }
 }

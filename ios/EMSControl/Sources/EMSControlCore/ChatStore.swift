@@ -39,6 +39,8 @@ public final class ChatStore {
 
     private let demoData: DemoDataStore
     private var currentSessionKey: String?
+    /// Bumped on session changes so a late live FAQ/explainer fetch cannot overwrite demo.
+    private var sessionGeneration = 0
 
     public init(client: APIClient?, demoData: DemoDataStore = DemoDataStore()) {
         self.client = client
@@ -57,6 +59,7 @@ public final class ChatStore {
         sessionMode = mode
 
         if didChangeSession {
+            sessionGeneration &+= 1
             clearSession()
             currentSessionKey = nextSessionKey
         }
@@ -91,14 +94,18 @@ public final class ChatStore {
     }
 
     public func loadExplainer() async {
+        let generation = sessionGeneration
+        let mode = sessionMode
         do {
-            if let client {
+            if let client, mode == .live {
                 explainerStatus = try await client.fetchExplainer()
+                guard generation == sessionGeneration, sessionMode == .live else { return }
             } else {
                 explainerStatus = try demoData.explainerStatus()
             }
             lastError = nil
         } catch {
+            guard generation == sessionGeneration else { return }
             lastError = String(describing: error)
         }
     }
@@ -146,12 +153,16 @@ public final class ChatStore {
 
     private func loadLiveSession() async {
         guard let client else { return }
+        let generation = sessionGeneration
 
         do {
             explainerStatus = try await client.fetchExplainer()
+            guard generation == sessionGeneration, sessionMode == .live else { return }
             faqItems = try await client.fetchFAQ().items
+            guard generation == sessionGeneration, sessionMode == .live else { return }
             lastError = nil
         } catch {
+            guard generation == sessionGeneration, sessionMode == .live else { return }
             lastError = String(describing: error)
         }
     }

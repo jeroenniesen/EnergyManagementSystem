@@ -16,7 +16,7 @@ struct SettingsView: View {
     }
 
     private var isDemo: Bool {
-        dashboardStore.snapshot?.isDemo == true
+        dashboardStore.demoSessionActive
     }
 
     var body: some View {

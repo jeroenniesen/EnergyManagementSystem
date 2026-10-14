@@ -38,15 +38,24 @@ final class DemoModeUITests: XCTestCase {
 
         tabBar.buttons["Car"].tap()
         XCTAssertTrue(banner.waitForExistence(timeout: 3))
-        XCTAssertTrue(app.otherElements["car.tab.content"].waitForExistence(timeout: 5))
+        XCTAssertTrue(
+            app.descendants(matching: .any).matching(identifier: "car.tab.content").firstMatch
+                .waitForExistence(timeout: 5)
+        )
 
         tabBar.buttons["Activity"].tap()
         XCTAssertTrue(banner.waitForExistence(timeout: 3))
-        XCTAssertTrue(app.otherElements["activity.entry.first"].waitForExistence(timeout: 5))
+        XCTAssertTrue(
+            app.descendants(matching: .any).matching(identifier: "activity.entry.first").firstMatch
+                .waitForExistence(timeout: 5)
+        )
 
         tabBar.buttons["Chat"].tap()
         XCTAssertTrue(banner.waitForExistence(timeout: 3))
-        XCTAssertTrue(app.textFields["chat.question.field"].waitForExistence(timeout: 5))
+        XCTAssertTrue(
+            app.descendants(matching: .any).matching(identifier: "chat.question.field").firstMatch
+                .waitForExistence(timeout: 5)
+        )
 
         app.buttons["dashboard.settings"].tap()
         app.buttons["settings.leaveDemo"].tap()

@@ -87,10 +87,19 @@ struct EMSTimelineProvider: TimelineProvider {
         let cache = WidgetSnapshotCache()
 
         if appGroup.isDemoModeActive {
-            if let demo = cache.load() {
-                return EMSEntry(date: Date(), content: .ready(demo, stale: false))
+            if let cached = cache.load() {
+                // Force DEMO labeling even if an older live blob is still in the cache.
+                let demoPayload = cached.isDemo ? cached : WidgetRenderData(
+                    socPct: cached.socPct,
+                    verdict: WidgetVerdict(word: cached.verdict.word, live: false),
+                    headline: cached.headline,
+                    carLine: cached.carLine,
+                    asOf: cached.asOf,
+                    isDemo: true
+                )
+                return EMSEntry(date: Date(), content: .ready(demoPayload, stale: false))
             }
-            return EMSEntry(date: Date(), content: .ready(.sample, stale: false))
+            return EMSEntry(date: Date(), content: .ready(.demoSample, stale: false))
         }
 
         guard let config = appGroup.load() else {

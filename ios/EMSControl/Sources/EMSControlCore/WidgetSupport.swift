@@ -250,6 +250,16 @@ public struct WidgetRenderData: Codable, Equatable, Sendable {
         asOf: Date(timeIntervalSince1970: 1_783_000_000)
     )
 
+    /// Offline demo fallback when the demo flag is on but the cache is empty (#256).
+    public static let demoSample = WidgetRenderData(
+        socPct: 63,
+        verdict: WidgetVerdict(word: "Self-consumption", live: false),
+        headline: "Running the house on your own sun — saving the battery for the evening peak.",
+        carLine: "Car: Mon 23:00 · 9.5 kWh",
+        asOf: Date(timeIntervalSince1970: 1_783_000_000),
+        isDemo: true
+    )
+
     /// Offline demo render payload for the home-screen widget (App Store review / demo mode).
     public static func make(
         from snapshot: MobileDashboardSnapshot,

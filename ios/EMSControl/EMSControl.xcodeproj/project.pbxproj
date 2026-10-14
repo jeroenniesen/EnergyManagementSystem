@@ -813,7 +813,6 @@
 		BC0105C2960E47D68194D3AF /* Release */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
-				BUNDLE_LOADER = "$(TEST_HOST)";
 				CODE_SIGN_STYLE = Automatic;
 				DEVELOPMENT_TEAM = C32G3GV975;
 				GENERATE_INFOPLIST_FILE = YES;
@@ -859,7 +858,6 @@
 		F68D928A1DF70009D98A55D8 /* Debug */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
-				BUNDLE_LOADER = "$(TEST_HOST)";
 				CODE_SIGN_STYLE = Automatic;
 				DEVELOPMENT_TEAM = C32G3GV975;
 				GENERATE_INFOPLIST_FILE = YES;
