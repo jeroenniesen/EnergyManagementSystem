@@ -43,7 +43,7 @@ observability (B-24); numbered date-less sprints, Issues+Milestones on GitHub.
 | **E-07 · Consumer-ready commercial product** | 🟨 B-55 settings menu | | | B-32 B-33 B-34 B-35 🟨 B-36 B-37 🟨 B-38 B-39 ✅ B-40 B-41 B-56 B-57 B-58 B-59 B-60 B-61 B-62 ✅ B-89 |
 | **E-08 · Predictive optimization intelligence** | | | | B-63 B-64 B-65 B-66 B-67 B-68 B-69 B-70 B-71 B-72 B-73 B-74 B-75 B-76 B-77 B-78 |
 | **E-09 · ISO 25010 quality engineering** | | | | **P1:** ✅ B-79 ✅ B-80 ✅ B-81 ✅ B-82 ✅ B-83 · ✅ B-84 B-85 |
-| **E-10 · Web UI redesign: dense → calm** | | | | ✅ B-86 ✅ B-87 B-88 |
+| **E-10 · Web UI redesign: dense → calm** | ⬜ B-94 B-95 B-96 | | | ✅ B-86 ✅ B-87 B-88 · ⬜ B-97 B-98 B-99 B-100 B-101 · B-102 |
 | *Big levers (pool)* | | | | B-17 B-18 B-19 B-20 B-23 |
 | *Refactoring (pool)* | | | | B-24 B-25 B-26 B-27 B-28 B-29 |
 | *Architecture & platform (pool)* | | | | **P1:** 🔄 SAF-01 B-42 B-43 B-44 B-52 · B-45 🟨 B-46 B-47 B-48 B-49 B-50 B-51 B-53 B-54 |
@@ -404,6 +404,8 @@ Create a retirement register for legacy `forecast_snapshots` reads, deprecated E
 *Goal: every screen answers "what's happening, and is it good?" before it shows a single number; each surface has a stated information budget, a clear hero → support → detail hierarchy, and detail on demand — never a wall of graphs and tiles competing for first attention.* (Trust/Motivation)
 
 > **Builds on** E-07's design constitution ([`docs/2026-07-12-apple-of-ems-roadmap.md`](docs/2026-07-12-apple-of-ems-roadmap.md)) — principles 2 (*one glance, one truth*) and 3 (*progressive disclosure everywhere*) — and **completes what B-32 started** on the dashboard, applying the same discipline to *every* surface. Density here is a measurable budget, not taste. Constraints unchanged: ≤300 KB gz, WCAG 2.1 AA, light/dark (`GOAL.md` §2, SPEC §9.1). *Prompted 2026-07-17: the operator finds the current UI too dense — too much information per screen.*
+>
+> **2026-10-01 calm first-viewport pass (B-94…B-102):** live audit found the shipped B-87 hierarchy had drifted — DeviceHealth wallpaper, duplicate evening-peak / SoC / savings, hero jargon, and BatteryActionWhy / evening-peak again sitting **between** tiles and PlanStory. Restore the budget toward the agreed calm mockup (**PlanStory chart kept**). Pointer + constraints: [`docs/2026-10-01-calm-first-viewport-audit.md`](docs/2026-10-01-calm-first-viewport-audit.md). Specs: [`docs/superpowers/specs/2026-07-18-calm-dashboard-design.md`](docs/superpowers/specs/2026-07-18-calm-dashboard-design.md). **Do not change:** PlanStory combined 24h chart, Waarom? disclosure pattern, override confirm, SkyBackdrop + theme tokens.
 
 ### B-86 · Density audit + hierarchy budget — UX · S *(roadmap P2)*
 The diagnostic and the ruler, before any pixels move. Inventory each surface (Dashboard, Next-24h/plan, Insights, Manage/Settings, Car, Chat): count the numbers, charts, badges, and cards visible per viewport; set a per-screen **information budget** (one hero verdict → supporting facts → detail-on-demand) and a shared type/spacing scale so "calm" is measurable and regressions are catchable — not a matter of taste.
@@ -413,11 +415,75 @@ The diagnostic and the ruler, before any pixels move. Inventory each surface (Da
 ### B-87 · Dashboard + Next-24h "one glance" redesign — UX · M *(extends B-32; roadmap P2)*
 Apply the budget to the two heaviest surfaces. The **Next-24h/plan** screen today stacks a battery-level chart, a price chart, a battery-plan strip, and a solar chart under five stat tiles and two banners — four charts and five numbers before the user has asked a question. Collapse to one primary chart answering one question per viewport; demote the secondary charts and the stat grid behind a fold/tap. The dashboard keeps its hero verdict and sheds the cards still competing with it.
 **Done when:** the plan view shows one primary question per viewport; a first-time user is never shown four charts and five tiles at once; the technical detail is one tap deeper, not gone.
-**Track:** ✅ done — merged hero, four outcome tiles, one combined plan chart, and retained technical disclosure; verified in the 204-test frontend suite.
+**Track:** ✅ done — merged hero, four outcome tiles, one combined plan chart, and retained technical disclosure; verified in the 204-test frontend suite. *Follow-up density drift → B-94…B-101.*
 
 ### B-88 · Insights / Manage / Car density pass + shared primitives — UX + Refactor · M *(pairs B-28/B-51; roadmap P2)*
-Carry the same hierarchy across the remaining surfaces, and extract shared chart / stat-tile / card primitives so the density language stays consistent by construction and the bundle stays within budget.
+Carry the same hierarchy across the remaining surfaces, and extract shared chart / stat-tile / card primitives so the density language stays consistent by construction and the bundle stays within budget. May absorb calm P2 polish that lands on shared primitives (see B-102).
 **Done when:** every surface shares one density language and stays within its B-86 budget; chart/tile primitives are deduped (pairs with the B-28 frontend consolidation).
+**Track:** Pool · E-10 · ⬜
+
+### B-94 · Quiet DeviceHealth + tile freshness when healthy — UX · S · **P0** *(calm first-viewport)*
+When overall freshness/data-quality is OK, DeviceHealth must not own the first viewport: collapse to one compact line / disclosure or move under Manage·System; stop showing the full four-source card above the fold. Outcome-tile "Updated …" timestamps appear **only when that tile's signal is stale** — never identical freshness under all four tiles.
+**Why now:** 2026-10-01 live audit — healthy DeviceHealth + 4× tile timestamps kill mobile fold (tiles/plan below the fold) and break the B-87 budget.
+**Done when:** healthy desktop/mobile first viewport shows hero → tiles → (room for) PlanStory without a full DeviceHealth card; stale paths still surface clear health + per-tile freshness; visual inventory / Playwright fold checks updated.
+**Do not change:** PlanStory chart, Waarom?, override confirm, sky/theme.
+**Refs:** [`docs/2026-10-01-calm-first-viewport-audit.md`](docs/2026-10-01-calm-first-viewport-audit.md) (audit P0); components `DeviceHealth.tsx`, `OutcomeTiles.tsx`, `App.tsx`.
+**Track:** Sprint 1 · E-10 · ⬜
+
+### B-95 · One evening-peak reassurance surface — UX · S · **P0** *(calm first-viewport)*
+Evening-peak coverage is celebrated in at most **one** primary surface (prefer hero trust-marker *or* one compact plan-adjacent line). Remove or demote the full `EveningPeakCoverageCard` banner when coverage is already shown as covered/100% in the hero; keep a risk banner only when coverage is below threshold.
+**Done when:** a covered evening peak appears once above the fold; at-risk coverage still warns clearly; no triple stack of hero marker + banner + plan insight saying the same thing.
+**Do not change:** PlanStory chart, Waarom?, override confirm, sky/theme.
+**Refs:** audit P0; `EveningPeakCoverage.tsx`, hero trustMarkers, `App.tsx`.
+**Track:** Sprint 1 · E-10 · ⬜
+
+### B-96 · Slim hero to plain language + act-line — UX · S · **P0** *(calm first-viewport)*
+Hero synthesis is one plain-language sentence plus the calm act-line ("Nothing needed from you." / equivalent). Planner jargon (`break-even`, raw `self-consumption:…`, EV-load operator prose) lives only under **Waarom?** / technical disclosure — not in the hero body. Optional Last-3h review demotes behind disclosure or plan header.
+**Done when:** 5-second scan yields verdict + one human sentence + act-line without operator jargon; Waarom? still carries full explainability; hero height no longer dominates the mobile fold alone with DeviceHealth.
+**Do not change:** PlanStory chart, Waarom? disclosure pattern (clean content, keep control), override confirm, sky/theme.
+**Refs:** audit P0; hero build in `App.tsx` / home-state; `BatteryActionWhy` / `DecisionReasonDetails`; calm spec §Dashboard hierarchy.
+**Track:** Sprint 1 · E-10 · ⬜
+
+### B-97 · PlanStory footer: drop duplicate SoC / Saved — UX · S · **P1** *(calm first-viewport)*
+Keep the combined Next-24h PlanStory chart (shared axis, SoC-dominant, price band, action ribbon). Remove footer KPI repeats of battery SoC and "Saved today" when those values already appear in OutcomeTiles; optional hover/details only.
+**Done when:** chart stays; footer no longer duplicates tile SoC/savings; legend/ribbon remain readable without competing KPI strip.
+**Do not change:** PlanStory chart itself, Waarom?, override confirm, sky/theme.
+**Refs:** audit P1; `PlanStory.tsx`.
+**Track:** Pool · E-10 · ⬜
+
+### B-98 · Dashboard language consistency (EN/NL) — UX · S · **P1** *(calm first-viewport)*
+One product voice on the dashboard: either Dutch-first everywhere on Home, or English with deliberate NL only where already productized (e.g. DeviceHealth / #79). Stop mixing EN headlines/tiles with NL "Alles actueel" / "Nu: Zelfconsumptie" / "Waarom?" in the same fold without a chosen rule. Prefer extending `labels.ts` rather than a parallel string table. Overlaps **B-21** (household Dutch) — this item is the **dashboard Home surface** slice only.
+**Done when:** first viewport + PlanStory chrome use one language rule; no EN/NL flip-flop on adjacent chrome; tests/snapshots updated for chosen locale.
+**Do not change:** PlanStory chart geometry, Waarom? pattern, override confirm, sky/theme.
+**Refs:** audit P1; `labels.ts`, DeviceHealth, BatteryActionWhy, nav.
+**Track:** Pool · E-10 · ⬜
+
+### B-99 · Reduce topbar badge cluster — UX · S · **P1** *(calm first-viewport)*
+Topbar keeps at most **1–2** primary chips (run-mode / attention). Data-quality chip only when not complete; demote Live-sensors / redundant "Alles actueel" when DeviceHealth or run-mode already conveys safety.
+**Done when:** healthy live session shows ≤2 meaningful topbar status chips; attention states still visible; confidence stays on hero if needed, not as a fourth chrome badge.
+**Do not change:** PlanStory chart, Waarom?, override confirm, sky/theme.
+**Refs:** audit P1; `App.tsx` header.
+**Track:** Pool · E-10 · ⬜
+
+### B-100 · Calm framing for negative / uncertain savings — UX · S · **P1** *(calm first-viewport)*
+When measured savings are negative or still in the measuring window, OutcomeTiles (and any remaining finance chrome) use calm copy ("Nog meten" / "Vandaag nog geen voordeel" or EN equivalent per B-98) + semantic icon — never alarm styling for an expected early-day or sparse-data figure.
+**Done when:** €-negative / measuring states read as quiet honesty, not failure; positive measured savings unchanged; emotional-design review tone preserved.
+**Do not change:** PlanStory chart, Waarom?, override confirm, sky/theme; measured-vs-estimated honesty from B-03b.
+**Refs:** audit P1; OutcomeTiles / scoreCopy; [`docs/2026-06-28-emotional-design-review.md`](docs/2026-06-28-emotional-design-review.md).
+**Track:** Pool · E-10 · ⬜
+
+### B-101 · Restore B-87 order: chart before Waarom / evening-peak — UX · S · **P1** *(calm first-viewport)*
+Recompose Home so order is hero → outcome tiles → **PlanStory chart** → then BatteryActionWhy / remaining evening-peak / More. Do not park Nu/Waarom or evening-peak between tiles and the chart.
+**Done when:** desktop and mobile inventories match the calm wireframe; chart is the first major visual after tiles; Waarom? remains one disclosure deeper, not deleted.
+**Do not change:** PlanStory chart, Waarom? pattern, override confirm, sky/theme.
+**Refs:** audit P1; B-87 done-when; `App.tsx` composition order; mockup `dashboard-mockup-calm-with-planstory`.
+**Track:** Pool · E-10 · ⬜
+
+### B-102 · Calm polish: More-body nest, tile icons, chart axis hint — UX · S · **P2** *(calm first-viewport / LATER)*
+Secondary density only: split "More from your home" into nested Strategy / Manual / Car disclosures; add subtle semantic icons on outcome tiles (not pill rows); optional subtle PlanStory vertical-axis / SoC-scale hint for power users. Schedule with or after B-88 if primitives land there first.
+**Done when:** More-body is scannable without dumping every control; tiles gain recognition without chrome noise; chart readability nudge does not add a second chart.
+**Do not change:** PlanStory as the single combined chart, Waarom?, override confirm, sky/theme.
+**Refs:** audit P2; may merge into B-88 when touched.
 **Track:** Pool · E-10 · ⬜
 
 ## Pool — big levers (each with a trigger)
