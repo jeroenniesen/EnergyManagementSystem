@@ -1492,12 +1492,12 @@ def create_app(
                 await settings_store.set_many(migration_writes)
                 stored_settings = await settings_store.all()
             settings_cache.update(effective_settings(stored_settings))
-            from ems.settings import live_mock_forecast_provider_active
+            from ems.settings import live_mock_forecast_in_use
 
-            if live_mock_forecast_provider_active(settings_cache, dev_mode):
+            if live_mock_forecast_in_use(solar_forecast, settings_cache, dev_mode):
                 _log.warning(
-                    "solar.forecast_provider is mock on a live install — "
-                    "switch to Forecast.Solar or Solcast in Settings (#242)"
+                    "live install still using built-in demo solar forecast — "
+                    "switch provider in Settings and restart EMS (#242)"
                 )
             _apply_control_settings()
             _apply_site_settings()
@@ -1829,12 +1829,12 @@ def create_app(
         )
 
     def _forecast_ok_for_quality() -> bool:
-        """False when no forecast source, or live install uses persisted mock (#242)."""
-        from ems.settings import live_mock_forecast_provider_active
+        """False when no forecast source, or live install still serves the demo curve (#242)."""
+        from ems.settings import live_mock_forecast_in_use
 
         if solar_forecast is None:
             return False
-        if live_mock_forecast_provider_active(settings_cache, dev_mode):
+        if live_mock_forecast_in_use(solar_forecast, settings_cache, dev_mode):
             return False
         return True
 
@@ -2695,8 +2695,11 @@ def create_app(
             unavail = getattr(price_source, "unavailable_since", None)
             if callable(unavail):
                 tibber_since = unavail()
-        from ems.settings import live_mock_forecast_provider_active
+        from ems.settings import live_mock_forecast_in_use
 
+        live_mock_forecast = live_mock_forecast_in_use(
+            solar_forecast, settings_cache, dev_mode,
+        )
         alerts = derive_alerts(
             snap, dry_run=dry_run, decision_outcome=outcome,
             confirmed_auto=confirmed_auto, last_command_unconfirmed=last_unconfirmed,
@@ -2704,9 +2707,7 @@ def create_app(
             mock_prices_blocked_operational=mock_blocked,
             tibber_unavailable_since=tibber_since,
             site_tz=site_tz,
-            live_mock_forecast_provider=live_mock_forecast_provider_active(
-                settings_cache, dev_mode,
-            ),
+            live_mock_forecast_provider=live_mock_forecast,
         )
         out = [{"key": a.key, "severity": a.severity, "message": a.message,
                 "safe": a.safe, "action": a.action, "ems_doing": a.ems_doing} for a in alerts]
@@ -2837,8 +2838,13 @@ def create_app(
         }
 
     async def _diagnostics_snapshot(now: datetime) -> dict:
+        from ems.settings import live_mock_forecast_in_use
+
         prices_ok = _prices_ok()
         forecast_ok = _forecast_ok_for_quality()
+        forecast_mock_on_live = live_mock_forecast_in_use(
+            solar_forecast, settings_cache, dev_mode,
+        )
         # Actually probe the stores so a broken DB shows as a failed check, not a silent pass.
         store_ok = False
         if store is not None:
@@ -2892,6 +2898,7 @@ def create_app(
             dry_run_block_reason=dry_run_block_reason,
             data_quality=dq,
             prices_ok=prices_ok, forecast_ok=forecast_ok,
+            forecast_mock_on_live=forecast_mock_on_live,
             battery_ok=battery_ok, p1_paired=p1_paired,
             battery_present=battery_present,
             plan_ok=plan_ok,

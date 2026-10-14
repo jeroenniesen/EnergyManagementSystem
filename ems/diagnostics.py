@@ -80,6 +80,7 @@ def build_diagnostics(
     dry_run_block_reason: str | None = None,
     battery_present: bool | None = None,
     grid_fuse_unset: bool = False,
+    forecast_mock_on_live: bool = False,
 ) -> list[Check]:
     dq_status = {"complete": "ok", "degraded": "warn", "price_fallback": "warn"}.get(
         data_quality, "fail"
@@ -93,6 +94,15 @@ def build_diagnostics(
     # Callers that probe and catch failures must pass battery_present=True so we don't mislabel
     # "unreachable" as "no battery driver".
     present = battery_ok if battery_present is None else battery_present
+    if forecast_ok:
+        forecast_detail = "forecast source configured"
+    elif forecast_mock_on_live:
+        # #242: demo curve is present and steering — not "no forecast source".
+        forecast_detail = (
+            "built-in demo curve — planning quality reduced (restart after changing provider)"
+        )
+    else:
+        forecast_detail = "no forecast source"
     checks = [
         Check("mode", "Run mode", mode_status, mode_detail),
         Check("history_store", "History store", "ok" if store_ok else "fail",
@@ -101,8 +111,7 @@ def build_diagnostics(
               "reachable" if settings_store_ok else "not reachable — settings won't persist"),
         Check("prices", "Electricity prices", "ok" if prices_ok else "warn",
               "price source configured" if prices_ok else "no price source — arbitrage disabled"),
-        Check("forecast", "Solar forecast", "ok" if forecast_ok else "warn",
-              "forecast source configured" if forecast_ok else "no forecast source"),
+        Check("forecast", "Solar forecast", "ok" if forecast_ok else "warn", forecast_detail),
         _battery_check(
             battery_ok=battery_ok, p1_paired=p1_paired, battery_present=present,
         ),
