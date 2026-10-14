@@ -1,5 +1,10 @@
 import Foundation
 
+extension Notification.Name {
+    /// Posted when widget timelines should reload (handled in the app target via WidgetKit).
+    public static let emsWidgetTimelinesShouldReload = Notification.Name("ems.widget.reloadTimelines")
+}
+
 // Shared, Foundation-only support for the home-screen widget (BACKLOG B-59). Everything here is
 // deliberately UI-framework-free so it (a) links cleanly into the WidgetKit app extension and
 // (b) stays unit-testable in EMSControlCoreTests without WidgetKit/SwiftUI. The widget target
@@ -207,19 +212,33 @@ public struct WidgetRenderData: Codable, Equatable, Sendable {
     public let headline: String?
     public let carLine: String?
     public let asOf: Date
+    /// True when this render payload is sample/demo data (not live EMS telemetry).
+    public let isDemo: Bool
 
     public init(
         socPct: Double?,
         verdict: WidgetVerdict,
         headline: String?,
         carLine: String?,
-        asOf: Date
+        asOf: Date,
+        isDemo: Bool = false
     ) {
         self.socPct = socPct
         self.verdict = verdict
         self.headline = headline
         self.carLine = carLine
         self.asOf = asOf
+        self.isDemo = isDemo
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        socPct = try container.decodeIfPresent(Double.self, forKey: .socPct)
+        verdict = try container.decode(WidgetVerdict.self, forKey: .verdict)
+        headline = try container.decodeIfPresent(String.self, forKey: .headline)
+        carLine = try container.decodeIfPresent(String.self, forKey: .carLine)
+        asOf = try container.decode(Date.self, forKey: .asOf)
+        isDemo = try container.decodeIfPresent(Bool.self, forKey: .isDemo) ?? false
     }
 
     /// Gallery / placeholder sample so Xcode previews and the widget picker have plausible content.
@@ -232,7 +251,11 @@ public struct WidgetRenderData: Codable, Equatable, Sendable {
     )
 
     /// Offline demo render payload for the home-screen widget (App Store review / demo mode).
-    public static func make(from snapshot: MobileDashboardSnapshot, asOf: Date = Date()) -> WidgetRenderData {
+    public static func make(
+        from snapshot: MobileDashboardSnapshot,
+        asOf: Date = Date(),
+        demo: Bool = false
+    ) -> WidgetRenderData {
         let mode = snapshot.battery.currentMode ?? snapshot.decision.desiredMode
         let verdictWord = WidgetVerdictBuilder.word(
             mode: mode,
@@ -247,7 +270,8 @@ public struct WidgetRenderData: Codable, Equatable, Sendable {
             verdict: verdict,
             headline: headline,
             carLine: carLine,
-            asOf: asOf
+            asOf: asOf,
+            isDemo: demo
         )
     }
 

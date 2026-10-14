@@ -122,7 +122,9 @@ public final class DashboardStore {
         }
         let widgetToken = accessToken ?? ((try? credentialStore.widgetToken(for: baseURL)) ?? nil)
         widgetConfig.setDemoModeActive(false)
+        widgetSnapshotCache.clear()
         widgetConfig.save(WidgetServerConfig(baseURL: baseURL, token: widgetToken))
+        requestWidgetTimelineReload()
 
         authFailed = false
         lastUpdatedAt = nil
@@ -167,7 +169,9 @@ public final class DashboardStore {
         // Mirror {baseURL, token} into the shared app group so the home-screen widget can reach the
         // same server without its own onboarding (B-59). Best-effort: never fail a connect over it.
         widgetConfig.setDemoModeActive(false)
+        widgetSnapshotCache.clear()
         widgetConfig.save(WidgetServerConfig(baseURL: client.baseURL, token: widgetAccessToken))
+        requestWidgetTimelineReload()
     }
 
     public func restoreSavedServer() {
@@ -183,7 +187,7 @@ public final class DashboardStore {
         authFailed = false
         snapshot = try demoData.dashboardSnapshot()
         if let snapshot {
-            nextRefreshAt = snapshot.generatedAt.addingTimeInterval(TimeInterval(snapshot.cacheTTLSeconds))
+            nextRefreshAt = nil
             publishDemoWidget(from: snapshot)
         }
         isStale = false
@@ -194,7 +198,21 @@ public final class DashboardStore {
     private func publishDemoWidget(from snapshot: MobileDashboardSnapshot) {
         widgetConfig.clear()
         widgetConfig.setDemoModeActive(true)
-        widgetSnapshotCache.save(WidgetRenderData.make(from: snapshot))
+        widgetSnapshotCache.save(WidgetRenderData.make(from: snapshot, demo: true))
+        requestWidgetTimelineReload()
+    }
+
+    /// Clears widget demo state left after a force-quit while the in-memory demo session is gone.
+    public func clearOrphanedWidgetDemoStateIfDisconnected() {
+        guard client == nil, snapshot == nil else { return }
+        guard widgetConfig.isDemoModeActive else { return }
+        widgetConfig.setDemoModeActive(false)
+        widgetSnapshotCache.clear()
+        requestWidgetTimelineReload()
+    }
+
+    private func requestWidgetTimelineReload() {
+        NotificationCenter.default.post(name: .emsWidgetTimelinesShouldReload, object: nil)
     }
 
     public func loadDemo() {
@@ -227,5 +245,6 @@ public final class DashboardStore {
         lastUpdatedAt = nil
         lastError = nil
         authFailed = false
+        requestWidgetTimelineReload()
     }
 }

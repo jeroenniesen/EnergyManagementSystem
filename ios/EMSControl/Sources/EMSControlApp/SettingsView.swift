@@ -45,6 +45,7 @@ struct SettingsView: View {
                                 systemImage: "rectangle.portrait.and.arrow.right"
                             )
                         }
+                        .accessibilityIdentifier(isDemo ? "settings.leaveDemo" : "settings.forgetServer")
                     } header: {
                         Text("Server")
                     } footer: {

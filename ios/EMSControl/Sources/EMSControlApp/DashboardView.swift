@@ -166,11 +166,14 @@ private struct HomeStatePanel: View {
                         .foregroundStyle(themeColor(theme.muted))
                 }
                 Spacer(minLength: 8)
-                StatusBadge(text: badgeText, color: badgeColor, theme: theme)
+                if !snapshot.isDemo {
+                    StatusBadge(text: badgeText, color: badgeColor, theme: theme)
+                }
             }
 
             HStack(spacing: 10) {
                 MetricPill(title: "Battery %", value: percent(snapshot.status.socPct), theme: theme)
+                    .accessibilityIdentifier("dashboard.metric.battery")
                 MetricPill(title: "Mode", value: humanizeMode(snapshot.battery.currentMode ?? snapshot.decision.desiredMode), theme: theme)
                 MetricPill(title: "Price", value: price(snapshot.energyStory.currentPriceEurPerKwh), theme: theme)
             }

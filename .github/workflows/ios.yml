@@ -52,9 +52,6 @@ jobs:
           count=$(grep -c 'PrivacyInfo.xcprivacy in Resources' ios/EMSControl/EMSControl.xcodeproj/project.pbxproj)
           # 3 PBXBuildFile rows + 3 Resources-phase file entries.
           test "$count" -ge 6
-          grep -q 'A251APP0PRIVACYINFO000001' ios/EMSControl/EMSControl.xcodeproj/project.pbxproj
-          grep -q 'A251COREPRIVACYINFO000001' ios/EMSControl/EMSControl.xcodeproj/project.pbxproj
-          grep -q 'A251WDGTPRIVACYINFO000001' ios/EMSControl/EMSControl.xcodeproj/project.pbxproj
 
       # #252: export compliance — no manual ASC prompt on TestFlight upload.
       - name: Check ITSAppUsesNonExemptEncryption

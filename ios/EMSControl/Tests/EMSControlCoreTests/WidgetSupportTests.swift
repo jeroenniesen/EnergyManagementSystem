@@ -87,6 +87,9 @@ final class WidgetSupportTests: XCTestCase {
         XCTAssertEqual(data.socPct, snapshot.status.socPct)
         XCTAssertFalse(data.verdict.live)
         XCTAssertNotNil(data.headline)
+        XCTAssertFalse(data.isDemo)
+        let demoData = WidgetRenderData.make(from: snapshot, asOf: Date(timeIntervalSince1970: 1_780_000_000), demo: true)
+        XCTAssertTrue(demoData.isDemo)
     }
 
     // MARK: - Widget access-token name

@@ -265,6 +265,65 @@ final class DashboardStoreTests: XCTestCase {
         let cached = try XCTUnwrap(widgetCache.load())
         XCTAssertEqual(cached.socPct, store.snapshot?.status.socPct)
         XCTAssertFalse(cached.verdict.live)
+        XCTAssertTrue(cached.isDemo)
+    }
+
+    func testUseDemoDoesNotArmHotRefreshLoop() throws {
+        let store = DashboardStore(
+            client: nil,
+            demoData: DemoDataStore(bundle: .module)
+        )
+        try store.useDemo()
+        XCTAssertNil(store.nextRefreshAt)
+    }
+
+    func testClearOrphanedWidgetDemoStateWhenDisconnected() throws {
+        let suite = "test.orphan.widget.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suite)!
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let widgetConfig = AppGroupConfigStore(defaults: defaults)
+        let widgetCache = WidgetSnapshotCache(defaults: defaults)
+        let store = DashboardStore(
+            client: nil,
+            widgetConfig: widgetConfig,
+            widgetSnapshotCache: widgetCache
+        )
+        try store.useDemo()
+        store.forgetServer()
+        widgetConfig.setDemoModeActive(true)
+        widgetCache.save(WidgetRenderData.sample)
+
+        store.clearOrphanedWidgetDemoStateIfDisconnected()
+
+        XCTAssertFalse(widgetConfig.isDemoModeActive)
+        XCTAssertNil(widgetCache.load())
+    }
+
+    func testLoginClearsWidgetDemoCacheAfterDemoSession() async throws {
+        let suite = "test.login.clears.demo.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suite)!
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let widgetConfig = AppGroupConfigStore(defaults: defaults)
+        let widgetCache = WidgetSnapshotCache(defaults: defaults)
+        let transport = LoginFlowTransport()
+        let store = DashboardStore(
+            client: nil,
+            demoData: DemoDataStore(bundle: .module),
+            credentialStore: RecordingCredentialStore(),
+            widgetConfig: widgetConfig,
+            widgetSnapshotCache: widgetCache,
+            transport: transport
+        )
+        try store.useDemo()
+        XCTAssertTrue(widgetConfig.isDemoModeActive)
+        XCTAssertNotNil(widgetCache.load())
+
+        let url = URL(string: "http://ems.local:8080")!
+        try await store.login(baseURL: url, username: "jeroen", password: "hunter2000", deviceName: "iPhone")
+
+        XCTAssertFalse(widgetConfig.isDemoModeActive)
+        XCTAssertNil(widgetCache.load())
+        XCTAssertNotNil(widgetConfig.load()?.baseURL)
     }
 
     func testLoadDemoRecordsErrorWhenDemoDataIsMissing() {

@@ -5,6 +5,10 @@ import EMSControlCore
 struct EMSControlApp: App {
     @State private var dashboardStore = DashboardStore(client: nil)
 
+    init() {
+        WidgetTimelineReloader.install()
+    }
+
     var body: some Scene {
         WindowGroup {
             AppShellView()

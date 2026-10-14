@@ -1734,21 +1734,21 @@ public struct AuditEntry: Codable, Equatable, Sendable, Identifiable {
     public static let demoEntries: [AuditEntry] = [
         AuditEntry(
             id: 3,
-            ts: "2026-07-04T06:15:00+02:00",
-            category: "mode_change",
+            ts: "2026-06-29T08:15:00+02:00",
+            category: "battery_decision",
             summary: "Set battery to self-consumption (solar covering the house)."
         ),
         AuditEntry(
             id: 2,
-            ts: "2026-07-04T02:30:00+02:00",
-            category: "plan",
+            ts: "2026-06-29T06:30:00+02:00",
+            category: "ai_validation",
             summary: "Overnight plan validated — on track for evening peak."
         ),
         AuditEntry(
             id: 1,
-            ts: "2026-07-03T23:05:00+02:00",
-            category: "car",
-            summary: "Car charge window scheduled for 23:00 (demo)."
+            ts: "2026-06-29T23:05:00+02:00",
+            category: "manual_override",
+            summary: "Car charge window scheduled for 23:00."
         ),
     ]
 }

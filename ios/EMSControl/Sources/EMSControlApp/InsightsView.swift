@@ -38,6 +38,7 @@ struct InsightsView: View {
                                     .font(.title3.weight(.semibold))
                                     .foregroundStyle(themeColor(theme.text))
                                     .fixedSize(horizontal: false, vertical: true)
+                                    .accessibilityIdentifier("insights.report.headline")
                                     .padding(16)
                                     .background(themeColor(theme.panel))
                                     .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))

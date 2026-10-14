@@ -34,8 +34,9 @@ struct ActivityView: View {
                             MessagePanel(text: "No activity recorded yet.", systemImage: "clock.arrow.circlepath", theme: theme)
                         } else {
                             VStack(spacing: 10) {
-                                ForEach(store.entries) { entry in
+                                ForEach(Array(store.entries.enumerated()), id: \.element.id) { index, entry in
                                     ActivityRow(entry: entry, theme: theme)
+                                        .accessibilityIdentifier(index == 0 ? "activity.entry.first" : "activity.entry.\(entry.id)")
                                 }
                             }
                         }

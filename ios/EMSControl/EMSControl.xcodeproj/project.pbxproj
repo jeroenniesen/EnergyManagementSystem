@@ -12,12 +12,14 @@
 		022C3F5AE75E9FFB6CCA9005 /* DemoModeUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 06EC1C3C24D57B8D8236CC2F /* DemoModeUITests.swift */; };
 		03BCFFC4E5ACF67ED5DA059F /* InsightsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 257B061EB9A96671DDB32DC5 /* InsightsView.swift */; };
 		042F4F18CFE0650AA449CAAC /* InsightsStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = AE96D50A9EC3DC4FEC64185B /* InsightsStore.swift */; };
+		04B675AEAA6CC693F51243AB /* PrivacyInfo.xcprivacy in Resources */ = {isa = PBXBuildFile; fileRef = C29A56A2AA2FCDB54F5C870D /* PrivacyInfo.xcprivacy */; };
 		0D0F6681CE829F1EC4356E68 /* EMSControlCore.framework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = 62C0D3FEB8DD96AF4F3CAD8C /* EMSControlCore.framework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 		0D87044D1DD83D7B05AC4069 /* EMSTimelineProvider.swift in Sources */ = {isa = PBXBuildFile; fileRef = 00226AD26ECD7A7800E34475 /* EMSTimelineProvider.swift */; };
 		145FB2DA6CB9ACB0352B4CED /* NotificationsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2B9061823F17E42906990E53 /* NotificationsView.swift */; };
 		15F7E1D2E299E702BCF34E68 /* DemoDataStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3699F1E6706AE136B68AB1C8 /* DemoDataStore.swift */; };
 		1A13A3975BE7484B3E9D2185 /* ISOTimestamp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2DC5EEC3A04E938FD71E41C8 /* ISOTimestamp.swift */; };
 		211D0CD0F3242A3EF71BD8AE /* demo-dashboard.json in Resources */ = {isa = PBXBuildFile; fileRef = 0888EA444AB57461568AD1F4 /* demo-dashboard.json */; };
+		3725F052C45F31EDA8CD9CB0 /* WidgetTimelineReloader.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8B33CD611BCD0228D1039CC1 /* WidgetTimelineReloader.swift */; };
 		4721E13236179397CD0A8943 /* CarView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 25C474902F0FBA9F9478CE8D /* CarView.swift */; };
 		47540E41529D561F9824A439 /* FailureCopy.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2F83049FC45D1B2AD10CBC19 /* FailureCopy.swift */; };
 		4B351738F06D0BB6B022CC2D /* AppLinks.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1D3B16B76FC1CFD5E7268D3F /* AppLinks.swift */; };
@@ -43,12 +45,14 @@
 		A9D364C633E4B45CE88CE158 /* DecisionReason.swift in Sources */ = {isa = PBXBuildFile; fileRef = C09418F4FB7664B14B1A0C2F /* DecisionReason.swift */; };
 		B1C9A8640321DD1AA1C7D313 /* ServerAddressValidator.swift in Sources */ = {isa = PBXBuildFile; fileRef = C10928FD46649449E9D7A9F3 /* ServerAddressValidator.swift */; };
 		B73C5305189929545FF315BF /* ChatStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = BC6937650BBFD71CE57B8BF5 /* ChatStore.swift */; };
+		B89A9A0ED173E773CA085069 /* PrivacyInfo.xcprivacy in Resources */ = {isa = PBXBuildFile; fileRef = C9BC38018F31F080573338FD /* PrivacyInfo.xcprivacy */; };
 		C32DD176D4AC4B7979994319 /* KeychainCredentialStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = F931E1AEC5676B6174B3A76F /* KeychainCredentialStore.swift */; };
 		C9F13CEE37D770D72BFECADC /* demo-faq.json in Resources */ = {isa = PBXBuildFile; fileRef = E720AFC468AEF7CC68D269FB /* demo-faq.json */; };
 		CE05537D943C4DEF4E95F80E /* demo-chat.json in Resources */ = {isa = PBXBuildFile; fileRef = 994E14FBDEF1C0F89AC9E28C /* demo-chat.json */; };
 		CFDAE5E01BD52A55AF0DCD9D /* SettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = D8D66C2A3F09E4F8B07BA96B /* SettingsView.swift */; };
 		D26583CB40FD4B9525AF4F6A /* CarStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7AE8E5DCF24A00DA770185CB /* CarStore.swift */; };
 		E4324AC3E37934CFA4C5AE74 /* CarTab.swift in Sources */ = {isa = PBXBuildFile; fileRef = 666215802737C6356279F9E7 /* CarTab.swift */; };
+		EDDA8DBD9BE38004CAF9859F /* PrivacyInfo.xcprivacy in Resources */ = {isa = PBXBuildFile; fileRef = A610212BA3E911A4FC417B88 /* PrivacyInfo.xcprivacy */; };
 		EEC0E74D439A37CB1C2D9F6C /* APIClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = 720F711D71B00AC0F6976700 /* APIClient.swift */; };
 		EF963FF881BB7743E2130B73 /* AppShellView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 24CB1980979D24B5EA49FBE4 /* AppShellView.swift */; };
 		F1353BCF968E5BDD8B22A049 /* UnreachableFailureBanner.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3DFA2D5DABDD9516CC1FFA4B /* UnreachableFailureBanner.swift */; };
@@ -144,18 +148,22 @@
 		7AE8E5DCF24A00DA770185CB /* CarStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CarStore.swift; sourceTree = "<group>"; };
 		81C65C37F0360A3E36856B3C /* EMSWidgetBundle.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EMSWidgetBundle.swift; sourceTree = "<group>"; };
 		851FDA73182D3541A3039A9A /* DashboardStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DashboardStore.swift; sourceTree = "<group>"; };
+		8B33CD611BCD0228D1039CC1 /* WidgetTimelineReloader.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WidgetTimelineReloader.swift; sourceTree = "<group>"; };
 		922974D3E5EFAB723E1B86D9 /* ChatView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatView.swift; sourceTree = "<group>"; };
 		93334206BA35A14EC4153324 /* EMSControl.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = EMSControl.entitlements; sourceTree = "<group>"; };
 		994E14FBDEF1C0F89AC9E28C /* demo-chat.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = "demo-chat.json"; sourceTree = "<group>"; };
 		A447D414CC4B7CC4F68D91D0 /* demo-explainer.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = "demo-explainer.json"; sourceTree = "<group>"; };
 		A516714D923D0B43BA82A7CA /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
+		A610212BA3E911A4FC417B88 /* PrivacyInfo.xcprivacy */ = {isa = PBXFileReference; path = PrivacyInfo.xcprivacy; sourceTree = "<group>"; };
 		AE96D50A9EC3DC4FEC64185B /* InsightsStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = InsightsStore.swift; sourceTree = "<group>"; };
 		BC6937650BBFD71CE57B8BF5 /* ChatStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatStore.swift; sourceTree = "<group>"; };
 		BE34CB449C6E2540E29A004B /* NotificationsModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NotificationsModels.swift; sourceTree = "<group>"; };
 		C09418F4FB7664B14B1A0C2F /* DecisionReason.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DecisionReason.swift; sourceTree = "<group>"; };
 		C10928FD46649449E9D7A9F3 /* ServerAddressValidator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ServerAddressValidator.swift; sourceTree = "<group>"; };
+		C29A56A2AA2FCDB54F5C870D /* PrivacyInfo.xcprivacy */ = {isa = PBXFileReference; path = PrivacyInfo.xcprivacy; sourceTree = "<group>"; };
 		C4315BE65439DFDF4D4C0BA1 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		C44D90E919EBD89422A67BCB /* NotificationsStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NotificationsStore.swift; sourceTree = "<group>"; };
+		C9BC38018F31F080573338FD /* PrivacyInfo.xcprivacy */ = {isa = PBXFileReference; path = PrivacyInfo.xcprivacy; sourceTree = "<group>"; };
 		D8D66C2A3F09E4F8B07BA96B /* SettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsView.swift; sourceTree = "<group>"; };
 		DFE9CA097DB9BAA988D849E2 /* EMSControlApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EMSControlApp.swift; sourceTree = "<group>"; };
 		E720AFC468AEF7CC68D269FB /* demo-faq.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = "demo-faq.json"; sourceTree = "<group>"; };
@@ -203,6 +211,7 @@
 				81C65C37F0360A3E36856B3C /* EMSWidgetBundle.swift */,
 				FCEB78668E11698B72193C5B /* EMSWidgetViews.swift */,
 				A516714D923D0B43BA82A7CA /* Info.plist */,
+				C9BC38018F31F080573338FD /* PrivacyInfo.xcprivacy */,
 			);
 			path = EMSWidget;
 			sourceTree = "<group>";
@@ -245,6 +254,7 @@
 				13253B7C77956C58739FA336 /* Models.swift */,
 				BE34CB449C6E2540E29A004B /* NotificationsModels.swift */,
 				C44D90E919EBD89422A67BCB /* NotificationsStore.swift */,
+				A610212BA3E911A4FC417B88 /* PrivacyInfo.xcprivacy */,
 				6489F114C4BCA73DEAF39933 /* SeriesGeometry.swift */,
 				C10928FD46649449E9D7A9F3 /* ServerAddressValidator.swift */,
 				033DDC49ECE87F18564D3288 /* ServerDiscovery.swift */,
@@ -277,8 +287,10 @@
 				001C06DC7E770182FD4B1DBB /* Info.plist */,
 				257B061EB9A96671DDB32DC5 /* InsightsView.swift */,
 				2B9061823F17E42906990E53 /* NotificationsView.swift */,
+				C29A56A2AA2FCDB54F5C870D /* PrivacyInfo.xcprivacy */,
 				D8D66C2A3F09E4F8B07BA96B /* SettingsView.swift */,
 				3DFA2D5DABDD9516CC1FFA4B /* UnreachableFailureBanner.swift */,
+				8B33CD611BCD0228D1039CC1 /* WidgetTimelineReloader.swift */,
 			);
 			path = EMSControlApp;
 			sourceTree = "<group>";
@@ -312,6 +324,7 @@
 			buildConfigurationList = 2A653E1C3B72FF9EFB1BCCB4 /* Build configuration list for PBXNativeTarget "EMSWidget" */;
 			buildPhases = (
 				7200BF5BF96964FD752A8408 /* Sources */,
+				7F6149FD56EA5DB49D8F234E /* Resources */,
 				C28A7393C6100C85D8B585EA /* Frameworks */,
 			);
 			buildRules = (
@@ -349,6 +362,7 @@
 			buildConfigurationList = D9207E08DA00D2FCD3402FFF /* Build configuration list for PBXNativeTarget "EMSControlCore" */;
 			buildPhases = (
 				B2059C6CC475C1E7AEB9F72C /* Sources */,
+				A477D9F39F744A7862F7E34B /* Resources */,
 			);
 			buildRules = (
 			);
@@ -431,11 +445,28 @@
 /* End PBXProject section */
 
 /* Begin PBXResourcesBuildPhase section */
+		7F6149FD56EA5DB49D8F234E /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				B89A9A0ED173E773CA085069 /* PrivacyInfo.xcprivacy in Resources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		A477D9F39F744A7862F7E34B /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				EDDA8DBD9BE38004CAF9859F /* PrivacyInfo.xcprivacy in Resources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 		B7C4B7EE1DC4EFEFFA23A5C3 /* Resources */ = {
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
 				9AA655D073E01E5E13F7FFA5 /* Assets.xcassets in Resources */,
+				04B675AEAA6CC693F51243AB /* PrivacyInfo.xcprivacy in Resources */,
 				CE05537D943C4DEF4E95F80E /* demo-chat.json in Resources */,
 				211D0CD0F3242A3EF71BD8AE /* demo-dashboard.json in Resources */,
 				A93F94C222669DFBD1867493 /* demo-explainer.json in Resources */,
@@ -508,6 +539,7 @@
 				145FB2DA6CB9ACB0352B4CED /* NotificationsView.swift in Sources */,
 				CFDAE5E01BD52A55AF0DCD9D /* SettingsView.swift in Sources */,
 				F1353BCF968E5BDD8B22A049 /* UnreachableFailureBanner.swift in Sources */,
+				3725F052C45F31EDA8CD9CB0 /* WidgetTimelineReloader.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

@@ -54,11 +54,17 @@ struct AppShellView: View {
         .task {
             // UI-screenshot / preview hook: land straight on the demo dashboard when launched
             // with EMS_UI_DEMO=1 in the environment. Never fires on a normal launch.
+            if ProcessInfo.processInfo.arguments.contains("-UITestingReset") {
+                dashboardStore.forgetServer()
+            }
             if ProcessInfo.processInfo.environment["EMS_UI_DEMO"] == "1" {
                 dashboardStore.loadDemo()
                 return
             }
             dashboardStore.restoreSavedServer()
+            if dashboardStore.snapshot == nil, dashboardStore.client == nil {
+                dashboardStore.clearOrphanedWidgetDemoStateIfDisconnected()
+            }
             await dashboardStore.refresh()
         }
         .task(id: refreshLoopKey) {
@@ -205,8 +211,7 @@ private struct DemoModeBanner: View {
                 .font(.subheadline.weight(.semibold))
             Text("— sample data only, no live EMS connection")
                 .font(.caption)
-                .lineLimit(1)
-                .minimumScaleFactor(0.8)
+                .lineLimit(2)
         }
         .foregroundStyle(themeColor(theme.background))
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -214,7 +219,6 @@ private struct DemoModeBanner: View {
         .padding(.vertical, 8)
         .background(themeColor(theme.amber))
         .accessibilityIdentifier("demo.mode.banner")
-        .accessibilityElement(children: .combine)
         .accessibilityLabel("Demo mode active")
     }
 }
