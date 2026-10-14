@@ -19,12 +19,14 @@ from ems.sources.tibber import TibberPriceSource
 AMS = ZoneInfo("Europe/Amsterdam")
 
 
-def test_registry_includes_mock_and_tibber():
+def test_registry_includes_mock_tibber_and_fixed():
     assert "mock" in registered_providers()
     assert "tibber" in registered_providers()
+    assert "fixed" in registered_providers()
     assert registered_adapters(PRICE_DOMAIN) == registered_providers()
     assert get_metadata(PRICE_DOMAIN, "mock") is not None
     assert get_metadata(PRICE_DOMAIN, "tibber") is not None
+    assert get_metadata(PRICE_DOMAIN, "fixed") is not None
 
 
 def test_register_price_provider_duplicate_fails():

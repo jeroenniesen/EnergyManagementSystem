@@ -182,7 +182,12 @@ class TibberPriceSource:
     request per window — avoids HTTP 429). On a fetch failure it serves the **last good** prices
     rather than dropping them — day-ahead prices for the rest of today don't change, so a transient
     outage/429 must not collapse the plan and prediction (CLAUDE.md: never worse than 'no EMS').
-    Only a failure with no prior success degrades to []."""
+    Only a failure with no prior success and no configured fixed-tariff backup degrades to [].
+
+    Fallback chain (#118): live Tibber → last-good cache → ``fallback`` (fixed tariff) → ``[]``.
+    While the fixed backup is active, ``serving_fixed_backup`` is True and ``unavailable_since``
+    returns immediately so control stays in self-use (reporting-only on backup prices).
+    """
 
     def __init__(
         self,
@@ -199,6 +204,7 @@ class TibberPriceSource:
         clock: Callable[[], datetime] | None = None,
         cache_store: object | None = None,
         cache_key: str = _CACHE_KEY,
+        fallback: object | None = None,
     ) -> None:
         self.token = token
         self.tz = tz
@@ -229,7 +235,14 @@ class TibberPriceSource:
         self._lock = threading.Lock()
         self._cache_store = cache_store
         self._cache_key = cache_key
+        self._fallback = fallback
+        self._serving_fixed_backup = False
         self._warm_start()
+
+    @property
+    def serving_fixed_backup(self) -> bool:
+        """True while the last ``slots()`` result came from the fixed-tariff backup (#118)."""
+        return self._serving_fixed_backup
 
     def _warm_start(self) -> None:
         """Seed the in-memory cache from a persisted snapshot so a restart doesn't immediately
@@ -281,7 +294,11 @@ class TibberPriceSource:
         - Returned timestamp is the frozen first failure of the streak (`_last_error_at`), so
           "sinds hh:mm" does not walk forward on every retry.
         Cold start (never succeeded): grace is skipped; N consecutive failures are enough.
+        Fixed-tariff backup (#118): while serving backup slots, return immediately so control
+        never grid-charges on estimated prices (reporting/display only).
         """
+        if self._serving_fixed_backup and self._last_error_at is not None:
+            return self._last_error_at
         if self._consecutive_failures < self._outage_min_failures:
             return None
         if self._last_error_at is None:
@@ -291,6 +308,26 @@ class TibberPriceSource:
         if self._clock() - self._last_ok_at <= self._outage_grace:
             return None
         return self._last_error_at
+
+    def _slots_from_fallback(self) -> list[PriceSlot]:
+        """Last rung of #118: configured fixed tariff, or empty when unset."""
+        if self._fallback is None:
+            self._serving_fixed_backup = False
+            return []
+        try:
+            slots = list(self._fallback.slots())
+        except Exception as exc:
+            _log.warning("fixed-tariff backup failed (%s); no prices", exc)
+            self._serving_fixed_backup = False
+            return []
+        self._serving_fixed_backup = bool(slots)
+        if slots:
+            _log.warning(
+                "Tibber unavailable with no last-good cache; serving fixed-tariff backup "
+                "(%d slots) — control stays in self-use",
+                len(slots),
+            )
+        return slots
 
     def _persist(self, slots: list[PriceSlot]) -> None:
         if self._cache_store is None:
@@ -305,16 +342,23 @@ class TibberPriceSource:
     def slots(self) -> list[PriceSlot]:
         if not self.token:
             _log.warning("Tibber token not set; no prices")
+            self._serving_fixed_backup = False
             return []
         # Throttle: serve the cache until the next allowed fetch. One request per window regardless
         # of how often the dashboard polls — successes hold for cache_ttl, failures for retry_ttl.
         if self._next_fetch_at is not None and self._clock() < self._next_fetch_at:
-            return self._cached
+            if self._cached:
+                self._serving_fixed_backup = False
+                return self._cached
+            return self._slots_from_fallback()
         with self._lock:
             # Double-checked: a concurrent caller may have refreshed while we waited on the lock.
             now = self._clock()
             if self._next_fetch_at is not None and now < self._next_fetch_at:
-                return self._cached
+                if self._cached:
+                    self._serving_fixed_backup = False
+                    return self._cached
+                return self._slots_from_fallback()
             try:
                 data = self._post(self.endpoint, self.token, {"query": PRICE_QUERY})
                 parsed = parse_price_info(data, self.home_index)
@@ -324,14 +368,28 @@ class TibberPriceSource:
                     self._next_fetch_at = now + self._cache_ttl
                     self._note_success(now)
                     self._persist(parsed)
-                else:  # empty (no error): keep any last-good prices, retry soon
-                    self._next_fetch_at = now + self._retry_ttl
-                    self._note_failure(now)
-                return self._cached
+                    self._serving_fixed_backup = False
+                    return self._cached
+                # empty (no error): keep any last-good prices, else fixed backup; retry soon
+                self._next_fetch_at = now + self._retry_ttl
+                self._note_failure(now)
+                if self._cached:
+                    self._serving_fixed_backup = False
+                    return self._cached
+                return self._slots_from_fallback()
             except Exception as exc:
                 # Fail-safe: keep serving the last good prices; back off so we don't hammer a 429.
                 self._next_fetch_at = now + self._retry_ttl
                 self._note_failure(now)
-                _log.warning("Tibber price fetch failed (%s: %s); %s", type(exc).__name__, exc,
-                             "serving cached prices" if self._cached else "no prices yet")
-                return self._cached
+                if self._cached:
+                    self._serving_fixed_backup = False
+                    _log.warning(
+                        "Tibber price fetch failed (%s: %s); serving cached prices",
+                        type(exc).__name__, exc,
+                    )
+                    return self._cached
+                _log.warning(
+                    "Tibber price fetch failed (%s: %s); trying fixed-tariff backup",
+                    type(exc).__name__, exc,
+                )
+                return self._slots_from_fallback()

@@ -180,7 +180,9 @@ ActionDecision:         plan_id/version, desired_intent, mapped_command, reason,
 
 **Plan confidence & data-quality badge (36, 50):** derived from forecast age, price completeness, per-signal sensor freshness, and forecast spread (P90−P10). Low confidence downgrades the badge; `unsafe` blocks all overriding actions (→ `ALLOW_SELF_CONSUMPTION`).
 
-**Plan invalidation reasons (37) → trigger a replan:** new prices, new forecast, SoC deviation beyond threshold, manual override, missed/failed command. **Max replan frequency (38, `min_replan_interval_seconds`)** prevents churn.
+**Fixed-tariff price backup (#118, display-only):** when Tibber live and last-good cache are both empty and `prices.backup_fixed_eur_per_kwh` > 0, `TibberPriceSource` may serve a flat `origin=fixed_backup` curve for the UI/chart. That curve is **not** a control input: `validate_price_horizon` rejects it, `Recorder` does not upsert it into `price_slots` or stamp prices fresh, `data_quality` is `price_fallback`, charge commitments abort (no `GRID_CHARGE` resume), and the plan memo is invalidated when Tibber recovers. Control stays in self-use until a real Tibber (or last-good) horizon returns — never worse than “no EMS”.
+
+**Plan invalidation reasons (37) → trigger a replan:** new prices, new forecast, SoC deviation beyond threshold, manual override, missed/failed command, **leaving fixed-tariff backup (#118)**. **Max replan frequency (38, `min_replan_interval_seconds`)** prevents churn.
 
 **Planned-vs-actual SoC deviation (39):** each cycle compares actual SoC to `projected_soc(now)`; if `|Δ| > soc_deviation_replan_pct`, invalidate and replan.
 

@@ -31,6 +31,7 @@ ABORT_TARGET_REACHED = "commitment_completed: target_soc_reached"
 ABORT_DRY_RUN = "commitment_aborted: dry_run"
 ABORT_UNARMED = "commitment_aborted: unarmed"
 ABORT_UNSAFE = "commitment_aborted: unsafe"
+ABORT_PRICE_FALLBACK = "commitment_aborted: price_fallback"
 ABORT_SHUTDOWN_PRESERVED = "commitment_preserved: shutdown_restore"  # audit-only on stop
 
 
@@ -144,6 +145,15 @@ def evaluate_commitment(
         return CommitmentVerdict(
             "abort",
             f"{ABORT_UNSAFE} — data quality unsafe; fail-safe AUTO (commitment cleared)",
+            commitment,
+        )
+
+    # #118: fixed-tariff / price_fallback is reporting-only — never resume GRID_CHARGE on it.
+    if data_quality == "price_fallback":
+        return CommitmentVerdict(
+            "abort",
+            (f"{ABORT_PRICE_FALLBACK} — backup/display prices only; "
+             "cannot resume GRID_CHARGE (commitment cleared)"),
             commitment,
         )
 

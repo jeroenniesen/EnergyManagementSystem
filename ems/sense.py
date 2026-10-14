@@ -120,11 +120,18 @@ class Recorder:
         """Upsert the current price curve so PAST slots keep the price that was active then —
         the live feed only carries today/tomorrow (finance + best-price history, spec 2026-07-03).
         Best-effort: prices come from the source's cache, but a failure (feed down, DB busy) must
-        never kill the sense cycle; the gap just lowers that day's price_coverage."""
+        never kill the sense cycle; the gap just lowers that day's price_coverage.
+
+        #118: fixed-tariff backup slots are display-only — never upsert into ``price_slots`` and
+        never stamp ``prices`` fresh (would look like a live Tibber fetch).
+        """
         if self.price_source is None:
             return
         try:
             slots = await asyncio.to_thread(self.price_source.slots)
+            serving_backup = bool(getattr(self.price_source, "serving_fixed_backup", False))
+            if serving_backup or any(getattr(p, "origin", "live") == "fixed_backup" for p in slots):
+                return
             await self.store.upsert_price_slots(
                 [(p.start.astimezone(UTC).isoformat(), float(p.eur_per_kwh)) for p in slots])
             # Stamp prices freshness from the source's real fetch time when available so a
