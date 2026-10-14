@@ -7,6 +7,7 @@ from ems.settings import (
     VALIDATE_SETTINGS_WITHOUT_DEV_MODE,
     defaults,
     effective_settings,
+    live_mock_forecast_in_use,
     live_mock_forecast_provider_active,
     schema_json,
     validate_settings,
@@ -238,6 +239,20 @@ def test_live_mock_forecast_provider_active_on_stored_mock():
     assert live_mock_forecast_provider_active(eff, "live") is True
     assert live_mock_forecast_provider_active(eff, "mock") is False
     assert live_mock_forecast_provider_active(eff, None) is False
+
+
+def test_live_mock_forecast_in_use_covers_restart_window():
+    """Saved Forecast.Solar but process still serving MockSolarForecastSource → still gated."""
+    from zoneinfo import ZoneInfo
+
+    from ems.sources.forecast import MockSolarForecastSource
+
+    eff = effective_settings({"solar.forecast_provider": "forecast_solar"})
+    mock_src = MockSolarForecastSource(ZoneInfo("Europe/Amsterdam"))
+    assert live_mock_forecast_provider_active(eff, "live") is False
+    assert live_mock_forecast_in_use(mock_src, eff, "live") is True
+    assert live_mock_forecast_in_use(mock_src, eff, "mock") is False
+    assert live_mock_forecast_in_use(None, eff, "live") is False
 
 
 def test_live_mock_forecast_provider_marks_data_quality_degraded():

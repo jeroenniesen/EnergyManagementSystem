@@ -51,6 +51,17 @@ def test_missing_prices_is_a_warning_not_a_failure():
     assert overall_status(checks) == "warn"
 
 
+def test_live_mock_forecast_diagnostics_names_demo_curve_not_missing():
+    """#242: demo curve on live is warn with honest detail — not 'no forecast source'."""
+    checks = build_diagnostics(
+        **_facts(forecast_ok=False, forecast_mock_on_live=True),
+    )
+    forecast = next(c for c in checks if c.key == "forecast")
+    assert forecast.status == "warn"
+    assert "demo curve" in forecast.detail.lower()
+    assert "no forecast source" not in forecast.detail.lower()
+
+
 def test_unsafe_data_quality_fails():
     checks = build_diagnostics(**_facts(data_quality="unsafe"))
     assert next(c for c in checks if c.key == "data_quality").status == "fail"
