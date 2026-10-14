@@ -814,15 +814,6 @@ def _normalise_dev_mode(dev_mode: str | None) -> str | None:
     return str(dev_mode).strip().lower()
 
 
-<<<<<<< HEAD
-=======
-def _normalise_dev_mode(dev_mode: str | None) -> str | None:
-    if dev_mode is None:
-        return None
-    return str(dev_mode).strip().lower()
-
-
->>>>>>> cb36a7a (fix(settings): surface persisted mock forecast on live installs (#242))
 def _mock_forecast_provider_disabled(dev_mode: str | None) -> bool:
     """#242: synthetic mock forecast is demo-only — grey out / reject in live Settings.
 
