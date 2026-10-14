@@ -38,7 +38,7 @@ SPEC §9 for the full target sample this mirrors):
 
     homeassistant:
       base_url: http://homeassistant.local:8123
-      token: !secret ha_long_lived_token   # via !secret/env, never committed
+      token: <via Settings / HA_TOKEN>     # never commit; no yaml !secret loader
       entity_map:                          # role -> entity id (don't rely on discovery names)
         grid_power: sensor.p1_meter_active_power
         solar_power: sensor.solar_kwh_meter_active_power
