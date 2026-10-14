@@ -191,6 +191,41 @@ def test_above_floor_persistence_still_applies():
     assert controller.driver.current_mode() is PhysicalMode.IDLE
 
 
+def test_floor_anti_flap_uses_device_min_when_stored_reserve_lower():
+    """#245: stored 3% + probed 5% — latch at the physical floor (5%), not the stored setting."""
+    controller = _controlling_controller()
+    settings = effective_settings({})
+    settings["battery.min_reserve_soc"] = 3.0
+    svc = ControlService(
+        ctx=ControlContext(), settings=settings, controller=controller, store=None,
+        audit_store=None, price_source=None, solar_forecast=None,
+        site_tz=ZoneInfo("Europe/Amsterdam"), dry_run=False, clock=None,
+        current_soc=lambda now: 5.0,
+        current_mode=lambda now: controller.driver.current_mode(),
+        current_towers=lambda now: None,
+        data_quality=lambda now: "fresh",
+        car_charging=lambda now: False,
+        load_by=lambda starts: {s: 0.0 for s in starts},
+        active_strategy=lambda now: "winter",
+        validate_plan_obj=lambda plan, now: PlanValidation(status="valid"),
+        planner_cfg=lambda: None,
+        summer_cfg=lambda s: None,
+        adaptive_cfg=lambda: None,
+        device_min_target_soc=lambda: 5.0,
+    )
+    state = {"i": 0}
+
+    def flapping(now):
+        state["i"] += 1
+        return _HOLD if state["i"] % 2 else _ASC
+
+    svc.effective_intent = flapping
+    for k in range(8):
+        svc.control_tick(NOW + timedelta(seconds=k))
+    assert controller.switches_today == 0
+    assert svc._ctx.floor_anti_flap_box["holding"] is True
+
+
 def test_manual_override_bypasses_floor_anti_flap():
     controller = _controlling_controller()
     svc, _ctx = _service(controller, soc=5.0)

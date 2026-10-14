@@ -37,7 +37,8 @@ import math
 from dataclasses import dataclass, replace
 from datetime import datetime, timedelta
 
-from ems.domain import BatteryIntent
+from ems.battery_profile import effective_plan_reserve_soc
+from ems.domain import BatteryIntent, CapabilityReport
 from ems.planner.charge_need import stored_kwh_per_slot
 from ems.planner.projection import ProjectedSlot
 from ems.planner.schedule import SLOT, Plan, PlanSlot
@@ -275,6 +276,8 @@ def honest_partial_from_projection(
     projection: list[ProjectedSlot] | None,
     *,
     min_reserve_soc: float,
+    capability: CapabilityReport | None = None,
+    min_target_soc: float = 0.0,
     margin_pp: float = 5.0,
 ) -> Plan:
     """Lower unreachable winter grid-charge targets to the projected reachable SoC (#162).
@@ -296,7 +299,9 @@ def honest_partial_from_projection(
     if not charge:
         return plan
 
-    reserve = max(0.0, min_reserve_soc)
+    reserve = effective_plan_reserve_soc(
+        min_reserve_soc, capability, device_min_target_soc=min_target_soc,
+    )
     # Per-commitment reachable SoC (same grouping as validator check #6).
     commitments = {(s.deadline or plan.deadline,
                     s.target_soc if s.target_soc is not None else plan.target_soc)

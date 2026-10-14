@@ -15,6 +15,8 @@ from __future__ import annotations
 import math
 from dataclasses import dataclass
 
+from ems.battery_profile import effective_plan_reserve_soc
+
 _SLOT_HOURS = 0.25  # hours in a 15-min slot (energy = power × this)
 
 
@@ -65,6 +67,7 @@ def compute_charge_need(
     night_reserve_kwh: float,
     overnight_load_kwh: float,
     round_trip_efficiency: float = 1.0,
+    device_min_target_soc: float = 0.0,
 ) -> ChargeNeed:
     """Target = overnight load + night reserve (converted to the DC store they need) + reserve
     floor, capped at usable capacity.
@@ -85,7 +88,10 @@ def compute_charge_need(
             reason="battery capacity not configured",
         )
     eta = math.sqrt(max(1e-6, min(1.0, round_trip_efficiency)))
-    reserve_kwh = usable_kwh * max(0.0, min_reserve_soc) / 100.0
+    reserve_pct = effective_plan_reserve_soc(
+        min_reserve_soc, device_min_target_soc=device_min_target_soc,
+    )
+    reserve_kwh = usable_kwh * reserve_pct / 100.0
     current_kwh = usable_kwh * soc / 100.0
     target_kwh = min(
         usable_kwh, (overnight_load_kwh + night_reserve_kwh) / eta + reserve_kwh

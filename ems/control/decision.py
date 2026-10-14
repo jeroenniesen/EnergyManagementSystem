@@ -16,6 +16,7 @@ from ems.application.protocols import (
     PlanProvider,
     PlanValidator,
 )
+from ems.battery_profile import effective_plan_reserve_soc
 from ems.control.override import as_plan
 from ems.control.safety import SafetyValidator
 from ems.domain import BatteryIntent
@@ -32,6 +33,7 @@ class ControlDecisionEngine:
         car_mode_action: CarModeActionProvider,
         car_session_active: Callable[[], bool],
         settings: dict[str, Any],
+        device_min_target_soc: Callable[[], float] = lambda: 0.0,
         site_tz=None,
         allow_export_discharge: Callable[[], bool] | None = None,
         validate_plan: PlanValidator | None = None,
@@ -41,6 +43,7 @@ class ControlDecisionEngine:
         self._car_mode_action = car_mode_action
         self._car_session_active = car_session_active
         self._settings = settings
+        self._device_min_target_soc = device_min_target_soc
         self._site_tz = site_tz
         self._allow_export_discharge = allow_export_discharge or (lambda: False)
         self._safety = safety or SafetyValidator(
@@ -50,6 +53,12 @@ class ControlDecisionEngine:
         # ControlService.control_tick. Not a control-state input — UI/recorder may call
         # effective_intent without advancing LOOP_COUNTERS.
         self.last_validator_rejected: bool = False
+
+    def _effective_min_reserve_soc(self) -> float:
+        return effective_plan_reserve_soc(
+            float(self._settings["battery.min_reserve_soc"]),
+            device_min_target_soc=float(self._device_min_target_soc()),
+        )
 
     def _car_guard(
         self,
@@ -117,7 +126,7 @@ class ControlDecisionEngine:
                 else override.expires_at.strftime("%H:%M")
             )
             intent, override_active = override.intent, True
-            floor = float(self._settings["battery.min_reserve_soc"])
+            floor = self._effective_min_reserve_soc()
             if intent is BatteryIntent.GRID_CHARGE_TO_TARGET:
                 override_target_soc = 100.0
                 override_power_w = float(self._settings["battery.max_charge_w"])
@@ -197,7 +206,7 @@ class ControlDecisionEngine:
         target_soc = power_w = None
         if car_action is not None and car_action.action == "discharge":
             power_w = car_action.power_w
-            target_soc = self._settings["battery.min_reserve_soc"]
+            target_soc = self._effective_min_reserve_soc()
         elif override_active:
             target_soc, power_w = override_target_soc, override_power_w
         elif cur is not None and intent is cur.intent:

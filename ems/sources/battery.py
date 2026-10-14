@@ -19,11 +19,24 @@ from .ports import BatteryDriver
 
 __all__ = [
     "BatteryDriver", "BatteryWriteUnconfirmed", "MockBatteryDriver",
-    "FailingMockBatteryDriver", "intent_to_mode",
+    "FailingMockBatteryDriver", "intent_to_mode", "clamp_commanded_target_soc",
 ]
 
 # Optional spy/write hook for hermetic arming tests (#139 / I3). Not used in production wiring.
 WriteTransport = Callable[..., Any]
+
+
+def clamp_commanded_target_soc(
+    target_soc: float | None,
+    capability: CapabilityReport,
+) -> float | None:
+    """Single-writer SoC target floor (#245 / adapters I4): match Indevolt clamp-at-apply."""
+    if target_soc is None:
+        return None
+    soc = max(0.0, min(100.0, float(target_soc)))
+    if capability.min_target_soc > 0:
+        soc = max(float(capability.min_target_soc), soc)
+    return soc
 
 
 class BatteryWriteUnconfirmed(Exception):
@@ -144,6 +157,7 @@ class MockBatteryDriver:
             if not self._armed:
                 return False
             self._write_transport(mode, target_soc=target_soc, power_w=power_w)
+        target_soc = clamp_commanded_target_soc(target_soc, self._capabilities)
         # Idempotent: re-applying the current mode is a no-op but still "confirmed".
         self._mode = mode
         self.last_target_soc, self.last_power_w = target_soc, power_w

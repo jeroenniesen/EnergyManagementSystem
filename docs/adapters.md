@@ -82,9 +82,11 @@ New vendor-neutral fields on every probe:
 | `min_target_soc` | Lowest charge/discharge target the device accepts (Indevolt: 5 %) |
 
 `IndevoltBatteryDriver.probe` and `MockBatteryDriver.probe` fill these from device limits.
-`/api/battery` surfaces them next to the legacy keys. `validate_plan` marks a charge target
-below `min_target_soc` as `unsafe` (`target_below_capability_min`). Central pre-`apply` clamp
-(I4) and moving Indevolt keys into `details` are **out of scope** here (slices c / d).
+`/api/battery` surfaces them next to the legacy keys. `validate_plan` warns (not `unsafe`) when a
+charge target is below `min_target_soc` (`target_below_capability_min`) — the single writer
+(`ems/sources/battery.py`, `clamp_commanded_target_soc`) floors sub-min targets at apply time
+(#245; aligns with Indevolt OpenData). Moving Indevolt keys into `details` remains **out of scope**
+(slice d).
 
 ## Adapter registry (#140)
 

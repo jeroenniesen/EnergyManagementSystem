@@ -302,6 +302,58 @@ def test_grid_fuse_preset_persists_watt_ceiling(tmp_path):
         assert not any(x["key"] == "grid_fuse" for x in checks)
 
 
+def test_min_reserve_schema_min_when_capability_known(tmp_path):
+    controller = ModeController(MockBatteryDriver(), Lifecycle(dry_run=True), dry_run=True)
+    with TestClient(_app(tmp_path, controller=controller)) as c:
+        row = next(
+            f for f in c.get("/api/settings").json()["schema"]
+            if f["key"] == "battery.min_reserve_soc"
+        )
+    assert row["min"] == 5.0
+    assert "device minimum" in row["help"]
+
+
+def test_min_reserve_schema_untouched_without_capability_probe(tmp_path):
+    with TestClient(_app(tmp_path)) as c:
+        row = next(
+            f for f in c.get("/api/settings").json()["schema"]
+            if f["key"] == "battery.min_reserve_soc"
+        )
+    assert row["min"] == 0.0
+    assert "device minimum" not in row["help"]
+
+
+def test_post_min_reserve_below_device_minimum_rejected(tmp_path):
+    controller = ModeController(MockBatteryDriver(), Lifecycle(dry_run=True), dry_run=True)
+    with TestClient(_app(tmp_path, controller=controller)) as c:
+        r = c.post("/api/settings", json={"battery.min_reserve_soc": 3})
+    assert r.status_code == 422
+    err = r.json()["errors"]["battery.min_reserve_soc"]
+    assert "must be >= 5% (battery device minimum)" in err
+
+
+def test_post_unrelated_key_keeps_stored_subfloor_reserve(tmp_path):
+    import asyncio
+
+    store = SettingsStore(str(tmp_path / "ems.sqlite"))
+
+    async def _seed():
+        await store.init()
+        await store.set_many({"battery.min_reserve_soc": 3.0})
+
+    asyncio.run(_seed())
+    controller = ModeController(MockBatteryDriver(), Lifecycle(dry_run=True), dry_run=True)
+    app = create_app(
+        MockSource(), dry_run=True, dev_mode="mock", settings_store=store,
+        controller=controller,
+    )
+    with TestClient(app) as c:
+        assert c.get("/api/settings").json()["values"]["battery.min_reserve_soc"] == 3.0
+        r = c.post("/api/settings", json={"ui.theme": "dark"})
+        assert r.status_code == 200
+        assert r.json()["values"]["battery.min_reserve_soc"] == 3.0
+
+
 def test_grid_fuse_custom_persists_watts(tmp_path):
     with TestClient(_app(tmp_path)) as c:
         r = c.post(

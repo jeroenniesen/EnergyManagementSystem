@@ -2,6 +2,10 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from ems.domain import CapabilityReport
 
 
 def normalize_tower_ips(master_ip: object, extra_ips: object = "") -> tuple[str, ...]:
@@ -45,6 +49,27 @@ class BatteryTopology:
         if self.tower_count > 1:
             return "battery cluster"
         return "battery"
+
+
+def effective_plan_reserve_soc(
+    min_reserve_soc: float,
+    capability: CapabilityReport | None = None,
+    *,
+    device_min_target_soc: float = 0.0,
+) -> float:
+    """Planner/validator reserve floor: operator setting overlaid with probed device minimum (#245).
+
+    Stored `battery.min_reserve_soc` may stay below the device floor for backward compatibility;
+    control and validation use this effective value so plans match what the writer will command."""
+    reserve = max(0.0, float(min_reserve_soc))
+    device_min = 0.0
+    if capability is not None and capability.min_target_soc > 0:
+        device_min = float(capability.min_target_soc)
+    elif device_min_target_soc > 0:
+        device_min = float(device_min_target_soc)
+    if device_min > 0:
+        reserve = max(reserve, device_min)
+    return reserve
 
 
 def apply_topology_defaults(settings: dict[str, object]) -> dict[str, object]:

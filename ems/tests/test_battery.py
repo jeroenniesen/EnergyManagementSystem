@@ -77,6 +77,12 @@ def test_configure_power_limits_preserves_vendor_neutral_floors():
     assert cap.supports_grid_charge is True
 
 
+def test_apply_floors_sub_min_target_soc_to_capability():
+    d = MockBatteryDriver()
+    d.apply(PhysicalMode.CHARGE, target_soc=3.0)
+    assert d.last_target_soc == 5.0
+
+
 def test_apply_changes_mode_and_is_idempotent():
     d = MockBatteryDriver()
     assert d.current_mode() is PhysicalMode.AUTO
