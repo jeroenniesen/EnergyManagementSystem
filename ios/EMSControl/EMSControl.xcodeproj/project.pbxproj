@@ -10,6 +10,7 @@
 		00308D987E6218B59EE31A64 /* EMSControlCore.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 62C0D3FEB8DD96AF4F3CAD8C /* EMSControlCore.framework */; };
 		00AE97E9ADF30CA0D9CCD42D /* EMSControlCore.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 62C0D3FEB8DD96AF4F3CAD8C /* EMSControlCore.framework */; };
 		022C3F5AE75E9FFB6CCA9005 /* DemoModeUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 06EC1C3C24D57B8D8236CC2F /* DemoModeUITests.swift */; };
+		259B1B2C3D4E5F60718293AC /* DemoModeScreenshotsUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 259A1B2C3D4E5F60718293AB /* DemoModeScreenshotsUITests.swift */; };
 		03BCFFC4E5ACF67ED5DA059F /* InsightsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 257B061EB9A96671DDB32DC5 /* InsightsView.swift */; };
 		042F4F18CFE0650AA449CAAC /* InsightsStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = AE96D50A9EC3DC4FEC64185B /* InsightsStore.swift */; };
 		04B675AEAA6CC693F51243AB /* PrivacyInfo.xcprivacy in Resources */ = {isa = PBXBuildFile; fileRef = C29A56A2AA2FCDB54F5C870D /* PrivacyInfo.xcprivacy */; };
@@ -121,6 +122,7 @@
 		00F8B1F9E78007B8E6F45047 /* ActivityStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ActivityStore.swift; sourceTree = "<group>"; };
 		033DDC49ECE87F18564D3288 /* ServerDiscovery.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ServerDiscovery.swift; sourceTree = "<group>"; };
 		06EC1C3C24D57B8D8236CC2F /* DemoModeUITests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DemoModeUITests.swift; sourceTree = "<group>"; };
+		259A1B2C3D4E5F60718293AB /* DemoModeScreenshotsUITests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DemoModeScreenshotsUITests.swift; sourceTree = "<group>"; };
 		0888EA444AB57461568AD1F4 /* demo-dashboard.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = "demo-dashboard.json"; sourceTree = "<group>"; };
 		13253B7C77956C58739FA336 /* Models.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Models.swift; sourceTree = "<group>"; };
 		14BCF6378F4A63CC1232715D /* EMSWidget.appex */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = "wrapper.app-extension"; path = EMSWidget.appex; sourceTree = BUILT_PRODUCTS_DIR; };
@@ -230,6 +232,7 @@
 			isa = PBXGroup;
 			children = (
 				06EC1C3C24D57B8D8236CC2F /* DemoModeUITests.swift */,
+				259A1B2C3D4E5F60718293AB /* DemoModeScreenshotsUITests.swift */,
 			);
 			path = EMSControlUITests;
 			sourceTree = "<group>";
@@ -492,6 +495,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				022C3F5AE75E9FFB6CCA9005 /* DemoModeUITests.swift in Sources */,
+				259B1B2C3D4E5F60718293AC /* DemoModeScreenshotsUITests.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

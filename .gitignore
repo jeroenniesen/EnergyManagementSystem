@@ -53,6 +53,7 @@ ems/web/frontend/.e2e-data/
 
 # iOS / Xcode build artifacts (never commit DerivedData-style trees)
 ios/**/build/
+ios/**/build/app-store-screenshots/
 ios/**/.build/
 **/xcuserdata/
 *.xcuserstate
