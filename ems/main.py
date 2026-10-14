@@ -28,6 +28,7 @@ from ems.storage.control_state import ControlStateStore
 from ems.storage.history import HistoryStore
 from ems.storage.settings import SettingsStore
 from ems.web.api import create_app
+from ems.web.bind_safety import ENV_WEB_BIND, resolve_listen_host
 
 _REPO_ROOT = Path(__file__).parent.parent
 # Built SPA (ems/web/static/dist) — present after `npm run build`; absent in pure-API dev.
@@ -140,7 +141,12 @@ app, _cfg = build_app()
 
 def main() -> None:
     # Reuse the already-built config; don't rebuild the app (which would make a 2nd store/recorder).
-    uvicorn.run("ems.main:app", host="0.0.0.0", port=_cfg.web_port)
+    # #234: open bind only when a bootstrap/shared token is present (or EMS_WEB_BIND overrides).
+    host = resolve_listen_host(
+        explicit=os.environ.get(ENV_WEB_BIND),
+        has_shared_token=bool(os.environ.get("EMS_WEB_TOKEN")),
+    )
+    uvicorn.run("ems.main:app", host=host, port=_cfg.web_port)
 
 
 if __name__ == "__main__":

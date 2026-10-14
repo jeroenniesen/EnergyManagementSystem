@@ -43,6 +43,17 @@ trust list, the proxy's own auth (SSO / service token), and TLS termination.
 The VPN authenticates the *device onto the network*; the **token** authenticates the *request to the
 EMS*. Both layers are required for safe remote use — the VPN is not a substitute for the token.
 
+## First admin on a fresh install
+
+`POST /api/auth/onboard` is auth-exempt so you can create the first admin. To stop a LAN peer from
+seizing that race when the service binds `0.0.0.0`:
+
+- **`scripts/install.sh` / bootstrap** mint a bootstrap token (`EMS_WEB_TOKEN`, also written to
+  `ems/data/bootstrap_web_token`) and print it. Enter it on the create-admin screen as
+  **Existing access token**.
+- **Without a token**, `python -m ems.main` defaults to `127.0.0.1`, and onboard from a non-loopback
+  client returns `403`. Override bind with `EMS_WEB_BIND` only when you understand the risk.
+
 ## Turn this on before connecting remotely
 
 1. **Set a token.** Settings → Access → *Web access token* (`web.auth_token`). Use a long random

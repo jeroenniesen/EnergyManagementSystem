@@ -47,7 +47,8 @@ def test_auth_discovery_body_for_anonymous_caller_when_user_exists(tmp_path):
     with TestClient(_app(db)) as c:
         body = c.get("/api/auth").json()
         assert set(body) == {
-            "required", "authenticated", "onboarding_needed", "user", "shared_token_required",
+            "required", "authenticated", "onboarding_needed", "user",
+            "shared_token_required", "local_onboard_only",
         }
         assert body == {
             "required": True,
@@ -57,6 +58,8 @@ def test_auth_discovery_body_for_anonymous_caller_when_user_exists(tmp_path):
             # Task 9: onboarding is already closed (a user exists), so the shared-token field
             # is never needed regardless of whether a shared token is configured.
             "shared_token_required": False,
+            # #234: same — local-only onboard gate only applies while onboarding is open.
+            "local_onboard_only": False,
         }
 
 

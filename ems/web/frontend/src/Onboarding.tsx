@@ -7,12 +7,15 @@ import { setToken } from "./auth";
 // first admin exists (`GET /api/auth`'s `onboarding_needed`). `sharedTokenRequired` comes from that
 // same discovery payload — a legacy `EMS_WEB_TOKEN`/`web.auth_token` must be proven (anti-seizure)
 // before onboarding is allowed to mint the first admin, so the "Existing access token" field only
-// renders when the backend says one is configured.
+// renders when the backend says one is configured. `localOnboardOnly` (#234) means no bootstrap
+// token is configured: create-admin is accepted only from the EMS host itself (loopback).
 export function Onboarding({
   sharedTokenRequired,
+  localOnboardOnly = false,
   onDone,
 }: {
   sharedTokenRequired: boolean;
+  localOnboardOnly?: boolean;
   onDone: () => void;
 }) {
   const [username, setUsername] = useState("");
@@ -83,6 +86,14 @@ export function Onboarding({
               autoComplete="off"
             />
           </div>
+        )}
+        {localOnboardOnly && (
+          <p className="field-help" data-testid="local-onboard-hint">
+            For safety, the first admin can only be created from this machine
+            (http://localhost). To set up from another device on your LAN, re-run
+            the installer (it prints a bootstrap token) or set EMS_WEB_TOKEN and
+            restart.
+          </p>
         )}
         <button type="submit" className="btn-primary" disabled={busy}>Create admin</button>
         {error && <p role="alert" className="field-err">{error}</p>}

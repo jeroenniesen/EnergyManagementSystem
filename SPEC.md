@@ -662,10 +662,10 @@ mqtt:
 
 web:
   enabled: true
-  bind: 0.0.0.0
+  bind: 0.0.0.0             # open bind only with bootstrap/shared token (#234); else 127.0.0.1
   port: 8080
   auth: bearer             # bearer | basic  (LAN-only by default; never expose to internet)
-  auth_token: !secret ems_web_token
+  auth_token: !secret ems_web_token   # install mints EMS_WEB_TOKEN before open bind (#234)
   guest_readonly: true     # optional read-only dashboard without control
   # Frontend is React + Vite, built at image-build time and served by FastAPI (§9.1).
   # No runtime CDN: all deps (charts, Leaflet, fonts, icons) are bundled/self-hosted.

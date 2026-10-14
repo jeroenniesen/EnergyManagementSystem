@@ -366,6 +366,8 @@ type AuthState = {
   authenticated: boolean;
   onboarding_needed: boolean;
   shared_token_required: boolean;
+  /** #234: true when create-admin is loopback-only (no bootstrap/shared token). */
+  local_onboard_only?: boolean;
   user: { username: string; role: string } | null;
 } | null;
 
@@ -776,7 +778,13 @@ export function App() {
   // the branch here, once all hooks are done, is the safe equivalent.
   if (auth === null) return null; // splash while the first GET /api/auth is in flight
   if (auth.onboarding_needed) {
-    return <Onboarding sharedTokenRequired={auth.shared_token_required} onDone={refreshAuth} />;
+    return (
+      <Onboarding
+        sharedTokenRequired={auth.shared_token_required}
+        localOnboardOnly={Boolean(auth.local_onboard_only)}
+        onDone={refreshAuth}
+      />
+    );
   }
   // Reachable while logged out (BEFORE the login gate below), like Onboarding — but onboarding
   // still wins when both are true (a fresh install has no invites to accept yet anyway).

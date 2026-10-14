@@ -47,6 +47,7 @@ from fastapi.responses import JSONResponse
 from ems.authn import dummy_verify, hash_password, hash_token, verify_password
 from ems.storage.auth import UsernameTaken
 from ems.web.authz import role_rank, tier_rank
+from ems.web.bind_safety import is_loopback_host
 from ems.web.context import AppContext
 from ems.web.ratelimit import LoginRateLimiter
 
@@ -139,11 +140,15 @@ def build_router(ctx: AppContext) -> APIRouter:
         """Create the first admin. User management/invites (routes/users.py) and invite-accept
         (below, in this module) shipped in slice 2 — this handler stays onboarding-only.
 
-        Anti-seizure: when a shared token (`EMS_WEB_TOKEN` / UI-set `web.auth_token`) is already
-        configured, onboarding REQUIRES proving control of it (else anyone reaching this exempt
-        endpoint before the real operator could mint themselves the first admin). The shared
-        token is migrated into an `access` token owned by the new admin, in the SAME atomic
-        transaction as the admin + session insert (`AuthStore.onboard_admin`).
+        Anti-seizure (#234):
+        - When a shared token (`EMS_WEB_TOKEN` / UI-set `web.auth_token`) is already configured,
+          onboarding REQUIRES proving control of it (else anyone reaching this exempt endpoint
+          before the real operator could mint themselves the first admin). The shared token is
+          migrated into an `access` token owned by the new admin, in the SAME atomic transaction
+          as the admin + session insert (`AuthStore.onboard_admin`).
+        - When no shared token is configured, only loopback clients may onboard — a LAN peer
+          cannot seize admin on a fresh open bind. Install generates a bootstrap token so LAN
+          setup still works (see `scripts/install.sh`).
         """
         if request.app.state.users_exist:
             return JSONResponse({"detail": "already onboarded"}, status_code=409)
@@ -159,6 +164,14 @@ def build_router(ctx: AppContext) -> APIRouter:
             if not secrets.compare_digest(str(body.get("shared_token", "")), shared):
                 return JSONResponse({"detail": "shared token required"}, status_code=403)
             migrate_hash = hash_token(shared)
+        else:
+            # No bootstrap/shared token: only the machine itself may create the first admin.
+            client_host = request.client.host if request.client else ""
+            if not is_loopback_host(client_host):
+                return JSONResponse(
+                    {"detail": "onboard from localhost, or set EMS_WEB_TOKEN for LAN bootstrap"},
+                    status_code=403,
+                )
         result = await auth_store.onboard_admin(username, hash_password(password),
                                                 migrate_token_hash=migrate_hash)
         if result is None:

@@ -14,9 +14,18 @@ def _app(db, *, token=None):
                       web_auth_token=token)
 
 
+def _local_client(app):
+    # #234: without a shared token, onboard is loopback-only; TestClient defaults to "testclient".
+    return TestClient(app, client=("127.0.0.1", 50000))
+
+
+def _lan_client(app):
+    return TestClient(app, client=("192.168.1.50", 50000))
+
+
 def test_onboard_creates_admin_then_gates_reopen(tmp_path):
     db = str(tmp_path / "ems.sqlite")
-    with TestClient(_app(db)) as c:
+    with _local_client(_app(db)) as c:
         assert c.get("/api/status").status_code == 409
         r = c.post("/api/auth/onboard", json={"username": "admin", "password": "pw12345678"})
         assert r.status_code == 200
@@ -33,7 +42,7 @@ def test_onboard_rejects_whitespace_only_username(tmp_path):
     # username slipped past the length check (accept_invite already stripped first). Both now go
     # through the shared `_validate_new_account` helper.
     db = str(tmp_path / "ems.sqlite")
-    with TestClient(_app(db)) as c:
+    with _local_client(_app(db)) as c:
         r = c.post("/api/auth/onboard", json={"username": "   ", "password": "pw12345678"})
         assert r.status_code == 422
         assert r.json()["detail"] == "username required; password min 8"
@@ -43,7 +52,8 @@ def test_onboard_rejects_whitespace_only_username(tmp_path):
 
 def test_onboard_requires_shared_token_and_migrates_it(tmp_path):
     db = str(tmp_path / "ems.sqlite")
-    with TestClient(_app(db, token="legacy-shared")) as c:
+    # Shared token present → LAN onboard allowed when the token is proven.
+    with _lan_client(_app(db, token="legacy-shared")) as c:
         no_token = c.post("/api/auth/onboard",
                           json={"username": "a", "password": "pw12345678"})
         assert no_token.status_code == 403
@@ -54,6 +64,32 @@ def test_onboard_requires_shared_token_and_migrates_it(tmp_path):
         # the old shared token now works as a migrated access token
         migrated = c.get("/api/status", headers={"Authorization": "Bearer legacy-shared"})
         assert migrated.status_code == 200
+
+
+def test_onboard_without_token_rejects_lan_client(tmp_path):
+    """#234: open bind + no bootstrap token → LAN peer cannot seize first admin."""
+    db = str(tmp_path / "ems.sqlite")
+    with _lan_client(_app(db)) as c:
+        auth = c.get("/api/auth").json()
+        assert auth["onboarding_needed"] is True
+        assert auth["shared_token_required"] is False
+        assert auth["local_onboard_only"] is True
+        r = c.post("/api/auth/onboard", json={"username": "admin", "password": "pw12345678"})
+        assert r.status_code == 403
+        assert "localhost" in r.json()["detail"]
+        # Still open for a real loopback client.
+    with _local_client(_app(db)) as c:
+        assert c.post(
+            "/api/auth/onboard", json={"username": "admin", "password": "pw12345678"},
+        ).status_code == 200
+
+
+def test_auth_discovery_local_onboard_only_clears_when_token_configured(tmp_path):
+    db = str(tmp_path / "ems.sqlite")
+    with TestClient(_app(db, token="boot")) as c:
+        auth = c.get("/api/auth").json()
+        assert auth["shared_token_required"] is True
+        assert auth["local_onboard_only"] is False
 
 
 def test_concurrent_onboard_yields_single_admin(tmp_path):

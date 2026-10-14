@@ -238,7 +238,9 @@ working — screens are added on top, fetches are not rewired.
   control loop is unaffected** (it does not pass through the web gate).
 - **Anti-seizure:** if a shared token (`EMS_WEB_TOKEN` env or `web.auth_token` setting) is
   configured, `/api/auth/onboard` **requires it** — a stranger on the LAN cannot grab admin during
-  the upgrade window. Fresh installs (no prior token) onboard first-come (like Home Assistant).
+  the upgrade window. Fresh installs: `scripts/install.sh` mints a bootstrap token before open
+  bind; without a token, onboard is **loopback-only** and `python -m ems.main` defaults to
+  `127.0.0.1` (#234 — closes the first-admin LAN race).
 - **Shared-token conversion is part of the onboarding transaction** (not a later step): the shared
   token is inserted as an `access` token owned by the new admin ("Migrated shared token") in the
   **same** `BEGIN IMMEDIATE` that creates the admin (§6), so the widget/scripts revive atomically —

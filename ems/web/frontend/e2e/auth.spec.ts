@@ -7,8 +7,9 @@ import { expect, test } from "@playwright/test";
 
 test("discovery reports onboarding needed on a fresh database", async ({ request }) => {
   // Task 10 supersedes the old "dev mode has no auth" 2-key legacy shape: `ems.main:app` always
-  // wires the identity auth store, so a fresh DB reports the full 5-key discovery payload with
+  // wires the identity auth store, so a fresh DB reports the discovery payload with
   // onboarding forced (Task 7/9 — GET /api/auth is EXEMPT, so this is reachable logged-out).
+  // #234: hermetic e2e server has no EMS_WEB_TOKEN → local_onboard_only (Playwright hits loopback).
   const b = await (await request.get("/api/auth")).json();
   expect(b).toMatchObject({
     required: true,
@@ -16,6 +17,7 @@ test("discovery reports onboarding needed on a fresh database", async ({ request
     onboarding_needed: true,
     user: null,
     shared_token_required: false,
+    local_onboard_only: true,
   });
 });
 

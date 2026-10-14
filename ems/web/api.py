@@ -2564,6 +2564,9 @@ def create_app(
                 # AND a legacy shared token is actually configured).
                 "shared_token_required": (not app.state.users_exist)
                                          and _effective_web_token() is not None,
+                # #234: without a bootstrap/shared token, only loopback may POST /api/auth/onboard.
+                "local_onboard_only": (not app.state.users_exist)
+                                      and _effective_web_token() is None,
             }
         # Legacy shared-token mode (no user system wired): lets the UI show a token field only
         # when writes are protected, and reflect auth state. UNCHANGED — old tests depend on this
