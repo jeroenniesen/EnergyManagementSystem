@@ -1847,6 +1847,9 @@ def create_app(
             return "none"
         if isinstance(price_source, MockPriceSource):
             return "mock"
+        # #118: fixed-tariff backup is not "live Tibber" — surface provenance on health strip.
+        if bool(getattr(price_source, "serving_fixed_backup", False)):
+            return "fixed_backup"
         return "live"
 
     def _device_health_payload(now: datetime) -> dict:
@@ -2619,14 +2622,28 @@ def create_app(
     @app.get("/api/prices")
     def prices() -> dict:
         if price_source is None:
-            return {"currency": "EUR", "resolution": "quarter_hourly",
-                    "current_eur_per_kwh": None, "slots": []}
+            return {
+                "currency": "EUR",
+                "resolution": "quarter_hourly",
+                "current_eur_per_kwh": None,
+                "slots": [],
+                "serving_fixed_backup": False,
+            }
         slots = price_source.slots()
+        serving_backup = bool(getattr(price_source, "serving_fixed_backup", False))
         return {
             "currency": "EUR",
             "resolution": "quarter_hourly",
             "current_eur_per_kwh": current_price(slots, datetime.now(UTC)),
-            "slots": [{"start": s.start.isoformat(), "eur_per_kwh": s.eur_per_kwh} for s in slots],
+            "serving_fixed_backup": serving_backup,
+            "slots": [
+                {
+                    "start": s.start.isoformat(),
+                    "eur_per_kwh": s.eur_per_kwh,
+                    "origin": getattr(s, "origin", "live"),
+                }
+                for s in slots
+            ],
         }
 
     @app.get("/api/alerts")

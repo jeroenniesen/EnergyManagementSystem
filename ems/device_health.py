@@ -73,7 +73,7 @@ def build_device_health(
     now: datetime,
     tz=None,
     battery_reachable: bool | None = None,
-    prices_kind: str = "unknown",  # live | mock | none
+    prices_kind: str = "unknown",  # live | mock | none | fixed_backup
     forecast_label: str | None = None,
     dry_run: bool = True,
     operational_mock_prices: bool = False,
@@ -102,6 +102,9 @@ def build_device_health(
                 note = "demoprijzen" if demo or dry_run else "geen live Tibber-prijzen"
             elif prices_kind == "none":
                 note = "geen prijsbron"
+            elif prices_kind == "fixed_backup":
+                # #118: configured flat tariff while Tibber has no last-good cache — display only.
+                note = "vaste reservetarief (alleen tonen; geen sturing)"
             elif state == "stale":
                 note = "reserveprijzen / laatst bekende curve"
         if key == "forecast":

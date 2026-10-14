@@ -50,6 +50,21 @@ def test_demo_summary_label():
     assert "niet van jouw huis" in health["summary"]["detail"]
 
 
+def test_fixed_backup_prices_note_is_display_only():
+    """#118: health strip must say fixed backup is display-only, not live Tibber."""
+    tr = FreshnessTracker()
+    for sig in ("battery", "grid", "prices", "forecast"):
+        tr.register(sig)
+        tr.mark(sig, T0)
+    health = build_device_health(
+        _detail(tr), now=T0, tz=AMS, prices_kind="fixed_backup", dry_run=True, demo=False,
+    )
+    prices = next(s for s in health["sources"] if s["key"] == "prices")
+    assert prices["note"] is not None
+    assert "reservetarief" in prices["note"].lower() or "vaste" in prices["note"].lower()
+    assert "sturing" in prices["note"].lower()
+
+
 def test_operational_mock_prices_badge_is_honest_not_self_use():
     """Critical label for operational+mock (#79 #4) — no false self-use / 'je hoeft niets' claim."""
     tr = FreshnessTracker()

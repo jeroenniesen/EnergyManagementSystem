@@ -97,7 +97,11 @@ def _hermetic_price(name: str):
         if name == "tibber"
         else None
     )
-    return builder(_site_eff(), _AMS, clock=lambda: _FIXED, http_post=http_post, horizon_slots=8)
+    eff = _site_eff()
+    # #118 fixed builder returns None when backup rate is 0 / unset (disabled).
+    if name == "fixed":
+        eff = {**eff, "prices.backup_fixed_eur_per_kwh": 0.22}
+    return builder(eff, _AMS, clock=lambda: _FIXED, http_post=http_post, horizon_slots=8)
 
 
 def _hermetic_forecast(name: str):

@@ -6,10 +6,11 @@ the **only** place that picks which price adapter to construct from settings —
 
 Register a new provider with `@register_price_provider("name")` (delegates to
 `ems.sources.registry.register_adapter` under `domain="price"`). Live Tibber requires a token +
-`connection.use_live_prices`; otherwise the credential-free mock is used (fail safe).
+`connection.use_live_prices`; otherwise the credential-free mock is used (fail safe). When
+``prices.backup_fixed_eur_per_kwh`` > 0, Tibber gets a ``FixedTariffPriceSource`` fallback (#118).
 
-Class names (`TibberPriceSource`, `MockPriceSource`) are part of API/UI provenance checks — do not
-rename them lightly.
+Class names (`TibberPriceSource`, `MockPriceSource`, `FixedTariffPriceSource`) are part of API/UI
+provenance checks — do not rename them lightly.
 """
 from __future__ import annotations
 
@@ -105,6 +106,7 @@ def _build_tibber(
     http_post: object | None = None,
     cache_ttl: object | None = None,
     retry_ttl: object | None = None,
+    fallback: object | None = None,
     **_: Any,
 ) -> Any | None:
     """Build Tibber when a token (or an injected transport) is present; else None → mock."""
@@ -115,7 +117,7 @@ def _build_tibber(
         return None
     from ems.sources.tibber import TibberPriceSource
 
-    kwargs: dict[str, Any] = {"tz": tz, "cache_store": cache_store}
+    kwargs: dict[str, Any] = {"tz": tz, "cache_store": cache_store, "fallback": fallback}
     if clock is not None:
         kwargs["clock"] = clock
     if http_post is not None:
@@ -125,6 +127,57 @@ def _build_tibber(
     if retry_ttl is not None:
         kwargs["retry_ttl"] = retry_ttl
     return TibberPriceSource(token or "contract-test", **kwargs)
+
+
+@register_price_provider(
+    "fixed",
+    metadata=AdapterMetadata(
+        label="Fixed import tariff",
+        description="Flat €/kWh backup curve when Tibber has no last-good cache (#118).",
+        capabilities=frozenset({"tz_aware_slots", "synthetic", "fixed_backup"}),
+        config_fields=(
+            AdapterConfigField(
+                key="prices.backup_fixed_eur_per_kwh", type="number", required=True,
+                label="Backup fixed import price",
+            ),
+        ),
+    ),
+)
+def _build_fixed(
+    eff: dict,
+    tz: ZoneInfo,
+    *,
+    clock: Callable[[], datetime] | None = None,
+    horizon_slots: int | None = None,
+    **_: Any,
+) -> Any | None:
+    """Build fixed-tariff source when backup €/kWh > 0; else None (disabled)."""
+    try:
+        rate = float(eff.get("prices.backup_fixed_eur_per_kwh") or 0.0)
+    except (TypeError, ValueError):
+        return None
+    if rate <= 0:
+        return None
+    from ems.sources.fixed_tariff import FixedTariffPriceSource
+
+    kwargs: dict[str, Any] = {"tz": tz}
+    if clock is not None:
+        kwargs["clock"] = clock
+    if horizon_slots is not None:
+        kwargs["horizon_slots"] = horizon_slots
+    return FixedTariffPriceSource(rate, **kwargs)
+
+
+def _backup_fixed(
+    eff: dict,
+    tz: ZoneInfo,
+    *,
+    clock: Callable[[], datetime] | None = None,
+) -> Any | None:
+    builder = get_builder(PRICE_DOMAIN, "fixed")
+    if builder is None:  # pragma: no cover
+        return None
+    return builder(eff, tz, clock=clock)
 
 
 def build_price_source(
@@ -138,7 +191,8 @@ def build_price_source(
     """Construct the price source for the effective settings.
 
     - Mock curve when live prices are off or the Tibber token is missing.
-    - Otherwise Tibber via the registry (fail-safe to mock on incomplete config).
+    - Otherwise Tibber via the registry (fail-safe to mock on incomplete config), with an
+      optional fixed-tariff ``fallback`` when ``prices.backup_fixed_eur_per_kwh`` > 0 (#118).
     """
     token = (eff.get("prices.tibber_token") or "").strip()
     live = bool(use_live) if use_live is not None else (
@@ -155,5 +209,8 @@ def build_price_source(
         _log.warning("tibber adapter missing from registry; using mock prices")
         return mock_builder(eff, tz, cache_store=cache_store)
 
-    built = builder(eff, tz, cache_store=cache_store, http_post=http_post)
+    fallback = _backup_fixed(eff, tz)
+    built = builder(
+        eff, tz, cache_store=cache_store, http_post=http_post, fallback=fallback,
+    )
     return built if built is not None else mock_builder(eff, tz, cache_store=cache_store)

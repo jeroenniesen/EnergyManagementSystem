@@ -68,8 +68,12 @@ _TIBBER_OK = {
 def _build_price(name: str, *, http_post=None, horizon_slots: int | None = 16):
     builder = get_builder(PRICE_DOMAIN, name)
     assert builder is not None, f"price adapter {name!r} missing from registry"
+    eff = _site_eff()
+    # #118 fixed adapter needs a positive backup rate (0 = disabled → builder returns None).
+    if name == "fixed":
+        eff = {**eff, "prices.backup_fixed_eur_per_kwh": 0.22}
     return builder(
-        _site_eff(),
+        eff,
         AMS,
         clock=_clock,
         http_post=http_post,
@@ -170,12 +174,14 @@ def _assert_forecast_bands(slots: list[ForecastSlot]) -> None:
 
 # --- Registry presence ------------------------------------------------------
 
-def test_price_domain_registers_mock_and_tibber():
+def test_price_domain_registers_mock_tibber_and_fixed():
     names = registered_adapters(PRICE_DOMAIN)
     assert "mock" in names
     assert "tibber" in names
+    assert "fixed" in names
     assert get_metadata(PRICE_DOMAIN, "mock") is not None
     assert get_metadata(PRICE_DOMAIN, "tibber") is not None
+    assert get_metadata(PRICE_DOMAIN, "fixed") is not None
 
 
 def test_forecast_domain_registers_mock_and_live_providers():
