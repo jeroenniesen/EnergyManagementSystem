@@ -170,7 +170,7 @@ class _FlakyBattery:
 
 def _live(battery) -> LiveSource:
     return LiveSource(
-        p1=HomeWizardMeter("x", http_get=lambda _u: P1),
+        p1=HomeWizardMeter("192.0.2.92", http_get=lambda _u: P1),
         solar=None,
         car=None,
         battery=battery,

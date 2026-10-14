@@ -127,7 +127,7 @@ class _FailingBattery:
 def test_unknown_soc_reason_matches_battery_plan_empty(tmp_path):
     """#134: unknown SoC → same empty/paused reason on diagnostics and battery-plan."""
     src = LiveSource(
-        p1=HomeWizardMeter("x", http_get=lambda _u: {"active_power_w": 0}),
+        p1=HomeWizardMeter("192.0.2.92", http_get=lambda _u: {"active_power_w": 0}),
         battery=_FailingBattery(),
     )
     with TestClient(_app(tmp_path, source=src)) as c:

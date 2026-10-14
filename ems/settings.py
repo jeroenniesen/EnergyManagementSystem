@@ -549,8 +549,10 @@ SETTINGS_SCHEMA: tuple[SettingsField, ...] = (
     ),
     SettingsField(
         "explainer.base_url", "AI endpoint", "text", "https://api.minimax.io/v1", "ai",
-        help="OpenAI-compatible chat endpoint. Point this at any compatible provider (or a "
-        "zero-retention gateway) — the app isn't locked to one vendor.", advanced=True,
+        help="OpenAI-compatible chat endpoint. Point this at any compatible public provider "
+        "(or a zero-retention gateway) — the app isn't locked to one vendor. Private/LAN "
+        "and link-local addresses are rejected (#232).",
+        advanced=True,
     ),
     SettingsField(
         "explainer.max_tokens", "AI reply length", "int", 1024, "ai",
@@ -640,14 +642,22 @@ SETTINGS_SCHEMA: tuple[SettingsField, ...] = (
         help="Base URL of an ntfy server — the free, shared https://ntfy.sh, or your own "
         "self-hosted instance. Blank (default) = in-app notifications only, no phone push. "
         "Install the free ntfy app (iOS/Android) and subscribe to the topic below to get real "
-        "push notifications with no Apple/Google account and no cloud subscription.",
+        "push notifications with no Apple/Google account and no cloud subscription. "
+        "Private LAN URLs need “Allow LAN ntfy server” (#232).",
+    ),
+    SettingsField(
+        "notify.allow_lan_url", "Allow LAN ntfy server", "bool", False, "notify",
+        help="Off by default (#232): the ntfy URL may not point at a private/LAN address "
+        "(SSRF guard). Turn on only for a self-hosted ntfy on your home network. "
+        "Link-local and cloud-metadata addresses stay blocked.",
+        advanced=True,
     ),
     SettingsField(
         "notify.ntfy_topic", "ntfy topic", "text", "", "notify",
         help="A private, hard-to-guess topic name — anyone who knows it can read what's "
         "published there, so avoid anything guessable (a random string is safest). Subscribe to "
         "the exact same topic in the ntfy app. Pick a long random topic — anyone who knows it "
-        "can read these notifications on ntfy.sh.",
+        "can read these notifications on ntfy.sh. Must not contain /, ?, or # (#232).",
     ),
     SettingsField(
         "notify.device_unreachable_minutes", "Device-down push after (minutes)", "int", 15,
@@ -1011,6 +1021,16 @@ def validate_settings(
 
     clean: dict[str, Any] = {}
     errors: dict[str, str] = {}
+    # #232: ntfy private-LAN opt-in must be known before validating notify.ntfy_url
+    # (dict key order is not guaranteed for a multi-key save).
+    allow_lan_ntfy = False
+    if "notify.allow_lan_url" in partial:
+        ok_lan, lan_val = _coerce(
+            SETTINGS_BY_KEY["notify.allow_lan_url"], partial["notify.allow_lan_url"],
+            dev_mode=dev_mode,
+        )
+        if ok_lan:
+            allow_lan_ntfy = bool(lan_val)
     for key, value in partial.items():
         canonical = (
             PRICE_INCLUDES_ALL_FEES_KEY
@@ -1033,12 +1053,54 @@ def validate_settings(
             errors[key] = result
             continue
         if key == "notify.ntfy_url" and result:
-            from urllib.parse import urlparse
+            from ems.url_safety import normalize_outbound_http_url
 
-            parsed = urlparse(result)
-            if parsed.scheme not in ("http", "https") or not parsed.netloc:
-                errors[key] = "must be an http(s) URL with a host"
+            try:
+                clean[key] = normalize_outbound_http_url(
+                    str(result), allow_private=allow_lan_ntfy, allow_path=False,
+                )
+            except ValueError as exc:
+                errors[key] = str(exc)
+            continue
+        if key == "notify.ntfy_topic" and result:
+            from ems.url_safety import normalize_ntfy_topic
+
+            try:
+                clean[key] = normalize_ntfy_topic(str(result))
+            except ValueError as exc:
+                errors[key] = str(exc)
+            continue
+        if key == "explainer.base_url" and result:
+            from ems.url_safety import normalize_outbound_http_url
+
+            try:
+                clean[key] = normalize_outbound_http_url(
+                    str(result), allow_private=False, allow_path=True,
+                )
+            except ValueError as exc:
+                errors[key] = str(exc)
+            continue
+        if key in (
+            "meters.p1_ip", "meters.solar_ip", "meters.car_ip", "battery.indevolt_ip",
+        ) and result:
+            from ems.url_safety import normalize_device_host
+
+            try:
+                clean[key] = normalize_device_host(str(result))
+            except ValueError as exc:
+                errors[key] = str(exc)
+            continue
+        if key == "battery.indevolt_ips_extra" and result:
+            from ems.url_safety import normalize_device_host
+
+            parts = [p.strip() for p in str(result).split(",")]
+            try:
+                normalised = [normalize_device_host(p) for p in parts if p.strip()]
+            except ValueError as exc:
+                errors[key] = str(exc)
                 continue
+            clean[key] = ", ".join(normalised)
+            continue
         if key == "consumers.ha.url" and result:
             # #266 / #261 / #263: HA is typically LAN — allow private hosts, but require a
             # sane http(s) base (no file:, empty host, userinfo, or path/query smuggling).
@@ -1086,6 +1148,27 @@ def settings_migration_writes(stored: Any) -> dict[str, Any]:
             reserve = None
         if reserve is not None and reserve < DEFAULT_MIN_TARGET_SOC_PCT:
             out["battery.min_reserve_soc"] = DEFAULT_MIN_TARGET_SOC_PCT
+    # #232: preserve an already-configured private/LAN ntfy URL by enabling the opt-in
+    # rather than silently dropping the URL on the new SSRF guard.
+    if (
+        stored.get("notify.ntfy_url")
+        and "notify.allow_lan_url" not in stored
+        and "notify.allow_lan_url" not in out
+    ):
+        from urllib.parse import urlparse
+
+        from ems.url_safety import hostname_is_private_ip
+
+        try:
+            host = (urlparse(str(stored["notify.ntfy_url"])).hostname or "").lower()
+        except ValueError:
+            host = ""
+        # Only true home-LAN forms — not cloud ``.internal`` / metadata names (#232 Grok M2).
+        if host and host not in ("localhost", "metadata", "instance-data") and (
+            hostname_is_private_ip(host)
+            or host.endswith((".local", ".lan", ".localhost"))
+        ) and not host.endswith(".internal"):
+            out["notify.allow_lan_url"] = True
     return out
 
 

@@ -65,10 +65,13 @@ class BatteryUnavailable(RuntimeError):
 
 def _post_getdata(url: str, keys: Iterable[int], timeout: float) -> dict:
     from ems.http_client import request as http_request
+    from ems.url_safety import prepare_outbound_request
 
     config = json.dumps({"t": list(keys)}).replace(" ", "")
+    pinned, extra = prepare_outbound_request(url, allow_private=True)
     r = http_request(
-        "POST", url, profile="lan_read", params={"config": config}, timeout=timeout,
+        "POST", pinned, profile="lan_read", params={"config": config}, timeout=timeout,
+        headers=extra,
     )
     r.raise_for_status()
     return r.json()

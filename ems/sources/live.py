@@ -24,8 +24,10 @@ JsonGet = Callable[[str], dict]
 
 def _httpx_get(url: str, timeout: float) -> dict:
     from ems.http_client import request as http_request
+    from ems.url_safety import prepare_outbound_request
 
-    r = http_request("GET", url, profile="lan_read", timeout=timeout)
+    pinned, extra = prepare_outbound_request(url, allow_private=True)
+    r = http_request("GET", pinned, profile="lan_read", timeout=timeout, headers=extra)
     r.raise_for_status()
     return r.json()
 
@@ -43,7 +45,13 @@ class HomeWizardMeter:
         self._get = http_get or (lambda url: _httpx_get(url, _timeout))
 
     def read(self) -> dict:
-        return self._get(self.url)
+        # #232: pin/reject at the meter call so injected getters (``make_json_get`` from
+        # ``build_wiring``) cannot dial DNS→loopback/metadata. Cleartext URL is rewritten to
+        # the checked IP; HomeWizard's IP API does not require the original Host header.
+        from ems.url_safety import prepare_outbound_request
+
+        pinned, _extra = prepare_outbound_request(self.url, allow_private=True)
+        return self._get(pinned)
 
 
 # --- sign normalisation (SPEC §4.1), pure + unit-tested against real captured payloads ---

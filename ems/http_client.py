@@ -192,10 +192,22 @@ def make_json_get(
     *,
     timeout: float | httpx.Timeout | None = None,
 ) -> Callable[[str], dict]:
-    """``(url) -> dict`` for HomeWizard / Forecast.Solar-style GETs."""
+    """``(url) -> dict`` for HomeWizard / Forecast.Solar-style GETs.
+
+    ``lan_read`` runs the #232 connect-time SSRF guard (LAN opt-in). Cloud profiles
+    re-check with private targets rejected. ``HomeWizardMeter.read`` also pins before
+    calling this getter so a future injection cannot skip the guard.
+    """
 
     def get(url: str) -> dict:
-        r = request("GET", url, profile=profile, timeout=timeout, runtime=runtime)
+        from ems.url_safety import prepare_outbound_request
+
+        allow_private = profile == "lan_read"
+        pinned, extra = prepare_outbound_request(url, allow_private=allow_private)
+        r = request(
+            "GET", pinned, profile=profile, timeout=timeout, runtime=runtime,
+            headers=extra,
+        )
         r.raise_for_status()
         return r.json()
 
@@ -307,13 +319,16 @@ def make_indevolt_getdata_post(
     """``(keys) -> dict`` matching ``IndevoltReadClient``'s ``GetDataPost``."""
     import json
 
+    from ems.url_safety import prepare_outbound_request
+
     url = f"http://{ip}:{port}/rpc/Indevolt.GetData"
 
     def post(keys: Any) -> dict:
         config = json.dumps({"t": list(keys)}).replace(" ", "")
+        pinned, extra = prepare_outbound_request(url, allow_private=True)
         r = request(
-            "POST", url, profile=profile, timeout=timeout, runtime=runtime,
-            params={"config": config},
+            "POST", pinned, profile=profile, timeout=timeout, runtime=runtime,
+            params={"config": config}, headers=extra,
         )
         r.raise_for_status()
         return r.json()

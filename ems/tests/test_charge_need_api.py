@@ -24,7 +24,7 @@ def _app(tmp_path, source):
 def test_charge_need_unknown_soc_returns_204(tmp_path):
     """LiveSource seeds soc=0.0 but never marks soc fresh → EMS must not invent a charge card."""
     src = LiveSource(
-        p1=HomeWizardMeter("x", http_get=lambda _u: {"active_power_w": 0}),
+        p1=HomeWizardMeter("192.0.2.92", http_get=lambda _u: {"active_power_w": 0}),
         battery=_FailingBattery(),
     )
     with TestClient(_app(tmp_path, src)) as c:

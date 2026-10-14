@@ -149,8 +149,9 @@ The car's SoC itself is **not** a config key — it's a runtime-store anchor (%,
 ## `notify` — implemented (BACKLOG B-20), missing from this reference until now
 | Key | Type | Default | Effect |
 |---|---|---|---|
-| `ntfy_url` | str | "" (empty = disabled) | ntfy.sh or self-hosted base URL for phone pushes |
-| `ntfy_topic` | str | "" | the ntfy topic to POST to; subscribe to it in the ntfy app |
+| `ntfy_url` | str | "" (empty = disabled) | ntfy.sh or self-hosted base URL for phone pushes. Private/LAN hosts need `notify.allow_lan_url` (#232). |
+| `allow_lan_url` | bool | false | Opt-in: allow private/LAN `ntfy_url` (self-hosted). Link-local/metadata (and DNS→those) stay blocked (#232). |
+| `ntfy_topic` | str | "" | the ntfy topic to POST to; subscribe to it in the ntfy app. Rejects `/`, `?`, `#` (#232). |
 
 > Backs the notification outbox (`ems/notify.py`) and header bell (`GET /api/notifications`, `SPEC §9.3`). In-app storage works with no `notify.*` set; the ntfy push is the optional extra.
 

@@ -391,9 +391,17 @@ def make_openai_chat_post(base_url: str, api_key: str, *, timeout: float = 8.0) 
             )
         else:
             req_timeout = _oneshot_timeout
+        from ems.url_safety import prepare_outbound_request
+
+        # #232: re-check resolved addresses at dial time (closes DNS→loopback/metadata).
+        pinned, extra = prepare_outbound_request(url, allow_private=False)
         resp = http_request(
-            "POST", url, profile="cloud",
-            headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+            "POST", pinned, profile="cloud",
+            headers={
+                **extra,
+                "Authorization": f"Bearer {api_key}",
+                "Content-Type": "application/json",
+            },
             json={"messages": messages, **params},
             timeout=req_timeout,
         )
