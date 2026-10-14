@@ -8,6 +8,8 @@
 #
 # Then open http://localhost:8080 and configure everything in the UI (devices, prices, location,
 # tokens, AI key). No credentials live in this repo — you add them through the web interface.
+# On a fresh install the service listens on localhost only until the first admin exists; restart
+# after onboarding (or set EMS_WEB_TOKEN before start) to enable LAN access.
 #
 # What it does (idempotent, no sudo, no system-wide changes):
 #   1. installs `uv` (user-local) if missing — manages Python 3.12 for you
@@ -72,7 +74,7 @@ say "Syncing the Python environment (uv will fetch Python 3.12 if needed)…"
 "$UV" sync
 mkdir -p ems/data   # SQLite history + UI settings live here (gitignored)
 
-START_CMD=("$UV" run uvicorn ems.main:app --host 0.0.0.0 --port "$PORT")
+START_CMD=("$UV" run python -m ems.main)
 
 if [ "$START" = "0" ]; then
   say "Setup complete (not started). Run: ${START_CMD[*]}"; exit 0
@@ -96,11 +98,8 @@ if [ "$OS" = "Darwin" ]; then
   <key>WorkingDirectory</key><string>$REPO</string>
   <key>ProgramArguments</key>
   <array>
-    <string>$UV</string><string>run</string><string>uvicorn</string>
-    <string>ems.main:app</string>
-    <string>--host</string><string>0.0.0.0</string>
-    <string>--port</string><string>$PORT</string>
-    <string>--no-access-log</string>
+    <string>$UV</string><string>run</string><string>python</string>
+    <string>-m</string><string>ems.main</string>
   </array>
   <key>EnvironmentVariables</key>
   <dict>
@@ -139,7 +138,7 @@ WorkingDirectory=$REPO
 Environment=PATH=$(dirname "$UV"):$HOME/.local/bin:$HOME/.cargo/bin:/usr/local/bin:/usr/bin:/bin
 Environment=EMS_LOG_FILE=$REPO/ems/data/server.log
 Environment=EMS_SUPERVISED=1
-ExecStart=$UV run uvicorn ems.main:app --host 0.0.0.0 --port $PORT --no-access-log
+ExecStart=$UV run python -m ems.main
 Restart=always
 RestartSec=3
 

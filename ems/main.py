@@ -28,6 +28,7 @@ from ems.storage.control_state import ControlStateStore
 from ems.storage.history import HistoryStore
 from ems.storage.settings import SettingsStore
 from ems.web.api import create_app
+from ems.web_bind import boot_onboarding_posture, log_bind_choice, resolve_bind_host
 
 _REPO_ROOT = Path(__file__).parent.parent
 # Built SPA (ems/web/static/dist) — present after `npm run build`; absent in pure-API dev.
@@ -140,7 +141,18 @@ app, _cfg = build_app()
 
 def main() -> None:
     # Reuse the already-built config; don't rebuild the app (which would make a 2nd store/recorder).
-    uvicorn.run("ems.main:app", host="0.0.0.0", port=_cfg.web_port)
+    db_path = Path(_cfg.db_path)
+    if not db_path.is_absolute():
+        db_path = _REPO_ROOT / db_path
+    env_token = os.environ.get("EMS_WEB_TOKEN") or None
+    users_exist, token_configured = boot_onboarding_posture(str(db_path), env_token)
+    host = resolve_bind_host(
+        configured=_cfg.web_bind,
+        users_exist=users_exist,
+        shared_token_configured=token_configured,
+    )
+    log_bind_choice(host, users_exist=users_exist, shared_token_configured=token_configured)
+    uvicorn.run("ems.main:app", host=host, port=_cfg.web_port)
 
 
 if __name__ == "__main__":

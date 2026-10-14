@@ -9,4 +9,6 @@ services:
       # `restart: unless-stopped` (below) is the supervisor, so a self-SIGTERM comes back up. This
       # arms the in-app "Apply & restart" endpoint; without it the endpoint refuses (fail-safe).
       EMS_SUPERVISED: "1"
+      # First admin from the host browser: set a bootstrap token (onboarding migrates it), e.g.
+      # EMS_WEB_TOKEN: "change-me" — or onboard via curl inside the container to 127.0.0.1.
     restart: unless-stopped

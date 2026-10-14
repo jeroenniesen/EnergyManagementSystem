@@ -36,6 +36,7 @@ class Config:
     # Slice 5: an access token unused for this many days stops resolving (idle auto-revoke).
     # 0 disables the check (tokens never idle-expire); clamped >= 0 on load.
     access_token_idle_days: int = 90
+    web_bind: str = "0.0.0.0"
 
 
 def load_config(path: str | Path) -> Config:
@@ -74,6 +75,7 @@ def load_config(path: str | Path) -> Config:
         dev_mode=dev_mode,
         dry_run=dry_run,
         web_port=int(web.get("port", 8080)),
+        web_bind=str(web.get("bind", "0.0.0.0")),
         db_path=db_path,
         cycle_seconds=cycle_seconds,
         retention_days=int(history.get("retention_days", 90)),

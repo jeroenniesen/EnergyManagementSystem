@@ -158,7 +158,7 @@ The car's SoC itself is **not** a config key — it's a runtime-store anchor (%,
 | Key | Type | Default | Effect |
 |---|---|---|---|
 | `enabled` | bool | true | serve the UI |
-| `bind` / `port` | str/int | 0.0.0.0 / 8080 | listen address (**LAN only; never expose to internet**) |
+| `bind` / `port` | str/int | 0.0.0.0 / 8080 | listen address after onboarding (**LAN only; never expose to internet**). Fresh installs with no admin and no `EMS_WEB_TOKEN` / `web.auth_token` bind **127.0.0.1** until the first admin exists (restart to open LAN). Override with `EMS_WEB_BIND`. |
 | `auth` | enum | `bearer`\|`basic` = bearer | auth scheme |
 | `auth_token` | secret | `!secret` | UI auth |
 | `guest_readonly` | bool | true | optional read-only dashboard |

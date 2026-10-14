@@ -32,4 +32,4 @@ COPY --from=frontend /app/ems/web/static/dist ./ems/web/static/dist
 ENV PATH="/app/.venv/bin:$PATH"
 
 EXPOSE 8080
-CMD ["uvicorn", "ems.main:app", "--host", "0.0.0.0", "--port", "8080"]
+CMD ["python", "-m", "ems.main"]
