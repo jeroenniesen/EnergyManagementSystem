@@ -193,6 +193,7 @@ def derive_alerts(
     mock_prices_blocked_operational: bool = False,
     tibber_unavailable_since: datetime | None = None,
     site_tz: ZoneInfo | None = None,
+    live_mock_forecast_provider: bool = False,
 ) -> list[Alert]:
     """Build the calm alert list for the current snapshot.
 
@@ -208,8 +209,19 @@ def derive_alerts(
     Tibber source at startup, so EMS stays in watch mode.
     `tibber_unavailable_since`: #126 case (b)/(b-kijkmodus) — Tibber outage while a live
     price source is wired; wording depends on `dry_run` and `confirmed_auto`.
+    `live_mock_forecast_provider`: #242 — persisted mock on a live install (synthetic curve).
     """
     alerts: list[Alert] = []
+    if live_mock_forecast_provider:
+        alerts.append(Alert(
+            "live_mock_forecast_provider", "warning",
+            "Solar forecast is set to the built-in demo curve — planning quality is reduced.",
+            safe="EMS still controls the battery, but overnight/charge sizing uses a synthetic "
+                 "daylight curve instead of Forecast.Solar or Solcast.",
+            action="Open Manage → Settings → Solar forecast provider and choose Forecast.Solar "
+                   "or Solcast, then restart EMS.",
+            ems_doing="EMS keeps planning with the demo curve until you switch provider.",
+        ))
     if mock_prices_blocked_operational:
         # #126 case (a): more specific than the generic dry_run info banner.
         alerts.append(Alert(

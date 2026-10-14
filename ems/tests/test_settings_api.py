@@ -19,12 +19,55 @@ def _app(tmp_path, **kw):
     )
 
 
+def _live_app(tmp_path, **kw):
+    return create_app(
+        MockSource(), dry_run=True, dev_mode="live",
+        settings_store=SettingsStore(str(tmp_path / "ems.sqlite")), **kw,
+    )
+
+
 def test_get_settings_returns_schema_and_defaults(tmp_path):
     with TestClient(_app(tmp_path)) as c:
         b = c.get("/api/settings").json()
     assert any(f["key"] == "ui.theme" for f in b["schema"])
     assert b["values"]["ui.theme"] == "auto"  # default until changed
     assert b["values"]["planner.charge_slots"] == 12
+
+
+def test_live_get_settings_disables_mock_forecast_provider(tmp_path):
+    with TestClient(_live_app(tmp_path)) as c:
+        row = next(
+            f for f in c.get("/api/settings").json()["schema"]
+            if f["key"] == "solar.forecast_provider"
+        )
+    assert "mock" in row["disabled_options"]
+
+
+def test_live_post_mock_forecast_provider_returns_422(tmp_path):
+    with TestClient(_live_app(tmp_path)) as c:
+        r = c.post("/api/settings", json={"solar.forecast_provider": "mock"})
+    assert r.status_code == 422
+    assert "solar.forecast_provider" in r.json()["errors"]
+
+
+def test_live_persisted_mock_forecast_degrades_alerts(tmp_path):
+    store = SettingsStore(str(tmp_path / "ems.sqlite"))
+    import asyncio
+
+    async def _seed():
+        await store.init()
+        await store.set_many({"solar.forecast_provider": "mock"})
+
+    asyncio.run(_seed())
+    with TestClient(
+        create_app(
+            MockSource(), dry_run=True, dev_mode="live", settings_store=store,
+        ),
+    ) as c:
+        body = c.get("/api/alerts").json()
+    keys = {a["key"] for a in body["alerts"]}
+    assert "live_mock_forecast_provider" in keys
+    assert body["data_quality"] != "complete"
 
 
 def test_post_settings_persists_and_is_reflected(tmp_path):
