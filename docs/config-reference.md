@@ -16,7 +16,7 @@ Legend: **UI** = also editable from the web UI (overlays the file). **CONFIRM** 
 | `model` | str | `solidflex_2000` | informational |
 | `usable_kwh` | float | 9.7 · **CONFIRM** | energy budget for planning |
 | `max_charge_w` / `max_discharge_w` | int W | 2,400 per tower (4,000 legacy two-tower default) | charge-time sizing; discharge cap |
-| `min_reserve_soc` | % | 10 | never discharge below |
+| `min_reserve_soc` | % | 10 | never discharge below; settings floor **5%** (= Indevolt `min_target_soc`, #245) |
 | `round_trip_efficiency` | 0–1 | 0.90 | arbitrage economics + SoC projection |
 | `min_mode_dwell_seconds` | int | 600 | min time in a mode (anti-flap) |
 | `allow_export_discharge` | bool | false | **Master arming for `EXPORT_FOR_PROFIT` only** (§7.1/§8.3a). When false, never force-discharge for trading/export. Does **not** change `DISCHARGE_FOR_LOAD` → `AUTO`. Live writes still need yaml/`dev.mode` dry-run floor + Watch only OFF + operational ON. **UI** (Trading page confirm-to-arm; omitted from Manage → Control advanced) |

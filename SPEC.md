@@ -563,7 +563,7 @@ battery:
   usable_kwh: 9.7          # ~90% of 10.8 kWh; CONFIRM@M1
   max_charge_w: 4000       # CONFIRM@M1 from HA power sensors / probe
   max_discharge_w: 4000    # idem; lower if a Gen-2 feed-in/output limit is set
-  min_reserve_soc: 10      # %
+  min_reserve_soc: 10      # %; settings floor 5% (= Indevolt min_target_soc; #245)
   round_trip_efficiency: 0.90
   min_mode_dwell_seconds: 600        # backs up max-switches/day; anti-flap
   allow_export_discharge: false      # arms EXPORT_FOR_PROFIT → forced DISCHARGE only (§7.1/§8.3a); does NOT arm DISCHARGE_FOR_LOAD

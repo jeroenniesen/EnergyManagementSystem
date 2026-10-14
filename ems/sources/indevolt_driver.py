@@ -17,6 +17,7 @@ import logging
 import time
 from collections.abc import Callable, Sequence
 
+from ems.battery_limits import DEFAULT_MIN_TARGET_SOC_PCT
 from ems.domain import CapabilityReport, PhysicalMode
 from ems.sources.battery import BatteryWriteUnconfirmed
 from ems.sources.indevolt import (
@@ -44,9 +45,10 @@ _STATE_CHARGING, _STATE_DISCHARGING = 1001, 1002  # read-side state (6001) value
 # mode; 47015 the real-time state (it triggers the action, so write it LAST after power/soc).
 P_MODE, P_STATE, P_POWER, P_SOC = 47005, 47015, 47016, 47017
 _W_IDLE, _W_CHARGE, _W_DISCHARGE = 0, 1, 2
-# Device limits (SolidFlex/PowerFlex per OpenData docs): power 50–2400 W, target SoC 5–100 %. Out-of
-# -range values are rejected by the device — clamp so a plan asking for 4 kW doesn't silently fail.
-_MIN_POWER_W, _MAX_POWER_W, _MIN_SOC = 50, 2400, 5
+# Device limits (SolidFlex/PowerFlex per OpenData docs): power 50–2400 W, target SoC 5–100 %.
+# Driver floors SoC writes; EMS settings/validator also refuse sub-floor targets (#245).
+_MIN_POWER_W, _MAX_POWER_W = 50, 2400
+_MIN_SOC = int(DEFAULT_MIN_TARGET_SOC_PCT)
 
 # (point, [values]) -> response. Default refuses: no accidental path to a live write exists.
 SetDataPost = Callable[[int, list[int]], object]

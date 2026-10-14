@@ -178,8 +178,11 @@ SETTINGS_SCHEMA: tuple[SettingsField, ...] = (
     SettingsField(
         "battery.min_reserve_soc", "Minimum reserve", "number", 10.0, "battery",
         help="The system always keeps at least this much charge in the battery and never goes "
-        "below it — your safety buffer.",
-        min=0.0, max=50.0, step=1.0, unit="%",
+        "below it — your safety buffer. Floor is 5% (Indevolt minimum charge target); values "
+        "below that are rejected so plans are not marked unsafe for targets the battery would "
+        "floor-and-run (#245).",
+        # #245: align with CapabilityReport.min_target_soc / indevolt_driver._MIN_SOC (5%).
+        min=5.0, max=50.0, step=1.0, unit="%",
     ),
     SettingsField(
         "battery.max_charge_w", "Max charge power", "number", 4000.0, "battery",
@@ -1059,20 +1062,31 @@ def validate_settings(
 
 
 def settings_migration_writes(stored: Any) -> dict[str, Any]:
-    """Persist-side migrations for renamed keys. Empty when nothing to write (#119)."""
+    """Persist-side migrations for renamed keys / floors. Empty when nothing to write."""
     if not isinstance(stored, dict):
         return {}
+    from ems.battery_limits import DEFAULT_MIN_TARGET_SOC_PCT
     from ems.tariffs import (
         LEGACY_PRICE_INCLUDES_ALL_FEES_KEY,
         PRICE_INCLUDES_ALL_FEES_KEY,
     )
 
+    out: dict[str, Any] = {}
     if (
         PRICE_INCLUDES_ALL_FEES_KEY not in stored
         and LEGACY_PRICE_INCLUDES_ALL_FEES_KEY in stored
     ):
-        return {PRICE_INCLUDES_ALL_FEES_KEY: stored[LEGACY_PRICE_INCLUDES_ALL_FEES_KEY]}
-    return {}
+        out[PRICE_INCLUDES_ALL_FEES_KEY] = stored[LEGACY_PRICE_INCLUDES_ALL_FEES_KEY]
+    # #245: legacy installs could store reserve 0–4%; clamp up to the device SoC floor so
+    # effective_settings does not drop the key and snap to the 10% default.
+    if "battery.min_reserve_soc" in stored:
+        try:
+            reserve = float(stored["battery.min_reserve_soc"])
+        except (TypeError, ValueError):
+            reserve = None
+        if reserve is not None and reserve < DEFAULT_MIN_TARGET_SOC_PCT:
+            out["battery.min_reserve_soc"] = DEFAULT_MIN_TARGET_SOC_PCT
+    return out
 
 
 def effective_settings(stored: Any) -> dict[str, Any]:
