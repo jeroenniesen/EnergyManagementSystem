@@ -47,6 +47,8 @@ def test_decide_without_ticket_calls_controller_directly():
     assert dec.desired_mode is PhysicalMode.AUTO
     assert controller.decide_calls == 1
     assert fence.snapshot().outstanding == 0
+    # decide() must not write the battery itself — only ModeController / apply may.
+    assert controller.driver.modes == []
 
 
 def test_decide_enters_fence_once_then_delegates():
@@ -62,11 +64,13 @@ def test_decide_enters_fence_once_then_delegates():
     assert boundary.writer_local.entered is True
     assert fence.snapshot().active_generation == ticket.generation
     assert controller.decide_calls == 1
+    assert controller.driver.modes == []
 
     # Second decide on the same worker must not re-enter / re-block.
     boundary.decide()
     assert controller.decide_calls == 2
     assert fence.snapshot().active_generation == ticket.generation
+    assert controller.driver.modes == []
 
     fence.leave(ticket)
     fence.release(ticket)
@@ -88,6 +92,7 @@ def test_decide_raises_when_ticket_superseded_before_enter():
         boundary.decide()
     assert controller.decide_calls == 0
     assert getattr(boundary.writer_local, "entered", False) is False
+    assert controller.driver.modes == []
 
     fence.release(stale)
     fence.release(recovery)
@@ -107,6 +112,7 @@ def test_decide_raises_when_override_supersedes_routine():
     with pytest.raises(_CommandSuperseded):
         boundary.decide()
     assert controller.decide_calls == 0
+    assert controller.driver.modes == []
 
     # Override still owns the lane.
     boundary.writer_local.ticket = override
@@ -114,6 +120,7 @@ def test_decide_raises_when_override_supersedes_routine():
     boundary.decide()
     assert controller.decide_calls == 1
     assert fence.snapshot().active_generation == override.generation
+    assert controller.driver.modes == []
 
     fence.leave(override)
     fence.release(routine)
