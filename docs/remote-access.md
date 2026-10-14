@@ -67,6 +67,17 @@ token so the browser can show its Access box — but every datum it renders come
 > With **no** token configured, `require_auth` cannot lock anything — you can't require a credential
 > that doesn't exist. Set a token first.
 
+## Outbound URL guards (#232)
+
+Settings that make the EMS host open an HTTP connection are SSRF-hardened:
+
+- **`notify.ntfy_url`** / **`explainer.base_url`**: http(s) only; no credentials/query/fragment;
+  link-local and cloud-metadata hosts always rejected. Private/LAN targets are rejected for ntfy
+  unless **Allow LAN ntfy server** (`notify.allow_lan_url`) is on; the AI endpoint never allows
+  private targets.
+- **Meter / battery IP fields**: IP or hostname only — not a full URL with a path.
+- **`notify.ntfy_topic`**: no `/`, `?`, or `#` (topic is appended as a path segment).
+
 ## Control permissions
 
 - **Single token** for both reading and control (manual override, settings, mode changes). There is
