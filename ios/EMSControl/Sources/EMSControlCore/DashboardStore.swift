@@ -61,6 +61,12 @@ public final class DashboardStore {
 
     public func refresh() async {
         guard let client else { return }
+        // A live client means we left offline demo (login/restore/tests that reattach a client).
+        // Clear the flag before fetch so failure/success can update stale state; in-flight races
+        // after `useDemo()` are still dropped via `sessionGeneration`.
+        if demoSessionActive {
+            demoSessionActive = false
+        }
 
         isLoading = true
         defer { isLoading = false }
@@ -68,14 +74,14 @@ public final class DashboardStore {
         let generation = sessionGeneration
         do {
             let response = try await client.fetchDashboard()
-            guard generation == sessionGeneration, !demoSessionActive else { return }
+            guard generation == sessionGeneration else { return }
             snapshot = response
             nextRefreshAt = response.generatedAt.addingTimeInterval(TimeInterval(response.cacheTTLSeconds))
             isStale = false
             lastUpdatedAt = Date()
             lastError = nil
         } catch APIClientError.httpStatus(401) {
-            guard generation == sessionGeneration, !demoSessionActive else { return }
+            guard generation == sessionGeneration else { return }
             // The session/token is no longer valid. Bounce back to the login screen rather than
             // showing stale data behind a dead token. Keep the saved server URL (do NOT forget it)
             // so re-login can prefill it; drop the live client + snapshot so AppShellView shows
@@ -92,7 +98,7 @@ public final class DashboardStore {
             lastError = nil
             invalidateLiveSession()
         } catch {
-            guard generation == sessionGeneration, !demoSessionActive else { return }
+            guard generation == sessionGeneration else { return }
             // Keep lastUpdatedAt from the prior success so "Laatst bekend hh:mm" stays honest.
             isStale = snapshot != nil
             lastError = String(describing: error)
