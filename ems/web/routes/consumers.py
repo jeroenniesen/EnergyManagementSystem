@@ -25,8 +25,15 @@ from ems.consumers.selection import apply_opt_in, default_device_ids_json, filte
 from ems.consumers.start_advice import assumed_kwh_for_kind, propose_start_window
 from ems.settings import effective_settings, normalize_ha_url
 from ems.web.context import AppContext
+from ems.web.ratelimit import FixedWindowRateLimiter
 
 _log = logging.getLogger(__name__)
+
+# #274: cap live HA probes so a stolen OPERATE session cannot scan the LAN via EMS.
+_HA_PROBE_MAX_PER_MINUTE = 10
+_HA_PROBE_LIMIT_DETAIL = (
+    "Too many connection tests — wait a minute and try again."
+)
 
 # Homeowner-facing status labels — never leak vendor tokens / stack traces.
 _STATE_LABEL: dict[str, str] = {
@@ -249,9 +256,13 @@ def build_router(
     sources: Sequence[ConsumerPort] | None = None,
     settings_store: Any | None = None,
     http_get: Any | None = None,
+    ha_probe_limiter: FixedWindowRateLimiter | None = None,
 ) -> APIRouter:
     router = APIRouter()
     wired: tuple[ConsumerPort, ...] = tuple(sources or ())
+    probe_limiter = ha_probe_limiter or FixedWindowRateLimiter(
+        max_calls=_HA_PROBE_MAX_PER_MINUTE, window_seconds=60.0,
+    )
 
     @router.get("/api/consumers")
     def get_consumers() -> dict:
@@ -273,9 +284,20 @@ def build_router(
             wired, ctx.settings_cache, prices, now=now,
         )
 
-    @router.post("/api/consumers/ha/test-connection")
-    async def ha_test_connection(request: Request) -> dict:
-        """Wizard probe: URL + token in body → candidate laundry entities (#263)."""
+    @router.post("/api/consumers/ha/test-connection", response_model=None)
+    async def ha_test_connection(request: Request):
+        """Wizard probe: URL + token in body → candidate laundry entities (#263).
+
+        Rate-limited per principal (or client IP) (#274) — live GET {url}/api/states.
+        """
+        principal = request.scope.get("auth_principal")
+        probe_key = (
+            f"user:{principal.user_id}"
+            if principal is not None
+            else (request.client.host if request.client else "unknown")
+        )
+        if not probe_limiter.allow(probe_key):
+            return JSONResponse({"detail": _HA_PROBE_LIMIT_DETAIL}, status_code=429)
         try:
             body = await request.json()
         except Exception:

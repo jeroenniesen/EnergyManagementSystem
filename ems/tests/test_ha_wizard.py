@@ -12,6 +12,8 @@ from ems.sources.mock import MockSource
 from ems.storage.history import HistoryStore
 from ems.storage.settings import SettingsStore
 from ems.web.api import create_app
+from ems.web.ratelimit import FixedWindowRateLimiter
+from ems.web.routes import consumers as consumers_routes
 
 WASHER = {
     "entity_id": "switch.bijkeuken_washer",
@@ -103,9 +105,6 @@ def test_api_test_connection_and_disconnect(tmp_path, monkeypatch):
         assert "secret-token" not in url
         return [WASHER]
 
-    import ems.web.routes.consumers as consumers_mod
-    from ems.web.routes import consumers as consumers_routes
-
     db = str(tmp_path / "ems.sqlite")
     store = SettingsStore(db)
     # Patch probe's default path via router http_get inject — rebuild app with monkeypatch
@@ -117,7 +116,6 @@ def test_api_test_connection_and_disconnect(tmp_path, monkeypatch):
             url, token, http_get=fake_get,
         ),
     )
-    _ = consumers_mod  # placate
 
     app = create_app(
         MockSource(),
@@ -215,3 +213,40 @@ def test_api_test_connection_and_disconnect(tmp_path, monkeypatch):
         after = c.get("/api/settings").json()["values"]
         assert after["consumers.ha.enabled"] is False
         assert after.get("consumers.ha.token.__set") is False
+
+
+def test_ha_test_connection_rate_limited(tmp_path, monkeypatch):
+    """#274: wizard probe returns 429 after the per-principal budget is spent."""
+    calls = {"n": 0}
+
+    def fake_probe(url, token, http_get=None):
+        calls["n"] += 1
+        return {"ok": True, "url": url, "devices": []}
+
+    monkeypatch.setattr(consumers_routes, "probe_ha_connection", fake_probe)
+    # Tiny budget so the suite stays fast; production default is 10/min.
+    limiter = FixedWindowRateLimiter(max_calls=2, window_seconds=60.0)
+    monkeypatch.setattr(
+        consumers_routes,
+        "FixedWindowRateLimiter",
+        lambda **kwargs: limiter,
+    )
+
+    db = str(tmp_path / "ems.sqlite")
+    app = create_app(
+        MockSource(),
+        dry_run=True,
+        config_dry_run=False,
+        dev_mode="mock",
+        store=HistoryStore(db),
+        settings_store=SettingsStore(db),
+    )
+    with TestClient(app) as c:
+        payload = {"url": "http://ha.local:8123", "token": "t"}
+        assert c.post("/api/consumers/ha/test-connection", json=payload).status_code == 200
+        assert c.post("/api/consumers/ha/test-connection", json=payload).status_code == 200
+        limited = c.post("/api/consumers/ha/test-connection", json=payload)
+        assert limited.status_code == 429
+        detail = limited.json()["detail"]
+        assert "Too many connection tests" in detail
+        assert calls["n"] == 2  # third call never reached the probe

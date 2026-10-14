@@ -95,7 +95,15 @@ export function HaWizard({ values, canOperate = true, onSaved }: Props) {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(body),
       });
-      const data = (await r.json()) as HaProbeResult;
+      const data = (await r.json().catch(() => ({}))) as HaProbeResult & { detail?: string };
+      if (r.status === 429) {
+        setError(
+          typeof data.detail === "string" && data.detail.trim()
+            ? data.detail
+            : "Too many connection tests — wait a minute and try again.",
+        );
+        return;
+      }
       setProbe(data);
       if (!data.ok) {
         setError(probeErrorMessage(data));
