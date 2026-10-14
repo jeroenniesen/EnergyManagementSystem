@@ -42,7 +42,8 @@ struct AppShellView: View {
                         .tag(AppTab.chat)
                 }
                 .safeAreaInset(edge: .top, spacing: 0) {
-                    if dashboardStore.demoSessionActive {
+                    if dashboardStore.demoSessionActive,
+                       !ProcessInfo.processInfo.arguments.contains("-UITestingScreenshots") {
                         DemoModeBanner(theme: theme)
                     }
                 }

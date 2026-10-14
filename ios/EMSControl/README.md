@@ -36,9 +36,10 @@ make ios-screenshots
 # or: ./scripts/ios-screenshots.sh
 ```
 
-Requires full Xcode (not Command Line Tools only). The script creates a dedicated simulator
-`EMS App Store 6.9` if needed, clears the status-bar override and shuts the simulator down when
-finished.
+Requires full Xcode (not Command Line Tools only) and no other booted iOS simulator (shared-machine
+rule). The script creates a dedicated simulator `EMS App Store 6.9` if needed, clears the
+status-bar override and shuts the simulator down when finished. Override the output directory with
+`EMS_SCREENSHOT_OUTPUT` if needed.
 
 ## Home-screen widget (B-59)
 

@@ -147,3 +147,5 @@ schemes:
       config: Debug
       targets:
         - EMSControlUITests
+      environmentVariables:
+        EMS_SCREENSHOT_DIR: $(SRCROOT)/build/app-store-screenshots

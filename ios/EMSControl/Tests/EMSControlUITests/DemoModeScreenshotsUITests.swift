@@ -7,12 +7,19 @@ final class DemoModeScreenshotsUITests: XCTestCase {
     }
 
     func testDemoModeScreenshotsMainTabs() throws {
-        let outputDir = ProcessInfo.processInfo.environment["EMS_SCREENSHOT_DIR"]
-        XCTAssertNotNil(outputDir, "EMS_SCREENSHOT_DIR must be set by scripts/ios-screenshots.sh")
-        XCTAssertFalse(outputDir?.isEmpty == true)
+        let outputDir = try XCTUnwrap(
+            ProcessInfo.processInfo.environment["EMS_SCREENSHOT_DIR"],
+            "EMS_SCREENSHOT_DIR must be set by scripts/ios-screenshots.sh or the EMSControl scheme"
+        )
+        XCTAssertFalse(outputDir.isEmpty)
 
         let app = XCUIApplication()
-        app.launchArguments = ["-UITestingReset"]
+        app.launchArguments = [
+            "-UITestingReset",
+            "-UITestingScreenshots",
+            "-AppleLanguages", "(en)",
+            "-AppleLocale", "en_US",
+        ]
         app.launch()
 
         enterDemoMode(app: app)
@@ -21,6 +28,7 @@ final class DemoModeScreenshotsUITests: XCTestCase {
         XCTAssertTrue(tabBar.waitForExistence(timeout: 3))
 
         captureTab(
+            outputDir: outputDir,
             app: app,
             tabBar: tabBar,
             tab: "Dashboard",
@@ -28,6 +36,7 @@ final class DemoModeScreenshotsUITests: XCTestCase {
             readyIdentifier: "dashboard.metric.battery"
         )
         captureTab(
+            outputDir: outputDir,
             app: app,
             tabBar: tabBar,
             tab: "Insights",
@@ -35,6 +44,7 @@ final class DemoModeScreenshotsUITests: XCTestCase {
             readyIdentifier: "insights.report.headline"
         )
         captureTab(
+            outputDir: outputDir,
             app: app,
             tabBar: tabBar,
             tab: "Car",
@@ -42,6 +52,7 @@ final class DemoModeScreenshotsUITests: XCTestCase {
             readyIdentifier: "car.tab.content"
         )
         captureTab(
+            outputDir: outputDir,
             app: app,
             tabBar: tabBar,
             tab: "Activity",
@@ -49,6 +60,7 @@ final class DemoModeScreenshotsUITests: XCTestCase {
             readyIdentifier: "activity.entry.first"
         )
         captureTab(
+            outputDir: outputDir,
             app: app,
             tabBar: tabBar,
             tab: "Chat",
@@ -65,11 +77,13 @@ final class DemoModeScreenshotsUITests: XCTestCase {
         }
         viewDemo.tap()
 
-        let banner = app.descendants(matching: .any).matching(identifier: "demo.mode.banner").firstMatch
-        XCTAssertTrue(banner.waitForExistence(timeout: 5))
+        let dashboardReady = app.descendants(matching: .any).matching(identifier: "dashboard.metric.battery")
+            .firstMatch
+        XCTAssertTrue(dashboardReady.waitForExistence(timeout: 5))
     }
 
     private func captureTab(
+        outputDir: String,
         app: XCUIApplication,
         tabBar: XCUIElement,
         tab: String,
@@ -81,21 +95,21 @@ final class DemoModeScreenshotsUITests: XCTestCase {
             app.descendants(matching: .any).matching(identifier: readyIdentifier).firstMatch
                 .waitForExistence(timeout: 5)
         )
-        saveScreenshot(named: fileName)
+        saveScreenshot(named: fileName, outputDir: outputDir)
     }
 
-    private func saveScreenshot(named name: String) {
-        guard let dir = ProcessInfo.processInfo.environment["EMS_SCREENSHOT_DIR"], !dir.isEmpty else {
-            XCTFail("EMS_SCREENSHOT_DIR missing")
-            return
-        }
-        let url = URL(fileURLWithPath: dir, isDirectory: true).appendingPathComponent("\(name).png")
+    private func saveScreenshot(named name: String, outputDir: String) {
+        let url = URL(fileURLWithPath: outputDir, isDirectory: true).appendingPathComponent("\(name).png")
         let screenshot = XCUIScreen.main.screenshot()
         do {
-            try FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
+            try FileManager.default.createDirectory(atPath: outputDir, withIntermediateDirectories: true)
             try screenshot.pngRepresentation.write(to: url)
         } catch {
             XCTFail("Failed to write \(url.path): \(error)")
         }
+        let attachment = XCTAttachment(screenshot: screenshot)
+        attachment.name = name
+        attachment.lifetime = .keepAlways
+        add(attachment)
     }
 }

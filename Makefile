@@ -35,5 +35,5 @@ e2e:            ## Run the Playwright end-to-end tests (hermetic; builds the SPA
 perf-check:    ## Run canned perf workload and print budget pass/fail table
 	uv run python -m ems.tools.perf_check
 
-ios-screenshots: ## App Store demo screenshots (6.9" iPhone simulator; requires Xcode)
+ios-screenshots: ## App Store demo screenshots (6.9" iPhone; full Xcode, no other booted sim)
 	./scripts/ios-screenshots.sh
