@@ -27,7 +27,7 @@ devices:
   indevolt_ips_extra: ""       # Optional comma-separated additional towers
 ```
 
-Secrets are env-only, never committed: `TIBBER_TOKEN`, `INDEVOLT_KEY`, `EMS_WEB_TOKEN`.
+Secrets are never committed. Bootstrap via env (`TIBBER_TOKEN`, `EMS_WEB_TOKEN`, …) or paste them in the Settings UI (SQLite settings store, masked on read). Plain-string `web.auth_token` in yaml also works for the shared web token — there is no `!secret` yaml tag.
 
 ## Status (verified 2026-06-28)
 

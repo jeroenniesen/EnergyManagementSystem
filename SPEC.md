@@ -587,7 +587,7 @@ solar:
 
 prices:
   provider: tibber                    # tibber | energyzero (free no-key fallback/cross-check)
-  tibber_token: !secret tibber_token
+  # tibber_token: set via Settings UI or TIBBER_TOKEN env (no yaml !secret loader)
   resolution: quarter_hourly          # quarter_hourly | hourly (auto-expands hourly→4×15min)
   cache_immutable_slots: true         # past slots never re-fetched (Tibber prices are immutable)
   tomorrow_required_by: "15:00"       # if tomorrow missing past this -> stale -> fallback
@@ -645,7 +645,7 @@ control:
 
 homeassistant:
   base_url: http://homeassistant.local:8123
-  token: !secret ha_long_lived_token
+  # token: set via Settings UI or HA_TOKEN env when the HA path ships (no yaml !secret loader)
   entity_map:              # explicit role->entity mapping (don't rely on discovery names)
     grid_power: sensor.p1_meter_active_power
     solar_power: sensor.solar_kwh_meter_active_power
@@ -669,7 +669,7 @@ web:
   # EMS_WEB_BIND + EMS_WEB_TOKEN for host-browser onboarding). POST /api/auth/onboard rejects
   # non-loopback clients unless a shared token is configured (defense in depth).
   auth: bearer             # bearer | basic  (LAN-only by default; never expose to internet)
-  auth_token: !secret ems_web_token
+  # auth_token: plain string or EMS_WEB_TOKEN env (do not commit); no yaml !secret loader
   guest_readonly: true     # optional read-only dashboard without control
   # Frontend is React + Vite, built at image-build time and served by FastAPI (§9.1).
   # No runtime CDN: all deps (charts, Leaflet, fonts, icons) are bundled/self-hosted.
@@ -704,7 +704,7 @@ explainer:                 # how the "why" text is phrased — INDEPENDENT of th
     provider: minimax              # example; any OpenAI-compatible chat endpoint
     base_url: https://api.minimax.io/v1
     model: <model-id>
-    api_key: !secret llm_api_key   # secret only; never logged/stored in SQLite (§12)
+    # api_key: Settings UI only → SQLite (masked); never logged plaintext (§12)
     timeout_seconds: 8
     max_tokens: 200
     share: reason_and_facts        # minimal redacted payload — the deterministic reason + the few numbers it cites; NEVER raw history/secrets
@@ -729,7 +729,7 @@ dev:                       # local development / testing (e.g. on a Mac) — see
 
 > **Implemented reality — this sample is the target design, not today's `config.yaml`.** The shipped file is a minimal starter: `site.timezone`, `dev.mode`, `control.{dry_run,cycle_seconds,control_cycle_seconds}`, `history.{db_path,retention_days,backup_keep}`, `web.port`, `sources.mode`, `prices.provider`, `devices.{p1_ip,solar_ip,car_ip,indevolt_ip,indevolt_ips_extra,indevolt_port}`, `auth.access_token_idle_days`. Everything else above (battery/strategy/arbitrage/consumption tuning, site lat/lon/tilt/azimuth/kwp) lives **only** in a **runtime settings store** (`ems/settings.py` → SQLite `settings` table), edited through the UI, under a **different key layout** than sampled here — e.g. `battery.usable_kwh`/`.min_reserve_soc`/`.night_reserve_kwh`, `strategy.mode`/`.summer_grid_topup`, `planner.mode` (always `rule_based` until M6; `ml`/`advisory` fall back), `planner.solar_confidence`/`.round_trip_efficiency`/`.degradation_eur_per_kwh`/`.risk_margin_eur_per_kwh`/`.negative_price_soak`, `site.lat`/`.lon`/`.kwp`/`.tilt`/`.azimuth`, `control.operational` + Settings **Watch only** (`control.dry_run` in the store — #136/#171 dual floor; yaml `control.dry_run: true` or `dev.mode: mock`/`replay` always wins) (not `arbitrage.*`/`solar.*` as sampled above). The **`homeassistant:` and `mqtt:` blocks are entirely unbuilt** (§5.2, §9.2) — no such keys are read anywhere; `ems/sources/ha.py` is a **skeleton only** (B-18/#107). The **`ml:` block is unbuilt** (M6 not reached — expected, not drift). Of `explainer.*`, `mode: external_llm` (MiniMax) **is implemented** (`explainer.api_key`/`.base_url`/`.model`/`.max_tokens`/`.timeout_seconds`/`.validate_hours`/`.cache_hours` runtime settings) but `local_llm` is not. A real, shipped settings group is **missing from this sample**: `notify.ntfy_url` / `notify.ntfy_topic` (BACKLOG B-20) configure the ntfy push channel (§9.3).
 
-**Defaults vs. UI-editable settings.** `config.yaml` holds base defaults (`:ro`). UI-editable values — **location (map pin)**, tilt/azimuth, `night_reserve_kwh`, percentile choice, mode override (with expiry, §9.1), Watch only / operational, planner mode — live in a **runtime settings store** in `/data` (a `settings` table in the same SQLite DB). **Effective config = defaults + runtime settings.** **Secrets are never written to the settings store or logs** (§12).
+**Defaults vs. UI-editable settings.** `config.yaml` holds base defaults (`:ro`). UI-editable values — **location (map pin)**, tilt/azimuth, `night_reserve_kwh`, percentile choice, mode override (with expiry, §9.1), Watch only / operational, planner mode — live in a **runtime settings store** in `/data` (a `settings` table in the same SQLite DB). **Effective config = defaults + runtime settings.** **Secrets typed in Settings are stored in that SQLite settings store (masked on API read); never commit them or log plaintext** (§12).
 
 ---
 
@@ -909,7 +909,7 @@ You can run the whole app on a laptop (e.g. a **Mac**) with **no Home Assistant,
 ## 12. Security
 
 - **Auth:** a **bearer token over LAN**. Writes (override / settings / control) **always** require the token when one is set; reads are open on the LAN by default (guest read-only) but can be locked with **`web.require_auth`**, which requires the token for **every `/api/*` read too** — turn it on before reaching the app over a VPN or from outside the home. Auth is one pure-ASGI choke point in front of the whole JSON API (no per-endpoint guards; no forwarded/proxy headers trusted). **Do not expose the EMS port to the internet.** **Remote access = the LAN over a VPN** (never a public proxy) — see [`docs/remote-access.md`](docs/remote-access.md) for the supported model, trust boundaries, token rotation, logging and control permissions.
-- **Secrets** (Tibber/Solcast/HA/web tokens, **external-LLM API key**) via **env / secret files only** — **never** in the SQLite settings store, never in logs.
+- **Secrets** (Tibber/Solcast/HA/web tokens, **external-LLM API key**): operators usually paste them in the Settings UI, where they are **stored in the local SQLite settings store** (API responses mask values and expose only a `__set` flag). First-boot bootstrap is **env vars** (`TIBBER_TOKEN`, `SOLCAST_API_KEY`, `EMS_WEB_TOKEN`, `HA_TOKEN`, …) or a plain-string `web.auth_token` in yaml (never commit it). There is **no** yaml `!secret` constructor — `config.yaml` is loaded with `yaml.safe_load`. **Never** commit secrets to git, and **never** log plaintext tokens.
 - **Redaction:** tokens/keys are **redacted from any debug dump, export, or log line**.
 - **CSRF / same-origin:** settings `POST`s require a same-origin check or CSRF token (the UI is browser-accessible).
 - **Guest mode (optional):** `web.guest_readonly` serves a **read-only dashboard** (no control, no settings) for sharing.

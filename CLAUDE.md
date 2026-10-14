@@ -79,7 +79,7 @@ docker-compose.yml # target Pi/dev sketches
 - **Economics, not magic numbers:** arbitrage runs only when `net_benefit = avoided_price − charge_price/efficiency − degradation − risk_margin (± grid fees) > 0`; no-trade below `daily_min_savings_eur`. Respect a cycle budget. **Trading (opt-in, default off):** day T-vs-Z; only if ≥ `planner.trading_min_extra_eur` (default €0.50); `prices.export_price_model` default `spot_minus_tax`; shared 1.5 cycles/day; year-round.
 - **Testing:** planners must be unit-testable with canned prices/forecasts and a mocked battery — no hardware in tests. Add tests with planner logic.
 - **Dry-run:** new control logic ships behind dry-run (log decisions, no writes) before going live — honour both yaml and Settings floors above.
-- **Secrets:** Tibber/Solcast tokens, HA token, web auth token via `!secret` / env — never commit secrets.
+- **Secrets:** Tibber/Solcast tokens, HA token, web auth token — Settings UI stores them in the local SQLite settings store (masked on read). First-boot bootstrap is **env vars** (`TIBBER_TOKEN`, `SOLCAST_API_KEY`, `EMS_WEB_TOKEN`, …) or a plain-string `web.auth_token` in yaml (do not commit it). There is **no** yaml `!secret` tag loader (`yaml.safe_load`). Never commit secrets or log plaintext tokens.
 
 ## Build order
 

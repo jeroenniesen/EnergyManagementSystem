@@ -80,7 +80,9 @@ export function AcceptInvite({ onDone }: { onDone: () => void }) {
             value={password}
             onChange={(e) => setPassword(e.target.value)}
             autoComplete="new-password"
+            minLength={10}
           />
+          <p className="field-help">At least 10 characters, with a letter and a digit.</p>
         </div>
         <button type="submit" className="btn-primary" disabled={busy}>
           Create account
