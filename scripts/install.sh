@@ -9,10 +9,12 @@
 # Then open http://localhost:8080 and configure everything in the UI (devices, prices, location,
 # tokens, AI key). No credentials live in this repo — you add them through the web interface.
 #
-# First-admin safety (#234): the installer mints a one-time bootstrap token
-# (ems/data/bootstrap_web_token → EMS_WEB_TOKEN in the service env) so open bind (0.0.0.0)
-# cannot be seized by a LAN peer before you create the admin. Enter that token on the
-# "Create admin" screen (Existing access token). Without a token, the app binds localhost
+# First-admin safety (#234): the installer mints (or reuses) a bootstrap token
+# (ems/data/bootstrap_web_token → EMS_WEB_TOKEN in the service env, mode 0600) so open
+# bind (0.0.0.0) cannot be seized by a LAN peer before you create the admin. Enter that
+# token on the "Create admin" screen (Existing access token). After signup it is migrated
+# to a lasting operate-tier access token ("Migrated shared token") — revoke it from Admin
+# → Tokens if you no longer want that bearer. Without a token, the app binds localhost
 # only and rejects non-loopback onboard.
 #
 # What it does (idempotent, no sudo, no system-wide changes):
@@ -79,6 +81,8 @@ say "Syncing the Python environment (uv will fetch Python 3.12 if needed)…"
 mkdir -p ems/data   # SQLite history + UI settings live here (gitignored)
 
 # #234: mint (or reuse) a bootstrap web token before open bind so LAN cannot seize first admin.
+# Always persist the value we install to TOKEN_FILE at 0600 (env-sourced installs too), and
+# write LaunchAgent / systemd units under umask 077 so the secret is not world-readable.
 TOKEN_FILE="$REPO/ems/data/bootstrap_web_token"
 if [ -n "${EMS_WEB_TOKEN:-}" ]; then
   WEB_TOKEN="$EMS_WEB_TOKEN"
@@ -88,8 +92,9 @@ elif [ -f "$TOKEN_FILE" ]; then
 else
   say "Generating a bootstrap web token (first-admin anti-seizure)…"
   WEB_TOKEN="$("$UV" run python -c 'import secrets; print(secrets.token_urlsafe(32))')"
-  ( umask 077; printf '%s\n' "$WEB_TOKEN" > "$TOKEN_FILE" )
 fi
+( umask 077; printf '%s\n' "$WEB_TOKEN" > "$TOKEN_FILE" )
+chmod 600 "$TOKEN_FILE" 2>/dev/null || true
 export EMS_WEB_TOKEN="$WEB_TOKEN"
 
 START_CMD=("$UV" run uvicorn ems.main:app --host 0.0.0.0 --port "$PORT")
@@ -106,6 +111,9 @@ if [ "$FOREGROUND" = "1" ]; then
 fi
 
 # 4. Auto-start service --------------------------------------------------------------------------
+# Keep EMS_WEB_TOKEN out of world-readable unit files (default umask is often 022 → 0644).
+_write_unit_umask="$(umask)"
+umask 077
 if [ "$OS" = "Darwin" ]; then
   say "Installing the auto-start service (LaunchAgent)…"
   mkdir -p "$HOME/Library/LaunchAgents" "$REPO/ems/data"
@@ -142,6 +150,7 @@ if [ "$OS" = "Darwin" ]; then
   <key>StandardErrorPath</key><string>$REPO/ems/data/server-crash.log</string>
 </dict></plist>
 PLIST
+  chmod 600 "$PLIST"
   launchctl unload "$PLIST" 2>/dev/null || true
   launchctl load "$PLIST"
 else
@@ -171,9 +180,11 @@ RestartSec=3
 [Install]
 WantedBy=default.target
 SERVICE
+  chmod 600 "$SERVICE_FILE"
   systemctl --user daemon-reload
   systemctl --user enable --now "$SERVICE_NAME"
 fi
+umask "$_write_unit_umask"
 
 # 5. Wait for health + report --------------------------------------------------------------------
 say "Waiting for the app to come up…"
@@ -189,9 +200,11 @@ for _ in $(seq 1 40); do
     printf '\n\033[1;32m✅ Smart Energy Manager is running.\033[0m\n'
     printf '   %s:  http://localhost:%s\n' "$LOCAL_LABEL" "$PORT"
     [ -n "$LAN_IP" ] && printf '   On your LAN:  http://%s:%s\n' "$LAN_IP" "$PORT"
-    printf '   Bootstrap token (create-admin / Existing access token):\n'
+    printf '   Bootstrap / operate token (create-admin → Existing access token):\n'
     printf '     %s\n' "$WEB_TOKEN"
-    printf '   (also saved at %s — keep it private)\n' "$TOKEN_FILE"
+    printf '   Saved at %s and in the service unit (mode 600).\n' "$TOKEN_FILE"
+    printf '   After signup it becomes a lasting operate token ("Migrated shared token");\n'
+    printf '   revoke it under Admin → Tokens if you no longer need that bearer.\n'
     printf '   Next: open it, create your admin (paste the token), then set up devices in the UI.\n'
     printf '   Logs: %s/ems/data/server.log    Stop/remove: ./scripts/uninstall.sh\n\n' "$REPO"
     exit 0

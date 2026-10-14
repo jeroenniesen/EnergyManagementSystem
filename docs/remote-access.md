@@ -49,8 +49,11 @@ EMS*. Both layers are required for safe remote use — the VPN is not a substitu
 seizing that race when the service binds `0.0.0.0`:
 
 - **`scripts/install.sh` / bootstrap** mint a bootstrap token (`EMS_WEB_TOKEN`, also written to
-  `ems/data/bootstrap_web_token`) and print it. Enter it on the create-admin screen as
-  **Existing access token**.
+  `ems/data/bootstrap_web_token` and the LaunchAgent / systemd unit at mode `600`) and print it.
+  Enter it on the create-admin screen as **Existing access token**. After signup it is migrated
+  into a lasting operate-tier access token (“Migrated shared token”) owned by the new admin —
+  revoke it under Admin → Tokens if you no longer want that bearer. Deleting the file alone does
+  not revoke the DB row or clear the service environment.
 - **Without a token**, `python -m ems.main` defaults to `127.0.0.1`, and onboard from a non-loopback
   client returns `403`. Override bind with `EMS_WEB_BIND` only when you understand the risk.
 

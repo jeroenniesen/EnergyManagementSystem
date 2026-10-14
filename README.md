@@ -23,9 +23,12 @@ That's it. It downloads the app to `~/EnergyManagementSystem` and bootstraps eve
 Homebrew, or system-wide package changes): installs `uv` if needed, fetches a repo-local Node only
 if needed, builds the dashboard, syncs the Python environment, starts the app, and prints the URL
 plus a **bootstrap token**. On macOS it installs a LaunchAgent; on Linux it installs a
-`systemd --user` service. Open **http://localhost:8080** (or the LAN URL), create your admin, and
-paste that token into **Existing access token** — it stops a LAN peer from seizing the first admin
-before you do. The token is also saved at `ems/data/bootstrap_web_token`.
+`systemd --user` service (both unit files and `ems/data/bootstrap_web_token` are mode `600`).
+Open **http://localhost:8080** (or the LAN URL), create your admin, and paste that token into
+**Existing access token** — it stops a LAN peer from seizing the first admin before you do.
+After signup the same value is kept as a lasting **operate**-tier access token named
+“Migrated shared token” (also still in the service env); revoke it under Admin → Tokens if you
+no longer want that bearer.
 
 Linux auto-start requires a user `systemd` session. For a headless machine, enable user lingering
 for your account (`loginctl enable-linger "$USER"`, subject to your administrator's policy), or use
