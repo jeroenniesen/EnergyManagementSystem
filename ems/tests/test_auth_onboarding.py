@@ -40,8 +40,22 @@ def test_onboard_rejects_whitespace_only_username(tmp_path):
     with _client(_app(db)) as c:
         r = c.post("/api/auth/onboard", json={"username": "   ", "password": "pw12345678"})
         assert r.status_code == 422
-        assert r.json()["detail"] == "username required; password min 8"
+        assert r.json()["detail"] == (
+            "username required; password min 10; need a letter and a digit"
+        )
         # onboarding must still be OPEN — the rejected attempt must not have consumed it.
+        assert c.get("/api/status").status_code == 409
+
+
+def test_onboard_rejects_weak_passwords(tmp_path):
+    # #237: new passwords need length ≥10 plus a letter and a digit (existing logins unchanged).
+    db = str(tmp_path / "ems.sqlite")
+    detail = "username required; password min 10; need a letter and a digit"
+    with _client(_app(db)) as c:
+        for password in ("short1a", "lettersonly", "1234567890"):
+            r = c.post("/api/auth/onboard", json={"username": "admin", "password": password})
+            assert r.status_code == 422, password
+            assert r.json()["detail"] == detail
         assert c.get("/api/status").status_code == 409
 
 

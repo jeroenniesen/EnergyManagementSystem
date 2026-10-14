@@ -164,6 +164,25 @@ def test_password_change_is_audited_as_password_changed(tmp_path):
     assert "pw12345678" not in blob and "newpass123" not in blob
 
 
+def test_password_change_rejects_weak_new_password(tmp_path):
+    # #237: change-password uses the same policy as onboard (existing login password unchanged).
+    db = str(tmp_path / "ems.sqlite")
+    _seed_user(db, "admin", "pw12345678", "admin")
+    with TestClient(_app(db)) as c:
+        session = c.post(
+            "/api/auth/login", json={"username": "admin", "password": "pw12345678"}
+        ).json()["token"]
+        h = {"Authorization": f"Bearer {session}"}
+        r = c.post("/api/auth/password", json={"old": "pw12345678", "new": "short1"},
+                   headers=h)
+        assert r.status_code == 422
+        assert r.json()["detail"] == "password min 10; need a letter and a digit"
+        # Old password still works — weak new was rejected, not applied.
+        assert c.post(
+            "/api/auth/login", json={"username": "admin", "password": "pw12345678"}
+        ).status_code == 200
+
+
 def test_token_mint_and_invite_accept_are_audited_without_secrets(tmp_path):
     db = str(tmp_path / "ems.sqlite")
     _seed_user(db, "admin", "pw12345678", "admin")

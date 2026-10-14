@@ -55,7 +55,7 @@ Full key list: `docs/config-reference.md` + `GET /api/settings` `schema[].applie
 ## Rotate a token (Tibber / Solcast / HA / web)
 
 1. Create the new token at the provider (Tibber, Solcast Toolkit, HA profile, or generate a new web token).
-2. Update the **secret source** — Settings UI (Tibber / Solcast fields) or env / secrets file — **never** put tokens in `config.yaml` literals or logs. For Solcast also keep the rooftop resource id in Settings (or `SOLCAST_RESOURCE_ID` on first boot); Solcast fields only appear when the forecast provider is set to Solcast.
+2. Update the **secret source** — Settings UI (Tibber / Solcast fields) or env (`TIBBER_TOKEN`, `SOLCAST_API_KEY`, `EMS_WEB_TOKEN`, …) — **never** put tokens in committed `config.yaml` literals or logs. There is no yaml `!secret` / secrets-file loader. For Solcast also keep the rooftop resource id in Settings (or `SOLCAST_RESOURCE_ID` on first boot); Solcast fields only appear when the forecast provider is set to Solcast.
 3. Restart the EMS so connection settings reload. Confirm via `/health/ready` and the relevant freshness indicator going green.
 4. Revoke the old token at the provider.
 
