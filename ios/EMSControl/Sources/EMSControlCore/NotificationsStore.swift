@@ -56,12 +56,13 @@ public final class NotificationsStore {
             // sessions handling. A failure keeps whatever digest was already shown.
             async let digestResult = client.fetchDigest(week: digestWeek)
             let response = try await feed
+            let nextDigest = try? await digestResult
             guard generation == readGeneration, !isDemo else { return }
             items = response.items
             unread = response.unread
-            // else: mark-all-read / setDemo landed while this GET was in flight.
-            digest = (try? await digestResult) ?? digest
-            guard generation == readGeneration, !isDemo else { return }
+            if let nextDigest {
+                digest = nextDigest
+            }
             errorMessage = nil
             loaded = true
         } catch {
@@ -75,7 +76,10 @@ public final class NotificationsStore {
     /// (last completed Mon-Sun week). A failure keeps the currently shown digest.
     public func loadDigest(week: String?) async {
         guard let client else { return }
-        if let fresh = try? await client.fetchDigest(week: week) {
+        let generation = readGeneration
+        let fresh = try? await client.fetchDigest(week: week)
+        guard generation == readGeneration, !isDemo else { return }
+        if let fresh {
             digest = fresh
             digestWeek = week  // anchor only on success, so digest + anchor never desync
         }
@@ -105,7 +109,10 @@ public final class NotificationsStore {
         }
         unread = 0
         guard let client else { return }  // demo / disconnected: keep the optimistic state
-        if let fresh = try? await client.markNotificationsRead() {
+        let generation = readGeneration
+        let fresh = try? await client.markNotificationsRead()
+        guard generation == readGeneration, !isDemo else { return }
+        if let fresh {
             unread = fresh
         }
     }

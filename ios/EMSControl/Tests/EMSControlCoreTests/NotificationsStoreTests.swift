@@ -195,6 +195,27 @@ final class NotificationsStoreTests: XCTestCase {
 
     // MARK: - Demo / server switching
 
+    func testInFlightDigestDoesNotClobberDemoWeek() async {
+        let transport = NotificationsRoutingTransport(feedData: feedJSON, digestData: digestJSON)
+        var openGate: AsyncStream<Void>.Continuation?
+        transport.digestGate = AsyncStream { openGate = $0 }
+        let arrived = expectation(description: "digest GET reached the transport")
+        transport.onDigestArrived = { arrived.fulfill() }
+
+        let store = makeStore(transport)
+        let refreshTask = Task { await store.refresh() }
+        await fulfillment(of: [arrived], timeout: 2)
+        store.setDemo()
+        XCTAssertEqual(store.digest, .demo)
+        openGate?.yield()
+        openGate?.finish()
+        await refreshTask.value
+
+        XCTAssertTrue(store.isDemo)
+        XCTAssertEqual(store.digest, .demo)
+        XCTAssertEqual(store.items, NotificationItem.demoItems)
+    }
+
     func testSetDemoPopulatesCodedFixtures() {
         let store = NotificationsStore(client: APIClient(
             baseURL: baseURL,
@@ -283,6 +304,8 @@ private final class NotificationsRoutingTransport: HTTPTransport, @unchecked Sen
     /// so the test knows the request is in flight.
     var feedGate: AsyncStream<Void>?
     var onFeedArrived: (@Sendable () -> Void)?
+    var digestGate: AsyncStream<Void>?
+    var onDigestArrived: (@Sendable () -> Void)?
     private(set) var lastRequest: URLRequest?
     private(set) var lastPostBody: Data?
     private(set) var lastFeedQuery: String?
@@ -322,6 +345,10 @@ private final class NotificationsRoutingTransport: HTTPTransport, @unchecked Sen
             return respond(feedData, feedStatus)
         case "/api/digest":
             lastDigestQuery = request.url?.query
+            if let gate = digestGate {
+                onDigestArrived?()
+                for await _ in gate { break }
+            }
             return respond(digestData, digestStatus)
         default:
             return respond(Data(#"{"detail":"unexpected path"}"#.utf8), 404)

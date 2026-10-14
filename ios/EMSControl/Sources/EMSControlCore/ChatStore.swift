@@ -98,8 +98,9 @@ public final class ChatStore {
         let mode = sessionMode
         do {
             if let client, mode == .live {
-                explainerStatus = try await client.fetchExplainer()
+                let status = try await client.fetchExplainer()
                 guard generation == sessionGeneration, sessionMode == .live else { return }
+                explainerStatus = status
             } else {
                 explainerStatus = try demoData.explainerStatus()
             }
@@ -156,10 +157,11 @@ public final class ChatStore {
         let generation = sessionGeneration
 
         do {
-            explainerStatus = try await client.fetchExplainer()
+            let status = try await client.fetchExplainer()
+            let faq = try await client.fetchFAQ().items
             guard generation == sessionGeneration, sessionMode == .live else { return }
-            faqItems = try await client.fetchFAQ().items
-            guard generation == sessionGeneration, sessionMode == .live else { return }
+            explainerStatus = status
+            faqItems = faq
             lastError = nil
         } catch {
             guard generation == sessionGeneration, sessionMode == .live else { return }
