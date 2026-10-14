@@ -51,7 +51,7 @@ ems/web/frontend/.e2e-data/
 # local disarmed demo instance (never commit)
 .demo-data/
 
-# iOS / Xcode build artifacts (never commit DerivedData-style trees)
+# iOS / Xcode build artifacts (never commit DerivedData-style trees; includes app-store-screenshots)
 ios/**/build/
 ios/**/.build/
 **/xcuserdata/

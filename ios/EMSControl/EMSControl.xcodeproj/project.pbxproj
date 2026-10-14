@@ -15,6 +15,7 @@
 		04B675AEAA6CC693F51243AB /* PrivacyInfo.xcprivacy in Resources */ = {isa = PBXBuildFile; fileRef = C29A56A2AA2FCDB54F5C870D /* PrivacyInfo.xcprivacy */; };
 		0D0F6681CE829F1EC4356E68 /* EMSControlCore.framework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = 62C0D3FEB8DD96AF4F3CAD8C /* EMSControlCore.framework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 		0D87044D1DD83D7B05AC4069 /* EMSTimelineProvider.swift in Sources */ = {isa = PBXBuildFile; fileRef = 00226AD26ECD7A7800E34475 /* EMSTimelineProvider.swift */; };
+		11FA1C3B8004F5455745065D /* DemoModeScreenshotsUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 89A17B5A033323A32A33889C /* DemoModeScreenshotsUITests.swift */; };
 		145FB2DA6CB9ACB0352B4CED /* NotificationsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2B9061823F17E42906990E53 /* NotificationsView.swift */; };
 		15F7E1D2E299E702BCF34E68 /* DemoDataStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3699F1E6706AE136B68AB1C8 /* DemoDataStore.swift */; };
 		1A13A3975BE7484B3E9D2185 /* ISOTimestamp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2DC5EEC3A04E938FD71E41C8 /* ISOTimestamp.swift */; };
@@ -148,6 +149,7 @@
 		7AE8E5DCF24A00DA770185CB /* CarStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CarStore.swift; sourceTree = "<group>"; };
 		81C65C37F0360A3E36856B3C /* EMSWidgetBundle.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EMSWidgetBundle.swift; sourceTree = "<group>"; };
 		851FDA73182D3541A3039A9A /* DashboardStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DashboardStore.swift; sourceTree = "<group>"; };
+		89A17B5A033323A32A33889C /* DemoModeScreenshotsUITests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DemoModeScreenshotsUITests.swift; sourceTree = "<group>"; };
 		8B33CD611BCD0228D1039CC1 /* WidgetTimelineReloader.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WidgetTimelineReloader.swift; sourceTree = "<group>"; };
 		922974D3E5EFAB723E1B86D9 /* ChatView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatView.swift; sourceTree = "<group>"; };
 		93334206BA35A14EC4153324 /* EMSControl.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = EMSControl.entitlements; sourceTree = "<group>"; };
@@ -229,6 +231,7 @@
 		38F2FED56B6A4FF6B8908150 /* EMSControlUITests */ = {
 			isa = PBXGroup;
 			children = (
+				89A17B5A033323A32A33889C /* DemoModeScreenshotsUITests.swift */,
 				06EC1C3C24D57B8D8236CC2F /* DemoModeUITests.swift */,
 			);
 			path = EMSControlUITests;
@@ -491,6 +494,7 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				11FA1C3B8004F5455745065D /* DemoModeScreenshotsUITests.swift in Sources */,
 				022C3F5AE75E9FFB6CCA9005 /* DemoModeUITests.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
@@ -813,6 +817,7 @@
 		BC0105C2960E47D68194D3AF /* Release */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
 				CODE_SIGN_STYLE = Automatic;
 				DEVELOPMENT_TEAM = C32G3GV975;
 				GENERATE_INFOPLIST_FILE = YES;
@@ -858,6 +863,7 @@
 		F68D928A1DF70009D98A55D8 /* Debug */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
 				CODE_SIGN_STYLE = Automatic;
 				DEVELOPMENT_TEAM = C32G3GV975;
 				GENERATE_INFOPLIST_FILE = YES;

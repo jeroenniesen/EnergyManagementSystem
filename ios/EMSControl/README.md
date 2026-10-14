@@ -25,6 +25,22 @@ xcodebuild -project EMSControl.xcodeproj -scheme EMSControl \
 
 Pass `-UITestingReset` via `app.launchArguments` in the test (clears saved server state before demo).
 
+### App Store screenshots (#259)
+
+Generates five PNGs (Dashboard, Insights, Car, Activity, Chat) in demo mode on a 6.9" Pro Max
+simulator with a clean status bar (9:41, full battery/signal). Output is gitignored under
+`ios/EMSControl/build/app-store-screenshots/`.
+
+```bash
+make ios-screenshots
+# or: ./scripts/ios-screenshots.sh
+```
+
+Requires full Xcode (not Command Line Tools only) and no other booted iOS simulator (shared-machine
+rule). The script creates a dedicated simulator `EMS App Store 6.9` if needed, clears the
+status-bar override and shuts the simulator down when finished. Override the output directory with
+`EMS_SCREENSHOT_OUTPUT` if needed.
+
 ## Home-screen widget (B-59)
 
 The `EMSWidget` app-extension target adds a WidgetKit widget (systemSmall + systemMedium) showing
