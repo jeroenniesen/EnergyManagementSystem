@@ -10,6 +10,8 @@ import {
   privateIpv4Hint,
   readPersistedBatteryIp,
   readPersistedSetupStep,
+  clearSetupPersistence,
+  interpretRestartResponse,
   restartPollConfig,
   type BatteryWizardPhase,
 } from "./setupFlow";
@@ -169,15 +171,16 @@ export function Setup({ onOpenSettings }: Props) {
     setPollTimedOut(false);
     try {
       const r = await apiFetch("/api/system/restart", { method: "POST" });
-      const b = await r.json().catch(() => ({}));
-      if (r.status === 202 && typeof b.boot_id === "string") {
+      const b = (await r.json().catch(() => ({}))) as Record<string, unknown>;
+      const dispatch = interpretRestartResponse(r.status, b);
+      if (dispatch.kind === "started") {
         setWizardPhase("restarting");
-        void pollForRestart(b.boot_id);
+        void pollForRestart(dispatch.bootId);
         return;
       }
-      if (r.status === 409) {
+      if (dispatch.kind === "busy" || dispatch.kind === "not_supervised") {
         restartRequestedRef.current = false;
-        if (b.reason === "not_supervised") {
+        if (dispatch.kind === "not_supervised") {
           setRestartAvailable({ available: false, reason: "not_supervised" });
           setWizardPhase("manual_restart");
         } else {
@@ -185,7 +188,7 @@ export function Setup({ onOpenSettings }: Props) {
         }
         return;
       }
-      throw new Error(b.detail ?? `HTTP ${r.status}`);
+      throw new Error(dispatch.message);
     } catch (e) {
       restartRequestedRef.current = false;
       setSaveError(e instanceof Error ? e.message : String(e));
@@ -263,6 +266,9 @@ export function Setup({ onOpenSettings }: Props) {
       if (outcome) {
         setWizardPhase(outcome.phase);
         setWizardMessage(outcome.message);
+        if (outcome.phase === "success") {
+          clearSetupPersistence();
+        }
       }
     } catch (e) {
       setSaveError(e instanceof Error ? e.message : String(e));

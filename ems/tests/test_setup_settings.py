@@ -9,8 +9,15 @@ from fastapi.testclient import TestClient
 from ems.authn import hash_password
 from ems.control.mode_controller import ModeController
 from ems.lifecycle import Lifecycle
+from ems.settings import (
+    SECRET_KEYS,
+    SETTINGS_SCHEMA,
+    SETUP_SETTINGS_BATTERY_POWER_LIMIT_KEYS,
+    SETUP_SETTINGS_SECRET_ALLOWLIST,
+)
 from ems.sources.battery import MockBatteryDriver
 from ems.sources.mock import MockSource
+from ems.storage.audit import AuditStore
 from ems.storage.auth import AuthStore
 from ems.storage.settings import SettingsStore
 from ems.web.api import create_app
@@ -29,12 +36,24 @@ def _seed_user(db: str, username: str, password: str, role: str):
 
 def _app(tmp_path, **kw):
     db = str(tmp_path / "ems.sqlite")
+    if "audit_store" not in kw:
+        kw = {**kw, "audit_store": AuditStore(db)}
     return create_app(
         MockSource(), dry_run=True, dev_mode="mock",
         settings_store=SettingsStore(db),
         auth_store=AuthStore(db),
         **kw,
     ), db
+
+
+def _settings_values(client: TestClient, headers: dict[str, str]) -> dict:
+    return client.get("/api/settings", headers=headers).json()["values"]
+
+
+def _audit_entries(client: TestClient, headers: dict[str, str]) -> list:
+    return client.get("/api/audit", params={"category": "config_change"}, headers=headers).json()[
+        "entries"
+    ]
 
 
 def _admin_headers(client: TestClient) -> dict[str, str]:
@@ -88,14 +107,107 @@ def test_mixed_forbidden_key_rejects_without_persist(tmp_path):
     _seed_admin(db)
     with TestClient(app) as c:
         h = _admin_headers(c)
+        cache_before = _settings_values(c, h)
         r = c.post(
             "/api/setup/settings",
             json={"battery.indevolt_ip": "192.168.1.20", "control.operational": True},
             headers=h,
         )
         assert r.status_code == 422
+        assert _settings_values(c, h) == cache_before
+        assert _audit_entries(c, h) == []
     after = asyncio.run(snapshot())
     assert before == after
+
+
+def test_battery_power_limit_deny_keys_match_schema():
+    """AC 17: deny-set stays aligned with battery.* number fields in W / % / kWh."""
+    derived = {
+        f.key
+        for f in SETTINGS_SCHEMA
+        if f.key.startswith("battery.")
+        and f.type in ("number", "int")
+        and f.unit in ("W", "%", "kWh")
+    }
+    assert derived == set(SETUP_SETTINGS_BATTERY_POWER_LIMIT_KEYS)
+
+
+@pytest.mark.parametrize("key", sorted(SETUP_SETTINGS_BATTERY_POWER_LIMIT_KEYS))
+def test_denied_battery_limit_keys_return_422_without_persist(tmp_path, key: str):
+    app, db = _app(tmp_path)
+    store = SettingsStore(db)
+
+    async def snapshot():
+        await store.init()
+        return await store.all()
+
+    before = asyncio.run(snapshot())
+    _seed_admin(db)
+    with TestClient(app) as c:
+        h = _admin_headers(c)
+        cache_before = _settings_values(c, h)
+        r = c.post("/api/setup/settings", json={key: 1234}, headers=h)
+        assert r.status_code == 422
+        assert key in r.json()["errors"]
+        assert _settings_values(c, h) == cache_before
+        assert _audit_entries(c, h) == []
+    assert asyncio.run(snapshot()) == before
+
+
+@pytest.mark.parametrize(
+    "secret_key",
+    sorted(k for k in SECRET_KEYS if k not in SETUP_SETTINGS_SECRET_ALLOWLIST),
+)
+def test_non_allowlisted_secret_keys_rejected(tmp_path, secret_key: str):
+    app, db = _app(tmp_path)
+    _seed_admin(db)
+    with TestClient(app) as c:
+        h = _admin_headers(c)
+        cache_before = _settings_values(c, h)
+        r = c.post("/api/setup/settings", json={secret_key: "leak-me"}, headers=h)
+        assert r.status_code == 422
+        assert secret_key in r.json()["errors"]
+        assert _settings_values(c, h) == cache_before
+
+
+def test_setup_tibber_token_masked_and_audited_without_value(tmp_path):
+    app, db = _app(tmp_path)
+    _seed_admin(db)
+    token = "tibber-test-token-xyz"
+    with TestClient(app) as c:
+        h = _admin_headers(c)
+        r = c.post("/api/setup/settings", json={"prices.tibber_token": token}, headers=h)
+        assert r.status_code == 200
+        values = r.json()["values"]
+        assert values.get("prices.tibber_token") == ""
+        assert values.get("prices.tibber_token.__set") is True
+        assert token not in str(values)
+        entries = _audit_entries(c, h)
+        assert entries
+        assert "prices.tibber_token" in entries[0]["detail"]["keys"]
+        assert "prices.tibber_token" in entries[0]["detail"]["secrets"]
+        assert token not in str(entries)
+
+
+def test_setup_save_audit_lists_keys_only(tmp_path):
+    app, db = _app(tmp_path)
+    _seed_admin(db)
+    with TestClient(app) as c:
+        h = _admin_headers(c)
+        r = c.post(
+            "/api/setup/settings",
+            json={
+                "battery.indevolt_ip": "192.168.1.61",
+                "connection.use_live_devices": True,
+            },
+            headers=h,
+        )
+        assert r.status_code == 200
+        entries = _audit_entries(c, h)
+        assert entries
+        keys = entries[0]["detail"]["keys"]
+        assert set(keys) == {"battery.indevolt_ip", "connection.use_live_devices"}
+        assert "192.168.1.61" not in entries[0]["summary"]
 
 
 def test_auth_matrix(tmp_path):
@@ -158,6 +270,15 @@ def test_allowed_battery_save_masks_and_restart_flag(tmp_path):
 
 
 @pytest.mark.parametrize(
+    "ip_key",
+    [
+        "battery.indevolt_ip",
+        "meters.p1_ip",
+        "meters.solar_ip",
+        "meters.car_ip",
+    ],
+)
+@pytest.mark.parametrize(
     "bad_ip",
     [
         "127.0.0.1",
@@ -172,18 +293,35 @@ def test_allowed_battery_save_masks_and_restart_flag(tmp_path):
         "",
     ],
 )
-def test_private_ipv4_only(tmp_path, bad_ip: str):
+def test_private_ipv4_only(tmp_path, ip_key: str, bad_ip: str):
     app, db = _app(tmp_path)
     _seed_admin(db)
     with TestClient(app) as c:
         h = _admin_headers(c)
         r = c.post(
             "/api/setup/settings",
-            json={"battery.indevolt_ip": bad_ip, "connection.use_live_devices": True},
+            json={ip_key: bad_ip, "connection.use_live_devices": True},
             headers=h,
         )
     assert r.status_code == 422
-    assert "battery.indevolt_ip" in r.json()["errors"]
+    assert ip_key in r.json()["errors"]
+
+
+def test_indevolt_ips_extra_rejects_public_ip(tmp_path):
+    app, db = _app(tmp_path)
+    _seed_admin(db)
+    with TestClient(app) as c:
+        h = _admin_headers(c)
+        r = c.post(
+            "/api/setup/settings",
+            json={
+                "battery.indevolt_ips_extra": "8.8.8.8, 192.168.1.2",
+                "connection.use_live_devices": True,
+            },
+            headers=h,
+        )
+    assert r.status_code == 422
+    assert "battery.indevolt_ips_extra" in r.json()["errors"]
 
 
 def test_zero_battery_write_calls_on_setup_save(tmp_path):
@@ -225,3 +363,4 @@ def test_control_flags_unchanged_after_setup(tmp_path):
         assert vals.get("control.dry_run") is True
         status = c.get("/api/status", headers=h).json()
         assert status.get("dry_run") is True
+        assert status.get("dry_run_cause") == "mock"

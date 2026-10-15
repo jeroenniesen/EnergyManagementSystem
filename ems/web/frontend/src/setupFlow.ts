@@ -68,6 +68,16 @@ export function persistSetupStep(step: string | null): void {
   }
 }
 
+/** Drop wizard persistence after a terminal outcome so a later #setup visit stays fresh. */
+export function clearSetupPersistence(): void {
+  persistSetupStep(null);
+  try {
+    sessionStorage.removeItem(SETUP_BATTERY_IP_KEY);
+  } catch {
+    /* best effort */
+  }
+}
+
 export function readPersistedSetupStep(): string | null {
   try {
     return sessionStorage.getItem(SETUP_STEP_STORAGE_KEY);
@@ -134,4 +144,28 @@ export function restartPollConfig(): { intervalMs: number; timeoutMs: number } {
     intervalMs: typeof inj?.intervalMs === "number" ? inj.intervalMs : RESTART_POLL_MS,
     timeoutMs: typeof inj?.timeoutMs === "number" ? inj.timeoutMs : RESTART_POLL_TIMEOUT_MS,
   };
+}
+
+export type RestartDispatch =
+  | { kind: "started"; bootId: string }
+  | { kind: "busy" }
+  | { kind: "not_supervised" }
+  | { kind: "error"; message: string };
+
+/** Map POST /api/system/restart response for the battery wizard (#291 AC 11). */
+export function interpretRestartResponse(
+  status: number,
+  body: Record<string, unknown>,
+): RestartDispatch {
+  if (status === 202 && typeof body.boot_id === "string") {
+    return { kind: "started", bootId: body.boot_id };
+  }
+  if (status === 409) {
+    if (body.reason === "not_supervised") {
+      return { kind: "not_supervised" };
+    }
+    return { kind: "busy" };
+  }
+  const detail = typeof body.detail === "string" ? body.detail : `HTTP ${status}`;
+  return { kind: "error", message: detail };
 }

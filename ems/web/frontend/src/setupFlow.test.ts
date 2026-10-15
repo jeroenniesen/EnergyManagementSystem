@@ -3,8 +3,12 @@ import { describe, expect, test } from "vitest";
 import {
   batteryChecklistOutcome,
   buildBatteryLinkPayload,
+  clearSetupPersistence,
+  interpretRestartResponse,
   needsP1IpField,
   privateIpv4Hint,
+  SETUP_BATTERY_IP_KEY,
+  SETUP_STEP_STORAGE_KEY,
 } from "./setupFlow";
 
 describe("setupFlow (#291)", () => {
@@ -47,5 +51,25 @@ describe("setupFlow (#291)", () => {
     expect(batteryChecklistOutcome("Ontbreekt", "192.168.1.3")?.message).toContain(
       "192.168.1.3",
     );
+  });
+
+  test("clearSetupPersistence removes wizard session keys", () => {
+    sessionStorage.setItem(SETUP_STEP_STORAGE_KEY, "battery");
+    sessionStorage.setItem(SETUP_BATTERY_IP_KEY, "192.168.1.1");
+    clearSetupPersistence();
+    expect(sessionStorage.getItem(SETUP_STEP_STORAGE_KEY)).toBeNull();
+    expect(sessionStorage.getItem(SETUP_BATTERY_IP_KEY)).toBeNull();
+  });
+
+  test("interpretRestartResponse (#291 AC 11)", () => {
+    expect(interpretRestartResponse(202, { boot_id: "abc" })).toEqual({
+      kind: "started",
+      bootId: "abc",
+    });
+    expect(interpretRestartResponse(409, { reason: "busy" })).toEqual({ kind: "busy" });
+    expect(interpretRestartResponse(409, { reason: "not_supervised" })).toEqual({
+      kind: "not_supervised",
+    });
+    expect(interpretRestartResponse(500, { detail: "kapot" }).kind).toBe("error");
   });
 });

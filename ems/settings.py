@@ -825,8 +825,26 @@ SETUP_FORBIDDEN_KEY_MSG = (
     "Deze instelling kan niet via de setup-wizard worden gewijzigd."
 )
 
+# AC 17 (#291): battery power/reserve limits — never via onboarding (capability probe later).
+SETUP_SETTINGS_BATTERY_POWER_LIMIT_KEYS: frozenset[str] = frozenset({
+    "battery.max_charge_w",
+    "battery.max_discharge_w",
+    "battery.usable_kwh",
+    "battery.min_reserve_soc",
+    "battery.night_reserve_kwh",
+    "battery.overnight_load_kwh",
+})
+SETUP_SETTINGS_DENIED_KEYS: frozenset[str] = SETUP_SETTINGS_BATTERY_POWER_LIMIT_KEYS
+
+# AC 18 (#291): only these secret keys may be written through POST /api/setup/settings.
+SETUP_SETTINGS_SECRET_ALLOWLIST: frozenset[str] = frozenset({"prices.tibber_token"})
+
 
 def setup_settings_key_allowed(key: str) -> bool:
+    if key in SETUP_SETTINGS_DENIED_KEYS:
+        return False
+    if key in SECRET_KEYS and key not in SETUP_SETTINGS_SECRET_ALLOWLIST:
+        return False
     if key in SETUP_SETTINGS_EXTRA_KEYS:
         return True
     return any(key.startswith(p) for p in SETUP_SETTINGS_PREFIXES)
