@@ -60,7 +60,7 @@ def test_status_ontbreekt_blocks_watch_steps():
     assert by_key["battery"].status == "ontbreekt"
     assert by_key["battery"].to_dict()["status"] == "Ontbreekt"
     assert cl.steps_remaining == 1
-    assert "Nog 1 stappen" in cl.headline
+    assert cl.headline == "Nog 1 stap tot EMS kan meekijken"
 
 
 def test_status_optioneel_for_missing_forecast():
@@ -86,6 +86,16 @@ def test_p1_and_battery_need_fresh_soc_not_zero_placeholder():
     """#134: without a fresh SoC reading the battery row stays Ontbreekt."""
     cl = _base(soc_ready=False, sensing_ok=False)
     assert next(i for i in cl.items if i.key == "battery").status == "ontbreekt"
+
+
+def test_p1_ontbreekt_when_grid_stale():
+    cl = _base(freshness={"grid": "stale", "soc": "fresh"})
+    assert next(i for i in cl.items if i.key == "p1").status == "ontbreekt"
+
+
+def test_p1_ontbreekt_when_not_paired():
+    cl = _base(p1_paired=False)
+    assert next(i for i in cl.items if i.key == "p1").status == "ontbreekt"
 
 
 def _seed_user(db: str, username: str, password: str, role: str):

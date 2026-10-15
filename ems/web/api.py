@@ -2600,16 +2600,11 @@ def create_app(
         driver = battery
         if driver is None and controller is not None:
             driver = getattr(controller, "driver", None)
-        p1_paired = False
+        # Cached CapabilityReport (startup / settings apply) — no battery probe on GET (#290).
+        cap = _capability_box.get("cap")
+        p1_paired = cap.p1_paired if cap is not None else False
         battery_present = driver is not None
-        battery_ok = False
-        if driver is not None:
-            try:
-                p1_paired = (await asyncio.to_thread(driver.probe)).p1_paired
-                battery_ok = True
-            except Exception:
-                _log.debug("setup checklist: battery probe failed (non-fatal)", exc_info=True)
-                battery_ok = False
+        battery_ok = cap is not None
         grid_fuse_unset = settings_cache.get("control.grid_fuse", "unset") == "unset"
 
         def _core():

@@ -158,6 +158,8 @@ def build_setup_checklist(
     watch_ready = readiness.sensing_ready
     if watch_ready:
         headline = "EMS kan meekijken"
+    elif steps_remaining == 1:
+        headline = "Nog 1 stap tot EMS kan meekijken"
     else:
         headline = f"Nog {steps_remaining} stappen tot EMS kan meekijken"
 

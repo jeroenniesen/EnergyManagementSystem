@@ -174,7 +174,7 @@ const CONFIDENCE_CHIP_LABEL: Record<PlanConfidence["level"], string> = HOME_CONF
 // #manage/audit. LEGACY hashes still work so old bookmarks / deep-links don't break: bare
 // #settings|#system|#audit redirect to the matching Manage sub-tab. Anything unknown falls back to
 // the dashboard (loop-2's finding — a mistyped hash must never blank the app).
-function routeFromHash(hash: string): Route {
+export function routeFromHash(hash: string): Route {
   const raw = hash.replace(/^#\/?/, "");
   // Legacy top-level Settings/System/Audit → the Manage sub-tab they became.
   if (raw === "settings") return { view: "manage", tab: "settings" };
