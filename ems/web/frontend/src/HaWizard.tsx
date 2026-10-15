@@ -10,7 +10,7 @@ import {
   tokenCreateUrl,
   trimHaUrl,
   validateHaUrlClient,
-} from "./haWizard";
+} from "./haWizardHelpers";
 
 type SettingsValues = Record<string, string | number | boolean>;
 
