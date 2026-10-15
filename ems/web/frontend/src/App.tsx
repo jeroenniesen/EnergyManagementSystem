@@ -64,6 +64,7 @@ import { PlanStory } from "./PlanStory";
 import { homeSummary } from "./scoreCopy";
 import { SkyBackdrop } from "./SkyBackdrop";
 import { Advanced } from "./Advanced";
+import { Setup } from "./Setup";
 import { applyTheme, readStoredTheme, storeTheme, type Theme } from "./theme";
 
 type Status = {
@@ -144,7 +145,7 @@ type AlertsResp = { data_quality: string; alerts: AlertItem[] };
 // The nav restructure (feat/ux-batch-3): five top-level views. Settings/System/Audit are no longer
 // top-level — they are sub-tabs of "manage" (see Manage.tsx + `ManageTab`). "car" is a first-class
 // view because the weekly schedule changes often and car config/insight was scattered before.
-type ViewName = "dashboard" | "insights" | "car" | "chat" | "trading" | "manage";
+type ViewName = "dashboard" | "insights" | "car" | "chat" | "trading" | "manage" | "setup";
 // A route is the top-level view plus, for "manage", which sub-tab is showing. The manage tab is
 // carried even on other views so returning to Manage can be deterministic, and so the hash router
 // (below) can round-trip `#manage/system` etc.
@@ -164,7 +165,7 @@ function todayStr(): string {
 }
 // Alert hierarchy: control-blocking (critical) above degraded (warning) above info (energy review).
 const SEVERITY_RANK: Record<string, number> = { critical: 3, warning: 2, info: 1 };
-const VIEWS: ViewName[] = ["dashboard", "insights", "car", "chat", "trading", "manage"];
+const VIEWS: ViewName[] = ["dashboard", "insights", "car", "chat", "trading", "setup", "manage"];
 const MANAGE_TABS: ManageTab[] = ["settings", "system", "audit"];
 // B-68 + B-98: plain-language confidence chip (Dutch-first Home).
 const CONFIDENCE_CHIP_LABEL: Record<PlanConfidence["level"], string> = HOME_CONFIDENCE_CHIP;
@@ -180,6 +181,7 @@ function routeFromHash(hash: string): Route {
   if (raw === "system") return { view: "manage", tab: "system" };
   if (raw === "audit") return { view: "manage", tab: "audit" };
   // Manage + its sub-tabs. Bare #manage (and #manage/settings) open the Settings tab.
+  if (raw === "setup") return { view: "setup", tab: "settings" };
   if (raw === "manage") return { view: "manage", tab: "settings" };
   const m = raw.match(/^manage\/(.+)$/);
   if (m) {
@@ -532,7 +534,8 @@ export function App() {
   // deep-link (e.g. "planner", "ev") — runtime-only, never encoded in the hash; omitting it resets
   // any section a previous deep-link left pending.
   function navigate(next: ViewName, tab: ManageTab = "settings", section?: string) {
-    const hash = next === "manage" && tab !== "settings" ? `manage/${tab}` : next;
+    const hash =
+      next === "manage" && tab !== "settings" ? `manage/${tab}` : next;
     if (window.location.hash.replace(/^#\/?/, "") !== hash) {
       window.location.hash = hash;
     }
@@ -890,6 +893,14 @@ export function App() {
           >
             Trading
           </button>
+          <button
+            className={`nav-btn${view === "setup" ? " nav-active" : ""}`}
+            onClick={() => navigate("setup")}
+            data-testid="nav-setup"
+            aria-current={view === "setup" ? "page" : undefined}
+          >
+            Inrichten
+          </button>
           {/* Manage folds the three ops surfaces (Settings · System · Audit) — "often used
               together and eat menu space" — behind one item with its own segmented sub-nav. */}
           <button
@@ -1057,6 +1068,10 @@ export function App() {
             return { message: hit.message, ems_doing: hit.ems_doing, action: hit.action };
           }}
         />
+      )}
+
+      {view === "setup" && (
+        <Setup onOpenSettings={(section) => navigate("manage", "settings", section)} />
       )}
 
       {view === "manage" && (

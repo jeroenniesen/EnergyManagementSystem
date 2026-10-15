@@ -51,6 +51,7 @@ EXPECTED_DIRECT_ROUTES = frozenset({
     ("GET", "/api/replay"),
     ("GET", "/api/series"),
     ("GET", "/api/settings"),
+    ("GET", "/api/setup/checklist"),
     ("GET", "/api/sky"),
     ("GET", "/api/status"),
     ("GET", "/api/strategy"),
