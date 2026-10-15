@@ -61,6 +61,7 @@ function OutcomeTile({
     </>
   );
 
+  // Name from visible label+value (WCAG 2.5.3); `title` stays for the hover tooltip.
   return onOpen ? (
     <button
       type="button"
@@ -69,7 +70,6 @@ function OutcomeTile({
       data-tone={tone ?? undefined}
       data-density-kind="tile"
       title={title}
-      aria-label={`${label}: ${value}. ${title}`}
       onClick={onOpen}
     >
       {content}
@@ -82,7 +82,6 @@ function OutcomeTile({
       data-density-kind="tile"
       title={title}
       role="group"
-      aria-label={`${label}: ${value}. ${title}`}
     >
       {content}
     </div>
