@@ -69,7 +69,6 @@ function OutcomeTile({
       data-tone={tone ?? undefined}
       data-density-kind="tile"
       title={title}
-      aria-label={`${label}: ${value}. ${title}`}
       onClick={onOpen}
     >
       {content}
@@ -82,7 +81,6 @@ function OutcomeTile({
       data-density-kind="tile"
       title={title}
       role="group"
-      aria-label={`${label}: ${value}. ${title}`}
     >
       {content}
     </div>
