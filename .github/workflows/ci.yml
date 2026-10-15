@@ -66,7 +66,9 @@ jobs:
 
       - name: Install frontend dependencies
         working-directory: ems/web/frontend
-        run: npm ci --no-audit --no-fund && npm install -D @axe-core/playwright
+        # Use the lockfile only — a trailing `npm install -D @axe-core/playwright`
+        # floated axe to 4.14 mid-flight and broke a11y on OutcomeTiles (PR #303).
+        run: npm ci --no-audit --no-fund
 
       - name: Build the SPA
         working-directory: ems/web/frontend
