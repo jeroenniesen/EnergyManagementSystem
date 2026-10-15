@@ -5,7 +5,7 @@ import { AdminAccess } from "./Admin";
 import { AutomationBoundsCard } from "./AutomationBounds";
 import { apiFetch, clearToken } from "./auth";
 import { type CarModel, type CarsResp } from "./ev";
-import { HaWizard } from "./HaWizard";
+import { HaWizard } from "./HaWizard.tsx";
 import { humanize } from "./labels";
 import { SectionIcon } from "./settingsIcons";
 

@@ -145,6 +145,7 @@ from ems.settings import (
     settings_migration_writes,
     validate_settings,
 )
+from ems.setup_checklist import build_setup_checklist
 from ems.sky import sun_times
 from ems.sources.base import Source
 from ems.sources.battery import BatteryDriver
@@ -2584,6 +2585,61 @@ def create_app(
     def device_health_endpoint() -> dict:
         """Consumer-facing per-source freshness + summary badge (B-38 / issue #79)."""
         return _device_health_payload(datetime.now(UTC))
+
+    @app.get("/api/setup/checklist")
+    async def setup_checklist_endpoint() -> dict:
+        """Read-only onboarding checklist (#290). Login required; no settings/control writes."""
+        now = datetime.now(UTC)
+        store_ok = False
+        if store is not None:
+            try:
+                store_ok = store.integrity_probe()
+            except Exception:
+                _log.debug("setup checklist: history-store probe failed (non-fatal)", exc_info=True)
+                store_ok = False
+        driver = battery
+        if driver is None and controller is not None:
+            driver = getattr(controller, "driver", None)
+        # Cached CapabilityReport (startup / settings apply) — no battery probe on GET (#290).
+        cap = _capability_box.get("cap")
+        p1_paired = cap.p1_paired if cap is not None else False
+        battery_present = driver is not None
+        battery_ok = cap is not None
+        grid_fuse_unset = settings_cache.get("control.grid_fuse", "unset") == "unset"
+
+        def _core():
+            dq = _data_quality(now)
+            plan_valid = True
+            plan_ok = False
+            try:
+                pp = _current_plan(now)
+                plan_ok = pp is not None and bool(pp[2].slots)
+                if pp is not None:
+                    plan_valid = _validate_plan_obj(pp[2], now).ok
+            except Exception:
+                plan_ok, plan_valid = False, False
+            soc_ready = control.soc_ready(now) if control is not None else False
+            sensing_ok = dq != "unsafe" and soc_ready
+            snap = freshness.snapshot(now) if freshness is not None else {}
+            return build_setup_checklist(
+                store_ok=store_ok,
+                sensing_ok=sensing_ok,
+                plan_ok=plan_ok,
+                data_quality=dq,
+                plan_valid=plan_valid,
+                operational=not dry_run,
+                capability_ok=_capability_box["cap"] is not None,
+                freshness=snap,
+                battery_ok=battery_ok,
+                battery_present=battery_present,
+                p1_paired=p1_paired,
+                soc_ready=soc_ready,
+                prices_live=_prices_live(),
+                forecast_ok=_forecast_ok_for_quality(),
+                grid_fuse_unset=grid_fuse_unset,
+            ).to_dict()
+
+        return await asyncio.to_thread(_core)
 
     @app.get(
         "/api/dashboard",
