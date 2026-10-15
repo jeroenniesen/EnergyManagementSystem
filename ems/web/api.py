@@ -139,10 +139,13 @@ from ems.sense import Recorder
 from ems.settings import (
     SECRET_KEYS,
     SETTINGS_BY_KEY,
+    SETUP_FORBIDDEN_KEY_MSG,
+    apply_setup_private_ipv4_rules,
     effective_settings,
     public_values,
     schema_json,
     settings_migration_writes,
+    setup_settings_key_allowed,
     validate_settings,
 )
 from ems.setup_checklist import build_setup_checklist
@@ -5169,21 +5172,8 @@ def create_app(
         # Secrets are masked (a parallel "<key>.__set" flag tells the UI whether one is stored).
         return {"schema": schema_json(dev_mode), "values": public_values(settings_cache)}
 
-    @app.post("/api/settings")
-    async def post_settings(request: Request, body: dict | None = None) -> JSONResponse:
-        # Auth is enforced centrally by the _enforce_access middleware (writes always gated).
-        if settings_store is None:
-            return JSONResponse(
-                {"detail": "settings store not configured"}, status_code=503
-            )
-        # Pass body straight through: validate_settings guards non-dict, so a missing/None body
-        # becomes a 422 ("expected a JSON object") rather than a silent 200 no-op.
-        clean, errors = validate_settings(body, dev_mode=dev_mode)
-        if errors:
-            # Reject the whole payload if ANY key is invalid — partial saves are confusing.
-            return JSONResponse(
-                {"detail": "invalid settings", "errors": errors}, status_code=422
-            )
+    async def _commit_settings_update(clean: dict) -> JSONResponse:
+        """Persist validated settings, apply side-effects, audit — shared POST settings paths."""
         # #263: changing the HA base URL without posting a new token must drop the stored
         # long-lived token — otherwise an operate client can retarget the credential via
         # settings then POST /api/consumers/ha/test-connection with use_stored_token.
@@ -5237,6 +5227,66 @@ def create_app(
         return JSONResponse(
             {"values": public_values(dict(settings_cache)), "restart_required": restart_required}
         )
+
+    @app.post("/api/settings")
+    async def post_settings(request: Request, body: dict | None = None) -> JSONResponse:
+        # Auth is enforced centrally by the _enforce_access middleware (writes always gated).
+        if settings_store is None:
+            return JSONResponse(
+                {"detail": "settings store not configured"}, status_code=503
+            )
+        # Pass body straight through: validate_settings guards non-dict, so a missing/None body
+        # becomes a 422 ("expected a JSON object") rather than a silent 200 no-op.
+        clean, errors = validate_settings(body, dev_mode=dev_mode)
+        if errors:
+            # Reject the whole payload if ANY key is invalid — partial saves are confusing.
+            return JSONResponse(
+                {"detail": "invalid settings", "errors": errors}, status_code=422
+            )
+        return await _commit_settings_update(clean)
+
+    @app.post("/api/setup/settings")
+    async def post_setup_settings(request: Request, body: dict | None = None) -> JSONResponse:
+        """Allowlisted settings writes for the onboarding wizard (#291). ADMIN + OPERATE_PATHS."""
+        if settings_store is None:
+            return JSONResponse(
+                {"detail": "settings store not configured"}, status_code=503
+            )
+        if not isinstance(body, dict):
+            return JSONResponse(
+                {
+                    "detail": "invalid settings",
+                    "errors": {"_": "expected a JSON object of setting keys to values"},
+                },
+                status_code=422,
+            )
+        if not body:
+            return JSONResponse(
+                {
+                    "detail": "invalid settings",
+                    "errors": {"_": "minstens één instelling is vereist"},
+                },
+                status_code=422,
+            )
+        allow_errors: dict[str, str] = {}
+        for key in body:
+            if not setup_settings_key_allowed(key):
+                allow_errors[key] = SETUP_FORBIDDEN_KEY_MSG
+        if allow_errors:
+            return JSONResponse(
+                {"detail": "invalid settings", "errors": allow_errors}, status_code=422,
+            )
+        staged, ip_errors = apply_setup_private_ipv4_rules(body)
+        if ip_errors:
+            return JSONResponse(
+                {"detail": "invalid settings", "errors": ip_errors}, status_code=422,
+            )
+        clean, errors = validate_settings(staged, dev_mode=dev_mode)
+        if errors:
+            return JSONResponse(
+                {"detail": "invalid settings", "errors": errors}, status_code=422
+            )
+        return await _commit_settings_update(clean)
 
     @app.get("/api/status", response_model=StatusResponse, response_model_exclude_unset=True)
     def status() -> dict:

@@ -1939,6 +1939,19 @@ body {
 .setup-status-control { background: color-mix(in srgb, var(--warn-text, #9a6700) 16%, transparent); color: var(--warn-text, #9a6700); }
 .setup-checklist-sentence { margin: 0; flex: 1; min-width: 12rem; font-size: 0.9rem; line-height: 1.45; }
 .setup-checklist-btn { font-size: 0.82rem; }
+.setup-battery-wizard {
+  margin-top: 8px; padding: 14px; border-radius: 10px; background: var(--panel-2);
+  display: flex; flex-direction: column; gap: 10px;
+}
+.setup-field-label { font-size: 0.82rem; font-weight: 550; color: var(--muted); }
+.setup-field-input {
+  width: 100%; max-width: 18rem; padding: 8px 10px; font-size: 0.9rem;
+  border: 1px solid var(--border); border-radius: 8px; background: var(--panel);
+}
+.setup-wizard-msg, .setup-wizard-hint { margin: 0; font-size: 0.85rem; color: var(--muted); line-height: 1.45; }
+.setup-wizard-error { margin: 0; font-size: 0.85rem; color: var(--danger, #b42318); }
+.setup-wizard-success { margin: 0; font-size: 0.85rem; color: var(--accent-text); }
+.setup-battery-save { align-self: flex-start; margin-top: 4px; }
 
 /* Advanced disclosure at the section's end (replaces the old global "Show advanced" toggle). */
 .settings-advanced { margin-top: 22px; }

@@ -159,5 +159,11 @@ def test_setup_wizard_does_not_reference_operational_writes():
     text = open(setup_tsx, encoding="utf-8").read()
     assert "control.operational" not in text
     assert "control.dry_run" not in text
-    assert "/api/setup/settings" not in text
-    assert "method: \"POST\"" not in text
+    import re
+    post_targets = set(
+        re.findall(
+            r'(?:apiFetch|fetch)\(\s*["\'](/api/[^"\']+)["\'][^)]*method:\s*["\']POST["\']',
+            text,
+        ),
+    )
+    assert post_targets == {"/api/setup/settings", "/api/system/restart"}

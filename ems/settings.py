@@ -810,6 +810,61 @@ SETTINGS_SCHEMA: tuple[SettingsField, ...] = (
 SETTINGS_BY_KEY: dict[str, SettingsField] = {f.key: f for f in SETTINGS_SCHEMA}
 SECRET_KEYS: frozenset[str] = frozenset(f.key for f in SETTINGS_SCHEMA if f.type == "secret")
 
+# POST /api/setup/settings allowlist (#291 onboarding).
+SETUP_SETTINGS_EXTRA_KEYS: frozenset[str] = frozenset({"connection.use_live_devices"})
+SETUP_SETTINGS_PREFIXES: tuple[str, ...] = (
+    "battery.", "meters.", "prices.", "site.", "ev.",
+)
+SETUP_PRIVATE_IPV4_KEYS: frozenset[str] = frozenset({
+    "battery.indevolt_ip",
+    "meters.p1_ip",
+    "meters.solar_ip",
+    "meters.car_ip",
+})
+SETUP_FORBIDDEN_KEY_MSG = (
+    "Deze instelling kan niet via de setup-wizard worden gewijzigd."
+)
+
+
+def setup_settings_key_allowed(key: str) -> bool:
+    if key in SETUP_SETTINGS_EXTRA_KEYS:
+        return True
+    return any(key.startswith(p) for p in SETUP_SETTINGS_PREFIXES)
+
+
+def apply_setup_private_ipv4_rules(
+    partial: dict[str, Any],
+) -> tuple[dict[str, Any], dict[str, str]]:
+    """Normalize RFC1918-only device IPs for setup saves; returns (body, errors)."""
+    from ems.url_safety import normalize_private_ipv4
+
+    out = dict(partial)
+    errors: dict[str, str] = {}
+    for key in list(out):
+        if key in SETUP_PRIVATE_IPV4_KEYS:
+            try:
+                out[key] = normalize_private_ipv4(str(out[key]))
+            except ValueError as exc:
+                errors[key] = str(exc)
+        elif key == "battery.indevolt_ips_extra":
+            raw = str(out[key]).strip()
+            if not raw:
+                try:
+                    normalize_private_ipv4("")
+                except ValueError as exc:
+                    errors[key] = str(exc)
+            else:
+                parts = [p.strip() for p in raw.split(",") if p.strip()]
+                normed: list[str] = []
+                try:
+                    for part in parts:
+                        normed.append(normalize_private_ipv4(part))
+                except ValueError as exc:
+                    errors[key] = str(exc)
+                else:
+                    out[key] = ", ".join(normed)
+    return out, errors
+
 # NL main-fuse presets @ 230 V → total watts (`control.grid_limit_w`). `unset` / `custom` are not
 # listed: unset keeps the conservative 5750 W schema default; custom uses the number field.
 GRID_FUSE_PRESET_W: dict[str, float] = {
