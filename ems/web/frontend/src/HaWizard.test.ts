@@ -6,7 +6,7 @@ import {
   tokenCreateUrl,
   trimHaUrl,
   validateHaUrlClient,
-} from "./haWizard";
+} from "./haWizardHelpers";
 
 describe("trimHaUrl", () => {
   it("strips whitespace and trailing slashes", () => {

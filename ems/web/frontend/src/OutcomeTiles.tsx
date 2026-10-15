@@ -61,6 +61,7 @@ function OutcomeTile({
     </>
   );
 
+  // Name from visible label+value (WCAG 2.5.3); `title` stays for the hover tooltip.
   return onOpen ? (
     <button
       type="button"
