@@ -834,6 +834,12 @@ SETUP_SETTINGS_BATTERY_POWER_LIMIT_KEYS: frozenset[str] = frozenset({
     "battery.night_reserve_kwh",
     "battery.overnight_load_kwh",
 })
+# Only connection fields — any other battery.* key is rejected (AC 17 guard against schema drift).
+SETUP_SETTINGS_BATTERY_SAFE_KEYS: frozenset[str] = frozenset({
+    "battery.indevolt_ip",
+    "battery.indevolt_ips_extra",
+    "battery.indevolt_port",
+})
 SETUP_SETTINGS_DENIED_KEYS: frozenset[str] = SETUP_SETTINGS_BATTERY_POWER_LIMIT_KEYS
 
 # AC 18 (#291): only these secret keys may be written through POST /api/setup/settings.
@@ -842,6 +848,8 @@ SETUP_SETTINGS_SECRET_ALLOWLIST: frozenset[str] = frozenset({"prices.tibber_toke
 
 def setup_settings_key_allowed(key: str) -> bool:
     if key in SETUP_SETTINGS_DENIED_KEYS:
+        return False
+    if key.startswith("battery.") and key not in SETUP_SETTINGS_BATTERY_SAFE_KEYS:
         return False
     if key in SECRET_KEYS and key not in SETUP_SETTINGS_SECRET_ALLOWLIST:
         return False

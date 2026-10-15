@@ -13,6 +13,7 @@ from ems.settings import (
     SECRET_KEYS,
     SETTINGS_SCHEMA,
     SETUP_SETTINGS_BATTERY_POWER_LIMIT_KEYS,
+    SETUP_SETTINGS_BATTERY_SAFE_KEYS,
     SETUP_SETTINGS_SECRET_ALLOWLIST,
 )
 from ems.sources.battery import MockBatteryDriver
@@ -132,6 +133,13 @@ def test_battery_power_limit_deny_keys_match_schema():
     assert derived == set(SETUP_SETTINGS_BATTERY_POWER_LIMIT_KEYS)
 
 
+def test_battery_setup_keys_partition_schema():
+    """Every battery.* schema key is either onboarding-safe (connection) or explicitly denied."""
+    battery_keys = {f.key for f in SETTINGS_SCHEMA if f.key.startswith("battery.")}
+    allowed = SETUP_SETTINGS_BATTERY_SAFE_KEYS | SETUP_SETTINGS_BATTERY_POWER_LIMIT_KEYS
+    assert battery_keys == allowed
+
+
 @pytest.mark.parametrize("key", sorted(SETUP_SETTINGS_BATTERY_POWER_LIMIT_KEYS))
 def test_denied_battery_limit_keys_return_422_without_persist(tmp_path, key: str):
     app, db = _app(tmp_path)
@@ -160,6 +168,13 @@ def test_denied_battery_limit_keys_return_422_without_persist(tmp_path, key: str
 )
 def test_non_allowlisted_secret_keys_rejected(tmp_path, secret_key: str):
     app, db = _app(tmp_path)
+    store = SettingsStore(db)
+
+    async def snapshot():
+        await store.init()
+        return await store.all()
+
+    before = asyncio.run(snapshot())
     _seed_admin(db)
     with TestClient(app) as c:
         h = _admin_headers(c)
@@ -168,6 +183,25 @@ def test_non_allowlisted_secret_keys_rejected(tmp_path, secret_key: str):
         assert r.status_code == 422
         assert secret_key in r.json()["errors"]
         assert _settings_values(c, h) == cache_before
+        assert _audit_entries(c, h) == []
+    assert asyncio.run(snapshot()) == before
+
+
+def test_setup_tibber_token_non_string_rejected_without_echo(tmp_path):
+    app, db = _app(tmp_path)
+    _seed_admin(db)
+    secret_num = 42424242
+    with TestClient(app) as c:
+        h = _admin_headers(c)
+        r = c.post(
+            "/api/setup/settings",
+            json={"prices.tibber_token": secret_num},
+            headers=h,
+        )
+        assert r.status_code == 422
+        body = r.json()
+        assert "prices.tibber_token" in body["errors"]
+        assert str(secret_num) not in r.text
 
 
 def test_setup_tibber_token_masked_and_audited_without_value(tmp_path):
