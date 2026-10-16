@@ -1,7 +1,7 @@
 import { Fragment, useState } from "react";
 
 import type { EnergyStoryData, PlanProvenance } from "./EnergyStory";
-import { HOME_PLAN_STORY, INTELLIGENCE_COPY, PLANNER_PROVENANCE_LABEL } from "./labels";
+import { HOME_ACT, HOME_PLAN_STORY, INTELLIGENCE_COPY, PLANNER_PROVENANCE_LABEL } from "./labels";
 import {
   ACTION_META,
   buildPlanStoryModel,
@@ -40,6 +40,8 @@ export type PlanStoryProps = {
   provenance?: PlanStoryProvenance | null;
   /** B-96: Last-3h review demoted behind a plan-header disclosure (not in the hero). */
   recentReview?: string | null;
+  /** F-13 (#313): price_fallback badge — show fail-safe copy on the plan surface. */
+  dataQuality?: string | null;
 };
 
 function RecentReviewDisclosure({ message }: { message: string }) {
@@ -108,6 +110,7 @@ export function PlanStory({
   story,
   provenance = null,
   recentReview = null,
+  dataQuality = null,
 }: PlanStoryProps) {
   const [hover, setHover] = useState<number | null>(null);
   const model = buildPlanStoryModel(story, PAD.l, PLOT_W);
@@ -150,6 +153,14 @@ export function PlanStory({
       aria-label={model.label}
     >
       {recentReview && <RecentReviewDisclosure message={recentReview} />}
+      {dataQuality === "price_fallback" && (
+        <p
+          className="plan-story-price-fallback"
+          data-testid="plan-story-price-fallback"
+        >
+          {HOME_ACT.priceFallback}
+        </p>
+      )}
       <p className="sr-only" data-testid="plan-story-summary">{model.summary}</p>
       <div className="plan-story-chart-wrap">
         <svg

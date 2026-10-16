@@ -1389,7 +1389,8 @@ class ControlService:
                 fail_safe = True
         # Data-quality unsafe / incomplete prices also count as fail-safe soak signal.
         dq = self._data_quality(now)
-        stale = dq != "fresh"
+        # F-46 (#313): data_quality is complete|degraded|price_fallback|unsafe — never "fresh".
+        stale = dq in ("degraded", "unsafe")
         if dq == "unsafe":
             fail_safe = True
         if self._price_horizon_status is not None and not self._price_horizon_status.ok:

@@ -5,7 +5,7 @@
 // B-98 fix: raw English story/reason text stays out of the hero the same way jargon does —
 // prefer Dutch HOME_HERO on-track / behind / fallback phrasing.
 
-import { HOME_HERO } from "./labels";
+import { HOME_ACT, HOME_HERO } from "./labels";
 
 const FALLBACK = HOME_HERO.fallback;
 
@@ -67,6 +67,10 @@ export function localizeHeroPhrase(candidate: string | null | undefined): string
     return stripTrail(HOME_HERO.runningTonight);
   }
 
+  if (lower === HOME_ACT.priceFallback.toLowerCase()) {
+    return HOME_ACT.priceFallback;
+  }
+
   // Fail closed: unmapped English (and unknown copy) never enters the hero fold.
   // Do not treat unknown strings as "already Dutch" — fall through to HOME_HERO.fallback.
   return null;
@@ -82,7 +86,11 @@ export function buildHeroSynthesis(opts: {
   currentReason?: string | null;
   onTrackMessage?: string | null;
   scoreSummary?: string | null;
+  priceFallback?: boolean;
 }): string {
+  if (opts.priceFallback) {
+    return HOME_ACT.priceFallback;
+  }
   return (
     localizeHeroPhrase(opts.onTrackMessage) ??
     localizeHeroPhrase(opts.currentReason) ??

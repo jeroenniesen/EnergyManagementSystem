@@ -166,6 +166,31 @@ def test_effective_intent_alone_does_not_inflate_validator_rejects():
     assert snap["outcomes"]["fail_safe"] == 0
 
 
+def test_complete_data_quality_does_not_count_stale_sensors():
+    """F-46 (#313): complete badge must not inflate stale_sensor_cycles every tick."""
+    controller = _controlling_controller()
+    svc = _service(controller, data_quality=lambda now: "complete")
+    LOOP_COUNTERS.reset()
+    svc.control_tick(NOW)
+    assert LOOP_COUNTERS.snapshot()["stale_sensor_cycles"] == 0
+
+
+def test_price_fallback_does_not_count_stale_sensors():
+    controller = _controlling_controller()
+    svc = _service(controller, data_quality=lambda now: "price_fallback")
+    LOOP_COUNTERS.reset()
+    svc.control_tick(NOW)
+    assert LOOP_COUNTERS.snapshot()["stale_sensor_cycles"] == 0
+
+
+def test_degraded_data_quality_counts_stale_sensors():
+    controller = _controlling_controller()
+    svc = _service(controller, data_quality=lambda now: "degraded")
+    LOOP_COUNTERS.reset()
+    svc.control_tick(NOW)
+    assert LOOP_COUNTERS.snapshot()["stale_sensor_cycles"] == 1
+
+
 def test_diagnostics_exposes_control_loop_counters():
     with TestClient(create_app(MockSource(), dry_run=True, dev_mode="mock")) as c:
         b = c.get("/api/diagnostics").json()

@@ -191,7 +191,16 @@ export function summarizeDeviceHealth(
   freshness: Record<string, string> | null | undefined,
   deviceHealth: DeviceHealth | null | undefined,
   isDemo: boolean,
+  dataQuality?: string | null,
 ): DeviceHealthSummary {
+  if (dataQuality === "price_fallback") {
+    return {
+      badge: "price_fallback",
+      label: HOME_ACT.priceFallback,
+      detail: DATA_QUALITY.price_fallback.title,
+      severity: "warning",
+    };
+  }
   if (deviceHealth?.summary) return deviceHealth.summary;
 
   const fromApi = deviceHealth?.sources ?? [];
@@ -397,6 +406,8 @@ export const HOME_ACT = {
   override: "Handmatig sturen — stopt vanzelf, of wis hieronder.",
   unsafe:
     "EMS zet terug naar zelfgebruik tot meters weer kloppen — niets te doen.",
+  /** F-13 (#313): same copy as DecisionReason.safety_constraint.message on price_fallback. */
+  priceFallback: "Geen live Tibber — inkopen uit (fail-safe)",
 } as const;
 
 export const HOME_CONFIDENCE_CHIP: Record<"high" | "medium" | "low", string> = {
