@@ -533,6 +533,7 @@ The planner reasons in **kWh → target SoC → deadline**, not just modes ([`do
 - **Comfort reserve vs economy reserve** (`reserve_policy`): bias toward waking up with more battery (comfort) vs. minimum cost (economy).
 - **Minimum top-up** (`min_grid_charge_kwh`): never schedule tiny inefficient grid charges (e.g. < 0.5 kWh).
 - **Maximum daily grid charge** (`max_daily_grid_charge_kwh`): hard cap so a bad forecast/config can't over-buy.
+- **Routine vs commitment switch caps** (`max_mode_switches_per_day` + `max_commitment_switches_per_day`, #309 / F-01): routine planner mode writes and committed `GRID_CHARGE_TO_TARGET` writes each have their own per-local-day counter (`switches_today` / `commitment_switches_today`, persisted §13.3). A spent routine cap cannot block a planned cheap-charge window; both budgets still honour `min_mode_dwell_seconds`. Deprecated: `commitment_reserve` (no behaviour).
 
 ### 8.11 Plan as a validated, versioned object
 The planner emits a **`Plan`** domain object (id/version, input snapshot, slots, projected SoC, confidence, data-quality badge, deadlines — §13.2). Before any plan is applied it passes the **plan validator**; low quality blocks acting:
@@ -634,6 +635,7 @@ strategy:
 control:
   cycle_seconds: 300
   max_mode_switches_per_day: 10
+  max_commitment_switches_per_day: 4   # GRID_CHARGE commitment writes; separate from routine cap (#309)
   replan_times: ["13:15", "06:00"]
   dry_run: true            # NEW control logic ships in dry-run first (§14)
   min_replan_interval_seconds: 600   # cap replan churn (§8.11)
@@ -1008,7 +1010,7 @@ All 15-min slot math goes through `timeutil.py`; **naive datetimes never enter p
 - **Ownership state machine:** `INACTIVE → OBSERVING → (DRY_RUN | CONTROLLING)`, with `MANUAL_OVERRIDE` as an overlay (diagram in [`docs/control-model.md`](docs/control-model.md) §7). The UI shows the current state (§9.1).
 - **Boot sequence:** observe first → validate sensors (§11.5) + run capability probe (§6.5) → load/restore the last plan → **capture the battery's original vendor mode** → only then consider acting.
 - **Restore original mode** on graceful shutdown / "return to default" / "pause" (§6.5, §9.1).
-- **Persisted across restarts:** plan id/version, `last_action_requested`/`last_action_confirmed`, the **per-day switch counter (keyed by local date)**, and **unresolved warnings**.
+- **Persisted across restarts:** plan id/version, `last_action_requested`/`last_action_confirmed`, the **per-day routine switch counter** (`switches_today`, keyed by local date), the **per-day commitment switch counter** (`commitment_switches_today`, same date boundary — #309), and **unresolved warnings**. Missing `commitment_switches_today` in an old blob restores as 0.
 
 ### 13.4 Startup grace period
 After boot/restart the EMS stays in `OBSERVING` for `startup_grace_seconds`, issuing **no** battery commands, so it doesn't act on half-populated HA state while entities settle. **Exception (post-grace crash fail-safe):** once grace has elapsed, if readiness is still incomplete, EMS is armed/operational (not dry-run), no operator override is active (`override_box`), and the observed mode is not `AUTO`, EMS writes `AUTO` so a forced charge/discharge cannot persist after a crash. Retries each cycle are allowed; dry-run and unarmed drivers never write. A brief AUTO↔planned bounce is acceptable if the plan loads after grace.

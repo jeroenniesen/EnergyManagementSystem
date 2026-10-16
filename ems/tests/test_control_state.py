@@ -67,6 +67,12 @@ def test_restore_state_survives_restart_keeping_switch_count(tmp_path):
     assert blocked.outcome == "cap_reached" and blocked.applied is False
 
 
+def test_restore_state_without_commitment_counter_starts_at_zero():
+    ctl = ModeController(MockBatteryDriver(), Lifecycle(dry_run=True), dry_run=True)
+    ctl.restore_state({"switches_today": 10})
+    assert ctl.commitment_switches_today == 0
+
+
 def test_restore_state_ignores_garbage():
     ctl = ModeController(MockBatteryDriver(), Lifecycle(dry_run=True), dry_run=True)
     ctl.restore_state({"switches_today": "not-an-int", "last_switch_at": "garbage"})

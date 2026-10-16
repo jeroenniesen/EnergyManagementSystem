@@ -287,16 +287,22 @@ SETTINGS_SCHEMA: tuple[SettingsField, ...] = (
     ),
     SettingsField(
         "control.max_switches_per_day", "Max mode switches/day", "int", 10, "control",
-        help="Hard cap on battery mode writes per day (SPEC target: under 10). Ceiling 20.",
+        help="Hard cap on routine battery mode writes per day (SPEC target: under 10). Committed "
+        "grid-charge writes use a separate limit below. Ceiling 20.",
         min=1, max=20,
     ),
     SettingsField(
+        "control.max_commitment_switches_per_day", "Max commitment switches/day", "int", 4,
+        "control",
+        help="Hard cap on mode writes for a committed grid-charge (GRID_CHARGE_TO_TARGET) per "
+        "local day — independent of the routine cap above, so a spent routine budget cannot block "
+        "a planned cheap-charge window (#309).",
+        min=1, max=10, advanced=True, applies="live",
+    ),
+    SettingsField(
         "control.commitment_reserve", "Switches reserved for charging", "int", 3, "control",
-        help="How many of the daily mode-switch budget above are held back for a committed "
-        "grid-charge, so ordinary idle/auto flapping can't use them all up and leave the battery "
-        "unable to charge before an expensive-price deadline. Ordinary switches may use "
-        "(cap − this); a committed charge may use the full cap. The total is still capped. 0 = no "
-        "reserve (the whole budget is shared).",
+        help="Deprecated — no longer affects control (#309). Kept so existing settings load; use "
+        "Max commitment switches/day instead.",
         min=0, max=10, advanced=True,
     ),
     SettingsField(

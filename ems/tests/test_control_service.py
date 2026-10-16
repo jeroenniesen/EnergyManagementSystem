@@ -448,6 +448,60 @@ def test_stable_car_session_preserves_command_budget_for_later_retune(mode):
     assert ctx.car_session["commands"] == 2
 
 
+class _EnergyTrackingDriver(MockBatteryDriver):
+    """Mock driver that accrues grid energy while in CHARGE (for commitment replay tests)."""
+
+    def __init__(self, *, charge_power_w: float = 4000.0) -> None:
+        super().__init__()
+        self.charge_power_w = charge_power_w
+        self.grid_import_kwh = 0.0
+
+    def apply(self, mode, *, target_soc=None, power_w=None):
+        pw = power_w or self.charge_power_w
+        accepted = super().apply(mode, target_soc=target_soc, power_w=pw)
+        return accepted
+
+    def accrue(self, dt_seconds: float) -> None:
+        if self.current_mode() is PhysicalMode.CHARGE:
+            pw = self.last_power_w or self.charge_power_w
+            self.grid_import_kwh += (pw / 1000.0) * (dt_seconds / 3600.0)
+
+
+def test_oct14_pattern_commitment_charges_after_routine_cap_exhausted():
+    """14-okt audit (F-01): 10 routine flaps before the cheap window must not cap-block charging."""
+    window_start = datetime(2026, 10, 14, 2, 0, tzinfo=ZoneInfo("Europe/Amsterdam"))
+    driver = _EnergyTrackingDriver(charge_power_w=4000.0)
+    controller = _controlling_controller(driver)
+    controller.max_switches_per_day = 10
+    controller.min_dwell = timedelta(seconds=600)
+    controller.switches_today = 10
+    controller.last_switch_at = window_start - timedelta(minutes=11)
+    svc, _ctx = _service(controller)
+    svc._settings["control.min_dwell_seconds"] = 600
+    svc.effective_intent = lambda now: _CHARGE
+
+    cap_hits = []
+    records = svc.control_tick(window_start)
+    for rec in records:
+        if rec.get("detail", {}).get("outcome") == "cap_reached":
+            cap_hits.append(rec)
+    assert not cap_hits
+    assert driver.current_mode() is PhysicalMode.CHARGE
+    assert any(r.get("detail", {}).get("outcome") == "applied" for r in records)
+
+    prev = window_start
+    for hour in range(1, 3):
+        now = window_start + timedelta(hours=hour)
+        driver.accrue((now - prev).total_seconds())
+        prev = now
+        recs = svc.control_tick(now)
+        cap_hits.extend(
+            r for r in recs if r.get("detail", {}).get("outcome") == "cap_reached")
+    driver.accrue((window_start + timedelta(hours=2) - prev).total_seconds())
+    assert driver.grid_import_kwh >= 2.0  # ≥1 kWh per started window hour at 4 kW
+    assert cap_hits == []
+
+
 def test_current_plan_uses_injected_clock_and_explicit_time_consistently():
     from ems.clock import FrozenClock
 

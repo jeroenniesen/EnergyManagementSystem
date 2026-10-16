@@ -1,6 +1,7 @@
 """Entrypoint: build the app from config + a source, run uvicorn."""
 from __future__ import annotations
 
+import asyncio
 import os
 from pathlib import Path
 from zoneinfo import ZoneInfo
@@ -16,11 +17,13 @@ from ems.connection import (
     watch_only_block_reason,
 )
 from ems.control.mode_controller import ModeController
+from ems.control.service import apply_control_settings
 from ems.freshness import FreshnessTracker
 from ems.http_client import HttpRuntime
 from ems.lifecycle import Lifecycle
 from ems.logging_setup import configure_logging
 from ems.sense import SIGNALS, Recorder
+from ems.settings import effective_settings
 from ems.storage.audit import AuditStore
 from ems.storage.auth import AuthStore
 from ems.storage.cache import CacheStore
@@ -110,6 +113,10 @@ def build_app():
     controller = ModeController(controller_driver, lifecycle, dry_run=dry_run, tz=tz,
                                 on_state_change=control_state_store.save)
     controller.restore_state(control_state_store.load())
+    apply_control_settings(
+        controller,
+        effective_settings(asyncio.run(settings_store.all())),
+    )
     app = create_app(
         source,
         dry_run=dry_run,

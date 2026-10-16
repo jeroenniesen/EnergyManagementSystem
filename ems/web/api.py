@@ -1110,12 +1110,8 @@ def create_app(
         """Push the control.* settings onto the live controller (preserves its switch counters)."""
         if controller is None:
             return
-        controller.max_switches_per_day = settings_cache["control.max_switches_per_day"]
-        # Switches reserved for a committed grid-charge so routine flapping can't starve it (07-12
-        # guardrail-starvation incident); mirrors max_switches_per_day's live-push convention.
-        controller.commitment_reserve = settings_cache["control.commitment_reserve"]
-        controller.min_dwell = timedelta(seconds=settings_cache["control.min_dwell_seconds"])
-        controller.allow_export_discharge = settings_cache["control.allow_export_discharge"]
+        from ems.control.service import apply_control_settings
+        apply_control_settings(controller, settings_cache)
 
     def _apply_site_settings() -> None:
         """Push the site.* array settings onto the solar forecast source so the forecast responds
