@@ -719,7 +719,10 @@ export function App() {
   // extra fetch. Calm stays calm: the reason sub-line only renders when confidence isn't high.
   const confidence = batteryPlan?.confidence ?? null;
   // B-96: one human sentence only — planner jargon stays under Waarom? / DecisionReasonDetails.
-  const priceFallbackActive = alertsData?.data_quality === "price_fallback";
+  // F-13 (#313): a manual override always wins the hero verdict/tone — the fail-safe copy would
+  // otherwise mask "You're in manual control" when both are true at once.
+  const priceFallbackActive =
+    alertsData?.data_quality === "price_fallback" && !decision?.override_active;
   const synthesis = buildHeroSynthesis({
     currentReason: batteryPlan?.current_reason,
     onTrackMessage: story?.on_track?.message,
