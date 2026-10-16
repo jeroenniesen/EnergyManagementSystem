@@ -7,6 +7,7 @@ still covered by the app-level suites (test_manual_control / test_car_session / 
 test_failsafe_api / test_recovery_wiring / …), which exercise the SAME methods through the aliases
 `create_app` sets. Here we only assert the standalone construction + a real tick works.
 """
+
 import asyncio
 from datetime import UTC, datetime, timedelta
 from zoneinfo import ZoneInfo
@@ -38,8 +39,13 @@ def _controlling_controller(driver=None) -> ModeController:
 
 
 def _service(
-    controller: ModeController, *, audit_store=None, car_charging=None, price_source=None,
-    current_mode=None, clock=None,
+    controller: ModeController,
+    *,
+    audit_store=None,
+    car_charging=None,
+    price_source=None,
+    current_mode=None,
+    clock=None,
 ) -> tuple[ControlService, ControlContext]:
     """Build a ControlService with mock collaborators + trivial injected callables. `price_source`
     is None so the plan path is a no-op (`current_plan()` returns None) — this test drives the
@@ -48,9 +54,16 @@ def _service(
     ctx = ControlContext()
     settings = effective_settings({})
     svc = ControlService(
-        ctx=ctx, settings=settings, controller=controller, store=None, audit_store=audit_store,
-        price_source=price_source, solar_forecast=None,
-        site_tz=ZoneInfo("Europe/Amsterdam"), dry_run=False, clock=clock,
+        ctx=ctx,
+        settings=settings,
+        controller=controller,
+        store=None,
+        audit_store=audit_store,
+        price_source=price_source,
+        solar_forecast=None,
+        site_tz=ZoneInfo("Europe/Amsterdam"),
+        dry_run=False,
+        clock=clock,
         current_soc=lambda now: 50.0,
         current_mode=current_mode or (lambda now: PhysicalMode.AUTO),
         current_towers=lambda now: None,
@@ -83,7 +96,8 @@ def test_incomplete_live_prices_return_a_forced_battery_to_auto():
     controller = _controlling_controller()
     controller.driver.apply(PhysicalMode.CHARGE)
     svc, ctx = _service(
-        controller, price_source=_IncompletePrices(),
+        controller,
+        price_source=_IncompletePrices(),
         current_mode=lambda now: controller.driver.current_mode(),
     )
     ctx.car_session["active"] = True  # price fail-safe must bypass the EV-stop grace window
@@ -102,7 +116,8 @@ def test_control_service_constructs_and_runs_a_tick_standalone():
     controller = _controlling_controller()
     svc, ctx = _service(controller)
     ctx.override_box["ov"] = Override(
-        intent=BatteryIntent.GRID_CHARGE_TO_TARGET, expires_at=NOW + timedelta(hours=1))
+        intent=BatteryIntent.GRID_CHARGE_TO_TARGET, expires_at=NOW + timedelta(hours=1)
+    )
 
     records = svc.control_tick(NOW)
 
@@ -155,8 +170,8 @@ def test_control_service_run_cycle_audits_the_write():
     controller = _controlling_controller()
     svc, ctx = _service(controller, audit_store=_FakeAudit(), clock=FrozenClock(NOW))
     ctx.override_box["ov"] = Override(
-        intent=BatteryIntent.GRID_CHARGE_TO_TARGET,
-        expires_at=NOW + timedelta(hours=1))
+        intent=BatteryIntent.GRID_CHARGE_TO_TARGET, expires_at=NOW + timedelta(hours=1)
+    )
 
     asyncio.run(svc.run_cycle())
 
@@ -179,8 +194,15 @@ def test_control_service_run_cycle_audits_the_write():
 # override / the car-guard hold / return-to-AUTO / the data fail-safe) are NEVER deferred.
 # ==================================================================================================
 
-_CHARGE_INTENT = (BatteryIntent.GRID_CHARGE_TO_TARGET, "cheap window — charge to full",
-                  False, 100.0, 4000.0, None, None)
+_CHARGE_INTENT = (
+    BatteryIntent.GRID_CHARGE_TO_TARGET,
+    "cheap window — charge to full",
+    False,
+    100.0,
+    4000.0,
+    None,
+    None,
+)
 
 
 def test_f2_defers_planner_grid_charge_during_active_car_session():
@@ -223,7 +245,8 @@ def test_f2_manual_override_grid_charge_is_not_deferred():
     svc, ctx = _service(controller, car_charging=lambda now: True)
     ctx.car_session["active"] = True
     ctx.override_box["ov"] = Override(
-        intent=BatteryIntent.GRID_CHARGE_TO_TARGET, expires_at=NOW + timedelta(hours=1))
+        intent=BatteryIntent.GRID_CHARGE_TO_TARGET, expires_at=NOW + timedelta(hours=1)
+    )
 
     svc.control_tick(NOW)  # real effective_intent — the active override resolves to GRID_CHARGE
 
@@ -273,6 +296,7 @@ def test_f2_master_switch_off_does_not_defer_the_plan():
 # not one per cycle — and honour the hourly re-log (which the old held-box latch would suppress).
 # ==================================================================================================
 
+
 class _AlwaysUnconfirmedDriver(MockBatteryDriver):
     """Every write times out (BatteryWriteUnconfirmed) — the stuck 'device slow' episode."""
 
@@ -286,7 +310,8 @@ def test_repeated_unconfirmed_episode_records_one_incident_row_then_relogs_hourl
     controller = _controlling_controller(_AlwaysUnconfirmedDriver())
     svc, ctx = _service(controller)
     ctx.override_box["ov"] = Override(
-        intent=BatteryIntent.GRID_CHARGE_TO_TARGET, expires_at=NOW + timedelta(hours=3))
+        intent=BatteryIntent.GRID_CHARGE_TO_TARGET, expires_at=NOW + timedelta(hours=3)
+    )
 
     rows = []
     for i in range(5):  # five back-to-back cycles within the hour
@@ -347,7 +372,7 @@ def test_transient_flap_never_issues_a_switch_or_burns_the_cap():
     for k in range(12):
         svc.control_tick(NOW + timedelta(seconds=k))
     assert controller.driver.current_mode() is PhysicalMode.AUTO  # never switched to idle
-    assert controller.switches_today == 0                          # daily cap untouched
+    assert controller.switches_today == 0  # daily cap untouched
 
 
 def test_committed_grid_charge_is_never_held_for_persistence():
@@ -375,7 +400,14 @@ def test_manual_override_bypasses_intent_persistence():
     controller = _controlling_controller()  # AUTO
     svc, ctx = _service(controller)
     svc.effective_intent = lambda now: (  # override_active=True (4th element)
-        BatteryIntent.HOLD_RESERVE, "override", True, None, None, None, None)
+        BatteryIntent.HOLD_RESERVE,
+        "override",
+        True,
+        None,
+        None,
+        None,
+        None,
+    )
     svc.control_tick(NOW)
     assert controller.driver.current_mode() is PhysicalMode.IDLE  # acted at once
 
@@ -411,7 +443,7 @@ def test_persistence_hold_is_audited_once_across_the_hold():
     pend1 = [r for r in c1 if r["detail"]["outcome"] == "intent_pending"]
     pend2 = [r for r in c2 if r["detail"]["outcome"] == "intent_pending"]
     assert len(pend1) == 1  # explained once...
-    assert pend2 == []      # ...deduped on the second observe cycle
+    assert pend2 == []  # ...deduped on the second observe cycle
     assert controller.driver.current_mode() is PhysicalMode.IDLE  # acted on the third
 
 
@@ -429,13 +461,17 @@ def test_stable_car_session_preserves_command_budget_for_later_retune(mode):
             return super().apply(mode, target_soc=target_soc, power_w=power_w)
 
     driver = RecordingDriver()
-    svc, ctx = _service(_controlling_controller(driver), car_charging=lambda now: True,
-                        current_mode=lambda now: driver.current_mode())
+    svc, ctx = _service(
+        _controlling_controller(driver),
+        car_charging=lambda now: True,
+        current_mode=lambda now: driver.current_mode(),
+    )
     svc._settings["control.car_charging_battery_mode"] = mode
     svc._settings["control.car_discharge_w"] = 800
     ctx.load_profile_box["profile"] = LoadProfile(dict.fromkeys(range(24), 800), svc._site_tz)
-    ctx.override_box["ov"] = Override(intent=BatteryIntent.ALLOW_SELF_CONSUMPTION,
-                                     expires_at=NOW + timedelta(hours=2))
+    ctx.override_box["ov"] = Override(
+        intent=BatteryIntent.ALLOW_SELF_CONSUMPTION, expires_at=NOW + timedelta(hours=2)
+    )
     for minute in range(0, 60, 10):
         svc.control_tick(NOW + timedelta(minutes=minute))
     assert driver.writes == [(PhysicalMode.DISCHARGE, 10.0, 800)]
@@ -443,8 +479,10 @@ def test_stable_car_session_preserves_command_budget_for_later_retune(mode):
     svc._settings["control.car_discharge_w"] = 1400
     ctx.load_profile_box["profile"] = LoadProfile(dict.fromkeys(range(24), 1400), svc._site_tz)
     svc.control_tick(NOW + timedelta(hours=1))
-    assert driver.writes == [(PhysicalMode.DISCHARGE, 10.0, 800),
-                             (PhysicalMode.DISCHARGE, 10.0, 1400)]
+    assert driver.writes == [
+        (PhysicalMode.DISCHARGE, 10.0, 800),
+        (PhysicalMode.DISCHARGE, 10.0, 1400),
+    ]
     assert ctx.car_session["commands"] == 2
 
 
@@ -495,8 +533,7 @@ def test_oct14_pattern_commitment_charges_after_routine_cap_exhausted():
         driver.accrue((now - prev).total_seconds())
         prev = now
         recs = svc.control_tick(now)
-        cap_hits.extend(
-            r for r in recs if r.get("detail", {}).get("outcome") == "cap_reached")
+        cap_hits.extend(r for r in recs if r.get("detail", {}).get("outcome") == "cap_reached")
     driver.accrue((window_start + timedelta(hours=2) - prev).total_seconds())
     assert driver.grid_import_kwh >= 2.0  # ≥1 kWh per started window hour at 4 kW
     assert cap_hits == []
@@ -509,7 +546,7 @@ def test_current_plan_uses_injected_clock_and_explicit_time_consistently():
 
     class Prices:
         def slots(self):
-            return [PriceSlot(midnight + timedelta(minutes=15 * i), .2) for i in range(192)]
+            return [PriceSlot(midnight + timedelta(minutes=15 * i), 0.2) for i in range(192)]
 
     svc, _ = _service(_controlling_controller(), price_source=Prices(), clock=FrozenClock(NOW))
     seen = []

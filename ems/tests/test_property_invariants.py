@@ -107,15 +107,19 @@ def test_mode_controller_daily_writes_never_exceed_routine_plus_commitment_caps(
     commit_cap = 2 + seed % 4
     d = MockBatteryDriver()
     ctl = ModeController(
-        d, _controlling_lc(), dry_run=False,
-        max_switches_per_day=routine_cap, max_commitment_switches_per_day=commit_cap,
+        d,
+        _controlling_lc(),
+        dry_run=False,
+        max_switches_per_day=routine_cap,
+        max_commitment_switches_per_day=commit_cap,
         min_dwell_seconds=0,
     )
     t = datetime(2026, 3, 1, 12, tzinfo=AMS)
     for step in range(40 + seed):
         commitment = (step + seed) % 2 == 0
         intent = (
-            BatteryIntent.GRID_CHARGE_TO_TARGET if d.current_mode() is PhysicalMode.IDLE
+            BatteryIntent.GRID_CHARGE_TO_TARGET
+            if d.current_mode() is PhysicalMode.IDLE
             else BatteryIntent.HOLD_RESERVE
         )
         dec = ctl.decide(intent, t, target_soc=90, commitment=commitment)

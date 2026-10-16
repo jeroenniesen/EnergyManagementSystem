@@ -79,6 +79,7 @@ def test_daily_switch_cap_holds():
 
 # F4 — a car-session (priority) command must NOT consume the planner's daily switch budget --------
 
+
 def test_count_toward_cap_false_leaves_the_switch_counter_untouched():
     # A car-session command is a priority write that bypasses the cap; before F4 it still bumped
     # switches_today, starving the planner's daily budget. count_toward_cap=False fixes that.
@@ -89,12 +90,19 @@ def test_count_toward_cap_false_leaves_the_switch_counter_untouched():
     assert ctl.switches_today == 1
     switch_at_after_ordinary = ctl.last_switch_at
     # Now a car-session command (a real DISCHARGE) — it must NOT spend the planner's budget.
-    dec = ctl.decide(BatteryIntent.DISCHARGE_FOR_LOAD, T0 + timedelta(seconds=400),
-                     target_soc=10.0, power_w=800.0, car_session=True, force=True,
-                     priority=True, count_toward_cap=False)
+    dec = ctl.decide(
+        BatteryIntent.DISCHARGE_FOR_LOAD,
+        T0 + timedelta(seconds=400),
+        target_soc=10.0,
+        power_w=800.0,
+        car_session=True,
+        force=True,
+        priority=True,
+        count_toward_cap=False,
+    )
     assert dec.outcome == "applied"
     assert d.current_mode() is PhysicalMode.DISCHARGE
-    assert ctl.switches_today == 1                      # untouched — the planner keeps its budget
+    assert ctl.switches_today == 1  # untouched — the planner keeps its budget
     assert ctl.last_switch_at == switch_at_after_ordinary  # and the dwell timer isn't disturbed
 
 
@@ -108,9 +116,16 @@ def test_count_toward_cap_false_on_unconfirmed_still_leaves_the_counter_untouche
     ctl = ModeController(TimingOut(), _controlling_lifecycle(), dry_run=False)
     ctl._reset_counter_if_new_day(T0 + timedelta(seconds=200))  # seed the counter date for today
     ctl.switches_today = 4
-    dec = ctl.decide(BatteryIntent.DISCHARGE_FOR_LOAD, T0 + timedelta(seconds=200),
-                     target_soc=10.0, power_w=800.0, car_session=True, force=True,
-                     priority=True, count_toward_cap=False)
+    dec = ctl.decide(
+        BatteryIntent.DISCHARGE_FOR_LOAD,
+        T0 + timedelta(seconds=200),
+        target_soc=10.0,
+        power_w=800.0,
+        car_session=True,
+        force=True,
+        priority=True,
+        count_toward_cap=False,
+    )
     assert dec.outcome == "unconfirmed"
     assert ctl.switches_today == 4
 
@@ -119,8 +134,9 @@ def test_ordinary_writes_still_count_and_cap():
     # Regression pin: an ORDINARY planner write (count_toward_cap defaults True) still increments
     # the counter and is still capped once the daily budget is spent.
     d = MockBatteryDriver()  # starts AUTO
-    ctl = ModeController(d, _controlling_lifecycle(), dry_run=False,
-                         max_switches_per_day=1, min_dwell_seconds=0)
+    ctl = ModeController(
+        d, _controlling_lifecycle(), dry_run=False, max_switches_per_day=1, min_dwell_seconds=0
+    )
     ctl.decide(BatteryIntent.GRID_CHARGE_TO_TARGET, T0 + timedelta(seconds=200), target_soc=80.0)
     assert ctl.switches_today == 1
     dec = ctl.decide(BatteryIntent.HOLD_RESERVE, T0 + timedelta(seconds=400))  # AUTO->CHARGE->IDLE
@@ -155,11 +171,15 @@ def test_transport_timeout_holds_and_does_not_revert_to_auto():
 
     d = TimingOutDriver()
     ctl = ModeController(d, _controlling_lifecycle(), dry_run=False)
-    dec = ctl.decide(BatteryIntent.GRID_CHARGE_TO_TARGET, T0 + timedelta(seconds=200),
-                     target_soc=100, manual=True)
+    dec = ctl.decide(
+        BatteryIntent.GRID_CHARGE_TO_TARGET,
+        T0 + timedelta(seconds=200),
+        target_soc=100,
+        manual=True,
+    )
     assert dec.outcome == "unconfirmed"
-    assert dec.desired_mode is PhysicalMode.CHARGE   # NOT reverted to AUTO
-    assert ctl.switches_today == 1                    # counted so automatic retries are spaced
+    assert dec.desired_mode is PhysicalMode.CHARGE  # NOT reverted to AUTO
+    assert ctl.switches_today == 1  # counted so automatic retries are spaced
     assert ctl.last_switch_at == T0 + timedelta(seconds=200)
 
 
@@ -167,8 +187,12 @@ def test_genuine_rejection_still_reverts_to_auto():
     # Regression guard: a genuine REJECTION (apply returns False, not a timeout) still reverts.
     d = FailingMockBatteryDriver(fail_times=1)  # apply() returns False (rejection), never raises
     ctl = ModeController(d, _controlling_lifecycle(), dry_run=False)
-    dec = ctl.decide(BatteryIntent.GRID_CHARGE_TO_TARGET, T0 + timedelta(seconds=200),
-                     target_soc=100, manual=True)
+    dec = ctl.decide(
+        BatteryIntent.GRID_CHARGE_TO_TARGET,
+        T0 + timedelta(seconds=200),
+        target_soc=100,
+        manual=True,
+    )
     assert dec.outcome == "failed_recovered"
     assert dec.desired_mode is PhysicalMode.AUTO
 
@@ -201,8 +225,11 @@ def test_decide_uses_observed_mode_without_reading_the_device():
     # with ZERO device reads.
     d = _CountingDriver()  # starts AUTO
     ctl = ModeController(d, _controlling_lifecycle(), dry_run=False)
-    dec = ctl.decide(BatteryIntent.ALLOW_SELF_CONSUMPTION, T0 + timedelta(seconds=200),
-                     observed_mode=PhysicalMode.AUTO)
+    dec = ctl.decide(
+        BatteryIntent.ALLOW_SELF_CONSUMPTION,
+        T0 + timedelta(seconds=200),
+        observed_mode=PhysicalMode.AUTO,
+    )
     assert dec.outcome == "idempotent"
     assert d.mode_reads == 0  # the device was NOT polled for the idempotency check
 
@@ -223,8 +250,8 @@ def test_failed_write_starts_dwell_and_counts_so_it_cannot_retry_every_cycle():
     t1 = T0 + timedelta(seconds=200)
     dec = ctl.decide(BatteryIntent.GRID_CHARGE_TO_TARGET, t1)
     assert dec.outcome in ("failed_recovered", "failed_unrecovered")
-    assert ctl.switches_today == 1          # the failed attempt counted toward the cap
-    assert ctl.last_switch_at == t1         # ...and started the dwell timer
+    assert ctl.switches_today == 1  # the failed attempt counted toward the cap
+    assert ctl.last_switch_at == t1  # ...and started the dwell timer
     # The next control cycle (5 min later, inside the 10 min dwell) is BLOCKED, not retried.
     nxt = ctl.decide(BatteryIntent.GRID_CHARGE_TO_TARGET, t1 + timedelta(seconds=300))
     assert nxt.outcome == "dwell"
@@ -234,8 +261,9 @@ def test_failed_write_starts_dwell_and_counts_so_it_cannot_retry_every_cycle():
 def test_repeated_failed_writes_are_bounded_by_the_daily_cap():
     # Even spaced past the dwell, a never-confirming write can't run forever — the cap stops it.
     d = FailingMockBatteryDriver(fail_times=99)
-    ctl = ModeController(d, _controlling_lifecycle(), dry_run=False,
-                         min_dwell_seconds=600, max_switches_per_day=3)
+    ctl = ModeController(
+        d, _controlling_lifecycle(), dry_run=False, min_dwell_seconds=600, max_switches_per_day=3
+    )
     t = T0 + timedelta(seconds=200)
     for _ in range(3):
         dec = ctl.decide(BatteryIntent.GRID_CHARGE_TO_TARGET, t)
@@ -253,8 +281,12 @@ def test_manual_override_bypasses_daily_cap():
     # exhausted the cap, then every "charge now" was blocked with no audit and no write.
     d = MockBatteryDriver()  # starts AUTO
     ctl = ModeController(d, _controlling_lifecycle(), dry_run=False, max_switches_per_day=0)
-    dec = ctl.decide(BatteryIntent.GRID_CHARGE_TO_TARGET, T0 + timedelta(seconds=200),
-                     target_soc=100, manual=True)
+    dec = ctl.decide(
+        BatteryIntent.GRID_CHARGE_TO_TARGET,
+        T0 + timedelta(seconds=200),
+        target_soc=100,
+        manual=True,
+    )
     assert dec.outcome == "applied"
     assert d.current_mode() is PhysicalMode.CHARGE
 
@@ -265,8 +297,9 @@ def test_manual_override_bypasses_min_dwell():
     t1 = T0 + timedelta(seconds=200)
     ctl.decide(BatteryIntent.ALLOW_SELF_CONSUMPTION, t1)  # establishes last_switch (no-op AUTO ok)
     ctl.last_switch_at = t1  # force a recent switch
-    dec = ctl.decide(BatteryIntent.GRID_CHARGE_TO_TARGET, t1 + timedelta(seconds=60),
-                     target_soc=100, manual=True)  # well within dwell
+    dec = ctl.decide(
+        BatteryIntent.GRID_CHARGE_TO_TARGET, t1 + timedelta(seconds=60), target_soc=100, manual=True
+    )  # well within dwell
     assert dec.outcome == "applied"
     assert d.current_mode() is PhysicalMode.CHARGE
 
@@ -289,8 +322,12 @@ def test_manual_override_still_idempotent_no_double_write():
     # is still a no-op (the control loop won't hammer the device every cycle).
     d = MockBatteryDriver()
     ctl = ModeController(d, _controlling_lifecycle(), dry_run=False)
-    dec = ctl.decide(BatteryIntent.ALLOW_SELF_CONSUMPTION, T0 + timedelta(seconds=200),
-                     observed_mode=PhysicalMode.AUTO, manual=True)
+    dec = ctl.decide(
+        BatteryIntent.ALLOW_SELF_CONSUMPTION,
+        T0 + timedelta(seconds=200),
+        observed_mode=PhysicalMode.AUTO,
+        manual=True,
+    )
     assert dec.outcome == "idempotent"
 
 
@@ -343,17 +380,17 @@ def test_switch_cap_window_rolls_at_local_midnight_not_utc():
     d = MockBatteryDriver()
     ctl = ModeController(d, _controlling_lifecycle(), dry_run=False, max_switches_per_day=1, tz=ams)
 
-    at_2330_utc = datetime(2026, 7, 1, 23, 30, tzinfo=UTC)     # 01:30 CEST, local day = Jul 2
+    at_2330_utc = datetime(2026, 7, 1, 23, 30, tzinfo=UTC)  # 01:30 CEST, local day = Jul 2
     first = ctl.decide(BatteryIntent.GRID_CHARGE_TO_TARGET, at_2330_utc)
-    assert first.outcome == "applied"                           # 1/1 for local day Jul 2
+    assert first.outcome == "applied"  # 1/1 for local day Jul 2
 
-    same_local_day = datetime(2026, 7, 2, 21, 0, tzinfo=UTC)    # 23:00 CEST, still local day Jul 2
+    same_local_day = datetime(2026, 7, 2, 21, 0, tzinfo=UTC)  # 23:00 CEST, still local day Jul 2
     blocked = ctl.decide(BatteryIntent.HOLD_RESERVE, same_local_day)
-    assert blocked.outcome == "cap_reached"                     # belongs to the SAME local day
+    assert blocked.outcome == "cap_reached"  # belongs to the SAME local day
 
     after_local_midnight = datetime(2026, 7, 2, 22, 30, tzinfo=UTC)  # 00:30 CEST, new local day
     reset = ctl.decide(BatteryIntent.HOLD_RESERVE, after_local_midnight)
-    assert reset.outcome == "applied"                           # counter reset at local midnight
+    assert reset.outcome == "applied"  # counter reset at local midnight
 
 
 class _StuckDriver(MockBatteryDriver):
@@ -382,8 +419,12 @@ def test_stuck_unconfirmed_episode_audits_once_across_cycles():
     ctl = ModeController(d, _controlling_lifecycle(), dry_run=False)
     audits = 0
     for i in range(5):
-        dec = ctl.decide(BatteryIntent.GRID_CHARGE_TO_TARGET, T0 + timedelta(seconds=200 + i),
-                         target_soc=90, manual=True)
+        dec = ctl.decide(
+            BatteryIntent.GRID_CHARGE_TO_TARGET,
+            T0 + timedelta(seconds=200 + i),
+            target_soc=90,
+            manual=True,
+        )
         assert dec.outcome == "unconfirmed"  # control behaviour (HOLD) unchanged every cycle
         audits += int(dec.audit)
     assert audits == 1  # exactly one incident row for the whole episode
@@ -392,21 +433,25 @@ def test_stuck_unconfirmed_episode_audits_once_across_cycles():
 def test_recovery_then_restick_audits_a_second_row():
     d = _StuckDriver()
     ctl = ModeController(d, _controlling_lifecycle(), dry_run=False)
-    first = ctl.decide(BatteryIntent.GRID_CHARGE_TO_TARGET, T0 + timedelta(seconds=200),
-                       target_soc=90, manual=True)
+    first = ctl.decide(
+        BatteryIntent.GRID_CHARGE_TO_TARGET, T0 + timedelta(seconds=200), target_soc=90, manual=True
+    )
     assert first.audit is True
-    again = ctl.decide(BatteryIntent.GRID_CHARGE_TO_TARGET, T0 + timedelta(seconds=201),
-                       target_soc=90, manual=True)
+    again = ctl.decide(
+        BatteryIntent.GRID_CHARGE_TO_TARGET, T0 + timedelta(seconds=201), target_soc=90, manual=True
+    )
     assert again.audit is False  # suppressed within the same episode
     # The device recovers: the write confirms → episode ends.
     d.stuck = False
-    ok = ctl.decide(BatteryIntent.GRID_CHARGE_TO_TARGET, T0 + timedelta(seconds=202),
-                    target_soc=90, manual=True)
+    ok = ctl.decide(
+        BatteryIntent.GRID_CHARGE_TO_TARGET, T0 + timedelta(seconds=202), target_soc=90, manual=True
+    )
     assert ok.outcome == "applied"
     # ...then it re-sticks: a fresh episode → a NEW audit row.
     d.stuck = True
-    restick = ctl.decide(BatteryIntent.GRID_CHARGE_TO_TARGET, T0 + timedelta(seconds=203),
-                         target_soc=90, manual=True)
+    restick = ctl.decide(
+        BatteryIntent.GRID_CHARGE_TO_TARGET, T0 + timedelta(seconds=203), target_soc=90, manual=True
+    )
     assert restick.outcome == "unconfirmed"
     assert restick.audit is True
 
@@ -419,11 +464,13 @@ def test_long_outage_relogs_after_61_minutes():
     t1 = T0 + timedelta(seconds=200)
     first = ctl.decide(BatteryIntent.GRID_CHARGE_TO_TARGET, t1, target_soc=90, manual=True)
     assert first.audit is True
-    mid = ctl.decide(BatteryIntent.GRID_CHARGE_TO_TARGET, t1 + timedelta(minutes=30),
-                     target_soc=90, manual=True)
+    mid = ctl.decide(
+        BatteryIntent.GRID_CHARGE_TO_TARGET, t1 + timedelta(minutes=30), target_soc=90, manual=True
+    )
     assert mid.audit is False  # still within the hour since the first log → suppressed
-    later = ctl.decide(BatteryIntent.GRID_CHARGE_TO_TARGET, t1 + timedelta(minutes=61),
-                       target_soc=90, manual=True)
+    later = ctl.decide(
+        BatteryIntent.GRID_CHARGE_TO_TARGET, t1 + timedelta(minutes=61), target_soc=90, manual=True
+    )
     assert later.audit is True  # >60 min since the last log → re-logged
 
 
@@ -432,8 +479,9 @@ def test_different_intent_starts_a_new_episode_row():
     # another one.
     d = _StuckDriver()
     ctl = ModeController(d, _controlling_lifecycle(), dry_run=False)
-    charge = ctl.decide(BatteryIntent.GRID_CHARGE_TO_TARGET, T0 + timedelta(seconds=200),
-                        target_soc=90, manual=True)
+    charge = ctl.decide(
+        BatteryIntent.GRID_CHARGE_TO_TARGET, T0 + timedelta(seconds=200), target_soc=90, manual=True
+    )
     assert charge.audit is True
     # HOLD_RESERVE → IDLE: a different desired mode → a new episode, so it audits.
     hold = ctl.decide(BatteryIntent.HOLD_RESERVE, T0 + timedelta(seconds=201), manual=True)
@@ -464,8 +512,11 @@ def _burn_switches(ctl, driver, n, start, *, commitment):
     must apply. Returns the next timestamp. min_dwell must be 0 so they don't self-block."""
     t = start
     for _ in range(n):
-        intent = (BatteryIntent.GRID_CHARGE_TO_TARGET if driver.current_mode() is PhysicalMode.IDLE
-                  else BatteryIntent.HOLD_RESERVE)  # AUTO/CHARGE -> IDLE ; IDLE -> CHARGE
+        intent = (
+            BatteryIntent.GRID_CHARGE_TO_TARGET
+            if driver.current_mode() is PhysicalMode.IDLE
+            else BatteryIntent.HOLD_RESERVE
+        )  # AUTO/CHARGE -> IDLE ; IDLE -> CHARGE
         dec = ctl.decide(intent, t, target_soc=90, commitment=commitment)
         assert dec.outcome == "applied", (dec.outcome, dec.reason)
         t += timedelta(seconds=1)
@@ -474,13 +525,16 @@ def _burn_switches(ctl, driver, n, start, *, commitment):
 
 def test_routine_cap_blocks_non_commitment_writes():
     d = MockBatteryDriver()
-    ctl = ModeController(d, _controlling_lifecycle(), dry_run=False,
-                         max_switches_per_day=10, min_dwell_seconds=0)
+    ctl = ModeController(
+        d, _controlling_lifecycle(), dry_run=False, max_switches_per_day=10, min_dwell_seconds=0
+    )
     t = _burn_switches(ctl, d, 10, T0 + timedelta(seconds=200), commitment=False)
     assert ctl.switches_today == 10
     _clear_charge_episode(ctl, d)
     routine = ctl.decide(
-        BatteryIntent.GRID_CHARGE_TO_TARGET, t + timedelta(seconds=1), target_soc=90,
+        BatteryIntent.GRID_CHARGE_TO_TARGET,
+        t + timedelta(seconds=1),
+        target_soc=90,
     )
     assert routine.outcome == "cap_reached"
     assert "daily switch cap reached" in routine.reason
@@ -489,13 +543,17 @@ def test_routine_cap_blocks_non_commitment_writes():
 def test_commitment_applies_when_routine_cap_is_exhausted():
     # AC1: switches_today=10 must not block commitment=True.
     d = MockBatteryDriver()
-    ctl = ModeController(d, _controlling_lifecycle(), dry_run=False,
-                         max_switches_per_day=10, min_dwell_seconds=0)
+    ctl = ModeController(
+        d, _controlling_lifecycle(), dry_run=False, max_switches_per_day=10, min_dwell_seconds=0
+    )
     t = T0 + timedelta(seconds=200)
     ctl.switches_today = 10
     _pin_counter_date(ctl, t)
     commit = ctl.decide(
-        BatteryIntent.GRID_CHARGE_TO_TARGET, t, target_soc=90, commitment=True,
+        BatteryIntent.GRID_CHARGE_TO_TARGET,
+        t,
+        target_soc=90,
+        commitment=True,
     )
     assert commit.outcome == "applied"
     assert ctl.switches_today == 10
@@ -508,8 +566,10 @@ def test_commitment_applies_after_restore_state_with_exhausted_routine_cap():
     other = ModeController(d, _controlling_lifecycle(), dry_run=False, min_dwell_seconds=0)
     other.restore_state(snap)
     commit = other.decide(
-        BatteryIntent.GRID_CHARGE_TO_TARGET, T0 + timedelta(seconds=200),
-        target_soc=90, commitment=True,
+        BatteryIntent.GRID_CHARGE_TO_TARGET,
+        T0 + timedelta(seconds=200),
+        target_soc=90,
+        commitment=True,
     )
     assert commit.outcome == "applied"
 
@@ -518,8 +578,10 @@ def test_commitment_write_does_not_increment_routine_counter():
     d = MockBatteryDriver()
     ctl = ModeController(d, _controlling_lifecycle(), dry_run=False, min_dwell_seconds=0)
     ctl.decide(
-        BatteryIntent.GRID_CHARGE_TO_TARGET, T0 + timedelta(seconds=200),
-        target_soc=90, commitment=True,
+        BatteryIntent.GRID_CHARGE_TO_TARGET,
+        T0 + timedelta(seconds=200),
+        target_soc=90,
+        commitment=True,
     )
     assert ctl.switches_today == 0
     assert ctl.commitment_switches_today == 1
@@ -528,15 +590,20 @@ def test_commitment_write_does_not_increment_routine_counter():
 def test_fifth_commitment_write_hits_commitment_limit():
     d = MockBatteryDriver()
     ctl = ModeController(
-        d, _controlling_lifecycle(), dry_run=False,
-        max_commitment_switches_per_day=4, min_dwell_seconds=0,
+        d,
+        _controlling_lifecycle(),
+        dry_run=False,
+        max_commitment_switches_per_day=4,
+        min_dwell_seconds=0,
     )
     t = _burn_switches(ctl, d, 4, T0 + timedelta(seconds=200), commitment=True)
     assert ctl.commitment_switches_today == 4
     _clear_charge_episode(ctl, d)
     blocked = ctl.decide(
-        BatteryIntent.GRID_CHARGE_TO_TARGET, t + timedelta(seconds=1),
-        target_soc=90, commitment=True,
+        BatteryIntent.GRID_CHARGE_TO_TARGET,
+        t + timedelta(seconds=1),
+        target_soc=90,
+        commitment=True,
     )
     assert blocked.outcome == "cap_reached"
     assert "commitment-limiet" in blocked.reason
@@ -545,8 +612,12 @@ def test_fifth_commitment_write_hits_commitment_limit():
 def test_total_writes_bounded_by_routine_plus_commitment_caps():
     d = MockBatteryDriver()
     ctl = ModeController(
-        d, _controlling_lifecycle(), dry_run=False,
-        max_switches_per_day=10, max_commitment_switches_per_day=4, min_dwell_seconds=0,
+        d,
+        _controlling_lifecycle(),
+        dry_run=False,
+        max_switches_per_day=10,
+        max_commitment_switches_per_day=4,
+        min_dwell_seconds=0,
     )
     t = _burn_switches(ctl, d, 10, T0 + timedelta(seconds=200), commitment=False)
     t = _burn_switches(ctl, d, 4, t, commitment=True)
@@ -561,9 +632,13 @@ def test_commitment_and_routine_budgets_reset_on_a_new_local_day():
     ams = ZoneInfo("Europe/Amsterdam")
     d = MockBatteryDriver()
     ctl = ModeController(
-        d, _controlling_lifecycle(), dry_run=False,
-        max_switches_per_day=10, max_commitment_switches_per_day=4,
-        min_dwell_seconds=0, tz=ams,
+        d,
+        _controlling_lifecycle(),
+        dry_run=False,
+        max_switches_per_day=10,
+        max_commitment_switches_per_day=4,
+        min_dwell_seconds=0,
+        tz=ams,
     )
     t = _burn_switches(ctl, d, 10, T0 + timedelta(seconds=200), commitment=False)
     _burn_switches(ctl, d, 4, t, commitment=True)
@@ -577,8 +652,12 @@ def test_commitment_counter_resets_on_dst_fall_back_local_midnight():
     ams = ZoneInfo("Europe/Amsterdam")
     d = MockBatteryDriver()
     ctl = ModeController(
-        d, _controlling_lifecycle(), dry_run=False,
-        max_commitment_switches_per_day=4, min_dwell_seconds=0, tz=ams,
+        d,
+        _controlling_lifecycle(),
+        dry_run=False,
+        max_commitment_switches_per_day=4,
+        min_dwell_seconds=0,
+        tz=ams,
     )
     oct24 = datetime(2026, 10, 24, 23, 0, tzinfo=ams)
     _burn_switches(ctl, d, 4, oct24, commitment=True)
@@ -586,8 +665,10 @@ def test_commitment_counter_resets_on_dst_fall_back_local_midnight():
     oct25_morning = datetime(2026, 10, 25, 1, 0, tzinfo=ams)
     ctl.decide(BatteryIntent.ALLOW_SELF_CONSUMPTION, oct25_morning, manual=True)
     commit = ctl.decide(
-        BatteryIntent.GRID_CHARGE_TO_TARGET, oct25_morning + timedelta(seconds=1),
-        target_soc=90, commitment=True,
+        BatteryIntent.GRID_CHARGE_TO_TARGET,
+        oct25_morning + timedelta(seconds=1),
+        target_soc=90,
+        commitment=True,
     )
     assert commit.outcome == "applied"
     assert ctl.commitment_switches_today == 1
@@ -595,12 +676,14 @@ def test_commitment_counter_resets_on_dst_fall_back_local_midnight():
 
 def test_priority_and_manual_bypass_caps_when_exhausted():
     d = MockBatteryDriver()
-    ctl = ModeController(d, _controlling_lifecycle(), dry_run=False, max_switches_per_day=10,
-                         min_dwell_seconds=0)
+    ctl = ModeController(
+        d, _controlling_lifecycle(), dry_run=False, max_switches_per_day=10, min_dwell_seconds=0
+    )
     t = _burn_switches(ctl, d, 10, T0 + timedelta(seconds=200), commitment=False)
     _clear_charge_episode(ctl, d)
-    hold = ctl.decide(BatteryIntent.GRID_CHARGE_TO_TARGET, t + timedelta(seconds=1),
-                      target_soc=90, priority=True)
+    hold = ctl.decide(
+        BatteryIntent.GRID_CHARGE_TO_TARGET, t + timedelta(seconds=1), target_soc=90, priority=True
+    )
     assert hold.outcome == "applied"
     assert ctl.commitment_switches_today == 0
     manual = ctl.decide(BatteryIntent.HOLD_RESERVE, T0 + timedelta(seconds=500), manual=True)
@@ -628,7 +711,7 @@ def test_persist_failure_is_logged_not_swallowed(caplog):
     ctl = ModeController(d, _controlling_lifecycle(), dry_run=False, on_state_change=_boom)
     with caplog.at_level(logging.WARNING):
         dec = ctl.decide(BatteryIntent.GRID_CHARGE_TO_TARGET, T0 + timedelta(seconds=200))
-    assert dec.outcome == "applied"                 # the decision still succeeded (non-fatal)
+    assert dec.outcome == "applied"  # the decision still succeeded (non-fatal)
     assert d.current_mode() is PhysicalMode.CHARGE
     assert "persist failed" in caplog.text
 
@@ -687,8 +770,11 @@ def test_already_charging_observed_charge_is_idempotent_and_does_not_count():
     ctl.decide(BatteryIntent.GRID_CHARGE_TO_TARGET, t, target_soc=90, commitment=True)
     assert ctl.commitment_switches_today == 1
     again = ctl.decide(
-        BatteryIntent.GRID_CHARGE_TO_TARGET, t + timedelta(seconds=60),
-        target_soc=90, commitment=True, observed_mode=PhysicalMode.CHARGE,
+        BatteryIntent.GRID_CHARGE_TO_TARGET,
+        t + timedelta(seconds=60),
+        target_soc=90,
+        commitment=True,
+        observed_mode=PhysicalMode.CHARGE,
     )
     assert again.outcome == "idempotent"
     assert again.applied is False
@@ -713,14 +799,19 @@ def test_return_to_auto_does_not_spend_the_daily_switch_budget():
 def test_after_routine_cap_exhausted_commitment_charge_still_applies():
     d = MockBatteryDriver()
     ctl = ModeController(
-        d, _controlling_lifecycle(), dry_run=False,
-        max_switches_per_day=10, min_dwell_seconds=0,
+        d,
+        _controlling_lifecycle(),
+        dry_run=False,
+        max_switches_per_day=10,
+        min_dwell_seconds=0,
     )
     t = _burn_switches(ctl, d, 10, T0 + timedelta(seconds=200), commitment=False)
     _clear_charge_episode(ctl, d)
     commit = ctl.decide(
-        BatteryIntent.GRID_CHARGE_TO_TARGET, t + timedelta(seconds=1),
-        target_soc=90, commitment=True,
+        BatteryIntent.GRID_CHARGE_TO_TARGET,
+        t + timedelta(seconds=1),
+        target_soc=90,
+        commitment=True,
     )
     assert commit.outcome == "applied"
     assert ctl.switches_today == 10
@@ -735,20 +826,27 @@ def test_leaving_charge_intent_allows_a_fresh_command_later():
     t = T0 + timedelta(seconds=200)
     ctl.decide(BatteryIntent.GRID_CHARGE_TO_TARGET, t, target_soc=90, commitment=True)
     hold = ctl.decide(
-        BatteryIntent.GRID_CHARGE_TO_TARGET, t + timedelta(seconds=60),
-        target_soc=90, commitment=True, observed_mode=PhysicalMode.IDLE,
+        BatteryIntent.GRID_CHARGE_TO_TARGET,
+        t + timedelta(seconds=60),
+        target_soc=90,
+        commitment=True,
+        observed_mode=PhysicalMode.IDLE,
     )
     assert hold.outcome == "idempotent"
     # Leave the charge episode with observed=CHARGE so the gate sees a real change to IDLE.
     leave = ctl.decide(
-        BatteryIntent.HOLD_RESERVE, t + timedelta(seconds=120),
+        BatteryIntent.HOLD_RESERVE,
+        t + timedelta(seconds=120),
         observed_mode=PhysicalMode.CHARGE,
     )
     assert leave.outcome == "applied"
     assert ctl.last_confirmed_action is PhysicalMode.IDLE
     again = ctl.decide(
-        BatteryIntent.GRID_CHARGE_TO_TARGET, t + timedelta(seconds=180),
-        target_soc=90, commitment=True, observed_mode=PhysicalMode.IDLE,
+        BatteryIntent.GRID_CHARGE_TO_TARGET,
+        t + timedelta(seconds=180),
+        target_soc=90,
+        commitment=True,
+        observed_mode=PhysicalMode.IDLE,
     )
     assert again.outcome == "applied"
     # initial charge + re-charge (hold_reserve is routine)
