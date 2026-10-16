@@ -20,7 +20,11 @@ from ems.storage.cache import CacheStore
 from ems.storage.control_state import ControlStateStore
 from ems.storage.history import HistoryStore
 from ems.storage.sqlite_guard import (
-    WriterGate, gate_for, hold_db_writer, reset_lock_stats, storage_write_retries,
+    WriterGate,
+    gate_for,
+    hold_db_writer,
+    reset_lock_stats,
+    storage_write_retries,
     wal_checkpoint_truncate,
 )
 
