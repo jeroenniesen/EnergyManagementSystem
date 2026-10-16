@@ -14,6 +14,7 @@ import json
 import sqlite3
 
 from ems.perf import timed
+from ems.storage.sqlite_guard import connect_timeout_ms, run_sync_write
 
 _BUSY_TIMEOUT_MS = 5000  # see ems/storage/history.py for the WAL/synchronous/timeout rationale
 _KEY = "controller"
@@ -41,8 +42,12 @@ class ControlStateStore:
         self.db_path = db_path
 
     def _conn(self) -> sqlite3.Connection:
-        con = sqlite3.connect(self.db_path, timeout=_BUSY_TIMEOUT_MS / 1000)
-        con.execute(f"PRAGMA busy_timeout={_BUSY_TIMEOUT_MS}")
+        # Own connection per call (the control tick is synchronous). A guarded save uses the
+        # short busy timeout so three attempts stay inside ~2 s and cannot overrun the cycle
+        # into an extra AUTO write (F-45).
+        timeout_ms = connect_timeout_ms(_BUSY_TIMEOUT_MS)
+        con = sqlite3.connect(self.db_path, timeout=timeout_ms / 1000)
+        con.execute(f"PRAGMA busy_timeout={int(timeout_ms)}")
         con.execute("PRAGMA synchronous=NORMAL")  # WAL-safe; see HistoryStore
         return con
 
@@ -112,14 +117,22 @@ class ControlStateStore:
             return decoded
 
     def save(self, state: dict) -> None:
-        with timed("store.control_state.write"):
-            con = self._conn()
-            try:
-                con.execute(
-                    "INSERT INTO control_state (key, value) VALUES (?, ?) "
-                    "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
-                    (_KEY, json.dumps(state)),
-                )
-                con.commit()
-            finally:
-                con.close()
+        """Persist the controller snapshot. Critical (F-45): 3 attempts on the writer gate,
+        ahead of non-critical writers. Exhaustion queues an alert + audit incident and
+        returns — it does not raise, and it does not write the battery.
+        """
+        def _body() -> None:
+            with timed("store.control_state.write"):
+                con = self._conn()
+                try:
+                    con.execute(
+                        "INSERT INTO control_state (key, value) VALUES (?, ?) "
+                        "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                        (_KEY, json.dumps(state)),
+                    )
+                    con.commit()
+                finally:
+                    con.close()
+
+        run_sync_write(
+            self.db_path, "control_state", "control_state", _body, critical=True)

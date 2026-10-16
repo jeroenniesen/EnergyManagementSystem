@@ -17,6 +17,7 @@ from ems.domain import RawSample
 from ems.load_model import DerivedSample
 from ems.perf import atimed
 from ems.storage.migrations import Migration, has_table, run_migrations
+from ems.storage.sqlite_guard import hold_db_writer, run_async_write, short_busy_connection
 
 _log = logging.getLogger("ems.storage")
 
@@ -613,9 +614,24 @@ class HistoryStore:
     @asynccontextmanager
     async def _write_conn(self):
         """Write seam: the same shared connection, serialized behind `_write_lock` (see the
-        `__init__` docstring) so a multi-statement write body can't be torn by a concurrent one."""
+        `__init__` docstring) so a multi-statement write body can't be torn by a concurrent one.
+
+        Also takes the per-file writer gate (F-45) so this connection cannot overlap a sibling
+        store's write or an in-process WAL checkpoint. A failed attempt rolls back so a retry
+        does not resume a half-open transaction on the shared connection.
+        """
         async with self._write_lock:
-            yield await self._connection()
+            async with hold_db_writer(self.db_path):
+                db = await self._connection()
+                async with short_busy_connection(db, default_ms=_BUSY_TIMEOUT_MS):
+                    try:
+                        yield db
+                    except Exception:
+                        try:
+                            await db.rollback()
+                        except Exception:
+                            _log.debug("history rollback after write error failed", exc_info=True)
+                        raise
 
     async def close(self) -> None:
         """Close the shared connection (app shutdown). Safe to call when never opened, or twice."""
@@ -891,23 +907,29 @@ class HistoryStore:
                     "raw_rows": raw_rows, "derived_rows": derived_rows}
 
     async def record(self, ts: str, raw: RawSample, derived: DerivedSample) -> None:
-        async with atimed("store.history.write"):
-            async with self._write_conn() as db:
-                await db.execute(
-                    "INSERT INTO raw_samples "
-                    "(ts, grid_power_w, solar_power_w, battery_power_w, ev_power_w, soc_pct) "
-                    "VALUES (?, ?, ?, ?, ?, ?)",
-                    (ts, raw.grid_power_w, raw.solar_power_w, raw.battery_power_w,
-                     raw.ev_power_w, raw.soc_pct),
-                )
-                await db.execute(
-                    "INSERT INTO derived_samples (ts, house_load_w, non_ev_load_w) "
-                    "VALUES (?, ?, ?)",
-                    (ts, derived.house_load_w, derived.non_ev_load_w),
-                )
-                # Both INSERTs must share THIS single commit (atomic raw+derived pair).
-                # Do NOT add an intermediate commit between them — it would let the tables drift.
-                await db.commit()
+        async def _body() -> None:
+            async with atimed("store.history.write"):
+                async with self._write_conn() as db:
+                    await db.execute(
+                        "INSERT INTO raw_samples "
+                        "(ts, grid_power_w, solar_power_w, battery_power_w, ev_power_w, soc_pct) "
+                        "VALUES (?, ?, ?, ?, ?, ?)",
+                        (ts, raw.grid_power_w, raw.solar_power_w, raw.battery_power_w,
+                         raw.ev_power_w, raw.soc_pct),
+                    )
+                    await db.execute(
+                        "INSERT INTO derived_samples (ts, house_load_w, non_ev_load_w) "
+                        "VALUES (?, ?, ?)",
+                        (ts, derived.house_load_w, derived.non_ev_load_w),
+                    )
+                    # Both INSERTs share THIS commit (atomic raw+derived pair).
+                    # No intermediate commit — that would let the tables drift.
+                    await db.commit()
+
+        # Samples stay visible to the recorder watchdog if the retry budget is exhausted.
+        # The lock error must not be turned into a control-cycle fail-safe (the recorder
+        # already treats a persist failure as non-fatal). swallow=False re-raises it.
+        await run_async_write(self.db_path, "history", "samples", _body, swallow=False)
 
     async def recent_raw(self, limit: int = 100) -> list[dict]:
         return await self._recent("raw_samples", _RAW_COLS, limit)
@@ -1107,19 +1129,26 @@ class HistoryStore:
         (the plan-epoch id + reserve floor the intent-aware follow-through scorer needs — see
         ems.analysis.plan_execution_error). Missing keys default to None (a partial or
         pre-commitment snapshot still records something rather than nothing; the scorer falls back
-        to legacy grouping for rows without plan_version/floor_soc)."""
-        async with atimed("store.history.write"):
-            async with self._write_conn() as db:
-                await db.execute(
-                    "INSERT INTO plan_history "
-                    "(ts, strategy, target_soc, deadline, soc_pct, intent, "
-                    "plan_version, floor_soc) "
-                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-                    (ts, snapshot.get("strategy"), snapshot.get("target_soc"),
-                     snapshot.get("deadline"), snapshot.get("soc_pct"), snapshot.get("intent"),
-                     snapshot.get("plan_version"), snapshot.get("floor_soc")),
-                )
-                await db.commit()
+        to legacy grouping for rows without plan_version/floor_soc).
+
+        Non-critical (F-45): a lock that survives the retry budget is skipped, never raised into
+        the control cycle.
+        """
+        async def _body() -> None:
+            async with atimed("store.history.write"):
+                async with self._write_conn() as db:
+                    await db.execute(
+                        "INSERT INTO plan_history "
+                        "(ts, strategy, target_soc, deadline, soc_pct, intent, "
+                        "plan_version, floor_soc) "
+                        "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                        (ts, snapshot.get("strategy"), snapshot.get("target_soc"),
+                         snapshot.get("deadline"), snapshot.get("soc_pct"), snapshot.get("intent"),
+                         snapshot.get("plan_version"), snapshot.get("floor_soc")),
+                    )
+                    await db.commit()
+
+        await run_async_write(self.db_path, "history", "plan_history", _body)
 
     async def plan_history_between(self, start_iso: str, end_iso: str) -> list[dict]:
         """Plan/target history rows with `ts` in [start, end), oldest-first (UTC-ISO ⇒
@@ -1137,13 +1166,19 @@ class HistoryStore:
     async def record_gas(self, ts: str, total_gas_m3: float) -> None:
         """Upsert one cumulative gas meter reading (B-02). INSERT OR REPLACE: `ts` is the
         recorder's sense timestamp (one row/cycle in practice), so a re-record at the same `ts`
-        (e.g. a retried cycle) simply overwrites rather than duplicating."""
-        async with atimed("store.history.write"):
-            async with self._write_conn() as db:
-                await db.execute(
-                    "INSERT OR REPLACE INTO gas_readings (ts, total_gas_m3) VALUES (?, ?)",
-                    (ts, total_gas_m3))
-                await db.commit()
+        (e.g. a retried cycle) simply overwrites rather than duplicating.
+
+        Non-critical (F-45): lock exhaustion is skipped, not raised.
+        """
+        async def _body() -> None:
+            async with atimed("store.history.write"):
+                async with self._write_conn() as db:
+                    await db.execute(
+                        "INSERT OR REPLACE INTO gas_readings (ts, total_gas_m3) VALUES (?, ?)",
+                        (ts, total_gas_m3))
+                    await db.commit()
+
+        await run_async_write(self.db_path, "history", "gas", _body)
 
     async def gas_between(self, start_iso: str, end_iso: str) -> list[dict]:
         """Gas meter readings with `ts` in [start, end), oldest-first (UTC-ISO ⇒
@@ -1158,13 +1193,19 @@ class HistoryStore:
                 return [dict(r) for r in await cur.fetchall()]
 
     async def upsert_daily_finance(self, day: str, data: dict) -> None:
-        """Store/replace one local day's finance rollup (day = YYYY-MM-DD, data = JSON-able)."""
-        async with atimed("store.history.write"):
-            async with self._write_conn() as db:
-                await db.execute(
-                    "INSERT OR REPLACE INTO daily_finance (day, data) VALUES (?, ?)",
-                    (day, json.dumps(data)))
-                await db.commit()
+        """Store/replace one local day's finance rollup (day = YYYY-MM-DD, data = JSON-able).
+
+        Non-critical memo (F-45): a lock that survives the retry budget leaves the day uncached.
+        """
+        async def _body() -> None:
+            async with atimed("store.history.write"):
+                async with self._write_conn() as db:
+                    await db.execute(
+                        "INSERT OR REPLACE INTO daily_finance (day, data) VALUES (?, ?)",
+                        (day, json.dumps(data)))
+                    await db.commit()
+
+        await run_async_write(self.db_path, "history", "daily_finance", _body)
 
     async def daily_finance_between(self, start_day: str, end_day: str) -> list[dict]:
         """Finance rollups for days in [start, end) as {day, data}, oldest-first."""
@@ -1232,15 +1273,20 @@ class HistoryStore:
 
     async def upsert_carbon(self, rows: list[tuple[str, float]]) -> None:
         """Idempotently store (start_ts UTC-ISO, kg CO2/kWh) slots — re-fetches simply overwrite
-        (roadmap F3, reporting-only)."""
+        (roadmap F3, reporting-only). Non-critical (F-45): lock exhaustion is skipped."""
         if not rows:
             return
-        async with atimed("store.history.write"):
-            async with self._write_conn() as db:
-                await db.executemany(
-                    "INSERT OR REPLACE INTO carbon_intensity (start_ts, kg_per_kwh) VALUES (?, ?)",
-                    rows)
-                await db.commit()
+
+        async def _body() -> None:
+            async with atimed("store.history.write"):
+                async with self._write_conn() as db:
+                    await db.executemany(
+                        "INSERT OR REPLACE INTO carbon_intensity (start_ts, kg_per_kwh) "
+                        "VALUES (?, ?)",
+                        rows)
+                    await db.commit()
+
+        await run_async_write(self.db_path, "history", "carbon", _body)
 
     async def carbon_between(self, start_iso: str, end_iso: str) -> list[dict]:
         """Stored carbon-intensity slots in [start, end), oldest-first (UTC-ISO ⇒

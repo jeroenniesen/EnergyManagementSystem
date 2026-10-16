@@ -1970,6 +1970,8 @@ def create_app(
         data_quality=_data_quality, validate_plan_obj=_validate_plan_obj,
         clock=application_clock,
     )
+    # F-45: control_state lock give-up alerts here; the report path does not write the battery.
+    control._storage_notifier = notifier
     # I2: the restart handler + tests reach the control brain's outstanding-write registry and the
     # idle-and-safe read through here (the single owner of the command-fence snapshot).
     app.state.control_service = control
@@ -3011,6 +3013,7 @@ def create_app(
             decision_reason = empty_decision_reason(
                 summary="Decision reason unavailable.",
             ).to_dict()
+        lock_status = StorageContext().lock_status()
         return {
             "overall": overall_status(checks),
             "checks": [c.to_dict() for c in checks],
@@ -3022,6 +3025,9 @@ def create_app(
             # Thin soak counters (#179) — diagnostics UI / structured logs only (no /metrics).
             "control_loop": LOOP_COUNTERS.snapshot(),
             "decision_reason": decision_reason,
+            # F-45: per-store lock incident + the process-wide retry counter.
+            "storage_locks": lock_status["stores"],
+            "storage_write_retries": lock_status["storage_write_retries"],
         }
 
     @app.get("/api/charge-need")

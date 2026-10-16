@@ -252,6 +252,71 @@ def test_restart_from_controlling_state():
     assert lc.can_command(NOW) is True
 
 
+def test_locked_history_writes_do_not_change_a_commanded_mode(tmp_path, monkeypatch, caplog):
+    """Injected database locks on history/audit/gas/carbon leave the commanded mode alone."""
+    import asyncio
+    import logging
+    import sqlite3
+
+    import ems.storage.sqlite_guard as guard
+    from ems.control.loop_counters import LOOP_COUNTERS
+    from ems.storage.audit import AuditStore
+    from ems.storage.history import HistoryStore
+
+    monkeypatch.setattr(guard, "BACKOFF_S", (0.0, 0.0))
+    guard.reset_lock_stats()
+    db = str(tmp_path / "locked.sqlite")
+    history = HistoryStore(db)
+    audit = AuditStore(db)
+
+    async def prime():
+        await history.init()
+        await audit.init()
+
+    asyncio.run(prime())
+    orig = history._db.execute
+
+    async def execute(sql, *args, **kwargs):
+        text = str(sql)
+        if "PRAGMA" not in text.upper() and (
+            "plan_history" in text or "gas_readings" in text or "carbon_intensity" in text
+        ):
+            raise sqlite3.OperationalError("database is locked")
+        return await orig(sql, *args, **kwargs)
+
+    history._db.execute = execute
+    orig_many = history._db.executemany
+
+    async def executemany(sql, *args, **kwargs):
+        if "carbon_intensity" in str(sql):
+            raise sqlite3.OperationalError("database is locked")
+        return await orig_many(sql, *args, **kwargs)
+
+    history._db.executemany = executemany
+    controller = _controlling_controller()
+    svc, ctx = _service(controller)
+    ctx.override_box["ov"] = Override(
+        intent=BatteryIntent.HOLD_RESERVE, expires_at=NOW + timedelta(hours=1))
+    LOOP_COUNTERS.reset()
+    before = guard.storage_write_retries()
+
+    async def run():
+        await history.record_plan("2026-06-28T12:00:00+00:00", {"strategy": "winter"})
+        await history.record_gas("2026-06-28T12:00:00+00:00", 3.0)
+        await history.upsert_carbon([("2026-06-28T12:00:00+00:00", 0.4)])
+        await audit.append("2026-06-28T12:00:00+00:00", "note", "ok", {})
+        svc.control_tick(NOW)
+
+    with caplog.at_level(logging.WARNING, logger="ems.storage"):
+        asyncio.run(run())
+    # HOLD_RESERVE commands IDLE. A lock must not add a second write back to AUTO.
+    assert controller.driver.current_mode() is PhysicalMode.IDLE
+    assert LOOP_COUNTERS.outcomes["fail_safe"] == 0
+    assert guard.storage_write_retries() >= before + 1
+    skipped = [r for r in caplog.records if "non-critical sqlite write skipped" in r.getMessage()]
+    assert len(skipped) == 1
+
+
 @pytest.mark.fault_injection
 def test_restart_preserves_battery_safety():
     """After restart, the battery is NOT assumed to be in a known mode. The lifecycle forces
