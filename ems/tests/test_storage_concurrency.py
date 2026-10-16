@@ -11,13 +11,18 @@ import math
 import os
 import time
 
+import pytest
+
 from ems.domain import RawSample
 from ems.load_model import reconstruct
 from ems.storage.audit import AuditStore
 from ems.storage.cache import CacheStore
 from ems.storage.control_state import ControlStateStore
 from ems.storage.history import HistoryStore
-from ems.storage.sqlite_guard import WriterGate, reset_lock_stats, wal_checkpoint_truncate
+from ems.storage.sqlite_guard import (
+    WriterGate, gate_for, hold_db_writer, reset_lock_stats, storage_write_retries,
+    wal_checkpoint_truncate,
+)
 
 
 def _p99(samples: list[float]) -> float:
@@ -129,6 +134,7 @@ def _run_stress(db_path: str, duration_s: float) -> float:
         root.setLevel(previous)
     assert locked["phrases"] == []
     assert latencies, "stress produced no writes"
+    assert storage_write_retries() == 0, "a retry or skipped write escaped the stress log check"
     return _p99(latencies)
 
 
@@ -170,3 +176,37 @@ def test_critical_writer_runs_ahead_of_a_waiting_noncritical():
     first.join(2)
     second.join(2)
     assert order[0] == "critical"
+
+
+def test_cancelled_async_waiter_releases_gate(tmp_path):
+    """Cancellation cannot leave a to_thread acquisition holding the DB forever."""
+    db_path = str(tmp_path / "ems.sqlite")
+
+    async def scenario() -> None:
+        gate = gate_for(db_path)
+        gate.acquire("holder")
+        waiter = asyncio.create_task(hold_db_writer(db_path, writer="cancelled").__aenter__())
+        await asyncio.sleep(0.05)
+        waiter.cancel()
+        gate.release()
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.wait_for(waiter, 2)
+        async with asyncio.timeout(2):
+            async with hold_db_writer(db_path, writer="next"):
+                pass
+
+    asyncio.run(scenario())
+
+
+def test_separate_lock_incidents_each_warn(caplog, monkeypatch):
+    import ems.storage.sqlite_guard as guard
+
+    guard.reset_lock_stats()
+    monkeypatch.setattr(guard, "_WARN_DEDUPE_S", 0.01)
+    with caplog.at_level(logging.WARNING, logger="ems.storage"):
+        guard._warn_give_up("history", "gas", 100)
+        guard._warn_give_up("history", "gas", 100)
+        time.sleep(0.02)
+        guard._warn_give_up("history", "gas", 100)
+    warnings = [r for r in caplog.records if "non-critical sqlite write skipped" in r.message]
+    assert len(warnings) == 2

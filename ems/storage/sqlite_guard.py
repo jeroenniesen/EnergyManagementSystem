@@ -135,8 +135,16 @@ class _AsyncWriter:
         self._critical = critical
 
     async def __aenter__(self) -> None:
-        await asyncio.to_thread(
-            partial(self._gate.acquire, self._writer, critical=self._critical))
+        acquire = asyncio.create_task(asyncio.to_thread(
+            partial(self._gate.acquire, self._writer, critical=self._critical)))
+        try:
+            await asyncio.shield(acquire)
+        except asyncio.CancelledError:
+            # to_thread cannot cancel a blocked Condition.wait(). Once that worker
+            # acquires the gate, release it before propagating cancellation.
+            await asyncio.shield(acquire)
+            self._gate.release()
+            raise
 
     async def __aexit__(self, *exc: object) -> None:
         self._gate.release()
@@ -165,7 +173,7 @@ class _StoreLockStats:
 _stats_guard = threading.Lock()
 _stats: dict[str, _StoreLockStats] = {name: _StoreLockStats() for name in STORE_NAMES}
 _retry_total = 0
-_warned: set[tuple[str, str]] = set()
+_warned: dict[tuple[str, str], float] = {}
 _last_warn_at = 0.0
 _critical: list[CriticalWriteFailure] = []
 # One WARN for a burst of non-critical give-ups (several writers, 3 attempts each).
@@ -236,11 +244,11 @@ def _warn_give_up(store: str, writer: str, duration_ms: float) -> None:
     global _last_warn_at
     key = (store, writer)
     with _stats_guard:
-        if key in _warned:
-            return
         now = time.monotonic()
-        burst = bool(_warned) and (now - _last_warn_at) < _WARN_DEDUPE_S
-        _warned.add(key)
+        if now - _warned.get(key, float("-inf")) < _WARN_DEDUPE_S:
+            return
+        burst = (now - _last_warn_at) < _WARN_DEDUPE_S
+        _warned[key] = now
         if burst:
             return
         _last_warn_at = now
@@ -253,7 +261,7 @@ def _warn_give_up(store: str, writer: str, duration_ms: float) -> None:
 
 def _clear_warn(store: str, writer: str) -> None:
     with _stats_guard:
-        _warned.discard((store, writer))
+        _warned.pop((store, writer), None)
 
 
 def _queue_critical(store: str, writer: str, duration_ms: float) -> None:
@@ -388,7 +396,9 @@ def wal_checkpoint_truncate(db_path: str) -> None:
         con = sqlite3.connect(db_path, timeout=SHORT_BUSY_MS / 1000)
         try:
             con.execute(f"PRAGMA busy_timeout={SHORT_BUSY_MS}")
-            con.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+            row = con.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchone()
+            if row is not None and row[0]:
+                raise sqlite3.OperationalError("sqlite checkpoint busy")
         finally:
             con.close()
 

@@ -2535,6 +2535,8 @@ class ControlService:
 def _reason_counts_as_fail_safe(reason: str) -> bool:
     """True when a decision reason is a real fail-safe, not a storage-lock hiccup (F-45)."""
     low = reason.lower()
+    if "fail-safe" in low or "holding self-consumption" in low:
+        return True
     if (
         "database is locked" in low
         or "database is busy" in low
@@ -2543,7 +2545,7 @@ def _reason_counts_as_fail_safe(reason: str) -> bool:
         or "non-critical sqlite write" in low
     ):
         return False
-    return "holding self-consumption" in reason or "fail-safe" in low
+    return False
 
 
 def _dominant_phase() -> str | None:

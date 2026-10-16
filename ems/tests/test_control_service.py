@@ -540,6 +540,15 @@ def test_unsafe_sensors_and_bad_prices_still_count_as_fail_safe():
 
     LOOP_COUNTERS.reset()
     svc._data_quality = lambda now: "fresh"
+    svc._observe_cycle_counters(
+        NOW, [{"detail": {"outcome": "idempotent", "reason":
+                          "holding self-consumption (fail-safe: stale grid); "
+                          "sqlite write lock on audit"}}], latency_ms=1.0,
+    )
+    assert LOOP_COUNTERS.outcomes["fail_safe"] == 1
+
+    LOOP_COUNTERS.reset()
+    svc._data_quality = lambda now: "fresh"
     svc._price_horizon_status = PriceHorizonStatus(False, "incomplete", 0, None)
     svc._observe_cycle_counters(
         NOW, [{"detail": {"outcome": "idempotent", "reason": "sqlite write lock on gas"}}],
