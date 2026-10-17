@@ -1003,7 +1003,7 @@ export function Settings({
             {HOME_NIGHT_RESERVE.minReserveExplainer}
           </p>
         )}
-        {f.key === "battery.night_reserve_kwh" && reserveAdvice && (
+        {f.key === "battery.night_reserve_kwh" && (
           <NightReserveSettingsHint
             nightReserveKwh={Number(edited[f.key] ?? f.default)}
             overnightLoadKwh={Number(
@@ -1011,7 +1011,7 @@ export function Settings({
                 schema?.find((x) => x.key === "battery.overnight_load_kwh")?.default ??
                 6,
             )}
-            learnedKwh={learnedNightKwhFromAdvice(reserveAdvice.night_demand_kwh)}
+            learnedKwh={learnedNightKwhFromAdvice(reserveAdvice?.night_demand_kwh)}
           />
         )}
         {f.key === "planner.solar_confidence" && solarAdvice && (

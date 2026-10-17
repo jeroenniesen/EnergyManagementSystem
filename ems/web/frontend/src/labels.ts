@@ -671,7 +671,7 @@ export const HOME_NIGHT_RESERVE = {
   learnedUnavailable: "Geleerd vannacht: nog onvoldoende meetdata.",
   configuredAside: (kwh: number) => `Jouw instelling: ${kwh.toFixed(1)} kWh`,
   exampleHours: (reserveKwh: number, hours: number) =>
-    `Met ${reserveKwh.toFixed(1)} kWh nacht-reserve houdt de batterij ± ${hours} uur het huis aan.`,
+    `Bij een nacht van 12 uur houdt ${reserveKwh.toFixed(1)} kWh nacht-reserve het huis nog ongeveer ${hours} uur aan.`,
   minReserveExplainer:
     "Minimumreserve is je noodrem — EMS laat de batterij hier niet onder zakken. "
     + "Nacht-reserve is extra comfort bovenop het verwachte nachtverbruik.",
@@ -690,10 +690,10 @@ export function nightReserveComfortHours(
   nightHours = NIGHT_RESERVE_COMFORT_HOURS,
 ): number | null {
   if (
-    !Number.isFinite(nightReserveKwh) ||
+    !Number.isFinite(nightReserveKwh) || nightReserveKwh < 0 ||
     !Number.isFinite(overnightLoadKwh) ||
     overnightLoadKwh <= 0 ||
-    nightHours <= 0
+    !Number.isFinite(nightHours) || nightHours <= 0
   ) {
     return null;
   }
@@ -708,16 +708,17 @@ export function nightReserveOverridesLearned(
   learnedKwh: number | null | undefined,
   threshold = 0.25,
 ): boolean {
-  if (learnedKwh == null || !Number.isFinite(learnedKwh) || !Number.isFinite(configuredKwh)) {
+  if (learnedKwh == null || !Number.isFinite(learnedKwh) || learnedKwh < 0 ||
+      !Number.isFinite(configuredKwh) || configuredKwh < 0) {
     return false;
   }
-  const base = Math.max(Math.abs(learnedKwh), Math.abs(configuredKwh), 1e-6);
-  return Math.abs(configuredKwh - learnedKwh) / base > threshold;
+  if (learnedKwh === 0) return configuredKwh > 0;
+  return Math.abs(configuredKwh - learnedKwh) / learnedKwh > threshold;
 }
 
 export function learnedNightKwhFromAdvice(
   nightDemandKwh: number | null | undefined,
 ): number | null {
-  if (nightDemandKwh == null || !Number.isFinite(nightDemandKwh)) return null;
+  if (nightDemandKwh == null || !Number.isFinite(nightDemandKwh) || nightDemandKwh < 0) return null;
   return nightDemandKwh;
 }

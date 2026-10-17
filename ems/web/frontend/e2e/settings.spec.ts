@@ -526,10 +526,19 @@ test.describe("EMS settings", () => {
       );
       await expect(page.getByTestId("night-reserve-learned")).toContainText("Jouw instelling: 2.0 kWh");
       await expect(page.getByTestId("night-reserve-example")).toContainText(
-        "Met 2.0 kWh nacht-reserve houdt de batterij ± 4 uur het huis aan.",
+        "Bij een nacht van 12 uur houdt 2.0 kWh nacht-reserve het huis nog ongeveer 4 uur aan.",
       );
       await expect(page.getByTestId("min-reserve-vs-night-hint")).toContainText("noodrem");
       await expect(hints).not.toContainText("SoC");
+
+      await page.route("**/api/advisor/reserve", (route) =>
+        route.fulfill({ status: 503, contentType: "application/json", body: "{}" }),
+      );
+      await page.reload();
+      await page.getByTestId("nav-manage").click();
+      await page.getByTestId("group-battery").click();
+      await expect(page.getByTestId("night-reserve-learned")).toContainText("onvoldoende meetdata");
+      await expect(page.getByTestId("night-reserve-example")).toContainText("2.0 kWh nacht-reserve");
     });
   });
 
