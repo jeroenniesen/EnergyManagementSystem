@@ -20,7 +20,7 @@ from datetime import datetime
 
 from ems.domain import BatteryIntent
 from ems.planner import economics
-from ems.planner.packing import late_pack_charge_starts
+from ems.planner.rule_based import late_pack_charge_starts
 from ems.planner.schedule import SLOT, Plan, PlanSlot
 from ems.sources.forecast import ForecastSlot
 from ems.sources.prices import PriceSlot
