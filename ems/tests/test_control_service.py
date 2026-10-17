@@ -486,6 +486,196 @@ def test_stable_car_session_preserves_command_budget_for_later_retune(mode):
     assert ctx.car_session["commands"] == 2
 
 
+def test_storage_lock_does_not_mark_the_cycle_fail_safe(tmp_path, monkeypatch, caplog):
+    """F-45: history/audit/gas/carbon lock errors keep the cycle outcome and fail_safe=0."""
+    import logging
+    import sqlite3
+
+    import ems.storage.sqlite_guard as guard
+    from ems.control.loop_counters import LOOP_COUNTERS
+    from ems.storage.audit import AuditStore
+    from ems.storage.history import HistoryStore
+
+    monkeypatch.setattr(guard, "BACKOFF_S", (0.0, 0.0))
+    guard.reset_lock_stats()
+    db = str(tmp_path / "ems.sqlite")
+    history = HistoryStore(db)
+    audit = AuditStore(db)
+
+    async def prime():
+        await history.init()
+        await audit.init()
+
+    asyncio.run(prime())
+
+    def _hit(sql: object, needles: tuple[str, ...]) -> bool:
+        text = str(sql)
+        if text.lstrip().upper().startswith("PRAGMA"):
+            return False
+        return any(needle in text for needle in needles)
+
+    def _patch(connection, needles: tuple[str, ...]) -> None:
+        orig_execute = connection.execute
+        orig_many = connection.executemany
+
+        async def execute(sql, *args, **kwargs):
+            if _hit(sql, needles):
+                raise sqlite3.OperationalError("database is locked")
+            return await orig_execute(sql, *args, **kwargs)
+
+        async def executemany(sql, *args, **kwargs):
+            if _hit(sql, needles):
+                raise sqlite3.OperationalError("database is locked")
+            return await orig_many(sql, *args, **kwargs)
+
+        connection.execute = execute
+        connection.executemany = executemany
+
+    _patch(history._db, ("plan_history", "gas_readings", "carbon_intensity"))
+    _patch(audit._db, ("audit_log",))
+
+    controller = _controlling_controller()
+    svc, _ctx = _service(controller, audit_store=audit)
+    before = guard.storage_write_retries()
+    LOOP_COUNTERS.reset()
+
+    async def run():
+        await history.record_plan("2026-06-28T12:00:00+00:00", {"strategy": "summer"})
+        await history.record_gas("2026-06-28T12:00:00+00:00", 10.0)
+        await history.upsert_carbon([("2026-06-28T12:00:00+00:00", 0.2)])
+        await audit.append("2026-06-28T12:00:00+00:00", "note", "locked", {})
+        await svc.run_cycle()
+
+    with caplog.at_level(logging.INFO, logger="ems.recorder"):
+        asyncio.run(run())
+
+    summaries = [
+        r.getMessage() for r in caplog.records if "control.cycle_summary" in r.getMessage()
+    ]
+    assert summaries, "cycle_summary was not logged"
+    assert "fail_safe=0" in summaries[-1]
+    warns = [
+        r for r in caplog.records
+        if r.levelno == logging.WARNING and "non-critical sqlite write skipped" in r.getMessage()
+    ]
+    assert len(warns) == 1
+    assert guard.storage_write_retries() >= before + 1
+    assert controller.driver.current_mode() is PhysicalMode.AUTO
+    assert LOOP_COUNTERS.outcomes["fail_safe"] == 0
+
+
+def test_unsafe_sensors_and_bad_prices_still_count_as_fail_safe():
+    """A storage-lock decoupling must not hide a real sensor or price failure (F-45)."""
+    from ems.control.loop_counters import LOOP_COUNTERS
+    from ems.price_quality import PriceHorizonStatus
+
+    controller = _controlling_controller()
+    svc, _ctx = _service(controller)
+    LOOP_COUNTERS.reset()
+    svc._data_quality = lambda now: "unsafe"
+    svc._observe_cycle_counters(NOW, [], latency_ms=1.0)
+    assert LOOP_COUNTERS.outcomes["fail_safe"] == 1
+
+    LOOP_COUNTERS.reset()
+    svc._data_quality = lambda now: "fresh"
+    svc._observe_cycle_counters(
+        NOW, [{"detail": {"outcome": "idempotent", "reason":
+                          "holding self-consumption (fail-safe: stale grid); "
+                          "sqlite write lock on audit"}}], latency_ms=1.0,
+    )
+    assert LOOP_COUNTERS.outcomes["fail_safe"] == 1
+
+    LOOP_COUNTERS.reset()
+    svc._data_quality = lambda now: "fresh"
+    svc._price_horizon_status = PriceHorizonStatus(False, "incomplete", 0, None)
+    svc._observe_cycle_counters(
+        NOW, [{"detail": {"outcome": "idempotent", "reason": "sqlite write lock on gas"}}],
+        latency_ms=1.0,
+    )
+    assert LOOP_COUNTERS.outcomes["fail_safe"] == 1
+
+    LOOP_COUNTERS.reset()
+    svc._price_horizon_status = None
+    svc._observe_cycle_counters(
+        NOW, [{"detail": {"outcome": "idempotent",
+                          "reason": "holding self-consumption (fail-safe: stale grid)"}}],
+        latency_ms=1.0,
+    )
+    assert LOOP_COUNTERS.outcomes["fail_safe"] == 1
+
+
+def test_control_state_lock_alerts_without_an_extra_battery_write(tmp_path, monkeypatch):
+    """control_state give-up: 3 attempts, audit F-45, alert, flag unchanged, no extra write."""
+    import sqlite3
+
+    import ems.storage.sqlite_guard as guard
+    from ems.storage.control_state import ControlStateStore
+
+    monkeypatch.setattr(guard, "BACKOFF_S", (0.0, 0.0))
+    guard.reset_lock_stats()
+    store = ControlStateStore(str(tmp_path / "ems.sqlite"))
+    store.init()
+    attempts = {"n": 0}
+
+    def _boom() -> None:
+        attempts["n"] += 1
+        raise sqlite3.OperationalError("database is locked")
+
+    monkeypatch.setattr(store, "_conn", _boom)
+    writes: list[PhysicalMode] = []
+    driver = MockBatteryDriver()
+    original = driver.apply
+
+    def _spy(mode, **kwargs):
+        writes.append(mode)
+        return original(mode, **kwargs)
+
+    driver.apply = _spy
+    controller = _controlling_controller(driver)
+    controller.last_command_unconfirmed = True
+    controller._on_state_change = store.save
+    store.save(controller.state_snapshot())
+    assert attempts["n"] == 3
+    assert writes == []
+    assert controller.last_command_unconfirmed is True
+
+    class _Audit:
+        def __init__(self) -> None:
+            self.rows: list[tuple] = []
+
+        async def append(self, ts, category, summary, detail):
+            self.rows.append((category, summary, detail))
+
+    class _Notify:
+        def __init__(self) -> None:
+            self.keys: list[str] = []
+
+        async def send(self, key, title, body, **kwargs):
+            self.keys.append(key)
+            return 1
+
+    audit = _Audit()
+    notify = _Notify()
+    svc, _ctx = _service(controller, audit_store=audit)
+    svc._storage_notifier = notify
+    asyncio.run(svc._report_critical_storage_failures(NOW))
+    assert writes == []
+    assert len(audit.rows) == 1
+    assert audit.rows[0][0] == "control_state_write_failed"
+    assert audit.rows[0][2]["audit_id"] == "F-45"
+    assert notify.keys == ["control_state_locked"]
+    assert controller.last_command_unconfirmed is True
+
+    # A real command still happens once; the failed persist does not add a second write.
+    guard.reset_lock_stats()
+    attempts["n"] = 0
+    controller.decide(BatteryIntent.GRID_CHARGE_TO_TARGET, NOW, target_soc=80)
+    assert writes == [PhysicalMode.CHARGE]
+    assert attempts["n"] == 3
+    asyncio.run(svc._report_critical_storage_failures(NOW))
+    assert writes == [PhysicalMode.CHARGE]
+
+
 class _EnergyTrackingDriver(MockBatteryDriver):
     """Mock driver that accrues grid energy while in CHARGE (for commitment replay tests)."""
 

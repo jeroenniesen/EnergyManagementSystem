@@ -518,6 +518,8 @@ class ControlService:
         # create_app aliases exist). When set, control-loop battery_decision audit rows carry the
         # same object as /api/battery-plan `reason`.
         self._decision_reason: Callable[[datetime], dict] | None = None
+        # Optional notifier for a critical control_state lock give-up (F-45). Wired by create_app.
+        self._storage_notifier: Any | None = None
 
     # --- coalesced live reads / config builders / strategy resolution (B-46 stage 2) -------------
     # Moved verbatim from api.py's create_app closures. Kept here because their primary caller is
@@ -1384,7 +1386,16 @@ class ControlService:
     def _observe_cycle_counters(
         self, now: datetime, records: list[dict], *, latency_ms: float,
     ) -> None:
-        """Bump soak counters + one structured log line (diagnostics UI / logs only — #179)."""
+        """Bump soak counters + one structured log line (diagnostics UI / logs only — #179).
+
+        F-45: several stores share one WAL writer (history samples / plan / gas / carbon /
+        finance, audit, settings, cache, control_state, plus checkpoint/VACUUM). A lock error
+        used to be counted here whenever a decision reason said "holding self-consumption" or
+        "fail-safe", which marked ``fail_safe`` without a battery fault. Storage-lock text
+        does not count. Unsafe data quality, a bad price horizon, startup AUTO, overrun and
+        an explicit ``fail_safe`` outcome still do — a real sensor/price/battery failure
+        stays on AUTO.
+        """
         outcome: str | None = getattr(self, "_tick_outcome", None)
         fail_safe = False
         for rec in reversed(records):
@@ -1396,7 +1407,7 @@ class ControlService:
             if event in ("startup_safe_auto", "control.overrun") or o == "fail_safe":
                 fail_safe = True
             reason = str(detail.get("reason") or "")
-            if "holding self-consumption" in reason or "fail-safe" in reason.lower():
+            if _reason_counts_as_fail_safe(reason):
                 fail_safe = True
         # Data-quality unsafe / incomplete prices also count as fail-safe soak signal.
         dq = self._data_quality(now)
@@ -2353,8 +2364,17 @@ class ControlService:
                             recovery_suppressed = recovery_token is None
                             _log.warning("control.overrun: cycle exceeded %.1fs budget (timeout)",
                                          PERF_BUDGETS["control.cycle"] / 1000.0)
-                        except Exception:
-                            _log.exception("control tick failed; retry next cycle (fail-safe)")
+                        except Exception as exc:
+                            from ems.storage.sqlite_guard import is_sqlite_lock_error
+                            if is_sqlite_lock_error(exc):
+                                # A storage lock is not a battery fault and must not be labelled
+                                # fail-safe (F-45). The next cycle retries the write.
+                                _log.warning(
+                                    "control tick hit a sqlite writer lock; "
+                                    "battery command unchanged")
+                            else:
+                                _log.exception(
+                                    "control tick failed; retry next cycle (fail-safe)")
                             return  # the worker's `finally` already released the slot
                 except Exception:
                     # Defensive: atimed itself should never raise, but a registry push failure must
@@ -2385,6 +2405,48 @@ class ControlService:
             # completion (never here); the `spawned` guard prevents a double-release.
             if cycle_token is not None and not spawned:
                 self._release_cycle(cycle_token)
+            try:
+                await self._report_critical_storage_failures(self._clock.now_utc())
+            except Exception:
+                _log.warning("control_state lock report failed", exc_info=True)
+
+    async def _report_critical_storage_failures(self, now: datetime) -> None:
+        """Alert + audit after control_state exhausts its retries. No battery write (F-45)."""
+        from ems.storage.sqlite_guard import drain_critical_failures
+
+        failures = drain_critical_failures()
+        if not failures:
+            return
+        for failure in failures:
+            if self._audit_store is not None:
+                try:
+                    await self._audit_store.append(
+                        now.isoformat(),
+                        "control_state_write_failed",
+                        "control_state write failed after retries; no extra battery command",
+                        {
+                            "audit_id": "F-45",
+                            "store": failure.store,
+                            "writer": failure.writer,
+                            "attempts": failure.attempts,
+                            "duration_ms": round(failure.duration_ms, 1),
+                        },
+                    )
+                except Exception:
+                    _log.warning("control_state lock audit failed", exc_info=True)
+            notifier = self._storage_notifier
+            if notifier is not None:
+                try:
+                    await notifier.send(
+                        "control_state_locked",
+                        "Could not save battery control state",
+                        "The database was busy while saving control state. "
+                        "EMS did not send an extra battery command. "
+                        "It will try again on the next cycle.",
+                        dedupe_key="control_state_locked",
+                    )
+                except Exception:
+                    _log.warning("control_state lock alert failed", exc_info=True)
 
     async def _handle_overrun(
         self, now: datetime, timed_out: bool, sample, *,
@@ -2481,6 +2543,22 @@ class ControlService:
             # timeout); the `spawned` guard prevents a double-release of a still-live writer's slot.
             if not spawned:
                 self.release_writer(token)
+
+
+def _reason_counts_as_fail_safe(reason: str) -> bool:
+    """True when a decision reason is a real fail-safe, not a storage-lock hiccup (F-45)."""
+    low = reason.lower()
+    if "fail-safe" in low or "holding self-consumption" in low:
+        return True
+    if (
+        "database is locked" in low
+        or "database is busy" in low
+        or "sqlite write lock" in low
+        or "sqlite lock event" in low
+        or "non-critical sqlite write" in low
+    ):
+        return False
+    return False
 
 
 def _dominant_phase() -> str | None:

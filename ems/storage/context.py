@@ -99,3 +99,12 @@ class StorageContext:
         self.close_errors = tuple(errors)
         if all(store is None or name in self._closed_stores for name, store in stores):
             self._closed = True
+
+    def lock_status(self) -> dict:
+        """Per-store SQLite lock incidents for ``/api/diagnostics`` (F-45 / #311)."""
+        from ems.storage.sqlite_guard import diagnostics_locks, storage_write_retries
+
+        return {
+            "stores": diagnostics_locks(),
+            "storage_write_retries": storage_write_retries(),
+        }

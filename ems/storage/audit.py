@@ -12,6 +12,7 @@ import aiosqlite
 
 from ems.perf import atimed
 from ems.storage.history import _connection_is_dead, _log, self_healing
+from ems.storage.sqlite_guard import hold_db_writer, run_async_write, short_busy_connection
 
 _BUSY_TIMEOUT_MS = 5000  # see ems/storage/history.py for the WAL/synchronous/timeout rationale
 
@@ -85,7 +86,17 @@ class AuditStore:
     @asynccontextmanager
     async def _write_conn(self):
         async with self._write_lock:
-            yield await self._connection()
+            async with hold_db_writer(self.db_path):
+                db = await self._connection()
+                async with short_busy_connection(db, default_ms=_BUSY_TIMEOUT_MS):
+                    try:
+                        yield db
+                    except Exception:
+                        try:
+                            await db.rollback()
+                        except Exception:
+                            _log.debug("audit rollback after write error failed", exc_info=True)
+                        raise
 
     async def close(self) -> None:
         async with self._connect_lock:
@@ -121,13 +132,19 @@ class AuditStore:
     async def append(
         self, ts: str, category: str, summary: str, detail: dict | None = None
     ) -> None:
-        async with atimed("store.audit.append"):
-            async with self._write_conn() as db:
-                await db.execute(
-                    "INSERT INTO audit_log (ts, category, summary, detail) VALUES (?, ?, ?, ?)",
-                    (ts, category, summary, json.dumps(detail or {})),
-                )
-                await db.commit()
+        """Append one audit row. Non-critical (F-45): a lock that survives the retry budget
+        is skipped so a history/audit hiccup cannot fail the control cycle."""
+        async def _body() -> None:
+            async with atimed("store.audit.append"):
+                async with self._write_conn() as db:
+                    await db.execute(
+                        "INSERT INTO audit_log (ts, category, summary, detail) "
+                        "VALUES (?, ?, ?, ?)",
+                        (ts, category, summary, json.dumps(detail or {})),
+                    )
+                    await db.commit()
+
+        await run_async_write(self.db_path, "audit", "audit", _body)
 
     async def recent(self, limit: int = 100, category: str | None = None) -> list[dict]:
         """Newest-first audit entries, optionally filtered by category. `detail` is decoded to a
