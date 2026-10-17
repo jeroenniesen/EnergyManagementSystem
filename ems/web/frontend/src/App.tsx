@@ -719,11 +719,17 @@ export function App() {
   // extra fetch. Calm stays calm: the reason sub-line only renders when confidence isn't high.
   const confidence = batteryPlan?.confidence ?? null;
   // B-96: one human sentence only — planner jargon stays under Waarom? / DecisionReasonDetails.
+  // F-13 (#313): a manual override always wins the hero verdict/tone — the fail-safe copy would
+  // otherwise mask "You're in manual control" when both are true at once.
+  const priceFallbackActive =
+    alertsData?.data_quality === "price_fallback" && !decision?.override_active;
   const synthesis = buildHeroSynthesis({
     currentReason: batteryPlan?.current_reason,
     onTrackMessage: story?.on_track?.message,
     scoreSummary: summary?.text,
+    priceFallback: priceFallbackActive,
   });
+  const heroTone = priceFallbackActive ? "watching" : (home?.tone ?? "watching");
   // B-98 fix: confidence reason under the chip is Dutch-mapped; hide unmapped EN API copy.
   const confidenceReasonNl = confidence?.reasons?.[0]
     ? homeConfidenceReasonNl(confidence.reasons[0])
@@ -764,9 +770,11 @@ export function App() {
           text: HOME_ACT.unsafe,
           calm: false,
         }
-      : topActionable
-        ? { text: topActionable.action || topActionable.message, calm: false }
-        : { text: HOME_ACT.calm, calm: true };
+      : priceFallbackActive
+        ? { text: HOME_ACT.priceFallback, calm: false }
+        : topActionable
+          ? { text: topActionable.action || topActionable.message, calm: false }
+          : { text: HOME_ACT.calm, calm: true };
 
   // B-57: on demo/mock data, a persistent friendly nudge into real onboarding (Settings opens on
   // the Connection section by default). Dismissible for the session; back on next visit.
@@ -981,10 +989,10 @@ export function App() {
           Hidden while unreachable so a stale "Nothing needed" can't sit under the outage banner. */}
       {view === "dashboard" && !error && home && (
         <section
-          className={`hero home-${home.tone}`}
+          className={`hero home-${heroTone}`}
           data-testid="home-state"
           data-density-kind="hero"
-          data-tone={home.tone}
+          data-tone={heroTone}
         >
           <div className="hero-verdict-row">
             <p className="hero-verdict" data-testid="hero-verdict">
@@ -1062,6 +1070,7 @@ export function App() {
           freshness={freshness}
           deviceHealth={deviceHealth}
           isDemo={status?.dev_mode !== "live" || !!home?.simulated}
+          dataQuality={alertsData?.data_quality}
           alertsForSource={(key) => {
             const hit = pickDeviceHealthAlert(key, alertsData?.alerts);
             if (!hit) return null;
@@ -1116,6 +1125,7 @@ export function App() {
             story={story?.window === "next" ? story : null}
             provenance={batteryPlan?.provenance}
             recentReview={story?.recent_review?.message ?? null}
+            dataQuality={alertsData?.data_quality}
           />
           {/* B-33 / #85: waarom voor batterij-acties + pauze/reserve (slice 1–2) — één tik, niet
               standaard open. Tekst uit battery-plan `reason` (#84), dry-run zegt "zou". */}

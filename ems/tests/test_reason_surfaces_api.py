@@ -20,7 +20,11 @@ from ems.control.service import ControlContext, ControlService
 from ems.domain import BatteryIntent, PhysicalMode
 from ems.freshness import FreshnessTracker
 from ems.lifecycle import Lifecycle
-from ems.planner.reason import GATE_DICT_KEYS, REASON_DICT_KEYS
+from ems.planner.reason import (
+    GATE_DICT_KEYS,
+    PRICE_FALLBACK_SAFETY_MESSAGE,
+    REASON_DICT_KEYS,
+)
 from ems.planner.validator import PlanValidation
 from ems.sense import SIGNALS
 from ems.settings import effective_settings
@@ -137,6 +141,35 @@ def test_unknown_soc_reason_matches_battery_plan_empty(tmp_path):
     _assert_same_reason(diag["decision_reason"], plan["reason"])
     assert plan["reason"]["safety_constraint"]["action"] == "paused"
     assert "No current plan" in plan["reason"]["summary"]
+
+
+def _all_fresh_tracker() -> FreshnessTracker:
+    fr = FreshnessTracker()
+    fr.register(*SIGNALS)
+    now = datetime.now(UTC)
+    for s in SIGNALS:
+        fr.mark(s, now)
+    return fr
+
+
+def test_decision_reason_price_fallback_when_operational_mock_prices(tmp_path):
+    """F-13 (#313): price_fallback surfaces Dutch fail-safe copy on /api/decision."""
+    db = str(tmp_path / "ems.sqlite")
+    app = create_app(
+        MockSource(), dry_run=True, dev_mode="mock",
+        price_source=MockPriceSource(AMS),
+        solar_forecast=MockSolarForecastSource(AMS),
+        freshness=_all_fresh_tracker(),
+        settings_store=SettingsStore(db),
+    )
+    with TestClient(app) as c:
+        c.post("/api/settings", json={"control.operational": True})
+        assert c.get("/api/alerts").json()["data_quality"] == "price_fallback"
+        body = c.get("/api/decision").json()
+    reason = body["decision_reason"]
+    _assert_reason_shape(reason)
+    assert reason["safety_constraint"]["action"] == "paused"
+    assert reason["safety_constraint"]["message"] == PRICE_FALLBACK_SAFETY_MESSAGE
 
 
 def test_replay_decision_embeds_structured_reason(tmp_path):
