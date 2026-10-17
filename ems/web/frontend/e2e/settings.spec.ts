@@ -426,6 +426,113 @@ test.describe("EMS settings", () => {
 
   // B-60: advisor suggestions gain a one-tap "Apply" — still one confirm (the existing sticky
   // save bar), still reversible (Discard), still audit-logged server-side like any settings save.
+  test.describe("night reserve learned vs configured (#335)", () => {
+    const BATTERY_SCHEMA = [
+      {
+        key: "battery.min_reserve_soc",
+        label: "Min reserve",
+        type: "number",
+        default: 10,
+        group: "battery",
+        help: "",
+        min: 5,
+        max: 50,
+        options: null,
+        step: 1,
+        unit: "%",
+        advanced: false,
+        applies: "live",
+      },
+      {
+        key: "battery.night_reserve_kwh",
+        label: "Night reserve",
+        type: "number",
+        default: 2,
+        group: "battery",
+        help: "",
+        min: 0,
+        max: 20,
+        options: null,
+        step: 0.5,
+        unit: "kWh",
+        advanced: false,
+        applies: "live",
+      },
+      {
+        key: "battery.overnight_load_kwh",
+        label: "Overnight load",
+        type: "number",
+        default: 6,
+        group: "battery",
+        help: "",
+        min: 0,
+        max: 50,
+        options: null,
+        step: 0.5,
+        unit: "kWh",
+        advanced: false,
+        applies: "live",
+      },
+    ];
+
+    test("battery settings show learned kWh, configured value and comfort-hours example", async ({
+      page,
+    }) => {
+      await page.route("**/api/settings", async (route) => {
+        if (route.request().method() === "GET") {
+          await route.fulfill({
+            status: 200,
+            contentType: "application/json",
+            body: JSON.stringify({
+              schema: BATTERY_SCHEMA,
+              values: {
+                "battery.min_reserve_soc": 10,
+                "battery.night_reserve_kwh": 2,
+                "battery.overnight_load_kwh": 6,
+              },
+            }),
+          });
+        } else {
+          await route.fulfill({ status: 200, contentType: "application/json", body: "{}" });
+        }
+      });
+      await page.route("**/api/advisor/reserve", async (route) => {
+        await route.fulfill({
+          status: 200,
+          contentType: "application/json",
+          body: JSON.stringify({
+            advice: {
+              recommended_soc_pct: 55,
+              min_reserve_soc: 10,
+              current_night_reserve_kwh: 2,
+              current_target_soc_pct: 50,
+              night_demand_kwh: 5.5,
+              label: null,
+              reason: "mock",
+              automatic: false,
+            },
+            automatic: false,
+          }),
+        });
+      });
+      await page.goto("/");
+      await page.getByTestId("nav-manage").click();
+      await page.getByTestId("group-battery").click();
+
+      const hints = page.getByTestId("night-reserve-hints");
+      await expect(hints).toBeVisible();
+      await expect(page.getByTestId("night-reserve-learned")).toContainText(
+        "Geleerd vannacht ≈ 5.5 kWh",
+      );
+      await expect(page.getByTestId("night-reserve-learned")).toContainText("Jouw instelling: 2.0 kWh");
+      await expect(page.getByTestId("night-reserve-example")).toContainText(
+        "Met 2.0 kWh nacht-reserve houdt de batterij ± 4 uur het huis aan.",
+      );
+      await expect(page.getByTestId("min-reserve-vs-night-hint")).toContainText("noodrem");
+      await expect(hints).not.toContainText("SoC");
+    });
+  });
+
   test.describe("advisor 'Apply' (B-60)", () => {
     const SCHEMA_SOLAR = [
       {

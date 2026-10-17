@@ -664,3 +664,60 @@ export const PLAN_ACTION_META: Record<
     phrase: "Staat stil",
   },
 };
+
+/** Night-reserve Settings + PlanStory copy (#335, audit F-27 / F-34). Dutch; no "SoC" in UI. */
+export const HOME_NIGHT_RESERVE = {
+  learnedTonight: (kwh: number) => `Geleerd vannacht ≈ ${kwh.toFixed(1)} kWh`,
+  learnedUnavailable: "Geleerd vannacht: nog onvoldoende meetdata.",
+  configuredAside: (kwh: number) => `Jouw instelling: ${kwh.toFixed(1)} kWh`,
+  exampleHours: (reserveKwh: number, hours: number) =>
+    `Met ${reserveKwh.toFixed(1)} kWh nacht-reserve houdt de batterij ± ${hours} uur het huis aan.`,
+  minReserveExplainer:
+    "Minimumreserve is je noodrem — EMS laat de batterij hier niet onder zakken. "
+    + "Nacht-reserve is extra comfort bovenop het verwachte nachtverbruik.",
+  overrideBadge: "Instelling overschrijft geleerd",
+  planReason: (configured: number, learned: number) =>
+    `Je nacht-reserve staat op ${configured.toFixed(1)} kWh; EMS verwacht vannacht ongeveer `
+    + `${learned.toFixed(1)} kWh nodig te hebben.`,
+} as const;
+
+/** Typical sunset→sunrise span for the comfort-hours example (matches overnight_load semantics). */
+export const NIGHT_RESERVE_COMFORT_HOURS = 12;
+
+export function nightReserveComfortHours(
+  nightReserveKwh: number,
+  overnightLoadKwh: number,
+  nightHours = NIGHT_RESERVE_COMFORT_HOURS,
+): number | null {
+  if (
+    !Number.isFinite(nightReserveKwh) ||
+    !Number.isFinite(overnightLoadKwh) ||
+    overnightLoadKwh <= 0 ||
+    nightHours <= 0
+  ) {
+    return null;
+  }
+  const hourly = overnightLoadKwh / nightHours;
+  if (hourly <= 0) return null;
+  return Math.round(nightReserveKwh / hourly);
+}
+
+/** True when configured night-reserve kWh differs from learned overnight need by more than `threshold`. */
+export function nightReserveOverridesLearned(
+  configuredKwh: number,
+  learnedKwh: number | null | undefined,
+  threshold = 0.25,
+): boolean {
+  if (learnedKwh == null || !Number.isFinite(learnedKwh) || !Number.isFinite(configuredKwh)) {
+    return false;
+  }
+  const base = Math.max(Math.abs(learnedKwh), Math.abs(configuredKwh), 1e-6);
+  return Math.abs(configuredKwh - learnedKwh) / base > threshold;
+}
+
+export function learnedNightKwhFromAdvice(
+  nightDemandKwh: number | null | undefined,
+): number | null {
+  if (nightDemandKwh == null || !Number.isFinite(nightDemandKwh)) return null;
+  return nightDemandKwh;
+}

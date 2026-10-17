@@ -1126,6 +1126,8 @@ export function App() {
             provenance={batteryPlan?.provenance}
             recentReview={story?.recent_review?.message ?? null}
             dataQuality={alertsData?.data_quality}
+            nightReserveConfiguredKwh={reserveAdvice?.current_night_reserve_kwh ?? null}
+            nightReserveLearnedKwh={reserveAdvice?.night_demand_kwh ?? null}
           />
           {/* B-33 / #85: waarom voor batterij-acties + pauze/reserve (slice 1–2) — één tik, niet
               standaard open. Tekst uit battery-plan `reason` (#84), dry-run zegt "zou". */}

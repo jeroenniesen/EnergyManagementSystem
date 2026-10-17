@@ -6,7 +6,12 @@ import { AutomationBoundsCard } from "./AutomationBounds";
 import { apiFetch, clearToken } from "./auth";
 import { type CarModel, type CarsResp } from "./ev";
 import { HaWizard } from "./HaWizard.tsx";
-import { humanize } from "./labels";
+import {
+  HOME_NIGHT_RESERVE,
+  learnedNightKwhFromAdvice,
+  nightReserveComfortHours,
+  humanize,
+} from "./labels";
 import { SectionIcon } from "./settingsIcons";
 
 /** Display labels for setting enum tokens that humanize() alone would mangle. */
@@ -77,6 +82,12 @@ type SolarConfidenceAdvice = {
   stable?: boolean;
   spread_pp?: number | null;
   window_days?: number;
+};
+
+/** B-67 / #74 + #335 — read-only night-reserve advice next to configured values (never writes). */
+type ReserveAdvicePayload = {
+  current_night_reserve_kwh: number;
+  night_demand_kwh: number | null;
 };
 
 // I3 "Apply & restart": server-computed capability, surfaced on GET /api/auth/me (I2) alongside
@@ -390,6 +401,33 @@ function Field({
 // uses — it makes the section dirty and raises the existing sticky save bar, so Save is the one
 // confirm and Discard cancels it, exactly like any other settings edit (audit-logged server-side,
 // reversible, never automatic).
+/** #335 — learned vs configured night reserve + comfort-hours example (advice-only). */
+export function NightReserveSettingsHint({
+  nightReserveKwh,
+  overnightLoadKwh,
+  learnedKwh,
+}: {
+  nightReserveKwh: number;
+  overnightLoadKwh: number;
+  learnedKwh: number | null;
+}) {
+  const hours = nightReserveComfortHours(nightReserveKwh, overnightLoadKwh);
+  return (
+    <div className="night-reserve-hints" data-testid="night-reserve-hints">
+      <p className="advisor-hint" data-testid="night-reserve-learned">
+        {learnedKwh != null
+          ? `${HOME_NIGHT_RESERVE.learnedTonight(learnedKwh)} · ${HOME_NIGHT_RESERVE.configuredAside(nightReserveKwh)}`
+          : HOME_NIGHT_RESERVE.learnedUnavailable}
+      </p>
+      {hours != null && (
+        <p className="advisor-hint" data-testid="night-reserve-example">
+          {HOME_NIGHT_RESERVE.exampleHours(nightReserveKwh, hours)}
+        </p>
+      )}
+    </div>
+  );
+}
+
 function SolarConfidenceHint({
   advice,
   currentPct,
@@ -489,6 +527,7 @@ export function Settings({
   const [auth, setAuth] = useState<{ required: boolean; authenticated: boolean } | null>(null);
   const [impact, setImpact] = useState<Impact | null>(null);
   const [solarAdvice, setSolarAdvice] = useState<SolarConfidenceAdvice | null>(null);
+  const [reserveAdvice, setReserveAdvice] = useState<ReserveAdvicePayload | null>(null);
   // True right after the solar-confidence hint's "Apply" is tapped, until: the field is edited
   // manually again, the pending edit is discarded, or it's saved (B-60) — see SolarConfidenceHint.
   const [solarAdviceApplied, setSolarAdviceApplied] = useState(false);
@@ -673,6 +712,31 @@ export function Settings({
         if (alive) setSolarAdvice(b.advice ?? null);
       } catch {
         /* best-effort — leave the hint hidden */
+      }
+    })();
+    return () => {
+      alive = false;
+    };
+  }, []);
+
+  useEffect(() => {
+    let alive = true;
+    (async () => {
+      try {
+        const r = await apiFetch("/api/advisor/reserve");
+        if (!r.ok) return;
+        const b: { advice?: ReserveAdvicePayload | null } = await r.json();
+        const a = b.advice;
+        if (
+          !alive ||
+          !a ||
+          typeof a.current_night_reserve_kwh !== "number"
+        ) {
+          return;
+        }
+        setReserveAdvice(a);
+      } catch {
+        /* best-effort — hints stay hidden */
       }
     })();
     return () => {
@@ -933,6 +997,22 @@ export function Settings({
             Not confirmed yet — EMS is using the conservative 1×25 A (5750 W) default until you
             choose your real main fuse. Three-phase homes are usually 3×25 or 3×35.
           </p>
+        )}
+        {f.key === "battery.min_reserve_soc" && (
+          <p className="advisor-hint" data-testid="min-reserve-vs-night-hint">
+            {HOME_NIGHT_RESERVE.minReserveExplainer}
+          </p>
+        )}
+        {f.key === "battery.night_reserve_kwh" && reserveAdvice && (
+          <NightReserveSettingsHint
+            nightReserveKwh={Number(edited[f.key] ?? f.default)}
+            overnightLoadKwh={Number(
+              edited["battery.overnight_load_kwh"] ??
+                schema?.find((x) => x.key === "battery.overnight_load_kwh")?.default ??
+                6,
+            )}
+            learnedKwh={learnedNightKwhFromAdvice(reserveAdvice.night_demand_kwh)}
+          />
         )}
         {f.key === "planner.solar_confidence" && solarAdvice && (
           <SolarConfidenceHint
