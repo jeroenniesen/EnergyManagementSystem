@@ -133,6 +133,16 @@ describe("buildHeroSynthesis", () => {
     ).toBe("Batterij volgt het huidige plan.");
   });
 
+  test("F-13: price_fallback forces explicit fail-safe copy in the hero", () => {
+    expect(
+      buildHeroSynthesis({
+        priceFallback: true,
+        currentReason: "Battery is following the current plan.",
+        onTrackMessage: "On track for tonight's target.",
+      }),
+    ).toBe("Geen live Tibber — inkopen uit (fail-safe)");
+  });
+
   test("Behind the N% target maps to Dutch behind line", () => {
     expect(
       buildHeroSynthesis({

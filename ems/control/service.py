@@ -49,6 +49,7 @@ from ems.control.command_fence import (
 from ems.control.decision import ControlDecisionEngine
 from ems.control.execution import CommandExecutionBoundary
 from ems.control.loop_counters import LOOP_COUNTERS
+from ems.control.mode_controller import ModeController
 from ems.control.override import NONE as OVERRIDE_NONE
 from ems.control.override import Override
 from ems.control.reconciliation import CommandReconciliation
@@ -92,6 +93,16 @@ _SAMPLE_MAX_AGE_SECONDS = 600.0
 # lifespan to SEED the box at boot, so it's exported here as the single source of truth.
 HYSTERESIS_KEY = "strategy:hysteresis"
 HYSTERESIS_TTL_SECONDS = 90 * 24 * 3600.0  # long enough to bridge shoulder-season gaps
+
+
+def apply_control_settings(controller: ModeController, settings: dict[str, Any]) -> None:
+    """Push live `control.*` limits onto the ModeController (preserves switch counters)."""
+    controller.max_switches_per_day = int(settings["control.max_switches_per_day"])
+    controller.max_commitment_switches_per_day = int(
+        settings.get("control.max_commitment_switches_per_day", 4))
+    controller.min_dwell = timedelta(seconds=float(settings["control.min_dwell_seconds"]))
+    controller.allow_export_discharge = bool(
+        settings.get("control.allow_export_discharge", False))
 
 
 # --- Cluster per-tower mode mapping (moved verbatim from api.py; re-exported there) --------------
@@ -1400,7 +1411,8 @@ class ControlService:
                 fail_safe = True
         # Data-quality unsafe / incomplete prices also count as fail-safe soak signal.
         dq = self._data_quality(now)
-        stale = dq != "fresh"
+        # F-46 (#313): data_quality is complete|degraded|price_fallback|unsafe — never "fresh".
+        stale = dq in ("degraded", "unsafe")
         if dq == "unsafe":
             fail_safe = True
         if self._price_horizon_status is not None and not self._price_horizon_status.ok:
@@ -1434,6 +1446,7 @@ class ControlService:
         """Inner tick body — wrapper records soak counters (#179)."""
         if self._controller is None:
             return []
+        apply_control_settings(self._controller, self._settings)
         lc = self._controller.lifecycle
         if lc.state is OwnershipState.INACTIVE:
             lc.start(now)

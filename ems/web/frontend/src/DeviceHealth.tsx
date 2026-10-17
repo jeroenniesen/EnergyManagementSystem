@@ -12,6 +12,7 @@ type Props = {
   freshness: Record<string, string> | null;
   deviceHealth: DeviceHealth | null;
   isDemo: boolean;
+  dataQuality?: string | null;
   /** Warning/critical alerts for the selected source — the three #73 answers. */
   alertsForSource?: (key: string) => {
     message?: string;
@@ -103,9 +104,10 @@ export function DeviceHealthStrip({
   freshness,
   deviceHealth,
   isDemo,
+  dataQuality = null,
   alertsForSource,
 }: Props) {
-  const summary = summarizeDeviceHealth(freshness, deviceHealth, isDemo);
+  const summary = summarizeDeviceHealth(freshness, deviceHealth, isDemo, dataQuality);
   const quiet = isDeviceHealthQuiet(summary);
 
   const extras = (

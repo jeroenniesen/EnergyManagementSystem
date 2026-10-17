@@ -1380,6 +1380,138 @@ test.describe("EMS dashboard", () => {
     await expect(reason).toContainText("Nog je dak");
   });
 
+  test("#313 F-13: price_fallback Home shows amber fail-safe copy", async ({ page }) => {
+    const pfMsg = "Geen live Tibber — inkopen uit (fail-safe)";
+    await mockRoute(page, "**/api/dashboard", async (route) => {
+      const response = await route.fetch();
+      const dashboard = await response.json();
+      await route.fulfill({
+        response,
+        json: {
+          ...dashboard,
+          alerts: { data_quality: "price_fallback", alerts: [] },
+          freshness: {
+            battery: "fresh",
+            grid: "fresh",
+            prices: "fresh",
+            forecast: "fresh",
+          },
+        },
+      });
+    });
+    await routePlanStory(page);
+    await page.route("**/api/battery-plan", (route) =>
+      route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify(
+          batteryPlanFixture(
+            {
+              level: "medium",
+              reasons: ["Live prices are unavailable, so the plan is running on a fallback price curve."],
+            },
+            undefined,
+            {
+              current_action: "paused",
+              current_reason: pfMsg,
+              reason: batteryPlanReasonFixture({
+                summary: pfMsg,
+                safety_constraint: {
+                  code: "no_live_prices",
+                  message: pfMsg,
+                  action: "paused",
+                },
+              }),
+            },
+          ),
+        ),
+      }),
+    );
+    await page.route("**/api/decision", (route) =>
+      route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          intent: "allow_self_consumption",
+          desired_mode: "auto",
+          applied: false,
+          outcome: "idempotent",
+          reason: "holding self-consumption",
+          home_state: {
+            headline: "All good — the battery is running the house",
+            tone: "good",
+            simulated: true,
+          },
+          decision_reason: batteryPlanReasonFixture({
+            summary: pfMsg,
+            safety_constraint: { code: "no_live_prices", message: pfMsg, action: "paused" },
+          }),
+        }),
+      }),
+    );
+    await page.goto("/");
+    const hero = page.getByTestId("home-state");
+    await expect(hero).toHaveAttribute("data-tone", "watching");
+    await expect(page.getByTestId("hero-synthesis")).toHaveText(pfMsg);
+    await expect(page.getByTestId("hero-act")).toHaveText(pfMsg);
+    await expect(page.getByText("Alles actueel")).toHaveCount(0);
+    await expect(page.getByTestId("plan-story-price-fallback")).toHaveText(pfMsg);
+  });
+
+  test("#313 F-13: a manual override wins the hero tone/synthesis over price_fallback", async ({ page }) => {
+    const pfMsg = "Geen live Tibber — inkopen uit (fail-safe)";
+    await mockRoute(page, "**/api/dashboard", async (route) => {
+      const response = await route.fetch();
+      const dashboard = await response.json();
+      await route.fulfill({
+        response,
+        json: {
+          ...dashboard,
+          alerts: { data_quality: "price_fallback", alerts: [] },
+          freshness: {
+            battery: "fresh",
+            grid: "fresh",
+            prices: "fresh",
+            forecast: "fresh",
+          },
+        },
+      });
+    });
+    await routePlanStory(page);
+    await page.route("**/api/battery-plan", (route) =>
+      route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify(batteryPlanFixture({ level: "medium", reasons: [] })),
+      }),
+    );
+    await page.route("**/api/decision", (route) =>
+      route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          intent: "hold_reserve",
+          desired_mode: "charge",
+          applied: true,
+          outcome: "applied",
+          reason: "manual override active",
+          override_active: true,
+          home_state: {
+            headline: "You're in manual control",
+            tone: "controlling",
+            simulated: true,
+          },
+          decision_reason: batteryPlanReasonFixture({ summary: "manual override active" }),
+        }),
+      }),
+    );
+    await page.goto("/");
+    const hero = page.getByTestId("home-state");
+    await expect(hero).toHaveAttribute("data-tone", "controlling");
+    await expect(page.getByTestId("hero-act")).toHaveText("Handmatig sturen — stopt vanzelf, of wis hieronder.");
+    await expect(page.getByTestId("hero-synthesis")).not.toHaveText(pfMsg);
+  });
+
   test("B-68: a low-confidence plan shows a red chip + the safety-fallback reason", async ({ page }) => {
     await page.route("**/api/battery-plan", (route) =>
       route.fulfill({

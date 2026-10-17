@@ -222,6 +222,18 @@ def test_power_exceeds_unsafe_pauses_with_finding_code():
     assert r["safety_constraint"]["code"] == "power_exceeds_capability"
 
 
+def test_price_fallback_reason_surfaces_dutch_fail_safe_message():
+    """F-13 (#313): badge-only price_fallback still pauses price-based steps in the UI."""
+    from ems.planner.reason import PRICE_FALLBACK_SAFETY_CODE, PRICE_FALLBACK_SAFETY_MESSAGE
+
+    plan = _charge_plan()
+    r = build_decision_reason(plan, data_quality="price_fallback").to_dict()
+    assert r["safety_constraint"]["action"] == "paused"
+    assert r["safety_constraint"]["code"] == PRICE_FALLBACK_SAFETY_CODE
+    assert r["safety_constraint"]["message"] == PRICE_FALLBACK_SAFETY_MESSAGE
+    assert r["summary"] == PRICE_FALLBACK_SAFETY_MESSAGE
+
+
 def test_incomplete_prices_reason_surfaces_code_as_paused():
     """#85: incomplete-prices hold self-use → paused + waarom-keyable safety code."""
     plan = _charge_plan()

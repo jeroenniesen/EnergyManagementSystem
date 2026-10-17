@@ -113,6 +113,7 @@ from ems.planner.explain import (
 from ems.planner.load_profile import build_load_profile
 from ems.planner.projection import BatteryModel, project_energy
 from ems.planner.reason import (
+    PRICE_FALLBACK_SAFETY_MESSAGE,
     build_decision_reason,
     empty_decision_reason,
     format_reason_log_line,
@@ -1110,12 +1111,8 @@ def create_app(
         """Push the control.* settings onto the live controller (preserves its switch counters)."""
         if controller is None:
             return
-        controller.max_switches_per_day = settings_cache["control.max_switches_per_day"]
-        # Switches reserved for a committed grid-charge so routine flapping can't starve it (07-12
-        # guardrail-starvation incident); mirrors max_switches_per_day's live-push convention.
-        controller.commitment_reserve = settings_cache["control.commitment_reserve"]
-        controller.min_dwell = timedelta(seconds=settings_cache["control.min_dwell_seconds"])
-        controller.allow_export_discharge = settings_cache["control.allow_export_discharge"]
+        from ems.control.service import apply_control_settings
+        apply_control_settings(controller, settings_cache)
 
     def _apply_site_settings() -> None:
         """Push the site.* array settings onto the solar forecast source so the forecast responds
@@ -2032,6 +2029,13 @@ def create_app(
                     failsafe=False,
                     action="proceed",
                 ).to_dict()
+            if quality == "price_fallback":
+                return empty_decision_reason(
+                    summary=PRICE_FALLBACK_SAFETY_MESSAGE,
+                    validator_code="no_live_prices",
+                    failsafe=True,
+                    safety_message=PRICE_FALLBACK_SAFETY_MESSAGE,
+                ).to_dict()
             # Incomplete price horizon → build_plan_now returns None; surface the waarom
             # code the web UI keys off (#85 slice 2), not a blank empty reason.
             horizon = control.price_horizon_status
@@ -2073,6 +2077,9 @@ def create_app(
                 else "Plan validation failed."
             )
             current_reason = finding
+        elif quality == "price_fallback":
+            current_action = "paused"
+            current_reason = PRICE_FALLBACK_SAFETY_MESSAGE
         decision_outcome: str | None = None
         unconfirmed = False
         if controller is not None and intent is not None:
@@ -2087,6 +2094,7 @@ def create_app(
             unconfirmed = bool(controller.last_command_unconfirmed)
         failsafe_active = (
             quality == "unsafe"
+            or quality == "price_fallback"
             or (plan_reason is not None and "fail-safe" in plan_reason.lower())
             or (plan_reason is not None and "failsafe" in plan_reason.lower())
         )
@@ -2106,6 +2114,7 @@ def create_app(
             unconfirmed=unconfirmed,
             paused=current_action == "paused",
             summary=current_reason,
+            data_quality=quality,
         ).to_dict()
 
     async def _canonical_decision_reason(now: datetime | None = None) -> dict:
@@ -4379,6 +4388,38 @@ def create_app(
                         reason="No current plan or forecast is available.",
                     ),
                 }
+            if quality == "price_fallback":
+                return {
+                    "status": "paused_safely",
+                    "summary": PRICE_FALLBACK_SAFETY_MESSAGE,
+                    "current_action": "paused",
+                    "current_reason": PRICE_FALLBACK_SAFETY_MESSAGE,
+                    "window_start": now.isoformat(),
+                    "window_end": (now + timedelta(hours=24)).isoformat(),
+                    "current_soc_pct": None,
+                    "reserve_soc_pct": reserve_pct,
+                    "target_soc_pct": None,
+                    "target_deadline": None,
+                    "deviation": {
+                        "status": "missing",
+                        "message": PRICE_FALLBACK_SAFETY_MESSAGE,
+                    },
+                    "warnings": [PRICE_FALLBACK_SAFETY_MESSAGE],
+                    "graph": {"forecast_soc": [], "actual_soc": [], "reserve_line": [],
+                              "target_line": [], "planned_actions": [],
+                              "price_windows": [], "solar": []},
+                    "confidence": confidence,
+                    "provenance": _plan_provenance(_active_strategy(now)),
+                    "reason": empty_decision_reason(
+                        summary=PRICE_FALLBACK_SAFETY_MESSAGE,
+                        validator_code="no_live_prices",
+                        failsafe=True,
+                        safety_message=PRICE_FALLBACK_SAFETY_MESSAGE,
+                    ).to_dict(),
+                    "evening_peak_coverage": unavailable_peak_coverage(
+                        reason=PRICE_FALLBACK_SAFETY_MESSAGE,
+                    ),
+                }
             horizon = control.price_horizon_status
             incomplete = horizon is not None and not horizon.ok
             empty_summary = (
@@ -4475,6 +4516,16 @@ def create_app(
             current_reason = finding
             warnings.append(finding)
             deviation = {"status": "missing", "message": finding}
+        elif quality == "price_fallback":
+            status = "paused_safely"
+            summary = PRICE_FALLBACK_SAFETY_MESSAGE
+            current_action = "paused"
+            current_reason = PRICE_FALLBACK_SAFETY_MESSAGE
+            warnings.append(PRICE_FALLBACK_SAFETY_MESSAGE)
+            deviation = {
+                "status": "missing",
+                "message": PRICE_FALLBACK_SAFETY_MESSAGE,
+            }
         elif verdict["status"] == "behind" and grid_charge_kwh > 0.05:
             status = "needs_topup"
             summary = f"Needs top-up — {verdict['message']}"
