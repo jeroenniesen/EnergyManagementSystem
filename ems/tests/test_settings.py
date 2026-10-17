@@ -66,15 +66,15 @@ def test_control_dry_run_setting_defaults_fail_safe():
 
 
 def test_anti_flap_control_knob_defaults():
-    # The two guardrail-starvation knobs (07-12 incident): intent persistence + commitment reserve.
     d = defaults()
-    assert d["control.intent_persistence_cycles"] == 2  # observe once, then act
-    assert d["control.commitment_reserve"] == 3         # switches held for committed grid-charge
-    # Both are int fields with sensible bounds (1 = legacy persistence; 0 = no reserve).
+    assert d["control.intent_persistence_cycles"] == 2
+    assert d["control.max_commitment_switches_per_day"] == 4
+    assert d["control.commitment_reserve"] == 3  # deprecated key, still loads
     assert SETTINGS_BY_KEY["control.intent_persistence_cycles"].type == "int"
     assert SETTINGS_BY_KEY["control.intent_persistence_cycles"].min == 1
+    field = SETTINGS_BY_KEY["control.max_commitment_switches_per_day"]
+    assert field.type == "int" and field.min == 1 and field.max == 10
     assert SETTINGS_BY_KEY["control.commitment_reserve"].type == "int"
-    assert SETTINGS_BY_KEY["control.commitment_reserve"].min == 0
 
 
 def test_grid_limit_setting_default():

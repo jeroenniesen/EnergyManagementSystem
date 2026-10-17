@@ -69,6 +69,7 @@ class ModeController:
         dry_run: bool,
         allow_export_discharge: bool = False,
         max_switches_per_day: int = 10,
+        max_commitment_switches_per_day: int = 4,
         commitment_reserve: int = 0,
         min_dwell_seconds: float = 600.0,
         tz: ZoneInfo | None = None,
@@ -82,20 +83,16 @@ class ModeController:
         # flipping the operator arming flag (`control.allow_export_discharge`). None = inactive.
         self._export_probe_until: datetime | None = None
         self.max_switches_per_day = max_switches_per_day
-        # Anti-starvation split of the daily switch cap (07-12 guardrail-starvation incident: 13
-        # routine auto<->idle flaps burned the 10-switch cap by 09:48, then 5 cap_reached blocks
-        # starved a COMMITTED grid-charge — it missed its deadline by 66 min). ROUTINE switches may
-        # consume at most (max - commitment_reserve); a committed grid-charge draws from the FULL
-        # cap (routine remainder + this reserve); the daily TOTAL is still bounded by max (the
-        # reserve carves out headroom, it never extends the cap). Defaults to 0 so a ModeController
-        # built without it behaves exactly like the plain cap; production sets it from
-        # control.commitment_reserve via _apply_control_settings.
+        # Separate hard cap for committed GRID_CHARGE writes (#309 / audit F-01): routine flaps can
+        # no longer starve a planned cheap window once the routine budget is spent.
+        self.max_commitment_switches_per_day = max_commitment_switches_per_day
+        # Deprecated (no behaviour): kept so old settings blobs/UI keys load without error (#309).
         self.commitment_reserve = commitment_reserve
         self.min_dwell = timedelta(seconds=min_dwell_seconds)
         self.tz = tz or ZoneInfo("UTC")
         self.switches_today = 0
-        # How many of today's switches were COMMITMENT writes (grid-charge). switches_today minus
-        # this is the routine consumption checked against the routine budget. Reset with the cap.
+        # Today's committed GRID_CHARGE mode writes (separate budget from switches_today). Reset at
+        # local midnight with switches_today (#309).
         self.commitment_switches_today = 0
         self.last_switch_at: datetime | None = None
         self._counter_date: date | None = None
@@ -291,8 +288,7 @@ class ModeController:
         return self.switches_today
 
     def _effective_commitment_switches(self, now: datetime) -> int:
-        """Today's COMMITMENT switch count, treating a new local date as a fresh 0 (read-only) —
-        so the routine budget is computed against the same day boundary as the total cap."""
+        """Today's COMMITMENT switch count, treating a new local date as a fresh 0 (read-only)."""
         if self._counter_date is not None and self._counter_date != now.astimezone(self.tz).date():
             return 0
         return self.commitment_switches_today
@@ -300,26 +296,25 @@ class ModeController:
     def _cap_block(
         self, intent: BatteryIntent, desired: PhysicalMode, now: datetime, *, commitment: bool,
     ) -> ActionDecision | None:
-        """The daily-cap gate, split into routine vs commitment budgets (07-12 starvation fix).
-        Returns a blocking `cap_reached` ActionDecision, or None to allow the write. The TOTAL is
-        always bounded by max_switches_per_day; a routine switch is additionally bounded by
-        (max - commitment_reserve) so idle/auto flapping can't consume the switches reserved for a
-        committed grid-charge. The reason names WHICH budget ran out (explainability first)."""
-        total = self._effective_switches(now)
-        cap = self.max_switches_per_day
-        if total >= cap:  # the whole daily cap is spent — nothing of either class gets through
-            return ActionDecision(
-                intent, desired, False, "cap_reached",
-                f"daily switch cap reached ({total}/{cap} used); holding")
+        """Daily-cap gate with independent routine vs commitment budgets (#309 / F-01).
+        Returns a blocking `cap_reached` ActionDecision, or None to allow the write. Routine
+        planner writes consume `switches_today` only; committed grid-charge writes consume
+        `commitment_switches_today` only — so a spent routine cap cannot block a commitment."""
         if commitment:
-            return None  # a commitment draws from the full cap (routine remainder + the reserve)
-        routine_budget = max(0, cap - self.commitment_reserve)
-        routine_used = total - self._effective_commitment_switches(now)
-        if routine_used >= routine_budget:
+            used = self._effective_commitment_switches(now)
+            cap = self.max_commitment_switches_per_day
+            if used >= cap:
+                return ActionDecision(
+                    intent, desired, False, "cap_reached",
+                    f"commitment-limiet bereikt ({used}/{cap} commitment-schakelingen vandaag); "
+                    "holding")
+            return None
+        routine_used = self._effective_switches(now)
+        cap = self.max_switches_per_day
+        if routine_used >= cap:
             return ActionDecision(
                 intent, desired, False, "cap_reached",
-                f"routine switch budget exhausted ({routine_used}/{routine_budget} used, "
-                f"{self.commitment_reserve} reserved for charge commitments); holding")
+                f"daily switch cap reached ({routine_used}/{cap} used); holding")
         return None
 
     def _gate(
@@ -353,11 +348,9 @@ class ModeController:
         it has decided a bounded re-command is warranted (car_mode.recommand + a 10-min car dwell),
         so it never re-introduces device hammering. `force=True` also skips the active-charge hold.
 
-        `commitment=True` marks a deadline-bearing committed grid-charge: it draws from the FULL
-        daily cap, while a routine (commitment=False) switch is additionally bounded by
-        (max_switches_per_day - commitment_reserve). This stops routine idle/auto flapping from
-        exhausting the switches a committed charge relies on (the 07-12 starvation incident). See
-        `_cap_block`. It changes ONLY the cap gate; dry_run / not_controlling / idempotency / dwell
+        `commitment=True` marks a deadline-bearing committed grid-charge: it uses the separate
+        `max_commitment_switches_per_day` budget (not `switches_today`). See `_cap_block`. It
+        changes ONLY the cap gate; dry_run / not_controlling / idempotency / dwell
         and every bypass (manual / priority / return-to-AUTO) are unaffected."""
         if self.dry_run:
             return ActionDecision(
@@ -443,9 +436,9 @@ class ModeController:
         it also spend the planner's daily switch budget starved the ordinary planner of switches for
         the rest of the day. Ordinary planner writes leave it True and are unchanged.
 
-        `commitment=True` marks a committed grid-charge so it draws from the full daily cap and its
-        write is accounted against the commitment budget (see _cap_block); routine planner writes
-        leave it False and are bounded by (max_switches_per_day - commitment_reserve)."""
+        `commitment=True` marks a committed grid-charge: its write counts only against
+        `commitment_switches_today` (see _cap_block); routine planner writes leave it False and
+        count only against `switches_today`."""
         desired = self._desired(intent, car_session=car_session, now=now)
         blocked = self._gate(intent, now, desired, observed_mode=observed_mode, manual=manual,
                              priority=priority, force=force, commitment=commitment)
@@ -465,9 +458,10 @@ class ModeController:
             # window. Stamp last_switch_at so dwell still spaces flaps; only skip the counter.
             if count_toward_cap:
                 if desired is not PhysicalMode.AUTO:
-                    self.switches_today += 1
                     if commitment:
                         self.commitment_switches_today += 1
+                    else:
+                        self.switches_today += 1
                 self.last_switch_at = now
 
         self._reset_counter_if_new_day(now)

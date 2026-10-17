@@ -9,10 +9,13 @@ from zoneinfo import ZoneInfo
 
 import pytest
 
+from ems.control.mode_controller import ModeController
 from ems.control.safety import SafetyValidator
-from ems.domain import BatteryIntent
+from ems.domain import BatteryIntent, PhysicalMode
 from ems.economics import EconomicSnapshot
+from ems.lifecycle import Lifecycle
 from ems.planner.rule_based import PlannerConfig, plan_rule_based
+from ems.sources.battery import MockBatteryDriver
 from ems.sources.prices import PriceSlot
 
 AMS = ZoneInfo("Europe/Amsterdam")
@@ -85,3 +88,44 @@ def test_break_even_is_inverse_of_delivered_cost(efficiency: float) -> None:
     )
     break_even = snapshot.break_even_import_price(0.4)
     assert snapshot.delivered_energy_cost(break_even) == pytest.approx(0.4)
+
+
+def _controlling_lc():
+    lc = Lifecycle(dry_run=False, startup_grace_seconds=0.0)
+    t0 = datetime(2026, 3, 1, 12, tzinfo=AMS)
+    lc.start(t0)
+    lc.mark_sensors_validated()
+    lc.mark_probe_ok()
+    lc.mark_plan_loaded()
+    lc.tick(t0)
+    return lc
+
+
+@pytest.mark.parametrize("seed", range(15))
+def test_mode_controller_daily_writes_never_exceed_routine_plus_commitment_caps(seed: int) -> None:
+    routine_cap = 3 + seed % 5
+    commit_cap = 2 + seed % 4
+    d = MockBatteryDriver()
+    ctl = ModeController(
+        d,
+        _controlling_lc(),
+        dry_run=False,
+        max_switches_per_day=routine_cap,
+        max_commitment_switches_per_day=commit_cap,
+        min_dwell_seconds=0,
+    )
+    t = datetime(2026, 3, 1, 12, tzinfo=AMS)
+    for step in range(40 + seed):
+        commitment = (step + seed) % 2 == 0
+        intent = (
+            BatteryIntent.GRID_CHARGE_TO_TARGET
+            if d.current_mode() is PhysicalMode.IDLE
+            else BatteryIntent.HOLD_RESERVE
+        )
+        dec = ctl.decide(intent, t, target_soc=90, commitment=commitment)
+        if dec.outcome == "cap_reached":
+            break
+        t += timedelta(seconds=1)
+    assert ctl.switches_today <= routine_cap
+    assert ctl.commitment_switches_today <= commit_cap
+    assert ctl.switches_today + ctl.commitment_switches_today <= routine_cap + commit_cap

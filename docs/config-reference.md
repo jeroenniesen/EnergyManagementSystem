@@ -114,8 +114,9 @@ The car's SoC itself is **not** a config key — it's a runtime-store anchor (%,
 | Key | Type | Default | Effect |
 |---|---|---|---|
 | `cycle_seconds` | int | 300 | sense→decide loop period |
-| `max_mode_switches_per_day` | int | 10 | protects Indevolt API (persisted, per local date) |
-| `commitment_reserve` | int | 3 | of the daily cap, how many switches are held back for a committed grid-charge so routine idle/auto flapping can't starve it (07-12 guardrail-starvation incident); routine switches may use `cap − reserve`, a commitment draws from the full cap, the total is still capped. Runtime key `control.commitment_reserve`. **UI** (advanced) |
+| `max_mode_switches_per_day` | int | 10 | routine planner mode writes/day (persisted `switches_today`, per local date) |
+| `max_commitment_switches_per_day` | int | 4 | committed `GRID_CHARGE_TO_TARGET` writes/day (persisted `commitment_switches_today`, separate budget — #309 / F-01). Runtime key `control.max_commitment_switches_per_day`. **UI** (advanced, live) |
+| `commitment_reserve` | int | 3 | **deprecated** — no behaviour (#309); kept for old settings. Use `max_commitment_switches_per_day`. Runtime key `control.commitment_reserve`. **UI** (advanced) |
 | `intent_persistence_cycles` | int | 2 | a routine (non-AUTO) mode change must persist this many consecutive cycles before it commands the battery (first observes, rest confirm) so a transient flap wastes no switch; commitments, manual overrides, the car-charging safety hold and return-to-AUTO are never delayed. 1 = legacy (switch immediately). Runtime key `control.intent_persistence_cycles`. **UI** (advanced). Complementary **floor anti-flap (#165)**: at/below `min_reserve_soc`, `HOLD_RESERVE`↔`ALLOW_SELF_CONSUMPTION` is latched to one safe mode (stick with current AUTO/IDLE; prefer AUTO when entering) — see `docs/control-model.md` §2. |
 | `replan_times` | list[HH:MM] | [13:15, 06:00] | scheduled replans |
 | `dry_run` | bool | true | log decisions, no writes; **yaml/mock floor always wins** over Settings `control.dry_run` and UI `control.operational` when true (#136). Also forced on when `dev.mode` is `mock`/`replay`. **Runtime twin:** Settings → Watch only (`control.dry_run`, default true, `applies: restart`, seeded from yaml on first boot) for daily enter/exit without editing this file (#171). Missing store ⇒ watch-only. |
