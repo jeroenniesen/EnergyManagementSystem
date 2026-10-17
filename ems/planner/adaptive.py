@@ -4,7 +4,8 @@ One algorithm for both seasons. It sizes the battery to the energy it should act
 the coming evening + night — computed from the FORECAST load minus the forecast solar — rather than
 a fixed night-carry constant (which the backtest showed under-sizes on dull days and leaves the
 battery draining mid-peak at peak price). It then grid-charges only the shortfall solar won't cover,
-in the cheapest slots *before* the expensive window, so the battery is full going into the peak and
+in the cost-minimal contiguous slots *before* the expensive window (tie → later; cheapest-n
+if no contiguous window fits), so the battery is full going into the peak and
 shaves it. Risk-aware: the solar it counts on to fill the battery is the EXPECTED (P50) forecast
 scaled by `solar_confidence` (0..1) — a single tunable conservatism dial. (This replaced an earlier
 fixed P10 = 0.6×P50 haircut, which over-bought; see `docs/charging-algorithm-research.md`.)
@@ -19,6 +20,7 @@ from datetime import datetime
 
 from ems.domain import BatteryIntent
 from ems.planner import economics
+from ems.planner.packing import late_pack_charge_starts
 from ems.planner.schedule import SLOT, Plan, PlanSlot
 from ems.sources.forecast import ForecastSlot
 from ems.sources.prices import PriceSlot
@@ -125,8 +127,14 @@ def _plan_adaptive(
     else:
         # No expensive peak ahead: only charge if genuinely cheap, to avoid pointless cycling.
         pool = [p for p in future if p.eur_per_kwh <= breakeven]
-    pool.sort(key=lambda p: (p.eur_per_kwh, p.start))
-    charge_set = {p.start for p in pool[:n_charge]}
+    # Pool is already capped and still chronological. Late-pack (same helper as winter) picks the
+    # cost-minimal contiguous window; max_buy is the pool's own ceiling so the existing cap is
+    # unchanged. No full window → cheapest n, and |charge_set| stays <= n_charge.
+    charge_set = late_pack_charge_starts(
+        pool, n_charge,
+        price_of=lambda p: p.eur_per_kwh,
+        max_buy=max((p.eur_per_kwh for p in pool), default=0.0),
+    )
 
     # The SoC the plan should reach (reserve + the demand it must cover), and by when.
     target_soc_pct = (min(100.0, (reserve_kwh + coverable_kwh) / usable * 100.0)

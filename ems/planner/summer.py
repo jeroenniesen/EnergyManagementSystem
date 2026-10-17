@@ -2,7 +2,8 @@
 
 Goal: run the house on the battery overnight using **your own solar**. Fill the battery from PV
 surplus during the day; grid-charge only the **shortfall** needed to reach the night-carry target
-(`target_soc_pct`), and only in the cheapest pre-sunset slots within a price cap. Everything else is
+(`target_soc_pct`), and only in the cost-minimal contiguous pre-deadline slots within a price
+cap (tie → later; cheapest-n if no contiguous window fits). Everything else is
 self-consumption — daytime soaks surplus, night discharges to serve the house.
 
 Risk-aware sizing (SPEC §6.3): the solar we *count on* to fill the battery is a configurable
@@ -18,6 +19,7 @@ from dataclasses import dataclass
 from datetime import datetime
 
 from ems.domain import BatteryIntent
+from ems.planner.packing import late_pack_charge_starts
 from ems.planner.schedule import SLOT, Plan, PlanSlot
 from ems.sources.forecast import ForecastSlot
 from ems.sources.prices import PriceSlot
@@ -112,10 +114,10 @@ def plan_summer(
     )
     shortfall_kwh = max(0.0, target_kwh - current_kwh - solar_charge_kwh)
 
-    # Buy only the shortfall, in the cheapest affordable slots before the charge deadline. With
-    # `negative_price_soak` on, a sub-zero slot (you are PAID to consume) is ALSO an eligible top-up
-    # candidate — even when `allow_grid_topup` is off and regardless of the price cap (price < 0 is
-    # below any cap anyway). Same shortfall-bounded, cheapest-first selection — no new sizing math.
+    # Buy only the shortfall before the charge deadline. Eligibility (price cap, or a sub-zero soak
+    # slot when `negative_price_soak` is on — even with `allow_grid_topup` off) is unchanged.
+    # Within that pool, late-pack picks the cost-minimal contiguous window (tie → later). No full
+    # window → cheapest n. Same shortfall-bounded slot count — no new sizing math.
     soak = cfg.negative_price_soak
     per_slot_kwh = cfg.max_charge_w * dh / 1000.0 * eta
     grid_set: set[datetime] = set()
@@ -130,8 +132,11 @@ def plan_summer(
     if (cfg.allow_grid_topup or soak) and shortfall_kwh > 1e-9:
         needed = math.ceil(shortfall_kwh / per_slot_kwh) if per_slot_kwh > 0 else 0
         affordable = [p for p in future if _eligible(p)]
-        affordable.sort(key=lambda p: (p.eur_per_kwh, p.start))
-        grid_set = {p.start for p in affordable[:needed]}
+        grid_set = late_pack_charge_starts(
+            affordable, needed,
+            price_of=lambda p: p.eur_per_kwh,
+            max_buy=max((p.eur_per_kwh for p in affordable), default=0.0),
+        )
 
     target_soc_clamped = max(0.0, min(100.0, cfg.target_soc_pct))
 

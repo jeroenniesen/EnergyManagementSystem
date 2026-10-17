@@ -172,6 +172,42 @@ def test_empty_prices_yields_empty_plan():
     assert plan_summer(past, [], T0, soc_pct=50.0, cfg=_cfg()).slots == ()
 
 
+def test_late_pack_topup_prefers_later_valley_under_price_cap():
+    """Early €0.20 + later €0.08 valley: top-up is the late contiguous block, cap still holds."""
+    eur = [0.20, 0.20, 0.08, 0.08, 0.50] + [0.25] * 11
+    prices = [PriceSlot(T0 + i * SLOT, e) for i, e in enumerate(eur)]
+    fc = _forecast([0.0] * len(eur))
+    plan = plan_summer(
+        prices, fc, T0, soc_pct=50.0,
+        cfg=_cfg(allow_grid_topup=True, max_topup_price_eur_per_kwh=0.30),
+    )
+    charge = [s for s in plan.slots if s.intent is BatteryIntent.GRID_CHARGE_TO_TARGET]
+    assert len(charge) == 3
+    # Cost-minimal window of 3 is slots 1–3 (second €0.20 + both €0.08), not earliest-first.
+    assert [s.start for s in charge] == [T0 + SLOT, T0 + 2 * SLOT, T0 + 3 * SLOT]
+    assert all(eur[i] <= 0.30 for i, s in enumerate(plan.slots)
+               if s.intent is BatteryIntent.GRID_CHARGE_TO_TARGET)
+    assert T0 + 4 * SLOT not in {s.start for s in charge}  # €0.50 stays above the cap
+
+
+def test_no_contiguous_topup_window_falls_back_to_cheapest_n():
+    """Gaps above the cap: no contiguous window → cheapest n eligible slots, size stays n."""
+    eur = [0.18, 0.40, 0.10, 0.40, 0.12, 0.40] + [0.40] * 10
+    prices = [PriceSlot(T0 + i * SLOT, e) for i, e in enumerate(eur)]
+    fc = _forecast([0.0] * len(eur))
+    plan = plan_summer(
+        prices, fc, T0, soc_pct=60.0,
+        cfg=_cfg(allow_grid_topup=True, max_topup_price_eur_per_kwh=0.30,
+                 target_soc_pct=80.0),
+    )
+    charge = [s for s in plan.slots if s.intent is BatteryIntent.GRID_CHARGE_TO_TARGET]
+    # 60%→80% of 10 kWh = 2 kWh → n=2. Eligible slots are gapped; cheapest two stay.
+    assert len(charge) == 2
+    assert {s.start for s in charge} == {T0 + 2 * SLOT, T0 + 4 * SLOT}
+    assert all(eur[i] <= 0.30 for i, s in enumerate(plan.slots)
+               if s.intent is BatteryIntent.GRID_CHARGE_TO_TARGET)
+
+
 def test_negative_price_soak_charges_below_zero_even_with_grid_topup_off():
     # allow_grid_topup OFF: normally no grid charging at all (see test_grid_topup_can_be_disabled).
     # With the soak on, a sub-zero slot is STILL a charge slot — you are PAID to consume — bounded
