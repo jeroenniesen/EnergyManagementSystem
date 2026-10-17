@@ -208,6 +208,23 @@ def test_no_contiguous_topup_window_falls_back_to_cheapest_n():
                if s.intent is BatteryIntent.GRID_CHARGE_TO_TARGET)
 
 
+def test_negative_soak_keeps_isolated_paid_slot_with_contiguous_topup():
+    # A three-slot positive window must not displace the paid slot when soak is enabled.
+    eur = [-0.20, 0.50, 0.10, 0.10, 0.10] + [0.50] * 11
+    prices = [PriceSlot(T0 + i * SLOT, e) for i, e in enumerate(eur)]
+    plan = plan_summer(
+        prices, _forecast([0.0] * len(eur)), T0, soc_pct=50.0,
+        cfg=_cfg(allow_grid_topup=True, negative_price_soak=True,
+                 max_topup_price_eur_per_kwh=0.30),
+    )
+    charge = [s for s in plan.slots if s.intent is BatteryIntent.GRID_CHARGE_TO_TARGET]
+    assert len(charge) == 3  # same 3 kWh shortfall budget
+    assert [s.start for s in charge] == [T0, T0 + 3 * SLOT, T0 + 4 * SLOT]
+    assert "paid to charge" in charge[0].reason
+    assert all(eur[i] <= 0.30 for i, s in enumerate(plan.slots)
+               if s.intent is BatteryIntent.GRID_CHARGE_TO_TARGET)
+
+
 def test_negative_price_soak_charges_below_zero_even_with_grid_topup_off():
     # allow_grid_topup OFF: normally no grid charging at all (see test_grid_topup_can_be_disabled).
     # With the soak on, a sub-zero slot is STILL a charge slot — you are PAID to consume — bounded

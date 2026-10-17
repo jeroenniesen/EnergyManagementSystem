@@ -132,11 +132,17 @@ def plan_summer(
     if (cfg.allow_grid_topup or soak) and shortfall_kwh > 1e-9:
         needed = math.ceil(shortfall_kwh / per_slot_kwh) if per_slot_kwh > 0 else 0
         affordable = [p for p in future if _eligible(p)]
+        # The opt-in soak policy gives sub-zero slots priority, even when an isolated negative
+        # slot cannot belong to a full contiguous window. Keep the same shortfall-sized budget.
+        negative = (sorted((p for p in affordable if p.eur_per_kwh < 0.0),
+                           key=lambda p: (p.eur_per_kwh, p.start))[:needed]
+                    if soak else [])
+        grid_set = {p.start for p in negative}
         grid_set = late_pack_charge_starts(
-            affordable, needed,
+            [p for p in affordable if p.start not in grid_set], needed - len(grid_set),
             price_of=lambda p: p.eur_per_kwh,
             max_buy=max((p.eur_per_kwh for p in affordable), default=0.0),
-        )
+        ) | grid_set
 
     target_soc_clamped = max(0.0, min(100.0, cfg.target_soc_pct))
 
