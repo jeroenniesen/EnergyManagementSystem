@@ -250,7 +250,10 @@ def _evaluate_day(day: dict, planner: str) -> dict:
         raise AssertionError(planner)
     after_pairs = _plan_import_pairs(plan, price_of)
     after_avg, after_kwh = _average(after_pairs)
-    before_pairs = _pump_from_first_mark(prices, marked, after_kwh, _MAX_CHARGE_W)
+    # Derive the old plan's energy from its own marks. Passing ``after_kwh`` here would make
+    # the per-day equality assertion true by construction, even if a planner changed the budget.
+    legacy_kwh = len(marked) * _grid_kwh(_MAX_CHARGE_W)
+    before_pairs = _pump_from_first_mark(prices, marked, legacy_kwh, _MAX_CHARGE_W)
     before_avg, before_kwh = _average(before_pairs)
     planned = {
         slot.start for slot in plan.slots
