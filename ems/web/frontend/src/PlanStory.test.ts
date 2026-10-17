@@ -141,6 +141,25 @@ describe("PlanStory rendering", () => {
     expect(html).not.toContain(">Mode<");
   });
 
+  test("#335: plan-reason shows override badge only when learned differs >25%", () => {
+    const withBadge = renderToStaticMarkup(createElement(PlanStory, {
+      story: storyData([], [storySlot(0)], 0),
+      nightReserveConfiguredKwh: 3,
+      nightReserveLearnedKwh: 2,
+    }));
+    expect(withBadge).toContain('data-testid="plan-story-override-learned-badge"');
+    expect(withBadge).toContain("Instelling overschrijft geleerd");
+    expect(withBadge).toContain("Je nacht-reserve staat op 3.0 kWh");
+
+    const withoutBadge = renderToStaticMarkup(createElement(PlanStory, {
+      story: storyData([], [storySlot(0)], 0),
+      nightReserveConfiguredKwh: 2,
+      nightReserveLearnedKwh: 2.2,
+    }));
+    expect(withoutBadge).toContain('data-testid="plan-story-night-reserve-reason"');
+    expect(withoutBadge).not.toContain('data-testid="plan-story-override-learned-badge"');
+  });
+
   test("B-96: recent review renders as a collapsed plan-header disclosure", () => {
     const html = renderToStaticMarkup(createElement(PlanStory, {
       story: storyData([], [storySlot(0)], 0),

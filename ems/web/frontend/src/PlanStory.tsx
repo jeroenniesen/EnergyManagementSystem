@@ -1,7 +1,14 @@
 import { Fragment, useState } from "react";
 
 import type { EnergyStoryData, PlanProvenance } from "./EnergyStory";
-import { HOME_ACT, HOME_PLAN_STORY, INTELLIGENCE_COPY, PLANNER_PROVENANCE_LABEL } from "./labels";
+import {
+  HOME_ACT,
+  HOME_NIGHT_RESERVE,
+  HOME_PLAN_STORY,
+  INTELLIGENCE_COPY,
+  nightReserveOverridesLearned,
+  PLANNER_PROVENANCE_LABEL,
+} from "./labels";
 import {
   ACTION_META,
   buildPlanStoryModel,
@@ -42,6 +49,9 @@ export type PlanStoryProps = {
   recentReview?: string | null;
   /** F-13 (#313): price_fallback badge — show fail-safe copy on the plan surface. */
   dataQuality?: string | null;
+  /** #335: configured vs learned night-reserve kWh for plan-reason + override badge. */
+  nightReserveConfiguredKwh?: number | null;
+  nightReserveLearnedKwh?: number | null;
 };
 
 function RecentReviewDisclosure({ message }: { message: string }) {
@@ -111,6 +121,8 @@ export function PlanStory({
   provenance = null,
   recentReview = null,
   dataQuality = null,
+  nightReserveConfiguredKwh = null,
+  nightReserveLearnedKwh = null,
 }: PlanStoryProps) {
   const [hover, setHover] = useState<number | null>(null);
   const model = buildPlanStoryModel(story, PAD.l, PLOT_W);
@@ -411,6 +423,22 @@ export function PlanStory({
           </span>
         ))}
       </div>
+
+      {nightReserveConfiguredKwh != null && nightReserveLearnedKwh != null && (
+        <p className="plan-reason" data-testid="plan-story-night-reserve-reason">
+          {nightReserveOverridesLearned(nightReserveConfiguredKwh, nightReserveLearnedKwh) && (
+            <span
+              className="badge badge-live"
+              data-testid="plan-story-override-learned-badge"
+              role="status"
+            >
+              {HOME_NIGHT_RESERVE.overrideBadge}
+            </span>
+          )}
+          {" "}
+          {HOME_NIGHT_RESERVE.planReason(nightReserveConfiguredKwh, nightReserveLearnedKwh)}
+        </p>
+      )}
 
       <ProvenanceCaption provenance={provenance} />
     </section>
