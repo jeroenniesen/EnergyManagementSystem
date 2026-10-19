@@ -172,7 +172,7 @@ export function PlanStory({
       aria-label={model.label}
     >
       {recentReview && <RecentReviewDisclosure message={recentReview} />}
-      {shouldShowWhyNotBuy(buyPool) && (
+      {shouldShowWhyNotBuy(buyPool, dataQuality) && (
         <div className="why-not-buy-tile" data-testid="why-not-buy">
           <h3 className="why-not-buy-title">{HOME_WHY_NOT_BUY.title}</h3>
           <p className="why-not-buy-body">{formatWhyNotBuyLine(buyPool)}</p>

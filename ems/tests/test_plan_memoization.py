@@ -302,6 +302,8 @@ def test_degradation_hot_apply_raises_max_buy_and_replans(tmp_path):
         client.get("/api/battery-plan")
         builds_before = svc.plan_builds
         plan1 = client.get("/api/plan").json()
+        # Same prices, same coalesce window: reading the plan must not rebuild.
+        assert svc.plan_builds == builds_before
         assert plan1.get("buy_pool") is not None
         mb1 = plan1["buy_pool"]["max_buy_eur_per_kwh"]
         r = client.post("/api/settings", json={"planner.degradation_eur_per_kwh": 0.03})
@@ -309,7 +311,7 @@ def test_degradation_hot_apply_raises_max_buy_and_replans(tmp_path):
         plan2 = client.get("/api/plan").json()
         mb2 = plan2["buy_pool"]["max_buy_eur_per_kwh"]
         assert mb2 > mb1
-        assert svc.plan_builds >= builds_before + 1
+        assert svc.plan_builds == builds_before + 1
 
 
 def test_concurrent_poll_single_flight_plan_build(tmp_path):

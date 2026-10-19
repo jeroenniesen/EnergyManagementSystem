@@ -399,10 +399,33 @@ describe("why not buy (#315)", () => {
     };
     expect(shouldShowWhyNotBuy(pool)).toBe(true);
     expect(shouldShowWhyNotBuy({ ...pool, state: "open" })).toBe(false);
+    expect(shouldShowWhyNotBuy({ ...pool, state: "cap" })).toBe(false);
+    expect(shouldShowWhyNotBuy({ ...pool, state: "not_needed" })).toBe(false);
+    expect(shouldShowWhyNotBuy(pool, "price_fallback")).toBe(false);
     const line = formatWhyNotBuyLine(pool);
     expect(line).toContain("Max inkoopprijs €0,35");
     expect(line).toContain("Goedkoopste moment 13:15 (€0,37)");
     expect(line).toContain("Tekort 4,2 kWh");
     expect(line).toContain("Geen koopmoment in de prijzen van vandaag/morgen");
+    // Site-local wall clock, not the browser zone (UTC would otherwise show 11:15).
+    const zulu = formatWhyNotBuyLine({
+      ...pool,
+      cheapest_slot: { start: "2026-10-16T13:15:00Z", eur_per_kwh: 0.37 },
+    });
+    expect(zulu).toContain("Goedkoopste moment 13:15 (€0,37)");
+  });
+
+  test("shows the next chance clock when the pool names one", async () => {
+    const { formatWhyNotBuyLine } = await import("./planStoryModel");
+    const line = formatWhyNotBuyLine({
+      state: "empty",
+      max_buy_eur_per_kwh: 0.35,
+      cheapest_slot: { start: "2026-10-16T13:15:00+02:00", eur_per_kwh: 0.37 },
+      shortfall_kwh: 4.2,
+      next_chance: { start: "2026-10-17T07:30:00+02:00" },
+      pool_size: 0,
+    });
+    expect(line).toContain("Volgende kans 07:30");
+    expect(line).not.toContain("Geen koopmoment in de prijzen van vandaag/morgen");
   });
 });

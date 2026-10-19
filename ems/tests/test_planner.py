@@ -367,5 +367,54 @@ def test_empty_buy_pool_fixture_summary_in_decision_reason():
     assert "Geen koopmoment" in summary
     assert "max-inkoopprijs" in summary
     assert plan.buy_pool.cheapest_slot is not None
+    assert plan.buy_pool.next_chance_start is None
     assert f"{plan.buy_pool.cheapest_slot.eur_per_kwh:.2f}".replace(".", ",") in summary
+    # Wall clock of the Amsterdam slot, not UTC.
+    assert plan.buy_pool.cheapest_slot.start.strftime("%H:%M") in summary
+    assert "€0,27" in summary
     assert summary.count("Geen koopmoment") == 1
+    assert all("Geen koopmoment" not in s.reason for s in plan.slots)
+
+
+def test_buy_pool_not_needed_when_nothing_to_buy_and_absent_without_prices():
+    """n_charge == 0 → not_needed; an empty future price list leaves buy_pool unset."""
+    t0 = datetime(2026, 10, 16, 6, 0, tzinfo=AMS)
+    prices = (
+        [PriceSlot(t0 + i * SLOT, 0.10) for i in range(20)]
+        + [PriceSlot(t0 + 20 * SLOT + i * SLOT, 0.50) for i in range(8)]
+    )
+    load = {p.start: (800.0 if p.eur_per_kwh >= 0.40 else 200.0) for p in prices}
+    full = plan_rule_based(
+        prices, t0, PlannerConfig(horizon_slots=28), soc_pct=100.0, load_w_by=load,
+        usable_kwh=10.8, reserve_soc_pct=10.0, max_charge_w=4000.0,
+    )
+    assert full.buy_pool is not None
+    assert full.buy_pool.state == "not_needed"
+    assert full.buy_pool.shortfall_kwh <= 1e-9
+    assert not any(s.intent is BatteryIntent.GRID_CHARGE_TO_TARGET for s in full.slots)
+    empty = plan_rule_based([], t0, PlannerConfig())
+    assert empty.slots == ()
+    assert empty.buy_pool is None
+
+
+def test_short_cheap_pool_stays_open_not_daily_cap():
+    """A partial cheap window is ``open``. ``cap`` is the daily kWh ceiling (#317), not this."""
+    t0 = datetime(2026, 10, 16, 6, 0, tzinfo=AMS)
+    # One pre-peak slot under max_buy (~€0.27); the rest sit above it. Post-peak €0.05
+    # does not refill the pool. n_charge stays above that single slot.
+    prices = (
+        [PriceSlot(t0, 0.20)]
+        + [PriceSlot(t0 + (i + 1) * SLOT, 0.37) for i in range(31)]
+        + [PriceSlot(t0 + 32 * SLOT + i * SLOT, 0.45) for i in range(8)]
+        + [PriceSlot(t0 + 40 * SLOT + i * SLOT, 0.05) for i in range(12)]
+    )
+    load = {p.start: (3500.0 if p.eur_per_kwh >= 0.44 else 500.0) for p in prices}
+    plan = plan_rule_based(
+        prices, t0, PlannerConfig(horizon_slots=52), soc_pct=5.5, load_w_by=load,
+        usable_kwh=10.8, reserve_soc_pct=10.0, max_charge_w=4000.0,
+    )
+    assert plan.buy_pool is not None
+    assert plan.buy_pool.pool_size == 1
+    assert plan.buy_pool.shortfall_kwh > 1
+    assert plan.buy_pool.state == "open"
+    assert plan.buy_pool.next_chance_start is not None

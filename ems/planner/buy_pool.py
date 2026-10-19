@@ -53,12 +53,14 @@ class BuyPoolInfo:
 def classify_buy_pool_state(
     *, n_charge: int, shortfall_kwh: float, pool_size: int,
 ) -> str:
+    """Explain the pool that already exists. ``cap`` is reserved for the daily grid-charge
+    ceiling (#317) and is not inferred from a short cheap window — a partial pool is still
+    ``open``. An empty horizon is not a state here: the planner leaves ``buy_pool`` unset.
+    """
     if n_charge <= 0 or shortfall_kwh <= 1e-9:
         return "not_needed"
     if pool_size == 0:
         return "empty"
-    if pool_size < n_charge:
-        return "cap"
     return "open"
 
 

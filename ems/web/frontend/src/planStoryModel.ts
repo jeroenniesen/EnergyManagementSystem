@@ -25,8 +25,22 @@ function kwhNl(value: number): string {
   return `${value.toFixed(1).replace(".", ",")} kWh`;
 }
 
-export function shouldShowWhyNotBuy(pool: BuyPool | null | undefined): pool is BuyPool {
-  return pool?.state === "empty";
+/**
+ * Wall clock of an API timestamp. Price slots are already in the site timezone
+ * (`isoformat` carries that offset); converting again with the browser zone turns
+ * 13:15+02 into 11:15 on a UTC runner.
+ */
+export function clockFromIso(iso: string): string {
+  const match = /T(\d{2}):(\d{2})/.exec(iso);
+  return match ? `${match[1]}:${match[2]}` : "—";
+}
+
+export function shouldShowWhyNotBuy(
+  pool: BuyPool | null | undefined,
+  dataQuality?: string | null,
+): pool is BuyPool {
+  // Backup/mock prices are not a buy decision (#313). The fail-safe line owns that case.
+  return pool?.state === "empty" && dataQuality !== "price_fallback";
 }
 
 /** One line for the Home tile (#315 AC3). */
@@ -35,21 +49,16 @@ export function formatWhyNotBuyLine(pool: BuyPool): string {
     HOME_WHY_NOT_BUY.maxBuy(eurNl(pool.max_buy_eur_per_kwh)),
   ];
   if (pool.cheapest_slot) {
-    const t = Date.parse(pool.cheapest_slot.start);
-    const time = Number.isFinite(t)
-      ? new Date(t).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", hour12: false })
-      : "—";
-    parts.push(HOME_WHY_NOT_BUY.cheapest(time, eurNl(pool.cheapest_slot.eur_per_kwh)));
+    parts.push(HOME_WHY_NOT_BUY.cheapest(
+      clockFromIso(pool.cheapest_slot.start),
+      eurNl(pool.cheapest_slot.eur_per_kwh),
+    ));
   }
   if (pool.shortfall_kwh > 1e-9) {
     parts.push(HOME_WHY_NOT_BUY.shortfall(kwhNl(pool.shortfall_kwh)));
   }
   if (pool.next_chance?.start) {
-    const t = Date.parse(pool.next_chance.start);
-    const time = Number.isFinite(t)
-      ? new Date(t).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", hour12: false })
-      : "—";
-    parts.push(HOME_WHY_NOT_BUY.nextChance(time));
+    parts.push(HOME_WHY_NOT_BUY.nextChance(clockFromIso(pool.next_chance.start)));
   } else {
     parts.push(HOME_WHY_NOT_BUY.noChanceInHorizon);
   }
