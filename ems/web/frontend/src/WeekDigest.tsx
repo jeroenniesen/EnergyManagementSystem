@@ -178,7 +178,7 @@ export function WeekDigest() {
 
           {negativeDays.length > 0 && (
             <div className="week-digest-loss-days" data-testid="week-digest-loss-days">
-              <h3 className="week-digest-loss-title">{WEEK_DIGEST_NEGATIVE_DAY.sectionTitle}</h3>
+              <p className="week-digest-loss-title">{WEEK_DIGEST_NEGATIVE_DAY.sectionTitle}</p>
               <ul className="week-digest-loss-list">
                 {negativeDays.map((day) => {
                   const expanded = openLossDay === day.date;

@@ -207,16 +207,51 @@ def _hold_active_that_day(audit_rows: list[dict]) -> bool:
     return False
 
 
+def _fmt_eur_nl(amount: float) -> str:
+    """€1,20 — comma decimal only; leave sentence periods alone."""
+    return f"€{abs(amount):.2f}".replace(".", ",")
+
+
+def _fmt_kwh_nl(kwh: float) -> str:
+    return f"{kwh:.1f}".replace(".", ",")
+
+
 def _low_spread_text(eur: float, *, names_spaarvloer: bool, daily_min: float) -> str:
-    amt = f"€{eur:.2f}".replace(".", ",")
+    amt = _fmt_eur_nl(eur)
     if names_spaarvloer:
+        floor = _fmt_eur_nl(daily_min)
         return (
             f"Krappe prijs-spread: handel onder de spaarvloer "
-            f"(instelling Min. verwachte besparing per dag, nu €{daily_min:.2f}) kostte ca. {amt}."
+            f"(instelling Min. verwachte besparing per dag, nu {floor}) kostte ca. {amt}."
         )
     return (
         f"Krappe prijs-spread: weinig te verdienen met laden/ontladen kostte ca. {amt}."
     )
+
+
+def _driver_text(spec: dict, *, names_spaarvloer: bool, daily_min: float) -> str:
+    """Dutch sentence for a driver. `eur` is the capped amount (after the top-3 scale)."""
+    eur = float(spec["eur"])
+    amt = _fmt_eur_nl(eur)
+    key = spec["key"]
+    if key == "grid_charge_cost":
+        return (
+            f"Netladen van de batterij ({_fmt_kwh_nl(spec['kwh'])} kWh van het net) "
+            f"kostte ca. {amt}."
+        )
+    if key == "expensive_peak_import":
+        return (
+            f"Import tijdens dure uren kostte ca. {amt} extra "
+            f"(ten opzichte van zonder batterij)."
+        )
+    if key == "ev_import_during_hold":
+        return (
+            f"EV laadde ({_fmt_kwh_nl(spec['kwh'])} kWh) terwijl de batterij vastgehouden werd "
+            f"— ca. {amt} netimport."
+        )
+    if key == "low_spread":
+        return _low_spread_text(eur, names_spaarvloer=names_spaarvloer, daily_min=daily_min)
+    return amt
 
 
 def explain_negative_day(
@@ -231,7 +266,8 @@ def explain_negative_day(
       - `energy`: optional day `Report.flows` dict (`grid_to_battery`, `grid_to_car`, …)
 
     Returns up to three `{key, eur, text}` items sorted by |eur| desc. Amounts are capped so their
-    sum is ≤ |saved_eur| + €0.05. Missing inputs → `[]` (callers show 'Oorzaak niet te bepalen')."""
+    sum is ≤ |saved_eur| + €0.05, and `text` cites that same capped euro (NL comma). Missing inputs
+    → `[]` (callers show 'Oorzaak niet te bepalen')."""
     finance = day_rows.get("finance") or {}
     saved = finance.get("saved_eur")
     if saved is None or saved >= -1e-9:
@@ -243,30 +279,18 @@ def explain_negative_day(
 
     grid_to_batt = float(energy.get("grid_to_battery") or 0.0)
     batt_contrib = finance.get("battery_contribution_eur")
-    if grid_to_batt > 0.05 and isinstance(batt_contrib, int | float) and batt_contrib < -0.01:
+    if grid_to_batt > 0.05 and isinstance(batt_contrib, int | float) and not isinstance(
+        batt_contrib, bool,
+    ) and batt_contrib < -0.01:
         eur = round(min(loss, abs(batt_contrib)), 2)
         if eur > 0:
-            candidates.append({
-                "key": "grid_charge_cost",
-                "eur": eur,
-                "text": (
-                    f"Netladen van de batterij ({grid_to_batt:.1f} kWh van het net) "
-                    f"kostte ca. €{eur:.2f}.".replace(".", ","),
-                ),
-            })
+            candidates.append({"key": "grid_charge_cost", "eur": eur, "kwh": grid_to_batt})
 
     avoided = finance.get("avoided_expensive_eur")
-    if isinstance(avoided, int | float) and avoided < -0.01:
+    if isinstance(avoided, int | float) and not isinstance(avoided, bool) and avoided < -0.01:
         eur = round(min(loss, abs(avoided)), 2)
         if eur > 0:
-            candidates.append({
-                "key": "expensive_peak_import",
-                "eur": eur,
-                "text": (
-                    f"Import tijdens dure uren kostte ca. €{eur:.2f} extra "
-                    f"(ten opzichte van zonder batterij).".replace(".", ","),
-                ),
-            })
+            candidates.append({"key": "expensive_peak_import", "eur": eur})
 
     hold = _hold_active_that_day(audit_rows)
     grid_to_car = float(energy.get("grid_to_car") or 0.0)
@@ -277,14 +301,7 @@ def explain_negative_day(
         if marginal is not None:
             eur = round(min(loss, ev_kwh * marginal), 2)
             if eur > 0:
-                candidates.append({
-                    "key": "ev_import_during_hold",
-                    "eur": eur,
-                    "text": (
-                        f"EV laadde ({ev_kwh:.1f} kWh) terwijl de batterij vastgehouden werd "
-                        f"— ca. €{eur:.2f} netimport.".replace(".", ","),
-                    ),
-                })
+                candidates.append({"key": "ev_import_during_hold", "eur": eur, "kwh": ev_kwh})
 
     audit_blob = " ".join(_row_text(r) for r in audit_rows).lower()
     if any(marker in audit_blob for marker in _NO_TRADE_MARKERS):
@@ -298,14 +315,7 @@ def explain_negative_day(
         if projected is not None and daily_min_savings_eur > projected + 1e-9:
             eur = round(min(loss, daily_min_savings_eur - projected), 2)
             if eur > 0:
-                candidates.append({
-                    "key": "low_spread",
-                    "eur": eur,
-                    "text": _low_spread_text(
-                        eur, names_spaarvloer=low_spread_names_spaarvloer,
-                        daily_min=daily_min_savings_eur,
-                    ),
-                })
+                candidates.append({"key": "low_spread", "eur": eur})
 
     if not candidates:
         return []
@@ -318,7 +328,19 @@ def explain_negative_day(
         scale = loss / total
         for d in picked:
             d["eur"] = round(d["eur"] * scale, 2)
-    return picked
+    out: list[dict] = []
+    for d in picked:
+        if d["eur"] <= 0:
+            continue
+        out.append({
+            "key": d["key"],
+            "eur": d["eur"],
+            "text": _driver_text(
+                d, names_spaarvloer=low_spread_names_spaarvloer,
+                daily_min=daily_min_savings_eur,
+            ),
+        })
+    return out
 
 
 def _negative_days(

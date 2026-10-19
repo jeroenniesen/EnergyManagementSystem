@@ -942,9 +942,15 @@ test.describe("Insights: your week digest (B-58)", () => {
     await page.goto("/");
     await page.getByTestId("nav-insights").click();
     await expect(page.getByTestId("week-digest-loss-days")).toBeVisible();
-    await page.getByTestId("week-digest-loss-2026-06-24").click();
+    await expect(page.getByRole("heading", { name: "Dagen met verlies" })).toHaveCount(0);
+    const toggle = page.getByTestId("week-digest-loss-2026-06-24");
+    await expect(toggle).toContainText("−€1,20");
+    await expect(toggle).toHaveAttribute("aria-expanded", "false");
+    await toggle.click();
+    await expect(toggle).toHaveAttribute("aria-expanded", "true");
     const body = page.getByTestId("week-digest-loss-body-2026-06-24");
     await expect(body).toContainText("€0,70");
+    await expect(body).toContainText("−€0,70");
     await expect(body).toContainText("Netladen");
   });
 });

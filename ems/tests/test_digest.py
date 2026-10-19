@@ -341,18 +341,43 @@ def test_explain_negative_day_fixture_top3_sorted_and_bounded():
         ],
     }
     drivers = explain_negative_day(day_rows, daily_min_savings_eur=0.20)
-    assert 1 <= len(drivers) <= 3
+    assert len(drivers) == 3
     assert drivers == sorted(drivers, key=lambda d: abs(d["eur"]), reverse=True)
     assert sum(d["eur"] for d in drivers) <= 1.20 + 0.05
-    keys = {d["key"] for d in drivers}
-    assert "grid_charge_cost" in keys
-    assert "expensive_peak_import" in keys
-    assert "ev_import_during_hold" in keys
+    assert [d["key"] for d in drivers] == [
+        "grid_charge_cost", "ev_import_during_hold", "expensive_peak_import",
+    ]
+    # Prose cites the capped euro (NL comma), not the pre-scale component and not "ca,".
+    assert drivers[0]["eur"] == 0.54
+    assert drivers[0]["text"] == (
+        "Netladen van de batterij (2,0 kWh van het net) kostte ca. €0,54."
+    )
+    assert drivers[1]["text"] == (
+        "EV laadde (1,0 kWh) terwijl de batterij vastgehouden werd — ca. €0,39 netimport."
+    )
+    assert drivers[2]["text"] == (
+        "Import tijdens dure uren kostte ca. €0,27 extra (ten opzichte van zonder batterij)."
+    )
+    assert "low_spread" not in {d["key"] for d in drivers}
+    for d in drivers:
+        cents = f"{d['eur']:.2f}".replace(".", ",")
+        assert f"€{cents}" in d["text"]
+        assert d["text"].endswith(".")
+        assert "ca," not in d["text"]
 
 
 def test_explain_negative_day_missing_data_returns_empty_drivers():
     day_rows = {"finance": {"day": "2026-07-07", "saved_eur": -2.0, "has_data": True}}
     assert explain_negative_day(day_rows) == []
+
+
+def test_saved_zero_and_positive_days_are_not_negative_days():
+    rows = [_fin("2026-07-06", 0.0), _fin("2026-07-07", 0.40), _fin("2026-07-08", -0.20)]
+    d = build_digest(finance_rows=rows, flows=FLOWS, scores=SCORES, audit_rows=[],
+                     advice=None, week_label=WEEK_LABEL)
+    assert [item["date"] for item in d["negative_days"]] == ["2026-07-08"]
+    assert d["negative_days"][0]["drivers"] == []
+    assert "Oorzaak niet te bepalen" in d["headline"] or "oorzaak niet te bepalen" in d["headline"]
 
 
 def test_negative_days_omit_non_loss_days_and_appear_in_digest():
@@ -374,7 +399,26 @@ def test_low_spread_copy_is_generic_until_spaarvloer_setting_ships():
                    )}}],
     }, daily_min_savings_eur=0.20, low_spread_names_spaarvloer=False)
     low = next(d for d in drivers if d["key"] == "low_spread")
+    assert low["eur"] == 0.15
+    assert low["text"] == (
+        "Krappe prijs-spread: weinig te verdienen met laden/ontladen kostte ca. €0,15."
+    )
     assert "spaarvloer" not in low["text"].lower()
+
+
+def test_low_spread_names_spaarvloer_when_enabled():
+    drivers = explain_negative_day({
+        "finance": {"day": "2026-07-01", "saved_eur": -0.50, "has_data": True},
+        "audit": [{"category": "plan", "summary": "",
+                   "detail": {"reason": (
+                       "Geen handel: geprojecteerde besparing €0,05 < daily_min €0,20 — "
+                       "hele dag no-trade."
+                   )}}],
+    }, daily_min_savings_eur=0.20, low_spread_names_spaarvloer=True)
+    low = next(d for d in drivers if d["key"] == "low_spread")
+    assert "spaarvloer" in low["text"].lower()
+    assert "€0,20" in low["text"]
+    assert "€0.20" not in low["text"]
 
 
 # --- full-shape sanity ----------------------------------------------------------------------------
