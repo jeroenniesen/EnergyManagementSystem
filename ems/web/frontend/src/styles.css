@@ -2456,6 +2456,17 @@ body {
 .week-digest-best-day { color: var(--muted); font-size: 0.85rem; margin: 0 0 10px; }
 .week-digest-tweak { margin-bottom: 8px; }
 .week-digest-coverage { color: var(--muted); font-size: 0.78rem; margin: 0; }
+.week-digest-loss-days { margin-top: 12px; }
+.week-digest-loss-title { font-size: 0.85rem; margin: 0 0 8px; font-weight: 600; }
+.week-digest-loss-list { list-style: none; margin: 0; padding: 0; }
+.week-digest-loss-item { border-top: 1px solid var(--border); }
+.week-digest-loss-toggle {
+  display: flex; align-items: flex-start; gap: 6px; width: 100%;
+  background: none; border: none; padding: 8px 0; text-align: left; cursor: pointer;
+  color: inherit; font: inherit;
+}
+.week-digest-loss-body { padding: 0 0 10px 1.1rem; font-size: 0.85rem; color: var(--muted); }
+.week-digest-loss-hint { display: block; margin-top: 4px; font-size: 0.78rem; }
 @media (max-width: 560px) {
   .week-digest-facts { grid-template-columns: 1fr; }
   .week-digest-head { flex-wrap: wrap; }

@@ -9,8 +9,13 @@ import { useEffect, useState } from "react";
 
 import { apiFetch } from "./auth";
 import { eur } from "./format";
+import { digestEurNl, WEEK_DIGEST_NEGATIVE_DAY } from "./labels";
 
 type BestDay = { date: string; saved_eur: number } | null;
+
+type NegativeDriver = { key: string; eur: number; text: string };
+
+type NegativeDay = { date: string; saved_eur: number; drivers: NegativeDriver[] };
 
 type Digest = {
   week_label: string;
@@ -24,6 +29,7 @@ type Digest = {
   headline: string;
   days_measured: number;
   days_total: number;
+  negative_days?: NegativeDay[];
 };
 
 // The trailing YYYY-MM-DD in a "Week of YYYY-MM-DD" label — mirrors ems/digest.py's own parsing,
@@ -46,6 +52,7 @@ export function WeekDigest() {
   const [digest, setDigest] = useState<Digest | null>(null);
   const [error, setError] = useState(false);
   const [open, setOpen] = useState(true);
+  const [openLossDay, setOpenLossDay] = useState<string | null>(null);
 
   useEffect(() => {
     let alive = true;
@@ -73,6 +80,10 @@ export function WeekDigest() {
   };
   const partial = digest.days_measured < digest.days_total;
   const actionsTotal = digest.actions.mode_switches + digest.actions.overrides;
+  const negativeDays = digest.negative_days ?? [];
+
+  const settingHint = (key: string): string | null =>
+    (WEEK_DIGEST_NEGATIVE_DAY.settingHint as Record<string, string>)[key] ?? null;
 
   return (
     <section className="week-digest" data-testid="week-digest" aria-label="Your week">
@@ -163,6 +174,60 @@ export function WeekDigest() {
             <p className="advisor-hint week-digest-tweak" data-testid="week-digest-tweak">
               {digest.tweak}
             </p>
+          )}
+
+          {negativeDays.length > 0 && (
+            <div className="week-digest-loss-days" data-testid="week-digest-loss-days">
+              <h3 className="week-digest-loss-title">{WEEK_DIGEST_NEGATIVE_DAY.sectionTitle}</h3>
+              <ul className="week-digest-loss-list">
+                {negativeDays.map((day) => {
+                  const expanded = openLossDay === day.date;
+                  return (
+                    <li key={day.date} className="week-digest-loss-item">
+                      <button
+                        type="button"
+                        className="week-digest-loss-toggle"
+                        data-testid={`week-digest-loss-${day.date}`}
+                        aria-expanded={expanded}
+                        onClick={() =>
+                          setOpenLossDay((cur) => (cur === day.date ? null : day.date))
+                        }
+                      >
+                        <span className="week-digest-chevron" aria-hidden="true">›</span>
+                        <span>
+                          {day.date}: {digestEurNl(day.saved_eur)}
+                        </span>
+                      </button>
+                      {expanded && (
+                        <div
+                          className="week-digest-loss-body"
+                          data-testid={`week-digest-loss-body-${day.date}`}
+                        >
+                          {day.drivers.length === 0 ? (
+                            <p>{WEEK_DIGEST_NEGATIVE_DAY.unknownCause}</p>
+                          ) : (
+                            <ol>
+                              {day.drivers.map((driver) => (
+                                <li key={driver.key}>
+                                  <strong>{digestEurNl(-Math.abs(driver.eur))}</strong>{" "}
+                                  {driver.text}
+                                  {settingHint(driver.key) && (
+                                    <span className="week-digest-loss-hint">
+                                      {" "}
+                                      {settingHint(driver.key)}
+                                    </span>
+                                  )}
+                                </li>
+                              ))}
+                            </ol>
+                          )}
+                        </div>
+                      )}
+                    </li>
+                  );
+                })}
+              </ul>
+            </div>
           )}
 
           {partial && (

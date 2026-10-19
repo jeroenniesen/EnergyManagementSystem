@@ -1,7 +1,7 @@
 """The weekly digest (BACKLOG B-58 / roadmap P2 "the Sunday read"): build_digest is pure — canned
 finance rows / flows / scores / audit rows / advisor advice in, the digest dict out. See
 ems/digest.py for the exact audit-string patterns these tests exercise."""
-from ems.digest import build_digest
+from ems.digest import build_digest, explain_negative_day
 
 WEEK_LABEL = "Week of 2026-07-06"
 
@@ -287,7 +287,8 @@ def test_headline_synthesizes_the_week_when_settings_look_right():
     d = build_digest(finance_rows=FULL_WEEK, flows=FLOWS, scores=SCORES, audit_rows=[],
                      advice=None, week_label=WEEK_LABEL)
     assert d["headline"] == (
-        "You saved €6.70 this week, ran 78% self-sufficient and the panels made 24.5 kWh. "
+        "You saved €6.70 this week (Verlies op donderdag: oorzaak niet te bepalen.), "
+        "ran 78% self-sufficient and the panels made 24.5 kWh. "
         "Steady week — settings look right."
     )
 
@@ -308,6 +309,74 @@ def test_headline_is_honest_with_no_priced_days():
     assert d["headline"].startswith("No priced days yet this week, so savings can't be measured.")
 
 
+# --- negative savings days (audit F-49 / #325) ---------------------------------------------------
+
+def test_explain_negative_day_fixture_top3_sorted_and_bounded():
+    """AC1: saved −€1.20 with known rows → ≤3 drivers, sum ≤ |loss| + €0.05."""
+    day_rows = {
+        "finance": {
+            "day": "2026-07-07",
+            "saved_eur": -1.20,
+            "has_data": True,
+            "grid_cost_eur": 4.00,
+            "grid_import_kwh": 8.0,
+            "battery_charge_kwh": 2.5,
+            "battery_contribution_eur": -0.70,
+            "avoided_expensive_eur": -0.35,
+            "solar_self_use_eur": 0.10,
+        },
+        "energy": {
+            "grid_to_battery": 2.0,
+            "grid_to_car": 1.0,
+            "battery_to_car": 0.0,
+        },
+        "audit": [
+            {"category": "battery_decision", "summary": "Would set battery → hold_reserve",
+             "detail": {"reason": "reserve"}},
+            {"category": "battery_decision", "summary": "Plan note",
+             "detail": {"reason": (
+                 "Geen handel: geprojecteerde besparing €0.10 < daily_min €0.20 — "
+                 "hele dag no-trade."
+             )}},
+        ],
+    }
+    drivers = explain_negative_day(day_rows, daily_min_savings_eur=0.20)
+    assert 1 <= len(drivers) <= 3
+    assert drivers == sorted(drivers, key=lambda d: abs(d["eur"]), reverse=True)
+    assert sum(d["eur"] for d in drivers) <= 1.20 + 0.05
+    keys = {d["key"] for d in drivers}
+    assert "grid_charge_cost" in keys
+    assert "expensive_peak_import" in keys
+    assert "ev_import_during_hold" in keys
+
+
+def test_explain_negative_day_missing_data_returns_empty_drivers():
+    day_rows = {"finance": {"day": "2026-07-07", "saved_eur": -2.0, "has_data": True}}
+    assert explain_negative_day(day_rows) == []
+
+
+def test_negative_days_omit_non_loss_days_and_appear_in_digest():
+    rows = FULL_WEEK[:]
+    d = build_digest(finance_rows=rows, flows=FLOWS, scores=SCORES, audit_rows=[],
+                     advice=None, week_label=WEEK_LABEL)
+    assert all(item["saved_eur"] < 0 for item in d["negative_days"])
+    assert {x["date"] for x in d["negative_days"]} == {"2026-07-09"}
+    assert "negative_days" in d
+
+
+def test_low_spread_copy_is_generic_until_spaarvloer_setting_ships():
+    drivers = explain_negative_day({
+        "finance": {"day": "2026-07-01", "saved_eur": -0.50, "has_data": True},
+        "audit": [{"category": "plan", "summary": "",
+                   "detail": {"reason": (
+                       "Geen handel: geprojecteerde besparing €0.05 < daily_min €0.20 — "
+                       "hele dag no-trade."
+                   )}}],
+    }, daily_min_savings_eur=0.20, low_spread_names_spaarvloer=False)
+    low = next(d for d in drivers if d["key"] == "low_spread")
+    assert "spaarvloer" not in low["text"].lower()
+
+
 # --- full-shape sanity ----------------------------------------------------------------------------
 
 def test_build_digest_full_shape():
@@ -323,8 +392,12 @@ def test_build_digest_full_shape():
         "co2_avoided_note": "Avoided 62% of a no-solar home's CO₂ (12 kg vs 32 kg).",
         "actions": {"mode_switches": 0, "negative_soaks": 0, "overrides": 1},
         "tweak": None,
-        "headline": "You saved €6.70 this week, ran 78% self-sufficient and the panels made "
-                    "24.5 kWh. Steady week — settings look right.",
+        "headline": (
+            "You saved €6.70 this week (Verlies op donderdag: oorzaak niet te bepalen.), "
+            "ran 78% self-sufficient and the panels made 24.5 kWh. "
+            "Steady week — settings look right."
+        ),
         "days_measured": 7,
         "days_total": 7,
+        "negative_days": [{"date": "2026-07-09", "saved_eur": -0.1, "drivers": []}],
     }
