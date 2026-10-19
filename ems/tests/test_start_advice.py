@@ -313,6 +313,27 @@ def test_quiet_hours_reject_start_or_end_ac3():
     assert not instant_in_quiet_hours(edge.start, "22:00-07:00", tz)
 
 
+def test_quiet_hours_reject_window_that_only_overlaps_the_middle():
+    """A cycle that starts before and ends after a short quiet period still falls inside it."""
+    tz = ZoneInfo("UTC")
+    base = datetime(2026, 6, 1, 11, 0, tzinfo=UTC)
+    # 11:00–13:00 is the cheapest 2h window. Both endpoints sit outside 12:00–13:00
+    # (13:00 is the exclusive end) while the cycle runs through the quiet period.
+    prices = [0.01] * 8 + [0.40] * 8
+    slots = _slots(prices, base=base)
+    quiet = "12:00-13:00"
+    scoring = StartAdviceScoring(quiet_hours=quiet, site_tz=tz)
+    advice = propose_start_window(
+        slots, duration_slots=8, now=base, assumed_kwh=1.0, scoring=scoring,
+    )
+    assert advice is not None
+    start = datetime.fromisoformat(advice["start"])
+    end = datetime.fromisoformat(advice["end"])
+    assert start == base + timedelta(hours=2)
+    assert not window_touches_quiet_hours(start, end, quiet, tz)
+    assert window_touches_quiet_hours(base, base + timedelta(hours=2), quiet, tz)
+
+
 def test_empty_quiet_hours_matches_price_only_regression_ac3():
     """Empty quiet_hours + no forecast → same window as #227 price-only."""
     prices = [0.05, 0.50, 0.20, 0.20, 0.50, 0.50, 0.50, 0.50]
@@ -385,6 +406,55 @@ def test_est_cost_is_price_minus_solar_times_kwh_without_penalty():
     assert covered["est_cost_eur"] == round((0.40 - solar_value) * 1.0, 2)
     assert "1 slot uses solar export value" in covered["reason"]
     assert "assuming 1 kWh" in covered["reason"]
+
+
+def test_negative_export_credit_is_explained_and_not_a_silent_markup():
+    """spot_minus_tax below the energy tax must not look like a higher import price."""
+    from ems.planner.economics import export_value
+
+    slots = _slots([0.05])
+    scoring = StartAdviceScoring(
+        p50_w_by_slot={slots[0].start: 4000.0},
+        load_w_by_slot={slots[0].start: 0.0},
+        export_model="spot_minus_tax",
+        energy_tax_eur_per_kwh=0.13,
+    )
+    advice = propose_start_window(
+        slots, duration_slots=1, now=BASE, assumed_kwh=1.0, scoring=scoring,
+    )
+    credit = export_value(0.05, model="spot_minus_tax", energy_tax_eur_per_kwh=0.13)
+    assert credit < 0
+    assert advice is not None
+    assert advice["est_cost_eur"] == round((0.05 - credit) * 1.0, 2)
+    assert advice["est_cost_eur"] > 0.05
+    assert "negative export credit" in advice["reason"].lower()
+    assert "import price" in advice["reason"].lower()
+
+
+def test_grid_charge_skip_does_not_call_a_dearer_window_cheaper():
+    """Fuse penalty can rank an overlapping window first even when it costs more euros."""
+    slots = _slots([0.05, 0.45, 0.20, 0.25])
+    load = {s.start: 0.0 for s in slots[:2]}
+    load.update({s.start: 3000.0 for s in slots[2:]})
+    p50 = {s.start: 0.0 for s in slots}
+    scoring = StartAdviceScoring(
+        p50_w_by_slot=p50,
+        load_w_by_slot=load,
+        grid_charge_starts=frozenset({slots[0].start}),
+        grid_limit_w=2500.0,
+        appliance_power_w=2000.0,
+        export_model="fixed",
+        fixed_feed_in_eur_per_kwh=0.0,
+    )
+    advice = propose_start_window(
+        slots, duration_slots=2, now=BASE, assumed_kwh=1.0, scoring=scoring,
+    )
+    assert advice is not None
+    assert advice["start"] == slots[2].start.isoformat()
+    assert "grid-charge" in advice["reason"].lower()
+    assert "cheaper" not in advice["reason"].lower()
+    # Energy estimate of the chosen window, without the fuse penalty.
+    assert advice["est_cost_eur"] == round((0.20 + 0.25) * 0.5, 2)
 
 
 def test_negative_surplus_does_not_change_cost():

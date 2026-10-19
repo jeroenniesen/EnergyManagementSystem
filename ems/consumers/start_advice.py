@@ -117,11 +117,25 @@ def window_touches_quiet_hours(
     quiet_hours: str,
     tz: ZoneInfo,
 ) -> bool:
-    if not str(quiet_hours or "").strip():
+    """True when the advice window starts, ends, or runs inside quiet hours.
+
+    Checking only the two endpoints misses a long cycle that starts before a short
+    quiet period and finishes after it (#333).
+    """
+    if not str(quiet_hours or "").strip() or parse_clock_range(quiet_hours) is None:
         return False
-    return instant_in_quiet_hours(start, quiet_hours, tz) or instant_in_quiet_hours(
-        end, quiet_hours, tz
-    )
+    if end < start:
+        return False
+    # Include the finish instant so a window that ends as quiet hours begin is rejected.
+    cursor = start
+    while cursor <= end:
+        if instant_in_quiet_hours(cursor, quiet_hours, tz):
+            return True
+        nxt = cursor + timedelta(minutes=1)
+        if nxt <= cursor:
+            return False
+        cursor = nxt
+    return False
 
 
 def window_outside_preferred(
@@ -356,7 +370,8 @@ def propose_start_window(
     ranked.sort(key=lambda r: (r[0], r[1]))
 
     grid_starts = scoring.grid_charge_starts if scoring is not None else None
-    chosen = ranked[0]
+    best = ranked[0]
+    chosen = best
     grid_overlap = _window_overlaps_grid_charge(chosen[2], grid_starts)
     skipped_for_grid = False
     if grid_overlap and len(ranked) > 1:
@@ -375,12 +390,20 @@ def propose_start_window(
     start, finish = window[0].start, window[-1].start + SLOT
     duration_label = _fmt_duration(duration_slots)
     avoided_fuse = any(entry[5] > fuse_hits and entry[3] + 1e-9 < econ_sum for entry in ranked)
+    price_sum = sum(float(s.eur_per_kwh) for s in window)
+    # Only claim "cheaper" when the abandoned window's energy estimate really is lower.
+    # A fuse penalty can rank an overlapping window first even when it costs more euros.
+    skipped_cheaper_grid = skipped_for_grid and best[3] + 1e-9 < econ_sum
 
     reason_parts = [
         f"Best {duration_label} window from the day-ahead prices (avg €{avg:.2f}/kWh",
     ]
     if price_only and scoring is not None and scoring.p50_w_by_slot is not None:
         reason_parts.append("; solar/load forecast unavailable — prices only")
+    elif not price_only and econ_sum > price_sum + 1e-6:
+        reason_parts.append(
+            "; negative export credit raises this estimate above the import price"
+        )
     elif not price_only and solar_slots > 0:
         if solar_slots == 1:
             reason_parts.append("; 1 slot uses solar export value")
@@ -388,8 +411,10 @@ def propose_start_window(
             reason_parts.append(f"; {solar_slots} slots use solar export value")
     if grid_overlap:
         reason_parts.append("; overlaps planned grid-charge — consider another time")
-    elif skipped_for_grid:
+    elif skipped_cheaper_grid:
         reason_parts.append("; skipped a cheaper window that overlapped grid-charge")
+    elif skipped_for_grid:
+        reason_parts.append("; avoided a window that overlapped planned grid-charge")
     if fuse_hits or avoided_fuse:
         kw = max(0.0, scoring.appliance_power_w) / 1000.0 if scoring is not None else 2.0
         reason_parts.append(
