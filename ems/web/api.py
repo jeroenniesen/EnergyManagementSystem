@@ -43,7 +43,7 @@ from ems.calibration import attach_solar
 from ems.cars import by_id as car_by_id
 from ems.clock import Clock, SystemClock
 from ems.confidence import plan_confidence
-from ems.connection import watching_only_primary_reason
+from ems.connection import live_writing_fields, watching_only_primary_reason
 from ems.control.mode_controller import ModeController
 from ems.control.override import (
     MAX_MINUTES,
@@ -5325,10 +5325,17 @@ def create_app(
             dev_mode=dev_mode,
             lifecycle_state=lc_state,
         )
+        # #314: display only. Arming stays in build_wiring / ModeController — this never writes
+        # control.dry_run or control.operational, and ``starting``/``no`` never claim live writes.
+        writing, writing_state = live_writing_fields(
+            dry_run=dry_run, cause=cause, lifecycle_state=lc_state,
+        )
         return {
             "dry_run": dry_run,
             "dry_run_reason": reason,
             "dry_run_cause": cause,
+            "live_writing": writing,
+            "live_writing_state": writing_state,
             "dev_mode": dev_mode,
             "soc_pct": raw.soc_pct,
             "grid_power_w": raw.grid_power_w,

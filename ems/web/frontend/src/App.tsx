@@ -20,7 +20,7 @@ import type { DecisionReason } from "./decisionWhy";
 import { buildHeroSynthesis } from "./heroSynthesis";
 import { Icon, type IconName } from "./icons";
 import { DeviceHealthStrip } from "./DeviceHealth";
-import { showTopbarDataQuality, showTopbarDataSource } from "./topbarChips";
+import { liveWritingChip, showTopbarDataQuality, showTopbarDataSource } from "./topbarChips";
 import {
   CAR_BADGE_SUFFIX,
   CAR_BADGE_SUFFIX_DEFAULT,
@@ -40,9 +40,6 @@ import {
   humanize,
   OUTCOME_LABEL,
   pickDeviceHealthAlert,
-  DRY_RUN_CAUSE_LABEL,
-  DRY_RUN_CAUSE_FALLBACK,
-  RUN_MODE,
   SIGNAL_NAME,
 } from "./labels";
 import { Login } from "./Login";
@@ -71,6 +68,9 @@ type Status = {
   dry_run: boolean;
   dry_run_reason?: string | null;
   dry_run_cause?: string | null;
+  /** #314 additive display fields. Missing on older servers — the chip fail-safes to NEE. */
+  live_writing?: boolean | null;
+  live_writing_state?: string | null;
   dev_mode: string;
   soc_pct: number;
   grid_power_w: number;
@@ -804,6 +804,8 @@ export function App() {
   const role = auth.user?.role ?? null;
   const canOperate = role !== "reader";
   const isAdmin = role === "admin";
+  // #314: one chip. Idle tooltip is the latest /api/decision reason; grace copy is separate.
+  const writingChip = liveWritingChip(status, decision?.reason ?? null);
 
   return (
     <>
@@ -811,30 +813,15 @@ export function App() {
       <div className="app">
       <header className="topbar">
         <h1>Smart Energy Manager</h1>
-        {status && (
-          <span
-            className={`badge ${status.dry_run ? "badge-dryrun" : "badge-live"}`}
-            data-testid="run-mode-badge"
-            data-cause={status.dry_run_cause ?? undefined}
-            title={
-              status.dry_run_reason
-                || (status.dry_run ? RUN_MODE.dry.title : RUN_MODE.live.title)
-            }
-          >
-            {status.dry_run ? RUN_MODE.dry.label : RUN_MODE.live.label}
-          </span>
-        )}
-        {status?.dry_run_reason && (
-          <span
-            className="badge badge-muted run-mode-reason"
-            data-testid="run-mode-reason"
-            title={status.dry_run_reason}
-          >
-            {status.dry_run_cause
-              ? (DRY_RUN_CAUSE_LABEL[status.dry_run_cause] ?? status.dry_run_cause)
-              : DRY_RUN_CAUSE_FALLBACK}
-          </span>
-        )}
+        <span
+          className={`badge ${writingChip.state === "yes" ? "badge-live" : "badge-dryrun"}`}
+          data-testid="run-mode-badge"
+          data-state={writingChip.state}
+          data-cause={writingChip.cause ?? undefined}
+          title={writingChip.title}
+        >
+          {writingChip.label}
+        </span>
         {/* B-99: demote redundant "Live sensoren"; keep Demo/mock as attention. */}
         {status && showTopbarDataSource(status.dev_mode) && (
           <span

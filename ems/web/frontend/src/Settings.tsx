@@ -8,10 +8,12 @@ import { type CarModel, type CarsResp } from "./ev";
 import { HaWizard } from "./HaWizard.tsx";
 import {
   HOME_NIGHT_RESERVE,
+  LIVE_WRITING_PANEL,
   learnedNightKwhFromAdvice,
   nightReserveComfortHours,
   humanize,
 } from "./labels";
+import { liveWritingConditions, type LiveWritingStatus } from "./topbarChips";
 import { SectionIcon } from "./settingsIcons";
 
 /** Display labels for setting enum tokens that humanize() alone would mangle. */
@@ -490,6 +492,55 @@ function SolarConfidenceHint({
   );
 }
 
+/** #314 — read-only checklist. Links only change which section is open; they never POST. */
+function LiveWritingPanel({
+  values,
+  status,
+  onOpen,
+}: {
+  values: Record<string, unknown>;
+  status: LiveWritingStatus | null;
+  onOpen: (section: string, highlight: string | null) => void;
+}) {
+  const rows = liveWritingConditions(values, status);
+  return (
+    <section
+      className="settings-access-bar"
+      data-testid="live-writing-panel"
+      aria-label={LIVE_WRITING_PANEL.title}
+    >
+      <h2 className="settings-group-title">{LIVE_WRITING_PANEL.title}</h2>
+      <p className="settings-group-hint">{LIVE_WRITING_PANEL.intro}</p>
+      <ul className="admin-list">
+        {rows.map((row) => (
+          <li
+            key={row.id}
+            className="admin-row"
+            data-testid={`live-writing-row-${row.id}`}
+            data-ok={row.ok ? "yes" : "no"}
+          >
+            <span className="admin-row-main">
+              <span aria-hidden="true">{row.ok ? "✓" : "✗"}</span>
+              <span className="sr-only">{row.ok ? LIVE_WRITING_PANEL.met : LIVE_WRITING_PANEL.unmet}</span>
+              <span className="admin-row-name">{row.label}</span>
+              <span>{row.detail}</span>
+            </span>
+            <button
+              type="button"
+              className="btn-ghost"
+              data-testid={`live-writing-link-${row.id}`}
+              aria-label={`${LIVE_WRITING_PANEL.openSection}: ${row.label}`}
+              onClick={() => onOpen(row.section, row.highlight)}
+            >
+              {LIVE_WRITING_PANEL.openSection}
+            </button>
+          </li>
+        ))}
+      </ul>
+    </section>
+  );
+}
+
 export function Settings({
   onSaved,
   initialSection,
@@ -517,6 +568,7 @@ export function Settings({
   identityAuth?: boolean;
 } = {}) {
   const [schema, setSchema] = useState<SettingField[] | null>(null);
+  const [liveStatus, setLiveStatus] = useState<LiveWritingStatus | null>(null);
   const [values, setValues] = useState<Values>({});
   const [edited, setEdited] = useState<Values>({});
   const [errors, setErrors] = useState<Record<string, string>>({});
@@ -687,6 +739,24 @@ export function Settings({
       }
     })();
     refreshAuth();
+    return () => {
+      alive = false;
+    };
+  }, []);
+
+  // #314: read-only live-writing checklist. GET /api/status only — never writes control.*.
+  useEffect(() => {
+    let alive = true;
+    (async () => {
+      try {
+        const r = await apiFetch("/api/status");
+        if (!r.ok) return;
+        const body = (await r.json()) as LiveWritingStatus;
+        if (alive) setLiveStatus(body);
+      } catch {
+        /* unknown status → checklist stays fail-safe ✗ */
+      }
+    })();
     return () => {
       alive = false;
     };
@@ -1184,6 +1254,12 @@ export function Settings({
           </p>
         </div>
       )}
+
+      <LiveWritingPanel
+        values={values}
+        status={liveStatus}
+        onOpen={(section, highlight) => openSection(section, highlight)}
+      />
 
       <div className="settings-panes">
         <aside className="settings-sidebar">

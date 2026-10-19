@@ -694,4 +694,84 @@ test.describe("EMS settings", () => {
       await expect(page.getByTestId("settings-savebar")).toHaveCount(0);
     });
   });
+
+  // #314 F-29: read-only Live schrijven checklist. Links open a section; nothing is POSTed.
+  test("#314 live-writing panel shows ✓/✗ and does not POST", async ({ page }) => {
+    const posts: string[] = [];
+    page.on("request", (req) => {
+      if (req.method() === "POST") posts.push(new URL(req.url()).pathname);
+    });
+    await page.route("**/api/settings", async (route) => {
+      if (route.request().method() !== "GET") {
+        await route.fulfill({ status: 500, contentType: "application/json", body: "{\"error\":\"no write\"}" });
+        return;
+      }
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          schema: [
+            ...SCHEMA,
+            {
+              key: "control.dry_run", label: "Watch only", type: "bool", default: true,
+              group: "control", help: "Watch only.", min: null, max: null, options: null, step: null, unit: "",
+            },
+            {
+              key: "control.operational", label: "Let the system control the battery", type: "bool",
+              default: false, group: "control", help: "", min: null, max: null, options: null, step: null, unit: "",
+            },
+            {
+              key: "connection.use_live_devices", label: "Use live devices", type: "bool", default: false,
+              group: "connection", help: "", min: null, max: null, options: null, step: null, unit: "",
+            },
+            {
+              key: "prices.tibber_token", label: "Tibber access token", type: "secret", default: "",
+              group: "prices", help: "", min: null, max: null, options: null, step: null, unit: "",
+            },
+          ],
+          values: {
+            ...BASE_VALUES,
+            "control.dry_run": true,
+            "control.operational": false,
+            "connection.use_live_devices": true,
+            "meters.p1_ip": "192.0.2.10",
+            "battery.indevolt_ip": "192.0.2.20",
+            "connection.use_live_prices": true,
+            "prices.tibber_token": "",
+            "prices.tibber_token.__set": true,
+          },
+        }),
+      });
+    });
+    await page.route("**/api/status", async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          dry_run: true,
+          dry_run_cause: "settings_dry_run",
+          dev_mode: "live",
+          live_writing: false,
+          live_writing_state: "no",
+        }),
+      });
+    });
+    await page.goto("/");
+    await page.getByTestId("nav-manage").click();
+    const panel = page.getByTestId("live-writing-panel");
+    await expect(panel).toBeVisible();
+    await expect(panel.getByRole("heading", { name: "Live schrijven" })).toBeVisible();
+    await expect(page.getByTestId("live-writing-row-yaml")).toHaveAttribute("data-ok", "yes");
+    await expect(page.getByTestId("live-writing-row-yaml")).toContainText("✓");
+    await expect(page.getByTestId("live-writing-row-watch_only")).toHaveAttribute("data-ok", "no");
+    await expect(page.getByTestId("live-writing-row-watch_only")).toContainText("✗");
+    await expect(page.getByTestId("live-writing-row-operational")).toHaveAttribute("data-ok", "no");
+    await expect(page.getByTestId("live-writing-row-devices")).toHaveAttribute("data-ok", "yes");
+    await expect(page.getByTestId("live-writing-row-prices")).toHaveAttribute("data-ok", "yes");
+    const before = posts.length;
+    await page.getByTestId("live-writing-link-watch_only").click();
+    await expect(page.getByRole("heading", { name: "Control & safety" })).toBeVisible();
+    expect(posts.slice(before)).toEqual([]);
+    expect(posts.filter((path) => path.includes("/api/settings"))).toEqual([]);
+  });
 });

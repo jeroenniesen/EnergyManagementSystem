@@ -36,6 +36,10 @@ def test_status_reconstructs_house_load():
     assert body["non_ev_load_w"] == 1000
     assert body["soc_pct"] == 55
     assert body["dry_run"] is True
+    # #314: mock is not live writing. Existing dry_run fields stay.
+    assert body["dry_run_cause"] == "mock"
+    assert body["live_writing"] is False
+    assert body["live_writing_state"] == "no"
 
 
 def test_dashboard_snapshot_has_coherent_core_sections():

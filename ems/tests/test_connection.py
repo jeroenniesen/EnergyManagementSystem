@@ -299,6 +299,34 @@ def test_watching_only_primary_reason_priority():
         lifecycle_state="controlling",
     ) == (None, None)
 
+
+def test_live_writing_fields_matrix():
+    """#314 F-29/F-47: yes only while controlling; grace is starting; every floor is no."""
+    from ems.connection import OBSERVING_WATCH_REASON, live_writing_fields
+
+    cases = [
+        ("mock", True, "mock", None, False, "no"),
+        ("replay", True, "mock", None, False, "no"),
+        ("yaml", True, "config_dry_run", None, False, "no"),
+        ("settings", True, "settings_dry_run", None, False, "no"),
+        ("unarmed", True, "unarmed", None, False, "no"),
+        ("prices", True, "no_live_prices", None, False, "no"),
+        ("devices", True, "no_live_devices", None, False, "no"),
+        ("observing", False, "observing", "observing", False, "starting"),
+        ("inactive", False, "observing", "inactive", False, "starting"),
+        ("controlling", False, None, "controlling", True, "yes"),
+        ("manual", False, None, "manual_override", False, "no"),
+        ("unknown lifecycle", False, None, None, False, "no"),
+        ("observing while watch-only", True, "settings_dry_run", "observing", False, "no"),
+    ]
+    for name, dry_run, cause, lifecycle, writing, state in cases:
+        assert live_writing_fields(
+            dry_run=dry_run, cause=cause, lifecycle_state=lifecycle,
+        ) == (writing, state), name
+    # Grace copy is not the Watch-only sentence.
+    assert "Watch only" not in OBSERVING_WATCH_REASON
+    assert "Opstarten" in OBSERVING_WATCH_REASON
+
 def test_settings_watch_only_keeps_driver_unarmed_when_config_allows():
     """#171: Settings dry_run True + force_dry_run True → unarmed even if operational ON."""
     eff = effective_settings({

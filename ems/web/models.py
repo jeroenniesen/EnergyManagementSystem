@@ -359,11 +359,18 @@ class DiagnosticsResponse(APIResponseModel):
 
 
 class StatusResponse(APIResponseModel):
-    """`GET /api/status` — live SoC / powers + watching-only cause (#178)."""
+    """`GET /api/status` — live SoC / powers + watching-only cause (#178, #314).
+
+    ``live_writing`` / ``live_writing_state`` are optional display fields (F-29 / F-47).
+    Older clients, including the iOS app, ignore them. They never arm the battery writer.
+    """
 
     dry_run: bool | None = None
     dry_run_reason: str | None = None
     dry_run_cause: str | None = None
+    # #314: additive. ``yes`` only when the process is actually allowed to command.
+    live_writing: bool | None = None
+    live_writing_state: Literal["yes", "no", "starting"] | None = None
     dev_mode: str | None = None
     soc_pct: float | None = None
     grid_power_w: float | None = None
