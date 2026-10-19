@@ -20,7 +20,9 @@ from datetime import datetime
 
 from ems.domain import BatteryIntent
 from ems.planner import economics
+from ems.planner.budgets import clamp_grid_charge
 from ems.planner.buy_pool import build_buy_pool_info
+from ems.planner.charge_need import stored_kwh_per_slot
 from ems.planner.rule_based import late_pack_charge_starts
 from ems.planner.schedule import SLOT, Plan, PlanSlot
 from ems.sources.forecast import ForecastSlot
@@ -41,6 +43,8 @@ class AdaptiveConfig:
     solar_confidence: float = 0.8
     horizon_slots: int = 96
     negative_price_soak: bool = False  # opt-in: charge on sub-zero slots (paid to consume)
+    max_daily_grid_charge_kwh: float = 12.0  # #317 hard daily grid-buy cap
+    already_bought_today_kwh: float | None = 0.0
 
 
 def plan_adaptive(
@@ -58,7 +62,10 @@ def plan_adaptive(
     plan = _plan_adaptive(prices, forecast, now, soc_pct=soc_pct, load_w_by=load_w_by, cfg=cfg)
     if cfg.negative_price_soak:
         plan = _soak_negative(plan, prices, cfg)
-    return plan
+    per_slot = stored_kwh_per_slot(cfg.max_charge_w, cfg.round_trip_efficiency)
+    return clamp_grid_charge(
+        plan, cfg.already_bought_today_kwh, cfg.max_daily_grid_charge_kwh, per_slot,
+    )
 
 
 def _plan_adaptive(

@@ -26,7 +26,7 @@ import logging
 import threading
 import time
 from collections.abc import Callable
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
@@ -59,6 +59,7 @@ from ems.lifecycle import Lifecycle, OwnershipState
 from ems.perf import PERF_BUDGETS, REGISTRY, atimed, timed
 from ems.planner.adaptive import AdaptiveConfig
 from ems.planner.base import PlannerRequest
+from ems.planner.budgets import read_already_bought_today
 from ems.planner.charge_need import compute_charge_need
 from ems.planner.factory import build_planner
 from ems.planner.projection import BatteryModel, project_energy
@@ -93,6 +94,13 @@ _SAMPLE_MAX_AGE_SECONDS = 600.0
 # lifespan to SEED the box at boot, so it's exported here as the single source of truth.
 HYSTERESIS_KEY = "strategy:hysteresis"
 HYSTERESIS_TTL_SECONDS = 90 * 24 * 3600.0  # long enough to bridge shoulder-season gaps
+
+
+def _stamp_already_bought(cfg: Any, bought: float | None) -> Any:
+    """Attach today's history total without changing any other planner knob."""
+    if cfg is None or not hasattr(cfg, "already_bought_today_kwh"):
+        return cfg
+    return replace(cfg, already_bought_today_kwh=bought)
 
 
 def apply_control_settings(controller: ModeController, settings: dict[str, Any]) -> None:
@@ -783,6 +791,7 @@ class ControlService:
                 if not setting_price_includes_all_fees(s) else 0.0
             ),
             price_includes_all_fees=setting_price_includes_all_fees(s),
+            max_daily_grid_charge_kwh=float(s.get("planner.max_daily_grid_charge_kwh", 12.0)),
         )
 
     def planner_cfg(self) -> PlannerConfig:
@@ -811,6 +820,7 @@ class ControlService:
             allow_grid_topup=s["strategy.summer_grid_topup"],
             max_topup_price_eur_per_kwh=s["strategy.summer_max_topup_price"],
             negative_price_soak=s["planner.negative_price_soak"],
+            max_daily_grid_charge_kwh=float(s.get("planner.max_daily_grid_charge_kwh", 12.0)),
         )
 
     def adaptive_cfg(self) -> AdaptiveConfig:
@@ -824,7 +834,18 @@ class ControlService:
             risk_margin_eur_per_kwh=s["planner.risk_margin_eur_per_kwh"],
             solar_confidence=s["planner.solar_confidence"] / 100.0,
             negative_price_soak=s["planner.negative_price_soak"],
+            max_daily_grid_charge_kwh=float(s.get("planner.max_daily_grid_charge_kwh", 12.0)),
         )
+
+    def already_bought_today_kwh(self, now: datetime) -> float | None:
+        """Grid-charge kWh already bought on the local day of `now`, from history.
+
+        Re-read on every call (no in-memory counter). `None` when history cannot be read —
+        the planner then clamps the new plan only and does not block charging.
+        """
+        store = self._store
+        path = getattr(store, "db_path", None) if store is not None else None
+        return read_already_bought_today(path, now, self._site_tz)
 
     def load_by(self, starts: list[datetime]) -> dict[datetime, float]:
         prof = self._ctx.load_profile_box["profile"]
@@ -961,16 +982,17 @@ class ControlService:
         ) if fc is not None else None
         forecast_issued_at = getattr(fc, "issued_at", None) if fc is not None else None
         mode = self._settings.get("planner.mode", "rule_based")
+        bought = self.already_bought_today_kwh(now)
         request = PlannerRequest(
             now=now,
             prices=prices,
             forecast=forecast,
             soc_pct=soc,
             strategy=strategy,
-            winter_cfg=self._planner_cfg(),
-            summer_cfg=self._summer_cfg(soc),
+            winter_cfg=_stamp_already_bought(self._planner_cfg(), bought),
+            summer_cfg=_stamp_already_bought(self._summer_cfg(soc), bought),
             load_w_by=load_by,
-            adaptive_cfg=self._adaptive_cfg(),
+            adaptive_cfg=_stamp_already_bought(self._adaptive_cfg(), bought),
             expected_ev_kwh=expected_ev_kwh,
             trading_cfg=trading_config_from_settings(
                 self._settings, reserve_soc_pct=self.effective_floor_soc(),
@@ -1037,7 +1059,11 @@ class ControlService:
             )
         recovered, status, catch = recover_if_needed(
             plan, now, soc_pct=soc, prices=prices,
-            enabled=bool(self._settings["planner.recovery_enabled"]), **self.recovery_sizing(),
+            enabled=bool(self._settings["planner.recovery_enabled"]),
+            max_daily_grid_charge_kwh=float(
+                self._settings.get("planner.max_daily_grid_charge_kwh", 12.0)),
+            already_bought_today_kwh=self.already_bought_today_kwh(now),
+            **self.recovery_sizing(),
         )
         # B-22/B-16 interaction (#162): if the forward projection still can't hit the committed
         # target, lower target_soc to what's reachable and keep the charge slots (honest partial).

@@ -347,3 +347,20 @@ def test_recover_if_needed_skips_summer_solar_hoped_target():
     out_plan, status, catch = _recover(30.0, plan, prices, T0 + 4 * SLOT)
     assert out_plan is plan and catch is None
     assert status.status == MISSED  # still diagnosed, just not a grid-charge catch-up
+
+
+def test_catch_up_respects_daily_grid_charge_cap():
+    """AC1: a large missed-window catch-up still stays within 12 kWh of new grid charge."""
+    deadline = T0 + 60 * SLOT
+    plan = _committed_plan(
+        charge_idx=(), end_idx=64, peak=(60, 61), target_soc=100.0, deadline=deadline,
+    )
+    prices = [_price(i, 0.50 if i in (60, 61) else 0.05) for i in range(64)]
+    result = _build(
+        0.0, plan, prices, usable_kwh=40.0, max_charge_w=4000.0,
+        round_trip_efficiency=1.0, max_daily_grid_charge_kwh=12.0,
+        already_bought_today_kwh=0.0,
+    )
+    charged = [s for s in result.plan.slots if s.intent is BatteryIntent.GRID_CHARGE_TO_TARGET]
+    assert sum(s.target_kwh or 0.0 for s in charged) <= 12.0 + 1e-6
+    assert any(s.reason == "Dagplafond 12 kWh bereikt" for s in result.plan.slots)

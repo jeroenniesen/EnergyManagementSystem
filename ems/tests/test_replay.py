@@ -566,3 +566,59 @@ def test_day_vs_auto_includes_import_fee_replay_cost_misses():
     )
     assert vs.auto_grid_cost_eur is not None and auto.cost_eur is not None
     assert vs.auto_grid_cost_eur > auto.cost_eur + 0.01  # fee visibly increases finance-priced cost
+
+
+def _charge_kwh(plan) -> float:
+    from ems.planner.budgets import planned_grid_charge_kwh
+
+    return planned_grid_charge_kwh(plan, 1.0, tz=UTZ)
+
+
+def test_replay_under_cap_day_spend_unchanged_and_over_cap_day_clamped():
+    """AC6 stand-in when ems/data/ems.sqlite is absent: no replayed day above 12 kWh,
+    and a day that already buys under 12 kWh keeps the same planner spend."""
+    from ems.planner.strategy import build_plan
+    from ems.replay import _adaptive_cfg, _summer_cfg, _winter_cfg
+
+    raw, prices = _winter_day()
+    capped = replay_day(raw, prices, [], cfg=_cfg())
+    loose = replay_day(raw, prices, [], cfg=_cfg(**{"planner.max_daily_grid_charge_kwh": 40}))
+    assert capped.data_ok and loose.data_ok
+    assert capped.scenarios["planner"].cost_eur == pytest.approx(
+        loose.scenarios["planner"].cost_eur,
+    )
+
+    # Negative-price soak across a long cheap block would buy well over 12 kWh uncapped.
+    soak_prices = _price_day(lambda i: -0.05 if _hour(i) < 20 else 0.80)
+    soak_raw = _raw_day(1000.0, lambda _i: 0.0)
+    tight = _cfg(**{"planner.negative_price_soak": True, "planner.max_daily_grid_charge_kwh": 12})
+    wide = _cfg(**{"planner.negative_price_soak": True, "planner.max_daily_grid_charge_kwh": 40})
+    for cfg in (tight, wide):
+        day = replay_day(soak_raw, soak_prices, [], cfg=cfg)
+        assert day.data_ok
+        slots = [
+            PriceSlot(
+                start=datetime.fromisoformat(p["start_ts"]),
+                eur_per_kwh=p["eur_per_kwh"],
+            )
+            for p in soak_prices
+        ]
+        plan = build_plan(
+            "winter", prices=slots, forecast=[], now=DAY, soc_pct=0.0,
+            winter_cfg=_winter_cfg(cfg), summer_cfg=_summer_cfg(cfg),
+            load_w_by={s.start: 1000.0 for s in slots}, adaptive_cfg=_adaptive_cfg(cfg),
+        )
+        assert _charge_kwh(plan) <= cfg.max_daily_grid_charge_kwh + 1e-6
+    assert _charge_kwh(build_plan(
+        "winter",
+        prices=[
+            PriceSlot(start=datetime.fromisoformat(p["start_ts"]), eur_per_kwh=p["eur_per_kwh"])
+            for p in soak_prices
+        ],
+        forecast=[], now=DAY, soc_pct=0.0,
+        winter_cfg=_winter_cfg(wide), summer_cfg=_summer_cfg(wide),
+        load_w_by={
+            datetime.fromisoformat(p["start_ts"]): 1000.0 for p in soak_prices
+        },
+        adaptive_cfg=_adaptive_cfg(wide),
+    )) > 12.0

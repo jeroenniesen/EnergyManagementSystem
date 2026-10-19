@@ -19,6 +19,8 @@ from dataclasses import dataclass
 from datetime import datetime
 
 from ems.domain import BatteryIntent
+from ems.planner.budgets import clamp_grid_charge
+from ems.planner.charge_need import stored_kwh_per_slot
 from ems.planner.rule_based import late_pack_charge_starts
 from ems.planner.schedule import SLOT, Plan, PlanSlot
 from ems.sources.forecast import ForecastSlot
@@ -57,6 +59,8 @@ class SummerConfig:
     max_topup_price_eur_per_kwh: float = 0.30  # never top up above this price
     horizon_slots: int = 96
     negative_price_soak: bool = False  # opt-in: sub-zero slots become top-up candidates
+    max_daily_grid_charge_kwh: float = 12.0  # #317 hard daily grid-buy cap
+    already_bought_today_kwh: float | None = 0.0
 
 
 def plan_summer(
@@ -172,5 +176,9 @@ def plan_summer(
             reason = "overnight: running the house on the battery"
         out.append(PlanSlot(p.start, intent, reason, target_soc=target_soc_clamped,
                             deadline=charge_deadline))
-    return Plan(created_at=now, slots=tuple(out), strategy="summer",
+    plan = Plan(created_at=now, slots=tuple(out), strategy="summer",
                 target_soc=target_soc_clamped, deadline=charge_deadline)
+    per_slot = stored_kwh_per_slot(cfg.max_charge_w, cfg.round_trip_efficiency)
+    return clamp_grid_charge(
+        plan, cfg.already_bought_today_kwh, cfg.max_daily_grid_charge_kwh, per_slot,
+    )

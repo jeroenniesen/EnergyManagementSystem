@@ -418,3 +418,44 @@ def test_short_cheap_pool_stays_open_not_daily_cap():
     assert plan.buy_pool.shortfall_kwh > 1
     assert plan.buy_pool.state == "open"
     assert plan.buy_pool.next_chance_start is not None
+
+
+def test_winter_daily_grid_charge_cap_is_12_kwh():
+    """AC1: cap 12 → the winter plan never schedules more than 12 kWh of grid charge."""
+    t0 = datetime(2026, 1, 15, 0, 0, tzinfo=AMS)
+    prices = (
+        [PriceSlot(t0 + i * SLOT, 0.05) for i in range(40)]
+        + [PriceSlot(t0 + (40 + i) * SLOT, 0.80) for i in range(16)]
+    )
+    cfg = PlannerConfig(
+        charge_slots=30, discharge_slots=8, round_trip_efficiency=1.0,
+        degradation_eur_per_kwh=0.0, risk_margin_eur_per_kwh=0.0,
+        max_daily_grid_charge_kwh=12.0,
+    )
+    plan = plan_rule_based(prices, t0, cfg, max_charge_w=4000.0)
+    charged = [s for s in plan.slots if s.intent is BatteryIntent.GRID_CHARGE_TO_TARGET]
+    # Fixed-count path has no target_kwh; 4 kW × 0.25 h × η=1 = 1 kWh/slot.
+    assert len(charged) * 1.0 <= 12.0 + 1e-9
+    assert len(charged) == 12
+    dropped = [s for s in plan.slots if s.reason.startswith("Dagplafond")]
+    assert dropped
+    assert all(s.intent is BatteryIntent.ALLOW_SELF_CONSUMPTION for s in dropped)
+    assert "Dagplafond 12 kWh bereikt" in dropped[0].reason
+
+
+def test_winter_already_bought_8_kwh_leaves_at_most_4():
+    """AC2: injected already-bought history of 8 kWh, cap 12 → ≤ 4 kWh new."""
+    t0 = datetime(2026, 1, 15, 0, 0, tzinfo=AMS)
+    prices = (
+        [PriceSlot(t0 + i * SLOT, 0.05) for i in range(40)]
+        + [PriceSlot(t0 + (40 + i) * SLOT, 0.80) for i in range(16)]
+    )
+    cfg = PlannerConfig(
+        charge_slots=30, discharge_slots=8, round_trip_efficiency=1.0,
+        degradation_eur_per_kwh=0.0, risk_margin_eur_per_kwh=0.0,
+        max_daily_grid_charge_kwh=12.0, already_bought_today_kwh=8.0,
+    )
+    plan = plan_rule_based(prices, t0, cfg, max_charge_w=4000.0)
+    charged = [s for s in plan.slots if s.intent is BatteryIntent.GRID_CHARGE_TO_TARGET]
+    assert len(charged) <= 4
+    assert len(charged) == 4

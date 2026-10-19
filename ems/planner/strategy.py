@@ -20,6 +20,8 @@ from datetime import datetime
 from zoneinfo import ZoneInfo
 
 from ems.planner.adaptive import AdaptiveConfig, plan_adaptive
+from ems.planner.budgets import clamp_grid_charge
+from ems.planner.charge_need import stored_kwh_per_slot
 from ems.planner.rule_based import PlannerConfig, plan_rule_based
 from ems.planner.schedule import Plan
 from ems.planner.summer import SummerConfig, plan_summer
@@ -249,6 +251,38 @@ def build_plan(
     # The resolved strategy is authoritative on the returned plan (whichever planner ran).
     plan = replace(plan, strategy=strategy)
     # Trading overlay (path T vs Z) — may replace strategy with 'trading' when T wins.
-    return maybe_apply_trading(
+    plan = maybe_apply_trading(
         plan, prices, now, trading_cfg, soc_pct=soc_pct, load_w_by=load_w_by,
+    )
+    # Second clamp: trading can add grid-charge after the seasonal planner already clamped.
+    bought, cap, per_slot = _daily_cap_inputs(
+        strategy, winter_cfg, summer_cfg, adaptive_cfg, load_w_by,
+    )
+    return clamp_grid_charge(plan, bought, cap, per_slot)
+
+
+def _daily_cap_inputs(
+    strategy: str,
+    winter_cfg: PlannerConfig,
+    summer_cfg: SummerConfig,
+    adaptive_cfg: AdaptiveConfig | None,
+    load_w_by: dict[datetime, float] | None,
+) -> tuple[float | None, float, float]:
+    """Cap, already-bought and per-slot quantum for the planner that just ran."""
+    if strategy == "summer" and adaptive_cfg is not None and load_w_by is not None:
+        cfg = adaptive_cfg
+        watts, rte = cfg.max_charge_w, cfg.round_trip_efficiency
+    elif strategy == "summer":
+        cfg = summer_cfg
+        watts, rte = cfg.max_charge_w, cfg.round_trip_efficiency
+    elif adaptive_cfg is not None and load_w_by is not None:
+        cfg = winter_cfg
+        watts, rte = adaptive_cfg.max_charge_w, winter_cfg.round_trip_efficiency
+    else:
+        cfg = winter_cfg
+        watts, rte = 4000.0, winter_cfg.round_trip_efficiency
+    return (
+        cfg.already_bought_today_kwh,
+        cfg.max_daily_grid_charge_kwh,
+        stored_kwh_per_slot(watts, rte),
     )
