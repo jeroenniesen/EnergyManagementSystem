@@ -11,7 +11,13 @@ from ems.consumers.models import (
     ConsumerKind,
 )
 from ems.consumers.selection import MOCK_DEVICE_IDS_KEY
-from ems.consumers.start_advice import propose_start_window
+from ems.consumers.start_advice import (
+    StartAdviceScoring,
+    instant_in_quiet_hours,
+    propose_start_window,
+    scoring_from_settings,
+    window_touches_quiet_hours,
+)
 from ems.sources.mock import MockSource
 from ems.sources.prices import PriceSlot
 from ems.storage.history import HistoryStore
@@ -40,7 +46,7 @@ def test_cheapest_contiguous_window_beats_lone_cheap_slot():
     assert advice["avg_eur_per_kwh"] == 0.20
     assert advice["est_cost_eur"] == 0.20  # (0.20+0.20) * 0.5 kWh/slot
     assert advice["assumed_kwh"] == 1.0
-    assert "Cheapest" in advice["reason"]
+    assert "window" in advice["reason"].lower()
     assert "assuming 1 kWh" in advice["reason"]
 
 
@@ -234,6 +240,105 @@ def test_no_start_surface_on_port():
     assert not hasattr(src, "apply")
 
 
+def test_sunny_window_wins_over_slightly_cheaper_night_ac1():
+    """AC1 (#333): higher sticker price but solar export value wins."""
+    prices = [0.04, 0.04, 0.50, 0.10, 0.50, 0.50]
+    slots = _slots(prices)
+    p50 = {slots[3].start: 4000.0}
+    load = {slots[3].start: 500.0}
+    scoring = StartAdviceScoring(
+        p50_w_by_slot=p50,
+        load_w_by_slot=load,
+        export_model="net_metering",
+    )
+    advice = propose_start_window(
+        slots, duration_slots=1, now=BASE, assumed_kwh=0.5, scoring=scoring,
+    )
+    assert advice is not None
+    assert advice["start"] == slots[3].start.isoformat()
+    assert "solar" in advice["reason"].lower()
+    assert advice["assumed_kwh"] == 0.5
+
+
+def test_grid_charge_overlap_picks_next_window_ac2():
+    """AC2 (#333): cheapest window overlaps GRID_CHARGE → next window."""
+    prices = [0.05, 0.05, 0.20, 0.20, 0.50, 0.50]
+    slots = _slots(prices)
+    grid = frozenset({slots[0].start, slots[1].start})
+    scoring = StartAdviceScoring(grid_charge_starts=grid)
+    advice = propose_start_window(
+        slots, duration_slots=2, now=BASE, assumed_kwh=1.0, scoring=scoring,
+    )
+    assert advice is not None
+    assert advice["start"] == (BASE + timedelta(minutes=30)).isoformat()
+    assert "grid-charge" in advice["reason"].lower()
+
+
+def test_quiet_hours_reject_start_or_end_ac3():
+    """AC3 (#333): advice must not start or end inside quiet hours."""
+    from zoneinfo import ZoneInfo
+
+    tz = ZoneInfo("Europe/Amsterdam")
+    # 06:00 UTC = 08:00 AMS in July — inside 22:00-07:00 quiet end edge cases avoided.
+    base = datetime(2026, 7, 11, 10, 0, tzinfo=UTC)
+    prices = [0.10] * 12
+    prices[0] = 0.02
+    prices[1] = 0.02
+    slots = _slots(prices, base=base)
+    scoring = StartAdviceScoring(quiet_hours="22:00-07:00", site_tz=tz)
+    advice = propose_start_window(
+        slots, duration_slots=2, now=base, assumed_kwh=1.0, scoring=scoring,
+    )
+    assert advice is not None
+    start = datetime.fromisoformat(advice["start"])
+    end = datetime.fromisoformat(advice["end"])
+    assert not window_touches_quiet_hours(start, end, "22:00-07:00", tz)
+
+
+def test_empty_quiet_hours_matches_price_only_regression_ac3():
+    """Empty quiet_hours + no forecast → same window as #227 price-only."""
+    prices = [0.05, 0.50, 0.20, 0.20, 0.50, 0.50, 0.50, 0.50]
+    plain = propose_start_window(
+        _slots(prices), duration_slots=2, now=BASE, assumed_kwh=1.0,
+    )
+    scoring = scoring_from_settings({"consumers.quiet_hours": ""})
+    with_scoring = propose_start_window(
+        _slots(prices), duration_slots=2, now=BASE, assumed_kwh=1.0, scoring=scoring,
+    )
+    assert plain == with_scoring
+
+
+def test_reason_mentions_solar_and_assumed_kwh_ac4():
+    prices = [0.30, 0.30, 0.30, 0.30]
+    slots = _slots(prices)
+    p50 = {slots[1].start: 3000.0}
+    load = {slots[1].start: 800.0}
+    scoring = StartAdviceScoring(
+        p50_w_by_slot=p50,
+        load_w_by_slot=load,
+        export_model="net_metering",
+    )
+    advice = propose_start_window(
+        slots, duration_slots=1, now=BASE, assumed_kwh=1.2, scoring=scoring,
+    )
+    assert advice is not None
+    assert advice["est_cost_eur"] is not None
+    assert "assuming 1.2 kWh" in advice["reason"]
+    assert "solar" in advice["reason"].lower()
+
+
+def test_quiet_hours_parser_wraps_midnight():
+    from zoneinfo import ZoneInfo
+
+    tz = ZoneInfo("UTC")
+    late = datetime(2026, 1, 1, 23, 0, tzinfo=UTC)
+    early = datetime(2026, 1, 1, 6, 0, tzinfo=UTC)
+    noon = datetime(2026, 1, 1, 12, 0, tzinfo=UTC)
+    assert instant_in_quiet_hours(late, "22:00-07:00", tz)
+    assert instant_in_quiet_hours(early, "22:00-07:00", tz)
+    assert not instant_in_quiet_hours(noon, "22:00-07:00", tz)
+
+
 def test_settings_defaults_dry_run_true():
     from ems.settings import SETTINGS_BY_KEY, defaults
 
@@ -241,3 +346,5 @@ def test_settings_defaults_dry_run_true():
     assert defaults()["consumers.dry_run"] is True
     assert defaults()["consumers.start_advice_enabled"] is True
     assert defaults()["consumers.default_duration_slots"] == 4
+    assert defaults()["consumers.quiet_hours"] == ""
+    assert defaults()["consumers.preferred_windows"] == "{}"
