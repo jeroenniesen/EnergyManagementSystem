@@ -49,6 +49,70 @@ export const RUN_MODE: Record<"dry" | "live", Labelled> = {
   },
 };
 
+/**
+ * #314 / F-29 / F-47 — one topbar chip: is EMS writing to the battery, and if not, why.
+ * Grace copy is deliberately different from Watch-only ("Alleen kijken" / Instellingen).
+ */
+export const LIVE_WRITING = {
+  yes: "Live schrijven: JA",
+  no: "Live schrijven: NEE",
+  starting: "Opstarten (1–2 min) — nog niet sturend",
+  yesTitle: "EMS schrijft nu naar de batterij.",
+  noTitle: "EMS schrijft niet naar de batterij.",
+  startingTitle:
+    "Opstarten (1–2 min) — sensoren en het plan worden nog gecontroleerd; EMS stuurt nog niet.",
+} as const;
+
+/** Cause suffix after "Live schrijven: NEE — …". Unknown causes omit the suffix (fail-safe NEE). */
+export const LIVE_WRITING_CAUSE: Record<string, string> = {
+  mock: "demo",
+  config_dry_run: "config.yaml",
+  settings_dry_run: "Instellingen (Alleen kijken)",
+  unarmed: "niet bewapend",
+  no_live_prices: "geen live prijzen",
+  no_live_devices: "geen live apparaten",
+  dry_run: "alleen kijken",
+};
+
+export const LIVE_WRITING_PANEL = {
+  title: "Live schrijven",
+  intro: "Alleen weergave. Dit paneel wijzigt geen instelling.",
+  met: "voldaan",
+  unmet: "ontbreekt",
+  openSection: "Naar sectie",
+} as const;
+
+export const LIVE_WRITING_CONDITION: Record<
+  "yaml" | "watch_only" | "operational" | "devices" | "prices",
+  { label: string; ok: string; fail: string }
+> = {
+  yaml: {
+    label: "config.yaml",
+    ok: "config.yaml laat live schrijven toe (dev.mode live, dry_run uit).",
+    fail: "config.yaml of demo/mock blokkeert schrijven. Pas config.yaml aan en herstart.",
+  },
+  watch_only: {
+    label: "Alleen kijken",
+    ok: "Alleen kijken staat uit.",
+    fail: "Alleen kijken staat aan onder Control & safety.",
+  },
+  operational: {
+    label: "Bewapend",
+    ok: "Het systeem mag de batterij sturen.",
+    fail: "Niet bewapend. ‘Let the system control the battery’ staat uit.",
+  },
+  devices: {
+    label: "Live apparaten",
+    ok: "Live apparaten, P1-meter en batterij-IP zijn ingevuld.",
+    fail: "Geen live apparaten, P1-meter of batterij-IP.",
+  },
+  prices: {
+    label: "Live prijzen",
+    ok: "Live Tibber-prijzen en een token zijn ingesteld.",
+    fail: "Geen live prijzen of geen Tibber-token.",
+  },
+};
+
 /** Short labels for /api/status dry_run_cause (#178) — full text stays in dry_run_reason. */
 export const DRY_RUN_CAUSE_LABEL: Record<string, string> = {
   mock: "demo/mock",

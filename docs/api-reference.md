@@ -93,6 +93,17 @@ Quick, concrete cheat-sheet for every integration. Details and rationale are in 
 - Caution: amp changes wake the car; cloud ≈30 cmd/min; `set_charging_amps` min/max undocumented — debounce + min dwell, read bounds at runtime.
 - v1: EV is read-only via the **HomeWizard car meter** (no Tesla credentials needed).
 
+## EMS `GET /api/status` — live writing (display only, #314)
+
+Optional fields on `StatusResponse` (`ems/web/models.py`). Older clients, including the iOS app, ignore unknown keys. Existing `dry_run`, `dry_run_cause` and `dry_run_reason` stay.
+
+| Field | Type | Meaning |
+| --- | --- | --- |
+| `live_writing` | bool, optional | `true` only when EMS is controlling and current price, battery-capability, data-quality and reachability checks pass. |
+| `live_writing_state` | `"yes"` \| `"no"` \| `"starting"`, optional | `starting` = startup grace (about 1–2 min), not Watch-only. `no` = a dry-run floor or any uncertainty. `yes` = controlling and not dry-run. |
+
+These fields do **not** arm writes. Watch-only (`config.yaml`, Settings, `control.operational`) still wins; missing prices or an unknown capability report still leave the battery on its own AUTO mode.
+
 ## Home Assistant (the EMS talks to HA) — planned, not yet implemented
 
 > **[#182](https://github.com/jeroenniesen/EnergyManagementSystem/issues/182) / B-26 reconcile:** none of this section is on the **live control path** today. `ems/sources/ha.py` exists as a **read-only skeleton** (unit-tested) but is **not wired** into `sense` / `connection.py` / config / startup validation. There is no `entity_map` in the shipped `config.yaml`, no MQTT publisher (`paho-mqtt` isn't a dependency; no `ems/publish/`), and Home Assistant is **not required** to run the EMS — every device below is read/written **directly** (see the Indevolt and HomeWizard sections above, and `../SPEC.md` §5.2). This section describes the **target** integration: [B-18 / #107](https://github.com/jeroenniesen/EnergyManagementSystem/issues/107).

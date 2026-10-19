@@ -954,6 +954,8 @@ test.describe("EMS dashboard", () => {
               dry_run: false,
               dry_run_reason: null,
               dry_run_cause: null,
+              live_writing: true,
+              live_writing_state: "yes",
               dev_mode: "live",
               soc_pct: 55,
             },
@@ -2254,8 +2256,11 @@ test.describe("EMS dashboard", () => {
     await openMore(page);
     await expect(page.getByRole("heading", { name: "Smart Energy Manager" })).toBeVisible();
 
-    // Run-mode badge in plain language (dry-run => "Alleen kijken"; M0a is read-only).
-    await expect(page.getByTestId("run-mode-badge")).toHaveText("Alleen kijken");
+    // #314: one chip. The e2e server is mock/dry-run, so live writing is NEE — demo
+    // (replaces the old "Alleen kijken" + separate cause chip).
+    await expect(page.getByTestId("run-mode-badge")).toHaveText("Live schrijven: NEE — demo");
+    await expect(page.getByTestId("run-mode-badge")).toHaveAttribute("data-cause", "mock");
+    await expect(page.getByTestId("run-mode-reason")).toHaveCount(0);
 
     // Live snapshot KPIs live in OutcomeTiles (B-97) — not a PlanStory footer strip.
     await expect(page.getByTestId("outcome-soc")).toContainText("55%");
@@ -2434,6 +2439,8 @@ test.describe("EMS dashboard", () => {
             dry_run: false,
             dry_run_reason: null,
             dry_run_cause: null,
+            live_writing: true,
+            live_writing_state: "yes",
             dev_mode: "live",
           },
           freshness: {
@@ -2469,7 +2476,100 @@ test.describe("EMS dashboard", () => {
     }
     expect(visible).toBeLessThanOrEqual(2);
     expect(visible).toBe(1);
+    await expect(page.getByTestId("run-mode-badge")).toHaveText("Live schrijven: JA");
+    await expect(page.getByTestId("run-mode-badge")).toHaveAttribute("data-state", "yes");
     healthyLive.assertRequested();
+  });
+
+  // #314 F-29/F-47: one chip, one cause, grace copy ≠ Watch-only, never JA while observing.
+  test("#314 live-writing chip shows JA/NEE/grace with data-cause", async ({ page }) => {
+    const cases: Array<{
+      status: Record<string, unknown>;
+      text: string;
+      cause: string | null;
+      state: string;
+      title?: string;
+    }> = [
+      {
+        status: { dry_run: true, dry_run_cause: "mock", dry_run_reason: "demo", dev_mode: "mock", live_writing: false, live_writing_state: "no" },
+        text: "Live schrijven: NEE — demo", cause: "mock", state: "no",
+      },
+      {
+        status: { dry_run: true, dry_run_cause: "mock", dry_run_reason: "replay", dev_mode: "replay", live_writing: false, live_writing_state: "no" },
+        text: "Live schrijven: NEE — demo", cause: "mock", state: "no",
+      },
+      {
+        status: { dry_run: true, dry_run_cause: "config_dry_run", dry_run_reason: "yaml", dev_mode: "live", live_writing: false, live_writing_state: "no" },
+        text: "Live schrijven: NEE — config.yaml", cause: "config_dry_run", state: "no",
+      },
+      {
+        status: { dry_run: true, dry_run_cause: "settings_dry_run", dry_run_reason: "watch", dev_mode: "live", live_writing: false, live_writing_state: "no" },
+        text: "Live schrijven: NEE — Instellingen (Alleen kijken)", cause: "settings_dry_run", state: "no",
+        title: "Laatste idle: batterij blijft op zelfgebruik.",
+      },
+      {
+        status: { dry_run: true, dry_run_cause: "unarmed", dry_run_reason: "off", dev_mode: "live", live_writing: false, live_writing_state: "no" },
+        text: "Live schrijven: NEE — niet bewapend", cause: "unarmed", state: "no",
+      },
+      {
+        status: { dry_run: true, dry_run_cause: "no_live_prices", dry_run_reason: "prices", dev_mode: "live", live_writing: false, live_writing_state: "no" },
+        text: "Live schrijven: NEE — geen live prijzen", cause: "no_live_prices", state: "no",
+      },
+      {
+        status: { dry_run: true, dry_run_cause: "no_live_devices", dry_run_reason: "devices", dev_mode: "live", live_writing: false, live_writing_state: "no" },
+        text: "Live schrijven: NEE — geen live apparaten", cause: "no_live_devices", state: "no",
+      },
+      {
+        status: { dry_run: false, dry_run_cause: "observing", dry_run_reason: "Opstarten (1–2 min) — nog niet sturend", dev_mode: "live", live_writing: false, live_writing_state: "starting" },
+        text: "Opstarten (1–2 min) — nog niet sturend", cause: "observing", state: "starting",
+      },
+      {
+        status: { dry_run: false, dry_run_cause: null, dry_run_reason: null, dev_mode: "live", live_writing: true, live_writing_state: "yes" },
+        text: "Live schrijven: JA", cause: null, state: "yes",
+      },
+      {
+        status: { dry_run: null, dry_run_cause: null, dry_run_reason: null, dev_mode: "live", live_writing: null, live_writing_state: null },
+        text: "Live schrijven: NEE", cause: null, state: "no",
+      },
+    ];
+    let current = cases[0];
+    await page.route("**/api/dashboard", async (route) => {
+      const response = await route.fetch();
+      const dashboard = await response.json();
+      await route.fulfill({
+        response,
+        json: { ...dashboard, status: { ...dashboard.status, ...current.status } },
+      });
+    });
+    await page.route("**/api/decision", async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          intent: "allow_self_consumption",
+          desired_mode: "auto",
+          applied: false,
+          outcome: "dry_run",
+          reason: current.title ?? "Watching only — not commanding.",
+        }),
+      });
+    });
+    for (const row of cases) {
+      current = row;
+      await page.goto("/");
+      const badge = page.getByTestId("run-mode-badge");
+      await expect(badge).toHaveText(row.text);
+      await expect(badge).toHaveAttribute("data-state", row.state);
+      if (row.cause) await expect(badge).toHaveAttribute("data-cause", row.cause);
+      else await expect(badge).not.toHaveAttribute("data-cause");
+      await expect(badge).not.toContainText("Stuurt batterij");
+      if (row.state !== "yes") await expect(badge).not.toContainText("Live schrijven: JA");
+      if (row.state === "starting") {
+        await expect(badge).not.toContainText("Instellingen (Alleen kijken)");
+      }
+      if (row.title) await expect(badge).toHaveAttribute("title", row.title);
+      await expect(page.getByTestId("run-mode-reason")).toHaveCount(0);
+    }
   });
 
   test("shows the controller decision (dry-run) panel", async ({ page }) => {
@@ -4102,7 +4202,22 @@ test.describe("EMS dashboard", () => {
     let failCore = false;
     const dashboardMock = await mockRoute(page, "**/api/dashboard", async (route) => {
       if (!failCore) {
-        await route.continue();
+        const response = await route.fetch();
+        const dashboard = await response.json();
+        await route.fulfill({
+          response,
+          json: {
+            ...dashboard,
+            status: {
+              ...dashboard.status,
+              dry_run: false,
+              dry_run_cause: null,
+              dev_mode: "live",
+              live_writing: true,
+              live_writing_state: "yes",
+            },
+          },
+        });
         return;
       }
       await route.fulfill({
@@ -4125,6 +4240,7 @@ test.describe("EMS dashboard", () => {
     await page.goto("/");
     // Wait until the first successful dashboard paint (hero is enough; alerts may also be present).
     await expect(page.getByTestId("home-state")).toBeVisible({ timeout: 15_000 });
+    await expect(page.getByTestId("run-mode-badge")).toHaveText("Live schrijven: JA");
     failCore = true;
     // Remount the dashboard poll immediately (interval is 10s).
     await page.getByTestId("nav-manage").click();
@@ -4133,6 +4249,7 @@ test.describe("EMS dashboard", () => {
     await expect(page.getByTestId("alert-laatst-bekend")).toHaveText(/Laatst bekend \d{2}:\d{2}/);
     await expect(page.getByTestId("alerts")).toHaveCount(0);
     await expect(page.getByTestId("home-state")).toHaveCount(0);
+    await expect(page.getByTestId("run-mode-badge")).toHaveText("Live schrijven: NEE");
     dashboardMock.assertRequested();
     statusMock.assertRequested();
   });

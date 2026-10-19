@@ -191,6 +191,8 @@ def test_status_exposes_primary_watching_cause():
     assert body["dry_run"] is True
     assert body["dry_run_cause"] == "mock"
     assert body["dry_run_reason"] == MOCK_WATCH_REASON
+    assert body["live_writing"] is False
+    assert body["live_writing_state"] == "no"
 
     # Config yaml floor.
     app_cfg = create_app(
@@ -201,6 +203,8 @@ def test_status_exposes_primary_watching_cause():
         body = client.get("/api/status").json()
     assert body["dry_run_cause"] == "config_dry_run"
     assert body["dry_run_reason"] == CONFIG_WATCH_REASON
+    assert body["live_writing"] is False
+    assert body["live_writing_state"] == "no"
 
     # Unarmed: config allows live, Settings dry_run off, operational default false.
     app_unarmed = create_app(
@@ -214,6 +218,8 @@ def test_status_exposes_primary_watching_cause():
         body = client.get("/api/status").json()
     assert body["dry_run_cause"] == "unarmed"
     assert body["dry_run_reason"] == UNARMED_WATCH_REASON
+    assert body["live_writing"] is False
+    assert body["live_writing_state"] == "no"
 
 
 def test_status_exposes_observing_grace_when_armed():
@@ -242,3 +248,92 @@ def test_status_exposes_observing_grace_when_armed():
     assert body["dry_run"] is False
     assert body["dry_run_cause"] == "observing"
     assert body["dry_run_reason"] == OBSERVING_WATCH_REASON
+    # F-47: grace is not live writing, and the reason is not Watch-only copy.
+    assert body["live_writing"] is False
+    assert body["live_writing_state"] == "starting"
+    assert "Watch only" not in body["dry_run_reason"]
+    assert "Opstarten" in body["dry_run_reason"]
+
+
+def test_status_live_writing_per_floor_and_when_controlling():
+    """#314: /api/status live_writing matches each watch floor, and yes only while controlling."""
+    from fastapi.testclient import TestClient
+
+    from ems.control.mode_controller import ModeController
+    from ems.lifecycle import Lifecycle, OwnershipState
+    from ems.sources.battery import MockBatteryDriver
+    from ems.sources.mock import MockSource
+    from ems.web.api import create_app
+
+    def status_for(**kwargs) -> dict:
+        settings = kwargs.pop("settings", None)
+        app = create_app(MockSource(), tz=ZoneInfo("Europe/Amsterdam"), **kwargs)
+        if settings:
+            app.state.application_context.settings.update(settings)
+        with TestClient(app) as client:
+            return client.get("/api/status").json()
+
+    replay = status_for(
+        dry_run=True, config_dry_run=False, dry_run_block_reason=None, dev_mode="replay",
+    )
+    assert replay["dry_run_cause"] == "mock"
+    assert replay["live_writing"] is False
+    assert replay["live_writing_state"] == "no"
+
+    settings_watch = status_for(
+        dry_run=True, config_dry_run=False, dry_run_block_reason=None, dev_mode="live",
+        settings={
+            "control.dry_run": True,
+            "control.operational": True,
+            "connection.use_live_devices": True,
+            "meters.p1_ip": "192.0.2.10",
+            "battery.indevolt_ip": "192.0.2.20",
+            "connection.use_live_prices": True,
+            "prices.tibber_token": "tok",
+        },
+    )
+    assert settings_watch["dry_run_cause"] == "settings_dry_run"
+    assert settings_watch["live_writing_state"] == "no"
+
+    no_devices = status_for(
+        dry_run=True, config_dry_run=False, dry_run_block_reason=None, dev_mode="live",
+        settings={
+            "control.dry_run": False,
+            "control.operational": True,
+            "connection.use_live_devices": False,
+            "battery.indevolt_ip": "",
+            "connection.use_live_prices": True,
+            "prices.tibber_token": "tok",
+        },
+    )
+    assert no_devices["dry_run_cause"] == "no_live_devices"
+    assert no_devices["live_writing"] is False
+
+    no_prices = status_for(
+        dry_run=True, config_dry_run=False, dry_run_block_reason=None, dev_mode="live",
+        settings={
+            "control.dry_run": False,
+            "control.operational": True,
+            "connection.use_live_devices": True,
+            "meters.p1_ip": "192.0.2.10",
+            "battery.indevolt_ip": "192.0.2.20",
+            "connection.use_live_prices": False,
+            "prices.tibber_token": "",
+        },
+    )
+    assert no_prices["dry_run_cause"] == "no_live_prices"
+    assert no_prices["live_writing_state"] == "no"
+
+    lc = Lifecycle(dry_run=False, startup_grace_seconds=0)
+    lc.state = OwnershipState.CONTROLLING
+    ctl = ModeController(MockBatteryDriver(), lc, dry_run=False)
+    live = status_for(
+        dry_run=False, config_dry_run=False, dry_run_block_reason=None, dev_mode="live",
+        controller=ctl,
+    )
+    assert live["dry_run"] is False
+    assert live["dry_run_cause"] is None
+    assert live["dry_run_reason"] is None
+    # A forged controlling lifecycle without live prices and a probed capability is not live.
+    assert live["live_writing"] is False
+    assert live["live_writing_state"] == "no"
