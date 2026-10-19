@@ -334,5 +334,6 @@ def test_status_live_writing_per_floor_and_when_controlling():
     assert live["dry_run"] is False
     assert live["dry_run_cause"] is None
     assert live["dry_run_reason"] is None
-    assert live["live_writing"] is True
-    assert live["live_writing_state"] == "yes"
+    # A forged controlling lifecycle without live prices and a probed capability is not live.
+    assert live["live_writing"] is False
+    assert live["live_writing_state"] == "no"

@@ -823,7 +823,8 @@ export function App() {
           {writingChip.label}
         </span>
         {/* B-99: demote redundant "Live sensoren"; keep Demo/mock as attention. */}
-        {status && showTopbarDataSource(status.dev_mode) && (
+        {status && showTopbarDataSource(status.dev_mode)
+          && !showTopbarDataQuality(alertsData?.data_quality) && (
           <span
             className="badge badge-muted"
             data-testid="data-source"

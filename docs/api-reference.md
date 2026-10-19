@@ -99,7 +99,7 @@ Optional fields on `StatusResponse` (`ems/web/models.py`). Older clients, includ
 
 | Field | Type | Meaning |
 | --- | --- | --- |
-| `live_writing` | bool, optional | `true` only when EMS may command the battery right now. |
+| `live_writing` | bool, optional | `true` only when EMS is controlling and current price, battery-capability, data-quality and reachability checks pass. |
 | `live_writing_state` | `"yes"` \| `"no"` \| `"starting"`, optional | `starting` = startup grace (about 1–2 min), not Watch-only. `no` = a dry-run floor or any uncertainty. `yes` = controlling and not dry-run. |
 
 These fields do **not** arm writes. Watch-only (`config.yaml`, Settings, `control.operational`) still wins; missing prices or an unknown capability report still leave the battery on its own AUTO mode.

@@ -314,7 +314,7 @@ def test_live_writing_fields_matrix():
         ("devices", True, "no_live_devices", None, False, "no"),
         ("observing", False, "observing", "observing", False, "starting"),
         ("inactive", False, "observing", "inactive", False, "starting"),
-        ("controlling", False, None, "controlling", True, "yes"),
+        ("controlling without safety evidence", False, None, "controlling", False, "no"),
         ("manual", False, None, "manual_override", False, "no"),
         ("unknown lifecycle", False, None, None, False, "no"),
         ("observing while watch-only", True, "settings_dry_run", "observing", False, "no"),
@@ -323,6 +323,12 @@ def test_live_writing_fields_matrix():
         assert live_writing_fields(
             dry_run=dry_run, cause=cause, lifecycle_state=lifecycle,
         ) == (writing, state), name
+    assert live_writing_fields(
+        dry_run=False, cause=None, lifecycle_state="controlling", safety_ready=True,
+    ) == (True, "yes")
+    assert live_writing_fields(
+        dry_run=True, cause="observing", lifecycle_state="observing", safety_ready=True,
+    ) == (False, "no")
     # Grace copy is not the Watch-only sentence.
     assert "Watch only" not in OBSERVING_WATCH_REASON
     assert "Opstarten" in OBSERVING_WATCH_REASON

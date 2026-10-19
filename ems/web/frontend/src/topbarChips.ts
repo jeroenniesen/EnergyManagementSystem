@@ -37,7 +37,7 @@ export type TopbarStatusInput = {
 /** Testids of topbar status chips that would render for this input. */
 export function topbarStatusChipTestIds(input: TopbarStatusInput): string[] {
   const ids: string[] = ["run-mode-badge"];
-  if (showTopbarDataSource(input.dev_mode)) ids.push("data-source");
+  if (showTopbarDataSource(input.dev_mode) && !showTopbarDataQuality(input.data_quality)) ids.push("data-source");
   if (showTopbarDataQuality(input.data_quality)) ids.push("data-quality");
   return ids;
 }
@@ -63,18 +63,16 @@ export type LiveWritingChipModel = {
 };
 
 function resolveLiveWritingState(status: LiveWritingStatus): LiveWritingState {
-  // F-47: observing is never "JA", even if a stale payload also says yes.
-  if (status.dry_run_cause === "observing" || status.live_writing_state === "starting") {
+  // Contradictory or incomplete payloads fail closed. JA requires every new field to agree.
+  if (status.dry_run === true) return "no";
+  if (status.dry_run_cause === "observing" && status.dry_run === false) {
     return "starting";
   }
-  if (status.live_writing_state === "no" || status.dry_run === true || status.live_writing === false) {
-    return "no";
-  }
-  if (status.live_writing_state === "yes" || status.live_writing === true) {
+  if (status.dry_run === false && status.dry_run_cause == null
+      && status.live_writing === true && status.live_writing_state === "yes"
+      && status.dev_mode === "live") {
     return "yes";
   }
-  // Older payloads without the #314 fields: dry_run false and no cause meant "controlling".
-  if (status.dry_run === false && !status.dry_run_cause) return "yes";
   return "no";
 }
 

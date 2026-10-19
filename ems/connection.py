@@ -154,21 +154,25 @@ def live_writing_fields(
     dry_run: bool,
     cause: str | None,
     lifecycle_state: str | None,
+    safety_ready: bool = False,
 ) -> tuple[bool, str]:
     """Display-only live-writing flag for ``/api/status`` (#314, F-29 / F-47).
 
     Returns ``(live_writing, live_writing_state)`` with state ``yes`` | ``no`` | ``starting``.
     Does not arm the writer and does not read or write ``control.*``.
 
-    ``yes`` only when dry-run is off, there is no watch cause, and lifecycle is ``controlling``.
+    ``yes`` only when dry-run is off, there is no watch cause, lifecycle is ``controlling``,
+    and the caller has confirmed the current price horizon and known battery limits.
     Startup grace (``observing`` / ``inactive``, or cause ``observing``) is ``starting`` — never
     ``yes``. Any other uncertainty is ``no``.
     """
+    if dry_run:
+        return False, "no"
     if cause == "observing" or (
         not dry_run and lifecycle_state in ("observing", "inactive")
     ):
         return False, "starting"
-    if dry_run or cause is not None or lifecycle_state != "controlling":
+    if cause is not None or lifecycle_state != "controlling" or not safety_ready:
         return False, "no"
     return True, "yes"
 

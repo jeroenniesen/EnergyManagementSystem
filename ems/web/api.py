@@ -5327,8 +5327,28 @@ def create_app(
         )
         # #314: display only. Arming stays in build_wiring / ModeController — this never writes
         # control.dry_run or control.operational, and ``starting``/``no`` never claim live writes.
+        # A lifecycle left in CONTROLLING can coexist with a failed current price horizon or
+        # unknown capability. Only claim JA when the existing safety inputs still allow control.
+        safety_ready = False
+        if not dry_run and lc_state == "controlling":
+            try:
+                horizon = control.price_horizon_status if control is not None else None
+                cap = _capability_box["cap"]
+                safety_ready = bool(
+                    dev_mode == "live"
+                    and horizon is not None and horizon.ok
+                    and horizon.horizon_end is not None and horizon.horizon_end > now
+                    and _prices_kind() == "live"
+                    and cap is not None
+                    and cap.max_charge_w > 0 and cap.max_discharge_w > 0
+                    and _data_quality(now) != "unsafe"
+                    and reachable is True
+                )
+            except Exception:
+                safety_ready = False
         writing, writing_state = live_writing_fields(
             dry_run=dry_run, cause=cause, lifecycle_state=lc_state,
+            safety_ready=safety_ready,
         )
         return {
             "dry_run": dry_run,

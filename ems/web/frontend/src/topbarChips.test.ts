@@ -85,6 +85,11 @@ describe("B-99 topbar chip budget", () => {
     expect(ids).toEqual(["run-mode-badge", "data-quality"]);
     expect(ids.length).toBeLessThanOrEqual(2);
   });
+
+  it("demo and degraded quality still fit the two-chip budget", () => {
+    expect(topbarStatusChipTestIds({ hasStatus: true, dev_mode: "mock", data_quality: "unsafe" }))
+      .toEqual(["run-mode-badge", "data-quality"]);
+  });
 });
 
 describe("#314 liveWritingChip", () => {
@@ -200,6 +205,12 @@ describe("#314 liveWritingChip", () => {
     expect(liveWritingChip({}).label).toBe(LIVE_WRITING.no);
     expect(liveWritingChip({ live_writing_state: "maybe", dry_run: null }).label).toBe(LIVE_WRITING.no);
     expect(liveWritingChip({ dry_run: true, live_writing_state: "yes" }).label).not.toContain("JA");
+    expect(liveWritingChip({ dry_run: false, dry_run_cause: null, dev_mode: "live" }).state).toBe("no");
+    expect(liveWritingChip({ dry_run: false, dry_run_cause: null, dev_mode: "live", live_writing_state: "yes" }).state).toBe("no");
+    expect(liveWritingChip({ dry_run: false, dry_run_cause: null, dev_mode: "live", live_writing: true }).state).toBe("no");
+    expect(liveWritingChip({ dry_run: true, dry_run_cause: "observing", live_writing_state: "starting" }).state).toBe("no");
+    expect(liveWritingChip({ dry_run: false, dry_run_cause: null, live_writing_state: "starting" }).state).toBe("no");
+    expect(liveWritingChip({ dry_run: false, dry_run_cause: null, dev_mode: "mock", live_writing: true, live_writing_state: "yes" }).state).toBe("no");
   });
 
   it("uses the decision idle reason as the tooltip only while NEE", () => {
@@ -210,7 +221,7 @@ describe("#314 liveWritingChip", () => {
     );
     expect(chip.title).toBe(idle);
     const live = liveWritingChip(
-      { dry_run: false, live_writing: true, live_writing_state: "yes" },
+      { dry_run: false, dry_run_cause: null, dev_mode: "live", live_writing: true, live_writing_state: "yes" },
       idle,
     );
     expect(live.title).toBe(LIVE_WRITING.yesTitle);
