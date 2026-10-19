@@ -1,7 +1,60 @@
 import type { EnergyStoryData, StorySlot } from "./EnergyStory";
-import { HOME_PLAN_STORY, PLAN_ACTION_META } from "./labels";
+import { HOME_PLAN_STORY, HOME_WHY_NOT_BUY, PLAN_ACTION_META } from "./labels";
 
 export const SLOT_MS = 15 * 60 * 1000;
+
+export type BuyPoolCheapestSlot = {
+  start: string;
+  eur_per_kwh: number;
+};
+
+export type BuyPool = {
+  state: string;
+  max_buy_eur_per_kwh: number;
+  cheapest_slot: BuyPoolCheapestSlot | null;
+  shortfall_kwh: number;
+  next_chance: { start: string } | null;
+  pool_size: number;
+};
+
+function eurNl(value: number): string {
+  return `€${value.toFixed(2).replace(".", ",")}`;
+}
+
+function kwhNl(value: number): string {
+  return `${value.toFixed(1).replace(".", ",")} kWh`;
+}
+
+export function shouldShowWhyNotBuy(pool: BuyPool | null | undefined): pool is BuyPool {
+  return pool?.state === "empty";
+}
+
+/** One line for the Home tile (#315 AC3). */
+export function formatWhyNotBuyLine(pool: BuyPool): string {
+  const parts = [
+    HOME_WHY_NOT_BUY.maxBuy(eurNl(pool.max_buy_eur_per_kwh)),
+  ];
+  if (pool.cheapest_slot) {
+    const t = Date.parse(pool.cheapest_slot.start);
+    const time = Number.isFinite(t)
+      ? new Date(t).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", hour12: false })
+      : "—";
+    parts.push(HOME_WHY_NOT_BUY.cheapest(time, eurNl(pool.cheapest_slot.eur_per_kwh)));
+  }
+  if (pool.shortfall_kwh > 1e-9) {
+    parts.push(HOME_WHY_NOT_BUY.shortfall(kwhNl(pool.shortfall_kwh)));
+  }
+  if (pool.next_chance?.start) {
+    const t = Date.parse(pool.next_chance.start);
+    const time = Number.isFinite(t)
+      ? new Date(t).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", hour12: false })
+      : "—";
+    parts.push(HOME_WHY_NOT_BUY.nextChance(time));
+  } else {
+    parts.push(HOME_WHY_NOT_BUY.noChanceInHorizon);
+  }
+  return parts.join(" · ");
+}
 
 export type TimedStorySlot = StorySlot & { startMs: number };
 export type SlotPointMetric = "soc" | "solar";

@@ -385,3 +385,24 @@ describe("gaps and story semantics", () => {
     expect(canonicalAction("discharge")).toBe("discharge");
   });
 });
+
+describe("why not buy (#315)", () => {
+  test("formats the Home tile line and hides unless state is empty", async () => {
+    const { formatWhyNotBuyLine, shouldShowWhyNotBuy } = await import("./planStoryModel");
+    const pool = {
+      state: "empty",
+      max_buy_eur_per_kwh: 0.35,
+      cheapest_slot: { start: "2026-10-16T13:15:00+02:00", eur_per_kwh: 0.37 },
+      shortfall_kwh: 4.2,
+      next_chance: null,
+      pool_size: 0,
+    };
+    expect(shouldShowWhyNotBuy(pool)).toBe(true);
+    expect(shouldShowWhyNotBuy({ ...pool, state: "open" })).toBe(false);
+    const line = formatWhyNotBuyLine(pool);
+    expect(line).toContain("Max inkoopprijs €0,35");
+    expect(line).toContain("Goedkoopste moment 13:15 (€0,37)");
+    expect(line).toContain("Tekort 4,2 kWh");
+    expect(line).toContain("Geen koopmoment in de prijzen van vandaag/morgen");
+  });
+});

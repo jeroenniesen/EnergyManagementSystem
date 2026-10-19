@@ -131,7 +131,19 @@ function batteryPlanReasonFixture(overrides: Record<string, unknown> = {}) {
       unconfirmed: false,
     },
     summary: "Grid top-up is planned to reach the battery target.",
+    buy_pool: null,
     ...overrides,
+  };
+}
+
+function buyPoolEmptyFixture() {
+  return {
+    state: "empty",
+    max_buy_eur_per_kwh: 0.35,
+    cheapest_slot: { start: "2026-10-16T13:15:00+02:00", eur_per_kwh: 0.37 },
+    shortfall_kwh: 4.2,
+    next_chance: null,
+    pool_size: 0,
   };
 }
 
@@ -1610,6 +1622,42 @@ test.describe("EMS dashboard", () => {
     await expect(line).toContainText("scenario intelligence: not active yet");
     await expect(page.getByTestId("plan-story-legend")).toBeVisible();
     await expect(page.getByTestId("story-footer")).toHaveCount(0);
+  });
+
+  test("#315: Waarom niet kopen? tile when decision buy_pool is empty", async ({ page }) => {
+    const pool = buyPoolEmptyFixture();
+    await routePlanStory(page);
+    await routeDashboardStatus(page);
+    await page.route("**/api/battery-plan", (route) => route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify(batteryPlanFixture(
+        { level: "high", reasons: ["Fresh data."] },
+        DEFAULT_PROVENANCE,
+        { reason: batteryPlanReasonFixture({ buy_pool: pool }) },
+      )),
+    }));
+    await page.route("**/api/decision", (route) => route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        intent: "allow_self_consumption",
+        desired_mode: "auto",
+        applied: false,
+        outcome: "idempotent",
+        reason: "self-consumption",
+        decision_reason: batteryPlanReasonFixture({ buy_pool: pool }),
+        buy_pool: pool,
+      }),
+    }));
+    await page.goto("/");
+    const tile = page.getByTestId("why-not-buy");
+    await expect(tile).toBeVisible();
+    await expect(tile).toContainText("Waarom niet kopen?");
+    await expect(tile).toContainText("Max inkoopprijs €0,35");
+    await expect(tile).toContainText("Goedkoopste moment 13:15 (€0,37)");
+    await expect(tile).toContainText("Tekort 4,2 kWh");
+    await expect(tile).toContainText("Geen koopmoment in de prijzen van vandaag/morgen");
   });
 
   // --- B-33 / #85 slice 1: waarom bij laden / vasthouden / zelfconsumptie ---------------------------

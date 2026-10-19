@@ -95,6 +95,8 @@ type Decision = {
   target_soc?: number | null;
   override_active?: boolean;
   home_state?: { headline: string; tone: string; simulated: boolean };
+  decision_reason?: import("./decisionWhy").DecisionReason;
+  buy_pool?: import("./planStoryModel").BuyPool | null;
 };
 
 type ChargeNeed = {
@@ -1117,6 +1119,11 @@ export function App() {
             dataQuality={alertsData?.data_quality}
             nightReserveConfiguredKwh={reserveAdvice?.current_night_reserve_kwh ?? null}
             nightReserveLearnedKwh={reserveAdvice?.night_demand_kwh ?? null}
+            buyPool={
+              decision?.buy_pool
+              ?? batteryPlan?.reason?.buy_pool
+              ?? null
+            }
           />
           {/* B-33 / #85: waarom voor batterij-acties + pauze/reserve (slice 1–2) — één tik, niet
               standaard open. Tekst uit battery-plan `reason` (#84), dry-run zegt "zou". */}

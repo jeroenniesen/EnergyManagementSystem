@@ -2835,7 +2835,8 @@ def create_app(
             return {"intent": None, "desired_mode": None, "applied": False,
                     "outcome": "unconfigured", "reason": "no controller",
                     "plan_reason": None, "override_active": False,
-                    "decision_reason": structured}
+                    "decision_reason": structured,
+                    "buy_pool": structured.get("buy_pool")}
         now = datetime.now(UTC)
 
         # All the blocking/sync work (cached source/price/forecast reads + a read-only preview that
@@ -2847,11 +2848,13 @@ def create_app(
             car_charging = _car_charging(now)
             intent, reason, override_active, tgt, pw, val, car_action = _effective_intent(now)
             if intent is None:
+                dr = _decision_reason_dict(now)
                 return None, {"intent": None, "desired_mode": None, "applied": False,
                               "outcome": "no_plan", "reason": "no plan slot for now",
                               "plan_reason": None, "override_active": False,
                               "car_charging": car_charging,
-                              "decision_reason": _decision_reason_dict(now)}
+                              "decision_reason": dr,
+                              "buy_pool": dr.get("buy_pool")}
             # preview() is read-only — a GET must never write to the battery or mutate counters.
             # Pass the coalesced observed mode so this poll doesn't read battery mode every cycle.
             # car_session keeps the previewed mode honest (DISCHARGE, not AUTO) in a car session.
@@ -2887,6 +2890,7 @@ def create_app(
             "plan_reason_explained": explained["text"],
             "explanation_source": explained["source"],
             "decision_reason": structured,
+            "buy_pool": structured.get("buy_pool"),
             "override_active": override_active,
             # Surfaced so the dashboard can show "car charging — battery held".
             "car_charging": car_charging,

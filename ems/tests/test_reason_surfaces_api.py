@@ -90,6 +90,23 @@ def test_decision_endpoint_carries_structured_decision_reason(tmp_path):
     _assert_same_reason(reason, plan["reason"])
 
 
+def test_decision_and_plan_expose_buy_pool(tmp_path):
+    """AC2: /api/decision and /api/plan surface buy_pool additively (#315)."""
+    with TestClient(_app(tmp_path)) as c:
+        decision = c.get("/api/decision").json()
+        plan = c.get("/api/plan").json()
+    assert "buy_pool" in decision
+    assert decision["buy_pool"] == decision["decision_reason"]["buy_pool"]
+    assert "buy_pool" in plan
+    pool = plan["buy_pool"]
+    assert pool is not None
+    for key in (
+        "state", "max_buy_eur_per_kwh", "cheapest_slot",
+        "shortfall_kwh", "next_chance", "pool_size",
+    ):
+        assert key in pool
+
+
 def test_export_package_manifest_carries_decision_reason(tmp_path):
     with TestClient(_app(tmp_path)) as c:
         r = c.get("/api/export/package?days=7")
@@ -204,6 +221,7 @@ def test_control_tick_audit_detail_includes_decision_reason():
             "cap_reached": False, "unconfirmed": False,
         },
         "summary": "audit-row reason fixture",
+        "buy_pool": None,
     }
     svc = ControlService(
         ctx=ctx, settings=settings, controller=controller, store=None, audit_store=None,
