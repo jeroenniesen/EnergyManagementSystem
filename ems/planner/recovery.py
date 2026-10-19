@@ -36,6 +36,7 @@ from __future__ import annotations
 import math
 from dataclasses import dataclass, replace
 from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
 
 from ems.domain import BatteryIntent
 from ems.planner.budgets import clamp_grid_charge
@@ -169,6 +170,7 @@ def build_catch_up_plan(
     round_trip_efficiency: float,
     max_daily_grid_charge_kwh: float = 12.0,
     already_bought_today_kwh: float | None = 0.0,
+    site_tz: ZoneInfo | None = None,
 ) -> CatchUpResult:
     """Reshape `plan` to catch up a missed charge window (SPEC §8.12).
 
@@ -281,6 +283,7 @@ def build_catch_up_plan(
     )
     recovered = clamp_grid_charge(
         recovered, already_bought_today_kwh, max_daily_grid_charge_kwh, slot_kwh,
+        tz=site_tz or ZoneInfo("Europe/Amsterdam"),
     )
     return CatchUpResult(
         plan=recovered, feasible=feasible, target_soc=recovered_target, kwh_short=kwh_short,
@@ -386,6 +389,7 @@ def recover_if_needed(
     margin_pp: float = 5.0,
     max_daily_grid_charge_kwh: float = 12.0,
     already_bought_today_kwh: float | None = 0.0,
+    site_tz: ZoneInfo | None = None,
 ) -> tuple[Plan, CompletionStatus, CatchUpResult | None]:
     """Pure control-loop entry point: return the plan to act on this cycle plus the diagnosis.
 
@@ -418,5 +422,6 @@ def recover_if_needed(
         round_trip_efficiency=round_trip_efficiency,
         max_daily_grid_charge_kwh=max_daily_grid_charge_kwh,
         already_bought_today_kwh=already_bought_today_kwh,
+        site_tz=site_tz,
     )
     return catch_up.plan, status, catch_up

@@ -255,10 +255,10 @@ def build_plan(
         plan, prices, now, trading_cfg, soc_pct=soc_pct, load_w_by=load_w_by,
     )
     # Second clamp: trading can add grid-charge after the seasonal planner already clamped.
-    bought, cap, per_slot = _daily_cap_inputs(
+    bought, cap, per_slot, site_tz = _daily_cap_inputs(
         strategy, winter_cfg, summer_cfg, adaptive_cfg, load_w_by,
     )
-    return clamp_grid_charge(plan, bought, cap, per_slot)
+    return clamp_grid_charge(plan, bought, cap, per_slot, tz=site_tz)
 
 
 def _daily_cap_inputs(
@@ -267,8 +267,8 @@ def _daily_cap_inputs(
     summer_cfg: SummerConfig,
     adaptive_cfg: AdaptiveConfig | None,
     load_w_by: dict[datetime, float] | None,
-) -> tuple[float | None, float, float]:
-    """Cap, already-bought and per-slot quantum for the planner that just ran."""
+) -> tuple[float | None, float, float, ZoneInfo]:
+    """Cap, already-bought, per-slot quantum and site tz for the planner that just ran."""
     if strategy == "summer" and adaptive_cfg is not None and load_w_by is not None:
         cfg = adaptive_cfg
         watts, rte = cfg.max_charge_w, cfg.round_trip_efficiency
@@ -285,4 +285,5 @@ def _daily_cap_inputs(
         cfg.already_bought_today_kwh,
         cfg.max_daily_grid_charge_kwh,
         stored_kwh_per_slot(watts, rte),
+        cfg.site_tz,
     )

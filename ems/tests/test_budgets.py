@@ -204,6 +204,18 @@ def test_missing_database_is_unknown_not_a_full_cap(tmp_path):
     assert read_already_bought_today(None, now, AMS) is None
 
 
+def test_clamp_honours_site_tz_for_local_today():
+    """Already-bought applies to the plan day in site tz, not a hard-coded zone."""
+    utc = ZoneInfo("UTC")
+    created = datetime(2026, 6, 15, 23, 0, tzinfo=utc)  # still 15 Jun UTC; 16 Jun in Amsterdam
+    slot = _charge(created, kwh=1.0)
+    plan = Plan(created_at=created, slots=(slot,))
+    utc_plan = clamp_grid_charge(plan, 10.0, 12.0, 1.0, tz=utc)
+    ams_plan = clamp_grid_charge(plan, 10.0, 12.0, 1.0, tz=AMS)
+    assert planned_grid_charge_kwh(utc_plan, 1.0, tz=utc) == 1.0  # 12 − 10 budget on 15 Jun
+    assert planned_grid_charge_kwh(ams_plan, 1.0, tz=AMS) == 1.0  # fresh 16 Jun day, full cap
+
+
 def test_injected_history_of_8_kwh_limits_new_charge_to_4():
     """AC2: history says 8 kWh bought, cap 12 → at most 4 kWh of new charge slots."""
     day = datetime(2026, 1, 15, 0, 0, tzinfo=AMS)

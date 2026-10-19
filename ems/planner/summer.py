@@ -15,8 +15,9 @@ the solar forecast and the current SoC; no hardware, no I/O.
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
+from zoneinfo import ZoneInfo
 
 from ems.domain import BatteryIntent
 from ems.planner.budgets import clamp_grid_charge
@@ -61,6 +62,7 @@ class SummerConfig:
     negative_price_soak: bool = False  # opt-in: sub-zero slots become top-up candidates
     max_daily_grid_charge_kwh: float = 12.0  # #317 hard daily grid-buy cap
     already_bought_today_kwh: float | None = 0.0
+    site_tz: ZoneInfo = field(default_factory=lambda: ZoneInfo("Europe/Amsterdam"))
 
 
 def plan_summer(
@@ -181,4 +183,5 @@ def plan_summer(
     per_slot = stored_kwh_per_slot(cfg.max_charge_w, cfg.round_trip_efficiency)
     return clamp_grid_charge(
         plan, cfg.already_bought_today_kwh, cfg.max_daily_grid_charge_kwh, per_slot,
+        tz=cfg.site_tz,
     )

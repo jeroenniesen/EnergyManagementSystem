@@ -97,7 +97,7 @@ def clamp_grid_charge(
 ) -> Plan:
     """Drop grid-charge slots that would exceed the local-day cap.
 
-    `already_bought_today_kwh is None` means history could not be read: clamp this plan
+    ``already_bought_today_kwh is None`` means history could not be read: clamp this plan
     alone (treat already-bought as 0) and log a warning. Never refuse every charge slot
     just because history is missing.
 

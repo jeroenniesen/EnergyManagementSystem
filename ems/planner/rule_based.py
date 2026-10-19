@@ -11,8 +11,9 @@ from __future__ import annotations
 import logging
 import math
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
+from zoneinfo import ZoneInfo
 
 from ems.domain import BatteryIntent
 from ems.planner import economics
@@ -98,6 +99,7 @@ class PlannerConfig:
     # #317: hard daily grid-buy cap. already_bought is today's history (None = unknown).
     max_daily_grid_charge_kwh: float = 12.0
     already_bought_today_kwh: float | None = 0.0
+    site_tz: ZoneInfo = field(default_factory=lambda: ZoneInfo("Europe/Amsterdam"))
 
 
 def _all_auto(prices: list[PriceSlot], now: datetime, note: str) -> Plan:
@@ -154,6 +156,7 @@ def plan_rule_based(
     per_slot = stored_kwh_per_slot(max_charge_w, cfg.round_trip_efficiency)
     return clamp_grid_charge(
         plan, cfg.already_bought_today_kwh, cfg.max_daily_grid_charge_kwh, per_slot,
+        tz=cfg.site_tz,
     )
 
 

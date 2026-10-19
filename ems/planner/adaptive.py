@@ -15,8 +15,9 @@ Pure + unit-tested. The caller supplies the expected load per slot (the learned 
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
+from zoneinfo import ZoneInfo
 
 from ems.domain import BatteryIntent
 from ems.planner import economics
@@ -45,6 +46,7 @@ class AdaptiveConfig:
     negative_price_soak: bool = False  # opt-in: charge on sub-zero slots (paid to consume)
     max_daily_grid_charge_kwh: float = 12.0  # #317 hard daily grid-buy cap
     already_bought_today_kwh: float | None = 0.0
+    site_tz: ZoneInfo = field(default_factory=lambda: ZoneInfo("Europe/Amsterdam"))
 
 
 def plan_adaptive(
@@ -65,6 +67,7 @@ def plan_adaptive(
     per_slot = stored_kwh_per_slot(cfg.max_charge_w, cfg.round_trip_efficiency)
     return clamp_grid_charge(
         plan, cfg.already_bought_today_kwh, cfg.max_daily_grid_charge_kwh, per_slot,
+        tz=cfg.site_tz,
     )
 
 

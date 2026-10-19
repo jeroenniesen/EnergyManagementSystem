@@ -792,6 +792,7 @@ class ControlService:
             ),
             price_includes_all_fees=setting_price_includes_all_fees(s),
             max_daily_grid_charge_kwh=float(s.get("planner.max_daily_grid_charge_kwh", 12.0)),
+            site_tz=self._site_tz,
         )
 
     def planner_cfg(self) -> PlannerConfig:
@@ -821,6 +822,7 @@ class ControlService:
             max_topup_price_eur_per_kwh=s["strategy.summer_max_topup_price"],
             negative_price_soak=s["planner.negative_price_soak"],
             max_daily_grid_charge_kwh=float(s.get("planner.max_daily_grid_charge_kwh", 12.0)),
+            site_tz=self._site_tz,
         )
 
     def adaptive_cfg(self) -> AdaptiveConfig:
@@ -835,6 +837,7 @@ class ControlService:
             solar_confidence=s["planner.solar_confidence"] / 100.0,
             negative_price_soak=s["planner.negative_price_soak"],
             max_daily_grid_charge_kwh=float(s.get("planner.max_daily_grid_charge_kwh", 12.0)),
+            site_tz=self._site_tz,
         )
 
     def already_bought_today_kwh(self, now: datetime) -> float | None:
@@ -1063,6 +1066,7 @@ class ControlService:
             max_daily_grid_charge_kwh=float(
                 self._settings.get("planner.max_daily_grid_charge_kwh", 12.0)),
             already_bought_today_kwh=self.already_bought_today_kwh(now),
+            site_tz=self._site_tz,
             **self.recovery_sizing(),
         )
         # B-22/B-16 interaction (#162): if the forward projection still can't hit the committed

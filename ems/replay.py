@@ -158,6 +158,7 @@ def _winter_cfg(cfg: ReplayConfig) -> PlannerConfig:
         discharge_slots=cfg.discharge_slots,
         negative_price_soak=cfg.negative_price_soak,
         max_daily_grid_charge_kwh=cfg.max_daily_grid_charge_kwh,
+        site_tz=cfg.tz,
     )
 
 
@@ -172,6 +173,7 @@ def _adaptive_cfg(cfg: ReplayConfig) -> AdaptiveConfig:
         solar_confidence=cfg.solar_confidence,
         negative_price_soak=cfg.negative_price_soak,
         max_daily_grid_charge_kwh=cfg.max_daily_grid_charge_kwh,
+        site_tz=cfg.tz,
     )
 
 
@@ -192,6 +194,7 @@ def _summer_cfg(cfg: ReplayConfig) -> SummerConfig:
         max_topup_price_eur_per_kwh=cfg.summer_max_topup_price,
         negative_price_soak=cfg.negative_price_soak,
         max_daily_grid_charge_kwh=cfg.max_daily_grid_charge_kwh,
+        site_tz=cfg.tz,
     )
 
 
