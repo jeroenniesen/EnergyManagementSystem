@@ -631,6 +631,25 @@ export const HOME_PLAN_STORY = {
   socScale: (pct: number) => `${pct}%`,
 } as const;
 
+/** Plan/control SoC floor copy (#310 / audit F-16a). */
+export const HOME_BATTERY_FLOOR = {
+  line: (effective: number, reserveSetting: number, deviceMin: number) => {
+    const eff = Math.round(effective);
+    const dev = Math.round(deviceMin);
+    const res = Math.round(reserveSetting);
+    const reserveNote = eff === res && res > dev ? " (jouw reserve)" : "";
+    return `Vloer ${eff}%${reserveNote} · apparaat ≥ ${dev}%`;
+  },
+  belowReserve: "Onder je reserve",
+} as const;
+
+export function isBelowReserveSoc(
+  socPct: number | null | undefined,
+  reserveSettingSoc: number,
+): boolean {
+  return socPct != null && socPct < reserveSettingSoc;
+}
+
 /**
  * PlanStory action ribbon / legend labels (B-98). Aligned with decisionWhy "Nu: …" vocabulary
  * where the same action appears (laden / zelfconsumptie / vasthouden).

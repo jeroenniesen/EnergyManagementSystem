@@ -1172,6 +1172,8 @@ export function App() {
                   onSetGridTopup={setGridTopup}
                   onTune={() => navigate("manage", "settings")}
                   canOperate={canOperate}
+                  battery={battery}
+                  currentSocPct={status?.soc_pct ?? null}
                 />
               </HomeMoreNest>
             )}
@@ -1305,7 +1307,11 @@ export function App() {
           onClose={() => setBatteryDetail(null)}
           testId="battery-modal"
         >
-          <BatteryChips battery={battery} metric={batteryDetail} />
+          <BatteryChips
+            battery={battery}
+            metric={batteryDetail}
+            currentSocPct={status?.soc_pct ?? null}
+          />
         </Modal>
       )}
       </main>

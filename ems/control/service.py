@@ -54,7 +54,7 @@ from ems.control.override import NONE as OVERRIDE_NONE
 from ems.control.override import Override
 from ems.control.reconciliation import CommandReconciliation
 from ems.control.safety import SafetyValidator, resolve_floor_anti_flap
-from ems.domain import BatteryIntent, PhysicalMode
+from ems.domain import BatteryIntent, CapabilityReport, PhysicalMode
 from ems.lifecycle import Lifecycle, OwnershipState
 from ems.perf import PERF_BUDGETS, REGISTRY, atimed, timed
 from ems.planner.adaptive import AdaptiveConfig
@@ -747,6 +747,20 @@ class ControlService:
         return s is not None and float(s.ev_power_w) > self._settings[
             "control.car_charging_threshold_w"]
 
+    def _cached_capability(self) -> CapabilityReport | None:
+        driver = getattr(self._controller, "driver", None) if self._controller is not None else None
+        cached = getattr(driver, "_capabilities", None) if driver is not None else None
+        if isinstance(cached, CapabilityReport):
+            return cached
+        return None
+
+    def effective_floor_soc(self) -> float:
+        from ems.battery_limits import effective_floor_from_settings
+
+        return effective_floor_from_settings(
+            self._settings, capability=self._cached_capability(),
+        )
+
     def planner_cfg_from(self, s: dict) -> PlannerConfig:
         return PlannerConfig(
             round_trip_efficiency=s["planner.round_trip_efficiency"],
@@ -770,7 +784,7 @@ class ControlService:
         s = self._settings
         return compute_charge_need(
             soc_pct=soc_pct, usable_kwh=s["battery.usable_kwh"],
-            min_reserve_soc=s["battery.min_reserve_soc"],
+            min_reserve_soc=self.effective_floor_soc(),
             night_reserve_kwh=s["battery.night_reserve_kwh"],
             overnight_load_kwh=s["battery.overnight_load_kwh"],
             round_trip_efficiency=s["planner.round_trip_efficiency"],
@@ -794,7 +808,7 @@ class ControlService:
         s = self._settings
         return AdaptiveConfig(
             usable_kwh=s["battery.usable_kwh"],
-            reserve_soc_pct=s["battery.min_reserve_soc"],
+            reserve_soc_pct=self.effective_floor_soc(),
             round_trip_efficiency=s["planner.round_trip_efficiency"],
             max_charge_w=s["battery.max_charge_w"],
             degradation_eur_per_kwh=s["planner.degradation_eur_per_kwh"],
@@ -890,7 +904,7 @@ class ControlService:
         s = self._settings
         return {
             "usable_kwh": s["battery.usable_kwh"],
-            "reserve_soc_pct": s["battery.min_reserve_soc"],
+            "reserve_soc_pct": self.effective_floor_soc(),
             "max_charge_w": s["battery.max_charge_w"],
             "round_trip_efficiency": s["planner.round_trip_efficiency"],
         }
@@ -949,7 +963,9 @@ class ControlService:
             load_w_by=load_by,
             adaptive_cfg=self._adaptive_cfg(),
             expected_ev_kwh=expected_ev_kwh,
-            trading_cfg=trading_config_from_settings(self._settings),
+            trading_cfg=trading_config_from_settings(
+                self._settings, reserve_soc_pct=self.effective_floor_soc(),
+            ),
             planner_mode=mode,
             price_provenance=type(self._price_source).__name__,
             forecast_provider=forecast_provider,
@@ -1019,16 +1035,12 @@ class ControlService:
         # #245: never honest-partial below the device SoC write floor (Indevolt 5%). Prefer a
         # cached CapabilityReport on the driver; fall back to DEFAULT_MIN_TARGET_SOC_PCT.
         from ems.battery_limits import device_min_target_soc
-        from ems.domain import CapabilityReport
 
-        cap = None
-        driver = getattr(self._controller, "driver", None) if self._controller is not None else None
-        cached = getattr(driver, "_capabilities", None) if driver is not None else None
-        if isinstance(cached, CapabilityReport):
-            cap = cached
+        cap = self._cached_capability()
+        floor = self.effective_floor_soc()
         recovered = honest_partial_from_projection(
             recovered, self._project_plan(recovered, now, soc),
-            min_reserve_soc=float(self._settings["battery.min_reserve_soc"]),
+            min_reserve_soc=floor,
             min_target_soc=device_min_target_soc(cap),
         )
         return now, prices, recovered, status, catch
@@ -1048,7 +1060,7 @@ class ControlService:
                 max_charge_w=s["battery.max_charge_w"],
                 max_discharge_w=s["battery.max_discharge_w"],
                 round_trip_efficiency=s["planner.round_trip_efficiency"],
-                reserve_soc_pct=s["battery.min_reserve_soc"],
+                reserve_soc_pct=self.effective_floor_soc(),
             )
             return project_energy(
                 plan.slots, start_soc_pct=soc, solar_w_by=solar_by, load_w_by=load_by,

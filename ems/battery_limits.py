@@ -43,3 +43,32 @@ def soc_control_floor(
         else device_min_target_soc(capability)
     )
     return max(0.0, float(min_reserve_soc), device)
+
+
+def effective_floor_soc(
+    min_reserve_soc: float,
+    *,
+    capability: CapabilityReport | None = None,
+    min_target_soc: float | None = None,
+) -> float:
+    """Plan / projection / validator SoC floor (#310 / audit F-16a).
+
+    Alias for :func:`soc_control_floor` — ``max(user reserve, device min_target_soc)``.
+    """
+    return soc_control_floor(
+        min_reserve_soc,
+        capability=capability,
+        min_target_soc=min_target_soc,
+    )
+
+
+def effective_floor_from_settings(
+    settings: dict,
+    *,
+    capability: CapabilityReport | None = None,
+) -> float:
+    """Runtime floor from the settings store + optional probed capability."""
+    return effective_floor_soc(
+        float(settings.get("battery.min_reserve_soc", 10.0)),
+        capability=capability,
+    )

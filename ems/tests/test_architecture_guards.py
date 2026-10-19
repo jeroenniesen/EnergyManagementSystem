@@ -262,3 +262,27 @@ def test_i2_helper_allows_benign_imports(snippet: str, package: str):
     assert not any(_is_forbidden_import(m) for m in modules), (
         f"{snippet!r} under {package!r} unexpectedly forbidden: {sorted(modules)}"
     )
+
+
+# ---------------------------------------------------------------------------
+# F-16a / #310 — planner / validator / projection must not read the settings key
+# ``battery.min_reserve_soc`` directly; callers pass effective_floor_soc instead.
+# ---------------------------------------------------------------------------
+
+_FLOOR_SETTINGS_KEY = "battery.min_reserve_soc"
+
+
+def test_f16a_planner_paths_do_not_read_min_reserve_settings_key():
+    """#310: reserve floor in plan/validate/project paths comes from battery_limits helpers."""
+    planner_root = _EMS_ROOT / "planner"
+    violations: list[str] = []
+    for path in _iter_ems_py_files(under=planner_root):
+        rel = path.relative_to(_EMS_ROOT).as_posix()
+        text = path.read_text(encoding="utf-8")
+        if _FLOOR_SETTINGS_KEY in text:
+            violations.append(rel)
+    assert not violations, (
+        "Planner code must not read battery.min_reserve_soc directly "
+        "(use effective_floor_soc / caller-supplied reserve_soc_pct):\n  - "
+        + "\n  - ".join(violations)
+    )
