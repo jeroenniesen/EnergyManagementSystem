@@ -2771,6 +2771,67 @@ test.describe("EMS dashboard", () => {
     await expect(page.getByTestId("strategy-summary")).toContainText("Arbitrage");
   });
 
+  test("strategy card shows effective floor and below-reserve hint (#310)", async ({ page }) => {
+    await routeDashboardStatus(page);
+    await page.route("**/api/dashboard", (route) => route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        status: {
+          dry_run: true,
+          dev_mode: "mock",
+          soc_pct: 8,
+          grid_power_w: 1000,
+          solar_power_w: 0,
+          battery_power_w: 0,
+          house_load_w: 1000,
+          non_ev_load_w: 1000,
+        },
+        freshness: { battery: "fresh" },
+        alerts: { data_quality: "complete", alerts: [] },
+      }),
+    }));
+    await page.route("**/api/strategy", (route) =>
+      route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          mode: "auto",
+          active: "summer",
+          auto: true,
+          summary: "Solar-first — fill the battery from your panels.",
+          grid_topup: true,
+          max_topup_price: 0.3,
+        }),
+      }),
+    );
+    await page.route("**/api/battery", (route) => route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        current_mode: "auto",
+        capabilities: { services: ["charge"], p1_paired: true },
+        aggregate: {
+          soc_pct: 8,
+          power_w: 0,
+          capacity_kwh: 10,
+          online_towers: 1,
+          total_towers: 1,
+        },
+        towers: [],
+        effective_floor_soc: 10,
+        reserve_setting_soc: 10,
+        device_min_target_soc: 5,
+      }),
+    }));
+    await page.goto("/");
+    await openMoreNest(page, "strategy");
+    const floor = page.getByTestId("strategy-battery-floor");
+    await expect(floor).toContainText("Vloer 10% (jouw reserve)");
+    await expect(floor).toContainText("apparaat ≥ 5%");
+    await expect(floor).toContainText("Onder je reserve");
+  });
+
   test("strategy card is operable with the keyboard (arrow keys)", async ({ page }) => {
     let mode = "auto";
     await page.route("**/api/strategy", (route) =>
@@ -4413,5 +4474,36 @@ test.describe("EMS dashboard", () => {
     await expect(page.getByTestId("notif-unread-dot")).toHaveCount(0);
     await page.getByTestId("notif-bell").click();
     await expect(page.getByTestId("notif-empty")).toContainText("No notifications yet.");
+  });
+
+  test("home shows the switch-cap banner when charge_blocked_by_cap is alerted", async ({ page }) => {
+    // #316 AC4: mocked /api/alerts (snapshot unavailable, so the fan-out path is what renders).
+    const dashboardMock = await mockRoute(page, "**/api/dashboard", (route) =>
+      route.fulfill({ status: 404, body: "snapshot unavailable" }),
+    );
+    const alertsMock = await mockRoute(page, "**/api/alerts", (route) =>
+      route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          data_quality: "complete",
+          alerts: [{
+            key: "charge_blocked_by_cap",
+            severity: "warning",
+            message: "server copy ignored",
+            safe: "De batterij blijft op de laatst bevestigde stand.",
+            action: "Nothing needed — EMS hervat automatically.",
+            ems_doing: "EMS houdt de huidige stand aan.",
+          }],
+        }),
+      }),
+    );
+    await page.goto("/");
+    const banner = page.getByTestId("alert-charge_blocked_by_cap");
+    await expect(banner).toBeVisible();
+    await expect(banner).toContainText("Geplande lading geblokkeerd door de schakellimiet");
+    await expect(banner).not.toContainText("server copy ignored");
+    dashboardMock.assertRequested();
+    alertsMock.assertRequested();
   });
 });

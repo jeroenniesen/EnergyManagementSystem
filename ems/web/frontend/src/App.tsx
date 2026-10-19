@@ -24,6 +24,7 @@ import { liveWritingChip, showTopbarDataQuality, showTopbarDataSource } from "./
 import {
   CAR_BADGE_SUFFIX,
   CAR_BADGE_SUFFIX_DEFAULT,
+  CHARGE_BLOCKED_BY_CAP,
   DATA_QUALITY,
   DATA_SOURCE,
   type DeviceHealth,
@@ -930,7 +931,9 @@ export function App() {
                 data-severity={a.severity}
                 data-testid={`alert-${a.key}`}
               >
-                <span className="alert-message">{a.message}</span>
+                <span className="alert-message">
+                  {a.key === "charge_blocked_by_cap" ? CHARGE_BLOCKED_BY_CAP.banner : a.message}
+                </span>
                 {/* B-37 / B-09 structured sub-lines — only for warning/critical. Info-level
                     notices (watch-only, dry-run) stay one calm line; their reassurance would
                     otherwise out-shout the hero's "Nothing needed from you." */}
@@ -1132,6 +1135,7 @@ export function App() {
             reason={batteryPlan?.reason as DecisionReason | undefined}
             dryRun={status?.dry_run ?? true}
             overrideActive={Boolean(decision?.override_active)}
+            capBlockedAlert={alerts.some((a) => a.key === "charge_blocked_by_cap")}
           />
           {/* B-63 / #88 + B-95: risk banner only when coverage is below the covered
               threshold; covered/100% is the hero trust-marker (one surface). */}
@@ -1168,6 +1172,8 @@ export function App() {
                   onSetGridTopup={setGridTopup}
                   onTune={() => navigate("manage", "settings")}
                   canOperate={canOperate}
+                  battery={battery}
+                  currentSocPct={status?.soc_pct ?? null}
                 />
               </HomeMoreNest>
             )}
@@ -1301,7 +1307,11 @@ export function App() {
           onClose={() => setBatteryDetail(null)}
           testId="battery-modal"
         >
-          <BatteryChips battery={battery} metric={batteryDetail} />
+          <BatteryChips
+            battery={battery}
+            metric={batteryDetail}
+            currentSocPct={status?.soc_pct ?? null}
+          />
         </Modal>
       )}
       </main>

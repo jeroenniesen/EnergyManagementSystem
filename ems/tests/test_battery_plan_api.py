@@ -457,3 +457,12 @@ def test_battery_plan_evening_peak_coverage_present_when_paused(tmp_path):
     assert cov["available"] is False
     assert cov["probability"] is None
     assert "no current plan" in cov["reason"].lower() or "forecast" in cov["reason"].lower()
+
+
+def test_battery_endpoint_exposes_effective_floor_fields(tmp_path):
+    """#310 / F-16a: additive /api/battery floor fields for dashboard."""
+    with TestClient(_app(tmp_path)) as c:
+        body = c.get("/api/battery").json()
+    assert body["effective_floor_soc"] >= 5.0
+    assert body["reserve_setting_soc"] >= 5.0
+    assert body["device_min_target_soc"] == 5.0

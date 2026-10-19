@@ -194,6 +194,7 @@ def derive_alerts(
     tibber_unavailable_since: datetime | None = None,
     site_tz: ZoneInfo | None = None,
     live_mock_forecast_provider: bool = False,
+    charge_blocked_by_cap: bool = False,
 ) -> list[Alert]:
     """Build the calm alert list for the current snapshot.
 
@@ -210,6 +211,8 @@ def derive_alerts(
     `tibber_unavailable_since`: #126 case (b)/(b-kijkmodus) — Tibber outage while a live
     price source is wired; wording depends on `dry_run` and `confirmed_auto`.
     `live_mock_forecast_provider`: #242 — persisted mock on a live install (synthetic curve).
+    `charge_blocked_by_cap`: #316 — the daily switch cap is blocking a planned grid-charge
+    slot of at least 15 minutes. False as soon as that block is gone (not latched).
     """
     alerts: list[Alert] = []
     if live_mock_forecast_provider:
@@ -336,6 +339,17 @@ def derive_alerts(
             action="Nothing needed — prices refresh automatically. If this lasts into the "
                    "evening, check your Tibber connection in Settings.",
             ems_doing="EMS keeps self-use planning and waits for a full Tibber price horizon.",
+        ))
+    if charge_blocked_by_cap:
+        alerts.append(Alert(
+            "charge_blocked_by_cap", "warning",
+            "Geplande lading geblokkeerd door de schakellimiet",
+            safe="De batterij blijft op de laatst bevestigde stand; EMS voegt geen extra "
+                 "schakeling toe.",
+            action="Nothing needed — EMS hervat de geplande lading automatically zodra de "
+                   "dagelijkse schakellimiet het toelaat.",
+            ems_doing="EMS houdt de huidige stand aan en laadt weer wanneer de schakellimiet "
+                      "het toelaat.",
         ))
     if control_overrun:
         # Hedge: the overrun latch is set even when dry-run / lifecycle / drain skip the AUTO

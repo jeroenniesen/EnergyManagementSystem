@@ -71,6 +71,7 @@ from ems.control.service import (
 )
 from ems.detectors import (
     DeviceUnreachableState,
+    charge_blocked_by_cap_notice,
     device_unreachable,
     ev_plug_in_reminder,
     evening_peak_risk,
@@ -322,6 +323,7 @@ async def _run_detectors(
     p1_stand: str | None = None,
     unreachable_threshold: timedelta | None = None,
     dry_run: bool = True,
+    charge_blocked_by_cap: bool = False,
 ) -> None:
     """Forecast-driven notifications (BACKLOG B-75) + device-unreachable (issue #128): run the
     pure detectors in `ems.detectors` against already-gathered PLAIN data and hand any that
@@ -358,6 +360,14 @@ async def _run_detectors(
         except Exception:
             _log.warning("%s detector failed (non-fatal)", name, exc_info=True)
 
+    # #316: one push per local day while the cap blocks a planned charge. None when clear.
+    try:
+        result = charge_blocked_by_cap_notice(charge_blocked_by_cap, now=now)
+        if result is not None:
+            await notifier.send(**result)
+    except Exception:
+        _log.warning("charge_blocked_by_cap detector failed (non-fatal)", exc_info=True)
+
     if device_states is None:
         return
     thr = unreachable_threshold  # None → detector default (15 min)
@@ -385,9 +395,88 @@ async def _run_detectors(
                          exc_info=True)
 
 
-# One recovery per committed window (its deadline) per day; the KV key IS the deadline so it is
-# inherently per-window — the TTL only bounds table growth past the window it protects.
+# One recovery side effect per local day per root cause (#316 / F-50). The plan deadline
+# shifts on every replan, so it is not part of the key. TTL only bounds table growth.
 _RECOVERY_DEDUPE_TTL_SECONDS = 24 * 3600
+
+# Closed set from #316. Dutch copy is the resident-facing name of each cause.
+_RECOVERY_CAUSE_NL = {
+    "empty_buy_pool": "Geen koopmoment onder je max-prijs",
+    "cap": "Dagelijkse schakellimiet",
+    "fail_safe": "Fail-safe actief",
+    "floor": "Batterij op vloer",
+}
+
+
+def recovery_root_cause(
+    *,
+    accepted: bool,
+    cap_blocked: bool,
+    soc_pct: float,
+    reserve_soc_pct: float,
+    slots_used: int,
+    prices: list[Any],
+    max_buy_price: float | None,
+) -> str | None:
+    """Classify a recovery side effect (#316).
+
+    Priority: a rejected validator is fail-safe; then a cap/held block; then SoC at or
+    below the reserve floor; then an empty buy pool (no slot used, or every quoted price
+    above the max-buy setting). A catch-up that actually bought slots and hits none of
+    those is not one of the four causes — the caller dedupes that path separately.
+    """
+    if not accepted:
+        return "fail_safe"
+    if cap_blocked:
+        return "cap"
+    try:
+        if float(soc_pct) <= float(reserve_soc_pct):
+            return "floor"
+    except (TypeError, ValueError):
+        return "fail_safe"
+    if int(slots_used) <= 0 or _prices_above_max_buy(prices, max_buy_price):
+        return "empty_buy_pool"
+    return None
+
+
+def _prices_above_max_buy(prices: list[Any], max_buy_price: float | None) -> bool:
+    """True when a max-buy setting is set and every quoted price sits strictly above it."""
+    if max_buy_price is None:
+        return False
+    try:
+        ceiling = float(max_buy_price)
+    except (TypeError, ValueError):
+        return False
+    quoted: list[float] = []
+    for slot in prices:
+        eur = getattr(slot, "eur_per_kwh", None)
+        if eur is None and isinstance(slot, dict):
+            eur = slot.get("eur_per_kwh")
+        if eur is None:
+            continue
+        try:
+            quoted.append(float(eur))
+        except (TypeError, ValueError):
+            continue
+    return bool(quoted) and all(eur > ceiling for eur in quoted)
+
+
+def _recovery_notice(cause: str, catch) -> tuple[str, str]:
+    """Title and body for a classified recovery. No target percentage when nothing was bought."""
+    dutch = _RECOVERY_CAUSE_NL[cause]
+    if int(catch.slots_used) <= 0:
+        title = dutch
+        body = (
+            f"{dutch}. root_cause: {cause}. "
+            "EMS laat de geplande bijlading vandaag zitten. "
+            "De batterij blijft veilig; je hoeft niets te doen."
+        )
+        return title, body
+    title = ("Catching up on a missed charge window" if catch.feasible
+             else "Only a partial catch-up is possible")
+    title = f"{title} — {dutch}"
+    body = f"{catch.note} {dutch}. root_cause: {cause}."
+    return title, body
 
 
 async def _run_recovery(
@@ -410,15 +499,19 @@ async def _run_recovery(
     precomputed_status: Any = None,
     margin_pp: float = 5.0,
     dedupe_ttl_seconds: float = _RECOVERY_DEDUPE_TTL_SECONDS,
+    cap_blocked: bool = False,
+    max_buy_price: float | None = None,
 ) -> dict | None:
-    """Missed-window recovery side effects (SPEC §8.12 / BACKLOG B-16).
+    """Missed-window recovery side effects (SPEC §8.12 / BACKLOG B-16, dedupe #316).
 
     Uses the FRESH (pre-recovery) plan's charge-completion diagnosis and, on a MISSED window,
     runs the SAME §8.11 validator over the catch-up plan (`validate_fn` — recovery bypasses
     NOTHING) then
     AUDITs ("plan recovered: …") and sends a calm, B-37-style notification — on a full catch-up and
-    on an impossible/partial one. Rate-limited to ONE recovery per committed window per day via the
-    KV cache. The plan the controller acts on is reshaped separately in `_current_plan` (a pure,
+    on an impossible/partial one. Rate-limited to ONE recovery per local day per root cause
+    (`empty_buy_pool` | `cap` | `fail_safe` | `floor`); a catch-up that bought slots and matches
+    none of those is one `recovered` row per local day. The deadline is not part of the key.
+    The plan the controller acts on is reshaped separately in `_current_plan` (a pure,
     deterministic fold), so this stays a plain, directly-testable function — like `_run_detectors`.
     Returns a summary dict for tests/observability, or None when nothing was done. Never raises."""
     if not enabled or plan is None:
@@ -436,14 +529,6 @@ async def _run_recovery(
     if catch is None:  # on-pace / behind (within margin) / complete / not-applicable → nothing
         return None
 
-    dedupe_key = f"recovery:{plan.deadline.isoformat()}"
-    if cache_store is not None:
-        try:
-            if await asyncio.to_thread(cache_store.get, dedupe_key) is not None:
-                return None  # this window already handled today (rate-limit)
-        except Exception:
-            _log.debug("recovery dedupe read failed (non-fatal)", exc_info=True)
-
     # Recovery NEVER bypasses the validator: the catch-up plan passes through the SAME §8.11 gate
     # (incl. the B-22 projection_short_of_target check). A rejected plan is not acted on — the
     # controller then holds AUTO exactly as it does for any invalid plan.
@@ -451,37 +536,58 @@ async def _run_recovery(
     finding = "failed validation"
     try:
         val = validate_fn(catch.plan, now)
-        accepted = val.ok
+        accepted = bool(val.ok)
         if not accepted and val.findings:
             finding = val.findings[0].message
     except Exception:
         _log.warning("recovery plan validation failed (non-fatal); holding plan as-is",
                      exc_info=True)
 
+    cause = recovery_root_cause(
+        accepted=accepted, cap_blocked=cap_blocked, soc_pct=soc_pct,
+        reserve_soc_pct=reserve_soc_pct, slots_used=int(catch.slots_used),
+        prices=prices, max_buy_price=max_buy_price,
+    )
+    day = now.astimezone(tz).date().isoformat()
+    # `recovered` is only the per-day bucket when none of the four causes apply.
+    dedupe_key = f"recovery:{day}:{cause or 'recovered'}"
+    if cache_store is not None:
+        try:
+            if await asyncio.to_thread(cache_store.get, dedupe_key) is not None:
+                return None  # this cause already handled today (rate-limit)
+        except Exception:
+            _log.debug("recovery dedupe read failed (non-fatal)", exc_info=True)
+
     ts = now.isoformat()
     summary = (f"plan recovered: {catch.reason}" if accepted
                else f"plan recovery rejected (holding self-consumption): {finding}")
+    detail = {
+        "status": status.to_dict(), "feasible": catch.feasible,
+        "target_soc": round(catch.target_soc, 1), "kwh_short": catch.kwh_short,
+        "slots_used": catch.slots_used, "accepted": accepted, "reason": catch.reason,
+    }
+    if cause is not None:
+        detail["root_cause"] = cause
     if audit_store is not None:
         try:
-            await audit_store.append(ts, "plan_recovery", summary, {
-                "status": status.to_dict(), "feasible": catch.feasible,
-                "target_soc": round(catch.target_soc, 1), "kwh_short": catch.kwh_short,
-                "slots_used": catch.slots_used, "accepted": accepted, "reason": catch.reason,
-            })
+            await audit_store.append(ts, "plan_recovery", summary, detail)
         except Exception:
             _log.warning("failed to write recovery audit (non-fatal)", exc_info=True)
 
-    day = now.astimezone(tz).date().isoformat()
     if notifier is not None and accepted:
-        # Calm B-37 shape (what happened + battery is safe + what EMS does / nothing to do). One
-        # message on a full catch-up, one on an impossible/partial one.
-        title = ("Catching up on a missed charge window" if catch.feasible
-                 else "Only a partial catch-up is possible")
+        # Calm B-37 shape. A classified cause is named in Dutch. Zero bought slots never
+        # carry a target percentage. A rejected plan is audited above and not pushed.
+        if cause is not None:
+            title, body = _recovery_notice(cause, catch)
+        else:
+            title = ("Catching up on a missed charge window" if catch.feasible
+                     else "Only a partial catch-up is possible")
+            body = catch.note
         try:
             await notifier.send(
-                key="plan_recovery", title=title, body=catch.note,
+                key="plan_recovery", title=title, body=body,
                 confidence="medium" if catch.feasible else "high",
-                dedupe_key=f"recovery:{day}:{plan.deadline.isoformat()}",
+                dedupe_key=dedupe_key,
             )
         except Exception:
             _log.debug("recovery notification failed (non-fatal)", exc_info=True)
@@ -493,7 +599,7 @@ async def _run_recovery(
             _log.debug("recovery dedupe write failed (non-fatal)", exc_info=True)
 
     return {"accepted": accepted, "feasible": catch.feasible, "status": status.status,
-            "summary": summary}
+            "summary": summary, "root_cause": cause}
 
 
 # Canonical day-ahead snapshot dedupe TTL: keyed by the target DATE, so a couple of days comfortably
@@ -1209,6 +1315,26 @@ def create_app(
     # so the §8.11 validator can check requested power vs the battery's rating without a networked
     # probe on every decision. None until first probed (the validator simply skips that warn-check).
     _capability_box: dict[str, Any] = {"cap": None}
+
+    def _effective_floor_soc() -> float:
+        from ems.battery_limits import effective_floor_from_settings
+
+        return effective_floor_from_settings(
+            settings_cache, capability=_capability_box["cap"],
+        )
+
+    def _battery_floor_payload() -> dict[str, float]:
+        from ems.battery_limits import device_min_target_soc, effective_floor_from_settings
+
+        cap = _capability_box["cap"]
+        reserve = float(settings_cache["battery.min_reserve_soc"])
+        return {
+            "effective_floor_soc": effective_floor_from_settings(
+                settings_cache, capability=cap,
+            ),
+            "reserve_setting_soc": reserve,
+            "device_min_target_soc": device_min_target_soc(cap),
+        }
     # RSS sampler (B-80): samples process memory every 60 s so a slow leak is visible in
     # /api/diagnostics.perf, not just at OOM. Task is created in the lifespan; ref so the
     # finally block can await its stop().
@@ -1931,7 +2057,7 @@ def create_app(
         # Project the *clamped* plan so reachability matches the power we will actually command.
         val = validate_plan(
             aligned, soc_pct=_current_soc(now), data_quality=_data_quality(now),
-            min_reserve_soc=settings_cache["battery.min_reserve_soc"],
+            min_reserve_soc=_effective_floor_soc(),
             max_switches_per_day=int(settings_cache["control.max_switches_per_day"]),
             min_dwell=timedelta(seconds=settings_cache["control.min_dwell_seconds"]),
             capability=cap, projection=_projection_sync(aligned, now),
@@ -2224,7 +2350,7 @@ def create_app(
                 else:
                     need = compute_charge_need(
                         soc_pct=soc, usable_kwh=settings_cache["battery.usable_kwh"],
-                        min_reserve_soc=settings_cache["battery.min_reserve_soc"],
+                        min_reserve_soc=_effective_floor_soc(),
                         night_reserve_kwh=settings_cache["battery.night_reserve_kwh"],
                         overnight_load_kwh=settings_cache["battery.overnight_load_kwh"],
                         round_trip_efficiency=settings_cache["planner.round_trip_efficiency"],
@@ -2392,6 +2518,9 @@ def create_app(
             battery_last_fresh_at=battery_last, p1_last_fresh_at=p1_last,
             battery_stand=battery_stand, battery_stand_confirmed=battery_stand_confirmed,
             p1_stand=p1_stand, unreachable_threshold=thr, dry_run=dry_run,
+            charge_blocked_by_cap=bool(
+                control is not None and control.charge_blocked_by_cap
+            ),
         )
 
     async def _run_recovery_cycle(now: datetime) -> None:
@@ -2417,6 +2546,8 @@ def create_app(
             enabled=bool(settings_cache["planner.recovery_enabled"]), tz=site_tz,
             cache_store=cache_store, notifier=notifier, audit_store=audit_store,
             validate_fn=_validate_plan_obj, precomputed_catch=catch, precomputed_status=_status,
+            cap_blocked=bool(control is not None and control.charge_blocked_by_cap),
+            max_buy_price=settings_cache.get("strategy.summer_max_topup_price"),
             **_recovery_sizing(),
         )
 
@@ -2769,6 +2900,7 @@ def create_app(
         live_mock_forecast = live_mock_forecast_in_use(
             solar_forecast, settings_cache, dev_mode,
         )
+        charge_blocked = bool(control is not None and control.charge_blocked_by_cap)
         alerts = derive_alerts(
             snap, dry_run=dry_run, decision_outcome=outcome,
             confirmed_auto=confirmed_auto, last_command_unconfirmed=last_unconfirmed,
@@ -2777,6 +2909,7 @@ def create_app(
             tibber_unavailable_since=tibber_since,
             site_tz=site_tz,
             live_mock_forecast_provider=live_mock_forecast,
+            charge_blocked_by_cap=charge_blocked,
         )
         out = [{"key": a.key, "severity": a.severity, "message": a.message,
                 "safe": a.safe, "action": a.action, "ems_doing": a.ems_doing} for a in alerts]
@@ -3056,7 +3189,7 @@ def create_app(
         return compute_charge_need(
             soc_pct=soc,
             usable_kwh=s["battery.usable_kwh"],
-            min_reserve_soc=s["battery.min_reserve_soc"],
+            min_reserve_soc=_effective_floor_soc(),
             night_reserve_kwh=s["battery.night_reserve_kwh"],
             overnight_load_kwh=s["battery.overnight_load_kwh"],
             round_trip_efficiency=s["planner.round_trip_efficiency"],
@@ -3165,7 +3298,7 @@ def create_app(
         """Trading portal snapshot: settings, floors, T-vs-Z evaluation (B-106)."""
         now = datetime.now(UTC)
         s = settings_cache
-        cfg = trading_config_from_settings(s)
+        cfg = trading_config_from_settings(s, reserve_soc_pct=_effective_floor_soc())
         block = _trading_floor_block_reason()
         test_block = _test_battery_block_reason(now)
         armed = bool(s.get("control.allow_export_discharge", False))
@@ -3286,7 +3419,7 @@ def create_app(
             return JSONResponse(
                 {"ok": False, "detail": "Test batterij already running"}, status_code=409,
             )
-        floor = float(settings_cache["battery.min_reserve_soc"])
+        floor = _effective_floor_soc()
         power = float(settings_cache["battery.max_discharge_w"])
         until = now + timedelta(seconds=_TEST_BATTERY_SECONDS)
         armed_before = bool(controller.allow_export_discharge)
@@ -3564,6 +3697,7 @@ def create_app(
         out: dict[str, Any] = {
             "current_mode": None, "capabilities": None,
             "towers": towers, "aggregate": aggregate,
+            **_battery_floor_payload(),
         }
         topology = BatteryTopology(normalize_tower_ips(
             settings_cache.get("battery.indevolt_ip"),
@@ -3773,7 +3907,7 @@ def create_app(
             max_charge_w=s["battery.max_charge_w"],
             max_discharge_w=s["battery.max_discharge_w"],
             round_trip_efficiency=s["planner.round_trip_efficiency"],
-            reserve_soc_pct=s["battery.min_reserve_soc"],
+            reserve_soc_pct=_effective_floor_soc(),
         )
 
     async def _forward_projection():
@@ -3844,7 +3978,7 @@ def create_app(
                 # the plan honestly scheduled 0 kWh top-up.
                 need = ui_charge_need(
                     soc_pct=soc, usable_kwh=settings_cache["battery.usable_kwh"],
-                    min_reserve_soc=settings_cache["battery.min_reserve_soc"],
+                    min_reserve_soc=_effective_floor_soc(),
                     night_reserve_kwh=settings_cache["battery.night_reserve_kwh"],
                     overnight_load_kwh=settings_cache["battery.overnight_load_kwh"],
                     round_trip_efficiency=settings_cache["planner.round_trip_efficiency"],
@@ -3894,7 +4028,7 @@ def create_app(
     @app.get("/api/energy-forecast")
     async def energy_forecast() -> dict:
         # Recorded SoC (past) + a forward projection (future) of SoC and grid flow. Read-only.
-        reserve_pct = settings_cache["battery.min_reserve_soc"]
+        reserve_pct = _effective_floor_soc()
         history: list[dict] = []
         if store is not None:
             rows = await store.recent_raw(288)
@@ -4318,7 +4452,7 @@ def create_app(
                 now=now,
                 tz=site_tz,
                 current_soc_pct=float(fp["current_soc"]),
-                reserve_soc_pct=float(settings_cache["battery.min_reserve_soc"]),
+                reserve_soc_pct=_effective_floor_soc(),
                 usable_kwh=float(settings_cache["battery.usable_kwh"]),
                 round_trip_efficiency=float(
                     settings_cache.get("planner.round_trip_efficiency", 0.90),
@@ -4346,7 +4480,7 @@ def create_app(
         /api/energy-story so the plan sentence, graph and diagnostics cannot drift apart.
         """
         now = datetime.now(UTC)
-        reserve_pct = settings_cache["battery.min_reserve_soc"]
+        reserve_pct = _effective_floor_soc()
         quality = _data_quality(now)
         # Plan confidence (B-68): pure synthesis over signals already gathered elsewhere — the
         # data-quality badge above, per-signal freshness, battery reachability (all no-extra-cost
@@ -4628,7 +4762,7 @@ def create_app(
     ) -> dict:
         # One shape, two directions: "next" = the plan/forecast; "past" = recorded last 24h. The
         # frontend renders both with the same timeline so the story reads consistently. Read-only.
-        reserve_pct = settings_cache["battery.min_reserve_soc"]
+        reserve_pct = _effective_floor_soc()
         if window == "past":
             return await _past_story(reserve_pct)
         return await _next_story(reserve_pct)
@@ -4920,7 +5054,7 @@ def create_app(
             usable_kwh=float(settings_cache.get("battery.usable_kwh", 10.8)),
             max_charge_w=float(settings_cache.get("battery.max_charge_w", 4000.0)),
             max_discharge_w=float(settings_cache.get("battery.max_discharge_w", 4000.0)),
-            min_reserve_soc=float(settings_cache.get("battery.min_reserve_soc", 10.0)),
+            min_reserve_soc=_effective_floor_soc(),
             degradation_eur_per_kwh=float(
                 settings_cache.get("planner.degradation_eur_per_kwh", 0.05)
             ),
