@@ -4506,4 +4506,87 @@ test.describe("EMS dashboard", () => {
     dashboardMock.assertRequested();
     alertsMock.assertRequested();
   });
+
+  // #341 / F-11: export-model banner — main content only (B-99 topbar chip budget).
+  test.describe("export model confirmation banner (#341)", () => {
+    const SCHEMA_EXPORT = [
+      {
+        key: "prices.export_price_model", label: "Export (feed-in) value", type: "enum",
+        default: "spot_minus_tax", group: "prices", help: "",
+        min: null, max: null, options: ["net_metering", "spot_minus_tax", "fixed"],
+        step: null, unit: "", advanced: false, applies: "live",
+      },
+    ];
+
+    async function mockUnconfirmedExport(page: Page, model = "spot_minus_tax") {
+      let saved: Record<string, unknown> = {};
+      await page.route("**/api/settings", async (route) => {
+        if (route.request().method() === "POST") {
+          saved = JSON.parse(route.request().postData() || "{}");
+          const nextModel = String(saved["prices.export_price_model"] ?? model);
+          await route.fulfill({
+            status: 200, contentType: "application/json",
+            body: JSON.stringify({
+              values: {
+                "prices.export_price_model": nextModel,
+                "prices.export_model_confirmed": true,
+              },
+            }),
+          });
+        } else {
+          await route.fulfill({
+            status: 200, contentType: "application/json",
+            body: JSON.stringify({
+              schema: SCHEMA_EXPORT,
+              values: {
+                "prices.export_price_model": model,
+                "prices.export_model_confirmed": false,
+              },
+            }),
+          });
+        }
+      });
+      return () => saved;
+    }
+
+    test("shows on Home while export model is not confirmed", async ({ page }) => {
+      await mockUnconfirmedExport(page);
+      await page.goto("/");
+      const banner = page.getByTestId("export-model-banner");
+      await expect(banner).toBeVisible();
+      await expect(banner).toContainText("Kies je exportmodel (saldering of vanaf 2027)");
+      await expect(page.locator(".topbar")).not.toContainText("Kies je exportmodel");
+    });
+
+    test("hides after choosing saldering and posts export model + confirmed", async ({ page }) => {
+      const readSaved = await mockUnconfirmedExport(page);
+      await page.goto("/");
+      await page.getByTestId("export-model-saldering").click();
+      await expect(page.getByTestId("export-model-banner")).toBeHidden();
+      expect(readSaved()["prices.export_price_model"]).toBe("net_metering");
+      expect(readSaved()["prices.export_model_confirmed"]).toBe(true);
+    });
+
+    test("hides after choosing the 2027 model and posts export model + confirmed", async ({ page }) => {
+      const readSaved = await mockUnconfirmedExport(page, "net_metering");
+      await page.goto("/");
+      await page.getByTestId("export-model-from2027").click();
+      await expect(page.getByTestId("export-model-banner")).toBeHidden();
+      expect(readSaved()["prices.export_price_model"]).toBe("spot_minus_tax");
+      expect(readSaved()["prices.export_model_confirmed"]).toBe(true);
+    });
+
+    test("choice on Settings stays hidden on Home", async ({ page }) => {
+      const readSaved = await mockUnconfirmedExport(page);
+      await page.goto("/");
+      await page.getByTestId("nav-manage").click();
+      await expect(page.getByTestId("export-model-banner")).toBeVisible();
+      await page.getByTestId("export-model-saldering").click();
+      await expect(page.getByTestId("export-model-banner")).toBeHidden();
+      expect(readSaved()["prices.export_price_model"]).toBe("net_metering");
+      expect(readSaved()["prices.export_model_confirmed"]).toBe(true);
+      await page.getByTestId("nav-dashboard").click();
+      await expect(page.getByTestId("export-model-banner")).toBeHidden();
+    });
+  });
 });

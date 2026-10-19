@@ -124,6 +124,12 @@ SETTINGS_SCHEMA: tuple[SettingsField, ...] = (
         options=("spot_minus_tax", "net_metering", "fixed"),
     ),
     SettingsField(
+        "prices.export_model_confirmed", "Export model confirmed", "bool", False, "prices",
+        help="Set when the household explicitly chose saldering vs the 2027-ready export model "
+        "(#341 / audit F-11). Omitted from Manage — the Home/Settings banner owns the choice.",
+        show_in_settings=False,
+    ),
+    SettingsField(
         "prices.energy_tax_eur_per_kwh", "Export energy tax", "number", 0.13, "prices",
         help="Energy tax subtracted from the spot price when export is valued at spot-minus-tax "
         "(post-2027 dynamic contracts).",
@@ -1129,6 +1135,8 @@ def validate_settings(
             clean["control.grid_limit_w"] = GRID_FUSE_PRESET_W[fuse]
         elif fuse == "unset":
             clean["control.grid_limit_w"] = float(SETTINGS_BY_KEY["control.grid_limit_w"].default)
+    # #341: do not invent prices.export_model_confirmed here. effective_settings() re-validates
+    # the whole store on read; confirmation is applied only by POST /api/settings.
     return clean, errors
 
 
