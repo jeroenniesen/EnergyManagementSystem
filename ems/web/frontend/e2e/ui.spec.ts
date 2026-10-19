@@ -4564,12 +4564,28 @@ test.describe("EMS dashboard", () => {
       await page.getByTestId("export-model-saldering").click();
       await expect(page.getByTestId("export-model-banner")).toBeHidden();
       expect(readSaved()["prices.export_price_model"]).toBe("net_metering");
+      expect(readSaved()["prices.export_model_confirmed"]).toBe(true);
     });
 
-    test("hides after choosing the 2027 model", async ({ page }) => {
-      await mockUnconfirmedExport(page, "net_metering");
+    test("hides after choosing the 2027 model and posts export model + confirmed", async ({ page }) => {
+      const readSaved = await mockUnconfirmedExport(page, "net_metering");
       await page.goto("/");
       await page.getByTestId("export-model-from2027").click();
+      await expect(page.getByTestId("export-model-banner")).toBeHidden();
+      expect(readSaved()["prices.export_price_model"]).toBe("spot_minus_tax");
+      expect(readSaved()["prices.export_model_confirmed"]).toBe(true);
+    });
+
+    test("choice on Settings stays hidden on Home", async ({ page }) => {
+      const readSaved = await mockUnconfirmedExport(page);
+      await page.goto("/");
+      await page.getByTestId("nav-manage").click();
+      await expect(page.getByTestId("export-model-banner")).toBeVisible();
+      await page.getByTestId("export-model-saldering").click();
+      await expect(page.getByTestId("export-model-banner")).toBeHidden();
+      expect(readSaved()["prices.export_price_model"]).toBe("net_metering");
+      expect(readSaved()["prices.export_model_confirmed"]).toBe(true);
+      await page.getByTestId("nav-dashboard").click();
       await expect(page.getByTestId("export-model-banner")).toBeHidden();
     });
   });

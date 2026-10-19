@@ -837,13 +837,13 @@ export const EXPORT_MODEL_BANNER = {
 export function exportModelMismatchWarning(exportPriceModel: string): string | null {
   if (exportPriceModel === "spot_minus_tax") {
     return (
-      "Je huidige keuze volgt het 2027-model — besparingen en handel kunnen export lager waarderen " +
+      "Het huidige model volgt 2027 — besparingen en handel kunnen export lager waarderen " +
       "dan bij saldering zolang je nog saldeert."
     );
   }
   if (exportPriceModel === "net_metering") {
     return (
-      "Je huidige keuze volgt saldering — de weekdigest herinnert je om het exportmodel te " +
+      "Het huidige model volgt saldering — de weekdigest herinnert je om het exportmodel te " +
       "herzien vóór saldering uitfaseert rond 2027."
     );
   }

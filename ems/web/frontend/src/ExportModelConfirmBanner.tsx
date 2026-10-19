@@ -14,7 +14,7 @@ type Props = {
 };
 
 export function ExportModelConfirmBanner({ values, onSaved }: Props) {
-  const [busy, setBusy] = useState(false);
+  const [pending, setPending] = useState<"net_metering" | "spot_minus_tax" | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   if (!values || values.exportModelConfirmed) {
@@ -22,15 +22,19 @@ export function ExportModelConfirmBanner({ values, onSaved }: Props) {
   }
 
   const mismatch = exportModelMismatchWarning(values.exportPriceModel);
+  const busy = pending !== null;
 
   async function choose(model: "net_metering" | "spot_minus_tax") {
-    setBusy(true);
+    setPending(model);
     setError(null);
     try {
       const r = await apiFetch("/api/settings", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ "prices.export_price_model": model }),
+        body: JSON.stringify({
+          "prices.export_price_model": model,
+          "prices.export_model_confirmed": true,
+        }),
       });
       const b = await r.json().catch(() => ({}));
       if (!r.ok) {
@@ -39,12 +43,12 @@ export function ExportModelConfirmBanner({ values, onSaved }: Props) {
       }
       onSaved({
         exportPriceModel: String(b.values?.["prices.export_price_model"] ?? model),
-        exportModelConfirmed: Boolean(b.values?.["prices.export_model_confirmed"] ?? true),
+        exportModelConfirmed: b.values?.["prices.export_model_confirmed"] === true,
       });
     } catch {
       setError("Opslaan mislukt");
     } finally {
-      setBusy(false);
+      setPending(null);
     }
   }
 
@@ -53,6 +57,7 @@ export function ExportModelConfirmBanner({ values, onSaved }: Props) {
       className="settings-access-bar export-model-banner"
       data-testid="export-model-banner"
       aria-labelledby="export-model-banner-title"
+      aria-busy={busy}
     >
       <h2 className="settings-group-title" id="export-model-banner-title">
         {EXPORT_MODEL_BANNER.title}
@@ -69,18 +74,20 @@ export function ExportModelConfirmBanner({ values, onSaved }: Props) {
           className="btn-primary"
           data-testid="export-model-saldering"
           disabled={busy}
+          aria-busy={pending === "net_metering"}
           onClick={() => choose("net_metering")}
         >
-          {busy ? EXPORT_MODEL_BANNER.saving : EXPORT_MODEL_BANNER.saldering}
+          {pending === "net_metering" ? EXPORT_MODEL_BANNER.saving : EXPORT_MODEL_BANNER.saldering}
         </button>
         <button
           type="button"
           className="btn-secondary"
           data-testid="export-model-from2027"
           disabled={busy}
+          aria-busy={pending === "spot_minus_tax"}
           onClick={() => choose("spot_minus_tax")}
         >
-          {EXPORT_MODEL_BANNER.from2027}
+          {pending === "spot_minus_tax" ? EXPORT_MODEL_BANNER.saving : EXPORT_MODEL_BANNER.from2027}
         </button>
       </div>
       {error && (
@@ -95,9 +102,11 @@ export function ExportModelConfirmBanner({ values, onSaved }: Props) {
 export function exportModelFromSettingsValues(
   values: Record<string, unknown> | null | undefined,
 ): ExportModelBannerValues | null {
-  if (!values) return null;
+  if (!values || !Object.prototype.hasOwnProperty.call(values, "prices.export_model_confirmed")) {
+    return null;
+  }
   return {
     exportPriceModel: String(values["prices.export_price_model"] ?? "spot_minus_tax"),
-    exportModelConfirmed: Boolean(values["prices.export_model_confirmed"]),
+    exportModelConfirmed: values["prices.export_model_confirmed"] === true,
   };
 }

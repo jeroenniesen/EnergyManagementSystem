@@ -1167,17 +1167,18 @@ export function Settings({
       <ExportModelConfirmBanner
         values={exportModelFromSettingsValues(values)}
         onSaved={(patch) => {
-          const merge = (prev: Values) => ({
-            ...prev,
+          const next: Values = {
+            ...values,
             ...(patch.exportPriceModel !== undefined
               ? { "prices.export_price_model": patch.exportPriceModel }
               : {}),
             ...(patch.exportModelConfirmed !== undefined
               ? { "prices.export_model_confirmed": patch.exportModelConfirmed }
               : {}),
-          });
-          setValues(merge);
-          setEdited(merge);
+          };
+          setValues(next);
+          setEdited(next);
+          onSaved?.(next);
         }}
       />
 

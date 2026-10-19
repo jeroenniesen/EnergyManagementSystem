@@ -1135,9 +1135,8 @@ def validate_settings(
             clean["control.grid_limit_w"] = GRID_FUSE_PRESET_W[fuse]
         elif fuse == "unset":
             clean["control.grid_limit_w"] = float(SETTINGS_BY_KEY["control.grid_limit_w"].default)
-    # #341 / F-11: any explicit export-model save counts as a deliberate household choice.
-    if "prices.export_price_model" in clean:
-        clean["prices.export_model_confirmed"] = True
+    # #341: do not invent prices.export_model_confirmed here. effective_settings() re-validates
+    # the whole store on read; confirmation is applied only by POST /api/settings.
     return clean, errors
 
 

@@ -342,4 +342,41 @@ def test_export_price_model_save_sets_confirmed_and_audits(tmp_path):
     with TestClient(app) as c2:
         r2 = c2.post("/api/settings", json={"prices.export_price_model": "spot_minus_tax"})
         assert r2.status_code == 200
+        assert r2.json()["values"]["prices.export_price_model"] == "spot_minus_tax"
         assert r2.json()["values"]["prices.export_model_confirmed"] is True
+        entries2 = c2.get("/api/audit").json()["entries"]
+    keys2 = [e for e in entries2 if e["category"] == "config_change"][-1]["detail"]["keys"]
+    assert "prices.export_price_model" in keys2
+    assert "prices.export_model_confirmed" in keys2
+
+
+def test_stored_export_model_stays_unconfirmed_until_save(tmp_path):
+    """#341: a persisted export model is not a confirmation until POST /api/settings."""
+    import asyncio
+
+    db = str(tmp_path / "ems.sqlite")
+    store = SettingsStore(db)
+
+    async def _seed():
+        await store.init()
+        await store.set_many({
+            "prices.export_price_model": "net_metering",
+            "prices.export_model_confirmed": False,
+        })
+
+    asyncio.run(_seed())
+    app = create_app(
+        MockSource(), dry_run=True, dev_mode="mock", settings_store=store,
+    )
+    with TestClient(app) as c:
+        vals = c.get("/api/settings").json()["values"]
+        assert vals["prices.export_price_model"] == "net_metering"
+        assert vals["prices.export_model_confirmed"] is False
+        r = c.post("/api/settings", json={
+            "prices.export_price_model": "spot_minus_tax",
+            "prices.export_model_confirmed": True,
+        })
+        assert r.status_code == 200
+        body = r.json()["values"]
+        assert body["prices.export_price_model"] == "spot_minus_tax"
+        assert body["prices.export_model_confirmed"] is True
