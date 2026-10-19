@@ -20,6 +20,11 @@ import type { DecisionReason } from "./decisionWhy";
 import { buildHeroSynthesis } from "./heroSynthesis";
 import { Icon, type IconName } from "./icons";
 import { DeviceHealthStrip } from "./DeviceHealth";
+import {
+  ExportModelConfirmBanner,
+  exportModelFromSettingsValues,
+  type ExportModelBannerValues,
+} from "./ExportModelConfirmBanner";
 import { liveWritingChip, showTopbarDataQuality, showTopbarDataSource } from "./topbarChips";
 import {
   CAR_BADGE_SUFFIX,
@@ -468,6 +473,7 @@ export function App() {
   // Seed from the localStorage cache so the first paint matches the saved theme (no flash);
   // the fetch below reconciles with the server's canonical value.
   const [theme, setTheme] = useState<Theme>(readStoredTheme);
+  const [exportModelBanner, setExportModelBanner] = useState<ExportModelBannerValues | null>(null);
   // While a strategy write is in flight, suppress the background poll's strategy update so the
   // optimistic selection doesn't flicker back to the old value mid-request.
   const strategyPending = useRef(false);
@@ -477,7 +483,9 @@ export function App() {
     apiFetch("/api/settings")
       .then((r) => (r.ok ? r.json() : null))
       .then((b) => {
-        if (alive && b?.values?.["ui.theme"]) setTheme(b.values["ui.theme"] as Theme);
+        if (!alive || !b?.values) return;
+        if (b.values["ui.theme"]) setTheme(b.values["ui.theme"] as Theme);
+        setExportModelBanner(exportModelFromSettingsValues(b.values));
       })
       .catch(() => {});
     return () => {
@@ -978,6 +986,15 @@ export function App() {
         </section>
       )}
 
+      {view === "dashboard" && !error && (
+        <ExportModelConfirmBanner
+          values={exportModelBanner}
+          onSaved={(patch) =>
+            setExportModelBanner((prev) => (prev ? { ...prev, ...patch } : prev))
+          }
+        />
+      )}
+
       {/* The hero: one verdict, one synthesis line, one explicit answer to "do I need to act?".
           Absorbs the old status banner + the scattered on-track/score copy into a single read.
           Hidden while unreachable so a stale "Nothing needed" can't sit under the outage banner. */}
@@ -1081,7 +1098,10 @@ export function App() {
         <Manage
           tab={manageTab}
           onTab={(t, section) => navigate("manage", t, section)}
-          onSettingsSaved={(v) => setTheme((v["ui.theme"] as Theme) ?? "auto")}
+          onSettingsSaved={(v) => {
+            setTheme((v["ui.theme"] as Theme) ?? "auto");
+            setExportModelBanner(exportModelFromSettingsValues(v));
+          }}
           settingsSection={settingsSection}
           canOperate={canOperate}
           isAdmin={isAdmin}

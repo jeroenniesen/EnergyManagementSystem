@@ -1771,6 +1771,12 @@ body {
   background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius);
   padding: 16px 18px; margin-bottom: 16px; box-shadow: var(--shadow);
 }
+.export-model-actions {
+  display: flex; flex-wrap: wrap; gap: 10px; margin-top: 12px;
+}
+.export-model-mismatch {
+  margin: 10px 0 0; font-size: 0.88rem; color: var(--muted);
+}
 .settings-access-row {
   display: flex; gap: 10px; flex-wrap: wrap; align-items: center; margin-top: 10px;
 }

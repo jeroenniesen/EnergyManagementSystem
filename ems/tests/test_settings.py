@@ -22,6 +22,22 @@ def test_defaults_cover_every_field():
     assert d["control.allow_export_discharge"] is False
 
 
+def test_export_model_confirmed_defaults_and_validation():
+    """#341 / F-11: confirmation flag defaults false; saving export model co-writes confirmed."""
+    d = defaults()
+    assert d["prices.export_model_confirmed"] is False
+    field = SETTINGS_BY_KEY["prices.export_model_confirmed"]
+    assert field.type == "bool" and field.show_in_settings is False
+    clean, errors = validate_settings({"prices.export_model_confirmed": True})
+    assert errors == {} and clean["prices.export_model_confirmed"] is True
+    _c, err = validate_settings({"prices.export_model_confirmed": "yes"})
+    assert "prices.export_model_confirmed" in err
+    clean, errors = validate_settings({"prices.export_price_model": "net_metering"})
+    assert errors == {}
+    assert clean["prices.export_price_model"] == "net_metering"
+    assert clean["prices.export_model_confirmed"] is True
+
+
 def test_trading_settings_defaults_match_e11_lock():
     """B-103 / #209: trading keys exist, default OFF / spot_minus_tax / €0.50 / uncapped."""
     d = defaults()

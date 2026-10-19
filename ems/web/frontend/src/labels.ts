@@ -821,3 +821,31 @@ export const CHARGE_BLOCKED_BY_CAP = {
   banner: "Geplande lading geblokkeerd door de schakellimiet",
   chipNote: "Geplande lading geblokkeerd door de schakellimiet",
 } as const;
+
+/** #341 / audit F-11 — export model confirmation banner (Home + Settings, not topbar). */
+export const EXPORT_MODEL_BANNER = {
+  title: "Kies je exportmodel (saldering of vanaf 2027)",
+  body:
+    "Het standaardmodel rekent export als spot minus energiebelasting (klaar voor na 2027). " +
+    "Kies saldering alleen als je contract dat nog zo waardeert.",
+  saldering: "Ik saldeer nog (net-metering)",
+  from2027: "Vanaf 2027 (spot minus belasting)",
+  saving: "Opslaan…",
+} as const;
+
+/** Mismatch hint using digest/finance assumptions only — no invented euro amounts. */
+export function exportModelMismatchWarning(exportPriceModel: string): string | null {
+  if (exportPriceModel === "spot_minus_tax") {
+    return (
+      "Je huidige keuze volgt het 2027-model — besparingen en handel kunnen export lager waarderen " +
+      "dan bij saldering zolang je nog saldeert."
+    );
+  }
+  if (exportPriceModel === "net_metering") {
+    return (
+      "Je huidige keuze volgt saldering — de weekdigest herinnert je om het exportmodel te " +
+      "herzien vóór saldering uitfaseert rond 2027."
+    );
+  }
+  return null;
+}
