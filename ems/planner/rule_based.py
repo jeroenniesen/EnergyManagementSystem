@@ -17,7 +17,7 @@ from zoneinfo import ZoneInfo
 
 from ems.domain import BatteryIntent
 from ems.planner import economics
-from ems.planner.budgets import clamp_grid_charge
+from ems.planner.budgets import ac_grid_kwh_per_slot, clamp_grid_charge
 from ems.planner.buy_pool import build_buy_pool_info
 from ems.planner.charge_need import stored_kwh_per_slot
 from ems.planner.ev_load import format_ev_load_reason
@@ -153,9 +153,10 @@ def plan_rule_based(
     if cfg.negative_price_soak:
         plan = _soak_negative(plan, prices, cfg, max_charge_w=max_charge_w)
     # After soak so negative-price slots spend the same daily cap (Besluit #317).
-    per_slot = stored_kwh_per_slot(max_charge_w, cfg.round_trip_efficiency)
+    # Cap unit is AC grid kWh, not the DC `stored_kwh_per_slot` the planner sizes with.
     return clamp_grid_charge(
-        plan, cfg.already_bought_today_kwh, cfg.max_daily_grid_charge_kwh, per_slot,
+        plan, cfg.already_bought_today_kwh, cfg.max_daily_grid_charge_kwh,
+        ac_grid_kwh_per_slot(max_charge_w),
         tz=cfg.site_tz,
     )
 

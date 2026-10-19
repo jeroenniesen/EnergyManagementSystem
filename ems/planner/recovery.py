@@ -39,7 +39,7 @@ from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
 from ems.domain import BatteryIntent
-from ems.planner.budgets import clamp_grid_charge
+from ems.planner.budgets import ac_grid_kwh_per_slot, clamp_grid_charge
 from ems.planner.charge_need import stored_kwh_per_slot
 from ems.planner.projection import ProjectedSlot
 from ems.planner.schedule import SLOT, Plan, PlanSlot
@@ -282,7 +282,8 @@ def build_catch_up_plan(
         version=int(plan.version) + 1,
     )
     recovered = clamp_grid_charge(
-        recovered, already_bought_today_kwh, max_daily_grid_charge_kwh, slot_kwh,
+        recovered, already_bought_today_kwh, max_daily_grid_charge_kwh,
+        ac_grid_kwh_per_slot(max_charge_w),
         tz=site_tz or ZoneInfo("Europe/Amsterdam"),
     )
     return CatchUpResult(

@@ -21,9 +21,8 @@ from zoneinfo import ZoneInfo
 
 from ems.domain import BatteryIntent
 from ems.planner import economics
-from ems.planner.budgets import clamp_grid_charge
+from ems.planner.budgets import ac_grid_kwh_per_slot, clamp_grid_charge
 from ems.planner.buy_pool import build_buy_pool_info
-from ems.planner.charge_need import stored_kwh_per_slot
 from ems.planner.rule_based import late_pack_charge_starts
 from ems.planner.schedule import SLOT, Plan, PlanSlot
 from ems.sources.forecast import ForecastSlot
@@ -64,9 +63,9 @@ def plan_adaptive(
     plan = _plan_adaptive(prices, forecast, now, soc_pct=soc_pct, load_w_by=load_w_by, cfg=cfg)
     if cfg.negative_price_soak:
         plan = _soak_negative(plan, prices, cfg)
-    per_slot = stored_kwh_per_slot(cfg.max_charge_w, cfg.round_trip_efficiency)
     return clamp_grid_charge(
-        plan, cfg.already_bought_today_kwh, cfg.max_daily_grid_charge_kwh, per_slot,
+        plan, cfg.already_bought_today_kwh, cfg.max_daily_grid_charge_kwh,
+        ac_grid_kwh_per_slot(cfg.max_charge_w),
         tz=cfg.site_tz,
     )
 

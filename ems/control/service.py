@@ -843,12 +843,19 @@ class ControlService:
     def already_bought_today_kwh(self, now: datetime) -> float | None:
         """Grid-charge kWh already bought on the local day of `now`, from history.
 
-        Re-read on every call (no in-memory counter). `None` when history cannot be read —
-        the planner then clamps the new plan only and does not block charging.
+        Re-read on every call (no in-memory counter). `None` when history cannot be read:
+        the planner treats today's cap as reached and does not grid-charge. Discharge and
+        the battery's own self-consumption mode are unchanged. Read-only — no battery write.
         """
         store = self._store
         path = getattr(store, "db_path", None) if store is not None else None
-        return read_already_bought_today(path, now, self._site_tz)
+        try:
+            watts = float(self._settings.get("battery.max_charge_w", 0.0) or 0.0)
+        except (TypeError, ValueError):
+            watts = 0.0
+        return read_already_bought_today(
+            path, now, self._site_tz, planned_charge_w=watts,
+        )
 
     def load_by(self, starts: list[datetime]) -> dict[datetime, float]:
         prof = self._ctx.load_profile_box["profile"]

@@ -20,8 +20,7 @@ from datetime import datetime
 from zoneinfo import ZoneInfo
 
 from ems.domain import BatteryIntent
-from ems.planner.budgets import clamp_grid_charge
-from ems.planner.charge_need import stored_kwh_per_slot
+from ems.planner.budgets import ac_grid_kwh_per_slot, clamp_grid_charge
 from ems.planner.rule_based import late_pack_charge_starts
 from ems.planner.schedule import SLOT, Plan, PlanSlot
 from ems.sources.forecast import ForecastSlot
@@ -180,8 +179,8 @@ def plan_summer(
                             deadline=charge_deadline))
     plan = Plan(created_at=now, slots=tuple(out), strategy="summer",
                 target_soc=target_soc_clamped, deadline=charge_deadline)
-    per_slot = stored_kwh_per_slot(cfg.max_charge_w, cfg.round_trip_efficiency)
     return clamp_grid_charge(
-        plan, cfg.already_bought_today_kwh, cfg.max_daily_grid_charge_kwh, per_slot,
+        plan, cfg.already_bought_today_kwh, cfg.max_daily_grid_charge_kwh,
+        ac_grid_kwh_per_slot(cfg.max_charge_w),
         tz=cfg.site_tz,
     )

@@ -20,8 +20,7 @@ from datetime import datetime
 from zoneinfo import ZoneInfo
 
 from ems.planner.adaptive import AdaptiveConfig, plan_adaptive
-from ems.planner.budgets import clamp_grid_charge
-from ems.planner.charge_need import stored_kwh_per_slot
+from ems.planner.budgets import ac_grid_kwh_per_slot, clamp_grid_charge
 from ems.planner.rule_based import PlannerConfig, plan_rule_based
 from ems.planner.schedule import Plan
 from ems.planner.summer import SummerConfig, plan_summer
@@ -268,22 +267,22 @@ def _daily_cap_inputs(
     adaptive_cfg: AdaptiveConfig | None,
     load_w_by: dict[datetime, float] | None,
 ) -> tuple[float | None, float, float, ZoneInfo]:
-    """Cap, already-bought, per-slot quantum and site tz for the planner that just ran."""
+    """Cap, already-bought, AC kWh per slot and site tz for the planner that just ran."""
     if strategy == "summer" and adaptive_cfg is not None and load_w_by is not None:
         cfg = adaptive_cfg
-        watts, rte = cfg.max_charge_w, cfg.round_trip_efficiency
+        watts = cfg.max_charge_w
     elif strategy == "summer":
         cfg = summer_cfg
-        watts, rte = cfg.max_charge_w, cfg.round_trip_efficiency
+        watts = cfg.max_charge_w
     elif adaptive_cfg is not None and load_w_by is not None:
         cfg = winter_cfg
-        watts, rte = adaptive_cfg.max_charge_w, winter_cfg.round_trip_efficiency
+        watts = adaptive_cfg.max_charge_w
     else:
         cfg = winter_cfg
-        watts, rte = 4000.0, winter_cfg.round_trip_efficiency
+        watts = 4000.0
     return (
         cfg.already_bought_today_kwh,
         cfg.max_daily_grid_charge_kwh,
-        stored_kwh_per_slot(watts, rte),
+        ac_grid_kwh_per_slot(watts),
         cfg.site_tz,
     )

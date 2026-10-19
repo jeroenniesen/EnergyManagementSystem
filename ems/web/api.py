@@ -103,7 +103,7 @@ from ems.intelligence import (
 from ems.load_model import reconstruct
 from ems.notify import Notifier
 from ems.planner.budgets import read_already_bought_today
-from ems.planner.charge_need import compute_charge_need, stored_kwh_per_slot, ui_charge_need
+from ems.planner.charge_need import compute_charge_need, ui_charge_need
 from ems.planner.explain import (
     ExternalLlmExplainer,
     TemplateExplainer,
@@ -2075,11 +2075,9 @@ def create_app(
                 settings_cache.get("planner.max_daily_grid_charge_kwh", 12.0)),
             already_bought_today_kwh=read_already_bought_today(
                 getattr(store, "db_path", None) if store is not None else None,
-                now, site_tz,
+                now, site_tz, planned_charge_w=settings_charge,
             ),
-            grid_charge_per_slot_kwh=stored_kwh_per_slot(
-                settings_charge, float(settings_cache["planner.round_trip_efficiency"]),
-            ),
+            grid_charge_per_slot_kwh=settings_charge * 0.25 / 1000.0,
             site_tz=site_tz,
         )
         if not clamp_findings:
