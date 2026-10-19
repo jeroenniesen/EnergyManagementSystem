@@ -14,10 +14,14 @@ import {
   buildPlanStoryModel,
   canonicalAction,
   formatClock,
+  formatWhyNotBuyLine,
   hoverIndexAtX,
+  shouldShowWhyNotBuy,
   SLOT_MS,
   slotTipRows,
+  type BuyPool,
 } from "./planStoryModel";
+import { HOME_WHY_NOT_BUY } from "./labels";
 
 const W = 1000;
 const H = 360;
@@ -52,6 +56,8 @@ export type PlanStoryProps = {
   /** #335: configured vs learned night-reserve kWh for plan-reason + override badge. */
   nightReserveConfiguredKwh?: number | null;
   nightReserveLearnedKwh?: number | null;
+  /** #315: explain empty buy pool (from /api/decision or battery-plan reason). */
+  buyPool?: BuyPool | null;
 };
 
 function RecentReviewDisclosure({ message }: { message: string }) {
@@ -123,6 +129,7 @@ export function PlanStory({
   dataQuality = null,
   nightReserveConfiguredKwh = null,
   nightReserveLearnedKwh = null,
+  buyPool = null,
 }: PlanStoryProps) {
   const [hover, setHover] = useState<number | null>(null);
   const model = buildPlanStoryModel(story, PAD.l, PLOT_W);
@@ -165,6 +172,12 @@ export function PlanStory({
       aria-label={model.label}
     >
       {recentReview && <RecentReviewDisclosure message={recentReview} />}
+      {shouldShowWhyNotBuy(buyPool, dataQuality) && (
+        <div className="why-not-buy-tile" data-testid="why-not-buy">
+          <h3 className="why-not-buy-title">{HOME_WHY_NOT_BUY.title}</h3>
+          <p className="why-not-buy-body">{formatWhyNotBuyLine(buyPool)}</p>
+        </div>
+      )}
       {dataQuality === "price_fallback" && (
         <p
           className="plan-story-price-fallback"

@@ -695,6 +695,16 @@ export const HOME_PLAN_STORY = {
   socScale: (pct: number) => `${pct}%`,
 } as const;
 
+/** #315 / F-02+F-31: Home tile when EMS cannot grid-buy (empty buy pool). */
+export const HOME_WHY_NOT_BUY = {
+  title: "Waarom niet kopen?",
+  noChanceInHorizon: "Geen koopmoment in de prijzen van vandaag/morgen",
+  maxBuy: (eur: string) => `Max inkoopprijs ${eur}`,
+  cheapest: (time: string, eur: string) => `Goedkoopste moment ${time} (${eur})`,
+  shortfall: (kwh: string) => `Tekort ${kwh}`,
+  nextChance: (time: string) => `Volgende kans ${time}`,
+} as const;
+
 /** Plan/control SoC floor copy (#310 / audit F-16a). */
 export const HOME_BATTERY_FLOOR = {
   line: (effective: number, reserveSetting: number, deviceMin: number) => {

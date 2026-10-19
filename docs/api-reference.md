@@ -11,6 +11,10 @@ Quick, concrete cheat-sheet for every integration. Details and rationale are in 
 - **Tariff economics:** `/api/plan` and `/api/report` include `tariff_policy`, showing the import and
   export fee assumptions applied to economics. This affects planning and reporting only; it never
   becomes a direct battery power command.
+- **Buy-pool explainability (#315):** `/api/plan` and `/api/decision` (and `decision_reason` on
+  `/api/battery-plan`) may include optional `buy_pool` — `state`, `max_buy_eur_per_kwh`,
+  `cheapest_slot`, `shortfall_kwh`, `next_chance`, `pool_size` — when the planner sized a grid
+  charge need. Explain-only; does not change control.
 - **Verification:** `GET /api/plan-verification` compares the current planned intent with the latest
   measured SoC and battery/grid power. It returns `awaiting_measurement`, `observed`,
   `unexpected_charge`, or `unexpected_discharge`; it is observational and never commands hardware.

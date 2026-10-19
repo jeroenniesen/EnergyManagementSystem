@@ -85,6 +85,14 @@ export type DecisionReason = {
     unconfirmed: boolean;
   };
   summary: string;
+  buy_pool?: {
+    state: string;
+    max_buy_eur_per_kwh: number;
+    cheapest_slot: { start: string; eur_per_kwh: number } | null;
+    shortfall_kwh: number;
+    next_chance: { start: string } | null;
+    pool_size: number;
+  } | null;
 };
 
 /**

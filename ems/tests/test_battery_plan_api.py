@@ -326,7 +326,7 @@ def test_battery_plan_full_cheap_window_keeps_normal_committed_target(tmp_path):
 
 _REASON_KEYS = {
     "chosen_window", "rejected_alternative", "expected_benefit", "risk",
-    "safety_constraint", "gates", "summary",
+    "safety_constraint", "gates", "summary", "buy_pool",
 }
 _GATE_KEYS = {"validator_code", "failsafe", "dwell", "cap_reached", "unconfirmed"}
 

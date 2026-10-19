@@ -20,6 +20,7 @@ from datetime import datetime
 
 from ems.domain import BatteryIntent
 from ems.planner import economics
+from ems.planner.buy_pool import build_buy_pool_info
 from ems.planner.rule_based import late_pack_charge_starts
 from ems.planner.schedule import SLOT, Plan, PlanSlot
 from ems.sources.forecast import ForecastSlot
@@ -118,15 +119,19 @@ def _plan_adaptive(
     per_slot_kwh = cfg.max_charge_w * _DH / 1000.0 * eta
     n_charge = (math.ceil(shortfall_kwh / per_slot_kwh)
                 if per_slot_kwh > 0 and shortfall_kwh > 1e-9 else 0)
+    max_buy_eur = breakeven
     if discharge_set:
         # Shaving a peak: any pre-peak slot CHEAPER THAN THE PEAK is worth charging in (it beats
         # importing at the peak). Using this — not the strict break-even — avoids silently
         # under-charging when too few slots sit below break-even, so the pack still fills.
         peak_min = min(p.eur_per_kwh for p in future if p.start in discharge_set)
+        max_buy_eur = peak_min
         pool = [p for p in future if p.start < last_need and p.eur_per_kwh < peak_min]
+        pre_peak = [p for p in future if p.start < last_need]
     else:
         # No expensive peak ahead: only charge if genuinely cheap, to avoid pointless cycling.
         pool = [p for p in future if p.eur_per_kwh <= breakeven]
+        pre_peak = list(future)
     # Pool is already capped and still chronological. Late-pack (same helper as winter) picks the
     # cost-minimal contiguous window; max_buy is the pool's own ceiling so the existing cap is
     # unchanged. No full window → cheapest n, and |charge_set| stays <= n_charge.
@@ -134,6 +139,14 @@ def _plan_adaptive(
         pool, n_charge,
         price_of=lambda p: p.eur_per_kwh,
         max_buy=max((p.eur_per_kwh for p in pool), default=0.0),
+    )
+    buy_pool = build_buy_pool_info(
+        pre_peak=pre_peak,
+        pool=pool,
+        n_charge=n_charge,
+        shortfall_kwh=shortfall_kwh,
+        max_buy_eur_per_kwh=max_buy_eur,
+        price_of=lambda p: p.eur_per_kwh,
     )
 
     # The SoC the plan should reach (reserve + the demand it must cover), and by when.
@@ -186,7 +199,7 @@ def _plan_adaptive(
     # No season label here: this planner serves both seasons. build_plan stamps the resolved
     # strategy; a direct caller gets an honest None rather than a misleading "summer".
     return Plan(created_at=now, slots=tuple(out), strategy=None, target_soc=target_soc_pct,
-                deadline=last_need)
+                deadline=last_need, buy_pool=buy_pool)
 
 
 def _soak_negative(plan: Plan, prices: list[PriceSlot], cfg: AdaptiveConfig) -> Plan:
@@ -209,4 +222,4 @@ def _soak_negative(plan: Plan, prices: list[PriceSlot], cfg: AdaptiveConfig) -> 
         for s in plan.slots
     )
     return Plan(created_at=plan.created_at, slots=out, strategy=plan.strategy,
-                target_soc=plan.target_soc, deadline=plan.deadline)
+                target_soc=plan.target_soc, deadline=plan.deadline, buy_pool=plan.buy_pool)
