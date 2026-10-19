@@ -115,3 +115,53 @@ def test_deficit_slot_that_would_cross_reserve_holds_instead():
 
 def test_empty_prices_yields_empty_plan():
     assert plan_adaptive([], [], T0, soc_pct=50.0, load_w_by={}, cfg=_cfg()).slots == ()
+
+
+def test_late_pack_matches_winter_on_early_medium_plus_deep_valley():
+    """Same curve as winter late-pack: early €0.22 shoulder + later €0.10 valley.
+
+    Both planners must mark the cost-minimal contiguous block (12:30–13:45), not the
+    earliest-of-cheapest set (12:00 start). An earliest-first regression fails here.
+    """
+    from ems.planner.rule_based import PlannerConfig, plan_rule_based
+
+    day = datetime(2026, 10, 5, 12, 0, tzinfo=UTC)
+    prices = (
+        [PriceSlot(day + i * SLOT, 0.22) for i in range(4)]
+        + [PriceSlot(day + i * SLOT, 0.10) for i in range(4, 8)]
+        + [PriceSlot(day + i * SLOT, 0.45) for i in range(8, 12)]
+    )
+    load = {p.start: (6000.0 if p.eur_per_kwh >= 0.40 else 0.0) for p in prices}
+    fc = [ForecastSlot(p.start, 0.0, 0.0, 0.0) for p in prices]
+    winter = plan_rule_based(
+        prices, day, PlannerConfig(charge_slots=8, round_trip_efficiency=1.0),
+        soc_pct=10.0, load_w_by=load, usable_kwh=10.0, reserve_soc_pct=10.0,
+        max_charge_w=4000.0,
+    )
+    adaptive = plan_adaptive(
+        prices, fc, day, soc_pct=10.0, load_w_by=load,
+        cfg=_cfg(round_trip_efficiency=1.0),
+    )
+    winter_charge = {
+        s.start for s in winter.slots if s.intent is BatteryIntent.GRID_CHARGE_TO_TARGET
+    }
+    adaptive_charge = {
+        s.start for s in adaptive.slots if s.intent is BatteryIntent.GRID_CHARGE_TO_TARGET
+    }
+    late = {day + i * SLOT for i in range(2, 8)}  # 12:30–13:45
+    assert winter_charge == late
+    assert adaptive_charge == winter_charge
+    assert day not in adaptive_charge  # 12:00 medium-cheap must stay out
+
+
+def test_no_contiguous_window_falls_back_to_cheapest_n():
+    """Isolated buyable slots: no length-n contiguous window → cheapest n, size stays n_charge."""
+    # Three cheap slots split by peaks. Demand sizes n_charge=2; the two cheapest are gapped.
+    prices = _prices([0.15, 0.50, 0.11, 0.50, 0.12, 0.50])
+    fc = _fc([0.0] * 6)
+    load = _load([0.0, 2000.0, 0.0, 2000.0, 0.0, 2000.0])
+    plan = plan_adaptive(prices, fc, T0, soc_pct=10.0, load_w_by=load, cfg=_cfg())
+    charge = [s for s in plan.slots if s.intent is BatteryIntent.GRID_CHARGE_TO_TARGET]
+    assert len(charge) == 2
+    assert {s.start for s in charge} == {T0 + 2 * SLOT, T0 + 4 * SLOT}
+    assert all(s.start not in {T0 + SLOT, T0 + 3 * SLOT, T0 + 5 * SLOT} for s in charge)
