@@ -208,6 +208,7 @@ describe("#314 liveWritingChip", () => {
     expect(liveWritingChip({ dry_run: false, dry_run_cause: null, dev_mode: "live" }).state).toBe("no");
     expect(liveWritingChip({ dry_run: false, dry_run_cause: null, dev_mode: "live", live_writing_state: "yes" }).state).toBe("no");
     expect(liveWritingChip({ dry_run: false, dry_run_cause: null, dev_mode: "live", live_writing: true }).state).toBe("no");
+    expect(liveWritingChip({ dry_run: false, dev_mode: "live", live_writing: true, live_writing_state: "yes" }).state).toBe("no");
     expect(liveWritingChip({ dry_run: true, dry_run_cause: "observing", live_writing_state: "starting" }).state).toBe("no");
     expect(liveWritingChip({ dry_run: false, dry_run_cause: null, live_writing_state: "starting" }).state).toBe("no");
     expect(liveWritingChip({ dry_run: false, dry_run_cause: null, dev_mode: "mock", live_writing: true, live_writing_state: "yes" }).state).toBe("no");

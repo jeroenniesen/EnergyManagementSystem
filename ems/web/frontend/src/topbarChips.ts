@@ -68,7 +68,7 @@ function resolveLiveWritingState(status: LiveWritingStatus): LiveWritingState {
   if (status.dry_run_cause === "observing" && status.dry_run === false) {
     return "starting";
   }
-  if (status.dry_run === false && status.dry_run_cause == null
+  if (status.dry_run === false && status.dry_run_cause === null
       && status.live_writing === true && status.live_writing_state === "yes"
       && status.dev_mode === "live") {
     return "yes";

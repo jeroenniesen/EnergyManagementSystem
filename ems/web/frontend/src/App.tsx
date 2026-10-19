@@ -608,6 +608,7 @@ export function App() {
               setError(String(e ?? snapshotError));
               // Cold fail: leave lastReachableAt null → "Laatst bekend —" (never invent a time).
               // Demote stale live state so old alerts/hero aren't shown as current under the banner.
+              setStatus(null);
               setAlertsData(null);
               setDecision(null);
               setTileFreshness((current) => ({ ...current, status: { ...current.status, stale: true } }));

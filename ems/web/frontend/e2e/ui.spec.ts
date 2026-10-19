@@ -4202,7 +4202,22 @@ test.describe("EMS dashboard", () => {
     let failCore = false;
     const dashboardMock = await mockRoute(page, "**/api/dashboard", async (route) => {
       if (!failCore) {
-        await route.continue();
+        const response = await route.fetch();
+        const dashboard = await response.json();
+        await route.fulfill({
+          response,
+          json: {
+            ...dashboard,
+            status: {
+              ...dashboard.status,
+              dry_run: false,
+              dry_run_cause: null,
+              dev_mode: "live",
+              live_writing: true,
+              live_writing_state: "yes",
+            },
+          },
+        });
         return;
       }
       await route.fulfill({
@@ -4225,6 +4240,7 @@ test.describe("EMS dashboard", () => {
     await page.goto("/");
     // Wait until the first successful dashboard paint (hero is enough; alerts may also be present).
     await expect(page.getByTestId("home-state")).toBeVisible({ timeout: 15_000 });
+    await expect(page.getByTestId("run-mode-badge")).toHaveText("Live schrijven: JA");
     failCore = true;
     // Remount the dashboard poll immediately (interval is 10s).
     await page.getByTestId("nav-manage").click();
@@ -4233,6 +4249,7 @@ test.describe("EMS dashboard", () => {
     await expect(page.getByTestId("alert-laatst-bekend")).toHaveText(/Laatst bekend \d{2}:\d{2}/);
     await expect(page.getByTestId("alerts")).toHaveCount(0);
     await expect(page.getByTestId("home-state")).toHaveCount(0);
+    await expect(page.getByTestId("run-mode-badge")).toHaveText("Live schrijven: NEE");
     dashboardMock.assertRequested();
     statusMock.assertRequested();
   });
