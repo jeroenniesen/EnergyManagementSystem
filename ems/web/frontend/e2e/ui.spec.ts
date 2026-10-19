@@ -4427,4 +4427,35 @@ test.describe("EMS dashboard", () => {
     await page.getByTestId("notif-bell").click();
     await expect(page.getByTestId("notif-empty")).toContainText("No notifications yet.");
   });
+
+  test("home shows the switch-cap banner when charge_blocked_by_cap is alerted", async ({ page }) => {
+    // #316 AC4: mocked /api/alerts (snapshot unavailable, so the fan-out path is what renders).
+    const dashboardMock = await mockRoute(page, "**/api/dashboard", (route) =>
+      route.fulfill({ status: 404, body: "snapshot unavailable" }),
+    );
+    const alertsMock = await mockRoute(page, "**/api/alerts", (route) =>
+      route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          data_quality: "complete",
+          alerts: [{
+            key: "charge_blocked_by_cap",
+            severity: "warning",
+            message: "server copy ignored",
+            safe: "De batterij blijft op de laatst bevestigde stand.",
+            action: "Nothing needed — EMS hervat automatically.",
+            ems_doing: "EMS houdt de huidige stand aan.",
+          }],
+        }),
+      }),
+    );
+    await page.goto("/");
+    const banner = page.getByTestId("alert-charge_blocked_by_cap");
+    await expect(banner).toBeVisible();
+    await expect(banner).toContainText("Geplande lading geblokkeerd door de schakellimiet");
+    await expect(banner).not.toContainText("server copy ignored");
+    dashboardMock.assertRequested();
+    alertsMock.assertRequested();
+  });
 });

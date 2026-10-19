@@ -236,6 +236,19 @@ def test_original_charge_slots_are_superseded_not_double_counted():
     assert {s.start for s in charge} == {T0 + i * SLOT for i in range(8, 14)}
 
 
+def test_zero_slot_catch_up_omits_target_percentage():
+    """#316: no open buy slot → note/reason name no target percentage. Plan slots stay empty."""
+    plan = _committed_plan(charge_idx=())
+    # Peak is far below every other price, so the recovery buy ceiling excludes them all.
+    prices = [_price(i, 0.01 if i in (28, 29) else 0.80) for i in range(32)]
+    r = _build(30.0, plan, prices)
+    assert r.slots_used == 0
+    assert "%" not in r.reason and "%" not in r.note
+    assert r.feasible is False
+    assert not any(s.intent is BatteryIntent.GRID_CHARGE_TO_TARGET for s in r.plan.slots)
+    assert r.plan.target_soc == r.target_soc
+
+
 def test_impossible_catch_up_is_honest_partial():
     # Deadline very close: from now only two slots remain, far short of the 5 kWh needed.
     near = T0 + 12 * SLOT  # 03:00

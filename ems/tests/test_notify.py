@@ -194,3 +194,37 @@ def test_send_without_the_flag_does_not_push_when_store_fails():
     row_id = asyncio.run(notifier.send("k", "t", "b"))  # no flag
     assert row_id is None
     assert calls["n"] == 0
+
+
+def test_charge_blocked_by_cap_push_once_per_local_day(tmp_path):
+    """#316: the cap-block notice pushes at most once per local day (B-37 dedupe key)."""
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+
+    from ems.detectors import charge_blocked_by_cap_notice
+
+    store = _store(tmp_path)
+    calls = {"n": 0}
+
+    def fake_post(url, data, headers):
+        calls["n"] += 1
+
+    notifier = Notifier(
+        store, {"notify.ntfy_url": "https://ntfy.sh", "notify.ntfy_topic": "ems"}, post=fake_post,
+    )
+    now = datetime(2026, 10, 14, 12, 0, tzinfo=ZoneInfo("Europe/Amsterdam"))
+    note = charge_blocked_by_cap_notice(True, now=now)
+    assert note is not None
+    assert asyncio.run(notifier.send(**note)) is not None
+    assert asyncio.run(notifier.send(**note)) is None  # same day
+    later = charge_blocked_by_cap_notice(True, now=now.replace(day=15))
+    assert later is not None
+    assert asyncio.run(notifier.send(**later)) is not None
+    assert calls["n"] == 2
+    rows = asyncio.run(store.notifications_between(
+        "2020-01-01T00:00:00+00:00", "2030-01-01T00:00:00+00:00"))
+    assert len(rows) == 2
+    assert {r["dedupe_key"] for r in rows} == {
+        "charge_blocked_by_cap:2026-10-14",
+        "charge_blocked_by_cap:2026-10-15",
+    }

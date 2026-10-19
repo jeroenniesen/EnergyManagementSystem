@@ -138,14 +138,19 @@ def _collect_all_alerts() -> list[Alert]:
         live_mock_forecast_provider=True,
     ):
         seen[a.key] = a
+    for a in derive_alerts(
+        ALL_FRESH, dry_run=False, decision_outcome=None, charge_blocked_by_cap=True,
+    ):
+        seen[a.key] = a
     return list(seen.values())
 
 
 def test_every_alert_has_non_empty_safe_action_and_ems_doing():
     alerts = _collect_all_alerts()
     # dry_run + 3 battery-write outcomes + 5 signals×2 states + price_horizon + overrun
-    # + no_live_prices + tibber_prices_unavailable + live_mock_forecast_provider = 19.
-    assert len(alerts) == 19
+    # + no_live_prices + tibber_prices_unavailable + live_mock_forecast_provider
+    # + charge_blocked_by_cap = 20.
+    assert len(alerts) == 20
     for a in alerts:
         assert a.safe.strip(), f"{a.key} has no safe answer"
         assert a.action.strip(), f"{a.key} has no action"
@@ -202,6 +207,20 @@ def test_alert_copy_style_guard():
         assert automatic or concrete_place, (
             f"{a.key} action has no automatic behaviour and no concrete place to act: {action!r}"
         )
+
+
+def test_charge_blocked_by_cap_alert_appears_only_while_blocked():
+    """#316 AC3: the alert is present while the cap blocks a planned charge, and gone after."""
+    on = derive_alerts(
+        ALL_FRESH, dry_run=False, decision_outcome=None, charge_blocked_by_cap=True,
+    )
+    hit = next(a for a in on if a.key == "charge_blocked_by_cap")
+    assert hit.severity == "warning"
+    assert hit.message == "Geplande lading geblokkeerd door de schakellimiet"
+    off = derive_alerts(
+        ALL_FRESH, dry_run=False, decision_outcome=None, charge_blocked_by_cap=False,
+    )
+    assert all(a.key != "charge_blocked_by_cap" for a in off)
 
 
 def test_signal_alerts_mention_state_appropriately():

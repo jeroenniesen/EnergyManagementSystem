@@ -22,6 +22,8 @@ class LoopCounters:
     http_retries: int = 0
     mode_applies: int = 0
     validator_rejects: int = 0
+    # Cycles where the daily switch cap blocked a planned GRID_CHARGE of >= 15 min (#316).
+    charge_blocked_by_cap: int = 0
     outcomes: dict[str, int] = field(
         default_factory=lambda: {k: 0 for k in _OUTCOME_KEYS}
     )
@@ -42,6 +44,7 @@ class LoopCounters:
         self.http_retries = 0
         self.mode_applies = 0
         self.validator_rejects = 0
+        self.charge_blocked_by_cap = 0
         self.outcomes = {k: 0 for k in _OUTCOME_KEYS}
         self.last_outcome = None
         self._pending_fail_safe = False
@@ -53,6 +56,10 @@ class LoopCounters:
         self.validator_rejects += max(0, int(n))
         # A §8.11 reject forces self-consumption — count as fail-safe on the next record_cycle.
         self._pending_fail_safe = True
+
+    def incr_charge_blocked_by_cap(self, n: int = 1) -> None:
+        """Count cycles a planned grid-charge was held by the daily switch cap (#316)."""
+        self.charge_blocked_by_cap += max(0, int(n))
 
     def record_cycle(
         self,
@@ -92,6 +99,7 @@ class LoopCounters:
             "http_retries": self.http_retries,
             "mode_applies": self.mode_applies,
             "validator_rejects": self.validator_rejects,
+            "charge_blocked_by_cap": self.charge_blocked_by_cap,
             "outcomes": dict(self.outcomes),
             "last_outcome": self.last_outcome,
         }

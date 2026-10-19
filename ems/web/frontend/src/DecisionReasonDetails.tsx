@@ -3,6 +3,7 @@
 // Same object as diagnostics.decision_reason and the export-package manifest — no parallel copy.
 import type { DecisionReason } from "./decisionWhy";
 import { eur } from "./format";
+import { CHARGE_BLOCKED_BY_CAP } from "./labels";
 
 function clockRange(start: string | null | undefined, end: string | null | undefined): string | null {
   if (!start && !end) return null;
@@ -49,8 +50,11 @@ function safetyLabel(
 /** Structured reason detail — facts only from the DecisionReason object. */
 export function DecisionReasonDetails({
   reason,
+  capBlockedAlert = false,
 }: {
   reason: DecisionReason | null | undefined;
+  /** True when /api/alerts currently includes `charge_blocked_by_cap` (#316). */
+  capBlockedAlert?: boolean;
 }) {
   if (!reason) return null;
   const chosen = reason.chosen_window;
@@ -118,6 +122,11 @@ export function DecisionReasonDetails({
                 {c}
               </span>
             ))}
+            {capBlockedAlert && reason.gates.cap_reached && (
+              <span className="decision-reason-chip" data-testid="cap-blocked-alert">
+                {CHARGE_BLOCKED_BY_CAP.chipNote}
+              </span>
+            )}
           </dd>
         </div>
       )}

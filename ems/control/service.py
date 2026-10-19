@@ -537,6 +537,15 @@ class ControlService:
         """True while a recent control.overrun is latched for /api/alerts (B-09 / #73)."""
         return self._control_overrun_active
 
+    @property
+    def charge_blocked_by_cap(self) -> bool:
+        """True only while the latest tick saw the cap block a planned grid-charge (#316).
+
+        Cleared at the start of every tick and set again only by the held-decision path.
+        Read by /api/alerts and the once-a-day push. Does not change what is decided.
+        """
+        return bool(self._ctx.held_box.get("charge_blocked_by_cap"))
+
     def _coalesce_s(self) -> float:
         """How long a live read is reused before re-reading the hardware (UI-tunable, eases load on
         a battery shared with Home Assistant + the Indevolt app); falls back to the module
@@ -1454,10 +1463,31 @@ class ControlService:
             outcomes.get("dry_run", 0),
         )
 
+    def _planned_grid_charge_minutes(self, now: datetime) -> float:
+        """Minutes of the plan slot covering `now` when that slot is a grid-charge, else 0.
+
+        Fail-soft: a planner miss counts as no planned slot, so the cap alert stays off.
+        Does not build a different plan and does not write.
+        """
+        try:
+            built = self.current_plan(now)
+        except Exception:
+            _log.debug("planned grid-charge slot lookup failed (non-fatal)", exc_info=True)
+            return 0.0
+        if not built or len(built) < 3:
+            return 0.0
+        plan = built[2]
+        slot = plan.intent_at(now) if plan is not None and hasattr(plan, "intent_at") else None
+        if slot is None or slot.intent is not BatteryIntent.GRID_CHARGE_TO_TARGET:
+            return 0.0
+        return max(0.0, (slot.slot_end - slot.start).total_seconds() / 60.0)
+
     def _control_tick_body(self, now: datetime) -> list[dict]:
         """Inner tick body — wrapper records soak counters (#179)."""
         if self._controller is None:
             return []
+        # #316: the cap-block alert is true only for a tick that observes it again.
+        self._ctx.held_box["charge_blocked_by_cap"] = False
         apply_control_settings(self._controller, self._settings)
         lc = self._controller.lifecycle
         if lc.state is OwnershipState.INACTIVE:
@@ -1738,14 +1768,27 @@ class ControlService:
             # (CLAUDE.md "explainability first — including why it is NOT acting"). Deduped so a
             # recurring hold is explained once per (outcome, desired_mode), not every cycle. With
             # the manual/return-to-AUTO bypass this only fires for the AUTOMATIC planner now.
+            # #316: tag + count a cap block of a planned GRID_CHARGE slot of >= 15 min.
+            # The counter is per cycle (the audit row stays deduped). No change to the decision.
+            blocked = (
+                dec.outcome == "cap_reached"
+                and dec.intent is BatteryIntent.GRID_CHARGE_TO_TARGET
+                and self._planned_grid_charge_minutes(now) >= 15
+            )
+            held["charge_blocked_by_cap"] = blocked
+            if blocked:
+                LOOP_COUNTERS.incr_charge_blocked_by_cap()
             sig = (dec.outcome, dec.desired_mode.value)
             if held["sig"] != sig:
                 held["sig"] = sig
+                detail = {"desired_mode": dec.desired_mode.value, "intent": str(dec.intent),
+                          "outcome": dec.outcome, "reason": dec.reason,
+                          "override_active": override_active}
+                if blocked:
+                    detail["charge_blocked_by_cap"] = True
                 records.append({
                     "summary": f"Battery NOT switched to {dec.desired_mode.value} — {dec.reason}",
-                    "detail": {"desired_mode": dec.desired_mode.value, "intent": str(dec.intent),
-                               "outcome": dec.outcome, "reason": dec.reason,
-                               "override_active": override_active}})
+                    "detail": detail})
         return records
 
     async def refresh_car_obs(self, now: datetime) -> None:

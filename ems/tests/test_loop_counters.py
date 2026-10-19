@@ -199,13 +199,14 @@ def test_diagnostics_exposes_control_loop_counters():
     assert {
         "cycles", "cycle_latency_ms_last", "cycle_latency_ms_avg",
         "stale_sensor_cycles", "http_retries", "mode_applies", "validator_rejects",
-        "outcomes", "last_outcome",
+        "charge_blocked_by_cap", "outcomes", "last_outcome",
     } <= set(cl)
     assert set(cl["outcomes"]) == {"idempotent", "dry_run", "fail_safe", "applied"}
     # Fresh process / dry-run: zeros until an operational tick runs.
     assert cl["cycles"] == 0
     assert cl["mode_applies"] == 0
     assert cl["http_retries"] == 0
+    assert cl["charge_blocked_by_cap"] == 0
 
 
 def test_http_read_retry_increments_http_retries(monkeypatch):
