@@ -849,3 +849,29 @@ export function exportModelMismatchWarning(exportPriceModel: string): string | n
   }
   return null;
 }
+
+/** Week digest: negative savings days (audit F-49 / #325). */
+export const WEEK_DIGEST_NEGATIVE_DAY = {
+  sectionTitle: "Dagen met verlies",
+  unknownCause: "Oorzaak niet te bepalen",
+  expandDay: (date: string) => `Waarom verlies op ${date}?`,
+  settingHint: {
+    grid_charge_cost: "Tip: controleer of netladen / winter- of zomer-top-up nodig was.",
+    ev_import_during_hold:
+      "Tip: EV-laden tijdens vasthouden — kijk naar het laadschema en de auto-instellingen.",
+    expensive_peak_import:
+      "Tip: piekimport — nachtreserve en laadvensters beïnvloeden wanneer de batterij helpt.",
+    low_spread:
+      "Tip: bij krappe spreads laadt EMS soms niet — drempel staat bij Planner-instellingen.",
+    low_spread_spaarvloer:
+      "Tip: pas de spaarvloer (Min. verwachte besparing per dag) aan als je meer/minder handel wilt.",
+  },
+} as const;
+
+export function digestEurNl(v: number): string {
+  const abs = Math.abs(v).toLocaleString("nl-NL", {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  });
+  return `${v < 0 ? "−" : ""}€${abs}`;
+}

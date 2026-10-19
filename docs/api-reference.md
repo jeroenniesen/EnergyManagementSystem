@@ -97,6 +97,28 @@ Quick, concrete cheat-sheet for every integration. Details and rationale are in 
 - Caution: amp changes wake the car; cloud ≈30 cmd/min; `set_charging_amps` min/max undocumented — debounce + min dwell, read bounds at runtime.
 - v1: EV is read-only via the **HomeWizard car meter** (no Tesla credentials needed).
 
+## EMS `GET /api/digest` — weekly digest (B-58, negative-day drivers F-49 / #325)
+
+Read-only JSON for the Insights “Your week” panel and the Sunday notification. Existing keys are unchanged; clients that ignore unknown fields stay compatible.
+
+| Field | Type | Meaning |
+| --- | --- | --- |
+| `negative_days` | array | One entry per calendar day in the requested week with `saved_eur` &lt; 0 (positive days omitted). |
+| `negative_days[].date` | string | Local day `YYYY-MM-DD`. |
+| `negative_days[].saved_eur` | number | That day’s measured saving (negative). |
+| `negative_days[].drivers` | array | Up to three `{key, eur, text}` items from `explain_negative_day()` in `ems/digest.py` (sorted by \|eur\| desc; sum ≤ \|saved_eur\| + €0.05). Empty when inputs are insufficient — UI shows “Oorzaak niet te bepalen”. |
+
+Driver keys and data sources (see the `explain_negative_day` docstring):
+
+| `key` | Sources |
+| --- | --- |
+| `grid_charge_cost` | Day finance (`battery_contribution_eur`) + day energy flows (`grid_to_battery`). |
+| `ev_import_during_hold` | Day audit (`hold_reserve`) + day flows (`grid_to_car`, `battery_to_car`) priced via finance `grid_cost_eur` / `grid_import_kwh`. |
+| `expensive_peak_import` | Day finance `avoided_expensive_eur` when negative. |
+| `low_spread` | Audit/plan no-trade text with projected savings vs `planner.daily_min_savings_eur` (spaarvloer copy names the setting only after #319). |
+
+Query `week=YYYY-MM-DD` (any date in the week) or omit for the last completed Mon–Sun week.
+
 ## EMS `GET /api/status` — live writing (display only, #314)
 
 Optional fields on `StatusResponse` (`ems/web/models.py`). Older clients, including the iOS app, ignore unknown keys. Existing `dry_run`, `dry_run_cause` and `dry_run_reason` stay.

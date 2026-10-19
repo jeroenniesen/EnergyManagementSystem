@@ -906,6 +906,53 @@ test.describe("Insights: your week digest (B-58)", () => {
     await expect(page.getByTestId("week-digest")).toHaveCount(0);
     await expect(page.getByTestId("score-grid")).toBeVisible();
   });
+
+  test("shows expandable loss-day drivers with Dutch euro amounts (mock digest)", async ({
+    page,
+  }) => {
+    const lossDigest = {
+      ...DIGEST,
+      saved_eur: -2.5,
+      headline: "You lost €2.50 this week — Verlies op dinsdag: vooral netladen.",
+      negative_days: [
+        {
+          date: "2026-06-24",
+          saved_eur: -1.2,
+          drivers: [
+            {
+              key: "grid_charge_cost",
+              eur: 0.7,
+              text: "Netladen van de batterij (2,0 kWh van het net) kostte ca. €0,70.",
+            },
+            {
+              key: "expensive_peak_import",
+              eur: 0.35,
+              text: "Import tijdens dure uren kostte ca. €0,35 extra.",
+            },
+          ],
+        },
+      ],
+    };
+    await page.route("**/api/report**", (route) =>
+      route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(REPORT) }),
+    );
+    await page.route("**/api/digest**", (route) =>
+      route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(lossDigest) }),
+    );
+    await page.goto("/");
+    await page.getByTestId("nav-insights").click();
+    await expect(page.getByTestId("week-digest-loss-days")).toBeVisible();
+    await expect(page.getByRole("heading", { name: "Dagen met verlies" })).toHaveCount(0);
+    const toggle = page.getByTestId("week-digest-loss-2026-06-24");
+    await expect(toggle).toContainText("−€1,20");
+    await expect(toggle).toHaveAttribute("aria-expanded", "false");
+    await toggle.click();
+    await expect(toggle).toHaveAttribute("aria-expanded", "true");
+    const body = page.getByTestId("week-digest-loss-body-2026-06-24");
+    await expect(body).toContainText("€0,70");
+    await expect(body).toContainText("−€0,70");
+    await expect(body).toContainText("Netladen");
+  });
 });
 
 
