@@ -9,6 +9,7 @@ test_failsafe_api / test_recovery_wiring / …), which exercise the SAME methods
 """
 
 import asyncio
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from zoneinfo import ZoneInfo
 
@@ -127,6 +128,18 @@ def test_control_service_constructs_and_runs_a_tick_standalone():
     assert "command sent" in records[0]["summary"]
     assert records[0]["detail"]["desired_mode"] == "charge"
     assert controller.driver.current_mode() is PhysicalMode.CHARGE
+
+
+def test_adaptive_cfg_uses_effective_floor_when_device_above_reserve():
+    """#310 / F-16a: planner cfgs use max(user reserve, probed min_target_soc)."""
+    driver = MockBatteryDriver()
+    driver._capabilities = replace(driver._capabilities, min_target_soc=6.0)
+    controller = _controlling_controller(driver)
+    svc, _ = _service(controller)
+    svc._settings["battery.min_reserve_soc"] = 5.0
+    assert svc.effective_floor_soc() == 6.0
+    assert svc.adaptive_cfg().reserve_soc_pct == 6.0
+    assert svc.recovery_sizing()["reserve_soc_pct"] == 6.0
 
 
 def test_forced_discharge_sizing_requires_export_intent_and_arming():

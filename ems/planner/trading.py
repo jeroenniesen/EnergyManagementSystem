@@ -61,8 +61,17 @@ class TradingConfig:
     assumed_house_load_w: float = _ASSUMED_HOUSE_LOAD_W
 
 
-def trading_config_from_settings(s: dict) -> TradingConfig:
-    """Build TradingConfig from the runtime settings store (canonical planner.* keys)."""
+def trading_config_from_settings(
+    s: dict,
+    *,
+    reserve_soc_pct: float | None = None,
+) -> TradingConfig:
+    """Build TradingConfig from the runtime settings store (canonical planner.* keys).
+
+    ``reserve_soc_pct`` is the plan floor (#310) — pass the effective floor from the caller
+    (:func:`ems.battery_limits.effective_floor_from_settings`); never load the user reserve
+    setting from the settings dict inside this module.
+    """
     mode = str(s.get("planner.export_mode", "peak_slice") or "peak_slice")
     if mode not in _EXPORT_MODES:
         mode = "peak_slice"
@@ -88,7 +97,7 @@ def trading_config_from_settings(s: dict) -> TradingConfig:
         max_charge_w=float(s.get("battery.max_charge_w", 4000.0)),
         max_discharge_w=float(s.get("battery.max_discharge_w", 4000.0)),
         usable_kwh=float(s.get("battery.usable_kwh", 10.0)),
-        reserve_soc_pct=float(s.get("battery.min_reserve_soc", 10.0)),
+        reserve_soc_pct=float(reserve_soc_pct if reserve_soc_pct is not None else 10.0),
         import_fee_eur_per_kwh=(
             float(s.get("grid_fees.import_fee_eur_per_kwh", 0.0))
             if not setting_price_includes_all_fees(s) else 0.0

@@ -1209,6 +1209,26 @@ def create_app(
     # so the §8.11 validator can check requested power vs the battery's rating without a networked
     # probe on every decision. None until first probed (the validator simply skips that warn-check).
     _capability_box: dict[str, Any] = {"cap": None}
+
+    def _effective_floor_soc() -> float:
+        from ems.battery_limits import effective_floor_from_settings
+
+        return effective_floor_from_settings(
+            settings_cache, capability=_capability_box["cap"],
+        )
+
+    def _battery_floor_payload() -> dict[str, float]:
+        from ems.battery_limits import device_min_target_soc, effective_floor_from_settings
+
+        cap = _capability_box["cap"]
+        reserve = float(settings_cache["battery.min_reserve_soc"])
+        return {
+            "effective_floor_soc": effective_floor_from_settings(
+                settings_cache, capability=cap,
+            ),
+            "reserve_setting_soc": reserve,
+            "device_min_target_soc": device_min_target_soc(cap),
+        }
     # RSS sampler (B-80): samples process memory every 60 s so a slow leak is visible in
     # /api/diagnostics.perf, not just at OOM. Task is created in the lifespan; ref so the
     # finally block can await its stop().
@@ -1931,7 +1951,7 @@ def create_app(
         # Project the *clamped* plan so reachability matches the power we will actually command.
         val = validate_plan(
             aligned, soc_pct=_current_soc(now), data_quality=_data_quality(now),
-            min_reserve_soc=settings_cache["battery.min_reserve_soc"],
+            min_reserve_soc=_effective_floor_soc(),
             max_switches_per_day=int(settings_cache["control.max_switches_per_day"]),
             min_dwell=timedelta(seconds=settings_cache["control.min_dwell_seconds"]),
             capability=cap, projection=_projection_sync(aligned, now),
@@ -2224,7 +2244,7 @@ def create_app(
                 else:
                     need = compute_charge_need(
                         soc_pct=soc, usable_kwh=settings_cache["battery.usable_kwh"],
-                        min_reserve_soc=settings_cache["battery.min_reserve_soc"],
+                        min_reserve_soc=_effective_floor_soc(),
                         night_reserve_kwh=settings_cache["battery.night_reserve_kwh"],
                         overnight_load_kwh=settings_cache["battery.overnight_load_kwh"],
                         round_trip_efficiency=settings_cache["planner.round_trip_efficiency"],
@@ -3052,7 +3072,7 @@ def create_app(
         return compute_charge_need(
             soc_pct=soc,
             usable_kwh=s["battery.usable_kwh"],
-            min_reserve_soc=s["battery.min_reserve_soc"],
+            min_reserve_soc=_effective_floor_soc(),
             night_reserve_kwh=s["battery.night_reserve_kwh"],
             overnight_load_kwh=s["battery.overnight_load_kwh"],
             round_trip_efficiency=s["planner.round_trip_efficiency"],
@@ -3161,7 +3181,7 @@ def create_app(
         """Trading portal snapshot: settings, floors, T-vs-Z evaluation (B-106)."""
         now = datetime.now(UTC)
         s = settings_cache
-        cfg = trading_config_from_settings(s)
+        cfg = trading_config_from_settings(s, reserve_soc_pct=_effective_floor_soc())
         block = _trading_floor_block_reason()
         test_block = _test_battery_block_reason(now)
         armed = bool(s.get("control.allow_export_discharge", False))
@@ -3282,7 +3302,7 @@ def create_app(
             return JSONResponse(
                 {"ok": False, "detail": "Test batterij already running"}, status_code=409,
             )
-        floor = float(settings_cache["battery.min_reserve_soc"])
+        floor = _effective_floor_soc()
         power = float(settings_cache["battery.max_discharge_w"])
         until = now + timedelta(seconds=_TEST_BATTERY_SECONDS)
         armed_before = bool(controller.allow_export_discharge)
@@ -3560,6 +3580,7 @@ def create_app(
         out: dict[str, Any] = {
             "current_mode": None, "capabilities": None,
             "towers": towers, "aggregate": aggregate,
+            **_battery_floor_payload(),
         }
         topology = BatteryTopology(normalize_tower_ips(
             settings_cache.get("battery.indevolt_ip"),
@@ -3769,7 +3790,7 @@ def create_app(
             max_charge_w=s["battery.max_charge_w"],
             max_discharge_w=s["battery.max_discharge_w"],
             round_trip_efficiency=s["planner.round_trip_efficiency"],
-            reserve_soc_pct=s["battery.min_reserve_soc"],
+            reserve_soc_pct=_effective_floor_soc(),
         )
 
     async def _forward_projection():
@@ -3840,7 +3861,7 @@ def create_app(
                 # the plan honestly scheduled 0 kWh top-up.
                 need = ui_charge_need(
                     soc_pct=soc, usable_kwh=settings_cache["battery.usable_kwh"],
-                    min_reserve_soc=settings_cache["battery.min_reserve_soc"],
+                    min_reserve_soc=_effective_floor_soc(),
                     night_reserve_kwh=settings_cache["battery.night_reserve_kwh"],
                     overnight_load_kwh=settings_cache["battery.overnight_load_kwh"],
                     round_trip_efficiency=settings_cache["planner.round_trip_efficiency"],
@@ -3890,7 +3911,7 @@ def create_app(
     @app.get("/api/energy-forecast")
     async def energy_forecast() -> dict:
         # Recorded SoC (past) + a forward projection (future) of SoC and grid flow. Read-only.
-        reserve_pct = settings_cache["battery.min_reserve_soc"]
+        reserve_pct = _effective_floor_soc()
         history: list[dict] = []
         if store is not None:
             rows = await store.recent_raw(288)
@@ -4314,7 +4335,7 @@ def create_app(
                 now=now,
                 tz=site_tz,
                 current_soc_pct=float(fp["current_soc"]),
-                reserve_soc_pct=float(settings_cache["battery.min_reserve_soc"]),
+                reserve_soc_pct=_effective_floor_soc(),
                 usable_kwh=float(settings_cache["battery.usable_kwh"]),
                 round_trip_efficiency=float(
                     settings_cache.get("planner.round_trip_efficiency", 0.90),
@@ -4342,7 +4363,7 @@ def create_app(
         /api/energy-story so the plan sentence, graph and diagnostics cannot drift apart.
         """
         now = datetime.now(UTC)
-        reserve_pct = settings_cache["battery.min_reserve_soc"]
+        reserve_pct = _effective_floor_soc()
         quality = _data_quality(now)
         # Plan confidence (B-68): pure synthesis over signals already gathered elsewhere — the
         # data-quality badge above, per-signal freshness, battery reachability (all no-extra-cost
@@ -4624,7 +4645,7 @@ def create_app(
     ) -> dict:
         # One shape, two directions: "next" = the plan/forecast; "past" = recorded last 24h. The
         # frontend renders both with the same timeline so the story reads consistently. Read-only.
-        reserve_pct = settings_cache["battery.min_reserve_soc"]
+        reserve_pct = _effective_floor_soc()
         if window == "past":
             return await _past_story(reserve_pct)
         return await _next_story(reserve_pct)
@@ -4916,7 +4937,7 @@ def create_app(
             usable_kwh=float(settings_cache.get("battery.usable_kwh", 10.8)),
             max_charge_w=float(settings_cache.get("battery.max_charge_w", 4000.0)),
             max_discharge_w=float(settings_cache.get("battery.max_discharge_w", 4000.0)),
-            min_reserve_soc=float(settings_cache.get("battery.min_reserve_soc", 10.0)),
+            min_reserve_soc=_effective_floor_soc(),
             degradation_eur_per_kwh=float(
                 settings_cache.get("planner.degradation_eur_per_kwh", 0.05)
             ),
