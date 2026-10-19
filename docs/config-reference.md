@@ -51,6 +51,7 @@ Legend: **UI** = also editable from the web UI (overlays the file). **CONFIRM** 
 | `grid_fees.import_fee_eur_per_kwh` | €/kWh | 0.0 | added to import price when the provider total excludes it |
 | `grid_fees.export_fee_eur_per_kwh` | €/kWh | 0.0 | deducted from export value in reporting/planning diagnostics |
 | `export_price_model` | enum | `spot_minus_tax`\|`net_metering`\|`fixed` = **spot_minus_tax** | how each exported kWh is valued (`economics.export_value`, §8.3/§8.3a): `spot_minus_tax`=default 2027-ready (may go negative, unclamped); `net_metering`=full price (today's saldering); `fixed`=flat feed-in. **UI** |
+| `export_model_confirmed` | bool | false | true after the household confirms saldering vs 2027-ready export via the banner or export-model save (#341 / F-11). **UI** (banner only; not a Manage field) |
 | `energy_tax_eur_per_kwh` | €/kWh | 0.13 | subtracted from spot when export = `spot_minus_tax`. **UI** |
 | `fixed_feed_in_eur_per_kwh` | €/kWh | 0.01 | flat export value when export = `fixed`. **UI** |
 | `export_tariff_eur_per_kwh` | €/kWh | 0.0 | (legacy) flat export value; superseded by `export_price_model` |

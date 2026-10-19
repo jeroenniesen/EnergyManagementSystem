@@ -27,6 +27,29 @@ from ems.web.context import AppContext
 
 _log = logging.getLogger("ems.web.digest")
 
+# #319 (spaarvloer) is not on main yet — flip when that issue merges so low_spread copy names the
+# planner.daily_min_savings_eur setting in the UI.
+_LOW_SPREAD_NAMES_SPAARVLOER = False
+
+
+def _audit_rows_for_local_day(audit_rows: list[dict], day: date_cls, tz: ZoneInfo) -> list[dict]:
+    """Keep audit rows whose local calendar day matches `day` (ISO timestamps in the store)."""
+    out: list[dict] = []
+    target = day.isoformat()
+    for row in audit_rows:
+        ts = row.get("ts")
+        if not ts:
+            continue
+        try:
+            dt = datetime.fromisoformat(str(ts))
+        except ValueError:
+            continue
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=UTC)
+        if dt.astimezone(tz).date().isoformat() == target:
+            out.append(row)
+    return out
+
 
 def _last_completed_week_monday(now_local: datetime) -> date_cls:
     """The Monday of the most recently FULLY COMPLETED Mon-Sun week as of local `now_local`
@@ -144,10 +167,34 @@ async def gather_digest(ctx: AppContext, anchor: date_cls) -> dict:
             start.astimezone(UTC).isoformat(), end.astimezone(UTC).isoformat())
     advice = await ctx.solar_confidence_advice(datetime.now(UTC))
     export_model = str(ctx.settings_cache.get("prices.export_price_model", "spot_minus_tax"))
+    daily_min = float(ctx.settings_cache.get("planner.daily_min_savings_eur", 0.20))
+    day_contexts: list[dict] = []
+    for fin in finance_rows:
+        day_s = fin.get("day")
+        if not day_s:
+            continue
+        try:
+            day_d = date_cls.fromisoformat(str(day_s))
+        except ValueError:
+            continue
+        energy: dict | None = None
+        if ctx.store is not None and day_d <= now_local.date():
+            d_start, d_end, d_label, d_partial = resolve_window(
+                "day", day_d, ctx.site_tz, now_local)
+            day_report = await ctx.report_for_window(
+                "day", d_start, d_end, d_label, d_partial, now_local)
+            energy = day_report.get("flows")
+        day_contexts.append({
+            "finance": fin,
+            "audit": _audit_rows_for_local_day(audit_rows, day_d, ctx.site_tz),
+            "energy": energy,
+        })
     return build_digest(
         finance_rows=finance_rows, flows=report["flows"], scores=report["scores"],
         audit_rows=audit_rows, advice=advice, week_label=label,
-        export_price_model=export_model,
+        export_price_model=export_model, day_contexts=day_contexts,
+        daily_min_savings_eur=daily_min,
+        low_spread_names_spaarvloer=_LOW_SPREAD_NAMES_SPAARVLOER,
     )
 
 

@@ -5379,6 +5379,10 @@ def create_app(
             return JSONResponse(
                 {"detail": "invalid settings", "errors": errors}, status_code=422
             )
+        # #341 / F-11: an explicit export-model save is the household's confirmation. Kept on
+        # the write path so re-reading a stored model (effective_settings) cannot hide the banner.
+        if "prices.export_price_model" in clean:
+            clean["prices.export_model_confirmed"] = True
         # #263: changing the HA base URL without posting a new token must drop the stored
         # long-lived token — otherwise an operate client can retarget the credential via
         # settings then POST /api/consumers/ha/test-connection with use_stored_token.

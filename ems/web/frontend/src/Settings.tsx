@@ -1,6 +1,10 @@
 import { useEffect, useRef, useState } from "react";
 
 import { AccountTokens } from "./AccountTokens";
+import {
+  ExportModelConfirmBanner,
+  exportModelFromSettingsValues,
+} from "./ExportModelConfirmBanner";
 import { AdminAccess } from "./Admin";
 import { AutomationBoundsCard } from "./AutomationBounds";
 import { apiFetch, clearToken } from "./auth";
@@ -1159,6 +1163,24 @@ export function Settings({
           renders a session-only manage UI or a quiet sign-in hint (fetches its own kind via
           GET /api/auth/me) — see AccountTokens.tsx. */}
       {auth?.authenticated && <AccountTokens />}
+
+      <ExportModelConfirmBanner
+        values={exportModelFromSettingsValues(values)}
+        onSaved={(patch) => {
+          const next: Values = {
+            ...values,
+            ...(patch.exportPriceModel !== undefined
+              ? { "prices.export_price_model": patch.exportPriceModel }
+              : {}),
+            ...(patch.exportModelConfirmed !== undefined
+              ? { "prices.export_model_confirmed": patch.exportModelConfirmed }
+              : {}),
+          };
+          setValues(next);
+          setEdited(next);
+          onSaved?.(next);
+        }}
+      />
 
       {/* I3 "Apply & restart" (spec §B.4): server-computed capability + pending flag — never
           client-inferred. Shown only when BOTH are true; an unsupervised-but-pending instance gets

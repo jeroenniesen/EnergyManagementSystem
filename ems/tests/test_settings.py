@@ -22,6 +22,35 @@ def test_defaults_cover_every_field():
     assert d["control.allow_export_discharge"] is False
 
 
+def test_export_model_confirmed_defaults_and_validation():
+    """#341 / F-11: flag defaults false, bool-only, hidden from Manage; reads do not confirm."""
+    d = defaults()
+    assert d["prices.export_model_confirmed"] is False
+    assert d["prices.export_price_model"] == "spot_minus_tax"
+    field = SETTINGS_BY_KEY["prices.export_model_confirmed"]
+    assert field.type == "bool" and field.show_in_settings is False
+    assert all(f["key"] != "prices.export_model_confirmed" for f in schema_json())
+    clean, errors = validate_settings({"prices.export_model_confirmed": True})
+    assert errors == {} and clean["prices.export_model_confirmed"] is True
+    clean_f, err_f = validate_settings({"prices.export_model_confirmed": False})
+    assert err_f == {} and clean_f["prices.export_model_confirmed"] is False
+    _c, err = validate_settings({"prices.export_model_confirmed": "yes"})
+    assert "prices.export_model_confirmed" in err
+    # Validation of the model must not co-write confirmation — effective_settings reuses it.
+    clean, errors = validate_settings({"prices.export_price_model": "net_metering"})
+    assert errors == {}
+    assert clean["prices.export_price_model"] == "net_metering"
+    assert "prices.export_model_confirmed" not in clean
+    stored = effective_settings({
+        "prices.export_price_model": "net_metering",
+        "prices.export_model_confirmed": False,
+    })
+    assert stored["prices.export_price_model"] == "net_metering"
+    assert stored["prices.export_model_confirmed"] is False
+    legacy = effective_settings({"prices.export_price_model": "spot_minus_tax"})
+    assert legacy["prices.export_model_confirmed"] is False
+
+
 def test_trading_settings_defaults_match_e11_lock():
     """B-103 / #209: trading keys exist, default OFF / spot_minus_tax / €0.50 / uncapped."""
     d = defaults()
