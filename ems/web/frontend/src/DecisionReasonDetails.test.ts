@@ -75,5 +75,20 @@ describe("DecisionReasonDetails (#84 slice 2)", () => {
     expect(html).not.toContain("Proceed — no safety hold");
     expect(html).toContain("dwell");
     expect(html).toContain("cap reached");
+    expect(html).not.toContain("Geplande lading geblokkeerd door de schakellimiet");
+  });
+
+  it("names the cap-block alert next to the cap reached chip", () => {
+    const held: DecisionReason = {
+      ...REASON,
+      gates: { ...REASON.gates, cap_reached: true },
+    };
+    const html = renderToStaticMarkup(createElement(DecisionReasonDetails, {
+      reason: held,
+      capBlockedAlert: true,
+    }));
+    expect(html).toContain("cap reached");
+    expect(html).toContain('data-testid="cap-blocked-alert"');
+    expect(html).toContain("Geplande lading geblokkeerd door de schakellimiet");
   });
 });

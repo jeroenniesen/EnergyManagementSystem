@@ -336,6 +336,8 @@ class ControlLoopCounters(APIResponseModel):
     http_retries: int | None = None
     mode_applies: int | None = None
     validator_rejects: int | None = None
+    # Cycles the daily switch cap blocked a planned grid-charge (#316). Diagnostics only.
+    charge_blocked_by_cap: int | None = None
     outcomes: ControlLoopOutcomes | None = None
     last_outcome: str | None = None
 

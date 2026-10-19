@@ -430,3 +430,26 @@ def open_incidents_from_notifications(
             incident_since=since, down_push_sent=True, contact_since=None,
         )
     return out
+
+
+def charge_blocked_by_cap_notice(blocked: bool, *, now: datetime) -> dict[str, Any] | None:
+    """Push when the daily switch cap blocks a planned grid charge (#316, audit F-01b).
+
+    At most one push per local day: the caller passes site-local `now` and the dedupe key
+    is `charge_blocked_by_cap:{that date}`. Returns None when the charge is not blocked, so
+    the alert can disappear on the next cycle without a clearing push. Notify-only.
+    """
+    if not blocked:
+        return None
+    day = now.date().isoformat()
+    return {
+        "key": "charge_blocked_by_cap",
+        "title": "Geplande lading geblokkeerd door de schakellimiet",
+        "body": (
+            "De dagelijkse schakellimiet blokkeert een geplande lading. "
+            "De batterij blijft op de laatste stand; EMS hervat vanzelf als de limiet het toelaat. "
+            "Je hoeft niets te doen."
+        ),
+        "confidence": "high",
+        "dedupe_key": f"charge_blocked_by_cap:{day}",
+    }

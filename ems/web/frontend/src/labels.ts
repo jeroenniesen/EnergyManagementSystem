@@ -786,3 +786,9 @@ export function learnedNightKwhFromAdvice(
   if (nightDemandKwh == null || !Number.isFinite(nightDemandKwh) || nightDemandKwh < 0) return null;
   return nightDemandKwh;
 }
+
+/** Home banner + chip note when alert `charge_blocked_by_cap` is present (#316, audit F-01b). */
+export const CHARGE_BLOCKED_BY_CAP = {
+  banner: "Geplande lading geblokkeerd door de schakellimiet",
+  chipNote: "Geplande lading geblokkeerd door de schakellimiet",
+} as const;

@@ -2,14 +2,17 @@
 recovery. Mirrors `test_detectors_wiring.py`'s shape (a plain, directly-testable function against
 canned data + the real HistoryStore/AuditStore/Notifier/CacheStore). Proves: a missed window runs
 the SAME §8.11 validator and audits + notifies; a rejected catch-up is audited (not applied) and
-never notified; the KV dedupe limits it to one recovery per window per day; disabled = no-op;
-on-pace = no-op."""
+never notified; the KV dedupe limits it to one recovery per local day per root cause (#316 / F-50;
+the deadline is not the key); disabled = no-op; on-pace = no-op."""
 import asyncio
-from datetime import UTC, datetime
+import re
+from dataclasses import replace
+from datetime import UTC, datetime, timedelta
 from zoneinfo import ZoneInfo
 
 from ems.domain import BatteryIntent
 from ems.notify import Notifier
+from ems.planner.recovery import CatchUpResult, CompletionStatus
 from ems.planner.schedule import SLOT, Plan, PlanSlot
 from ems.planner.validator import PlanValidation
 from ems.sources.prices import PriceSlot
@@ -112,10 +115,15 @@ def test_rejected_catch_up_is_audited_not_notified(tmp_path):
 
 
 def test_kv_dedupe_one_recovery_per_window_per_day(tmp_path):
+    """Same local day and the same (unclassified) catch-up still collapses to one row.
+
+    #316 moved the key off the deadline onto (local day, root cause). This case buys slots
+    and matches none of the four blocker causes, so it shares the per-day `recovered` bucket.
+    """
     store, audit, cache, notifier = _stores(tmp_path)
     first = _run(cache_store=cache, notifier=notifier, audit_store=audit, validate_fn=_ok_validator)
     second = _run(cache_store=cache, notifier=notifier, audit_store=audit,
-                  validate_fn=_ok_validator)  # same window, same day
+                  validate_fn=_ok_validator)  # same day, deadline unchanged
     assert first is not None and second is None  # deduped
     assert len(_notifications(store)) == 1
     assert sum(1 for r in _audits(audit) if r["category"] == "plan_recovery") == 1
@@ -157,3 +165,92 @@ def test_impossible_catch_up_still_notifies(tmp_path):
     assert out is not None and out["feasible"] is False
     notes = _notifications(store)
     assert len(notes) == 1 and "partial" in notes[0]["title"].lower()
+
+
+def _priced_out_prices():
+    """Discharge peak cheap, everything else above the recovery buy ceiling → slots_used 0."""
+    return [PriceSlot(start=T0 + i * SLOT, eur_per_kwh=0.01 if i in (28, 29) else 0.80)
+            for i in range(32)]
+
+
+def _recovery_rows(audit):
+    return [r for r in _audits(audit) if r["category"] == "plan_recovery"]
+
+
+def test_zero_open_buy_slots_names_cause_without_a_target_percentage(tmp_path):
+    """#316 AC2: empty pool copy names the cause and carries no target percentage."""
+    store, audit, cache, notifier = _stores(tmp_path)
+    out = _run(prices=_priced_out_prices(), cache_store=cache, notifier=notifier,
+               audit_store=audit, validate_fn=_ok_validator)
+    assert out is not None and out["root_cause"] == "empty_buy_pool"
+    rows = _recovery_rows(audit)
+    assert len(rows) == 1 and rows[0]["detail"]["root_cause"] == "empty_buy_pool"
+    notes = _notifications(store)
+    assert len(notes) == 1
+    blob = notes[0]["title"] + notes[0]["body"]
+    assert "Geen koopmoment onder je max-prijs" in notes[0]["title"]
+    assert "root_cause: empty_buy_pool" in notes[0]["body"]
+    assert re.search(r"\d+\s*%", blob) is None
+
+
+def test_fifty_cycles_one_audit_and_notification_per_day_per_cause(tmp_path):
+    """#316 AC1: shifting deadlines, one cause → one row; a new cause or day is another."""
+    store, audit, cache, notifier = _stores(tmp_path)
+    status = CompletionStatus(status="missed", gap_pp=50.0, reason="missed")
+    base_plan = _missed_plan()
+
+    def catch(slots_used: int, target: float = 73.0) -> CatchUpResult:
+        return CatchUpResult(
+            plan=base_plan, feasible=False, target_soc=target, kwh_short=2.0,
+            slots_used=slots_used, reason="catch-up",
+            note=f"would have targeted {target:.0f}%",
+        )
+
+    def cycle(*, now, deadline, slots_used, soc_pct=30.0, cap_blocked=False,
+              validate_fn=_ok_validator):
+        plan = replace(base_plan, deadline=deadline)
+        return _run(
+            plan=plan, now=now, soc_pct=soc_pct, cache_store=cache, notifier=notifier,
+            audit_store=audit, validate_fn=validate_fn, precomputed_catch=catch(slots_used),
+            precomputed_status=status, cap_blocked=cap_blocked,
+        )
+
+    now = T0 + 4 * SLOT
+    for i in range(50):
+        cycle(now=now, deadline=DEADLINE + i * SLOT, slots_used=0)
+    assert len(_recovery_rows(audit)) == 1
+    assert len(_notifications(store)) == 1
+    assert _recovery_rows(audit)[0]["detail"]["root_cause"] == "empty_buy_pool"
+    empty_note = _notifications(store)[0]
+    assert "Geen koopmoment onder je max-prijs" in empty_note["title"]
+    assert re.search(r"\d+\s*%", empty_note["title"] + empty_note["body"]) is None
+
+    # Same day, different cause (battery on the reserve floor) → a second row and push.
+    cycle(now=now, deadline=DEADLINE + 60 * SLOT, slots_used=0, soc_pct=10.0)
+    assert len(_recovery_rows(audit)) == 2
+    assert len(_notifications(store)) == 2
+    assert _recovery_rows(audit)[-1]["detail"]["root_cause"] == "floor"
+    assert "Batterij op vloer" in _notifications(store)[-1]["title"]
+
+    # Cap is its own cause, even when the pool is also empty.
+    cycle(now=now, deadline=DEADLINE + 61 * SLOT, slots_used=0, cap_blocked=True)
+    assert len(_recovery_rows(audit)) == 3
+    assert _recovery_rows(audit)[-1]["detail"]["root_cause"] == "cap"
+    assert "Dagelijkse schakellimiet" in _notifications(store)[-1]["body"]
+
+    # Fail-safe is audited once and not pushed (a rejected catch-up stays quiet).
+    for i in range(50):
+        cycle(now=now, deadline=DEADLINE + (70 + i) * SLOT, slots_used=0,
+              validate_fn=_unsafe_validator)
+    assert len(_recovery_rows(audit)) == 4
+    assert _recovery_rows(audit)[-1]["detail"]["root_cause"] == "fail_safe"
+    assert "Fail-safe actief" not in "".join(n["title"] for n in _notifications(store))
+    assert len(_notifications(store)) == 3
+
+    # Next local day, same empty-pool cause → a new row and a new push.
+    tomorrow = now + timedelta(days=1)
+    for i in range(50):
+        cycle(now=tomorrow, deadline=DEADLINE + timedelta(days=1, minutes=15 * i), slots_used=0)
+    assert len(_recovery_rows(audit)) == 5
+    assert len(_notifications(store)) == 4
+    assert _recovery_rows(audit)[-1]["detail"]["root_cause"] == "empty_buy_pool"

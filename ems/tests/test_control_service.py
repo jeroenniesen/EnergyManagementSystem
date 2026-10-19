@@ -696,7 +696,13 @@ class _EnergyTrackingDriver(MockBatteryDriver):
 
 
 def test_oct14_pattern_commitment_charges_after_routine_cap_exhausted():
-    """14-okt audit (F-01): 10 routine flaps before the cheap window must not cap-block charging."""
+    """14-okt audit (F-01): 10 routine flaps before the cheap window must not cap-block charging.
+
+    #316 AC5: once #309's separate commitment budget is in place, this replay does not
+    increment `charge_blocked_by_cap` (the planned charge is applied, not held).
+    """
+    from ems.control.loop_counters import LOOP_COUNTERS
+    LOOP_COUNTERS.reset()
     window_start = datetime(2026, 10, 14, 2, 0, tzinfo=ZoneInfo("Europe/Amsterdam"))
     driver = _EnergyTrackingDriver(charge_power_w=4000.0)
     controller = _controlling_controller(driver)
@@ -727,6 +733,7 @@ def test_oct14_pattern_commitment_charges_after_routine_cap_exhausted():
     driver.accrue((window_start + timedelta(hours=2) - prev).total_seconds())
     assert driver.grid_import_kwh >= 2.0  # ≥1 kWh per started window hour at 4 kW
     assert cap_hits == []
+    assert LOOP_COUNTERS.snapshot()["charge_blocked_by_cap"] == 0
 
 
 def test_current_plan_uses_injected_clock_and_explicit_time_consistently():
@@ -752,3 +759,54 @@ def test_current_plan_uses_injected_clock_and_explicit_time_consistently():
         assert at == plan.created_at == expected
         assert seen and set(seen) == {expected}
         seen.clear()
+
+
+def test_cap_block_of_planned_grid_charge_counts_then_clears():
+    """#316: a >=15 min GRID_CHARGE held by the commitment cap is tagged and counted per cycle.
+
+    A shorter slot does not count. The next tick that is not blocked clears the alert flag.
+    The decision itself is still cap_reached / applied — this only tags and counts.
+    """
+    from ems.control.loop_counters import LOOP_COUNTERS
+    from ems.planner.schedule import SLOT, Plan, PlanSlot
+
+    LOOP_COUNTERS.reset()
+    start = NOW
+    slot = PlanSlot(
+        start, BatteryIntent.GRID_CHARGE_TO_TARGET, "cheap window",
+        target_soc=80.0, end=start + SLOT,
+    )
+    plan = Plan(created_at=start, slots=(slot,), strategy="winter",
+                target_soc=80.0, deadline=start + 4 * SLOT)
+    controller = _controlling_controller()
+    controller.commitment_switches_today = 4  # settings default commitment cap
+    svc, _ctx = _service(controller)
+    svc.effective_intent = lambda now: _CHARGE
+    svc.current_plan = lambda now=None: (now or start, [], plan)
+
+    recs = svc.control_tick(start)
+    assert svc.charge_blocked_by_cap is True
+    assert LOOP_COUNTERS.snapshot()["charge_blocked_by_cap"] == 1
+    tagged = [r for r in recs if r.get("detail", {}).get("charge_blocked_by_cap") is True]
+    assert len(tagged) == 1 and tagged[0]["detail"]["outcome"] == "cap_reached"
+    assert controller.driver.current_mode() is PhysicalMode.AUTO  # held, not written
+
+    svc.control_tick(start + timedelta(minutes=1))
+    assert LOOP_COUNTERS.snapshot()["charge_blocked_by_cap"] == 2  # per cycle, audit stays deduped
+
+    short = PlanSlot(
+        start, BatteryIntent.GRID_CHARGE_TO_TARGET, "too short to alert",
+        target_soc=80.0, end=start + timedelta(minutes=5),
+    )
+    short_plan = Plan(created_at=start, slots=(short,), strategy="winter",
+                      target_soc=80.0, deadline=start + timedelta(minutes=5))
+    svc.current_plan = lambda now=None: (now or start, [], short_plan)
+    svc.control_tick(start + timedelta(minutes=1))
+    assert svc.charge_blocked_by_cap is False
+    assert LOOP_COUNTERS.snapshot()["charge_blocked_by_cap"] == 2
+
+    controller.commitment_switches_today = 0
+    svc.current_plan = lambda now=None: (now or start, [], plan)
+    svc.control_tick(start + timedelta(minutes=2))
+    assert svc.charge_blocked_by_cap is False
+    assert controller.driver.current_mode() is PhysicalMode.CHARGE
