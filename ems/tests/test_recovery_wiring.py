@@ -254,3 +254,29 @@ def test_fifty_cycles_one_audit_and_notification_per_day_per_cause(tmp_path):
     assert len(_recovery_rows(audit)) == 5
     assert len(_notifications(store)) == 4
     assert _recovery_rows(audit)[-1]["detail"]["root_cause"] == "empty_buy_pool"
+
+
+def test_recovery_dedupe_follows_site_local_day_not_utc_date(tmp_path):
+    """#316: dedupe day is `now.astimezone(site_tz).date()`, not the UTC calendar date."""
+    store, audit, cache, notifier = _stores(tmp_path)
+    status = CompletionStatus(status="missed", gap_pp=50.0, reason="missed")
+    base_plan = _missed_plan()
+    catch = CatchUpResult(
+        plan=base_plan, feasible=False, target_soc=73.0, kwh_short=2.0,
+        slots_used=0, reason="catch-up", note="no slots",
+    )
+
+    def cycle(now: datetime) -> None:
+        asyncio.run(_run_recovery(
+            base_plan, now, soc_pct=30.0, prices=_priced_out_prices(), enabled=True, tz=AMS,
+            cache_store=cache, notifier=notifier, audit_store=audit, validate_fn=_ok_validator,
+            precomputed_catch=catch, precomputed_status=status, **SIZING,
+        ))
+
+    # 22:30 UTC = 23:30 Europe/Amsterdam on 2026-01-15.
+    cycle(datetime(2026, 1, 15, 22, 30, tzinfo=UTC))
+    # 23:30 UTC = 00:30 on 2026-01-16 in Amsterdam — new local day, same root cause.
+    cycle(datetime(2026, 1, 15, 23, 30, tzinfo=UTC))
+    assert len(_recovery_rows(audit)) == 2
+    assert len(_notifications(store)) == 2
+    assert {r["detail"]["root_cause"] for r in _recovery_rows(audit)} == {"empty_buy_pool"}
