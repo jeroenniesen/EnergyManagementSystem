@@ -5758,9 +5758,48 @@ def create_app(
         ctx, controller=controller, config_dry_run=config_dry_run,
         capability_getter=lambda: _capability_box.get("cap"),
     ))
-    # #224 / #263: appliances insight + HA connection wizard (no battery writes).
+    # #224 / #263 / #333: appliances insight + start-window advice (read plan/forecast only).
+    def _consumer_start_advice_inputs(now: datetime) -> dict[str, Any]:
+        p50_map: dict[datetime, float] | None = None
+        if solar_forecast is not None:
+            try:
+                p50_map = {f.start: float(f.p50_w) for f in solar_forecast.slots()}
+            except Exception:
+                _log.debug("consumers start-advice: forecast slots failed", exc_info=True)
+                p50_map = None
+        load_map: dict[datetime, float] | None = None
+        profile = _load_profile_box.get("profile")
+        if profile is not None and price_source is not None:
+            try:
+                load_map = {
+                    s.start: float(profile.expected_w(s.start))
+                    for s in price_source.slots()
+                }
+            except Exception:
+                _log.debug("consumers start-advice: load profile map failed", exc_info=True)
+                load_map = None
+        grid_charge: frozenset[datetime] | None = None
+        try:
+            pp = _current_plan(now)
+            if pp is not None and getattr(pp[2], "slots", None):
+                starts = frozenset(
+                    s.start for s in pp[2].slots
+                    if s.intent is BatteryIntent.GRID_CHARGE_TO_TARGET
+                )
+                grid_charge = starts if starts else None
+        except Exception:
+            _log.debug("consumers start-advice: plan read failed", exc_info=True)
+        return {
+            "p50_w_by_slot": p50_map,
+            "load_w_by_slot": load_map,
+            "grid_charge_starts": grid_charge,
+        }
+
     app.include_router(build_consumers_router(
-        ctx, sources=consumer_sources, settings_store=settings_store,
+        ctx,
+        sources=consumer_sources,
+        settings_store=settings_store,
+        advice_inputs=_consumer_start_advice_inputs,
     ))
     app.include_router(build_plan_router(ctx, plan_service))
     app.include_router(build_report_router(ctx, report_service))

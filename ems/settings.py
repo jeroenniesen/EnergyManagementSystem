@@ -761,6 +761,28 @@ SETTINGS_SCHEMA: tuple[SettingsField, ...] = (
         min=1.0, max=32.0, unit="slots", show_in_settings=False, advanced=True,
     ),
     SettingsField(
+        "consumers.quiet_hours",
+        "Quiet hours (no start advice)",
+        "text",
+        "",
+        "consumers",
+        help="Optional local-time window when start-window advice must not begin or end, e.g. "
+        "22:00-07:00. Empty = no restriction (#333).",
+        show_in_settings=False,
+        advanced=True,
+    ),
+    SettingsField(
+        "consumers.preferred_windows",
+        "Per-appliance preferred windows",
+        "text",
+        "{}",
+        "consumers",
+        help='JSON map of device id → local "HH:MM-HH:MM" band where advice should fit. '
+        "Empty object = no per-device preference (#333).",
+        show_in_settings=False,
+        advanced=True,
+    ),
+    SettingsField(
         "consumers.smartthings.enabled", "SmartThings integration", "bool", False, "consumers",
         help="Turn on the Samsung SmartThings appliance adapter (washer/dryer). "
         "Needs a personal access token below. Read-only — EMS does not start cycles yet. "
@@ -1123,6 +1145,30 @@ def validate_settings(
                 clean[key] = normalize_ha_url(str(result))
             except ValueError as exc:
                 errors[key] = str(exc)
+            continue
+        if key == "consumers.quiet_hours":
+            from ems.consumers.start_advice import quiet_hours_error
+
+            text = str(result or "").strip()
+            err = quiet_hours_error(text)
+            if err:
+                errors[key] = err
+                continue
+            clean[key] = text
+            continue
+        if key == "consumers.preferred_windows":
+            from ems.consumers.start_advice import (
+                parse_preferred_windows_json,
+                preferred_windows_error,
+            )
+
+            raw = str(result or "").strip() or "{}"
+            err = preferred_windows_error(raw)
+            if err:
+                errors[key] = err
+                continue
+            parsed = parse_preferred_windows_json(raw)
+            clean[key] = json.dumps(parsed, sort_keys=True) if parsed else "{}"
             continue
         if field.type == "secret" and result == "":
             continue  # blank secret = keep the existing value

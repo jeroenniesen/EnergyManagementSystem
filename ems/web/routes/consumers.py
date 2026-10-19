@@ -11,9 +11,10 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from datetime import UTC, datetime, timedelta
 from typing import Any
+from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
@@ -22,7 +23,12 @@ from ems.consumers.ha_probe import probe_ha_connection
 from ems.consumers.models import ConsumerState, ConsumerStatus
 from ems.consumers.ports import ConsumerPort
 from ems.consumers.selection import apply_opt_in, default_device_ids_json, filter_opted_in
-from ems.consumers.start_advice import assumed_kwh_for_kind, propose_start_window
+from ems.consumers.start_advice import (
+    assumed_kwh_for_kind,
+    parse_preferred_windows_json,
+    propose_start_window,
+    scoring_from_settings,
+)
 from ems.settings import effective_settings, normalize_ha_url
 from ems.web.context import AppContext
 from ems.web.ratelimit import FixedWindowRateLimiter
@@ -152,6 +158,8 @@ def gather_start_advice(
     price_slots: Sequence[Any],
     *,
     now: datetime,
+    site_tz: ZoneInfo | None = None,
+    advice_inputs: Callable[[datetime], dict[str, Any] | None] | None = None,
 ) -> dict[str, Any]:
     """Cheapest start windows for eligible opted-in appliances (#227). Advice only."""
     dry_run = bool(settings.get("consumers.dry_run", True))
@@ -182,6 +190,14 @@ def gather_start_advice(
     catalog = gather_consumers(sources, settings)
     horizon_end = now + _HORIZON
     advice_out: list[dict[str, Any]] = []
+    tz = site_tz or ZoneInfo("UTC")
+    raw_inputs = advice_inputs(now) if advice_inputs is not None else None
+    p50_map = (raw_inputs or {}).get("p50_w_by_slot")
+    load_map = (raw_inputs or {}).get("load_w_by_slot")
+    grid_charge = (raw_inputs or {}).get("grid_charge_starts")
+    preferred_by_device = parse_preferred_windows_json(
+        str(settings.get("consumers.preferred_windows") or ""),
+    )
 
     for device in catalog["devices"]:
         caps = device.get("capabilities") or {}
@@ -211,12 +227,21 @@ def gather_start_advice(
             advice_out.append(entry)
             continue
 
+        scoring = scoring_from_settings(
+            settings,
+            p50_w_by_slot=p50_map,
+            load_w_by_slot=load_map,
+            grid_charge_starts=grid_charge,
+            site_tz=tz,
+            preferred_window=preferred_by_device.get(device["id"], ""),
+        )
         window = propose_start_window(
             list(price_slots),
             duration_slots=duration_slots,
             now=now,
             horizon_end=horizon_end,
             assumed_kwh=assumed_kwh_for_kind(device["kind"]),
+            scoring=scoring,
         )
         if window is None:
             entry["skip_reason"] = "Not enough day-ahead prices for a full cycle window."
@@ -257,6 +282,7 @@ def build_router(
     settings_store: Any | None = None,
     http_get: Any | None = None,
     ha_probe_limiter: FixedWindowRateLimiter | None = None,
+    advice_inputs: Callable[[datetime], dict[str, Any] | None] | None = None,
 ) -> APIRouter:
     router = APIRouter()
     wired: tuple[ConsumerPort, ...] = tuple(sources or ())
@@ -281,7 +307,12 @@ def build_router(
                 _log.debug("consumers start-advice: price slots failed", exc_info=True)
                 prices = []
         return gather_start_advice(
-            wired, ctx.settings_cache, prices, now=now,
+            wired,
+            ctx.settings_cache,
+            prices,
+            now=now,
+            site_tz=ctx.site_tz,
+            advice_inputs=advice_inputs,
         )
 
     @router.post("/api/consumers/ha/test-connection", response_model=None)
