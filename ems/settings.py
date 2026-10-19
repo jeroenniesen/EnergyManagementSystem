@@ -1141,23 +1141,28 @@ def validate_settings(
                 errors[key] = str(exc)
             continue
         if key == "consumers.quiet_hours":
-            from ems.consumers.start_advice import parse_clock_range
+            from ems.consumers.start_advice import quiet_hours_error
 
             text = str(result or "").strip()
-            if text and parse_clock_range(text) is None:
-                errors[key] = 'use HH:MM-HH:MM (e.g. 22:00-07:00) or leave empty'
+            err = quiet_hours_error(text)
+            if err:
+                errors[key] = err
                 continue
             clean[key] = text
             continue
         if key == "consumers.preferred_windows":
-            from ems.consumers.start_advice import parse_clock_range, parse_preferred_windows_json
+            from ems.consumers.start_advice import (
+                parse_preferred_windows_json,
+                preferred_windows_error,
+            )
 
             raw = str(result or "").strip() or "{}"
-            parsed = parse_preferred_windows_json(raw)
-            if raw != "{}" and not parsed:
-                errors[key] = 'expected JSON like {"device-id": "09:00-17:00"}'
+            err = preferred_windows_error(raw)
+            if err:
+                errors[key] = err
                 continue
-            clean[key] = json.dumps(parsed) if parsed else "{}"
+            parsed = parse_preferred_windows_json(raw)
+            clean[key] = json.dumps(parsed, sort_keys=True) if parsed else "{}"
             continue
         if field.type == "secret" and result == "":
             continue  # blank secret = keep the existing value

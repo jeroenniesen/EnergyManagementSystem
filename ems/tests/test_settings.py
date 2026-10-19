@@ -483,10 +483,23 @@ def test_consumers_quiet_hours_and_preferred_windows_validation():
     clean, errors = validate_settings({"consumers.quiet_hours": "22:00-07:00"})
     assert errors == {}
     assert clean["consumers.quiet_hours"] == "22:00-07:00"
+    clean_empty, err_empty = validate_settings({"consumers.quiet_hours": "  "})
+    assert err_empty == {}
+    assert clean_empty["consumers.quiet_hours"] == ""
     _c, err = validate_settings({"consumers.quiet_hours": "not-a-range"})
     assert "consumers.quiet_hours" in err
+    _c, err_same = validate_settings({"consumers.quiet_hours": "22:00-22:00"})
+    assert "consumers.quiet_hours" in err_same
     clean2, err2 = validate_settings({
         "consumers.preferred_windows": '{"mock-washer-1": "09:00-17:00"}',
     })
     assert err2 == {}
     assert "mock-washer-1" in clean2["consumers.preferred_windows"]
+    _c, err_partial = validate_settings({
+        "consumers.preferred_windows": '{"washer": "09:00-17:00", "dryer": "nope"}',
+    })
+    assert "consumers.preferred_windows" in err_partial
+    _c, err_wrap = validate_settings({
+        "consumers.preferred_windows": '{"washer": "22:00-07:00"}',
+    })
+    assert "consumers.preferred_windows" in err_wrap

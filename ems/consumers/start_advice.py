@@ -4,6 +4,7 @@ Pure — no clock reads, no I/O, never starts a device and never touches the bat
 Window score = Σ (effective €/kWh) × kWh/slot, with solar surplus (P50 − load) valued at
 ``economics.export_value``. Penalties apply for GRID_CHARGE plan overlap and fuse pressure.
 """
+
 from __future__ import annotations
 
 import json
@@ -13,8 +14,7 @@ from datetime import datetime, timedelta
 from typing import Protocol
 from zoneinfo import ZoneInfo
 
-from ems.economics import EconomicSnapshot
-from ems.tariffs import TariffPolicy
+from ems.planner.economics import export_value
 
 SLOT = timedelta(minutes=15)
 SLOT_HOURS = 0.25
@@ -119,9 +119,8 @@ def window_touches_quiet_hours(
 ) -> bool:
     if not str(quiet_hours or "").strip():
         return False
-    return (
-        instant_in_quiet_hours(start, quiet_hours, tz)
-        or instant_in_quiet_hours(end, quiet_hours, tz)
+    return instant_in_quiet_hours(start, quiet_hours, tz) or instant_in_quiet_hours(
+        end, quiet_hours, tz
     )
 
 
@@ -137,13 +136,17 @@ def window_outside_preferred(
         return False
     pref_start, pref_end = parsed
     if pref_start >= pref_end:
-        # Wrapping preferred bands are not used for appliances — treat as invalid / no constraint.
+        # Wrapping preferred bands are rejected at save time. Stored leftovers do not constrain.
         return False
     sm, em = _local_minutes(start, tz), _local_minutes(end, tz)
+    # A window that crosses local midnight cannot sit inside a same-day band.
+    if em <= sm:
+        return True
     return sm < pref_start or em > pref_end
 
 
 def parse_preferred_windows_json(raw: str | None) -> dict[str, str]:
+    """Best-effort map for advice. Invalid entries are dropped; save-time validation is strict."""
     if not raw or not str(raw).strip():
         return {}
     try:
@@ -154,22 +157,45 @@ def parse_preferred_windows_json(raw: str | None) -> dict[str, str]:
         return {}
     out: dict[str, str] = {}
     for k, v in data.items():
-        if isinstance(k, str) and isinstance(v, str) and parse_clock_range(v):
-            out[k] = v.strip()
+        if not isinstance(k, str) or not k.strip() or not isinstance(v, str):
+            continue
+        parsed = parse_clock_range(v)
+        if parsed is None or parsed[0] >= parsed[1]:
+            continue
+        out[k.strip()] = v.strip()
     return out
 
 
-def _economic_snapshot(scoring: StartAdviceScoring | None) -> EconomicSnapshot | None:
-    if scoring is None:
+def preferred_windows_error(raw: str) -> str | None:
+    """None when ``raw`` is empty/{} or a same-day HH:MM-HH:MM map. Otherwise an error string."""
+    text = str(raw or "").strip() or "{}"
+    try:
+        data = json.loads(text)
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return 'expected JSON like {"device-id": "09:00-17:00"}'
+    if not isinstance(data, dict):
+        return 'expected JSON like {"device-id": "09:00-17:00"}'
+    for k, v in data.items():
+        if not isinstance(k, str) or not k.strip() or not isinstance(v, str):
+            return 'expected JSON like {"device-id": "09:00-17:00"}'
+        parsed = parse_clock_range(v)
+        if parsed is None or parsed[0] >= parsed[1]:
+            return (
+                f"{k.strip() or 'device'}: use a same-day HH:MM-HH:MM window "
+                "(start before end), e.g. 09:00-17:00"
+            )
+    return None
+
+
+def quiet_hours_error(raw: str) -> str | None:
+    """None when empty or a real HH:MM-HH:MM range (midnight wrap allowed)."""
+    text = str(raw or "").strip()
+    if not text:
         return None
-    if scoring.p50_w_by_slot is None and scoring.load_w_by_slot is None:
-        return None
-    return EconomicSnapshot.from_tariff_policy(
-        TariffPolicy(export_fee_eur_per_kwh=max(0.0, float(scoring.export_fee_eur_per_kwh))),
-        export_model=scoring.export_model,
-        energy_tax_eur_per_kwh=scoring.energy_tax_eur_per_kwh,
-        fixed_feed_in_eur_per_kwh=scoring.fixed_feed_in_eur_per_kwh,
-    )
+    parsed = parse_clock_range(text)
+    if parsed is None or parsed[0] == parsed[1]:
+        return "use HH:MM-HH:MM (e.g. 22:00-07:00) or leave empty"
+    return None
 
 
 def _load_w(
@@ -183,35 +209,62 @@ def _load_w(
     return None
 
 
-def _slot_effective_eur_per_kwh(
+def _export_eur_per_kwh(price: float, scoring: StartAdviceScoring) -> float | None:
+    """€/kWh forgone by using surplus on site. None when the price cannot be valued."""
+    try:
+        credit = export_value(
+            price,
+            model=scoring.export_model,
+            energy_tax_eur_per_kwh=float(scoring.energy_tax_eur_per_kwh),
+            fixed_feed_in_eur_per_kwh=float(scoring.fixed_feed_in_eur_per_kwh),
+        )
+        fee = max(0.0, float(scoring.export_fee_eur_per_kwh))
+    except (TypeError, ValueError):
+        return None
+    return float(credit) - fee
+
+
+def _slot_economics(
     slot: _PriceLike,
     kwh_per_slot: float,
     scoring: StartAdviceScoring | None,
-    snapshot: EconomicSnapshot | None,
-) -> tuple[float, float]:
-    """Return (effective €/kWh, solar_value €/kWh component used)."""
+    *,
+    use_solar: bool,
+) -> tuple[float, float, bool, bool]:
+    """Return (price − solar_value €/kWh, solar_value €/kWh, grid-charge hit, fuse hit).
+
+    Penalties are flags only — they rank windows and never enter ``est_cost_eur``.
+    Missing P50 or load for this slot contributes no solar credit (surplus stays 0).
+    """
     price = float(slot.eur_per_kwh)
     solar_value = 0.0
-    if snapshot is not None and scoring is not None and scoring.p50_w_by_slot is not None:
-        p50 = float(scoring.p50_w_by_slot.get(slot.start, 0.0))
+    if use_solar and scoring is not None and scoring.p50_w_by_slot is not None:
         load_w = _load_w(slot.start, scoring)
-        if load_w is not None:
-            surplus_w = max(0.0, p50 - load_w)
+        if load_w is not None and kwh_per_slot > 0:
+            p50 = max(0.0, float(scoring.p50_w_by_slot.get(slot.start, 0.0)))
+            surplus_w = max(0.0, p50 - max(0.0, load_w))
             surplus_kwh = surplus_w * SLOT_HOURS / 1000.0
-            if kwh_per_slot > 0 and surplus_kwh > 0:
-                export_credit = snapshot.export_credit(price)
-                solar_value = export_credit * min(1.0, surplus_kwh / kwh_per_slot)
-    effective = price - solar_value
-    if scoring is not None and scoring.grid_charge_starts is not None:
-        if slot.start in scoring.grid_charge_starts:
-            effective += GRID_CHARGE_SLOT_PENALTY_EUR_PER_KWH
+            if surplus_kwh > 0:
+                credit = _export_eur_per_kwh(price, scoring)
+                if credit is not None:
+                    solar_value = credit * min(1.0, surplus_kwh / kwh_per_slot)
+    grid_hit = bool(
+        scoring is not None
+        and scoring.grid_charge_starts is not None
+        and slot.start in scoring.grid_charge_starts
+    )
+    fuse_hit = False
     if scoring is not None and scoring.grid_limit_w is not None and scoring.grid_limit_w > 0:
         load_w = _load_w(slot.start, scoring)
         if load_w is not None:
-            demand_w = max(0.0, load_w) + max(0.0, scoring.appliance_power_w)
+            p50 = 0.0
+            if scoring.p50_w_by_slot is not None:
+                p50 = max(0.0, float(scoring.p50_w_by_slot.get(slot.start, 0.0)))
+            # Grid draw ≈ house load + appliance − PV. Missing PV counts as 0 (no invented sun).
+            demand_w = max(0.0, load_w) + max(0.0, scoring.appliance_power_w) - p50
             if demand_w > scoring.grid_limit_w + 1e-6:
-                effective += FUSE_PRESSURE_PENALTY_EUR_PER_KWH
-    return effective, solar_value
+                fuse_hit = True
+    return price - solar_value, solar_value, grid_hit, fuse_hit
 
 
 def _window_overlaps_grid_charge(
@@ -241,10 +294,7 @@ def propose_start_window(
         return None
     end = horizon_end
     candidates = sorted(
-        (
-            s for s in price_slots
-            if s.start >= now and (end is None or s.start < end)
-        ),
+        (s for s in price_slots if s.start >= now and (end is None or s.start < end)),
         key=lambda s: s.start,
     )
     if len(candidates) < duration_slots:
@@ -253,10 +303,8 @@ def propose_start_window(
     kwh_per_slot = (
         (assumed_kwh / duration_slots) if assumed_kwh is not None and assumed_kwh > 0 else 0.0
     )
-    snapshot = _economic_snapshot(scoring)
     use_solar = (
-        snapshot is not None
-        and scoring is not None
+        scoring is not None
         and scoring.p50_w_by_slot is not None
         and scoring.load_w_by_slot is not None
         and len(scoring.load_w_by_slot) > 0
@@ -267,10 +315,11 @@ def propose_start_window(
     quiet = str(scoring.quiet_hours if scoring else "").strip()
     preferred = str(scoring.preferred_window if scoring else "").strip()
 
-    ranked: list[tuple[float, int, list[_PriceLike], float, int]] = []
+    # score ranks; econ_sum is Σ(price − solar_value) and is the only euro figure we publish.
+    ranked: list[tuple[float, int, list[_PriceLike], float, int, int]] = []
     n = len(candidates)
     for i in range(n - duration_slots + 1):
-        window = candidates[i:i + duration_slots]
+        window = candidates[i : i + duration_slots]
         if any(window[k + 1].start - window[k].start != SLOT for k in range(len(window) - 1)):
             continue
         start, finish = window[0].start, window[-1].start + SLOT
@@ -278,19 +327,28 @@ def propose_start_window(
             continue
         if preferred and window_outside_preferred(start, finish, preferred, tz):
             continue
-        total = 0.0
+        econ_sum = 0.0
+        score = 0.0
         solar_slots = 0
+        fuse_hits = 0
         for s in window:
-            eff, solar_v = _slot_effective_eur_per_kwh(
+            econ, solar_v, grid_hit, fuse_hit = _slot_economics(
                 s,
                 kwh_per_slot,
                 scoring,
-                snapshot if use_solar else None,
+                use_solar=use_solar,
             )
-            total += eff
+            econ_sum += econ
+            slot_score = econ
+            if grid_hit:
+                slot_score += GRID_CHARGE_SLOT_PENALTY_EUR_PER_KWH
+            if fuse_hit:
+                slot_score += FUSE_PRESSURE_PENALTY_EUR_PER_KWH
+                fuse_hits += 1
+            score += slot_score
             if solar_v > 1e-9:
                 solar_slots += 1
-        ranked.append((total, i, window, total / duration_slots, solar_slots))
+        ranked.append((score, i, window, econ_sum, solar_slots, fuse_hits))
 
     if not ranked:
         return None
@@ -310,11 +368,13 @@ def propose_start_window(
                 break
 
     window = chosen[2]
-    best_sum = chosen[0]
-    avg = chosen[3]
+    econ_sum = chosen[3]
     solar_slots = chosen[4]
+    fuse_hits = chosen[5]
+    avg = econ_sum / duration_slots
     start, finish = window[0].start, window[-1].start + SLOT
     duration_label = _fmt_duration(duration_slots)
+    avoided_fuse = any(entry[5] > fuse_hits and entry[3] + 1e-9 < econ_sum for entry in ranked)
 
     reason_parts = [
         f"Best {duration_label} window from the day-ahead prices (avg €{avg:.2f}/kWh",
@@ -322,11 +382,21 @@ def propose_start_window(
     if price_only and scoring is not None and scoring.p50_w_by_slot is not None:
         reason_parts.append("; solar/load forecast unavailable — prices only")
     elif not price_only and solar_slots > 0:
-        reason_parts.append(f"; {solar_slots} slot(s) use solar export value")
+        if solar_slots == 1:
+            reason_parts.append("; 1 slot uses solar export value")
+        else:
+            reason_parts.append(f"; {solar_slots} slots use solar export value")
     if grid_overlap:
         reason_parts.append("; overlaps planned grid-charge — consider another time")
     elif skipped_for_grid:
         reason_parts.append("; skipped a cheaper window that overlapped grid-charge")
+    if fuse_hits or avoided_fuse:
+        kw = max(0.0, scoring.appliance_power_w) / 1000.0 if scoring is not None else 2.0
+        reason_parts.append(
+            f"; house fuse is tight at an assumed {kw:g} kW draw"
+            if fuse_hits
+            else "; skipped a cheaper window that would press the house fuse"
+        )
     if assumed_kwh is not None and assumed_kwh > 0:
         reason_parts.append(f", assuming {assumed_kwh:g} kWh")
     reason_parts.append(").")
@@ -340,13 +410,24 @@ def propose_start_window(
         "reason": reason,
     }
     if assumed_kwh is not None and assumed_kwh > 0:
-        out["est_cost_eur"] = round(best_sum * kwh_per_slot, 2)
+        # Σ(price − solar_value) × kWh/slot. Penalties are not euros.
+        out["est_cost_eur"] = round(econ_sum * kwh_per_slot, 2)
         out["assumed_kwh"] = assumed_kwh
     return out
 
 
 def assumed_kwh_for_kind(kind: str) -> float:
     return _ASSUMED_KWH.get(str(kind), 1.0)
+
+
+def _setting_float(settings: dict, key: str, default: float) -> float:
+    try:
+        raw = settings.get(key, default)
+        if raw is None or raw == "":
+            return float(default)
+        return float(raw)
+    except (TypeError, ValueError):
+        return float(default)
 
 
 def scoring_from_settings(
@@ -358,21 +439,25 @@ def scoring_from_settings(
     site_tz: ZoneInfo | None = None,
     preferred_window: str = "",
 ) -> StartAdviceScoring:
-    try:
-        grid_limit = float(settings.get("control.grid_limit_w", 0) or 0)
-    except (TypeError, ValueError):
-        grid_limit = 0.0
-    if grid_limit <= 0:
-        grid_limit = None  # type: ignore[assignment]
+    # Default watts exist while the fuse is still "unset" (#197). Do not invent a limit then.
+    fuse = str(settings.get("control.grid_fuse", "unset") or "unset").strip().lower()
+    watts = _setting_float(settings, "control.grid_limit_w", 0.0)
+    grid_limit = watts if fuse != "unset" and watts > 0 else None
     return StartAdviceScoring(
         p50_w_by_slot=p50_w_by_slot,
         load_w_by_slot=load_w_by_slot,
         grid_charge_starts=grid_charge_starts,
         grid_limit_w=grid_limit,
-        export_model=str(settings.get("prices.export_price_model", "spot_minus_tax")),
-        energy_tax_eur_per_kwh=float(settings.get("prices.energy_tax_eur_per_kwh", 0.13)),
-        fixed_feed_in_eur_per_kwh=float(settings.get("prices.fixed_feed_in_eur_per_kwh", 0.01)),
-        export_fee_eur_per_kwh=float(settings.get("grid_fees.export_fee_eur_per_kwh", 0.0)),
+        export_model=str(
+            settings.get("prices.export_price_model", "spot_minus_tax") or "spot_minus_tax"
+        ),
+        energy_tax_eur_per_kwh=_setting_float(settings, "prices.energy_tax_eur_per_kwh", 0.13),
+        fixed_feed_in_eur_per_kwh=_setting_float(
+            settings,
+            "prices.fixed_feed_in_eur_per_kwh",
+            0.01,
+        ),
+        export_fee_eur_per_kwh=_setting_float(settings, "grid_fees.export_fee_eur_per_kwh", 0.0),
         site_tz=site_tz,
         quiet_hours=str(settings.get("consumers.quiet_hours") or ""),
         preferred_window=preferred_window,
