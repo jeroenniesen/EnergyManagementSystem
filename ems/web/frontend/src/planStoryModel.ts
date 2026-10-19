@@ -1,7 +1,69 @@
 import type { EnergyStoryData, StorySlot } from "./EnergyStory";
-import { HOME_PLAN_STORY, PLAN_ACTION_META } from "./labels";
+import { HOME_PLAN_STORY, HOME_WHY_NOT_BUY, PLAN_ACTION_META } from "./labels";
 
 export const SLOT_MS = 15 * 60 * 1000;
+
+export type BuyPoolCheapestSlot = {
+  start: string;
+  eur_per_kwh: number;
+};
+
+export type BuyPool = {
+  state: string;
+  max_buy_eur_per_kwh: number;
+  cheapest_slot: BuyPoolCheapestSlot | null;
+  shortfall_kwh: number;
+  next_chance: { start: string } | null;
+  pool_size: number;
+};
+
+function eurNl(value: number): string {
+  return `€${value.toFixed(2).replace(".", ",")}`;
+}
+
+function kwhNl(value: number): string {
+  return `${value.toFixed(1).replace(".", ",")} kWh`;
+}
+
+/**
+ * Wall clock of an API timestamp. Price slots are already in the site timezone
+ * (`isoformat` carries that offset); converting again with the browser zone turns
+ * 13:15+02 into 11:15 on a UTC runner.
+ */
+export function clockFromIso(iso: string): string {
+  const match = /T(\d{2}):(\d{2})/.exec(iso);
+  return match ? `${match[1]}:${match[2]}` : "—";
+}
+
+export function shouldShowWhyNotBuy(
+  pool: BuyPool | null | undefined,
+  dataQuality?: string | null,
+): pool is BuyPool {
+  // Backup/mock prices are not a buy decision (#313). The fail-safe line owns that case.
+  return pool?.state === "empty" && dataQuality !== "price_fallback";
+}
+
+/** One line for the Home tile (#315 AC3). */
+export function formatWhyNotBuyLine(pool: BuyPool): string {
+  const parts = [
+    HOME_WHY_NOT_BUY.maxBuy(eurNl(pool.max_buy_eur_per_kwh)),
+  ];
+  if (pool.cheapest_slot) {
+    parts.push(HOME_WHY_NOT_BUY.cheapest(
+      clockFromIso(pool.cheapest_slot.start),
+      eurNl(pool.cheapest_slot.eur_per_kwh),
+    ));
+  }
+  if (pool.shortfall_kwh > 1e-9) {
+    parts.push(HOME_WHY_NOT_BUY.shortfall(kwhNl(pool.shortfall_kwh)));
+  }
+  if (pool.next_chance?.start) {
+    parts.push(HOME_WHY_NOT_BUY.nextChance(clockFromIso(pool.next_chance.start)));
+  } else {
+    parts.push(HOME_WHY_NOT_BUY.noChanceInHorizon);
+  }
+  return parts.join(" · ");
+}
 
 export type TimedStorySlot = StorySlot & { startMs: number };
 export type SlotPointMetric = "soc" | "solar";

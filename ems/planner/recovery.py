@@ -229,12 +229,24 @@ def build_catch_up_plan(
             if usable_kwh > 0 else reserve
         feasible = False
         kwh_short = round(max(0.0, remaining_dc - achievable_dc), 1)
-        reason = (f"catch-up (partial): missed {label} ({remaining_kwh:.1f} kWh short) but only "
-                  f"{len(chosen)} cheap slot(s) before {deadline:%H:%M} — targeting "
-                  f"{recovered_target:.0f}% (not {target:.0f}%), {kwh_short:.1f} kWh short")
-        note = (f"EMS missed the {label} charge window and can only partly catch up before "
-                f"{deadline:%H:%M} (about {kwh_short:.1f} kWh short of the {target:.0f}% target). "
-                f"Your battery is safe; it will charge as much as it economically can.")
+        # slots_used == 0: no target percentage in the resident-facing lines (#316 / F-50).
+        # The plan itself (slots, target_soc) is unchanged — only the note and reason.
+        if not chosen:
+            reason = (f"catch-up: missed {label} ({remaining_kwh:.1f} kWh short) but no remaining "
+                      f"slot under the max buy price before {deadline:%H:%M}")
+            note = ("EMS missed the charge window and there is no buy slot left under your "
+                    "max price. Your battery is safe; nothing to do.")
+        else:
+            reason = (
+                f"catch-up (partial): missed {label} ({remaining_kwh:.1f} kWh short) but only "
+                f"{len(chosen)} cheap slot(s) before {deadline:%H:%M} — targeting "
+                f"{recovered_target:.0f}% (not {target:.0f}%), {kwh_short:.1f} kWh short"
+            )
+            note = (
+                f"EMS missed the {label} charge window and can only partly catch up before "
+                f"{deadline:%H:%M} (about {kwh_short:.1f} kWh short of the {target:.0f}% "
+                f"target). Your battery is safe; it will charge as much as it economically can."
+            )
 
     chosen_starts = {p.start for p in chosen}
     per_slot_kwh = round(slot_kwh, 3)

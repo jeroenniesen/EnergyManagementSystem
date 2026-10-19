@@ -211,6 +211,9 @@ def test_battery_endpoint_returns_mode_and_capabilities():
     assert b["capabilities"]["supports_standby"] is True
     assert b["capabilities"]["min_power_w"] == 50.0
     assert b["capabilities"]["min_target_soc"] == 5.0
+    assert b["effective_floor_soc"] >= 5.0
+    assert b["reserve_setting_soc"] >= 5.0
+    assert b["device_min_target_soc"] == 5.0
     assert b["topology"]["tower_count"] == 0
     assert b["topology"]["configured"] is False
 
@@ -219,6 +222,9 @@ def test_battery_endpoint_without_driver():
     b = _client().get("/api/battery").json()
     assert b["current_mode"] is None
     assert b["capabilities"] is None
+    assert b["effective_floor_soc"] >= 5.0
+    assert b["reserve_setting_soc"] >= 5.0
+    assert b["device_min_target_soc"] == 5.0
 
 
 def test_decision_endpoint_dry_run():

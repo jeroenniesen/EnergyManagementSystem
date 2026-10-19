@@ -20,10 +20,16 @@ import type { DecisionReason } from "./decisionWhy";
 import { buildHeroSynthesis } from "./heroSynthesis";
 import { Icon, type IconName } from "./icons";
 import { DeviceHealthStrip } from "./DeviceHealth";
+import {
+  ExportModelConfirmBanner,
+  exportModelFromSettingsValues,
+  type ExportModelBannerValues,
+} from "./ExportModelConfirmBanner";
 import { liveWritingChip, showTopbarDataQuality, showTopbarDataSource } from "./topbarChips";
 import {
   CAR_BADGE_SUFFIX,
   CAR_BADGE_SUFFIX_DEFAULT,
+  CHARGE_BLOCKED_BY_CAP,
   DATA_QUALITY,
   DATA_SOURCE,
   type DeviceHealth,
@@ -95,6 +101,8 @@ type Decision = {
   target_soc?: number | null;
   override_active?: boolean;
   home_state?: { headline: string; tone: string; simulated: boolean };
+  decision_reason?: import("./decisionWhy").DecisionReason;
+  buy_pool?: import("./planStoryModel").BuyPool | null;
 };
 
 type ChargeNeed = {
@@ -465,6 +473,7 @@ export function App() {
   // Seed from the localStorage cache so the first paint matches the saved theme (no flash);
   // the fetch below reconciles with the server's canonical value.
   const [theme, setTheme] = useState<Theme>(readStoredTheme);
+  const [exportModelBanner, setExportModelBanner] = useState<ExportModelBannerValues | null>(null);
   // While a strategy write is in flight, suppress the background poll's strategy update so the
   // optimistic selection doesn't flicker back to the old value mid-request.
   const strategyPending = useRef(false);
@@ -474,7 +483,9 @@ export function App() {
     apiFetch("/api/settings")
       .then((r) => (r.ok ? r.json() : null))
       .then((b) => {
-        if (alive && b?.values?.["ui.theme"]) setTheme(b.values["ui.theme"] as Theme);
+        if (!alive || !b?.values) return;
+        if (b.values["ui.theme"]) setTheme(b.values["ui.theme"] as Theme);
+        setExportModelBanner(exportModelFromSettingsValues(b.values));
       })
       .catch(() => {});
     return () => {
@@ -928,7 +939,9 @@ export function App() {
                 data-severity={a.severity}
                 data-testid={`alert-${a.key}`}
               >
-                <span className="alert-message">{a.message}</span>
+                <span className="alert-message">
+                  {a.key === "charge_blocked_by_cap" ? CHARGE_BLOCKED_BY_CAP.banner : a.message}
+                </span>
                 {/* B-37 / B-09 structured sub-lines — only for warning/critical. Info-level
                     notices (watch-only, dry-run) stay one calm line; their reassurance would
                     otherwise out-shout the hero's "Nothing needed from you." */}
@@ -971,6 +984,15 @@ export function App() {
             </span>
           </div>
         </section>
+      )}
+
+      {view === "dashboard" && !error && (
+        <ExportModelConfirmBanner
+          values={exportModelBanner}
+          onSaved={(patch) =>
+            setExportModelBanner((prev) => (prev ? { ...prev, ...patch } : prev))
+          }
+        />
       )}
 
       {/* The hero: one verdict, one synthesis line, one explicit answer to "do I need to act?".
@@ -1076,7 +1098,10 @@ export function App() {
         <Manage
           tab={manageTab}
           onTab={(t, section) => navigate("manage", t, section)}
-          onSettingsSaved={(v) => setTheme((v["ui.theme"] as Theme) ?? "auto")}
+          onSettingsSaved={(v) => {
+            setTheme((v["ui.theme"] as Theme) ?? "auto");
+            setExportModelBanner(exportModelFromSettingsValues(v));
+          }}
           settingsSection={settingsSection}
           canOperate={canOperate}
           isAdmin={isAdmin}
@@ -1117,6 +1142,11 @@ export function App() {
             dataQuality={alertsData?.data_quality}
             nightReserveConfiguredKwh={reserveAdvice?.current_night_reserve_kwh ?? null}
             nightReserveLearnedKwh={reserveAdvice?.night_demand_kwh ?? null}
+            buyPool={
+              decision?.buy_pool
+              ?? batteryPlan?.reason?.buy_pool
+              ?? null
+            }
           />
           {/* B-33 / #85: waarom voor batterij-acties + pauze/reserve (slice 1–2) — één tik, niet
               standaard open. Tekst uit battery-plan `reason` (#84), dry-run zegt "zou". */}
@@ -1125,6 +1155,7 @@ export function App() {
             reason={batteryPlan?.reason as DecisionReason | undefined}
             dryRun={status?.dry_run ?? true}
             overrideActive={Boolean(decision?.override_active)}
+            capBlockedAlert={alerts.some((a) => a.key === "charge_blocked_by_cap")}
           />
           {/* B-63 / #88 + B-95: risk banner only when coverage is below the covered
               threshold; covered/100% is the hero trust-marker (one surface). */}
@@ -1161,6 +1192,8 @@ export function App() {
                   onSetGridTopup={setGridTopup}
                   onTune={() => navigate("manage", "settings")}
                   canOperate={canOperate}
+                  battery={battery}
+                  currentSocPct={status?.soc_pct ?? null}
                 />
               </HomeMoreNest>
             )}
@@ -1294,7 +1327,11 @@ export function App() {
           onClose={() => setBatteryDetail(null)}
           testId="battery-modal"
         >
-          <BatteryChips battery={battery} metric={batteryDetail} />
+          <BatteryChips
+            battery={battery}
+            metric={batteryDetail}
+            currentSocPct={status?.soc_pct ?? null}
+          />
         </Modal>
       )}
       </main>

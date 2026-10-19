@@ -3,6 +3,8 @@
 import { useRef } from "react";
 
 import { Icon, type IconName } from "./icons";
+import { batteryFloorFields, type Battery } from "./BatteryChips";
+import { HOME_BATTERY_FLOOR, isBelowReserveSoc } from "./labels";
 
 export type Strategy = {
   mode: string; // auto | summer | winter (the user's choice)
@@ -26,11 +28,15 @@ export function StrategyCard({
   onSetGridTopup,
   onTune,
   canOperate = true,
+  battery = null,
+  currentSocPct = null,
 }: {
   strategy: Strategy | null;
   onChange: (mode: string) => void;
   onSetGridTopup: (on: boolean) => void;
   onTune: () => void;
+  battery?: Battery | null;
+  currentSocPct?: number | null;
   // Reader read-only mode (auth slice 2 web): the season switch + grid-topup toggle both write
   // via /api/settings, an OPERATE-tier endpoint — disabled (not hidden, so the current choice
   // stays visible) for a reader. Defaults true so every other caller is unaffected.
@@ -38,6 +44,10 @@ export function StrategyCard({
 }) {
   const refs = useRef<(HTMLButtonElement | null)[]>([]);
   if (!strategy) return null;
+
+  const floor = batteryFloorFields(battery);
+  const belowReserve =
+    floor != null && isBelowReserveSoc(currentSocPct, floor.reserve);
 
   const idx = Math.max(0, OPTIONS.findIndex((o) => o.key === strategy.mode));
   // Arrow keys move through the segmented control like a native radio group.
@@ -87,6 +97,17 @@ export function StrategyCard({
       <p className="strategy-summary" data-testid="strategy-summary">
         {strategy.summary}
       </p>
+      {floor && (
+        <p className="battery-floor-line" data-testid="strategy-battery-floor">
+          {HOME_BATTERY_FLOOR.line(floor.effective, floor.reserve, floor.device)}
+          {belowReserve && (
+            <span data-testid="strategy-below-reserve">
+              {" "}
+              · {HOME_BATTERY_FLOOR.belowReserve}
+            </span>
+          )}
+        </p>
+      )}
       {strategy.auto && strategy.reason && (
         <p className="strategy-why" data-testid="strategy-why">
           {strategy.reason}

@@ -165,6 +165,24 @@ class TariffWarning(APIResponseModel):
     message: str | None = None
 
 
+class BuyPoolCheapestSlot(APIResponseModel):
+    start: str | None = None
+    eur_per_kwh: float | None = None
+
+
+class BuyPoolNextChance(APIResponseModel):
+    start: str | None = None
+
+
+class BuyPoolModel(APIResponseModel):
+    state: Literal["empty", "open", "not_needed", "cap"] | None = None
+    max_buy_eur_per_kwh: float | None = None
+    cheapest_slot: BuyPoolCheapestSlot | None = None
+    shortfall_kwh: float | None = None
+    next_chance: BuyPoolNextChance | None = None
+    pool_size: int | None = None
+
+
 class PlanResponse(APIResponseModel):
     created_at: str | None = None
     strategy: Literal["summer", "winter"] | None = None
@@ -176,6 +194,7 @@ class PlanResponse(APIResponseModel):
     validation: PlanValidation | None = None
     tariff_policy: TariffPolicyModel | None = None
     tariff_warnings: list[TariffWarning] | None = None
+    buy_pool: BuyPoolModel | None = None
 
 
 class ReportResponse(APIResponseModel):
@@ -336,6 +355,8 @@ class ControlLoopCounters(APIResponseModel):
     http_retries: int | None = None
     mode_applies: int | None = None
     validator_rejects: int | None = None
+    # Cycles the daily switch cap blocked a planned grid-charge (#316). Diagnostics only.
+    charge_blocked_by_cap: int | None = None
     outcomes: ControlLoopOutcomes | None = None
     last_outcome: str | None = None
 

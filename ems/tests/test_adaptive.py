@@ -30,6 +30,34 @@ def _cfg(**kw) -> AdaptiveConfig:
     return AdaptiveConfig(**base)
 
 
+def test_buy_pool_golden_adaptive_charge_set_unchanged():
+    """AC4: adaptive intents/targets stay on the pre-#315 peak-shave fixture."""
+    import hashlib
+
+    prices = _prices([0.10] * 4 + [0.40] * 4)
+    fc = _fc([0.0] * 8)
+    load = _load([200.0] * 4 + [3000.0] * 4)
+    plan = plan_adaptive(prices, fc, T0, soc_pct=15.0, load_w_by=load, cfg=_cfg())
+    signature = [
+        (s.intent, s.target_soc, s.target_kwh, s.power_w) for s in plan.slots
+    ]
+    digest = hashlib.sha256(repr(signature).encode()).hexdigest()
+    assert digest == (
+        "89232523e30244b662a4835675e05e3cc6b443b1148c65a2bca7c3106f19e643"
+    )
+
+
+def test_adaptive_plan_exposes_buy_pool_open_when_charging():
+    prices = _prices([0.10] * 4 + [0.40] * 4)
+    fc = _fc([0.0] * 8)
+    load = _load([200.0] * 4 + [3000.0] * 4)
+    plan = plan_adaptive(prices, fc, T0, soc_pct=15.0, load_w_by=load, cfg=_cfg())
+    assert plan.buy_pool is not None
+    assert plan.buy_pool.state == "open"
+    assert plan.buy_pool.pool_size > 0
+    assert plan.buy_pool.shortfall_kwh > 0
+
+
 def test_peak_shave_charges_cheap_before_the_peak_and_discharges_it():
     # Cheap morning (€0.10), expensive evening (€0.40) with a big deficit, no solar, low SoC.
     prices = _prices([0.10] * 4 + [0.40] * 4)

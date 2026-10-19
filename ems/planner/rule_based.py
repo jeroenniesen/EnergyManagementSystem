@@ -16,6 +16,7 @@ from datetime import datetime
 
 from ems.domain import BatteryIntent
 from ems.planner import economics
+from ems.planner.buy_pool import build_buy_pool_info
 from ems.planner.charge_need import stored_kwh_per_slot
 from ems.planner.ev_load import format_ev_load_reason
 from ems.planner.schedule import SLOT, Plan, PlanSlot
@@ -191,6 +192,7 @@ def _plan_winter(
     floor = reserve_soc_pct if load_w_by is not None else None
     slot_stored_kwh = stored_kwh_per_slot(max_charge_w, cfg.round_trip_efficiency)
     per_slot_kwh = round(slot_stored_kwh, 3) if load_w_by is not None else None
+    buy_pool = None
     # Exogenous EV (#181): AC kWh to fold into winter demand sizing when known. Clamped ≥ 0;
     # ignored when there is no load profile (fixed-count path has no demand target).
     ev_kwh = max(0.0, float(expected_ev_kwh or 0.0)) if load_w_by is not None else 0.0
@@ -234,6 +236,14 @@ def _plan_winter(
             pre_peak, n_charge,
             price_of=lambda p: _effective_import_price(p, cfg),
             max_buy=max_buy,
+        )
+        buy_pool = build_buy_pool_info(
+            pre_peak=pre_peak,
+            pool=pool,
+            n_charge=n_charge,
+            shortfall_kwh=shortfall_dc,
+            max_buy_eur_per_kwh=max_buy,
+            price_of=lambda p: _effective_import_price(p, cfg),
         )
         # Honest partial (#162): commit only to the DC the chosen cheap slots can actually store.
         # A full shortfall target with too few slots trips B-22 and used to fail-safe to AUTO —
@@ -288,7 +298,7 @@ def _plan_winter(
             reason = f"self-consumption (€{p.eur_per_kwh:.2f}/kWh)"
         out.append(PlanSlot(p.start, intent, reason, floor_soc=floor))
     return Plan(created_at=now, slots=tuple(out), strategy="winter", target_soc=target_soc,
-                deadline=first_peak)
+                deadline=first_peak, buy_pool=buy_pool)
 
 
 def _soak_negative(
@@ -313,4 +323,4 @@ def _soak_negative(
         for s in plan.slots
     )
     return Plan(created_at=plan.created_at, slots=out, strategy=plan.strategy,
-                target_soc=plan.target_soc, deadline=plan.deadline)
+                target_soc=plan.target_soc, deadline=plan.deadline, buy_pool=plan.buy_pool)

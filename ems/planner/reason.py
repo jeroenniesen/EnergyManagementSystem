@@ -16,6 +16,7 @@ from datetime import datetime
 from typing import Any
 
 from ems.domain import BatteryIntent
+from ems.planner.buy_pool import format_empty_buy_summary
 from ems.planner.schedule import Plan, PlanSlot
 from ems.savings import estimate_daily_savings_eur
 
@@ -35,7 +36,7 @@ PRICE_FALLBACK_SAFETY_MESSAGE = "Geen live Tibber — inkopen uit (fail-safe)"
 # Stable top-level keys of DecisionReason.to_dict() — contract for web / logs / diagnostics (#84).
 REASON_DICT_KEYS = frozenset({
     "chosen_window", "rejected_alternative", "expected_benefit", "risk",
-    "safety_constraint", "gates", "summary",
+    "safety_constraint", "gates", "summary", "buy_pool",
 })
 GATE_DICT_KEYS = frozenset({
     "validator_code", "failsafe", "dwell", "cap_reached", "unconfirmed",
@@ -150,6 +151,7 @@ class DecisionReason:
     safety_constraint: SafetyConstraint
     gates: GateOutcomes
     summary: str
+    buy_pool: dict[str, Any] | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -164,6 +166,7 @@ class DecisionReason:
             "safety_constraint": self.safety_constraint.to_dict(),
             "gates": self.gates.to_dict(),
             "summary": self.summary,
+            "buy_pool": self.buy_pool,
         }
 
 
@@ -381,6 +384,7 @@ def empty_decision_reason(
             unconfirmed=unconfirmed,
         ),
         summary=summary,
+        buy_pool=None,
     )
 
 
@@ -505,10 +509,19 @@ def build_decision_reason(
         cap_reached=cap_reached,
         unconfirmed=unconfirmed,
     )
-    text = (
-        PRICE_FALLBACK_SAFETY_MESSAGE if price_fallback
-        else _homeowner_summary(summary or plan_reason, chosen)
-    )
+    buy_pool_dict = plan.buy_pool.to_dict() if plan.buy_pool is not None else None
+    if (
+        not price_fallback
+        and plan.buy_pool is not None
+        and plan.buy_pool.state == "empty"
+        and plan.buy_pool.shortfall_kwh > 1e-9
+    ):
+        text = format_empty_buy_summary(plan.buy_pool)
+    else:
+        text = (
+            PRICE_FALLBACK_SAFETY_MESSAGE if price_fallback
+            else _homeowner_summary(summary or plan_reason, chosen)
+        )
     return DecisionReason(
         chosen_window=chosen,
         rejected_alternative=rejected,
@@ -517,4 +530,5 @@ def build_decision_reason(
         safety_constraint=safety,
         gates=gates,
         summary=text,
+        buy_pool=buy_pool_dict,
     )

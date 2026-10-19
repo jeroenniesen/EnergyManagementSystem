@@ -16,11 +16,13 @@ export function BatteryActionWhy({
   reason,
   dryRun,
   overrideActive = false,
+  capBlockedAlert = false,
 }: {
   currentAction: string | null | undefined;
   reason: DecisionReason | null | undefined;
   dryRun: boolean;
   overrideActive?: boolean;
+  capBlockedAlert?: boolean;
 }) {
   if (!reason) return null;
 
@@ -55,7 +57,7 @@ export function BatteryActionWhy({
               {waarom}
             </p>
           )}
-          <DecisionReasonDetails reason={reason} />
+          <DecisionReasonDetails reason={reason} capBlockedAlert={capBlockedAlert} />
         </details>
       </div>
     </section>

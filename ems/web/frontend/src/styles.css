@@ -598,6 +598,25 @@ body {
   box-shadow: var(--shadow);
 }
 /* B-96: Last-3h review lives under a plan-header disclosure, not the hero body. */
+.why-not-buy-tile {
+  margin: 0 0 0.75rem;
+  padding: 0.65rem 0.85rem;
+  border-radius: var(--radius-md, 8px);
+  background: var(--surface-2, rgba(127, 127, 127, 0.08));
+  border: 1px solid var(--border-subtle, rgba(127, 127, 127, 0.2));
+}
+.why-not-buy-title {
+  margin: 0 0 0.35rem;
+  font-size: 0.95rem;
+  font-weight: 600;
+}
+.why-not-buy-body {
+  margin: 0;
+  font-size: 0.88rem;
+  line-height: 1.45;
+  color: var(--text-muted, inherit);
+}
+
 .plan-story-recent-review {
   margin: 0 0 12px;
   color: var(--muted);
@@ -1751,6 +1770,12 @@ body {
 .settings-access-bar {
   background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius);
   padding: 16px 18px; margin-bottom: 16px; box-shadow: var(--shadow);
+}
+.export-model-actions {
+  display: flex; flex-wrap: wrap; gap: 10px; margin-top: 12px;
+}
+.export-model-mismatch {
+  margin: 10px 0 0; font-size: 0.88rem; color: var(--muted);
 }
 .settings-access-row {
   display: flex; gap: 10px; flex-wrap: wrap; align-items: center; margin-top: 10px;

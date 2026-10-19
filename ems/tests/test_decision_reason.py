@@ -45,7 +45,7 @@ def test_empty_reason_is_paused_with_stable_shape():
     r = empty_decision_reason(summary="waiting").to_dict()
     assert set(r) == {
         "chosen_window", "rejected_alternative", "expected_benefit", "risk",
-        "safety_constraint", "gates", "summary",
+        "safety_constraint", "gates", "summary", "buy_pool",
     }
     assert r["chosen_window"] is None
     assert r["safety_constraint"]["action"] == "paused"
@@ -53,6 +53,25 @@ def test_empty_reason_is_paused_with_stable_shape():
         "validator_code": None, "failsafe": False, "dwell": False,
         "cap_reached": False, "unconfirmed": False,
     }
+
+
+def test_decision_reason_includes_buy_pool_from_plan():
+    from ems.planner.buy_pool import build_buy_pool_info
+    from ems.sources.prices import PriceSlot
+
+    slots = (
+        _slot(0, BatteryIntent.ALLOW_SELF_CONSUMPTION, "self-consumption (€0.40/kWh)"),
+    )
+    pre = [PriceSlot(NOW, 0.40)]
+    pool = []
+    info = build_buy_pool_info(
+        pre_peak=pre, pool=pool, n_charge=2, shortfall_kwh=3.5,
+        max_buy_eur_per_kwh=0.35, price_of=lambda p: p.eur_per_kwh,
+    )
+    plan = Plan(created_at=NOW, slots=slots, strategy="winter", buy_pool=info)
+    r = build_decision_reason(plan, price_by={NOW: 0.40}).to_dict()
+    assert r["buy_pool"]["state"] == "empty"
+    assert "Geen koopmoment" in r["summary"]
 
 
 def test_charge_plan_carries_chosen_window_and_rejected_self_consume():

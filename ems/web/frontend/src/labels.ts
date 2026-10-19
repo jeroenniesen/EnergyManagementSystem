@@ -695,6 +695,35 @@ export const HOME_PLAN_STORY = {
   socScale: (pct: number) => `${pct}%`,
 } as const;
 
+/** #315 / F-02+F-31: Home tile when EMS cannot grid-buy (empty buy pool). */
+export const HOME_WHY_NOT_BUY = {
+  title: "Waarom niet kopen?",
+  noChanceInHorizon: "Geen koopmoment in de prijzen van vandaag/morgen",
+  maxBuy: (eur: string) => `Max inkoopprijs ${eur}`,
+  cheapest: (time: string, eur: string) => `Goedkoopste moment ${time} (${eur})`,
+  shortfall: (kwh: string) => `Tekort ${kwh}`,
+  nextChance: (time: string) => `Volgende kans ${time}`,
+} as const;
+
+/** Plan/control SoC floor copy (#310 / audit F-16a). */
+export const HOME_BATTERY_FLOOR = {
+  line: (effective: number, reserveSetting: number, deviceMin: number) => {
+    const eff = Math.round(effective);
+    const dev = Math.round(deviceMin);
+    const res = Math.round(reserveSetting);
+    const reserveNote = eff === res && res > dev ? " (jouw reserve)" : "";
+    return `Vloer ${eff}%${reserveNote} · apparaat ≥ ${dev}%`;
+  },
+  belowReserve: "Onder je reserve",
+} as const;
+
+export function isBelowReserveSoc(
+  socPct: number | null | undefined,
+  reserveSettingSoc: number,
+): boolean {
+  return socPct != null && socPct < reserveSettingSoc;
+}
+
 /**
  * PlanStory action ribbon / legend labels (B-98). Aligned with decisionWhy "Nu: …" vocabulary
  * where the same action appears (laden / zelfconsumptie / vasthouden).
@@ -785,6 +814,40 @@ export function learnedNightKwhFromAdvice(
 ): number | null {
   if (nightDemandKwh == null || !Number.isFinite(nightDemandKwh) || nightDemandKwh < 0) return null;
   return nightDemandKwh;
+}
+
+/** Home banner + chip note when alert `charge_blocked_by_cap` is present (#316, audit F-01b). */
+export const CHARGE_BLOCKED_BY_CAP = {
+  banner: "Geplande lading geblokkeerd door de schakellimiet",
+  chipNote: "Geplande lading geblokkeerd door de schakellimiet",
+} as const;
+
+/** #341 / audit F-11 — export model confirmation banner (Home + Settings, not topbar). */
+export const EXPORT_MODEL_BANNER = {
+  title: "Kies je exportmodel (saldering of vanaf 2027)",
+  body:
+    "Het standaardmodel rekent export als spot minus energiebelasting (klaar voor na 2027). " +
+    "Kies saldering alleen als je contract dat nog zo waardeert.",
+  saldering: "Ik saldeer nog (net-metering)",
+  from2027: "Vanaf 2027 (spot minus belasting)",
+  saving: "Opslaan…",
+} as const;
+
+/** Mismatch hint using digest/finance assumptions only — no invented euro amounts. */
+export function exportModelMismatchWarning(exportPriceModel: string): string | null {
+  if (exportPriceModel === "spot_minus_tax") {
+    return (
+      "Het huidige model volgt 2027 — besparingen en handel kunnen export lager waarderen " +
+      "dan bij saldering zolang je nog saldeert."
+    );
+  }
+  if (exportPriceModel === "net_metering") {
+    return (
+      "Het huidige model volgt saldering — de weekdigest herinnert je om het exportmodel te " +
+      "herzien vóór saldering uitfaseert rond 2027."
+    );
+  }
+  return null;
 }
 
 /** Week digest: negative savings days (audit F-49 / #325). */
