@@ -7,7 +7,7 @@ Basiscommit: `0542df3305e6aa215757daac892ec3a49662f1ff` (`origin/main` op branch
 
 De niet-dashboardschermen zijn bruikbaar en deels al op het niveau van de juli-audit (sidebar, zoeken, sticky save, switches, “More”-hulp). Wat een bewoner nog kan verrassen, zit in drie dingen: sturen van de batterij staat op drie plekken met drie opslaanpatronen, veiligheidsteksten mengen Nederlands en Engels met ruwe tokens (`restart_pending`, `dry_run`), en een leeg getalveld of een muiswiel kan een grenswaarde vastleggen zonder extra bevestiging.
 
-De scope-tabel in #362 heeft **15 rijen**. Elke rij heeft hieronder een eigen sectie. Per scherm zijn de negen te beoordelen elementen beantwoord. Waar iets alleen in de browser te meten is (contrast, flits, echte 390 px-layout), staat dat erbij; het oordeel leunt dan op de CSS- en componentcode.
+De scope-tabel in #362 heeft **15 rijen** (14 schermroutes/onderdelen plus de rij Gedeelde tokens). Elke rij heeft hieronder een eigen sectie (§2.1–§2.15). Per scherm zijn de negen te beoordelen elementen beantwoord. Waar iets alleen in de browser te meten is (contrast, flits, echte 390 px-layout), staat dat erbij; het oordeel leunt dan op de CSS- en componentcode.
 
 | Ernst | Aantal bevindingen |
 |---|---|
@@ -28,11 +28,11 @@ Startpunten uit #362, nagekeken op deze commit:
 
 | Hint | Uitkomst |
 |---|---|
-| Taalmix in de navigatie en op Trading | Klopt. `ems/web/frontend/src/App.tsx` 869–920: Dashboard, Insights, Car, Chat, Trading, Manage naast Inrichten. Trading-kop “Test batterij” in `ems/web/frontend/src/Trading.tsx` 358, lichaam Engels. |
+| Taalmix in de navigatie en op Trading | Klopt. `ems/web/frontend/src/App.tsx` 862–921: Dashboard, Insights, Car, Chat, Trading, Manage naast Inrichten. Trading-kop “Test batterij” in `ems/web/frontend/src/Trading.tsx` 358, lichaam Engels. |
 | Twee opslaanpatronen; instellingen op drie plekken | Klopt, en het zijn er drie patronen: sticky draft in Instellingen (`ems/web/frontend/src/Settings.tsx` 1471–1503), mix van direct opslaan en sticky bar op Auto (`ems/web/frontend/src/Car.tsx` 374–437 en 643–673), direct `POST /api/settings` op Trading (`ems/web/frontend/src/Trading.tsx` 98–116, 227–293). |
 | `NumberInput` leeg → `min ?? 0` bij blur | Klopt. `ems/web/frontend/src/Settings.tsx` 283–284. |
 | Tokens `restart_pending`, “Apply & restart”, “dry_run / mock” | Klopt. Zichtbare badge `restart_pending` op `ems/web/frontend/src/Settings.tsx` 325; save-tekst 1484; hint `control` 166–170. |
-| ~75 hardgecodeerde hex-kleuren | Deels. In `ems/web/frontend/src/styles.css` staan **69** hex-literals in code. **44** daarvan zijn het tokenblok `:root` / `:root[data-theme="light"]` (regels 1–63). **25** staan daarbuiten (topbar, fallbacks, `#e05050`). |
+| ~75 hardgecodeerde hex-kleuren | Deels. In `ems/web/frontend/src/styles.css` staan **70** hex-literals (issue-hint ~75 telt ook `#`-refs in CSS-commentaren). **45** daarvan zitten in `:root` / `:root[data-theme="light"]` (regels 1–63). **25** staan daarbuiten (topbar, fallbacks, `#e05050`). |
 | Breakpoints 480/520/560/640/700 | Klopt, plus **720** (`ems/web/frontend/src/styles.css` 2633). |
 | Deep-link naar een Settings-sectie zit niet in de hash | Klopt. `ems/web/frontend/src/App.tsx` 453–456 en 544–555: `settingsSection` is React-state; de hash wordt `#manage` of `#manage/system` / `#manage/audit`. |
 | Veiligheidsknoppen verspreid | Klopt: Trading (arm + test), Instellingen › Control & safety (`control.dry_run`, `control.operational`, zekering), Auto (batterijmodus tijdens laden). |
@@ -123,7 +123,7 @@ Bestanden: `ems/web/frontend/src/Car.tsx`, `ems/web/frontend/src/CarCard.tsx`, `
 | Responsiviteit/mobiel | Schema-grid versmalt ≤480 px naar `40px 1fr 60px 84px` (`ems/web/frontend/src/styles.css` 1663–1691). Of “Monday” + tijdveld op 390 px knippen, is runtime; de code probeert horizontaal scrollen te vermijden (`min-width: 0`). |
 | Toegankelijkheid | Radiogroep met pijltjes (`ems/web/frontend/src/Car.tsx` 160–167, 202–223). Schedule-inputs hebben `aria-label`. `e2e/a11y.spec.ts` 97–108 scant `car-view`. |
 | Onboarding / eerste gebruik | Uit-staat legt uit dat de planner uit staat. De bewoner landt daarna in de Engelse Car-sectie van Instellingen, niet in een wizard. |
-| Veiligheidsgevoelige instellingen | Moduskeuze `static_discharge` posteert meteen modus én wattage (`ems/web/frontend/src/Car.tsx` 418–428). Geen bevestiging. Boven huisverbruik verschijnt een waarschuwing nádat je het getal verlaat (253–257), niet vóór het opslaan. Default in code én schema: master aan, modus hold (`ems/web/frontend/src/Car.tsx` 42, `ems/settings.py` 339–340). |
+| Veiligheidsgevoelige instellingen | Moduskeuze `static_discharge` posteert meteen modus én wattage (`ems/web/frontend/src/Car.tsx` 418–428). Geen bevestiging. Boven huisverbruik verschijnt een waarschuwing nádat je het getal verlaat (253–257), niet vóór het opslaan. Default in code én schema: master aan, modus hold (`ems/web/frontend/src/Car.tsx` 42, `ems/settings.py` 339–340 en 347). |
 
 | ID | Probleem | Impact (voor de bewoner) | Voorstel | Ernst | Omvang | Bestandsverwijzing |
 |---|---|---|---|---|---|---|
@@ -256,7 +256,7 @@ Bestanden: `ems/web/frontend/src/HaWizard.tsx`, `ems/web/frontend/src/haWizardHe
 | Visuele consistentie | `.ha-wizard-*` op de panel-tokens. Foutkleur via ontbrekende `--danger` (CSS 1927). |
 | Formulieren & input-controls | URL, token, checkboxes voor apparaten (426–429), handmatig entity-id `switch.washer` (441–452). Checkboxes zijn native, niet de switch van Instellingen. |
 | Teksten & microcopy | Engels, inclusief een duidelijke http-waarschuwing (387–390). |
-| States | `role="status"` en `role="alert"` (208, 213 in de eerdere grep). Bezig-tekst “Testing…”. |
+| States | `role="status"` en `role="alert"` (`ems/web/frontend/src/HaWizard.tsx` 207–215). Bezig-tekst “Testing…”. |
 | Responsiviteit/mobiel | Geen eigen breakpoint gevonden voor de wizardlijst. 390 px niet bekeken. |
 | Toegankelijkheid | Handmatig veld heeft een `<label for>`. Apparaat-checkbox zit in een `<label>` (424–436). Niet als aparte axe-case. |
 | Onboarding / eerste gebruik | De wizard zit verstopt onder Appliances, niet in Inrichten. Ontdekking van Home Assistant in de setup-wizard is een latere slice van #94, niet deze checklist. |
@@ -305,7 +305,7 @@ Bestanden: `ems/web/frontend/src/System.tsx`, `ems/web/frontend/src/DeviceHealth
 
 | ID | Probleem | Impact (voor de bewoner) | Voorstel | Ernst | Omvang | Bestandsverwijzing |
 |---|---|---|---|---|---|---|
-| SYS-01 | De herstelzin voor `mode` noemt Settings → operational, Watch only, `config.yaml`, `dev.mode` en `control.dry_run`. | Als sturen geblokkeerd is, is het hulpvenster het moeilijkste stuk tekst van de app. | Eén Nederlandse zin: wat er nú gebeurt, welke schakelaar, dat een herstart nodig is. `config.yaml` achter “Meer”. Vendor-zin “Indevolt IP” blijft #123. | Hoog | S | `ems/web/frontend/src/System.tsx:311-317`, `ems/web/frontend/src/System.tsx:321-334` |
+| SYS-01 | De herstelzin voor `mode` noemt Settings → operational, Watch only, `config.yaml`, `dev.mode` en `control.dry_run`. | Als sturen geblokkeerd is, is het hulpvenster het moeilijkste stuk tekst van de app. | Eén Nederlandse zin: wat er nú gebeurt, welke schakelaar, dat een herstart nodig is. `config.yaml` achter “Meer”. Vendor-zin “Indevolt IP” blijft #123. | Hoog | S | `ems/web/frontend/src/System.tsx:311-314` |
 | SYS-02 | De control-loop toont `dry_run/0`, `fail_safe/0`, MAPE en “Clamped samples” als lopende tekst. | Het systeemblok leest als een log, niet als “alles in orde / dit heeft aandacht”. | De drie gezondheidsregels bovenaan houden; de tellers in het bestaande Advanced-patroon. | Middel | S | `ems/web/frontend/src/System.tsx:134-136`, `ems/web/frontend/src/System.tsx:656-682` |
 | SYS-03 | Diagnosefout toont de ruwe exception en biedt geen opnieuw. | “Cannot load diagnostics: Error: HTTP 500” helpt niet. | Vaste zin + knop die `load()` opnieuw aanroept. | Middel | S | `ems/web/frontend/src/System.tsx:437-444` |
 
