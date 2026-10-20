@@ -299,10 +299,10 @@ test.describe("Car view", () => {
   });
 });
 
-// "While the car charges" battery-mode section (feat/car-charge-modes): the home-BATTERY's
+// "While the car charges" battery-mode section (feat/car-charge-modes, #365): the home-BATTERY's
 // behaviour during a charging session — hold (default) / a fixed discharge wattage / match the
-// predicted house load — moved out of Settings' "Control & safety" group into its own radio-card
-// picker here, saving immediately (no sticky save bar, unlike the schedule editor above).
+// predicted house load. Mode and wattage are a draft on the same sticky save bar as the schedule:
+// a radio tap or wattage edit does not POST; Save posts both keys once; Discard restores them.
 test.describe("Car view — while the car charges (battery mode)", () => {
   // A minimal control.* seed merged over the component's own defaults (hold/on/800W) — tests only
   // need to override what they care about. `/api/settings` POST is mocked per-test so every save
@@ -338,15 +338,20 @@ test.describe("Car view — while the car charges (battery mode)", () => {
     await expect(page.getByTestId("car-mode-match_home_load")).toHaveAttribute("aria-checked", "false");
     // The wattage input only mounts once static_discharge is actually selected.
     await expect(page.getByTestId("car-mode-watts")).toHaveCount(0);
+    await expect(page.getByTestId("car-mode-consequence")).toContainText(
+      "holds and does not discharge",
+    );
+    await expect(page.getByTestId("car-save")).toHaveCount(0);
   });
 
-  test("selecting the fixed-power mode reveals the W input and POSTs both keys", async ({ page }) => {
+  test("a radio tap does not POST; Save posts mode and wattage once", async ({ page }) => {
     let saved: Record<string, unknown> = {};
+    let posts = 0;
     await mockSettings(page, {
       "control.hold_battery_when_car_charging": true,
       "control.car_charging_battery_mode": "hold",
       "control.car_discharge_w": 800,
-    }, (body) => { saved = body; });
+    }, (body) => { saved = body; posts += 1; });
     await mockCars(page);
     await page.goto("/");
     await page.getByTestId("nav-car").click();
@@ -357,15 +362,52 @@ test.describe("Car view — while the car charges (battery mode)", () => {
     await expect(page.getByTestId("car-mode-static_discharge")).toHaveAttribute("aria-checked", "true");
     await expect(page.getByTestId("car-mode-watts")).toBeVisible();
     await expect(page.getByTestId("car-mode-watts-input")).toHaveValue("800");
-    await expect(page.getByTestId("car-mode-saved")).toBeVisible();
+    await expect(page.getByTestId("car-mode-consequence")).toContainText(
+      "discharges at a fixed 800 W",
+    );
+    await expect(page.getByTestId("car-save")).toBeEnabled();
+    expect(posts).toBe(0);
 
+    await page.getByTestId("car-save").click();
+    await expect(page.getByTestId("car-saved")).toBeVisible();
+    expect(posts).toBe(1);
     expect(saved).toEqual({
       "control.car_charging_battery_mode": "static_discharge",
       "control.car_discharge_w": 800,
     });
   });
 
-  test("selecting the automatic (match-home-load) mode POSTs just the mode key", async ({ page }) => {
+  test("Discard restores the saved mode and wattage without a POST", async ({ page }) => {
+    let posts = 0;
+    await mockSettings(page, {
+      "control.hold_battery_when_car_charging": true,
+      "control.car_charging_battery_mode": "hold",
+      "control.car_discharge_w": 800,
+    }, () => { posts += 1; });
+    await mockCars(page);
+    await page.goto("/");
+    await page.getByTestId("nav-car").click();
+
+    await page.getByTestId("car-mode-static_discharge").click();
+    await page.getByTestId("car-mode-watts-input").fill("1200");
+    await expect(page.getByTestId("car-mode-consequence")).toContainText(
+      "discharges at a fixed 1200 W",
+    );
+    expect(posts).toBe(0);
+
+    await page.getByTestId("car-discard").click();
+
+    await expect(page.getByTestId("car-mode-hold")).toHaveAttribute("aria-checked", "true");
+    await expect(page.getByTestId("car-mode-static_discharge")).toHaveAttribute("aria-checked", "false");
+    await expect(page.getByTestId("car-mode-watts")).toHaveCount(0);
+    await expect(page.getByTestId("car-mode-consequence")).toContainText(
+      "holds and does not discharge",
+    );
+    await expect(page.getByTestId("car-save")).toHaveCount(0);
+    expect(posts).toBe(0);
+  });
+
+  test("selecting automatic mode still saves mode and wattage in one POST", async ({ page }) => {
     let saved: Record<string, unknown> = {};
     let posts = 0;
     await mockSettings(page, {
@@ -380,17 +422,63 @@ test.describe("Car view — while the car charges (battery mode)", () => {
     await page.getByTestId("car-mode-match_home_load").click();
 
     await expect(page.getByTestId("car-mode-match_home_load")).toHaveAttribute("aria-checked", "true");
-    await expect(page.getByTestId("car-mode-saved")).toBeVisible();
+    await expect(page.getByTestId("car-mode-consequence")).toContainText(
+      "covers the house automatically",
+    );
+    expect(posts).toBe(0);
+
+    await page.getByTestId("car-save").click();
+    await expect(page.getByTestId("car-saved")).toBeVisible();
     expect(posts).toBe(1);
-    expect(saved).toEqual({ "control.car_charging_battery_mode": "match_home_load" });
+    expect(saved).toEqual({
+      "control.car_charging_battery_mode": "match_home_load",
+      "control.car_discharge_w": 800,
+    });
+  });
+
+  test("a failed save shows the error in the bar and keeps the draft", async ({ page }) => {
+    let posts = 0;
+    await page.route("**/api/settings", async (route) => {
+      if (route.request().method() === "GET") {
+        await route.fulfill({
+          status: 200, contentType: "application/json",
+          body: JSON.stringify({
+            schema: [],
+            values: {
+              "control.hold_battery_when_car_charging": true,
+              "control.car_charging_battery_mode": "hold",
+              "control.car_discharge_w": 800,
+            },
+          }),
+        });
+        return;
+      }
+      posts += 1;
+      await route.fulfill({
+        status: 422, contentType: "application/json",
+        body: JSON.stringify({ errors: { "control.car_charging_battery_mode": "Rejected" } }),
+      });
+    });
+    await mockCars(page);
+    await page.goto("/");
+    await page.getByTestId("nav-car").click();
+
+    await page.getByTestId("car-mode-static_discharge").click();
+    expect(posts).toBe(0);
+    await page.getByTestId("car-save").click();
+
+    await expect(page.getByTestId("car-save-error")).toContainText("Rejected");
+    await expect(page.getByTestId("car-mode-static_discharge")).toHaveAttribute("aria-checked", "true");
+    expect(posts).toBe(1);
   });
 
   test("the fixed-power physics warning appears only above the home's usual draw", async ({ page }) => {
+    let posts = 0;
     await mockSettings(page, {
       "control.hold_battery_when_car_charging": true,
       "control.car_charging_battery_mode": "static_discharge",
       "control.car_discharge_w": 400,
-    });
+    }, () => { posts += 1; });
     await page.route("**/api/status", (route) =>
       route.fulfill({
         status: 200, contentType: "application/json",
@@ -411,11 +499,15 @@ test.describe("Car view — while the car charges (battery mode)", () => {
     await input.fill("500");
     await expect(page.getByTestId("car-mode-watts-warning")).toHaveCount(0);
 
-    // Above it — the honest physics line appears.
+    // Above it — the honest physics line appears before Save, while the field still holds 900
+    // (no blur-to-commit, and no POST yet).
     await input.fill("900");
     await expect(page.getByTestId("car-mode-watts-warning")).toBeVisible();
     await expect(page.getByTestId("car-mode-watts-warning")).toContainText(
       "the extra feeds the car from the battery, which is your choice");
+    await expect(input).toBeFocused();
+    expect(posts).toBe(0);
+    await expect(page.getByTestId("car-save")).toBeEnabled();
 
     // Back below — the warning clears again (it's a live, honest comparison, not a one-shot flag).
     await input.fill("500");
