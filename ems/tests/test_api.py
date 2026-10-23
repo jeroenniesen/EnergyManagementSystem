@@ -119,18 +119,17 @@ def test_prices_endpoint_returns_slots_and_current():
     from ems.sources.prices import MockPriceSource
 
     tz = ZoneInfo("Europe/Amsterdam")
-    price_source = MockPriceSource(tz)
     app = create_app(
         MockSource(),
         dry_run=True,
         dev_mode="mock",
-        price_source=price_source,
+        price_source=MockPriceSource(tz),
         tz=tz,
     )
     b = TestClient(app).get("/api/prices").json()
     assert b["resolution"] == "quarter_hourly"
     assert b["currency"] == "EUR"
-    assert len(b["slots"]) == len(price_source.slots())  # today + tomorrow, DST-aware 15-min
+    assert len(b["slots"]) == 192  # today + tomorrow, 15-min
     assert b["current_eur_per_kwh"] is not None
 
 
