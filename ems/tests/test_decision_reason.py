@@ -6,6 +6,7 @@ from datetime import UTC, datetime, timedelta
 from ems.domain import BatteryIntent
 from ems.planner.reason import (
     build_decision_reason,
+    current_action_from_slot,
     empty_decision_reason,
 )
 from ems.planner.schedule import Plan, PlanSlot
@@ -262,3 +263,14 @@ def test_incomplete_prices_reason_surfaces_code_as_paused():
     ).to_dict()
     assert r["safety_constraint"]["action"] == "paused"
     assert r["safety_constraint"]["code"] == "incomplete_prices"
+
+
+def test_current_action_floor_hold_is_hold_not_discharge():
+    """#312 AC2: floor-hold slot maps to current_action hold."""
+    slot = _slot(
+        0, BatteryIntent.HOLD_RESERVE,
+        "Op de batterijvloer (10%) — huis op net",
+    )
+    assert current_action_from_slot(slot, battery_w=0.0) == "hold"
+    discharge_slot = _slot(0, BatteryIntent.DISCHARGE_FOR_LOAD, "peak window")
+    assert current_action_from_slot(discharge_slot, battery_w=1500.0) == "discharge"

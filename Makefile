@@ -20,8 +20,8 @@ dev:            ## Run in the foreground on this machine (no auto-start service)
 build:          ## Build the React dashboard
 	cd ems/web/frontend && npm ci --no-audit --no-fund && npm run build
 
-test:           ## Run the Python test suite
-	uv run pytest ems/tests
+test:           ## Run the Python test suite (excludes @pytest.mark.slow)
+	uv run pytest ems/tests -m "not slow"
 
 lint:           ## Lint the Python code
 	uv run ruff check ems

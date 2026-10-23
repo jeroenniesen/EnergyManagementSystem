@@ -749,6 +749,50 @@ def test_oct14_pattern_commitment_charges_after_routine_cap_exhausted():
     assert LOOP_COUNTERS.snapshot()["charge_blocked_by_cap"] == 0
 
 
+def test_floor_hold_plan_tick_does_not_add_mode_writes():
+    """#312 AC5: marked floor-hold at the reserve matches DISCHARGE_FOR_LOAD write count."""
+    from ems.planner.projection import BatteryModel, mark_floor_holds, project_energy
+    from ems.planner.schedule import Plan, PlanSlot
+
+    floor = 10.0
+    start = NOW
+    model = BatteryModel(
+        usable_kwh=10.0, max_charge_w=4000.0, max_discharge_w=4000.0,
+        round_trip_efficiency=1.0, reserve_soc_pct=floor,
+    )
+    dfl_slot = PlanSlot(start, BatteryIntent.DISCHARGE_FOR_LOAD, "peak", floor_soc=floor)
+    raw = Plan(created_at=start, slots=(dfl_slot,))
+    proj = project_energy(
+        raw.slots, start_soc_pct=floor, solar_w_by={start: 0.0},
+        load_w_by={start: 800.0}, model=model,
+    )
+    marked = mark_floor_holds(raw, proj, floor, start_soc_pct=floor)
+    assert marked.slots[0].intent is BatteryIntent.HOLD_RESERVE
+
+    def _switches_after_ticks(intent, reason):
+        controller = _controlling_controller()
+        plan = marked if intent is BatteryIntent.HOLD_RESERVE else raw
+        svc, _ctx = _service(controller)
+        svc._current_soc = lambda now: floor
+        svc.current_plan = lambda now=None: (start, [], plan)
+        svc.effective_intent = lambda now: (
+            intent, reason, False, None, None, None, None,
+        )
+        before = controller.switches_today
+        for k in range(8):
+            svc.control_tick(start + timedelta(seconds=k))
+        return controller.switches_today - before, controller.driver.current_mode()
+
+    dfl_delta, dfl_mode = _switches_after_ticks(
+        BatteryIntent.DISCHARGE_FOR_LOAD, "peak",
+    )
+    hold_delta, hold_mode = _switches_after_ticks(
+        BatteryIntent.HOLD_RESERVE, marked.slots[0].reason,
+    )
+    assert hold_delta == dfl_delta == 0
+    assert hold_mode is dfl_mode is PhysicalMode.AUTO
+
+
 def test_current_plan_uses_injected_clock_and_explicit_time_consistently():
     from ems.clock import FrozenClock
 

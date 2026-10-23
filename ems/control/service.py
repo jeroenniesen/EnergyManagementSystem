@@ -62,7 +62,7 @@ from ems.planner.base import PlannerRequest
 from ems.planner.budgets import read_already_bought_today
 from ems.planner.charge_need import compute_charge_need
 from ems.planner.factory import build_planner
-from ems.planner.projection import BatteryModel, project_energy
+from ems.planner.projection import BatteryModel, mark_floor_holds, project_energy
 from ems.planner.recovery import (
     NOT_APPLICABLE,
     CompletionStatus,
@@ -1084,8 +1084,10 @@ class ControlService:
 
         cap = self._cached_capability()
         floor = self.effective_floor_soc()
+        projected = self._project_plan(recovered, now, soc)
+        recovered = mark_floor_holds(recovered, projected, floor, start_soc_pct=soc)
         recovered = honest_partial_from_projection(
-            recovered, self._project_plan(recovered, now, soc),
+            recovered, projected,
             min_reserve_soc=floor,
             min_target_soc=device_min_target_soc(cap),
         )
