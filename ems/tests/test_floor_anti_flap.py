@@ -11,6 +11,8 @@ from ems.control.safety import resolve_floor_anti_flap
 from ems.control.service import ControlContext, ControlService
 from ems.domain import BatteryIntent, PhysicalMode
 from ems.lifecycle import Lifecycle
+from ems.planner.projection import BatteryModel, mark_floor_holds, project_energy
+from ems.planner.schedule import Plan, PlanSlot
 from ems.planner.validator import PlanValidation
 from ems.settings import effective_settings
 from ems.sources.battery import MockBatteryDriver
@@ -189,6 +191,29 @@ def test_above_floor_persistence_still_applies():
     assert first and first[0]["detail"]["outcome"] == "intent_pending"
     svc.control_tick(NOW + timedelta(seconds=1))
     assert controller.driver.current_mode() is PhysicalMode.IDLE
+
+
+def test_mark_floor_hold_aligns_with_floor_anti_flap_auto():
+    """#312: floor-hold plan intent remaps to AUTO like resolve_floor_anti_flap — no IDLE write."""
+    floor = 10.0
+    start = NOW
+    slot = PlanSlot(start, BatteryIntent.DISCHARGE_FOR_LOAD, "peak", floor_soc=floor)
+    plan = Plan(created_at=start, slots=(slot,))
+    proj = project_energy(
+        plan.slots, start_soc_pct=floor + 0.5, solar_w_by={start: 0.0},
+        load_w_by={start: 800.0},
+        model=BatteryModel(
+            usable_kwh=10.0, max_charge_w=4000.0, max_discharge_w=4000.0,
+            round_trip_efficiency=1.0, reserve_soc_pct=floor,
+        ),
+    )
+    marked = mark_floor_holds(plan, proj, floor)
+    intent, reason, holding = resolve_floor_anti_flap(
+        marked.slots[0].intent, soc_pct=floor, min_reserve_soc=floor,
+        observed_mode=PhysicalMode.AUTO, holding=False,
+    )
+    assert intent is BatteryIntent.ALLOW_SELF_CONSUMPTION
+    assert holding is True
 
 
 def test_manual_override_bypasses_floor_anti_flap():

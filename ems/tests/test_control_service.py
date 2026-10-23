@@ -749,6 +749,30 @@ def test_oct14_pattern_commitment_charges_after_routine_cap_exhausted():
     assert LOOP_COUNTERS.snapshot()["charge_blocked_by_cap"] == 0
 
 
+def test_floor_hold_plan_tick_does_not_add_mode_writes():
+    """#312 AC5: floor-hold intent at the SoC floor stays on AUTO — no extra vendor writes."""
+    from ems.planner.schedule import Plan, PlanSlot
+
+    controller = _controlling_controller()
+    start = NOW
+    hold_slot = PlanSlot(
+        start, BatteryIntent.HOLD_RESERVE,
+        "Op de batterijvloer (10%) — huis op net", floor_soc=10.0,
+    )
+    plan = Plan(created_at=start, slots=(hold_slot,))
+    svc, _ctx = _service(controller)
+    svc._current_soc = lambda now: 10.0
+    svc.current_plan = lambda now=None: (start, [], plan)
+    svc.effective_intent = lambda now: (
+        BatteryIntent.HOLD_RESERVE, hold_slot.reason, False, None, None, None, None,
+    )
+    switches_before = controller.switches_today
+    for k in range(8):
+        svc.control_tick(start + timedelta(seconds=k))
+    assert controller.switches_today == switches_before
+    assert controller.driver.current_mode() is PhysicalMode.AUTO
+
+
 def test_current_plan_uses_injected_clock_and_explicit_time_consistently():
     from ems.clock import FrozenClock
 

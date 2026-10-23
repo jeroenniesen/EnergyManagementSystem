@@ -437,6 +437,17 @@ def test_hand_built_plan_over_daily_cap_is_unsafe_auto():
     assert not any(f.code == "daily_grid_charge_cap" for f in under.findings)
 
 
+def test_floor_hold_reserve_slot_stays_valid():
+    """#312 AC4: floor-hold rewrite keeps the plan validator-clean."""
+    hold = PlanSlot(
+        T0, BatteryIntent.HOLD_RESERVE,
+        "Op de batterijvloer (10%) — huis op net", floor_soc=10.0,
+    )
+    v = validate_plan(_plan(hold), **_ctx())
+    assert v.ok
+    assert not any(f.severity == "unsafe" for f in v.findings)
+
+
 def test_unknown_counter_is_unsafe_and_discharge_is_not():
     """None treats the cap as reached. A discharge-only plan is not blocked."""
     charged = validate_plan(

@@ -20,6 +20,26 @@ def _arbitrage_prices():
     return MockPriceSource(AMS, clock=lambda: MIDNIGHT).slots()
 
 
+def test_mark_floor_holds_leaves_winter_arbitrage_structure_intact():
+    """#312: floor-hold rewrite is a pure post-pass — planner output shape unchanged."""
+    from ems.planner.projection import BatteryModel, mark_floor_holds, project_energy
+
+    prices = _arbitrage_prices()
+    plan = plan_rule_based(prices, MIDNIGHT + timedelta(hours=18), soc_pct=10.5)
+    assert plan.slots
+    model = BatteryModel(
+        usable_kwh=10.0, max_charge_w=4000.0, max_discharge_w=4000.0,
+        round_trip_efficiency=0.9, reserve_soc_pct=10.0,
+    )
+    load_by = {s.start: 1000.0 for s in plan.slots}
+    proj = project_energy(
+        plan.slots, start_soc_pct=10.5, solar_w_by={}, load_w_by=load_by, model=model,
+    )
+    marked = mark_floor_holds(plan, proj, 10.0)
+    assert len(marked.slots) == len(plan.slots)
+    assert any(s.intent is BatteryIntent.HOLD_RESERVE and "vloer" in s.reason for s in marked.slots)
+
+
 def test_arbitrage_day_has_charge_discharge_and_hold():
     plan = plan_rule_based(_arbitrage_prices(), MIDNIGHT)
     intents = {s.intent for s in plan.slots}
