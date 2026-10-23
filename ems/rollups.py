@@ -199,7 +199,10 @@ async def catch_up_rollups(
             if key not in energy_days:
                 filled.append(day)
                 energy_days.add(key)
-        # Finance persist keeps the #131 guard (no empty overwrite of a stored row).
-        if has_samples or key in finance_days:
+        # Finance: fill gaps and refresh yesterday; #131 path when raw is gone but cache remains.
+        need_finance = (
+            has_samples and (key not in finance_days or day == yesterday)
+        ) or (key in finance_days and not has_samples)
+        if need_finance:
             await ensure_finance(day)
     return filled
