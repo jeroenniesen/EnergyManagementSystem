@@ -1,4 +1,6 @@
-import { expect, test } from "@playwright/test";
+import { expect, test, type Page } from "@playwright/test";
+
+import { mockRoute } from "./route-mock";
 
 // A small stand-in schema for the mocked-API tests (so they never touch the shared dev DB
 // or race other workers). The real schema is exercised by the read-only tests below.
@@ -787,5 +789,160 @@ test.describe("EMS settings", () => {
     await expect(field.locator("output")).toContainText("12");
     await expect(field.locator("output")).toContainText("kWh");
     await expect(page.getByTestId("settings-advanced-body")).toHaveCount(0);
+  });
+});
+
+// #366 — limit fields keep their draft when cleared, show the unit in the field, and ignore the wheel.
+const RESERVE_FIELD = {
+  key: "battery.min_reserve_soc",
+  label: "Minimum reserve",
+  type: "number",
+  default: 10,
+  group: "battery",
+  help: "Safety buffer.",
+  min: 5,
+  max: 50,
+  options: null,
+  step: 1,
+  unit: "%",
+  advanced: false,
+  applies: "live",
+};
+
+async function mockReserveSettings(
+  page: Page,
+  opts?: { rejectOutOfRange?: boolean },
+) {
+  let value = 10;
+  const posts: Record<string, unknown>[] = [];
+  const mocked = await mockRoute(page, "**/api/settings", async (route) => {
+    if (route.request().method() === "POST") {
+      const body = JSON.parse(route.request().postData() || "{}") as Record<string, unknown>;
+      posts.push(body);
+      if (opts?.rejectOutOfRange) {
+        await route.fulfill({
+          status: 422,
+          contentType: "application/json",
+          body: JSON.stringify({
+            errors: { "battery.min_reserve_soc": "must be >= 5.0" },
+          }),
+        });
+        return;
+      }
+      if (typeof body["battery.min_reserve_soc"] === "number") {
+        value = body["battery.min_reserve_soc"];
+      }
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          values: { "battery.min_reserve_soc": value, "ui.theme": "auto" },
+        }),
+      });
+      return;
+    }
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        schema: [RESERVE_FIELD],
+        values: { "battery.min_reserve_soc": value, "ui.theme": "auto" },
+      }),
+    });
+  });
+  return { posts, mocked };
+}
+
+test.describe("#366 stable number inputs", () => {
+  test("empty Minimum reserve restores the draft and does not open the save bar", async ({ page }) => {
+    const { mocked } = await mockReserveSettings(page);
+    await page.goto("/");
+    await page.getByTestId("nav-manage").click();
+    const input = page.locator("#set-battery\\.min_reserve_soc");
+    await expect(input).toBeVisible();
+    await expect(input).toHaveValue("10");
+    await input.fill("");
+    await input.blur();
+    await expect(input).toHaveValue("10");
+    await expect(page.getByTestId("settings-savebar")).toHaveCount(0);
+    const field = page.getByTestId("field-battery.min_reserve_soc");
+    await expect(field.locator(".field-label")).toContainText("Minimum reserve");
+    await expect(field.locator(".field-label")).not.toContainText("(%)");
+    await expect(page.getByTestId("unit-battery.min_reserve_soc")).toHaveText("%");
+    mocked.assertRequested();
+  });
+
+  test("mouse wheel over a focused Minimum reserve does not change the value", async ({ page }) => {
+    await mockReserveSettings(page);
+    await page.goto("/");
+    await page.getByTestId("nav-manage").click();
+    const input = page.locator("#set-battery\\.min_reserve_soc");
+    await input.click();
+    await expect(input).toBeFocused();
+    await input.evaluate((el) => {
+      el.addEventListener("wheel", () => {
+        el.dataset.wheeled = "yes";
+      });
+    });
+    await input.hover();
+    await page.mouse.wheel(0, 240);
+    await expect(input).toHaveValue("10");
+    await expect(input).toHaveAttribute("data-wheeled", "yes");
+  });
+
+  test("unit suffix stays inside the field at 390px in light and dark", async ({ page }) => {
+    await page.emulateMedia({ colorScheme: "light" });
+    await mockReserveSettings(page);
+    await page.setViewportSize({ width: 390, height: 844 });
+    await page.goto("/");
+    await page.getByTestId("nav-manage").click();
+    // Phone width starts on the section list; the field is in the pane behind it.
+    await page.getByTestId("group-battery").click();
+    const input = page.locator("#set-battery\\.min_reserve_soc");
+    const unit = page.getByTestId("unit-battery.min_reserve_soc");
+    const wrap = input.locator("xpath=..");
+    for (const scheme of ["light", "dark"] as const) {
+      await page.emulateMedia({ colorScheme: scheme });
+      await expect(page.locator("html")).toHaveAttribute("data-theme", scheme);
+      await expect(unit).toBeVisible();
+      const unitBox = await unit.boundingBox();
+      const wrapBox = await wrap.boundingBox();
+      const inputBox = await input.boundingBox();
+      expect(unitBox).toBeTruthy();
+      expect(wrapBox).toBeTruthy();
+      expect(inputBox).toBeTruthy();
+      expect(unitBox!.x).toBeGreaterThan(inputBox!.x);
+      expect(unitBox!.x + unitBox!.width).toBeLessThanOrEqual(wrapBox!.x + wrapBox!.width + 1);
+      expect(unitBox!.x + unitBox!.width).toBeLessThanOrEqual(390);
+    }
+  });
+
+  test("a valid reserve still saves from the save bar", async ({ page }) => {
+    const { posts } = await mockReserveSettings(page);
+    await page.goto("/");
+    await page.getByTestId("nav-manage").click();
+    const input = page.locator("#set-battery\\.min_reserve_soc");
+    await input.fill("20");
+    await input.blur();
+    await expect(page.getByTestId("settings-savebar")).toBeVisible();
+    await page.getByTestId("settings-save").click();
+    await expect(page.getByTestId("settings-saved")).toBeVisible();
+    expect(posts.some((body) => body["battery.min_reserve_soc"] === 20)).toBe(true);
+    await expect(input).toHaveValue("20");
+  });
+
+  test("out of range keeps the field error and does not snap to min", async ({ page }) => {
+    await mockReserveSettings(page, { rejectOutOfRange: true });
+    await page.goto("/");
+    await page.getByTestId("nav-manage").click();
+    const input = page.locator("#set-battery\\.min_reserve_soc");
+    await input.fill("1");
+    await input.blur();
+    await expect(input).toHaveValue("1");
+    await expect(page.getByTestId("settings-savebar")).toBeVisible();
+    await page.getByTestId("settings-save").click();
+    await expect(page.getByTestId("err-battery.min_reserve_soc")).toHaveText("must be >= 5.0");
+    await expect(input).toHaveValue("1");
+    await expect(page.getByTestId("settings-saved")).toHaveCount(0);
   });
 });
