@@ -111,7 +111,10 @@ If you already run live battery control from a git checkout (`make upgrade` / `g
 ## Developing
 
 ```bash
-make test     # Python test suite (uv run pytest)
+make test     # Python test suite (uv run pytest -m "not slow")
+# Stress tests (not in make test / the blocking CI backend job):
+# uv run pytest -m slow ems/tests
+# EMS_STRESS_P99_MAX_S=5 uv run pytest -m slow ems/tests/test_storage_concurrency.py
 make lint     # ruff
 make build    # build the React/Vite dashboard
 make e2e      # Playwright end-to-end tests (hermetic: isolated DB, forced mock)

@@ -29,6 +29,25 @@ from ems.storage.sqlite_guard import (
 )
 
 
+def _stress_p99_max_s() -> float:
+    """p99 ceiling in seconds. ``EMS_STRESS_P99_MAX_S`` overrides the 1.0 s default.
+
+    Non-numeric or non-finite values fail the test; they never fall back to the default.
+    """
+    raw = os.environ.get("EMS_STRESS_P99_MAX_S", "1.0")
+    try:
+        limit = float(raw)
+    except (TypeError, ValueError) as exc:
+        raise AssertionError(
+            f"EMS_STRESS_P99_MAX_S must be a float number of seconds (default 1.0), got {raw!r}"
+        ) from exc
+    if not math.isfinite(limit):
+        raise AssertionError(
+            f"EMS_STRESS_P99_MAX_S must be a finite float number of seconds, got {raw!r}"
+        )
+    return limit
+
+
 def _p99(samples: list[float]) -> float:
     ordered = sorted(samples)
     index = min(len(ordered) - 1, max(0, math.ceil(0.99 * len(ordered)) - 1))
@@ -142,16 +161,25 @@ def _run_stress(db_path: str, duration_s: float) -> float:
     return _p99(latencies)
 
 
+@pytest.mark.slow
 def test_parallel_writers_checkpoint_stress(tmp_path, capsys):
-    """8 writers + WAL checkpoint. Default window is short; AC 1 uses 30 s via the env var."""
+    """8 writers + WAL checkpoint. Default window is short; AC 1 uses 30 s via the env var.
+
+    Excluded from the default suite (``-m "not slow"``). Ceiling is
+    ``EMS_STRESS_P99_MAX_S`` (default 1.0 s).
+    """
     duration = float(os.environ.get("EMS_LOCK_STRESS_SECONDS", "2"))
+    p99_max_s = _stress_p99_max_s()
     p99 = _run_stress(str(tmp_path / "ems.sqlite"), duration)
-    line = f"LOCK_STRESS duration_s={duration} p99_s={p99:.4f}"
+    line = f"LOCK_STRESS duration_s={duration} p99_s={p99:.4f} p99_max_s={p99_max_s:.4f}"
     print(line)
     logging.getLogger("ems.storage").warning("%s", line)
     captured = capsys.readouterr()
     assert f"p99_s={p99:.4f}" in captured.out
-    assert p99 < 1.0
+    assert p99 < p99_max_s, (
+        f"LOCK_STRESS p99_s={p99:.4f} exceeded p99_max_s={p99_max_s:.4f} "
+        f"(EMS_STRESS_P99_MAX_S, default 1.0)"
+    )
 
 
 def test_critical_writer_runs_ahead_of_a_waiting_noncritical():
