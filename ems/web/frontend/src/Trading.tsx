@@ -271,7 +271,7 @@ export function TradingView({ canOperate = true }: { canOperate?: boolean }) {
                     setThresholdDraft(null);
                     if (raw === null) return;
                     const result = resolveNumberBlur(raw, THRESHOLD_BOUNDS);
-                    if (result.action === "restore" || result.value === s.min_extra_eur) return;
+                    if (result.action !== "commit" || result.value === s.min_extra_eur) return;
                     void patchSettings({ "planner.trading_min_extra_eur": result.value });
                   }}
                 />
@@ -298,7 +298,7 @@ export function TradingView({ canOperate = true }: { canOperate?: boolean }) {
                       setCapDraft(null);
                       if (raw === null) return;
                       const result = resolveNumberBlur(raw, CAP_BOUNDS);
-                      if (result.action === "restore" || result.value === s.max_export_kwh_per_day) return;
+                      if (result.action !== "commit" || result.value === s.max_export_kwh_per_day) return;
                       void patchSettings({ "planner.max_export_kwh_per_day": result.value });
                     }}
                   />
