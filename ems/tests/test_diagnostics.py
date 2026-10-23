@@ -145,3 +145,17 @@ def test_battery_missing_vs_unreachable_detail():
     ok = next(c for c in build_diagnostics(**_facts(battery_ok=True)) if c.key == "battery")
     assert ok.status == "ok"
     assert "probed" in ok.detail
+
+
+def test_rollup_missing_count_is_the_diagnostics_counter():
+    """F-48 / #342: the teller is 0 when every sampled day has a rollup, else a warn."""
+    clear = next(c for c in build_diagnostics(**_facts()) if c.key == "rollup")
+    assert clear.status == "ok"
+    assert clear.detail.startswith("0 ")
+    assert overall_status(build_diagnostics(**_facts())) == "ok"
+    late = next(
+        c for c in build_diagnostics(**_facts(), rollup_missing_count=2) if c.key == "rollup"
+    )
+    assert late.status == "warn"
+    assert late.detail.startswith("2 ")
+    assert overall_status(build_diagnostics(**_facts(), rollup_missing_count=2)) == "warn"

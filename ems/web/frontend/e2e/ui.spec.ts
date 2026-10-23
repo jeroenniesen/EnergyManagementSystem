@@ -1,3 +1,4 @@
+import AxeBuilder from "@axe-core/playwright";
 import { expect, type Page, test } from "@playwright/test";
 
 import { mockInsightsDensity, waitForInsightsDensity } from "./density-fixtures";
@@ -4588,5 +4589,52 @@ test.describe("EMS dashboard", () => {
       await page.getByTestId("nav-dashboard").click();
       await expect(page.getByTestId("export-model-banner")).toBeHidden();
     });
+  });
+});
+
+test.describe("F-48 voorlopig badge", () => {
+  test("shows voorlopig on a provisional finance day and stays accessible", async ({ page }) => {
+    await page.route("**/api/report**", (route) => route.fulfill({
+      status: 200, contentType: "application/json",
+      body: JSON.stringify({
+        period: "day", label: "2026-06-28", partial: false,
+        flows: {
+          has_data: true, partial: false,
+          solar_kwh: 1, grid_import_kwh: 1, grid_export_kwh: 0,
+          battery_charge_kwh: 0, battery_discharge_kwh: 0,
+          home_kwh: 2, car_kwh: 0, car_guard_leak_kwh: 0,
+          self_sufficiency_pct: 50, solar_self_consumption_pct: 50,
+        },
+        scores: [],
+        series: [],
+      }),
+    }));
+    await page.route("**/api/finance**", (route) => route.fulfill({
+      status: 200, contentType: "application/json",
+      body: JSON.stringify({
+        period: "day", label: "2026-06-28", partial: false,
+        days: [{
+          day: "2026-06-28", has_data: true, price_coverage: 1, sample_coverage: 0.4,
+          provisional: true, grid_cost_eur: 1.2, battery_cost_eur: 0.1,
+          baseline_cost_eur: 2, saved_eur: 0.7, grid_import_kwh: 1, grid_export_kwh: 0,
+        }],
+        totals: {
+          grid_cost_eur: 1.2, battery_cost_eur: 0.1, saved_eur: 0.7,
+          days_with_prices: 1, days_with_data: 1,
+        },
+      }),
+    }));
+    await page.goto("/");
+    await page.getByTestId("nav-insights").click();
+    const badge = page.getByTestId("fin-provisional-badge");
+    await expect(badge).toBeVisible();
+    await expect(badge).toHaveText("voorlopig");
+    await expect(badge).toHaveAttribute("role", "status");
+    for (const theme of ["light", "dark"] as const) {
+      await page.evaluate((value) => {
+        document.documentElement.setAttribute("data-theme", value);
+      }, theme);
+      expect((await new AxeBuilder({ page }).analyze()).violations).toEqual([]);
+    }
   });
 });

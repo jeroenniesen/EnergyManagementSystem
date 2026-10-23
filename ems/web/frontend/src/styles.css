@@ -313,6 +313,14 @@ body {
 }
 .badge-dryrun { background: rgba(224, 162, 58, 0.16); color: var(--amber-text); }
 .badge-amber { background: rgba(224, 162, 58, 0.16); color: var(--amber-text); text-transform: none; letter-spacing: 0; }
+/* F-48: light and dark both read --amber-text (AA on --panel). */
+.badge-provisional {
+  background: rgba(224, 162, 58, 0.16);
+  color: var(--amber-text);
+  text-transform: none;
+  letter-spacing: 0;
+  font-weight: 600;
+}
 .badge-live { background: rgba(70, 200, 168, 0.16); color: var(--green-text); }
 .badge-muted { background: var(--panel-2); color: var(--muted); text-transform: none; letter-spacing: 0; font-weight: 500; }
 .badge-dq { letter-spacing: 0; }
@@ -2687,6 +2695,7 @@ body {
   overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0;
 }
 .behavior, .fin { margin-top: 20px; }
+.fin-provisional { display: flex; align-items: center; gap: 8px; margin: 8px 0; flex-wrap: wrap; }
 .behavior-wrap { position: relative; }
 .behavior-svg { width: 100%; height: auto; display: block; }
 .behavior-tick { fill: var(--muted); font-size: 10px; }

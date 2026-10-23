@@ -1,4 +1,4 @@
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 
 from ems.alerts import Alert, data_quality, derive_alerts
 
@@ -142,6 +142,11 @@ def _collect_all_alerts() -> list[Alert]:
         ALL_FRESH, dry_run=False, decision_outcome=None, charge_blocked_by_cap=True,
     ):
         seen[a.key] = a
+    for a in derive_alerts(
+        ALL_FRESH, dry_run=False, decision_outcome=None,
+        rollup_missing_days=(date(2026, 6, 28),),
+    ):
+        seen[a.key] = a
     return list(seen.values())
 
 
@@ -149,8 +154,8 @@ def test_every_alert_has_non_empty_safe_action_and_ems_doing():
     alerts = _collect_all_alerts()
     # dry_run + 3 battery-write outcomes + 5 signals×2 states + price_horizon + overrun
     # + no_live_prices + tibber_prices_unavailable + live_mock_forecast_provider
-    # + charge_blocked_by_cap = 20.
-    assert len(alerts) == 20
+    # + charge_blocked_by_cap + rollup_missing = 21.
+    assert len(alerts) == 21
     for a in alerts:
         assert a.safe.strip(), f"{a.key} has no safe answer"
         assert a.action.strip(), f"{a.key} has no action"
@@ -221,6 +226,24 @@ def test_charge_blocked_by_cap_alert_appears_only_while_blocked():
         ALL_FRESH, dry_run=False, decision_outcome=None, charge_blocked_by_cap=False,
     )
     assert all(a.key != "charge_blocked_by_cap" for a in off)
+
+
+def test_rollup_missing_appears_and_clears_when_the_rollup_exists():
+    """F-48 / #342: the alert is present while a sampled day has no rollup, and gone after."""
+    missing = derive_alerts(
+        ALL_FRESH, dry_run=False, decision_outcome=None,
+        rollup_missing_days=(date(2026, 6, 28),),
+    )
+    hit = next(a for a in missing if a.key == "rollup_missing")
+    assert hit.severity == "warning"
+    assert "2026-06-28" in hit.message
+    assert "batterij-aansturing" in hit.safe
+    cleared = derive_alerts(
+        ALL_FRESH, dry_run=False, decision_outcome=None, rollup_missing_days=(),
+    )
+    assert all(a.key != "rollup_missing" for a in cleared)
+    absent = derive_alerts(ALL_FRESH, dry_run=False, decision_outcome=None)
+    assert all(a.key != "rollup_missing" for a in absent)
 
 
 def test_signal_alerts_mention_state_appropriately():

@@ -127,6 +127,8 @@ class ReportSeriesPoint(APIResponseModel):
     car_kwh: float | None = None
     solar_kwh: float | None = None
     samples: int | None = None
+    # F-48 / #342: week/month buckets are local days.
+    provisional: bool | None = None
 
 
 class GasSummary(APIResponseModel):
@@ -206,6 +208,8 @@ class ReportResponse(APIResponseModel):
     flows: FlowSummary | None = None
     scores: list[ReportScore] | None = None
     series: list[ReportSeriesPoint] | None = None
+    # F-48 / #342: the single local day when period=day.
+    provisional: bool | None = None
     gas: GasSummary | None = None
     tariff_policy: TariffPolicyModel | None = None
     tariff_warnings: list[TariffWarning] | None = None
@@ -226,6 +230,8 @@ class FinanceDay(APIResponseModel):
     battery_charge_kwh: float | None = None
     battery_discharge_kwh: float | None = None
     calc_v: int | None = None
+    # F-48 / #342: no settled rollup yet, or sample coverage below 95%.
+    provisional: bool | None = None
 
 
 class FinanceTotals(APIResponseModel):
@@ -372,6 +378,8 @@ class DiagnosticsResponse(APIResponseModel):
     control_loop: ControlLoopCounters | None = None
     # B-74 / #84 slice 2: structured DecisionReason (same shape as /api/battery-plan `reason`).
     decision_reason: dict[str, object] | None = None
+    # F-48 / #342: sampled days past noon that still lack an energy+finance rollup.
+    rollup_missing_count: int | None = None
 
 
 # --- Hot homeowner endpoints (#92 / B-45 slice 1): status, dashboard, battery-plan ---------------

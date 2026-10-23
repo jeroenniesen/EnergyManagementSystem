@@ -137,6 +137,12 @@ from ems.reporting import (
     resolve_window,
 )
 from ems.retrospect import build_past_story, past_headline
+from ems.rollups import (
+    apply_energy_provisional,
+    catch_up_rollups,
+    day_is_provisional,
+    missing_rollup_days,
+)
 from ems.savings import estimate_daily_savings_eur
 from ems.sense import Recorder
 from ems.settings import (
@@ -160,12 +166,7 @@ from ems.storage.auth import AuthStore
 from ems.storage.cache import CacheStore
 from ems.storage.context import StorageContext
 from ems.storage.control_state import ControlStateStore
-from ems.storage.history import (
-    OBSERVATION_RETENTION_DAYS,
-    HistoryStore,
-    materialize_daily_energy,
-    materialize_observations,
-)
+from ems.storage.history import OBSERVATION_RETENTION_DAYS, HistoryStore
 from ems.storage.settings import SettingsStore
 from ems.tariff_validation import validate_tariff_policy
 from ems.tariffs import policy_from_settings, policy_to_dict
@@ -1492,25 +1493,14 @@ def create_app(
                         _log.info("history retention: purged %d rows older than %d days",
                                   deleted, history_retention_days)
                 await store.maintain()
-                # Compact long-horizon stores (design §4.1 / B-13): materialize YESTERDAY (local)
-                # into the 15-min observation store + the daily kWh rollup — idempotent upserts, so
-                # a re-run (restart, retry) just overwrites. Observations then purge at their OWN
-                # 400-day horizon, INDEPENDENTLY of raw retention_days; daily_energy is never purged
-                # (that is the point — year-over-year kWh survives the raw purge).
+                # F-48 / #342: idempotent catch-up of the last 7 completed local days (not older).
+                # Yesterday is refreshed when samples remain; a stored rollup is never replaced
+                # with empty data. Finance still goes through `_ensure_day_finance` (#131 + F5).
                 now_local = _now_utc().astimezone(site_tz)
-                y = now_local.date() - timedelta(days=1)
-                day_start = datetime(y.year, y.month, y.day, tzinfo=site_tz)
-                day_end = day_start + timedelta(days=1)
-                cadence = _sample_cadence_seconds()
-                await materialize_observations(store, day_start, day_end, cadence_seconds=cadence)
-                await materialize_daily_energy(store, day_start, day_end, cadence_seconds=cadence)
-                # Finance year-completeness (F5): also cache YESTERDAY's finance rollup now,
-                # mirroring the daily_energy materialization above. daily_finance was previously
-                # written ONLY on a view/export, so a day nobody looked at before the 90-day raw
-                # purge became permanently uncomputable — a silent year-view undercount. This makes
-                # every completed day's finance survive the raw purge. Idempotent: the day's cached
-                # row (under the current calc_v) is returned unchanged, never re-upserted.
-                await _ensure_day_finance(y)
+                await catch_up_rollups(
+                    store, now_local, cadence_seconds=_sample_cadence_seconds(),
+                    ensure_finance=_ensure_day_finance,
+                )
                 obs_cutoff = (_now_utc()
                               - timedelta(days=OBSERVATION_RETENTION_DAYS)).isoformat()
                 purged = await store.purge_observations_older_than(obs_cutoff)
@@ -2910,6 +2900,11 @@ def create_app(
             solar_forecast, settings_cache, dev_mode,
         )
         charge_blocked = bool(control is not None and control.charge_blocked_by_cap)
+        # F-48: sampled days past noon without both rollup rows. Empty as soon as they exist.
+        rollup_gaps = (
+            missing_rollup_days(store.db_path, _now_utc().astimezone(site_tz))
+            if store is not None else []
+        )
         alerts = derive_alerts(
             snap, dry_run=dry_run, decision_outcome=outcome,
             confirmed_auto=confirmed_auto, last_command_unconfirmed=last_unconfirmed,
@@ -2919,6 +2914,7 @@ def create_app(
             site_tz=site_tz,
             live_mock_forecast_provider=live_mock_forecast,
             charge_blocked_by_cap=charge_blocked,
+            rollup_missing_days=rollup_gaps,
         )
         out = [{"key": a.key, "severity": a.severity, "message": a.message,
                 "safe": a.safe, "action": a.action, "ems_doing": a.ems_doing} for a in alerts]
@@ -3108,6 +3104,10 @@ def create_app(
         )
         # #197: fuse choice still at schema default `unset` → System CHECK (do not pretend known).
         grid_fuse_unset = settings_cache.get("control.grid_fuse", "unset") == "unset"
+        rollup_gaps = (
+            missing_rollup_days(store.db_path, now.astimezone(site_tz))
+            if store is not None else []
+        )
         checks = build_diagnostics(
             dev_mode=dev_mode, dry_run=dry_run,
             dry_run_block_reason=dry_run_block_reason,
@@ -3123,6 +3123,7 @@ def create_app(
             freshness=freshness.snapshot(now) if freshness is not None else None,
             ev_guard_blind=ev_guard_blind,
             grid_fuse_unset=grid_fuse_unset,
+            rollup_missing_count=len(rollup_gaps),
         )
         # Observability: how much is currently cached (reused instead of refetched / re-spent).
         cache_stats = None
@@ -3183,6 +3184,8 @@ def create_app(
             # F-45: per-store lock incident + the process-wide retry counter.
             "storage_locks": lock_status["stores"],
             "storage_write_retries": lock_status["storage_write_retries"],
+            # F-48 / #342: sampled days past noon that still lack an energy+finance rollup.
+            "rollup_missing_count": len(rollup_gaps),
         }
 
     @app.get("/api/charge-need")
@@ -4798,7 +4801,7 @@ def create_app(
         from and went, in kWh. Rolled up on demand from recorded history — NOT on the dashboard
         poll, and bounded to one day's rows, so it adds no device load (energy review: minimum
         load). `date` is YYYY-MM-DD in the site timezone; omitted = today."""
-        now_local = datetime.now(UTC).astimezone(site_tz)
+        now_local = _now_utc().astimezone(site_tz)
         if date:
             try:
                 d = date_cls.fromisoformat(date)
@@ -4811,17 +4814,35 @@ def create_app(
         day_start = datetime(d.year, d.month, d.day, tzinfo=site_tz)
         day_end = day_start + timedelta(days=1)
         partial = d == now_local.date()
+
+        async def _with_provisional(body: dict) -> dict:
+            # F-48: per-day energy flag. No `/api/energy` route — this is the day surface.
+            coverage = None
+            has_rollup = False
+            if store is not None and d <= now_local.date():
+                rows = await store.daily_energy_between(
+                    d.isoformat(), (d + timedelta(days=1)).isoformat())
+                if rows:
+                    has_rollup = True
+                    coverage = rows[0].get("coverage")
+            body["provisional"] = day_is_provisional(
+                has_rollup=has_rollup, sample_coverage=coverage,
+            )
+            return body
+
         # No store, or a future day → an honest empty distribution (has_data False), never an error.
         if store is None or d > now_local.date():
-            return build_daily_flows([], [], day_start, day_end,
+            body = build_daily_flows([], [], day_start, day_end,
                                      label=d.isoformat(), partial=partial).to_dict()
+            return await _with_provisional(body)
         s_iso, e_iso = day_start.astimezone(UTC).isoformat(), day_end.astimezone(UTC).isoformat()
         raw = await store.raw_between(s_iso, e_iso)
         der = await store.derived_between(s_iso, e_iso)
-        return build_daily_flows(raw, der, day_start, day_end,
+        body = build_daily_flows(raw, der, day_start, day_end,
                                  label=d.isoformat(), partial=partial,
                                  sample_interval_seconds=_sample_cadence_seconds(),
                                  max_hold_seconds=2 * _sample_cadence_seconds()).to_dict()
+        return await _with_provisional(body)
 
     @app.get("/api/sky")
     async def sky() -> dict:
@@ -4894,6 +4915,21 @@ def create_app(
             PriceSlot(p.start, tariff_policy.normalize(p.eur_per_kwh).import_eur_per_kwh)
             for p in prices
         ]
+
+        async def _stamp_energy_provisional(resp: dict) -> dict:
+            """F-48: per-day `provisional` on the day report and week/month day buckets."""
+            if period not in ("day", "week", "month"):
+                return resp
+            coverage: dict[str, float | None] = {}
+            if store is not None:
+                rows = await store.daily_energy_between(
+                    start.date().isoformat(), end.date().isoformat())
+                coverage = {str(row["date"]): row.get("coverage") for row in rows}
+            apply_energy_provisional(
+                resp, period=period, day=start.date().isoformat(), coverage=coverage,
+            )
+            return resp
+
         # Future / no store → an honest empty report (has_data False), never an error.
         if store is None or start > now_local:
             resp = build_report(
@@ -4912,7 +4948,7 @@ def create_app(
                 tariff_policy,
                 export_model=str(settings_cache.get("prices.export_price_model", "spot_minus_tax")),
             )]
-            return resp
+            return await _stamp_energy_provisional(resp)
         q_end = min(end, now_local + timedelta(minutes=1))  # never query the future
         # Size the row cap to the window AND the recorder cadence (finding 10) so week/month/year
         # aren't truncated and it stays correct if the sampling frequency changes.
@@ -4969,7 +5005,7 @@ def create_app(
             )]
             return resp
 
-        return await asyncio.to_thread(_assemble)
+        return await _stamp_energy_provisional(await asyncio.to_thread(_assemble))
 
     async def report(
         period: str = Query(default="day", pattern="^(day|week|month|year)$"),
@@ -5090,6 +5126,15 @@ def create_app(
         out.update(vs.to_ephemeral_dict())
         return out
 
+    def _with_provisional(data: dict, *, has_rollup: bool) -> dict:
+        """F-48 / #342 view flag. Never stored on the daily_finance row."""
+        out = dict(data)
+        out.pop("provisional", None)
+        out["provisional"] = day_is_provisional(
+            has_rollup=has_rollup, sample_coverage=out.get("sample_coverage"),
+        )
+        return out
+
     async def _persist_daily_finance(day_label: str, data: dict) -> None:
         """Best-effort write-through of one day's finance rollup to the `daily_finance` MEMO cache.
 
@@ -5101,9 +5146,12 @@ def create_app(
         that is NOT transient contention (a real schema/IO error) still propagates. This mirrors the
         best-effort persist philosophy used elsewhere (notification store, recorder).
 
-        #131: strip per-request vs-AUTO fields — the simulation is never stored."""
+        #131: strip per-request vs-AUTO fields — the simulation is never stored.
+        F-48: `provisional` is a view flag and is stripped the same way."""
         try:
-            await store.upsert_daily_finance(day_label, strip_vs_auto_ephemeral(data))
+            payload = strip_vs_auto_ephemeral(data)
+            payload.pop("provisional", None)
+            await store.upsert_daily_finance(day_label, payload)
         except sqlite3.OperationalError as exc:
             msg = str(exc).lower()
             if "locked" not in msg and "busy" not in msg:
@@ -5116,7 +5164,7 @@ def create_app(
         viewed window) and the export package (which backfills every completed day in ITS window,
         so `daily_finance.csv` covers days no one ever viewed — not just previously-cached ones).
         `store` must not be None (both call sites already guard that)."""
-        now_local = datetime.now(UTC).astimezone(site_tz)
+        now_local = _now_utc().astimezone(site_tz)
         day_label = day_local.isoformat()
         cur = datetime(day_local.year, day_local.month, day_local.day, tzinfo=site_tz)
         nxt = cur + timedelta(days=1)
@@ -5141,11 +5189,14 @@ def create_app(
                 cached_data = cached[0]["data"]
             # Current-version cache is trusted as-is.
             if cached_data is not None and cached_data.get("calc_v") == _FINANCE_CALC_VERSION:
-                return _attach_vs_auto(day_label, cached_data, raw, price_rows)
+                return _with_provisional(
+                    _attach_vs_auto(day_label, cached_data, raw, price_rows),
+                    has_rollup=True,
+                )
             # #131 guard: never overwrite a stored rollup with an empty recompute when raw is gone
             # (purged after retention). Keep the cached row byte-for-byte; vs-AUTO stays absent.
             if cached_data is not None and not raw:
-                return dict(cached_data)
+                return _with_provisional(dict(cached_data), has_rollup=True)
         f = day_finance(raw, price_rows, day=day_label,
                         degradation_eur_per_kwh=degradation,
                         export_price_model=export_model,
@@ -5160,7 +5211,9 @@ def create_app(
         f["calc_v"] = _FINANCE_CALC_VERSION
         if completed:
             await _persist_daily_finance(day_label, f)
-        return _attach_vs_auto(day_label, f, raw, price_rows)
+        return _with_provisional(
+            _attach_vs_auto(day_label, f, raw, price_rows), has_rollup=completed,
+        )
 
     async def _finance_window(start: datetime, end: datetime, now_local: datetime) -> list[dict]:
         """Batched replacement for calling `_ensure_day_finance` once per day (BACKLOG B-49): the
@@ -5200,8 +5253,8 @@ def create_app(
             "min_reserve_soc": float(settings_cache.get("battery.min_reserve_soc", 10.0)),
         }
 
-        def _compute() -> list[tuple[str, dict, bool]]:
-            out: list[tuple[str, dict, bool]] = []
+        def _compute() -> list[tuple[str, dict, bool, bool]]:
+            out: list[tuple[str, dict, bool, bool]] = []
             cur = start
             while cur < end and cur <= now_local:
                 day_label = cur.date().isoformat()
@@ -5214,10 +5267,12 @@ def create_app(
                         and cached_data.get("calc_v") == _FINANCE_CALC_VERSION:
                     data = dict(cached_data)
                     needs_upsert = False
+                    has_rollup = True
                 elif completed and cached_data is not None and not day_raw:
                     # #131: raw purged — keep the stored rollup; never write "geen data".
                     data = dict(cached_data)
                     needs_upsert = False
+                    has_rollup = True
                 else:
                     f = day_finance(
                         day_raw, day_prices,
@@ -5234,6 +5289,7 @@ def create_app(
                     f["calc_v"] = _FINANCE_CALC_VERSION
                     data = f
                     needs_upsert = completed
+                    has_rollup = completed
                 if day_raw:
                     vs = day_vs_auto(
                         day_raw, day_prices, day=day_label,
@@ -5247,16 +5303,16 @@ def create_app(
                         **batt_kw,
                     )
                     data.update(vs.to_ephemeral_dict())
-                out.append((day_label, data, needs_upsert))
+                out.append((day_label, data, needs_upsert, has_rollup))
                 cur = nxt
             return out
 
         computed = await asyncio.to_thread(_compute)
         days: list[dict] = []
-        for day_label, data, needs_upsert in computed:
+        for day_label, data, needs_upsert, has_rollup in computed:
             if needs_upsert:
                 await _persist_daily_finance(day_label, data)
-            days.append(data)
+            days.append(_with_provisional(data, has_rollup=has_rollup))
         return days
 
     async def _vs_auto_rolling(self_days: int, now_local: datetime) -> dict | None:
