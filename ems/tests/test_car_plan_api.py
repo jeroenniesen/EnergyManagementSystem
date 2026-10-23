@@ -51,7 +51,10 @@ def _all_days_enabled(min_pct: int = 80, ready_by: str = "07:30") -> dict:
 def test_plan_disabled_returns_enabled_false(tmp_path):
     with TestClient(_app(tmp_path)) as c:  # ev.advice_enabled defaults False
         body = c.get("/api/car/plan").json()
-    assert body == {"enabled": False, "plan": None, "soc": None}
+    assert body["enabled"] is False
+    assert body["plan"] is None
+    assert body["soc"] is None
+    assert body["skip_today"]["active"] is False
 
 
 def test_enabled_without_anchor_needs_anchor(tmp_path):
@@ -185,6 +188,54 @@ def test_post_soc_writes_audit_entry_and_persists(tmp_path):
 def test_post_soc_without_store_returns_503():
     app = create_app(MockSource(), dry_run=True, dev_mode="mock")  # no history store
     assert TestClient(app).post("/api/car/soc", json={"pct": 50}).status_code == 503
+
+
+# ---- POST /api/ev/skip-today (#320) ----
+
+def test_skip_today_sets_expected_ev_zero_in_plan(tmp_path):
+    with TestClient(_app(tmp_path)) as c:
+        c.post("/api/settings", json={
+            "strategy.mode": "winter",
+            "ev.advice_enabled": True,
+            "ev.day_hint": True,
+            "ev.charge_kwh": 25.0,
+        })
+        c.post("/api/car/soc", json={"pct": 50})
+        c.post("/api/settings", json={"ev.schedule": json.dumps(_all_days_enabled())})
+        svc = c.app.state.control_service
+        before = svc.plan_builds
+        r = c.post("/api/ev/skip-today", json={"skip": True})
+        assert r.status_code == 200
+        assert r.json()["skip_today"]["active"] is True
+        now = datetime.now(UTC)
+        est = svc.expected_ev_exogenous(now)
+        assert est.expected_kwh == 0.0
+        assert est.source == "skipped_today"
+        _, _, plan, _, _ = svc.plan_with_recovery(now)
+        assert plan.input_snapshot is not None
+        assert (plan.input_snapshot.expected_ev_kwh or 0) == 0
+        assert svc.plan_builds == before + 1
+        entries = c.get("/api/audit", params={"category": "config_change"}).json()["entries"]
+        assert any("ev.skip_date" in e.get("detail", {}).get("keys", []) for e in entries)
+
+
+def test_skip_today_reader_gets_403(tmp_path):
+    from ems.storage.auth import AuthStore
+    from ems.tests.test_auth_api import _seed_user
+
+    db = str(tmp_path / "ems.sqlite")
+    _seed_user(db, "rdr", "pw12345678", "reader")
+    app = create_app(
+        MockSource(), dry_run=True, dev_mode="mock", tz=AMS,
+        store=HistoryStore(db),
+        price_source=MockPriceSource(AMS), solar_forecast=MockSolarForecastSource(AMS),
+        settings_store=SettingsStore(db),
+        auth_store=AuthStore(db),
+    )
+    with TestClient(app) as c:
+        login = c.post("/api/auth/login", json={"username": "rdr", "password": "pw12345678"})
+        h = {"Authorization": f"Bearer {login.json()['token']}"}
+        assert c.post("/api/ev/skip-today", json={"skip": True}, headers=h).status_code == 403
 
 
 # ---- GET /api/car/sessions (Car tab history table) ----

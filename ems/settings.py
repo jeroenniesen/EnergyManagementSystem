@@ -13,7 +13,9 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
+from datetime import date, datetime
 from typing import Any
+from zoneinfo import ZoneInfo
 
 from ems.consumers.selection import default_device_ids_json
 from ems.ev_schedule import default_schedule
@@ -729,6 +731,12 @@ SETTINGS_SCHEMA: tuple[SettingsField, ...] = (
         "the charger. Off + no schedule/history ⇒ fail-soft (no EV addend).",
     ),
     SettingsField(
+        "ev.skip_date", "Skip EV load today", "text", "", "ev",
+        help="ISO local date when the household chose 'car does not charge today' (#320). "
+        "Managed from the Car card — not the generic Settings form. Empty = off.",
+        show_in_settings=False,
+    ),
+    SettingsField(
         "ev.expected_day_kwh", "Expected EV import today", "number", 0.0, "ev",
         help="Optional manual override for today's expected car import (kWh). When > 0, the "
         "winter planner uses this instead of the day hint / schedule / same-weekday history "
@@ -866,6 +874,26 @@ _GRID_W_TO_FUSE: dict[float, str] = {w: k for k, w in GRID_FUSE_PRESET_W.items()
 def fuse_from_watts(watts: float) -> str:
     """Map a stored watt ceiling to a fuse token (exact preset match, else `custom`)."""
     return _GRID_W_TO_FUSE.get(float(watts), "custom")
+
+
+def ev_skip_date_active(
+    skip_date: Any, now: datetime, tz: ZoneInfo,
+) -> bool:
+    """True when `ev.skip_date` equals today's local date (#320). Past/invalid → inactive."""
+    if not isinstance(skip_date, str):
+        return False
+    raw = skip_date.strip()
+    if not raw:
+        return False
+    try:
+        stored = date.fromisoformat(raw[:10])
+    except ValueError:
+        return False
+    try:
+        today = now.astimezone(tz).date()
+    except Exception:
+        return False
+    return stored == today
 
 
 def defaults() -> dict[str, Any]:
@@ -1115,6 +1143,12 @@ def validate_settings(
             except ValueError as exc:
                 errors[key] = str(exc)
             continue
+        if key == "ev.skip_date" and result:
+            try:
+                date.fromisoformat(str(result)[:10])
+            except ValueError:
+                errors[key] = "must be an ISO local date (YYYY-MM-DD) or empty"
+                continue
         if key == "explainer.base_url" and result:
             from ems.url_safety import normalize_outbound_http_url
 

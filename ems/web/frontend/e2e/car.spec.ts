@@ -13,6 +13,7 @@ function fullPlanBody() {
   const deadlineIso = new Date(floor15(now + 20 * 3600000)).toISOString();
   return {
     enabled: true,
+    skip_today: { active: false },
     car_meter_configured: true,
     soc: {
       soc_pct: 42.3, anchor_pct: 40, anchor_ts: new Date(now - 80 * 3600000).toISOString(),
@@ -269,6 +270,45 @@ test.describe("Car view", () => {
     await expect(page.getByTestId("car-window-row").first()).toBeVisible();
   });
 
+  test("skip-today toggle posts on and off and shows tot middernacht when active", async ({
+    page,
+  }) => {
+    let skipActive = false;
+    await page.route("**/api/ev/skip-today", async (route) => {
+      const body = JSON.parse(route.request().postData() || "{}");
+      skipActive = Boolean(body.skip);
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          skip_today: { active: skipActive },
+          "ev.skip_date": skipActive ? "2026-01-01" : "",
+        }),
+      });
+    });
+    await page.route("**/api/car/plan", (route) =>
+      route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({ ...fullPlanBody(), skip_today: { active: skipActive } }),
+      }));
+    await mockCars(page);
+    await page.goto("/");
+    await page.getByTestId("nav-car").click();
+
+    const toggle = page.getByTestId("car-skip-today-toggle");
+    await expect(toggle).toHaveAttribute("role", "switch");
+    await expect(page.getByTestId("car-skip-today-status")).toHaveCount(0);
+
+    await toggle.check();
+    await expect(page.getByTestId("car-skip-today-status")).toContainText("tot middernacht");
+    await expect(toggle).toBeChecked();
+
+    await toggle.uncheck();
+    await expect(page.getByTestId("car-skip-today-status")).toHaveCount(0);
+    await expect(toggle).not.toBeChecked();
+  });
+
   // The compact dashboard card stays headless when the feature is off (covered in ui.spec.ts) —
   // but the full Car tab must not be left blank on a fresh install with no clue why.
   test("the full Car view shows an honest enable-it card when the charge planner is off", async ({
@@ -277,7 +317,7 @@ test.describe("Car view", () => {
     await page.route("**/api/car/plan", (route) =>
       route.fulfill({
         status: 200, contentType: "application/json",
-        body: JSON.stringify({ enabled: false, plan: null, soc: null }),
+        body: JSON.stringify({ enabled: false, plan: null, soc: null, skip_today: { active: false } }),
       }));
     await page.goto("/");
     await page.getByTestId("nav-car").click();

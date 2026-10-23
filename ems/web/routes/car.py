@@ -5,8 +5,8 @@ that `_run_detector_cycle` (B-75 `ev_plug_in_reminder`) in api.py also calls —
 module-level function taking the ctx, not a closure, exactly like `_run_weekly_digest`.
 
 AUTH: POST /api/car/soc is a write; it is gated centrally by `_AccessMiddleware` in api.py, whose
-`_WRITE_API_PATHS` set includes "/api/car/soc". Moving the handler here does NOT change its path, so
-the middleware still guards it — keep the path in that set if this route is ever renamed.
+`_WRITE_API_PATHS` set includes "/api/car/soc" and "/api/ev/skip-today". Moving a handler here does
+NOT change its path, so the middleware still guards it — keep the path in that set if renamed.
 """
 from __future__ import annotations
 
@@ -22,6 +22,7 @@ from ems.cars import to_dict as car_to_dict
 from ems.ev_planner import plan_car_charging
 from ems.ev_schedule import materialize_deadlines, parse_schedule
 from ems.ev_session import detect_sessions, estimate_soc
+from ems.settings import effective_settings, ev_skip_date_active, validate_settings
 from ems.web.context import AppContext, history_row_cap
 
 
@@ -45,6 +46,12 @@ async def car_soc_estimate(
     )
 
 
+def _skip_today_payload(ctx: AppContext, now: datetime) -> dict:
+    return {
+        "active": ev_skip_date_active(ctx.settings_cache.get("ev.skip_date"), now, ctx.site_tz),
+    }
+
+
 async def gather_car_plan(ctx: AppContext, now: datetime) -> dict:
     """The EV feature's main read (design 2026-07-12): when to plug in the car to meet the
     weekly minimum-charge schedule as cheaply as possible. Advisory only — never commands
@@ -61,7 +68,10 @@ async def gather_car_plan(ctx: AppContext, now: datetime) -> dict:
     of duplicating it."""
     s = ctx.settings_cache
     if not s.get("ev.advice_enabled"):
-        return {"enabled": False, "plan": None, "soc": None}
+        return {
+            "enabled": False, "plan": None, "soc": None,
+            "skip_today": _skip_today_payload(ctx, now),
+        }
 
     car_meter_configured = bool(str(s.get("meters.car_ip") or "").strip())
 
@@ -75,6 +85,7 @@ async def gather_car_plan(ctx: AppContext, now: datetime) -> dict:
         return {
             "enabled": True, "plan": None, "soc": None, "needs_anchor": True,
             "car_meter_configured": car_meter_configured,
+            "skip_today": _skip_today_payload(ctx, now),
         }
 
     # --- weekly schedule → concrete, tz-aware deadlines (empty ⇒ prompt to set a schedule) ---
@@ -84,6 +95,7 @@ async def gather_car_plan(ctx: AppContext, now: datetime) -> dict:
         return {
             "enabled": True, "soc": soc, "plan": None, "needs_schedule": True,
             "car_meter_configured": car_meter_configured,
+            "skip_today": _skip_today_payload(ctx, now),
         }
 
     # --- effective charge power = min(charger, car AC limit) (charger alone if no car) ---
@@ -119,6 +131,7 @@ async def gather_car_plan(ctx: AppContext, now: datetime) -> dict:
         "effective_kw": effective_kw,
         "car": car_to_dict(car) if car is not None else None,
         "car_meter_configured": car_meter_configured,
+        "skip_today": _skip_today_payload(ctx, now),
         "battery_hold_recommendation": {
             "enabled": bool(s.get("control.hold_battery_when_car_charging", True)),
             "mode": str(s.get("control.car_charging_battery_mode", "hold")),
@@ -195,5 +208,45 @@ def build_router(ctx: AppContext) -> APIRouter:
             )
         soc = await car_soc_estimate(ctx, now, anchor_pct=float(pct), anchor_ts=now.isoformat())
         return JSONResponse({"soc": soc})
+
+    @router.post("/api/ev/skip-today")
+    async def ev_skip_today(request: Request, body: dict | None = None) -> JSONResponse:
+        """No-EV-load day for winter sizing (#320 / F-28). Resets at local midnight."""
+        body = body or {}
+        skip = body.get("skip")
+        if not isinstance(skip, bool):
+            return JSONResponse(
+                {"detail": "invalid skip-today", "errors": {"skip": "must be true or false"}},
+                status_code=422,
+            )
+        storage = getattr(getattr(request.app.state, "application_context", None), "storage", None)
+        settings_store = storage.settings if storage is not None else None
+        if settings_store is None:
+            return JSONResponse({"detail": "settings store not configured"}, status_code=503)
+        now = datetime.now(UTC)
+        local_today = now.astimezone(ctx.site_tz).date().isoformat()
+        clean, errors = validate_settings(
+            {"ev.skip_date": local_today if skip else ""},
+            dev_mode=ctx.dev_mode,
+        )
+        if errors:
+            return JSONResponse(
+                {"detail": "invalid skip-today", "errors": errors}, status_code=422,
+            )
+        await settings_store.set_many(clean)
+        ctx.settings_cache.update(effective_settings(await settings_store.all()))
+        control = request.app.state.control_service
+        control.invalidate_cycle_caches()
+        if ctx.audit_store is not None:
+            await ctx.audit_store.append(
+                now.isoformat(),
+                "config_change",
+                "Changed 1 setting(s): ev.skip_date",
+                {"keys": ["ev.skip_date"], "secrets": []},
+            )
+        return JSONResponse({
+            "skip_today": _skip_today_payload(ctx, now),
+            "ev.skip_date": ctx.settings_cache.get("ev.skip_date", ""),
+        })
 
     return router
