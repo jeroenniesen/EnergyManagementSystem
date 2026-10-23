@@ -884,3 +884,38 @@ export const DAILY_GRID_CHARGE_CAP = {
     + "Laden bij een negatieve prijs telt mee. De teller gaat om middernacht (lokale tijd) weer naar nul.",
   reason: (capKwh: number) => `Dagplafond ${capKwh} kWh bereikt`,
 } as const;
+
+/**
+ * #364 — save-bar consequence before Watch only goes off or operational goes on.
+ * Pulled forward from the Apply & restart dialog: control is allowed, only after
+ * restart, and a restart can abort an active charge window.
+ */
+export const CONTROL_ARM_CONSEQUENCE =
+  "EMS mag daarna de batterij aansturen. Dat wordt pas actief na een herstart. "
+  + "Een herstart geeft de batterij terug aan automatisch zelfgebruik en breekt een lopend laadvenster af.";
+
+export const CONTROL_ARM_CONFIRM_TITLE = "Sturen toestaan?";
+export const CONTROL_ARM_CONFIRM_LABEL = "Opslaan en sturen toestaan";
+export const CONTROL_ARM_CONFIRM_CANCEL = "Annuleren";
+
+/** Visible badge / save line instead of the `restart_pending` token (#364). */
+export const RESTART_PENDING_LABEL = "Wacht op herstart";
+
+/** Control & safety section hint — no dry_run / mock jargon in the visible text (#364). */
+export const CONTROL_SECTION_HINT =
+  "Safety limits and arming. Set your main fuse here — until confirmed, System shows a Check "
+  + "and EMS keeps the conservative 1×25 A ceiling. Watch only / Let the system control need "
+  + "Apply & restart — saved ≠ live until then. A demo setup, or a file that forces watch-only, "
+  + "still always wins over these toggles. Other control knobs apply as soon as you save (active now).";
+
+/**
+ * #364 SYS-01 — one Dutch sentence for a blocked run mode. File-level tokens stay behind Meer.
+ */
+export const MODE_BLOCK_RECOVERY = {
+  sentence:
+    "EMS stuurt de batterij nu niet: zet Alleen kijken uit onder Control & safety en herstart, "
+    + "of zet ‘Let the system control the battery’ uit als je wilt blijven kijken.",
+  more:
+    "In config.yaml moeten dev.mode op live en control.dry_run op false staan; "
+    + "anders blijft alleen kijken geforceerd.",
+} as const;

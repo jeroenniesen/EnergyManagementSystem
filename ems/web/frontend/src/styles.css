@@ -2041,6 +2041,9 @@ body {
 }
 .settings-savebar-msg { display: flex; align-items: center; gap: 12px; min-height: 20px; }
 .settings-savebar-actions { display: flex; align-items: center; gap: 10px; margin-left: auto; }
+.settings-arm-consequence,
+.settings-arm-confirm { flex: 1 0 100%; }
+.settings-arm-consequence { margin: 0; }
 
 @media (prefers-reduced-motion: reduce) {
   .switch-input, .switch-input::before, .settings-advanced-chevron { transition: none; }
