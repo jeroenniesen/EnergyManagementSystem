@@ -203,6 +203,10 @@ from ems.web.routes.report import build_router as build_report_router
 from ems.web.routes.reserve_advice import build_router as build_reserve_advice_router
 from ems.web.routes.users import build_router as build_users_router
 from ems.web.routes.verification import build_router as build_verification_router
+from ems.web.routes.whatif import (
+    WHATIF_APPLY_HEADER,
+    prepare_whatif_live_patch,
+)
 from ems.web.routes.whatif import build_router as build_whatif_router
 
 _log = logging.getLogger("ems.recorder")
@@ -5382,6 +5386,14 @@ def create_app(
             )
         # Pass body straight through: validate_settings guards non-dict, so a missing/None body
         # becomes a 422 ("expected a JSON object") rather than a silent 200 no-op.
+        # #337 / F-38: the What-if confirm posts here (same audit + cache invalidation). The
+        # header narrows that one call to WHATIF_ALLOWED_KEYS; a normal Settings save omits it.
+        if request.headers.get(WHATIF_APPLY_HEADER) == "1":
+            body, errors = prepare_whatif_live_patch(body)
+            if errors:
+                return JSONResponse(
+                    {"detail": "invalid settings", "errors": errors}, status_code=422,
+                )
         clean, errors = validate_settings(body, dev_mode=dev_mode)
         if errors:
             # Reject the whole payload if ANY key is invalid — partial saves are confusing.

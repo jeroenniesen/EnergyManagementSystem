@@ -380,3 +380,109 @@ def test_stored_export_model_stays_unconfirmed_until_save(tmp_path):
         body = r.json()["values"]
         assert body["prices.export_price_model"] == "spot_minus_tax"
         assert body["prices.export_model_confirmed"] is True
+
+
+def test_solar_confidence_post_audits_and_invalidates_plan_cache(tmp_path):
+    """#337 / F-36: the digest button is POST /api/settings for exactly one key. That path audits
+    config_change and drops the memoized plan so the next cycle replans. Arming floors stay put."""
+    from ems.storage.audit import AuditStore
+
+    db = str(tmp_path / "ems.sqlite")
+    audit = AuditStore(db)
+    app = create_app(
+        MockSource(), dry_run=True, dev_mode="mock",
+        settings_store=SettingsStore(db), audit_store=audit,
+    )
+    calls: list[str] = []
+    service = app.state.control_service
+    original = service.invalidate_cycle_caches
+
+    def spy() -> None:
+        calls.append("invalidate")
+        original()
+
+    service.invalidate_cycle_caches = spy
+    with TestClient(app) as c:
+        before = c.get("/api/settings").json()["values"]
+        r = c.post("/api/settings", json={"planner.solar_confidence": 70})
+        assert r.status_code == 200
+        vals = r.json()["values"]
+        assert vals["planner.solar_confidence"] == 70.0
+        assert vals["control.dry_run"] == before["control.dry_run"]
+        assert vals["control.operational"] == before["control.operational"]
+        assert calls == ["invalidate"]
+        entries = c.get("/api/audit").json()["entries"]
+    config_rows = [e for e in entries if e["category"] == "config_change"]
+    assert config_rows[-1]["detail"]["keys"] == ["planner.solar_confidence"]
+
+
+def test_whatif_apply_header_rejects_keys_outside_the_allow_list(tmp_path):
+    """#337 / F-38: X-EMS-Whatif-Apply narrows POST /api/settings. A key outside
+    WHATIF_ALLOWED_KEYS — including the arming floors — is 422 and writes nothing."""
+    with TestClient(_app(tmp_path)) as c:
+        before = c.get("/api/settings").json()["values"]
+        header = {"X-EMS-Whatif-Apply": "1"}
+        for payload in (
+            {"control.dry_run": False},
+            {"control.operational": True},
+            {"battery.usable_kwh": 20.0},
+            {"planner.solar_confidence": 60, "control.dry_run": False},
+            {},
+        ):
+            r = c.post("/api/settings", json=payload, headers=header)
+            assert r.status_code == 422, payload
+        after = c.get("/api/settings").json()["values"]
+        assert after["planner.solar_confidence"] == before["planner.solar_confidence"]
+        assert after["control.dry_run"] == before["control.dry_run"]
+        assert after["control.operational"] == before["control.operational"]
+        ok = c.post(
+            "/api/settings",
+            json={"planner.solar_confidence": 60, "battery.min_reserve_soc": 30},
+            headers=header,
+        )
+        assert ok.status_code == 200
+        saved = ok.json()["values"]
+        assert saved["planner.solar_confidence"] == 60.0
+        assert saved["battery.min_reserve_soc"] == 30.0
+        assert saved["control.dry_run"] == before["control.dry_run"]
+        assert saved["control.operational"] == before["control.operational"]
+
+
+def test_reader_post_settings_is_403_for_digest_and_whatif_payloads(tmp_path):
+    """#337 AC3: a reader can view settings but both one-click applies are POST /api/settings."""
+    import asyncio
+
+    from ems.authn import hash_password
+    from ems.storage.auth import AuthStore
+
+    db = str(tmp_path / "ems.sqlite")
+    auth = AuthStore(db)
+
+    async def seed():
+        await auth.init()
+        await auth.create_user("rdr", hash_password("pw12345678"), "reader")
+        await auth.close()
+
+    asyncio.run(seed())
+    app = create_app(
+        MockSource(), dry_run=True, dev_mode="mock",
+        settings_store=SettingsStore(db), auth_store=AuthStore(db),
+    )
+    with TestClient(app) as c:
+        login = c.post("/api/auth/login", json={"username": "rdr", "password": "pw12345678"})
+        assert login.status_code == 200
+        headers = {"Authorization": f"Bearer {login.json()['token']}"}
+        assert c.get("/api/settings", headers=headers).status_code == 200
+        digest = c.post(
+            "/api/settings", json={"planner.solar_confidence": 70}, headers=headers,
+        )
+        assert digest.status_code == 403
+        whatif = c.post(
+            "/api/settings",
+            json={"planner.negative_price_soak": True},
+            headers={**headers, "X-EMS-Whatif-Apply": "1"},
+        )
+        assert whatif.status_code == 403
+        vals = c.get("/api/settings", headers=headers).json()["values"]
+        assert vals["planner.solar_confidence"] == 80.0
+        assert vals["planner.negative_price_soak"] is False
