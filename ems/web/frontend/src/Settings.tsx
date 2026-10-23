@@ -962,6 +962,10 @@ export function Settings({
   }
 
   async function save() {
+    if (draftNeedsControlConfirm(values, edited) && !armConfirming) {
+      setArmConfirming(true);
+      return;
+    }
     setStatus("saving");
     setErrors({});
     const restartGroups = (schema ?? [])
@@ -1498,6 +1502,8 @@ export function Settings({
                 id="control-arm-consequence"
                 className="override-consequence settings-arm-consequence"
                 data-testid="control-arm-consequence"
+                role="status"
+                aria-live="polite"
               >
                 {CONTROL_ARM_CONSEQUENCE}
               </p>
@@ -1522,8 +1528,12 @@ export function Settings({
               <div
                 className="override-confirm settings-arm-confirm"
                 data-testid="control-arm-confirm"
+                role="dialog"
+                aria-labelledby="control-arm-confirm-title"
               >
-                <p className="override-confirm-title">{CONTROL_ARM_CONFIRM_TITLE}</p>
+                <p className="override-confirm-title" id="control-arm-confirm-title">
+                  {CONTROL_ARM_CONFIRM_TITLE}
+                </p>
                 <div className="override-controls">
                   <button
                     type="button"
