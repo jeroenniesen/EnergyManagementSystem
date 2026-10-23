@@ -2,6 +2,7 @@ import { expect, type Page, test } from "@playwright/test";
 
 import { mockInsightsDensity, waitForInsightsDensity } from "./density-fixtures";
 import { mockRoute } from "./route-mock";
+import { guardRoute, isStaleRouteError } from "./stale-route-helper";
 
 const DASHBOARD_BUDGET = {
   hero: 1,
@@ -2581,42 +2582,58 @@ test.describe("EMS dashboard", () => {
       },
     ];
     let current = cases[0];
-    await page.route("**/api/dashboard", async (route) => {
-      const response = await route.fetch();
-      const dashboard = await response.json();
-      await route.fulfill({
-        response,
-        json: { ...dashboard, status: { ...dashboard.status, ...current.status } },
-      });
-    });
-    await page.route("**/api/decision", async (route) => {
-      await route.fulfill({
-        status: 200,
-        contentType: "application/json",
-        body: JSON.stringify({
-          intent: "allow_self_consumption",
-          desired_mode: "auto",
-          applied: false,
-          outcome: "dry_run",
-          reason: current.title ?? "Watching only — not commanding.",
-        }),
-      });
-    });
-    for (const row of cases) {
-      current = row;
-      await page.goto("/");
-      const badge = page.getByTestId("run-mode-badge");
-      await expect(badge).toHaveText(row.text);
-      await expect(badge).toHaveAttribute("data-state", row.state);
-      if (row.cause) await expect(badge).toHaveAttribute("data-cause", row.cause);
-      else await expect(badge).not.toHaveAttribute("data-cause");
-      await expect(badge).not.toContainText("Stuurt batterij");
-      if (row.state !== "yes") await expect(badge).not.toContainText("Live schrijven: JA");
-      if (row.state === "starting") {
-        await expect(badge).not.toContainText("Instellingen (Alleen kijken)");
+    try {
+      // #378: 10× goto while the app polls /api/dashboard. A navigation or page
+      // close between route.fetch() and response.json() disposes the APIResponse.
+      await page.route("**/api/dashboard", (route) => guardRoute(route, async () => {
+        const response = await route.fetch();
+        const dashboard = await response.json();
+        await route.fulfill({
+          response,
+          json: { ...dashboard, status: { ...dashboard.status, ...current.status } },
+        });
+      }));
+      await page.route("**/api/decision", (route) => guardRoute(route, async () => {
+        await route.fulfill({
+          status: 200,
+          contentType: "application/json",
+          body: JSON.stringify({
+            intent: "allow_self_consumption",
+            desired_mode: "auto",
+            applied: false,
+            outcome: "dry_run",
+            reason: current.title ?? "Watching only — not commanding.",
+          }),
+        });
+      }));
+      for (const row of cases) {
+        current = row;
+        const dashboardReady = page.waitForResponse(
+          (response) => new URL(response.url()).pathname === "/api/dashboard",
+        );
+        await page.goto("/");
+        await dashboardReady;
+        const badge = page.getByTestId("run-mode-badge");
+        await expect(badge).toHaveText(row.text);
+        await expect(badge).toHaveAttribute("data-state", row.state);
+        if (row.cause) await expect(badge).toHaveAttribute("data-cause", row.cause);
+        else await expect(badge).not.toHaveAttribute("data-cause");
+        await expect(badge).not.toContainText("Stuurt batterij");
+        if (row.state !== "yes") await expect(badge).not.toContainText("Live schrijven: JA");
+        if (row.state === "starting") {
+          await expect(badge).not.toContainText("Instellingen (Alleen kijken)");
+        }
+        if (row.title) await expect(badge).toHaveAttribute("title", row.title);
+        await expect(page.getByTestId("run-mode-reason")).toHaveCount(0);
       }
-      if (row.title) await expect(badge).toHaveAttribute("title", row.title);
-      await expect(page.getByTestId("run-mode-reason")).toHaveCount(0);
+    } finally {
+      // Drop in-flight handlers before the page closes, so a disposed poll
+      // cannot reject into the next test (#378, dry-run panel).
+      try {
+        await page.unrouteAll({ behavior: "ignoreErrors" });
+      } catch (error) {
+        if (!isStaleRouteError(error)) throw error;
+      }
     }
   });
 
