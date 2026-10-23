@@ -219,12 +219,13 @@ def test_skip_today_sets_expected_ev_zero_in_plan(tmp_path):
         assert any("ev.skip_date" in e.get("detail", {}).get("keys", []) for e in entries)
 
 
-def test_skip_today_reader_gets_403(tmp_path):
+def _skip_today_auth_app(tmp_path, username: str, role: str):
     from ems.storage.auth import AuthStore
     from ems.tests.test_auth_api import _seed_user
 
+    password = "pw12345678"
     db = str(tmp_path / "ems.sqlite")
-    _seed_user(db, "rdr", "pw12345678", "reader")
+    _seed_user(db, username, password, role)
     app = create_app(
         MockSource(), dry_run=True, dev_mode="mock", tz=AMS,
         store=HistoryStore(db),
@@ -232,10 +233,25 @@ def test_skip_today_reader_gets_403(tmp_path):
         settings_store=SettingsStore(db),
         auth_store=AuthStore(db),
     )
+    return app, username, password
+
+
+def test_skip_today_reader_gets_403(tmp_path):
+    app, username, password = _skip_today_auth_app(tmp_path, "rdr", "reader")
     with TestClient(app) as c:
-        login = c.post("/api/auth/login", json={"username": "rdr", "password": "pw12345678"})
+        login = c.post("/api/auth/login", json={"username": username, "password": password})
         h = {"Authorization": f"Bearer {login.json()['token']}"}
         assert c.post("/api/ev/skip-today", json={"skip": True}, headers=h).status_code == 403
+
+
+def test_skip_today_operate_gets_200(tmp_path):
+    app, username, password = _skip_today_auth_app(tmp_path, "op", "user")
+    with TestClient(app) as c:
+        login = c.post("/api/auth/login", json={"username": username, "password": password})
+        h = {"Authorization": f"Bearer {login.json()['token']}"}
+        r = c.post("/api/ev/skip-today", json={"skip": True}, headers=h)
+        assert r.status_code == 200
+        assert r.json()["skip_today"]["active"] is True
 
 
 # ---- GET /api/car/sessions (Car tab history table) ----
