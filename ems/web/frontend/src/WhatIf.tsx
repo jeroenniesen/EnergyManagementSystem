@@ -1,13 +1,17 @@
 // "What if?" scenario simulator (BACKLOG B-73) + the counterfactual savings header line (B-69).
-// Sits on the Insights tab near FinanceSection (see Insights.tsx): a read-only "laboratory" for a
-// handful of preset planner/battery tweaks, replayed against the SAME engine (ems/replay.py, B-77)
-// the planner itself is graded against. Never touches real settings — POST /api/whatif is a pure
-// simulation (see its "simulation": true field + ems/web/routes/whatif.py's module docstring), so
-// this panel is clearly badged and never offers to "apply" anything.
+// Sits on the Insights tab near FinanceSection (see Insights.tsx): presets are replayed against
+// the SAME engine (ems/replay.py, B-77) the planner itself is graded against. POST /api/whatif
+// stays a pure simulation (see its "simulation": true field and ems/web/routes/whatif.py).
+// A separate explicit action, "Gebruik deze knoppen live", can write those same allow-listed
+// overrides through POST /api/settings after a confirmation dialog that shows old → new
+// (#337 / F-38). Nothing is written until that confirm. The simulation badge stays, because
+// running a preset still changes nothing by itself.
 import { useEffect, useState } from "react";
 
+import { WHATIF_APPLY_HEADER, whatifLiveSettingsBody } from "./applyLive";
 import { apiFetch } from "./auth";
 import { eur } from "./format";
+import { WHATIF_APPLY_LIVE } from "./labels";
 
 type ScenarioTotals = { cost_eur: number | null; import_kwh: number; export_kwh: number };
 
@@ -68,6 +72,25 @@ const PRESETS: Preset[] = [
 
 const DAY_OPTIONS = [7, 14, 30] as const;
 
+type SettingsSchemaRow = { key: string; label?: string };
+
+type LiveConfirm = {
+  overrides: Record<string, unknown>;
+  current: Record<string, unknown>;
+  schema: SettingsSchemaRow[];
+};
+
+function formatLiveValue(value: unknown): string {
+  if (typeof value === "boolean") return value ? "true" : "false";
+  if (typeof value === "number" && Number.isFinite(value)) return String(value);
+  if (value == null || value === "") return "—";
+  return String(value);
+}
+
+function settingLabel(schema: SettingsSchemaRow[], key: string): string {
+  return schema.find((row) => row.key === key)?.label ?? key;
+}
+
 function verdict(
   preset: Preset,
   delta: number | null,
@@ -90,13 +113,16 @@ function verdict(
   return `${preset.label} would have made almost no difference ${window}.`;
 }
 
-export function WhatIf() {
+export function WhatIf({ canOperate = true }: { canOperate?: boolean } = {}) {
   const [counterfactual, setCounterfactual] = useState<Counterfactual | null>(null);
   const [days, setDays] = useState<(typeof DAY_OPTIONS)[number]>(14);
   const [activePreset, setActivePreset] = useState<Preset | null>(null);
   const [result, setResult] = useState<WhatIfResult | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(false);
+  const [confirm, setConfirm] = useState<LiveConfirm | null>(null);
+  const [confirmBusy, setConfirmBusy] = useState(false);
+  const [applyState, setApplyState] = useState<"idle" | "saving" | "saved" | "error">("idle");
 
   // Best-effort, like the other Insights sub-panels (FinanceSection, WeekDigest): the counterfactual
   // header is a bonus fact, never something the rest of the panel waits on or errors over.
@@ -115,6 +141,8 @@ export function WhatIf() {
     setActivePreset(preset);
     setResult(null);
     setError(false);
+    setConfirm(null);
+    setApplyState("idle");
     setLoading(true);
     apiFetch("/api/whatif", {
       method: "POST",
@@ -128,6 +156,55 @@ export function WhatIf() {
       .then((v: WhatIfResult) => setResult(v))
       .catch(() => setError(true))
       .finally(() => setLoading(false));
+  };
+
+  const openLiveConfirm = () => {
+    if (!canOperate || !activePreset || confirmBusy) return;
+    const overrides = whatifLiveSettingsBody(activePreset.overrides);
+    if (!overrides) {
+      setApplyState("error");
+      return;
+    }
+    setConfirmBusy(true);
+    setApplyState("idle");
+    apiFetch("/api/settings")
+      .then((r) => {
+        if (!r.ok) throw new Error(`HTTP ${r.status}`);
+        return r.json();
+      })
+      .then((body: { values?: Record<string, unknown>; schema?: SettingsSchemaRow[] }) => {
+        setConfirm({
+          overrides,
+          current: body.values ?? {},
+          schema: body.schema ?? [],
+        });
+      })
+      .catch(() => setApplyState("error"))
+      .finally(() => setConfirmBusy(false));
+  };
+
+  const confirmLive = () => {
+    if (!canOperate || !confirm || applyState === "saving") return;
+    const payload = whatifLiveSettingsBody(confirm.overrides);
+    if (!payload) {
+      setApplyState("error");
+      return;
+    }
+    setApplyState("saving");
+    apiFetch("/api/settings", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        [WHATIF_APPLY_HEADER]: "1",
+      },
+      body: JSON.stringify(payload),
+    })
+      .then((r) => {
+        if (!r.ok) throw new Error(`HTTP ${r.status}`);
+        setConfirm(null);
+        setApplyState("saved");
+      })
+      .catch(() => setApplyState("error"));
   };
 
   const cf = counterfactual;
@@ -268,6 +345,83 @@ export function WhatIf() {
               </div>
             </details>
           )}
+
+          <div className="whatif-apply">
+            <button
+              type="button"
+              className="btn-primary"
+              data-testid="whatif-apply-live"
+              disabled={!canOperate || confirmBusy || applyState === "saving"}
+              onClick={openLiveConfirm}
+            >
+              {WHATIF_APPLY_LIVE.button}
+            </button>
+            {!canOperate && (
+              <p className="advisor-hint" data-testid="whatif-apply-readonly">
+                {WHATIF_APPLY_LIVE.readonly}
+              </p>
+            )}
+            {confirmBusy && (
+              <p className="dist-msg" data-testid="whatif-apply-loading">
+                {WHATIF_APPLY_LIVE.loading}
+              </p>
+            )}
+            {confirm && canOperate && (
+              <div
+                className="override-confirm"
+                role="dialog"
+                aria-modal="true"
+                aria-labelledby="whatif-apply-title"
+                data-testid="whatif-apply-dialog"
+                onKeyDown={(event) => {
+                  if (event.key === "Escape" && applyState !== "saving") setConfirm(null);
+                }}
+              >
+                <p className="override-confirm-title" id="whatif-apply-title">
+                  {WHATIF_APPLY_LIVE.title}
+                </p>
+                <ul className="whatif-apply-diff">
+                  {Object.keys(confirm.overrides).map((key) => (
+                    <li key={key} data-testid={`whatif-apply-diff-${key}`}>
+                      {settingLabel(confirm.schema, key)}: {formatLiveValue(confirm.current[key])}
+                      {" → "}
+                      {formatLiveValue(confirm.overrides[key])}
+                    </li>
+                  ))}
+                </ul>
+                <div className="override-controls">
+                  <button
+                    type="button"
+                    className="btn-ghost"
+                    data-testid="whatif-apply-cancel"
+                    disabled={applyState === "saving"}
+                    onClick={() => setConfirm(null)}
+                  >
+                    {WHATIF_APPLY_LIVE.cancel}
+                  </button>
+                  <button
+                    type="button"
+                    className="btn-primary"
+                    data-testid="whatif-apply-confirm"
+                    disabled={applyState === "saving"}
+                    onClick={confirmLive}
+                  >
+                    {WHATIF_APPLY_LIVE.confirm}
+                  </button>
+                </div>
+              </div>
+            )}
+            {canOperate && applyState === "saved" && (
+              <p className="advisor-hint" role="status" data-testid="whatif-apply-saved">
+                {WHATIF_APPLY_LIVE.saved}
+              </p>
+            )}
+            {applyState === "error" && (
+              <p className="fin-caveat" role="alert" data-testid="whatif-apply-error">
+                {WHATIF_APPLY_LIVE.failed}
+              </p>
+            )}
+          </div>
         </div>
       )}
     </section>

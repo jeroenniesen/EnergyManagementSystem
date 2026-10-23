@@ -884,3 +884,23 @@ export const DAILY_GRID_CHARGE_CAP = {
     + "Laden bij een negatieve prijs telt mee. De teller gaat om middernacht (lokale tijd) weer naar nul.",
   reason: (capKwh: number) => `Dagplafond ${capKwh} kWh bereikt`,
 } as const;
+
+/** #337 / audit F-36 — one-click solar confidence from the week digest. */
+export const WEEK_DIGEST_APPLY = {
+  button: (pct: number) => `Pas ${pct}% toe`,
+  readonly: "Alleen-lezen: een reader kan deze instelling niet wijzigen.",
+  saved: "Opgeslagen. Het volgende plan gebruikt deze waarde.",
+  failed: "Opslaan mislukt — de instelling is niet gewijzigd.",
+} as const;
+
+/** #337 / audit F-38 — apply what-if overrides live after an old→new confirmation. */
+export const WHATIF_APPLY_LIVE = {
+  button: "Gebruik deze knoppen live",
+  title: "Deze instellingen live gebruiken?",
+  confirm: "Bevestigen",
+  cancel: "Annuleren",
+  readonly: "Alleen-lezen: een reader kan deze instellingen niet live zetten.",
+  saved: "Opgeslagen. Het volgende plan gebruikt deze waarden.",
+  failed: "Opslaan mislukt — er is niets gewijzigd.",
+  loading: "Huidige waarden ophalen…",
+} as const;

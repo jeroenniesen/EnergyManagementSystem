@@ -3197,3 +3197,9 @@ body {
 .trading-confirm { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-top: 8px; }
 .trading-confirm p { flex: 1 1 100%; margin: 0; }
 .trading-view .muted { color: var(--muted); font-size: 0.88rem; }
+
+/* #337 / F-36 + F-38 — digest solar apply + what-if live confirm */
+.week-digest-apply { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin: 0 0 8px; }
+.whatif-apply { margin-top: 12px; display: flex; flex-direction: column; align-items: flex-start; gap: 8px; }
+.whatif-apply-diff { margin: 0 0 8px; padding-left: 1.1rem; }
+.whatif-apply .override-confirm { width: 100%; }
