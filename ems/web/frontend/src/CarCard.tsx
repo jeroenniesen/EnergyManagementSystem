@@ -255,6 +255,8 @@ export function CarCard({
   const [editingAnchor, setEditingAnchor] = useState(false);
   const [busy, setBusy] = useState(false);
   const [skipBusy, setSkipBusy] = useState(false);
+  // Immediate UI for the skip-today switch — server `data.skip_today` updates only after POST + refetch.
+  const [skipTodayPending, setSkipTodayPending] = useState<boolean | null>(null);
   const [err, setErr] = useState<string | null>(null);
 
   useEffect(() => {
@@ -277,7 +279,12 @@ export function CarCard({
     };
   }, []);
 
+  useEffect(() => {
+    if (!skipBusy) setSkipTodayPending(null);
+  }, [data?.skip_today?.active, skipBusy]);
+
   async function setSkipToday(skip: boolean) {
+    setSkipTodayPending(skip);
     setSkipBusy(true);
     setErr(null);
     try {
@@ -288,6 +295,7 @@ export function CarCard({
       });
       const b = await r.json().catch(() => ({}));
       if (r.status === 403) {
+        setSkipTodayPending(null);
         setErr("This action needs a user or admin account.");
       } else if (!r.ok) {
         throw new Error(b.detail ?? `HTTP ${r.status}`);
@@ -296,6 +304,7 @@ export function CarCard({
         if (r2.ok) setData(await r2.json());
       }
     } catch (e) {
+      setSkipTodayPending(null);
       setErr(String(e));
     } finally {
       setSkipBusy(false);
@@ -420,7 +429,7 @@ export function CarCard({
   const { plan, soc } = data;
   if (!plan || !soc || plan.deadlines.length === 0) return null; // defensive: contract guarantees this
 
-  const skipActive = data.skip_today?.active === true;
+  const skipActive = skipTodayPending ?? data.skip_today?.active === true;
 
   const nextDeadline = plan.deadlines[0];
   const status = deadlineStatus(nextDeadline);
