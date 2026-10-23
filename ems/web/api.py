@@ -5543,7 +5543,13 @@ def create_app(
             return _forbidden_error()
         if audit_store is None:
             return {"entries": []}
-        entries = await audit_store.recent(limit, category)
+        # The operational cycle applies the battery mode inside its worker thread, then
+        # awaits the audit insert back on the event loop. ``control_lock`` is held across
+        # that whole window (see ControlService.run_cycle). Taking it here lets a caller
+        # that already observes the new mode read the log after that insert has committed
+        # (#379).
+        async with control._ctx.control_lock:
+            entries = await audit_store.recent(limit, category)
         if not is_admin:
             entries = [e for e in entries if e.get("category") != "auth"]
         return {"entries": entries}
