@@ -11,6 +11,7 @@ import { apiFetch, clearToken } from "./auth";
 import { type CarModel, type CarsResp } from "./ev";
 import { HaWizard } from "./HaWizard.tsx";
 import {
+  DAILY_GRID_CHARGE_CAP,
   HOME_NIGHT_RESERVE,
   LIVE_WRITING_PANEL,
   learnedNightKwhFromAdvice,
@@ -308,9 +309,15 @@ function Field({
   onChange: (v: number | boolean | string) => void;
 }) {
   const id = `set-${field.key}`;
+  const labelText = field.key === "planner.max_daily_grid_charge_kwh"
+    ? DAILY_GRID_CHARGE_CAP.label
+    : field.label;
+  const helpText = field.key === "planner.max_daily_grid_charge_kwh"
+    ? DAILY_GRID_CHARGE_CAP.help
+    : field.help;
   const label = (
     <label htmlFor={id} className="field-label">
-      {field.label}
+      {labelText}
       {field.unit && <span className="field-unit"> ({field.unit})</span>}
       {field.applies === "restart" ? (
         <span
@@ -352,7 +359,7 @@ function Field({
             onChange={(e) => onChange(e.target.checked)}
           />
         </div>
-        {field.help && <FieldHelp help={field.help} />}
+        {helpText && <FieldHelp help={helpText} />}
         {error && <p className="field-err" data-testid={`err-${field.key}`}>{error}</p>}
       </div>
     );
@@ -393,7 +400,7 @@ function Field({
     <div className={`field${error ? " field-error" : ""}`} data-testid={`field-${field.key}`}>
       {label}
       {control}
-      {field.help && <FieldHelp help={field.help} />}
+      {helpText && <FieldHelp help={helpText} />}
       {error && (
         <p className="field-err" data-testid={`err-${field.key}`}>{error}</p>
       )}

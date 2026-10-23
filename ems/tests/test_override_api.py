@@ -12,6 +12,7 @@ from ems.sense import SIGNALS
 from ems.sources.battery import MockBatteryDriver
 from ems.sources.mock import MockSource
 from ems.sources.prices import MockPriceSource
+from ems.storage.history import HistoryStore
 from ems.storage.settings import SettingsStore
 from ems.web.api import _spawn_tracked, create_app
 
@@ -27,9 +28,13 @@ def _fresh_tracker():
 
 
 def _app(tmp_path, **kw):
+    db = str(tmp_path / "ems.sqlite")
     return create_app(
         MockSource(), dry_run=True, dev_mode="mock",
-        override_store=SettingsStore(str(tmp_path / "ems.sqlite"), table="runtime_state"),
+        # Known-zero grid-charge counter. A missing store is an unknown counter and blocks
+        # grid charging (#317); these tests are about the override, not that fail-closed path.
+        store=HistoryStore(db),
+        override_store=SettingsStore(db, table="runtime_state"),
         **kw,
     )
 

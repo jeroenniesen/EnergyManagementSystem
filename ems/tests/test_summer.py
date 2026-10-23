@@ -242,3 +242,27 @@ def test_negative_price_soak_charges_below_zero_even_with_grid_topup_off():
     assert "paid to charge" in soaked[0].reason
     # Only the sub-zero slot is soaked — the €0.20 slots stay off (grid top-up is disabled).
     assert all(s.start == T0 + 2 * SLOT for s in on_charge)
+
+
+def test_summer_daily_grid_charge_cap_is_12_kwh():
+    """AC1: a large uncovered night target is still clamped to 12 kWh on the local day."""
+    from zoneinfo import ZoneInfo
+
+    ams = ZoneInfo("Europe/Amsterdam")
+    # Start at local midnight so the horizon stays on one local day (no fresh next-day cap).
+    t0 = datetime(2026, 1, 15, 0, 0, tzinfo=ams)
+    prices = [PriceSlot(t0 + i * SLOT, 0.05) for i in range(40)]
+    fc = [ForecastSlot(t0 + i * SLOT, 0.0, 0.0, 0.0) for i in range(40)]
+    plan = plan_summer(
+        prices, fc, t0, soc_pct=0.0,
+        cfg=_cfg(usable_kwh=40.0, target_soc_pct=100.0, round_trip_efficiency=1.0,
+                 max_charge_w=4000.0, max_daily_grid_charge_kwh=12.0),
+    )
+    charged = [s for s in plan.slots if s.intent is BatteryIntent.GRID_CHARGE_TO_TARGET]
+    assert sum(s.target_kwh or 0.0 for s in charged) <= 12.0 + 1e-6
+    assert len(charged) == 12
+    assert any(s.reason == "Dagplafond 12 kWh bereikt" for s in plan.slots)
+    assert all(
+        s.intent is BatteryIntent.ALLOW_SELF_CONSUMPTION
+        for s in plan.slots if s.reason.startswith("Dagplafond")
+    )

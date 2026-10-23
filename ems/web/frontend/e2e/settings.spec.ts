@@ -774,4 +774,18 @@ test.describe("EMS settings", () => {
     expect(posts.slice(before)).toEqual([]);
     expect(posts.filter((path) => path.includes("/api/settings"))).toEqual([]);
   });
+
+  // #317 / F-03 / F-32: daily grid-charge cap is a Strategy slider, visible without Advanced.
+  test("daily grid-charge cap slider is on Strategy without Advanced", async ({ page }) => {
+    await page.goto("/");
+    await page.getByTestId("nav-manage").click();
+    await page.getByTestId("group-strategy").click();
+    const field = page.getByTestId("field-planner.max_daily_grid_charge_kwh");
+    await expect(field).toBeVisible();
+    await expect(field.getByText("Max. netinkoop per dag")).toBeVisible();
+    await expect(field.locator("input[type=range]")).toBeVisible();
+    await expect(field.locator("output")).toContainText("12");
+    await expect(field.locator("output")).toContainText("kWh");
+    await expect(page.getByTestId("settings-advanced-body")).toHaveCount(0);
+  });
 });
