@@ -193,27 +193,86 @@ def test_above_floor_persistence_still_applies():
     assert controller.driver.current_mode() is PhysicalMode.IDLE
 
 
-def test_mark_floor_hold_aligns_with_floor_anti_flap_auto():
-    """#312: floor-hold plan intent remaps to AUTO like resolve_floor_anti_flap — no IDLE write."""
+def _tick_writes_for_plan(controller, svc, plan, *, soc: float, intent, reason: str):
+    svc._current_soc = lambda now: soc
+    svc.current_plan = lambda now=None: (plan.created_at, [], plan)
+    svc.effective_intent = lambda now: (
+        intent, reason, False, None, None, None, None,
+    )
+    switches_before = controller.switches_today
+    mode_before = controller.driver.current_mode()
+    for k in range(4):
+        svc.control_tick(plan.created_at + timedelta(seconds=k))
+    return (
+        controller.switches_today - switches_before,
+        controller.driver.current_mode(),
+        mode_before,
+    )
+
+
+def test_mark_floor_hold_matches_discharge_for_load_ticks():
+    """#312 AC5: marking must not add vendor writes vs unmarked DISCHARGE_FOR_LOAD."""
     floor = 10.0
     start = NOW
-    slot = PlanSlot(start, BatteryIntent.DISCHARGE_FOR_LOAD, "peak", floor_soc=floor)
-    plan = Plan(created_at=start, slots=(slot,))
-    proj = project_energy(
-        plan.slots, start_soc_pct=floor + 0.5, solar_w_by={start: 0.0},
-        load_w_by={start: 800.0},
-        model=BatteryModel(
-            usable_kwh=10.0, max_charge_w=4000.0, max_discharge_w=4000.0,
-            round_trip_efficiency=1.0, reserve_soc_pct=floor,
-        ),
+    model = BatteryModel(
+        usable_kwh=10.0, max_charge_w=4000.0, max_discharge_w=4000.0,
+        round_trip_efficiency=1.0, reserve_soc_pct=floor,
     )
-    marked = mark_floor_holds(plan, proj, floor)
-    intent, reason, holding = resolve_floor_anti_flap(
-        marked.slots[0].intent, soc_pct=floor, min_reserve_soc=floor,
+
+    def _plan_and_mark(start_soc: float, load_w: float):
+        slot = PlanSlot(start, BatteryIntent.DISCHARGE_FOR_LOAD, "peak", floor_soc=floor)
+        raw = Plan(created_at=start, slots=(slot,))
+        proj = project_energy(
+            raw.slots, start_soc_pct=start_soc, solar_w_by={start: 0.0},
+            load_w_by={start: load_w}, model=model,
+        )
+        marked = mark_floor_holds(raw, proj, floor, start_soc_pct=start_soc)
+        return raw, marked, proj
+
+    # Just above the floor: real discharge — marking is a no-op; ticks match plain DFL.
+    above = floor + 0.5
+    raw, marked, _ = _plan_and_mark(above, 1000.0)
+    assert marked is raw
+    ctrl_dfl = _controlling_controller()
+    svc_dfl, _ = _service(ctrl_dfl, soc=above)
+    dfl_writes, dfl_mode, _ = _tick_writes_for_plan(
+        ctrl_dfl, svc_dfl, raw, soc=above,
+        intent=BatteryIntent.DISCHARGE_FOR_LOAD, reason="peak",
+    )
+    assert dfl_writes == 0
+    assert dfl_mode is PhysicalMode.AUTO
+
+    # High SoC slot that drains to the floor: still real discharge — do not floor-hold.
+    high_start = 18.0
+    raw_hi, marked_hi, proj_hi = _plan_and_mark(high_start, 4000.0)
+    assert proj_hi[0].battery_w > 0.0
+    assert marked_hi.slots[0].intent is BatteryIntent.DISCHARGE_FOR_LOAD
+    ctrl_hi = _controlling_controller()
+    svc_hi, _ = _service(ctrl_hi, soc=high_start)
+    hi_writes, hi_mode, _ = _tick_writes_for_plan(
+        ctrl_hi, svc_hi, marked_hi, soc=high_start,
+        intent=BatteryIntent.DISCHARGE_FOR_LOAD, reason="peak",
+    )
+    assert hi_writes == 0
+    assert hi_mode is PhysicalMode.AUTO
+
+    # On the floor with fake zero-watt discharge: marked hold aligns with anti-flap (AUTO).
+    raw_fl, marked_fl, proj_fl = _plan_and_mark(floor, 1000.0)
+    assert proj_fl[0].battery_w == 0.0
+    assert marked_fl.slots[0].intent is BatteryIntent.HOLD_RESERVE
+    intent, _, holding = resolve_floor_anti_flap(
+        marked_fl.slots[0].intent, soc_pct=floor, min_reserve_soc=floor,
         observed_mode=PhysicalMode.AUTO, holding=False,
     )
-    assert intent is BatteryIntent.ALLOW_SELF_CONSUMPTION
-    assert holding is True
+    assert intent is BatteryIntent.ALLOW_SELF_CONSUMPTION and holding is True
+    ctrl_fl = _controlling_controller()
+    svc_fl, _ = _service(ctrl_fl, soc=floor)
+    fl_writes, fl_mode, _ = _tick_writes_for_plan(
+        ctrl_fl, svc_fl, marked_fl, soc=floor,
+        intent=BatteryIntent.HOLD_RESERVE, reason=marked_fl.slots[0].reason,
+    )
+    assert fl_writes == 0
+    assert fl_mode is PhysicalMode.AUTO
 
 
 def test_manual_override_bypasses_floor_anti_flap():

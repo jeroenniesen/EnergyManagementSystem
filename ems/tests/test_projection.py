@@ -98,16 +98,25 @@ def test_discharge_for_load_at_floor_deficit_is_idle_until_marked_hold():
     floor = 10.0
     slots = _slots(BatteryIntent.DISCHARGE_FOR_LOAD)
     model = _model(reserve_soc_pct=floor)
-    out = _run(slots, start_soc_pct=floor + 0.5, load=1000.0, model=model)
+    out = _run(slots, start_soc_pct=floor, load=1000.0, model=model)
+    assert out[0].battery_w == 0.0
     plan = Plan(created_at=T0, slots=tuple(slots))
-    marked = mark_floor_holds(plan, out, floor)
+    marked = mark_floor_holds(plan, out, floor, start_soc_pct=floor)
     assert marked.slots[0].intent is BatteryIntent.HOLD_RESERVE
     assert "vloer" in marked.slots[0].reason.lower()
-    hold_slots = [
-        PlanSlot(slots[0].start, marked.slots[0].intent, marked.slots[0].reason),
-    ]
-    idle = _run(hold_slots, start_soc_pct=floor + 0.5, load=1000.0, model=model)
-    assert idle[0].battery_w == 0.0
+
+
+def test_discharge_for_load_just_above_floor_stays_discharge_until_marked():
+    """#312 AC5: above the anti-flap band, real projected discharge stays DISCHARGE_FOR_LOAD."""
+    floor = 10.0
+    slots = _slots(BatteryIntent.DISCHARGE_FOR_LOAD)
+    model = _model(reserve_soc_pct=floor)
+    start = floor + 0.5
+    out = _run(slots, start_soc_pct=start, load=1000.0, model=model)
+    assert out[0].battery_w > 0.0
+    plan = Plan(created_at=T0, slots=tuple(slots))
+    marked = mark_floor_holds(plan, out, floor, start_soc_pct=start)
+    assert marked.slots[0].intent is BatteryIntent.DISCHARGE_FOR_LOAD
 
 
 def test_discharge_for_load_surplus_charges_like_self_consumption():

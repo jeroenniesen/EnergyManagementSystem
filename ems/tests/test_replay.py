@@ -626,8 +626,8 @@ def test_replay_under_cap_day_spend_unchanged_and_over_cap_day_clamped():
     )) > 12.0
 
 
-def test_replay_fixture_floor_hold_passes_validator():
-    """#312 AC4: floor-hold post-pass on a replay-shaped day stays validator-clean."""
+def test_marked_floor_hold_at_reserve_passes_validator():
+    """#312 AC4: floor-hold post-pass on a synthetic at-floor slot stays validator-clean."""
     from ems.planner.validator import validate_plan as vp
 
     floor = 5.0
@@ -638,12 +638,12 @@ def test_replay_fixture_floor_hold_passes_validator():
         round_trip_efficiency=1.0, reserve_soc_pct=floor,
     )
     proj = project_energy(
-        plan.slots, start_soc_pct=floor + 0.5, solar_w_by={}, load_w_by={slot.start: 1000.0},
+        plan.slots, start_soc_pct=floor, solar_w_by={}, load_w_by={slot.start: 1000.0},
         model=model,
     )
-    marked = mark_floor_holds(plan, proj, floor)
+    marked = mark_floor_holds(plan, proj, floor, start_soc_pct=floor)
     v = vp(
-        marked, soc_pct=floor + 0.5, min_reserve_soc=floor, data_quality="complete",
+        marked, soc_pct=floor, min_reserve_soc=floor, data_quality="complete",
     )
     assert v.ok
     assert not any(f.severity == "unsafe" for f in v.findings)

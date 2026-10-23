@@ -135,22 +135,35 @@ def mark_floor_holds(
     projected: list[ProjectedSlot] | None,
     floor_soc: float,
     tol_pp: float = 1.0,
+    *,
+    start_soc_pct: float | None = None,
 ) -> Plan:
     """Rewrite DISCHARGE_FOR_LOAD at the SoC floor to HOLD_RESERVE (#312 / audit F-16b).
 
-    Slots whose forward projection ends at or below ``floor_soc + tol_pp`` while still planned
-    as discharge-for-load are shown as floor holds — house on grid, battery idle — not fake
-    zero-watt discharge. Pure: no I/O, no device writes.
+    Only **fake** discharge: the slot starts at or below the reserve floor and the forward
+    projection already has ``battery_w == 0`` (vendor cannot discharge). Do not mark slots that
+    still project real discharge or that start above the floor — that would plan ``HOLD_RESERVE``
+    while ``resolve_floor_anti_flap`` keeps ``AUTO`` and cause an extra IDLE write (#312 AC5).
+
+    ``tol_pp`` is retained for call-site compatibility; marking no longer keys off end-of-slot SoC.
+    Pure: no I/O, no device writes.
     """
     if projected is None or not plan.slots or len(projected) != len(plan.slots):
         return plan
+    _ = tol_pp  # reserved for API compatibility (#312); marking uses slot-start SoC only.
     floor = float(floor_soc)
     out: list[PlanSlot] = []
     changed = False
-    for slot, proj in zip(plan.slots, projected, strict=True):
+    for i, (slot, proj) in enumerate(zip(plan.slots, projected, strict=True)):
+        if start_soc_pct is not None:
+            slot_start_soc = start_soc_pct if i == 0 else projected[i - 1].soc_pct
+        else:
+            slot_start_soc = None
         if (
             slot.intent is BatteryIntent.DISCHARGE_FOR_LOAD
-            and proj.soc_pct <= floor + tol_pp
+            and proj.battery_w == 0.0
+            and slot_start_soc is not None
+            and slot_start_soc <= floor
         ):
             reason = f"Op de batterijvloer ({floor:.0f}%) — huis op net"
             out.append(PlanSlot(

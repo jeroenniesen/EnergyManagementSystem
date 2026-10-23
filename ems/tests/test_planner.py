@@ -35,9 +35,11 @@ def test_mark_floor_holds_leaves_winter_arbitrage_structure_intact():
     proj = project_energy(
         plan.slots, start_soc_pct=10.5, solar_w_by={}, load_w_by=load_by, model=model,
     )
-    marked = mark_floor_holds(plan, proj, 10.0)
+    marked = mark_floor_holds(plan, proj, 10.0, start_soc_pct=10.5)
     assert len(marked.slots) == len(plan.slots)
-    assert any(s.intent is BatteryIntent.HOLD_RESERVE and "vloer" in s.reason for s in marked.slots)
+    for ps, ms, pj in zip(plan.slots, marked.slots, proj, strict=True):
+        if pj.battery_w > 0:
+            assert ms.intent is ps.intent  # real discharge — never floor-hold (#312 r1 / AC5)
 
 
 def test_arbitrage_day_has_charge_discharge_and_hold():
