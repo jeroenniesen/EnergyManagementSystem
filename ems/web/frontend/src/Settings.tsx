@@ -11,6 +11,16 @@ import { apiFetch, clearToken } from "./auth";
 import { type CarModel, type CarsResp } from "./ev";
 import { HaWizard } from "./HaWizard.tsx";
 import {
+  draftNeedsControlConfirm,
+  restartPendingStatusLabel,
+  savedApplyStatusText,
+} from "./controlArming";
+import {
+  CONTROL_ARM_CONFIRM_CANCEL,
+  CONTROL_ARM_CONFIRM_LABEL,
+  CONTROL_ARM_CONFIRM_TITLE,
+  CONTROL_ARM_CONSEQUENCE,
+  CONTROL_SECTION_HINT,
   DAILY_GRID_CHARGE_CAP,
   HOME_NIGHT_RESERVE,
   LIVE_WRITING_PANEL,
@@ -164,11 +174,7 @@ const GROUP_HINT: Record<string, string> = {
     "Link washers and dryers from Home Assistant (read-only). URL and token need Apply & restart; "
     + "which appliances you select apply as soon as you save.",
   site: "Location & array — these drive the solar forecast.",
-  control:
-    "Safety limits and arming. Set your main fuse here — until confirmed, System shows a Check "
-    + "and EMS keeps the conservative 1×25 A ceiling. Watch only / Let the system control need "
-    + "Apply & restart — saved ≠ live until then. config.yaml dry_run / mock still always wins "
-    + "over these toggles. Other control knobs apply as soon as you save (active now).",
+  control: CONTROL_SECTION_HINT,
   planner: "Arbitrage maths — these apply as soon as you save; the next plan uses them (active now).",
   ai: "Optional. Off by default. Turn on to get natural-language explanations and the chat — a tiny, "
     + "redacted summary is sent to MiniMax; never your address, history or tokens.",
@@ -329,7 +335,7 @@ function Field({
               : "Takes effect after Apply & restart — saved ≠ live yet"
           }
         >
-          {restartPending ? "restart_pending" : "needs restart"}
+          {restartPendingStatusLabel(Boolean(restartPending))}
         </span>
       ) : (
         <span
@@ -606,6 +612,8 @@ export function Settings({
   const [restartPending, setRestartPending] = useState<Set<string>>(new Set());
   const [restartPendingKeys, setRestartPendingKeys] = useState<Set<string>>(new Set());
   const [lastSaveRestart, setLastSaveRestart] = useState(false);
+  // #364: extra confirm before a draft that arms live control is posted.
+  const [armConfirming, setArmConfirming] = useState(false);
   // Mobile drill-in (≤700px): start on the section list, then drill into one section.
   const [mobileList, setMobileList] = useState(true);
 
@@ -863,6 +871,11 @@ export function Settings({
   const restartChanged = (schema ?? []).some(
     (f) => f.applies === "restart" && f.key in changed,
   );
+  const armsLive = draftNeedsControlConfirm(values, edited);
+  const showArmConfirm = armsLive && armConfirming;
+  useEffect(() => {
+    if (!armsLive) setArmConfirming(false);
+  }, [armsLive]);
 
   // Live "impact on the algorithm": when planner economics are edited, recompute the plan with the
   // proposed values (debounced, read-only) and show the before/after so the effect is visible.
@@ -949,6 +962,10 @@ export function Settings({
   }
 
   async function save() {
+    if (draftNeedsControlConfirm(values, edited) && !armConfirming) {
+      setArmConfirming(true);
+      return;
+    }
     setStatus("saving");
     setErrors({});
     const restartGroups = (schema ?? [])
@@ -980,6 +997,7 @@ export function Settings({
       setValues(b.values);
       setEdited(b.values);
       setSolarAdviceApplied(false);
+      setArmConfirming(false);
       setStatus("saved");
       setBoundsRefreshKey((k) => k + 1);
       if (restartGroups.length) {
@@ -1004,6 +1022,7 @@ export function Settings({
     setErrors({});
     setStatus("idle");
     setSolarAdviceApplied(false);
+    setArmConfirming(false);
   }
 
   if (loadError) {
@@ -1478,8 +1497,19 @@ export function Settings({
       {showSaveBar && (
         <div className="settings-savebar" data-testid="settings-savebar">
           <div className="settings-savebar-inner">
+            {armsLive && (
+              <p
+                id="control-arm-consequence"
+                className="override-consequence settings-arm-consequence"
+                data-testid="control-arm-consequence"
+                role="status"
+                aria-live="polite"
+              >
+                {CONTROL_ARM_CONSEQUENCE}
+              </p>
+            )}
             <div className="settings-savebar-msg">
-              {dirty && (
+              {dirty && !showArmConfirm && (
                 <span className="settings-dirty" data-testid="settings-dirty">
                   {changeCount} unsaved change{changeCount === 1 ? "" : "s"}
                   {restartChanged ? " · some apply on restart" : ""}
@@ -1487,25 +1517,67 @@ export function Settings({
               )}
               {status === "saved" && (
                 <span className="settings-msg-ok" data-testid="settings-saved">
-                  {lastSaveRestart
-                    ? "Saved — restart_pending (boot still runs old values until Apply & restart)"
-                    : "Saved — active now"}
+                  {savedApplyStatusText(lastSaveRestart)}
                 </span>
               )}
               {status === "error" && errors._ && (
                 <span className="settings-msg-err">{errors._}</span>
               )}
             </div>
-            <div className="settings-savebar-actions">
-              <button className="btn-ghost" data-testid="settings-discard" onClick={reset}
-                disabled={!dirty}>
-                Discard
-              </button>
-              <button className="btn-primary" data-testid="settings-save" onClick={save}
-                disabled={!dirty || status === "saving"}>
-                {status === "saving" ? "Saving…" : "Save"}
-              </button>
-            </div>
+            {showArmConfirm ? (
+              <div
+                className="override-confirm settings-arm-confirm"
+                data-testid="control-arm-confirm"
+                role="dialog"
+                aria-labelledby="control-arm-confirm-title"
+              >
+                <p className="override-confirm-title" id="control-arm-confirm-title">
+                  {CONTROL_ARM_CONFIRM_TITLE}
+                </p>
+                <div className="override-controls">
+                  <button
+                    type="button"
+                    className="btn-primary"
+                    data-testid="control-arm-confirm-save"
+                    aria-describedby="control-arm-consequence"
+                    disabled={status === "saving"}
+                    onClick={() => void save()}
+                  >
+                    {status === "saving" ? "Saving…" : CONTROL_ARM_CONFIRM_LABEL}
+                  </button>
+                  <button
+                    type="button"
+                    className="btn-ghost"
+                    data-testid="control-arm-cancel"
+                    disabled={status === "saving"}
+                    onClick={() => setArmConfirming(false)}
+                  >
+                    {CONTROL_ARM_CONFIRM_CANCEL}
+                  </button>
+                </div>
+              </div>
+            ) : (
+              <div className="settings-savebar-actions">
+                <button className="btn-ghost" data-testid="settings-discard" onClick={reset}
+                  disabled={!dirty}>
+                  Discard
+                </button>
+                <button
+                  className="btn-primary"
+                  data-testid="settings-save"
+                  disabled={!dirty || status === "saving"}
+                  onClick={() => {
+                    if (armsLive) {
+                      setArmConfirming(true);
+                      return;
+                    }
+                    void save();
+                  }}
+                >
+                  {status === "saving" ? "Saving…" : "Save"}
+                </button>
+              </div>
+            )}
           </div>
         </div>
       )}
