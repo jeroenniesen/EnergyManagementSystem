@@ -876,7 +876,30 @@ body {
 }
 .strategy-badge { background: var(--panel-2); color: var(--muted); text-transform: none; }
 .season-summer .strategy-badge { color: var(--summer-text); background: var(--summer-tint); }
-.season-winter .strategy-badge { color: var(--winter); background: var(--winter-tint); }
+.season-winter .strategy-badge { color: var(--winter-text); background: var(--winter-tint); }
+/* F-39: pending winter hold + one-tap solar-first. Text/tint follow the active theme. */
+.strategy-hold {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin-top: 12px;
+}
+.strategy-hold-chip {
+  display: inline-flex;
+  align-items: center;
+  padding: 4px 10px;
+  border-radius: 999px;
+  background: var(--winter-tint);
+  color: var(--winter-text);
+  border: 1px solid var(--line);
+  font-size: 0.82rem;
+  font-weight: 600;
+  letter-spacing: 0;
+  text-transform: none;
+}
+.strategy-hold-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.strategy-hold-btn { padding: 6px 12px; font-size: 0.85rem; }
 
 /* Inline tuning row — one contextual knob + a door to the advanced settings (progressive
    disclosure: simple by default, deep when you want it). */
