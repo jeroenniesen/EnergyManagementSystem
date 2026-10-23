@@ -11,11 +11,13 @@ from __future__ import annotations
 import logging
 import math
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
+from zoneinfo import ZoneInfo
 
 from ems.domain import BatteryIntent
 from ems.planner import economics
+from ems.planner.budgets import ac_grid_kwh_per_slot, clamp_grid_charge
 from ems.planner.buy_pool import build_buy_pool_info
 from ems.planner.charge_need import stored_kwh_per_slot
 from ems.planner.ev_load import format_ev_load_reason
@@ -94,6 +96,10 @@ class PlannerConfig:
     negative_price_soak: bool = False  # opt-in: charge on sub-zero slots (paid to consume)
     import_fee_eur_per_kwh: float = 0.0
     price_includes_all_fees: bool = False
+    # #317: hard daily grid-buy cap. already_bought is today's history (None = unknown).
+    max_daily_grid_charge_kwh: float = 12.0
+    already_bought_today_kwh: float | None = 0.0
+    site_tz: ZoneInfo = field(default_factory=lambda: ZoneInfo("Europe/Amsterdam"))
 
 
 def _all_auto(prices: list[PriceSlot], now: datetime, note: str) -> Plan:
@@ -146,7 +152,13 @@ def plan_rule_based(
     )
     if cfg.negative_price_soak:
         plan = _soak_negative(plan, prices, cfg, max_charge_w=max_charge_w)
-    return plan
+    # After soak so negative-price slots spend the same daily cap (Besluit #317).
+    # Cap unit is AC grid kWh, not the DC `stored_kwh_per_slot` the planner sizes with.
+    return clamp_grid_charge(
+        plan, cfg.already_bought_today_kwh, cfg.max_daily_grid_charge_kwh,
+        ac_grid_kwh_per_slot(max_charge_w),
+        tz=cfg.site_tz,
+    )
 
 
 def _plan_winter(

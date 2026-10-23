@@ -10,6 +10,7 @@ from ems.sense import SIGNALS
 from ems.sources.battery import MockBatteryDriver
 from ems.sources.mock import MockSource
 from ems.sources.prices import MockPriceSource
+from ems.storage.history import HistoryStore
 from ems.storage.settings import SettingsStore
 from ems.web.api import create_app
 
@@ -50,10 +51,13 @@ def test_complete_data_does_not_trigger_failsafe():
 
 
 def _override_app(tmp_path, *, freshness=None):
+    db = str(tmp_path / "ems.sqlite")
     return create_app(
         MockSource(), dry_run=True, dev_mode="mock",
         price_source=MockPriceSource(AMS), controller=_controller(), freshness=freshness,
-        override_store=SettingsStore(str(tmp_path / "ems.sqlite"), table="runtime_state"),
+        # Empty history → counter is 0, not unknown. Unknown blocks grid charging (#317).
+        store=HistoryStore(db),
+        override_store=SettingsStore(db, table="runtime_state"),
     )
 
 

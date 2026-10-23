@@ -7,9 +7,10 @@
 //       charging session (a completely different concern from (a)'s advisory charge-timing plan):
 //       the master switch + three keyboard-accessible radio-card modes (hold / a fixed discharge
 //       wattage / match the predicted house load), moved out of Settings' "Control & safety" group
-//       the same way the fields in (c) were moved out of its "Car" group. Saves immediately (the
-//       heating mark-as-done idiom — optimistic patch, POST the changed keys, roll back on
-//       failure), NOT through this view's sticky save bar below, since there's nothing to draft;
+//       the same way the fields in (c) were moved out of its "Car" group. The master switch still
+//       saves immediately. The mode and wattage are a draft (#365): they join the sticky save bar
+//       in (c) and are posted only when the user presses Save, after one sentence that says what
+//       the home battery will do while the car charges;
 //   (c) the weekly-minimum schedule editor + brand/model car picker, MOVED here from Settings and
 //       reusing the shared components in ev.tsx. Edits save through the SAME /api/settings POST
 //       path, behind this view's own sticky save bar (the user said they change the schedule
@@ -19,6 +20,18 @@
 import { useEffect, useRef, useState } from "react";
 
 import { apiFetch } from "./auth";
+import {
+  type CarBatteryDraft,
+  type CarChargingMode,
+  CAR_MODE_MAX_W,
+  CAR_MODE_MIN_W,
+  CAR_MODE_STEP_W,
+  carBatteryConsequence,
+  carBatteryDraftDiff,
+  carBatterySettingsBody,
+  clampDischargeW,
+  showAboveHouseWarning,
+} from "./carBatteryDraft";
 import { CarCard } from "./CarCard";
 import {
   CarPicker,
@@ -37,12 +50,8 @@ const EV_KEYS = ["ev.car_id", "ev.battery_kwh", "ev.schedule"] as const;
 // Mirrors ems/control/car_mode.py's three modes + ems/settings.py's defaults, so a partial/missing
 // GET /api/settings response (or a fresh install) degrades to exactly the backend's own default
 // shape: hold selected, master on, 800 W.
-type CarChargingMode = "hold" | "static_discharge" | "match_home_load";
 const CAR_MODE_ORDER: CarChargingMode[] = ["hold", "static_discharge", "match_home_load"];
 const CAR_MODE_DEFAULTS = { holdEnabled: true, mode: "hold" as CarChargingMode, dischargeW: 800 };
-const CAR_MODE_MIN_W = 100;
-const CAR_MODE_MAX_W = 5000;
-const CAR_MODE_STEP_W = 50;
 
 type CarModeState = { holdEnabled: boolean; mode: CarChargingMode; dischargeW: number };
 
@@ -137,9 +146,9 @@ function CarModeSection({
   houseLoadW: number | null;
   status: "idle" | "saving" | "saved" | "error";
   error: string | null;
-  // Reader read-only mode (auth slice 2 web): these three settings save IMMEDIATELY on
-  // interaction (no sticky save bar to gate), so the controls themselves must be disabled.
-  // Defaults false so every other caller is unaffected.
+  // Reader read-only mode (auth slice 2 web): mode and wattage draft through the save bar,
+  // which readers never see, and the master switch still posts immediately — so the controls
+  // themselves are disabled. Defaults false so every other caller is unaffected.
   disabled?: boolean;
 }) {
   const optionRefs = useRef<(HTMLButtonElement | null)[]>([]);
@@ -148,13 +157,18 @@ function CarModeSection({
     setWattsRaw(String(carMode.dischargeW));
   }, [carMode.dischargeW]);
 
+  // Draft only — the parent folds this into the save bar. A blank field stays local until blur
+  // clamps it; otherwise every keystroke would snap the input back to a number.
+  function draftWatts(raw: string) {
+    if (raw.trim() === "") return;
+    const n = Number(raw);
+    if (Number.isFinite(n)) onCommitWatts(n);
+  }
+
   function commitWatts() {
-    const n = Number(wattsRaw);
-    const clamped = Number.isFinite(n)
-      ? Math.max(CAR_MODE_MIN_W, Math.min(CAR_MODE_MAX_W, Math.round(n / CAR_MODE_STEP_W) * CAR_MODE_STEP_W))
-      : carMode.dischargeW;
+    const clamped = clampDischargeW(Number(wattsRaw), carMode.dischargeW);
     setWattsRaw(String(clamped));
-    if (clamped !== carMode.dischargeW) onCommitWatts(clamped);
+    onCommitWatts(clamped);
   }
 
   function onOptionKeyDown(e: React.KeyboardEvent<HTMLButtonElement>, idx: number) {
@@ -168,9 +182,8 @@ function CarModeSection({
   }
 
   const enteredW = Number(wattsRaw);
-  const showWattsWarning =
-    carMode.mode === "static_discharge" && Number.isFinite(enteredW) &&
-    houseLoadW != null && enteredW > houseLoadW;
+  // Live on the number in the field, so the warning is visible before Save and before blur.
+  const showWattsWarning = showAboveHouseWarning(carMode.mode, enteredW, houseLoadW);
 
   return (
     <div className="car-mode" data-testid="car-battery-mode" data-density-kind="card">
@@ -243,7 +256,10 @@ function CarModeSection({
                       value={wattsRaw}
                       disabled={disabled}
                       data-testid="car-mode-watts-input"
-                      onChange={(e) => setWattsRaw(e.target.value)}
+                      onChange={(e) => {
+                        setWattsRaw(e.target.value);
+                        draftWatts(e.target.value);
+                      }}
                       onBlur={commitWatts}
                       onKeyDown={(e) => {
                         if (e.key === "Enter") (e.target as HTMLInputElement).blur();
@@ -257,6 +273,20 @@ function CarModeSection({
                     </p>
                   )}
                 </div>
+              )}
+              {selected && (
+                <p className="advisor-hint" data-testid="car-mode-consequence">
+                  {carBatteryConsequence({
+                    mode: key,
+                    dischargeW:
+                      key === "static_discharge"
+                        ? clampDischargeW(
+                            wattsRaw.trim() === "" ? Number.NaN : enteredW,
+                            carMode.dischargeW,
+                          )
+                        : carMode.dischargeW,
+                  })}
+                </p>
               )}
             </div>
           );
@@ -300,10 +330,13 @@ export function CarView({
   const [saveErr, setSaveErr] = useState<string | null>(null);
   const [sessions, setSessions] = useState<Session[] | null>(null);
 
-  // "While the car charges" battery-mode state (feat/car-charge-modes) — separate from the
-  // ev.*/values-edited-dirty-bar state above: these three keys save IMMEDIATELY on selection (the
-  // heating mark-as-done idiom), never through this view's sticky save bar.
+  // Saved "while the car charges" state. The master switch still posts immediately. Mode and
+  // wattage are `batteryDraft` until the sticky save bar below posts them (#365).
   const [carMode, setCarMode] = useState<CarModeState>(CAR_MODE_DEFAULTS);
+  const [batteryDraft, setBatteryDraft] = useState<CarBatteryDraft>({
+    mode: CAR_MODE_DEFAULTS.mode,
+    dischargeW: CAR_MODE_DEFAULTS.dischargeW,
+  });
   const [carModeStatus, setCarModeStatus] = useState<"idle" | "saving" | "saved" | "error">("idle");
   const [carModeErr, setCarModeErr] = useState<string | null>(null);
   // The smallest honest source for "what's the house using right now": the same coalesced reading
@@ -314,8 +347,8 @@ export function CarView({
 
   // Current ev.* values from the shared settings store — the same GET Settings uses, so a value
   // saved in either surface shows up in the other. Only the values are needed here (the editor +
-  // picker are hardcoded components, not schema-driven). The three car-mode keys ride the SAME
-  // fetch (one GET, not two) into their own immediate-save state above.
+  // picker are hardcoded components, not schema-driven). The car-mode keys ride the SAME fetch
+  // (one GET, not two) into the saved state; mode and wattage stay a draft until Save.
   useEffect(() => {
     let alive = true;
     (async () => {
@@ -333,13 +366,15 @@ export function CarView({
         const holdRaw = v["control.hold_battery_when_car_charging"];
         const modeRaw = v["control.car_charging_battery_mode"];
         const wattsRaw = v["control.car_discharge_w"];
-        setCarMode({
+        const loaded: CarModeState = {
           holdEnabled: typeof holdRaw === "boolean" ? holdRaw : CAR_MODE_DEFAULTS.holdEnabled,
           mode: (CAR_MODE_ORDER as string[]).includes(String(modeRaw))
             ? (modeRaw as CarChargingMode)
             : CAR_MODE_DEFAULTS.mode,
           dischargeW: typeof wattsRaw === "number" ? wattsRaw : CAR_MODE_DEFAULTS.dischargeW,
-        });
+        };
+        setCarMode(loaded);
+        setBatteryDraft({ mode: loaded.mode, dischargeW: loaded.dischargeW });
       } catch {
         /* best-effort — the editor still renders on defaults */
       }
@@ -371,9 +406,8 @@ export function CarView({
     };
   }, []);
 
-  // Immediate-save helper for the car-mode section: optimistic patch (already applied by the
-  // caller before calling this), POST the changed key(s), roll back on failure — same idiom as
-  // HeatingAdvice's mark-as-done. Never touches the ev.*/schedule dirty-bar state above.
+  // Immediate-save helper for the master switch only. Mode and wattage never call this — they
+  // stay in `batteryDraft` until the sticky save bar posts both keys in one request.
   function postCarMode(body: Record<string, number | boolean | string>, rollback: () => void) {
     setCarModeStatus("saving");
     setCarModeErr(null);
@@ -416,25 +450,19 @@ export function CarView({
   }
 
   function selectCarMode(next: CarChargingMode) {
-    if (next === carMode.mode) return; // already selected — nothing to save
-    const prev = carMode.mode;
-    const body: Record<string, number | boolean | string> = {
-      "control.car_charging_battery_mode": next,
-    };
-    // Selecting the fixed-power mode posts its wattage alongside the mode in the SAME request, so
-    // the two keys that define this behaviour are always saved together.
-    if (next === "static_discharge") body["control.car_discharge_w"] = carMode.dischargeW;
-    setCarMode((c) => ({ ...c, mode: next }));
-    postCarMode(body, () => setCarMode((c) => ({ ...c, mode: prev })));
+    if (next === batteryDraft.mode) return;
+    setBatteryDraft((d) => ({ ...d, mode: next }));
+    setStatus("idle");
+    setSaveErr(null);
+    setCarModeStatus("idle");
   }
 
-  function commitCarModeWatts(next: number) {
-    const prev = carMode.dischargeW;
-    setCarMode((c) => ({ ...c, dischargeW: next }));
-    postCarMode(
-      { "control.car_discharge_w": next },
-      () => setCarMode((c) => ({ ...c, dischargeW: prev })),
-    );
+  function draftCarModeWatts(next: number) {
+    if (next === batteryDraft.dischargeW) return;
+    setBatteryDraft((d) => ({ ...d, dischargeW: next }));
+    setStatus("idle");
+    setSaveErr(null);
+    setCarModeStatus("idle");
   }
 
   // Static car database for the picker (ems/cars.py) — degrades to "Custom" only on failure.
@@ -482,8 +510,21 @@ export function CarView({
   }
 
   const changed: Values = {};
-  for (const k of EV_KEYS) if (k in edited && edited[k] !== values[k]) changed[k] = edited[k];
-  const changeCount = Object.keys(changed).length;
+  let evChangeCount = 0;
+  for (const k of EV_KEYS) {
+    if (k in edited && edited[k] !== values[k]) {
+      changed[k] = edited[k];
+      evChangeCount += 1;
+    }
+  }
+  const savedBattery: CarBatteryDraft = { mode: carMode.mode, dischargeW: carMode.dischargeW };
+  const batteryDiff = carBatteryDraftDiff(savedBattery, batteryDraft);
+  const batteryBody = carBatterySettingsBody(savedBattery, batteryDraft);
+  if (batteryBody) {
+    changed["control.car_charging_battery_mode"] = batteryBody["control.car_charging_battery_mode"];
+    changed["control.car_discharge_w"] = batteryBody["control.car_discharge_w"];
+  }
+  const changeCount = evChangeCount + Number(batteryDiff.mode) + Number(batteryDiff.dischargeW);
   const dirty = changeCount > 0;
 
   async function save() {
@@ -516,6 +557,15 @@ export function CarView({
       for (const k of EV_KEYS) if (k in merged) seed[k] = merged[k];
       setValues(seed);
       setEdited(seed);
+      const postedMode = changed["control.car_charging_battery_mode"];
+      const postedWatts = changed["control.car_discharge_w"];
+      if (
+        (postedMode === "hold" || postedMode === "static_discharge" || postedMode === "match_home_load") &&
+        typeof postedWatts === "number"
+      ) {
+        setCarMode((c) => ({ ...c, mode: postedMode, dischargeW: postedWatts }));
+        setBatteryDraft({ mode: postedMode, dischargeW: postedWatts });
+      }
       setStatus("saved");
     } catch (e) {
       setSaveErr(String(e));
@@ -525,6 +575,7 @@ export function CarView({
 
   function reset() {
     setEdited(values);
+    setBatteryDraft({ mode: carMode.mode, dischargeW: carMode.dischargeW });
     setStatus("idle");
     setSaveErr(null);
   }
@@ -541,21 +592,23 @@ export function CarView({
           the feature-off empty state can send you to Manage → Settings → Car too. */}
       <CarCard onOpenSettings={onOpenSettings} canOperate={canOperate} />
 
-      {/* (b) The home-battery's behaviour while the car charges (feat/car-charge-modes) — saves
-          immediately, independent of this view's own sticky save bar below. */}
+      {/* (b) Home-battery behaviour while the car charges. Mode and wattage are a draft in the
+          save bar below; the master switch still posts on its own. */}
       <CarModeSection
-        carMode={carMode}
+        carMode={{
+          holdEnabled: carMode.holdEnabled,
+          mode: batteryDraft.mode,
+          dischargeW: batteryDraft.dischargeW,
+        }}
         onToggleHold={toggleCarModeHold}
         onSelectMode={selectCarMode}
-        onCommitWatts={commitCarModeWatts}
+        onCommitWatts={draftCarModeWatts}
         houseLoadW={houseLoadW}
         status={carModeStatus}
         error={carModeErr}
-        // NOT gated on carModeStatus === "saving" — these controls never disabled during their
-        // own immediate-save round-trip before this slice, and the arrow-key/space keyboard
-        // interaction test depends on that (a disabled button can't hold focus). Reader read-only
-        // mode is the only new reason to disable them.
-        disabled={!canOperate}
+        // Disabled while the shared save bar is in flight so a second edit cannot race the POST.
+        // Arrow-key selection only drafts, so it is not disabled on its own.
+        disabled={!canOperate || status === "saving"}
       />
 
       {/* (c) Config: car picker + weekly schedule, moved here from Settings. */}
@@ -640,7 +693,7 @@ export function CarView({
       {/* (d) Charging-sessions history. */}
       <SessionsTable sessions={sessions} />
 
-      {/* Own sticky save bar (reuses the Settings sticky-save pattern), scoped to the car config. */}
+      {/* Sticky save bar (Settings pattern): car config and the battery-mode draft share one POST. */}
       {showSaveBar && (
         <div className="settings-savebar" data-testid="car-savebar">
           <div className="settings-savebar-inner">

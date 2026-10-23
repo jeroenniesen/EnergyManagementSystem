@@ -13,8 +13,10 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field, replace
 from datetime import timedelta
+from zoneinfo import ZoneInfo
 
 from ems.domain import BatteryIntent, CapabilityReport
+from ems.planner.budgets import UNKNOWN_COUNTER_REASON, cap_reason, slot_grid_kwh
 from ems.planner.projection import ProjectedSlot
 from ems.planner.schedule import Plan, PlanSlot
 
@@ -202,6 +204,10 @@ def validate_plan(
     settings_max_discharge_w: float | None = None,
     max_export_kwh_per_day: float | None = None,
     allow_export_discharge: bool = False,
+    max_daily_grid_charge_kwh: float | None = None,
+    already_bought_today_kwh: float | None = None,
+    grid_charge_per_slot_kwh: float = 0.0,
+    site_tz: ZoneInfo | None = None,
 ) -> PlanValidation:
     """Validate `plan` against the current conditions. Returns a PlanValidation; `unsafe` ⇒ the
     controller must hold AUTO. Each check appends at most one representative finding (not one per
@@ -220,7 +226,13 @@ def validate_plan(
 
     E-11 / B-105: `EXPORT_FOR_PROFIT` requires discharge capability + reserve floor; optional
     `max_export_kwh_per_day` (>0) caps planned export; `allow_export_discharge=False` warns
-    (writes stay dry-run / AUTO via intent_to_mode)."""
+    (writes stay dry-run / AUTO via intent_to_mode).
+
+    #317: when `max_daily_grid_charge_kwh` is set, a plan whose AC grid-charge on the local day
+    still exceeds that cap (plus `already_bought_today_kwh` when the counter is known) is
+    `unsafe` (`daily_grid_charge_cap`) — the controller holds AUTO. `already_bought is None`
+    treats today's cap as already reached (no grid charging). Energy is AC grid kWh, not
+    DC `target_kwh`."""
     findings: list[Finding] = []
     slots = plan.slots[:slot_horizon]
 
@@ -439,6 +451,38 @@ def validate_plan(
                 ))
                 break
             starts[s.start] = s.intent
+
+    # 8. Daily grid-charge cap (#317). Safety net for a plan the clamp did not catch.
+    #    unsafe ⇒ AUTO. Unknown counter (already_bought is None) ⇒ today's cap is reached.
+    #    Accounting is AC grid kWh (power × time), including only the remainder of the running slot.
+    if max_daily_grid_charge_kwh is not None and max_daily_grid_charge_kwh > 0 and slots:
+        zone = site_tz or ZoneInfo("Europe/Amsterdam")
+        today = plan.created_at.astimezone(zone).date()
+        unknown = already_bought_today_kwh is None
+        cap = float(max_daily_grid_charge_kwh)
+        bought = cap if unknown else max(0.0, already_bought_today_kwh)
+        by_day: dict = {}
+        for s in slots:
+            if s.intent not in _CHARGE_INTENTS:
+                continue
+            day = s.start.astimezone(zone).date()
+            by_day[day] = by_day.get(day, 0.0) + slot_grid_kwh(
+                s, grid_charge_per_slot_kwh, now=plan.created_at,
+            )
+        for day, planned in by_day.items():
+            allowance = cap - (bought if day == today else 0.0)
+            if planned > allowance + 1e-6:
+                if unknown and day == today:
+                    message = f"{UNKNOWN_COUNTER_REASON}. Holding self-use."
+                else:
+                    message = (
+                        f"Planned grid charge {planned:.1f} kWh"
+                        + (f" plus {bought:.1f} kWh already bought"
+                           if day == today and bought > 1e-6 else "")
+                        + f" exceeds the daily cap — {cap_reason(cap)}. Holding self-use."
+                    )
+                findings.append(Finding(_UNSAFE, "daily_grid_charge_cap", message))
+                break
 
     status = (_UNSAFE if any(f.severity == _UNSAFE for f in findings)
               else _WARN if findings else "valid")

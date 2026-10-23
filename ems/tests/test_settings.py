@@ -499,6 +499,27 @@ def test_heating_done_field_accepts_arbitrary_json_string():
     }
 
 
+def test_max_daily_grid_charge_bounds_and_slider():
+    """AC4: planner.max_daily_grid_charge_kwh — min ≤ default ≤ max; min−1 and max+1 rejected."""
+    field = SETTINGS_BY_KEY["planner.max_daily_grid_charge_kwh"]
+    assert field.type == "number"
+    assert field.group == "strategy"
+    assert field.unit == "kWh"
+    assert field.slider is True
+    assert field.advanced is False
+    assert field.min <= field.default <= field.max
+    assert field.default == 12.0 and field.min == 1.0 and field.max == 40.0
+    assert defaults()["planner.max_daily_grid_charge_kwh"] == 12.0
+    _low, err_low = validate_settings({"planner.max_daily_grid_charge_kwh": field.min - 1})
+    _high, err_high = validate_settings({"planner.max_daily_grid_charge_kwh": field.max + 1})
+    assert "planner.max_daily_grid_charge_kwh" in err_low
+    assert "planner.max_daily_grid_charge_kwh" in err_high
+    clean, errors = validate_settings({"planner.max_daily_grid_charge_kwh": 12})
+    assert errors == {} and clean["planner.max_daily_grid_charge_kwh"] == 12
+    row = next(r for r in schema_json() if r["key"] == field.key)
+    assert row["slider"] is True and row["advanced"] is False and row["group"] == "strategy"
+
+
 def test_heating_done_field_overlays_onto_effective_settings():
     payload = json.dumps({"dhw_eco": "2026-07-01"})
     eff = effective_settings({"heating.done": payload})

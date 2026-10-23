@@ -193,3 +193,23 @@ def test_no_contiguous_window_falls_back_to_cheapest_n():
     assert len(charge) == 2
     assert {s.start for s in charge} == {T0 + 2 * SLOT, T0 + 4 * SLOT}
     assert all(s.start not in {T0 + SLOT, T0 + 3 * SLOT, T0 + 5 * SLOT} for s in charge)
+
+
+def test_adaptive_daily_grid_charge_cap_is_12_kwh_and_marks_buy_pool():
+    """AC1 + buy_pool.state='cap' when the cap blocks part of the buying."""
+    n = 40
+    prices = _prices([0.05] * 24 + [0.80] * 16)
+    fc = _fc([0.0] * n)
+    load = _load([0.0] * 24 + [4000.0] * 16)
+    plan = plan_adaptive(
+        prices, fc, T0, soc_pct=0.0, load_w_by=load,
+        cfg=_cfg(usable_kwh=40.0, reserve_soc_pct=0.0, round_trip_efficiency=1.0,
+                 max_charge_w=4000.0, degradation_eur_per_kwh=0.0,
+                 risk_margin_eur_per_kwh=0.0, max_daily_grid_charge_kwh=12.0),
+    )
+    charged = [s for s in plan.slots if s.intent is BatteryIntent.GRID_CHARGE_TO_TARGET]
+    assert sum(s.target_kwh or 0.0 for s in charged) <= 12.0 + 1e-6
+    assert plan.buy_pool is not None and plan.buy_pool.state == "cap"
+    dropped = [s for s in plan.slots if "Dagplafond" in s.reason]
+    assert dropped
+    assert all(s.intent is BatteryIntent.ALLOW_SELF_CONSUMPTION for s in dropped)

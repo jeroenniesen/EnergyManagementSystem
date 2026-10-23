@@ -875,3 +875,12 @@ export function digestEurNl(v: number): string {
   });
   return `${v < 0 ? "−" : ""}€${abs}`;
 }
+
+/** Daily grid-charge ceiling in Settings → Strategy (#317, audit F-03 / F-32). */
+export const DAILY_GRID_CHARGE_CAP = {
+  label: "Max. netinkoop per dag",
+  help:
+    "Hard plafond: EMS koopt per lokale dag nooit meer dan dit aantal kWh van het net voor de batterij. "
+    + "Laden bij een negatieve prijs telt mee. De teller gaat om middernacht (lokale tijd) weer naar nul.",
+  reason: (capKwh: number) => `Dagplafond ${capKwh} kWh bereikt`,
+} as const;
