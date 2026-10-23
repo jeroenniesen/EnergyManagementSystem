@@ -21,9 +21,11 @@ from zoneinfo import ZoneInfo
 
 import pytest
 
-from ems.domain import RawSample
+from ems.domain import BatteryIntent, RawSample
 from ems.economics import EconomicSnapshot
 from ems.load_model import reconstruct
+from ems.planner.projection import BatteryModel, mark_floor_holds, project_energy
+from ems.planner.schedule import SLOT, Plan, PlanSlot
 from ems.planner.strategy import HysteresisState
 from ems.replay import (
     ReplayConfig,
@@ -622,3 +624,26 @@ def test_replay_under_cap_day_spend_unchanged_and_over_cap_day_clamped():
         },
         adaptive_cfg=_adaptive_cfg(wide),
     )) > 12.0
+
+
+def test_marked_floor_hold_at_reserve_passes_validator():
+    """#312 AC4: floor-hold post-pass on a synthetic at-floor slot stays validator-clean."""
+    from ems.planner.validator import validate_plan as vp
+
+    floor = 5.0
+    slot = PlanSlot(DAY + 18 * SLOT, BatteryIntent.DISCHARGE_FOR_LOAD, "evening peak")
+    plan = Plan(created_at=DAY, slots=(slot,), strategy="winter")
+    model = BatteryModel(
+        usable_kwh=10.0, max_charge_w=4000.0, max_discharge_w=4000.0,
+        round_trip_efficiency=1.0, reserve_soc_pct=floor,
+    )
+    proj = project_energy(
+        plan.slots, start_soc_pct=floor, solar_w_by={}, load_w_by={slot.start: 1000.0},
+        model=model,
+    )
+    marked = mark_floor_holds(plan, proj, floor, start_soc_pct=floor)
+    v = vp(
+        marked, soc_pct=floor, min_reserve_soc=floor, data_quality="complete",
+    )
+    assert v.ok
+    assert not any(f.severity == "unsafe" for f in v.findings)

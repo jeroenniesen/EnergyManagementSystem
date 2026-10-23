@@ -28,6 +28,13 @@ _SELF = BatteryIntent.ALLOW_SELF_CONSUMPTION
 # Homeowner-facing action vocabulary aligned with /api/battery-plan current_action.
 _ACTION_PAUSED = "paused"
 _ACTION_PROCEED = "proceed"
+_ACTION_HOLD = "hold"
+_ACTION_DISCHARGE = "discharge"
+_ACTION_GRID_CHARGE = "grid_charge"
+_ACTION_FULL_SPEED = "full_speed_discharge"
+_ACTION_SELF = "self_consume"
+_ACTION_SOLAR_CHARGE = "solar_charge"
+_BATTERY_W_IDLE_BAND_W = 50.0
 
 # F-13 (#313): fail-safe copy when the plan badge is price_fallback (mock/backup/no Tibber).
 PRICE_FALLBACK_SAFETY_CODE = "no_live_prices"
@@ -168,6 +175,44 @@ class DecisionReason:
             "summary": self.summary,
             "buy_pool": self.buy_pool,
         }
+
+
+def _is_floor_hold_slot(slot: PlanSlot) -> bool:
+    """True when the slot is a floor hold (plan/UI vocabulary #312 / F-16b)."""
+    if slot.intent is not _HOLD:
+        return False
+    low = (slot.reason or "").lower()
+    return "batterijvloer" in low or "vloer" in low
+
+
+def current_action_from_slot(
+    slot: PlanSlot,
+    *,
+    battery_w: float = 0.0,
+) -> str:
+    """Map the active plan slot → ``current_action`` token (aligned with /api/battery-plan).
+
+    ``battery_w`` is the projected or observed slot power (+discharge / −charge); when omitted
+    callers may pass ``slot.power_w`` — floor holds are detected from slot reason/intent (#312).
+    """
+    if _is_floor_hold_slot(slot):
+        return _ACTION_HOLD
+    intent = slot.intent
+    if intent is _CHARGE:
+        return _ACTION_GRID_CHARGE
+    if intent is _HOLD:
+        return _ACTION_HOLD
+    if intent is BatteryIntent.EXPORT_FOR_PROFIT:
+        return _ACTION_FULL_SPEED
+    if intent is _DISCHARGE:
+        if abs(battery_w) <= _BATTERY_W_IDLE_BAND_W and "vloer" in (slot.reason or "").lower():
+            return _ACTION_HOLD
+        return _ACTION_DISCHARGE
+    if intent is _SELF:
+        if battery_w < -_BATTERY_W_IDLE_BAND_W:
+            return _ACTION_SOLAR_CHARGE
+        return _ACTION_SELF
+    return _ACTION_SELF
 
 
 def format_reason_log_line(reason: dict[str, Any] | DecisionReason) -> str:

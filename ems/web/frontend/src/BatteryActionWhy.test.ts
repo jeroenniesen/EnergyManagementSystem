@@ -125,6 +125,21 @@ describe("BatteryActionWhy", () => {
     expect(html).toContain('data-testid="battery-action-why-text"');
   });
 
+  it("shows floor-hold Nu label (#312)", () => {
+    const html = renderToStaticMarkup(
+      createElement(BatteryActionWhy, {
+        currentAction: "hold",
+        reason: {
+          ...REASON,
+          summary: "Op de batterijvloer (10%) — huis op net",
+        },
+        dryRun: false,
+      }),
+    );
+    expect(html).toContain("Op de vloer — huis op net");
+    expect(html.toLowerCase()).not.toMatch(/\bontlaadt\b/);
+  });
+
   it("shows Op volle snelheid ontladen for forced dump", () => {
     const html = renderToStaticMarkup(
       createElement(BatteryActionWhy, {
