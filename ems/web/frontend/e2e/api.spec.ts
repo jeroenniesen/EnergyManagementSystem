@@ -98,7 +98,8 @@ test.describe("EMS API", () => {
   test("prices returns 15-min slots and a current price", async ({ request }) => {
     const b = await (await request.get("/api/prices")).json();
     expect(b.resolution).toBe("quarter_hourly");
-    expect(b.slots.length).toBe(192);
+    // Mock horizon = two local days (188/192/196 slots around EU DST).
+    expect([188, 192, 196]).toContain(b.slots.length);
     expect(typeof b.current_eur_per_kwh).toBe("number");
     expect(b.slots[0]).toHaveProperty("eur_per_kwh");
   });
