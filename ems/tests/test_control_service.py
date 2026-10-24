@@ -112,6 +112,11 @@ def test_incomplete_live_prices_return_a_forced_battery_to_auto():
     assert records
 
 
+def test_cycle_throughput_today_is_none_without_a_store():
+    svc, _ctx = _service(_controlling_controller())
+    assert svc.cycle_throughput_today(NOW) is None
+
+
 def test_control_service_constructs_and_runs_a_tick_standalone():
     # Constructs with no FastAPI in sight, and a manual "charge now" override drives one real tick.
     controller = _controlling_controller()

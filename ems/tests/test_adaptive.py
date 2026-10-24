@@ -213,3 +213,29 @@ def test_adaptive_daily_grid_charge_cap_is_12_kwh_and_marks_buy_pool():
     dropped = [s for s in plan.slots if "Dagplafond" in s.reason]
     assert dropped
     assert all(s.intent is BatteryIntent.ALLOW_SELF_CONSUMPTION for s in dropped)
+
+
+def test_adaptive_refuses_charge_when_the_shared_cycle_budget_is_spent():
+    prices = _prices([0.10] * 4 + [0.40] * 4)
+    fc = _fc([0.0] * 8)
+    load = _load([200.0] * 4 + [3000.0] * 4)
+    open_plan = plan_adaptive(
+        prices, fc, T0, soc_pct=15.0, load_w_by=load, cfg=_cfg(max_cycles_per_day=1.5),
+    )
+    spent = plan_adaptive(
+        prices, fc, T0, soc_pct=15.0, load_w_by=load,
+        cfg=_cfg(max_cycles_per_day=1.5, charged_today_kwh=30.0, discharged_today_kwh=0.0),
+    )
+    tight = plan_adaptive(
+        prices, fc, T0, soc_pct=15.0, load_w_by=load, cfg=_cfg(max_cycles_per_day=0.01),
+    )
+    assert any(s.intent is BatteryIntent.GRID_CHARGE_TO_TARGET for s in open_plan.slots)
+    assert not any(s.intent is BatteryIntent.GRID_CHARGE_TO_TARGET for s in spent.slots)
+    assert any(s.reason == "Cycle-budget op (1,5 EFC)" for s in spent.slots)
+    assert sum(
+        s.intent is BatteryIntent.GRID_CHARGE_TO_TARGET for s in tight.slots
+    ) < sum(s.intent is BatteryIntent.GRID_CHARGE_TO_TARGET for s in open_plan.slots)
+    restricted = {BatteryIntent.GRID_CHARGE_TO_TARGET, BatteryIntent.EXPORT_FOR_PROFIT}
+    for before, after in zip(open_plan.slots, spent.slots, strict=True):
+        if after.intent in restricted:
+            assert before.intent is after.intent
