@@ -2,13 +2,14 @@
 from __future__ import annotations
 
 import pickle
+import re
 from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
 
 from ems.domain import BatteryIntent
 from ems.planner.adaptive import AdaptiveConfig
-from ems.planner.base import PlannerRequest, RuleBasedPlanner
+from ems.planner.base import _CONFIG_HASH_LEN, PlannerRequest, RuleBasedPlanner
 from ems.planner.reason import (
     STALE_METER_PLAN_REASON,
     build_decision_reason,
@@ -77,6 +78,24 @@ def _assert_grid_charge_lte_baseline(stale, baseline) -> None:
         if match.intent is BatteryIntent.GRID_CHARGE_TO_TARGET:
             assert (s.target_kwh or 0.0) <= (match.target_kwh or 0.0) + 1e-9
             assert (s.power_w or 0.0) <= (match.power_w or 0.0) + 1e-9
+
+
+def _plan_pickle_without_config_hash(plan: Plan) -> bytes:
+    if plan.input_snapshot is None:
+        return pickle.dumps(plan)
+    neutralised = replace(
+        plan,
+        input_snapshot=replace(plan.input_snapshot, config_hash=None),
+    )
+    return pickle.dumps(neutralised)
+
+
+def _assert_plan_matches_stale_meter_golden(plan: Plan, golden: Plan) -> None:
+    assert _plan_pickle_without_config_hash(plan) == _plan_pickle_without_config_hash(golden)
+    assert plan.input_snapshot is not None
+    ch = plan.input_snapshot.config_hash
+    assert ch is not None
+    assert re.fullmatch(rf"[0-9a-f]{{{_CONFIG_HASH_LEN}}}", ch)
 
 
 def _grid_charge_kwh(plan) -> float:
@@ -173,13 +192,15 @@ def test_plan_byte_identical_without_stale_golden():
     req, _, _ = _adaptive_fixture()
     plan = RuleBasedPlanner().plan(req)
     golden = pickle.loads(_GOLDEN.read_bytes())
-    assert pickle.dumps(plan) == pickle.dumps(golden)
+    _assert_plan_matches_stale_meter_golden(plan, golden)
 
 
 def test_plan_byte_identical_when_stale_signals_none():
     req, _, _ = _adaptive_fixture()
     req_none = replace(req, ev_stale=False, grid_stale=False)
-    assert pickle.dumps(RuleBasedPlanner().plan(req_none)) == _GOLDEN.read_bytes()
+    plan = RuleBasedPlanner().plan(req_none)
+    golden = pickle.loads(_GOLDEN.read_bytes())
+    _assert_plan_matches_stale_meter_golden(plan, golden)
 
 
 def test_grid_stale_never_increases_grid_charge_vs_baseline():
