@@ -4,6 +4,7 @@ import type { EnergyStoryData, PlanProvenance } from "./EnergyStory";
 import {
   HOME_ACT,
   HOME_NIGHT_RESERVE,
+  HOME_MUST_CHARGE,
   HOME_PLAN_STORY,
   INTELLIGENCE_COPY,
   nightReserveOverridesLearned,
@@ -56,8 +57,8 @@ export type PlanStoryProps = {
   /** #335: configured vs learned night-reserve kWh for plan-reason + override badge. */
   nightReserveConfiguredKwh?: number | null;
   nightReserveLearnedKwh?: number | null;
-  /** #315: explain empty buy pool (from /api/decision or battery-plan reason). */
-  buyPool?: BuyPool | null;
+  /** #315 / #323: buy pool + optional must-charge summary from battery-plan reason. */
+  buyPool?: (BuyPool & { must_charge_summary?: string }) | null;
 };
 
 function RecentReviewDisclosure({ message }: { message: string }) {
@@ -176,6 +177,12 @@ export function PlanStory({
         <div className="why-not-buy-tile" data-testid="why-not-buy">
           <h3 className="why-not-buy-title">{HOME_WHY_NOT_BUY.title}</h3>
           <p className="why-not-buy-body">{formatWhyNotBuyLine(buyPool)}</p>
+        </div>
+      )}
+      {buyPool?.must_charge_summary && (
+        <div className="why-not-buy-tile" data-testid="must-charge-summary">
+          <h3 className="why-not-buy-title">{HOME_MUST_CHARGE.title}</h3>
+          <p className="why-not-buy-body">{buyPool.must_charge_summary}</p>
         </div>
       )}
       {dataQuality === "price_fallback" && (

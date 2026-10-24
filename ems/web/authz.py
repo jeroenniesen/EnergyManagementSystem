@@ -23,6 +23,7 @@ _LEGACY_ACCESS_CAP = _TIER_RANK["operate"]
 OPERATE_PATHS = frozenset({
     "/api/override",
     "/api/settings",
+    "/api/setup/settings",
     "/api/ai/validate",
     "/api/chat",
     "/api/car/soc",
@@ -31,6 +32,7 @@ OPERATE_PATHS = frozenset({
     # #263: HA wizard probe/disconnect carry a long-lived token in the body.
     "/api/consumers/ha/test-connection",
     "/api/consumers/ha/disconnect",
+    "/api/consumers/advice/accept",
 })
 # Mutating HTTP verbs — only these can require OPERATE on an OPERATE_PATHS member; reads (GET/
 # HEAD/OPTIONS) of the same path are VIEW (mirrors api.py's own _WRITE_METHODS).
@@ -48,7 +50,11 @@ _ADMIN_PREFIXES = ("/api/users", "/api/invites")
 # `/api/system/restart` (I2 refuse-when-busy self-restart) is ADMIN — a supervisor-relaunch of the
 # whole process is the most privileged mutation there is — AND session-only (below): no machine or
 # access token may ever trigger a restart, only an interactive admin.
-ADMIN_PATHS = frozenset({"/api/export/package", "/api/system/restart"})
+ADMIN_PATHS = frozenset({
+    "/api/export/package",
+    "/api/system/restart",
+    "/api/setup/settings",
+})
 # Interactive-session-only surfaces (kind == 'session'); no access/machine token allowed.
 _SESSION_ONLY_PATHS = frozenset(
     {"/api/auth/password", "/api/auth/logout", "/api/system/restart"})

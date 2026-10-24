@@ -390,7 +390,11 @@ def wal_checkpoint_truncate(db_path: str) -> None:
     """``PRAGMA wal_checkpoint(TRUNCATE)`` while holding the writer gate.
 
     The stress test and any in-process checkpoint must use this so the checkpoint
-    does not collide with a store write and surface a lock error.
+    does not collide with a store write and surface a lock error. The gate is taken
+    as a normal writer: checkpoint is maintenance, not a battery write. Sharing
+    ``control_state``'s critical priority lets the two tight loops convoy, so
+    samples and audit wait out the whole window behind cache, and cache waits
+    behind ``wal_checkpoint`` (#379). A busy checkpoint still retries outside the gate.
     """
     def _op() -> None:
         con = sqlite3.connect(db_path, timeout=SHORT_BUSY_MS / 1000)
@@ -403,10 +407,11 @@ def wal_checkpoint_truncate(db_path: str) -> None:
             con.close()
 
     # Not control_state: a failed checkpoint raises (it is not a battery command).
+    # critical=False: see the docstring. A critical checkpoint starves the other writers.
     started = time.perf_counter()
     gate = gate_for(db_path)
     for attempt in range(LOCK_ATTEMPTS):
-        gate.acquire("wal_checkpoint", critical=True)
+        gate.acquire("wal_checkpoint", critical=False)
         try:
             try:
                 _op()

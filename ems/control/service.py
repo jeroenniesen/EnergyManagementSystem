@@ -31,6 +31,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from ems.clock import Clock, SystemClock
+from ems.consumers.start_advice import accepted_load_bump_w, accepted_windows_revision
 from ems.control.car_mode import (
     _RESERVE_ENTER_PP,
     CarModeAction,
@@ -843,6 +844,19 @@ class ControlService:
 
     def adaptive_cfg(self) -> AdaptiveConfig:
         s = self._settings
+        cap = self._cached_capability()
+        cap_ready = (
+            cap is not None
+            and cap.supports_grid_charge
+            and cap.max_charge_w > 0
+        )
+        device_min = cap.min_target_soc if cap is not None and cap.min_target_soc > 0 else None
+        target_soc = float(s.get("planner.must_charge_target_soc", 30.0))
+        floor = self.effective_floor_soc()
+        if device_min is not None:
+            target_soc = max(floor, device_min, min(100.0, target_soc))
+        else:
+            target_soc = max(floor, min(100.0, target_soc))
         return AdaptiveConfig(
             usable_kwh=s["battery.usable_kwh"],
             reserve_soc_pct=self.effective_floor_soc(),
@@ -855,6 +869,14 @@ class ControlService:
             max_daily_grid_charge_kwh=float(s.get("planner.max_daily_grid_charge_kwh", 12.0)),
             max_cycles_per_day=float(s.get("planner.max_cycles_per_day", 1.5)),
             site_tz=self._site_tz,
+            must_charge_enabled=bool(s.get("planner.must_charge_enabled", False)),
+            must_charge_target_soc=target_soc,
+            must_charge_max_price_eur_per_kwh=float(
+                s.get("planner.must_charge_max_price_eur_per_kwh", 0.40),
+            ),
+            must_charge_buffer_pp=float(s.get("planner.must_charge_buffer_pp", 10.0)),
+            must_charge_capability_ready=cap_ready,
+            must_charge_device_min_target_soc=device_min,
         )
 
     def already_bought_today_kwh(self, now: datetime) -> float | None:
@@ -883,8 +905,11 @@ class ControlService:
         prof = self._ctx.load_profile_box["profile"]
         if prof is None:  # cold start: a flat overnight-derived baseline
             fallback = self._settings["battery.overnight_load_kwh"] * 1000.0 / 12.0
-            return {s: fallback for s in starts}
-        return {s: prof.expected_w(s) for s in starts}
+            base = {s: fallback for s in starts}
+        else:
+            base = {s: prof.expected_w(s) for s in starts}
+        bump = accepted_load_bump_w(self._cache_store, starts, self._clock)
+        return {s: base[s] + max(0.0, bump.get(s, 0.0)) for s in starts}
 
     def expected_ev_exogenous(self, now: datetime):
         """Winter EV-day estimate (#181 / SPEC §4.5). Fail-soft to 0 kWh when history/settings
@@ -1064,7 +1089,7 @@ class ControlService:
         reuse this path and must not rebuild a divergent plan just for explain.
         """
         now = self._clock.now_utc() if now is None else now
-        key = self.quantize_now(now)
+        key = (self.quantize_now(now), accepted_windows_revision(self._cache_store, self._clock))
         cache = self._ctx.plan_cache
         if cache["key"] == key:  # fast path: no lock when this cycle's plan is warm
             return cache["result"]
@@ -1104,6 +1129,8 @@ class ControlService:
                 self._settings.get("planner.max_daily_grid_charge_kwh", 12.0)),
             already_bought_today_kwh=self.already_bought_today_kwh(now),
             site_tz=self._site_tz,
+            degradation_eur_per_kwh=float(self._settings["planner.degradation_eur_per_kwh"]),
+            risk_margin_eur_per_kwh=float(self._settings["planner.risk_margin_eur_per_kwh"]),
             **self.recovery_sizing(),
         )
         # B-22/B-16 interaction (#162): if the forward projection still can't hit the committed

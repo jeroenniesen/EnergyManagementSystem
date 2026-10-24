@@ -1,7 +1,16 @@
 """Shared energy economics (backlog B-05 / post-2027): the arbitrage break-even the planners spend
 against, and the feed-in value of exported energy under net-metering (today) vs the post-saldering
 models. Pure numeric identities — no I/O, no hardware."""
-from ems.planner.economics import EXPORT_MODELS, breakeven, export_value
+import pytest
+
+from ems.planner.economics import (
+    EXPORT_MODELS,
+    breakeven,
+    export_value,
+    max_buy_for_peak,
+    max_buy_for_planner_config,
+)
+from ems.planner.rule_based import PlannerConfig
 
 
 def test_breakeven_numeric_identity():
@@ -10,6 +19,30 @@ def test_breakeven_numeric_identity():
     be = breakeven(0.20, round_trip_efficiency=0.90,
                    degradation_eur_per_kwh=0.05, risk_margin_eur_per_kwh=0.02)
     assert abs(be - (0.20 / 0.9 + 0.05 + 0.02)) < 1e-12
+
+
+def test_max_buy_for_peak_matches_legacy_winter_formula():
+    """#327 AC1: the helper is the old winter ceiling, including the acceptance numbers."""
+    import json
+    from pathlib import Path
+
+    # (0.40 - 0.03 - 0.01) * 0.85 = 0.306. Same operations the winter planner inlined.
+    assert max_buy_for_peak(0.40, rte=0.85, deg=0.03, risk=0.01) == (0.40 - 0.03 - 0.01) * 0.85
+    cases = json.loads(
+        (Path(__file__).parent / "fixtures" / "max_buy_for_peak.json").read_text(encoding="utf-8")
+    )["cases"]
+    assert len(cases) == 5
+    for case in cases:
+        legacy = (case["peak"] - case["deg"] - case["risk"]) * case["rte"]
+        got = max_buy_for_peak(case["peak"], rte=case["rte"], deg=case["deg"], risk=case["risk"])
+        assert got == legacy
+        assert got == pytest.approx(case["expected"], abs=1e-12)
+        cfg = PlannerConfig(
+            round_trip_efficiency=case["rte"],
+            degradation_eur_per_kwh=case["deg"],
+            risk_margin_eur_per_kwh=case["risk"],
+        )
+        assert max_buy_for_planner_config(case["peak"], cfg) == got
 
 
 def test_export_models_tuple():

@@ -23,9 +23,12 @@ def _forecast(watts: list[float]) -> list[ForecastSlot]:
 
 
 def _cfg(**kw) -> SummerConfig:
+    # Wear and risk stay 0 here so the sizing tests keep their price cap. The shared
+    # ceiling is covered by test_summer_topup_cap_is_min_of_setting_and_max_buy.
     base = dict(usable_kwh=10.0, target_soc_pct=80.0, round_trip_efficiency=1.0,
                 max_charge_w=4000.0, expected_load_w=0.0, allow_grid_topup=True,
-                max_topup_price_eur_per_kwh=0.30)
+                max_topup_price_eur_per_kwh=0.30,
+                degradation_eur_per_kwh=0.0, risk_margin_eur_per_kwh=0.0)
     base.update(kw)
     return SummerConfig(**base)
 
@@ -266,3 +269,26 @@ def test_summer_daily_grid_charge_cap_is_12_kwh():
         s.intent is BatteryIntent.ALLOW_SELF_CONSUMPTION
         for s in plan.slots if s.reason.startswith("Dagplafond")
     )
+
+
+def test_summer_topup_cap_is_min_of_setting_and_max_buy():
+    """Daytime €0.30, night peak €0.40, user cap €0.35. Wear makes max_buy €0.297, so no top-up.
+
+    With wear and risk at 0 and a lossless RTE the same cap still allows the €0.30 slots.
+    """
+    prices = [PriceSlot(T0 + i * SLOT, 0.30 if i < 8 else 0.40) for i in range(16)]
+    fc = _forecast([500.0] * 4 + [0.0] * 12)
+    blocked = plan_summer(
+        prices, fc, T0, soc_pct=50.0,
+        cfg=_cfg(max_topup_price_eur_per_kwh=0.35, round_trip_efficiency=0.90,
+                 degradation_eur_per_kwh=0.05, risk_margin_eur_per_kwh=0.02),
+    )
+    assert not [s for s in blocked.slots if s.intent is BatteryIntent.GRID_CHARGE_TO_TARGET]
+    allowed = plan_summer(
+        prices, fc, T0, soc_pct=50.0,
+        cfg=_cfg(max_topup_price_eur_per_kwh=0.35, round_trip_efficiency=1.0,
+                 degradation_eur_per_kwh=0.0, risk_margin_eur_per_kwh=0.0),
+    )
+    charge = [s for s in allowed.slots if s.intent is BatteryIntent.GRID_CHARGE_TO_TARGET]
+    assert charge
+    assert all(s.start <= T0 + 3 * SLOT for s in charge)
