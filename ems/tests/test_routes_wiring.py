@@ -94,6 +94,7 @@ EXTRACTED_GET_ROUTES = [
 ]
 EXTRACTED_WRITE_ROUTES = [
     "/api/car/soc",                    # car
+    "/api/ev/skip-today",              # car (#320)
     "/api/notifications/read",         # notify
 ]
 # POST /api/whatif (B-73) is reachable but deliberately NOT a gated write (see api.py's

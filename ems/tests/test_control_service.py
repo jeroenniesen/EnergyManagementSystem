@@ -135,6 +135,18 @@ def test_control_service_constructs_and_runs_a_tick_standalone():
     assert controller.driver.current_mode() is PhysicalMode.CHARGE
 
 
+def test_expected_ev_exogenous_honours_skip_today_setting():
+    """#320: ev.skip_date matching today forces 0 kWh exogenous before other sources."""
+    controller = _controlling_controller()
+    svc, _ = _service(controller)
+    svc._settings["ev.day_hint"] = True
+    svc._settings["ev.charge_kwh"] = 30.0
+    svc._settings["ev.skip_date"] = NOW.astimezone(ZoneInfo("Europe/Amsterdam")).date().isoformat()
+    est = svc.expected_ev_exogenous(NOW)
+    assert est.expected_kwh == 0.0
+    assert est.source == "skipped_today"
+
+
 def test_adaptive_cfg_uses_effective_floor_when_device_above_reserve():
     """#310 / F-16a: planner cfgs use max(user reserve, probed min_target_soc)."""
     driver = MockBatteryDriver()

@@ -80,6 +80,7 @@ type CarPlanResp = {
   needs_anchor?: boolean;
   needs_schedule?: boolean;
   car_meter_configured?: boolean;
+  skip_today?: { active: boolean };
   battery_hold_recommendation?: { enabled: boolean; mode: string; message: string };
 };
 
@@ -253,6 +254,9 @@ export function CarCard({
   const [pctInput, setPctInput] = useState(50);
   const [editingAnchor, setEditingAnchor] = useState(false);
   const [busy, setBusy] = useState(false);
+  const [skipBusy, setSkipBusy] = useState(false);
+  // Immediate UI for the skip-today switch — server `data.skip_today` updates only after POST + refetch.
+  const [skipTodayPending, setSkipTodayPending] = useState<boolean | null>(null);
   const [err, setErr] = useState<string | null>(null);
 
   useEffect(() => {
@@ -274,6 +278,38 @@ export function CarCard({
       clearInterval(id);
     };
   }, []);
+
+  useEffect(() => {
+    if (!skipBusy) setSkipTodayPending(null);
+  }, [data?.skip_today?.active, skipBusy]);
+
+  async function setSkipToday(skip: boolean) {
+    setSkipTodayPending(skip);
+    setSkipBusy(true);
+    setErr(null);
+    try {
+      const r = await apiFetch("/api/ev/skip-today", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ skip }),
+      });
+      const b = await r.json().catch(() => ({}));
+      if (r.status === 403) {
+        setSkipTodayPending(null);
+        setErr("This action needs a user or admin account.");
+      } else if (!r.ok) {
+        throw new Error(b.detail ?? `HTTP ${r.status}`);
+      } else {
+        const r2 = await apiFetch("/api/car/plan");
+        if (r2.ok) setData(await r2.json());
+      }
+    } catch (e) {
+      setSkipTodayPending(null);
+      setErr(String(e));
+    } finally {
+      setSkipBusy(false);
+    }
+  }
 
   async function setSoc(pct: number) {
     setBusy(true);
@@ -393,6 +429,8 @@ export function CarCard({
   const { plan, soc } = data;
   if (!plan || !soc || plan.deadlines.length === 0) return null; // defensive: contract guarantees this
 
+  const skipActive = skipTodayPending ?? data.skip_today?.active === true;
+
   const nextDeadline = plan.deadlines[0];
   const status = deadlineStatus(nextDeadline);
   const { cells, startMs } = buildCells(Date.now(), plan.slots);
@@ -416,6 +454,33 @@ export function CarCard({
       data-compact={compact ? "true" : undefined}
     >
       <CardHead />
+
+      <div className="car-skip-today-row" data-testid="car-skip-today-row">
+        {canOperate ? (
+          <label className="switch-row car-skip-today-label">
+            <input
+              type="checkbox"
+              className="switch-input"
+              role="switch"
+              checked={skipActive}
+              disabled={skipBusy}
+              onChange={(e) => setSkipToday(e.target.checked)}
+              data-testid="car-skip-today-toggle"
+              aria-describedby={skipActive ? "car-skip-today-status" : undefined}
+            />
+            <span>Auto laadt vandaag niet</span>
+          </label>
+        ) : (
+          <p className="advisor-hint" data-testid="car-skip-today-readonly">
+            Skipping today&apos;s expected car load needs a user or admin account.
+          </p>
+        )}
+        {skipActive && (
+          <p className="override-hint" id="car-skip-today-status" data-testid="car-skip-today-status">
+            tot middernacht
+          </p>
+        )}
+      </div>
 
       <div className="car-soc-row" data-testid="car-soc-row">
         <span className="car-soc-value" data-testid="car-soc-value">

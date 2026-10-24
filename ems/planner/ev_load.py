@@ -33,7 +33,7 @@ class EvExogenousEstimate:
     """How much EV import (AC kWh) the winter planner should size against today."""
 
     expected_kwh: float
-    source: str  # "manual" | "day_hint" | "schedule" | "same_weekday_history" | "none"
+    source: str  # manual | day_hint | schedule | same_weekday_history | skipped_today | none
     reason: str
 
     def to_dict(self) -> dict:
@@ -95,6 +95,7 @@ def estimate_ev_exogenous_kwh(
     typical_charge_kwh: float = 20.0,
     schedule_raw: str | dict | None = None,
     daily_ev_rows: list[dict] | None = None,
+    skip_today: bool = False,
 ) -> EvExogenousEstimate:
     """Estimate today's expected EV import (AC kWh) for winter demand sizing.
 
@@ -104,6 +105,13 @@ def estimate_ev_exogenous_kwh(
         local_today = now.astimezone(tz).date()
     except Exception:
         return _none("invalid now/tz for EV exogenous estimate")
+
+    if skip_today:
+        return EvExogenousEstimate(
+            expected_kwh=0.0,
+            source="skipped_today",
+            reason="Auto laadt vandaag niet (jouw keuze)",
+        )
 
     typical = max(0.0, float(typical_charge_kwh or 0.0))
 

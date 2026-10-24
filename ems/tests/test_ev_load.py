@@ -72,6 +72,36 @@ def test_sparse_history_fail_soft():
     assert est.source == "none"
 
 
+def test_skip_today_wins_over_manual_day_hint_schedule_and_history():
+    sched = default_schedule()
+    sched["mon"]["enabled"] = True
+    rows = [
+        {"date": "2025-12-29", "ev_kwh": 28.0},
+        {"date": "2026-01-05", "ev_kwh": 32.0},
+    ]
+    est = estimate_ev_exogenous_kwh(
+        now=NOW,
+        tz=AMS,
+        skip_today=True,
+        expected_day_kwh=30.0,
+        day_hint=True,
+        typical_charge_kwh=22.0,
+        schedule_raw=json.dumps(sched),
+        daily_ev_rows=rows,
+    )
+    assert est.expected_kwh == 0.0
+    assert est.source == "skipped_today"
+    assert est.reason == "Auto laadt vandaag niet (jouw keuze)"
+
+
+def test_skip_today_false_leaves_priority_unchanged():
+    est = estimate_ev_exogenous_kwh(
+        now=NOW, tz=AMS, skip_today=False, expected_day_kwh=30.0, day_hint=True,
+    )
+    assert est.source == "manual"
+    assert est.expected_kwh == 30.0
+
+
 def test_corrupt_inputs_never_raise():
     est = estimate_ev_exogenous_kwh(
         now=NOW, tz=AMS, expected_day_kwh="nope",  # type: ignore[arg-type]
