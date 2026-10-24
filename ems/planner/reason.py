@@ -40,6 +40,10 @@ _BATTERY_W_IDLE_BAND_W = 50.0
 PRICE_FALLBACK_SAFETY_CODE = "no_live_prices"
 PRICE_FALLBACK_SAFETY_MESSAGE = "Geen live Tibber — inkopen uit (fail-safe)"
 
+# #326 / F-17+F-24: morning discharge held so the evening peak is not emptied.
+# /api/decision copies the active slot reason into DecisionReason.summary.
+EVENING_RESERVE_HOLD_REASON = "Ochtend ingehouden voor avondpiek"
+
 # Stable top-level keys of DecisionReason.to_dict() — contract for web / logs / diagnostics (#84).
 REASON_DICT_KEYS = frozenset({
     "chosen_window", "rejected_alternative", "expected_benefit", "risk",
@@ -378,6 +382,8 @@ def _homeowner_summary(raw: str | None, chosen: ChosenWindow | None) -> str:
     """
     if raw:
         text = raw.strip()
+        if text == EVENING_RESERVE_HOLD_REASON:
+            return EVENING_RESERVE_HOLD_REASON
         low = text.lower()
         if low.startswith("discharge:"):
             rest = text.split(":", 1)[1].strip()

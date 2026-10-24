@@ -1,0 +1,52 @@
+{
+  "tz": "Europe/Amsterdam",
+  "first_date": "2026-01-05",
+  "days": 14,
+  "start_soc_pct": 60.0,
+  "usable_kwh": 10.0,
+  "reserve_soc_pct": 10.0,
+  "load_w": 4000.0,
+  "max_charge_w": 4000.0,
+  "max_discharge_w": 4000.0,
+  "round_trip_efficiency": 0.9,
+  "prices_eur_by_local_hour": {
+    "0": 0.05,
+    "1": 0.05,
+    "2": 0.05,
+    "3": 0.05,
+    "4": 0.05,
+    "5": 0.05,
+    "6": 0.05,
+    "7": 0.4,
+    "8": 0.4,
+    "9": 0.12,
+    "10": 0.12,
+    "11": 0.12,
+    "12": 0.12,
+    "13": 0.12,
+    "14": 0.12,
+    "15": 0.12,
+    "16": 0.12,
+    "17": 0.12,
+    "18": 0.45,
+    "19": 0.45,
+    "20": 0.45,
+    "21": 0.08,
+    "22": 0.08,
+    "23": 0.08
+  },
+    "baseline_before_326": {
+        "days_soc_18_below_floor_plus_1kwh": 14,
+        "reserve_breaches": 0,
+        "savings_eur": 16.672855
+    },
+    "expected_after_326": {
+        "days_soc_18_below_floor_plus_1kwh": 0,
+        "reserve_breaches": 0,
+        "soc_kwh_at_18": 4.729537233052703,
+        "planner_cost_eur": 191.45004854371248,
+        "auto_cost_eur": 210.599608456823,
+        "savings_eur": 19.149559913110522,
+        "savings_difference_eur": 2.476705
+    }
+}
