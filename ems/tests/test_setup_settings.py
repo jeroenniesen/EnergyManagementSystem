@@ -2,12 +2,14 @@
 from __future__ import annotations
 
 import asyncio
+import types
 
 import pytest
 from fastapi.testclient import TestClient
 
 from ems.authn import hash_password
 from ems.control.mode_controller import ModeController
+from ems.domain import PhysicalMode, RawSample
 from ems.lifecycle import Lifecycle
 from ems.settings import (
     SECRET_KEYS,
@@ -17,11 +19,24 @@ from ems.settings import (
     SETUP_SETTINGS_SECRET_ALLOWLIST,
 )
 from ems.sources.battery import MockBatteryDriver
-from ems.sources.mock import MockSource
 from ems.storage.audit import AuditStore
 from ems.storage.auth import AuthStore
 from ems.storage.settings import SettingsStore
 from ems.web.api import create_app
+
+
+class _SetupTestSource:
+    """Minimal Source double for setup-settings API tests (no ems.sources.mock import)."""
+
+    def read(self) -> RawSample:
+        return RawSample(
+            grid_power_w=200.0,
+            solar_power_w=0.0,
+            battery_power_w=800.0,
+            ev_power_w=0.0,
+            soc_pct=55.0,
+            total_gas_m3=None,
+        )
 
 
 def _seed_user(db: str, username: str, password: str, role: str):
@@ -40,7 +55,7 @@ def _app(tmp_path, **kw):
     if "audit_store" not in kw:
         kw = {**kw, "audit_store": AuditStore(db)}
     return create_app(
-        MockSource(), dry_run=True, dev_mode="mock",
+        _SetupTestSource(), dry_run=True, dev_mode="mock",
         settings_store=SettingsStore(db),
         auth_store=AuthStore(db),
         **kw,
@@ -364,7 +379,25 @@ def test_zero_battery_write_calls_on_setup_save(tmp_path):
     def spy(mode, *, target_soc=None, power_w=None):
         calls.append((mode, target_soc, power_w))
 
-    driver = MockBatteryDriver(armed=True, write_transport=spy)
+    driver = MockBatteryDriver(write_transport=spy)
+    assert driver.armed is False
+    driver.apply(PhysicalMode.CHARGE)
+    assert calls == []
+
+    def apply_would_hit_transport(
+        self, mode, *, target_soc=None, power_w=None,
+    ) -> bool:
+        if self._write_transport is not None:
+            self._write_transport(mode, target_soc=target_soc, power_w=power_w)
+        self._mode = mode
+        self.last_target_soc, self.last_power_w = target_soc, power_w
+        return True
+
+    driver.apply = types.MethodType(apply_would_hit_transport, driver)
+    driver.apply(PhysicalMode.DISCHARGE)
+    assert calls == [(PhysicalMode.DISCHARGE, None, None)]
+    calls.clear()
+
     app, db = _app(
         tmp_path,
         battery=driver,
@@ -375,7 +408,10 @@ def test_zero_battery_write_calls_on_setup_save(tmp_path):
         h = _admin_headers(c)
         r = c.post(
             "/api/setup/settings",
-            json={"battery.indevolt_ip": "192.168.1.77", "connection.use_live_devices": True},
+            json={
+                "battery.indevolt_ip": "192.168.1.77",
+                "connection.use_live_devices": True,
+            },
             headers=h,
         )
     assert r.status_code == 200
