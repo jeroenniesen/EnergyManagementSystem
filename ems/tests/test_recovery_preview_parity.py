@@ -86,3 +86,91 @@ def test_preview_recovery_matches_live_planner_buy_ceiling():
     zero_starts = _charge_starts(zero_catch.plan)
     assert zero_starts != live_starts
     assert len(zero_starts) == 2
+
+
+CAP_EUR = 0.20
+
+
+def _cap_prices() -> list[PriceSlot]:
+    return [_price(i, PEAK_EUR if i == 8 else (0.15 if i == 2 else (0.25 if i == 3 else 0.90)))
+            for i in range(10)]
+
+
+def _live_recovery_with_max_buy(
+    plan: Plan, prices: list[PriceSlot], now: datetime, max_buy_eur_per_kwh: float,
+):
+    return recover_if_needed(
+        plan, now, soc_pct=50.0, prices=prices, enabled=True,
+        degradation_eur_per_kwh=0.0, risk_margin_eur_per_kwh=0.0,
+        max_buy_eur_per_kwh=max_buy_eur_per_kwh, **SIZING,
+    )
+
+
+def _preview_recovery(plan, prices, now, validate_fn, *, soc_pct=70.0, **kwargs):
+    asyncio.run(_run_recovery(
+        plan, now, soc_pct=soc_pct, prices=prices, enabled=True, tz=UTC,
+        cache_store=None, notifier=None, audit_store=None, validate_fn=validate_fn,
+        degradation_eur_per_kwh=kwargs.pop("degradation_eur_per_kwh", DEG),
+        risk_margin_eur_per_kwh=kwargs.pop("risk_margin_eur_per_kwh", RISK),
+        **SIZING, **kwargs,
+    ))
+
+
+def test_preview_recovery_fallback_respects_max_buy_eur_per_kwh_cap():
+    """#414: preview fallback passes max_buy_eur_per_kwh=0.20 like the live planner."""
+    plan = _missed_plan()
+    prices = _cap_prices()
+    now = T0
+    _, _, live_catch = _live_recovery_with_max_buy(plan, prices, now, max_buy_eur_per_kwh=CAP_EUR)
+    assert live_catch is not None
+    live_starts = _charge_starts(live_catch.plan)
+    _, _, uncapped_catch = _live_recovery_with_max_buy(
+        plan, prices, now, max_buy_eur_per_kwh=0.0,
+    )
+    assert len(_charge_starts(uncapped_catch.plan)) > len(live_starts)
+    assert any(
+        p.eur_per_kwh > CAP_EUR for p in prices
+        if p.start in _charge_starts(uncapped_catch.plan)
+    )
+
+    seen: dict = {}
+
+    def _validator(catch_plan, _now):
+        seen["plan"] = catch_plan
+        return PlanValidation(status="valid")
+
+    _preview_recovery(
+        plan, prices, now, _validator, soc_pct=50.0,
+        degradation_eur_per_kwh=0.0, risk_margin_eur_per_kwh=0.0,
+        max_buy_eur_per_kwh=CAP_EUR,
+    )
+    preview_starts = _charge_starts(seen["plan"])
+    assert preview_starts == live_starts
+    assert not any(
+        p.eur_per_kwh > CAP_EUR for p in prices if p.start in preview_starts
+    )
+
+
+def test_preview_recovery_identical_with_zero_max_buy_eur_per_kwh_no_cap():
+    """#414: cap 0 or omitted max_buy_eur_per_kwh leaves preview unchanged."""
+    plan = _missed_plan()
+    prices = _prices()
+    now = T0
+
+    def _capture(seen: dict):
+        def _validator(catch_plan, _now):
+            seen["plan"] = catch_plan
+            return PlanValidation(status="valid")
+        return _validator
+
+    seen_explicit: dict = {}
+    _preview_recovery(plan, prices, now, _capture(seen_explicit), max_buy_eur_per_kwh=0.0)
+    seen_omitted: dict = {}
+    _preview_recovery(plan, prices, now, _capture(seen_omitted))
+    assert _charge_starts(seen_explicit["plan"]) == _charge_starts(seen_omitted["plan"])
+
+    _, _, baseline_catch = recover_if_needed(
+        plan, now, soc_pct=70.0, prices=prices, enabled=True,
+        degradation_eur_per_kwh=DEG, risk_margin_eur_per_kwh=RISK, **SIZING,
+    )
+    assert _charge_starts(seen_omitted["plan"]) == _charge_starts(baseline_catch.plan)
