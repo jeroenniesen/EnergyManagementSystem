@@ -1563,6 +1563,45 @@ body {
   outline: 2px solid var(--accent); outline-offset: 1px;
 }
 .field-help { color: var(--muted); font-size: 0.78rem; margin: 0; line-height: 1.45; }
+/* #366 — unit sits inside the field chrome (light and dark use the same tokens). */
+.number-with-unit {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  background: var(--panel-2);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  color: var(--text);
+}
+.field .number-with-unit input[type="number"],
+.trading-row .number-with-unit input[type="number"] {
+  flex: 1 1 auto;
+  width: auto;
+  min-width: 0;
+  border: 0;
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  padding: 7px 10px;
+}
+.number-unit-suffix {
+  flex: none;
+  padding: 0 10px 0 0;
+  color: var(--muted);
+  font-size: 0.85rem;
+  pointer-events: none;
+}
+.number-with-unit:focus-within {
+  border-color: var(--accent);
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+.number-with-unit input:focus,
+.number-with-unit input:focus-visible {
+  outline: none;
+  border-color: transparent;
+}
+.field-error .number-with-unit { border-color: rgba(220, 80, 80, 0.6); }
 .field-error input, .field-error select { border-color: rgba(220, 80, 80, 0.6); }
 .field-err { color: var(--error); font-size: 0.74rem; margin: 0; }
 
@@ -3236,6 +3275,9 @@ body {
 .trading-metrics dd { margin: 2px 0 0; font-size: 1.15rem; font-weight: 600; }
 .trading-row { display: flex; justify-content: space-between; align-items: center; gap: 12px; margin: 10px 0; font-size: 0.92rem; }
 .trading-row input[type="number"], .trading-row select { width: 9rem; }
+.trading-row .number-with-unit { width: 9.5rem; max-width: 46%; flex: 0 1 auto; }
+.trading-row .number-with-unit input[type="number"] { width: auto; }
+.trading-cap-hint { margin: -4px 0 8px; color: var(--muted); font-size: 0.78rem; }
 .trading-confirm { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-top: 8px; }
 .trading-confirm p { flex: 1 1 100%; margin: 0; }
 .trading-view .muted { color: var(--muted); font-size: 0.88rem; }
