@@ -39,6 +39,15 @@ def test_required_tier():
     # decisions/config/overrides; the "auth"-category filtering is enforced in the handler, not
     # via the tier (see ems.web.api.audit_endpoint).
     assert required_tier("/api/audit", "GET") == Tier.VIEW
+    # #334: accept/cancel change the planner load estimate — operate on writes, view on reads.
+    assert required_tier("/api/consumers/advice/accept", "POST") == Tier.OPERATE
+    assert required_tier("/api/consumers/advice/accept", "DELETE") == Tier.OPERATE
+    assert required_tier("/api/consumers/advice/accept", "GET") == Tier.VIEW
+    assert not role_satisfies("reader", required_tier("/api/consumers/advice/accept", "POST"))
+    assert role_satisfies("user", required_tier("/api/consumers/advice/accept", "DELETE"))
+    assert effective_rank("admin", "access", "view") < int(
+        required_tier("/api/consumers/advice/accept", "POST")
+    )
 
 
 def test_requires_session():
