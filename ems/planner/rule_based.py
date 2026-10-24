@@ -248,12 +248,12 @@ def _plan_winter(
         # earliest-of-cheapest-set) so max-power execution does not fill early medium-cheap hours
         # when a deeper valley still lies ahead of the peak deadline.
         last_need = max(discharge_set)
-        peak_min = min(_effective_import_price(p, cfg) for p in horizon if p.start in discharge_set)
-        # Inverse of economics.breakeven: solved for the highest charge price that still undercuts
-        # `peak_min` after losses + wear + risk. Kept local — it's the reverse direction (sizing the
-        # buy pool), not the forward break-even gate above.
-        max_buy = (peak_min - cfg.degradation_eur_per_kwh
-                   - cfg.risk_margin_eur_per_kwh) * cfg.round_trip_efficiency
+        # Buy ceiling is the shared inverse of breakeven (F-08/F-10): the dearest pre-peak price
+        # that still undercuts the cheapest profitable peak after losses, wear and risk.
+        peak_price = min(
+            _effective_import_price(p, cfg) for p in horizon if p.start in discharge_set
+        )
+        max_buy = economics.max_buy_for_planner_config(peak_price, cfg)
         pre_peak = [p for p in horizon if p.start < last_need]
         pool = [p for p in pre_peak if _effective_import_price(p, cfg) <= max_buy]
         charge_set = late_pack_charge_starts(
