@@ -625,6 +625,18 @@ export const HOME_MORE_NEST = {
   car: "Auto",
 } as const;
 
+/** Resident must-charge override (#322). Copy is fixed — tests and the API share these strings. */
+export const MUST_CHARGE_OVERRIDE = {
+  title: "Vul tot X% vóór HH:MM",
+  hint: "Tijdelijk laden voor gasten, vorst of piekangst. Stopt vanzelf op het tijdstip of zodra het doel bereikt is.",
+  targetLabel: "Doelpercentage",
+  hourLabel: "Klaar vóór",
+  submit: "Vul de batterij",
+  cancel: "Annuleer",
+  watchOnly: "alleen kijken — niet uitgevoerd",
+  active: (pct: number, hhmm: string) => `Vul tot ${pct}% vóór ${hhmm}`,
+} as const;
+
 export const HOME_TILE = {
   sectionAria: "Tot nu toe vandaag",
   staleUpdated: "Verouderd · Bijgewerkt",

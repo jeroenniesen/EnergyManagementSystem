@@ -1059,13 +1059,24 @@ body {
 .override-confirm-title { font-weight: 600; margin: 0 0 6px; }
 .override-reassure { color: var(--muted); font-size: 0.78rem; margin: 6px 0 12px; }
 .override-controls { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; }
-.override-controls select {
+.override-controls select,
+.override-controls input {
   font: inherit;
   color: var(--text);
   background: var(--panel-2);
   border: 1px solid var(--line);
   border-radius: 8px;
+  padding: 8px 10px;
+}
+.override-controls select {
   padding: 8px 32px 8px 10px;
+}
+.override-controls label {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 0.78rem;
+  color: var(--muted);
 }
 
 /* Native selects → one custom chevron so the dropdowns match the rest of the controls. The
@@ -1079,6 +1090,13 @@ body {
   background-position: right 11px center;
 }
 .field select { padding-right: 32px; }
+.must-charge {
+  margin-top: 16px;
+  padding-top: 14px;
+  border-top: 1px solid var(--line);
+}
+.must-charge h3 { margin: 0 0 6px; font-size: 0.95rem; font-weight: 650; }
+.must-charge-warning { margin-top: 8px; }
 .override-controls select:focus { outline: none; border-color: var(--accent); }
 .override-controls select:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
 

@@ -432,6 +432,11 @@ class ControlContext:
     # write starts in the sub-second window before the process actually exits (checked atomically
     # atomically with every writer reservation inside command_fence). A pure "stop work" flag.
     draining: bool = False
+    # Resident must-charge override (#322). ``rec`` is a MustChargeOverride or None; ``warning``
+    # is the latest unreachable-target reason from the planner (display only).
+    must_charge_box: dict[str, Any] = field(
+        default_factory=lambda: {"rec": None, "warning": None},
+    )
 
 
 class ControlService:
@@ -850,6 +855,7 @@ class ControlService:
         device_min = cap.min_target_soc if cap is not None and cap.min_target_soc > 0 else None
         target_soc = float(s.get("planner.must_charge_target_soc", 30.0))
         floor = self.effective_floor_soc()
+        resident_target, resident_deadline = self._resident_must_charge_inputs()
         if device_min is not None:
             target_soc = max(floor, device_min, min(100.0, target_soc))
         else:
@@ -874,6 +880,8 @@ class ControlService:
             must_charge_buffer_pp=float(s.get("planner.must_charge_buffer_pp", 10.0)),
             must_charge_capability_ready=cap_ready,
             must_charge_device_min_target_soc=device_min,
+            resident_must_charge_target_soc=resident_target,
+            resident_must_charge_deadline=resident_deadline,
         )
 
     def already_bought_today_kwh(self, now: datetime) -> float | None:
@@ -993,6 +1001,43 @@ class ControlService:
             "round_trip_efficiency": s["planner.round_trip_efficiency"],
         }
 
+    def _resident_must_charge_inputs(self) -> tuple[float | None, datetime | None]:
+        """Active resident override target and deadline, or ``(None, None)``."""
+        rec = self._ctx.must_charge_box.get("rec")
+        if rec is None:
+            return None, None
+        now = self._clock.now_utc()
+        if not rec.engages(now, self._current_soc(now)):
+            return None, None
+        return rec.target_soc, rec.deadline
+
+    def _resident_override_token(self, now: datetime) -> tuple:
+        """Plan-cache identity for the resident override, including expiry and reached target."""
+        rec = self._ctx.must_charge_box.get("rec")
+        if rec is None:
+            return (None,)
+        soc = self._current_soc(now)
+        cause = rec.end_cause(now, soc)
+        if cause is not None:
+            return ("ended", cause, rec.created.isoformat())
+        if not rec.engages(now, soc):
+            return ("idle", rec.created.isoformat())
+        return ("active", rec.target_soc, rec.deadline.isoformat(), rec.created.isoformat())
+
+    def _note_resident_must_charge(self, plan, prices, now: datetime, soc: float) -> None:
+        from ems.planner.must_charge import explain_resident_override
+
+        self._ctx.must_charge_box["warning"] = explain_resident_override(
+            plan, prices, now, soc_pct=soc, adaptive_cfg=self._adaptive_cfg(),
+        )
+
+    async def _expire_resident_must_charge(self) -> None:
+        """Let the API hook audit and clear an override whose deadline passed or target was met."""
+        hook = getattr(self, "settle_resident_override", None)
+        if hook is None:
+            return
+        await hook(self._clock.now_utc())
+
     def build_plan_now(self, now: datetime | None = None):
         """The fresh plan the active strategy builds THIS instant, BEFORE any missed-window
         recovery. Goes through the Planner port (B-47): registry selects the producer by
@@ -1061,6 +1106,7 @@ class ControlService:
             baseline="load_profile" if load_by else None,
         )
         plan = build_planner(mode).plan(request)
+        self._note_resident_must_charge(plan, prices, now, soc)
         return now, prices, plan
 
     def plan_with_recovery(self, now: datetime | None = None):
@@ -1081,7 +1127,11 @@ class ControlService:
         reuse this path and must not rebuild a divergent plan just for explain.
         """
         now = self._clock.now_utc() if now is None else now
-        key = (self.quantize_now(now), accepted_windows_revision(self._cache_store, self._clock))
+        key = (
+            self.quantize_now(now),
+            accepted_windows_revision(self._cache_store, self._clock),
+            self._resident_override_token(now),
+        )
         cache = self._ctx.plan_cache
         if cache["key"] == key:  # fast path: no lock when this cycle's plan is warm
             return cache["result"]
@@ -2467,6 +2517,7 @@ class ControlService:
         the pre-reserved slot so the registry can't leak."""
         spawned = False  # True once the tick worker OWNS the token (releases it on real completion)
         try:
+            await self._expire_resident_must_charge()
             if self._controller is None:
                 return
             # Belt-and-suspenders: a restart just passed idle-and-safe and is about to exit — do not
