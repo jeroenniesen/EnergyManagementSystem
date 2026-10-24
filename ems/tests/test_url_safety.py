@@ -12,6 +12,7 @@ from ems.url_safety import (
     normalize_device_host,
     normalize_ntfy_topic,
     normalize_outbound_http_url,
+    normalize_private_ipv4,
     prepare_outbound_request,
 )
 
@@ -209,3 +210,31 @@ def test_homewizard_make_json_get_path_does_not_dial_ssrf_hosts(monkeypatch):
 
     # Restore unused binding for linters / clarity (spy already via monkeypatch).
     assert real_cc is not None
+
+
+@pytest.mark.parametrize(
+    "ok",
+    ["192.168.1.1", "10.0.0.5", "172.20.3.4"],
+)
+def test_normalize_private_ipv4_accepts_rfc1918(ok: str):
+    assert normalize_private_ipv4(ok) == ok
+
+
+@pytest.mark.parametrize(
+    "bad",
+    [
+        "127.0.0.1",
+        "169.254.1.1",
+        "100.64.0.1",
+        "8.8.8.8",
+        "::1",
+        "fe80::1",
+        "http://192.168.1.1",
+        "1.2.3.4:80",
+        "myrouter.local",
+        "",
+    ],
+)
+def test_normalize_private_ipv4_rejects_non_private(bad: str):
+    with pytest.raises(ValueError):
+        normalize_private_ipv4(bad)
