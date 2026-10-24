@@ -3,7 +3,26 @@
 // #manage/system, #manage/audit), the LEGACY redirects (#settings/#system/#audit — old bookmarks
 // and deep-links must keep working), the unknown-hash fallback, sub-tab switching, and that the
 // Settings section deep-link mechanics survive when Settings is mounted inside Manage.
-import { expect, test } from "@playwright/test";
+import { expect, test, type Page } from "@playwright/test";
+
+const CORE_FAIL = {
+  status: 500,
+  contentType: "application/json",
+  body: '{"detail":"down"}',
+};
+
+async function mockCoreReachability(page: Page, reachable: { value: boolean }) {
+  const handler = async (route: import("@playwright/test").Route) => {
+    if (reachable.value) {
+      const response = await route.fetch();
+      await route.fulfill({ response });
+      return;
+    }
+    await route.fulfill(CORE_FAIL);
+  };
+  await page.route("**/api/dashboard", handler);
+  await page.route("**/api/status", handler);
+}
 
 test.describe("Manage view + hash routing", () => {
   test("legacy #settings redirects to Manage → Settings", async ({ page }) => {
@@ -130,5 +149,65 @@ test.describe("Manage view + hash routing", () => {
     await page.getByTestId("manage-tab-system").click();
     await expect(panel).toHaveAttribute("id", "manage-panel-system");
     await expect(panel).toHaveAttribute("aria-labelledby", "manage-tab-system");
+  });
+});
+
+test.describe("EMS unreachable banner outside dashboard (#369 NAV-03)", () => {
+  test("shows on Manage and Insights while core APIs fail, then clears on recovery", async ({
+    page,
+  }) => {
+    const reachable = { value: false };
+    await mockCoreReachability(page, reachable);
+
+    await page.goto("/#manage");
+    const banner = page.getByTestId("alert-ems_unreachable");
+    await expect(banner).toBeVisible();
+    await expect(banner).toContainText("niet bereikbaar");
+
+    await page.getByTestId("nav-insights").click();
+    await expect(page.getByTestId("insights")).toBeVisible();
+    await expect(page.getByTestId("alert-ems_unreachable")).toBeVisible();
+
+    reachable.value = true;
+    await expect(page.getByTestId("alert-ems_unreachable")).toHaveCount(0, { timeout: 15000 });
+  });
+
+  test("shows on Trading and Car while core APIs fail", async ({ page }) => {
+    await mockCoreReachability(page, { value: false });
+    await page.goto("/#trading");
+    await expect(page.getByTestId("trading-view")).toBeVisible();
+    await expect(page.getByTestId("alert-ems_unreachable")).toBeVisible();
+
+    await page.getByTestId("nav-car").click();
+    await expect(page.getByTestId("alert-ems_unreachable")).toBeVisible();
+  });
+});
+
+test.describe("Audit load error (#369 AUD-01)", () => {
+  test("keeps the filter visible with retry when /api/audit fails", async ({ page }) => {
+    let auditCalls = 0;
+    await page.route("**/api/audit**", (route) => {
+      auditCalls += 1;
+      if (auditCalls < 3) {
+        return route.fulfill({ status: 500, contentType: "application/json", body: '{"detail":"down"}' });
+      }
+      return route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          entries: [{ id: 1, ts: "2026-06-01T12:00:00Z", category: "config_change", summary: "OK", detail: {} }],
+        }),
+      });
+    });
+    await page.goto("/#manage/audit");
+    const filter = page.getByTestId("audit-filter");
+    await expect(filter).toBeVisible();
+    await expect(page.getByTestId("audit-error")).toBeVisible();
+    await filter.selectOption("battery_decision");
+    await expect(filter).toHaveValue("battery_decision");
+    await expect(page.getByTestId("audit-error")).toBeVisible();
+    await page.getByTestId("audit-retry").click();
+    await expect(page.getByTestId("audit-list")).toContainText("OK");
+    await expect(page.getByTestId("audit-error")).toHaveCount(0);
   });
 });

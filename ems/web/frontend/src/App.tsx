@@ -686,6 +686,47 @@ export function App() {
     };
   }, [view]);
 
+  // B-09 / #369 NAV-03: same /api/dashboard → /api/status liveness check on non-dashboard views
+  // so the unreachable banner is not dashboard-only. Dashboard keeps the full poll above unchanged.
+  useEffect(() => {
+    if (view === "dashboard") return;
+    let alive = true;
+    async function getJson(url: string) {
+      const r = await apiFetch(url);
+      if (!r.ok) throw new Error(`HTTP ${r.status}`);
+      return r.json();
+    }
+    function touchReachability() {
+      getJson("/api/dashboard")
+        .then(() => {
+          if (!alive) return;
+          unreachableRef.current = false;
+          setError(null);
+          setLastReachableAt(Date.now());
+        })
+        .catch(() => {
+          getJson("/api/status")
+            .then(() => {
+              if (!alive) return;
+              unreachableRef.current = false;
+              setError(null);
+              setLastReachableAt(Date.now());
+            })
+            .catch((e) => {
+              if (!alive) return;
+              unreachableRef.current = true;
+              setError(String(e ?? "unreachable"));
+            });
+        });
+    }
+    touchReachability();
+    const id = setInterval(touchReachability, POLL_MS);
+    return () => {
+      alive = false;
+      clearInterval(id);
+    };
+  }, [view]);
+
   // Save a strategy setting live: apply an optimistic patch (instant, self-consistent card), POST
   // it, then reconcile from the server — reverting if the write fails. The pending guard stops the
   // 5 s poll clobbering the change mid-flight.
@@ -967,7 +1008,7 @@ export function App() {
 
       {/* B-09 / #73: unreachable EMS uses the same alert-item anatomy (message + failsafe +
           Laatst bekend) — never a bare "Cannot reach EMS API: …" error code. */}
-      {view === "dashboard" && error && (
+      {error && (
         <section className="alerts" data-testid="error">
           <div
             className="alert-item alert-critical"

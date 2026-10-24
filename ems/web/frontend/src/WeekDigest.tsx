@@ -5,11 +5,11 @@
 // of Insights' own day/week/month/year period picker — this is always a WEEK, with its own small
 // ‹ › stepper (mirrors Insights' period-nav). Collapsible to one line (the headline itself, like
 // the Advanced disclosure toggle) so it never dominates a repeat visit.
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 
 import { apiFetch } from "./auth";
 import { eur } from "./format";
-import { digestEurNl, WEEK_DIGEST_NEGATIVE_DAY } from "./labels";
+import { digestEurNl, WEEK_DIGEST, WEEK_DIGEST_NEGATIVE_DAY } from "./labels";
 
 type BestDay = { date: string; saved_eur: number } | null;
 
@@ -50,12 +50,17 @@ function shiftWeek(monday: string, dir: number): string {
 export function WeekDigest() {
   const [anchor, setAnchor] = useState<string>(""); // "" = let the server pick the default week
   const [digest, setDigest] = useState<Digest | null>(null);
+  const [loading, setLoading] = useState(true);
   const [error, setError] = useState(false);
+  const [fetchGen, setFetchGen] = useState(0);
   const [open, setOpen] = useState(true);
   const [openLossDay, setOpenLossDay] = useState<string | null>(null);
 
+  const retry = useCallback(() => setFetchGen((g) => g + 1), []);
+
   useEffect(() => {
     let alive = true;
+    setLoading(true);
     setError(false);
     const url = anchor ? `/api/digest?week=${anchor}` : "/api/digest";
     apiFetch(url)
@@ -63,16 +68,58 @@ export function WeekDigest() {
         if (!r.ok) throw new Error(`HTTP ${r.status}`);
         return r.json();
       })
-      .then((v: Digest) => alive && setDigest(v))
-      .catch(() => alive && setError(true));
+      .then((v: Digest) => {
+        if (alive) {
+          setDigest(v);
+          setError(false);
+        }
+      })
+      .catch(() => {
+        if (alive) {
+          setDigest(null);
+          setError(true);
+        }
+      })
+      .finally(() => {
+        if (alive) setLoading(false);
+      });
     return () => {
       alive = false;
     };
-  }, [anchor]);
+  }, [anchor, fetchGen]);
 
-  // Best-effort like the other Insights sub-panels (FinanceSection, HeatingAdvice): a digest
-  // hiccup never blocks the scores/flows/finance the rest of Insights already shows.
-  if (error || !digest) return null;
+  if (loading && !digest) {
+    return (
+      <section className="week-digest" data-testid="week-digest" aria-label="Your week">
+        <div className="week-digest-head">
+          <span className="metric-label" data-testid="week-digest-section-title">
+            {WEEK_DIGEST.sectionTitle}
+          </span>
+        </div>
+        <span className="skel-line skel-line-lg" data-testid="week-digest-loading" aria-hidden="true" />
+      </section>
+    );
+  }
+
+  if (error && !digest) {
+    return (
+      <section className="week-digest" data-testid="week-digest" aria-label="Your week">
+        <div className="week-digest-head">
+          <span className="metric-label" data-testid="week-digest-section-title">
+            {WEEK_DIGEST.sectionTitle}
+          </span>
+        </div>
+        <div className="week-digest-error" role="alert" data-testid="week-digest-error">
+          <p>{WEEK_DIGEST.loadError}</p>
+          <button type="button" className="btn secondary" data-testid="week-digest-retry" onClick={retry}>
+            {WEEK_DIGEST.retry}
+          </button>
+        </div>
+      </section>
+    );
+  }
+
+  if (!digest) return null;
 
   const monday = mondayOf(digest.week_label);
   const step = (dir: number) => {
