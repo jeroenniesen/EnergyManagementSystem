@@ -854,6 +854,25 @@ export function exportModelMismatchWarning(exportPriceModel: string): string | n
   return null;
 }
 
+/** Week digest panel — load/error copy (#369 INS-01). */
+export const WEEK_DIGEST = {
+  sectionTitle: "Je week",
+  loadError: "De weeksamenvatting kon niet worden geladen.",
+  retry: "Opnieuw",
+} as const;
+
+/** Onboarding checklist (#369 SETP-02). */
+export const SETUP_CHECKLIST = {
+  loading: "Laden…",
+  retry: "Opnieuw proberen",
+} as const;
+
+/** Audit log (#369 AUD-01 error slice). */
+export const AUDIT_VIEW = {
+  loadError: "Het wijzigingslog kon niet worden geladen.",
+  retry: "Opnieuw",
+} as const;
+
 /** Week digest: negative savings days (audit F-49 / #325). */
 export const WEEK_DIGEST_NEGATIVE_DAY = {
   sectionTitle: "Dagen met verlies",

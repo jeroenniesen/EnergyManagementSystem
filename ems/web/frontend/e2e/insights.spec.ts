@@ -892,18 +892,33 @@ test.describe("Insights: your week digest (B-58)", () => {
     await expect(page.getByTestId("week-digest-label")).toHaveText("Week of 2026-06-22");
   });
 
-  test("stays hidden without blocking the rest of Insights when /api/digest fails", async ({
-    page,
-  }) => {
+  test("shows the section title, error and retry when /api/digest fails (#369)", async ({ page }) => {
     await page.route("**/api/report**", (route) =>
       route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(REPORT) }),
     );
-    await page.route("**/api/digest**", (route) =>
-      route.fulfill({ status: 503, contentType: "application/json", body: "{\"detail\":\"down\"}" }),
-    );
+    let digestCalls = 0;
+    await page.route("**/api/digest**", (route) => {
+      digestCalls += 1;
+      if (digestCalls === 1) {
+        return route.fulfill({
+          status: 500,
+          contentType: "application/json",
+          body: '{"detail":"down"}',
+        });
+      }
+      return route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(DIGEST) });
+    });
     await page.goto("/");
     await page.getByTestId("nav-insights").click();
-    await expect(page.getByTestId("week-digest")).toHaveCount(0);
+    const panel = page.getByTestId("week-digest");
+    await expect(panel).toBeVisible();
+    await expect(page.getByTestId("week-digest-section-title")).toContainText("Je week");
+    const err = page.getByTestId("week-digest-error");
+    await expect(err).toBeVisible();
+    await expect(err).toContainText("kon niet worden geladen");
+    await page.getByTestId("week-digest-retry").click();
+    await expect(page.getByTestId("week-digest-headline")).toContainText("You saved €12.34");
+    await expect(page.getByTestId("week-digest-error")).toHaveCount(0);
     await expect(page.getByTestId("score-grid")).toBeVisible();
   });
 
