@@ -157,11 +157,14 @@ def test_report_year_series_reads_rollup_raw_reads_stay_single(tmp_path, monkeyp
     assert calls["derived_between"] == 1
 
 
-def test_report_day_view_never_touches_daily_energy(tmp_path, monkeypatch):
+def test_report_day_view_series_stays_off_the_rollup(tmp_path, monkeypatch):
+    # The day SERIES is still build_series over raw rows (B-49). F-48 adds one coverage
+    # read to stamp `provisional`, and boot catch-up reads the last-7 window once.
     db = str(tmp_path / "ems.sqlite")
     asyncio.run(_seed(db))
     calls: dict = {}
     _count_method(monkeypatch, HistoryStore, "daily_energy_between", calls)
     with TestClient(_app(db)) as c:
-        c.get(f"/api/report?period=day&date={YEAR}-01-05").json()
-    assert calls["daily_energy_between"] == 0
+        body = c.get(f"/api/report?period=day&date={YEAR}-01-05").json()
+    assert "provisional" in body
+    assert calls["daily_energy_between"] == 2

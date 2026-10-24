@@ -21,8 +21,9 @@ battery write. Device-health strip maps those alert keys onto the prices row.
 """
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import date, datetime
 from zoneinfo import ZoneInfo
 
 from ems.sources.prices import MockPriceSource
@@ -195,6 +196,7 @@ def derive_alerts(
     site_tz: ZoneInfo | None = None,
     live_mock_forecast_provider: bool = False,
     charge_blocked_by_cap: bool = False,
+    rollup_missing_days: Sequence[date] | None = None,
 ) -> list[Alert]:
     """Build the calm alert list for the current snapshot.
 
@@ -213,6 +215,8 @@ def derive_alerts(
     `live_mock_forecast_provider`: #242 — persisted mock on a live install (synthetic curve).
     `charge_blocked_by_cap`: #316 — the daily switch cap is blocking a planned grid-charge
     slot of at least 15 minutes. False as soon as that block is gone (not latched).
+    `rollup_missing_days`: #342 / F-48 — local days past 12:00 the next day that still
+    have meter samples but no energy+finance rollup. Empty clears the alert.
     """
     alerts: list[Alert] = []
     if live_mock_forecast_provider:
@@ -350,6 +354,17 @@ def derive_alerts(
                    "dagelijkse schakellimiet het toelaat.",
             ems_doing="EMS houdt de huidige stand aan en laadt weer wanneer de schakellimiet "
                       "het toelaat.",
+        ))
+    if rollup_missing_days:
+        listed = ", ".join(day.isoformat() for day in rollup_missing_days)
+        alerts.append(Alert(
+            "rollup_missing", "warning",
+            f"Dagelijkse rollup ontbreekt voor {listed}.",
+            safe="Dit raakt alleen de dagtotaal in Inzichten, niet de batterij-aansturing.",
+            action="Nothing needed — EMS vult een gemiste rollup van de laatste 7 dagen "
+                   "vanzelf aan.",
+            ems_doing="EMS schrijft de ontbrekende rollup alsnog en haalt deze melding "
+                      "weg zodra die er is.",
         ))
     if control_overrun:
         # Hedge: the overrun latch is set even when dry-run / lifecycle / drain skip the AUTO

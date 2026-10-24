@@ -23,6 +23,8 @@ type DayFin = {
   battery_contribution_eur?: number | null;
   grid_import_kwh: number;
   grid_export_kwh: number;
+  /** F-48: no rollup yet, or sample coverage below 95%. */
+  provisional?: boolean;
 };
 
 type VsAuto = {
@@ -134,6 +136,11 @@ function SavedBars({ days }: { days: DayFin[] }) {
               <span className="chart-tip-val">{eur(days[hover].battery_cost_eur!)}</span>
             </div>
           )}
+          {days[hover].provisional && (
+            <div className="chart-tip-row">Status
+              <span className="chart-tip-val">voorlopig</span>
+            </div>
+          )}
         </div>
       )}
     </div>
@@ -185,6 +192,26 @@ function coverageCaveat(fin: FinResp): string | null {
   return null;
 }
 
+/** F-48 / #342: Dutch 'voorlopig' when a day has no rollup yet or under 95% samples. */
+export function ProvisionalMark({ days }: { days: { day: string; provisional?: boolean }[] }) {
+  const flagged = days.filter((d) => d.provisional);
+  if (flagged.length === 0) return null;
+  const listed = flagged.map((d) => d.day).join(", ");
+  return (
+    <p className="fin-provisional" data-testid="fin-provisional">
+      <span
+        className="badge badge-provisional"
+        role="status"
+        data-testid="fin-provisional-badge"
+        aria-label={`Voorlopig: ${listed}. Nog geen rollup of minder dan 95 procent meetpunten.`}
+      >
+        voorlopig
+      </span>
+      <span className="fin-caveat">{listed}</span>
+    </p>
+  );
+}
+
 export function FinanceSection({ period, anchor }: { period: string; anchor: string }) {
   const [fin, setFin] = useState<FinResp | null>(null);
   const [error, setError] = useState(false);
@@ -230,6 +257,7 @@ export function FinanceSection({ period, anchor }: { period: string; anchor: str
   return (
     <div className="fin" data-testid="finance-section">
       <h3 className="card-title flow-title">What it cost &amp; saved{soFar}</h3>
+      <ProvisionalMark days={fin.days} />
       {t.saved_eur == null ? (
         <p className="fin-caveat" data-testid="fin-caveat">
           No price history recorded yet — money figures start appearing after the app has stored a
