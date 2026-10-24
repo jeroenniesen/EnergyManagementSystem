@@ -19,6 +19,7 @@ from datetime import datetime
 
 from ems.domain import BatteryIntent
 from ems.planner import economics
+from ems.planner.budgets import cycle_budget_reason, equivalent_full_cycles, resolved_cycle_history
 from ems.planner.charge_need import stored_kwh_per_slot
 from ems.planner.schedule import SLOT, Plan, PlanSlot
 from ems.sources.prices import PriceSlot
@@ -42,6 +43,8 @@ class TradingConfig:
     min_export_kwh: float = 0.5
     export_mode: str = "peak_slice"  # peak_slice | full_dump
     max_cycles_per_day: float = 1.5
+    charged_today_kwh: float | None = 0.0
+    discharged_today_kwh: float | None = 0.0
     daily_min_savings_eur: float = 0.20
     export_price_model: str = "spot_minus_tax"
     energy_tax_eur_per_kwh: float = 0.13
@@ -331,7 +334,14 @@ def _build_path_t(
     else:
         export_candidates = profitable[: cfg.discharge_slots]
 
-    cycle_kwh_budget = cfg.max_cycles_per_day * 2.0 * cfg.usable_kwh
+    hist_c, hist_d = resolved_cycle_history(
+        cfg.charged_today_kwh, cfg.discharged_today_kwh, cfg.max_cycles_per_day,
+    )
+    used_efc = equivalent_full_cycles(hist_c, hist_d, cfg.usable_kwh)
+    if (hist_c > 0.0 or hist_d > 0.0) and used_efc >= cfg.max_cycles_per_day - 1e-9:
+        return None, 0.0, 0.0, f"Geen handel: {cycle_budget_reason(cfg.max_cycles_per_day)}"
+    remaining_cycles = max(0.0, cfg.max_cycles_per_day - used_efc)
+    cycle_kwh_budget = remaining_cycles * 2.0 * cfg.usable_kwh
     max_export_from_cycles = cycle_kwh_budget / 2.0
     day_cap = (
         cfg.max_export_kwh_per_day
@@ -381,7 +391,9 @@ def _build_path_t(
 
     # Trim to cycle budget instead of abandoning (Grok nit).
     while export_starts and cfg.usable_kwh > 0:
-        efc = (stored_dc + export_ac / eta) / (2.0 * cfg.usable_kwh)
+        efc = equivalent_full_cycles(
+            hist_c + stored_dc, hist_d + export_ac / eta, cfg.usable_kwh,
+        )
         if efc <= cfg.max_cycles_per_day + 1e-9:
             break
         export_starts.pop()

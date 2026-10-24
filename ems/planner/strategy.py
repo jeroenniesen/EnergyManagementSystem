@@ -20,7 +20,7 @@ from datetime import datetime
 from zoneinfo import ZoneInfo
 
 from ems.planner.adaptive import AdaptiveConfig, plan_adaptive
-from ems.planner.budgets import ac_grid_kwh_per_slot, clamp_grid_charge
+from ems.planner.budgets import ac_grid_kwh_per_slot, clamp_cycle_budget, clamp_grid_charge
 from ems.planner.rule_based import PlannerConfig, plan_rule_based
 from ems.planner.schedule import Plan
 from ems.planner.summer import SummerConfig, plan_summer
@@ -257,7 +257,58 @@ def build_plan(
     bought, cap, per_slot, site_tz = _daily_cap_inputs(
         strategy, winter_cfg, summer_cfg, adaptive_cfg, load_w_by,
     )
-    return clamp_grid_charge(plan, bought, cap, per_slot, tz=site_tz)
+    plan = clamp_grid_charge(plan, bought, cap, per_slot, tz=site_tz)
+    # Trading already applied the shared EFC helper to its own charge and export.
+    # A second slot walk would count full-power slots, which is stricter than the
+    # trade's stored-energy trim and would change a zero-history decision.
+    if plan.strategy == "trading":
+        return plan
+    return _clamp_shared_cycles(
+        plan, strategy, winter_cfg, summer_cfg, adaptive_cfg, load_w_by,
+    )
+
+
+def _clamp_shared_cycles(
+    plan: Plan,
+    strategy: str,
+    winter_cfg: PlannerConfig,
+    summer_cfg: SummerConfig,
+    adaptive_cfg: AdaptiveConfig | None,
+    load_w_by: dict[datetime, float] | None,
+) -> Plan:
+    """Apply the one daily EFC budget on the seasonal plan that just ran."""
+    if strategy == "summer" and adaptive_cfg is not None and load_w_by is not None:
+        src = adaptive_cfg
+        usable, watts, rte, zone = (
+            src.usable_kwh, src.max_charge_w, src.round_trip_efficiency, src.site_tz,
+        )
+    elif strategy == "summer":
+        src = winter_cfg
+        usable, watts, rte, zone = (
+            summer_cfg.usable_kwh, summer_cfg.max_charge_w,
+            summer_cfg.round_trip_efficiency, summer_cfg.site_tz,
+        )
+    elif adaptive_cfg is not None and load_w_by is not None:
+        src = winter_cfg
+        usable, watts, rte, zone = (
+            adaptive_cfg.usable_kwh, adaptive_cfg.max_charge_w,
+            winter_cfg.round_trip_efficiency, winter_cfg.site_tz,
+        )
+    else:
+        src = winter_cfg
+        usable, watts, rte, zone = (
+            10.0, 4000.0, winter_cfg.round_trip_efficiency, winter_cfg.site_tz,
+        )
+    return clamp_cycle_budget(
+        plan,
+        getattr(src, "charged_today_kwh", 0.0),
+        getattr(src, "discharged_today_kwh", 0.0),
+        getattr(src, "max_cycles_per_day", 1.5),
+        usable,
+        round_trip_efficiency=rte,
+        charge_fallback_w=watts,
+        tz=zone,
+    )
 
 
 def _daily_cap_inputs(

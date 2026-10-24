@@ -1,4 +1,4 @@
-"""Daily grid-charge budget (#317, audit F-03 / F-32).
+"""Daily grid-charge budget (#317) and shared EFC cycle budget (#318, audit F-05).
 
 `clamp_grid_charge` runs after a plan is built. It only removes grid-buying slots:
 slots that would push the local day over `max_daily_grid_charge_kwh` become
@@ -9,10 +9,16 @@ bought today" figure is recomputed from history for the site-local calendar day
 (Europe/Amsterdam in production). It is not an in-memory counter, so a restart cannot
 reset it early and local midnight — including 23 h and 25 h DST days — starts a new day.
 A missing counter (`None`) means today's cap is already reached: no further grid charging.
+
+The shared cycle budget is also restrict-only. `clamp_cycle_budget` drops new
+grid-charge and export slots once today's equivalent full cycles would pass
+`max_cycles_per_day`. Unknown cycle history counts in-plan energy only and logs
+a warning; it does not by itself block the day.
 """
 from __future__ import annotations
 
 import logging
+import math
 import sqlite3
 from collections import defaultdict
 from dataclasses import replace
@@ -21,6 +27,7 @@ from zoneinfo import ZoneInfo
 
 from ems.domain import BatteryIntent
 from ems.planner.schedule import Plan, PlanSlot
+from ems.storage.history import read_charged_discharged_kwh
 from ems.timeutil import require_aware, slot_start
 
 _log = logging.getLogger("ems.planner.budgets")
@@ -370,3 +377,216 @@ def _parse_ts(value: object) -> datetime | None:
     if parsed.tzinfo is None:
         return parsed.replace(tzinfo=UTC)
     return parsed
+
+
+_RESTRICTED = frozenset({
+    BatteryIntent.GRID_CHARGE_TO_TARGET,
+    BatteryIntent.EXPORT_FOR_PROFIT,
+})
+_CYCLE_EPS = 1e-9
+
+
+def cycle_budget_reason(max_cycles: float) -> str:
+    """Homeowner-facing reason when a new grid-charge or export slot is dropped."""
+    shown = float(max_cycles)
+    if abs(shown - round(shown)) < 1e-9:
+        body = str(int(round(shown)))
+    else:
+        body = f"{shown:.10g}".replace(".", ",")
+    return f"Cycle-budget op ({body} EFC)"
+
+
+def equivalent_full_cycles(
+    charged_kwh: float, discharged_kwh: float, usable_kwh: float,
+) -> float:
+    """(kWh charged + kWh discharged) / (2 × usable_kwh). Zero when usable is unknown."""
+    denom = 2.0 * float(usable_kwh)
+    if denom <= 1e-12:
+        return 0.0
+    return (max(0.0, charged_kwh) + max(0.0, discharged_kwh)) / denom
+
+
+def resolved_cycle_history(
+    charged_kwh: float | None,
+    discharged_kwh: float | None,
+    max_cycles: float,
+) -> tuple[float, float]:
+    """History kWh for the cycle counter.
+
+    ``None`` on either side means the read failed: count in-plan energy only and warn.
+    That miss does not by itself block grid charge or export.
+    """
+    if charged_kwh is None or discharged_kwh is None:
+        _log.warning(
+            "cycle-budget history unknown — counting in-plan EFC only (limit %.3g EFC)",
+            max_cycles,
+        )
+        return 0.0, 0.0
+    return max(0.0, float(charged_kwh)), max(0.0, float(discharged_kwh))
+
+
+def _eta(round_trip_efficiency: float) -> float:
+    return math.sqrt(max(1e-6, min(1.0, float(round_trip_efficiency))))
+
+
+def _slot_cycle_kwh(
+    slot: PlanSlot,
+    *,
+    now: datetime | None,
+    eta: float,
+    charge_fallback_w: float,
+) -> tuple[float, float]:
+    """DC kWh ``(charged, discharged)`` this slot still adds at ``now``."""
+    frac = 1.0 if now is None else _remaining_fraction(slot.start, now)
+    if frac <= 0.0:
+        return 0.0, 0.0
+    intent = slot.intent
+    if intent is BatteryIntent.GRID_CHARGE_TO_TARGET:
+        if slot.power_w is not None and slot.power_w > 0:
+            dc = float(slot.power_w) * _SLOT_HOURS / 1000.0 * eta
+        elif slot.target_kwh is not None and slot.target_kwh > 0:
+            dc = float(slot.target_kwh)
+        elif charge_fallback_w > 0:
+            dc = float(charge_fallback_w) * _SLOT_HOURS / 1000.0 * eta
+        else:
+            dc = 0.0
+        return dc * frac, 0.0
+    if intent is BatteryIntent.EXPORT_FOR_PROFIT:
+        if slot.power_w is not None and slot.power_w > 0:
+            dc = float(slot.power_w) * _SLOT_HOURS / 1000.0 / eta
+        elif slot.target_kwh is not None and slot.target_kwh > 0:
+            dc = float(slot.target_kwh) / eta
+        else:
+            dc = 0.0
+        return 0.0, dc * frac
+    if intent is BatteryIntent.DISCHARGE_FOR_LOAD:
+        if slot.power_w is not None and slot.power_w > 0:
+            dc = float(slot.power_w) * _SLOT_HOURS / 1000.0 / eta
+        elif slot.target_kwh is not None and slot.target_kwh > 0:
+            dc = float(slot.target_kwh) / eta
+        else:
+            return 0.0, 0.0
+        return 0.0, dc * frac
+    return 0.0, 0.0
+
+
+def clamp_cycle_budget(
+    plan: Plan,
+    charged_today_kwh: float | None,
+    discharged_today_kwh: float | None,
+    max_cycles_per_day: float,
+    usable_kwh: float,
+    *,
+    round_trip_efficiency: float = 1.0,
+    charge_fallback_w: float = 0.0,
+    tz: ZoneInfo | None = None,
+) -> Plan:
+    """Drop grid-charge and export slots that would pass the local-day EFC budget.
+
+    Discharge-for-load and self-consumption slots stay. Their declared energy is
+    reserved first, so a later grid-charge or export cannot spend a budget the
+    discharge will already use. Other local days in the horizon get a fresh budget.
+    Unknown history (``None``) counts in-plan energy only.
+    """
+    if not plan.slots or float(usable_kwh) <= 0.0:
+        return plan
+    limit = max(0.0, float(max_cycles_per_day))
+    zone = tz or _SITE_TZ
+    eta = _eta(round_trip_efficiency)
+    hist_c, hist_d = resolved_cycle_history(
+        charged_today_kwh, discharged_today_kwh, limit,
+    )
+    today = _plan_day(plan, zone)
+    now = plan.created_at
+    free_c: dict[date, float] = defaultdict(float)
+    free_d: dict[date, float] = defaultdict(float)
+    for slot in plan.slots:
+        if slot.intent in _RESTRICTED:
+            continue
+        charged, discharged = _slot_cycle_kwh(
+            slot, now=now, eta=eta, charge_fallback_w=charge_fallback_w,
+        )
+        day = slot.start.astimezone(zone).date()
+        free_c[day] += charged
+        free_d[day] += discharged
+
+    used_c: dict[date, float] = defaultdict(float)
+    used_d: dict[date, float] = defaultdict(float)
+    reason = cycle_budget_reason(limit)
+    blocked = False
+    new_slots: list[PlanSlot] = []
+    for slot in plan.slots:
+        if slot.intent not in _RESTRICTED:
+            new_slots.append(slot)
+            continue
+        day = slot.start.astimezone(zone).date()
+        charged, discharged = _slot_cycle_kwh(
+            slot, now=now, eta=eta, charge_fallback_w=charge_fallback_w,
+        )
+        base_c = free_c[day] + used_c[day] + (hist_c if day == today else 0.0)
+        base_d = free_d[day] + used_d[day] + (hist_d if day == today else 0.0)
+        efc = equivalent_full_cycles(base_c + charged, base_d + discharged, usable_kwh)
+        if efc <= limit + _CYCLE_EPS:
+            used_c[day] += charged
+            used_d[day] += discharged
+            new_slots.append(slot)
+            continue
+        blocked = True
+        new_slots.append(_as_self_consumption(slot, reason))
+    if not blocked:
+        return plan
+    return replace(plan, slots=tuple(new_slots))
+
+
+def plan_day_efc(
+    plan: Plan,
+    usable_kwh: float,
+    *,
+    round_trip_efficiency: float = 1.0,
+    charge_fallback_w: float = 0.0,
+    tz: ZoneInfo | None = None,
+    charged_today_kwh: float = 0.0,
+    discharged_today_kwh: float = 0.0,
+) -> dict[date, float]:
+    """Local-day EFC of history (on the plan's created-at day) plus in-plan throughput."""
+    zone = tz or _SITE_TZ
+    eta = _eta(round_trip_efficiency)
+    today = _plan_day(plan, zone)
+    now = plan.created_at
+    charged: dict[date, float] = defaultdict(float)
+    discharged: dict[date, float] = defaultdict(float)
+    charged[today] += max(0.0, charged_today_kwh)
+    discharged[today] += max(0.0, discharged_today_kwh)
+    for slot in plan.slots:
+        c, d = _slot_cycle_kwh(
+            slot, now=now, eta=eta, charge_fallback_w=charge_fallback_w,
+        )
+        day = slot.start.astimezone(zone).date()
+        charged[day] += c
+        discharged[day] += d
+    return {
+        day: equivalent_full_cycles(charged[day], discharged[day], usable_kwh)
+        for day in charged
+    }
+
+
+def read_cycle_throughput_today(
+    db_path: str | None,
+    now: datetime,
+    tz: ZoneInfo,
+) -> tuple[float, float] | None:
+    """Read-only battery kWh ``(charged, discharged)`` for the local day of ``now``.
+
+    ``None`` when the database cannot be read. ``(0.0, 0.0)`` when nothing was
+    recorded in the window. No process memory: every call re-reads SQLite.
+    """
+    if not db_path:
+        return None
+    require_aware(now, "now")
+    start, end = local_day_bounds(now, tz)
+    return read_charged_discharged_kwh(
+        db_path,
+        start.astimezone(UTC).isoformat(),
+        end.astimezone(UTC).isoformat(),
+        now_iso=now.astimezone(UTC).isoformat(),
+    )

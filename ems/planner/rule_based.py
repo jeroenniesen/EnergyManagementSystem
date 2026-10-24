@@ -17,7 +17,7 @@ from zoneinfo import ZoneInfo
 
 from ems.domain import BatteryIntent
 from ems.planner import economics
-from ems.planner.budgets import ac_grid_kwh_per_slot, clamp_grid_charge
+from ems.planner.budgets import ac_grid_kwh_per_slot, clamp_cycle_budget, clamp_grid_charge
 from ems.planner.buy_pool import build_buy_pool_info
 from ems.planner.charge_need import stored_kwh_per_slot
 from ems.planner.ev_load import format_ev_load_reason
@@ -99,6 +99,9 @@ class PlannerConfig:
     # #317: hard daily grid-buy cap. already_bought is today's history (None = unknown).
     max_daily_grid_charge_kwh: float = 12.0
     already_bought_today_kwh: float | None = 0.0
+    max_cycles_per_day: float = 1.5
+    charged_today_kwh: float | None = 0.0
+    discharged_today_kwh: float | None = 0.0
     site_tz: ZoneInfo = field(default_factory=lambda: ZoneInfo("Europe/Amsterdam"))
 
 
@@ -154,10 +157,16 @@ def plan_rule_based(
         plan = _soak_negative(plan, prices, cfg, max_charge_w=max_charge_w)
     # After soak so negative-price slots spend the same daily cap (Besluit #317).
     # Cap unit is AC grid kWh, not the DC `stored_kwh_per_slot` the planner sizes with.
-    return clamp_grid_charge(
+    capped = clamp_grid_charge(
         plan, cfg.already_bought_today_kwh, cfg.max_daily_grid_charge_kwh,
         ac_grid_kwh_per_slot(max_charge_w),
         tz=cfg.site_tz,
+    )
+    return clamp_cycle_budget(
+        capped, cfg.charged_today_kwh, cfg.discharged_today_kwh,
+        cfg.max_cycles_per_day, usable_kwh,
+        round_trip_efficiency=cfg.round_trip_efficiency,
+        charge_fallback_w=max_charge_w, tz=cfg.site_tz,
     )
 
 

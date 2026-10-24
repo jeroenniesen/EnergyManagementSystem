@@ -626,6 +626,42 @@ def test_replay_under_cap_day_spend_unchanged_and_over_cap_day_clamped():
     )) > 12.0
 
 
+def test_replay_canned_days_stay_within_the_shared_cycle_budget():
+    """AC5: 14 canned winter days, no planned local day above planner.max_cycles_per_day.
+
+    A 14-day replay on the production database is a manual post-merge check.
+    """
+    from ems.planner.budgets import plan_day_efc
+    from ems.planner.strategy import build_plan
+    from ems.replay import _adaptive_cfg, _summer_cfg, _winter_cfg
+
+    cfg = _cfg()
+    limit = 1.5
+    for offset in range(14):
+        day = DAY + timedelta(days=offset)
+        raw = _raw_day(1000.0, lambda _i: 0.0, day=day)
+        prices = _price_day(_winter_price, day=day)
+        result = replay_day(raw, prices, [], cfg=cfg)
+        assert result.data_ok, result.skip_reason
+        assert result.scenarios["planner"].cycles_kwh <= limit * cfg.usable_kwh + 1e-6
+        slots = [
+            PriceSlot(start=datetime.fromisoformat(p["start_ts"]), eur_per_kwh=p["eur_per_kwh"])
+            for p in prices
+        ]
+        plan = build_plan(
+            "winter", prices=slots, forecast=[], now=day, soc_pct=0.0,
+            winter_cfg=_winter_cfg(cfg), summer_cfg=_summer_cfg(cfg),
+            load_w_by={s.start: 1000.0 for s in slots}, adaptive_cfg=_adaptive_cfg(cfg),
+        )
+        efc = plan_day_efc(
+            plan, cfg.usable_kwh,
+            round_trip_efficiency=cfg.round_trip_efficiency,
+            charge_fallback_w=cfg.max_charge_w, tz=UTZ,
+        )
+        assert efc
+        assert max(efc.values()) <= limit + 1e-6
+
+
 def test_marked_floor_hold_at_reserve_passes_validator():
     """#312 AC4: floor-hold post-pass on a synthetic at-floor slot stays validator-clean."""
     from ems.planner.validator import validate_plan as vp
