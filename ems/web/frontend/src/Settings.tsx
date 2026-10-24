@@ -1250,7 +1250,7 @@ export function Settings({
               <div className="override-controls">
                 <button
                   type="button"
-                  className="btn-primary"
+                  className="btn-danger"
                   data-testid="restart-confirm"
                   disabled={restartPhase === "requesting"}
                   onClick={requestRestart}
