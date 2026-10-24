@@ -686,6 +686,77 @@ export function App() {
     };
   }, [view]);
 
+  // B-09 / #369 NAV-03: same /api/dashboard → /api/status liveness check on non-dashboard views
+  // so the unreachable banner is not dashboard-only. Dashboard keeps the full poll above unchanged.
+  useEffect(() => {
+    if (view === "dashboard") return;
+    let alive = true;
+    async function getJson(url: string) {
+      const r = await apiFetch(url);
+      if (!r.ok) throw new Error(`HTTP ${r.status}`);
+      return r.json();
+    }
+    function touchReachability() {
+      const applyCore = (value: {
+        status: Status;
+        freshness: FreshnessMap;
+        alerts: AlertsResp;
+        device_health?: DeviceHealth | null;
+      }) => {
+        unreachableRef.current = false;
+        setStatus(value.status);
+        setFreshness(value.freshness);
+        batteryFreshness.current = value.freshness.battery ?? null;
+        setAlertsData(value.alerts);
+        if (value.device_health) setDeviceHealth(value.device_health);
+        setError(null);
+        setLastReachableAt(Date.now());
+        setTileFreshness((current) => ({
+          ...current,
+          status: { updatedAt: Date.now(), stale: batteryFreshness.current === "stale" },
+        }));
+        if (value.freshness.battery === "stale" || value.freshness.battery === "missing") {
+          setTileFreshness((current) => ({ ...current, status: { ...current.status, stale: true } }));
+        }
+      };
+      getJson("/api/dashboard")
+        .then((value: {
+          status: Status;
+          freshness: FreshnessMap;
+          alerts: AlertsResp;
+          device_health?: DeviceHealth | null;
+        }) => {
+          if (!alive) return;
+          applyCore(value);
+        })
+        .catch(() => {
+          getJson("/api/status")
+            .then((v) => {
+              if (!alive) return;
+              unreachableRef.current = false;
+              setStatus(v);
+              setError(null);
+              setLastReachableAt(Date.now());
+            })
+            .catch((e) => {
+              if (!alive) return;
+              unreachableRef.current = true;
+              setError(String(e ?? "unreachable"));
+              setStatus(null);
+              setAlertsData(null);
+              setDecision(null);
+              setTileFreshness((current) => ({ ...current, status: { ...current.status, stale: true } }));
+            });
+        });
+    }
+    touchReachability();
+    const id = setInterval(touchReachability, POLL_MS);
+    return () => {
+      alive = false;
+      clearInterval(id);
+    };
+  }, [view]);
+
   // Save a strategy setting live: apply an optimistic patch (instant, self-consistent card), POST
   // it, then reconcile from the server — reverting if the write fails. The pending guard stops the
   // 5 s poll clobbering the change mid-flight.
@@ -967,7 +1038,7 @@ export function App() {
 
       {/* B-09 / #73: unreachable EMS uses the same alert-item anatomy (message + failsafe +
           Laatst bekend) — never a bare "Cannot reach EMS API: …" error code. */}
-      {view === "dashboard" && error && (
+      {error && (
         <section className="alerts" data-testid="error">
           <div
             className="alert-item alert-critical"

@@ -1,6 +1,7 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 
 import { apiFetch } from "./auth";
+import { SETUP_CHECKLIST } from "./labels";
 
 type ChecklistItem = {
   key: string;
@@ -38,9 +39,13 @@ function statusClass(status: ChecklistItem["status"]): string {
 export function Setup({ onOpenSettings }: Props) {
   const [data, setData] = useState<Checklist | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [fetchGen, setFetchGen] = useState(0);
+
+  const retry = useCallback(() => setFetchGen((g) => g + 1), []);
 
   useEffect(() => {
     let alive = true;
+    setError(null);
     apiFetch("/api/setup/checklist")
       .then(async (r) => {
         if (!r.ok) throw new Error(`HTTP ${r.status}`);
@@ -50,12 +55,15 @@ export function Setup({ onOpenSettings }: Props) {
         if (alive) setData(body);
       })
       .catch(() => {
-        if (alive) setError("Kon de checklist niet laden. Probeer het later opnieuw.");
+        if (alive) {
+          setData(null);
+          setError("Kon de checklist niet laden. Probeer het later opnieuw.");
+        }
       });
     return () => {
       alive = false;
     };
-  }, []);
+  }, [fetchGen]);
 
   return (
     <section className="setup-checklist" data-testid="setup-checklist">
@@ -64,10 +72,25 @@ export function Setup({ onOpenSettings }: Props) {
         Zo zie je wat EMS nog nodig heeft voordat het veilig mee kan kijken. EMS blijft in
         kijkmodus tot je later zelf live sturen inschakelt.
       </p>
-      {error && (
-        <p className="setup-checklist-error" role="alert" data-testid="setup-checklist-error">
-          {error}
+      {data === null && !error && (
+        <p className="loading" data-testid="setup-checklist-loading">
+          {SETUP_CHECKLIST.loading}
         </p>
+      )}
+      {error && (
+        <div className="setup-checklist-error-row" data-testid="setup-checklist-error-row">
+          <p className="error" role="alert" data-testid="setup-checklist-error">
+            {error}
+          </p>
+          <button
+            type="button"
+            className="btn secondary setup-checklist-btn"
+            data-testid="setup-checklist-retry"
+            onClick={retry}
+          >
+            {SETUP_CHECKLIST.retry}
+          </button>
+        </div>
       )}
       {data && (
         <>
