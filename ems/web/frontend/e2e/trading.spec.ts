@@ -82,7 +82,14 @@ test.describe("Trading view", () => {
     await expect(page.getByTestId("trading-arm-step2-missing")).toContainText(
       "Ontbreekt: stap 2 — bekijk de dry-run",
     );
+    await expect(page.getByTestId("trading-test-consequence")).toContainText("reservevloer");
+    const startBtn = page.getByTestId("trading-test-btn");
+    await expect(startBtn).toBeDisabled();
+    await expect(startBtn).toHaveClass(/btn-danger/);
     await expect(page.getByTestId("trading-test-blocked")).toBeVisible();
+    await expect(page.getByTestId("trading-test-blocked")).toContainText(
+      TRADING_RESP.block_reason,
+    );
     trading.assertRequested();
   });
 
@@ -188,6 +195,51 @@ test.describe("Trading view", () => {
     );
     await page.goto("/#trading");
     await expect(page.getByTestId("trading-disarm")).toBeEnabled();
+  });
+
+  test("TRD-02: writes allowed opens confirm, focus moves, one POST on confirm", async ({
+    page,
+  }) => {
+    let testPosts = 0;
+    await mockRoute(page, "**/api/trading", (route) =>
+      route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          ...TRADING_RESP,
+          dry_run: false,
+          operational: true,
+          writes_allowed: true,
+          block_reason: null,
+          test_battery_allowed: true,
+        }),
+      }),
+    );
+    await page.route("**/api/trading/test-battery", async (route) => {
+      if (route.request().method() === "POST") {
+        testPosts += 1;
+        await route.fulfill({
+          status: 200,
+          contentType: "application/json",
+          body: JSON.stringify({ ok: true, detail: "Test gestart" }),
+        });
+      } else {
+        await route.fallback();
+      }
+    });
+    await page.goto("/#trading");
+    await expect(page.getByTestId("trading-test-consequence")).toBeVisible();
+    const startBtn = page.getByTestId("trading-test-btn");
+    await expect(startBtn).toBeEnabled();
+    await expect(startBtn).toHaveClass(/btn-danger/);
+    await startBtn.click();
+    const panel = page.getByTestId("trading-test-confirm-panel");
+    await expect(panel).toBeVisible();
+    await expect(panel).toBeFocused();
+    const confirmBtn = page.getByTestId("trading-test-confirm");
+    await expect(confirmBtn).toHaveClass(/btn-danger/);
+    await confirmBtn.click();
+    await expect.poll(() => testPosts).toBe(1);
   });
 
   test("hides Test battery button while a probe is running", async ({ page }) => {

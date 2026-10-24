@@ -968,3 +968,51 @@ export const MODE_BLOCK_RECOVERY = {
     "In config.yaml moeten dev.mode op live en control.dry_run op false staan; "
     + "anders blijft alleen kijken geforceerd.",
 } as const;
+
+/** TRD-02 (#367) — battery test card copy and gate helpers (Trading.tsx). */
+export const TRADING_TEST_BATTERY = {
+  consequence:
+    "De batterij ontlaadt ongeveer 2 minuten op maximaal vermogen, tot aan de reservevloer.",
+  startLabel: "Start test",
+  confirmHint:
+    "Bevestig de proefontlading. Dit bewapent live handel niet. Geweigerd als de auto gaat laden "
+    + "vóór je bevestigt.",
+  defaultBlockReason: "Test niet beschikbaar — schrijven of sensorgegevens geblokkeerd.",
+} as const;
+
+export type TradingTestGateStatus = {
+  writes_allowed: boolean;
+  block_reason: string | null;
+  test_battery_allowed?: boolean;
+  test_battery_block_reason?: string | null;
+};
+
+/** Mirrors GET /api/trading test gate — UI only; server stays authoritative. */
+export function tradingTestBlockedByStatus(s: TradingTestGateStatus): boolean {
+  return (
+    s.test_battery_allowed === false
+    || (!s.writes_allowed && s.test_battery_allowed === undefined)
+  );
+}
+
+export function tradingTestBlockReason(s: TradingTestGateStatus): string {
+  return (
+    s.test_battery_block_reason
+    || s.block_reason
+    || TRADING_TEST_BATTERY.defaultBlockReason
+  );
+}
+
+/** Show block copy only when the status gate is closed — not when busy alone disables the button. */
+export function tradingTestShowBlockReason(s: TradingTestGateStatus): boolean {
+  return !s.writes_allowed || tradingTestBlockedByStatus(s);
+}
+
+export function tradingTestStartDisabled(
+  s: TradingTestGateStatus,
+  opts: { canOperate: boolean; busy: boolean; probeActive?: boolean },
+): boolean {
+  if (!opts.canOperate || opts.busy || opts.probeActive) return true;
+  if (!s.writes_allowed) return true;
+  return tradingTestBlockedByStatus(s);
+}
