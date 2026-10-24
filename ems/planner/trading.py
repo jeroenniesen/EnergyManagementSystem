@@ -21,6 +21,7 @@ from ems.domain import BatteryIntent
 from ems.planner import economics
 from ems.planner.budgets import cycle_budget_reason, equivalent_full_cycles, resolved_cycle_history
 from ems.planner.charge_need import stored_kwh_per_slot
+from ems.planner.horizon import slice_price_horizon
 from ems.planner.schedule import SLOT, Plan, PlanSlot
 from ems.sources.prices import PriceSlot
 from ems.tariffs import setting_price_includes_all_fees
@@ -262,9 +263,17 @@ def score_t_plan(
     return revenue - cost
 
 
+def _price_horizon(prices: list[PriceSlot], now: datetime, cfg: TradingConfig) -> list[PriceSlot]:
+    """Same next-day horizon as the seasonal planners (#329). Price tz is the site tz."""
+    tz = next((p.start.tzinfo for p in prices if p.start.tzinfo is not None), None)
+    if tz is None:
+        return [p for p in prices if p.start + SLOT > now][: cfg.horizon_slots]
+    return slice_price_horizon(prices, now, tz, fallback_slots=cfg.horizon_slots)
+
+
 def _all_auto_plan(prices: list[PriceSlot], now, cfg: TradingConfig, *, reason: str) -> Plan:
     """Whole-day no-trade AUTO (decision 9) — no load-arbitrage, no export."""
-    horizon = [p for p in prices if p.start + SLOT > now][: cfg.horizon_slots]
+    horizon = _price_horizon(prices, now, cfg)
     floor = cfg.reserve_soc_pct
     slots = tuple(
         PlanSlot(
@@ -289,7 +298,7 @@ def _build_path_t(
     Returns (plan|None, projected_T_eur, existing_ac_exported, skip_reason).
     `existing_ac_exported` is the portion of export from already-stored energy (Z opportunity).
     """
-    horizon = [p for p in prices if p.start + SLOT > now][: cfg.horizon_slots]
+    horizon = _price_horizon(prices, now, cfg)
     if not horizon:
         return None, 0.0, 0.0, "Geen handel: geen prijsvensters over."
 

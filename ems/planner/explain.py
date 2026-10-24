@@ -15,6 +15,7 @@ from datetime import datetime
 from typing import Protocol
 
 from ems.domain import BatteryIntent
+from ems.planner.horizon import MAX_HORIZON_SLOTS
 from ems.planner.projection import SLOT_HOURS, ProjectedSlot
 from ems.planner.reason import STALE_METER_PLAN_REASON
 from ems.planner.schedule import Plan
@@ -420,7 +421,7 @@ def build_plan_detail(
     prices: list[PriceSlot],
     plan: Plan,
     forecast_slots: list[ForecastSlot] | None,
-    horizon: int = 96,
+    horizon: int = MAX_HORIZON_SLOTS,
 ) -> dict:
     """Per-slot {start, intent, reason, eur_per_kwh, solar_w} on the plan's timeline + a summary."""
     price_by = {p.start: p.eur_per_kwh for p in prices}
