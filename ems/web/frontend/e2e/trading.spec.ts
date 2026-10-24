@@ -3,6 +3,27 @@ import { expect, test } from "@playwright/test";
 
 import { mockRoute } from "./route-mock";
 
+const TRADING_STEPS = [
+  {
+    id: "advice",
+    ok: false,
+    label: "Stap 1 — Trading aan (plan-only)",
+    missing: "trading staat uit",
+  },
+  {
+    id: "dry_run",
+    ok: false,
+    label: "Stap 2 — Dry-run T-vs-Z bekeken",
+    missing: "niet vastgelegd",
+  },
+  {
+    id: "arm",
+    ok: false,
+    label: "Stap 3 — Live export bewapend",
+    missing: "nog niet bewapend",
+  },
+];
+
 const TRADING_RESP = {
   trading_enabled: false,
   min_extra_eur: 0.5,
@@ -15,6 +36,10 @@ const TRADING_RESP = {
   operational: false,
   writes_allowed: false,
   block_reason: "yaml/control dry-run or mock/replay floor — no battery writes",
+  dry_run_reviewed_at: null,
+  arm_allowed: false,
+  arm_block_reason: "yaml/control dry-run or mock/replay floor — no battery writes",
+  steps: TRADING_STEPS,
   evaluation: {
     enabled: false,
     would_trade: false,
@@ -53,6 +78,10 @@ test.describe("Trading view", () => {
     await expect(page.getByTestId("trading-eval-projection")).toContainText("Plan validator: valid");
     await expect(page.getByTestId("trading-enabled")).toBeVisible();
     await expect(page.getByTestId("trading-arm")).toBeVisible();
+    await expect(page.getByTestId("trading-step-dry_run")).toContainText("✗");
+    await expect(page.getByTestId("trading-arm-step2-missing")).toContainText(
+      "Ontbreekt: stap 2 — bekijk de dry-run",
+    );
     await expect(page.getByTestId("trading-test-blocked")).toBeVisible();
     trading.assertRequested();
   });
@@ -63,7 +92,19 @@ test.describe("Trading view", () => {
       route.fulfill({
         status: 200,
         contentType: "application/json",
-        body: JSON.stringify(TRADING_RESP),
+        body: JSON.stringify({
+          ...TRADING_RESP,
+          dry_run: false,
+          operational: true,
+          writes_allowed: true,
+          block_reason: null,
+          dry_run_reviewed_at: "2026-03-15T10:00:00+00:00",
+          arm_allowed: true,
+          arm_block_reason: null,
+          steps: TRADING_STEPS.map((s) =>
+            s.id === "dry_run" ? { ...s, ok: true, missing: null } : s,
+          ),
+        }),
       }),
     );
     await page.route("**/api/settings", async (route) => {
@@ -79,10 +120,74 @@ test.describe("Trading view", () => {
       });
     });
     await page.goto("/#trading");
+    await expect(page.getByTestId("trading-step-dry_run")).toContainText("✓");
     await page.getByTestId("trading-arm").click();
     await expect(page.getByTestId("trading-arm-confirm")).toBeVisible();
     await page.getByTestId("trading-arm-confirm").click();
     await expect.poll(() => posted?.["control.allow_export_discharge"]).toBe(true);
+  });
+
+  test("dry-run reviewed button posts to the reviewed endpoint", async ({ page }) => {
+    let reviewed = false;
+    await mockRoute(page, "**/api/trading", (route) =>
+      route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify(TRADING_RESP),
+      }),
+    );
+    await page.route("**/api/trading/dry-run-reviewed", async (route) => {
+      reviewed = true;
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          ok: true,
+          reviewed_at: "2026-03-15T10:00:00+00:00",
+        }),
+      });
+    });
+    await page.goto("/#trading");
+    await page.getByTestId("trading-dry-run-reviewed").click();
+    await expect.poll(() => reviewed).toBe(true);
+  });
+
+  test("arm disabled when writes blocked (Watch-only / dry-run)", async ({ page }) => {
+    await mockRoute(page, "**/api/trading", (route) =>
+      route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          ...TRADING_RESP,
+          dry_run_reviewed_at: "2026-03-15T10:00:00+00:00",
+          steps: TRADING_STEPS.map((s) =>
+            s.id === "dry_run" ? { ...s, ok: true, missing: null } : s,
+          ),
+        }),
+      }),
+    );
+    await page.goto("/#trading");
+    await expect(page.getByTestId("trading-arm")).toBeDisabled();
+    await expect(page.getByTestId("trading-arm-block-reason")).toContainText("dry-run");
+  });
+
+  test("disarm stays enabled when armed", async ({ page }) => {
+    await mockRoute(page, "**/api/trading", (route) =>
+      route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          ...TRADING_RESP,
+          allow_export_discharge: true,
+          writes_allowed: false,
+          steps: TRADING_STEPS.map((s) =>
+            s.id === "arm" ? { ...s, ok: true, missing: null } : s,
+          ),
+        }),
+      }),
+    );
+    await page.goto("/#trading");
+    await expect(page.getByTestId("trading-disarm")).toBeEnabled();
   });
 
   test("hides Test battery button while a probe is running", async ({ page }) => {
