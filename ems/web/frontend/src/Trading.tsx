@@ -1,6 +1,12 @@
 import { useEffect, useRef, useState } from "react";
 
 import { apiFetch } from "./auth";
+import {
+  TRADING_TEST_BATTERY,
+  tradingTestBlockReason,
+  tradingTestShowBlockReason,
+  tradingTestStartDisabled,
+} from "./labels";
 
 type TradingStatus = {
   trading_enabled: boolean;
@@ -60,6 +66,13 @@ export function TradingView({ canOperate = true }: { canOperate?: boolean }) {
   const [capDraft, setCapDraft] = useState<string | null>(null);
   const editingRef = useRef(false);
   editingRef.current = thresholdDraft !== null || capDraft !== null;
+  const testConfirmRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (testConfirm) {
+      testConfirmRef.current?.focus();
+    }
+  }, [testConfirm]);
 
   async function load(opts?: { force?: boolean }) {
     // Skip polling while the operator is mid-edit so a 15s refresh does not wipe drafts.
@@ -161,6 +174,15 @@ export function TradingView({ canOperate = true }: { canOperate?: boolean }) {
     (s.evaluation.would_trade ||
       (s.evaluation.t_eur ?? 0) !== 0 ||
       (s.evaluation.z_eur ?? 0) !== 0);
+  const testStartDisabled = s
+    ? tradingTestStartDisabled(s, {
+        canOperate,
+        busy,
+        probeActive: s.probe_active,
+      })
+    : true;
+  const testBlockReason = s ? tradingTestBlockReason(s) : "";
+  const testShowBlockReason = s ? tradingTestShowBlockReason(s) : false;
 
   return (
     <section className="trading-view" data-testid="trading-view">
@@ -356,41 +378,38 @@ export function TradingView({ canOperate = true }: { canOperate?: boolean }) {
 
           <div className="trading-card" data-testid="trading-test">
             <h3>Test batterij</h3>
-            <p>
-              Optional short forced-DISCHARGE probe to confirm the cluster can export.
-              Recommended before arming; not a hard gate. Refuses when Watch only / dry-run
-              blocks writes, sensor data is unsafe, or while the car is charging.
+            <p data-testid="trading-test-consequence">{TRADING_TEST_BATTERY.consequence}</p>
+            <p className="muted">
+              Korte proefontlading om te controleren of het cluster kan exporteren. Aanbevolen
+              vóór bewapenen; geen harde voorwaarde.
             </p>
             {testMsg && (
-              <p data-testid="trading-test-msg">{testMsg}</p>
+              <p data-testid="trading-test-msg" aria-live="polite" role="status">
+                {testMsg}
+              </p>
             )}
             {!canOperate ? (
               <p className="muted">Operate permission required.</p>
-            ) : s.test_battery_allowed === false || (!s.writes_allowed && s.test_battery_allowed === undefined) ? (
-              <p className="muted" data-testid="trading-test-blocked">
-                {s.test_battery_block_reason
-                  || s.block_reason
-                  || "Test unavailable — writes or sensor data blocked."}
-              </p>
             ) : s.probe_active ? (
               <p className="muted" data-testid="trading-test-running">
                 Test batterij running…
               </p>
             ) : testConfirm ? (
-              <div className="trading-confirm">
-                <p>
-                  Start a ~2 minute max-power discharge toward the reserve floor, then
-                  return to AUTO? Does not arm live trading. Refused if the car starts
-                  charging before you confirm.
-                </p>
+              <div
+                className="trading-confirm"
+                ref={testConfirmRef}
+                tabIndex={-1}
+                data-testid="trading-test-confirm-panel"
+              >
+                <p>{TRADING_TEST_BATTERY.confirmHint}</p>
                 <button
                   type="button"
-                  className="btn btn-primary"
+                  className="btn btn-danger"
                   data-testid="trading-test-confirm"
                   disabled={busy}
                   onClick={() => void runTestBattery()}
                 >
-                  Start test
+                  {TRADING_TEST_BATTERY.startLabel}
                 </button>
                 <button
                   type="button"
@@ -402,15 +421,22 @@ export function TradingView({ canOperate = true }: { canOperate?: boolean }) {
                 </button>
               </div>
             ) : (
-              <button
-                type="button"
-                className="btn"
-                data-testid="trading-test-btn"
-                disabled={busy}
-                onClick={() => setTestConfirm(true)}
-              >
-                Test batterij…
-              </button>
+              <div className="trading-test-actions">
+                <button
+                  type="button"
+                  className="btn btn-danger"
+                  data-testid="trading-test-btn"
+                  disabled={testStartDisabled}
+                  onClick={() => setTestConfirm(true)}
+                >
+                  {TRADING_TEST_BATTERY.startLabel}
+                </button>
+                {testShowBlockReason && (
+                  <span className="muted" data-testid="trading-test-blocked">
+                    {testBlockReason}
+                  </span>
+                )}
+              </div>
             )}
           </div>
         </>
