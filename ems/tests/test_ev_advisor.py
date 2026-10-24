@@ -214,12 +214,18 @@ def _reason(solar_share_pct: int) -> str:
 
 
 def _window(start: datetime, slot_prices: list[float], solar_share_pct: int) -> dict:
-    """Exact advice for one contiguous 8-slot window. `end` is two real hours after `start`."""
+    """Exact advice for one contiguous 8-slot window.
+
+    `end` is eight absolute quarter-hours after `start` (UTC), then shown in local time.
+    Same-zone addition is wrong across the spring gap: 00:00+01 plus two wall-clock hours
+    is the non-existent 02:00+01 label, while the real end is 03:00+02.
+    """
     assert len(slot_prices) == _CHARGE_SLOTS
     cost = round(sum(price * _KWH_PER_SLOT for price in slot_prices), 2)
+    end = (start.astimezone(UTC) + _CHARGE_SLOTS * timedelta(minutes=15)).astimezone(start.tzinfo)
     return {
         "start": start.isoformat(),
-        "end": (start + timedelta(hours=2)).isoformat(),
+        "end": end.isoformat(),
         "est_cost_eur": cost,
         "solar_share_pct": solar_share_pct,
         "slots": _CHARGE_SLOTS,
@@ -263,12 +269,21 @@ def test_ev_advisor_endpoint_returns_advice_shape_when_enabled(tmp_path, monkeyp
     assert "07:30" in advice["reason"]
 
 
-# 2026-03-29 00:15 is omitted on purpose: eight real quarter-hours from 00:15 cross the
-# spring-forward gap, and same-tzinfo subtraction treats that 15-minute jump as 75 minutes.
-# Documented in the session summary; not asserted, so the bug is neither locked in nor xfailed.
+# Ends use absolute quarters (#393). The #392 expectation for 2026-03-29 00:00 encoded the
+# wall-clock label 02:00+01; the last quarter of that window really ends at 03:00+02.
 @pytest.mark.parametrize(
     ("local", "expected"),
     [
+        pytest.param(
+            datetime(2026, 10, 24, 0, 15, tzinfo=AMS),
+            _overnight(datetime(2026, 10, 24, 0, 15, tzinfo=AMS)),
+            id="2026-10-24T00:15",
+        ),
+        pytest.param(
+            datetime(2026, 10, 24, 2, 0, tzinfo=AMS),
+            _overnight(datetime(2026, 10, 24, 2, 0, tzinfo=AMS)),
+            id="2026-10-24T02:00",
+        ),
         pytest.param(
             datetime(2026, 10, 24, 5, 30, tzinfo=AMS),
             _boundary(datetime(2026, 10, 24, 5, 30, tzinfo=AMS)),
@@ -298,6 +313,31 @@ def test_ev_advisor_endpoint_returns_advice_shape_when_enabled(tmp_path, monkeyp
             id="2026-10-25T00:15_dst_end",
         ),
         pytest.param(
+            datetime(2026, 10, 25, 2, 0, tzinfo=AMS, fold=0),
+            _overnight(datetime(2026, 10, 25, 2, 0, tzinfo=AMS, fold=0)),
+            id="2026-10-25T02:00_fold0",
+        ),
+        pytest.param(
+            datetime(2026, 10, 25, 2, 30, tzinfo=AMS, fold=0),
+            _overnight(datetime(2026, 10, 25, 2, 30, tzinfo=AMS, fold=0)),
+            id="2026-10-25T02:30_fold0",
+        ),
+        pytest.param(
+            datetime(2026, 10, 25, 2, 45, tzinfo=AMS, fold=0),
+            _overnight(datetime(2026, 10, 25, 2, 45, tzinfo=AMS, fold=0)),
+            id="2026-10-25T02:45_fold0",
+        ),
+        pytest.param(
+            datetime(2026, 10, 25, 2, 0, tzinfo=AMS, fold=1),
+            _overnight(datetime(2026, 10, 25, 2, 0, tzinfo=AMS, fold=1)),
+            id="2026-10-25T02:00_fold1",
+        ),
+        pytest.param(
+            datetime(2026, 10, 25, 2, 30, tzinfo=AMS, fold=1),
+            _overnight(datetime(2026, 10, 25, 2, 30, tzinfo=AMS, fold=1)),
+            id="2026-10-25T02:30_fold1",
+        ),
+        pytest.param(
             datetime(2026, 10, 25, 4, 0, tzinfo=AMS),
             _overnight(datetime(2026, 10, 25, 4, 0, tzinfo=AMS)),
             id="2026-10-25T04:00_after_fold",
@@ -309,6 +349,11 @@ def test_ev_advisor_endpoint_returns_advice_shape_when_enabled(tmp_path, monkeyp
         ),
         pytest.param(datetime(2026, 10, 25, 5, 56, tzinfo=AMS), None, id="2026-10-25T05:56"),
         pytest.param(
+            datetime(2026, 10, 25, 7, 30, tzinfo=AMS),
+            _solar_midday(datetime(2026, 10, 25, 9, 45, tzinfo=AMS)),
+            id="2026-10-25T07:30_rollover",
+        ),
+        pytest.param(
             datetime(2026, 3, 28, 23, 59, tzinfo=AMS),
             _overnight(datetime(2026, 3, 29, 0, 0, tzinfo=AMS)),
             id="2026-03-28T23:59",
@@ -319,11 +364,31 @@ def test_ev_advisor_endpoint_returns_advice_shape_when_enabled(tmp_path, monkeyp
             id="2026-03-29T00:00_dst_start",
         ),
         pytest.param(
+            datetime(2026, 3, 29, 0, 15, tzinfo=AMS),
+            _overnight(datetime(2026, 3, 29, 0, 15, tzinfo=AMS)),
+            id="2026-03-29T00:15_dst_start",
+        ),
+        pytest.param(
+            datetime(2026, 3, 29, 1, 45, tzinfo=AMS),
+            _overnight(datetime(2026, 3, 29, 1, 45, tzinfo=AMS)),
+            id="2026-03-29T01:45_before_gap",
+        ),
+        pytest.param(
+            datetime(2026, 3, 29, 3, 0, tzinfo=AMS),
+            _overnight(datetime(2026, 3, 29, 3, 0, tzinfo=AMS)),
+            id="2026-03-29T03:00_after_gap",
+        ),
+        pytest.param(
             datetime(2026, 3, 29, 5, 30, tzinfo=AMS),
             _boundary(datetime(2026, 3, 29, 5, 30, tzinfo=AMS)),
             id="2026-03-29T05:30_dst_start",
         ),
         pytest.param(datetime(2026, 3, 29, 5, 56, tzinfo=AMS), None, id="2026-03-29T05:56"),
+        pytest.param(
+            datetime(2026, 3, 29, 7, 30, tzinfo=AMS),
+            _solar_midday(datetime(2026, 3, 29, 9, 45, tzinfo=AMS)),
+            id="2026-03-29T07:30_rollover",
+        ),
         pytest.param(
             datetime(2026, 6, 14, 23, 59, tzinfo=AMS),
             _overnight(datetime(2026, 6, 15, 0, 0, tzinfo=AMS)),
@@ -346,3 +411,208 @@ def test_ev_advisor_endpoint_fixed_clock(tmp_path, monkeypatch, local, expected)
         _enable(c)
         advice = c.get("/api/advisor/ev-charge").json()["advice"]
     assert advice == expected
+
+
+class _ListedPrices:
+    """Quarter-hour prices for the advisor route. No device and no network."""
+
+    def __init__(self, slots: list[PriceSlot]) -> None:
+        self._slots = slots
+
+    def slots(self) -> list[PriceSlot]:
+        return list(self._slots)
+
+
+_TIE_PRICE = 0.10
+_OTHER_PRICE = 0.50
+
+
+def _at(year: int, month: int, day: int, hour: int, minute: int, *, fold: int = 0) -> datetime:
+    return datetime(year, month, day, hour, minute, tzinfo=AMS, fold=fold)
+
+
+def _tie_curve(local: datetime, early: datetime, later: datetime) -> list[PriceSlot]:
+    """Two 8-slot windows at `_TIE_PRICE`, separated by one expensive quarter.
+
+    Slots are stepped in UTC, so a spring-gap pair and both fall folds are real 15-minute steps.
+    """
+    midnight = datetime(local.year, local.month, local.day, tzinfo=AMS)
+    end_day = midnight.date() + timedelta(days=2)
+    end_local = datetime(end_day.year, end_day.month, end_day.day, tzinfo=AMS)
+    cheap: set[datetime] = set()
+    for origin in (early, later):
+        base = origin.astimezone(UTC)
+        for i in range(_CHARGE_SLOTS):
+            cheap.add(base + i * timedelta(minutes=15))
+    slots: list[PriceSlot] = []
+    cur = midnight.astimezone(UTC)
+    end = end_local.astimezone(UTC)
+    while cur < end:
+        price = _TIE_PRICE if cur in cheap else _OTHER_PRICE
+        slots.append(PriceSlot(cur.astimezone(AMS), price))
+        cur += timedelta(minutes=15)
+    return slots
+
+
+def _day_span(local: datetime) -> timedelta:
+    midnight = datetime(local.year, local.month, local.day, tzinfo=AMS)
+    nxt = local.date() + timedelta(days=1)
+    end = datetime(nxt.year, nxt.month, nxt.day, tzinfo=AMS)
+    return end.astimezone(UTC) - midnight.astimezone(UTC)
+
+
+# now, day quarters, start local, end local, start UTC, end UTC.
+# The second cheap window begins nine quarters after `start` (one expensive quarter in between).
+# At 05:30 that second window starts at 07:45, after the 07:30 departure, so only one window is
+# eligible; every other clock below has two eligible windows at the same price.
+_EQUAL_WINDOWS = [
+    pytest.param(
+        _at(2026, 10, 24, 0, 15), 96,
+        "2026-10-24T00:15:00+02:00", "2026-10-24T02:15:00+02:00",
+        "2026-10-23T22:15:00+00:00", "2026-10-24T00:15:00+00:00",
+        id="2026-10-24T00:15",
+    ),
+    pytest.param(
+        _at(2026, 10, 24, 2, 0), 96,
+        "2026-10-24T02:00:00+02:00", "2026-10-24T04:00:00+02:00",
+        "2026-10-24T00:00:00+00:00", "2026-10-24T02:00:00+00:00",
+        id="2026-10-24T02:00",
+    ),
+    pytest.param(
+        _at(2026, 10, 24, 5, 30), 96,
+        "2026-10-24T05:30:00+02:00", "2026-10-24T07:30:00+02:00",
+        "2026-10-24T03:30:00+00:00", "2026-10-24T05:30:00+00:00",
+        id="2026-10-24T05:30",
+    ),
+    pytest.param(
+        _at(2026, 10, 24, 7, 30), 96,
+        "2026-10-24T07:30:00+02:00", "2026-10-24T09:30:00+02:00",
+        "2026-10-24T05:30:00+00:00", "2026-10-24T07:30:00+00:00",
+        id="2026-10-24T07:30",
+    ),
+    pytest.param(
+        _at(2026, 3, 29, 0, 15), 92,
+        "2026-03-29T00:15:00+01:00", "2026-03-29T03:15:00+02:00",
+        "2026-03-28T23:15:00+00:00", "2026-03-29T01:15:00+00:00",
+        id="2026-03-29T00:15",
+    ),
+    pytest.param(
+        _at(2026, 3, 29, 1, 45), 92,
+        "2026-03-29T01:45:00+01:00", "2026-03-29T04:45:00+02:00",
+        "2026-03-29T00:45:00+00:00", "2026-03-29T02:45:00+00:00",
+        id="2026-03-29T01:45",
+    ),
+    pytest.param(
+        _at(2026, 3, 29, 3, 0), 92,
+        "2026-03-29T03:00:00+02:00", "2026-03-29T05:00:00+02:00",
+        "2026-03-29T01:00:00+00:00", "2026-03-29T03:00:00+00:00",
+        id="2026-03-29T03:00",
+    ),
+    pytest.param(
+        _at(2026, 3, 29, 5, 30), 92,
+        "2026-03-29T05:30:00+02:00", "2026-03-29T07:30:00+02:00",
+        "2026-03-29T03:30:00+00:00", "2026-03-29T05:30:00+00:00",
+        id="2026-03-29T05:30",
+    ),
+    pytest.param(
+        _at(2026, 3, 29, 7, 30), 92,
+        "2026-03-29T07:30:00+02:00", "2026-03-29T09:30:00+02:00",
+        "2026-03-29T05:30:00+00:00", "2026-03-29T07:30:00+00:00",
+        id="2026-03-29T07:30",
+    ),
+    pytest.param(
+        _at(2026, 10, 25, 0, 15), 100,
+        "2026-10-25T00:15:00+02:00", "2026-10-25T02:15:00+02:00",
+        "2026-10-24T22:15:00+00:00", "2026-10-25T00:15:00+00:00",
+        id="2026-10-25T00:15",
+    ),
+    pytest.param(
+        _at(2026, 10, 25, 2, 0, fold=0), 100,
+        "2026-10-25T02:00:00+02:00", "2026-10-25T03:00:00+01:00",
+        "2026-10-25T00:00:00+00:00", "2026-10-25T02:00:00+00:00",
+        id="2026-10-25T02:00_fold0",
+    ),
+    pytest.param(
+        _at(2026, 10, 25, 2, 30, fold=0), 100,
+        "2026-10-25T02:30:00+02:00", "2026-10-25T03:30:00+01:00",
+        "2026-10-25T00:30:00+00:00", "2026-10-25T02:30:00+00:00",
+        id="2026-10-25T02:30_fold0",
+    ),
+    pytest.param(
+        _at(2026, 10, 25, 2, 45, fold=0), 100,
+        "2026-10-25T02:45:00+02:00", "2026-10-25T03:45:00+01:00",
+        "2026-10-25T00:45:00+00:00", "2026-10-25T02:45:00+00:00",
+        id="2026-10-25T02:45_fold0",
+    ),
+    pytest.param(
+        _at(2026, 10, 25, 2, 0, fold=1), 100,
+        "2026-10-25T02:00:00+01:00", "2026-10-25T04:00:00+01:00",
+        "2026-10-25T01:00:00+00:00", "2026-10-25T03:00:00+00:00",
+        id="2026-10-25T02:00_fold1",
+    ),
+    pytest.param(
+        _at(2026, 10, 25, 2, 30, fold=1), 100,
+        "2026-10-25T02:30:00+01:00", "2026-10-25T04:30:00+01:00",
+        "2026-10-25T01:30:00+00:00", "2026-10-25T03:30:00+00:00",
+        id="2026-10-25T02:30_fold1",
+    ),
+    pytest.param(
+        _at(2026, 10, 25, 5, 30), 100,
+        "2026-10-25T05:30:00+01:00", "2026-10-25T07:30:00+01:00",
+        "2026-10-25T04:30:00+00:00", "2026-10-25T06:30:00+00:00",
+        id="2026-10-25T05:30",
+    ),
+    pytest.param(
+        _at(2026, 10, 25, 7, 30), 100,
+        "2026-10-25T07:30:00+01:00", "2026-10-25T09:30:00+01:00",
+        "2026-10-25T06:30:00+00:00", "2026-10-25T08:30:00+00:00",
+        id="2026-10-25T07:30",
+    ),
+]
+
+
+@pytest.mark.parametrize(
+    ("local", "day_slots", "start_iso", "end_iso", "start_utc", "end_utc"),
+    _EQUAL_WINDOWS,
+)
+def test_earliest_equal_cost_window_across_dst(
+    tmp_path, monkeypatch, local, day_slots, start_iso, end_iso, start_utc, end_utc,
+):
+    """Frozen Amsterdam clock; two equally cheap 8-slot windows; the earliest absolute one wins."""
+    assert _day_span(local) == timedelta(minutes=15) * day_slots
+    early = datetime.fromisoformat(start_iso)
+    later = (early.astimezone(UTC) + (_CHARGE_SLOTS + 1) * timedelta(minutes=15)).astimezone(AMS)
+    slots = _tie_curve(local, early, later)
+    on_day = [s for s in slots if s.start.astimezone(AMS).date() == local.date()]
+    assert len(on_day) == day_slots
+    cheap = [s for s in slots if s.eur_per_kwh == _TIE_PRICE]
+    assert len(cheap) == _CHARGE_SLOTS * 2
+    assert cheap[0].start.isoformat() == start_iso
+    mock_on_day = [
+        s for s in MockPriceSource(AMS, clock=lambda: local.astimezone(UTC)).slots()
+        if s.start.astimezone(AMS).date() == local.date()
+    ]
+    assert len(mock_on_day) == day_slots
+
+    from ems.tests.conftest import freeze_wall_clock_utc
+
+    freeze_wall_clock_utc(monkeypatch, local.astimezone(UTC))
+    app = create_app(
+        MockSource(), dry_run=True, dev_mode="mock", tz=AMS,
+        price_source=_ListedPrices(slots), solar_forecast=None,
+        settings_store=SettingsStore(str(tmp_path / "ems.sqlite")),
+    )
+    with TestClient(app) as client:
+        _enable(client)
+        advice = client.get("/api/advisor/ev-charge").json()["advice"]
+    assert advice == {
+        "start": start_iso,
+        "end": end_iso,
+        "est_cost_eur": round(_TIE_PRICE * _KWH_PER_SLOT * _CHARGE_SLOTS, 2),
+        "solar_share_pct": 0,
+        "slots": _CHARGE_SLOTS,
+        "reason": _reason(0),
+    }
+    assert datetime.fromisoformat(advice["start"]).astimezone(UTC).isoformat() == start_utc
+    assert datetime.fromisoformat(advice["end"]).astimezone(UTC).isoformat() == end_utc
+    assert "07:30" in advice["reason"]
