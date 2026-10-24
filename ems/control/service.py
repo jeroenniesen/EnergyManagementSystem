@@ -816,6 +816,7 @@ class ControlService:
             max_daily_grid_charge_kwh=float(s.get("planner.max_daily_grid_charge_kwh", 12.0)),
             max_cycles_per_day=float(s.get("planner.max_cycles_per_day", 1.5)),
             daily_min_savings_eur=float(s.get("planner.daily_min_savings_eur", 0.20)),
+            max_buy_eur_per_kwh=float(s.get("planner.max_buy_eur_per_kwh", 0.0)),
             site_tz=self._site_tz,
         )
 
@@ -887,6 +888,7 @@ class ControlService:
             must_charge_device_min_target_soc=device_min,
             resident_must_charge_target_soc=resident_target,
             resident_must_charge_deadline=resident_deadline,
+            max_buy_eur_per_kwh=float(s.get("planner.max_buy_eur_per_kwh", 0.0)),
         )
 
     def already_bought_today_kwh(self, now: datetime) -> float | None:
@@ -1193,6 +1195,7 @@ class ControlService:
             site_tz=self._site_tz,
             degradation_eur_per_kwh=float(self._settings["planner.degradation_eur_per_kwh"]),
             risk_margin_eur_per_kwh=float(self._settings["planner.risk_margin_eur_per_kwh"]),
+            max_buy_eur_per_kwh=float(self._settings.get("planner.max_buy_eur_per_kwh", 0.0)),
             **self.recovery_sizing(),
         )
         # B-22/B-16 interaction (#162): if the forward projection still can't hit the committed

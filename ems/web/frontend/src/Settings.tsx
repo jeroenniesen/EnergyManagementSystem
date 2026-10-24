@@ -28,6 +28,7 @@ import {
   CONTROL_ARM_CONSEQUENCE,
   CONTROL_SECTION_HINT,
   DAILY_GRID_CHARGE_CAP,
+  MAX_BUY_PRICE_CAP,
   HOME_NIGHT_RESERVE,
   LIVE_WRITING_PANEL,
   learnedNightKwhFromAdvice,
@@ -321,12 +322,18 @@ function Field({
   onChange: (v: number | boolean | string) => void;
 }) {
   const id = `set-${field.key}`;
-  const labelText = field.key === "planner.max_daily_grid_charge_kwh"
-    ? DAILY_GRID_CHARGE_CAP.label
-    : field.label;
-  const helpText = field.key === "planner.max_daily_grid_charge_kwh"
-    ? DAILY_GRID_CHARGE_CAP.help
-    : field.help;
+  const labelText =
+    field.key === "planner.max_daily_grid_charge_kwh"
+      ? DAILY_GRID_CHARGE_CAP.label
+      : field.key === "planner.max_buy_eur_per_kwh"
+        ? MAX_BUY_PRICE_CAP.label
+        : field.label;
+  const helpText =
+    field.key === "planner.max_daily_grid_charge_kwh"
+      ? DAILY_GRID_CHARGE_CAP.help
+      : field.key === "planner.max_buy_eur_per_kwh"
+        ? MAX_BUY_PRICE_CAP.help
+        : field.help;
   const label = (
     <label htmlFor={id} className="field-label">
       {labelText}

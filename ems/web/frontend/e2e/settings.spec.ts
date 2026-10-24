@@ -787,6 +787,16 @@ test.describe("EMS settings", () => {
     await expect(page.getByTestId("field-planner.must_charge_buffer_pp")).toBeVisible();
   });
 
+  test("#324: max buy price field is on Strategy without Advanced", async ({ page }) => {
+    await page.goto("/");
+    await page.getByTestId("nav-manage").click();
+    await page.getByTestId("group-strategy").click();
+    const field = page.getByTestId("field-planner.max_buy_eur_per_kwh");
+    await expect(field).toBeVisible();
+    await expect(field.getByText("Max. inkoopprijs")).toBeVisible();
+    await expect(page.getByTestId("settings-advanced-body")).toHaveCount(0);
+  });
+
   test("daily grid-charge cap slider is on Strategy without Advanced", async ({ page }) => {
     await page.goto("/");
     await page.getByTestId("nav-manage").click();

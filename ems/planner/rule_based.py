@@ -110,6 +110,8 @@ class PlannerConfig:
     # #319 / F-04. 0 leaves build_plan unchanged. The live service passes
     # planner.daily_min_savings_eur (settings default €0.20).
     daily_min_savings_eur: float = 0.0
+    # #324 / F-15: 0 = automatic; when > 0, ``min(auto_max_buy, cap)``.
+    max_buy_eur_per_kwh: float = 0.0
     site_tz: ZoneInfo = field(default_factory=lambda: ZoneInfo("Europe/Amsterdam"))
 
 
@@ -259,6 +261,8 @@ def _plan_winter(
             _effective_import_price(p, cfg) for p in horizon if p.start in discharge_set
         )
         max_buy = economics.max_buy_for_planner_config(peak_price, cfg)
+        auto_max_buy = max_buy
+        max_buy = economics.apply_max_buy_cap(max_buy, cfg.max_buy_eur_per_kwh)
         pre_peak = [p for p in horizon if p.start < last_need]
         pool = [p for p in pre_peak if _effective_import_price(p, cfg) <= max_buy]
         charge_set = late_pack_charge_starts(
@@ -272,6 +276,8 @@ def _plan_winter(
             n_charge=n_charge,
             shortfall_kwh=shortfall_dc,
             max_buy_eur_per_kwh=max_buy,
+            auto_max_buy_eur_per_kwh=auto_max_buy,
+            resident_cap_eur_per_kwh=cfg.max_buy_eur_per_kwh,
             price_of=lambda p: _effective_import_price(p, cfg),
         )
         # Honest partial (#162): commit only to the DC the chosen cheap slots can actually store.

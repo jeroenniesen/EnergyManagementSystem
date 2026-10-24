@@ -716,6 +716,7 @@ export const HOME_WHY_NOT_BUY = {
   title: "Waarom niet kopen?",
   noChanceInHorizon: "Geen koopmoment in de prijzen van vandaag/morgen",
   maxBuy: (eur: string) => `Max inkoopprijs ${eur}`,
+  residentLimit: (eur: string) => `Jouw limiet ${eur}`,
   cheapest: (time: string, eur: string) => `Goedkoopste moment ${time} (${eur})`,
   shortfall: (kwh: string) => `Tekort ${kwh}`,
   nextChance: (time: string) => `Volgende kans ${time}`,
@@ -918,6 +919,15 @@ export const DAILY_GRID_CHARGE_CAP = {
     "Hard plafond: EMS koopt per lokale dag nooit meer dan dit aantal kWh van het net voor de batterij. "
     + "Laden bij een negatieve prijs telt mee. De teller gaat om middernacht (lokale tijd) weer naar nul.",
   reason: (capKwh: number) => `Dagplafond ${capKwh} kWh bereikt`,
+} as const;
+
+/** Resident max purchase price (#324, audit F-15). */
+export const MAX_BUY_PRICE_CAP = {
+  label: "Max. inkoopprijs",
+  help:
+    "Nooit van het net laden boven deze prijs. 0 = automatisch: EMS berekent zelf de economische "
+    + "koopgrens uit piek, rendement, slijtage en risico.",
+  residentLimit: (eur: string) => `Jouw limiet ${eur}`,
 } as const;
 
 /**

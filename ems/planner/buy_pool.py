@@ -26,10 +26,12 @@ class BuyPoolInfo:
     shortfall_kwh: float
     next_chance_start: datetime | None
     pool_size: int
+    auto_max_buy_eur_per_kwh: float | None = None
+    resident_cap_eur_per_kwh: float = 0.0
 
     def to_dict(self) -> dict[str, Any]:
         cs = self.cheapest_slot
-        return {
+        out: dict[str, Any] = {
             "state": self.state,
             "max_buy_eur_per_kwh": round(self.max_buy_eur_per_kwh, 4),
             "cheapest_slot": (
@@ -48,6 +50,11 @@ class BuyPoolInfo:
             ),
             "pool_size": self.pool_size,
         }
+        if self.auto_max_buy_eur_per_kwh is not None:
+            out["auto_max_buy_eur_per_kwh"] = round(self.auto_max_buy_eur_per_kwh, 4)
+        if self.resident_cap_eur_per_kwh > 0:
+            out["resident_cap_eur_per_kwh"] = round(self.resident_cap_eur_per_kwh, 4)
+        return out
 
 
 def classify_buy_pool_state(
@@ -72,6 +79,8 @@ def build_buy_pool_info[P: PriceSlot](
     shortfall_kwh: float,
     max_buy_eur_per_kwh: float,
     price_of: Callable[[P], float],
+    auto_max_buy_eur_per_kwh: float | None = None,
+    resident_cap_eur_per_kwh: float = 0.0,
 ) -> BuyPoolInfo:
     """Instrument the pool already used for ``late_pack_charge_starts`` — no replanning."""
     pool_size = len(pool)
@@ -90,6 +99,8 @@ def build_buy_pool_info[P: PriceSlot](
         shortfall_kwh=shortfall_kwh,
         next_chance_start=next_chance,
         pool_size=pool_size,
+        auto_max_buy_eur_per_kwh=auto_max_buy_eur_per_kwh,
+        resident_cap_eur_per_kwh=resident_cap_eur_per_kwh,
     )
 
 
@@ -101,16 +112,26 @@ def _clock_nl(when: datetime) -> str:
     return when.strftime("%H:%M")
 
 
+def _resident_cap_limits_pool(info: BuyPoolInfo) -> bool:
+    cap = float(info.resident_cap_eur_per_kwh)
+    auto = info.auto_max_buy_eur_per_kwh
+    return cap > 0 and auto is not None and cap < auto
+
+
 def format_empty_buy_summary(info: BuyPoolInfo) -> str:
     """One homeowner-facing line when the buy pool is empty but energy is still needed."""
+    resident = _resident_cap_limits_pool(info)
+    ceiling = _eur_nl(info.resident_cap_eur_per_kwh if resident else info.max_buy_eur_per_kwh)
+    ceiling_phrase = (
+        f"jouw limiet {ceiling}" if resident else f"je max-inkoopprijs {ceiling}"
+    )
     if info.cheapest_slot is None:
         return (
-            f"Geen koopmoment: geen prijsmoment vóór de piek ligt onder je "
-            f"max-inkoopprijs {_eur_nl(info.max_buy_eur_per_kwh)}"
+            f"Geen koopmoment: geen prijsmoment vóór de piek ligt onder "
+            f"{ceiling_phrase}"
         )
     cs = info.cheapest_slot
     return (
         f"Geen koopmoment: goedkoopste slot {_eur_nl(cs.eur_per_kwh)} "
-        f"({_clock_nl(cs.start)}) ligt boven je max-inkoopprijs "
-        f"{_eur_nl(info.max_buy_eur_per_kwh)}"
+        f"({_clock_nl(cs.start)}) ligt boven {ceiling_phrase}"
     )
