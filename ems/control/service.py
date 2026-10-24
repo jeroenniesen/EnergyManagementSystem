@@ -855,7 +855,7 @@ class ControlService:
             target_soc = max(floor, min(100.0, target_soc))
         return AdaptiveConfig(
             usable_kwh=s["battery.usable_kwh"],
-            reserve_soc_pct=floor,
+            reserve_soc_pct=self.effective_floor_soc(),
             round_trip_efficiency=s["planner.round_trip_efficiency"],
             max_charge_w=s["battery.max_charge_w"],
             degradation_eur_per_kwh=s["planner.degradation_eur_per_kwh"],
