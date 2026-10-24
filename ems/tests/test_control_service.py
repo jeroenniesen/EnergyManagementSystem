@@ -878,6 +878,35 @@ def test_cap_block_of_planned_grid_charge_counts_then_clears():
     assert controller.driver.current_mode() is PhysicalMode.CHARGE
 
 
+def test_recovery_call_receives_wear_and_risk_from_settings(monkeypatch):
+    """#327: _plan_with_recovery_uncached passes the existing planner wear settings through."""
+    from ems.planner.recovery import NOT_APPLICABLE, CompletionStatus
+    from ems.planner.schedule import Plan, PlanSlot
+
+    svc, _ctx = _service(_controlling_controller())
+    captured: dict = {}
+
+    def fake_recover(plan, now, **kwargs):
+        captured.update(kwargs)
+        return plan, CompletionStatus(NOT_APPLICABLE, 0.0, "not this cycle"), None
+
+    monkeypatch.setattr("ems.control.service.recover_if_needed", fake_recover)
+    plan = Plan(
+        created_at=NOW,
+        slots=(PlanSlot(NOW, BatteryIntent.ALLOW_SELF_CONSUMPTION, "idle"),),
+        strategy="winter",
+    )
+    svc.build_plan_now = lambda now: (now, [PriceSlot(NOW, 0.20)], plan)
+    svc._current_soc = lambda now: 40.0
+    svc._plan_with_recovery_uncached(NOW)
+    assert captured["degradation_eur_per_kwh"] == float(
+        svc._settings["planner.degradation_eur_per_kwh"],
+    )
+    assert captured["risk_margin_eur_per_kwh"] == float(
+        svc._settings["planner.risk_margin_eur_per_kwh"],
+    )
+
+
 def _two_local_days(when: datetime, tz: ZoneInfo) -> list[PriceSlot]:
     local = when.astimezone(tz)
     midnight = datetime(local.year, local.month, local.day, tzinfo=tz)

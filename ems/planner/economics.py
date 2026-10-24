@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from dataclasses import replace
 from datetime import datetime
+from typing import Protocol
 
 from ems.domain import BatteryIntent
 from ems.economics import EconomicSnapshot
@@ -40,6 +41,45 @@ def breakeven(
         risk_margin_eur_per_kwh=risk_margin_eur_per_kwh,
     )
     return snapshot.delivered_energy_cost()
+
+
+def max_buy_for_peak(peak_price: float, rte: float, deg: float, risk: float) -> float:
+    """Highest charge price that still undercuts `peak_price` after losses, wear and risk.
+
+    Inverse of `breakeven`: one kWh bought at this price and delivered at `peak_price` is
+    break-even. This is the only buy ceiling (audit F-08, F-10). Winter used to inline
+    `(peak - degradation - risk) * round_trip_efficiency`; that expression lives here now.
+    """
+    snapshot = EconomicSnapshot(
+        import_price_eur_per_kwh=float(peak_price),
+        export_price_eur_per_kwh=float(peak_price),
+        round_trip_efficiency=float(rte),
+        degradation_eur_per_kwh=float(deg),
+        risk_margin_eur_per_kwh=float(risk),
+    )
+    return snapshot.break_even_import_price(float(peak_price))
+
+
+class _BuyCeilingCfg(Protocol):
+    """PlannerConfig, AdaptiveConfig or SummerConfig: the three fields the ceiling reads."""
+
+    round_trip_efficiency: float
+    degradation_eur_per_kwh: float
+    risk_margin_eur_per_kwh: float
+
+
+def max_buy_for_planner_config(peak_price: float, cfg: _BuyCeilingCfg) -> float:
+    """PlannerConfig / AdaptiveConfig / SummerConfig adapter for `max_buy_for_peak`.
+
+    Reads `round_trip_efficiency`, `degradation_eur_per_kwh` and `risk_margin_eur_per_kwh`
+    off the config. No new settings — the same three fields the planners already carry.
+    """
+    return max_buy_for_peak(
+        float(peak_price),
+        float(cfg.round_trip_efficiency),
+        float(cfg.degradation_eur_per_kwh),
+        float(cfg.risk_margin_eur_per_kwh),
+    )
 
 
 def export_value(

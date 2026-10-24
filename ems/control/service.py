@@ -1121,6 +1121,8 @@ class ControlService:
                 self._settings.get("planner.max_daily_grid_charge_kwh", 12.0)),
             already_bought_today_kwh=self.already_bought_today_kwh(now),
             site_tz=self._site_tz,
+            degradation_eur_per_kwh=float(self._settings["planner.degradation_eur_per_kwh"]),
+            risk_margin_eur_per_kwh=float(self._settings["planner.risk_margin_eur_per_kwh"]),
             **self.recovery_sizing(),
         )
         # B-22/B-16 interaction (#162): if the forward projection still can't hit the committed
