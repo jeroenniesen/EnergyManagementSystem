@@ -444,6 +444,7 @@ Seasonal selection (`auto` / `summer` / `winter`) is **configurable** (calendar 
 
 > **Implemented — post-2027 economics (`ems/planner/economics.py`).** Two shared, pure money functions back both live planners *and* the finance/savings math, so the arbitrage gate and the reported benefit never drift apart:
 > - `breakeven(charge_price, …)` — the sell price a stored kWh must beat (charge price grossed up for round-trip losses + wear + risk margin). This is the profitability test in step 2, factored out.
+> - `max_buy_for_peak(peak_price, rte, deg, risk)` — the highest charge price that still undercuts `peak_price` after the same losses, wear and risk: `(peak − deg − risk) × rte`. Winter, adaptive, summer grid top-up (`min(configured cap, max_buy)`, peak = dearest slot after the charge deadline) and missed-window recovery all use this helper (audit F-08, F-10). A stricter ceiling only drops buys.
 > - `export_value(price, model, …)` — what one **exported** kWh is worth under a configurable feed-in model (`prices.export_price_model`):
 >   - **`spot_minus_tax`** (**default**, 2027-ready) — spot price **−** energy tax. This **may be negative** on a negative-spot slot — exporting can *cost* money — and is deliberately **not** clamped (§2 "negative prices & export tariffs are real");
 >   - **`net_metering`** — the full retail price (today's Dutch *saldering*: export nets against import at the full price);

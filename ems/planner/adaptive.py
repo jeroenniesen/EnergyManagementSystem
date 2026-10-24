@@ -205,12 +205,11 @@ def _plan_adaptive(
                 if per_slot_kwh > 0 and shortfall_kwh > 1e-9 else 0)
     max_buy_eur = breakeven
     if discharge_set:
-        # Shaving a peak: any pre-peak slot CHEAPER THAN THE PEAK is worth charging in (it beats
-        # importing at the peak). Using this — not the strict break-even — avoids silently
-        # under-charging when too few slots sit below break-even, so the pack still fills.
-        peak_min = min(p.eur_per_kwh for p in future if p.start in discharge_set)
-        max_buy_eur = peak_min
-        pool = [p for p in future if p.start < last_need and p.eur_per_kwh < peak_min]
+        # Shaving a peak: buy only slots that still undercut the cheapest peak after losses,
+        # wear and risk. The old raw `peak_min` gate ignored that and over-bought.
+        peak_price = min(p.eur_per_kwh for p in future if p.start in discharge_set)
+        max_buy_eur = economics.max_buy_for_planner_config(peak_price, cfg)
+        pool = [p for p in future if p.start < last_need and p.eur_per_kwh <= max_buy_eur]
         pre_peak = [p for p in future if p.start < last_need]
     else:
         # No expensive peak ahead: only charge if genuinely cheap, to avoid pointless cycling.
