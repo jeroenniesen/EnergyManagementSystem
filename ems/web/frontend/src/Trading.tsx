@@ -4,6 +4,7 @@ import { apiFetch } from "./auth";
 import {
   TRADING_TEST_BATTERY,
   tradingTestBlockReason,
+  tradingTestShowBlockReason,
   tradingTestStartDisabled,
 } from "./labels";
 
@@ -181,6 +182,7 @@ export function TradingView({ canOperate = true }: { canOperate?: boolean }) {
       })
     : true;
   const testBlockReason = s ? tradingTestBlockReason(s) : "";
+  const testShowBlockReason = s ? tradingTestShowBlockReason(s) : false;
 
   return (
     <section className="trading-view" data-testid="trading-view">
@@ -429,7 +431,7 @@ export function TradingView({ canOperate = true }: { canOperate?: boolean }) {
                 >
                   {TRADING_TEST_BATTERY.startLabel}
                 </button>
-                {testStartDisabled && (
+                {testShowBlockReason && (
                   <span className="muted" data-testid="trading-test-blocked">
                     {testBlockReason}
                   </span>

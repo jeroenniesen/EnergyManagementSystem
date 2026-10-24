@@ -4,6 +4,7 @@ import {
   TRADING_TEST_BATTERY,
   tradingTestBlockReason,
   tradingTestBlockedByStatus,
+  tradingTestShowBlockReason,
   tradingTestStartDisabled,
 } from "./labels";
 
@@ -53,6 +54,22 @@ describe("TRADING_TEST_BATTERY (#367)", () => {
         test_battery_block_reason: null,
       }),
     ).toBe("yaml floor");
+  });
+
+  it("tradingTestShowBlockReason is false when only busy would disable (writes ok)", () => {
+    expect(
+      tradingTestShowBlockReason({
+        writes_allowed: true,
+        block_reason: null,
+        test_battery_allowed: true,
+      }),
+    ).toBe(false);
+    expect(
+      tradingTestShowBlockReason({
+        writes_allowed: false,
+        block_reason: "Watch only",
+      }),
+    ).toBe(true);
   });
 
   it("tradingTestStartDisabled blocks on writes_allowed and probe", () => {

@@ -954,6 +954,11 @@ export function tradingTestBlockReason(s: TradingTestGateStatus): string {
   );
 }
 
+/** Show block copy only when the status gate is closed — not when busy alone disables the button. */
+export function tradingTestShowBlockReason(s: TradingTestGateStatus): boolean {
+  return !s.writes_allowed || tradingTestBlockedByStatus(s);
+}
+
 export function tradingTestStartDisabled(
   s: TradingTestGateStatus,
   opts: { canOperate: boolean; busy: boolean; probeActive?: boolean },
