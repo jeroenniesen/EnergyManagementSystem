@@ -25,11 +25,7 @@ from ems.planner import economics
 from ems.planner.budgets import ac_grid_kwh_per_slot, clamp_grid_charge
 from ems.planner.rule_based import late_pack_charge_starts
 from ems.planner.schedule import SLOT, Plan, PlanSlot
-from ems.sources.forecast import (
-    ForecastSlot,
-    commitment_solar_basis,
-    committed_solar_w,
-)
+from ems.sources.forecast import ForecastSlot
 from ems.sources.prices import PriceSlot
 
 _DAYLIGHT_W = 20.0  # a slot counts as daytime above this P50 solar power
@@ -93,9 +89,6 @@ class SummerConfig:
     max_daily_grid_charge_kwh: float = 12.0  # #317 hard daily grid-buy cap
     already_bought_today_kwh: float | None = 0.0
     site_tz: ZoneInfo = field(default_factory=lambda: ZoneInfo("Europe/Amsterdam"))
-    # #330 / F-18. auto + forecast_real_p10 sizes on min(confidence×P50, P10).
-    commit_solar_basis: str = "auto"
-    forecast_real_p10: bool = False
 
 
 def plan_summer(
@@ -111,16 +104,7 @@ def plan_summer(
         return Plan(created_at=now, slots=())
 
     p50_by = {f.start: f.p50_w for f in forecast}
-    p10_by = {f.start: f.p10_w for f in forecast}
     confidence = max(0.0, min(1.0, cfg.solar_confidence))
-    basis = commitment_solar_basis(cfg.commit_solar_basis, cfg.forecast_real_p10)
-
-    def counted_w(start: datetime) -> float:
-        return committed_solar_w(
-            p50_by.get(start, 0.0), p10_by.get(start, 0.0), confidence,
-            commit_solar_basis=cfg.commit_solar_basis,
-            forecast_real_p10=cfg.forecast_real_p10,
-        )
     eta = math.sqrt(max(1e-6, min(1.0, cfg.round_trip_efficiency)))
     dh = SLOT.total_seconds() / 3600.0
 
@@ -156,9 +140,8 @@ def plan_summer(
     # Solar energy we count on flowing INTO the battery before sunset: the surplus (the
     # confidence-scaled expected forecast, after the house takes its share) times the one-way
     # charge efficiency. `solar_confidence` is the single conservatism knob (was a hard P10).
-    # confidence × P50, or min(that, P10) when auto and the delivered source has real P10.
     solar_charge_kwh = sum(
-        max(0.0, counted_w(p.start) - cfg.expected_load_w) * dh / 1000.0 * eta
+        max(0.0, confidence * p50_by.get(p.start, 0.0) - cfg.expected_load_w) * dh / 1000.0 * eta
         for p in solar_window
     )
     shortfall_kwh = max(0.0, target_kwh - current_kwh - solar_charge_kwh)
@@ -223,8 +206,7 @@ def plan_summer(
         out.append(PlanSlot(p.start, intent, reason, target_soc=target_soc_clamped,
                             deadline=charge_deadline))
     plan = Plan(created_at=now, slots=tuple(out), strategy="summer",
-                target_soc=target_soc_clamped, deadline=charge_deadline,
-                solar_basis=basis)
+                target_soc=target_soc_clamped, deadline=charge_deadline)
     return clamp_grid_charge(
         plan, cfg.already_bought_today_kwh, cfg.max_daily_grid_charge_kwh,
         ac_grid_kwh_per_slot(cfg.max_charge_w),
