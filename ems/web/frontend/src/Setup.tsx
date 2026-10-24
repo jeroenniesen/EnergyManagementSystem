@@ -193,6 +193,7 @@ export function Setup({ onOpenSettings }: Props) {
           setWizardPhase("manual_restart");
         } else {
           setRestartBusyMsg("Het systeem is bezig — probeer het over enkele seconden opnieuw.");
+          setWizardPhase("form");
         }
         return;
       }
@@ -200,6 +201,7 @@ export function Setup({ onOpenSettings }: Props) {
     } catch (e) {
       restartRequestedRef.current = false;
       setSaveError(e instanceof Error ? e.message : String(e));
+      setWizardPhase("form");
     }
   }
 
