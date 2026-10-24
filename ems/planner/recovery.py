@@ -174,6 +174,7 @@ def build_catch_up_plan(
     site_tz: ZoneInfo | None = None,
     degradation_eur_per_kwh: float = 0.0,
     risk_margin_eur_per_kwh: float = 0.0,
+    max_buy_eur_per_kwh: float = 0.0,
 ) -> CatchUpResult:
     """Reshape `plan` to catch up a missed charge window (SPEC §8.12).
 
@@ -219,6 +220,7 @@ def build_catch_up_plan(
         )
     else:
         max_buy = float("inf")
+    max_buy = economics.apply_max_buy_cap(max_buy, max_buy_eur_per_kwh)
     executable_starts = {s.start for s in plan.slots}
     candidates = sorted(
         (p for p in prices
@@ -403,6 +405,7 @@ def recover_if_needed(
     site_tz: ZoneInfo | None = None,
     degradation_eur_per_kwh: float = 0.0,
     risk_margin_eur_per_kwh: float = 0.0,
+    max_buy_eur_per_kwh: float = 0.0,
 ) -> tuple[Plan, CompletionStatus, CatchUpResult | None]:
     """Pure control-loop entry point: return the plan to act on this cycle plus the diagnosis.
 
@@ -438,5 +441,6 @@ def recover_if_needed(
         site_tz=site_tz,
         degradation_eur_per_kwh=degradation_eur_per_kwh,
         risk_margin_eur_per_kwh=risk_margin_eur_per_kwh,
+        max_buy_eur_per_kwh=max_buy_eur_per_kwh,
     )
     return catch_up.plan, status, catch_up

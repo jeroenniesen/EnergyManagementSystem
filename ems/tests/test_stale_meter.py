@@ -1,9 +1,10 @@
 """F-23 / #332: cautious planning when EV or grid meter freshness is uncertain."""
 from __future__ import annotations
 
+import dataclasses
 import pickle
 import re
-from dataclasses import replace
+from dataclasses import fields, is_dataclass, replace
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -80,22 +81,83 @@ def _assert_grid_charge_lte_baseline(stale, baseline) -> None:
             assert (s.power_w or 0.0) <= (match.power_w or 0.0) + 1e-9
 
 
-def _plan_pickle_without_config_hash(plan: Plan) -> bytes:
-    if plan.input_snapshot is None:
-        return pickle.dumps(plan)
-    neutralised = replace(
-        plan,
-        input_snapshot=replace(plan.input_snapshot, config_hash=None),
-    )
-    return pickle.dumps(neutralised)
+def _field_has_default_value(field: dataclasses.Field, value: object) -> bool:
+    if field.default is not dataclasses.MISSING:
+        return value == field.default
+    if field.default_factory is not dataclasses.MISSING:
+        return value == field.default_factory()
+    return False
+
+
+def _assert_buy_pool_field_match(
+    field: dataclasses.Field,
+    actual,
+    golden,
+    pool_actual,
+    pool_golden,
+) -> bool:
+    """Return True when a #324 buy-pool extension is accepted against the golden pickle."""
+    if not _field_has_default_value(field, golden):
+        return False
+    if field.name == "auto_max_buy_eur_per_kwh":
+        assert actual == pool_actual.max_buy_eur_per_kwh == pool_golden.max_buy_eur_per_kwh
+        return True
+    if field.name == "resident_cap_eur_per_kwh":
+        assert actual in (None, 0, 0.0)
+        return True
+    return False
+
+
+def _assert_value_matches_golden(actual: object, golden: object) -> None:
+    if is_dataclass(golden) and not isinstance(golden, type):
+        assert is_dataclass(actual) and type(actual) is type(golden)
+        cls = type(golden)
+        for field in fields(cls):
+            if cls.__name__ == "PlannerInputSnapshot" and field.name == "config_hash":
+                continue
+            gv = getattr(golden, field.name)
+            av = getattr(actual, field.name)
+            if cls.__name__ == "BuyPoolInfo" and _assert_buy_pool_field_match(
+                field, av, gv, actual, golden
+            ):
+                continue
+            _assert_value_matches_golden(av, gv)
+        return
+    if isinstance(golden, tuple):
+        assert isinstance(actual, tuple)
+        assert len(actual) == len(golden)
+        for a_item, g_item in zip(actual, golden, strict=True):
+            _assert_value_matches_golden(a_item, g_item)
+        return
+    if isinstance(golden, list):
+        assert isinstance(actual, list)
+        assert len(actual) == len(golden)
+        for a_item, g_item in zip(actual, golden, strict=True):
+            _assert_value_matches_golden(a_item, g_item)
+        return
+    if isinstance(golden, dict):
+        assert isinstance(actual, dict)
+        assert actual.keys() == golden.keys()
+        for key in golden:
+            _assert_value_matches_golden(actual[key], golden[key])
+        return
+    assert actual == golden
 
 
 def _assert_plan_matches_stale_meter_golden(plan: Plan, golden: Plan) -> None:
-    assert _plan_pickle_without_config_hash(plan) == _plan_pickle_without_config_hash(golden)
+    _assert_value_matches_golden(plan, golden)
     assert plan.input_snapshot is not None
     ch = plan.input_snapshot.config_hash
     assert ch is not None
     assert re.fullmatch(rf"[0-9a-f]{{{_CONFIG_HASH_LEN}}}", ch)
+    assert plan.buy_pool is not None
+    assert golden.buy_pool is not None
+    assert plan.buy_pool.resident_cap_eur_per_kwh in (None, 0, 0.0)
+    assert (
+        plan.buy_pool.auto_max_buy_eur_per_kwh
+        == plan.buy_pool.max_buy_eur_per_kwh
+        == golden.buy_pool.max_buy_eur_per_kwh
+    )
 
 
 def _grid_charge_kwh(plan) -> float:

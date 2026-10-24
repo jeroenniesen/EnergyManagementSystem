@@ -5,6 +5,7 @@ import pytest
 
 from ems.planner.economics import (
     EXPORT_MODELS,
+    apply_max_buy_cap,
     breakeven,
     export_value,
     max_buy_for_peak,
@@ -43,6 +44,11 @@ def test_max_buy_for_peak_matches_legacy_winter_formula():
             risk_margin_eur_per_kwh=case["risk"],
         )
         assert max_buy_for_planner_config(case["peak"], cfg) == got
+
+
+def test_apply_max_buy_cap_resident_ceiling():
+    assert apply_max_buy_cap(0.297, 0.0) == 0.297
+    assert apply_max_buy_cap(0.297, 0.20) == 0.20
 
 
 def test_export_models_tuple():

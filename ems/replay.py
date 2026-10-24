@@ -113,6 +113,7 @@ class ReplayConfig:
     export_fee_eur_per_kwh: float = 0.0
     # #317 hard daily grid-buy cap (kWh). Replay starts each day at zero already-bought.
     max_daily_grid_charge_kwh: float = 12.0
+    max_buy_eur_per_kwh: float = 0.0
     # Locale (season choice + local-day bucketing). Default = the site tz.
     tz: ZoneInfo = ZoneInfo("Europe/Amsterdam")
 
@@ -145,6 +146,7 @@ class ReplayConfig:
             fixed_feed_in_eur_per_kwh=s["prices.fixed_feed_in_eur_per_kwh"],
             export_fee_eur_per_kwh=s.get("grid_fees.export_fee_eur_per_kwh", 0.0),
             max_daily_grid_charge_kwh=float(s.get("planner.max_daily_grid_charge_kwh", 12.0)),
+            max_buy_eur_per_kwh=float(s.get("planner.max_buy_eur_per_kwh", 0.0)),
             tz=tz or ZoneInfo("Europe/Amsterdam"),
         )
 
@@ -158,6 +160,7 @@ def _winter_cfg(cfg: ReplayConfig) -> PlannerConfig:
         discharge_slots=cfg.discharge_slots,
         negative_price_soak=cfg.negative_price_soak,
         max_daily_grid_charge_kwh=cfg.max_daily_grid_charge_kwh,
+        max_buy_eur_per_kwh=cfg.max_buy_eur_per_kwh,
         site_tz=cfg.tz,
     )
 
@@ -173,6 +176,7 @@ def _adaptive_cfg(cfg: ReplayConfig) -> AdaptiveConfig:
         solar_confidence=cfg.solar_confidence,
         negative_price_soak=cfg.negative_price_soak,
         max_daily_grid_charge_kwh=cfg.max_daily_grid_charge_kwh,
+        max_buy_eur_per_kwh=cfg.max_buy_eur_per_kwh,
         site_tz=cfg.tz,
     )
 

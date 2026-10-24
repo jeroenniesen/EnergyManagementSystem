@@ -15,6 +15,8 @@ export type BuyPool = {
   shortfall_kwh: number;
   next_chance: { start: string } | null;
   pool_size: number;
+  auto_max_buy_eur_per_kwh?: number;
+  resident_cap_eur_per_kwh?: number;
 };
 
 function eurNl(value: number): string {
@@ -43,10 +45,19 @@ export function shouldShowWhyNotBuy(
   return pool?.state === "empty" && dataQuality !== "price_fallback";
 }
 
+function residentCapLimitsPool(pool: BuyPool): boolean {
+  const cap = pool.resident_cap_eur_per_kwh ?? 0;
+  const auto = pool.auto_max_buy_eur_per_kwh;
+  return cap > 0 && auto !== undefined && cap < auto;
+}
+
 /** One line for the Home tile (#315 AC3). */
 export function formatWhyNotBuyLine(pool: BuyPool): string {
+  const resident = residentCapLimitsPool(pool);
   const parts = [
-    HOME_WHY_NOT_BUY.maxBuy(eurNl(pool.max_buy_eur_per_kwh)),
+    resident
+      ? HOME_WHY_NOT_BUY.residentLimit(eurNl(pool.resident_cap_eur_per_kwh!))
+      : HOME_WHY_NOT_BUY.maxBuy(eurNl(pool.max_buy_eur_per_kwh)),
   ];
   if (pool.cheapest_slot) {
     parts.push(HOME_WHY_NOT_BUY.cheapest(
