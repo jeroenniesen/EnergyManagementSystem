@@ -611,6 +611,10 @@ arbitrage:
   max_cycles_per_month: 30
   min_grid_charge_kwh: 0.5            # never schedule tiny inefficient grid charges (§8.10)
   max_daily_grid_charge_kwh: 12       # hard cap on grid energy bought/day (§8.10)
+  must_charge_enabled: false          # optional precautionary pre-peak grid charge (#323 / F-02)
+  must_charge_target_soc: 30          # % target when must-charge runs (clamped to reserve/device)
+  must_charge_max_price_eur_per_kwh: 0.40  # separate buy ceiling (advanced)
+  must_charge_buffer_pp: 10           # trigger only when SoC < effective floor + buffer (advanced)
 
 consumption:
   source: learned          # learned (reconstructed load from HA) | fixed
