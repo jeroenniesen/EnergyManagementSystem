@@ -153,6 +153,8 @@ class ControlDecisionEngine:
                 since = since()
             if since is not None:
                 intent = BatteryIntent.ALLOW_SELF_CONSUMPTION
+                # F-13 (#313): Dutch homeowner copy is in build_decision_reason(data_quality=…);
+                # keep English operator text here for logs and existing outage tests (#126).
                 reason = "holding self-consumption — live Tibber prices unavailable"
                 override_active = False
             else:

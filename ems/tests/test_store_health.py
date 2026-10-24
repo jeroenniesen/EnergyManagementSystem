@@ -81,3 +81,35 @@ def test_alert_pushes_ntfy_even_when_the_store_is_dead(tmp_path):
     )
     asyncio.run(_run_store_health_check(_Recorder(10), notifier, NOON, AMS, {"alerted_date": None}))
     assert captured["url"] == "https://ntfy.sh/hems"  # pushed despite the dead store
+
+
+def test_noncritical_sqlite_lock_does_not_escalate_store_health(tmp_path, monkeypatch):
+    """A skipped gas/carbon lock is not a wedged store: the health alert stays quiet (F-45)."""
+    import sqlite3
+
+    import ems.storage.sqlite_guard as guard
+
+    monkeypatch.setattr(guard, "BACKOFF_S", (0.0, 0.0))
+    guard.reset_lock_stats()
+    store = HistoryStore(str(tmp_path / "health.sqlite"))
+
+    async def locked_gas():
+        await store.init()
+        orig = store._db.execute
+
+        async def execute(sql, *args, **kwargs):
+            if "gas_readings" in str(sql) or "carbon_intensity" in str(sql):
+                raise sqlite3.OperationalError("database is locked")
+            return await orig(sql, *args, **kwargs)
+
+        store._db.execute = execute
+        await store.record_gas("2026-07-16T12:00:00+00:00", 12.0)
+        await store.upsert_carbon([("2026-07-16T12:00:00+00:00", 0.1)])
+
+    asyncio.run(locked_gas())
+    notifier = Notifier(store, {"notify.ntfy_url": "", "notify.ntfy_topic": ""})
+    state = {"alerted_date": None}
+    # Below the streak threshold: the lock skip must not itself be treated as store-unhealthy.
+    asyncio.run(_run_store_health_check(_Recorder(0), notifier, NOON, AMS, state))
+    assert state["alerted_date"] is None
+    assert guard.storage_write_retries() >= 3

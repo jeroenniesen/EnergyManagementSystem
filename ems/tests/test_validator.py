@@ -409,3 +409,150 @@ def test_non_charge_plan_ignores_grid_limit():
     )
     assert not any(f.code == "grid_limit_exceeded" for f in v.findings)
     assert v.ok is True
+
+
+def test_hand_built_plan_over_daily_cap_is_unsafe_auto():
+    """AC5: a hand-built plan above the cap is unsafe (`daily_grid_charge_cap`) → AUTO."""
+    slots = tuple(
+        PlanSlot(
+            T0 + i * SLOT, BatteryIntent.GRID_CHARGE_TO_TARGET, "charge",
+            target_soc=90.0, target_kwh=1.0, power_w=4000.0, floor_soc=10.0,
+        )
+        for i in range(13)
+    )
+    v = validate_plan(
+        Plan(created_at=T0, slots=slots, strategy="winter"),
+        max_daily_grid_charge_kwh=12.0, already_bought_today_kwh=0.0,
+        grid_charge_per_slot_kwh=1.0, **_ctx(),
+    )
+    assert v.status == "unsafe" and v.ok is False
+    finding = next(f for f in v.findings if f.code == "daily_grid_charge_cap")
+    assert finding.severity == "unsafe"
+    assert "Dagplafond 12 kWh bereikt" in finding.message
+    under = validate_plan(
+        Plan(created_at=T0, slots=slots[:12], strategy="winter"),
+        max_daily_grid_charge_kwh=12.0, already_bought_today_kwh=0.0,
+        grid_charge_per_slot_kwh=1.0, **_ctx(),
+    )
+    assert not any(f.code == "daily_grid_charge_cap" for f in under.findings)
+
+
+def test_floor_hold_reserve_slot_stays_valid():
+    """#312 AC4: floor-hold rewrite keeps the plan validator-clean."""
+    hold = PlanSlot(
+        T0, BatteryIntent.HOLD_RESERVE,
+        "Op de batterijvloer (10%) — huis op net", floor_soc=10.0,
+    )
+    v = validate_plan(_plan(hold), **_ctx())
+    assert v.ok
+    assert not any(f.severity == "unsafe" for f in v.findings)
+
+
+def test_unknown_counter_is_unsafe_and_discharge_is_not():
+    """None treats the cap as reached. A discharge-only plan is not blocked."""
+    charged = validate_plan(
+        _plan(_charge(0)),
+        max_daily_grid_charge_kwh=12.0, already_bought_today_kwh=None,
+        grid_charge_per_slot_kwh=1.0, **_ctx(),
+    )
+    assert charged.status == "unsafe"
+    finding = next(f for f in charged.findings if f.code == "daily_grid_charge_cap")
+    assert "Dagteller onbekend: niet laden van het net" in finding.message
+    discharge = PlanSlot(T0, BatteryIntent.DISCHARGE_FOR_LOAD, "serve the house", floor_soc=10.0)
+    held = validate_plan(
+        _plan(discharge),
+        max_daily_grid_charge_kwh=12.0, already_bought_today_kwh=None,
+        grid_charge_per_slot_kwh=1.0, **_ctx(),
+    )
+    assert not any(f.code == "daily_grid_charge_cap" for f in held.findings)
+
+
+def test_validator_counts_ac_not_dc_and_calendar_dst_days():
+    """25 slots of 0.5 kWh AC (DC sum still ≤ 12) are unsafe. 23 h / 25 h stay per calendar date."""
+    import math
+    from zoneinfo import ZoneInfo
+
+    eta = math.sqrt(0.9)
+    dc = 2000.0 * 0.25 / 1000.0 * eta
+    assert 25 * dc <= 12.0
+    over = tuple(
+        PlanSlot(
+            T0 + i * SLOT, BatteryIntent.GRID_CHARGE_TO_TARGET, "charge",
+            target_soc=80.0, target_kwh=dc, power_w=2000.0, floor_soc=10.0,
+        )
+        for i in range(25)
+    )
+    v = validate_plan(
+        Plan(created_at=T0, slots=over, strategy="winter"),
+        max_daily_grid_charge_kwh=12.0, already_bought_today_kwh=0.0,
+        grid_charge_per_slot_kwh=0.5, **_ctx(),
+    )
+    assert any(f.code == "daily_grid_charge_cap" for f in v.findings)
+    under = validate_plan(
+        Plan(created_at=T0, slots=over[:24], strategy="winter"),
+        max_daily_grid_charge_kwh=12.0, already_bought_today_kwh=0.0,
+        grid_charge_per_slot_kwh=0.5, **_ctx(),
+    )
+    assert not any(f.code == "daily_grid_charge_cap" for f in under.findings)
+
+    ams = ZoneInfo("Europe/Amsterdam")
+    spring = datetime(2026, 3, 29, 4, 0, tzinfo=ams)
+    spring_today = tuple(
+        PlanSlot(
+            spring + i * SLOT, BatteryIntent.GRID_CHARGE_TO_TARGET, "charge",
+            target_soc=80.0, power_w=4000.0, floor_soc=10.0,
+        )
+        for i in range(12)
+    )
+    next_morning = PlanSlot(
+        datetime(2026, 3, 30, 0, 30, tzinfo=ams), BatteryIntent.GRID_CHARGE_TO_TARGET, "charge",
+        target_soc=80.0, power_w=4000.0, floor_soc=10.0,
+    )
+    split = validate_plan(
+        Plan(created_at=spring, slots=spring_today + (next_morning,), strategy="winter"),
+        max_daily_grid_charge_kwh=12.0, already_bought_today_kwh=0.0,
+        grid_charge_per_slot_kwh=1.0, site_tz=ams, **_ctx(),
+    )
+    assert not any(f.code == "daily_grid_charge_cap" for f in split.findings)
+    thirteenth = PlanSlot(
+        spring + 12 * SLOT, BatteryIntent.GRID_CHARGE_TO_TARGET, "charge",
+        target_soc=80.0, power_w=4000.0, floor_soc=10.0,
+    )
+    packed = validate_plan(
+        Plan(created_at=spring, slots=spring_today + (thirteenth,), strategy="winter"),
+        max_daily_grid_charge_kwh=12.0, already_bought_today_kwh=0.0,
+        grid_charge_per_slot_kwh=1.0, site_tz=ams, **_ctx(),
+    )
+    assert any(f.code == "daily_grid_charge_cap" for f in packed.findings)
+
+    autumn = datetime(2026, 10, 25, 20, 0, tzinfo=ams)
+    # 23:30 is still 25 October on the 25-hour day (midnight+24 h is 23:00).
+    late = datetime(2026, 10, 25, 23, 30, tzinfo=ams)
+    autumn_slots = tuple(
+        PlanSlot(
+            autumn + i * SLOT, BatteryIntent.GRID_CHARGE_TO_TARGET, "charge",
+            target_soc=80.0, power_w=4000.0, floor_soc=10.0,
+        )
+        for i in range(11)
+    ) + (
+        PlanSlot(
+            late, BatteryIntent.GRID_CHARGE_TO_TARGET, "charge",
+            target_soc=80.0, power_w=4000.0, floor_soc=10.0,
+        ),
+    )
+    ok_long = validate_plan(
+        Plan(created_at=autumn, slots=autumn_slots, strategy="winter"),
+        max_daily_grid_charge_kwh=12.0, already_bought_today_kwh=0.0,
+        grid_charge_per_slot_kwh=1.0, site_tz=ams, **_ctx(),
+    )
+    assert not any(f.code == "daily_grid_charge_cap" for f in ok_long.findings)
+    extra = PlanSlot(
+        datetime(2026, 10, 25, 23, 45, tzinfo=ams), BatteryIntent.GRID_CHARGE_TO_TARGET, "charge",
+        target_soc=80.0, power_w=4000.0, floor_soc=10.0,
+    )
+    over_long = validate_plan(
+        Plan(created_at=autumn, slots=autumn_slots + (extra,), strategy="winter"),
+        max_daily_grid_charge_kwh=12.0, already_bought_today_kwh=0.0,
+        grid_charge_per_slot_kwh=1.0, site_tz=ams, **_ctx(),
+    )
+    assert any(f.code == "daily_grid_charge_cap" for f in over_long.findings)

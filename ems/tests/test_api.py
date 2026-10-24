@@ -1,5 +1,6 @@
 import asyncio
 
+import pytest
 from fastapi.testclient import TestClient
 
 from ems.domain import RawSample
@@ -36,6 +37,10 @@ def test_status_reconstructs_house_load():
     assert body["non_ev_load_w"] == 1000
     assert body["soc_pct"] == 55
     assert body["dry_run"] is True
+    # #314: mock is not live writing. Existing dry_run fields stay.
+    assert body["dry_run_cause"] == "mock"
+    assert body["live_writing"] is False
+    assert body["live_writing_state"] == "no"
 
 
 def test_dashboard_snapshot_has_coherent_core_sections():
@@ -109,23 +114,52 @@ def test_serves_spa_index_when_static_dir_present(tmp_path):
     assert "EMS" in r.text  # SPA index served at "/"
 
 
-def test_prices_endpoint_returns_slots_and_current():
+# MockPriceSource horizon = local midnight today → local midnight +2 days (DST-aware wall time).
+# 96 slots per 24 h local day; autumn DST end adds 4 slots (25 h); spring start drops 4 (23 h).
+_PRICE_SLOT_CASES = [
+    pytest.param("2026-06-14T23:59", 96 + 96, id="normal_day_2359"),  # 14 Jun + 15 Jun
+    pytest.param("2026-06-15T00:00", 96 + 96, id="normal_day_0000"),
+    pytest.param("2026-06-15T00:15", 96 + 96, id="normal_day_0015"),
+    pytest.param("2026-10-24T12:00", 96 + 100, id="autumn_dst_day_before"),  # 24+25 Oct
+    pytest.param("2026-10-25T12:00", 100 + 96, id="autumn_dst_day"),
+    pytest.param("2026-03-28T12:00", 96 + 92, id="spring_dst_day_before"),
+    pytest.param("2026-03-29T12:00", 92 + 96, id="spring_dst_day"),
+]
+
+
+def _parse_amsterdam_local(iso_local: str):
+    from datetime import datetime as dt
     from zoneinfo import ZoneInfo
 
+    naive = dt.fromisoformat(iso_local)
+    return naive.replace(tzinfo=ZoneInfo("Europe/Amsterdam"))
+
+
+@pytest.mark.parametrize("local_iso,expected_slots", _PRICE_SLOT_CASES)
+def test_prices_endpoint_returns_slots_and_current(local_iso, expected_slots, monkeypatch):
+    from zoneinfo import ZoneInfo
+
+    from ems.sources import prices as prices_mod
     from ems.sources.prices import MockPriceSource
+    from ems.tests.conftest import freeze_wall_clock_utc
+
+    local = _parse_amsterdam_local(local_iso)
+    from datetime import UTC
+
+    freeze_wall_clock_utc(monkeypatch, local.astimezone(UTC))
 
     tz = ZoneInfo("Europe/Amsterdam")
     app = create_app(
         MockSource(),
         dry_run=True,
         dev_mode="mock",
-        price_source=MockPriceSource(tz),
+        price_source=MockPriceSource(tz, clock=prices_mod._utcnow),
         tz=tz,
     )
     b = TestClient(app).get("/api/prices").json()
     assert b["resolution"] == "quarter_hourly"
     assert b["currency"] == "EUR"
-    assert len(b["slots"]) == 192  # today + tomorrow, 15-min
+    assert len(b["slots"]) == expected_slots
     assert b["current_eur_per_kwh"] is not None
 
 
@@ -136,19 +170,40 @@ def test_prices_endpoint_without_source():
     assert b.get("serving_fixed_backup") is False
 
 
-def test_forecast_endpoint_returns_slots_and_today_kwh():
+# MockSolarForecastSource uses a fixed 2×96-slot horizon from local midnight (not calendar DST).
+_FORECAST_SLOT_CASES = [
+    pytest.param("2026-06-14T23:59", 96 + 96, id="normal_day_2359"),
+    pytest.param("2026-06-15T00:00", 96 + 96, id="normal_day_0000"),
+    pytest.param("2026-06-15T00:15", 96 + 96, id="normal_day_0015"),
+    pytest.param("2026-10-24T12:00", 96 + 96, id="autumn_dst_day_before"),
+    pytest.param("2026-10-25T12:00", 96 + 96, id="autumn_dst_day"),
+    pytest.param("2026-03-28T12:00", 96 + 96, id="spring_dst_day_before"),
+    pytest.param("2026-03-29T12:00", 96 + 96, id="spring_dst_day"),
+]
+
+
+@pytest.mark.parametrize("local_iso,expected_slots", _FORECAST_SLOT_CASES)
+def test_forecast_endpoint_returns_slots_and_today_kwh(local_iso, expected_slots, monkeypatch):
+    from datetime import UTC
     from zoneinfo import ZoneInfo
 
+    from ems.sources import forecast as forecast_mod
     from ems.sources.forecast import MockSolarForecastSource
+    from ems.tests.conftest import freeze_wall_clock_utc
+
+    local = _parse_amsterdam_local(local_iso)
+    freeze_wall_clock_utc(monkeypatch, local.astimezone(UTC))
 
     app = create_app(
         MockSource(),
         dry_run=True,
         dev_mode="mock",
-        solar_forecast=MockSolarForecastSource(ZoneInfo("Europe/Amsterdam")),
+        solar_forecast=MockSolarForecastSource(
+            ZoneInfo("Europe/Amsterdam"), clock=forecast_mod._utcnow
+        ),
     )
     b = TestClient(app).get("/api/forecast").json()
-    assert len(b["slots"]) == 192
+    assert len(b["slots"]) == expected_slots
     assert b["today_kwh_p50"] is not None
     assert b["slots"][0]["p10_w"] <= b["slots"][0]["p50_w"] <= b["slots"][0]["p90_w"]
 
@@ -207,6 +262,9 @@ def test_battery_endpoint_returns_mode_and_capabilities():
     assert b["capabilities"]["supports_standby"] is True
     assert b["capabilities"]["min_power_w"] == 50.0
     assert b["capabilities"]["min_target_soc"] == 5.0
+    assert b["effective_floor_soc"] >= 5.0
+    assert b["reserve_setting_soc"] >= 5.0
+    assert b["device_min_target_soc"] == 5.0
     assert b["topology"]["tower_count"] == 0
     assert b["topology"]["configured"] is False
 
@@ -215,6 +273,9 @@ def test_battery_endpoint_without_driver():
     b = _client().get("/api/battery").json()
     assert b["current_mode"] is None
     assert b["capabilities"] is None
+    assert b["effective_floor_soc"] >= 5.0
+    assert b["reserve_setting_soc"] >= 5.0
+    assert b["device_min_target_soc"] == 5.0
 
 
 def test_decision_endpoint_dry_run():

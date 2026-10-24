@@ -17,6 +17,7 @@ from ems.sources.forecast import MockSolarForecastSource
 from ems.sources.mock import MockSource
 from ems.sources.prices import MockPriceSource
 from ems.storage.audit import AuditStore
+from ems.storage.history import HistoryStore
 from ems.storage.settings import SettingsStore
 from ems.web.api import create_app
 
@@ -39,6 +40,7 @@ def _operational_app(tmp_path, driver):
         MockSource(), dry_run=False, dev_mode="live", tz=AMS,
         price_source=MockPriceSource(AMS), solar_forecast=MockSolarForecastSource(AMS),
         controller=ctl, freshness=_fresh(),
+        store=HistoryStore(db),
         override_store=SettingsStore(db, table="runtime_state"), audit_store=AuditStore(db),
         control_cycle_seconds=0.02,
     )
@@ -80,6 +82,7 @@ def test_manual_override_drives_battery_even_when_daily_cap_exhausted(tmp_path):
         MockSource(), dry_run=False, dev_mode="live", tz=AMS,
         price_source=MockPriceSource(AMS), solar_forecast=MockSolarForecastSource(AMS),
         controller=ctl, freshness=_fresh(),
+        store=HistoryStore(db),
         override_store=SettingsStore(db, table="runtime_state"), audit_store=AuditStore(db),
         control_cycle_seconds=0.02,
     )

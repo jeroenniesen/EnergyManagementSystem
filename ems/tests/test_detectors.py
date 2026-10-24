@@ -11,6 +11,7 @@ from zoneinfo import ZoneInfo
 from ems.detectors import (
     STABLE_RECOVER_AFTER,
     DeviceUnreachableState,
+    charge_blocked_by_cap_notice,
     device_unreachable,
     ev_plug_in_reminder,
     evening_peak_risk,
@@ -445,3 +446,16 @@ def test_open_incidents_from_notifications_survives_restart_shape():
     # Matching up closes it.
     rows.append({"key": "battery_up", "dedupe_key": f"battery_up:{since.isoformat()}"})
     assert open_incidents_from_notifications(rows) == {}
+
+
+def test_charge_blocked_by_cap_notice_is_one_push_shape_per_local_day():
+    """#316 AC3: no push unless blocked; the dedupe key is the local day."""
+    now = _local(2026, 10, 14, 15, 0)
+    assert charge_blocked_by_cap_notice(False, now=now) is None
+    note = charge_blocked_by_cap_notice(True, now=now)
+    assert note is not None
+    assert note["key"] == "charge_blocked_by_cap"
+    assert note["title"] == "Geplande lading geblokkeerd door de schakellimiet"
+    assert note["dedupe_key"] == "charge_blocked_by_cap:2026-10-14"
+    nxt = charge_blocked_by_cap_notice(True, now=_local(2026, 10, 15, 9, 0))
+    assert nxt is not None and nxt["dedupe_key"] == "charge_blocked_by_cap:2026-10-15"

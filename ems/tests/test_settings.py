@@ -22,6 +22,35 @@ def test_defaults_cover_every_field():
     assert d["control.allow_export_discharge"] is False
 
 
+def test_export_model_confirmed_defaults_and_validation():
+    """#341 / F-11: flag defaults false, bool-only, hidden from Manage; reads do not confirm."""
+    d = defaults()
+    assert d["prices.export_model_confirmed"] is False
+    assert d["prices.export_price_model"] == "spot_minus_tax"
+    field = SETTINGS_BY_KEY["prices.export_model_confirmed"]
+    assert field.type == "bool" and field.show_in_settings is False
+    assert all(f["key"] != "prices.export_model_confirmed" for f in schema_json())
+    clean, errors = validate_settings({"prices.export_model_confirmed": True})
+    assert errors == {} and clean["prices.export_model_confirmed"] is True
+    clean_f, err_f = validate_settings({"prices.export_model_confirmed": False})
+    assert err_f == {} and clean_f["prices.export_model_confirmed"] is False
+    _c, err = validate_settings({"prices.export_model_confirmed": "yes"})
+    assert "prices.export_model_confirmed" in err
+    # Validation of the model must not co-write confirmation — effective_settings reuses it.
+    clean, errors = validate_settings({"prices.export_price_model": "net_metering"})
+    assert errors == {}
+    assert clean["prices.export_price_model"] == "net_metering"
+    assert "prices.export_model_confirmed" not in clean
+    stored = effective_settings({
+        "prices.export_price_model": "net_metering",
+        "prices.export_model_confirmed": False,
+    })
+    assert stored["prices.export_price_model"] == "net_metering"
+    assert stored["prices.export_model_confirmed"] is False
+    legacy = effective_settings({"prices.export_price_model": "spot_minus_tax"})
+    assert legacy["prices.export_model_confirmed"] is False
+
+
 def test_trading_settings_defaults_match_e11_lock():
     """B-103 / #209: trading keys exist, default OFF / spot_minus_tax / €0.50 / uncapped."""
     d = defaults()
@@ -66,15 +95,15 @@ def test_control_dry_run_setting_defaults_fail_safe():
 
 
 def test_anti_flap_control_knob_defaults():
-    # The two guardrail-starvation knobs (07-12 incident): intent persistence + commitment reserve.
     d = defaults()
-    assert d["control.intent_persistence_cycles"] == 2  # observe once, then act
-    assert d["control.commitment_reserve"] == 3         # switches held for committed grid-charge
-    # Both are int fields with sensible bounds (1 = legacy persistence; 0 = no reserve).
+    assert d["control.intent_persistence_cycles"] == 2
+    assert d["control.max_commitment_switches_per_day"] == 4
+    assert d["control.commitment_reserve"] == 3  # deprecated key, still loads
     assert SETTINGS_BY_KEY["control.intent_persistence_cycles"].type == "int"
     assert SETTINGS_BY_KEY["control.intent_persistence_cycles"].min == 1
+    field = SETTINGS_BY_KEY["control.max_commitment_switches_per_day"]
+    assert field.type == "int" and field.min == 1 and field.max == 10
     assert SETTINGS_BY_KEY["control.commitment_reserve"].type == "int"
-    assert SETTINGS_BY_KEY["control.commitment_reserve"].min == 0
 
 
 def test_grid_limit_setting_default():
@@ -470,6 +499,27 @@ def test_heating_done_field_accepts_arbitrary_json_string():
     }
 
 
+def test_max_daily_grid_charge_bounds_and_slider():
+    """AC4: planner.max_daily_grid_charge_kwh — min ≤ default ≤ max; min−1 and max+1 rejected."""
+    field = SETTINGS_BY_KEY["planner.max_daily_grid_charge_kwh"]
+    assert field.type == "number"
+    assert field.group == "strategy"
+    assert field.unit == "kWh"
+    assert field.slider is True
+    assert field.advanced is False
+    assert field.min <= field.default <= field.max
+    assert field.default == 12.0 and field.min == 1.0 and field.max == 40.0
+    assert defaults()["planner.max_daily_grid_charge_kwh"] == 12.0
+    _low, err_low = validate_settings({"planner.max_daily_grid_charge_kwh": field.min - 1})
+    _high, err_high = validate_settings({"planner.max_daily_grid_charge_kwh": field.max + 1})
+    assert "planner.max_daily_grid_charge_kwh" in err_low
+    assert "planner.max_daily_grid_charge_kwh" in err_high
+    clean, errors = validate_settings({"planner.max_daily_grid_charge_kwh": 12})
+    assert errors == {} and clean["planner.max_daily_grid_charge_kwh"] == 12
+    row = next(r for r in schema_json() if r["key"] == field.key)
+    assert row["slider"] is True and row["advanced"] is False and row["group"] == "strategy"
+
+
 def test_heating_done_field_overlays_onto_effective_settings():
     payload = json.dumps({"dhw_eco": "2026-07-01"})
     eff = effective_settings({"heating.done": payload})
@@ -477,3 +527,29 @@ def test_heating_done_field_overlays_onto_effective_settings():
     # An invalid (non-string) stored value must never break the dashboard — falls back to default.
     eff_bad = effective_settings({"heating.done": 123})
     assert eff_bad["heating.done"] == "{}"
+
+
+def test_consumers_quiet_hours_and_preferred_windows_validation():
+    clean, errors = validate_settings({"consumers.quiet_hours": "22:00-07:00"})
+    assert errors == {}
+    assert clean["consumers.quiet_hours"] == "22:00-07:00"
+    clean_empty, err_empty = validate_settings({"consumers.quiet_hours": "  "})
+    assert err_empty == {}
+    assert clean_empty["consumers.quiet_hours"] == ""
+    _c, err = validate_settings({"consumers.quiet_hours": "not-a-range"})
+    assert "consumers.quiet_hours" in err
+    _c, err_same = validate_settings({"consumers.quiet_hours": "22:00-22:00"})
+    assert "consumers.quiet_hours" in err_same
+    clean2, err2 = validate_settings({
+        "consumers.preferred_windows": '{"mock-washer-1": "09:00-17:00"}',
+    })
+    assert err2 == {}
+    assert "mock-washer-1" in clean2["consumers.preferred_windows"]
+    _c, err_partial = validate_settings({
+        "consumers.preferred_windows": '{"washer": "09:00-17:00", "dryer": "nope"}',
+    })
+    assert "consumers.preferred_windows" in err_partial
+    _c, err_wrap = validate_settings({
+        "consumers.preferred_windows": '{"washer": "22:00-07:00"}',
+    })
+    assert "consumers.preferred_windows" in err_wrap

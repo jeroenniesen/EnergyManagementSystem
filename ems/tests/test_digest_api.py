@@ -62,6 +62,9 @@ def test_digest_endpoint_returns_the_requested_week(tmp_path):
     assert b["tweak"] is None
     assert b["self_sufficiency_pct"] is not None
     assert b["solar_kwh"] > 0
+    assert "negative_days" in b
+    assert isinstance(b["negative_days"], list)
+    assert "saved_eur" in b and "week_label" in b
 
 
 def test_digest_endpoint_rejects_a_malformed_week_param(tmp_path):

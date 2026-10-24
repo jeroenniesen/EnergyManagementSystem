@@ -19,6 +19,7 @@ from datetime import datetime
 
 from ems.domain import BatteryIntent
 from ems.planner import economics
+from ems.planner.budgets import cycle_budget_reason, equivalent_full_cycles, resolved_cycle_history
 from ems.planner.charge_need import stored_kwh_per_slot
 from ems.planner.schedule import SLOT, Plan, PlanSlot
 from ems.sources.prices import PriceSlot
@@ -42,6 +43,8 @@ class TradingConfig:
     min_export_kwh: float = 0.5
     export_mode: str = "peak_slice"  # peak_slice | full_dump
     max_cycles_per_day: float = 1.5
+    charged_today_kwh: float | None = 0.0
+    discharged_today_kwh: float | None = 0.0
     daily_min_savings_eur: float = 0.20
     export_price_model: str = "spot_minus_tax"
     energy_tax_eur_per_kwh: float = 0.13
@@ -61,8 +64,17 @@ class TradingConfig:
     assumed_house_load_w: float = _ASSUMED_HOUSE_LOAD_W
 
 
-def trading_config_from_settings(s: dict) -> TradingConfig:
-    """Build TradingConfig from the runtime settings store (canonical planner.* keys)."""
+def trading_config_from_settings(
+    s: dict,
+    *,
+    reserve_soc_pct: float | None = None,
+) -> TradingConfig:
+    """Build TradingConfig from the runtime settings store (canonical planner.* keys).
+
+    ``reserve_soc_pct`` is the plan floor (#310) — pass the effective floor from the caller
+    (:func:`ems.battery_limits.effective_floor_from_settings`); never load the user reserve
+    setting from the settings dict inside this module.
+    """
     mode = str(s.get("planner.export_mode", "peak_slice") or "peak_slice")
     if mode not in _EXPORT_MODES:
         mode = "peak_slice"
@@ -88,7 +100,7 @@ def trading_config_from_settings(s: dict) -> TradingConfig:
         max_charge_w=float(s.get("battery.max_charge_w", 4000.0)),
         max_discharge_w=float(s.get("battery.max_discharge_w", 4000.0)),
         usable_kwh=float(s.get("battery.usable_kwh", 10.0)),
-        reserve_soc_pct=float(s.get("battery.min_reserve_soc", 10.0)),
+        reserve_soc_pct=float(reserve_soc_pct if reserve_soc_pct is not None else 10.0),
         import_fee_eur_per_kwh=(
             float(s.get("grid_fees.import_fee_eur_per_kwh", 0.0))
             if not setting_price_includes_all_fees(s) else 0.0
@@ -322,7 +334,14 @@ def _build_path_t(
     else:
         export_candidates = profitable[: cfg.discharge_slots]
 
-    cycle_kwh_budget = cfg.max_cycles_per_day * 2.0 * cfg.usable_kwh
+    hist_c, hist_d = resolved_cycle_history(
+        cfg.charged_today_kwh, cfg.discharged_today_kwh, cfg.max_cycles_per_day,
+    )
+    used_efc = equivalent_full_cycles(hist_c, hist_d, cfg.usable_kwh)
+    if (hist_c > 0.0 or hist_d > 0.0) and used_efc >= cfg.max_cycles_per_day - 1e-9:
+        return None, 0.0, 0.0, f"Geen handel: {cycle_budget_reason(cfg.max_cycles_per_day)}"
+    remaining_cycles = max(0.0, cfg.max_cycles_per_day - used_efc)
+    cycle_kwh_budget = remaining_cycles * 2.0 * cfg.usable_kwh
     max_export_from_cycles = cycle_kwh_budget / 2.0
     day_cap = (
         cfg.max_export_kwh_per_day
@@ -372,7 +391,9 @@ def _build_path_t(
 
     # Trim to cycle budget instead of abandoning (Grok nit).
     while export_starts and cfg.usable_kwh > 0:
-        efc = (stored_dc + export_ac / eta) / (2.0 * cfg.usable_kwh)
+        efc = equivalent_full_cycles(
+            hist_c + stored_dc, hist_d + export_ac / eta, cfg.usable_kwh,
+        )
         if efc <= cfg.max_cycles_per_day + 1e-9:
             break
         export_starts.pop()
@@ -449,6 +470,35 @@ def _build_path_t(
     return plan, t_eur, existing_ac, ""
 
 
+def _shared_savings_block(
+    plan: Plan,
+    prices: list[PriceSlot],
+    load_w_by: dict[datetime, float] | None,
+    cfg: TradingConfig,
+) -> str | None:
+    """Whole-day no-trade when the shared helper is known and under daily_min.
+
+    Path T's own `t_eur` gate still runs inside `_build_path_t`. This extra check
+    only fires when that gate already passed and `estimate_plan_savings` returns
+    a lower known figure — never when the estimate is unknown (None). Threshold
+    0 keeps today's behaviour. The reason keeps the `daily_min` / hele-dag marker
+    so the existing no-trade path stays whole-day AUTO.
+    """
+    if cfg.daily_min_savings_eur <= 1e-12:
+        return None
+    shared = economics.estimate_plan_savings(
+        plan, prices, load_w_by,
+        cfg.round_trip_efficiency, cfg.degradation_eur_per_kwh,
+        cfg.risk_margin_eur_per_kwh, cfg.import_fee_eur_per_kwh,
+    )
+    if shared is None or shared + 1e-9 >= cfg.daily_min_savings_eur:
+        return None
+    return (
+        f"Geen handel: geprojecteerde besparing €{shared:.2f} < "
+        f"daily_min €{cfg.daily_min_savings_eur:.2f} — hele dag no-trade."
+    )
+
+
 def maybe_apply_trading(
     z_plan: Plan,
     prices: list[PriceSlot],
@@ -470,6 +520,9 @@ def maybe_apply_trading(
         if "hele dag no-trade" in skip:
             return _all_auto_plan(prices, now, cfg, reason=skip)
         return z_plan
+    shared_block = _shared_savings_block(t_plan, prices, load_w_by, cfg)
+    if shared_block:
+        return _all_auto_plan(prices, now, cfg, reason=shared_block)
     z_eur = score_z_plan(
         z_plan, prices, cfg, existing_ac_kwh=existing_ac, load_w_by=load_w_by,
     )
@@ -518,6 +571,14 @@ def evaluate_trading(
     z_eur = score_z_plan(
         z_plan, prices, cfg, existing_ac_kwh=existing_ac, load_w_by=load_w_by,
     )
+    if t_plan is not None:
+        shared_block = _shared_savings_block(t_plan, prices, load_w_by, cfg)
+        if shared_block:
+            return {
+                "enabled": True, "would_trade": False, "reason": shared_block,
+                "t_eur": t_eur, "z_eur": z_eur, "extra_eur": t_eur - z_eur,
+                "whole_day_auto": True,
+            }
     if t_plan is None:
         return {
             "enabled": True, "would_trade": False, "reason": skip,

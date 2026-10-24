@@ -15,6 +15,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 
 from ems.domain import BatteryIntent, PlannerInputSnapshot
+from ems.planner.buy_pool import BuyPoolInfo
 
 SLOT = timedelta(minutes=15)
 
@@ -53,6 +54,7 @@ class Plan:
     version: int = 1
     input_snapshot: PlannerInputSnapshot | None = None
     planner_mode: str | None = None   # rule_based | ml | advisory (requested producer mode)
+    buy_pool: BuyPoolInfo | None = None  # #315: why EMS did / did not grid-buy (explain-only)
 
     def intent_at(self, now: datetime) -> PlanSlot | None:
         """The slot covering `now`, or None if `now` is outside the plan horizon. Uses each slot's

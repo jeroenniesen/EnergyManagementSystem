@@ -28,6 +28,7 @@ testpaths = ["ems/tests"]
 addopts = "-q"
 markers = [
     "fault_injection: tests that exercise deliberate source/control failures",
+    "slow: timing-sensitive stress tests excluded from the default CI and make test run",
 ]
 
 [tool.hatch.build.targets.wheel]

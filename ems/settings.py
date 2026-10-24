@@ -65,6 +65,14 @@ SETTINGS_SCHEMA: tuple[SettingsField, ...] = (
         "hours. Off = use only solar (the battery may not last the whole night).",
     ),
     SettingsField(
+        "planner.max_daily_grid_charge_kwh", "Max grid charge per day", "number", 12.0,
+        "strategy",
+        help="Hard cap on energy the battery may buy from the grid on one local day. A bad "
+        "forecast or setting can never buy more than this. Charging while the price is negative "
+        "counts toward the same cap. The counter resets at local midnight.",
+        min=1.0, max=40.0, step=0.5, unit="kWh", slider=True,
+    ),
+    SettingsField(
         "strategy.summer_max_topup_price", "Summer: max top-up price", "number", 0.30, "strategy",
         help="Never grid-charge in summer above this price.",
         min=0.0, max=2.0, step=0.01, unit="€/kWh", advanced=True,
@@ -122,6 +130,12 @@ SETTINGS_SCHEMA: tuple[SettingsField, ...] = (
         "(export nets against import at the FULL price). Pick fixed if your contract pays a "
         "flat feed-in tariff regardless of the spot price.",
         options=("spot_minus_tax", "net_metering", "fixed"),
+    ),
+    SettingsField(
+        "prices.export_model_confirmed", "Export model confirmed", "bool", False, "prices",
+        help="Set when the household explicitly chose saldering vs the 2027-ready export model "
+        "(#341 / audit F-11). Omitted from Manage — the Home/Settings banner owns the choice.",
+        show_in_settings=False,
     ),
     SettingsField(
         "prices.energy_tax_eur_per_kwh", "Export energy tax", "number", 0.13, "prices",
@@ -287,16 +301,22 @@ SETTINGS_SCHEMA: tuple[SettingsField, ...] = (
     ),
     SettingsField(
         "control.max_switches_per_day", "Max mode switches/day", "int", 10, "control",
-        help="Hard cap on battery mode writes per day (SPEC target: under 10). Ceiling 20.",
+        help="Hard cap on routine battery mode writes per day (SPEC target: under 10). Committed "
+        "grid-charge writes use a separate limit below. Ceiling 20.",
         min=1, max=20,
     ),
     SettingsField(
+        "control.max_commitment_switches_per_day", "Max commitment switches/day", "int", 4,
+        "control",
+        help="Hard cap on mode writes for a committed grid-charge (GRID_CHARGE_TO_TARGET) per "
+        "local day — independent of the routine cap above, so a spent routine budget cannot block "
+        "a planned cheap-charge window (#309).",
+        min=1, max=10, advanced=True, applies="live",
+    ),
+    SettingsField(
         "control.commitment_reserve", "Switches reserved for charging", "int", 3, "control",
-        help="How many of the daily mode-switch budget above are held back for a committed "
-        "grid-charge, so ordinary idle/auto flapping can't use them all up and leave the battery "
-        "unable to charge before an expensive-price deadline. Ordinary switches may use "
-        "(cap − this); a committed charge may use the full cap. The total is still capped. 0 = no "
-        "reserve (the whole budget is shared).",
+        help="Deprecated — no longer affects control (#309). Kept so existing settings load; use "
+        "Max commitment switches/day instead.",
         min=0, max=10, advanced=True,
     ),
     SettingsField(
@@ -749,6 +769,28 @@ SETTINGS_SCHEMA: tuple[SettingsField, ...] = (
         min=1.0, max=32.0, unit="slots", show_in_settings=False, advanced=True,
     ),
     SettingsField(
+        "consumers.quiet_hours",
+        "Quiet hours (no start advice)",
+        "text",
+        "",
+        "consumers",
+        help="Optional local-time window when start-window advice must not begin or end, e.g. "
+        "22:00-07:00. Empty = no restriction (#333).",
+        show_in_settings=False,
+        advanced=True,
+    ),
+    SettingsField(
+        "consumers.preferred_windows",
+        "Per-appliance preferred windows",
+        "text",
+        "{}",
+        "consumers",
+        help='JSON map of device id → local "HH:MM-HH:MM" band where advice should fit. '
+        "Empty object = no per-device preference (#333).",
+        show_in_settings=False,
+        advanced=True,
+    ),
+    SettingsField(
         "consumers.smartthings.enabled", "SmartThings integration", "bool", False, "consumers",
         help="Turn on the Samsung SmartThings appliance adapter (washer/dryer). "
         "Needs a personal access token below. Read-only — EMS does not start cycles yet. "
@@ -1193,6 +1235,30 @@ def validate_settings(
             except ValueError as exc:
                 errors[key] = str(exc)
             continue
+        if key == "consumers.quiet_hours":
+            from ems.consumers.start_advice import quiet_hours_error
+
+            text = str(result or "").strip()
+            err = quiet_hours_error(text)
+            if err:
+                errors[key] = err
+                continue
+            clean[key] = text
+            continue
+        if key == "consumers.preferred_windows":
+            from ems.consumers.start_advice import (
+                parse_preferred_windows_json,
+                preferred_windows_error,
+            )
+
+            raw = str(result or "").strip() or "{}"
+            err = preferred_windows_error(raw)
+            if err:
+                errors[key] = err
+                continue
+            parsed = parse_preferred_windows_json(raw)
+            clean[key] = json.dumps(parsed, sort_keys=True) if parsed else "{}"
+            continue
         if field.type == "secret" and result == "":
             continue  # blank secret = keep the existing value
         clean[key] = result
@@ -1204,6 +1270,8 @@ def validate_settings(
             clean["control.grid_limit_w"] = GRID_FUSE_PRESET_W[fuse]
         elif fuse == "unset":
             clean["control.grid_limit_w"] = float(SETTINGS_BY_KEY["control.grid_limit_w"].default)
+    # #341: do not invent prices.export_model_confirmed here. effective_settings() re-validates
+    # the whole store on read; confirmation is applied only by POST /api/settings.
     return clean, errors
 
 

@@ -20,7 +20,11 @@ from ems.control.service import ControlContext, ControlService
 from ems.domain import BatteryIntent, PhysicalMode
 from ems.freshness import FreshnessTracker
 from ems.lifecycle import Lifecycle
-from ems.planner.reason import GATE_DICT_KEYS, REASON_DICT_KEYS
+from ems.planner.reason import (
+    GATE_DICT_KEYS,
+    PRICE_FALLBACK_SAFETY_MESSAGE,
+    REASON_DICT_KEYS,
+)
 from ems.planner.validator import PlanValidation
 from ems.sense import SIGNALS
 from ems.settings import effective_settings
@@ -86,6 +90,23 @@ def test_decision_endpoint_carries_structured_decision_reason(tmp_path):
     _assert_same_reason(reason, plan["reason"])
 
 
+def test_decision_and_plan_expose_buy_pool(tmp_path):
+    """AC2: /api/decision and /api/plan surface buy_pool additively (#315)."""
+    with TestClient(_app(tmp_path)) as c:
+        decision = c.get("/api/decision").json()
+        plan = c.get("/api/plan").json()
+    assert "buy_pool" in decision
+    assert decision["buy_pool"] == decision["decision_reason"]["buy_pool"]
+    assert "buy_pool" in plan
+    pool = plan["buy_pool"]
+    assert pool is not None
+    for key in (
+        "state", "max_buy_eur_per_kwh", "cheapest_slot",
+        "shortfall_kwh", "next_chance", "pool_size",
+    ):
+        assert key in pool
+
+
 def test_export_package_manifest_carries_decision_reason(tmp_path):
     with TestClient(_app(tmp_path)) as c:
         r = c.get("/api/export/package?days=7")
@@ -139,6 +160,35 @@ def test_unknown_soc_reason_matches_battery_plan_empty(tmp_path):
     assert "No current plan" in plan["reason"]["summary"]
 
 
+def _all_fresh_tracker() -> FreshnessTracker:
+    fr = FreshnessTracker()
+    fr.register(*SIGNALS)
+    now = datetime.now(UTC)
+    for s in SIGNALS:
+        fr.mark(s, now)
+    return fr
+
+
+def test_decision_reason_price_fallback_when_operational_mock_prices(tmp_path):
+    """F-13 (#313): price_fallback surfaces Dutch fail-safe copy on /api/decision."""
+    db = str(tmp_path / "ems.sqlite")
+    app = create_app(
+        MockSource(), dry_run=True, dev_mode="mock",
+        price_source=MockPriceSource(AMS),
+        solar_forecast=MockSolarForecastSource(AMS),
+        freshness=_all_fresh_tracker(),
+        settings_store=SettingsStore(db),
+    )
+    with TestClient(app) as c:
+        c.post("/api/settings", json={"control.operational": True})
+        assert c.get("/api/alerts").json()["data_quality"] == "price_fallback"
+        body = c.get("/api/decision").json()
+    reason = body["decision_reason"]
+    _assert_reason_shape(reason)
+    assert reason["safety_constraint"]["action"] == "paused"
+    assert reason["safety_constraint"]["message"] == PRICE_FALLBACK_SAFETY_MESSAGE
+
+
 def test_replay_decision_embeds_structured_reason(tmp_path):
     with TestClient(_app(tmp_path)) as c:
         body = c.get("/api/replay").json()
@@ -171,6 +221,7 @@ def test_control_tick_audit_detail_includes_decision_reason():
             "cap_reached": False, "unconfirmed": False,
         },
         "summary": "audit-row reason fixture",
+        "buy_pool": None,
     }
     svc = ControlService(
         ctx=ctx, settings=settings, controller=controller, store=None, audit_store=None,

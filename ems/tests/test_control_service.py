@@ -7,7 +7,9 @@ still covered by the app-level suites (test_manual_control / test_car_session / 
 test_failsafe_api / test_recovery_wiring / …), which exercise the SAME methods through the aliases
 `create_app` sets. Here we only assert the standalone construction + a real tick works.
 """
+
 import asyncio
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from zoneinfo import ZoneInfo
 
@@ -38,8 +40,13 @@ def _controlling_controller(driver=None) -> ModeController:
 
 
 def _service(
-    controller: ModeController, *, audit_store=None, car_charging=None, price_source=None,
-    current_mode=None, clock=None,
+    controller: ModeController,
+    *,
+    audit_store=None,
+    car_charging=None,
+    price_source=None,
+    current_mode=None,
+    clock=None,
 ) -> tuple[ControlService, ControlContext]:
     """Build a ControlService with mock collaborators + trivial injected callables. `price_source`
     is None so the plan path is a no-op (`current_plan()` returns None) — this test drives the
@@ -48,9 +55,16 @@ def _service(
     ctx = ControlContext()
     settings = effective_settings({})
     svc = ControlService(
-        ctx=ctx, settings=settings, controller=controller, store=None, audit_store=audit_store,
-        price_source=price_source, solar_forecast=None,
-        site_tz=ZoneInfo("Europe/Amsterdam"), dry_run=False, clock=clock,
+        ctx=ctx,
+        settings=settings,
+        controller=controller,
+        store=None,
+        audit_store=audit_store,
+        price_source=price_source,
+        solar_forecast=None,
+        site_tz=ZoneInfo("Europe/Amsterdam"),
+        dry_run=False,
+        clock=clock,
         current_soc=lambda now: 50.0,
         current_mode=current_mode or (lambda now: PhysicalMode.AUTO),
         current_towers=lambda now: None,
@@ -83,7 +97,8 @@ def test_incomplete_live_prices_return_a_forced_battery_to_auto():
     controller = _controlling_controller()
     controller.driver.apply(PhysicalMode.CHARGE)
     svc, ctx = _service(
-        controller, price_source=_IncompletePrices(),
+        controller,
+        price_source=_IncompletePrices(),
         current_mode=lambda now: controller.driver.current_mode(),
     )
     ctx.car_session["active"] = True  # price fail-safe must bypass the EV-stop grace window
@@ -97,12 +112,18 @@ def test_incomplete_live_prices_return_a_forced_battery_to_auto():
     assert records
 
 
+def test_cycle_throughput_today_is_none_without_a_store():
+    svc, _ctx = _service(_controlling_controller())
+    assert svc.cycle_throughput_today(NOW) is None
+
+
 def test_control_service_constructs_and_runs_a_tick_standalone():
     # Constructs with no FastAPI in sight, and a manual "charge now" override drives one real tick.
     controller = _controlling_controller()
     svc, ctx = _service(controller)
     ctx.override_box["ov"] = Override(
-        intent=BatteryIntent.GRID_CHARGE_TO_TARGET, expires_at=NOW + timedelta(hours=1))
+        intent=BatteryIntent.GRID_CHARGE_TO_TARGET, expires_at=NOW + timedelta(hours=1)
+    )
 
     records = svc.control_tick(NOW)
 
@@ -112,6 +133,18 @@ def test_control_service_constructs_and_runs_a_tick_standalone():
     assert "command sent" in records[0]["summary"]
     assert records[0]["detail"]["desired_mode"] == "charge"
     assert controller.driver.current_mode() is PhysicalMode.CHARGE
+
+
+def test_adaptive_cfg_uses_effective_floor_when_device_above_reserve():
+    """#310 / F-16a: planner cfgs use max(user reserve, probed min_target_soc)."""
+    driver = MockBatteryDriver()
+    driver._capabilities = replace(driver._capabilities, min_target_soc=6.0)
+    controller = _controlling_controller(driver)
+    svc, _ = _service(controller)
+    svc._settings["battery.min_reserve_soc"] = 5.0
+    assert svc.effective_floor_soc() == 6.0
+    assert svc.adaptive_cfg().reserve_soc_pct == 6.0
+    assert svc.recovery_sizing()["reserve_soc_pct"] == 6.0
 
 
 def test_forced_discharge_sizing_requires_export_intent_and_arming():
@@ -155,8 +188,8 @@ def test_control_service_run_cycle_audits_the_write():
     controller = _controlling_controller()
     svc, ctx = _service(controller, audit_store=_FakeAudit(), clock=FrozenClock(NOW))
     ctx.override_box["ov"] = Override(
-        intent=BatteryIntent.GRID_CHARGE_TO_TARGET,
-        expires_at=NOW + timedelta(hours=1))
+        intent=BatteryIntent.GRID_CHARGE_TO_TARGET, expires_at=NOW + timedelta(hours=1)
+    )
 
     asyncio.run(svc.run_cycle())
 
@@ -179,8 +212,15 @@ def test_control_service_run_cycle_audits_the_write():
 # override / the car-guard hold / return-to-AUTO / the data fail-safe) are NEVER deferred.
 # ==================================================================================================
 
-_CHARGE_INTENT = (BatteryIntent.GRID_CHARGE_TO_TARGET, "cheap window — charge to full",
-                  False, 100.0, 4000.0, None, None)
+_CHARGE_INTENT = (
+    BatteryIntent.GRID_CHARGE_TO_TARGET,
+    "cheap window — charge to full",
+    False,
+    100.0,
+    4000.0,
+    None,
+    None,
+)
 
 
 def test_f2_defers_planner_grid_charge_during_active_car_session():
@@ -223,7 +263,8 @@ def test_f2_manual_override_grid_charge_is_not_deferred():
     svc, ctx = _service(controller, car_charging=lambda now: True)
     ctx.car_session["active"] = True
     ctx.override_box["ov"] = Override(
-        intent=BatteryIntent.GRID_CHARGE_TO_TARGET, expires_at=NOW + timedelta(hours=1))
+        intent=BatteryIntent.GRID_CHARGE_TO_TARGET, expires_at=NOW + timedelta(hours=1)
+    )
 
     svc.control_tick(NOW)  # real effective_intent — the active override resolves to GRID_CHARGE
 
@@ -273,6 +314,7 @@ def test_f2_master_switch_off_does_not_defer_the_plan():
 # not one per cycle — and honour the hourly re-log (which the old held-box latch would suppress).
 # ==================================================================================================
 
+
 class _AlwaysUnconfirmedDriver(MockBatteryDriver):
     """Every write times out (BatteryWriteUnconfirmed) — the stuck 'device slow' episode."""
 
@@ -286,7 +328,8 @@ def test_repeated_unconfirmed_episode_records_one_incident_row_then_relogs_hourl
     controller = _controlling_controller(_AlwaysUnconfirmedDriver())
     svc, ctx = _service(controller)
     ctx.override_box["ov"] = Override(
-        intent=BatteryIntent.GRID_CHARGE_TO_TARGET, expires_at=NOW + timedelta(hours=3))
+        intent=BatteryIntent.GRID_CHARGE_TO_TARGET, expires_at=NOW + timedelta(hours=3)
+    )
 
     rows = []
     for i in range(5):  # five back-to-back cycles within the hour
@@ -347,7 +390,7 @@ def test_transient_flap_never_issues_a_switch_or_burns_the_cap():
     for k in range(12):
         svc.control_tick(NOW + timedelta(seconds=k))
     assert controller.driver.current_mode() is PhysicalMode.AUTO  # never switched to idle
-    assert controller.switches_today == 0                          # daily cap untouched
+    assert controller.switches_today == 0  # daily cap untouched
 
 
 def test_committed_grid_charge_is_never_held_for_persistence():
@@ -375,7 +418,14 @@ def test_manual_override_bypasses_intent_persistence():
     controller = _controlling_controller()  # AUTO
     svc, ctx = _service(controller)
     svc.effective_intent = lambda now: (  # override_active=True (4th element)
-        BatteryIntent.HOLD_RESERVE, "override", True, None, None, None, None)
+        BatteryIntent.HOLD_RESERVE,
+        "override",
+        True,
+        None,
+        None,
+        None,
+        None,
+    )
     svc.control_tick(NOW)
     assert controller.driver.current_mode() is PhysicalMode.IDLE  # acted at once
 
@@ -411,7 +461,7 @@ def test_persistence_hold_is_audited_once_across_the_hold():
     pend1 = [r for r in c1 if r["detail"]["outcome"] == "intent_pending"]
     pend2 = [r for r in c2 if r["detail"]["outcome"] == "intent_pending"]
     assert len(pend1) == 1  # explained once...
-    assert pend2 == []      # ...deduped on the second observe cycle
+    assert pend2 == []  # ...deduped on the second observe cycle
     assert controller.driver.current_mode() is PhysicalMode.IDLE  # acted on the third
 
 
@@ -429,13 +479,17 @@ def test_stable_car_session_preserves_command_budget_for_later_retune(mode):
             return super().apply(mode, target_soc=target_soc, power_w=power_w)
 
     driver = RecordingDriver()
-    svc, ctx = _service(_controlling_controller(driver), car_charging=lambda now: True,
-                        current_mode=lambda now: driver.current_mode())
+    svc, ctx = _service(
+        _controlling_controller(driver),
+        car_charging=lambda now: True,
+        current_mode=lambda now: driver.current_mode(),
+    )
     svc._settings["control.car_charging_battery_mode"] = mode
     svc._settings["control.car_discharge_w"] = 800
     ctx.load_profile_box["profile"] = LoadProfile(dict.fromkeys(range(24), 800), svc._site_tz)
-    ctx.override_box["ov"] = Override(intent=BatteryIntent.ALLOW_SELF_CONSUMPTION,
-                                     expires_at=NOW + timedelta(hours=2))
+    ctx.override_box["ov"] = Override(
+        intent=BatteryIntent.ALLOW_SELF_CONSUMPTION, expires_at=NOW + timedelta(hours=2)
+    )
     for minute in range(0, 60, 10):
         svc.control_tick(NOW + timedelta(minutes=minute))
     assert driver.writes == [(PhysicalMode.DISCHARGE, 10.0, 800)]
@@ -443,9 +497,305 @@ def test_stable_car_session_preserves_command_budget_for_later_retune(mode):
     svc._settings["control.car_discharge_w"] = 1400
     ctx.load_profile_box["profile"] = LoadProfile(dict.fromkeys(range(24), 1400), svc._site_tz)
     svc.control_tick(NOW + timedelta(hours=1))
-    assert driver.writes == [(PhysicalMode.DISCHARGE, 10.0, 800),
-                             (PhysicalMode.DISCHARGE, 10.0, 1400)]
+    assert driver.writes == [
+        (PhysicalMode.DISCHARGE, 10.0, 800),
+        (PhysicalMode.DISCHARGE, 10.0, 1400),
+    ]
     assert ctx.car_session["commands"] == 2
+
+
+def test_storage_lock_does_not_mark_the_cycle_fail_safe(tmp_path, monkeypatch, caplog):
+    """F-45: history/audit/gas/carbon lock errors keep the cycle outcome and fail_safe=0."""
+    import logging
+    import sqlite3
+
+    import ems.storage.sqlite_guard as guard
+    from ems.control.loop_counters import LOOP_COUNTERS
+    from ems.storage.audit import AuditStore
+    from ems.storage.history import HistoryStore
+
+    monkeypatch.setattr(guard, "BACKOFF_S", (0.0, 0.0))
+    guard.reset_lock_stats()
+    db = str(tmp_path / "ems.sqlite")
+    history = HistoryStore(db)
+    audit = AuditStore(db)
+
+    async def prime():
+        await history.init()
+        await audit.init()
+
+    asyncio.run(prime())
+
+    def _hit(sql: object, needles: tuple[str, ...]) -> bool:
+        text = str(sql)
+        if text.lstrip().upper().startswith("PRAGMA"):
+            return False
+        return any(needle in text for needle in needles)
+
+    def _patch(connection, needles: tuple[str, ...]) -> None:
+        orig_execute = connection.execute
+        orig_many = connection.executemany
+
+        async def execute(sql, *args, **kwargs):
+            if _hit(sql, needles):
+                raise sqlite3.OperationalError("database is locked")
+            return await orig_execute(sql, *args, **kwargs)
+
+        async def executemany(sql, *args, **kwargs):
+            if _hit(sql, needles):
+                raise sqlite3.OperationalError("database is locked")
+            return await orig_many(sql, *args, **kwargs)
+
+        connection.execute = execute
+        connection.executemany = executemany
+
+    _patch(history._db, ("plan_history", "gas_readings", "carbon_intensity"))
+    _patch(audit._db, ("audit_log",))
+
+    controller = _controlling_controller()
+    svc, _ctx = _service(controller, audit_store=audit)
+    before = guard.storage_write_retries()
+    LOOP_COUNTERS.reset()
+
+    async def run():
+        await history.record_plan("2026-06-28T12:00:00+00:00", {"strategy": "summer"})
+        await history.record_gas("2026-06-28T12:00:00+00:00", 10.0)
+        await history.upsert_carbon([("2026-06-28T12:00:00+00:00", 0.2)])
+        await audit.append("2026-06-28T12:00:00+00:00", "note", "locked", {})
+        await svc.run_cycle()
+
+    with caplog.at_level(logging.INFO, logger="ems.recorder"):
+        asyncio.run(run())
+
+    summaries = [
+        r.getMessage() for r in caplog.records if "control.cycle_summary" in r.getMessage()
+    ]
+    assert summaries, "cycle_summary was not logged"
+    assert "fail_safe=0" in summaries[-1]
+    warns = [
+        r for r in caplog.records
+        if r.levelno == logging.WARNING and "non-critical sqlite write skipped" in r.getMessage()
+    ]
+    assert len(warns) == 1
+    assert guard.storage_write_retries() >= before + 1
+    assert controller.driver.current_mode() is PhysicalMode.AUTO
+    assert LOOP_COUNTERS.outcomes["fail_safe"] == 0
+
+
+def test_unsafe_sensors_and_bad_prices_still_count_as_fail_safe():
+    """A storage-lock decoupling must not hide a real sensor or price failure (F-45)."""
+    from ems.control.loop_counters import LOOP_COUNTERS
+    from ems.price_quality import PriceHorizonStatus
+
+    controller = _controlling_controller()
+    svc, _ctx = _service(controller)
+    LOOP_COUNTERS.reset()
+    svc._data_quality = lambda now: "unsafe"
+    svc._observe_cycle_counters(NOW, [], latency_ms=1.0)
+    assert LOOP_COUNTERS.outcomes["fail_safe"] == 1
+
+    LOOP_COUNTERS.reset()
+    svc._data_quality = lambda now: "fresh"
+    svc._observe_cycle_counters(
+        NOW, [{"detail": {"outcome": "idempotent", "reason":
+                          "holding self-consumption (fail-safe: stale grid); "
+                          "sqlite write lock on audit"}}], latency_ms=1.0,
+    )
+    assert LOOP_COUNTERS.outcomes["fail_safe"] == 1
+
+    LOOP_COUNTERS.reset()
+    svc._data_quality = lambda now: "fresh"
+    svc._price_horizon_status = PriceHorizonStatus(False, "incomplete", 0, None)
+    svc._observe_cycle_counters(
+        NOW, [{"detail": {"outcome": "idempotent", "reason": "sqlite write lock on gas"}}],
+        latency_ms=1.0,
+    )
+    assert LOOP_COUNTERS.outcomes["fail_safe"] == 1
+
+    LOOP_COUNTERS.reset()
+    svc._price_horizon_status = None
+    svc._observe_cycle_counters(
+        NOW, [{"detail": {"outcome": "idempotent",
+                          "reason": "holding self-consumption (fail-safe: stale grid)"}}],
+        latency_ms=1.0,
+    )
+    assert LOOP_COUNTERS.outcomes["fail_safe"] == 1
+
+
+def test_control_state_lock_alerts_without_an_extra_battery_write(tmp_path, monkeypatch):
+    """control_state give-up: 3 attempts, audit F-45, alert, flag unchanged, no extra write."""
+    import sqlite3
+
+    import ems.storage.sqlite_guard as guard
+    from ems.storage.control_state import ControlStateStore
+
+    monkeypatch.setattr(guard, "BACKOFF_S", (0.0, 0.0))
+    guard.reset_lock_stats()
+    store = ControlStateStore(str(tmp_path / "ems.sqlite"))
+    store.init()
+    attempts = {"n": 0}
+
+    def _boom() -> None:
+        attempts["n"] += 1
+        raise sqlite3.OperationalError("database is locked")
+
+    monkeypatch.setattr(store, "_conn", _boom)
+    writes: list[PhysicalMode] = []
+    driver = MockBatteryDriver()
+    original = driver.apply
+
+    def _spy(mode, **kwargs):
+        writes.append(mode)
+        return original(mode, **kwargs)
+
+    driver.apply = _spy
+    controller = _controlling_controller(driver)
+    controller.last_command_unconfirmed = True
+    controller._on_state_change = store.save
+    store.save(controller.state_snapshot())
+    assert attempts["n"] == 3
+    assert writes == []
+    assert controller.last_command_unconfirmed is True
+
+    class _Audit:
+        def __init__(self) -> None:
+            self.rows: list[tuple] = []
+
+        async def append(self, ts, category, summary, detail):
+            self.rows.append((category, summary, detail))
+
+    class _Notify:
+        def __init__(self) -> None:
+            self.keys: list[str] = []
+
+        async def send(self, key, title, body, **kwargs):
+            self.keys.append(key)
+            return 1
+
+    audit = _Audit()
+    notify = _Notify()
+    svc, _ctx = _service(controller, audit_store=audit)
+    svc._storage_notifier = notify
+    asyncio.run(svc._report_critical_storage_failures(NOW))
+    assert writes == []
+    assert len(audit.rows) == 1
+    assert audit.rows[0][0] == "control_state_write_failed"
+    assert audit.rows[0][2]["audit_id"] == "F-45"
+    assert notify.keys == ["control_state_locked"]
+    assert controller.last_command_unconfirmed is True
+
+    # A real command still happens once; the failed persist does not add a second write.
+    guard.reset_lock_stats()
+    attempts["n"] = 0
+    controller.decide(BatteryIntent.GRID_CHARGE_TO_TARGET, NOW, target_soc=80)
+    assert writes == [PhysicalMode.CHARGE]
+    assert attempts["n"] == 3
+    asyncio.run(svc._report_critical_storage_failures(NOW))
+    assert writes == [PhysicalMode.CHARGE]
+
+
+class _EnergyTrackingDriver(MockBatteryDriver):
+    """Mock driver that accrues grid energy while in CHARGE (for commitment replay tests)."""
+
+    def __init__(self, *, charge_power_w: float = 4000.0) -> None:
+        super().__init__()
+        self.charge_power_w = charge_power_w
+        self.grid_import_kwh = 0.0
+
+    def apply(self, mode, *, target_soc=None, power_w=None):
+        pw = power_w or self.charge_power_w
+        accepted = super().apply(mode, target_soc=target_soc, power_w=pw)
+        return accepted
+
+    def accrue(self, dt_seconds: float) -> None:
+        if self.current_mode() is PhysicalMode.CHARGE:
+            pw = self.last_power_w or self.charge_power_w
+            self.grid_import_kwh += (pw / 1000.0) * (dt_seconds / 3600.0)
+
+
+def test_oct14_pattern_commitment_charges_after_routine_cap_exhausted():
+    """14-okt audit (F-01): 10 routine flaps before the cheap window must not cap-block charging.
+
+    #316 AC5: once #309's separate commitment budget is in place, this replay does not
+    increment `charge_blocked_by_cap` (the planned charge is applied, not held).
+    """
+    from ems.control.loop_counters import LOOP_COUNTERS
+    LOOP_COUNTERS.reset()
+    window_start = datetime(2026, 10, 14, 2, 0, tzinfo=ZoneInfo("Europe/Amsterdam"))
+    driver = _EnergyTrackingDriver(charge_power_w=4000.0)
+    controller = _controlling_controller(driver)
+    controller.max_switches_per_day = 10
+    controller.min_dwell = timedelta(seconds=600)
+    controller.switches_today = 10
+    controller.last_switch_at = window_start - timedelta(minutes=11)
+    svc, _ctx = _service(controller)
+    svc._settings["control.min_dwell_seconds"] = 600
+    svc.effective_intent = lambda now: _CHARGE
+
+    cap_hits = []
+    records = svc.control_tick(window_start)
+    for rec in records:
+        if rec.get("detail", {}).get("outcome") == "cap_reached":
+            cap_hits.append(rec)
+    assert not cap_hits
+    assert driver.current_mode() is PhysicalMode.CHARGE
+    assert any(r.get("detail", {}).get("outcome") == "applied" for r in records)
+
+    prev = window_start
+    for hour in range(1, 3):
+        now = window_start + timedelta(hours=hour)
+        driver.accrue((now - prev).total_seconds())
+        prev = now
+        recs = svc.control_tick(now)
+        cap_hits.extend(r for r in recs if r.get("detail", {}).get("outcome") == "cap_reached")
+    driver.accrue((window_start + timedelta(hours=2) - prev).total_seconds())
+    assert driver.grid_import_kwh >= 2.0  # ≥1 kWh per started window hour at 4 kW
+    assert cap_hits == []
+    assert LOOP_COUNTERS.snapshot()["charge_blocked_by_cap"] == 0
+
+
+def test_floor_hold_plan_tick_does_not_add_mode_writes():
+    """#312 AC5: marked floor-hold at the reserve matches DISCHARGE_FOR_LOAD write count."""
+    from ems.planner.projection import BatteryModel, mark_floor_holds, project_energy
+    from ems.planner.schedule import Plan, PlanSlot
+
+    floor = 10.0
+    start = NOW
+    model = BatteryModel(
+        usable_kwh=10.0, max_charge_w=4000.0, max_discharge_w=4000.0,
+        round_trip_efficiency=1.0, reserve_soc_pct=floor,
+    )
+    dfl_slot = PlanSlot(start, BatteryIntent.DISCHARGE_FOR_LOAD, "peak", floor_soc=floor)
+    raw = Plan(created_at=start, slots=(dfl_slot,))
+    proj = project_energy(
+        raw.slots, start_soc_pct=floor, solar_w_by={start: 0.0},
+        load_w_by={start: 800.0}, model=model,
+    )
+    marked = mark_floor_holds(raw, proj, floor, start_soc_pct=floor)
+    assert marked.slots[0].intent is BatteryIntent.HOLD_RESERVE
+
+    def _switches_after_ticks(intent, reason):
+        controller = _controlling_controller()
+        plan = marked if intent is BatteryIntent.HOLD_RESERVE else raw
+        svc, _ctx = _service(controller)
+        svc._current_soc = lambda now: floor
+        svc.current_plan = lambda now=None: (start, [], plan)
+        svc.effective_intent = lambda now: (
+            intent, reason, False, None, None, None, None,
+        )
+        before = controller.switches_today
+        for k in range(8):
+            svc.control_tick(start + timedelta(seconds=k))
+        return controller.switches_today - before, controller.driver.current_mode()
+
+    dfl_delta, dfl_mode = _switches_after_ticks(
+        BatteryIntent.DISCHARGE_FOR_LOAD, "peak",
+    )
+    hold_delta, hold_mode = _switches_after_ticks(
+        BatteryIntent.HOLD_RESERVE, marked.slots[0].reason,
+    )
+    assert hold_delta == dfl_delta == 0
+    assert hold_mode is dfl_mode is PhysicalMode.AUTO
 
 
 def test_current_plan_uses_injected_clock_and_explicit_time_consistently():
@@ -455,7 +805,7 @@ def test_current_plan_uses_injected_clock_and_explicit_time_consistently():
 
     class Prices:
         def slots(self):
-            return [PriceSlot(midnight + timedelta(minutes=15 * i), .2) for i in range(192)]
+            return [PriceSlot(midnight + timedelta(minutes=15 * i), 0.2) for i in range(192)]
 
     svc, _ = _service(_controlling_controller(), price_source=Prices(), clock=FrozenClock(NOW))
     seen = []
@@ -471,3 +821,54 @@ def test_current_plan_uses_injected_clock_and_explicit_time_consistently():
         assert at == plan.created_at == expected
         assert seen and set(seen) == {expected}
         seen.clear()
+
+
+def test_cap_block_of_planned_grid_charge_counts_then_clears():
+    """#316: a >=15 min GRID_CHARGE held by the commitment cap is tagged and counted per cycle.
+
+    A shorter slot does not count. The next tick that is not blocked clears the alert flag.
+    The decision itself is still cap_reached / applied — this only tags and counts.
+    """
+    from ems.control.loop_counters import LOOP_COUNTERS
+    from ems.planner.schedule import SLOT, Plan, PlanSlot
+
+    LOOP_COUNTERS.reset()
+    start = NOW
+    slot = PlanSlot(
+        start, BatteryIntent.GRID_CHARGE_TO_TARGET, "cheap window",
+        target_soc=80.0, end=start + SLOT,
+    )
+    plan = Plan(created_at=start, slots=(slot,), strategy="winter",
+                target_soc=80.0, deadline=start + 4 * SLOT)
+    controller = _controlling_controller()
+    controller.commitment_switches_today = 4  # settings default commitment cap
+    svc, _ctx = _service(controller)
+    svc.effective_intent = lambda now: _CHARGE
+    svc.current_plan = lambda now=None: (now or start, [], plan)
+
+    recs = svc.control_tick(start)
+    assert svc.charge_blocked_by_cap is True
+    assert LOOP_COUNTERS.snapshot()["charge_blocked_by_cap"] == 1
+    tagged = [r for r in recs if r.get("detail", {}).get("charge_blocked_by_cap") is True]
+    assert len(tagged) == 1 and tagged[0]["detail"]["outcome"] == "cap_reached"
+    assert controller.driver.current_mode() is PhysicalMode.AUTO  # held, not written
+
+    svc.control_tick(start + timedelta(minutes=1))
+    assert LOOP_COUNTERS.snapshot()["charge_blocked_by_cap"] == 2  # per cycle, audit stays deduped
+
+    short = PlanSlot(
+        start, BatteryIntent.GRID_CHARGE_TO_TARGET, "too short to alert",
+        target_soc=80.0, end=start + timedelta(minutes=5),
+    )
+    short_plan = Plan(created_at=start, slots=(short,), strategy="winter",
+                      target_soc=80.0, deadline=start + timedelta(minutes=5))
+    svc.current_plan = lambda now=None: (now or start, [], short_plan)
+    svc.control_tick(start + timedelta(minutes=1))
+    assert svc.charge_blocked_by_cap is False
+    assert LOOP_COUNTERS.snapshot()["charge_blocked_by_cap"] == 2
+
+    controller.commitment_switches_today = 0
+    svc.current_plan = lambda now=None: (now or start, [], plan)
+    svc.control_tick(start + timedelta(minutes=2))
+    assert svc.charge_blocked_by_cap is False
+    assert controller.driver.current_mode() is PhysicalMode.CHARGE

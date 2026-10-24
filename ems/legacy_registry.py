@@ -204,6 +204,20 @@ LEGACY_REGISTRY: tuple[LegacyEntry, ...] = (
             "only delete ml/advisory tokens if the product drops those modes."
         ),
     ),
+    LegacyEntry(
+        id="control-commitment-reserve-setting",
+        path="control.commitment_reserve",
+        owner="control / settings",
+        reason=(
+            "Pre-#309 routine-vs-commitment split used a reserve carved from the shared daily cap; "
+            "commitment writes now use control.max_commitment_switches_per_day instead."
+        ),
+        usage_signal="Settings schema still exposes the key; ModeController ignores it.",
+        removal_trigger=(
+            "Remove from SETTINGS_SCHEMA and docs after no production DB still stores the key "
+            "(or one full release with migration note)."
+        ),
+    ),
     # --- Temporary / scratch artifacts ---
     LegacyEntry(
         id="root-validation-screenshots",

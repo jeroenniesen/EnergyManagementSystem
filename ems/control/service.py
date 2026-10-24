@@ -26,7 +26,7 @@ import logging
 import threading
 import time
 from collections.abc import Callable
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
@@ -49,18 +49,24 @@ from ems.control.command_fence import (
 from ems.control.decision import ControlDecisionEngine
 from ems.control.execution import CommandExecutionBoundary
 from ems.control.loop_counters import LOOP_COUNTERS
+from ems.control.mode_controller import ModeController
 from ems.control.override import NONE as OVERRIDE_NONE
 from ems.control.override import Override
 from ems.control.reconciliation import CommandReconciliation
 from ems.control.safety import SafetyValidator, resolve_floor_anti_flap
-from ems.domain import BatteryIntent, PhysicalMode
+from ems.domain import BatteryIntent, CapabilityReport, PhysicalMode
 from ems.lifecycle import Lifecycle, OwnershipState
 from ems.perf import PERF_BUDGETS, REGISTRY, atimed, timed
 from ems.planner.adaptive import AdaptiveConfig
 from ems.planner.base import PlannerRequest
+from ems.planner.budgets import (
+    clamp_cycle_budget,
+    read_already_bought_today,
+    read_cycle_throughput_today,
+)
 from ems.planner.charge_need import compute_charge_need
 from ems.planner.factory import build_planner
-from ems.planner.projection import BatteryModel, project_energy
+from ems.planner.projection import BatteryModel, mark_floor_holds, project_energy
 from ems.planner.recovery import (
     NOT_APPLICABLE,
     CompletionStatus,
@@ -92,6 +98,30 @@ _SAMPLE_MAX_AGE_SECONDS = 600.0
 # lifespan to SEED the box at boot, so it's exported here as the single source of truth.
 HYSTERESIS_KEY = "strategy:hysteresis"
 HYSTERESIS_TTL_SECONDS = 90 * 24 * 3600.0  # long enough to bridge shoulder-season gaps
+
+
+def _stamp_already_bought(cfg: Any, bought: float | None) -> Any:
+    """Attach today's history total without changing any other planner knob."""
+    if cfg is None or not hasattr(cfg, "already_bought_today_kwh"):
+        return cfg
+    return replace(cfg, already_bought_today_kwh=bought)
+
+
+def _with_throughput(cfg: Any, throughput: tuple[float, float] | None) -> Any:
+    if cfg is None or not hasattr(cfg, "charged_today_kwh"):
+        return cfg
+    charged, discharged = (None, None) if throughput is None else throughput
+    return replace(cfg, charged_today_kwh=charged, discharged_today_kwh=discharged)
+
+
+def apply_control_settings(controller: ModeController, settings: dict[str, Any]) -> None:
+    """Push live `control.*` limits onto the ModeController (preserves switch counters)."""
+    controller.max_switches_per_day = int(settings["control.max_switches_per_day"])
+    controller.max_commitment_switches_per_day = int(
+        settings.get("control.max_commitment_switches_per_day", 4))
+    controller.min_dwell = timedelta(seconds=float(settings["control.min_dwell_seconds"]))
+    controller.allow_export_discharge = bool(
+        settings.get("control.allow_export_discharge", False))
 
 
 # --- Cluster per-tower mode mapping (moved verbatim from api.py; re-exported there) --------------
@@ -507,6 +537,8 @@ class ControlService:
         # create_app aliases exist). When set, control-loop battery_decision audit rows carry the
         # same object as /api/battery-plan `reason`.
         self._decision_reason: Callable[[datetime], dict] | None = None
+        # Optional notifier for a critical control_state lock give-up (F-45). Wired by create_app.
+        self._storage_notifier: Any | None = None
 
     # --- coalesced live reads / config builders / strategy resolution (B-46 stage 2) -------------
     # Moved verbatim from api.py's create_app closures. Kept here because their primary caller is
@@ -523,6 +555,15 @@ class ControlService:
     def control_overrun_active(self) -> bool:
         """True while a recent control.overrun is latched for /api/alerts (B-09 / #73)."""
         return self._control_overrun_active
+
+    @property
+    def charge_blocked_by_cap(self) -> bool:
+        """True only while the latest tick saw the cap block a planned grid-charge (#316).
+
+        Cleared at the start of every tick and set again only by the held-decision path.
+        Read by /api/alerts and the once-a-day push. Does not change what is decided.
+        """
+        return bool(self._ctx.held_box.get("charge_blocked_by_cap"))
 
     def _coalesce_s(self) -> float:
         """How long a live read is reused before re-reading the hardware (UI-tunable, eases load on
@@ -734,6 +775,20 @@ class ControlService:
         return s is not None and float(s.ev_power_w) > self._settings[
             "control.car_charging_threshold_w"]
 
+    def _cached_capability(self) -> CapabilityReport | None:
+        driver = getattr(self._controller, "driver", None) if self._controller is not None else None
+        cached = getattr(driver, "_capabilities", None) if driver is not None else None
+        if isinstance(cached, CapabilityReport):
+            return cached
+        return None
+
+    def effective_floor_soc(self) -> float:
+        from ems.battery_limits import effective_floor_from_settings
+
+        return effective_floor_from_settings(
+            self._settings, capability=self._cached_capability(),
+        )
+
     def planner_cfg_from(self, s: dict) -> PlannerConfig:
         return PlannerConfig(
             round_trip_efficiency=s["planner.round_trip_efficiency"],
@@ -747,6 +802,10 @@ class ControlService:
                 if not setting_price_includes_all_fees(s) else 0.0
             ),
             price_includes_all_fees=setting_price_includes_all_fees(s),
+            max_daily_grid_charge_kwh=float(s.get("planner.max_daily_grid_charge_kwh", 12.0)),
+            max_cycles_per_day=float(s.get("planner.max_cycles_per_day", 1.5)),
+            daily_min_savings_eur=float(s.get("planner.daily_min_savings_eur", 0.20)),
+            site_tz=self._site_tz,
         )
 
     def planner_cfg(self) -> PlannerConfig:
@@ -757,7 +816,7 @@ class ControlService:
         s = self._settings
         return compute_charge_need(
             soc_pct=soc_pct, usable_kwh=s["battery.usable_kwh"],
-            min_reserve_soc=s["battery.min_reserve_soc"],
+            min_reserve_soc=self.effective_floor_soc(),
             night_reserve_kwh=s["battery.night_reserve_kwh"],
             overnight_load_kwh=s["battery.overnight_load_kwh"],
             round_trip_efficiency=s["planner.round_trip_efficiency"],
@@ -775,20 +834,47 @@ class ControlService:
             allow_grid_topup=s["strategy.summer_grid_topup"],
             max_topup_price_eur_per_kwh=s["strategy.summer_max_topup_price"],
             negative_price_soak=s["planner.negative_price_soak"],
+            max_daily_grid_charge_kwh=float(s.get("planner.max_daily_grid_charge_kwh", 12.0)),
+            site_tz=self._site_tz,
         )
 
     def adaptive_cfg(self) -> AdaptiveConfig:
         s = self._settings
         return AdaptiveConfig(
             usable_kwh=s["battery.usable_kwh"],
-            reserve_soc_pct=s["battery.min_reserve_soc"],
+            reserve_soc_pct=self.effective_floor_soc(),
             round_trip_efficiency=s["planner.round_trip_efficiency"],
             max_charge_w=s["battery.max_charge_w"],
             degradation_eur_per_kwh=s["planner.degradation_eur_per_kwh"],
             risk_margin_eur_per_kwh=s["planner.risk_margin_eur_per_kwh"],
             solar_confidence=s["planner.solar_confidence"] / 100.0,
             negative_price_soak=s["planner.negative_price_soak"],
+            max_daily_grid_charge_kwh=float(s.get("planner.max_daily_grid_charge_kwh", 12.0)),
+            max_cycles_per_day=float(s.get("planner.max_cycles_per_day", 1.5)),
+            site_tz=self._site_tz,
         )
+
+    def already_bought_today_kwh(self, now: datetime) -> float | None:
+        """Grid-charge kWh already bought on the local day of `now`, from history.
+
+        Re-read on every call (no in-memory counter). `None` when history cannot be read:
+        the planner treats today's cap as reached and does not grid-charge. Discharge and
+        the battery's own self-consumption mode are unchanged. Read-only — no battery write.
+        """
+        store = self._store
+        path = getattr(store, "db_path", None) if store is not None else None
+        try:
+            watts = float(self._settings.get("battery.max_charge_w", 0.0) or 0.0)
+        except (TypeError, ValueError):
+            watts = 0.0
+        return read_already_bought_today(
+            path, now, self._site_tz, planned_charge_w=watts,
+        )
+
+    def cycle_throughput_today(self, now: datetime) -> tuple[float, float] | None:
+        store = self._store
+        path = getattr(store, "db_path", None) if store is not None else None
+        return read_cycle_throughput_today(path, now, self._site_tz)
 
     def load_by(self, starts: list[datetime]) -> dict[datetime, float]:
         prof = self._ctx.load_profile_box["profile"]
@@ -877,7 +963,7 @@ class ControlService:
         s = self._settings
         return {
             "usable_kwh": s["battery.usable_kwh"],
-            "reserve_soc_pct": s["battery.min_reserve_soc"],
+            "reserve_soc_pct": self.effective_floor_soc(),
             "max_charge_w": s["battery.max_charge_w"],
             "round_trip_efficiency": s["planner.round_trip_efficiency"],
         }
@@ -925,18 +1011,24 @@ class ControlService:
         ) if fc is not None else None
         forecast_issued_at = getattr(fc, "issued_at", None) if fc is not None else None
         mode = self._settings.get("planner.mode", "rule_based")
+        bought = self.already_bought_today_kwh(now)
+        throughput = self._cycle_throughput = self.cycle_throughput_today(now)
         request = PlannerRequest(
             now=now,
             prices=prices,
             forecast=forecast,
             soc_pct=soc,
             strategy=strategy,
-            winter_cfg=self._planner_cfg(),
-            summer_cfg=self._summer_cfg(soc),
+            winter_cfg=_with_throughput(
+                _stamp_already_bought(self._planner_cfg(), bought), throughput),
+            summer_cfg=_stamp_already_bought(self._summer_cfg(soc), bought),
             load_w_by=load_by,
-            adaptive_cfg=self._adaptive_cfg(),
+            adaptive_cfg=_with_throughput(
+                _stamp_already_bought(self._adaptive_cfg(), bought), throughput),
             expected_ev_kwh=expected_ev_kwh,
-            trading_cfg=trading_config_from_settings(self._settings),
+            trading_cfg=_with_throughput(trading_config_from_settings(
+                self._settings, reserve_soc_pct=self.effective_floor_soc(),
+            ), throughput),
             planner_mode=mode,
             price_provenance=type(self._price_source).__name__,
             forecast_provider=forecast_provider,
@@ -999,24 +1091,36 @@ class ControlService:
             )
         recovered, status, catch = recover_if_needed(
             plan, now, soc_pct=soc, prices=prices,
-            enabled=bool(self._settings["planner.recovery_enabled"]), **self.recovery_sizing(),
+            enabled=bool(self._settings["planner.recovery_enabled"]),
+            max_daily_grid_charge_kwh=float(
+                self._settings.get("planner.max_daily_grid_charge_kwh", 12.0)),
+            already_bought_today_kwh=self.already_bought_today_kwh(now),
+            site_tz=self._site_tz,
+            **self.recovery_sizing(),
         )
         # B-22/B-16 interaction (#162): if the forward projection still can't hit the committed
         # target, lower target_soc to what's reachable and keep the charge slots (honest partial).
         # #245: never honest-partial below the device SoC write floor (Indevolt 5%). Prefer a
         # cached CapabilityReport on the driver; fall back to DEFAULT_MIN_TARGET_SOC_PCT.
         from ems.battery_limits import device_min_target_soc
-        from ems.domain import CapabilityReport
 
-        cap = None
-        driver = getattr(self._controller, "driver", None) if self._controller is not None else None
-        cached = getattr(driver, "_capabilities", None) if driver is not None else None
-        if isinstance(cached, CapabilityReport):
-            cap = cached
+        cap = self._cached_capability()
+        floor = self.effective_floor_soc()
+        projected = self._project_plan(recovered, now, soc)
+        recovered = mark_floor_holds(recovered, projected, floor, start_soc_pct=soc)
         recovered = honest_partial_from_projection(
-            recovered, self._project_plan(recovered, now, soc),
-            min_reserve_soc=float(self._settings["battery.min_reserve_soc"]),
+            recovered, projected,
+            min_reserve_soc=floor,
             min_target_soc=device_min_target_soc(cap),
+        )
+        tp = getattr(self, "_cycle_throughput", None)
+        c_kwh, d_kwh = tp if isinstance(tp, tuple) else (None, None)
+        s = self._settings
+        recovered = clamp_cycle_budget(
+            recovered, c_kwh, d_kwh, float(s.get("planner.max_cycles_per_day", 1.5)),
+            float(s.get("battery.usable_kwh", 10.0)),
+            round_trip_efficiency=float(s.get("planner.round_trip_efficiency", 0.9)),
+            charge_fallback_w=float(s.get("battery.max_charge_w", 4000.0)), tz=self._site_tz,
         )
         return now, prices, recovered, status, catch
 
@@ -1035,7 +1139,7 @@ class ControlService:
                 max_charge_w=s["battery.max_charge_w"],
                 max_discharge_w=s["battery.max_discharge_w"],
                 round_trip_efficiency=s["planner.round_trip_efficiency"],
-                reserve_soc_pct=s["battery.min_reserve_soc"],
+                reserve_soc_pct=self.effective_floor_soc(),
             )
             return project_energy(
                 plan.slots, start_soc_pct=soc, solar_w_by=solar_by, load_w_by=load_by,
@@ -1373,7 +1477,16 @@ class ControlService:
     def _observe_cycle_counters(
         self, now: datetime, records: list[dict], *, latency_ms: float,
     ) -> None:
-        """Bump soak counters + one structured log line (diagnostics UI / logs only — #179)."""
+        """Bump soak counters + one structured log line (diagnostics UI / logs only — #179).
+
+        F-45: several stores share one WAL writer (history samples / plan / gas / carbon /
+        finance, audit, settings, cache, control_state, plus checkpoint/VACUUM). A lock error
+        used to be counted here whenever a decision reason said "holding self-consumption" or
+        "fail-safe", which marked ``fail_safe`` without a battery fault. Storage-lock text
+        does not count. Unsafe data quality, a bad price horizon, startup AUTO, overrun and
+        an explicit ``fail_safe`` outcome still do — a real sensor/price/battery failure
+        stays on AUTO.
+        """
         outcome: str | None = getattr(self, "_tick_outcome", None)
         fail_safe = False
         for rec in reversed(records):
@@ -1385,11 +1498,12 @@ class ControlService:
             if event in ("startup_safe_auto", "control.overrun") or o == "fail_safe":
                 fail_safe = True
             reason = str(detail.get("reason") or "")
-            if "holding self-consumption" in reason or "fail-safe" in reason.lower():
+            if _reason_counts_as_fail_safe(reason):
                 fail_safe = True
         # Data-quality unsafe / incomplete prices also count as fail-safe soak signal.
         dq = self._data_quality(now)
-        stale = dq != "fresh"
+        # F-46 (#313): data_quality is complete|degraded|price_fallback|unsafe — never "fresh".
+        stale = dq in ("degraded", "unsafe")
         if dq == "unsafe":
             fail_safe = True
         if self._price_horizon_status is not None and not self._price_horizon_status.ok:
@@ -1419,10 +1533,32 @@ class ControlService:
             outcomes.get("dry_run", 0),
         )
 
+    def _planned_grid_charge_minutes(self, now: datetime) -> float:
+        """Minutes of the plan slot covering `now` when that slot is a grid-charge, else 0.
+
+        Fail-soft: a planner miss counts as no planned slot, so the cap alert stays off.
+        Does not build a different plan and does not write.
+        """
+        try:
+            built = self.current_plan(now)
+        except Exception:
+            _log.debug("planned grid-charge slot lookup failed (non-fatal)", exc_info=True)
+            return 0.0
+        if not built or len(built) < 3:
+            return 0.0
+        plan = built[2]
+        slot = plan.intent_at(now) if plan is not None and hasattr(plan, "intent_at") else None
+        if slot is None or slot.intent is not BatteryIntent.GRID_CHARGE_TO_TARGET:
+            return 0.0
+        return max(0.0, (slot.slot_end - slot.start).total_seconds() / 60.0)
+
     def _control_tick_body(self, now: datetime) -> list[dict]:
         """Inner tick body — wrapper records soak counters (#179)."""
         if self._controller is None:
             return []
+        # #316: the cap-block alert is true only for a tick that observes it again.
+        self._ctx.held_box["charge_blocked_by_cap"] = False
+        apply_control_settings(self._controller, self._settings)
         lc = self._controller.lifecycle
         if lc.state is OwnershipState.INACTIVE:
             lc.start(now)
@@ -1702,14 +1838,27 @@ class ControlService:
             # (CLAUDE.md "explainability first — including why it is NOT acting"). Deduped so a
             # recurring hold is explained once per (outcome, desired_mode), not every cycle. With
             # the manual/return-to-AUTO bypass this only fires for the AUTOMATIC planner now.
+            # #316: tag + count a cap block of a planned GRID_CHARGE slot of >= 15 min.
+            # The counter is per cycle (the audit row stays deduped). No change to the decision.
+            blocked = (
+                dec.outcome == "cap_reached"
+                and dec.intent is BatteryIntent.GRID_CHARGE_TO_TARGET
+                and self._planned_grid_charge_minutes(now) >= 15
+            )
+            held["charge_blocked_by_cap"] = blocked
+            if blocked:
+                LOOP_COUNTERS.incr_charge_blocked_by_cap()
             sig = (dec.outcome, dec.desired_mode.value)
             if held["sig"] != sig:
                 held["sig"] = sig
+                detail = {"desired_mode": dec.desired_mode.value, "intent": str(dec.intent),
+                          "outcome": dec.outcome, "reason": dec.reason,
+                          "override_active": override_active}
+                if blocked:
+                    detail["charge_blocked_by_cap"] = True
                 records.append({
                     "summary": f"Battery NOT switched to {dec.desired_mode.value} — {dec.reason}",
-                    "detail": {"desired_mode": dec.desired_mode.value, "intent": str(dec.intent),
-                               "outcome": dec.outcome, "reason": dec.reason,
-                               "override_active": override_active}})
+                    "detail": detail})
         return records
 
     async def refresh_car_obs(self, now: datetime) -> None:
@@ -2340,8 +2489,17 @@ class ControlService:
                             recovery_suppressed = recovery_token is None
                             _log.warning("control.overrun: cycle exceeded %.1fs budget (timeout)",
                                          PERF_BUDGETS["control.cycle"] / 1000.0)
-                        except Exception:
-                            _log.exception("control tick failed; retry next cycle (fail-safe)")
+                        except Exception as exc:
+                            from ems.storage.sqlite_guard import is_sqlite_lock_error
+                            if is_sqlite_lock_error(exc):
+                                # A storage lock is not a battery fault and must not be labelled
+                                # fail-safe (F-45). The next cycle retries the write.
+                                _log.warning(
+                                    "control tick hit a sqlite writer lock; "
+                                    "battery command unchanged")
+                            else:
+                                _log.exception(
+                                    "control tick failed; retry next cycle (fail-safe)")
                             return  # the worker's `finally` already released the slot
                 except Exception:
                     # Defensive: atimed itself should never raise, but a registry push failure must
@@ -2372,6 +2530,48 @@ class ControlService:
             # completion (never here); the `spawned` guard prevents a double-release.
             if cycle_token is not None and not spawned:
                 self._release_cycle(cycle_token)
+            try:
+                await self._report_critical_storage_failures(self._clock.now_utc())
+            except Exception:
+                _log.warning("control_state lock report failed", exc_info=True)
+
+    async def _report_critical_storage_failures(self, now: datetime) -> None:
+        """Alert + audit after control_state exhausts its retries. No battery write (F-45)."""
+        from ems.storage.sqlite_guard import drain_critical_failures
+
+        failures = drain_critical_failures()
+        if not failures:
+            return
+        for failure in failures:
+            if self._audit_store is not None:
+                try:
+                    await self._audit_store.append(
+                        now.isoformat(),
+                        "control_state_write_failed",
+                        "control_state write failed after retries; no extra battery command",
+                        {
+                            "audit_id": "F-45",
+                            "store": failure.store,
+                            "writer": failure.writer,
+                            "attempts": failure.attempts,
+                            "duration_ms": round(failure.duration_ms, 1),
+                        },
+                    )
+                except Exception:
+                    _log.warning("control_state lock audit failed", exc_info=True)
+            notifier = self._storage_notifier
+            if notifier is not None:
+                try:
+                    await notifier.send(
+                        "control_state_locked",
+                        "Could not save battery control state",
+                        "The database was busy while saving control state. "
+                        "EMS did not send an extra battery command. "
+                        "It will try again on the next cycle.",
+                        dedupe_key="control_state_locked",
+                    )
+                except Exception:
+                    _log.warning("control_state lock alert failed", exc_info=True)
 
     async def _handle_overrun(
         self, now: datetime, timed_out: bool, sample, *,
@@ -2468,6 +2668,22 @@ class ControlService:
             # timeout); the `spawned` guard prevents a double-release of a still-live writer's slot.
             if not spawned:
                 self.release_writer(token)
+
+
+def _reason_counts_as_fail_safe(reason: str) -> bool:
+    """True when a decision reason is a real fail-safe, not a storage-lock hiccup (F-45)."""
+    low = reason.lower()
+    if "fail-safe" in low or "holding self-consumption" in low:
+        return True
+    if (
+        "database is locked" in low
+        or "database is busy" in low
+        or "sqlite write lock" in low
+        or "sqlite lock event" in low
+        or "non-critical sqlite write" in low
+    ):
+        return False
+    return False
 
 
 def _dominant_phase() -> str | None:

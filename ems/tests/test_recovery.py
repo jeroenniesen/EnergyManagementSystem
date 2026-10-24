@@ -236,6 +236,19 @@ def test_original_charge_slots_are_superseded_not_double_counted():
     assert {s.start for s in charge} == {T0 + i * SLOT for i in range(8, 14)}
 
 
+def test_zero_slot_catch_up_omits_target_percentage():
+    """#316: no open buy slot → note/reason name no target percentage. Plan slots stay empty."""
+    plan = _committed_plan(charge_idx=())
+    # Peak is far below every other price, so the recovery buy ceiling excludes them all.
+    prices = [_price(i, 0.01 if i in (28, 29) else 0.80) for i in range(32)]
+    r = _build(30.0, plan, prices)
+    assert r.slots_used == 0
+    assert "%" not in r.reason and "%" not in r.note
+    assert r.feasible is False
+    assert not any(s.intent is BatteryIntent.GRID_CHARGE_TO_TARGET for s in r.plan.slots)
+    assert r.plan.target_soc == r.target_soc
+
+
 def test_impossible_catch_up_is_honest_partial():
     # Deadline very close: from now only two slots remain, far short of the 5 kWh needed.
     near = T0 + 12 * SLOT  # 03:00
@@ -334,3 +347,20 @@ def test_recover_if_needed_skips_summer_solar_hoped_target():
     out_plan, status, catch = _recover(30.0, plan, prices, T0 + 4 * SLOT)
     assert out_plan is plan and catch is None
     assert status.status == MISSED  # still diagnosed, just not a grid-charge catch-up
+
+
+def test_catch_up_respects_daily_grid_charge_cap():
+    """AC1: a large missed-window catch-up still stays within 12 kWh of new grid charge."""
+    deadline = T0 + 60 * SLOT
+    plan = _committed_plan(
+        charge_idx=(), end_idx=64, peak=(60, 61), target_soc=100.0, deadline=deadline,
+    )
+    prices = [_price(i, 0.50 if i in (60, 61) else 0.05) for i in range(64)]
+    result = _build(
+        0.0, plan, prices, usable_kwh=40.0, max_charge_w=4000.0,
+        round_trip_efficiency=1.0, max_daily_grid_charge_kwh=12.0,
+        already_bought_today_kwh=0.0,
+    )
+    charged = [s for s in result.plan.slots if s.intent is BatteryIntent.GRID_CHARGE_TO_TARGET]
+    assert sum(s.target_kwh or 0.0 for s in charged) <= 12.0 + 1e-6
+    assert any(s.reason == "Dagplafond 12 kWh bereikt" for s in result.plan.slots)

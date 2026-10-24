@@ -21,9 +21,11 @@ from zoneinfo import ZoneInfo
 
 import pytest
 
-from ems.domain import RawSample
+from ems.domain import BatteryIntent, RawSample
 from ems.economics import EconomicSnapshot
 from ems.load_model import reconstruct
+from ems.planner.projection import BatteryModel, mark_floor_holds, project_energy
+from ems.planner.schedule import SLOT, Plan, PlanSlot
 from ems.planner.strategy import HysteresisState
 from ems.replay import (
     ReplayConfig,
@@ -566,3 +568,118 @@ def test_day_vs_auto_includes_import_fee_replay_cost_misses():
     )
     assert vs.auto_grid_cost_eur is not None and auto.cost_eur is not None
     assert vs.auto_grid_cost_eur > auto.cost_eur + 0.01  # fee visibly increases finance-priced cost
+
+
+def _charge_kwh(plan) -> float:
+    from ems.planner.budgets import planned_grid_charge_kwh
+
+    return planned_grid_charge_kwh(plan, 1.0, tz=UTZ)
+
+
+def test_replay_under_cap_day_spend_unchanged_and_over_cap_day_clamped():
+    """AC6 stand-in when ems/data/ems.sqlite is absent: no replayed day above 12 kWh,
+    and a day that already buys under 12 kWh keeps the same planner spend."""
+    from ems.planner.strategy import build_plan
+    from ems.replay import _adaptive_cfg, _summer_cfg, _winter_cfg
+
+    raw, prices = _winter_day()
+    capped = replay_day(raw, prices, [], cfg=_cfg())
+    loose = replay_day(raw, prices, [], cfg=_cfg(**{"planner.max_daily_grid_charge_kwh": 40}))
+    assert capped.data_ok and loose.data_ok
+    assert capped.scenarios["planner"].cost_eur == pytest.approx(
+        loose.scenarios["planner"].cost_eur,
+    )
+
+    # Negative-price soak across a long cheap block would buy well over 12 kWh uncapped.
+    soak_prices = _price_day(lambda i: -0.05 if _hour(i) < 20 else 0.80)
+    soak_raw = _raw_day(1000.0, lambda _i: 0.0)
+    tight = _cfg(**{"planner.negative_price_soak": True, "planner.max_daily_grid_charge_kwh": 12})
+    wide = _cfg(**{"planner.negative_price_soak": True, "planner.max_daily_grid_charge_kwh": 40})
+    for cfg in (tight, wide):
+        day = replay_day(soak_raw, soak_prices, [], cfg=cfg)
+        assert day.data_ok
+        slots = [
+            PriceSlot(
+                start=datetime.fromisoformat(p["start_ts"]),
+                eur_per_kwh=p["eur_per_kwh"],
+            )
+            for p in soak_prices
+        ]
+        plan = build_plan(
+            "winter", prices=slots, forecast=[], now=DAY, soc_pct=0.0,
+            winter_cfg=_winter_cfg(cfg), summer_cfg=_summer_cfg(cfg),
+            load_w_by={s.start: 1000.0 for s in slots}, adaptive_cfg=_adaptive_cfg(cfg),
+        )
+        assert _charge_kwh(plan) <= cfg.max_daily_grid_charge_kwh + 1e-6
+    assert _charge_kwh(build_plan(
+        "winter",
+        prices=[
+            PriceSlot(start=datetime.fromisoformat(p["start_ts"]), eur_per_kwh=p["eur_per_kwh"])
+            for p in soak_prices
+        ],
+        forecast=[], now=DAY, soc_pct=0.0,
+        winter_cfg=_winter_cfg(wide), summer_cfg=_summer_cfg(wide),
+        load_w_by={
+            datetime.fromisoformat(p["start_ts"]): 1000.0 for p in soak_prices
+        },
+        adaptive_cfg=_adaptive_cfg(wide),
+    )) > 12.0
+
+
+def test_replay_canned_days_stay_within_the_shared_cycle_budget():
+    """AC5: 14 canned winter days, no planned local day above planner.max_cycles_per_day.
+
+    A 14-day replay on the production database is a manual post-merge check.
+    """
+    from ems.planner.budgets import plan_day_efc
+    from ems.planner.strategy import build_plan
+    from ems.replay import _adaptive_cfg, _summer_cfg, _winter_cfg
+
+    cfg = _cfg()
+    limit = 1.5
+    for offset in range(14):
+        day = DAY + timedelta(days=offset)
+        raw = _raw_day(1000.0, lambda _i: 0.0, day=day)
+        prices = _price_day(_winter_price, day=day)
+        result = replay_day(raw, prices, [], cfg=cfg)
+        assert result.data_ok, result.skip_reason
+        assert result.scenarios["planner"].cycles_kwh <= limit * cfg.usable_kwh + 1e-6
+        slots = [
+            PriceSlot(start=datetime.fromisoformat(p["start_ts"]), eur_per_kwh=p["eur_per_kwh"])
+            for p in prices
+        ]
+        plan = build_plan(
+            "winter", prices=slots, forecast=[], now=day, soc_pct=0.0,
+            winter_cfg=_winter_cfg(cfg), summer_cfg=_summer_cfg(cfg),
+            load_w_by={s.start: 1000.0 for s in slots}, adaptive_cfg=_adaptive_cfg(cfg),
+        )
+        efc = plan_day_efc(
+            plan, cfg.usable_kwh,
+            round_trip_efficiency=cfg.round_trip_efficiency,
+            charge_fallback_w=cfg.max_charge_w, tz=UTZ,
+        )
+        assert efc
+        assert max(efc.values()) <= limit + 1e-6
+
+
+def test_marked_floor_hold_at_reserve_passes_validator():
+    """#312 AC4: floor-hold post-pass on a synthetic at-floor slot stays validator-clean."""
+    from ems.planner.validator import validate_plan as vp
+
+    floor = 5.0
+    slot = PlanSlot(DAY + 18 * SLOT, BatteryIntent.DISCHARGE_FOR_LOAD, "evening peak")
+    plan = Plan(created_at=DAY, slots=(slot,), strategy="winter")
+    model = BatteryModel(
+        usable_kwh=10.0, max_charge_w=4000.0, max_discharge_w=4000.0,
+        round_trip_efficiency=1.0, reserve_soc_pct=floor,
+    )
+    proj = project_energy(
+        plan.slots, start_soc_pct=floor, solar_w_by={}, load_w_by={slot.start: 1000.0},
+        model=model,
+    )
+    marked = mark_floor_holds(plan, proj, floor, start_soc_pct=floor)
+    v = vp(
+        marked, soc_pct=floor, min_reserve_soc=floor, data_quality="complete",
+    )
+    assert v.ok
+    assert not any(f.severity == "unsafe" for f in v.findings)

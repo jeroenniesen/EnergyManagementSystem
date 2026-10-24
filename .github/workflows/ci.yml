@@ -37,7 +37,28 @@ jobs:
         run: uv run ruff check ems
 
       - name: Test (pytest)
-        run: uv run pytest ems/tests
+        run: uv run pytest ems/tests -m "not slow"
+
+  # Watchdog only: the lock-stress test is timing-sensitive and must not fail the
+  # blocking Backend job. continue-on-error keeps a red stress run non-blocking.
+  backend-slow:
+    name: Backend (slow stress, non-blocking)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Install dependencies
+        run: uv sync --frozen --extra dev
+
+      - name: Stress tests (pytest -m slow)
+        run: uv run pytest -m slow ems/tests
 
   frontend:
     name: Frontend (build + bundle-size + e2e)
@@ -66,7 +87,9 @@ jobs:
 
       - name: Install frontend dependencies
         working-directory: ems/web/frontend
-        run: npm ci --no-audit --no-fund && npm install -D @axe-core/playwright
+        # Use the lockfile only — a trailing `npm install -D @axe-core/playwright`
+        # floated axe to 4.14 mid-flight and broke a11y on OutcomeTiles (PR #303).
+        run: npm ci --no-audit --no-fund
 
       - name: Build the SPA
         working-directory: ems/web/frontend

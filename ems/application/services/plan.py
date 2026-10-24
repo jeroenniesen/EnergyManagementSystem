@@ -43,4 +43,7 @@ class PlanService:
                 "floor_soc": s.floor_soc,
                 "deadline": s.deadline.isoformat() if s.deadline else None,
             } for s in plan.slots],
+            "buy_pool": (
+                plan.buy_pool.to_dict() if plan.buy_pool is not None else None
+            ),
         }

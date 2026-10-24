@@ -20,10 +20,16 @@ import type { DecisionReason } from "./decisionWhy";
 import { buildHeroSynthesis } from "./heroSynthesis";
 import { Icon, type IconName } from "./icons";
 import { DeviceHealthStrip } from "./DeviceHealth";
-import { showTopbarDataQuality, showTopbarDataSource } from "./topbarChips";
+import {
+  ExportModelConfirmBanner,
+  exportModelFromSettingsValues,
+  type ExportModelBannerValues,
+} from "./ExportModelConfirmBanner";
+import { liveWritingChip, showTopbarDataQuality, showTopbarDataSource } from "./topbarChips";
 import {
   CAR_BADGE_SUFFIX,
   CAR_BADGE_SUFFIX_DEFAULT,
+  CHARGE_BLOCKED_BY_CAP,
   DATA_QUALITY,
   DATA_SOURCE,
   type DeviceHealth,
@@ -40,9 +46,6 @@ import {
   humanize,
   OUTCOME_LABEL,
   pickDeviceHealthAlert,
-  DRY_RUN_CAUSE_LABEL,
-  DRY_RUN_CAUSE_FALLBACK,
-  RUN_MODE,
   SIGNAL_NAME,
 } from "./labels";
 import { Login } from "./Login";
@@ -71,6 +74,9 @@ type Status = {
   dry_run: boolean;
   dry_run_reason?: string | null;
   dry_run_cause?: string | null;
+  /** #314 additive display fields. Missing on older servers — the chip fail-safes to NEE. */
+  live_writing?: boolean | null;
+  live_writing_state?: string | null;
   dev_mode: string;
   soc_pct: number;
   grid_power_w: number;
@@ -95,6 +101,8 @@ type Decision = {
   target_soc?: number | null;
   override_active?: boolean;
   home_state?: { headline: string; tone: string; simulated: boolean };
+  decision_reason?: import("./decisionWhy").DecisionReason;
+  buy_pool?: import("./planStoryModel").BuyPool | null;
 };
 
 type ChargeNeed = {
@@ -465,6 +473,7 @@ export function App() {
   // Seed from the localStorage cache so the first paint matches the saved theme (no flash);
   // the fetch below reconciles with the server's canonical value.
   const [theme, setTheme] = useState<Theme>(readStoredTheme);
+  const [exportModelBanner, setExportModelBanner] = useState<ExportModelBannerValues | null>(null);
   // While a strategy write is in flight, suppress the background poll's strategy update so the
   // optimistic selection doesn't flicker back to the old value mid-request.
   const strategyPending = useRef(false);
@@ -474,7 +483,9 @@ export function App() {
     apiFetch("/api/settings")
       .then((r) => (r.ok ? r.json() : null))
       .then((b) => {
-        if (alive && b?.values?.["ui.theme"]) setTheme(b.values["ui.theme"] as Theme);
+        if (!alive || !b?.values) return;
+        if (b.values["ui.theme"]) setTheme(b.values["ui.theme"] as Theme);
+        setExportModelBanner(exportModelFromSettingsValues(b.values));
       })
       .catch(() => {});
     return () => {
@@ -608,6 +619,7 @@ export function App() {
               setError(String(e ?? snapshotError));
               // Cold fail: leave lastReachableAt null → "Laatst bekend —" (never invent a time).
               // Demote stale live state so old alerts/hero aren't shown as current under the banner.
+              setStatus(null);
               setAlertsData(null);
               setDecision(null);
               setTileFreshness((current) => ({ ...current, status: { ...current.status, stale: true } }));
@@ -674,6 +686,77 @@ export function App() {
     };
   }, [view]);
 
+  // B-09 / #369 NAV-03: same /api/dashboard → /api/status liveness check on non-dashboard views
+  // so the unreachable banner is not dashboard-only. Dashboard keeps the full poll above unchanged.
+  useEffect(() => {
+    if (view === "dashboard") return;
+    let alive = true;
+    async function getJson(url: string) {
+      const r = await apiFetch(url);
+      if (!r.ok) throw new Error(`HTTP ${r.status}`);
+      return r.json();
+    }
+    function touchReachability() {
+      const applyCore = (value: {
+        status: Status;
+        freshness: FreshnessMap;
+        alerts: AlertsResp;
+        device_health?: DeviceHealth | null;
+      }) => {
+        unreachableRef.current = false;
+        setStatus(value.status);
+        setFreshness(value.freshness);
+        batteryFreshness.current = value.freshness.battery ?? null;
+        setAlertsData(value.alerts);
+        if (value.device_health) setDeviceHealth(value.device_health);
+        setError(null);
+        setLastReachableAt(Date.now());
+        setTileFreshness((current) => ({
+          ...current,
+          status: { updatedAt: Date.now(), stale: batteryFreshness.current === "stale" },
+        }));
+        if (value.freshness.battery === "stale" || value.freshness.battery === "missing") {
+          setTileFreshness((current) => ({ ...current, status: { ...current.status, stale: true } }));
+        }
+      };
+      getJson("/api/dashboard")
+        .then((value: {
+          status: Status;
+          freshness: FreshnessMap;
+          alerts: AlertsResp;
+          device_health?: DeviceHealth | null;
+        }) => {
+          if (!alive) return;
+          applyCore(value);
+        })
+        .catch(() => {
+          getJson("/api/status")
+            .then((v) => {
+              if (!alive) return;
+              unreachableRef.current = false;
+              setStatus(v);
+              setError(null);
+              setLastReachableAt(Date.now());
+            })
+            .catch((e) => {
+              if (!alive) return;
+              unreachableRef.current = true;
+              setError(String(e ?? "unreachable"));
+              setStatus(null);
+              setAlertsData(null);
+              setDecision(null);
+              setTileFreshness((current) => ({ ...current, status: { ...current.status, stale: true } }));
+            });
+        });
+    }
+    touchReachability();
+    const id = setInterval(touchReachability, POLL_MS);
+    return () => {
+      alive = false;
+      clearInterval(id);
+    };
+  }, [view]);
+
   // Save a strategy setting live: apply an optimistic patch (instant, self-consistent card), POST
   // it, then reconcile from the server — reverting if the write fails. The pending guard stops the
   // 5 s poll clobbering the change mid-flight.
@@ -719,11 +802,17 @@ export function App() {
   // extra fetch. Calm stays calm: the reason sub-line only renders when confidence isn't high.
   const confidence = batteryPlan?.confidence ?? null;
   // B-96: one human sentence only — planner jargon stays under Waarom? / DecisionReasonDetails.
+  // F-13 (#313): a manual override always wins the hero verdict/tone — the fail-safe copy would
+  // otherwise mask "You're in manual control" when both are true at once.
+  const priceFallbackActive =
+    alertsData?.data_quality === "price_fallback" && !decision?.override_active;
   const synthesis = buildHeroSynthesis({
     currentReason: batteryPlan?.current_reason,
     onTrackMessage: story?.on_track?.message,
     scoreSummary: summary?.text,
+    priceFallback: priceFallbackActive,
   });
+  const heroTone = priceFallbackActive ? "watching" : (home?.tone ?? "watching");
   // B-98 fix: confidence reason under the chip is Dutch-mapped; hide unmapped EN API copy.
   const confidenceReasonNl = confidence?.reasons?.[0]
     ? homeConfidenceReasonNl(confidence.reasons[0])
@@ -764,9 +853,11 @@ export function App() {
           text: HOME_ACT.unsafe,
           calm: false,
         }
-      : topActionable
-        ? { text: topActionable.action || topActionable.message, calm: false }
-        : { text: HOME_ACT.calm, calm: true };
+      : priceFallbackActive
+        ? { text: HOME_ACT.priceFallback, calm: false }
+        : topActionable
+          ? { text: topActionable.action || topActionable.message, calm: false }
+          : { text: HOME_ACT.calm, calm: true };
 
   // B-57: on demo/mock data, a persistent friendly nudge into real onboarding (Settings opens on
   // the Connection section by default). Dismissible for the session; back on next visit.
@@ -796,6 +887,8 @@ export function App() {
   const role = auth.user?.role ?? null;
   const canOperate = role !== "reader";
   const isAdmin = role === "admin";
+  // #314: one chip. Idle tooltip is the latest /api/decision reason; grace copy is separate.
+  const writingChip = liveWritingChip(status, decision?.reason ?? null);
 
   return (
     <>
@@ -803,32 +896,18 @@ export function App() {
       <div className="app">
       <header className="topbar">
         <h1>Smart Energy Manager</h1>
-        {status && (
-          <span
-            className={`badge ${status.dry_run ? "badge-dryrun" : "badge-live"}`}
-            data-testid="run-mode-badge"
-            data-cause={status.dry_run_cause ?? undefined}
-            title={
-              status.dry_run_reason
-                || (status.dry_run ? RUN_MODE.dry.title : RUN_MODE.live.title)
-            }
-          >
-            {status.dry_run ? RUN_MODE.dry.label : RUN_MODE.live.label}
-          </span>
-        )}
-        {status?.dry_run_reason && (
-          <span
-            className="badge badge-muted run-mode-reason"
-            data-testid="run-mode-reason"
-            title={status.dry_run_reason}
-          >
-            {status.dry_run_cause
-              ? (DRY_RUN_CAUSE_LABEL[status.dry_run_cause] ?? status.dry_run_cause)
-              : DRY_RUN_CAUSE_FALLBACK}
-          </span>
-        )}
+        <span
+          className={`badge ${writingChip.state === "yes" ? "badge-live" : "badge-dryrun"}`}
+          data-testid="run-mode-badge"
+          data-state={writingChip.state}
+          data-cause={writingChip.cause ?? undefined}
+          title={writingChip.title}
+        >
+          {writingChip.label}
+        </span>
         {/* B-99: demote redundant "Live sensoren"; keep Demo/mock as attention. */}
-        {status && showTopbarDataSource(status.dev_mode) && (
+        {status && showTopbarDataSource(status.dev_mode)
+          && !showTopbarDataQuality(alertsData?.data_quality) && (
           <span
             className="badge badge-muted"
             data-testid="data-source"
@@ -931,7 +1010,9 @@ export function App() {
                 data-severity={a.severity}
                 data-testid={`alert-${a.key}`}
               >
-                <span className="alert-message">{a.message}</span>
+                <span className="alert-message">
+                  {a.key === "charge_blocked_by_cap" ? CHARGE_BLOCKED_BY_CAP.banner : a.message}
+                </span>
                 {/* B-37 / B-09 structured sub-lines — only for warning/critical. Info-level
                     notices (watch-only, dry-run) stay one calm line; their reassurance would
                     otherwise out-shout the hero's "Nothing needed from you." */}
@@ -957,7 +1038,7 @@ export function App() {
 
       {/* B-09 / #73: unreachable EMS uses the same alert-item anatomy (message + failsafe +
           Laatst bekend) — never a bare "Cannot reach EMS API: …" error code. */}
-      {view === "dashboard" && error && (
+      {error && (
         <section className="alerts" data-testid="error">
           <div
             className="alert-item alert-critical"
@@ -976,15 +1057,24 @@ export function App() {
         </section>
       )}
 
+      {view === "dashboard" && !error && (
+        <ExportModelConfirmBanner
+          values={exportModelBanner}
+          onSaved={(patch) =>
+            setExportModelBanner((prev) => (prev ? { ...prev, ...patch } : prev))
+          }
+        />
+      )}
+
       {/* The hero: one verdict, one synthesis line, one explicit answer to "do I need to act?".
           Absorbs the old status banner + the scattered on-track/score copy into a single read.
           Hidden while unreachable so a stale "Nothing needed" can't sit under the outage banner. */}
       {view === "dashboard" && !error && home && (
         <section
-          className={`hero home-${home.tone}`}
+          className={`hero home-${heroTone}`}
           data-testid="home-state"
           data-density-kind="hero"
-          data-tone={home.tone}
+          data-tone={heroTone}
         >
           <div className="hero-verdict-row">
             <p className="hero-verdict" data-testid="hero-verdict">
@@ -1062,6 +1152,7 @@ export function App() {
           freshness={freshness}
           deviceHealth={deviceHealth}
           isDemo={status?.dev_mode !== "live" || !!home?.simulated}
+          dataQuality={alertsData?.data_quality}
           alertsForSource={(key) => {
             const hit = pickDeviceHealthAlert(key, alertsData?.alerts);
             if (!hit) return null;
@@ -1078,7 +1169,10 @@ export function App() {
         <Manage
           tab={manageTab}
           onTab={(t, section) => navigate("manage", t, section)}
-          onSettingsSaved={(v) => setTheme((v["ui.theme"] as Theme) ?? "auto")}
+          onSettingsSaved={(v) => {
+            setTheme((v["ui.theme"] as Theme) ?? "auto");
+            setExportModelBanner(exportModelFromSettingsValues(v));
+          }}
           settingsSection={settingsSection}
           canOperate={canOperate}
           isAdmin={isAdmin}
@@ -1116,6 +1210,14 @@ export function App() {
             story={story?.window === "next" ? story : null}
             provenance={batteryPlan?.provenance}
             recentReview={story?.recent_review?.message ?? null}
+            dataQuality={alertsData?.data_quality}
+            nightReserveConfiguredKwh={reserveAdvice?.current_night_reserve_kwh ?? null}
+            nightReserveLearnedKwh={reserveAdvice?.night_demand_kwh ?? null}
+            buyPool={
+              decision?.buy_pool
+              ?? batteryPlan?.reason?.buy_pool
+              ?? null
+            }
           />
           {/* B-33 / #85: waarom voor batterij-acties + pauze/reserve (slice 1–2) — één tik, niet
               standaard open. Tekst uit battery-plan `reason` (#84), dry-run zegt "zou". */}
@@ -1124,6 +1226,7 @@ export function App() {
             reason={batteryPlan?.reason as DecisionReason | undefined}
             dryRun={status?.dry_run ?? true}
             overrideActive={Boolean(decision?.override_active)}
+            capBlockedAlert={alerts.some((a) => a.key === "charge_blocked_by_cap")}
           />
           {/* B-63 / #88 + B-95: risk banner only when coverage is below the covered
               threshold; covered/100% is the hero trust-marker (one surface). */}
@@ -1160,6 +1263,8 @@ export function App() {
                   onSetGridTopup={setGridTopup}
                   onTune={() => navigate("manage", "settings")}
                   canOperate={canOperate}
+                  battery={battery}
+                  currentSocPct={status?.soc_pct ?? null}
                 />
               </HomeMoreNest>
             )}
@@ -1293,7 +1398,11 @@ export function App() {
           onClose={() => setBatteryDetail(null)}
           testId="battery-modal"
         >
-          <BatteryChips battery={battery} metric={batteryDetail} />
+          <BatteryChips
+            battery={battery}
+            metric={batteryDetail}
+            currentSocPct={status?.soc_pct ?? null}
+          />
         </Modal>
       )}
       </main>

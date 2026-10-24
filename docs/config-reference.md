@@ -51,6 +51,7 @@ Legend: **UI** = also editable from the web UI (overlays the file). **CONFIRM** 
 | `grid_fees.import_fee_eur_per_kwh` | €/kWh | 0.0 | added to import price when the provider total excludes it |
 | `grid_fees.export_fee_eur_per_kwh` | €/kWh | 0.0 | deducted from export value in reporting/planning diagnostics |
 | `export_price_model` | enum | `spot_minus_tax`\|`net_metering`\|`fixed` = **spot_minus_tax** | how each exported kWh is valued (`economics.export_value`, §8.3/§8.3a): `spot_minus_tax`=default 2027-ready (may go negative, unclamped); `net_metering`=full price (today's saldering); `fixed`=flat feed-in. **UI** |
+| `export_model_confirmed` | bool | false | true after the household confirms saldering vs 2027-ready export via the banner or export-model save (#341 / F-11). **UI** (banner only; not a Manage field) |
 | `energy_tax_eur_per_kwh` | €/kWh | 0.13 | subtracted from spot when export = `spot_minus_tax`. **UI** |
 | `fixed_feed_in_eur_per_kwh` | €/kWh | 0.01 | flat export value when export = `fixed`. **UI** |
 | `export_tariff_eur_per_kwh` | €/kWh | 0.0 | (legacy) flat export value; superseded by `export_price_model` |
@@ -65,7 +66,7 @@ Legend: **UI** = also editable from the web UI (overlays the file). **CONFIRM** 
 | `max_cycles_per_day` | float | 1.5 | equivalent full cycles — **shared** by load-arbitrage + trading |
 | `max_cycles_per_month` | float | 30 | monthly cycle budget |
 | `min_grid_charge_kwh` | kWh | 0.5 | don't schedule tiny grid charges |
-| `max_daily_grid_charge_kwh` | kWh | 12 | hard cap on grid energy bought/day |
+| `max_daily_grid_charge_kwh` | kWh | 12 | hard cap on grid energy bought/day. **Enforced** by runtime `planner.max_daily_grid_charge_kwh` (Settings → Strategy, slider 1–40, not Advanced). See `planner` below (#317) |
 
 ## `consumption`
 | Key | Type | Default | Effect |
@@ -114,8 +115,9 @@ The car's SoC itself is **not** a config key — it's a runtime-store anchor (%,
 | Key | Type | Default | Effect |
 |---|---|---|---|
 | `cycle_seconds` | int | 300 | sense→decide loop period |
-| `max_mode_switches_per_day` | int | 10 | protects Indevolt API (persisted, per local date) |
-| `commitment_reserve` | int | 3 | of the daily cap, how many switches are held back for a committed grid-charge so routine idle/auto flapping can't starve it (07-12 guardrail-starvation incident); routine switches may use `cap − reserve`, a commitment draws from the full cap, the total is still capped. Runtime key `control.commitment_reserve`. **UI** (advanced) |
+| `max_mode_switches_per_day` | int | 10 | routine planner mode writes/day (persisted `switches_today`, per local date) |
+| `max_commitment_switches_per_day` | int | 4 | committed `GRID_CHARGE_TO_TARGET` writes/day (persisted `commitment_switches_today`, separate budget — #309 / F-01). Runtime key `control.max_commitment_switches_per_day`. **UI** (advanced, live) |
+| `commitment_reserve` | int | 3 | **deprecated** — no behaviour (#309); kept for old settings. Use `max_commitment_switches_per_day`. Runtime key `control.commitment_reserve`. **UI** (advanced) |
 | `intent_persistence_cycles` | int | 2 | a routine (non-AUTO) mode change must persist this many consecutive cycles before it commands the battery (first observes, rest confirm) so a transient flap wastes no switch; commitments, manual overrides, the car-charging safety hold and return-to-AUTO are never delayed. 1 = legacy (switch immediately). Runtime key `control.intent_persistence_cycles`. **UI** (advanced). Complementary **floor anti-flap (#165)**: at/below `min_reserve_soc`, `HOLD_RESERVE`↔`ALLOW_SELF_CONSUMPTION` is latched to one safe mode (stick with current AUTO/IDLE; prefer AUTO when entering) — see `docs/control-model.md` §2. |
 | `replan_times` | list[HH:MM] | [13:15, 06:00] | scheduled replans |
 | `dry_run` | bool | true | log decisions, no writes; **yaml/mock floor always wins** over Settings `control.dry_run` and UI `control.operational` when true (#136). Also forced on when `dev.mode` is `mock`/`replay`. **Runtime twin:** Settings → Watch only (`control.dry_run`, default true, `applies: restart`, seeded from yaml on first boot) for daily enter/exit without editing this file (#171). Missing store ⇒ watch-only. |
@@ -178,7 +180,8 @@ The car's SoC itself is **not** a config key — it's a runtime-store anchor (%,
 | `export_mode` | enum | `peak_slice`\|`full_dump` = peak_slice | How export slots are chosen: `peak_slice` = planner picks discharge windows like charge slots; `full_dump` = empty available surplus to SoC reserve across the peak. Mode-switching only. **UI** (Trading) |
 | `max_cycles_per_day` | float | 1.5 | **Canonical** runtime cycle budget (overlays SPEC-sample `arbitrage.max_cycles_per_day` when both exist). Shared EFC for load + trading. **UI** (advanced) |
 | `daily_min_savings_eur` | € | 0.20 | **Canonical** runtime twin of `arbitrage.daily_min_savings_eur` (this key wins). Fail ⇒ whole-day no-trade. **UI** (advanced) |
-| `negative_price_soak` | bool | false | opt-in: charge on sub-zero-priced slots (you're PAID to consume), up to headroom — even outside a normal cheap window and with summer grid top-up off. Off = today's behaviour (§8.2 step 5). Applies to the winter, adaptive and summer planners. **UI** |
+| `negative_price_soak` | bool | false | opt-in: charge on sub-zero-priced slots (you're PAID to consume), up to headroom — even outside a normal cheap window and with summer grid top-up off. Off = today's behaviour (§8.2 step 5). Applies to the winter, adaptive and summer planners. Those slots **count toward** `max_daily_grid_charge_kwh`. **UI** |
+| `max_daily_grid_charge_kwh` | kWh | 12 | Hard cap on **AC grid energy** bought for the battery per **local** day (site tz, midnight reset, DST-correct, from history — not an in-memory counter; not DC stored energy). Min 1, max 40. Clamped after winter/summer/adaptive plan build and recovery catch-up; slots past the cap → `ALLOW_SELF_CONSUMPTION` (`Dagplafond X kWh bereikt`) and `buy_pool.state=cap` when a buy-pool is present. A measurement gap during a grid-charge slot counts as a full slot at the planned power; a gap elsewhere counts as 0. The running slot is counted pro rata so measurements and the plan do not both take the full quarter-hour. Unknown counter (`None`): today's cap is treated as reached — no further grid charging, reason `Dagteller onbekend: niet laden van het net`. Validator `daily_grid_charge_cap` is `unsafe` → AUTO if a plan still exceeds the cap. Only lowers buying. **UI** (Strategy, slider, not advanced) |
 | `validate_projection` | bool | true | pre-apply projected-SoC gate (§8.5/§8.11/B-22 / #162): flag a grid-charge plan whose forward projection can't reach its `target_soc` by its `deadline` (>5 pp short) as **`warn`** (not `unsafe`→AUTO); the plan path lowers the target to the projected reachable value and keeps best-effort charging (honest partial). Projection below reserve and unsafe data-quality still fail safe to `AUTO`. Default on; skipped when data-quality ≠ `complete`. **UI** |
 | `recovery_enabled` | bool | true | missed-window recovery (§8.12/B-16): if a committed cheap charge window is missed (outage, held decisions, price spike) and the deadline is still ahead, top up in the cheapest REMAINING slots toward the SAME target (honest partial when too few hours remain; projection-based re-lower when still short — #162). Default on — it only ADDS charging through the same §8.11 validator + control caps (bypasses nothing) and prevents the costly "woke up short before the morning peak"; audited + calmly notified, one recovery per window per day. Off = a missed window is left as-is. **UI** |
 

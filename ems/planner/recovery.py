@@ -36,8 +36,10 @@ from __future__ import annotations
 import math
 from dataclasses import dataclass, replace
 from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
 
 from ems.domain import BatteryIntent
+from ems.planner.budgets import ac_grid_kwh_per_slot, clamp_grid_charge
 from ems.planner.charge_need import stored_kwh_per_slot
 from ems.planner.projection import ProjectedSlot
 from ems.planner.schedule import SLOT, Plan, PlanSlot
@@ -166,6 +168,9 @@ def build_catch_up_plan(
     reserve_soc_pct: float,
     max_charge_w: float,
     round_trip_efficiency: float,
+    max_daily_grid_charge_kwh: float = 12.0,
+    already_bought_today_kwh: float | None = 0.0,
+    site_tz: ZoneInfo | None = None,
 ) -> CatchUpResult:
     """Reshape `plan` to catch up a missed charge window (SPEC §8.12).
 
@@ -229,12 +234,24 @@ def build_catch_up_plan(
             if usable_kwh > 0 else reserve
         feasible = False
         kwh_short = round(max(0.0, remaining_dc - achievable_dc), 1)
-        reason = (f"catch-up (partial): missed {label} ({remaining_kwh:.1f} kWh short) but only "
-                  f"{len(chosen)} cheap slot(s) before {deadline:%H:%M} — targeting "
-                  f"{recovered_target:.0f}% (not {target:.0f}%), {kwh_short:.1f} kWh short")
-        note = (f"EMS missed the {label} charge window and can only partly catch up before "
-                f"{deadline:%H:%M} (about {kwh_short:.1f} kWh short of the {target:.0f}% target). "
-                f"Your battery is safe; it will charge as much as it economically can.")
+        # slots_used == 0: no target percentage in the resident-facing lines (#316 / F-50).
+        # The plan itself (slots, target_soc) is unchanged — only the note and reason.
+        if not chosen:
+            reason = (f"catch-up: missed {label} ({remaining_kwh:.1f} kWh short) but no remaining "
+                      f"slot under the max buy price before {deadline:%H:%M}")
+            note = ("EMS missed the charge window and there is no buy slot left under your "
+                    "max price. Your battery is safe; nothing to do.")
+        else:
+            reason = (
+                f"catch-up (partial): missed {label} ({remaining_kwh:.1f} kWh short) but only "
+                f"{len(chosen)} cheap slot(s) before {deadline:%H:%M} — targeting "
+                f"{recovered_target:.0f}% (not {target:.0f}%), {kwh_short:.1f} kWh short"
+            )
+            note = (
+                f"EMS missed the {label} charge window and can only partly catch up before "
+                f"{deadline:%H:%M} (about {kwh_short:.1f} kWh short of the {target:.0f}% "
+                f"target). Your battery is safe; it will charge as much as it economically can."
+            )
 
     chosen_starts = {p.start for p in chosen}
     per_slot_kwh = round(slot_kwh, 3)
@@ -263,6 +280,11 @@ def build_catch_up_plan(
         plan, created_at=now, slots=tuple(out),
         target_soc=recovered_target, deadline=deadline,
         version=int(plan.version) + 1,
+    )
+    recovered = clamp_grid_charge(
+        recovered, already_bought_today_kwh, max_daily_grid_charge_kwh,
+        ac_grid_kwh_per_slot(max_charge_w),
+        tz=site_tz or ZoneInfo("Europe/Amsterdam"),
     )
     return CatchUpResult(
         plan=recovered, feasible=feasible, target_soc=recovered_target, kwh_short=kwh_short,
@@ -366,6 +388,9 @@ def recover_if_needed(
     round_trip_efficiency: float,
     enabled: bool = True,
     margin_pp: float = 5.0,
+    max_daily_grid_charge_kwh: float = 12.0,
+    already_bought_today_kwh: float | None = 0.0,
+    site_tz: ZoneInfo | None = None,
 ) -> tuple[Plan, CompletionStatus, CatchUpResult | None]:
     """Pure control-loop entry point: return the plan to act on this cycle plus the diagnosis.
 
@@ -396,5 +421,8 @@ def recover_if_needed(
         plan, now, soc_pct=soc_pct, prices=prices, usable_kwh=usable_kwh,
         reserve_soc_pct=reserve_soc_pct, max_charge_w=max_charge_w,
         round_trip_efficiency=round_trip_efficiency,
+        max_daily_grid_charge_kwh=max_daily_grid_charge_kwh,
+        already_bought_today_kwh=already_bought_today_kwh,
+        site_tz=site_tz,
     )
     return catch_up.plan, status, catch_up

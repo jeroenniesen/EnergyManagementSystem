@@ -99,5 +99,21 @@ describe("issue #79 device-health labels", () => {
     );
     expect(liveOk.severity).toBe("ok");
     expect(isDeviceHealthQuiet(liveOk)).toBe(true);
+    const pf = summarizeDeviceHealth(
+      { battery: "fresh", grid: "fresh", prices: "fresh", forecast: "fresh" },
+      {
+        sources: [],
+        summary: {
+          badge: "current",
+          label: "Alles actueel",
+          detail: "ignored",
+          severity: "ok",
+        },
+      },
+      false,
+      "price_fallback",
+    );
+    expect(pf.label).toBe("Geen live Tibber — inkopen uit (fail-safe)");
+    expect(pf.severity).toBe("warning");
   });
 });

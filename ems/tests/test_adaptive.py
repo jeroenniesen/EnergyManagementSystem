@@ -30,6 +30,34 @@ def _cfg(**kw) -> AdaptiveConfig:
     return AdaptiveConfig(**base)
 
 
+def test_buy_pool_golden_adaptive_charge_set_unchanged():
+    """AC4: adaptive intents/targets stay on the pre-#315 peak-shave fixture."""
+    import hashlib
+
+    prices = _prices([0.10] * 4 + [0.40] * 4)
+    fc = _fc([0.0] * 8)
+    load = _load([200.0] * 4 + [3000.0] * 4)
+    plan = plan_adaptive(prices, fc, T0, soc_pct=15.0, load_w_by=load, cfg=_cfg())
+    signature = [
+        (s.intent, s.target_soc, s.target_kwh, s.power_w) for s in plan.slots
+    ]
+    digest = hashlib.sha256(repr(signature).encode()).hexdigest()
+    assert digest == (
+        "89232523e30244b662a4835675e05e3cc6b443b1148c65a2bca7c3106f19e643"
+    )
+
+
+def test_adaptive_plan_exposes_buy_pool_open_when_charging():
+    prices = _prices([0.10] * 4 + [0.40] * 4)
+    fc = _fc([0.0] * 8)
+    load = _load([200.0] * 4 + [3000.0] * 4)
+    plan = plan_adaptive(prices, fc, T0, soc_pct=15.0, load_w_by=load, cfg=_cfg())
+    assert plan.buy_pool is not None
+    assert plan.buy_pool.state == "open"
+    assert plan.buy_pool.pool_size > 0
+    assert plan.buy_pool.shortfall_kwh > 0
+
+
 def test_peak_shave_charges_cheap_before_the_peak_and_discharges_it():
     # Cheap morning (€0.10), expensive evening (€0.40) with a big deficit, no solar, low SoC.
     prices = _prices([0.10] * 4 + [0.40] * 4)
@@ -115,3 +143,99 @@ def test_deficit_slot_that_would_cross_reserve_holds_instead():
 
 def test_empty_prices_yields_empty_plan():
     assert plan_adaptive([], [], T0, soc_pct=50.0, load_w_by={}, cfg=_cfg()).slots == ()
+
+
+def test_late_pack_matches_winter_on_early_medium_plus_deep_valley():
+    """Same curve as winter late-pack: early €0.22 shoulder + later €0.10 valley.
+
+    Both planners must mark the cost-minimal contiguous block (12:30–13:45), not the
+    earliest-of-cheapest set (12:00 start). An earliest-first regression fails here.
+    """
+    from ems.planner.rule_based import PlannerConfig, plan_rule_based
+
+    day = datetime(2026, 10, 5, 12, 0, tzinfo=UTC)
+    prices = (
+        [PriceSlot(day + i * SLOT, 0.22) for i in range(4)]
+        + [PriceSlot(day + i * SLOT, 0.10) for i in range(4, 8)]
+        + [PriceSlot(day + i * SLOT, 0.45) for i in range(8, 12)]
+    )
+    load = {p.start: (6000.0 if p.eur_per_kwh >= 0.40 else 0.0) for p in prices}
+    fc = [ForecastSlot(p.start, 0.0, 0.0, 0.0) for p in prices]
+    winter = plan_rule_based(
+        prices, day, PlannerConfig(charge_slots=8, round_trip_efficiency=1.0),
+        soc_pct=10.0, load_w_by=load, usable_kwh=10.0, reserve_soc_pct=10.0,
+        max_charge_w=4000.0,
+    )
+    adaptive = plan_adaptive(
+        prices, fc, day, soc_pct=10.0, load_w_by=load,
+        cfg=_cfg(round_trip_efficiency=1.0),
+    )
+    winter_charge = {
+        s.start for s in winter.slots if s.intent is BatteryIntent.GRID_CHARGE_TO_TARGET
+    }
+    adaptive_charge = {
+        s.start for s in adaptive.slots if s.intent is BatteryIntent.GRID_CHARGE_TO_TARGET
+    }
+    late = {day + i * SLOT for i in range(2, 8)}  # 12:30–13:45
+    assert winter_charge == late
+    assert adaptive_charge == winter_charge
+    assert day not in adaptive_charge  # 12:00 medium-cheap must stay out
+
+
+def test_no_contiguous_window_falls_back_to_cheapest_n():
+    """Isolated buyable slots: no length-n contiguous window → cheapest n, size stays n_charge."""
+    # Three cheap slots split by peaks. Demand sizes n_charge=2; the two cheapest are gapped.
+    prices = _prices([0.15, 0.50, 0.11, 0.50, 0.12, 0.50])
+    fc = _fc([0.0] * 6)
+    load = _load([0.0, 2000.0, 0.0, 2000.0, 0.0, 2000.0])
+    plan = plan_adaptive(prices, fc, T0, soc_pct=10.0, load_w_by=load, cfg=_cfg())
+    charge = [s for s in plan.slots if s.intent is BatteryIntent.GRID_CHARGE_TO_TARGET]
+    assert len(charge) == 2
+    assert {s.start for s in charge} == {T0 + 2 * SLOT, T0 + 4 * SLOT}
+    assert all(s.start not in {T0 + SLOT, T0 + 3 * SLOT, T0 + 5 * SLOT} for s in charge)
+
+
+def test_adaptive_daily_grid_charge_cap_is_12_kwh_and_marks_buy_pool():
+    """AC1 + buy_pool.state='cap' when the cap blocks part of the buying."""
+    n = 40
+    prices = _prices([0.05] * 24 + [0.80] * 16)
+    fc = _fc([0.0] * n)
+    load = _load([0.0] * 24 + [4000.0] * 16)
+    plan = plan_adaptive(
+        prices, fc, T0, soc_pct=0.0, load_w_by=load,
+        cfg=_cfg(usable_kwh=40.0, reserve_soc_pct=0.0, round_trip_efficiency=1.0,
+                 max_charge_w=4000.0, degradation_eur_per_kwh=0.0,
+                 risk_margin_eur_per_kwh=0.0, max_daily_grid_charge_kwh=12.0),
+    )
+    charged = [s for s in plan.slots if s.intent is BatteryIntent.GRID_CHARGE_TO_TARGET]
+    assert sum(s.target_kwh or 0.0 for s in charged) <= 12.0 + 1e-6
+    assert plan.buy_pool is not None and plan.buy_pool.state == "cap"
+    dropped = [s for s in plan.slots if "Dagplafond" in s.reason]
+    assert dropped
+    assert all(s.intent is BatteryIntent.ALLOW_SELF_CONSUMPTION for s in dropped)
+
+
+def test_adaptive_refuses_charge_when_the_shared_cycle_budget_is_spent():
+    prices = _prices([0.10] * 4 + [0.40] * 4)
+    fc = _fc([0.0] * 8)
+    load = _load([200.0] * 4 + [3000.0] * 4)
+    open_plan = plan_adaptive(
+        prices, fc, T0, soc_pct=15.0, load_w_by=load, cfg=_cfg(max_cycles_per_day=1.5),
+    )
+    spent = plan_adaptive(
+        prices, fc, T0, soc_pct=15.0, load_w_by=load,
+        cfg=_cfg(max_cycles_per_day=1.5, charged_today_kwh=30.0, discharged_today_kwh=0.0),
+    )
+    tight = plan_adaptive(
+        prices, fc, T0, soc_pct=15.0, load_w_by=load, cfg=_cfg(max_cycles_per_day=0.01),
+    )
+    assert any(s.intent is BatteryIntent.GRID_CHARGE_TO_TARGET for s in open_plan.slots)
+    assert not any(s.intent is BatteryIntent.GRID_CHARGE_TO_TARGET for s in spent.slots)
+    assert any(s.reason == "Cycle-budget op (1,5 EFC)" for s in spent.slots)
+    assert sum(
+        s.intent is BatteryIntent.GRID_CHARGE_TO_TARGET for s in tight.slots
+    ) < sum(s.intent is BatteryIntent.GRID_CHARGE_TO_TARGET for s in open_plan.slots)
+    restricted = {BatteryIntent.GRID_CHARGE_TO_TARGET, BatteryIntent.EXPORT_FOR_PROFIT}
+    for before, after in zip(open_plan.slots, spent.slots, strict=True):
+        if after.intent in restricted:
+            assert before.intent is after.intent

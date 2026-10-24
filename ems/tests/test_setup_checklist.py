@@ -152,17 +152,43 @@ def test_setup_checklist_wired_app_mock_prices(tmp_path):
     assert prices["status"] == "Ontbreekt"
 
 
-def test_setup_wizard_does_not_reference_operational_writes():
-    """Guard (#290): the Setup screen must not toggle live control flags."""
+def _setup_tsx_text() -> str:
     root = __file__.replace("/ems/tests/test_setup_checklist.py", "")
     setup_tsx = f"{root}/ems/web/frontend/src/Setup.tsx"
-    text = open(setup_tsx, encoding="utf-8").read()
+    return open(setup_tsx, encoding="utf-8").read()
+
+
+def test_setup_checklist_load_render_does_not_post():
+    """Guard (#290/#291): checklist fetch/render never POSTs or toggles control flags."""
+    text = _setup_tsx_text()
     assert "control.operational" not in text
     assert "control.dry_run" not in text
+    marker = 'apiFetch("/api/setup/checklist")'
+    idx = text.find(marker)
+    assert idx != -1
+    load_start = text.rfind("useEffect(", 0, idx)
+    load_end = text.find("}, [fetchGen]);", idx)
+    assert load_start != -1 and load_end != -1
+    load_block = text[load_start:load_end]
+    assert 'method: "POST"' not in load_block
+    assert "method: 'POST'" not in load_block
     import re
+
+    for block in re.findall(r"useEffect\(\(\) => \{.*?\}, \[[^\]]*\]\);", text, re.DOTALL):
+        assert 'method: "POST"' not in block
+        assert "method: 'POST'" not in block
+
+
+def test_setup_wizard_post_targets_are_allowlisted():
+    """Guard (#291 AC 14): wizard writes only via setup settings + supervised restart."""
+    import re
+
+    text = _setup_tsx_text()
+    assert "control.operational" not in text
+    assert "control.dry_run" not in text
     post_targets = set(
         re.findall(
-            r'(?:apiFetch|fetch)\(\s*["\'](/api/[^"\']+)["\'][^)]*method:\s*["\']POST["\']',
+            r'apiFetch\(\s*["\'](/api/[^"\']+)["\'][^)]*method:\s*["\']POST["\']',
             text,
         ),
     )

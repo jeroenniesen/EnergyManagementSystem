@@ -7,8 +7,8 @@ from datetime import UTC, datetime
 import pytest
 
 from ems.domain import BatteryIntent
-from ems.planner.projection import BatteryModel, project_energy
-from ems.planner.schedule import SLOT, PlanSlot
+from ems.planner.projection import BatteryModel, mark_floor_holds, project_energy
+from ems.planner.schedule import SLOT, Plan, PlanSlot
 
 T0 = datetime(2026, 6, 28, 12, 0, tzinfo=UTC)
 
@@ -91,6 +91,58 @@ def test_discharge_for_load_covers_the_deficit():
     out = _run(_slots(BatteryIntent.DISCHARGE_FOR_LOAD), start_soc_pct=50.0, load=1500.0)
     assert out[0].battery_w == 1500.0
     assert out[0].grid_w == 0.0
+
+
+def test_discharge_for_load_at_floor_deficit_is_idle_until_marked_hold():
+    """#312 AC1: at the reserve floor, discharge-for-load cannot push power — then floor hold."""
+    floor = 10.0
+    slots = _slots(BatteryIntent.DISCHARGE_FOR_LOAD)
+    model = _model(reserve_soc_pct=floor)
+    out = _run(slots, start_soc_pct=floor, load=1000.0, model=model)
+    assert out[0].battery_w == 0.0
+    plan = Plan(created_at=T0, slots=tuple(slots))
+    marked = mark_floor_holds(plan, out, floor, start_soc_pct=floor)
+    assert marked.slots[0].intent is BatteryIntent.HOLD_RESERVE
+    assert "vloer" in marked.slots[0].reason.lower()
+
+
+def test_discharge_for_load_just_above_floor_stays_discharge_until_marked():
+    """#312 AC5: above the anti-flap band, real projected discharge stays DISCHARGE_FOR_LOAD."""
+    floor = 10.0
+    slots = _slots(BatteryIntent.DISCHARGE_FOR_LOAD)
+    model = _model(reserve_soc_pct=floor)
+    start = floor + 0.5
+    out = _run(slots, start_soc_pct=start, load=1000.0, model=model)
+    assert out[0].battery_w > 0.0
+    plan = Plan(created_at=T0, slots=tuple(slots))
+    marked = mark_floor_holds(plan, out, floor, start_soc_pct=start)
+    assert marked.slots[0].intent is BatteryIntent.DISCHARGE_FOR_LOAD
+
+
+def test_discharge_for_load_surplus_charges_like_self_consumption():
+    """#312 AC3 / F-21: surplus under DISCHARGE_FOR_LOAD charges (less export than idle)."""
+    slots = _slots(BatteryIntent.DISCHARGE_FOR_LOAD, BatteryIntent.ALLOW_SELF_CONSUMPTION)
+    solar_by = {s.start: 2000.0 for s in slots}
+    load_by = {s.start: 500.0 for s in slots}
+    model = _model()
+    dfl = project_energy(
+        [slots[0]], start_soc_pct=50.0, solar_w_by=solar_by, load_w_by=load_by, model=model,
+    )
+    asc = project_energy(
+        [slots[1]], start_soc_pct=50.0, solar_w_by=solar_by, load_w_by=load_by, model=model,
+    )
+    assert dfl[0].battery_w < 0
+    assert dfl[0].soc_pct > 50.0
+    assert dfl[0].grid_w == 0.0  # surplus soaked — not exported like pre-F-21 (grid_w = −1500 W)
+    assert asc[0].battery_w == dfl[0].battery_w
+
+
+def test_export_for_profit_does_not_charge_surplus():
+    """F-21 contrast: deliberate export keeps surplus on the grid."""
+    out = _run(_slots(BatteryIntent.EXPORT_FOR_PROFIT), start_soc_pct=50.0,
+               solar=2000.0, load=500.0)
+    assert out[0].battery_w == 0.0
+    assert out[0].grid_w < 0
 
 
 def test_round_trip_efficiency_loss_on_charge():

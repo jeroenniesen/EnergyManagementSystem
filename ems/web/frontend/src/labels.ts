@@ -49,6 +49,70 @@ export const RUN_MODE: Record<"dry" | "live", Labelled> = {
   },
 };
 
+/**
+ * #314 / F-29 / F-47 — one topbar chip: is EMS writing to the battery, and if not, why.
+ * Grace copy is deliberately different from Watch-only ("Alleen kijken" / Instellingen).
+ */
+export const LIVE_WRITING = {
+  yes: "Live schrijven: JA",
+  no: "Live schrijven: NEE",
+  starting: "Opstarten (1–2 min) — nog niet sturend",
+  yesTitle: "EMS schrijft nu naar de batterij.",
+  noTitle: "EMS schrijft niet naar de batterij.",
+  startingTitle:
+    "Opstarten (1–2 min) — sensoren en het plan worden nog gecontroleerd; EMS stuurt nog niet.",
+} as const;
+
+/** Cause suffix after "Live schrijven: NEE — …". Unknown causes omit the suffix (fail-safe NEE). */
+export const LIVE_WRITING_CAUSE: Record<string, string> = {
+  mock: "demo",
+  config_dry_run: "config.yaml",
+  settings_dry_run: "Instellingen (Alleen kijken)",
+  unarmed: "niet bewapend",
+  no_live_prices: "geen live prijzen",
+  no_live_devices: "geen live apparaten",
+  dry_run: "alleen kijken",
+};
+
+export const LIVE_WRITING_PANEL = {
+  title: "Live schrijven",
+  intro: "Alleen weergave. Dit paneel wijzigt geen instelling.",
+  met: "voldaan",
+  unmet: "ontbreekt",
+  openSection: "Naar sectie",
+} as const;
+
+export const LIVE_WRITING_CONDITION: Record<
+  "yaml" | "watch_only" | "operational" | "devices" | "prices",
+  { label: string; ok: string; fail: string }
+> = {
+  yaml: {
+    label: "config.yaml",
+    ok: "config.yaml laat live schrijven toe (dev.mode live, dry_run uit).",
+    fail: "config.yaml of demo/mock blokkeert schrijven. Pas config.yaml aan en herstart.",
+  },
+  watch_only: {
+    label: "Alleen kijken",
+    ok: "Alleen kijken staat uit.",
+    fail: "Alleen kijken staat aan onder Control & safety.",
+  },
+  operational: {
+    label: "Bewapend",
+    ok: "Het systeem mag de batterij sturen.",
+    fail: "Niet bewapend. ‘Let the system control the battery’ staat uit.",
+  },
+  devices: {
+    label: "Live apparaten",
+    ok: "Live apparaten, P1-meter en batterij-IP zijn ingevuld.",
+    fail: "Geen live apparaten, P1-meter of batterij-IP.",
+  },
+  prices: {
+    label: "Live prijzen",
+    ok: "Live Tibber-prijzen en een token zijn ingesteld.",
+    fail: "Geen live prijzen of geen Tibber-token.",
+  },
+};
+
 /** Short labels for /api/status dry_run_cause (#178) — full text stays in dry_run_reason. */
 export const DRY_RUN_CAUSE_LABEL: Record<string, string> = {
   mock: "demo/mock",
@@ -191,7 +255,16 @@ export function summarizeDeviceHealth(
   freshness: Record<string, string> | null | undefined,
   deviceHealth: DeviceHealth | null | undefined,
   isDemo: boolean,
+  dataQuality?: string | null,
 ): DeviceHealthSummary {
+  if (dataQuality === "price_fallback") {
+    return {
+      badge: "price_fallback",
+      label: HOME_ACT.priceFallback,
+      detail: DATA_QUALITY.price_fallback.title,
+      severity: "warning",
+    };
+  }
   if (deviceHealth?.summary) return deviceHealth.summary;
 
   const fromApi = deviceHealth?.sources ?? [];
@@ -397,6 +470,8 @@ export const HOME_ACT = {
   override: "Handmatig sturen — stopt vanzelf, of wis hieronder.",
   unsafe:
     "EMS zet terug naar zelfgebruik tot meters weer kloppen — niets te doen.",
+  /** F-13 (#313): same copy as DecisionReason.safety_constraint.message on price_fallback. */
+  priceFallback: "Geen live Tibber — inkopen uit (fail-safe)",
 } as const;
 
 export const HOME_CONFIDENCE_CHIP: Record<"high" | "medium" | "low", string> = {
@@ -620,6 +695,35 @@ export const HOME_PLAN_STORY = {
   socScale: (pct: number) => `${pct}%`,
 } as const;
 
+/** #315 / F-02+F-31: Home tile when EMS cannot grid-buy (empty buy pool). */
+export const HOME_WHY_NOT_BUY = {
+  title: "Waarom niet kopen?",
+  noChanceInHorizon: "Geen koopmoment in de prijzen van vandaag/morgen",
+  maxBuy: (eur: string) => `Max inkoopprijs ${eur}`,
+  cheapest: (time: string, eur: string) => `Goedkoopste moment ${time} (${eur})`,
+  shortfall: (kwh: string) => `Tekort ${kwh}`,
+  nextChance: (time: string) => `Volgende kans ${time}`,
+} as const;
+
+/** Plan/control SoC floor copy (#310 / audit F-16a). */
+export const HOME_BATTERY_FLOOR = {
+  line: (effective: number, reserveSetting: number, deviceMin: number) => {
+    const eff = Math.round(effective);
+    const dev = Math.round(deviceMin);
+    const res = Math.round(reserveSetting);
+    const reserveNote = eff === res && res > dev ? " (jouw reserve)" : "";
+    return `Vloer ${eff}%${reserveNote} · apparaat ≥ ${dev}%`;
+  },
+  belowReserve: "Onder je reserve",
+} as const;
+
+export function isBelowReserveSoc(
+  socPct: number | null | undefined,
+  reserveSettingSoc: number,
+): boolean {
+  return socPct != null && socPct < reserveSettingSoc;
+}
+
 /**
  * PlanStory action ribbon / legend labels (B-98). Aligned with decisionWhy "Nu: …" vocabulary
  * where the same action appears (laden / zelfconsumptie / vasthouden).
@@ -653,3 +757,184 @@ export const PLAN_ACTION_META: Record<
     phrase: "Staat stil",
   },
 };
+
+/** Night-reserve Settings + PlanStory copy (#335, audit F-27 / F-34). Dutch; no "SoC" in UI. */
+export const HOME_NIGHT_RESERVE = {
+  learnedTonight: (kwh: number) => `Geleerd vannacht ≈ ${kwh.toFixed(1)} kWh`,
+  learnedUnavailable: "Geleerd vannacht: nog onvoldoende meetdata.",
+  configuredAside: (kwh: number) => `Jouw instelling: ${kwh.toFixed(1)} kWh`,
+  exampleHours: (reserveKwh: number, hours: number) =>
+    `Bij een nacht van 12 uur houdt ${reserveKwh.toFixed(1)} kWh nacht-reserve het huis nog ongeveer ${hours} uur aan.`,
+  minReserveExplainer:
+    "Minimumreserve is je noodrem — EMS laat de batterij hier niet onder zakken. "
+    + "Nacht-reserve is extra comfort bovenop het verwachte nachtverbruik.",
+  overrideBadge: "Instelling overschrijft geleerd",
+  planReason: (configured: number, learned: number) =>
+    `Je nacht-reserve staat op ${configured.toFixed(1)} kWh; EMS verwacht vannacht ongeveer `
+    + `${learned.toFixed(1)} kWh nodig te hebben.`,
+} as const;
+
+/** Typical sunset→sunrise span for the comfort-hours example (matches overnight_load semantics). */
+export const NIGHT_RESERVE_COMFORT_HOURS = 12;
+
+export function nightReserveComfortHours(
+  nightReserveKwh: number,
+  overnightLoadKwh: number,
+  nightHours = NIGHT_RESERVE_COMFORT_HOURS,
+): number | null {
+  if (
+    !Number.isFinite(nightReserveKwh) || nightReserveKwh < 0 ||
+    !Number.isFinite(overnightLoadKwh) ||
+    overnightLoadKwh <= 0 ||
+    !Number.isFinite(nightHours) || nightHours <= 0
+  ) {
+    return null;
+  }
+  const hourly = overnightLoadKwh / nightHours;
+  if (hourly <= 0) return null;
+  return Math.round(nightReserveKwh / hourly);
+}
+
+/** True when configured night-reserve kWh differs from learned overnight need by more than `threshold`. */
+export function nightReserveOverridesLearned(
+  configuredKwh: number,
+  learnedKwh: number | null | undefined,
+  threshold = 0.25,
+): boolean {
+  if (learnedKwh == null || !Number.isFinite(learnedKwh) || learnedKwh < 0 ||
+      !Number.isFinite(configuredKwh) || configuredKwh < 0) {
+    return false;
+  }
+  if (learnedKwh === 0) return configuredKwh > 0;
+  return Math.abs(configuredKwh - learnedKwh) / learnedKwh > threshold;
+}
+
+export function learnedNightKwhFromAdvice(
+  nightDemandKwh: number | null | undefined,
+): number | null {
+  if (nightDemandKwh == null || !Number.isFinite(nightDemandKwh) || nightDemandKwh < 0) return null;
+  return nightDemandKwh;
+}
+
+/** Home banner + chip note when alert `charge_blocked_by_cap` is present (#316, audit F-01b). */
+export const CHARGE_BLOCKED_BY_CAP = {
+  banner: "Geplande lading geblokkeerd door de schakellimiet",
+  chipNote: "Geplande lading geblokkeerd door de schakellimiet",
+} as const;
+
+/** #341 / audit F-11 — export model confirmation banner (Home + Settings, not topbar). */
+export const EXPORT_MODEL_BANNER = {
+  title: "Kies je exportmodel (saldering of vanaf 2027)",
+  body:
+    "Het standaardmodel rekent export als spot minus energiebelasting (klaar voor na 2027). " +
+    "Kies saldering alleen als je contract dat nog zo waardeert.",
+  saldering: "Ik saldeer nog (net-metering)",
+  from2027: "Vanaf 2027 (spot minus belasting)",
+  saving: "Opslaan…",
+} as const;
+
+/** Mismatch hint using digest/finance assumptions only — no invented euro amounts. */
+export function exportModelMismatchWarning(exportPriceModel: string): string | null {
+  if (exportPriceModel === "spot_minus_tax") {
+    return (
+      "Het huidige model volgt 2027 — besparingen en handel kunnen export lager waarderen " +
+      "dan bij saldering zolang je nog saldeert."
+    );
+  }
+  if (exportPriceModel === "net_metering") {
+    return (
+      "Het huidige model volgt saldering — de weekdigest herinnert je om het exportmodel te " +
+      "herzien vóór saldering uitfaseert rond 2027."
+    );
+  }
+  return null;
+}
+
+/** Week digest panel — load/error copy (#369 INS-01). */
+export const WEEK_DIGEST = {
+  sectionTitle: "Je week",
+  loadError: "De weeksamenvatting kon niet worden geladen.",
+  retry: "Opnieuw",
+} as const;
+
+/** Onboarding checklist (#369 SETP-02). */
+export const SETUP_CHECKLIST = {
+  loading: "Laden…",
+  retry: "Opnieuw proberen",
+} as const;
+
+/** Audit log (#369 AUD-01 error slice). */
+export const AUDIT_VIEW = {
+  loadError: "Het wijzigingslog kon niet worden geladen.",
+  retry: "Opnieuw",
+} as const;
+
+/** Week digest: negative savings days (audit F-49 / #325). */
+export const WEEK_DIGEST_NEGATIVE_DAY = {
+  sectionTitle: "Dagen met verlies",
+  unknownCause: "Oorzaak niet te bepalen",
+  expandDay: (date: string) => `Waarom verlies op ${date}?`,
+  settingHint: {
+    grid_charge_cost: "Tip: controleer of netladen / winter- of zomer-top-up nodig was.",
+    ev_import_during_hold:
+      "Tip: EV-laden tijdens vasthouden — kijk naar het laadschema en de auto-instellingen.",
+    expensive_peak_import:
+      "Tip: piekimport — nachtreserve en laadvensters beïnvloeden wanneer de batterij helpt.",
+    low_spread:
+      "Tip: bij krappe spreads laadt EMS soms niet — drempel staat bij Planner-instellingen.",
+    low_spread_spaarvloer:
+      "Tip: pas de spaarvloer (Min. verwachte besparing per dag) aan als je meer/minder handel wilt.",
+  },
+} as const;
+
+export function digestEurNl(v: number): string {
+  const abs = Math.abs(v).toLocaleString("nl-NL", {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  });
+  return `${v < 0 ? "−" : ""}€${abs}`;
+}
+
+/** Daily grid-charge ceiling in Settings → Strategy (#317, audit F-03 / F-32). */
+export const DAILY_GRID_CHARGE_CAP = {
+  label: "Max. netinkoop per dag",
+  help:
+    "Hard plafond: EMS koopt per lokale dag nooit meer dan dit aantal kWh van het net voor de batterij. "
+    + "Laden bij een negatieve prijs telt mee. De teller gaat om middernacht (lokale tijd) weer naar nul.",
+  reason: (capKwh: number) => `Dagplafond ${capKwh} kWh bereikt`,
+} as const;
+
+/**
+ * #364 — save-bar consequence before Watch only goes off or operational goes on.
+ * Pulled forward from the Apply & restart dialog: control is allowed, only after
+ * restart, and a restart can abort an active charge window.
+ */
+export const CONTROL_ARM_CONSEQUENCE =
+  "EMS mag daarna de batterij aansturen. Dat wordt pas actief na een herstart. "
+  + "Een herstart geeft de batterij terug aan automatisch zelfgebruik en breekt een lopend laadvenster af.";
+
+export const CONTROL_ARM_CONFIRM_TITLE = "Sturen toestaan?";
+export const CONTROL_ARM_CONFIRM_LABEL = "Opslaan en sturen toestaan";
+export const CONTROL_ARM_CONFIRM_CANCEL = "Annuleren";
+
+/** Visible badge / save line instead of the `restart_pending` token (#364). */
+export const RESTART_PENDING_LABEL = "Wacht op herstart";
+
+/** Control & safety section hint — no dry_run / mock jargon in the visible text (#364). */
+export const CONTROL_SECTION_HINT =
+  "Safety limits and arming. Set your main fuse here — until confirmed, System shows a Check "
+  + "and EMS keeps the conservative 1×25 A ceiling. Watch only / Let the system control need "
+  + "Apply & restart — saved ≠ live until then. A demo setup, or a file that forces watch-only, "
+  + "still always wins over these toggles. Other control knobs apply as soon as you save (active now).";
+
+/**
+ * #364 SYS-01 — one Dutch sentence for a blocked run mode. File-level tokens stay behind Meer.
+ */
+export const MODE_BLOCK_RECOVERY = {
+  sentence:
+    "EMS stuurt de batterij nu niet: zet Alleen kijken uit onder Control & safety en herstart, "
+    + "of zet ‘Let the system control the battery’ uit als je wilt blijven kijken.",
+  more:
+    "In config.yaml moeten dev.mode op live en control.dry_run op false staan; "
+    + "anders blijft alleen kijken geforceerd.",
+} as const;

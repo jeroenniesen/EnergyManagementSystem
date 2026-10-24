@@ -16,19 +16,26 @@ export function BatteryActionWhy({
   reason,
   dryRun,
   overrideActive = false,
+  capBlockedAlert = false,
 }: {
   currentAction: string | null | undefined;
   reason: DecisionReason | null | undefined;
   dryRun: boolean;
   overrideActive?: boolean;
+  capBlockedAlert?: boolean;
 }) {
   if (!reason) return null;
 
+  const floorHold =
+    (currentAction === "hold" || currentAction === "discharge")
+    && /vloer/i.test(reason.summary ?? "");
   const waarom =
     currentAction != null
       ? formatBatteryActionWhy(reason, currentAction, { dryRun, overrideActive })
       : formatBatteryActionWhy(reason, "paused", { dryRun, overrideActive });
-  const actionLabel = batteryActionLabel(currentAction, reason);
+  const actionLabel = floorHold
+    ? "Op de vloer — huis op net"
+    : batteryActionLabel(currentAction, reason);
 
   return (
     <section
@@ -55,7 +62,7 @@ export function BatteryActionWhy({
               {waarom}
             </p>
           )}
-          <DecisionReasonDetails reason={reason} />
+          <DecisionReasonDetails reason={reason} capBlockedAlert={capBlockedAlert} />
         </details>
       </div>
     </section>

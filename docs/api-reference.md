@@ -11,6 +11,10 @@ Quick, concrete cheat-sheet for every integration. Details and rationale are in 
 - **Tariff economics:** `/api/plan` and `/api/report` include `tariff_policy`, showing the import and
   export fee assumptions applied to economics. This affects planning and reporting only; it never
   becomes a direct battery power command.
+- **Buy-pool explainability (#315):** `/api/plan` and `/api/decision` (and `decision_reason` on
+  `/api/battery-plan`) may include optional `buy_pool` — `state`, `max_buy_eur_per_kwh`,
+  `cheapest_slot`, `shortfall_kwh`, `next_chance`, `pool_size` — when the planner sized a grid
+  charge need. Explain-only; does not change control.
 - **Verification:** `GET /api/plan-verification` compares the current planned intent with the latest
   measured SoC and battery/grid power. It returns `awaiting_measurement`, `observed`,
   `unexpected_charge`, or `unexpected_discharge`; it is observational and never commands hardware.
@@ -92,6 +96,39 @@ Quick, concrete cheat-sheet for every integration. Details and rationale are in 
 - Options: **Tesla BLE** (ESP32 + `yoziru/esphome-tesla-ble`, local, no fees — best for a HEMS) · **Tessie** (~$13/mo, HA core, easiest) · **Teslemetry** (~€32/mo) · **Tesla Fleet API** (free ≤ $10/mo credit, self-host the HTTP proxy).
 - Caution: amp changes wake the car; cloud ≈30 cmd/min; `set_charging_amps` min/max undocumented — debounce + min dwell, read bounds at runtime.
 - v1: EV is read-only via the **HomeWizard car meter** (no Tesla credentials needed).
+
+## EMS `GET /api/digest` — weekly digest (B-58, negative-day drivers F-49 / #325)
+
+Read-only JSON for the Insights “Your week” panel and the Sunday notification. Existing keys are unchanged; clients that ignore unknown fields stay compatible.
+
+| Field | Type | Meaning |
+| --- | --- | --- |
+| `negative_days` | array | One entry per calendar day in the requested week with `saved_eur` &lt; 0 (positive days omitted). |
+| `negative_days[].date` | string | Local day `YYYY-MM-DD`. |
+| `negative_days[].saved_eur` | number | That day’s measured saving (negative). |
+| `negative_days[].drivers` | array | Up to three `{key, eur, text}` items from `explain_negative_day()` in `ems/digest.py` (sorted by \|eur\| desc; sum ≤ \|saved_eur\| + €0.05). Empty when inputs are insufficient — UI shows “Oorzaak niet te bepalen”. |
+
+Driver keys and data sources (see the `explain_negative_day` docstring):
+
+| `key` | Sources |
+| --- | --- |
+| `grid_charge_cost` | Day finance (`battery_contribution_eur`) + day energy flows (`grid_to_battery`). |
+| `ev_import_during_hold` | Day audit (`hold_reserve`) + day flows (`grid_to_car`, `battery_to_car`) priced via finance `grid_cost_eur` / `grid_import_kwh`. |
+| `expensive_peak_import` | Day finance `avoided_expensive_eur` when negative. |
+| `low_spread` | Audit/plan no-trade text with projected savings vs `planner.daily_min_savings_eur` (spaarvloer copy names the setting only after #319). |
+
+Query `week=YYYY-MM-DD` (any date in the week) or omit for the last completed Mon–Sun week.
+
+## EMS `GET /api/status` — live writing (display only, #314)
+
+Optional fields on `StatusResponse` (`ems/web/models.py`). Older clients, including the iOS app, ignore unknown keys. Existing `dry_run`, `dry_run_cause` and `dry_run_reason` stay.
+
+| Field | Type | Meaning |
+| --- | --- | --- |
+| `live_writing` | bool, optional | `true` only when EMS is controlling and current price, battery-capability, data-quality and reachability checks pass. |
+| `live_writing_state` | `"yes"` \| `"no"` \| `"starting"`, optional | `starting` = startup grace (about 1–2 min), not Watch-only. `no` = a dry-run floor or any uncertainty. `yes` = controlling and not dry-run. |
+
+These fields do **not** arm writes. Watch-only (`config.yaml`, Settings, `control.operational`) still wins; missing prices or an unknown capability report still leave the battery on its own AUTO mode.
 
 ## Home Assistant (the EMS talks to HA) — planned, not yet implemented
 

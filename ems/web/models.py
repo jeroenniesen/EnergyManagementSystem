@@ -165,6 +165,24 @@ class TariffWarning(APIResponseModel):
     message: str | None = None
 
 
+class BuyPoolCheapestSlot(APIResponseModel):
+    start: str | None = None
+    eur_per_kwh: float | None = None
+
+
+class BuyPoolNextChance(APIResponseModel):
+    start: str | None = None
+
+
+class BuyPoolModel(APIResponseModel):
+    state: Literal["empty", "open", "not_needed", "cap"] | None = None
+    max_buy_eur_per_kwh: float | None = None
+    cheapest_slot: BuyPoolCheapestSlot | None = None
+    shortfall_kwh: float | None = None
+    next_chance: BuyPoolNextChance | None = None
+    pool_size: int | None = None
+
+
 class PlanResponse(APIResponseModel):
     created_at: str | None = None
     strategy: Literal["summer", "winter"] | None = None
@@ -176,6 +194,7 @@ class PlanResponse(APIResponseModel):
     validation: PlanValidation | None = None
     tariff_policy: TariffPolicyModel | None = None
     tariff_warnings: list[TariffWarning] | None = None
+    buy_pool: BuyPoolModel | None = None
 
 
 class ReportResponse(APIResponseModel):
@@ -336,6 +355,8 @@ class ControlLoopCounters(APIResponseModel):
     http_retries: int | None = None
     mode_applies: int | None = None
     validator_rejects: int | None = None
+    # Cycles the daily switch cap blocked a planned grid-charge (#316). Diagnostics only.
+    charge_blocked_by_cap: int | None = None
     outcomes: ControlLoopOutcomes | None = None
     last_outcome: str | None = None
 
@@ -359,11 +380,18 @@ class DiagnosticsResponse(APIResponseModel):
 
 
 class StatusResponse(APIResponseModel):
-    """`GET /api/status` — live SoC / powers + watching-only cause (#178)."""
+    """`GET /api/status` — live SoC / powers + watching-only cause (#178, #314).
+
+    ``live_writing`` / ``live_writing_state`` are optional display fields (F-29 / F-47).
+    Older clients, including the iOS app, ignore them. They never arm the battery writer.
+    """
 
     dry_run: bool | None = None
     dry_run_reason: str | None = None
     dry_run_cause: str | None = None
+    # #314: additive. ``yes`` only when the process is actually allowed to command.
+    live_writing: bool | None = None
+    live_writing_state: Literal["yes", "no", "starting"] | None = None
     dev_mode: str | None = None
     soc_pct: float | None = None
     grid_power_w: float | None = None

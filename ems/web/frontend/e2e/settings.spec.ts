@@ -426,6 +426,122 @@ test.describe("EMS settings", () => {
 
   // B-60: advisor suggestions gain a one-tap "Apply" — still one confirm (the existing sticky
   // save bar), still reversible (Discard), still audit-logged server-side like any settings save.
+  test.describe("night reserve learned vs configured (#335)", () => {
+    const BATTERY_SCHEMA = [
+      {
+        key: "battery.min_reserve_soc",
+        label: "Min reserve",
+        type: "number",
+        default: 10,
+        group: "battery",
+        help: "",
+        min: 5,
+        max: 50,
+        options: null,
+        step: 1,
+        unit: "%",
+        advanced: false,
+        applies: "live",
+      },
+      {
+        key: "battery.night_reserve_kwh",
+        label: "Night reserve",
+        type: "number",
+        default: 2,
+        group: "battery",
+        help: "",
+        min: 0,
+        max: 20,
+        options: null,
+        step: 0.5,
+        unit: "kWh",
+        advanced: false,
+        applies: "live",
+      },
+      {
+        key: "battery.overnight_load_kwh",
+        label: "Overnight load",
+        type: "number",
+        default: 6,
+        group: "battery",
+        help: "",
+        min: 0,
+        max: 50,
+        options: null,
+        step: 0.5,
+        unit: "kWh",
+        advanced: false,
+        applies: "live",
+      },
+    ];
+
+    test("battery settings show learned kWh, configured value and comfort-hours example", async ({
+      page,
+    }) => {
+      await page.route("**/api/settings", async (route) => {
+        if (route.request().method() === "GET") {
+          await route.fulfill({
+            status: 200,
+            contentType: "application/json",
+            body: JSON.stringify({
+              schema: BATTERY_SCHEMA,
+              values: {
+                "battery.min_reserve_soc": 10,
+                "battery.night_reserve_kwh": 2,
+                "battery.overnight_load_kwh": 6,
+              },
+            }),
+          });
+        } else {
+          await route.fulfill({ status: 200, contentType: "application/json", body: "{}" });
+        }
+      });
+      await page.route("**/api/advisor/reserve", async (route) => {
+        await route.fulfill({
+          status: 200,
+          contentType: "application/json",
+          body: JSON.stringify({
+            advice: {
+              recommended_soc_pct: 55,
+              min_reserve_soc: 10,
+              current_night_reserve_kwh: 2,
+              current_target_soc_pct: 50,
+              night_demand_kwh: 5.5,
+              label: null,
+              reason: "mock",
+              automatic: false,
+            },
+            automatic: false,
+          }),
+        });
+      });
+      await page.goto("/");
+      await page.getByTestId("nav-manage").click();
+      await page.getByTestId("group-battery").click();
+
+      const hints = page.getByTestId("night-reserve-hints");
+      await expect(hints).toBeVisible();
+      await expect(page.getByTestId("night-reserve-learned")).toContainText(
+        "Geleerd vannacht ≈ 5.5 kWh",
+      );
+      await expect(page.getByTestId("night-reserve-learned")).toContainText("Jouw instelling: 2.0 kWh");
+      await expect(page.getByTestId("night-reserve-example")).toContainText(
+        "Bij een nacht van 12 uur houdt 2.0 kWh nacht-reserve het huis nog ongeveer 4 uur aan.",
+      );
+      await expect(page.getByTestId("min-reserve-vs-night-hint")).toContainText("noodrem");
+      await expect(hints).not.toContainText("SoC");
+
+      await page.route("**/api/advisor/reserve", (route) =>
+        route.fulfill({ status: 503, contentType: "application/json", body: "{}" }),
+      );
+      await page.reload();
+      await page.getByTestId("nav-manage").click();
+      await page.getByTestId("group-battery").click();
+      await expect(page.getByTestId("night-reserve-learned")).toContainText("onvoldoende meetdata");
+      await expect(page.getByTestId("night-reserve-example")).toContainText("2.0 kWh nacht-reserve");
+    });
+  });
+
   test.describe("advisor 'Apply' (B-60)", () => {
     const SCHEMA_SOLAR = [
       {
@@ -577,5 +693,99 @@ test.describe("EMS settings", () => {
       await expect(page.getByTestId("advisor-solar-confidence-apply")).toHaveCount(0);
       await expect(page.getByTestId("settings-savebar")).toHaveCount(0);
     });
+  });
+
+  // #314 F-29: read-only Live schrijven checklist. Links open a section; nothing is POSTed.
+  test("#314 live-writing panel shows ✓/✗ and does not POST", async ({ page }) => {
+    const posts: string[] = [];
+    page.on("request", (req) => {
+      if (req.method() === "POST") posts.push(new URL(req.url()).pathname);
+    });
+    await page.route("**/api/settings", async (route) => {
+      if (route.request().method() !== "GET") {
+        await route.fulfill({ status: 500, contentType: "application/json", body: "{\"error\":\"no write\"}" });
+        return;
+      }
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          schema: [
+            ...SCHEMA,
+            {
+              key: "control.dry_run", label: "Watch only", type: "bool", default: true,
+              group: "control", help: "Watch only.", min: null, max: null, options: null, step: null, unit: "",
+            },
+            {
+              key: "control.operational", label: "Let the system control the battery", type: "bool",
+              default: false, group: "control", help: "", min: null, max: null, options: null, step: null, unit: "",
+            },
+            {
+              key: "connection.use_live_devices", label: "Use live devices", type: "bool", default: false,
+              group: "connection", help: "", min: null, max: null, options: null, step: null, unit: "",
+            },
+            {
+              key: "prices.tibber_token", label: "Tibber access token", type: "secret", default: "",
+              group: "prices", help: "", min: null, max: null, options: null, step: null, unit: "",
+            },
+          ],
+          values: {
+            ...BASE_VALUES,
+            "control.dry_run": true,
+            "control.operational": false,
+            "connection.use_live_devices": true,
+            "meters.p1_ip": "192.0.2.10",
+            "battery.indevolt_ip": "192.0.2.20",
+            "connection.use_live_prices": true,
+            "prices.tibber_token": "",
+            "prices.tibber_token.__set": true,
+          },
+        }),
+      });
+    });
+    await page.route("**/api/status", async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          dry_run: true,
+          dry_run_cause: "settings_dry_run",
+          dev_mode: "live",
+          live_writing: false,
+          live_writing_state: "no",
+        }),
+      });
+    });
+    await page.goto("/");
+    await page.getByTestId("nav-manage").click();
+    const panel = page.getByTestId("live-writing-panel");
+    await expect(panel).toBeVisible();
+    await expect(panel.getByRole("heading", { name: "Live schrijven" })).toBeVisible();
+    await expect(page.getByTestId("live-writing-row-yaml")).toHaveAttribute("data-ok", "yes");
+    await expect(page.getByTestId("live-writing-row-yaml")).toContainText("✓");
+    await expect(page.getByTestId("live-writing-row-watch_only")).toHaveAttribute("data-ok", "no");
+    await expect(page.getByTestId("live-writing-row-watch_only")).toContainText("✗");
+    await expect(page.getByTestId("live-writing-row-operational")).toHaveAttribute("data-ok", "no");
+    await expect(page.getByTestId("live-writing-row-devices")).toHaveAttribute("data-ok", "yes");
+    await expect(page.getByTestId("live-writing-row-prices")).toHaveAttribute("data-ok", "yes");
+    const before = posts.length;
+    await page.getByTestId("live-writing-link-watch_only").click();
+    await expect(page.getByRole("heading", { name: "Control & safety" })).toBeVisible();
+    expect(posts.slice(before)).toEqual([]);
+    expect(posts.filter((path) => path.includes("/api/settings"))).toEqual([]);
+  });
+
+  // #317 / F-03 / F-32: daily grid-charge cap is a Strategy slider, visible without Advanced.
+  test("daily grid-charge cap slider is on Strategy without Advanced", async ({ page }) => {
+    await page.goto("/");
+    await page.getByTestId("nav-manage").click();
+    await page.getByTestId("group-strategy").click();
+    const field = page.getByTestId("field-planner.max_daily_grid_charge_kwh");
+    await expect(field).toBeVisible();
+    await expect(field.getByText("Max. netinkoop per dag")).toBeVisible();
+    await expect(field.locator("input[type=range]")).toBeVisible();
+    await expect(field.locator("output")).toContainText("12");
+    await expect(field.locator("output")).toContainText("kWh");
+    await expect(page.getByTestId("settings-advanced-body")).toHaveCount(0);
   });
 });

@@ -261,6 +261,22 @@ def test_concurrent_cycles_serialised_no_duplicate_writes():
 
 
 # ==================================================================================================
+# I5b — Separate commitment cap cannot be starved by routine cap (#309 / F-01)
+# ==================================================================================================
+
+def test_commitment_write_succeeds_when_routine_cap_spent():
+    controller = _controlling_controller()
+    controller.switches_today = 10
+    controller.max_switches_per_day = 10
+    svc, _ctx = _service(controller)
+    svc.effective_intent = lambda now: (
+        BatteryIntent.GRID_CHARGE_TO_TARGET, "cheap", False, 90.0, 4000.0, None, None)
+    records = svc.control_tick(NOW)
+    assert controller.driver.current_mode() is PhysicalMode.CHARGE
+    assert not any(r.get("detail", {}).get("outcome") == "cap_reached" for r in records)
+
+
+# ==================================================================================================
 # I6 — No command on failed plan validation
 # ==================================================================================================
 

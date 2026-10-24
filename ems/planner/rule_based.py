@@ -11,11 +11,14 @@ from __future__ import annotations
 import logging
 import math
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
+from zoneinfo import ZoneInfo
 
 from ems.domain import BatteryIntent
 from ems.planner import economics
+from ems.planner.budgets import ac_grid_kwh_per_slot, clamp_cycle_budget, clamp_grid_charge
+from ems.planner.buy_pool import build_buy_pool_info
 from ems.planner.charge_need import stored_kwh_per_slot
 from ems.planner.ev_load import format_ev_load_reason
 from ems.planner.schedule import SLOT, Plan, PlanSlot
@@ -93,6 +96,16 @@ class PlannerConfig:
     negative_price_soak: bool = False  # opt-in: charge on sub-zero slots (paid to consume)
     import_fee_eur_per_kwh: float = 0.0
     price_includes_all_fees: bool = False
+    # #317: hard daily grid-buy cap. already_bought is today's history (None = unknown).
+    max_daily_grid_charge_kwh: float = 12.0
+    already_bought_today_kwh: float | None = 0.0
+    max_cycles_per_day: float = 1.5
+    charged_today_kwh: float | None = 0.0
+    discharged_today_kwh: float | None = 0.0
+    # #319 / F-04. 0 leaves build_plan unchanged. The live service passes
+    # planner.daily_min_savings_eur (settings default €0.20).
+    daily_min_savings_eur: float = 0.0
+    site_tz: ZoneInfo = field(default_factory=lambda: ZoneInfo("Europe/Amsterdam"))
 
 
 def _all_auto(prices: list[PriceSlot], now: datetime, note: str) -> Plan:
@@ -145,7 +158,19 @@ def plan_rule_based(
     )
     if cfg.negative_price_soak:
         plan = _soak_negative(plan, prices, cfg, max_charge_w=max_charge_w)
-    return plan
+    # After soak so negative-price slots spend the same daily cap (Besluit #317).
+    # Cap unit is AC grid kWh, not the DC `stored_kwh_per_slot` the planner sizes with.
+    capped = clamp_grid_charge(
+        plan, cfg.already_bought_today_kwh, cfg.max_daily_grid_charge_kwh,
+        ac_grid_kwh_per_slot(max_charge_w),
+        tz=cfg.site_tz,
+    )
+    return clamp_cycle_budget(
+        capped, cfg.charged_today_kwh, cfg.discharged_today_kwh,
+        cfg.max_cycles_per_day, usable_kwh,
+        round_trip_efficiency=cfg.round_trip_efficiency,
+        charge_fallback_w=max_charge_w, tz=cfg.site_tz,
+    )
 
 
 def _plan_winter(
@@ -191,6 +216,7 @@ def _plan_winter(
     floor = reserve_soc_pct if load_w_by is not None else None
     slot_stored_kwh = stored_kwh_per_slot(max_charge_w, cfg.round_trip_efficiency)
     per_slot_kwh = round(slot_stored_kwh, 3) if load_w_by is not None else None
+    buy_pool = None
     # Exogenous EV (#181): AC kWh to fold into winter demand sizing when known. Clamped ≥ 0;
     # ignored when there is no load profile (fixed-count path has no demand target).
     ev_kwh = max(0.0, float(expected_ev_kwh or 0.0)) if load_w_by is not None else 0.0
@@ -234,6 +260,14 @@ def _plan_winter(
             pre_peak, n_charge,
             price_of=lambda p: _effective_import_price(p, cfg),
             max_buy=max_buy,
+        )
+        buy_pool = build_buy_pool_info(
+            pre_peak=pre_peak,
+            pool=pool,
+            n_charge=n_charge,
+            shortfall_kwh=shortfall_dc,
+            max_buy_eur_per_kwh=max_buy,
+            price_of=lambda p: _effective_import_price(p, cfg),
         )
         # Honest partial (#162): commit only to the DC the chosen cheap slots can actually store.
         # A full shortfall target with too few slots trips B-22 and used to fail-safe to AUTO —
@@ -288,7 +322,7 @@ def _plan_winter(
             reason = f"self-consumption (€{p.eur_per_kwh:.2f}/kWh)"
         out.append(PlanSlot(p.start, intent, reason, floor_soc=floor))
     return Plan(created_at=now, slots=tuple(out), strategy="winter", target_soc=target_soc,
-                deadline=first_peak)
+                deadline=first_peak, buy_pool=buy_pool)
 
 
 def _soak_negative(
@@ -313,4 +347,4 @@ def _soak_negative(
         for s in plan.slots
     )
     return Plan(created_at=plan.created_at, slots=out, strategy=plan.strategy,
-                target_soc=plan.target_soc, deadline=plan.deadline)
+                target_soc=plan.target_soc, deadline=plan.deadline, buy_pool=plan.buy_pool)

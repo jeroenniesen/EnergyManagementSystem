@@ -4,7 +4,8 @@ One algorithm for both seasons. It sizes the battery to the energy it should act
 the coming evening + night — computed from the FORECAST load minus the forecast solar — rather than
 a fixed night-carry constant (which the backtest showed under-sizes on dull days and leaves the
 battery draining mid-peak at peak price). It then grid-charges only the shortfall solar won't cover,
-in the cheapest slots *before* the expensive window, so the battery is full going into the peak and
+in the cost-minimal contiguous slots *before* the expensive window (tie → later; cheapest-n
+if no contiguous window fits), so the battery is full going into the peak and
 shaves it. Risk-aware: the solar it counts on to fill the battery is the EXPECTED (P50) forecast
 scaled by `solar_confidence` (0..1) — a single tunable conservatism dial. (This replaced an earlier
 fixed P10 = 0.6×P50 haircut, which over-bought; see `docs/charging-algorithm-research.md`.)
@@ -14,11 +15,15 @@ Pure + unit-tested. The caller supplies the expected load per slot (the learned 
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
+from zoneinfo import ZoneInfo
 
 from ems.domain import BatteryIntent
 from ems.planner import economics
+from ems.planner.budgets import ac_grid_kwh_per_slot, clamp_cycle_budget, clamp_grid_charge
+from ems.planner.buy_pool import build_buy_pool_info
+from ems.planner.rule_based import late_pack_charge_starts
 from ems.planner.schedule import SLOT, Plan, PlanSlot
 from ems.sources.forecast import ForecastSlot
 from ems.sources.prices import PriceSlot
@@ -38,6 +43,12 @@ class AdaptiveConfig:
     solar_confidence: float = 0.8
     horizon_slots: int = 96
     negative_price_soak: bool = False  # opt-in: charge on sub-zero slots (paid to consume)
+    max_daily_grid_charge_kwh: float = 12.0  # #317 hard daily grid-buy cap
+    already_bought_today_kwh: float | None = 0.0
+    max_cycles_per_day: float = 1.5
+    charged_today_kwh: float | None = 0.0
+    discharged_today_kwh: float | None = 0.0
+    site_tz: ZoneInfo = field(default_factory=lambda: ZoneInfo("Europe/Amsterdam"))
 
 
 def plan_adaptive(
@@ -55,7 +66,17 @@ def plan_adaptive(
     plan = _plan_adaptive(prices, forecast, now, soc_pct=soc_pct, load_w_by=load_w_by, cfg=cfg)
     if cfg.negative_price_soak:
         plan = _soak_negative(plan, prices, cfg)
-    return plan
+    capped = clamp_grid_charge(
+        plan, cfg.already_bought_today_kwh, cfg.max_daily_grid_charge_kwh,
+        ac_grid_kwh_per_slot(cfg.max_charge_w),
+        tz=cfg.site_tz,
+    )
+    return clamp_cycle_budget(
+        capped, cfg.charged_today_kwh, cfg.discharged_today_kwh,
+        cfg.max_cycles_per_day, cfg.usable_kwh,
+        round_trip_efficiency=cfg.round_trip_efficiency,
+        charge_fallback_w=cfg.max_charge_w, tz=cfg.site_tz,
+    )
 
 
 def _plan_adaptive(
@@ -116,17 +137,35 @@ def _plan_adaptive(
     per_slot_kwh = cfg.max_charge_w * _DH / 1000.0 * eta
     n_charge = (math.ceil(shortfall_kwh / per_slot_kwh)
                 if per_slot_kwh > 0 and shortfall_kwh > 1e-9 else 0)
+    max_buy_eur = breakeven
     if discharge_set:
         # Shaving a peak: any pre-peak slot CHEAPER THAN THE PEAK is worth charging in (it beats
         # importing at the peak). Using this — not the strict break-even — avoids silently
         # under-charging when too few slots sit below break-even, so the pack still fills.
         peak_min = min(p.eur_per_kwh for p in future if p.start in discharge_set)
+        max_buy_eur = peak_min
         pool = [p for p in future if p.start < last_need and p.eur_per_kwh < peak_min]
+        pre_peak = [p for p in future if p.start < last_need]
     else:
         # No expensive peak ahead: only charge if genuinely cheap, to avoid pointless cycling.
         pool = [p for p in future if p.eur_per_kwh <= breakeven]
-    pool.sort(key=lambda p: (p.eur_per_kwh, p.start))
-    charge_set = {p.start for p in pool[:n_charge]}
+        pre_peak = list(future)
+    # Pool is already capped and still chronological. Late-pack (same helper as winter) picks the
+    # cost-minimal contiguous window; max_buy is the pool's own ceiling so the existing cap is
+    # unchanged. No full window → cheapest n, and |charge_set| stays <= n_charge.
+    charge_set = late_pack_charge_starts(
+        pool, n_charge,
+        price_of=lambda p: p.eur_per_kwh,
+        max_buy=max((p.eur_per_kwh for p in pool), default=0.0),
+    )
+    buy_pool = build_buy_pool_info(
+        pre_peak=pre_peak,
+        pool=pool,
+        n_charge=n_charge,
+        shortfall_kwh=shortfall_kwh,
+        max_buy_eur_per_kwh=max_buy_eur,
+        price_of=lambda p: p.eur_per_kwh,
+    )
 
     # The SoC the plan should reach (reserve + the demand it must cover), and by when.
     target_soc_pct = (min(100.0, (reserve_kwh + coverable_kwh) / usable * 100.0)
@@ -178,7 +217,7 @@ def _plan_adaptive(
     # No season label here: this planner serves both seasons. build_plan stamps the resolved
     # strategy; a direct caller gets an honest None rather than a misleading "summer".
     return Plan(created_at=now, slots=tuple(out), strategy=None, target_soc=target_soc_pct,
-                deadline=last_need)
+                deadline=last_need, buy_pool=buy_pool)
 
 
 def _soak_negative(plan: Plan, prices: list[PriceSlot], cfg: AdaptiveConfig) -> Plan:
@@ -201,4 +240,4 @@ def _soak_negative(plan: Plan, prices: list[PriceSlot], cfg: AdaptiveConfig) -> 
         for s in plan.slots
     )
     return Plan(created_at=plan.created_at, slots=out, strategy=plan.strategy,
-                target_soc=plan.target_soc, deadline=plan.deadline)
+                target_soc=plan.target_soc, deadline=plan.deadline, buy_pool=plan.buy_pool)

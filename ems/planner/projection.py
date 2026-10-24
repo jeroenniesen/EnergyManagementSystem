@@ -20,7 +20,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 
 from ems.domain import BatteryIntent
-from ems.planner.schedule import SLOT
+from ems.planner.schedule import SLOT, Plan, PlanSlot
 
 SLOT_HOURS = SLOT.total_seconds() / 3600.0  # 0.25 h — energy = power × this per slot
 
@@ -96,8 +96,17 @@ def project_energy(
         elif ps.intent is BatteryIntent.HOLD_RESERVE:
             # Hold charge for a coming peak: never discharge, but soak free solar surplus.
             battery_w = -min(-net, max_charge_ac) if net < 0 else 0.0
-        elif ps.intent is BatteryIntent.DISCHARGE_FOR_LOAD:
+        elif ps.intent is BatteryIntent.EXPORT_FOR_PROFIT:
+            # Deliberate export — never soak surplus like vendor AUTO (#312 / F-21 contrast).
             battery_w = min(net, max_discharge_ac) if net > 0 else 0.0
+        elif ps.intent is BatteryIntent.DISCHARGE_FOR_LOAD:
+            # Peak self-consumption: cover deficit; soak solar surplus like AUTO (#312 / F-21).
+            if net > 0:
+                battery_w = min(net, max_discharge_ac)
+            elif net < 0:
+                battery_w = -min(-net, max_charge_ac)
+            else:
+                battery_w = 0.0
         else:  # ALLOW_SELF_CONSUMPTION — track the house: discharge deficit, charge surplus
             if net > 0:
                 battery_w = min(net, max_discharge_ac)
@@ -119,3 +128,59 @@ def project_energy(
             solar_w=solar, load_w=load,
         ))
     return out
+
+
+def mark_floor_holds(
+    plan: Plan,
+    projected: list[ProjectedSlot] | None,
+    floor_soc: float,
+    tol_pp: float = 1.0,
+    *,
+    start_soc_pct: float | None = None,
+) -> Plan:
+    """Rewrite DISCHARGE_FOR_LOAD at the SoC floor to HOLD_RESERVE (#312 / audit F-16b).
+
+    Only **fake** discharge: the slot starts at or below the reserve floor and the forward
+    projection already has ``battery_w == 0`` (vendor cannot discharge). Do not mark slots that
+    still project real discharge or that start above the floor — that would plan ``HOLD_RESERVE``
+    while ``resolve_floor_anti_flap`` keeps ``AUTO`` and cause an extra IDLE write (#312 AC5).
+
+    ``tol_pp`` is retained for call-site compatibility; marking no longer keys off end-of-slot SoC.
+    Pure: no I/O, no device writes.
+    """
+    if projected is None or not plan.slots or len(projected) != len(plan.slots):
+        return plan
+    _ = tol_pp  # reserved for API compatibility (#312); marking uses slot-start SoC only.
+    floor = float(floor_soc)
+    out: list[PlanSlot] = []
+    changed = False
+    for i, (slot, proj) in enumerate(zip(plan.slots, projected, strict=True)):
+        if start_soc_pct is not None:
+            slot_start_soc = start_soc_pct if i == 0 else projected[i - 1].soc_pct
+        else:
+            slot_start_soc = None
+        if (
+            slot.intent is BatteryIntent.DISCHARGE_FOR_LOAD
+            and proj.battery_w == 0.0
+            and slot_start_soc is not None
+            and slot_start_soc <= floor
+        ):
+            reason = f"Op de batterijvloer ({floor:.0f}%) — huis op net"
+            out.append(PlanSlot(
+                slot.start, BatteryIntent.HOLD_RESERVE, reason,
+                target_soc=slot.target_soc, target_kwh=slot.target_kwh,
+                power_w=slot.power_w,
+                floor_soc=slot.floor_soc if slot.floor_soc is not None else floor,
+                deadline=slot.deadline, end=slot.end,
+            ))
+            changed = True
+        else:
+            out.append(slot)
+    if not changed:
+        return plan
+    return Plan(
+        created_at=plan.created_at, slots=tuple(out), strategy=plan.strategy,
+        target_soc=plan.target_soc, deadline=plan.deadline, id=plan.id,
+        version=plan.version, input_snapshot=plan.input_snapshot,
+        planner_mode=plan.planner_mode, buy_pool=plan.buy_pool,
+    )

@@ -2,7 +2,8 @@
 
 Goal: run the house on the battery overnight using **your own solar**. Fill the battery from PV
 surplus during the day; grid-charge only the **shortfall** needed to reach the night-carry target
-(`target_soc_pct`), and only in the cheapest pre-sunset slots within a price cap. Everything else is
+(`target_soc_pct`), and only in the cost-minimal contiguous pre-deadline slots within a price
+cap (tie → later; cheapest-n if no contiguous window fits). Everything else is
 self-consumption — daytime soaks surplus, night discharges to serve the house.
 
 Risk-aware sizing (SPEC §6.3): the solar we *count on* to fill the battery is a configurable
@@ -14,10 +15,13 @@ the solar forecast and the current SoC; no hardware, no I/O.
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
+from zoneinfo import ZoneInfo
 
 from ems.domain import BatteryIntent
+from ems.planner.budgets import ac_grid_kwh_per_slot, clamp_grid_charge
+from ems.planner.rule_based import late_pack_charge_starts
 from ems.planner.schedule import SLOT, Plan, PlanSlot
 from ems.sources.forecast import ForecastSlot
 from ems.sources.prices import PriceSlot
@@ -55,6 +59,9 @@ class SummerConfig:
     max_topup_price_eur_per_kwh: float = 0.30  # never top up above this price
     horizon_slots: int = 96
     negative_price_soak: bool = False  # opt-in: sub-zero slots become top-up candidates
+    max_daily_grid_charge_kwh: float = 12.0  # #317 hard daily grid-buy cap
+    already_bought_today_kwh: float | None = 0.0
+    site_tz: ZoneInfo = field(default_factory=lambda: ZoneInfo("Europe/Amsterdam"))
 
 
 def plan_summer(
@@ -112,10 +119,10 @@ def plan_summer(
     )
     shortfall_kwh = max(0.0, target_kwh - current_kwh - solar_charge_kwh)
 
-    # Buy only the shortfall, in the cheapest affordable slots before the charge deadline. With
-    # `negative_price_soak` on, a sub-zero slot (you are PAID to consume) is ALSO an eligible top-up
-    # candidate — even when `allow_grid_topup` is off and regardless of the price cap (price < 0 is
-    # below any cap anyway). Same shortfall-bounded, cheapest-first selection — no new sizing math.
+    # Buy only the shortfall before the charge deadline. Eligibility (price cap, or a sub-zero soak
+    # slot when `negative_price_soak` is on — even with `allow_grid_topup` off) is unchanged.
+    # Within that pool, late-pack picks the cost-minimal contiguous window (tie → later). No full
+    # window → cheapest n. Same shortfall-bounded slot count — no new sizing math.
     soak = cfg.negative_price_soak
     per_slot_kwh = cfg.max_charge_w * dh / 1000.0 * eta
     grid_set: set[datetime] = set()
@@ -130,8 +137,17 @@ def plan_summer(
     if (cfg.allow_grid_topup or soak) and shortfall_kwh > 1e-9:
         needed = math.ceil(shortfall_kwh / per_slot_kwh) if per_slot_kwh > 0 else 0
         affordable = [p for p in future if _eligible(p)]
-        affordable.sort(key=lambda p: (p.eur_per_kwh, p.start))
-        grid_set = {p.start for p in affordable[:needed]}
+        # The opt-in soak policy gives sub-zero slots priority, even when an isolated negative
+        # slot cannot belong to a full contiguous window. Keep the same shortfall-sized budget.
+        negative = (sorted((p for p in affordable if p.eur_per_kwh < 0.0),
+                           key=lambda p: (p.eur_per_kwh, p.start))[:needed]
+                    if soak else [])
+        grid_set = {p.start for p in negative}
+        grid_set = late_pack_charge_starts(
+            [p for p in affordable if p.start not in grid_set], needed - len(grid_set),
+            price_of=lambda p: p.eur_per_kwh,
+            max_buy=max((p.eur_per_kwh for p in affordable), default=0.0),
+        ) | grid_set
 
     target_soc_clamped = max(0.0, min(100.0, cfg.target_soc_pct))
 
@@ -161,5 +177,10 @@ def plan_summer(
             reason = "overnight: running the house on the battery"
         out.append(PlanSlot(p.start, intent, reason, target_soc=target_soc_clamped,
                             deadline=charge_deadline))
-    return Plan(created_at=now, slots=tuple(out), strategy="summer",
+    plan = Plan(created_at=now, slots=tuple(out), strategy="summer",
                 target_soc=target_soc_clamped, deadline=charge_deadline)
+    return clamp_grid_charge(
+        plan, cfg.already_bought_today_kwh, cfg.max_daily_grid_charge_kwh,
+        ac_grid_kwh_per_slot(cfg.max_charge_w),
+        tz=cfg.site_tz,
+    )

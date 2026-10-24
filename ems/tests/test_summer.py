@@ -172,6 +172,59 @@ def test_empty_prices_yields_empty_plan():
     assert plan_summer(past, [], T0, soc_pct=50.0, cfg=_cfg()).slots == ()
 
 
+def test_late_pack_topup_prefers_later_valley_under_price_cap():
+    """Early €0.20 + later €0.08 valley: top-up is the late contiguous block, cap still holds."""
+    eur = [0.20, 0.20, 0.08, 0.08, 0.50] + [0.25] * 11
+    prices = [PriceSlot(T0 + i * SLOT, e) for i, e in enumerate(eur)]
+    fc = _forecast([0.0] * len(eur))
+    plan = plan_summer(
+        prices, fc, T0, soc_pct=50.0,
+        cfg=_cfg(allow_grid_topup=True, max_topup_price_eur_per_kwh=0.30),
+    )
+    charge = [s for s in plan.slots if s.intent is BatteryIntent.GRID_CHARGE_TO_TARGET]
+    assert len(charge) == 3
+    # Cost-minimal window of 3 is slots 1–3 (second €0.20 + both €0.08), not earliest-first.
+    assert [s.start for s in charge] == [T0 + SLOT, T0 + 2 * SLOT, T0 + 3 * SLOT]
+    assert all(eur[i] <= 0.30 for i, s in enumerate(plan.slots)
+               if s.intent is BatteryIntent.GRID_CHARGE_TO_TARGET)
+    assert T0 + 4 * SLOT not in {s.start for s in charge}  # €0.50 stays above the cap
+
+
+def test_no_contiguous_topup_window_falls_back_to_cheapest_n():
+    """Gaps above the cap: no contiguous window → cheapest n eligible slots, size stays n."""
+    eur = [0.18, 0.40, 0.10, 0.40, 0.12, 0.40] + [0.40] * 10
+    prices = [PriceSlot(T0 + i * SLOT, e) for i, e in enumerate(eur)]
+    fc = _forecast([0.0] * len(eur))
+    plan = plan_summer(
+        prices, fc, T0, soc_pct=60.0,
+        cfg=_cfg(allow_grid_topup=True, max_topup_price_eur_per_kwh=0.30,
+                 target_soc_pct=80.0),
+    )
+    charge = [s for s in plan.slots if s.intent is BatteryIntent.GRID_CHARGE_TO_TARGET]
+    # 60%→80% of 10 kWh = 2 kWh → n=2. Eligible slots are gapped; cheapest two stay.
+    assert len(charge) == 2
+    assert {s.start for s in charge} == {T0 + 2 * SLOT, T0 + 4 * SLOT}
+    assert all(eur[i] <= 0.30 for i, s in enumerate(plan.slots)
+               if s.intent is BatteryIntent.GRID_CHARGE_TO_TARGET)
+
+
+def test_negative_soak_keeps_isolated_paid_slot_with_contiguous_topup():
+    # A three-slot positive window must not displace the paid slot when soak is enabled.
+    eur = [-0.20, 0.50, 0.10, 0.10, 0.10] + [0.50] * 11
+    prices = [PriceSlot(T0 + i * SLOT, e) for i, e in enumerate(eur)]
+    plan = plan_summer(
+        prices, _forecast([0.0] * len(eur)), T0, soc_pct=50.0,
+        cfg=_cfg(allow_grid_topup=True, negative_price_soak=True,
+                 max_topup_price_eur_per_kwh=0.30),
+    )
+    charge = [s for s in plan.slots if s.intent is BatteryIntent.GRID_CHARGE_TO_TARGET]
+    assert len(charge) == 3  # same 3 kWh shortfall budget
+    assert [s.start for s in charge] == [T0, T0 + 3 * SLOT, T0 + 4 * SLOT]
+    assert "paid to charge" in charge[0].reason
+    assert all(eur[i] <= 0.30 for i, s in enumerate(plan.slots)
+               if s.intent is BatteryIntent.GRID_CHARGE_TO_TARGET)
+
+
 def test_negative_price_soak_charges_below_zero_even_with_grid_topup_off():
     # allow_grid_topup OFF: normally no grid charging at all (see test_grid_topup_can_be_disabled).
     # With the soak on, a sub-zero slot is STILL a charge slot — you are PAID to consume — bounded
@@ -189,3 +242,27 @@ def test_negative_price_soak_charges_below_zero_even_with_grid_topup_off():
     assert "paid to charge" in soaked[0].reason
     # Only the sub-zero slot is soaked — the €0.20 slots stay off (grid top-up is disabled).
     assert all(s.start == T0 + 2 * SLOT for s in on_charge)
+
+
+def test_summer_daily_grid_charge_cap_is_12_kwh():
+    """AC1: a large uncovered night target is still clamped to 12 kWh on the local day."""
+    from zoneinfo import ZoneInfo
+
+    ams = ZoneInfo("Europe/Amsterdam")
+    # Start at local midnight so the horizon stays on one local day (no fresh next-day cap).
+    t0 = datetime(2026, 1, 15, 0, 0, tzinfo=ams)
+    prices = [PriceSlot(t0 + i * SLOT, 0.05) for i in range(40)]
+    fc = [ForecastSlot(t0 + i * SLOT, 0.0, 0.0, 0.0) for i in range(40)]
+    plan = plan_summer(
+        prices, fc, t0, soc_pct=0.0,
+        cfg=_cfg(usable_kwh=40.0, target_soc_pct=100.0, round_trip_efficiency=1.0,
+                 max_charge_w=4000.0, max_daily_grid_charge_kwh=12.0),
+    )
+    charged = [s for s in plan.slots if s.intent is BatteryIntent.GRID_CHARGE_TO_TARGET]
+    assert sum(s.target_kwh or 0.0 for s in charged) <= 12.0 + 1e-6
+    assert len(charged) == 12
+    assert any(s.reason == "Dagplafond 12 kWh bereikt" for s in plan.slots)
+    assert all(
+        s.intent is BatteryIntent.ALLOW_SELF_CONSUMPTION
+        for s in plan.slots if s.reason.startswith("Dagplafond")
+    )

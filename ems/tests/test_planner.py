@@ -1,7 +1,9 @@
+import hashlib
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
 from ems.domain import BatteryIntent
+from ems.planner.reason import build_decision_reason
 from ems.planner.rule_based import PlannerConfig, late_pack_charge_starts, plan_rule_based
 from ems.planner.schedule import SLOT
 from ems.sources.prices import MockPriceSource, PriceSlot
@@ -16,6 +18,28 @@ def _flat(now, n=96, price=0.20):
 
 def _arbitrage_prices():
     return MockPriceSource(AMS, clock=lambda: MIDNIGHT).slots()
+
+
+def test_mark_floor_holds_leaves_winter_arbitrage_structure_intact():
+    """#312: floor-hold rewrite is a pure post-pass — planner output shape unchanged."""
+    from ems.planner.projection import BatteryModel, mark_floor_holds, project_energy
+
+    prices = _arbitrage_prices()
+    plan = plan_rule_based(prices, MIDNIGHT + timedelta(hours=18), soc_pct=10.5)
+    assert plan.slots
+    model = BatteryModel(
+        usable_kwh=10.0, max_charge_w=4000.0, max_discharge_w=4000.0,
+        round_trip_efficiency=0.9, reserve_soc_pct=10.0,
+    )
+    load_by = {s.start: 1000.0 for s in plan.slots}
+    proj = project_energy(
+        plan.slots, start_soc_pct=10.5, solar_w_by={}, load_w_by=load_by, model=model,
+    )
+    marked = mark_floor_holds(plan, proj, 10.0, start_soc_pct=10.5)
+    assert len(marked.slots) == len(plan.slots)
+    for ps, ms, pj in zip(plan.slots, marked.slots, proj, strict=True):
+        if pj.battery_w > 0:
+            assert ms.intent is ps.intent  # real discharge — never floor-hold (#312 r1 / AC5)
 
 
 def test_arbitrage_day_has_charge_discharge_and_hold():
@@ -295,3 +319,199 @@ def test_winter_late_pack_shifts_charge_past_early_medium_cheap():
     starts = sorted(s.start for s in charge)
     assert all(starts[i] + SLOT == starts[i + 1] for i in range(len(starts) - 1))
     assert all(s.deadline is not None and s.target_soc is not None for s in charge)
+
+
+def _control_signature(plan):
+    return [
+        (s.intent, s.target_soc, s.target_kwh, s.power_w)
+        for s in plan.slots
+    ]
+
+
+def test_buy_pool_golden_plan_slots_unchanged_fixed_arbitrage():
+    """AC4: intents/targets unchanged on the fixed-count arbitrage fixture (#315)."""
+    plan = plan_rule_based(_arbitrage_prices(), MIDNIGHT)
+    digest = hashlib.sha256(repr(_control_signature(plan)).encode()).hexdigest()
+    assert digest == (
+        "11422461a3e8184006d9b06ae8ed53b34bd78d9457e8f5837a3ecf86870bd99b"
+    )
+
+
+def test_buy_pool_golden_plan_slots_unchanged_late_pack_demand():
+    """AC4: demand-sized late-pack fixture — control payload identical (#315)."""
+    day = datetime(2026, 10, 5, 8, 0, tzinfo=AMS)
+
+    def block(hour: int, n: int, price: float) -> list[PriceSlot]:
+        start = datetime(2026, 10, 5, hour, 0, tzinfo=AMS)
+        return [PriceSlot(start + i * SLOT, price) for i in range(n)]
+
+    prices = (
+        block(8, 16, 0.32)
+        + block(12, 4, 0.228)
+        + block(13, 4, 0.172)
+        + block(14, 4, 0.182)
+        + block(15, 8, 0.239)
+        + block(17, 8, 0.30)
+        + block(19, 8, 0.449)
+    )
+    load = {p.start: (4500.0 if p.eur_per_kwh >= 0.40 else 400.0) for p in prices}
+    plan = plan_rule_based(
+        prices, day, PlannerConfig(charge_slots=12, discharge_slots=24),
+        soc_pct=8.0, load_w_by=load, usable_kwh=10.8, reserve_soc_pct=10.0,
+        max_charge_w=4000.0,
+    )
+    digest = hashlib.sha256(repr(_control_signature(plan)).encode()).hexdigest()
+    assert digest == (
+        "1ecb2fd66948725ff0f6c4d044c230d5b056b785a2467b461f987a314d51c89e"
+    )
+
+
+def test_empty_buy_pool_fixture_summary_in_decision_reason():
+    """AC1: empty pool + shortfall → one Dutch summary with max buy and cheapest slot."""
+    t0 = datetime(2026, 10, 16, 6, 0, tzinfo=AMS)
+    # Pre-peak slots above max_buy, profitable peak, cheap post-peak slots lower break-even only.
+    prices = (
+        [PriceSlot(t0 + i * SLOT, 0.37) for i in range(32)]
+        + [PriceSlot(t0 + 32 * SLOT + i * SLOT, 0.45) for i in range(8)]
+        + [PriceSlot(t0 + 40 * SLOT + i * SLOT, 0.05) for i in range(12)]
+    )
+    load = {p.start: (3500.0 if p.eur_per_kwh >= 0.44 else 500.0) for p in prices}
+    plan = plan_rule_based(
+        prices, t0, PlannerConfig(horizon_slots=52), soc_pct=5.5, load_w_by=load,
+        usable_kwh=10.8, reserve_soc_pct=10.0, max_charge_w=4000.0,
+    )
+    assert plan.buy_pool is not None
+    assert plan.buy_pool.state == "empty"
+    assert plan.buy_pool.shortfall_kwh > 0
+    assert plan.buy_pool.pool_size == 0
+    price_by = {p.start: p.eur_per_kwh for p in prices}
+    summary = build_decision_reason(plan, price_by=price_by).summary
+    assert "Geen koopmoment" in summary
+    assert "max-inkoopprijs" in summary
+    assert plan.buy_pool.cheapest_slot is not None
+    assert plan.buy_pool.next_chance_start is None
+    assert f"{plan.buy_pool.cheapest_slot.eur_per_kwh:.2f}".replace(".", ",") in summary
+    # Wall clock of the Amsterdam slot, not UTC.
+    assert plan.buy_pool.cheapest_slot.start.strftime("%H:%M") in summary
+    assert "€0,27" in summary
+    assert summary.count("Geen koopmoment") == 1
+    assert all("Geen koopmoment" not in s.reason for s in plan.slots)
+
+
+def test_buy_pool_not_needed_when_nothing_to_buy_and_absent_without_prices():
+    """n_charge == 0 → not_needed; an empty future price list leaves buy_pool unset."""
+    t0 = datetime(2026, 10, 16, 6, 0, tzinfo=AMS)
+    prices = (
+        [PriceSlot(t0 + i * SLOT, 0.10) for i in range(20)]
+        + [PriceSlot(t0 + 20 * SLOT + i * SLOT, 0.50) for i in range(8)]
+    )
+    load = {p.start: (800.0 if p.eur_per_kwh >= 0.40 else 200.0) for p in prices}
+    full = plan_rule_based(
+        prices, t0, PlannerConfig(horizon_slots=28), soc_pct=100.0, load_w_by=load,
+        usable_kwh=10.8, reserve_soc_pct=10.0, max_charge_w=4000.0,
+    )
+    assert full.buy_pool is not None
+    assert full.buy_pool.state == "not_needed"
+    assert full.buy_pool.shortfall_kwh <= 1e-9
+    assert not any(s.intent is BatteryIntent.GRID_CHARGE_TO_TARGET for s in full.slots)
+    empty = plan_rule_based([], t0, PlannerConfig())
+    assert empty.slots == ()
+    assert empty.buy_pool is None
+
+
+def test_short_cheap_pool_stays_open_not_daily_cap():
+    """A partial cheap window is ``open``. ``cap`` is the daily kWh ceiling (#317), not this."""
+    t0 = datetime(2026, 10, 16, 6, 0, tzinfo=AMS)
+    # One pre-peak slot under max_buy (~€0.27); the rest sit above it. Post-peak €0.05
+    # does not refill the pool. n_charge stays above that single slot.
+    prices = (
+        [PriceSlot(t0, 0.20)]
+        + [PriceSlot(t0 + (i + 1) * SLOT, 0.37) for i in range(31)]
+        + [PriceSlot(t0 + 32 * SLOT + i * SLOT, 0.45) for i in range(8)]
+        + [PriceSlot(t0 + 40 * SLOT + i * SLOT, 0.05) for i in range(12)]
+    )
+    load = {p.start: (3500.0 if p.eur_per_kwh >= 0.44 else 500.0) for p in prices}
+    plan = plan_rule_based(
+        prices, t0, PlannerConfig(horizon_slots=52), soc_pct=5.5, load_w_by=load,
+        usable_kwh=10.8, reserve_soc_pct=10.0, max_charge_w=4000.0,
+    )
+    assert plan.buy_pool is not None
+    assert plan.buy_pool.pool_size == 1
+    assert plan.buy_pool.shortfall_kwh > 1
+    assert plan.buy_pool.state == "open"
+    assert plan.buy_pool.next_chance_start is not None
+
+
+def test_winter_daily_grid_charge_cap_is_12_kwh():
+    """AC1: cap 12 → the winter plan never schedules more than 12 kWh of grid charge."""
+    t0 = datetime(2026, 1, 15, 0, 0, tzinfo=AMS)
+    prices = (
+        [PriceSlot(t0 + i * SLOT, 0.05) for i in range(40)]
+        + [PriceSlot(t0 + (40 + i) * SLOT, 0.80) for i in range(16)]
+    )
+    cfg = PlannerConfig(
+        charge_slots=30, discharge_slots=8, round_trip_efficiency=1.0,
+        degradation_eur_per_kwh=0.0, risk_margin_eur_per_kwh=0.0,
+        max_daily_grid_charge_kwh=12.0,
+    )
+    plan = plan_rule_based(prices, t0, cfg, max_charge_w=4000.0)
+    charged = [s for s in plan.slots if s.intent is BatteryIntent.GRID_CHARGE_TO_TARGET]
+    # Fixed-count path has no target_kwh; 4 kW × 0.25 h × η=1 = 1 kWh/slot.
+    assert len(charged) * 1.0 <= 12.0 + 1e-9
+    assert len(charged) == 12
+    dropped = [s for s in plan.slots if s.reason.startswith("Dagplafond")]
+    assert dropped
+    assert all(s.intent is BatteryIntent.ALLOW_SELF_CONSUMPTION for s in dropped)
+    assert "Dagplafond 12 kWh bereikt" in dropped[0].reason
+
+
+def test_winter_already_bought_8_kwh_leaves_at_most_4():
+    """AC2: injected already-bought history of 8 kWh, cap 12 → ≤ 4 kWh new."""
+    t0 = datetime(2026, 1, 15, 0, 0, tzinfo=AMS)
+    prices = (
+        [PriceSlot(t0 + i * SLOT, 0.05) for i in range(40)]
+        + [PriceSlot(t0 + (40 + i) * SLOT, 0.80) for i in range(16)]
+    )
+    cfg = PlannerConfig(
+        charge_slots=30, discharge_slots=8, round_trip_efficiency=1.0,
+        degradation_eur_per_kwh=0.0, risk_margin_eur_per_kwh=0.0,
+        max_daily_grid_charge_kwh=12.0, already_bought_today_kwh=8.0,
+    )
+    plan = plan_rule_based(prices, t0, cfg, max_charge_w=4000.0)
+    charged = [s for s in plan.slots if s.intent is BatteryIntent.GRID_CHARGE_TO_TARGET]
+    assert len(charged) <= 4
+    assert len(charged) == 4
+
+
+def test_winter_refuses_new_charge_when_the_cycle_budget_is_spent():
+    """#318: after 1.5 EFC today the winter planner names 'Cycle-budget op' and stops buying."""
+    t0 = datetime(2026, 1, 15, 0, 0, tzinfo=AMS)
+    prices = (
+        [PriceSlot(t0 + i * SLOT, 0.05) for i in range(40)]
+        + [PriceSlot(t0 + (40 + i) * SLOT, 0.80) for i in range(16)]
+    )
+    common = dict(
+        charge_slots=30, discharge_slots=8, round_trip_efficiency=1.0,
+        degradation_eur_per_kwh=0.0, risk_margin_eur_per_kwh=0.0,
+        max_daily_grid_charge_kwh=80.0,
+    )
+
+    def _n(max_cycles: float, charged: float = 0.0) -> int:
+        plan = plan_rule_based(
+            prices, t0, PlannerConfig(
+                **common, max_cycles_per_day=max_cycles,
+                charged_today_kwh=charged, discharged_today_kwh=0.0,
+            ),
+            max_charge_w=4000.0, usable_kwh=10.0,
+        )
+        return sum(s.intent is BatteryIntent.GRID_CHARGE_TO_TARGET for s in plan.slots)
+
+    assert _n(2.0) > _n(1.0) > _n(0.5)
+    spent = plan_rule_based(
+        prices, t0, PlannerConfig(
+            **common, max_cycles_per_day=1.5, charged_today_kwh=30.0,
+        ),
+        max_charge_w=4000.0, usable_kwh=10.0,
+    )
+    assert not any(s.intent is BatteryIntent.GRID_CHARGE_TO_TARGET for s in spent.slots)
+    assert any(s.reason == "Cycle-budget op (1,5 EFC)" for s in spent.slots)

@@ -2,6 +2,7 @@ import { expect, type Page, test } from "@playwright/test";
 
 import { mockInsightsDensity, waitForInsightsDensity } from "./density-fixtures";
 import { mockRoute } from "./route-mock";
+import { guardRoute, isStaleRouteError } from "./stale-route-helper";
 
 const DASHBOARD_BUDGET = {
   hero: 1,
@@ -131,7 +132,19 @@ function batteryPlanReasonFixture(overrides: Record<string, unknown> = {}) {
       unconfirmed: false,
     },
     summary: "Grid top-up is planned to reach the battery target.",
+    buy_pool: null,
     ...overrides,
+  };
+}
+
+function buyPoolEmptyFixture() {
+  return {
+    state: "empty",
+    max_buy_eur_per_kwh: 0.35,
+    cheapest_slot: { start: "2026-10-16T13:15:00+02:00", eur_per_kwh: 0.37 },
+    shortfall_kwh: 4.2,
+    next_chance: null,
+    pool_size: 0,
   };
 }
 
@@ -954,6 +967,8 @@ test.describe("EMS dashboard", () => {
               dry_run: false,
               dry_run_reason: null,
               dry_run_cause: null,
+              live_writing: true,
+              live_writing_state: "yes",
               dev_mode: "live",
               soc_pct: 55,
             },
@@ -1380,6 +1395,138 @@ test.describe("EMS dashboard", () => {
     await expect(reason).toContainText("Nog je dak");
   });
 
+  test("#313 F-13: price_fallback Home shows amber fail-safe copy", async ({ page }) => {
+    const pfMsg = "Geen live Tibber — inkopen uit (fail-safe)";
+    await mockRoute(page, "**/api/dashboard", async (route) => {
+      const response = await route.fetch();
+      const dashboard = await response.json();
+      await route.fulfill({
+        response,
+        json: {
+          ...dashboard,
+          alerts: { data_quality: "price_fallback", alerts: [] },
+          freshness: {
+            battery: "fresh",
+            grid: "fresh",
+            prices: "fresh",
+            forecast: "fresh",
+          },
+        },
+      });
+    });
+    await routePlanStory(page);
+    await page.route("**/api/battery-plan", (route) =>
+      route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify(
+          batteryPlanFixture(
+            {
+              level: "medium",
+              reasons: ["Live prices are unavailable, so the plan is running on a fallback price curve."],
+            },
+            undefined,
+            {
+              current_action: "paused",
+              current_reason: pfMsg,
+              reason: batteryPlanReasonFixture({
+                summary: pfMsg,
+                safety_constraint: {
+                  code: "no_live_prices",
+                  message: pfMsg,
+                  action: "paused",
+                },
+              }),
+            },
+          ),
+        ),
+      }),
+    );
+    await page.route("**/api/decision", (route) =>
+      route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          intent: "allow_self_consumption",
+          desired_mode: "auto",
+          applied: false,
+          outcome: "idempotent",
+          reason: "holding self-consumption",
+          home_state: {
+            headline: "All good — the battery is running the house",
+            tone: "good",
+            simulated: true,
+          },
+          decision_reason: batteryPlanReasonFixture({
+            summary: pfMsg,
+            safety_constraint: { code: "no_live_prices", message: pfMsg, action: "paused" },
+          }),
+        }),
+      }),
+    );
+    await page.goto("/");
+    const hero = page.getByTestId("home-state");
+    await expect(hero).toHaveAttribute("data-tone", "watching");
+    await expect(page.getByTestId("hero-synthesis")).toHaveText(pfMsg);
+    await expect(page.getByTestId("hero-act")).toHaveText(pfMsg);
+    await expect(page.getByText("Alles actueel")).toHaveCount(0);
+    await expect(page.getByTestId("plan-story-price-fallback")).toHaveText(pfMsg);
+  });
+
+  test("#313 F-13: a manual override wins the hero tone/synthesis over price_fallback", async ({ page }) => {
+    const pfMsg = "Geen live Tibber — inkopen uit (fail-safe)";
+    await mockRoute(page, "**/api/dashboard", async (route) => {
+      const response = await route.fetch();
+      const dashboard = await response.json();
+      await route.fulfill({
+        response,
+        json: {
+          ...dashboard,
+          alerts: { data_quality: "price_fallback", alerts: [] },
+          freshness: {
+            battery: "fresh",
+            grid: "fresh",
+            prices: "fresh",
+            forecast: "fresh",
+          },
+        },
+      });
+    });
+    await routePlanStory(page);
+    await page.route("**/api/battery-plan", (route) =>
+      route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify(batteryPlanFixture({ level: "medium", reasons: [] })),
+      }),
+    );
+    await page.route("**/api/decision", (route) =>
+      route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          intent: "hold_reserve",
+          desired_mode: "charge",
+          applied: true,
+          outcome: "applied",
+          reason: "manual override active",
+          override_active: true,
+          home_state: {
+            headline: "You're in manual control",
+            tone: "controlling",
+            simulated: true,
+          },
+          decision_reason: batteryPlanReasonFixture({ summary: "manual override active" }),
+        }),
+      }),
+    );
+    await page.goto("/");
+    const hero = page.getByTestId("home-state");
+    await expect(hero).toHaveAttribute("data-tone", "controlling");
+    await expect(page.getByTestId("hero-act")).toHaveText("Handmatig sturen — stopt vanzelf, of wis hieronder.");
+    await expect(page.getByTestId("hero-synthesis")).not.toHaveText(pfMsg);
+  });
+
   test("B-68: a low-confidence plan shows a red chip + the safety-fallback reason", async ({ page }) => {
     await page.route("**/api/battery-plan", (route) =>
       route.fulfill({
@@ -1476,6 +1623,42 @@ test.describe("EMS dashboard", () => {
     await expect(line).toContainText("scenario intelligence: not active yet");
     await expect(page.getByTestId("plan-story-legend")).toBeVisible();
     await expect(page.getByTestId("story-footer")).toHaveCount(0);
+  });
+
+  test("#315: Waarom niet kopen? tile when decision buy_pool is empty", async ({ page }) => {
+    const pool = buyPoolEmptyFixture();
+    await routePlanStory(page);
+    await routeDashboardStatus(page);
+    await page.route("**/api/battery-plan", (route) => route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify(batteryPlanFixture(
+        { level: "high", reasons: ["Fresh data."] },
+        DEFAULT_PROVENANCE,
+        { reason: batteryPlanReasonFixture({ buy_pool: pool }) },
+      )),
+    }));
+    await page.route("**/api/decision", (route) => route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        intent: "allow_self_consumption",
+        desired_mode: "auto",
+        applied: false,
+        outcome: "idempotent",
+        reason: "self-consumption",
+        decision_reason: batteryPlanReasonFixture({ buy_pool: pool }),
+        buy_pool: pool,
+      }),
+    }));
+    await page.goto("/");
+    const tile = page.getByTestId("why-not-buy");
+    await expect(tile).toBeVisible();
+    await expect(tile).toContainText("Waarom niet kopen?");
+    await expect(tile).toContainText("Max inkoopprijs €0,35");
+    await expect(tile).toContainText("Goedkoopste moment 13:15 (€0,37)");
+    await expect(tile).toContainText("Tekort 4,2 kWh");
+    await expect(tile).toContainText("Geen koopmoment in de prijzen van vandaag/morgen");
   });
 
   // --- B-33 / #85 slice 1: waarom bij laden / vasthouden / zelfconsumptie ---------------------------
@@ -2122,8 +2305,11 @@ test.describe("EMS dashboard", () => {
     await openMore(page);
     await expect(page.getByRole("heading", { name: "Smart Energy Manager" })).toBeVisible();
 
-    // Run-mode badge in plain language (dry-run => "Alleen kijken"; M0a is read-only).
-    await expect(page.getByTestId("run-mode-badge")).toHaveText("Alleen kijken");
+    // #314: one chip. The e2e server is mock/dry-run, so live writing is NEE — demo
+    // (replaces the old "Alleen kijken" + separate cause chip).
+    await expect(page.getByTestId("run-mode-badge")).toHaveText("Live schrijven: NEE — demo");
+    await expect(page.getByTestId("run-mode-badge")).toHaveAttribute("data-cause", "mock");
+    await expect(page.getByTestId("run-mode-reason")).toHaveCount(0);
 
     // Live snapshot KPIs live in OutcomeTiles (B-97) — not a PlanStory footer strip.
     await expect(page.getByTestId("outcome-soc")).toContainText("55%");
@@ -2302,6 +2488,8 @@ test.describe("EMS dashboard", () => {
             dry_run: false,
             dry_run_reason: null,
             dry_run_cause: null,
+            live_writing: true,
+            live_writing_state: "yes",
             dev_mode: "live",
           },
           freshness: {
@@ -2337,7 +2525,116 @@ test.describe("EMS dashboard", () => {
     }
     expect(visible).toBeLessThanOrEqual(2);
     expect(visible).toBe(1);
+    await expect(page.getByTestId("run-mode-badge")).toHaveText("Live schrijven: JA");
+    await expect(page.getByTestId("run-mode-badge")).toHaveAttribute("data-state", "yes");
     healthyLive.assertRequested();
+  });
+
+  // #314 F-29/F-47: one chip, one cause, grace copy ≠ Watch-only, never JA while observing.
+  test("#314 live-writing chip shows JA/NEE/grace with data-cause", async ({ page }) => {
+    const cases: Array<{
+      status: Record<string, unknown>;
+      text: string;
+      cause: string | null;
+      state: string;
+      title?: string;
+    }> = [
+      {
+        status: { dry_run: true, dry_run_cause: "mock", dry_run_reason: "demo", dev_mode: "mock", live_writing: false, live_writing_state: "no" },
+        text: "Live schrijven: NEE — demo", cause: "mock", state: "no",
+      },
+      {
+        status: { dry_run: true, dry_run_cause: "mock", dry_run_reason: "replay", dev_mode: "replay", live_writing: false, live_writing_state: "no" },
+        text: "Live schrijven: NEE — demo", cause: "mock", state: "no",
+      },
+      {
+        status: { dry_run: true, dry_run_cause: "config_dry_run", dry_run_reason: "yaml", dev_mode: "live", live_writing: false, live_writing_state: "no" },
+        text: "Live schrijven: NEE — config.yaml", cause: "config_dry_run", state: "no",
+      },
+      {
+        status: { dry_run: true, dry_run_cause: "settings_dry_run", dry_run_reason: "watch", dev_mode: "live", live_writing: false, live_writing_state: "no" },
+        text: "Live schrijven: NEE — Instellingen (Alleen kijken)", cause: "settings_dry_run", state: "no",
+        title: "Laatste idle: batterij blijft op zelfgebruik.",
+      },
+      {
+        status: { dry_run: true, dry_run_cause: "unarmed", dry_run_reason: "off", dev_mode: "live", live_writing: false, live_writing_state: "no" },
+        text: "Live schrijven: NEE — niet bewapend", cause: "unarmed", state: "no",
+      },
+      {
+        status: { dry_run: true, dry_run_cause: "no_live_prices", dry_run_reason: "prices", dev_mode: "live", live_writing: false, live_writing_state: "no" },
+        text: "Live schrijven: NEE — geen live prijzen", cause: "no_live_prices", state: "no",
+      },
+      {
+        status: { dry_run: true, dry_run_cause: "no_live_devices", dry_run_reason: "devices", dev_mode: "live", live_writing: false, live_writing_state: "no" },
+        text: "Live schrijven: NEE — geen live apparaten", cause: "no_live_devices", state: "no",
+      },
+      {
+        status: { dry_run: false, dry_run_cause: "observing", dry_run_reason: "Opstarten (1–2 min) — nog niet sturend", dev_mode: "live", live_writing: false, live_writing_state: "starting" },
+        text: "Opstarten (1–2 min) — nog niet sturend", cause: "observing", state: "starting",
+      },
+      {
+        status: { dry_run: false, dry_run_cause: null, dry_run_reason: null, dev_mode: "live", live_writing: true, live_writing_state: "yes" },
+        text: "Live schrijven: JA", cause: null, state: "yes",
+      },
+      {
+        status: { dry_run: null, dry_run_cause: null, dry_run_reason: null, dev_mode: "live", live_writing: null, live_writing_state: null },
+        text: "Live schrijven: NEE", cause: null, state: "no",
+      },
+    ];
+    let current = cases[0];
+    try {
+      // #378: 10× goto while the app polls /api/dashboard. A navigation or page
+      // close between route.fetch() and response.json() disposes the APIResponse.
+      await page.route("**/api/dashboard", (route) => guardRoute(route, async () => {
+        const response = await route.fetch();
+        const dashboard = await response.json();
+        await route.fulfill({
+          response,
+          json: { ...dashboard, status: { ...dashboard.status, ...current.status } },
+        });
+      }));
+      await page.route("**/api/decision", (route) => guardRoute(route, async () => {
+        await route.fulfill({
+          status: 200,
+          contentType: "application/json",
+          body: JSON.stringify({
+            intent: "allow_self_consumption",
+            desired_mode: "auto",
+            applied: false,
+            outcome: "dry_run",
+            reason: current.title ?? "Watching only — not commanding.",
+          }),
+        });
+      }));
+      for (const row of cases) {
+        current = row;
+        const dashboardReady = page.waitForResponse(
+          (response) => new URL(response.url()).pathname === "/api/dashboard",
+        );
+        await page.goto("/");
+        await dashboardReady;
+        const badge = page.getByTestId("run-mode-badge");
+        await expect(badge).toHaveText(row.text);
+        await expect(badge).toHaveAttribute("data-state", row.state);
+        if (row.cause) await expect(badge).toHaveAttribute("data-cause", row.cause);
+        else await expect(badge).not.toHaveAttribute("data-cause");
+        await expect(badge).not.toContainText("Stuurt batterij");
+        if (row.state !== "yes") await expect(badge).not.toContainText("Live schrijven: JA");
+        if (row.state === "starting") {
+          await expect(badge).not.toContainText("Instellingen (Alleen kijken)");
+        }
+        if (row.title) await expect(badge).toHaveAttribute("title", row.title);
+        await expect(page.getByTestId("run-mode-reason")).toHaveCount(0);
+      }
+    } finally {
+      // Drop in-flight handlers before the page closes, so a disposed poll
+      // cannot reject into the next test (#378, dry-run panel).
+      try {
+        await page.unrouteAll({ behavior: "ignoreErrors" });
+      } catch (error) {
+        if (!isStaleRouteError(error)) throw error;
+      }
+    }
   });
 
   test("shows the controller decision (dry-run) panel", async ({ page }) => {
@@ -2489,6 +2786,67 @@ test.describe("EMS dashboard", () => {
     await page.getByTestId("strategy-winter").click();
     await expect(page.getByTestId("strategy-winter")).toHaveAttribute("aria-checked", "true");
     await expect(page.getByTestId("strategy-summary")).toContainText("Arbitrage");
+  });
+
+  test("strategy card shows effective floor and below-reserve hint (#310)", async ({ page }) => {
+    await routeDashboardStatus(page);
+    await page.route("**/api/dashboard", (route) => route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        status: {
+          dry_run: true,
+          dev_mode: "mock",
+          soc_pct: 8,
+          grid_power_w: 1000,
+          solar_power_w: 0,
+          battery_power_w: 0,
+          house_load_w: 1000,
+          non_ev_load_w: 1000,
+        },
+        freshness: { battery: "fresh" },
+        alerts: { data_quality: "complete", alerts: [] },
+      }),
+    }));
+    await page.route("**/api/strategy", (route) =>
+      route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          mode: "auto",
+          active: "summer",
+          auto: true,
+          summary: "Solar-first — fill the battery from your panels.",
+          grid_topup: true,
+          max_topup_price: 0.3,
+        }),
+      }),
+    );
+    await page.route("**/api/battery", (route) => route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        current_mode: "auto",
+        capabilities: { services: ["charge"], p1_paired: true },
+        aggregate: {
+          soc_pct: 8,
+          power_w: 0,
+          capacity_kwh: 10,
+          online_towers: 1,
+          total_towers: 1,
+        },
+        towers: [],
+        effective_floor_soc: 10,
+        reserve_setting_soc: 10,
+        device_min_target_soc: 5,
+      }),
+    }));
+    await page.goto("/");
+    await openMoreNest(page, "strategy");
+    const floor = page.getByTestId("strategy-battery-floor");
+    await expect(floor).toContainText("Vloer 10% (jouw reserve)");
+    await expect(floor).toContainText("apparaat ≥ 5%");
+    await expect(floor).toContainText("Onder je reserve");
   });
 
   test("strategy card is operable with the keyboard (arrow keys)", async ({ page }) => {
@@ -3970,7 +4328,22 @@ test.describe("EMS dashboard", () => {
     let failCore = false;
     const dashboardMock = await mockRoute(page, "**/api/dashboard", async (route) => {
       if (!failCore) {
-        await route.continue();
+        const response = await route.fetch();
+        const dashboard = await response.json();
+        await route.fulfill({
+          response,
+          json: {
+            ...dashboard,
+            status: {
+              ...dashboard.status,
+              dry_run: false,
+              dry_run_cause: null,
+              dev_mode: "live",
+              live_writing: true,
+              live_writing_state: "yes",
+            },
+          },
+        });
         return;
       }
       await route.fulfill({
@@ -3993,6 +4366,7 @@ test.describe("EMS dashboard", () => {
     await page.goto("/");
     // Wait until the first successful dashboard paint (hero is enough; alerts may also be present).
     await expect(page.getByTestId("home-state")).toBeVisible({ timeout: 15_000 });
+    await expect(page.getByTestId("run-mode-badge")).toHaveText("Live schrijven: JA");
     failCore = true;
     // Remount the dashboard poll immediately (interval is 10s).
     await page.getByTestId("nav-manage").click();
@@ -4001,6 +4375,7 @@ test.describe("EMS dashboard", () => {
     await expect(page.getByTestId("alert-laatst-bekend")).toHaveText(/Laatst bekend \d{2}:\d{2}/);
     await expect(page.getByTestId("alerts")).toHaveCount(0);
     await expect(page.getByTestId("home-state")).toHaveCount(0);
+    await expect(page.getByTestId("run-mode-badge")).toHaveText("Live schrijven: NEE");
     dashboardMock.assertRequested();
     statusMock.assertRequested();
   });
@@ -4116,5 +4491,119 @@ test.describe("EMS dashboard", () => {
     await expect(page.getByTestId("notif-unread-dot")).toHaveCount(0);
     await page.getByTestId("notif-bell").click();
     await expect(page.getByTestId("notif-empty")).toContainText("No notifications yet.");
+  });
+
+  test("home shows the switch-cap banner when charge_blocked_by_cap is alerted", async ({ page }) => {
+    // #316 AC4: mocked /api/alerts (snapshot unavailable, so the fan-out path is what renders).
+    const dashboardMock = await mockRoute(page, "**/api/dashboard", (route) =>
+      route.fulfill({ status: 404, body: "snapshot unavailable" }),
+    );
+    const alertsMock = await mockRoute(page, "**/api/alerts", (route) =>
+      route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          data_quality: "complete",
+          alerts: [{
+            key: "charge_blocked_by_cap",
+            severity: "warning",
+            message: "server copy ignored",
+            safe: "De batterij blijft op de laatst bevestigde stand.",
+            action: "Nothing needed — EMS hervat automatically.",
+            ems_doing: "EMS houdt de huidige stand aan.",
+          }],
+        }),
+      }),
+    );
+    await page.goto("/");
+    const banner = page.getByTestId("alert-charge_blocked_by_cap");
+    await expect(banner).toBeVisible();
+    await expect(banner).toContainText("Geplande lading geblokkeerd door de schakellimiet");
+    await expect(banner).not.toContainText("server copy ignored");
+    dashboardMock.assertRequested();
+    alertsMock.assertRequested();
+  });
+
+  // #341 / F-11: export-model banner — main content only (B-99 topbar chip budget).
+  test.describe("export model confirmation banner (#341)", () => {
+    const SCHEMA_EXPORT = [
+      {
+        key: "prices.export_price_model", label: "Export (feed-in) value", type: "enum",
+        default: "spot_minus_tax", group: "prices", help: "",
+        min: null, max: null, options: ["net_metering", "spot_minus_tax", "fixed"],
+        step: null, unit: "", advanced: false, applies: "live",
+      },
+    ];
+
+    async function mockUnconfirmedExport(page: Page, model = "spot_minus_tax") {
+      let saved: Record<string, unknown> = {};
+      await page.route("**/api/settings", async (route) => {
+        if (route.request().method() === "POST") {
+          saved = JSON.parse(route.request().postData() || "{}");
+          const nextModel = String(saved["prices.export_price_model"] ?? model);
+          await route.fulfill({
+            status: 200, contentType: "application/json",
+            body: JSON.stringify({
+              values: {
+                "prices.export_price_model": nextModel,
+                "prices.export_model_confirmed": true,
+              },
+            }),
+          });
+        } else {
+          await route.fulfill({
+            status: 200, contentType: "application/json",
+            body: JSON.stringify({
+              schema: SCHEMA_EXPORT,
+              values: {
+                "prices.export_price_model": model,
+                "prices.export_model_confirmed": false,
+              },
+            }),
+          });
+        }
+      });
+      return () => saved;
+    }
+
+    test("shows on Home while export model is not confirmed", async ({ page }) => {
+      await mockUnconfirmedExport(page);
+      await page.goto("/");
+      const banner = page.getByTestId("export-model-banner");
+      await expect(banner).toBeVisible();
+      await expect(banner).toContainText("Kies je exportmodel (saldering of vanaf 2027)");
+      await expect(page.locator(".topbar")).not.toContainText("Kies je exportmodel");
+    });
+
+    test("hides after choosing saldering and posts export model + confirmed", async ({ page }) => {
+      const readSaved = await mockUnconfirmedExport(page);
+      await page.goto("/");
+      await page.getByTestId("export-model-saldering").click();
+      await expect(page.getByTestId("export-model-banner")).toBeHidden();
+      expect(readSaved()["prices.export_price_model"]).toBe("net_metering");
+      expect(readSaved()["prices.export_model_confirmed"]).toBe(true);
+    });
+
+    test("hides after choosing the 2027 model and posts export model + confirmed", async ({ page }) => {
+      const readSaved = await mockUnconfirmedExport(page, "net_metering");
+      await page.goto("/");
+      await page.getByTestId("export-model-from2027").click();
+      await expect(page.getByTestId("export-model-banner")).toBeHidden();
+      expect(readSaved()["prices.export_price_model"]).toBe("spot_minus_tax");
+      expect(readSaved()["prices.export_model_confirmed"]).toBe(true);
+    });
+
+    test("choice on Settings stays hidden on Home", async ({ page }) => {
+      const readSaved = await mockUnconfirmedExport(page);
+      await page.goto("/");
+      await page.getByTestId("nav-manage").click();
+      await expect(page.getByTestId("export-model-banner")).toBeVisible();
+      await page.getByTestId("export-model-saldering").click();
+      await expect(page.getByTestId("export-model-banner")).toBeHidden();
+      expect(readSaved()["prices.export_price_model"]).toBe("net_metering");
+      expect(readSaved()["prices.export_model_confirmed"]).toBe(true);
+      await page.getByTestId("nav-dashboard").click();
+      await expect(page.getByTestId("export-model-banner")).toBeHidden();
+    });
   });
 });

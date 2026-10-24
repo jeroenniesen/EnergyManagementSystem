@@ -17,6 +17,7 @@ import aiosqlite
 
 from ems.perf import atimed
 from ems.storage.history import _connection_is_dead, _log, self_healing
+from ems.storage.sqlite_guard import hold_db_writer, run_async_write, short_busy_connection
 
 _BUSY_TIMEOUT_MS = 5000  # see ems/storage/history.py for the WAL/synchronous/timeout rationale
 
@@ -90,7 +91,17 @@ class SettingsStore:
     @asynccontextmanager
     async def _write_conn(self):
         async with self._write_lock:
-            yield await self._connection()
+            async with hold_db_writer(self.db_path):
+                db = await self._connection()
+                async with short_busy_connection(db, default_ms=_BUSY_TIMEOUT_MS):
+                    try:
+                        yield db
+                    except Exception:
+                        try:
+                            await db.rollback()
+                        except Exception:
+                            _log.debug("settings rollback after write error failed", exc_info=True)
+                        raise
 
     async def close(self) -> None:
         async with self._connect_lock:
@@ -138,26 +149,40 @@ class SettingsStore:
         return out
 
     async def set_many(self, items: dict[str, Any]) -> None:
-        """Upsert the given key→value pairs in a single transaction. No-op for an empty dict."""
+        """Upsert the given key→value pairs in a single transaction. No-op for an empty dict.
+
+        Settings are not a battery command, but a lost write must stay visible: a lock that
+        survives the retry budget is re-raised (F-45), not swallowed.
+        """
         if not items:
             return
-        async with atimed("store.settings.write"):
-            async with self._write_conn() as db:
-                for key, value in items.items():
-                    await db.execute(
-                        f"INSERT INTO {self.table} (key, value) VALUES (?, ?) "
-                        "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
-                        (key, json.dumps(value)),
-                    )
-                await db.commit()
+
+        async def _body() -> None:
+            async with atimed("store.settings.write"):
+                async with self._write_conn() as db:
+                    for key, value in items.items():
+                        await db.execute(
+                            f"INSERT INTO {self.table} (key, value) VALUES (?, ?) "
+                            "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                            (key, json.dumps(value)),
+                        )
+                    await db.commit()
+
+        await run_async_write(
+            self.db_path, "settings", "settings", _body, swallow=False)
 
     async def delete(self, *keys: str) -> None:
         """Remove the given keys (used to clear runtime state such as a manual override)."""
         if not keys:
             return
-        async with atimed("store.settings.write"):
-            async with self._write_conn() as db:
-                await db.executemany(
-                    f"DELETE FROM {self.table} WHERE key = ?", [(k,) for k in keys]
-                )
-                await db.commit()
+
+        async def _body() -> None:
+            async with atimed("store.settings.write"):
+                async with self._write_conn() as db:
+                    await db.executemany(
+                        f"DELETE FROM {self.table} WHERE key = ?", [(k,) for k in keys]
+                    )
+                    await db.commit()
+
+        await run_async_write(
+            self.db_path, "settings", "settings", _body, swallow=False)

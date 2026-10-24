@@ -5,12 +5,17 @@
 // of Insights' own day/week/month/year period picker — this is always a WEEK, with its own small
 // ‹ › stepper (mirrors Insights' period-nav). Collapsible to one line (the headline itself, like
 // the Advanced disclosure toggle) so it never dominates a repeat visit.
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 
 import { apiFetch } from "./auth";
 import { eur } from "./format";
+import { digestEurNl, WEEK_DIGEST, WEEK_DIGEST_NEGATIVE_DAY } from "./labels";
 
 type BestDay = { date: string; saved_eur: number } | null;
+
+type NegativeDriver = { key: string; eur: number; text: string };
+
+type NegativeDay = { date: string; saved_eur: number; drivers: NegativeDriver[] };
 
 type Digest = {
   week_label: string;
@@ -24,6 +29,7 @@ type Digest = {
   headline: string;
   days_measured: number;
   days_total: number;
+  negative_days?: NegativeDay[];
 };
 
 // The trailing YYYY-MM-DD in a "Week of YYYY-MM-DD" label — mirrors ems/digest.py's own parsing,
@@ -44,11 +50,17 @@ function shiftWeek(monday: string, dir: number): string {
 export function WeekDigest() {
   const [anchor, setAnchor] = useState<string>(""); // "" = let the server pick the default week
   const [digest, setDigest] = useState<Digest | null>(null);
+  const [loading, setLoading] = useState(true);
   const [error, setError] = useState(false);
+  const [fetchGen, setFetchGen] = useState(0);
   const [open, setOpen] = useState(true);
+  const [openLossDay, setOpenLossDay] = useState<string | null>(null);
+
+  const retry = useCallback(() => setFetchGen((g) => g + 1), []);
 
   useEffect(() => {
     let alive = true;
+    setLoading(true);
     setError(false);
     const url = anchor ? `/api/digest?week=${anchor}` : "/api/digest";
     apiFetch(url)
@@ -56,16 +68,58 @@ export function WeekDigest() {
         if (!r.ok) throw new Error(`HTTP ${r.status}`);
         return r.json();
       })
-      .then((v: Digest) => alive && setDigest(v))
-      .catch(() => alive && setError(true));
+      .then((v: Digest) => {
+        if (alive) {
+          setDigest(v);
+          setError(false);
+        }
+      })
+      .catch(() => {
+        if (alive) {
+          setDigest(null);
+          setError(true);
+        }
+      })
+      .finally(() => {
+        if (alive) setLoading(false);
+      });
     return () => {
       alive = false;
     };
-  }, [anchor]);
+  }, [anchor, fetchGen]);
 
-  // Best-effort like the other Insights sub-panels (FinanceSection, HeatingAdvice): a digest
-  // hiccup never blocks the scores/flows/finance the rest of Insights already shows.
-  if (error || !digest) return null;
+  if (loading && !digest) {
+    return (
+      <section className="week-digest" data-testid="week-digest" aria-label="Your week">
+        <div className="week-digest-head">
+          <span className="metric-label" data-testid="week-digest-section-title">
+            {WEEK_DIGEST.sectionTitle}
+          </span>
+        </div>
+        <span className="skel-line skel-line-lg" data-testid="week-digest-loading" aria-hidden="true" />
+      </section>
+    );
+  }
+
+  if (error && !digest) {
+    return (
+      <section className="week-digest" data-testid="week-digest" aria-label="Your week">
+        <div className="week-digest-head">
+          <span className="metric-label" data-testid="week-digest-section-title">
+            {WEEK_DIGEST.sectionTitle}
+          </span>
+        </div>
+        <div className="error" role="alert" data-testid="week-digest-error">
+          <p>{WEEK_DIGEST.loadError}</p>
+          <button type="button" className="btn secondary" data-testid="week-digest-retry" onClick={retry}>
+            {WEEK_DIGEST.retry}
+          </button>
+        </div>
+      </section>
+    );
+  }
+
+  if (!digest) return null;
 
   const monday = mondayOf(digest.week_label);
   const step = (dir: number) => {
@@ -73,6 +127,10 @@ export function WeekDigest() {
   };
   const partial = digest.days_measured < digest.days_total;
   const actionsTotal = digest.actions.mode_switches + digest.actions.overrides;
+  const negativeDays = digest.negative_days ?? [];
+
+  const settingHint = (key: string): string | null =>
+    (WEEK_DIGEST_NEGATIVE_DAY.settingHint as Record<string, string>)[key] ?? null;
 
   return (
     <section className="week-digest" data-testid="week-digest" aria-label="Your week">
@@ -163,6 +221,60 @@ export function WeekDigest() {
             <p className="advisor-hint week-digest-tweak" data-testid="week-digest-tweak">
               {digest.tweak}
             </p>
+          )}
+
+          {negativeDays.length > 0 && (
+            <div className="week-digest-loss-days" data-testid="week-digest-loss-days">
+              <p className="week-digest-loss-title">{WEEK_DIGEST_NEGATIVE_DAY.sectionTitle}</p>
+              <ul className="week-digest-loss-list">
+                {negativeDays.map((day) => {
+                  const expanded = openLossDay === day.date;
+                  return (
+                    <li key={day.date} className="week-digest-loss-item">
+                      <button
+                        type="button"
+                        className="week-digest-loss-toggle"
+                        data-testid={`week-digest-loss-${day.date}`}
+                        aria-expanded={expanded}
+                        onClick={() =>
+                          setOpenLossDay((cur) => (cur === day.date ? null : day.date))
+                        }
+                      >
+                        <span className="week-digest-chevron" aria-hidden="true">›</span>
+                        <span>
+                          {day.date}: {digestEurNl(day.saved_eur)}
+                        </span>
+                      </button>
+                      {expanded && (
+                        <div
+                          className="week-digest-loss-body"
+                          data-testid={`week-digest-loss-body-${day.date}`}
+                        >
+                          {day.drivers.length === 0 ? (
+                            <p>{WEEK_DIGEST_NEGATIVE_DAY.unknownCause}</p>
+                          ) : (
+                            <ol>
+                              {day.drivers.map((driver) => (
+                                <li key={driver.key}>
+                                  <strong>{digestEurNl(-Math.abs(driver.eur))}</strong>{" "}
+                                  {driver.text}
+                                  {settingHint(driver.key) && (
+                                    <span className="week-digest-loss-hint">
+                                      {" "}
+                                      {settingHint(driver.key)}
+                                    </span>
+                                  )}
+                                </li>
+                              ))}
+                            </ol>
+                          )}
+                        </div>
+                      )}
+                    </li>
+                  );
+                })}
+              </ul>
+            </div>
           )}
 
           {partial && (

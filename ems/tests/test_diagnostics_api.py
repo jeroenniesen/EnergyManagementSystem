@@ -13,6 +13,18 @@ from ems.storage.settings import SettingsStore
 from ems.web.api import create_app
 
 
+def test_diagnostics_exposes_per_store_lock_counters():
+    """F-45: every store reports last_lock_event and retries ≥ 0, plus storage_write_retries."""
+    b = TestClient(create_app(MockSource(), dry_run=True, dev_mode="mock")).get(
+        "/api/diagnostics"
+    ).json()
+    locks = b["storage_locks"]
+    for name in ("history", "settings", "audit", "auth", "cache", "control_state"):
+        assert locks[name]["retries"] >= 0
+        assert "last_lock_event" in locks[name]
+    assert b["storage_write_retries"] >= 0
+
+
 def test_diagnostics_minimal_app_reports_checks():
     # No stores/sources wired -> still returns a structured report, with warnings (not a crash).
     b = TestClient(create_app(MockSource(), dry_run=True, dev_mode="mock")).get(

@@ -266,6 +266,38 @@ def test_reset_connection_forces_reopen(tmp_path, Store, monkeypatch):
     assert calls["n"] == 2
 
 
+def test_noncritical_lock_retries_three_times_then_skips(tmp_path, monkeypatch, caplog):
+    """plan-history lock: 3 attempts, one WARN, counter moves, no exception (F-45)."""
+    import ems.storage.sqlite_guard as guard
+
+    monkeypatch.setattr(guard, "BACKOFF_S", (0.0, 0.0))
+    guard.reset_lock_stats()
+    store = HistoryStore(str(tmp_path / "ems.sqlite"))
+
+    async def run():
+        await store.init()
+        orig = store._db.execute
+        calls = {"n": 0}
+
+        async def execute(sql, *args, **kwargs):
+            if "plan_history" in str(sql):
+                calls["n"] += 1
+                raise sqlite3.OperationalError("database is locked")
+            return await orig(sql, *args, **kwargs)
+
+        store._db.execute = execute
+        await store.record_plan("2026-06-28T10:00:00+00:00", {"strategy": "summer"})
+        return calls["n"]
+
+    with caplog.at_level(logging.WARNING, logger="ems.storage"):
+        attempts = asyncio.run(run())
+    assert attempts == 3
+    assert guard.storage_write_retries() == 3
+    skipped = [r for r in caplog.records if "non-critical sqlite write skipped" in r.getMessage()]
+    assert len(skipped) == 1
+    assert "database is locked" not in skipped[0].getMessage()
+
+
 @pytest.mark.parametrize("Store", [HistoryStore, SettingsStore, AuditStore])
 def test_lagging_sibling_discard_does_not_thrash_a_healed_connection(tmp_path, Store, caplog):
     # F1 (self-heal race): two coroutines both failed on connection X. Sibling A discards X and its

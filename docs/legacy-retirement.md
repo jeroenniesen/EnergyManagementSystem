@@ -29,6 +29,7 @@
 | `price-includes-all-fees-alias` | `grid_fees.tibber_total_includes_all` | retained | prices / settings | After upgrade window; canonical key only |
 | `legacy-shared-token-tier-cap` | `authz._LEGACY_ACCESS_CAP` | retained | auth | Every access token has an explicit tier |
 | `planner-mode-ml-advisory` | `PlannerMode` + `planner.mode` ml/advisory | retained | planner / ml | Enable at M6 — do not delete the seam |
+| `control-commitment-reserve-setting` | `control.commitment_reserve` | retained | control / settings | Remove after upgrade window; use `max_commitment_switches_per_day` (#309) |
 | `root-validation-screenshots` | root `*-validation.png` / `behavior-panels.png` | ignored | repo hygiene | `.gitignore` |
 | `root-task-reports` | root `task-*-report.md` | ignored | repo hygiene | `.gitignore` |
 

@@ -16,6 +16,7 @@ from datetime import datetime
 from typing import Any
 
 from ems.domain import BatteryIntent
+from ems.planner.buy_pool import format_empty_buy_summary
 from ems.planner.schedule import Plan, PlanSlot
 from ems.savings import estimate_daily_savings_eur
 
@@ -27,11 +28,22 @@ _SELF = BatteryIntent.ALLOW_SELF_CONSUMPTION
 # Homeowner-facing action vocabulary aligned with /api/battery-plan current_action.
 _ACTION_PAUSED = "paused"
 _ACTION_PROCEED = "proceed"
+_ACTION_HOLD = "hold"
+_ACTION_DISCHARGE = "discharge"
+_ACTION_GRID_CHARGE = "grid_charge"
+_ACTION_FULL_SPEED = "full_speed_discharge"
+_ACTION_SELF = "self_consume"
+_ACTION_SOLAR_CHARGE = "solar_charge"
+_BATTERY_W_IDLE_BAND_W = 50.0
+
+# F-13 (#313): fail-safe copy when the plan badge is price_fallback (mock/backup/no Tibber).
+PRICE_FALLBACK_SAFETY_CODE = "no_live_prices"
+PRICE_FALLBACK_SAFETY_MESSAGE = "Geen live Tibber — inkopen uit (fail-safe)"
 
 # Stable top-level keys of DecisionReason.to_dict() — contract for web / logs / diagnostics (#84).
 REASON_DICT_KEYS = frozenset({
     "chosen_window", "rejected_alternative", "expected_benefit", "risk",
-    "safety_constraint", "gates", "summary",
+    "safety_constraint", "gates", "summary", "buy_pool",
 })
 GATE_DICT_KEYS = frozenset({
     "validator_code", "failsafe", "dwell", "cap_reached", "unconfirmed",
@@ -146,6 +158,7 @@ class DecisionReason:
     safety_constraint: SafetyConstraint
     gates: GateOutcomes
     summary: str
+    buy_pool: dict[str, Any] | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -160,7 +173,46 @@ class DecisionReason:
             "safety_constraint": self.safety_constraint.to_dict(),
             "gates": self.gates.to_dict(),
             "summary": self.summary,
+            "buy_pool": self.buy_pool,
         }
+
+
+def _is_floor_hold_slot(slot: PlanSlot) -> bool:
+    """True when the slot is a floor hold (plan/UI vocabulary #312 / F-16b)."""
+    if slot.intent is not _HOLD:
+        return False
+    low = (slot.reason or "").lower()
+    return "batterijvloer" in low or "vloer" in low
+
+
+def current_action_from_slot(
+    slot: PlanSlot,
+    *,
+    battery_w: float = 0.0,
+) -> str:
+    """Map the active plan slot → ``current_action`` token (aligned with /api/battery-plan).
+
+    ``battery_w`` is the projected or observed slot power (+discharge / −charge); when omitted
+    callers may pass ``slot.power_w`` — floor holds are detected from slot reason/intent (#312).
+    """
+    if _is_floor_hold_slot(slot):
+        return _ACTION_HOLD
+    intent = slot.intent
+    if intent is _CHARGE:
+        return _ACTION_GRID_CHARGE
+    if intent is _HOLD:
+        return _ACTION_HOLD
+    if intent is BatteryIntent.EXPORT_FOR_PROFIT:
+        return _ACTION_FULL_SPEED
+    if intent is _DISCHARGE:
+        if abs(battery_w) <= _BATTERY_W_IDLE_BAND_W and "vloer" in (slot.reason or "").lower():
+            return _ACTION_HOLD
+        return _ACTION_DISCHARGE
+    if intent is _SELF:
+        if battery_w < -_BATTERY_W_IDLE_BAND_W:
+            return _ACTION_SOLAR_CHARGE
+        return _ACTION_SELF
+    return _ACTION_SELF
 
 
 def format_reason_log_line(reason: dict[str, Any] | DecisionReason) -> str:
@@ -377,6 +429,7 @@ def empty_decision_reason(
             unconfirmed=unconfirmed,
         ),
         summary=summary,
+        buy_pool=None,
     )
 
 
@@ -394,6 +447,7 @@ def build_decision_reason(
     unconfirmed: bool = False,
     paused: bool = False,
     summary: str | None = None,
+    data_quality: str | None = None,
 ) -> DecisionReason:
     """Assemble the structured reason from the recovered plan + factual gate outcomes.
 
@@ -420,17 +474,24 @@ def build_decision_reason(
     ) or bool(
         summary and "incomplete prices" in summary.lower()
     )
+    price_fallback = data_quality == "price_fallback"
 
-    is_paused = paused or not validation_ok or failsafe or incomplete_prices
+    is_paused = (
+        paused or not validation_ok or failsafe or incomplete_prices or price_fallback
+    )
     if plan is None:
+        pf_msg = PRICE_FALLBACK_SAFETY_MESSAGE if price_fallback else None
         return empty_decision_reason(
-            summary=summary or plan_reason or "No plan is available yet.",
-            validator_code=validator_code or ("incomplete_prices" if incomplete_prices else None),
-            failsafe=failsafe or incomplete_prices,
+            summary=pf_msg or summary or plan_reason or "No plan is available yet.",
+            validator_code=validator_code or (
+                PRICE_FALLBACK_SAFETY_CODE if price_fallback
+                else ("incomplete_prices" if incomplete_prices else None)
+            ),
+            failsafe=failsafe or incomplete_prices or price_fallback,
             dwell=dwell,
             cap_reached=cap_reached,
             unconfirmed=unconfirmed,
-            safety_message=validator_message,
+            safety_message=pf_msg or validator_message,
         )
 
     chosen = _chosen_window(plan, price_by)
@@ -461,10 +522,19 @@ def build_decision_reason(
     )
 
     if is_paused:
-        pause_code = validator_code or ("incomplete_prices" if incomplete_prices else None)
+        if price_fallback:
+            pause_code = PRICE_FALLBACK_SAFETY_CODE
+            pause_message = PRICE_FALLBACK_SAFETY_MESSAGE
+        else:
+            pause_code = validator_code or (
+                "incomplete_prices" if incomplete_prices else None
+            )
+            pause_message = (
+                validator_message or plan_reason or summary or "Plan paused safely."
+            )
         safety = SafetyConstraint(
             code=pause_code,
-            message=validator_message or plan_reason or summary or "Plan paused safely.",
+            message=pause_message,
             action=_ACTION_PAUSED,
         )
     else:
@@ -484,7 +554,19 @@ def build_decision_reason(
         cap_reached=cap_reached,
         unconfirmed=unconfirmed,
     )
-    text = _homeowner_summary(summary or plan_reason, chosen)
+    buy_pool_dict = plan.buy_pool.to_dict() if plan.buy_pool is not None else None
+    if (
+        not price_fallback
+        and plan.buy_pool is not None
+        and plan.buy_pool.state == "empty"
+        and plan.buy_pool.shortfall_kwh > 1e-9
+    ):
+        text = format_empty_buy_summary(plan.buy_pool)
+    else:
+        text = (
+            PRICE_FALLBACK_SAFETY_MESSAGE if price_fallback
+            else _homeowner_summary(summary or plan_reason, chosen)
+        )
     return DecisionReason(
         chosen_window=chosen,
         rejected_alternative=rejected,
@@ -493,4 +575,5 @@ def build_decision_reason(
         safety_constraint=safety,
         gates=gates,
         summary=text,
+        buy_pool=buy_pool_dict,
     )

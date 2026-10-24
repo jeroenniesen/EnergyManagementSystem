@@ -1,12 +1,34 @@
 import { useEffect, useRef, useState } from "react";
 
 import { AccountTokens } from "./AccountTokens";
+import {
+  ExportModelConfirmBanner,
+  exportModelFromSettingsValues,
+} from "./ExportModelConfirmBanner";
 import { AdminAccess } from "./Admin";
 import { AutomationBoundsCard } from "./AutomationBounds";
 import { apiFetch, clearToken } from "./auth";
 import { type CarModel, type CarsResp } from "./ev";
 import { HaWizard } from "./HaWizard.tsx";
-import { humanize } from "./labels";
+import {
+  draftNeedsControlConfirm,
+  restartPendingStatusLabel,
+  savedApplyStatusText,
+} from "./controlArming";
+import {
+  CONTROL_ARM_CONFIRM_CANCEL,
+  CONTROL_ARM_CONFIRM_LABEL,
+  CONTROL_ARM_CONFIRM_TITLE,
+  CONTROL_ARM_CONSEQUENCE,
+  CONTROL_SECTION_HINT,
+  DAILY_GRID_CHARGE_CAP,
+  HOME_NIGHT_RESERVE,
+  LIVE_WRITING_PANEL,
+  learnedNightKwhFromAdvice,
+  nightReserveComfortHours,
+  humanize,
+} from "./labels";
+import { liveWritingConditions, type LiveWritingStatus } from "./topbarChips";
 import { SectionIcon } from "./settingsIcons";
 
 /** Display labels for setting enum tokens that humanize() alone would mangle. */
@@ -79,6 +101,12 @@ type SolarConfidenceAdvice = {
   window_days?: number;
 };
 
+/** B-67 / #74 + #335 — read-only night-reserve advice next to configured values (never writes). */
+type ReserveAdvicePayload = {
+  current_night_reserve_kwh: number;
+  night_demand_kwh: number | null;
+};
+
 // I3 "Apply & restart": server-computed capability, surfaced on GET /api/auth/me (I2) alongside
 // `restart_pending` — never inferred client-side. `available` = the process is supervised AND this
 // caller is an interactive ADMIN session (an access token can never restart, even an admin one).
@@ -146,11 +174,7 @@ const GROUP_HINT: Record<string, string> = {
     "Link washers and dryers from Home Assistant (read-only). URL and token need Apply & restart; "
     + "which appliances you select apply as soon as you save.",
   site: "Location & array — these drive the solar forecast.",
-  control:
-    "Safety limits and arming. Set your main fuse here — until confirmed, System shows a Check "
-    + "and EMS keeps the conservative 1×25 A ceiling. Watch only / Let the system control need "
-    + "Apply & restart — saved ≠ live until then. config.yaml dry_run / mock still always wins "
-    + "over these toggles. Other control knobs apply as soon as you save (active now).",
+  control: CONTROL_SECTION_HINT,
   planner: "Arbitrage maths — these apply as soon as you save; the next plan uses them (active now).",
   ai: "Optional. Off by default. Turn on to get natural-language explanations and the chat — a tiny, "
     + "redacted summary is sent to MiniMax; never your address, history or tokens.",
@@ -291,9 +315,15 @@ function Field({
   onChange: (v: number | boolean | string) => void;
 }) {
   const id = `set-${field.key}`;
+  const labelText = field.key === "planner.max_daily_grid_charge_kwh"
+    ? DAILY_GRID_CHARGE_CAP.label
+    : field.label;
+  const helpText = field.key === "planner.max_daily_grid_charge_kwh"
+    ? DAILY_GRID_CHARGE_CAP.help
+    : field.help;
   const label = (
     <label htmlFor={id} className="field-label">
-      {field.label}
+      {labelText}
       {field.unit && <span className="field-unit"> ({field.unit})</span>}
       {field.applies === "restart" ? (
         <span
@@ -305,7 +335,7 @@ function Field({
               : "Takes effect after Apply & restart — saved ≠ live yet"
           }
         >
-          {restartPending ? "restart_pending" : "needs restart"}
+          {restartPendingStatusLabel(Boolean(restartPending))}
         </span>
       ) : (
         <span
@@ -335,7 +365,7 @@ function Field({
             onChange={(e) => onChange(e.target.checked)}
           />
         </div>
-        {field.help && <FieldHelp help={field.help} />}
+        {helpText && <FieldHelp help={helpText} />}
         {error && <p className="field-err" data-testid={`err-${field.key}`}>{error}</p>}
       </div>
     );
@@ -376,7 +406,7 @@ function Field({
     <div className={`field${error ? " field-error" : ""}`} data-testid={`field-${field.key}`}>
       {label}
       {control}
-      {field.help && <FieldHelp help={field.help} />}
+      {helpText && <FieldHelp help={helpText} />}
       {error && (
         <p className="field-err" data-testid={`err-${field.key}`}>{error}</p>
       )}
@@ -390,6 +420,33 @@ function Field({
 // uses — it makes the section dirty and raises the existing sticky save bar, so Save is the one
 // confirm and Discard cancels it, exactly like any other settings edit (audit-logged server-side,
 // reversible, never automatic).
+/** #335 — learned vs configured night reserve + comfort-hours example (advice-only). */
+export function NightReserveSettingsHint({
+  nightReserveKwh,
+  overnightLoadKwh,
+  learnedKwh,
+}: {
+  nightReserveKwh: number;
+  overnightLoadKwh: number;
+  learnedKwh: number | null;
+}) {
+  const hours = nightReserveComfortHours(nightReserveKwh, overnightLoadKwh);
+  return (
+    <div className="night-reserve-hints" data-testid="night-reserve-hints">
+      <p className="advisor-hint" data-testid="night-reserve-learned">
+        {learnedKwh != null
+          ? `${HOME_NIGHT_RESERVE.learnedTonight(learnedKwh)} · ${HOME_NIGHT_RESERVE.configuredAside(nightReserveKwh)}`
+          : HOME_NIGHT_RESERVE.learnedUnavailable}
+      </p>
+      {hours != null && (
+        <p className="advisor-hint" data-testid="night-reserve-example">
+          {HOME_NIGHT_RESERVE.exampleHours(nightReserveKwh, hours)}
+        </p>
+      )}
+    </div>
+  );
+}
+
 function SolarConfidenceHint({
   advice,
   currentPct,
@@ -452,6 +509,55 @@ function SolarConfidenceHint({
   );
 }
 
+/** #314 — read-only checklist. Links only change which section is open; they never POST. */
+function LiveWritingPanel({
+  values,
+  status,
+  onOpen,
+}: {
+  values: Record<string, unknown>;
+  status: LiveWritingStatus | null;
+  onOpen: (section: string, highlight: string | null) => void;
+}) {
+  const rows = liveWritingConditions(values, status);
+  return (
+    <section
+      className="settings-access-bar"
+      data-testid="live-writing-panel"
+      aria-label={LIVE_WRITING_PANEL.title}
+    >
+      <h2 className="settings-group-title">{LIVE_WRITING_PANEL.title}</h2>
+      <p className="settings-group-hint">{LIVE_WRITING_PANEL.intro}</p>
+      <ul className="admin-list">
+        {rows.map((row) => (
+          <li
+            key={row.id}
+            className="admin-row"
+            data-testid={`live-writing-row-${row.id}`}
+            data-ok={row.ok ? "yes" : "no"}
+          >
+            <span className="admin-row-main">
+              <span aria-hidden="true">{row.ok ? "✓" : "✗"}</span>
+              <span className="sr-only">{row.ok ? LIVE_WRITING_PANEL.met : LIVE_WRITING_PANEL.unmet}</span>
+              <span className="admin-row-name">{row.label}</span>
+              <span>{row.detail}</span>
+            </span>
+            <button
+              type="button"
+              className="btn-ghost"
+              data-testid={`live-writing-link-${row.id}`}
+              aria-label={`${LIVE_WRITING_PANEL.openSection}: ${row.label}`}
+              onClick={() => onOpen(row.section, row.highlight)}
+            >
+              {LIVE_WRITING_PANEL.openSection}
+            </button>
+          </li>
+        ))}
+      </ul>
+    </section>
+  );
+}
+
 export function Settings({
   onSaved,
   initialSection,
@@ -479,6 +585,7 @@ export function Settings({
   identityAuth?: boolean;
 } = {}) {
   const [schema, setSchema] = useState<SettingField[] | null>(null);
+  const [liveStatus, setLiveStatus] = useState<LiveWritingStatus | null>(null);
   const [values, setValues] = useState<Values>({});
   const [edited, setEdited] = useState<Values>({});
   const [errors, setErrors] = useState<Record<string, string>>({});
@@ -489,6 +596,7 @@ export function Settings({
   const [auth, setAuth] = useState<{ required: boolean; authenticated: boolean } | null>(null);
   const [impact, setImpact] = useState<Impact | null>(null);
   const [solarAdvice, setSolarAdvice] = useState<SolarConfidenceAdvice | null>(null);
+  const [reserveAdvice, setReserveAdvice] = useState<ReserveAdvicePayload | null>(null);
   // True right after the solar-confidence hint's "Apply" is tapped, until: the field is edited
   // manually again, the pending edit is discarded, or it's saved (B-60) — see SolarConfidenceHint.
   const [solarAdviceApplied, setSolarAdviceApplied] = useState(false);
@@ -504,6 +612,8 @@ export function Settings({
   const [restartPending, setRestartPending] = useState<Set<string>>(new Set());
   const [restartPendingKeys, setRestartPendingKeys] = useState<Set<string>>(new Set());
   const [lastSaveRestart, setLastSaveRestart] = useState(false);
+  // #364: extra confirm before a draft that arms live control is posted.
+  const [armConfirming, setArmConfirming] = useState(false);
   // Mobile drill-in (≤700px): start on the section list, then drill into one section.
   const [mobileList, setMobileList] = useState(true);
 
@@ -653,6 +763,24 @@ export function Settings({
     };
   }, []);
 
+  // #314: read-only live-writing checklist. GET /api/status only — never writes control.*.
+  useEffect(() => {
+    let alive = true;
+    (async () => {
+      try {
+        const r = await apiFetch("/api/status");
+        if (!r.ok) return;
+        const body = (await r.json()) as LiveWritingStatus;
+        if (alive) setLiveStatus(body);
+      } catch {
+        /* unknown status → checklist stays fail-safe ✗ */
+      }
+    })();
+    return () => {
+      alive = false;
+    };
+  }, []);
+
   // Deep-link on mount: open the requested section straight away (no extra click), reusing the
   // exact openSection() a sidebar click would call — same mobileList/highlight behaviour. Runs
   // once; later navigation is owned by the user's own clicks, not this prop.
@@ -673,6 +801,31 @@ export function Settings({
         if (alive) setSolarAdvice(b.advice ?? null);
       } catch {
         /* best-effort — leave the hint hidden */
+      }
+    })();
+    return () => {
+      alive = false;
+    };
+  }, []);
+
+  useEffect(() => {
+    let alive = true;
+    (async () => {
+      try {
+        const r = await apiFetch("/api/advisor/reserve");
+        if (!r.ok) return;
+        const b: { advice?: ReserveAdvicePayload | null } = await r.json();
+        const a = b.advice;
+        if (
+          !alive ||
+          !a ||
+          typeof a.current_night_reserve_kwh !== "number"
+        ) {
+          return;
+        }
+        setReserveAdvice(a);
+      } catch {
+        /* best-effort — hints stay hidden */
       }
     })();
     return () => {
@@ -718,6 +871,11 @@ export function Settings({
   const restartChanged = (schema ?? []).some(
     (f) => f.applies === "restart" && f.key in changed,
   );
+  const armsLive = draftNeedsControlConfirm(values, edited);
+  const showArmConfirm = armsLive && armConfirming;
+  useEffect(() => {
+    if (!armsLive) setArmConfirming(false);
+  }, [armsLive]);
 
   // Live "impact on the algorithm": when planner economics are edited, recompute the plan with the
   // proposed values (debounced, read-only) and show the before/after so the effect is visible.
@@ -804,6 +962,10 @@ export function Settings({
   }
 
   async function save() {
+    if (draftNeedsControlConfirm(values, edited) && !armConfirming) {
+      setArmConfirming(true);
+      return;
+    }
     setStatus("saving");
     setErrors({});
     const restartGroups = (schema ?? [])
@@ -835,6 +997,7 @@ export function Settings({
       setValues(b.values);
       setEdited(b.values);
       setSolarAdviceApplied(false);
+      setArmConfirming(false);
       setStatus("saved");
       setBoundsRefreshKey((k) => k + 1);
       if (restartGroups.length) {
@@ -859,6 +1022,7 @@ export function Settings({
     setErrors({});
     setStatus("idle");
     setSolarAdviceApplied(false);
+    setArmConfirming(false);
   }
 
   if (loadError) {
@@ -933,6 +1097,22 @@ export function Settings({
             Not confirmed yet — EMS is using the conservative 1×25 A (5750 W) default until you
             choose your real main fuse. Three-phase homes are usually 3×25 or 3×35.
           </p>
+        )}
+        {f.key === "battery.min_reserve_soc" && (
+          <p className="advisor-hint" data-testid="min-reserve-vs-night-hint">
+            {HOME_NIGHT_RESERVE.minReserveExplainer}
+          </p>
+        )}
+        {f.key === "battery.night_reserve_kwh" && (
+          <NightReserveSettingsHint
+            nightReserveKwh={Number(edited[f.key] ?? f.default)}
+            overnightLoadKwh={Number(
+              edited["battery.overnight_load_kwh"] ??
+                schema?.find((x) => x.key === "battery.overnight_load_kwh")?.default ??
+                6,
+            )}
+            learnedKwh={learnedNightKwhFromAdvice(reserveAdvice?.night_demand_kwh)}
+          />
         )}
         {f.key === "planner.solar_confidence" && solarAdvice && (
           <SolarConfidenceHint
@@ -1010,6 +1190,24 @@ export function Settings({
           GET /api/auth/me) — see AccountTokens.tsx. */}
       {auth?.authenticated && <AccountTokens />}
 
+      <ExportModelConfirmBanner
+        values={exportModelFromSettingsValues(values)}
+        onSaved={(patch) => {
+          const next: Values = {
+            ...values,
+            ...(patch.exportPriceModel !== undefined
+              ? { "prices.export_price_model": patch.exportPriceModel }
+              : {}),
+            ...(patch.exportModelConfirmed !== undefined
+              ? { "prices.export_model_confirmed": patch.exportModelConfirmed }
+              : {}),
+          };
+          setValues(next);
+          setEdited(next);
+          onSaved?.(next);
+        }}
+      />
+
       {/* I3 "Apply & restart" (spec §B.4): server-computed capability + pending flag — never
           client-inferred. Shown only when BOTH are true; an unsupervised-but-pending instance gets
           a manual hint instead (no button, since a self-restart with no supervisor would just take
@@ -1052,7 +1250,7 @@ export function Settings({
               <div className="override-controls">
                 <button
                   type="button"
-                  className="btn-primary"
+                  className="btn-danger"
                   data-testid="restart-confirm"
                   disabled={restartPhase === "requesting"}
                   onClick={requestRestart}
@@ -1104,6 +1302,12 @@ export function Settings({
           </p>
         </div>
       )}
+
+      <LiveWritingPanel
+        values={values}
+        status={liveStatus}
+        onOpen={(section, highlight) => openSection(section, highlight)}
+      />
 
       <div className="settings-panes">
         <aside className="settings-sidebar">
@@ -1293,8 +1497,19 @@ export function Settings({
       {showSaveBar && (
         <div className="settings-savebar" data-testid="settings-savebar">
           <div className="settings-savebar-inner">
+            {armsLive && (
+              <p
+                id="control-arm-consequence"
+                className="override-consequence settings-arm-consequence"
+                data-testid="control-arm-consequence"
+                role="status"
+                aria-live="polite"
+              >
+                {CONTROL_ARM_CONSEQUENCE}
+              </p>
+            )}
             <div className="settings-savebar-msg">
-              {dirty && (
+              {dirty && !showArmConfirm && (
                 <span className="settings-dirty" data-testid="settings-dirty">
                   {changeCount} unsaved change{changeCount === 1 ? "" : "s"}
                   {restartChanged ? " · some apply on restart" : ""}
@@ -1302,25 +1517,67 @@ export function Settings({
               )}
               {status === "saved" && (
                 <span className="settings-msg-ok" data-testid="settings-saved">
-                  {lastSaveRestart
-                    ? "Saved — restart_pending (boot still runs old values until Apply & restart)"
-                    : "Saved — active now"}
+                  {savedApplyStatusText(lastSaveRestart)}
                 </span>
               )}
               {status === "error" && errors._ && (
                 <span className="settings-msg-err">{errors._}</span>
               )}
             </div>
-            <div className="settings-savebar-actions">
-              <button className="btn-ghost" data-testid="settings-discard" onClick={reset}
-                disabled={!dirty}>
-                Discard
-              </button>
-              <button className="btn-primary" data-testid="settings-save" onClick={save}
-                disabled={!dirty || status === "saving"}>
-                {status === "saving" ? "Saving…" : "Save"}
-              </button>
-            </div>
+            {showArmConfirm ? (
+              <div
+                className="override-confirm settings-arm-confirm"
+                data-testid="control-arm-confirm"
+                role="dialog"
+                aria-labelledby="control-arm-confirm-title"
+              >
+                <p className="override-confirm-title" id="control-arm-confirm-title">
+                  {CONTROL_ARM_CONFIRM_TITLE}
+                </p>
+                <div className="override-controls">
+                  <button
+                    type="button"
+                    className="btn-primary"
+                    data-testid="control-arm-confirm-save"
+                    aria-describedby="control-arm-consequence"
+                    disabled={status === "saving"}
+                    onClick={() => void save()}
+                  >
+                    {status === "saving" ? "Saving…" : CONTROL_ARM_CONFIRM_LABEL}
+                  </button>
+                  <button
+                    type="button"
+                    className="btn-ghost"
+                    data-testid="control-arm-cancel"
+                    disabled={status === "saving"}
+                    onClick={() => setArmConfirming(false)}
+                  >
+                    {CONTROL_ARM_CONFIRM_CANCEL}
+                  </button>
+                </div>
+              </div>
+            ) : (
+              <div className="settings-savebar-actions">
+                <button className="btn-ghost" data-testid="settings-discard" onClick={reset}
+                  disabled={!dirty}>
+                  Discard
+                </button>
+                <button
+                  className="btn-primary"
+                  data-testid="settings-save"
+                  disabled={!dirty || status === "saving"}
+                  onClick={() => {
+                    if (armsLive) {
+                      setArmConfirming(true);
+                      return;
+                    }
+                    void save();
+                  }}
+                >
+                  {status === "saving" ? "Saving…" : "Save"}
+                </button>
+              </div>
+            )}
           </div>
         </div>
       )}
