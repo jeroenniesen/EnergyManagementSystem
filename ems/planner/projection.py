@@ -184,6 +184,7 @@ def mark_floor_holds(
         target_soc=plan.target_soc, deadline=plan.deadline, id=plan.id,
         version=plan.version, input_snapshot=plan.input_snapshot,
         planner_mode=plan.planner_mode, buy_pool=plan.buy_pool,
+        solar_basis=plan.solar_basis,
     )
 
 

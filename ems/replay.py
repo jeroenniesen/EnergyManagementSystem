@@ -114,6 +114,8 @@ class ReplayConfig:
     # #317 hard daily grid-buy cap (kWh). Replay starts each day at zero already-bought.
     max_daily_grid_charge_kwh: float = 12.0
     max_buy_eur_per_kwh: float = 0.0
+    commit_solar_basis: str = "auto"  # #330 auto|p50; unknown solar stays on P50
+    forecast_real_p10: bool = False  # true only when the delivered source has real p10
     # Locale (season choice + local-day bucketing). Default = the site tz.
     tz: ZoneInfo = ZoneInfo("Europe/Amsterdam")
 
@@ -147,6 +149,8 @@ class ReplayConfig:
             export_fee_eur_per_kwh=s.get("grid_fees.export_fee_eur_per_kwh", 0.0),
             max_daily_grid_charge_kwh=float(s.get("planner.max_daily_grid_charge_kwh", 12.0)),
             max_buy_eur_per_kwh=float(s.get("planner.max_buy_eur_per_kwh", 0.0)),
+            commit_solar_basis=str(s.get("planner.commit_solar_basis", "auto")),
+            forecast_real_p10=False,
             tz=tz or ZoneInfo("Europe/Amsterdam"),
         )
 
@@ -178,6 +182,8 @@ def _adaptive_cfg(cfg: ReplayConfig) -> AdaptiveConfig:
         max_daily_grid_charge_kwh=cfg.max_daily_grid_charge_kwh,
         max_buy_eur_per_kwh=cfg.max_buy_eur_per_kwh,
         site_tz=cfg.tz,
+        commit_solar_basis=cfg.commit_solar_basis,
+        forecast_real_p10=cfg.forecast_real_p10,
     )
 
 
@@ -199,6 +205,8 @@ def _summer_cfg(cfg: ReplayConfig) -> SummerConfig:
         negative_price_soak=cfg.negative_price_soak,
         max_daily_grid_charge_kwh=cfg.max_daily_grid_charge_kwh,
         site_tz=cfg.tz,
+        commit_solar_basis=cfg.commit_solar_basis,
+        forecast_real_p10=cfg.forecast_real_p10,
     )
 
 

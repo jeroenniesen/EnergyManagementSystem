@@ -8,6 +8,7 @@ import type {
   StorySlot,
   StoryTotals,
 } from "./EnergyStory";
+import { COMMIT_SOLAR_P10_LABEL } from "./labels";
 import { PlanStory } from "./PlanStory";
 
 const BASE = Date.parse("2026-07-18T06:00:00Z");
@@ -373,5 +374,29 @@ describe("PlanStory rendering", () => {
     expect(html).toContain("Prijs €-0.20–€-0.10");
     expect(html).not.toContain("Prijs €-0.20–€0.00");
     expect(html).not.toContain("Price €-0.20–€0.00");
+  });
+
+  test("#330 shows the P10 sizing label only when solarBasis is p10", () => {
+    const story = storyData([], [storySlot(0)], 0);
+    const onP10 = renderToStaticMarkup(createElement(PlanStory, {
+      story,
+      solarBasis: "p10",
+    }));
+    const onP50 = renderToStaticMarkup(createElement(PlanStory, {
+      story,
+      solarBasis: "p50",
+    }));
+    const hidden = renderToStaticMarkup(createElement(PlanStory, {
+      story,
+      solarBasis: null,
+    }));
+    const omitted = renderToStaticMarkup(createElement(PlanStory, { story }));
+
+    expect(onP10).toContain(COMMIT_SOLAR_P10_LABEL);
+    expect(onP10).toContain('data-testid="plan-story-solar-basis"');
+    expect(onP50).not.toContain(COMMIT_SOLAR_P10_LABEL);
+    expect(onP50).not.toContain('data-testid="plan-story-solar-basis"');
+    expect(hidden).not.toContain(COMMIT_SOLAR_P10_LABEL);
+    expect(omitted).not.toContain(COMMIT_SOLAR_P10_LABEL);
   });
 });

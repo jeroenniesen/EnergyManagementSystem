@@ -32,6 +32,42 @@ class ForecastSlot:
     p90_w: float
 
 
+def committed_solar_w(
+    p50_w: float,
+    p10_w: float,
+    confidence: float,
+    *,
+    commit_solar_basis: str = "auto",
+    forecast_real_p10: bool = False,
+) -> float:
+    """Watts of solar counted when sizing a committed grid charge (#330 / F-18).
+
+    ``auto`` and a delivered source with real P10 → ``min(confidence × P50, P10)``,
+    which is never above today's confidence × P50. Every other case, including an
+    unknown forecast, is exactly ``confidence × P50``.
+    """
+    scaled = confidence * p50_w
+    if commit_solar_basis == "auto" and forecast_real_p10:
+        return min(scaled, max(0.0, p10_w))
+    return scaled
+
+
+def commitment_solar_basis(
+    commit_solar_basis: str = "auto",
+    forecast_real_p10: bool = False,
+) -> str | None:
+    """``p10`` when auto used a real P10, ``p50`` when that mode is explicit, else None.
+
+    None keeps plans that did not choose a P10 path identical to the pre-#330 default
+    (the stale-meter golden compares Plan fields, and this field defaults to None).
+    """
+    if commit_solar_basis == "auto" and forecast_real_p10:
+        return "p10"
+    if commit_solar_basis == "p50":
+        return "p50"
+    return None
+
+
 def _utcnow() -> datetime:
     return datetime.now(UTC)
 

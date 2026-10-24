@@ -28,6 +28,7 @@ from ems.sources.registry import (
     AdapterConfigField,
     AdapterMetadata,
     get_builder,
+    get_metadata,
     register_adapter,
     registered_adapters,
 )
@@ -212,6 +213,58 @@ def _build_solcast(
         cache_store=cache_store,
         **_optional_transport_kw(http_get=http_get, clock=clock, horizon_slots=horizon_slots),
     )
+
+
+def _delivered_forecast_provider_key(source: object | None) -> str | None:
+    """Registry name of the adapter that actually produced the latest slots.
+
+    Solcast keeps its class after ``fallback_on_failure`` but renames ``provider`` /
+    ``source_label`` to the fallback. Unknown sources return None (treat as no real P10).
+    """
+    if source is None:
+        return None
+    label = str(getattr(source, "source_label", "") or "").strip().lower()
+    provider = str(getattr(source, "provider", "") or "").strip().lower()
+    cls = type(source).__name__
+    if "fallback" in label or provider == "fallback":
+        if "model" in label or cls == "MockSolarForecastSource":
+            return "mock"
+        if (
+            "forecast.solar" in label
+            or "forecast_solar" in label
+            or provider == "forecast_solar"
+            or cls == "ForecastSolarSource"
+        ):
+            return "forecast_solar"
+        return None
+    if provider == "solcast" or (cls == "SolcastSource" and "solcast" in label):
+        return "solcast"
+    if (
+        cls == "ForecastSolarSource"
+        or provider == "forecast_solar"
+        or "forecast.solar" in label
+    ):
+        return "forecast_solar"
+    if cls == "MockSolarForecastSource" or provider == "mock":
+        return "mock"
+    return None
+
+
+def delivered_source_has_real_p10(source: object | None) -> bool:
+    """True when the delivered source has capability ``p10`` and not ``synthetic``.
+
+    Forecast.Solar (derived bands) and the built-in model (``synthetic``) are false.
+    After Solcast ``fallback_on_failure`` the delivered name is the fallback, so ``auto``
+    stays on confidence × P50. A missing or unknown source is false.
+    """
+    key = _delivered_forecast_provider_key(source)
+    if key is None:
+        return False
+    meta = get_metadata(FORECAST_DOMAIN, key)
+    if meta is None:
+        return False
+    caps = meta.capabilities
+    return "p10" in caps and "synthetic" not in caps
 
 
 def build_solar_forecast(
