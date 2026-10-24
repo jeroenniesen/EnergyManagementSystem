@@ -3,7 +3,9 @@
 // #manage/system, #manage/audit), the LEGACY redirects (#settings/#system/#audit — old bookmarks
 // and deep-links must keep working), the unknown-hash fallback, sub-tab switching, and that the
 // Settings section deep-link mechanics survive when Settings is mounted inside Manage.
-import { expect, test, type Page } from "@playwright/test";
+import { expect, test, type Page, type Route } from "@playwright/test";
+
+import { isStaleRouteError } from "./stale-route-helper";
 
 const CORE_FAIL = {
   status: 500,
@@ -12,10 +14,11 @@ const CORE_FAIL = {
 };
 
 async function mockCoreReachability(page: Page, reachable: { value: boolean }) {
-  const handler = async (route: import("@playwright/test").Route) => {
+  // Passthrough must not call route.fetch(): that holds a body navigation or
+  // teardown can dispose ("Fetch response has been disposed" / "route.fetch: Test ended").
+  const handler = async (route: Route) => {
     if (reachable.value) {
-      const response = await route.fetch();
-      await route.fulfill({ response });
+      await route.continue();
       return;
     }
     await route.fulfill(CORE_FAIL);
@@ -23,6 +26,16 @@ async function mockCoreReachability(page: Page, reachable: { value: boolean }) {
   await page.route("**/api/dashboard", handler);
   await page.route("**/api/status", handler);
 }
+
+// Drop handlers before the page/context closes, so nothing is still routed — and no
+// in-flight fulfill/continue can reject into the result — after the test ends (#401).
+test.afterEach(async ({ page }) => {
+  try {
+    await page.unrouteAll({ behavior: "ignoreErrors" });
+  } catch (error) {
+    if (!isStaleRouteError(error)) throw error;
+  }
+});
 
 test.describe("Manage view + hash routing", () => {
   test("legacy #settings redirects to Manage → Settings", async ({ page }) => {
