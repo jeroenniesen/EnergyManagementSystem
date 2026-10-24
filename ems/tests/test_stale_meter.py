@@ -9,8 +9,9 @@ from pathlib import Path
 from ems.domain import BatteryIntent
 from ems.planner.adaptive import AdaptiveConfig
 from ems.planner.base import PlannerRequest, RuleBasedPlanner
-from ems.planner.reason import STALE_METER_PLAN_REASON, apply_stale_meter_caution
-from ems.planner.rule_based import PlannerConfig, plan_rule_based
+from ems.planner.reason import STALE_METER_PLAN_REASON
+from ems.planner.recovery import recover_if_needed
+from ems.planner.rule_based import PlannerConfig
 from ems.planner.schedule import SLOT
 from ems.planner.summer import SummerConfig
 from ems.sources.forecast import ForecastSlot
@@ -40,6 +41,37 @@ def _adaptive_fixture():
     return req, prices, load
 
 
+def _winter_fixture():
+    prices = [PriceSlot(T0 + i * SLOT, e) for i, e in enumerate([0.08] * 4 + [0.45] * 4)]
+    fc = [ForecastSlot(T0 + i * SLOT, 0, 0, 0) for i in range(8)]
+    load = {T0 + i * SLOT: (200.0 if i < 4 else 3500.0) for i in range(8)}
+    req = PlannerRequest(
+        now=T0,
+        prices=prices,
+        forecast=fc,
+        soc_pct=12.0,
+        strategy="winter",
+        winter_cfg=PlannerConfig(charge_slots=4, discharge_slots=4),
+        summer_cfg=SummerConfig(usable_kwh=10.0, target_soc_pct=80.0),
+        load_w_by=load,
+        adaptive_cfg=AdaptiveConfig(
+            usable_kwh=10.0, reserve_soc_pct=10.0, max_charge_w=4000.0,
+        ),
+    )
+    return req, prices
+
+
+def _assert_grid_charge_lte_baseline(stale, baseline) -> None:
+    assert _grid_charge_kwh(stale) <= _grid_charge_kwh(baseline) + 1e-9
+    for s in stale.slots:
+        if s.intent is not BatteryIntent.GRID_CHARGE_TO_TARGET:
+            continue
+        match = next(b for b in baseline.slots if b.start == s.start)
+        if match.intent is BatteryIntent.GRID_CHARGE_TO_TARGET:
+            assert (s.target_kwh or 0.0) <= (match.target_kwh or 0.0) + 1e-9
+            assert (s.power_w or 0.0) <= (match.power_w or 0.0) + 1e-9
+
+
 def _grid_charge_kwh(plan) -> float:
     total = 0.0
     for s in plan.slots:
@@ -58,9 +90,11 @@ def test_ev_stale_raises_floor_and_trims_discharge():
     stale_req = replace(req, ev_stale=True)
     stale = RuleBasedPlanner().plan(stale_req)
     assert any(STALE_METER_PLAN_REASON in (s.reason or "") for s in stale.slots)
-    assert all(
-        (s.floor_soc or 0.0) >= 15.0 - 1e-9 for s in stale.slots if s.floor_soc is not None
-    )
+    assert all(s.floor_soc == 15.0 for s in stale.slots if s.floor_soc is not None)
+    peak_starts = {T0 + i * SLOT for i in range(4, 8)}
+    for s in stale.slots:
+        if s.start in peak_starts:
+            assert s.intent is BatteryIntent.HOLD_RESERVE
     base_discharge = {
         s.start for s in baseline.slots if s.intent is BatteryIntent.DISCHARGE_FOR_LOAD
     }
@@ -68,7 +102,7 @@ def test_ev_stale_raises_floor_and_trims_discharge():
         s.start for s in stale.slots if s.intent is BatteryIntent.DISCHARGE_FOR_LOAD
     }
     assert stale_discharge <= base_discharge
-    assert _grid_charge_kwh(stale) <= _grid_charge_kwh(baseline) + 1e-9
+    _assert_grid_charge_lte_baseline(stale, baseline)
 
 
 def test_plan_byte_identical_without_stale_golden():
@@ -85,21 +119,27 @@ def test_plan_byte_identical_when_stale_signals_none():
 
 
 def test_grid_stale_never_increases_grid_charge_vs_baseline():
-    prices = [PriceSlot(T0 + i * SLOT, e) for i, e in enumerate([0.08] * 4 + [0.45] * 4)]
-    load = {T0 + i * SLOT: (200.0 if i < 4 else 3500.0) for i in range(8)}
-    cfg = PlannerConfig(charge_slots=4, discharge_slots=4)
-    baseline = plan_rule_based(
-        prices, T0, cfg, soc_pct=12.0, load_w_by=load, usable_kwh=10.0,
-        reserve_soc_pct=10.0, max_charge_w=4000.0,
+    req, _ = _winter_fixture()
+    baseline = RuleBasedPlanner().plan(req)
+    for flags in ({"ev_stale": True}, {"grid_stale": True}):
+        stale = RuleBasedPlanner().plan(replace(req, **flags))
+        _assert_grid_charge_lte_baseline(stale, baseline)
+
+
+def test_stale_never_increases_grid_charge_after_recovery():
+    req, prices = _winter_fixture()
+    now = T0 + 3 * SLOT
+    recover_kw = dict(
+        soc_pct=12.0,
+        prices=prices,
+        usable_kwh=10.0,
+        reserve_soc_pct=10.0,
+        max_charge_w=4000.0,
+        round_trip_efficiency=0.90,
     )
-    stale = apply_stale_meter_caution(
-        baseline, base_reserve_soc_pct=10.0, buffer_pp=5.0,
-    )
-    assert _grid_charge_kwh(stale) <= _grid_charge_kwh(baseline) + 1e-9
-    for s in stale.slots:
-        if s.intent is not BatteryIntent.GRID_CHARGE_TO_TARGET:
-            continue
-        match = next(b for b in baseline.slots if b.start == s.start)
-        if match.intent is BatteryIntent.GRID_CHARGE_TO_TARGET:
-            assert (s.target_kwh or 0.0) <= (match.target_kwh or 0.0) + 1e-9
-            assert (s.power_w or 0.0) <= (match.power_w or 0.0) + 1e-9
+    baseline = RuleBasedPlanner().plan(req)
+    base_after, _, _ = recover_if_needed(baseline, now, **recover_kw)
+    for flags in ({"ev_stale": True}, {"grid_stale": True}):
+        stale = RuleBasedPlanner().plan(replace(req, **flags))
+        stale_after, _, _ = recover_if_needed(stale, now, **recover_kw)
+        _assert_grid_charge_lte_baseline(stale_after, base_after)

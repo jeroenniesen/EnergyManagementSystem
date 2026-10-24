@@ -17,6 +17,7 @@ from typing import Any
 
 from ems.domain import BatteryIntent
 from ems.planner.buy_pool import format_empty_buy_summary
+from ems.planner.rule_based import stale_discharge_floor_soc
 from ems.planner.schedule import Plan, PlanSlot
 from ems.savings import estimate_daily_savings_eur
 
@@ -601,7 +602,11 @@ def is_aggressive_discharge_slot(slot: PlanSlot) -> bool:
     if slot.intent is not _DISCHARGE:
         return False
     low = (slot.reason or "").lower()
-    return low.startswith("discharge:") or low.startswith("shave the €")
+    return (
+        low.startswith("discharge:")
+        or low.startswith("shave the €")
+        or low.startswith("self-consumption:")
+    )
 
 
 def apply_stale_meter_caution(
@@ -611,7 +616,9 @@ def apply_stale_meter_caution(
     buffer_pp: float,
 ) -> Plan:
     """Raise the discharge floor and drop export/aggressive discharge — never add grid charge."""
-    effective_floor = min(100.0, max(0.0, float(base_reserve_soc_pct) + float(buffer_pp)))
+    effective_floor = stale_discharge_floor_soc(
+        base_reserve_soc_pct, buffer_pp=buffer_pp,
+    )
     baseline_discharge = {
         s.start for s in plan.slots if s.intent is _DISCHARGE or s.intent is _EXPORT
     }
@@ -625,8 +632,10 @@ def apply_stale_meter_caution(
         if intent is _EXPORT or (
             intent is _DISCHARGE and is_aggressive_discharge_slot(s)
         ):
-            intent = _SELF
-            reason = stale_meter_reason_prefix("self-consumption while meter data is uncertain")
+            intent = _HOLD
+            reason = stale_meter_reason_prefix(
+                "hold reserve while meter data is uncertain",
+            )
         out.append(replace(
             s, intent=intent, reason=reason, floor_soc=floor_soc,
             target_soc=s.target_soc, target_kwh=s.target_kwh, power_w=s.power_w,
