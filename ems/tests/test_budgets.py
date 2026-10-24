@@ -11,11 +11,16 @@ from ems.domain import BatteryIntent
 from ems.planner.budgets import (
     UNKNOWN_COUNTER_REASON,
     cap_reason,
+    clamp_cycle_budget,
     clamp_grid_charge,
+    cycle_budget_reason,
+    equivalent_full_cycles,
     grid_charge_kwh_from_samples,
     local_day_bounds,
+    plan_day_efc,
     planned_grid_charge_kwh,
     read_already_bought_today,
+    read_cycle_throughput_today,
 )
 from ems.planner.buy_pool import BuyPoolInfo
 from ems.planner.schedule import SLOT, Plan, PlanSlot
@@ -452,3 +457,159 @@ def test_sql_gap_uses_plan_history_intent(tmp_path):
     conn.close()
     now = datetime(2026, 6, 15, 2, 0, tzinfo=AMS)
     assert read_already_bought_today(str(db), now, AMS, planned_charge_w=4000.0) == 2.0
+
+
+def _cycle_plan(n: int, *, start: datetime, intent=BatteryIntent.GRID_CHARGE_TO_TARGET) -> Plan:
+    slots = tuple(
+        PlanSlot(
+            start + i * SLOT, intent, "move",
+            target_kwh=1.0, power_w=4000.0,
+        )
+        for i in range(n)
+    )
+    return Plan(created_at=start, slots=slots, strategy="winter")
+
+
+def test_equivalent_full_cycle_matches_the_definition():
+    assert equivalent_full_cycles(15.0, 15.0, 10.0) == pytest.approx(1.5)
+    assert cycle_budget_reason(1.5) == "Cycle-budget op (1,5 EFC)"
+    assert cycle_budget_reason(2) == "Cycle-budget op (2 EFC)"
+
+
+def test_cycle_budget_blocks_new_charge_and_export_at_one_and_a_half():
+    """After >= 1.5 EFC on this local day, new charge and export are refused."""
+    t0 = datetime(2026, 6, 15, 0, 0, tzinfo=AMS)
+    charge = _cycle_plan(4, start=t0)
+    export = _cycle_plan(4, start=t0, intent=BatteryIntent.EXPORT_FOR_PROFIT)
+    # 30 kWh charged on a 10 kWh pack is exactly 1.5 EFC.
+    for incoming in (charge, export):
+        out = clamp_cycle_budget(
+            incoming, 30.0, 0.0, 1.5, 10.0, round_trip_efficiency=1.0, tz=AMS,
+        )
+        assert not any(
+            s.intent in (
+                BatteryIntent.GRID_CHARGE_TO_TARGET, BatteryIntent.EXPORT_FOR_PROFIT,
+            )
+            for s in out.slots
+        )
+        assert all(s.reason == "Cycle-budget op (1,5 EFC)" for s in out.slots)
+
+
+def test_changing_max_cycles_moves_the_limit():
+    t0 = datetime(2026, 6, 15, 0, 0, tzinfo=AMS)
+    incoming = _cycle_plan(50, start=t0)
+    one = clamp_cycle_budget(incoming, 0.0, 0.0, 1.0, 10.0, round_trip_efficiency=1.0, tz=AMS)
+    two = clamp_cycle_budget(incoming, 0.0, 0.0, 2.0, 10.0, round_trip_efficiency=1.0, tz=AMS)
+    n1 = sum(s.intent is BatteryIntent.GRID_CHARGE_TO_TARGET for s in one.slots)
+    n2 = sum(s.intent is BatteryIntent.GRID_CHARGE_TO_TARGET for s in two.slots)
+    # 1 kWh DC per slot, budget kWh = max_cycles * 2 * 10.
+    assert n1 == 20
+    assert n2 == 40
+    assert one.slots[20].reason == "Cycle-budget op (1 EFC)"
+    assert two.slots[40].reason == "Cycle-budget op (2 EFC)"
+
+
+def test_unknown_cycle_history_counts_in_plan_only_and_warns(caplog):
+    t0 = datetime(2026, 6, 15, 0, 0, tzinfo=AMS)
+    small = _cycle_plan(2, start=t0)
+    with caplog.at_level(logging.WARNING, logger="ems.planner.budgets"):
+        kept = clamp_cycle_budget(small, None, None, 1.5, 10.0, round_trip_efficiency=1.0, tz=AMS)
+    assert all(s.intent is BatteryIntent.GRID_CHARGE_TO_TARGET for s in kept.slots)
+    assert any("cycle-budget history unknown" in r.message for r in caplog.records)
+    huge = _cycle_plan(40, start=t0)
+    capped = clamp_cycle_budget(huge, None, None, 1.5, 10.0, round_trip_efficiency=1.0, tz=AMS)
+    n = sum(s.intent is BatteryIntent.GRID_CHARGE_TO_TARGET for s in capped.slots)
+    assert 0 < n <= 30
+
+
+def test_cycle_budget_restricts_only():
+    t0 = datetime(2026, 6, 15, 0, 0, tzinfo=AMS)
+    slots = []
+    for i in range(8):
+        intent = (
+            BatteryIntent.EXPORT_FOR_PROFIT if i >= 6 else BatteryIntent.GRID_CHARGE_TO_TARGET
+        )
+        slots.append(PlanSlot(t0 + i * SLOT, intent, "move", power_w=4000.0, target_kwh=1.0))
+    slots.append(PlanSlot(t0 + 8 * SLOT, BatteryIntent.DISCHARGE_FOR_LOAD, "serve"))
+    original = Plan(created_at=t0, slots=tuple(slots), strategy="winter")
+    loose = clamp_cycle_budget(original, 0.0, 0.0, 100.0, 10.0, round_trip_efficiency=1.0, tz=AMS)
+    tight = clamp_cycle_budget(original, 20.0, 10.0, 1.5, 10.0, round_trip_efficiency=1.0, tz=AMS)
+    assert loose is original
+    restricted = {BatteryIntent.GRID_CHARGE_TO_TARGET, BatteryIntent.EXPORT_FOR_PROFIT}
+    for before, after in zip(original.slots, tight.slots, strict=True):
+        if after.intent in restricted:
+            assert before.intent is after.intent
+            assert (after.power_w or 0.0) <= (before.power_w or 0.0) + 1e-9
+    assert any(s.intent is BatteryIntent.DISCHARGE_FOR_LOAD for s in tight.slots)
+
+
+def test_cycle_budget_resets_at_local_midnight_including_dst():
+    """Today's spent budget does not cross local midnight, including a 25 h autumn day."""
+    t0 = datetime(2026, 6, 15, 23, 0, tzinfo=AMS)
+    today = _cycle_plan(4, start=t0)
+    tomorrow_slot = PlanSlot(
+        datetime(2026, 6, 16, 0, 15, tzinfo=AMS),
+        BatteryIntent.GRID_CHARGE_TO_TARGET, "move", power_w=4000.0,
+    )
+    plan = Plan(created_at=t0, slots=today.slots + (tomorrow_slot,))
+    out = clamp_cycle_budget(plan, 30.0, 0.0, 1.5, 10.0, round_trip_efficiency=1.0, tz=AMS)
+    assert all(
+        s.intent is BatteryIntent.ALLOW_SELF_CONSUMPTION
+        for s in out.slots if s.start.astimezone(AMS).date() == t0.date()
+    )
+    assert out.slots[-1].intent is BatteryIntent.GRID_CHARGE_TO_TARGET
+
+    autumn = datetime(2026, 10, 25, 0, 0, tzinfo=AMS)
+    # 40 slots stay on the 25 h local day; one slot is the next midnight.
+    autumn_plan = _cycle_plan(40, start=autumn)
+    next_day = PlanSlot(
+        datetime(2026, 10, 26, 0, 0, tzinfo=AMS),
+        BatteryIntent.GRID_CHARGE_TO_TARGET, "move", power_w=4000.0,
+    )
+    mixed = Plan(created_at=autumn, slots=autumn_plan.slots + (next_day,))
+    capped = clamp_cycle_budget(mixed, 0.0, 0.0, 1.5, 10.0, round_trip_efficiency=1.0, tz=AMS)
+    on_autumn = [
+        s for s in capped.slots
+        if s.start.astimezone(AMS).date().isoformat() == "2026-10-25"
+        and s.intent is BatteryIntent.GRID_CHARGE_TO_TARGET
+    ]
+    assert len(on_autumn) == 30
+    assert capped.slots[-1].intent is BatteryIntent.GRID_CHARGE_TO_TARGET
+    fold_a = datetime(2026, 10, 25, 2, 30, tzinfo=AMS, fold=0)
+    fold_b = datetime(2026, 10, 25, 2, 30, tzinfo=AMS, fold=1)
+    assert fold_a.date() == fold_b.date()
+    efc = plan_day_efc(capped, 10.0, round_trip_efficiency=1.0, tz=AMS)
+    assert efc[autumn.date()] == pytest.approx(1.5)
+    assert efc[next_day.start.date()] == pytest.approx(0.05)
+    # 23 h spring day: 23:45 stays on the short day; 00:15 is the next local day.
+    spring = datetime(2026, 3, 29, 23, 45, tzinfo=AMS)
+    spring_plan = Plan(
+        created_at=spring,
+        slots=(
+            PlanSlot(spring, BatteryIntent.GRID_CHARGE_TO_TARGET, "move", power_w=4000.0),
+            PlanSlot(
+                datetime(2026, 3, 30, 0, 15, tzinfo=AMS),
+                BatteryIntent.GRID_CHARGE_TO_TARGET, "move", power_w=4000.0,
+            ),
+        ),
+    )
+    spring_out = clamp_cycle_budget(
+        spring_plan, 30.0, 0.0, 1.5, 10.0, round_trip_efficiency=1.0, tz=AMS,
+    )
+    assert spring_out.slots[0].reason == "Cycle-budget op (1,5 EFC)"
+    assert spring_out.slots[1].intent is BatteryIntent.GRID_CHARGE_TO_TARGET
+
+
+def test_read_cycle_throughput_splits_charge_and_discharge(tmp_path):
+    utc = ZoneInfo("UTC")
+    day = datetime(2026, 6, 15, 0, 0, tzinfo=AMS)
+    db = tmp_path / "cycles.sqlite"
+    _write_history(db, [
+        ((day + timedelta(hours=10)).astimezone(utc).isoformat(), 0.0, -4000.0),
+        ((day + timedelta(hours=18)).astimezone(utc).isoformat(), 0.0, 2000.0),
+    ])
+    now = datetime(2026, 6, 15, 20, 0, tzinfo=AMS)
+    charged, discharged = read_cycle_throughput_today(str(db), now, AMS)
+    assert charged == pytest.approx(1.0)
+    assert discharged == pytest.approx(0.5)
+    assert read_cycle_throughput_today(None, now, AMS) is None

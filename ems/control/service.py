@@ -59,7 +59,11 @@ from ems.lifecycle import Lifecycle, OwnershipState
 from ems.perf import PERF_BUDGETS, REGISTRY, atimed, timed
 from ems.planner.adaptive import AdaptiveConfig
 from ems.planner.base import PlannerRequest
-from ems.planner.budgets import read_already_bought_today
+from ems.planner.budgets import (
+    clamp_cycle_budget,
+    read_already_bought_today,
+    read_cycle_throughput_today,
+)
 from ems.planner.charge_need import compute_charge_need
 from ems.planner.factory import build_planner
 from ems.planner.projection import BatteryModel, mark_floor_holds, project_energy
@@ -101,6 +105,13 @@ def _stamp_already_bought(cfg: Any, bought: float | None) -> Any:
     if cfg is None or not hasattr(cfg, "already_bought_today_kwh"):
         return cfg
     return replace(cfg, already_bought_today_kwh=bought)
+
+
+def _with_throughput(cfg: Any, throughput: tuple[float, float] | None) -> Any:
+    if cfg is None or not hasattr(cfg, "charged_today_kwh"):
+        return cfg
+    charged, discharged = (None, None) if throughput is None else throughput
+    return replace(cfg, charged_today_kwh=charged, discharged_today_kwh=discharged)
 
 
 def apply_control_settings(controller: ModeController, settings: dict[str, Any]) -> None:
@@ -792,6 +803,7 @@ class ControlService:
             ),
             price_includes_all_fees=setting_price_includes_all_fees(s),
             max_daily_grid_charge_kwh=float(s.get("planner.max_daily_grid_charge_kwh", 12.0)),
+            max_cycles_per_day=float(s.get("planner.max_cycles_per_day", 1.5)),
             site_tz=self._site_tz,
         )
 
@@ -837,6 +849,7 @@ class ControlService:
             solar_confidence=s["planner.solar_confidence"] / 100.0,
             negative_price_soak=s["planner.negative_price_soak"],
             max_daily_grid_charge_kwh=float(s.get("planner.max_daily_grid_charge_kwh", 12.0)),
+            max_cycles_per_day=float(s.get("planner.max_cycles_per_day", 1.5)),
             site_tz=self._site_tz,
         )
 
@@ -856,6 +869,11 @@ class ControlService:
         return read_already_bought_today(
             path, now, self._site_tz, planned_charge_w=watts,
         )
+
+    def cycle_throughput_today(self, now: datetime) -> tuple[float, float] | None:
+        store = self._store
+        path = getattr(store, "db_path", None) if store is not None else None
+        return read_cycle_throughput_today(path, now, self._site_tz)
 
     def load_by(self, starts: list[datetime]) -> dict[datetime, float]:
         prof = self._ctx.load_profile_box["profile"]
@@ -993,20 +1011,23 @@ class ControlService:
         forecast_issued_at = getattr(fc, "issued_at", None) if fc is not None else None
         mode = self._settings.get("planner.mode", "rule_based")
         bought = self.already_bought_today_kwh(now)
+        throughput = self._cycle_throughput = self.cycle_throughput_today(now)
         request = PlannerRequest(
             now=now,
             prices=prices,
             forecast=forecast,
             soc_pct=soc,
             strategy=strategy,
-            winter_cfg=_stamp_already_bought(self._planner_cfg(), bought),
+            winter_cfg=_with_throughput(
+                _stamp_already_bought(self._planner_cfg(), bought), throughput),
             summer_cfg=_stamp_already_bought(self._summer_cfg(soc), bought),
             load_w_by=load_by,
-            adaptive_cfg=_stamp_already_bought(self._adaptive_cfg(), bought),
+            adaptive_cfg=_with_throughput(
+                _stamp_already_bought(self._adaptive_cfg(), bought), throughput),
             expected_ev_kwh=expected_ev_kwh,
-            trading_cfg=trading_config_from_settings(
+            trading_cfg=_with_throughput(trading_config_from_settings(
                 self._settings, reserve_soc_pct=self.effective_floor_soc(),
-            ),
+            ), throughput),
             planner_mode=mode,
             price_provenance=type(self._price_source).__name__,
             forecast_provider=forecast_provider,
@@ -1090,6 +1111,15 @@ class ControlService:
             recovered, projected,
             min_reserve_soc=floor,
             min_target_soc=device_min_target_soc(cap),
+        )
+        tp = getattr(self, "_cycle_throughput", None)
+        c_kwh, d_kwh = tp if isinstance(tp, tuple) else (None, None)
+        s = self._settings
+        recovered = clamp_cycle_budget(
+            recovered, c_kwh, d_kwh, float(s.get("planner.max_cycles_per_day", 1.5)),
+            float(s.get("battery.usable_kwh", 10.0)),
+            round_trip_efficiency=float(s.get("planner.round_trip_efficiency", 0.9)),
+            charge_fallback_w=float(s.get("battery.max_charge_w", 4000.0)), tz=self._site_tz,
         )
         return now, prices, recovered, status, catch
 

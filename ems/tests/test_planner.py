@@ -481,3 +481,37 @@ def test_winter_already_bought_8_kwh_leaves_at_most_4():
     charged = [s for s in plan.slots if s.intent is BatteryIntent.GRID_CHARGE_TO_TARGET]
     assert len(charged) <= 4
     assert len(charged) == 4
+
+
+def test_winter_refuses_new_charge_when_the_cycle_budget_is_spent():
+    """#318: after 1.5 EFC today the winter planner names 'Cycle-budget op' and stops buying."""
+    t0 = datetime(2026, 1, 15, 0, 0, tzinfo=AMS)
+    prices = (
+        [PriceSlot(t0 + i * SLOT, 0.05) for i in range(40)]
+        + [PriceSlot(t0 + (40 + i) * SLOT, 0.80) for i in range(16)]
+    )
+    common = dict(
+        charge_slots=30, discharge_slots=8, round_trip_efficiency=1.0,
+        degradation_eur_per_kwh=0.0, risk_margin_eur_per_kwh=0.0,
+        max_daily_grid_charge_kwh=80.0,
+    )
+
+    def _n(max_cycles: float, charged: float = 0.0) -> int:
+        plan = plan_rule_based(
+            prices, t0, PlannerConfig(
+                **common, max_cycles_per_day=max_cycles,
+                charged_today_kwh=charged, discharged_today_kwh=0.0,
+            ),
+            max_charge_w=4000.0, usable_kwh=10.0,
+        )
+        return sum(s.intent is BatteryIntent.GRID_CHARGE_TO_TARGET for s in plan.slots)
+
+    assert _n(2.0) > _n(1.0) > _n(0.5)
+    spent = plan_rule_based(
+        prices, t0, PlannerConfig(
+            **common, max_cycles_per_day=1.5, charged_today_kwh=30.0,
+        ),
+        max_charge_w=4000.0, usable_kwh=10.0,
+    )
+    assert not any(s.intent is BatteryIntent.GRID_CHARGE_TO_TARGET for s in spent.slots)
+    assert any(s.reason == "Cycle-budget op (1,5 EFC)" for s in spent.slots)
