@@ -21,6 +21,7 @@ from zoneinfo import ZoneInfo
 
 from ems.planner.adaptive import AdaptiveConfig, plan_adaptive
 from ems.planner.budgets import ac_grid_kwh_per_slot, clamp_cycle_budget, clamp_grid_charge
+from ems.planner.economics import apply_daily_savings_floor
 from ems.planner.rule_based import PlannerConfig, plan_rule_based
 from ems.planner.schedule import Plan
 from ems.planner.summer import SummerConfig, plan_summer
@@ -261,10 +262,37 @@ def build_plan(
     # Trading already applied the shared EFC helper to its own charge and export.
     # A second slot walk would count full-power slots, which is stricter than the
     # trade's stored-energy trim and would change a zero-history decision.
-    if plan.strategy == "trading":
-        return plan
-    return _clamp_shared_cycles(
-        plan, strategy, winter_cfg, summer_cfg, adaptive_cfg, load_w_by,
+    if plan.strategy != "trading":
+        plan = _clamp_shared_cycles(
+            plan, strategy, winter_cfg, summer_cfg, adaptive_cfg, load_w_by,
+        )
+    # #319: after the plan (and the cycle clamp) exist, drop grid charge that
+    # does not clear planner.daily_min_savings_eur. Threshold 0 is off.
+    return _apply_savings_floor(
+        plan, prices, load_w_by, winter_cfg, adaptive_cfg,
+    )
+
+
+def _apply_savings_floor(
+    plan: Plan,
+    prices: list[PriceSlot],
+    load_w_by: dict[datetime, float] | None,
+    winter_cfg: PlannerConfig,
+    adaptive_cfg: AdaptiveConfig | None,
+) -> Plan:
+    """Shared daily-min gate for winter and adaptive (and any plan build_plan returns)."""
+    minimum = float(getattr(winter_cfg, "daily_min_savings_eur", 0.0) or 0.0)
+    if adaptive_cfg is not None and load_w_by is not None:
+        rte = adaptive_cfg.round_trip_efficiency
+        deg = adaptive_cfg.degradation_eur_per_kwh
+        risk = adaptive_cfg.risk_margin_eur_per_kwh
+    else:
+        rte = winter_cfg.round_trip_efficiency
+        deg = winter_cfg.degradation_eur_per_kwh
+        risk = winter_cfg.risk_margin_eur_per_kwh
+    return apply_daily_savings_floor(
+        plan, prices, load_w_by, minimum, rte, deg, risk,
+        float(getattr(winter_cfg, "import_fee_eur_per_kwh", 0.0) or 0.0),
     )
 
 

@@ -470,6 +470,35 @@ def _build_path_t(
     return plan, t_eur, existing_ac, ""
 
 
+def _shared_savings_block(
+    plan: Plan,
+    prices: list[PriceSlot],
+    load_w_by: dict[datetime, float] | None,
+    cfg: TradingConfig,
+) -> str | None:
+    """Whole-day no-trade when the shared helper is known and under daily_min.
+
+    Path T's own `t_eur` gate still runs inside `_build_path_t`. This extra check
+    only fires when that gate already passed and `estimate_plan_savings` returns
+    a lower known figure — never when the estimate is unknown (None). Threshold
+    0 keeps today's behaviour. The reason keeps the `daily_min` / hele-dag marker
+    so the existing no-trade path stays whole-day AUTO.
+    """
+    if cfg.daily_min_savings_eur <= 1e-12:
+        return None
+    shared = economics.estimate_plan_savings(
+        plan, prices, load_w_by,
+        cfg.round_trip_efficiency, cfg.degradation_eur_per_kwh,
+        cfg.risk_margin_eur_per_kwh, cfg.import_fee_eur_per_kwh,
+    )
+    if shared is None or shared + 1e-9 >= cfg.daily_min_savings_eur:
+        return None
+    return (
+        f"Geen handel: geprojecteerde besparing €{shared:.2f} < "
+        f"daily_min €{cfg.daily_min_savings_eur:.2f} — hele dag no-trade."
+    )
+
+
 def maybe_apply_trading(
     z_plan: Plan,
     prices: list[PriceSlot],
@@ -491,6 +520,9 @@ def maybe_apply_trading(
         if "hele dag no-trade" in skip:
             return _all_auto_plan(prices, now, cfg, reason=skip)
         return z_plan
+    shared_block = _shared_savings_block(t_plan, prices, load_w_by, cfg)
+    if shared_block:
+        return _all_auto_plan(prices, now, cfg, reason=shared_block)
     z_eur = score_z_plan(
         z_plan, prices, cfg, existing_ac_kwh=existing_ac, load_w_by=load_w_by,
     )
@@ -539,6 +571,14 @@ def evaluate_trading(
     z_eur = score_z_plan(
         z_plan, prices, cfg, existing_ac_kwh=existing_ac, load_w_by=load_w_by,
     )
+    if t_plan is not None:
+        shared_block = _shared_savings_block(t_plan, prices, load_w_by, cfg)
+        if shared_block:
+            return {
+                "enabled": True, "would_trade": False, "reason": shared_block,
+                "t_eur": t_eur, "z_eur": z_eur, "extra_eur": t_eur - z_eur,
+                "whole_day_auto": True,
+            }
     if t_plan is None:
         return {
             "enabled": True, "would_trade": False, "reason": skip,

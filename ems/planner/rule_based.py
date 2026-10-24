@@ -102,6 +102,9 @@ class PlannerConfig:
     max_cycles_per_day: float = 1.5
     charged_today_kwh: float | None = 0.0
     discharged_today_kwh: float | None = 0.0
+    # #319 / F-04. 0 leaves build_plan unchanged. The live service passes
+    # planner.daily_min_savings_eur (settings default €0.20).
+    daily_min_savings_eur: float = 0.0
     site_tz: ZoneInfo = field(default_factory=lambda: ZoneInfo("Europe/Amsterdam"))
 
 
