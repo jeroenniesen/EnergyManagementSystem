@@ -3,11 +3,15 @@ import { describe, expect, test } from "vitest";
 import {
   batteryChecklistOutcome,
   buildBatteryLinkPayload,
+  buildP1LinkPayload,
   clearSetupPersistence,
   interpretRestartResponse,
   needsP1IpField,
+  p1ChecklistOutcome,
+  P1_RESTART_MESSAGE,
   privateIpv4Hint,
   SETUP_BATTERY_IP_KEY,
+  SETUP_P1_IP_KEY,
   SETUP_STEP_STORAGE_KEY,
 } from "./setupFlow";
 
@@ -59,6 +63,44 @@ describe("setupFlow (#291)", () => {
     clearSetupPersistence();
     expect(sessionStorage.getItem(SETUP_STEP_STORAGE_KEY)).toBeNull();
     expect(sessionStorage.getItem(SETUP_BATTERY_IP_KEY)).toBeNull();
+  });
+
+  test("buildP1LinkPayload (#292)", () => {
+    expect(buildP1LinkPayload("192.168.1.20", "")).toEqual({ "meters.p1_ip": "192.168.1.20" });
+    expect(buildP1LinkPayload("192.168.1.20", "10.0.0.2")).toEqual({
+      "meters.p1_ip": "192.168.1.20",
+    });
+    expect(buildP1LinkPayload("10.0.0.2", "10.0.0.2")).toBeNull();
+    expect(buildP1LinkPayload("", "192.168.1.5")).toBeNull();
+  });
+
+  test("p1ChecklistOutcome (#292 AC 3)", () => {
+    expect(p1ChecklistOutcome("Werkt", "Werkt", "192.168.1.2")?.phase).toBe("success");
+    expect(p1ChecklistOutcome("Ontbreekt", "Ontbreekt", "192.168.1.2")?.linkBattery).toBe(true);
+    expect(p1ChecklistOutcome("Ontbreekt", "Ontbreekt", "192.168.1.2")?.message).toBe(
+      "Koppel eerst je batterij",
+    );
+    const err = p1ChecklistOutcome("Ontbreekt", "Werkt", "192.168.3.3");
+    expect(err?.phase).toBe("error");
+    expect(err?.message).toBe(
+      "P1-meter niet gevonden op 192.168.3.3. Staan de meter en EMS op hetzelfde netwerk?",
+    );
+  });
+
+  test("P1 restart copy (#292 AC 2)", () => {
+    expect(P1_RESTART_MESSAGE).toBe(
+      "EMS start opnieuw om je P1-meter te zoeken. Dit duurt even, laat dit scherm open.",
+    );
+  });
+
+  test("privateIpv4Hint P1 empty message", () => {
+    expect(privateIpv4Hint("", "p1")).toMatch(/P1-meter/);
+  });
+
+  test("clearSetupPersistence clears P1 key (#292)", () => {
+    sessionStorage.setItem(SETUP_P1_IP_KEY, "192.168.1.9");
+    clearSetupPersistence();
+    expect(sessionStorage.getItem(SETUP_P1_IP_KEY)).toBeNull();
   });
 
   test("interpretRestartResponse (#291 AC 11)", () => {
