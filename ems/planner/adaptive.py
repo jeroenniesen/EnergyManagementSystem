@@ -56,6 +56,10 @@ class AdaptiveConfig:
     must_charge_buffer_pp: float = 10.0
     must_charge_capability_ready: bool = False
     must_charge_device_min_target_soc: float | None = None
+    # Resident override (#322): charge to this SoC before this deadline, via the must-charge
+    # path. None means no override — the automatic #323 trigger is unchanged.
+    resident_must_charge_target_soc: float | None = None
+    resident_must_charge_deadline: datetime | None = None
 
 
 @dataclass(frozen=True)

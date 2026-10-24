@@ -55,4 +55,83 @@ test.describe("EMS operator override", () => {
     await page.getByTestId("override-clear").click();
     await expect(page.getByTestId("override-inactive")).toBeVisible();
   });
+
+  test("resident can set vul tot X% vóór HH:MM and cancel it", async ({ page }) => {
+    let mustCharge: {
+      active: boolean;
+      target_soc: number | null;
+      deadline_hhmm: string | null;
+      unreachable_reason: string | null;
+    } = {
+      active: false,
+      target_soc: null,
+      deadline_hhmm: null,
+      unreachable_reason: null,
+    };
+    await page.route("**/api/override", async (route) => {
+      if (route.request().url().includes("/must-charge")) {
+        await route.fallback();
+        return;
+      }
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          intent: null,
+          expires_at: null,
+          active: false,
+          seconds_remaining: 0,
+          options: OPTIONS,
+        }),
+      });
+    });
+    await page.route("**/api/override/must-charge", async (route) => {
+      const method = route.request().method();
+      if (method === "POST") {
+        const body = JSON.parse(route.request().postData() || "{}");
+        mustCharge = {
+          active: true,
+          target_soc: body.target_soc,
+          deadline_hhmm: body.deadline,
+          unreachable_reason: "Dagplafond 1 kWh bereikt",
+        };
+      } else if (method === "DELETE") {
+        mustCharge = {
+          active: false,
+          target_soc: null,
+          deadline_hhmm: null,
+          unreachable_reason: null,
+        };
+      }
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          ...mustCharge,
+          deadline: mustCharge.active ? "2026-01-16T06:00:00+00:00" : null,
+          created: mustCharge.active ? "2026-01-15T22:00:00+00:00" : null,
+          expires: mustCharge.active ? "2026-01-16T06:00:00+00:00" : null,
+          seconds_remaining: mustCharge.active ? 8 * 3600 : 0,
+          warning: mustCharge.unreachable_reason,
+          watch_only: true,
+          execution: "alleen kijken — niet uitgevoerd",
+          deadline_format: "ISO-8601 with a timezone offset, or HH:MM",
+        }),
+      });
+    });
+    await page.goto("/");
+    await page.getByTestId("home-more-toggle").click();
+    await page.getByTestId("home-more-manual-toggle").click();
+    await expect(page.getByTestId("must-charge")).toBeVisible();
+    await expect(page.getByTestId("must-charge-watch-only")).toHaveText(
+      "alleen kijken — niet uitgevoerd",
+    );
+    await page.getByTestId("must-charge-target").fill("80");
+    await page.getByTestId("must-charge-hour").fill("07:00");
+    await page.getByTestId("must-charge-submit").click();
+    await expect(page.getByTestId("must-charge-active")).toContainText("Vul tot 80% vóór 07:00");
+    await expect(page.getByTestId("must-charge-warning")).toHaveText("Dagplafond 1 kWh bereikt");
+    await page.getByTestId("must-charge-cancel").click();
+    await expect(page.getByTestId("must-charge-active")).toHaveCount(0);
+  });
 });

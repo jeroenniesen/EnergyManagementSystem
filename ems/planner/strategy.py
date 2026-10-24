@@ -22,7 +22,11 @@ from zoneinfo import ZoneInfo
 from ems.planner.adaptive import AdaptiveConfig, plan_adaptive
 from ems.planner.budgets import ac_grid_kwh_per_slot, clamp_cycle_budget, clamp_grid_charge
 from ems.planner.economics import apply_daily_savings_floor
-from ems.planner.must_charge import MustChargeConfig, apply_must_charge
+from ems.planner.must_charge import (
+    MustChargeConfig,
+    apply_must_charge,
+    apply_resident_overlay,
+)
 from ems.planner.rule_based import PlannerConfig, plan_rule_based
 from ems.planner.schedule import Plan
 from ems.planner.summer import SummerConfig, plan_summer
@@ -308,7 +312,10 @@ def _maybe_apply_must_charge(
         device_min_target_soc_pct=adaptive_cfg.must_charge_device_min_target_soc,
         site_tz=adaptive_cfg.site_tz,
     )
-    return apply_must_charge(plan, prices, now, soc_pct=soc_pct, cfg=cfg)
+    plan = apply_must_charge(plan, prices, now, soc_pct=soc_pct, cfg=cfg)
+    return apply_resident_overlay(
+        plan, prices, now, soc_pct=soc_pct, adaptive_cfg=adaptive_cfg,
+    )
 
 
 def _apply_savings_floor(

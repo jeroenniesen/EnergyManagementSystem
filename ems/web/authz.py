@@ -22,6 +22,7 @@ _LEGACY_ACCESS_CAP = _TIER_RANK["operate"]
 # Writes any 'user' may perform (the old _WRITE_API_PATHS set).
 OPERATE_PATHS = frozenset({
     "/api/override",
+    "/api/override/must-charge",
     "/api/settings",
     "/api/setup/settings",
     "/api/ai/validate",

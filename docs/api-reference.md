@@ -11,6 +11,7 @@ Quick, concrete cheat-sheet for every integration. Details and rationale are in 
 - **Tariff economics:** `/api/plan` and `/api/report` include `tariff_policy`, showing the import and
   export fee assumptions applied to economics. This affects planning and reporting only; it never
   becomes a direct battery power command.
+- **Resident must-charge override (#322 / F-41):** `GET/POST /api/override/must-charge` and `DELETE /api/override/must-charge`. POST body `{target_soc, deadline}`. `deadline` is either an ISO-8601 timestamp with a timezone offset, or `HH:MM` (the next occurrence strictly after now in the site timezone), at most 24 h ahead. `target_soc` is between the effective floor + 5 and 100. Missing or invalid prices, or an unknown battery capability, return **422** `{"detail": "geen sturing"}` and store nothing. A stored override is `{target_soc, deadline, created, expires}` in the override KV. The response includes `unreachable_reason` when the price cap, daily ceiling, cycle budget or battery power cannot reach the target, and `execution: "alleen kijken — niet uitgevoerd"` when watch-only or dry-run is on. POST and DELETE require operate; GET is view. Audit categories: `must_charge_override_start`, `must_charge_override_end`, `must_charge_override_cancel`.
 - **Buy-pool explainability (#315):** `/api/plan` and `/api/decision` (and `decision_reason` on
   `/api/battery-plan`) may include optional `buy_pool` — `state`, `max_buy_eur_per_kwh`,
   `cheapest_slot`, `shortfall_kwh`, `next_chance`, `pool_size` — when the planner sized a grid
