@@ -169,7 +169,8 @@ test.describe("EMS unreachable banner outside dashboard (#369 NAV-03)", () => {
     await expect(page.getByTestId("alert-ems_unreachable")).toBeVisible();
 
     reachable.value = true;
-    await expect(page.getByTestId("alert-ems_unreachable")).toHaveCount(0, { timeout: 15000 });
+    await page.getByTestId("nav-manage").click();
+    await expect(page.getByTestId("alert-ems_unreachable")).toHaveCount(0);
   });
 
   test("shows on Trading and Car while core APIs fail", async ({ page }) => {

@@ -76,7 +76,7 @@ export function AuditView() {
         </select>
       </div>
       {err && (
-        <div className="audit-error-block" role="alert" data-testid="audit-error">
+        <div className="error" role="alert" data-testid="audit-error">
           <p>{err}</p>
           <button type="button" className="btn secondary" data-testid="audit-retry" onClick={retry}>
             {AUDIT_VIEW.retry}

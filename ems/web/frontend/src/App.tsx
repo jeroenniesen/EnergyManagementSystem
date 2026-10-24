@@ -697,18 +697,44 @@ export function App() {
       return r.json();
     }
     function touchReachability() {
+      const applyCore = (value: {
+        status: Status;
+        freshness: FreshnessMap;
+        alerts: AlertsResp;
+        device_health?: DeviceHealth | null;
+      }) => {
+        unreachableRef.current = false;
+        setStatus(value.status);
+        setFreshness(value.freshness);
+        batteryFreshness.current = value.freshness.battery ?? null;
+        setAlertsData(value.alerts);
+        if (value.device_health) setDeviceHealth(value.device_health);
+        setError(null);
+        setLastReachableAt(Date.now());
+        setTileFreshness((current) => ({
+          ...current,
+          status: { updatedAt: Date.now(), stale: batteryFreshness.current === "stale" },
+        }));
+        if (value.freshness.battery === "stale" || value.freshness.battery === "missing") {
+          setTileFreshness((current) => ({ ...current, status: { ...current.status, stale: true } }));
+        }
+      };
       getJson("/api/dashboard")
-        .then(() => {
+        .then((value: {
+          status: Status;
+          freshness: FreshnessMap;
+          alerts: AlertsResp;
+          device_health?: DeviceHealth | null;
+        }) => {
           if (!alive) return;
-          unreachableRef.current = false;
-          setError(null);
-          setLastReachableAt(Date.now());
+          applyCore(value);
         })
         .catch(() => {
           getJson("/api/status")
-            .then(() => {
+            .then((v) => {
               if (!alive) return;
               unreachableRef.current = false;
+              setStatus(v);
               setError(null);
               setLastReachableAt(Date.now());
             })
@@ -716,6 +742,10 @@ export function App() {
               if (!alive) return;
               unreachableRef.current = true;
               setError(String(e ?? "unreachable"));
+              setStatus(null);
+              setAlertsData(null);
+              setDecision(null);
+              setTileFreshness((current) => ({ ...current, status: { ...current.status, stale: true } }));
             });
         });
     }

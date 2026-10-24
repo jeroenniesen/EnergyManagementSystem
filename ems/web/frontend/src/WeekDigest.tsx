@@ -109,7 +109,7 @@ export function WeekDigest() {
             {WEEK_DIGEST.sectionTitle}
           </span>
         </div>
-        <div className="week-digest-error" role="alert" data-testid="week-digest-error">
+        <div className="error" role="alert" data-testid="week-digest-error">
           <p>{WEEK_DIGEST.loadError}</p>
           <button type="button" className="btn secondary" data-testid="week-digest-retry" onClick={retry}>
             {WEEK_DIGEST.retry}

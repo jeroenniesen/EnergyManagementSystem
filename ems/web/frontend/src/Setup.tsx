@@ -73,13 +73,13 @@ export function Setup({ onOpenSettings }: Props) {
         kijkmodus tot je later zelf live sturen inschakelt.
       </p>
       {data === null && !error && (
-        <p className="setup-checklist-loading" data-testid="setup-checklist-loading">
+        <p className="loading" data-testid="setup-checklist-loading">
           {SETUP_CHECKLIST.loading}
         </p>
       )}
       {error && (
         <div className="setup-checklist-error-row" data-testid="setup-checklist-error-row">
-          <p className="setup-checklist-error" role="alert" data-testid="setup-checklist-error">
+          <p className="error" role="alert" data-testid="setup-checklist-error">
             {error}
           </p>
           <button
