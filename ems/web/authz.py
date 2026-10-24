@@ -30,6 +30,7 @@ OPERATE_PATHS = frozenset({
     "/api/car/soc",
     "/api/notifications/read",
     "/api/trading/test-battery",
+    "/api/trading/dry-run-reviewed",
     # #263: HA wizard probe/disconnect carry a long-lived token in the body.
     "/api/consumers/ha/test-connection",
     "/api/consumers/ha/disconnect",

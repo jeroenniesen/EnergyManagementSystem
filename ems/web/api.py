@@ -1635,6 +1635,9 @@ def create_app(
                 await settings_store.set_many(migration_writes)
                 stored_settings = await settings_store.all()
             settings_cache.update(effective_settings(stored_settings))
+            _raw_dry_run_reviewed = stored_settings.get("trading.dry_run_reviewed_at")
+            if _raw_dry_run_reviewed is not None:
+                settings_cache["trading.dry_run_reviewed_at"] = _raw_dry_run_reviewed
             from ems.settings import live_mock_forecast_in_use
 
             if live_mock_forecast_in_use(solar_forecast, settings_cache, dev_mode):
@@ -3437,6 +3440,25 @@ def create_app(
     _TEST_BATTERY_SECONDS = 120
     _trading_probe_tasks: set[asyncio.Task] = set()
     app.state.trading_probe_active = False
+    _TRADING_DRY_RUN_REVIEWED_KEY = "trading.dry_run_reviewed_at"
+    _ARM_STEP2_BLOCK_DETAIL = "Ontbreekt: stap 2 — bekijk de dry-run"
+
+    def _trading_dry_run_reviewed_at(settings: dict) -> str | None:
+        raw = settings.get(_TRADING_DRY_RUN_REVIEWED_KEY)
+        if raw is None:
+            return None
+        text = str(raw).strip()
+        return text or None
+
+    def _trading_arm_gate(settings: dict, *, floor_block: str | None) -> tuple[bool, str | None]:
+        """Whether a false→true arm is allowed now, and the NL block reason when not."""
+        if bool(settings.get("control.allow_export_discharge", False)):
+            return True, None
+        if floor_block is not None:
+            return False, floor_block
+        if _trading_dry_run_reviewed_at(settings) is None:
+            return False, _ARM_STEP2_BLOCK_DETAIL
+        return True, None
 
     def _trading_floor_block_reason() -> str | None:
         """Why yaml/operational/arming floors block live battery writes (not data quality)."""
@@ -3524,6 +3546,29 @@ def create_app(
             "data_quality": quality,
             "validator": validator_status,
         }
+        reviewed_at = _trading_dry_run_reviewed_at(s)
+        trading_on = bool(s.get("planner.trading_enabled", False))
+        arm_allowed, arm_block_reason = _trading_arm_gate(s, floor_block=block)
+        steps = [
+            {
+                "id": "advice",
+                "ok": trading_on,
+                "label": "Stap 1 — Trading aan (plan-only)",
+                "missing": None if trading_on else "trading staat uit",
+            },
+            {
+                "id": "dry_run",
+                "ok": reviewed_at is not None,
+                "label": "Stap 2 — Dry-run T-vs-Z bekeken",
+                "missing": None if reviewed_at is not None else "niet vastgelegd",
+            },
+            {
+                "id": "arm",
+                "ok": armed,
+                "label": "Stap 3 — Live export bewapend",
+                "missing": None if armed else "nog niet bewapend",
+            },
+        ]
         return {
             "trading_enabled": bool(s.get("planner.trading_enabled", False)),
             "min_extra_eur": float(s.get("planner.trading_min_extra_eur", 0.50)),
@@ -3538,12 +3583,37 @@ def create_app(
             "block_reason": block,
             "test_battery_allowed": test_block is None,
             "test_battery_block_reason": test_block,
+            "dry_run_reviewed_at": reviewed_at,
+            "arm_allowed": arm_allowed,
+            "arm_block_reason": arm_block_reason,
+            "steps": steps,
             "evaluation": evaluation,
             "copy": {
                 "house": "Pad Z = energie voor het huis (zelfconsumptie).",
                 "sell": "Pad T = goedkoop laden / duur verkopen aan het net.",
             },
         }
+
+    @app.post("/api/trading/dry-run-reviewed")
+    async def trading_dry_run_reviewed(request: Request) -> JSONResponse:
+        """Record trading step 2 (F-30 / #339): operator confirmed they reviewed T-vs-Z dry-run."""
+        if settings_store is None:
+            return JSONResponse(
+                {"detail": "settings store not configured"}, status_code=503,
+            )
+        now = datetime.now(UTC)
+        reviewed_at = now.isoformat()
+        await settings_store.set_many({_TRADING_DRY_RUN_REVIEWED_KEY: reviewed_at})
+        settings_cache.update(effective_settings(await settings_store.all()))
+        settings_cache[_TRADING_DRY_RUN_REVIEWED_KEY] = reviewed_at
+        if audit_store is not None:
+            await audit_store.append(
+                now.isoformat(),
+                "trading_dry_run_reviewed",
+                "Trading stap 2: dry-run T-vs-Z bekeken",
+                {"reviewed_at": reviewed_at},
+            )
+        return JSONResponse({"ok": True, "reviewed_at": reviewed_at})
 
     async def _clear_trading_probe_override() -> None:
         """Best-effort clear of Test-batterij override + probe window (never touches arm flag)."""
@@ -5535,6 +5605,18 @@ def create_app(
 
     async def _commit_settings_update(clean: dict) -> JSONResponse:
         """Persist validated settings, apply side-effects, audit — shared POST settings paths."""
+        # #339: refuse the whole payload on a false→true arm until floors pass and stap 2
+        # is recorded. Shared by POST /api/settings and POST /api/setup/settings.
+        if clean.get("control.allow_export_discharge") is True:
+            was_armed = bool(settings_cache.get("control.allow_export_discharge", False))
+            if not was_armed:
+                floor_block = _trading_floor_block_reason()
+                if floor_block is not None:
+                    return JSONResponse({"detail": floor_block}, status_code=409)
+                if _trading_dry_run_reviewed_at(settings_cache) is None:
+                    return JSONResponse(
+                        {"detail": _ARM_STEP2_BLOCK_DETAIL}, status_code=409,
+                    )
         # #341 / F-11: an explicit export-model save is the household's confirmation. Kept on
         # the write path so re-reading a stored model (effective_settings) cannot hide the banner.
         if "prices.export_price_model" in clean:
@@ -5602,6 +5684,19 @@ def create_app(
             )
         # Pass body straight through: validate_settings guards non-dict, so a missing/None body
         # becomes a 422 ("expected a JSON object") rather than a silent 200 no-op.
+        # #339: the client can never fake stap 2; only POST /api/trading/dry-run-reviewed writes it.
+        if isinstance(body, dict) and _TRADING_DRY_RUN_REVIEWED_KEY in body:
+            return JSONResponse(
+                {
+                    "detail": "invalid settings",
+                    "errors": {
+                        _TRADING_DRY_RUN_REVIEWED_KEY: (
+                            "must be set via POST /api/trading/dry-run-reviewed"
+                        ),
+                    },
+                },
+                status_code=422,
+            )
         clean, errors = validate_settings(body, dev_mode=dev_mode)
         if errors:
             # Reject the whole payload if ANY key is invalid — partial saves are confusing.
