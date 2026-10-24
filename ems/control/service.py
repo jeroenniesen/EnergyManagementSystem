@@ -804,6 +804,7 @@ class ControlService:
             price_includes_all_fees=setting_price_includes_all_fees(s),
             max_daily_grid_charge_kwh=float(s.get("planner.max_daily_grid_charge_kwh", 12.0)),
             max_cycles_per_day=float(s.get("planner.max_cycles_per_day", 1.5)),
+            daily_min_savings_eur=float(s.get("planner.daily_min_savings_eur", 0.20)),
             site_tz=self._site_tz,
         )
 
