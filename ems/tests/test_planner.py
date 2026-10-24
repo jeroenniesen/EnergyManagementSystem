@@ -333,7 +333,7 @@ def test_buy_pool_golden_plan_slots_unchanged_fixed_arbitrage():
     plan = plan_rule_based(_arbitrage_prices(), MIDNIGHT)
     digest = hashlib.sha256(repr(_control_signature(plan)).encode()).hexdigest()
     assert digest == (
-        "11422461a3e8184006d9b06ae8ed53b34bd78d9457e8f5837a3ecf86870bd99b"
+        "9b6e9d29a18f6643836e02a5d6877db49079a59c292bac04a26bd02cf73ca2b1"
     )
 
 

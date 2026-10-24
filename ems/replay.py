@@ -749,7 +749,7 @@ def replay_range(
                     conn,
                     "SELECT start_ts, eur_per_kwh FROM price_slots "
                     "WHERE start_ts >= ? AND start_ts < ? ORDER BY start_ts ASC",
-                    (start_iso, end_iso),
+                    (start_iso, _day_window(d + timedelta(days=1), cfg.tz)[1]),
                 )
                 # Canonical prediction ledger (not the deprecated forecast_snapshots write path).
                 forecast = _day_ahead_forecast(conn, start_iso, end_iso)
