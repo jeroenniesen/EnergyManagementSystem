@@ -51,6 +51,39 @@ async function switchTheme(page: Page, theme: "light" | "dark") {
 }
 
 test.describe("WCAG 2.1 AA accessibility gate", () => {
+  test("Setup (Inrichten) page is accessible", async ({ page }) => {
+    await page.route("**/api/setup/checklist", async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          headline: "Nog 2 stappen",
+          steps_remaining: 2,
+          watch_ready: false,
+          items: [
+            {
+              key: "battery",
+              sentence: "EMS ziet je batterij en weet hoe vol ze is.",
+              status: "Ontbreekt",
+              button_label: "Batterij instellen",
+              settings_section: "battery",
+            },
+            {
+              key: "p1",
+              sentence: "De stroommeter op je meterkast stuurt actuele metingen door.",
+              status: "Ontbreekt",
+              button_label: "Meter instellen",
+              settings_section: "meters",
+            },
+          ],
+        }),
+      });
+    });
+    await page.goto("/#setup");
+    await page.waitForSelector("[data-testid='setup-checklist']");
+    await checkA11y(page);
+  });
+
   test("Dashboard首页 is accessible", async ({ page }) => {
     await page.goto("/");
     await page.waitForSelector("[data-testid='hero-verdict']");
