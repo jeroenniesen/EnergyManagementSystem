@@ -289,3 +289,23 @@ def test_current_action_floor_hold_is_hold_not_discharge():
     assert current_action_from_slot(slot, battery_w=0.0) == "hold"
     discharge_slot = _slot(0, BatteryIntent.DISCHARGE_FOR_LOAD, "peak window")
     assert current_action_from_slot(discharge_slot, battery_w=1500.0) == "discharge"
+
+
+def test_evening_reserve_hold_reason_is_the_decision_summary():
+    """#326 AC5: the hold reason is the DecisionReason summary /api/decision serves.
+
+    The API passes the active slot reason as ``summary`` and ``plan_reason``.
+    """
+    from ems.planner.reason import EVENING_RESERVE_HOLD_REASON
+
+    slot = _slot(0, BatteryIntent.HOLD_RESERVE, EVENING_RESERVE_HOLD_REASON)
+    plan = Plan(created_at=NOW, slots=(slot,), strategy="winter")
+    assert current_action_from_slot(slot, battery_w=0.0) == "hold"
+    reason = build_decision_reason(
+        plan, price_by={slot.start: 0.40},
+        summary=slot.reason, plan_reason=slot.reason,
+    )
+    body = reason.to_dict()
+    assert body["summary"] == "Ochtend ingehouden voor avondpiek"
+    assert reason.summary == EVENING_RESERVE_HOLD_REASON
+    assert EVENING_RESERVE_HOLD_REASON in body["summary"]

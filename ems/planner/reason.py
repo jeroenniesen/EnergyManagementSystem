@@ -13,12 +13,14 @@ from __future__ import annotations
 
 from dataclasses import dataclass, replace
 from datetime import datetime
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from ems.domain import BatteryIntent
 from ems.planner.buy_pool import format_empty_buy_summary
-from ems.planner.projection import BatteryModel, ProjectedSlot, project_energy
 from ems.planner.schedule import Plan, PlanSlot
+
+if TYPE_CHECKING:
+    from ems.planner.projection import BatteryModel, ProjectedSlot
 from ems.savings import estimate_daily_savings_eur
 
 _CHARGE = BatteryIntent.GRID_CHARGE_TO_TARGET
@@ -124,6 +126,10 @@ _BATTERY_W_IDLE_BAND_W = 50.0
 # F-13 (#313): fail-safe copy when the plan badge is price_fallback (mock/backup/no Tibber).
 PRICE_FALLBACK_SAFETY_CODE = "no_live_prices"
 PRICE_FALLBACK_SAFETY_MESSAGE = "Geen live Tibber — inkopen uit (fail-safe)"
+
+# #326 / F-17+F-24: morning discharge held so the evening peak is not emptied.
+# /api/decision copies the active slot reason into DecisionReason.summary.
+EVENING_RESERVE_HOLD_REASON = "Ochtend ingehouden voor avondpiek"
 
 # F-23 / #332: cautious planning when EV or grid meter freshness is uncertain.
 STALE_METER_PLAN_REASON = "Voorzichtig: meter verouderd"
@@ -467,6 +473,8 @@ def _homeowner_summary(raw: str | None, chosen: ChosenWindow | None) -> str:
     """
     if raw:
         text = raw.strip()
+        if text == EVENING_RESERVE_HOLD_REASON:
+            return EVENING_RESERVE_HOLD_REASON
         low = text.lower()
         if low.startswith("discharge:"):
             rest = text.split(":", 1)[1].strip()
@@ -742,6 +750,7 @@ def apply_stale_meter_caution(
     load_w_by: dict[datetime, float],
 ) -> Plan:
     """Raise discharge floor; hold slots that would discharge below it — never add grid charge."""
+    from ems.planner.projection import project_energy
     from ems.planner.rule_based import stale_discharge_floor_soc
 
     effective_floor = stale_discharge_floor_soc(
