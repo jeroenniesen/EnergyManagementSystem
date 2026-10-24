@@ -54,7 +54,7 @@ def must_charge_configured_ceiling_eur(slots: tuple[PlanSlot, ...]) -> float | N
 
 
 def is_must_charge_slot(slot: PlanSlot) -> bool:
-    return (slot.reason or "").startswith(MUST_CHARGE_REASON_PREFIX)
+    return MUST_CHARGE_REASON_PREFIX in (slot.reason or "")
 
 
 def must_charge_slots(plan: Plan) -> tuple[PlanSlot, ...]:

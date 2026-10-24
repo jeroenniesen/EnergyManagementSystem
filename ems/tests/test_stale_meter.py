@@ -9,10 +9,16 @@ from pathlib import Path
 from ems.domain import BatteryIntent
 from ems.planner.adaptive import AdaptiveConfig
 from ems.planner.base import PlannerRequest, RuleBasedPlanner
-from ems.planner.reason import STALE_METER_PLAN_REASON
+from ems.planner.reason import (
+    STALE_METER_PLAN_REASON,
+    build_decision_reason,
+    format_must_charge_slot_reason,
+    is_must_charge_slot,
+    stale_meter_reason_prefix,
+)
 from ems.planner.recovery import recover_if_needed
 from ems.planner.rule_based import PlannerConfig
-from ems.planner.schedule import SLOT
+from ems.planner.schedule import SLOT, Plan, PlanSlot
 from ems.planner.summer import SummerConfig
 from ems.planner.validator import validate_plan
 from ems.sources.forecast import ForecastSlot
@@ -241,3 +247,56 @@ def test_stale_never_increases_grid_charge_after_recovery():
         stale_after, _, _ = recover_if_needed(stale, now, **recover_kw)
         _assert_grid_charge_lte_baseline(stale_after, base_after)
     # Recovery catch-up slot keeps baseline reserve on floor_soc (#327); kWh/power already asserted.
+
+
+def test_stale_must_charge_reason_prefix_still_counts_slots_and_summary():
+    """#323 × #332: stale slot prefix must not hide must-charge from decision/validator."""
+    from ems.tests.test_must_charge import _SUMMER, _adaptive, _empty_pool_fixture
+    from ems.tests.test_must_charge import T0 as MUST_T0
+
+    prices, load = _empty_pool_fixture()
+    winter_cfg = PlannerConfig(horizon_slots=len(prices), daily_min_savings_eur=0.0)
+    req = PlannerRequest(
+        now=MUST_T0,
+        prices=prices,
+        forecast=[],
+        soc_pct=12.0,
+        strategy="winter",
+        winter_cfg=winter_cfg,
+        summer_cfg=_SUMMER,
+        load_w_by=load,
+        adaptive_cfg=_adaptive(must_charge_enabled=True),
+    )
+    planner = RuleBasedPlanner()
+    baseline = planner.plan(replace(req, ev_stale=False))
+    stale = planner.plan(replace(req, ev_stale=True))
+    base_mc = [s for s in baseline.slots if is_must_charge_slot(s)]
+    stale_mc = [s for s in stale.slots if is_must_charge_slot(s)]
+    assert base_mc
+    assert len(stale_mc) == len(base_mc)
+    _assert_grid_charge_lte_baseline(stale, baseline)
+    price_by = {p.start: p.eur_per_kwh for p in prices}
+    reason = build_decision_reason(stale, price_by=price_by)
+    assert STALE_METER_PLAN_REASON in reason.summary
+    assert "Voorzorgslading" in reason.summary
+    assert "Geen koopmoment" not in reason.summary
+    assert reason.buy_pool is not None
+    assert reason.buy_pool.get("must_charge_summary")
+    assert reason.buy_pool.get("must_charge_ceiling_eur_per_kwh") == 0.4
+
+    unsized = PlanSlot(
+        MUST_T0,
+        BatteryIntent.GRID_CHARGE_TO_TARGET,
+        stale_meter_reason_prefix(format_must_charge_slot_reason(0.40)),
+        power_w=4000.0,
+    )
+    assert is_must_charge_slot(unsized)
+    v = validate_plan(
+        Plan(created_at=MUST_T0, slots=(unsized,), strategy="winter"),
+        soc_pct=12.0,
+        data_quality="complete",
+        min_reserve_soc=10.0,
+        validate_projection=False,
+    )
+    assert v.status == "unsafe"
+    assert any(f.code == "must_charge_unsized" for f in v.findings)
