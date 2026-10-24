@@ -5,9 +5,11 @@ from datetime import UTC, datetime, timedelta
 
 from ems.domain import BatteryIntent
 from ems.planner.reason import (
+    STALE_METER_PLAN_REASON,
     build_decision_reason,
     current_action_from_slot,
     empty_decision_reason,
+    stale_meter_reason_prefix,
 )
 from ems.planner.schedule import Plan, PlanSlot
 from ems.planner.validator import Finding, PlanValidation
@@ -263,6 +265,19 @@ def test_incomplete_prices_reason_surfaces_code_as_paused():
     ).to_dict()
     assert r["safety_constraint"]["action"] == "paused"
     assert r["safety_constraint"]["code"] == "incomplete_prices"
+
+
+def test_stale_meter_reason_surfaces_in_decision_summary():
+    plan = _charge_plan()
+    stale_slot = _slot(
+        0, BatteryIntent.GRID_CHARGE_TO_TARGET,
+        stale_meter_reason_prefix("charge: cheap window €0.10/kWh"),
+        target_soc=80.0, power_w=4000.0, deadline=NOW + 8 * SLOT,
+    )
+    plan = Plan(created_at=NOW, slots=(stale_slot,) + plan.slots[1:], strategy="winter")
+    r = build_decision_reason(plan, price_by={NOW: 0.10}).to_dict()
+    assert "meter verouderd" in r["summary"]
+    assert STALE_METER_PLAN_REASON in r["summary"]
 
 
 def test_current_action_floor_hold_is_hold_not_discharge():

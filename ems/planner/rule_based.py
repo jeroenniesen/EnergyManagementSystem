@@ -28,6 +28,11 @@ _log = logging.getLogger("ems.planner.rule_based")
 _DH = 0.25  # hours per 15-min slot
 
 
+def stale_discharge_floor_soc(reserve_soc_pct: float, *, buffer_pp: float) -> float:
+    """Discharge floor with stale-meter buffer (#332); does not raise charge targets."""
+    return min(100.0, max(0.0, float(reserve_soc_pct)) + max(0.0, float(buffer_pp)))
+
+
 def late_pack_charge_starts(
     pre_peak: list[PriceSlot],
     n_charge: int,
@@ -248,12 +253,12 @@ def _plan_winter(
         # earliest-of-cheapest-set) so max-power execution does not fill early medium-cheap hours
         # when a deeper valley still lies ahead of the peak deadline.
         last_need = max(discharge_set)
-        peak_min = min(_effective_import_price(p, cfg) for p in horizon if p.start in discharge_set)
-        # Inverse of economics.breakeven: solved for the highest charge price that still undercuts
-        # `peak_min` after losses + wear + risk. Kept local — it's the reverse direction (sizing the
-        # buy pool), not the forward break-even gate above.
-        max_buy = (peak_min - cfg.degradation_eur_per_kwh
-                   - cfg.risk_margin_eur_per_kwh) * cfg.round_trip_efficiency
+        # Buy ceiling is the shared inverse of breakeven (F-08/F-10): the dearest pre-peak price
+        # that still undercuts the cheapest profitable peak after losses, wear and risk.
+        peak_price = min(
+            _effective_import_price(p, cfg) for p in horizon if p.start in discharge_set
+        )
+        max_buy = economics.max_buy_for_planner_config(peak_price, cfg)
         pre_peak = [p for p in horizon if p.start < last_need]
         pool = [p for p in pre_peak if _effective_import_price(p, cfg) <= max_buy]
         charge_set = late_pack_charge_starts(

@@ -53,8 +53,19 @@ function shiftDay(d: string, delta: number): string {
 }
 
 test.describe("Insights", () => {
-  // #224 / #227 / epic #222: appliances card + dry-run start-window advice (no start/stop).
+  // #224 / #227 / epic #222: appliances card stays read-only for device control.
+  // #334: "Ik start hier" / "Annuleer" only book an advised window.
   test("shows a read-only appliances card with selected device status", async ({ page }) => {
+    const adviceWindow = {
+      start: "2026-07-11T02:00:00+00:00",
+      end: "2026-07-11T03:00:00+00:00",
+      slots: 4,
+      avg_eur_per_kwh: 0.08,
+      est_cost_eur: 0.08,
+      assumed_kwh: 1.0,
+      reason:
+        "Cheapest 1h window from the day-ahead prices (avg €0.08/kWh, assuming 1 kWh).",
+    };
     await page.route("**/api/report**", (route) =>
       route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(REPORT) }),
     );
@@ -75,16 +86,7 @@ test.describe("Insights", () => {
               device_name: "Mock washer",
               kind: "washer",
               eligible: true,
-              window: {
-                start: "2026-07-11T02:00:00+00:00",
-                end: "2026-07-11T03:00:00+00:00",
-                slots: 4,
-                avg_eur_per_kwh: 0.08,
-                est_cost_eur: 0.08,
-                assumed_kwh: 1.0,
-                reason:
-                  "Cheapest 1h window from the day-ahead prices (avg €0.08/kWh, assuming 1 kWh).",
-              },
+              window: adviceWindow,
               skip_reason: null,
             },
           ],
@@ -94,7 +96,8 @@ test.describe("Insights", () => {
       }),
     );
     await page.route("**/api/consumers**", (route) => {
-      if (route.request().url().includes("/start-advice")) {
+      const url = route.request().url();
+      if (url.includes("/start-advice") || url.includes("/advice/accept")) {
         return route.fallback();
       }
       return route.fulfill({
@@ -125,6 +128,21 @@ test.describe("Insights", () => {
         }),
       });
     });
+    // Same success body as POST /api/consumers/advice/accept (ok, device, slots, kWh, bump watts).
+    // 1.0 kWh over 4 quarter-hours is 1000 W. Nothing here starts the appliance.
+    await page.route("**/api/consumers/advice/accept**", (route) =>
+      route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          ok: true,
+          device_id: "mock-washer-1",
+          slots: adviceWindow.slots,
+          assumed_kwh: adviceWindow.assumed_kwh,
+          bump_w: 1000,
+        }),
+      }),
+    );
     await page.goto("/");
     await page.getByTestId("nav-insights").click();
     const card = page.getByTestId("consumers-card");
@@ -143,7 +161,49 @@ test.describe("Insights", () => {
       "nothing changes automatically",
     );
     await expect(page.getByTestId("consumers-footnote")).not.toContainText(/arm live/i);
-    await expect(card.getByRole("button", { name: /start|stop/i })).toHaveCount(0);
+    // Same /start|stop/i name match. Only the #334 bookkeeping buttons are excluded, by testid.
+    await expect(
+      card.getByRole("button", { name: /start|stop/i }).and(
+        card.locator(
+          'button:not([data-testid$="-accept-window"]):not([data-testid$="-cancel-window"])',
+        ),
+      ),
+    ).toHaveCount(0);
+    const acceptBtn = page.getByTestId("consumer-mock-washer-1-accept-window");
+    await expect(acceptBtn).toBeVisible();
+    await expect(acceptBtn).toHaveText("Ik start hier");
+    const mutations: string[] = [];
+    const seenUrls: string[] = [];
+    const deviceControl =
+      /smartthings|homeassistant|\/api\/services|\/api\/control|\/api\/override|\/api\/settings|turn_on|turn_off|start_device|remote_start/i;
+    const onRequest = (req: import("@playwright/test").Request) => {
+      seenUrls.push(req.url());
+      const method = req.method();
+      if (method !== "GET" && method !== "HEAD" && method !== "OPTIONS") {
+        mutations.push(`${method} ${new URL(req.url()).pathname}`);
+      }
+    };
+    page.on("request", onRequest);
+    try {
+      const [acceptReq] = await Promise.all([
+        page.waitForRequest(
+          (req) =>
+            req.method() === "POST" &&
+            new URL(req.url()).pathname === "/api/consumers/advice/accept",
+        ),
+        acceptBtn.click(),
+      ]);
+      // Success path finishes when the card swaps to Annuleer; no extra write is started there.
+      await expect(page.getByTestId("consumer-mock-washer-1-cancel-window")).toBeVisible();
+      expect(mutations).toEqual(["POST /api/consumers/advice/accept"]);
+      expect(seenUrls.filter((url) => deviceControl.exec(url) != null)).toEqual([]);
+      expect(acceptReq.postDataJSON()).toEqual({
+        device_id: "mock-washer-1",
+        window: adviceWindow,
+      });
+    } finally {
+      page.off("request", onRequest);
+    }
   });
 
   test("shows the three scores and the energy-flow amounts", async ({ page }) => {

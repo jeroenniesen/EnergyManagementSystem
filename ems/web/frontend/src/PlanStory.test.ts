@@ -322,6 +322,26 @@ describe("PlanStory rendering", () => {
     expect(html).toContain("rule-based winter planner");
   });
 
+  test("#323: shows Voorzorgslading tile with cost estimate from buy_pool", () => {
+    const html = renderToStaticMarkup(createElement(PlanStory, {
+      story: storyData([], [storySlot(0, { action: "grid_charge" })], 0),
+      buyPool: {
+        state: "empty",
+        max_buy_eur_per_kwh: 0.27,
+        cheapest_slot: null,
+        shortfall_kwh: 5.0,
+        next_chance: null,
+        pool_size: 0,
+        must_charge_summary:
+          "Voorzorgslading: circa 2,0 kWh × €0,37/kWh (plafond €0,40/kWh)",
+      },
+    }));
+    expect(html).toContain('data-testid="must-charge-summary"');
+    expect(html).toContain("Voorzorgslading");
+    expect(html).toContain("kWh");
+    expect(html).toContain("plafond");
+  });
+
   test("draws negative prices below a zero baseline while captioning the observed range", () => {
     const html = renderToStaticMarkup(createElement(PlanStory, {
       story: storyData([], [

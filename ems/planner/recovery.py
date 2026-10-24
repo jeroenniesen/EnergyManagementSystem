@@ -39,6 +39,7 @@ from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
 from ems.domain import BatteryIntent
+from ems.planner import economics
 from ems.planner.budgets import ac_grid_kwh_per_slot, clamp_grid_charge
 from ems.planner.charge_need import stored_kwh_per_slot
 from ems.planner.projection import ProjectedSlot
@@ -171,6 +172,8 @@ def build_catch_up_plan(
     max_daily_grid_charge_kwh: float = 12.0,
     already_bought_today_kwh: float | None = 0.0,
     site_tz: ZoneInfo | None = None,
+    degradation_eur_per_kwh: float = 0.0,
+    risk_margin_eur_per_kwh: float = 0.0,
 ) -> CatchUpResult:
     """Reshape `plan` to catch up a missed charge window (SPEC §8.12).
 
@@ -203,12 +206,19 @@ def build_catch_up_plan(
     # Candidate slots: still ahead (slot_end > now), before the deadline, and NOT a peak the plan is
     # discharging into. Cheapest first, ties by earliest start (deterministic).
     discharging = {s.start for s in plan.slots if s.intent is BatteryIntent.DISCHARGE_FOR_LOAD}
-    # Never buy above the price of the peak being shaved (grossed up for round-trip
-    # losses).  The normal planner tightens this ceiling further for wear/risk;
-    # this conservative local equivalent prevents recovery from buying at a loss.
+    # Same buy ceiling as winter: undercut the cheapest peak still being shaved, after
+    # losses, wear and risk. Defaults of 0 reproduce the previous `peak * RTE` ceiling
+    # for callers that do not pass the planner settings (api preview stays on that path).
     discharge_prices = [p.eur_per_kwh for p in prices if p.start in discharging]
-    max_buy = (min(discharge_prices) * round_trip_efficiency
-               if discharge_prices else float("inf"))
+    if discharge_prices:
+        max_buy = economics.max_buy_for_peak(
+            min(discharge_prices),
+            rte=round_trip_efficiency,
+            deg=degradation_eur_per_kwh,
+            risk=risk_margin_eur_per_kwh,
+        )
+    else:
+        max_buy = float("inf")
     executable_starts = {s.start for s in plan.slots}
     candidates = sorted(
         (p for p in prices
@@ -391,6 +401,8 @@ def recover_if_needed(
     max_daily_grid_charge_kwh: float = 12.0,
     already_bought_today_kwh: float | None = 0.0,
     site_tz: ZoneInfo | None = None,
+    degradation_eur_per_kwh: float = 0.0,
+    risk_margin_eur_per_kwh: float = 0.0,
 ) -> tuple[Plan, CompletionStatus, CatchUpResult | None]:
     """Pure control-loop entry point: return the plan to act on this cycle plus the diagnosis.
 
@@ -424,5 +436,7 @@ def recover_if_needed(
         max_daily_grid_charge_kwh=max_daily_grid_charge_kwh,
         already_bought_today_kwh=already_bought_today_kwh,
         site_tz=site_tz,
+        degradation_eur_per_kwh=degradation_eur_per_kwh,
+        risk_margin_eur_per_kwh=risk_margin_eur_per_kwh,
     )
     return catch_up.plan, status, catch_up

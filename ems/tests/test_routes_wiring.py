@@ -46,6 +46,7 @@ EXPECTED_DIRECT_ROUTES = frozenset({
     ("GET", "/api/incidents"),
     ("GET", "/api/intelligence"),
     ("GET", "/api/override"),
+    ("GET", "/api/override/must-charge"),
     ("GET", "/api/plan-detail"),
     ("GET", "/api/prices"),
     ("GET", "/api/replay"),
@@ -59,8 +60,11 @@ EXPECTED_DIRECT_ROUTES = frozenset({
     ("POST", "/api/ai/validate"),
     ("POST", "/api/chat"),
     ("POST", "/api/override"),
+    ("POST", "/api/override/must-charge"),
+    ("DELETE", "/api/override/must-charge"),
     ("POST", "/api/plan-preview"),
     ("POST", "/api/settings"),
+    ("POST", "/api/setup/settings"),
     ("POST", "/api/trading/test-battery"),
     ("POST", "/api/trading/dry-run-reviewed"),
     # The catch-all is registered for every write method + GET.
@@ -95,6 +99,7 @@ EXTRACTED_GET_ROUTES = [
 EXTRACTED_WRITE_ROUTES = [
     "/api/car/soc",                    # car
     "/api/notifications/read",         # notify
+    "/api/consumers/advice/accept",    # accepted start window (#334)
 ]
 # POST /api/whatif (B-73) is reachable but deliberately NOT a gated write (see api.py's
 # _WRITE_API_PATHS comment + ems/web/routes/whatif.py's module docstring) — checked separately
