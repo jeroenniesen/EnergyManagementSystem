@@ -28,6 +28,13 @@
   /* Gas (Insights gas panel): amber/orange, distinct from --car (pink) and --house (violet). */
   --gas: #e08a3a;
   --gas-text: #e08a3a;
+  /* UX-review TOK-01: aliases used by System, setup, week digest (see ui-review-2026-10). */
+  --border: var(--line);
+  --danger: var(--error);
+  --warn-text: var(--amber-text);
+  /* TOK-03: destructive actions (.btn-danger) — fill + label colour (contrast-checked). */
+  --danger-fill: #b42318;
+  --danger-fill-text: #ffffff;
   font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
 }
 
@@ -60,6 +67,11 @@
   --car: #b0568c;
   --gas: #b0660c;
   --gas-text: #8a5109; /* darker gas/amber for text — AA on white */
+  --border: var(--line);
+  --danger: var(--error);
+  --warn-text: var(--amber-text);
+  --danger-fill: #c0392b;
+  --danger-fill-text: #ffffff;
 }
 
 * { box-sizing: border-box; }
@@ -1047,13 +1059,24 @@ body {
 .override-confirm-title { font-weight: 600; margin: 0 0 6px; }
 .override-reassure { color: var(--muted); font-size: 0.78rem; margin: 6px 0 12px; }
 .override-controls { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; }
-.override-controls select {
+.override-controls select,
+.override-controls input {
   font: inherit;
   color: var(--text);
   background: var(--panel-2);
   border: 1px solid var(--line);
   border-radius: 8px;
+  padding: 8px 10px;
+}
+.override-controls select {
   padding: 8px 32px 8px 10px;
+}
+.override-controls label {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 0.78rem;
+  color: var(--muted);
 }
 
 /* Native selects → one custom chevron so the dropdowns match the rest of the controls. The
@@ -1067,6 +1090,13 @@ body {
   background-position: right 11px center;
 }
 .field select { padding-right: 32px; }
+.must-charge {
+  margin-top: 16px;
+  padding-top: 14px;
+  border-top: 1px solid var(--line);
+}
+.must-charge h3 { margin: 0 0 6px; font-size: 0.95rem; font-weight: 650; }
+.must-charge-warning { margin-top: 8px; }
 .override-controls select:focus { outline: none; border-color: var(--accent); }
 .override-controls select:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
 
@@ -1742,6 +1772,19 @@ body {
 }
 .btn-primary:hover:not(:disabled) { filter: brightness(1.07); }
 .btn-primary:disabled { opacity: 0.45; cursor: not-allowed; }
+.btn-danger {
+  font: inherit;
+  font-weight: 600;
+  color: var(--danger-fill-text);
+  background: var(--danger-fill);
+  border: none;
+  border-radius: 8px;
+  padding: 9px 18px;
+  cursor: pointer;
+  transition: filter 0.15s ease, opacity 0.15s ease;
+}
+.btn-danger:hover:not(:disabled) { filter: brightness(1.07); }
+.btn-danger:disabled { opacity: 0.45; cursor: not-allowed; }
 .btn-ghost {
   font: inherit;
   color: var(--muted);
@@ -1754,7 +1797,7 @@ body {
 }
 .btn-ghost:hover:not(:disabled) { color: var(--text); border-color: var(--muted); }
 .btn-ghost:disabled { opacity: 0.4; cursor: not-allowed; }
-.btn-primary:focus-visible, .btn-ghost:focus-visible {
+.btn-primary:focus-visible, .btn-danger:focus-visible, .btn-ghost:focus-visible {
   outline: 2px solid var(--accent); outline-offset: 2px;
 }
 .settings-msg-ok { color: var(--green-text); font-size: 0.85rem; }
@@ -1924,8 +1967,8 @@ body {
 .ha-wizard-input:focus { outline: 2px solid var(--accent); outline-offset: 1px; }
 .ha-wizard-hint { margin: 0; font-size: 0.78rem; color: var(--muted); line-height: 1.45; }
 .ha-wizard-hint code { font-size: 0.76rem; }
-.ha-wizard-error { margin: 0; font-size: 0.85rem; color: var(--danger, #b42318); }
-.ha-wizard-warn { margin: 0; font-size: 0.82rem; color: var(--warn-text, #9a6700); }
+.ha-wizard-error { margin: 0; font-size: 0.85rem; color: var(--danger); }
+.ha-wizard-warn { margin: 0; font-size: 0.82rem; color: var(--warn-text); }
 .ha-wizard-status { margin: 0 0 10px; font-size: 0.85rem; color: var(--accent-text); }
 .ha-wizard-actions { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 4px; }
 .ha-wizard-token-row { display: flex; gap: 8px; align-items: center; }
@@ -1946,7 +1989,7 @@ body {
 .setup-checklist-headline {
   margin: 0 0 16px; font-size: 1rem; font-weight: 600; color: var(--text);
 }
-.setup-checklist-error { margin: 0 0 12px; font-size: 0.85rem; color: var(--danger, #b42318); }
+.setup-checklist-error { margin: 0 0 12px; font-size: 0.85rem; color: var(--danger); }
 .setup-checklist-items {
   list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 12px;
 }
@@ -1959,11 +2002,25 @@ body {
   border-radius: 999px; padding: 3px 10px; white-space: nowrap;
 }
 .setup-status-ok { background: color-mix(in srgb, var(--accent) 18%, transparent); color: var(--accent-text); }
-.setup-status-miss { background: color-mix(in srgb, var(--danger, #b42318) 14%, transparent); color: var(--danger, #b42318); }
+/* 10% keeps light --danger (#c0392b) at 4.69:1 on --panel; 14% measures 4.41:1. */
+.setup-status-miss { background: color-mix(in srgb, var(--danger) 10%, transparent); color: var(--danger); }
 .setup-status-opt { background: var(--panel-2); color: var(--muted); }
-.setup-status-control { background: color-mix(in srgb, var(--warn-text, #9a6700) 16%, transparent); color: var(--warn-text, #9a6700); }
+.setup-status-control { background: color-mix(in srgb, var(--warn-text) 16%, transparent); color: var(--warn-text); }
 .setup-checklist-sentence { margin: 0; flex: 1; min-width: 12rem; font-size: 0.9rem; line-height: 1.45; }
 .setup-checklist-btn { font-size: 0.82rem; }
+.setup-battery-wizard {
+  margin-top: 8px; padding: 14px; border-radius: 10px; background: var(--panel-2);
+  display: flex; flex-direction: column; gap: 10px;
+}
+.setup-field-label { font-size: 0.82rem; font-weight: 550; color: var(--muted); }
+.setup-field-input {
+  width: 100%; max-width: 18rem; padding: 8px 10px; font-size: 0.9rem;
+  border: 1px solid var(--border); border-radius: 8px; background: var(--panel);
+}
+.setup-wizard-msg, .setup-wizard-hint { margin: 0; font-size: 0.85rem; color: var(--muted); line-height: 1.45; }
+.setup-wizard-error { margin: 0; font-size: 0.85rem; color: var(--danger); }
+.setup-wizard-success { margin: 0; font-size: 0.85rem; color: var(--accent-text); }
+.setup-battery-save { align-self: flex-start; margin-top: 4px; }
 
 /* Advanced disclosure at the section's end (replaces the old global "Show advanced" toggle). */
 .settings-advanced { margin-top: 22px; }
@@ -2080,7 +2137,7 @@ body {
 .check-dot { width: 9px; height: 9px; border-radius: 50%; }
 .dot-ok { background: var(--green); }
 .dot-warn { background: var(--amber); }
-.dot-fail { background: #e05050; }
+.dot-fail { background: var(--danger); }
 .check-label { font-weight: 600; font-size: 0.9rem; }
 .check-detail { grid-column: 2; color: var(--muted); font-size: 0.8rem; }
 .check-recovery {
@@ -3200,3 +3257,9 @@ body {
 .trading-confirm { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-top: 8px; }
 .trading-confirm p { flex: 1 1 100%; margin: 0; }
 .trading-view .muted { color: var(--muted); font-size: 0.88rem; }
+.trading-steps { list-style: none; margin: 12px 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
+.trading-step { display: flex; gap: 10px; align-items: flex-start; font-size: 0.92rem; line-height: 1.4; }
+.trading-step-mark { flex-shrink: 0; font-weight: 600; width: 1.25rem; text-align: center; }
+.trading-step.ok .trading-step-mark { color: var(--ok, #0a7); }
+.trading-step.fail .trading-step-mark { color: var(--danger, #c33); }
+.trading-step-missing { color: var(--muted); font-size: 0.85rem; }

@@ -20,7 +20,13 @@ from datetime import datetime
 from zoneinfo import ZoneInfo
 
 from ems.planner.adaptive import AdaptiveConfig, plan_adaptive
-from ems.planner.budgets import ac_grid_kwh_per_slot, clamp_grid_charge
+from ems.planner.budgets import ac_grid_kwh_per_slot, clamp_cycle_budget, clamp_grid_charge
+from ems.planner.economics import apply_daily_savings_floor
+from ems.planner.must_charge import (
+    MustChargeConfig,
+    apply_must_charge,
+    apply_resident_overlay,
+)
 from ems.planner.rule_based import PlannerConfig, plan_rule_based
 from ems.planner.schedule import Plan
 from ems.planner.summer import SummerConfig, plan_summer
@@ -257,7 +263,125 @@ def build_plan(
     bought, cap, per_slot, site_tz = _daily_cap_inputs(
         strategy, winter_cfg, summer_cfg, adaptive_cfg, load_w_by,
     )
-    return clamp_grid_charge(plan, bought, cap, per_slot, tz=site_tz)
+    plan = clamp_grid_charge(plan, bought, cap, per_slot, tz=site_tz)
+    # Trading already applied the shared EFC helper to its own charge and export.
+    # A second slot walk would count full-power slots, which is stricter than the
+    # trade's stored-energy trim and would change a zero-history decision.
+    if plan.strategy != "trading":
+        plan = _clamp_shared_cycles(
+            plan, strategy, winter_cfg, summer_cfg, adaptive_cfg, load_w_by,
+        )
+    plan = _maybe_apply_must_charge(
+        plan, prices, now, soc_pct, adaptive_cfg, load_w_by,
+    )
+    bought, cap, per_slot, site_tz = _daily_cap_inputs(
+        strategy, winter_cfg, summer_cfg, adaptive_cfg, load_w_by,
+    )
+    plan = clamp_grid_charge(plan, bought, cap, per_slot, tz=site_tz)
+    if plan.strategy != "trading":
+        plan = _clamp_shared_cycles(
+            plan, strategy, winter_cfg, summer_cfg, adaptive_cfg, load_w_by,
+        )
+    # #319: after the plan (and the cycle clamp) exist, drop grid charge that
+    # does not clear planner.daily_min_savings_eur. Threshold 0 is off.
+    return _apply_savings_floor(
+        plan, prices, load_w_by, winter_cfg, adaptive_cfg,
+    )
+
+
+def _maybe_apply_must_charge(
+    plan: Plan,
+    prices: list[PriceSlot],
+    now: datetime,
+    soc_pct: float,
+    adaptive_cfg: AdaptiveConfig | None,
+    load_w_by: dict[datetime, float] | None,
+) -> Plan:
+    if adaptive_cfg is None or load_w_by is None:
+        return plan
+    cfg = MustChargeConfig(
+        enabled=adaptive_cfg.must_charge_enabled,
+        target_soc_pct=adaptive_cfg.must_charge_target_soc,
+        max_price_eur_per_kwh=adaptive_cfg.must_charge_max_price_eur_per_kwh,
+        buffer_pp=adaptive_cfg.must_charge_buffer_pp,
+        usable_kwh=adaptive_cfg.usable_kwh,
+        effective_floor_soc_pct=adaptive_cfg.reserve_soc_pct,
+        max_charge_w=adaptive_cfg.max_charge_w,
+        round_trip_efficiency=adaptive_cfg.round_trip_efficiency,
+        capability_ready=adaptive_cfg.must_charge_capability_ready,
+        device_min_target_soc_pct=adaptive_cfg.must_charge_device_min_target_soc,
+        site_tz=adaptive_cfg.site_tz,
+    )
+    plan = apply_must_charge(plan, prices, now, soc_pct=soc_pct, cfg=cfg)
+    return apply_resident_overlay(
+        plan, prices, now, soc_pct=soc_pct, adaptive_cfg=adaptive_cfg,
+    )
+
+
+def _apply_savings_floor(
+    plan: Plan,
+    prices: list[PriceSlot],
+    load_w_by: dict[datetime, float] | None,
+    winter_cfg: PlannerConfig,
+    adaptive_cfg: AdaptiveConfig | None,
+) -> Plan:
+    """Shared daily-min gate for winter and adaptive (and any plan build_plan returns)."""
+    minimum = float(getattr(winter_cfg, "daily_min_savings_eur", 0.0) or 0.0)
+    if adaptive_cfg is not None and load_w_by is not None:
+        rte = adaptive_cfg.round_trip_efficiency
+        deg = adaptive_cfg.degradation_eur_per_kwh
+        risk = adaptive_cfg.risk_margin_eur_per_kwh
+    else:
+        rte = winter_cfg.round_trip_efficiency
+        deg = winter_cfg.degradation_eur_per_kwh
+        risk = winter_cfg.risk_margin_eur_per_kwh
+    return apply_daily_savings_floor(
+        plan, prices, load_w_by, minimum, rte, deg, risk,
+        float(getattr(winter_cfg, "import_fee_eur_per_kwh", 0.0) or 0.0),
+    )
+
+
+def _clamp_shared_cycles(
+    plan: Plan,
+    strategy: str,
+    winter_cfg: PlannerConfig,
+    summer_cfg: SummerConfig,
+    adaptive_cfg: AdaptiveConfig | None,
+    load_w_by: dict[datetime, float] | None,
+) -> Plan:
+    """Apply the one daily EFC budget on the seasonal plan that just ran."""
+    if strategy == "summer" and adaptive_cfg is not None and load_w_by is not None:
+        src = adaptive_cfg
+        usable, watts, rte, zone = (
+            src.usable_kwh, src.max_charge_w, src.round_trip_efficiency, src.site_tz,
+        )
+    elif strategy == "summer":
+        src = winter_cfg
+        usable, watts, rte, zone = (
+            summer_cfg.usable_kwh, summer_cfg.max_charge_w,
+            summer_cfg.round_trip_efficiency, summer_cfg.site_tz,
+        )
+    elif adaptive_cfg is not None and load_w_by is not None:
+        src = winter_cfg
+        usable, watts, rte, zone = (
+            adaptive_cfg.usable_kwh, adaptive_cfg.max_charge_w,
+            winter_cfg.round_trip_efficiency, winter_cfg.site_tz,
+        )
+    else:
+        src = winter_cfg
+        usable, watts, rte, zone = (
+            10.0, 4000.0, winter_cfg.round_trip_efficiency, winter_cfg.site_tz,
+        )
+    return clamp_cycle_budget(
+        plan,
+        getattr(src, "charged_today_kwh", 0.0),
+        getattr(src, "discharged_today_kwh", 0.0),
+        getattr(src, "max_cycles_per_day", 1.5),
+        usable,
+        round_trip_efficiency=rte,
+        charge_fallback_w=watts,
+        tz=zone,
+    )
 
 
 def _daily_cap_inputs(

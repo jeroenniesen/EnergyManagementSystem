@@ -356,6 +356,46 @@ def normalize_ntfy_topic(raw: str) -> str:
     return text
 
 
+_RFC1918_V4 = (
+    ipaddress.IPv4Network("10.0.0.0/8"),
+    ipaddress.IPv4Network("172.16.0.0/12"),
+    ipaddress.IPv4Network("192.168.0.0/16"),
+)
+
+_PRIVATE_IPV4_MSG = (
+    "Vul een privé IPv4-adres in (10.x.x.x, 172.16–172.31.x.x of 192.168.x.x)."
+)
+
+
+def _is_rfc1918_v4(ip: ipaddress.IPv4Address) -> bool:
+    return any(ip in net for net in _RFC1918_V4)
+
+
+def normalize_private_ipv4(raw: str) -> str:
+    """RFC1918 IPv4 only — for onboarding setup saves (#291). No hostnames, no public IPs."""
+    text = str(raw).strip()
+    if not text:
+        raise ValueError(_PRIVATE_IPV4_MSG)
+    if "://" in text or any(ch in text for ch in "/?#@\\"):
+        raise ValueError(_PRIVATE_IPV4_MSG)
+    host = text[1:-1] if text.startswith("[") and text.endswith("]") else text
+    if host.count(":") == 1 and not host.startswith("["):
+        left, right = host.split(":", 1)
+        if right.isdigit():
+            raise ValueError(_PRIVATE_IPV4_MSG)
+    ip = _parse_ip_literal(host)
+    if ip is None or not isinstance(ip, ipaddress.IPv4Address):
+        raise ValueError(_PRIVATE_IPV4_MSG)
+    ip = _unwrap_mapped(ip)
+    if ip.is_loopback or ip.is_link_local or ip in _METADATA_V4:
+        raise ValueError(_PRIVATE_IPV4_MSG)
+    if isinstance(ip, ipaddress.IPv4Address) and ip in _CGNAT_V4:
+        raise ValueError(_PRIVATE_IPV4_MSG)
+    if not _is_rfc1918_v4(ip):
+        raise ValueError(_PRIVATE_IPV4_MSG)
+    return str(ip)
+
+
 def hostname_is_private_ip(hostname: str) -> bool:
     """True when ``hostname`` is an IP literal in a private/site-local range."""
     host = (hostname or "").strip().lower()

@@ -75,6 +75,12 @@ SETTINGS_SCHEMA: tuple[SettingsField, ...] = (
         min=1.0, max=40.0, step=0.5, unit="kWh", slider=True,
     ),
     SettingsField(
+        "planner.max_buy_eur_per_kwh", "Max inkoopprijs", "number", 0.0, "strategy",
+        help="Nooit van het net laden boven deze prijs (€/kWh). 0 = automatisch: EMS gebruikt "
+        "de economische koopgrens uit piek, rendement, slijtage en risico.",
+        min=0.0, max=1.0, step=0.01, unit="€/kWh",
+    ),
+    SettingsField(
         "strategy.summer_max_topup_price", "Summer: max top-up price", "number", 0.30, "strategy",
         help="Never grid-charge in summer above this price.",
         min=0.0, max=2.0, step=0.01, unit="€/kWh", advanced=True,
@@ -442,6 +448,16 @@ SETTINGS_SCHEMA: tuple[SettingsField, ...] = (
         min=30.0, max=100.0, step=5.0, unit="%", slider=True,
     ),
     SettingsField(
+        "planner.commit_solar_basis", "Committed solar basis", "enum", "auto", "planner",
+        help="How much sun to count when sizing a committed grid charge. Auto uses the "
+        "lower of solar-confidence × P50 and P10 when the forecast that actually arrived "
+        "has a real P10 (Solcast). Forecast.Solar's derived bands, a fallback to those "
+        "bands, and an unknown forecast keep today's solar-confidence × P50. P50 always "
+        "uses solar-confidence × P50. Auto never counts on more sun than today.",
+        options=("auto", "p50"),
+        advanced=True,
+    ),
+    SettingsField(
         "planner.round_trip_efficiency", "Round-trip efficiency", "number", 0.90, "planner",
         help="How much energy survives a charge-then-discharge cycle (0.90 = 90%). Lower means the "
         "system only acts when the savings clearly beat the losses.",
@@ -539,11 +555,44 @@ SETTINGS_SCHEMA: tuple[SettingsField, ...] = (
         advanced=True,
     ),
     SettingsField(
+        "planner.stale_reserve_buffer_pp", "Stale meter reserve buffer", "number", 5.0, "planner",
+        help="When the EV or grid meter stops updating, the planner adds this many percentage "
+        "points to the discharge floor and avoids new export or aggressive discharge until "
+        "readings are fresh again.",
+        min=0.0, max=20.0, step=1.0, unit="pp", advanced=True,
+    ),
+    SettingsField(
         "planner.recovery_enabled", "Recover a missed charge window", "bool", True, "planner",
         help="If a planned low-cost charge is missed and the deadline is still ahead, the system "
         "can use the best worthwhile slots that remain. It never bypasses the same safety checks "
         "or buys above its break-even limit. Turn it off to leave missed windows untouched.",
         advanced=True,
+    ),
+    SettingsField(
+        "planner.must_charge_enabled", "Voorzorgslading vóór avondpiek", "bool", False, "strategy",
+        help="Optioneel: laad de batterij bij tot het ingestelde doel vóór een dure avondpiek "
+        "als normale arbitrage geen koopmoment vindt en het laadniveau laag is. Standaard uit.",
+    ),
+    SettingsField(
+        "planner.must_charge_target_soc", "Voorzorgslading: doel laadniveau", "number", 30.0,
+        "strategy",
+        help="Laadniveau (%) dat voorzorgslading probeert te halen vóór de piek. Blijft binnen "
+        "je reserve en batterijgrenzen.",
+        min=5.0, max=100.0, step=1.0, unit="%",
+    ),
+    SettingsField(
+        "planner.must_charge_max_price_eur_per_kwh", "Voorzorgslading: prijsplafond", "number",
+        0.40, "strategy",
+        help="Laad alleen op slots met een bekende prijs tot dit plafond (€/kWh), los van de "
+        "arbitrage-max-inkoop.",
+        min=0.0, max=2.0, step=0.01, unit="€/kWh", advanced=True,
+    ),
+    SettingsField(
+        "planner.must_charge_buffer_pp", "Voorzorgslading: buffer boven vloer", "number", 10.0,
+        "strategy",
+        help="Start voorzorgslading alleen wanneer het laadniveau onder de effectieve vloer "
+        "plus deze buffer (procentpunt) zit.",
+        min=0.0, max=50.0, step=1.0, unit="pp", advanced=True,
     ),
     # --- AI explanations (optional, OFF by default; the one off-device feature — SPEC §12) ---
     SettingsField(
@@ -859,6 +908,87 @@ SETTINGS_SCHEMA: tuple[SettingsField, ...] = (
 
 SETTINGS_BY_KEY: dict[str, SettingsField] = {f.key: f for f in SETTINGS_SCHEMA}
 SECRET_KEYS: frozenset[str] = frozenset(f.key for f in SETTINGS_SCHEMA if f.type == "secret")
+
+# POST /api/setup/settings allowlist (#291 onboarding).
+SETUP_SETTINGS_EXTRA_KEYS: frozenset[str] = frozenset({"connection.use_live_devices"})
+SETUP_SETTINGS_PREFIXES: tuple[str, ...] = (
+    "battery.", "meters.", "prices.", "site.", "ev.",
+)
+SETUP_PRIVATE_IPV4_KEYS: frozenset[str] = frozenset({
+    "battery.indevolt_ip",
+    "meters.p1_ip",
+    "meters.solar_ip",
+    "meters.car_ip",
+})
+SETUP_FORBIDDEN_KEY_MSG = (
+    "Deze instelling kan niet via de setup-wizard worden gewijzigd."
+)
+
+# AC 17 (#291): battery power/reserve limits — never via onboarding (capability probe later).
+SETUP_SETTINGS_BATTERY_POWER_LIMIT_KEYS: frozenset[str] = frozenset({
+    "battery.max_charge_w",
+    "battery.max_discharge_w",
+    "battery.usable_kwh",
+    "battery.min_reserve_soc",
+    "battery.night_reserve_kwh",
+    "battery.overnight_load_kwh",
+})
+# Only connection fields — any other battery.* key is rejected (AC 17 guard against schema drift).
+SETUP_SETTINGS_BATTERY_SAFE_KEYS: frozenset[str] = frozenset({
+    "battery.indevolt_ip",
+    "battery.indevolt_ips_extra",
+    "battery.indevolt_port",
+})
+SETUP_SETTINGS_DENIED_KEYS: frozenset[str] = SETUP_SETTINGS_BATTERY_POWER_LIMIT_KEYS
+
+# AC 18 (#291): only these secret keys may be written through POST /api/setup/settings.
+SETUP_SETTINGS_SECRET_ALLOWLIST: frozenset[str] = frozenset({"prices.tibber_token"})
+
+
+def setup_settings_key_allowed(key: str) -> bool:
+    if key in SETUP_SETTINGS_DENIED_KEYS:
+        return False
+    if key.startswith("battery.") and key not in SETUP_SETTINGS_BATTERY_SAFE_KEYS:
+        return False
+    if key in SECRET_KEYS and key not in SETUP_SETTINGS_SECRET_ALLOWLIST:
+        return False
+    if key in SETUP_SETTINGS_EXTRA_KEYS:
+        return True
+    return any(key.startswith(p) for p in SETUP_SETTINGS_PREFIXES)
+
+
+def apply_setup_private_ipv4_rules(
+    partial: dict[str, Any],
+) -> tuple[dict[str, Any], dict[str, str]]:
+    """Normalize RFC1918-only device IPs for setup saves; returns (body, errors)."""
+    from ems.url_safety import normalize_private_ipv4
+
+    out = dict(partial)
+    errors: dict[str, str] = {}
+    for key in list(out):
+        if key in SETUP_PRIVATE_IPV4_KEYS:
+            try:
+                out[key] = normalize_private_ipv4(str(out[key]))
+            except ValueError as exc:
+                errors[key] = str(exc)
+        elif key == "battery.indevolt_ips_extra":
+            raw = str(out[key]).strip()
+            if not raw:
+                try:
+                    normalize_private_ipv4("")
+                except ValueError as exc:
+                    errors[key] = str(exc)
+            else:
+                parts = [p.strip() for p in raw.split(",") if p.strip()]
+                normed: list[str] = []
+                try:
+                    for part in parts:
+                        normed.append(normalize_private_ipv4(part))
+                except ValueError as exc:
+                    errors[key] = str(exc)
+                else:
+                    out[key] = ", ".join(normed)
+    return out, errors
 
 # NL main-fuse presets @ 230 V → total watts (`control.grid_limit_w`). `unset` / `custom` are not
 # listed: unset keeps the conservative 5750 W schema default; custom uses the number field.

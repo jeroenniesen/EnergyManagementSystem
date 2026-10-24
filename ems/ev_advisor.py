@@ -16,7 +16,7 @@ sticker price, and the recommended window shifts toward the sunny hours — see
 from __future__ import annotations
 
 import math
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from typing import Protocol
 
 from ems.economics import EconomicSnapshot
@@ -24,6 +24,16 @@ from ems.tariffs import TariffPolicy
 
 SLOT = timedelta(minutes=15)
 SLOT_HOURS = 0.25
+
+
+def _utc(dt: datetime) -> datetime:
+    """Absolute instant.
+
+    Subtracting two aware datetimes that share a ZoneInfo ignores a DST offset change
+    and returns the wall-clock gap (75 minutes across the spring jump; the fall folds
+    compare equal). Contiguity, ordering and the window end all go through UTC.
+    """
+    return dt.astimezone(UTC)
 
 
 class _PriceLike(Protocol):
@@ -64,9 +74,14 @@ def advise_charge_window(
     if duration_slots <= 0:
         return None
 
+    now_utc = _utc(now) if now is not None else None
+    departure_utc = _utc(departure)
     candidates = sorted(
-        (s for s in price_slots if (now is None or s.start >= now) and s.start < departure),
-        key=lambda s: s.start,
+        (
+            s for s in price_slots
+            if (now_utc is None or _utc(s.start) >= now_utc) and _utc(s.start) < departure_utc
+        ),
+        key=lambda s: _utc(s.start),
     )
     if len(candidates) < duration_slots:
         return None
@@ -98,7 +113,10 @@ def advise_charge_window(
     for i in range(n - duration_slots + 1):
         window = candidates[i:i + duration_slots]
         # Only a run of back-to-back 15-min slots is an actionable "plug in at HH:MM" window.
-        if any(window[k + 1].start - window[k].start != SLOT for k in range(len(window) - 1)):
+        if any(
+            _utc(window[k + 1].start) - _utc(window[k].start) != SLOT
+            for k in range(len(window) - 1)
+        ):
             continue
         cost = 0.0
         surplus_slots = 0
@@ -113,7 +131,8 @@ def advise_charge_window(
         return None
 
     window = candidates[best_start_idx:best_start_idx + duration_slots]
-    start, end = window[0].start, window[-1].start + SLOT
+    start = window[0].start
+    end = (_utc(window[-1].start) + SLOT).astimezone(start.tzinfo)
     solar_share_pct = round(100 * best_surplus_slots / duration_slots)
     duration_label = _fmt_duration(duration_slots * SLOT_HOURS)
     reason = f"Cheapest {duration_label} window before your {departure.strftime('%H:%M')} departure"

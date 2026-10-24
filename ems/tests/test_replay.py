@@ -626,6 +626,42 @@ def test_replay_under_cap_day_spend_unchanged_and_over_cap_day_clamped():
     )) > 12.0
 
 
+def test_replay_canned_days_stay_within_the_shared_cycle_budget():
+    """AC5: 14 canned winter days, no planned local day above planner.max_cycles_per_day.
+
+    A 14-day replay on the production database is a manual post-merge check.
+    """
+    from ems.planner.budgets import plan_day_efc
+    from ems.planner.strategy import build_plan
+    from ems.replay import _adaptive_cfg, _summer_cfg, _winter_cfg
+
+    cfg = _cfg()
+    limit = 1.5
+    for offset in range(14):
+        day = DAY + timedelta(days=offset)
+        raw = _raw_day(1000.0, lambda _i: 0.0, day=day)
+        prices = _price_day(_winter_price, day=day)
+        result = replay_day(raw, prices, [], cfg=cfg)
+        assert result.data_ok, result.skip_reason
+        assert result.scenarios["planner"].cycles_kwh <= limit * cfg.usable_kwh + 1e-6
+        slots = [
+            PriceSlot(start=datetime.fromisoformat(p["start_ts"]), eur_per_kwh=p["eur_per_kwh"])
+            for p in prices
+        ]
+        plan = build_plan(
+            "winter", prices=slots, forecast=[], now=day, soc_pct=0.0,
+            winter_cfg=_winter_cfg(cfg), summer_cfg=_summer_cfg(cfg),
+            load_w_by={s.start: 1000.0 for s in slots}, adaptive_cfg=_adaptive_cfg(cfg),
+        )
+        efc = plan_day_efc(
+            plan, cfg.usable_kwh,
+            round_trip_efficiency=cfg.round_trip_efficiency,
+            charge_fallback_w=cfg.max_charge_w, tz=UTZ,
+        )
+        assert efc
+        assert max(efc.values()) <= limit + 1e-6
+
+
 def test_marked_floor_hold_at_reserve_passes_validator():
     """#312 AC4: floor-hold post-pass on a synthetic at-floor slot stays validator-clean."""
     from ems.planner.validator import validate_plan as vp
@@ -647,3 +683,147 @@ def test_marked_floor_hold_at_reserve_passes_validator():
     )
     assert v.ok
     assert not any(f.severity == "unsafe" for f in v.findings)
+
+
+def test_replay_14_winter_days_keep_more_energy_for_18():
+    """#326 AC4: 14 winter days — fewer evenings under floor+1 kWh, no extra breaches.
+
+    Savings difference (after − before) is +2.476705 EUR: the battery serves the
+    dearer evening peak instead of emptying on the morning peak. Before-figures were
+    measured on this fixture with the pre-#326 planner.
+    """
+    import json
+    from pathlib import Path
+
+    from ems.planner.strategy import build_plan
+    from ems.replay import _adaptive_cfg, _summer_cfg, _winter_cfg
+
+    spec = json.loads(Path("ems/tests/fixtures/evening_reserve_14d.json").read_text())
+    ams = ZoneInfo(spec["tz"])
+    prices_by_hour = {int(h): v for h, v in spec["prices_eur_by_local_hour"].items()}
+    load_w = float(spec["load_w"])
+    soc = float(spec["start_soc_pct"])
+    usable = float(spec["usable_kwh"])
+    floor = float(spec["reserve_soc_pct"])
+    cfg = ReplayConfig.from_settings({
+        "battery.usable_kwh": usable,
+        "battery.max_charge_w": spec["max_charge_w"],
+        "battery.max_discharge_w": spec["max_discharge_w"],
+        "battery.min_reserve_soc": floor,
+        "planner.round_trip_efficiency": spec["round_trip_efficiency"],
+        "strategy.mode": "winter",
+        "prices.export_price_model": "net_metering",
+    }, tz=ams)
+    first = datetime.fromisoformat(spec["first_date"]).replace(tzinfo=ams)
+    below = 0
+    breaches = 0
+    planner_cost = 0.0
+    auto_cost = 0.0
+    model = BatteryModel(
+        usable_kwh=usable, max_charge_w=spec["max_charge_w"],
+        max_discharge_w=spec["max_discharge_w"],
+        round_trip_efficiency=spec["round_trip_efficiency"],
+        reserve_soc_pct=floor,
+    )
+    for offset in range(int(spec["days"])):
+        day = first + timedelta(days=offset)
+        raw, price_rows, price_slots = [], [], []
+        for i in range(96):
+            start = day + timedelta(minutes=15 * i)
+            raw.append({
+                "ts": start.isoformat(),
+                "grid_power_w": load_w,
+                "solar_power_w": 0.0,
+                "battery_power_w": 0.0,
+                "ev_power_w": 0.0,
+                "soc_pct": soc,
+            })
+            price = prices_by_hour[start.hour]
+            price_rows.append({"start_ts": start.isoformat(), "eur_per_kwh": price})
+            price_slots.append(PriceSlot(start=start, eur_per_kwh=price))
+        result = replay_day(raw, price_rows, [], cfg=cfg)
+        assert result.data_ok, result.skip_reason
+        breaches += result.scenarios["planner"].reserve_breaches
+        planner_cost += result.scenarios["planner"].cost_eur
+        auto_cost += result.scenarios["auto_selfuse"].cost_eur
+        load_by = {s.start: load_w for s in price_slots}
+        plan = build_plan(
+            "winter", prices=price_slots, forecast=[], now=day, soc_pct=soc,
+            winter_cfg=_winter_cfg(cfg), summer_cfg=_summer_cfg(cfg),
+            load_w_by=load_by, adaptive_cfg=_adaptive_cfg(cfg),
+        )
+        proj = project_energy(
+            plan.slots, start_soc_pct=soc, solar_w_by={}, load_w_by=load_by,
+            model=model, charge_target_soc_pct=plan.target_soc,
+        )
+        entering = next(
+            p for p in proj
+            if p.start.astimezone(ams).hour == 17 and p.start.astimezone(ams).minute == 45
+        )
+        soc_kwh = entering.soc_pct / 100.0 * usable
+        assert soc_kwh == spec["expected_after_326"]["soc_kwh_at_18"]
+        if soc_kwh < floor / 100.0 * usable + 1.0:
+            below += 1
+    before = spec["baseline_before_326"]
+    after = spec["expected_after_326"]
+    savings = auto_cost - planner_cost
+    assert below == after["days_soc_18_below_floor_plus_1kwh"]
+    assert below < before["days_soc_18_below_floor_plus_1kwh"]
+    assert breaches == after["reserve_breaches"]
+    assert breaches <= before["reserve_breaches"]
+    assert planner_cost == after["planner_cost_eur"]
+    assert auto_cost == after["auto_cost_eur"]
+    assert savings == after["savings_eur"]
+    assert round(savings - before["savings_eur"], 6) == after["savings_difference_eur"]
+
+
+def test_fourteen_day_replay_shared_buy_ceiling_keeps_winter_numbers():
+    """#327 AC4: winter replay kWh, savings and reserve breaches stay on the pre-helper figures.
+
+    Summer-strategy (adaptive) on the same wide spread must not buy more or add breaches.
+    Exact adaptive figures are locked once measured; the inequalities are the acceptance.
+    """
+    from ems.planner.budgets import planned_grid_charge_kwh
+    from ems.planner.strategy import build_plan
+    from ems.replay import _adaptive_cfg, _summer_cfg, _winter_cfg
+
+    def totals(cfg):
+        cost_p = cost_a = breaches = bought = 0.0
+        for offset in range(14):
+            day = DAY + timedelta(days=offset)
+            raw = _raw_day(1000.0, lambda _i: 0.0, day=day)
+            prices = _price_day(_winter_price, day=day)
+            result = replay_day(raw, prices, [], cfg=cfg)
+            assert result.data_ok, result.skip_reason
+            cost_p += result.scenarios["planner"].cost_eur
+            cost_a += result.scenarios["auto_selfuse"].cost_eur
+            breaches += result.scenarios["planner"].reserve_breaches
+            slots = [
+                PriceSlot(
+                    start=datetime.fromisoformat(p["start_ts"]),
+                    eur_per_kwh=p["eur_per_kwh"],
+                )
+                for p in prices
+            ]
+            plan = build_plan(
+                result.strategy, prices=slots, forecast=[], now=day, soc_pct=0.0,
+                winter_cfg=_winter_cfg(cfg), summer_cfg=_summer_cfg(cfg),
+                load_w_by={s.start: 1000.0 for s in slots},
+                adaptive_cfg=_adaptive_cfg(cfg),
+            )
+            bought += planned_grid_charge_kwh(plan, 1.0, tz=UTZ)
+        return cost_a - cost_p, bought, breaches
+
+    savings, bought, breaches = totals(_cfg())
+    # #326: the evening reserve keeps energy for the EUR 0.50 evening peak and discharges there,
+    # so winter savings rise from 21.7 to 23.8 while bought energy stays 84.0 kWh and breaches
+    # stay 252: the higher saving never comes from buying more.
+    assert savings == pytest.approx(23.8)
+    assert bought == pytest.approx(84.0)
+    assert breaches == 252
+
+    savings_s, bought_s, breaches_s = totals(_cfg(**{"strategy.mode": "summer"}))
+    # Wide winter spread: the valleys stay under the new ceiling, so kWh and € do not move.
+    assert bought_s == pytest.approx(140.0)
+    assert breaches_s == 196
+    assert savings_s == pytest.approx(12.6)

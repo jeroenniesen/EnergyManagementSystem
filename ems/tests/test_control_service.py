@@ -15,15 +15,19 @@ from zoneinfo import ZoneInfo
 
 import pytest
 
+from ems.clock import FrozenClock
+from ems.consumers.start_advice import remember_accepted_window
 from ems.control.mode_controller import ModeController
 from ems.control.override import Override
 from ems.control.service import ControlContext, ControlService
 from ems.domain import BatteryIntent, PhysicalMode
 from ems.lifecycle import Lifecycle
+from ems.planner.budgets import ac_grid_kwh_per_slot, plan_day_efc, planned_grid_charge_kwh
 from ems.planner.validator import PlanValidation
 from ems.settings import effective_settings
 from ems.sources.battery import BatteryWriteUnconfirmed, MockBatteryDriver
 from ems.sources.prices import PriceSlot
+from ems.storage.history import HistoryStore
 
 NOW = datetime(2026, 6, 28, 12, 0, tzinfo=UTC)
 
@@ -110,6 +114,11 @@ def test_incomplete_live_prices_return_a_forced_battery_to_auto():
     assert "incomplete prices" in reason
     assert controller.driver.current_mode() is PhysicalMode.AUTO
     assert records
+
+
+def test_cycle_throughput_today_is_none_without_a_store():
+    svc, _ctx = _service(_controlling_controller())
+    assert svc.cycle_throughput_today(NOW) is None
 
 
 def test_control_service_constructs_and_runs_a_tick_standalone():
@@ -879,3 +888,151 @@ def test_cap_block_of_planned_grid_charge_counts_then_clears():
     svc.control_tick(start + timedelta(minutes=2))
     assert svc.charge_blocked_by_cap is False
     assert controller.driver.current_mode() is PhysicalMode.CHARGE
+
+
+def test_recovery_call_receives_wear_and_risk_from_settings(monkeypatch):
+    """#327: _plan_with_recovery_uncached passes the existing planner wear settings through."""
+    from ems.planner.recovery import NOT_APPLICABLE, CompletionStatus
+    from ems.planner.schedule import Plan, PlanSlot
+
+    svc, _ctx = _service(_controlling_controller())
+    captured: dict = {}
+
+    def fake_recover(plan, now, **kwargs):
+        captured.update(kwargs)
+        return plan, CompletionStatus(NOT_APPLICABLE, 0.0, "not this cycle"), None
+
+    monkeypatch.setattr("ems.control.service.recover_if_needed", fake_recover)
+    plan = Plan(
+        created_at=NOW,
+        slots=(PlanSlot(NOW, BatteryIntent.ALLOW_SELF_CONSUMPTION, "idle"),),
+        strategy="winter",
+    )
+    svc.build_plan_now = lambda now: (now, [PriceSlot(NOW, 0.20)], plan)
+    svc._current_soc = lambda now: 40.0
+    svc._plan_with_recovery_uncached(NOW)
+    assert captured["degradation_eur_per_kwh"] == float(
+        svc._settings["planner.degradation_eur_per_kwh"],
+    )
+    assert captured["risk_margin_eur_per_kwh"] == float(
+        svc._settings["planner.risk_margin_eur_per_kwh"],
+    )
+
+
+def _two_local_days(when: datetime, tz: ZoneInfo) -> list[PriceSlot]:
+    local = when.astimezone(tz)
+    midnight = datetime(local.year, local.month, local.day, tzinfo=tz)
+    start = midnight.astimezone(UTC)
+    end = (midnight + timedelta(days=2)).astimezone(UTC)
+    out = []
+    cursor = start
+    step = timedelta(minutes=15)
+    while cursor < end:
+        hour = cursor.astimezone(tz).hour
+        out.append(PriceSlot(cursor, 0.05 if hour < 6 else 0.40))
+        cursor += step
+    return out
+
+
+class _PriceCurve:
+    def __init__(self, slots) -> None:
+        self._slots = slots
+
+    def slots(self):
+        return list(self._slots)
+
+
+def test_large_accepted_bump_stays_inside_daily_and_cycle_ceilings(tmp_path):
+    """#334 AC5: a huge accepted load bump cannot lift grid charge past #317/#318."""
+    tz = ZoneInfo("Europe/Amsterdam")
+    when = datetime(2026, 1, 15, 1, 0, tzinfo=UTC)
+    svc, _ctx = _service(
+        _controlling_controller(),
+        price_source=_PriceCurve(_two_local_days(when, tz)),
+        clock=FrozenClock(when),
+    )
+    svc._planner_cfg = svc.planner_cfg
+    svc._summer_cfg = svc.summer_cfg
+    svc._adaptive_cfg = svc.adaptive_cfg
+    svc._load_by = svc.load_by
+    svc._current_soc = lambda now: 5.0
+    store = HistoryStore(str(tmp_path / "hist.sqlite"))
+    asyncio.run(store.init())
+    svc._store = store
+    svc._settings["battery.overnight_load_kwh"] = 18.0
+    svc._settings["battery.usable_kwh"] = 10.8
+    svc._settings["battery.max_charge_w"] = 4000.0
+    svc._settings["planner.max_daily_grid_charge_kwh"] = 12.0
+    svc._settings["planner.max_cycles_per_day"] = 1.5
+    svc._settings["planner.round_trip_efficiency"] = 0.9
+
+    plain = svc.plan_with_recovery(when)
+    assert plain is not None
+    day = when.astimezone(tz).date()
+    per_slot = ac_grid_kwh_per_slot(4000.0)
+    assert per_slot == 1.0
+    plain_kwh = planned_grid_charge_kwh(plain[2], per_slot, tz=tz, day=day)
+    assert plain_kwh > 0.0
+    assert plain_kwh <= 12.0
+
+    start = datetime(2026, 1, 15, 1, 0, tzinfo=UTC)
+    end = start + timedelta(hours=4)
+    remember_accepted_window(
+        _Mem(svc), "washer", start, end, 16, 80.0, when,
+    )
+    # 80 kWh / 16 slots / 0.25 h × 1000 = 20000 W on each accepted slot.
+    bumped_load = svc.load_by([start, start + timedelta(minutes=15), end])
+    base_load = 18.0 * 1000.0 / 12.0
+    assert bumped_load[start] - base_load == 20000.0
+    assert bumped_load[end] - base_load == 0.0
+
+    bumped = svc.plan_with_recovery(when)
+    assert bumped is not None
+    plan = bumped[2]
+    bumped_kwh = planned_grid_charge_kwh(plan, per_slot, tz=tz, day=day)
+    assert plain_kwh == 10.0
+    assert bumped_kwh == 10.0
+    charge_slots = [
+        s for s in plan.slots
+        if s.intent is BatteryIntent.GRID_CHARGE_TO_TARGET
+        and s.start.astimezone(tz).date() == day
+    ]
+    for slot in charge_slots:
+        assert slot.power_w == 4000.0
+        assert slot.power_w * 0.25 / 1000.0 == 1.0
+    efc = plan_day_efc(
+        plan, 10.8,
+        round_trip_efficiency=0.9,
+        charge_fallback_w=4000.0,
+        tz=tz,
+    )
+    assert efc.get(day, 0.0) <= 1.5
+    # A tighter daily ceiling still caps the bumped plan. Same frozen instant.
+    svc._settings["planner.max_daily_grid_charge_kwh"] = 2.0
+    svc._ctx.plan_cache["key"] = None
+    tight = svc.plan_with_recovery(when)
+    assert tight is not None
+    tight_kwh = planned_grid_charge_kwh(tight[2], per_slot, tz=tz, day=day)
+    assert tight_kwh <= 2.0
+    tight_efc = plan_day_efc(
+        tight[2], 10.8,
+        round_trip_efficiency=0.9,
+        charge_fallback_w=4000.0,
+        tz=tz,
+    )
+    assert tight_efc.get(day, 0.0) <= 1.5
+
+
+class _Mem:
+    def __init__(self, svc) -> None:
+        self.values: dict[str, str] = {}
+        svc._cache_store = self
+
+    def get(self, key: str):
+        return self.values.get(key)
+
+    def set(self, key: str, value: str, ttl_seconds: float) -> None:
+        self.values[key] = value
+
+    def _delete_key(self, key: str) -> None:
+        self.values.pop(key, None)

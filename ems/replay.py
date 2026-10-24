@@ -113,6 +113,8 @@ class ReplayConfig:
     export_fee_eur_per_kwh: float = 0.0
     # #317 hard daily grid-buy cap (kWh). Replay starts each day at zero already-bought.
     max_daily_grid_charge_kwh: float = 12.0
+    max_buy_eur_per_kwh: float = 0.0
+    commit_solar_basis: str = "auto"  # #330 auto|p50; unknown solar stays on P50
     # Locale (season choice + local-day bucketing). Default = the site tz.
     tz: ZoneInfo = ZoneInfo("Europe/Amsterdam")
 
@@ -145,6 +147,8 @@ class ReplayConfig:
             fixed_feed_in_eur_per_kwh=s["prices.fixed_feed_in_eur_per_kwh"],
             export_fee_eur_per_kwh=s.get("grid_fees.export_fee_eur_per_kwh", 0.0),
             max_daily_grid_charge_kwh=float(s.get("planner.max_daily_grid_charge_kwh", 12.0)),
+            max_buy_eur_per_kwh=float(s.get("planner.max_buy_eur_per_kwh", 0.0)),
+            commit_solar_basis=str(s.get("planner.commit_solar_basis", "auto")),
             tz=tz or ZoneInfo("Europe/Amsterdam"),
         )
 
@@ -158,6 +162,7 @@ def _winter_cfg(cfg: ReplayConfig) -> PlannerConfig:
         discharge_slots=cfg.discharge_slots,
         negative_price_soak=cfg.negative_price_soak,
         max_daily_grid_charge_kwh=cfg.max_daily_grid_charge_kwh,
+        max_buy_eur_per_kwh=cfg.max_buy_eur_per_kwh,
         site_tz=cfg.tz,
     )
 
@@ -173,7 +178,9 @@ def _adaptive_cfg(cfg: ReplayConfig) -> AdaptiveConfig:
         solar_confidence=cfg.solar_confidence,
         negative_price_soak=cfg.negative_price_soak,
         max_daily_grid_charge_kwh=cfg.max_daily_grid_charge_kwh,
+        max_buy_eur_per_kwh=cfg.max_buy_eur_per_kwh,
         site_tz=cfg.tz,
+        commit_solar_basis=cfg.commit_solar_basis,
     )
 
 
@@ -742,7 +749,7 @@ def replay_range(
                     conn,
                     "SELECT start_ts, eur_per_kwh FROM price_slots "
                     "WHERE start_ts >= ? AND start_ts < ? ORDER BY start_ts ASC",
-                    (start_iso, end_iso),
+                    (start_iso, _day_window(d + timedelta(days=1), cfg.tz)[1]),
                 )
                 # Canonical prediction ledger (not the deprecated forecast_snapshots write path).
                 forecast = _day_ahead_forecast(conn, start_iso, end_iso)

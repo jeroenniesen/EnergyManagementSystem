@@ -92,6 +92,8 @@ export type DecisionReason = {
     shortfall_kwh: number;
     next_chance: { start: string } | null;
     pool_size: number;
+    auto_max_buy_eur_per_kwh?: number;
+    resident_cap_eur_per_kwh?: number;
   } | null;
 };
 

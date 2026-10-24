@@ -8,6 +8,7 @@ import type {
   StorySlot,
   StoryTotals,
 } from "./EnergyStory";
+import { COMMIT_SOLAR_P10_LABEL } from "./labels";
 import { PlanStory } from "./PlanStory";
 
 const BASE = Date.parse("2026-07-18T06:00:00Z");
@@ -322,6 +323,26 @@ describe("PlanStory rendering", () => {
     expect(html).toContain("rule-based winter planner");
   });
 
+  test("#323: shows Voorzorgslading tile with cost estimate from buy_pool", () => {
+    const html = renderToStaticMarkup(createElement(PlanStory, {
+      story: storyData([], [storySlot(0, { action: "grid_charge" })], 0),
+      buyPool: {
+        state: "empty",
+        max_buy_eur_per_kwh: 0.27,
+        cheapest_slot: null,
+        shortfall_kwh: 5.0,
+        next_chance: null,
+        pool_size: 0,
+        must_charge_summary:
+          "Voorzorgslading: circa 2,0 kWh × €0,37/kWh (plafond €0,40/kWh)",
+      },
+    }));
+    expect(html).toContain('data-testid="must-charge-summary"');
+    expect(html).toContain("Voorzorgslading");
+    expect(html).toContain("kWh");
+    expect(html).toContain("plafond");
+  });
+
   test("draws negative prices below a zero baseline while captioning the observed range", () => {
     const html = renderToStaticMarkup(createElement(PlanStory, {
       story: storyData([], [
@@ -353,5 +374,42 @@ describe("PlanStory rendering", () => {
     expect(html).toContain("Prijs €-0.20–€-0.10");
     expect(html).not.toContain("Prijs €-0.20–€0.00");
     expect(html).not.toContain("Price €-0.20–€0.00");
+  });
+
+  test("#330 shows the P10 sizing label only when solarBasis is p10", () => {
+    const story = storyData([], [storySlot(0)], 0);
+    const onP10 = renderToStaticMarkup(createElement(PlanStory, {
+      story,
+      solarBasis: "p10",
+    }));
+    const onP50 = renderToStaticMarkup(createElement(PlanStory, {
+      story,
+      solarBasis: "p50",
+    }));
+    const hidden = renderToStaticMarkup(createElement(PlanStory, {
+      story,
+      solarBasis: null,
+    }));
+    const omitted = renderToStaticMarkup(createElement(PlanStory, { story }));
+
+    expect(onP10).toContain(COMMIT_SOLAR_P10_LABEL);
+    expect(onP10).toContain('data-testid="plan-story-solar-basis"');
+    expect(onP50).not.toContain(COMMIT_SOLAR_P10_LABEL);
+    expect(onP50).not.toContain('data-testid="plan-story-solar-basis"');
+    expect(hidden).not.toContain(COMMIT_SOLAR_P10_LABEL);
+    expect(omitted).not.toContain(COMMIT_SOLAR_P10_LABEL);
+  });
+
+  test("renders a 48h horizon without breaking the chart frame", () => {
+    const slots = Array.from({ length: 192 }, (_, index) => storySlot(index * 15));
+    const html = renderToStaticMarkup(createElement(PlanStory, {
+      story: storyData([], slots, 0),
+    }));
+    expect(html).toContain('data-testid="plan-story"');
+    expect(html).toContain("plan-story-axis");
+    expect(html).toContain("plan-story-chart-wrap");
+    const prices = html.split('data-testid="plan-story-price"').length - 1;
+    expect(prices).toBe(192);
+    expect(html).not.toContain("NaN");
   });
 });
