@@ -31,6 +31,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from ems.clock import Clock, SystemClock
+from ems.consumers.start_advice import accepted_load_bump_w, accepted_windows_revision
 from ems.control.car_mode import (
     _RESERVE_ENTER_PP,
     CarModeAction,
@@ -901,8 +902,11 @@ class ControlService:
         prof = self._ctx.load_profile_box["profile"]
         if prof is None:  # cold start: a flat overnight-derived baseline
             fallback = self._settings["battery.overnight_load_kwh"] * 1000.0 / 12.0
-            return {s: fallback for s in starts}
-        return {s: prof.expected_w(s) for s in starts}
+            base = {s: fallback for s in starts}
+        else:
+            base = {s: prof.expected_w(s) for s in starts}
+        bump = accepted_load_bump_w(self._cache_store, starts, self._clock)
+        return {s: base[s] + max(0.0, bump.get(s, 0.0)) for s in starts}
 
     def expected_ev_exogenous(self, now: datetime):
         """Winter EV-day estimate (#181 / SPEC §4.5). Fail-soft to 0 kWh when history/settings
@@ -1077,7 +1081,7 @@ class ControlService:
         reuse this path and must not rebuild a divergent plan just for explain.
         """
         now = self._clock.now_utc() if now is None else now
-        key = self.quantize_now(now)
+        key = (self.quantize_now(now), accepted_windows_revision(self._cache_store, self._clock))
         cache = self._ctx.plan_cache
         if cache["key"] == key:  # fast path: no lock when this cycle's plan is warm
             return cache["result"]

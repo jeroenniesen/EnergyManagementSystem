@@ -32,6 +32,7 @@ OPERATE_PATHS = frozenset({
     # #263: HA wizard probe/disconnect carry a long-lived token in the body.
     "/api/consumers/ha/test-connection",
     "/api/consumers/ha/disconnect",
+    "/api/consumers/advice/accept",
 })
 # Mutating HTTP verbs — only these can require OPERATE on an OPERATE_PATHS member; reads (GET/
 # HEAD/OPTIONS) of the same path are VIEW (mirrors api.py's own _WRITE_METHODS).
