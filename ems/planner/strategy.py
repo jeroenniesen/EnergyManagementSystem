@@ -306,6 +306,7 @@ def _maybe_apply_must_charge(
         round_trip_efficiency=adaptive_cfg.round_trip_efficiency,
         capability_ready=adaptive_cfg.must_charge_capability_ready,
         device_min_target_soc_pct=adaptive_cfg.must_charge_device_min_target_soc,
+        site_tz=adaptive_cfg.site_tz,
     )
     return apply_must_charge(plan, prices, now, soc_pct=soc_pct, cfg=cfg)
 

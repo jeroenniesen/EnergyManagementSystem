@@ -7,7 +7,8 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass, replace
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
+from zoneinfo import ZoneInfo
 
 from ems.domain import BatteryIntent
 from ems.planner.adaptive import detect_must_charge_signals
@@ -19,6 +20,13 @@ from ems.sources.prices import PriceSlot
 
 _H = 0.25
 _PEAK_HORIZON = timedelta(hours=12)
+
+
+def _quarter_floor_utc(dt: datetime) -> datetime:
+    """Floor to the UTC quarter-hour containing ``dt`` (price slot alignment)."""
+    utc = dt.astimezone(UTC)
+    minute = (utc.minute // 15) * 15
+    return utc.replace(minute=minute, second=0, microsecond=0)
 
 
 def _price_span_incomplete(
@@ -47,6 +55,7 @@ class MustChargeConfig:
     round_trip_efficiency: float = 0.90
     capability_ready: bool = False
     device_min_target_soc_pct: float | None = None
+    site_tz: ZoneInfo = ZoneInfo("Europe/Amsterdam")
 
 
 def clamp_must_charge_target_soc(
@@ -87,6 +96,7 @@ def apply_must_charge(
         buffer_pp=cfg.buffer_pp,
         now=now,
         horizon=_PEAK_HORIZON,
+        site_tz=cfg.site_tz,
     )
     if signals is None:
         return plan
@@ -112,7 +122,7 @@ def apply_must_charge(
     span_end = ordered_pre[-1].start + SLOT
     if _price_span_incomplete(ordered_pre[0].start, span_end, price_by):
         return plan
-    if _price_span_incomplete(now, deadline, price_by):
+    if _price_span_incomplete(_quarter_floor_utc(now), deadline, price_by):
         return plan
 
     pool = [

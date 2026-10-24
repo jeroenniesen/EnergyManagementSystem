@@ -64,6 +64,9 @@ class MustChargeTriggerSignals:
     peak_deadline: datetime
 
 
+_EVENING_PEAK_HOURS = range(17, 22)
+
+
 def detect_must_charge_signals(
     plan: Plan,
     *,
@@ -72,6 +75,7 @@ def detect_must_charge_signals(
     buffer_pp: float,
     now: datetime,
     horizon: timedelta,
+    site_tz: ZoneInfo | None = None,
 ) -> MustChargeTriggerSignals | None:
     """Shortfall + empty/insufficient arbitrage pool, low SoC, and a peak within ``horizon``."""
     pool_info = plan.buy_pool
@@ -92,11 +96,13 @@ def detect_must_charge_signals(
         return None
     if soc_pct >= effective_floor_pct + max(0.0, buffer_pp) - 1e-6:
         return None
+    tz = site_tz or ZoneInfo("Europe/Amsterdam")
     peaks = [
         s.start for s in plan.slots
         if s.intent is BatteryIntent.DISCHARGE_FOR_LOAD
         and s.start > now
         and s.start <= now + horizon
+        and s.start.astimezone(tz).hour in _EVENING_PEAK_HOURS
     ]
     if not peaks:
         return None

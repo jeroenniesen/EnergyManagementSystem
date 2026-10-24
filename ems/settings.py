@@ -563,7 +563,7 @@ SETTINGS_SCHEMA: tuple[SettingsField, ...] = (
         min=0.0, max=2.0, step=0.01, unit="€/kWh", advanced=True,
     ),
     SettingsField(
-        "planner.must_charge_buffer_pp", "Voorzorgslading: buffer onder vloer", "number", 10.0,
+        "planner.must_charge_buffer_pp", "Voorzorgslading: buffer boven vloer", "number", 10.0,
         "strategy",
         help="Start voorzorgslading alleen wanneer het laadniveau onder de effectieve vloer "
         "plus deze buffer (procentpunt) zit.",

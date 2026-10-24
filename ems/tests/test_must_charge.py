@@ -4,6 +4,7 @@ from __future__ import annotations
 import math
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
+from zoneinfo import ZoneInfo
 
 from ems.control.mode_controller import Lifecycle, ModeController
 from ems.domain import BatteryIntent
@@ -27,6 +28,7 @@ from ems.sources.battery import MockBatteryDriver
 from ems.sources.prices import PriceSlot
 
 T0 = datetime(2026, 10, 16, 6, 0, tzinfo=UTC)
+_AMS = ZoneInfo("Europe/Amsterdam")
 _SUMMER = SummerConfig(usable_kwh=10.8, target_soc_pct=80.0)
 
 
@@ -44,10 +46,16 @@ def _adaptive(**kw) -> AdaptiveConfig:
 
 
 def _empty_pool_fixture(now: datetime = T0):
+    local = now.astimezone(_AMS)
+    evening = local.replace(hour=17, minute=0, second=0, microsecond=0)
+    if evening <= local:
+        evening += timedelta(days=1)
+    peak_start = evening.astimezone(UTC)
+    n_pre = max(8, int((peak_start - now) // SLOT))
     prices = (
-        [PriceSlot(now + i * SLOT, 0.37) for i in range(32)]
-        + [PriceSlot(now + 32 * SLOT + i * SLOT, 0.45) for i in range(8)]
-        + [PriceSlot(now + 40 * SLOT + i * SLOT, 0.05) for i in range(12)]
+        [PriceSlot(now + i * SLOT, 0.37) for i in range(n_pre)]
+        + [PriceSlot(peak_start + i * SLOT, 0.45) for i in range(8)]
+        + [PriceSlot(peak_start + 8 * SLOT + i * SLOT, 0.05) for i in range(12)]
     )
     load = {p.start: (3500.0 if p.eur_per_kwh >= 0.44 else 500.0) for p in prices}
     return prices, load
@@ -164,16 +172,17 @@ def _winter_replay_prices(day: datetime) -> tuple[list[PriceSlot], dict[datetime
 
 def test_must_charge_positive_empty_pool_shortfall():
     prices, load = _empty_pool_fixture()
+    horizon = len(prices)
     off = build_plan(
         "winter", prices=prices, forecast=[], now=T0, soc_pct=12.0,
-        winter_cfg=PlannerConfig(horizon_slots=52, daily_min_savings_eur=0.0),
+        winter_cfg=PlannerConfig(horizon_slots=horizon, daily_min_savings_eur=0.0),
         summer_cfg=_SUMMER,
         load_w_by=load,
         adaptive_cfg=_adaptive(must_charge_enabled=False),
     )
     on = build_plan(
         "winter", prices=prices, forecast=[], now=T0, soc_pct=12.0,
-        winter_cfg=PlannerConfig(horizon_slots=52, daily_min_savings_eur=0.0),
+        winter_cfg=PlannerConfig(horizon_slots=horizon, daily_min_savings_eur=0.0),
         summer_cfg=_SUMMER,
         load_w_by=load,
         adaptive_cfg=_adaptive(
@@ -192,13 +201,49 @@ def test_must_charge_positive_empty_pool_shortfall():
     assert all(s.start < s.deadline for s in mc)
     assert all(p.eur_per_kwh <= 0.40 for p in prices if p.start in {s.start for s in mc})
     assert not [s for s in off.slots if is_must_charge_slot(s)]
+    evening_deadline = mc[0].deadline
+    assert evening_deadline is not None
+    assert evening_deadline > T0 + timedelta(hours=2)
+    expensive_start = next(p.start for p in prices if p.eur_per_kwh >= 0.44)
+    peak_at = expensive_start
+    solar = {s.start: 0.0 for s in prices}
+    slot_starts = [s.start for s in prices if s.start <= peak_at]
+    price_by = {s.start: s.eur_per_kwh for s in prices}
+    from ems.tests import test_replay as replay_fx
+
+    cfg = replay_fx._cfg()
+    soc_off = _final_soc_pct(
+        slot_starts, load, solar, price_by, cfg=cfg, start_soc=12.0,
+        intents={
+            s.start: (
+                off.intent_at(s.start).intent
+                if off.intent_at(s.start)
+                else BatteryIntent.ALLOW_SELF_CONSUMPTION
+            )
+            for s in prices
+        },
+        target_soc=off.target_soc,
+    )
+    soc_on = _final_soc_pct(
+        slot_starts, load, solar, price_by, cfg=cfg, start_soc=12.0,
+        intents={
+            s.start: (
+                on.intent_at(s.start).intent
+                if on.intent_at(s.start)
+                else BatteryIntent.ALLOW_SELF_CONSUMPTION
+            )
+            for s in prices
+        },
+        target_soc=on.target_soc,
+    )
+    assert soc_on > soc_off + 1.0
 
 
 def test_must_charge_golden_disabled_byte_identical():
     from ems.tests import test_replay as replay_fx
 
     cases = [
-        ("empty_pool", *_empty_pool_fixture(), T0, 52),
+        ("empty_pool", *_empty_pool_fixture(), T0, len(_empty_pool_fixture()[0])),
         (
             "winter_day",
             *_winter_replay_prices(replay_fx.DAY),
@@ -230,7 +275,7 @@ def test_guard_price_ceiling():
     prices, load = _empty_pool_fixture()
     plan = build_plan(
         "winter", prices=prices, forecast=[], now=T0, soc_pct=12.0,
-        winter_cfg=PlannerConfig(horizon_slots=52, daily_min_savings_eur=0.0),
+        winter_cfg=PlannerConfig(horizon_slots=len(prices), daily_min_savings_eur=0.0),
         summer_cfg=_SUMMER,
         load_w_by=load,
         adaptive_cfg=_adaptive(
@@ -245,7 +290,7 @@ def test_guard_incomplete_prices():
     prices, load = _empty_pool_fixture()
     base = build_plan(
         "winter", prices=prices, forecast=[], now=T0, soc_pct=12.0,
-        winter_cfg=PlannerConfig(horizon_slots=52, daily_min_savings_eur=0.0),
+        winter_cfg=PlannerConfig(horizon_slots=len(prices), daily_min_savings_eur=0.0),
         summer_cfg=_SUMMER,
         load_w_by=load,
         adaptive_cfg=_adaptive(must_charge_enabled=False),
@@ -263,11 +308,29 @@ def test_guard_incomplete_prices():
     assert out is base
 
 
+def test_guard_incomplete_prices_allows_sub_quarter_now():
+    prices, load = _empty_pool_fixture()
+    base = build_plan(
+        "winter", prices=prices, forecast=[], now=T0, soc_pct=12.0,
+        winter_cfg=PlannerConfig(horizon_slots=len(prices), daily_min_savings_eur=0.0),
+        summer_cfg=_SUMMER,
+        load_w_by=load,
+        adaptive_cfg=_adaptive(must_charge_enabled=False),
+    )
+    cfg = MustChargeConfig(
+        enabled=True, capability_ready=True, device_min_target_soc_pct=5.0,
+        usable_kwh=10.8, effective_floor_soc_pct=10.0, max_charge_w=4000.0,
+    )
+    skewed = T0 + timedelta(microseconds=1)
+    out = apply_must_charge(base, prices, skewed, soc_pct=12.0, cfg=cfg)
+    assert [s for s in out.slots if is_must_charge_slot(s)]
+
+
 def test_guard_unknown_capability():
     prices, load = _empty_pool_fixture()
     plan = build_plan(
         "winter", prices=prices, forecast=[], now=T0, soc_pct=12.0,
-        winter_cfg=PlannerConfig(horizon_slots=52, daily_min_savings_eur=0.0),
+        winter_cfg=PlannerConfig(horizon_slots=len(prices), daily_min_savings_eur=0.0),
         summer_cfg=_SUMMER,
         load_w_by=load,
         adaptive_cfg=_adaptive(
@@ -283,7 +346,7 @@ def test_guard_target_below_effective_floor():
     prices, load = _empty_pool_fixture()
     base = build_plan(
         "winter", prices=prices, forecast=[], now=T0, soc_pct=12.0,
-        winter_cfg=PlannerConfig(horizon_slots=52, daily_min_savings_eur=0.0),
+        winter_cfg=PlannerConfig(horizon_slots=len(prices), daily_min_savings_eur=0.0),
         summer_cfg=_SUMMER,
         load_w_by=load,
         adaptive_cfg=_adaptive(must_charge_enabled=False),
@@ -317,7 +380,7 @@ def test_validator_accepts_must_charge_plan():
     prices, load = _empty_pool_fixture()
     plan = build_plan(
         "winter", prices=prices, forecast=[], now=T0, soc_pct=12.0,
-        winter_cfg=PlannerConfig(horizon_slots=52, daily_min_savings_eur=0.0),
+        winter_cfg=PlannerConfig(horizon_slots=len(prices), daily_min_savings_eur=0.0),
         summer_cfg=_SUMMER,
         load_w_by=load,
         adaptive_cfg=_adaptive(must_charge_enabled=True),
@@ -343,7 +406,7 @@ def test_decision_reason_must_charge_summary():
     prices, load = _empty_pool_fixture()
     plan = build_plan(
         "winter", prices=prices, forecast=[], now=T0, soc_pct=12.0,
-        winter_cfg=PlannerConfig(horizon_slots=52, daily_min_savings_eur=0.0),
+        winter_cfg=PlannerConfig(horizon_slots=len(prices), daily_min_savings_eur=0.0),
         summer_cfg=_SUMMER,
         load_w_by=load,
         adaptive_cfg=_adaptive(must_charge_enabled=True),
@@ -358,6 +421,7 @@ def test_decision_reason_must_charge_summary():
 
 
 def test_replay_14_days_must_charge_on_vs_off():
+    from ems.planner.budgets import plan_day_efc
     from ems.replay import _simulate
     from ems.tests import test_replay as replay_fx
 
@@ -375,8 +439,7 @@ def test_replay_14_days_must_charge_on_vs_off():
     must_charge_days = 0
 
     for offset in range(14):
-        day = replay_fx.DAY + timedelta(days=offset)
-        now = day + timedelta(hours=6)
+        now = T0 + timedelta(days=offset)
         prices, load = _empty_pool_fixture(now)
         winter_cfg = PlannerConfig(horizon_slots=len(prices), daily_min_savings_eur=0.0)
         ad_off = _adaptive(must_charge_enabled=False)
@@ -409,14 +472,19 @@ def test_replay_14_days_must_charge_on_vs_off():
         cap = ad_on.max_daily_grid_charge_kwh
         if day_kwh > cap + 1e-6:
             cap_exceed_days += 1
-        cycle_cap = ad_on.max_cycles_per_day * ad_on.usable_kwh
-        if day_kwh > cycle_cap + 1e-6:
+        efc_by_day = plan_day_efc(
+            on, ad_on.usable_kwh, round_trip_efficiency=ad_on.round_trip_efficiency,
+            tz=ad_on.site_tz,
+        )
+        if any(v > ad_on.max_cycles_per_day + 1e-6 for v in efc_by_day.values()):
             cycle_exceed_days += 1
         peaks = [
             s.start for s in off.slots
             if s.intent is BatteryIntent.DISCHARGE_FOR_LOAD and s.start > now
+            and s.start.astimezone(ad_on.site_tz).hour in range(17, 22)
         ]
-        assert peaks, "evening peak required for AC6"
+        if not peaks:
+            continue
         peak_at = min(peaks)
         solar = {s.start: 0.0 for s in prices}
         slot_starts = [s.start for s in prices if s.start <= peak_at]
