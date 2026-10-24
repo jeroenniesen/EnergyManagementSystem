@@ -23,6 +23,33 @@ from ems.savings import estimate_daily_savings_eur
 _CHARGE = BatteryIntent.GRID_CHARGE_TO_TARGET
 MUST_CHARGE_REASON = "Voorzorgslading: batterij staat laag voor de avondpiek"
 MUST_CHARGE_REASON_PREFIX = "Voorzorgslading"
+_MUST_CHARGE_CEILING_MARKER = "[plafond-instelling €"
+
+
+def format_must_charge_slot_reason(max_price_eur_per_kwh: float) -> str:
+    return (
+        f"{MUST_CHARGE_REASON} {_MUST_CHARGE_CEILING_MARKER}"
+        f"{max_price_eur_per_kwh:.2f}/kWh]"
+    )
+
+
+def must_charge_configured_ceiling_eur(slots: tuple[PlanSlot, ...]) -> float | None:
+    for slot in slots:
+        if not is_must_charge_slot(slot):
+            continue
+        reason = slot.reason or ""
+        idx = reason.find(_MUST_CHARGE_CEILING_MARKER)
+        if idx < 0:
+            continue
+        tail = reason[idx + len(_MUST_CHARGE_CEILING_MARKER):]
+        end = tail.find("/kWh]")
+        if end <= 0:
+            continue
+        try:
+            return float(tail[:end])
+        except ValueError:
+            continue
+    return None
 
 
 def is_must_charge_slot(slot: PlanSlot) -> bool:
@@ -591,7 +618,9 @@ def build_decision_reason(
     if mc and price_by:
         kwh, eur = estimate_must_charge_cost_eur(mc, price_by)
         avg = eur / kwh if kwh > 1e-9 else 0.0
-        ceiling = max(price_by.get(s.start, 0.0) for s in mc)
+        ceiling = must_charge_configured_ceiling_eur(mc)
+        if ceiling is None:
+            ceiling = max(price_by.get(s.start, 0.0) for s in mc)
         summary_mc = (
             f"Voorzorgslading: circa {kwh:.1f} kWh × €{avg:.2f}/kWh "
             f"(plafond €{ceiling:.2f}/kWh)"

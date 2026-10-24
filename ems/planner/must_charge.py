@@ -12,13 +12,27 @@ from datetime import datetime, timedelta
 from ems.domain import BatteryIntent
 from ems.planner.adaptive import detect_must_charge_signals
 from ems.planner.charge_need import stored_kwh_per_slot
-from ems.planner.reason import MUST_CHARGE_REASON
+from ems.planner.reason import format_must_charge_slot_reason
 from ems.planner.rule_based import late_pack_charge_starts
 from ems.planner.schedule import SLOT, Plan, PlanSlot
 from ems.sources.prices import PriceSlot
 
 _H = 0.25
 _PEAK_HORIZON = timedelta(hours=12)
+
+
+def _price_span_incomplete(
+    span_start: datetime,
+    span_end: datetime,
+    price_by: dict[datetime, float],
+) -> bool:
+    """True when any quarter-hour in [span_start, span_end) lacks a known price."""
+    cursor = span_start
+    while cursor < span_end:
+        if cursor not in price_by:
+            return True
+        cursor += SLOT
+    return False
 
 
 @dataclass(frozen=True)
@@ -94,7 +108,11 @@ def apply_must_charge(
     pre_peak = [p for p in future if p.start < deadline]
     if not pre_peak:
         return plan
-    if any(p.start not in price_by for p in pre_peak):
+    ordered_pre = sorted(pre_peak, key=lambda p: p.start)
+    span_end = ordered_pre[-1].start + SLOT
+    if _price_span_incomplete(ordered_pre[0].start, span_end, price_by):
+        return plan
+    if _price_span_incomplete(now, deadline, price_by):
         return plan
 
     pool = [
@@ -141,7 +159,7 @@ def apply_must_charge(
         out.append(PlanSlot(
             slot.start,
             BatteryIntent.GRID_CHARGE_TO_TARGET,
-            MUST_CHARGE_REASON,
+            format_must_charge_slot_reason(cfg.max_price_eur_per_kwh),
             target_soc=target_soc,
             target_kwh=per_slot_kwh,
             power_w=cfg.max_charge_w,

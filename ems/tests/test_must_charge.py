@@ -1,17 +1,26 @@
 """#323 optional must-charge before the evening peak (audit F-02)."""
 from __future__ import annotations
 
+import math
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 
 from ems.control.mode_controller import Lifecycle, ModeController
 from ems.domain import BatteryIntent
 from ems.planner.adaptive import AdaptiveConfig
+from ems.planner.budgets import clamp_grid_charge
 from ems.planner.economics import apply_daily_savings_floor
 from ems.planner.must_charge import MustChargeConfig, apply_must_charge
 from ems.planner.reason import MUST_CHARGE_REASON, build_decision_reason, is_must_charge_slot
 from ems.planner.rule_based import PlannerConfig, plan_rule_based
 from ems.planner.schedule import SLOT, Plan, PlanSlot
-from ems.planner.strategy import build_plan
+from ems.planner.strategy import (
+    _apply_savings_floor,
+    _clamp_shared_cycles,
+    _daily_cap_inputs,
+    build_plan,
+    maybe_apply_trading,
+)
 from ems.planner.summer import SummerConfig
 from ems.planner.validator import validate_plan
 from ems.sources.battery import MockBatteryDriver
@@ -34,18 +43,123 @@ def _adaptive(**kw) -> AdaptiveConfig:
     return AdaptiveConfig(**base)
 
 
-def _empty_pool_fixture():
+def _empty_pool_fixture(now: datetime = T0):
     prices = (
-        [PriceSlot(T0 + i * SLOT, 0.37) for i in range(32)]
-        + [PriceSlot(T0 + 32 * SLOT + i * SLOT, 0.45) for i in range(8)]
-        + [PriceSlot(T0 + 40 * SLOT + i * SLOT, 0.05) for i in range(12)]
+        [PriceSlot(now + i * SLOT, 0.37) for i in range(32)]
+        + [PriceSlot(now + 32 * SLOT + i * SLOT, 0.45) for i in range(8)]
+        + [PriceSlot(now + 40 * SLOT + i * SLOT, 0.05) for i in range(12)]
     )
     load = {p.start: (3500.0 if p.eur_per_kwh >= 0.44 else 500.0) for p in prices}
     return prices, load
 
 
-def _control_signature(plan: Plan):
-    return [(s.intent, s.target_soc, s.target_kwh, s.power_w) for s in plan.slots]
+def _final_soc_pct(
+    slot_starts: list[datetime],
+    load: dict[datetime, float],
+    solar: dict[datetime, float],
+    price_by: dict[datetime, float],
+    *,
+    cfg,
+    start_soc: float,
+    intents: dict[datetime, BatteryIntent],
+    target_soc: float | None,
+) -> float:
+    eta = math.sqrt(max(1e-6, min(1.0, cfg.round_trip_efficiency)))
+    usable = cfg.usable_kwh
+    reserve_kwh = max(0.0, min(100.0, cfg.min_reserve_soc)) / 100.0 * usable
+    soc_kwh = max(0.0, min(100.0, start_soc)) / 100.0 * usable
+    target_kwh = (
+        usable if target_soc is None
+        else max(0.0, min(100.0, target_soc)) / 100.0 * usable
+    )
+    for slot in slot_starts:
+        solar_w = solar.get(slot, 0.0)
+        load_w = load.get(slot, 0.0)
+        net = load_w - solar_w
+        headroom_kwh = max(0.0, usable - soc_kwh)
+        avail_kwh = max(0.0, soc_kwh - reserve_kwh)
+        max_charge_ac = min(cfg.max_charge_w, headroom_kwh / eta / 0.25 * 1000.0)
+        max_discharge_ac = min(cfg.max_discharge_w, avail_kwh * eta / 0.25 * 1000.0)
+        intent = intents.get(slot, BatteryIntent.ALLOW_SELF_CONSUMPTION)
+        if intent is BatteryIntent.GRID_CHARGE_TO_TARGET:
+            room_to_target_ac = max(0.0, target_kwh - soc_kwh) / eta / 0.25 * 1000.0
+            battery_w = -min(max_charge_ac, room_to_target_ac)
+        elif intent is BatteryIntent.HOLD_RESERVE:
+            battery_w = 0.0
+        elif net > 0:
+            battery_w = min(net, max_discharge_ac)
+        elif net < 0:
+            battery_w = -min(-net, max_charge_ac)
+        else:
+            battery_w = 0.0
+        if battery_w < 0:
+            soc_kwh += (-battery_w) * eta * 0.25 / 1000.0
+        elif battery_w > 0:
+            soc_kwh -= battery_w / eta * 0.25 / 1000.0
+        soc_kwh = max(0.0, min(usable, soc_kwh))
+    return soc_kwh / usable * 100.0
+
+
+def _slot_tuple(plan: Plan):
+    return tuple(
+        (
+            s.start, s.intent, s.reason, s.target_soc, s.target_kwh, s.power_w,
+            s.floor_soc, s.deadline, s.end,
+        )
+        for s in plan.slots
+    )
+
+
+def _build_plan_without_must_charge(
+    *,
+    prices: list[PriceSlot],
+    now: datetime,
+    soc_pct: float,
+    winter_cfg: PlannerConfig,
+    summer_cfg: SummerConfig,
+    load_w_by: dict[datetime, float],
+    adaptive_cfg: AdaptiveConfig,
+) -> Plan:
+    """Seasonal pipeline as before the must-charge overlay (for golden byte identity)."""
+    plan = plan_rule_based(
+        prices, now, winter_cfg, soc_pct=soc_pct, load_w_by=load_w_by,
+        usable_kwh=adaptive_cfg.usable_kwh, reserve_soc_pct=adaptive_cfg.reserve_soc_pct,
+        max_charge_w=adaptive_cfg.max_charge_w,
+    )
+    plan = replace(plan, strategy="winter")
+    plan = maybe_apply_trading(
+        plan, prices, now, None, soc_pct=soc_pct, load_w_by=load_w_by,
+    )
+    bought, cap, per_slot, site_tz = _daily_cap_inputs(
+        "winter", winter_cfg, summer_cfg, adaptive_cfg, load_w_by,
+    )
+    plan = clamp_grid_charge(plan, bought, cap, per_slot, tz=site_tz)
+    plan = _clamp_shared_cycles(
+        plan, "winter", winter_cfg, summer_cfg, adaptive_cfg, load_w_by,
+    )
+    bought, cap, per_slot, site_tz = _daily_cap_inputs(
+        "winter", winter_cfg, summer_cfg, adaptive_cfg, load_w_by,
+    )
+    plan = clamp_grid_charge(plan, bought, cap, per_slot, tz=site_tz)
+    plan = _clamp_shared_cycles(
+        plan, "winter", winter_cfg, summer_cfg, adaptive_cfg, load_w_by,
+    )
+    return _apply_savings_floor(plan, prices, load_w_by, winter_cfg, adaptive_cfg)
+
+
+def _winter_replay_prices(day: datetime) -> tuple[list[PriceSlot], dict[datetime, float]]:
+    from ems.tests import test_replay as replay_fx
+
+    price_rows = replay_fx._price_day(replay_fx._winter_price, day=day)
+    slots = [
+        PriceSlot(
+            start=datetime.fromisoformat(p["start_ts"]),
+            eur_per_kwh=p["eur_per_kwh"],
+        )
+        for p in price_rows
+    ]
+    load = {s.start: 1000.0 for s in slots}
+    return slots, load
 
 
 def test_must_charge_positive_empty_pool_shortfall():
@@ -81,22 +195,35 @@ def test_must_charge_positive_empty_pool_shortfall():
 
 
 def test_must_charge_golden_disabled_byte_identical():
-    prices, load = _empty_pool_fixture()
-    a = build_plan(
-        "winter", prices=prices, forecast=[], now=T0, soc_pct=12.0,
-        winter_cfg=PlannerConfig(horizon_slots=52),
-        summer_cfg=_SUMMER,
-        load_w_by=load,
-        adaptive_cfg=_adaptive(must_charge_enabled=False),
-    )
-    b = build_plan(
-        "winter", prices=prices, forecast=[], now=T0, soc_pct=12.0,
-        winter_cfg=PlannerConfig(horizon_slots=52),
-        summer_cfg=_SUMMER,
-        load_w_by=load,
-        adaptive_cfg=_adaptive(),
-    )
-    assert repr(_control_signature(a)) == repr(_control_signature(b))
+    from ems.tests import test_replay as replay_fx
+
+    cases = [
+        ("empty_pool", *_empty_pool_fixture(), T0, 52),
+        (
+            "winter_day",
+            *_winter_replay_prices(replay_fx.DAY),
+            replay_fx.DAY + timedelta(hours=6),
+            96,
+        ),
+    ]
+    for _label, prices, load, now, horizon in cases:
+        winter_cfg = PlannerConfig(horizon_slots=horizon, daily_min_savings_eur=0.0)
+        adaptive = _adaptive(must_charge_enabled=False)
+        disabled = build_plan(
+            "winter", prices=prices, forecast=[], now=now, soc_pct=12.0,
+            winter_cfg=winter_cfg,
+            summer_cfg=_SUMMER,
+            load_w_by=load,
+            adaptive_cfg=adaptive,
+        )
+        reference = _build_plan_without_must_charge(
+            prices=prices, now=now, soc_pct=12.0,
+            winter_cfg=winter_cfg, summer_cfg=_SUMMER, load_w_by=load,
+            adaptive_cfg=adaptive,
+        )
+        assert _slot_tuple(disabled) == _slot_tuple(reference)
+        assert disabled.target_soc == reference.target_soc
+        assert disabled.deadline == reference.deadline
 
 
 def test_guard_price_ceiling():
@@ -116,17 +243,24 @@ def test_guard_price_ceiling():
 
 def test_guard_incomplete_prices():
     prices, load = _empty_pool_fixture()
-    sparse = prices[:40]
-    plan = plan_rule_based(
-        sparse, T0, PlannerConfig(horizon_slots=40), soc_pct=12.0, load_w_by=load,
-        usable_kwh=10.8, reserve_soc_pct=10.0, max_charge_w=4000.0,
+    base = build_plan(
+        "winter", prices=prices, forecast=[], now=T0, soc_pct=12.0,
+        winter_cfg=PlannerConfig(horizon_slots=52, daily_min_savings_eur=0.0),
+        summer_cfg=_SUMMER,
+        load_w_by=load,
+        adaptive_cfg=_adaptive(must_charge_enabled=False),
     )
     cfg = MustChargeConfig(
         enabled=True, capability_ready=True, device_min_target_soc_pct=5.0,
         usable_kwh=10.8, effective_floor_soc_pct=10.0, max_charge_w=4000.0,
     )
-    out = apply_must_charge(plan, sparse, T0, soc_pct=12.0, cfg=cfg)
-    assert out is plan
+    charged = apply_must_charge(base, prices, T0, soc_pct=12.0, cfg=cfg)
+    mc_starts = {s.start for s in charged.slots if is_must_charge_slot(s)}
+    assert mc_starts
+    missing = next(iter(mc_starts))
+    gapped = [p for p in prices if p.start != missing]
+    out = apply_must_charge(base, gapped, T0, soc_pct=12.0, cfg=cfg)
+    assert out is base
 
 
 def test_guard_unknown_capability():
@@ -146,16 +280,26 @@ def test_guard_unknown_capability():
 
 
 def test_guard_target_below_effective_floor():
+    prices, load = _empty_pool_fixture()
+    base = build_plan(
+        "winter", prices=prices, forecast=[], now=T0, soc_pct=12.0,
+        winter_cfg=PlannerConfig(horizon_slots=52, daily_min_savings_eur=0.0),
+        summer_cfg=_SUMMER,
+        load_w_by=load,
+        adaptive_cfg=_adaptive(must_charge_enabled=False),
+    )
     cfg = MustChargeConfig(
         enabled=True,
         target_soc_pct=8.0,
         capability_ready=True,
         device_min_target_soc_pct=5.0,
         effective_floor_soc_pct=10.0,
+        usable_kwh=10.8,
+        max_charge_w=4000.0,
     )
-    assert apply_must_charge(
-        Plan(created_at=T0, slots=()), [], T0, soc_pct=5.0, cfg=cfg,
-    ).slots == ()
+    out = apply_must_charge(base, prices, T0, soc_pct=12.0, cfg=cfg)
+    assert out is base
+    assert not [s for s in out.slots if is_must_charge_slot(s)]
 
 
 def test_savings_floor_does_not_strip_must_charge():
@@ -208,55 +352,52 @@ def test_decision_reason_must_charge_summary():
     reason = build_decision_reason(plan, price_by=price_by)
     assert reason.buy_pool is not None
     assert "Voorzorgslading" in reason.summary
-    assert "plafond" in reason.summary.lower()
+    assert "0,40" in reason.summary
     assert reason.buy_pool.get("must_charge_summary")
+    assert reason.buy_pool.get("must_charge_ceiling_eur_per_kwh") == 0.4
 
 
 def test_replay_14_days_must_charge_on_vs_off():
-    from dataclasses import replace
-
-    from ems.replay import _adaptive_cfg, _simulate, _winter_cfg
+    from ems.replay import _simulate
     from ems.tests import test_replay as replay_fx
 
     cfg = replay_fx._cfg()
+    floor_buffer_pct = 10.0 + 10.0
     extra_kwh_on = 0.0
     extra_eur_on = 0.0
     max_daily_extra_kwh = 0.0
+    max_daily_extra_eur = 0.0
     cap_exceed_days = 0
+    cycle_exceed_days = 0
     extra_reserve_breaches = 0
+    unprotected_off = 0
+    unprotected_on = 0
+    must_charge_days = 0
 
     for offset in range(14):
         day = replay_fx.DAY + timedelta(days=offset)
-        price_rows = replay_fx._price_day(replay_fx._winter_price, day=day)
-        slots = [
-            PriceSlot(
-                start=datetime.fromisoformat(p["start_ts"]),
-                eur_per_kwh=p["eur_per_kwh"],
-            )
-            for p in price_rows
-        ]
-        load = {s.start: 1000.0 for s in slots}
-        winter = _winter_cfg(cfg)
-        ad_off = _adaptive_cfg(cfg)
-        ad_on = replace(
-            ad_off,
+        now = day + timedelta(hours=6)
+        prices, load = _empty_pool_fixture(now)
+        winter_cfg = PlannerConfig(horizon_slots=len(prices), daily_min_savings_eur=0.0)
+        ad_off = _adaptive(must_charge_enabled=False)
+        ad_on = _adaptive(
             must_charge_enabled=True,
-            must_charge_capability_ready=True,
-            must_charge_device_min_target_soc=5.0,
             must_charge_target_soc=30.0,
             must_charge_max_price_eur_per_kwh=0.40,
             must_charge_buffer_pp=10.0,
         )
         common = dict(
-            prices=slots, forecast=[], now=day, soc_pct=8.0,
-            summer_cfg=SummerConfig(usable_kwh=10.0, target_soc_pct=80.0),
+            prices=prices, forecast=[], now=now, soc_pct=12.0,
+            summer_cfg=_SUMMER,
             load_w_by=load,
-            winter_cfg=replace(winter, daily_min_savings_eur=0.0),
+            winter_cfg=winter_cfg,
         )
         off = build_plan("winter", adaptive_cfg=ad_off, **common)
         on = build_plan("winter", adaptive_cfg=ad_on, **common)
         mc = [s for s in on.slots if is_must_charge_slot(s)]
-        price_by = {s.start: s.eur_per_kwh for s in slots}
+        if mc:
+            must_charge_days += 1
+        price_by = {s.start: s.eur_per_kwh for s in prices}
         day_kwh = sum((s.power_w or 0) * 0.25 / 1000.0 for s in mc)
         day_eur = sum(
             (s.power_w or 0) * 0.25 / 1000.0 * price_by.get(s.start, 0.0) for s in mc
@@ -264,37 +405,87 @@ def test_replay_14_days_must_charge_on_vs_off():
         extra_kwh_on += day_kwh
         extra_eur_on += day_eur
         max_daily_extra_kwh = max(max_daily_extra_kwh, day_kwh)
+        max_daily_extra_eur = max(max_daily_extra_eur, day_eur)
         cap = ad_on.max_daily_grid_charge_kwh
         if day_kwh > cap + 1e-6:
             cap_exceed_days += 1
-        solar = {s.start: 0.0 for s in slots}
-        day_slots = list(slots)
+        cycle_cap = ad_on.max_cycles_per_day * ad_on.usable_kwh
+        if day_kwh > cycle_cap + 1e-6:
+            cycle_exceed_days += 1
+        peaks = [
+            s.start for s in off.slots
+            if s.intent is BatteryIntent.DISCHARGE_FOR_LOAD and s.start > now
+        ]
+        assert peaks, "evening peak required for AC6"
+        peak_at = min(peaks)
+        solar = {s.start: 0.0 for s in prices}
+        slot_starts = [s.start for s in prices if s.start <= peak_at]
 
-        def intents(plan: Plan, starts=day_slots):
-            return {
+        def _soc_at_peak(
+            plan: Plan,
+            *,
+            day_prices: list[PriceSlot],
+            day_slot_starts: list[datetime],
+            day_load: dict[datetime, float],
+            day_solar: dict[datetime, float],
+            day_price_by: dict[datetime, float],
+        ) -> float:
+            intents = {
                 s.start: (
                     plan.intent_at(s.start).intent
                     if plan.intent_at(s.start)
                     else BatteryIntent.ALLOW_SELF_CONSUMPTION
                 )
-                for s in starts
+                for s in day_prices
             }
+            return _final_soc_pct(
+                day_slot_starts, day_load, day_solar, day_price_by, cfg=cfg,
+                start_soc=12.0, intents=intents, target_soc=plan.target_soc,
+            )
 
+        peak_kw = dict(
+            day_prices=prices, day_slot_starts=slot_starts, day_load=load,
+            day_solar=solar, day_price_by=price_by,
+        )
+        if _soc_at_peak(off, **peak_kw) < floor_buffer_pct - 1e-6:
+            unprotected_off += 1
+        if _soc_at_peak(on, **peak_kw) < floor_buffer_pct - 1e-6:
+            unprotected_on += 1
         sim_off = _simulate(
-            [s.start for s in slots], load, solar, price_by, cfg=cfg,
-            start_soc=8.0, battery_enabled=True, intents=intents(off),
+            [s.start for s in prices], load, solar, price_by, cfg=cfg,
+            start_soc=12.0, battery_enabled=True,
+            intents={
+                s.start: (
+                    off.intent_at(s.start).intent
+                    if off.intent_at(s.start)
+                    else BatteryIntent.ALLOW_SELF_CONSUMPTION
+                )
+                for s in prices
+            },
             target_soc=off.target_soc,
         )
         sim_on = _simulate(
-            [s.start for s in slots], load, solar, price_by, cfg=cfg,
-            start_soc=8.0, battery_enabled=True, intents=intents(on),
+            [s.start for s in prices], load, solar, price_by, cfg=cfg,
+            start_soc=12.0, battery_enabled=True,
+            intents={
+                s.start: (
+                    on.intent_at(s.start).intent
+                    if on.intent_at(s.start)
+                    else BatteryIntent.ALLOW_SELF_CONSUMPTION
+                )
+                for s in prices
+            },
             target_soc=on.target_soc,
         )
         extra_reserve_breaches += max(0, sim_on.reserve_breaches - sim_off.reserve_breaches)
 
+    assert must_charge_days > 0
+    assert unprotected_on < unprotected_off
     assert cap_exceed_days == 0
+    assert cycle_exceed_days == 0
     assert extra_reserve_breaches == 0
-    assert extra_kwh_on >= 0.0
+    assert extra_kwh_on > 0.0
+    assert max_daily_extra_kwh <= ad_on.max_daily_grid_charge_kwh + 1e-6
 
 
 def test_settings_must_charge_defaults_and_bounds():

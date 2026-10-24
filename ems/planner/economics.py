@@ -197,8 +197,8 @@ def apply_daily_savings_floor(
     `estimate_plan_savings` is unknown and also leaves the plan unchanged.
     Only `GRID_CHARGE_TO_TARGET` at a non-negative price is rewritten to
     `ALLOW_SELF_CONSUMPTION`. Negative-price soak stays. Reserve (`floor_soc`)
-    is copied unchanged. Must-charge (#323) and manual override (#322) are not
-    plan-slot kinds on this tree; override is applied later by the decision engine.
+    is copied unchanged. Must-charge (#323) slots are exempt from this rewrite; manual override
+    (#322) is applied later by the decision engine, not as a plan-slot kind here.
     """
     if minimum_eur <= 1e-12:
         return plan
