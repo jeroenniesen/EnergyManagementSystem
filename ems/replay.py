@@ -201,6 +201,8 @@ def _summer_cfg(cfg: ReplayConfig) -> SummerConfig:
         max_topup_price_eur_per_kwh=cfg.summer_max_topup_price,
         negative_price_soak=cfg.negative_price_soak,
         max_daily_grid_charge_kwh=cfg.max_daily_grid_charge_kwh,
+        degradation_eur_per_kwh=cfg.degradation_eur_per_kwh,
+        risk_margin_eur_per_kwh=cfg.risk_margin_eur_per_kwh,
         site_tz=cfg.tz,
     )
 
