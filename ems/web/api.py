@@ -2064,6 +2064,8 @@ def create_app(
             _log.debug("plan projection failed; skipping SoC checks (non-fatal)", exc_info=True)
             return None  # projection is best-effort; its absence just skips those checks
 
+    control = None  # late-bound for _validate_plan_obj → bought_today_for (#361)
+
     def _validate_plan_obj(plan, now: datetime) -> PlanValidation:
         """Run the §8.11 hard validator over a given plan (pure besides the cached SoC, capability
         and projection). `unsafe` ⇒ the controller must hold AUTO.
@@ -2099,9 +2101,12 @@ def create_app(
                 settings_cache.get("control.allow_export_discharge", False)),
             max_daily_grid_charge_kwh=float(
                 settings_cache.get("planner.max_daily_grid_charge_kwh", 12.0)),
-            already_bought_today_kwh=read_already_bought_today(
-                getattr(store, "db_path", None) if store is not None else None,
-                now, site_tz, planned_charge_w=settings_charge,
+            already_bought_today_kwh=(
+                control.bought_today_for(now) if control is not None
+                else read_already_bought_today(
+                    getattr(store, "db_path", None) if store is not None else None,
+                    now, site_tz, planned_charge_w=settings_charge,
+                )
             ),
             grid_charge_per_slot_kwh=settings_charge * 0.25 / 1000.0,
             site_tz=site_tz,
