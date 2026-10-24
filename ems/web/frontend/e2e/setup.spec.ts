@@ -244,13 +244,71 @@ test.describe("Setup wizard P1 (#292)", () => {
     await page.getByTestId("setup-p1-wizard-ip").fill("192.168.88.20");
     const loadPromise = page.waitForEvent("load");
     await page.getByTestId("setup-p1-save").click();
-    await expect(page.getByTestId("setup-p1-restarting")).toContainText("P1-meter");
+    await expect(page.getByTestId("setup-p1-restarting")).toHaveText(
+      "EMS start opnieuw om je P1-meter te zoeken. Dit duurt even, laat dit scherm open.",
+    );
     await loadPromise;
 
     await expect(page.getByTestId("setup-p1-wizard")).toBeVisible();
     await expect(page.getByTestId("setup-item-p1")).toContainText("Ontbreekt");
-    await expect(page.getByTestId("setup-p1-error")).toContainText("192.168.88.20");
-    await expect(page.getByTestId("setup-p1-retry")).toBeVisible();
+    await expect(page.getByTestId("setup-p1-error")).toHaveText(
+      "P1-meter niet gevonden op 192.168.88.20. Staan de meter en EMS op hetzelfde netwerk?",
+    );
+    await expect(page.getByTestId("setup-p1-retry")).toHaveText("Opnieuw proberen");
+    expect(restartPosts).toBe(1);
+  });
+
+  test("preconfigured IP: form prefilled, restart only, no settings POST (#292 B3)", async ({
+    page,
+  }) => {
+    await mockAuthMe(page);
+    await mockSettings(page, "192.168.1.20");
+    await page.route("**/api/setup/checklist", async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          ...CHECKLIST_BASE,
+          items: [batteryItem("Werkt"), p1Item("Ontbreekt")],
+        }),
+      });
+    });
+    let setupPosts = 0;
+    await page.route("**/api/setup/settings", async (route) => {
+      setupPosts += 1;
+      await route.fulfill({ status: 500, body: "unexpected" });
+    });
+    let restartPosts = 0;
+    await page.route("**/api/system/restart", async (route) => {
+      restartPosts += 1;
+      await route.fulfill({
+        status: 202,
+        contentType: "application/json",
+        body: JSON.stringify({ restarting: true, boot_id: "boot-p1pref" }),
+      });
+    });
+    let healthCalls = 0;
+    await page.route("**/health/live", async (route) => {
+      healthCalls += 1;
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          status: "alive",
+          boot_id: healthCalls >= 2 ? "boot-p1pref2" : "boot-p1pref",
+        }),
+      });
+    });
+
+    await page.goto("/#setup");
+    await page.getByTestId("setup-btn-p1").click();
+    await expect(page.getByTestId("setup-p1-wizard-ip")).toHaveValue("192.168.1.20");
+    await expect(page.getByTestId("setup-p1-error")).toHaveCount(0);
+    const loadPromise = page.waitForEvent("load");
+    await page.getByTestId("setup-p1-save").click();
+    await expect(page.getByTestId("setup-p1-restarting")).toBeVisible();
+    await loadPromise;
+    expect(setupPosts).toBe(0);
     expect(restartPosts).toBe(1);
   });
 
@@ -304,8 +362,8 @@ test.describe("Setup wizard P1 (#292)", () => {
     await page.getByTestId("setup-p1-wizard-ip").fill("192.168.1.70");
     const loadPromise = page.waitForEvent("load");
     await page.getByTestId("setup-p1-save").click();
-    await expect(page.getByTestId("setup-p1-restarting")).toContainText(
-      "laat dit scherm open",
+    await expect(page.getByTestId("setup-p1-restarting")).toHaveText(
+      "EMS start opnieuw om je P1-meter te zoeken. Dit duurt even, laat dit scherm open.",
     );
     await loadPromise;
 

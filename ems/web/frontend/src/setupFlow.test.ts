@@ -82,13 +82,15 @@ describe("setupFlow (#291)", () => {
     );
     const err = p1ChecklistOutcome("Ontbreekt", "Werkt", "192.168.3.3");
     expect(err?.phase).toBe("error");
-    expect(err?.message).toContain("192.168.3.3");
-    expect(err?.message).toContain("hetzelfde netwerk");
+    expect(err?.message).toBe(
+      "P1-meter niet gevonden op 192.168.3.3. Staan de meter en EMS op hetzelfde netwerk?",
+    );
   });
 
   test("P1 restart copy (#292 AC 2)", () => {
-    expect(P1_RESTART_MESSAGE).toContain("P1-meter");
-    expect(P1_RESTART_MESSAGE).toContain("laat dit scherm open");
+    expect(P1_RESTART_MESSAGE).toBe(
+      "EMS start opnieuw om je P1-meter te zoeken. Dit duurt even, laat dit scherm open.",
+    );
   });
 
   test("privateIpv4Hint P1 empty message", () => {

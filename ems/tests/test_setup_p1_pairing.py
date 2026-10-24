@@ -11,6 +11,7 @@ from ems.control.mode_controller import ModeController
 from ems.domain import RawSample
 from ems.lifecycle import Lifecycle
 from ems.sources.battery import MockBatteryDriver
+from ems.sources.live import HomeWizardMeter
 from ems.storage.audit import AuditStore
 from ems.storage.auth import AuthStore
 from ems.storage.settings import SettingsStore
@@ -88,5 +89,20 @@ def test_zero_battery_and_http_writes_on_p1_setup_save(tmp_path, monkeypatch):
         for _ in range(3):
             c.get("/api/status", headers=h)
     assert battery_calls == []
+    assert http_calls == []
     write_http = [m for m, _ in http_calls if m in ("POST", "PUT", "PATCH", "DELETE")]
     assert write_http == []
+
+
+def test_homewizard_p1_read_uses_get_only():
+    """AC 6 (#292): P1 meter adapter issues GET only (recording transport, no socket)."""
+    methods: list[str] = []
+
+    def recording_get(url: str) -> dict:
+        methods.append("GET")
+        return {"active_power_w": 0}
+
+    meter = HomeWizardMeter("192.168.1.44", http_get=recording_get)
+    payload = meter.read()
+    assert payload["active_power_w"] == 0
+    assert methods == ["GET"]

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState, type MutableRefObject } from "react";
 
 import { apiFetch } from "./auth";
 import { SETUP_CHECKLIST } from "./labels";
@@ -42,6 +42,72 @@ type RestartAvailability = { available: boolean; reason: string };
 type Props = {
   onOpenSettings: (section: string) => void;
 };
+
+const BATTERY_RESTART_MESSAGE =
+  "EMS start opnieuw om je batterij te zoeken. Dit duurt even, laat dit scherm open.";
+
+type WizardRestartHandle = {
+  requestedRef: MutableRefObject<boolean>;
+  setPhase: (phase: BatteryWizardPhase) => void;
+  setPollTimedOut: (timedOut: boolean) => void;
+  setBusyMsg: (msg: string | null) => void;
+  setSaveError: (msg: string | null) => void;
+};
+
+function WizardRestartStatus({
+  phase,
+  restartingMessage,
+  restartingTestId,
+  manualTestId,
+}: {
+  phase: BatteryWizardPhase;
+  restartingMessage: string;
+  restartingTestId: string;
+  manualTestId: string;
+}) {
+  return (
+    <>
+      {phase === "restarting" && (
+        <p className="setup-wizard-msg" data-testid={restartingTestId}>
+          {restartingMessage}
+        </p>
+      )}
+      {phase === "manual_restart" && (
+        <p className="setup-wizard-msg" data-testid={manualTestId}>
+          Herstart EMS handmatig met{" "}
+          <code>make restart</code> of <code>scripts/restart.sh</code>, en herlaad daarna deze
+          pagina.
+        </p>
+      )}
+    </>
+  );
+}
+
+function WizardFormRestartExtras({
+  pollTimedOut,
+  busyMsg,
+  reloadTestId,
+}: {
+  pollTimedOut: boolean;
+  busyMsg: string | null;
+  reloadTestId: string;
+}) {
+  return (
+    <>
+      {busyMsg && <p className="setup-wizard-hint" role="status">{busyMsg}</p>}
+      {pollTimedOut && (
+        <button
+          type="button"
+          className="btn secondary"
+          data-testid={reloadTestId}
+          onClick={() => window.location.reload()}
+        >
+          Pagina herladen
+        </button>
+      )}
+    </>
+  );
+}
 
 function statusClass(status: ChecklistItem["status"]): string {
   switch (status) {
@@ -175,7 +241,7 @@ export function Setup({ onOpenSettings }: Props) {
   useEffect(() => {
     if (!p1Open || !data) return;
     if (readPersistedSetupStep() !== "p1") return;
-    const savedIp = readPersistedP1Ip() || settingsP1;
+    const savedIp = readPersistedP1Ip();
     if (!savedIp.trim()) return;
     const p1 = data.items.find((i) => i.key === "p1");
     const battery = data.items.find((i) => i.key === "battery");
@@ -185,9 +251,25 @@ export function Setup({ onOpenSettings }: Props) {
       setP1WizardMessage(outcome.message);
       setP1LinkBattery(Boolean(outcome.linkBattery));
     }
-  }, [p1Open, data, settingsP1]);
+  }, [p1Open, data]);
 
-  async function pollForRestart(initialBootId: string) {
+  const batteryRestartHandle: WizardRestartHandle = {
+    requestedRef: restartRequestedRef,
+    setPhase: setWizardPhase,
+    setPollTimedOut: setPollTimedOut,
+    setBusyMsg: setRestartBusyMsg,
+    setSaveError,
+  };
+
+  const p1RestartHandle: WizardRestartHandle = {
+    requestedRef: p1RestartRequestedRef,
+    setPhase: setP1WizardPhase,
+    setPollTimedOut: setP1PollTimedOut,
+    setBusyMsg: setP1RestartBusyMsg,
+    setSaveError: setP1SaveError,
+  };
+
+  async function pollForRestartBoot(initialBootId: string, handle: WizardRestartHandle) {
     const { intervalMs, timeoutMs } = restartPollConfig();
     const start = Date.now();
     while (Date.now() - start < timeoutMs) {
@@ -206,98 +288,41 @@ export function Setup({ onOpenSettings }: Props) {
       }
     }
     if (restartAliveRef.current) {
-      setPollTimedOut(true);
-      setWizardPhase("form");
+      handle.setPollTimedOut(true);
+      handle.setPhase("form");
     }
   }
 
-  async function pollForP1Restart(initialBootId: string) {
-    const { intervalMs, timeoutMs } = restartPollConfig();
-    const start = Date.now();
-    while (Date.now() - start < timeoutMs) {
-      await new Promise((resolve) => setTimeout(resolve, intervalMs));
-      try {
-        const r = await fetch("/health/live");
-        if (r.ok) {
-          const b = await r.json();
-          if (typeof b.boot_id === "string" && b.boot_id !== initialBootId) {
-            window.location.reload();
-            return;
-          }
-        }
-      } catch {
-        /* mid-restart */
-      }
-    }
-    if (restartAliveRef.current) {
-      setP1PollTimedOut(true);
-      setP1WizardPhase("form");
-    }
-  }
-
-  async function requestRestartOnce() {
-    if (restartRequestedRef.current) return;
-    restartRequestedRef.current = true;
-    setRestartBusyMsg(null);
-    setPollTimedOut(false);
+  async function requestRestartOnce(handle: WizardRestartHandle) {
+    if (handle.requestedRef.current) return;
+    handle.requestedRef.current = true;
+    handle.setBusyMsg(null);
+    handle.setPollTimedOut(false);
     try {
       const r = await apiFetch("/api/system/restart", { method: "POST" });
       const b = (await r.json().catch(() => ({}))) as Record<string, unknown>;
       const dispatch = interpretRestartResponse(r.status, b);
       if (dispatch.kind === "started") {
-        setWizardPhase("restarting");
-        void pollForRestart(dispatch.bootId);
+        handle.setPhase("restarting");
+        void pollForRestartBoot(dispatch.bootId, handle);
         return;
       }
       if (dispatch.kind === "busy" || dispatch.kind === "not_supervised") {
-        restartRequestedRef.current = false;
+        handle.requestedRef.current = false;
         if (dispatch.kind === "not_supervised") {
           setRestartAvailable({ available: false, reason: "not_supervised" });
-          setWizardPhase("manual_restart");
+          handle.setPhase("manual_restart");
         } else {
-          setRestartBusyMsg("Het systeem is bezig — probeer het over enkele seconden opnieuw.");
-          setWizardPhase("form");
+          handle.setBusyMsg("Het systeem is bezig — probeer het over enkele seconden opnieuw.");
+          handle.setPhase("form");
         }
         return;
       }
       throw new Error(dispatch.message);
     } catch (e) {
-      restartRequestedRef.current = false;
-      setSaveError(e instanceof Error ? e.message : String(e));
-      setWizardPhase("form");
-    }
-  }
-
-  async function requestP1RestartOnce() {
-    if (p1RestartRequestedRef.current) return;
-    p1RestartRequestedRef.current = true;
-    setP1RestartBusyMsg(null);
-    setP1PollTimedOut(false);
-    try {
-      const r = await apiFetch("/api/system/restart", { method: "POST" });
-      const b = (await r.json().catch(() => ({}))) as Record<string, unknown>;
-      const dispatch = interpretRestartResponse(r.status, b);
-      if (dispatch.kind === "started") {
-        setP1WizardPhase("restarting");
-        void pollForP1Restart(dispatch.bootId);
-        return;
-      }
-      if (dispatch.kind === "busy" || dispatch.kind === "not_supervised") {
-        p1RestartRequestedRef.current = false;
-        if (dispatch.kind === "not_supervised") {
-          setRestartAvailable({ available: false, reason: "not_supervised" });
-          setP1WizardPhase("manual_restart");
-        } else {
-          setP1RestartBusyMsg("Het systeem is bezig — probeer het over enkele seconden opnieuw.");
-          setP1WizardPhase("form");
-        }
-        return;
-      }
-      throw new Error(dispatch.message);
-    } catch (e) {
-      p1RestartRequestedRef.current = false;
-      setP1SaveError(e instanceof Error ? e.message : String(e));
-      setP1WizardPhase("form");
+      handle.requestedRef.current = false;
+      handle.setSaveError(e instanceof Error ? e.message : String(e));
+      handle.setPhase("form");
     }
   }
 
@@ -362,7 +387,7 @@ export function Setup({ onOpenSettings }: Props) {
           return;
         }
         setWizardPhase("restarting");
-        await requestRestartOnce();
+        await requestRestartOnce(batteryRestartHandle);
         return;
       }
       const body = await loadChecklist();
@@ -415,7 +440,7 @@ export function Setup({ onOpenSettings }: Props) {
       return;
     }
     setP1WizardPhase("restarting");
-    await requestP1RestartOnce();
+    await requestRestartOnce(p1RestartHandle);
   }
 
   async function saveAndTestP1() {
@@ -528,18 +553,12 @@ export function Setup({ onOpenSettings }: Props) {
                 </div>
                 {item.key === "p1" && p1Open ? (
                   <div className="setup-p1-wizard" data-testid="setup-p1-wizard">
-                    {p1WizardPhase === "restarting" && (
-                      <p className="setup-wizard-msg" data-testid="setup-p1-restarting">
-                        {P1_RESTART_MESSAGE}
-                      </p>
-                    )}
-                    {p1WizardPhase === "manual_restart" && (
-                      <p className="setup-wizard-msg" data-testid="setup-p1-restart-manual-hint">
-                        Herstart EMS handmatig met{" "}
-                        <code>make restart</code> of <code>scripts/restart.sh</code>, en herlaad
-                        daarna deze pagina.
-                      </p>
-                    )}
+                    <WizardRestartStatus
+                      phase={p1WizardPhase}
+                      restartingMessage={P1_RESTART_MESSAGE}
+                      restartingTestId="setup-p1-restarting"
+                      manualTestId="setup-p1-restart-manual-hint"
+                    />
                     {p1WizardPhase === "success" && p1WizardMessage && (
                       <p className="setup-wizard-success" data-testid="setup-p1-success" role="status">
                         {p1WizardMessage}
@@ -592,19 +611,11 @@ export function Setup({ onOpenSettings }: Props) {
                         {p1SaveError && (
                           <p className="setup-wizard-error" role="alert">{p1SaveError}</p>
                         )}
-                        {p1RestartBusyMsg && (
-                          <p className="setup-wizard-hint" role="status">{p1RestartBusyMsg}</p>
-                        )}
-                        {p1PollTimedOut && (
-                          <button
-                            type="button"
-                            className="btn secondary"
-                            data-testid="setup-p1-manual-reload"
-                            onClick={() => window.location.reload()}
-                          >
-                            Pagina herladen
-                          </button>
-                        )}
+                        <WizardFormRestartExtras
+                          pollTimedOut={p1PollTimedOut}
+                          busyMsg={p1RestartBusyMsg}
+                          reloadTestId="setup-p1-manual-reload"
+                        />
                         <button
                           type="button"
                           className="btn primary setup-p1-save"
@@ -619,19 +630,12 @@ export function Setup({ onOpenSettings }: Props) {
                   </div>
                 ) : item.key === "battery" && batteryOpen ? (
                   <div className="setup-battery-wizard" data-testid="setup-battery-wizard">
-                    {wizardPhase === "restarting" && (
-                      <p className="setup-wizard-msg" data-testid="setup-battery-restarting">
-                        EMS start opnieuw om je batterij te zoeken. Dit duurt even, laat dit scherm
-                        open.
-                      </p>
-                    )}
-                    {wizardPhase === "manual_restart" && (
-                      <p className="setup-wizard-msg" data-testid="setup-restart-manual-hint">
-                        Herstart EMS handmatig met{" "}
-                        <code>make restart</code> of <code>scripts/restart.sh</code>, en herlaad
-                        daarna deze pagina.
-                      </p>
-                    )}
+                    <WizardRestartStatus
+                      phase={wizardPhase}
+                      restartingMessage={BATTERY_RESTART_MESSAGE}
+                      restartingTestId="setup-battery-restarting"
+                      manualTestId="setup-restart-manual-hint"
+                    />
                     {wizardPhase === "success" && wizardMessage && (
                       <p className="setup-wizard-success" data-testid="setup-battery-success" role="status">
                         {wizardMessage}
@@ -690,19 +694,11 @@ export function Setup({ onOpenSettings }: Props) {
                         {saveError && (
                           <p className="setup-wizard-error" role="alert">{saveError}</p>
                         )}
-                        {restartBusyMsg && (
-                          <p className="setup-wizard-hint" role="status">{restartBusyMsg}</p>
-                        )}
-                        {pollTimedOut && (
-                          <button
-                            type="button"
-                            className="btn secondary"
-                            data-testid="setup-manual-reload"
-                            onClick={() => window.location.reload()}
-                          >
-                            Pagina herladen
-                          </button>
-                        )}
+                        <WizardFormRestartExtras
+                          pollTimedOut={pollTimedOut}
+                          busyMsg={restartBusyMsg}
+                          reloadTestId="setup-manual-reload"
+                        />
                         <button
                           type="button"
                           className="btn primary setup-battery-save"
