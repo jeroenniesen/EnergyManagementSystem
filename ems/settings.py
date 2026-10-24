@@ -852,6 +852,87 @@ SETTINGS_SCHEMA: tuple[SettingsField, ...] = (
 SETTINGS_BY_KEY: dict[str, SettingsField] = {f.key: f for f in SETTINGS_SCHEMA}
 SECRET_KEYS: frozenset[str] = frozenset(f.key for f in SETTINGS_SCHEMA if f.type == "secret")
 
+# POST /api/setup/settings allowlist (#291 onboarding).
+SETUP_SETTINGS_EXTRA_KEYS: frozenset[str] = frozenset({"connection.use_live_devices"})
+SETUP_SETTINGS_PREFIXES: tuple[str, ...] = (
+    "battery.", "meters.", "prices.", "site.", "ev.",
+)
+SETUP_PRIVATE_IPV4_KEYS: frozenset[str] = frozenset({
+    "battery.indevolt_ip",
+    "meters.p1_ip",
+    "meters.solar_ip",
+    "meters.car_ip",
+})
+SETUP_FORBIDDEN_KEY_MSG = (
+    "Deze instelling kan niet via de setup-wizard worden gewijzigd."
+)
+
+# AC 17 (#291): battery power/reserve limits — never via onboarding (capability probe later).
+SETUP_SETTINGS_BATTERY_POWER_LIMIT_KEYS: frozenset[str] = frozenset({
+    "battery.max_charge_w",
+    "battery.max_discharge_w",
+    "battery.usable_kwh",
+    "battery.min_reserve_soc",
+    "battery.night_reserve_kwh",
+    "battery.overnight_load_kwh",
+})
+# Only connection fields — any other battery.* key is rejected (AC 17 guard against schema drift).
+SETUP_SETTINGS_BATTERY_SAFE_KEYS: frozenset[str] = frozenset({
+    "battery.indevolt_ip",
+    "battery.indevolt_ips_extra",
+    "battery.indevolt_port",
+})
+SETUP_SETTINGS_DENIED_KEYS: frozenset[str] = SETUP_SETTINGS_BATTERY_POWER_LIMIT_KEYS
+
+# AC 18 (#291): only these secret keys may be written through POST /api/setup/settings.
+SETUP_SETTINGS_SECRET_ALLOWLIST: frozenset[str] = frozenset({"prices.tibber_token"})
+
+
+def setup_settings_key_allowed(key: str) -> bool:
+    if key in SETUP_SETTINGS_DENIED_KEYS:
+        return False
+    if key.startswith("battery.") and key not in SETUP_SETTINGS_BATTERY_SAFE_KEYS:
+        return False
+    if key in SECRET_KEYS and key not in SETUP_SETTINGS_SECRET_ALLOWLIST:
+        return False
+    if key in SETUP_SETTINGS_EXTRA_KEYS:
+        return True
+    return any(key.startswith(p) for p in SETUP_SETTINGS_PREFIXES)
+
+
+def apply_setup_private_ipv4_rules(
+    partial: dict[str, Any],
+) -> tuple[dict[str, Any], dict[str, str]]:
+    """Normalize RFC1918-only device IPs for setup saves; returns (body, errors)."""
+    from ems.url_safety import normalize_private_ipv4
+
+    out = dict(partial)
+    errors: dict[str, str] = {}
+    for key in list(out):
+        if key in SETUP_PRIVATE_IPV4_KEYS:
+            try:
+                out[key] = normalize_private_ipv4(str(out[key]))
+            except ValueError as exc:
+                errors[key] = str(exc)
+        elif key == "battery.indevolt_ips_extra":
+            raw = str(out[key]).strip()
+            if not raw:
+                try:
+                    normalize_private_ipv4("")
+                except ValueError as exc:
+                    errors[key] = str(exc)
+            else:
+                parts = [p.strip() for p in raw.split(",") if p.strip()]
+                normed: list[str] = []
+                try:
+                    for part in parts:
+                        normed.append(normalize_private_ipv4(part))
+                except ValueError as exc:
+                    errors[key] = str(exc)
+                else:
+                    out[key] = ", ".join(normed)
+    return out, errors
+
 # NL main-fuse presets @ 230 V → total watts (`control.grid_limit_w`). `unset` / `custom` are not
 # listed: unset keeps the conservative 5750 W schema default; custom uses the number field.
 GRID_FUSE_PRESET_W: dict[str, float] = {

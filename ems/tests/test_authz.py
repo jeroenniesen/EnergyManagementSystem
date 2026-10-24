@@ -21,6 +21,7 @@ def test_role_satisfies():
 def test_required_tier():
     assert required_tier("/api/status", "GET") == Tier.VIEW
     assert required_tier("/api/settings", "POST") == Tier.OPERATE
+    assert required_tier("/api/setup/settings", "POST") == Tier.ADMIN
     # Review fix: a GET on an OPERATE_PATHS member is a read — readers must not be 403'd on it.
     assert required_tier("/api/settings", "GET") == Tier.VIEW
     assert required_tier("/api/override", "GET") == Tier.VIEW

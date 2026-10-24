@@ -61,6 +61,7 @@ EXPECTED_DIRECT_ROUTES = frozenset({
     ("POST", "/api/override"),
     ("POST", "/api/plan-preview"),
     ("POST", "/api/settings"),
+    ("POST", "/api/setup/settings"),
     ("POST", "/api/trading/test-battery"),
     # The catch-all is registered for every write method + GET.
     ("GET", "/api/{rest:path}"),
