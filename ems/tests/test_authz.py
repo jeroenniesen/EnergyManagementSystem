@@ -25,6 +25,12 @@ def test_required_tier():
     # Review fix: a GET on an OPERATE_PATHS member is a read — readers must not be 403'd on it.
     assert required_tier("/api/settings", "GET") == Tier.VIEW
     assert required_tier("/api/override", "GET") == Tier.VIEW
+    assert required_tier("/api/override/must-charge", "GET") == Tier.VIEW
+    assert required_tier("/api/override/must-charge", "POST") == Tier.OPERATE
+    assert required_tier("/api/override/must-charge", "DELETE") == Tier.OPERATE
+    assert not role_satisfies("reader", required_tier("/api/override/must-charge", "POST"))
+    assert not role_satisfies("reader", required_tier("/api/override/must-charge", "DELETE"))
+    assert role_satisfies("user", required_tier("/api/override/must-charge", "POST"))
     assert required_tier("/api/users", "GET") == Tier.ADMIN
     assert required_tier("/api/users/5", "DELETE") == Tier.ADMIN
     assert required_tier("/api/invites", "POST") == Tier.ADMIN

@@ -34,6 +34,31 @@ def format_must_charge_slot_reason(max_price_eur_per_kwh: float) -> str:
     )
 
 
+def _soc_text(pct: float) -> str:
+    if abs(pct - round(pct)) < 1e-6:
+        return str(int(round(pct)))
+    return f"{pct:.1f}"
+
+
+def format_resident_must_charge_reason(
+    target_soc: float, deadline_hhmm: str, max_price_eur_per_kwh: float,
+) -> str:
+    """Slot reason for a resident 'vul tot X% vóór HH:MM' override (#322).
+
+    Shares the Voorzorgslading prefix and the price-ceiling marker so the existing
+    must-charge exemptions (savings floor, validator sizing) apply without a second path.
+    """
+    return (
+        f"{MUST_CHARGE_REASON_PREFIX}: vul tot {_soc_text(target_soc)}% vóór {deadline_hhmm} "
+        f"{_MUST_CHARGE_CEILING_MARKER}{max_price_eur_per_kwh:.2f}/kWh]"
+    )
+
+
+def is_resident_must_charge_slot(slot: PlanSlot) -> bool:
+    reason = slot.reason or ""
+    return reason.startswith(MUST_CHARGE_REASON_PREFIX) and "vul tot " in reason
+
+
 def must_charge_configured_ceiling_eur(slots: tuple[PlanSlot, ...]) -> float | None:
     for slot in slots:
         if not is_must_charge_slot(slot):

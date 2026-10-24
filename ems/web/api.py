@@ -56,6 +56,20 @@ from ems.control.override import (
 from ems.control.override import (
     from_stored as override_from_stored,
 )
+from ems.control.override_must_charge import (
+    AUDIT_CANCEL,
+    AUDIT_END,
+    AUDIT_START,
+    GEEN_STURING,
+    MUST_CHARGE_KEYS,
+    MustChargeOverride,
+    parse_deadline,
+    public_view,
+    validate_target_soc,
+)
+from ems.control.override_must_charge import (
+    from_stored as must_charge_from_stored,
+)
 from ems.control.service import (
     _CAR_SESSION_MAX_COMMANDS,  # noqa: F401 — re-exported for the closure-testing tests
     _LABEL_TO_MODE,  # noqa: F401 — re-exported for the closure-testing tests
@@ -1174,6 +1188,7 @@ def create_app(
     # closures are aliased here. B-46 stage 2 migrates the remaining closures to read ctx.*.
     ctx = ControlContext()
     override_box = ctx.override_box
+    must_charge_box = ctx.must_charge_box
     _OV_INTENT, _OV_EXP = "override.intent", "override.expires_at"
     # Kept here only for the lifespan's boot-time seed of the hysteresis state (§8.4 / B-15); the
     # read-modify-write + persist now lives in ControlService.commit_hysteresis (B-46 stage 2).
@@ -1641,6 +1656,7 @@ def create_app(
             override_box["ov"] = override_from_stored(
                 stored.get(_OV_INTENT), stored.get(_OV_EXP)
             )
+            must_charge_box["rec"] = must_charge_from_stored(stored)
         if audit_store is not None:
             await audit_store.init()
         if auth_store is not None:
@@ -3284,6 +3300,138 @@ def create_app(
         if not dry_run:
             _spawn_override_cycle()
         return JSONResponse(get_override())
+
+    def _must_charge_watch_only() -> bool:
+        if dry_run:
+            return True
+        return not bool(settings_cache.get("control.operational", False))
+
+    def _must_charge_steering_ok(now: datetime) -> bool:
+        """Prices, a probed battery and a known SoC — otherwise the resident override is refused."""
+        from ems.price_quality import validate_price_horizon
+
+        if price_source is None or _current_soc(now) is None:
+            return False
+        horizon = validate_price_horizon(price_source.slots(), now=now, site_tz=site_tz)
+        if not horizon.ok:
+            return False
+        cap = _capability_box["cap"]
+        if cap is None or not cap.supports_grid_charge or cap.max_charge_w <= 0:
+            return False
+        if cap.min_target_soc <= 0:
+            return False
+        return True
+
+    def _must_charge_body(now: datetime) -> dict:
+        rec = must_charge_box.get("rec")
+        soc = _current_soc(now)
+        active = rec is not None and rec.engages(now, soc)
+        reason = must_charge_box.get("warning") if active else None
+        return public_view(
+            rec, now, site_tz,
+            watch_only=_must_charge_watch_only(),
+            unreachable_reason=reason,
+            active=active,
+        )
+
+    async def _settle_must_charge(now: datetime) -> None:
+        rec = must_charge_box.get("rec")
+        if rec is None:
+            return
+        cause = rec.end_cause(now, _current_soc(now))
+        if cause is None:
+            return
+        must_charge_box["rec"] = None
+        must_charge_box["warning"] = None
+        if override_store is not None:
+            await override_store.delete(*MUST_CHARGE_KEYS)
+        control.invalidate_plan_cache()
+        if audit_store is not None:
+            await audit_store.append(
+                now.isoformat(), AUDIT_END,
+                f"Must-charge override ended ({cause})",
+                {
+                    "action": "end",
+                    "cause": cause,
+                    "target_soc": rec.target_soc,
+                    "deadline": rec.deadline.isoformat(),
+                },
+            )
+
+    control.settle_resident_override = _settle_must_charge
+
+    @app.get("/api/override/must-charge")
+    async def get_must_charge() -> dict:
+        now = _now_utc()
+        await _settle_must_charge(now)
+        return _must_charge_body(now)
+
+    @app.post("/api/override/must-charge")
+    async def set_must_charge(body: dict | None = None) -> JSONResponse:
+        if override_store is None:
+            return JSONResponse({"detail": "override store not configured"}, status_code=503)
+        now = _now_utc()
+        if not _must_charge_steering_ok(now):
+            return JSONResponse({"detail": GEEN_STURING}, status_code=422)
+        body = body or {}
+        errors: dict[str, str] = {}
+        target, target_err = validate_target_soc(body.get("target_soc"), _effective_floor_soc())
+        if target_err:
+            errors["target_soc"] = target_err
+        deadline, deadline_err = parse_deadline(body.get("deadline"), now, site_tz)
+        if deadline_err:
+            errors["deadline"] = deadline_err
+        if errors or target is None or deadline is None:
+            return JSONResponse(
+                {"detail": "invalid must-charge override", "errors": errors}, status_code=422,
+            )
+        rec = MustChargeOverride(
+            target_soc=target, deadline=deadline, created=now, expires=deadline,
+        )
+        await override_store.set_many({
+            "override.must_charge.target_soc": rec.target_soc,
+            "override.must_charge.deadline": rec.deadline.isoformat(),
+            "override.must_charge.created": rec.created.isoformat(),
+            "override.must_charge.expires": rec.expires.isoformat(),
+        })
+        must_charge_box["rec"] = rec
+        control.invalidate_plan_cache()
+        if audit_store is not None:
+            await audit_store.append(
+                now.isoformat(), AUDIT_START,
+                f"Must-charge override: {rec.target_soc:g}% by {rec.deadline.isoformat()}",
+                {
+                    "action": "start",
+                    "target_soc": rec.target_soc,
+                    "deadline": rec.deadline.isoformat(),
+                    "created": rec.created.isoformat(),
+                    "expires": rec.expires.isoformat(),
+                },
+            )
+        control.plan_with_recovery(now)
+        return JSONResponse(_must_charge_body(now))
+
+    @app.delete("/api/override/must-charge")
+    async def cancel_must_charge() -> JSONResponse:
+        if override_store is None:
+            return JSONResponse({"detail": "override store not configured"}, status_code=503)
+        now = _now_utc()
+        rec = must_charge_box.get("rec")
+        await override_store.delete(*MUST_CHARGE_KEYS)
+        must_charge_box["rec"] = None
+        must_charge_box["warning"] = None
+        control.invalidate_plan_cache()
+        if rec is not None and audit_store is not None:
+            await audit_store.append(
+                now.isoformat(), AUDIT_CANCEL,
+                "Must-charge override cancelled",
+                {
+                    "action": "cancel",
+                    "target_soc": rec.target_soc,
+                    "deadline": rec.deadline.isoformat(),
+                },
+            )
+        return JSONResponse(_must_charge_body(now))
 
     # --- E-11 Trading portal (B-106 / B-107 / B-108) ---------------------------------------------
     _TEST_BATTERY_SECONDS = 120
