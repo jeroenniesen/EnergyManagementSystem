@@ -107,10 +107,14 @@ class FreshnessTracker:
 
 
 def raw_meter_stale(snapshot: dict[str, str]) -> set[str]:
-    """Instantaneous stale/missing EV or grid meter signals (no hysteresis)."""
+    """Instantaneous stale EV or grid meter signals (no hysteresis).
+
+    ``missing`` is not stale here — a never-seen meter does not drive cautious
+    planning until hysteresis has observed it fresh at least once (#332).
+    """
     return {
         sig for sig in METER_STALE_SIGNALS
-        if snapshot.get(sig) in (Freshness.STALE.value, Freshness.MISSING.value)
+        if snapshot.get(sig) == Freshness.STALE.value
     }
 
 
@@ -120,10 +124,20 @@ class StaleMeterHysteresis:
 
     _active: set[str] = field(default_factory=set)
     _fresh_streak: dict[str, int] = field(default_factory=dict)
+    _ever_fresh: set[str] = field(default_factory=set)
 
     def stale_signals(self, snapshot: dict[str, str]) -> set[str]:
         """Return EV/grid signal names that should drive cautious planning after hysteresis."""
+        for sig in METER_STALE_SIGNALS:
+            if snapshot.get(sig) == Freshness.FRESH.value:
+                self._ever_fresh.add(sig)
         raw = raw_meter_stale(snapshot)
+        for sig in METER_STALE_SIGNALS:
+            if (
+                snapshot.get(sig) == Freshness.MISSING.value
+                and sig in self._ever_fresh
+            ):
+                raw.add(sig)
         out: set[str] = set()
         for sig in METER_STALE_SIGNALS:
             if sig in raw:

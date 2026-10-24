@@ -61,6 +61,8 @@ def test_stale_reserve_buffer_pp_defaults_and_bounds():
     assert errors == {} and clean["planner.stale_reserve_buffer_pp"] == 20.0
     _c, err = validate_settings({"planner.stale_reserve_buffer_pp": 21.0})
     assert "planner.stale_reserve_buffer_pp" in err
+    _c, err_neg = validate_settings({"planner.stale_reserve_buffer_pp": -1.0})
+    assert "planner.stale_reserve_buffer_pp" in err_neg
 
 
 def test_trading_settings_defaults_match_e11_lock():

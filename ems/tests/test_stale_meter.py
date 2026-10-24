@@ -14,6 +14,7 @@ from ems.planner.recovery import recover_if_needed
 from ems.planner.rule_based import PlannerConfig
 from ems.planner.schedule import SLOT
 from ems.planner.summer import SummerConfig
+from ems.planner.validator import validate_plan
 from ems.sources.forecast import ForecastSlot
 from ems.sources.prices import PriceSlot
 
@@ -119,13 +120,36 @@ def test_ev_stale_keeps_discharge_when_soc_stays_above_stale_floor():
         assert STALE_METER_PLAN_REASON in (s.reason or "")
 
 
+def test_ev_stale_holds_peak_that_drops_below_floor_after_charge_cap():
+    """AC1: SoC walk respects target_soc; peak ending below 15% becomes HOLD_RESERVE."""
+    req, _, _ = _adaptive_fixture()
+    stale = RuleBasedPlanner().plan(replace(req, ev_stale=True))
+    peak_starts = [T0 + i * SLOT for i in range(4, 8)]
+    below_floor = peak_starts[3]
+    above_floor = peak_starts[:3]
+    for s in stale.slots:
+        if s.start == below_floor:
+            assert s.intent is BatteryIntent.HOLD_RESERVE
+            assert STALE_METER_PLAN_REASON in (s.reason or "")
+        elif s.start in above_floor:
+            assert s.intent is BatteryIntent.DISCHARGE_FOR_LOAD
+            assert STALE_METER_PLAN_REASON in (s.reason or "")
+
+
 def test_ev_stale_raises_floor_and_trims_discharge():
     req, _, _ = _adaptive_fixture()
     baseline = RuleBasedPlanner().plan(req)
     stale_req = replace(req, ev_stale=True)
     stale = RuleBasedPlanner().plan(stale_req)
     assert any(STALE_METER_PLAN_REASON in (s.reason or "") for s in stale.slots)
-    assert all(s.floor_soc == 15.0 for s in stale.slots if s.floor_soc is not None)
+    for s in stale.slots:
+        if s.floor_soc is None:
+            continue
+        if s.intent is BatteryIntent.GRID_CHARGE_TO_TARGET:
+            base = next(b for b in baseline.slots if b.start == s.start)
+            assert s.floor_soc == base.floor_soc
+        else:
+            assert s.floor_soc == 15.0
     base_discharge = {
         s.start for s in baseline.slots if s.intent is BatteryIntent.DISCHARGE_FOR_LOAD
     }
@@ -158,6 +182,45 @@ def test_grid_stale_never_increases_grid_charge_vs_baseline():
     for flags in ({"ev_stale": True}, {"grid_stale": True}):
         stale = RuleBasedPlanner().plan(replace(req, **flags))
         _assert_grid_charge_lte_baseline(stale, baseline)
+
+
+def test_ev_stale_counterexample_stays_valid_grid_charge_floor_unchanged():
+    """Review r3: low SoC + grid charge must not get raised floor_soc (unsafe plan)."""
+    prices = [PriceSlot(T0 + i * SLOT, e) for i, e in enumerate([0.04] * 6 + [0.55] * 2)]
+    fc = [ForecastSlot(T0 + i * SLOT, 0, 0, 0) for i in range(8)]
+    load = {
+        T0 + i * SLOT: (40.0 if i < 6 else 400.0) for i in range(8)
+    }
+    req = PlannerRequest(
+        now=T0,
+        prices=prices,
+        forecast=fc,
+        soc_pct=11.0,
+        strategy="winter",
+        winter_cfg=PlannerConfig(charge_slots=4, discharge_slots=2),
+        summer_cfg=SummerConfig(usable_kwh=10.0, target_soc_pct=80.0),
+        load_w_by=load,
+        adaptive_cfg=AdaptiveConfig(
+            usable_kwh=10.0, reserve_soc_pct=10.0, max_charge_w=4000.0,
+        ),
+        ev_stale=True,
+    )
+    baseline = RuleBasedPlanner().plan(replace(req, ev_stale=False))
+    stale = RuleBasedPlanner().plan(req)
+    val = validate_plan(
+        stale, soc_pct=11.0, min_reserve_soc=10.0, data_quality="complete",
+    )
+    assert val.ok
+    assert any(
+        s.intent is BatteryIntent.HOLD_RESERVE
+        and "meter data is uncertain" in (s.reason or "")
+        for s in stale.slots
+    )
+    for s in stale.slots:
+        if s.intent is BatteryIntent.GRID_CHARGE_TO_TARGET:
+            base = next(b for b in baseline.slots if b.start == s.start)
+            assert s.floor_soc == base.floor_soc
+    _assert_grid_charge_lte_baseline(stale, baseline)
 
 
 def test_stale_never_increases_grid_charge_after_recovery():

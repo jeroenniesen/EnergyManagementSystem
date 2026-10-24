@@ -648,16 +648,21 @@ def apply_stale_meter_caution(
     out: list[PlanSlot] = []
     running_soc = start_soc_pct
     for s in plan.slots:
+        charge_cap = s.target_soc if s.target_soc is not None else None
         proj = project_energy(
             [s],
             start_soc_pct=running_soc,
             solar_w_by=solar_w_by,
             load_w_by=load_w_by,
             model=projection_model,
+            charge_target_soc_pct=charge_cap,
         )[0]
-        floor_soc = effective_floor
-        if s.floor_soc is not None:
-            floor_soc = max(float(s.floor_soc), effective_floor)
+        if s.intent is _CHARGE:
+            floor_soc = s.floor_soc
+        else:
+            floor_soc = effective_floor
+            if s.floor_soc is not None:
+                floor_soc = max(float(s.floor_soc), effective_floor)
         intent = s.intent
         reason = stale_meter_reason_prefix(s.reason)
         power_w = s.power_w
@@ -673,6 +678,7 @@ def apply_stale_meter_caution(
                 solar_w_by=solar_w_by,
                 load_w_by=load_w_by,
                 model=projection_model,
+                charge_target_soc_pct=charge_cap,
             )[0]
         running_soc = proj.soc_pct
         out.append(replace(
