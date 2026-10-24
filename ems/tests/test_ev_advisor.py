@@ -2,9 +2,11 @@
 for v2 — this never commands anything). Pure logic in `ems/ev_advisor.py` + the read-only
 `/api/advisor/ev-charge` endpoint that wires it to settings + the existing price/forecast access
 patterns."""
+import math
 from datetime import UTC, datetime, timedelta
 from zoneinfo import ZoneInfo
 
+import pytest
 from fastapi.testclient import TestClient
 
 from ems.ev_advisor import advise_charge_window
@@ -159,14 +161,86 @@ def test_surplus_export_models_and_fees_match_economic_snapshot():
 
 
 # ---- GET /api/advisor/ev-charge ----
+#
+# 20 kWh at 11 kW needs ceil(20/11/0.25) = 8 quarter-hours. The route keeps price slots with
+# now <= start < departure, and departure is today 07:30 until that instant, then tomorrow.
+# The 8th slot before 07:30 starts at 05:30, so advice is absent for 05:30 < local < 07:30.
 
-def _app(tmp_path):
+_CHARGE_SLOTS = math.ceil(20.0 / 11.0 / 0.25)
+_KWH_PER_SLOT = 20.0 / _CHARGE_SLOTS
+_OVERNIGHT = 0.08  # price_for_hour for local hours 0–5
+_SHOULDER = 0.12  # local hour 6
+_MORNING_PEAK = 0.32  # local hours 7–8
+_DAYTIME = 0.18  # local hours 9–16
+_ENERGY_TAX = 0.13  # default prices.energy_tax_eur_per_kwh, spot_minus_tax surplus credit
+
+
+def _app(tmp_path, clock=None):
     db = str(tmp_path / "ems.sqlite")
+    clock_arg = {} if clock is None else {"clock": clock}
     return create_app(
         MockSource(), dry_run=True, dev_mode="mock", tz=AMS,
-        price_source=MockPriceSource(AMS), solar_forecast=MockSolarForecastSource(AMS),
+        price_source=MockPriceSource(AMS, **clock_arg),
+        solar_forecast=MockSolarForecastSource(AMS, **clock_arg),
         settings_store=SettingsStore(db),
     )
+
+
+def _frozen_app(tmp_path, monkeypatch, local: datetime):
+    """Pin the route clock and the mock price/forecast horizon to one Amsterdam instant.
+
+    `freeze_wall_clock_utc` replaces `ems.web.api.datetime`. Mock sources bind their clock as a
+    default argument at import, so the same instant is passed in explicitly as well.
+    """
+    from ems.tests.conftest import freeze_wall_clock_utc
+
+    frozen_utc = local.astimezone(UTC)
+    freeze_wall_clock_utc(monkeypatch, frozen_utc)
+    return _app(tmp_path, clock=lambda: frozen_utc)
+
+
+def _enable(client: TestClient) -> None:
+    client.post("/api/settings", json={
+        "ev.advice_enabled": True, "ev.departure_time": "07:30",
+        "ev.charge_kwh": 20.0, "ev.charger_kw": 11.0,
+    })
+
+
+def _reason(solar_share_pct: int) -> str:
+    text = "Cheapest 2h window before your 07:30 departure"
+    if solar_share_pct > 0:
+        return f"{text} \u2014 {solar_share_pct}% overlaps expected solar surplus."
+    return f"{text}."
+
+
+def _window(start: datetime, slot_prices: list[float], solar_share_pct: int) -> dict:
+    """Exact advice for one contiguous 8-slot window. `end` is two real hours after `start`."""
+    assert len(slot_prices) == _CHARGE_SLOTS
+    cost = round(sum(price * _KWH_PER_SLOT for price in slot_prices), 2)
+    return {
+        "start": start.isoformat(),
+        "end": (start + timedelta(hours=2)).isoformat(),
+        "est_cost_eur": cost,
+        "solar_share_pct": solar_share_pct,
+        "slots": _CHARGE_SLOTS,
+        "reason": _reason(solar_share_pct),
+    }
+
+
+def _overnight(start: datetime) -> dict:
+    return _window(start, [_OVERNIGHT] * _CHARGE_SLOTS, 0)
+
+
+def _boundary(start: datetime) -> dict:
+    # 05:30 and 05:45 at 0.08, four hour-6 slots at 0.12, 07:00 and 07:15 at 0.32.
+    prices = [_OVERNIGHT, _OVERNIGHT, _SHOULDER, _SHOULDER, _SHOULDER, _SHOULDER,
+              _MORNING_PEAK, _MORNING_PEAK]
+    return _window(start, prices, 0)
+
+
+def _solar_midday(start: datetime) -> dict:
+    # First P50 >= 1000 W is 09:45; daytime sticker 0.18, surplus credit 0.18 - 0.13.
+    return _window(start, [_DAYTIME - _ENERGY_TAX] * _CHARGE_SLOTS, 100)
 
 
 def test_ev_advisor_endpoint_null_when_disabled(tmp_path):
@@ -175,12 +249,11 @@ def test_ev_advisor_endpoint_null_when_disabled(tmp_path):
     assert body == {"advice": None}
 
 
-def test_ev_advisor_endpoint_returns_advice_shape_when_enabled(tmp_path):
-    with TestClient(_app(tmp_path)) as c:
-        c.post("/api/settings", json={
-            "ev.advice_enabled": True, "ev.departure_time": "07:30",
-            "ev.charge_kwh": 20.0, "ev.charger_kw": 11.0,
-        })
+def test_ev_advisor_endpoint_returns_advice_shape_when_enabled(tmp_path, monkeypatch):
+    # 04:00 is before the 05:30 cutoff: 04:00..07:15 is 14 slots, so advice exists on any CI clock.
+    local = datetime(2026, 10, 24, 4, 0, tzinfo=AMS)
+    with TestClient(_frozen_app(tmp_path, monkeypatch, local)) as c:
+        _enable(c)
         body = c.get("/api/advisor/ev-charge").json()
     advice = body["advice"]
     assert advice is not None
@@ -188,3 +261,88 @@ def test_ev_advisor_endpoint_returns_advice_shape_when_enabled(tmp_path):
         assert key in advice
     assert advice["slots"] > 0
     assert "07:30" in advice["reason"]
+
+
+# 2026-03-29 00:15 is omitted on purpose: eight real quarter-hours from 00:15 cross the
+# spring-forward gap, and same-tzinfo subtraction treats that 15-minute jump as 75 minutes.
+# Documented in the session summary; not asserted, so the bug is neither locked in nor xfailed.
+@pytest.mark.parametrize(
+    ("local", "expected"),
+    [
+        pytest.param(
+            datetime(2026, 10, 24, 5, 30, tzinfo=AMS),
+            _boundary(datetime(2026, 10, 24, 5, 30, tzinfo=AMS)),
+            id="2026-10-24T05:30_last_fit",
+        ),
+        pytest.param(datetime(2026, 10, 24, 5, 31, tzinfo=AMS), None, id="2026-10-24T05:31"),
+        pytest.param(datetime(2026, 10, 24, 5, 56, tzinfo=AMS), None, id="2026-10-24T05:56_ci"),
+        pytest.param(datetime(2026, 10, 24, 7, 29, tzinfo=AMS), None, id="2026-10-24T07:29"),
+        pytest.param(
+            datetime(2026, 10, 24, 7, 30, tzinfo=AMS),
+            _solar_midday(datetime(2026, 10, 24, 9, 45, tzinfo=AMS)),
+            id="2026-10-24T07:30_rollover",
+        ),
+        pytest.param(
+            datetime(2026, 10, 24, 23, 59, tzinfo=AMS),
+            _overnight(datetime(2026, 10, 25, 0, 0, tzinfo=AMS)),
+            id="2026-10-24T23:59",
+        ),
+        pytest.param(
+            datetime(2026, 10, 25, 0, 0, tzinfo=AMS),
+            _overnight(datetime(2026, 10, 25, 0, 0, tzinfo=AMS)),
+            id="2026-10-25T00:00_dst_end",
+        ),
+        pytest.param(
+            datetime(2026, 10, 25, 0, 15, tzinfo=AMS),
+            _overnight(datetime(2026, 10, 25, 0, 15, tzinfo=AMS)),
+            id="2026-10-25T00:15_dst_end",
+        ),
+        pytest.param(
+            datetime(2026, 10, 25, 4, 0, tzinfo=AMS),
+            _overnight(datetime(2026, 10, 25, 4, 0, tzinfo=AMS)),
+            id="2026-10-25T04:00_after_fold",
+        ),
+        pytest.param(
+            datetime(2026, 10, 25, 5, 30, tzinfo=AMS),
+            _boundary(datetime(2026, 10, 25, 5, 30, tzinfo=AMS)),
+            id="2026-10-25T05:30_dst_end",
+        ),
+        pytest.param(datetime(2026, 10, 25, 5, 56, tzinfo=AMS), None, id="2026-10-25T05:56"),
+        pytest.param(
+            datetime(2026, 3, 28, 23, 59, tzinfo=AMS),
+            _overnight(datetime(2026, 3, 29, 0, 0, tzinfo=AMS)),
+            id="2026-03-28T23:59",
+        ),
+        pytest.param(
+            datetime(2026, 3, 29, 0, 0, tzinfo=AMS),
+            _overnight(datetime(2026, 3, 29, 0, 0, tzinfo=AMS)),
+            id="2026-03-29T00:00_dst_start",
+        ),
+        pytest.param(
+            datetime(2026, 3, 29, 5, 30, tzinfo=AMS),
+            _boundary(datetime(2026, 3, 29, 5, 30, tzinfo=AMS)),
+            id="2026-03-29T05:30_dst_start",
+        ),
+        pytest.param(datetime(2026, 3, 29, 5, 56, tzinfo=AMS), None, id="2026-03-29T05:56"),
+        pytest.param(
+            datetime(2026, 6, 14, 23, 59, tzinfo=AMS),
+            _overnight(datetime(2026, 6, 15, 0, 0, tzinfo=AMS)),
+            id="2026-06-14T23:59",
+        ),
+        pytest.param(
+            datetime(2026, 6, 15, 0, 0, tzinfo=AMS),
+            _overnight(datetime(2026, 6, 15, 0, 0, tzinfo=AMS)),
+            id="2026-06-15T00:00",
+        ),
+        pytest.param(
+            datetime(2026, 6, 15, 0, 15, tzinfo=AMS),
+            _overnight(datetime(2026, 6, 15, 0, 15, tzinfo=AMS)),
+            id="2026-06-15T00:15",
+        ),
+    ],
+)
+def test_ev_advisor_endpoint_fixed_clock(tmp_path, monkeypatch, local, expected):
+    with TestClient(_frozen_app(tmp_path, monkeypatch, local)) as c:
+        _enable(c)
+        advice = c.get("/api/advisor/ev-charge").json()["advice"]
+    assert advice == expected
