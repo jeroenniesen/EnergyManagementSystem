@@ -125,8 +125,8 @@ Subtract the HomeWizard car meter from the learned baseline **only when the car 
 ### 4.6 Missing / stale meter fallback
 Per-source freshness is tracked (§6, §16). If a meter is missing or stale:
 - **Solar meter stale** → fall back to the solar *forecast* for `solar_power_w` (flag the chart).
-- **Car meter stale** → assume `ev_power_w = 0` and widen the load uncertainty band.
-- **P1 stale** → reconstruction is unreliable → **fail safe to `AUTO`** and raise an alert (§9.3).
+- **Car meter stale** → assume `ev_power_w = 0` and widen the load uncertainty band. The planner also plans more cautiously: +`planner.stale_reserve_buffer_pp` on the discharge floor, no new export/aggressive discharge, reason `Voorzichtig: meter verouderd` (clears after two fresh cycles; #332 / F-23).
+- **P1 stale** → reconstruction is unreliable → **fail safe to `AUTO`** and raise an alert (§9.3). The same cautious planner path may still run when `grid_stale` is set, but **`unsafe` fail-safe wins before any plan is applied**.
 - Any reconstruction using a stale input is flagged in the UI freshness indicators (§9.1).
 
 ### 4.7 Data quality (per-signal staleness, plausibility, source priority)
@@ -437,13 +437,14 @@ Seasonal selection (`auto` / `summer` / `winter`) is **configurable** (calendar 
 5. **Export valuation:** gate and projection use `export_value(..., prices.export_price_model)`. **Default model = `spot_minus_tax`** (2027-ready). Negative export value ⇒ never dump that slot.
 6. **Slot policy `planner.export_mode`:** `peak_slice` (default) — planner picks discharge slots the same way it picks charge slots (optimal expensive windows, dwell-aware); `full_dump` — empty available surplus down to the SoC reserve across the peak window. Both are mode switches at `power_w`, not continuous control.
 7. **Caps:** `planner.max_export_kwh_per_day` — **0 / empty = no hard cap** (export down to SoC reserve only). `planner.min_export_kwh` skips tiny dumps (default 0.5). Shared `planner.max_cycles_per_day` (default 1.5) with load arbitrage.
-8. **Arming / dry-run:** planning may log `EXPORT_FOR_PROFIT` in dry-run; **live forced `DISCHARGE` writes** require `control.allow_export_discharge` **and** the existing two floors (`config.yaml`/`dev.mode` dry-run + Settings Watch only / `control.operational`). No fixed N-day gate — user arms when ready (portal **Trading** menu; optional **Test batterij**, §9.1 / B-107).
+8. **Arming / dry-run:** planning may log `EXPORT_FOR_PROFIT` in dry-run; **live forced `DISCHARGE` writes** require `control.allow_export_discharge` **and** the existing two floors (`config.yaml`/`dev.mode` dry-run + Settings Watch only / `control.operational`). **New arms** (false→true on `control.allow_export_discharge`) also require a recorded **stap 2** (`trading.dry_run_reviewed_at` via `POST /api/trading/dry-run-reviewed` only — not via `POST /api/settings`); already-armed installs stay armed without migration (#339 / F-30). Optional **Test batterij** is not a gate (§9.1 / B-107).
 9. **Fail-safe:** `daily_min_savings` fail → whole-day no-trade (`AUTO`). Unsafe/stale data, missing `discharge` capability, or flag off → no export intent.
 
 > **Implemented status:** config/schema lock (B-103 / #209); intent + mapping + validator (B-105 / #211); planner T-vs-Z (B-104 / #210); UI/arming (B-106…B-108). Until those land, runtime behaviour remains summer/winter only.
 
 > **Implemented — post-2027 economics (`ems/planner/economics.py`).** Two shared, pure money functions back both live planners *and* the finance/savings math, so the arbitrage gate and the reported benefit never drift apart:
 > - `breakeven(charge_price, …)` — the sell price a stored kWh must beat (charge price grossed up for round-trip losses + wear + risk margin). This is the profitability test in step 2, factored out.
+> - `max_buy_for_peak(peak_price, rte, deg, risk)` — the highest charge price that still undercuts `peak_price` after the same losses, wear and risk: `(peak − deg − risk) × rte`. Winter, adaptive, summer grid top-up (`min(configured cap, max_buy)`, peak = dearest slot after the charge deadline) and missed-window recovery all use this helper (audit F-08, F-10). A stricter ceiling only drops buys.
 > - `export_value(price, model, …)` — what one **exported** kWh is worth under a configurable feed-in model (`prices.export_price_model`):
 >   - **`spot_minus_tax`** (**default**, 2027-ready) — spot price **−** energy tax. This **may be negative** on a negative-spot slot — exporting can *cost* money — and is deliberately **not** clamped (§2 "negative prices & export tariffs are real");
 >   - **`net_metering`** — the full retail price (today's Dutch *saldering*: export nets against import at the full price);
@@ -610,6 +611,10 @@ arbitrage:
   max_cycles_per_month: 30
   min_grid_charge_kwh: 0.5            # never schedule tiny inefficient grid charges (§8.10)
   max_daily_grid_charge_kwh: 12       # hard cap on grid energy bought/day (§8.10)
+  must_charge_enabled: false          # optional precautionary pre-peak grid charge (#323 / F-02)
+  must_charge_target_soc: 30          # % target when must-charge runs (clamped to reserve/device)
+  must_charge_max_price_eur_per_kwh: 0.40  # separate buy ceiling (advanced)
+  must_charge_buffer_pp: 10           # trigger only when SoC < effective floor + buffer (advanced)
 
 consumption:
   source: learned          # learned (reconstructed load from HA) | fixed

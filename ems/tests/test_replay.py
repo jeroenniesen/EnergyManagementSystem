@@ -775,3 +775,55 @@ def test_replay_14_winter_days_keep_more_energy_for_18():
     assert auto_cost == after["auto_cost_eur"]
     assert savings == after["savings_eur"]
     assert round(savings - before["savings_eur"], 6) == after["savings_difference_eur"]
+
+
+def test_fourteen_day_replay_shared_buy_ceiling_keeps_winter_numbers():
+    """#327 AC4: winter replay kWh, savings and reserve breaches stay on the pre-helper figures.
+
+    Summer-strategy (adaptive) on the same wide spread must not buy more or add breaches.
+    Exact adaptive figures are locked once measured; the inequalities are the acceptance.
+    """
+    from ems.planner.budgets import planned_grid_charge_kwh
+    from ems.planner.strategy import build_plan
+    from ems.replay import _adaptive_cfg, _summer_cfg, _winter_cfg
+
+    def totals(cfg):
+        cost_p = cost_a = breaches = bought = 0.0
+        for offset in range(14):
+            day = DAY + timedelta(days=offset)
+            raw = _raw_day(1000.0, lambda _i: 0.0, day=day)
+            prices = _price_day(_winter_price, day=day)
+            result = replay_day(raw, prices, [], cfg=cfg)
+            assert result.data_ok, result.skip_reason
+            cost_p += result.scenarios["planner"].cost_eur
+            cost_a += result.scenarios["auto_selfuse"].cost_eur
+            breaches += result.scenarios["planner"].reserve_breaches
+            slots = [
+                PriceSlot(
+                    start=datetime.fromisoformat(p["start_ts"]),
+                    eur_per_kwh=p["eur_per_kwh"],
+                )
+                for p in prices
+            ]
+            plan = build_plan(
+                result.strategy, prices=slots, forecast=[], now=day, soc_pct=0.0,
+                winter_cfg=_winter_cfg(cfg), summer_cfg=_summer_cfg(cfg),
+                load_w_by={s.start: 1000.0 for s in slots},
+                adaptive_cfg=_adaptive_cfg(cfg),
+            )
+            bought += planned_grid_charge_kwh(plan, 1.0, tz=UTZ)
+        return cost_a - cost_p, bought, breaches
+
+    savings, bought, breaches = totals(_cfg())
+    # #326: the evening reserve keeps energy for the EUR 0.50 evening peak and discharges there,
+    # so winter savings rise from 21.7 to 23.8 while bought energy stays 84.0 kWh and breaches
+    # stay 252: the higher saving never comes from buying more.
+    assert savings == pytest.approx(23.8)
+    assert bought == pytest.approx(84.0)
+    assert breaches == 252
+
+    savings_s, bought_s, breaches_s = totals(_cfg(**{"strategy.mode": "summer"}))
+    # Wide winter spread: the valleys stay under the new ceiling, so kWh and € do not move.
+    assert bought_s == pytest.approx(140.0)
+    assert breaches_s == 196
+    assert savings_s == pytest.approx(12.6)

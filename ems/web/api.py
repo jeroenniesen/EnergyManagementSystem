@@ -56,6 +56,20 @@ from ems.control.override import (
 from ems.control.override import (
     from_stored as override_from_stored,
 )
+from ems.control.override_must_charge import (
+    AUDIT_CANCEL,
+    AUDIT_END,
+    AUDIT_START,
+    GEEN_STURING,
+    MUST_CHARGE_KEYS,
+    MustChargeOverride,
+    parse_deadline,
+    public_view,
+    validate_target_soc,
+)
+from ems.control.override_must_charge import (
+    from_stored as must_charge_from_stored,
+)
 from ems.control.service import (
     _CAR_SESSION_MAX_COMMANDS,  # noqa: F401 — re-exported for the closure-testing tests
     _LABEL_TO_MODE,  # noqa: F401 — re-exported for the closure-testing tests
@@ -142,10 +156,13 @@ from ems.sense import Recorder
 from ems.settings import (
     SECRET_KEYS,
     SETTINGS_BY_KEY,
+    SETUP_FORBIDDEN_KEY_MSG,
+    apply_setup_private_ipv4_rules,
     effective_settings,
     public_values,
     schema_json,
     settings_migration_writes,
+    setup_settings_key_allowed,
     validate_settings,
 )
 from ems.setup_checklist import build_setup_checklist
@@ -1171,6 +1188,7 @@ def create_app(
     # closures are aliased here. B-46 stage 2 migrates the remaining closures to read ctx.*.
     ctx = ControlContext()
     override_box = ctx.override_box
+    must_charge_box = ctx.must_charge_box
     _OV_INTENT, _OV_EXP = "override.intent", "override.expires_at"
     # Kept here only for the lifespan's boot-time seed of the hysteresis state (§8.4 / B-15); the
     # read-modify-write + persist now lives in ControlService.commit_hysteresis (B-46 stage 2).
@@ -1617,6 +1635,9 @@ def create_app(
                 await settings_store.set_many(migration_writes)
                 stored_settings = await settings_store.all()
             settings_cache.update(effective_settings(stored_settings))
+            _raw_dry_run_reviewed = stored_settings.get("trading.dry_run_reviewed_at")
+            if _raw_dry_run_reviewed is not None:
+                settings_cache["trading.dry_run_reviewed_at"] = _raw_dry_run_reviewed
             from ems.settings import live_mock_forecast_in_use
 
             if live_mock_forecast_in_use(solar_forecast, settings_cache, dev_mode):
@@ -1638,6 +1659,7 @@ def create_app(
             override_box["ov"] = override_from_stored(
                 stored.get(_OV_INTENT), stored.get(_OV_EXP)
             )
+            must_charge_box["rec"] = must_charge_from_stored(stored)
         if audit_store is not None:
             await audit_store.init()
         if auth_store is not None:
@@ -2094,6 +2116,14 @@ def create_app(
     # web-facing) and are still injected. `settings` is THE live shared dict (never copied — the
     # settings_cache convention). The aliases below expose the service methods under their original
     # names so every endpoint + closure keeps calling `_current_soc` / `_active_strategy` / … .
+    from ems.freshness import StaleMeterHysteresis
+
+    _meter_stale_hysteresis = StaleMeterHysteresis()
+
+    def _stale_signals(now: datetime) -> set[str]:
+        snap = freshness.snapshot(now) if freshness is not None else {}
+        return _meter_stale_hysteresis.stale_signals(snap)
+
     control = ControlService(
         ctx=ctx, settings=settings_cache, controller=controller, store=store,
         audit_store=audit_store, price_source=price_source, solar_forecast=solar_forecast,
@@ -2101,6 +2131,7 @@ def create_app(
         source=source, cache_store=cache_store,
         data_quality=_data_quality, validate_plan_obj=_validate_plan_obj,
         clock=application_clock,
+        stale_signals=_stale_signals,
     )
     # F-45: control_state lock give-up alerts here; the report path does not write the battery.
     control._storage_notifier = notifier
@@ -3273,10 +3304,161 @@ def create_app(
             _spawn_override_cycle()
         return JSONResponse(get_override())
 
+    def _must_charge_watch_only() -> bool:
+        if dry_run:
+            return True
+        return not bool(settings_cache.get("control.operational", False))
+
+    def _must_charge_steering_ok(now: datetime) -> bool:
+        """Prices, a probed battery and a known SoC — otherwise the resident override is refused."""
+        from ems.price_quality import validate_price_horizon
+
+        if price_source is None or _current_soc(now) is None:
+            return False
+        horizon = validate_price_horizon(price_source.slots(), now=now, site_tz=site_tz)
+        if not horizon.ok:
+            return False
+        cap = _capability_box["cap"]
+        if cap is None or not cap.supports_grid_charge or cap.max_charge_w <= 0:
+            return False
+        if cap.min_target_soc <= 0:
+            return False
+        return True
+
+    def _must_charge_body(now: datetime) -> dict:
+        rec = must_charge_box.get("rec")
+        soc = _current_soc(now)
+        active = rec is not None and rec.engages(now, soc)
+        reason = must_charge_box.get("warning") if active else None
+        return public_view(
+            rec, now, site_tz,
+            watch_only=_must_charge_watch_only(),
+            unreachable_reason=reason,
+            active=active,
+        )
+
+    async def _settle_must_charge(now: datetime) -> None:
+        rec = must_charge_box.get("rec")
+        if rec is None:
+            return
+        cause = rec.end_cause(now, _current_soc(now))
+        if cause is None:
+            return
+        must_charge_box["rec"] = None
+        must_charge_box["warning"] = None
+        if override_store is not None:
+            await override_store.delete(*MUST_CHARGE_KEYS)
+        control.invalidate_plan_cache()
+        if audit_store is not None:
+            await audit_store.append(
+                now.isoformat(), AUDIT_END,
+                f"Must-charge override ended ({cause})",
+                {
+                    "action": "end",
+                    "cause": cause,
+                    "target_soc": rec.target_soc,
+                    "deadline": rec.deadline.isoformat(),
+                },
+            )
+
+    control.settle_resident_override = _settle_must_charge
+
+    @app.get("/api/override/must-charge")
+    async def get_must_charge() -> dict:
+        now = _now_utc()
+        await _settle_must_charge(now)
+        return _must_charge_body(now)
+
+    @app.post("/api/override/must-charge")
+    async def set_must_charge(body: dict | None = None) -> JSONResponse:
+        if override_store is None:
+            return JSONResponse({"detail": "override store not configured"}, status_code=503)
+        now = _now_utc()
+        if not _must_charge_steering_ok(now):
+            return JSONResponse({"detail": GEEN_STURING}, status_code=422)
+        body = body or {}
+        errors: dict[str, str] = {}
+        target, target_err = validate_target_soc(body.get("target_soc"), _effective_floor_soc())
+        if target_err:
+            errors["target_soc"] = target_err
+        deadline, deadline_err = parse_deadline(body.get("deadline"), now, site_tz)
+        if deadline_err:
+            errors["deadline"] = deadline_err
+        if errors or target is None or deadline is None:
+            return JSONResponse(
+                {"detail": "invalid must-charge override", "errors": errors}, status_code=422,
+            )
+        rec = MustChargeOverride(
+            target_soc=target, deadline=deadline, created=now, expires=deadline,
+        )
+        await override_store.set_many({
+            "override.must_charge.target_soc": rec.target_soc,
+            "override.must_charge.deadline": rec.deadline.isoformat(),
+            "override.must_charge.created": rec.created.isoformat(),
+            "override.must_charge.expires": rec.expires.isoformat(),
+        })
+        must_charge_box["rec"] = rec
+        control.invalidate_plan_cache()
+        if audit_store is not None:
+            await audit_store.append(
+                now.isoformat(), AUDIT_START,
+                f"Must-charge override: {rec.target_soc:g}% by {rec.deadline.isoformat()}",
+                {
+                    "action": "start",
+                    "target_soc": rec.target_soc,
+                    "deadline": rec.deadline.isoformat(),
+                    "created": rec.created.isoformat(),
+                    "expires": rec.expires.isoformat(),
+                },
+            )
+        control.plan_with_recovery(now)
+        return JSONResponse(_must_charge_body(now))
+
+    @app.delete("/api/override/must-charge")
+    async def cancel_must_charge() -> JSONResponse:
+        if override_store is None:
+            return JSONResponse({"detail": "override store not configured"}, status_code=503)
+        now = _now_utc()
+        rec = must_charge_box.get("rec")
+        await override_store.delete(*MUST_CHARGE_KEYS)
+        must_charge_box["rec"] = None
+        must_charge_box["warning"] = None
+        control.invalidate_plan_cache()
+        if rec is not None and audit_store is not None:
+            await audit_store.append(
+                now.isoformat(), AUDIT_CANCEL,
+                "Must-charge override cancelled",
+                {
+                    "action": "cancel",
+                    "target_soc": rec.target_soc,
+                    "deadline": rec.deadline.isoformat(),
+                },
+            )
+        return JSONResponse(_must_charge_body(now))
+
     # --- E-11 Trading portal (B-106 / B-107 / B-108) ---------------------------------------------
     _TEST_BATTERY_SECONDS = 120
     _trading_probe_tasks: set[asyncio.Task] = set()
     app.state.trading_probe_active = False
+    _TRADING_DRY_RUN_REVIEWED_KEY = "trading.dry_run_reviewed_at"
+    _ARM_STEP2_BLOCK_DETAIL = "Ontbreekt: stap 2 — bekijk de dry-run"
+
+    def _trading_dry_run_reviewed_at(settings: dict) -> str | None:
+        raw = settings.get(_TRADING_DRY_RUN_REVIEWED_KEY)
+        if raw is None:
+            return None
+        text = str(raw).strip()
+        return text or None
+
+    def _trading_arm_gate(settings: dict, *, floor_block: str | None) -> tuple[bool, str | None]:
+        """Whether a false→true arm is allowed now, and the NL block reason when not."""
+        if bool(settings.get("control.allow_export_discharge", False)):
+            return True, None
+        if floor_block is not None:
+            return False, floor_block
+        if _trading_dry_run_reviewed_at(settings) is None:
+            return False, _ARM_STEP2_BLOCK_DETAIL
+        return True, None
 
     def _trading_floor_block_reason() -> str | None:
         """Why yaml/operational/arming floors block live battery writes (not data quality)."""
@@ -3364,6 +3546,29 @@ def create_app(
             "data_quality": quality,
             "validator": validator_status,
         }
+        reviewed_at = _trading_dry_run_reviewed_at(s)
+        trading_on = bool(s.get("planner.trading_enabled", False))
+        arm_allowed, arm_block_reason = _trading_arm_gate(s, floor_block=block)
+        steps = [
+            {
+                "id": "advice",
+                "ok": trading_on,
+                "label": "Stap 1 — Trading aan (plan-only)",
+                "missing": None if trading_on else "trading staat uit",
+            },
+            {
+                "id": "dry_run",
+                "ok": reviewed_at is not None,
+                "label": "Stap 2 — Dry-run T-vs-Z bekeken",
+                "missing": None if reviewed_at is not None else "niet vastgelegd",
+            },
+            {
+                "id": "arm",
+                "ok": armed,
+                "label": "Stap 3 — Live export bewapend",
+                "missing": None if armed else "nog niet bewapend",
+            },
+        ]
         return {
             "trading_enabled": bool(s.get("planner.trading_enabled", False)),
             "min_extra_eur": float(s.get("planner.trading_min_extra_eur", 0.50)),
@@ -3378,12 +3583,37 @@ def create_app(
             "block_reason": block,
             "test_battery_allowed": test_block is None,
             "test_battery_block_reason": test_block,
+            "dry_run_reviewed_at": reviewed_at,
+            "arm_allowed": arm_allowed,
+            "arm_block_reason": arm_block_reason,
+            "steps": steps,
             "evaluation": evaluation,
             "copy": {
                 "house": "Pad Z = energie voor het huis (zelfconsumptie).",
                 "sell": "Pad T = goedkoop laden / duur verkopen aan het net.",
             },
         }
+
+    @app.post("/api/trading/dry-run-reviewed")
+    async def trading_dry_run_reviewed(request: Request) -> JSONResponse:
+        """Record trading step 2 (F-30 / #339): operator confirmed they reviewed T-vs-Z dry-run."""
+        if settings_store is None:
+            return JSONResponse(
+                {"detail": "settings store not configured"}, status_code=503,
+            )
+        now = datetime.now(UTC)
+        reviewed_at = now.isoformat()
+        await settings_store.set_many({_TRADING_DRY_RUN_REVIEWED_KEY: reviewed_at})
+        settings_cache.update(effective_settings(await settings_store.all()))
+        settings_cache[_TRADING_DRY_RUN_REVIEWED_KEY] = reviewed_at
+        if audit_store is not None:
+            await audit_store.append(
+                now.isoformat(),
+                "trading_dry_run_reviewed",
+                "Trading stap 2: dry-run T-vs-Z bekeken",
+                {"reviewed_at": reviewed_at},
+            )
+        return JSONResponse({"ok": True, "reviewed_at": reviewed_at})
 
     async def _clear_trading_probe_override() -> None:
         """Best-effort clear of Test-batterij override + probe window (never touches arm flag)."""
@@ -5373,21 +5603,20 @@ def create_app(
         # Secrets are masked (a parallel "<key>.__set" flag tells the UI whether one is stored).
         return {"schema": schema_json(dev_mode), "values": public_values(settings_cache)}
 
-    @app.post("/api/settings")
-    async def post_settings(request: Request, body: dict | None = None) -> JSONResponse:
-        # Auth is enforced centrally by the _enforce_access middleware (writes always gated).
-        if settings_store is None:
-            return JSONResponse(
-                {"detail": "settings store not configured"}, status_code=503
-            )
-        # Pass body straight through: validate_settings guards non-dict, so a missing/None body
-        # becomes a 422 ("expected a JSON object") rather than a silent 200 no-op.
-        clean, errors = validate_settings(body, dev_mode=dev_mode)
-        if errors:
-            # Reject the whole payload if ANY key is invalid — partial saves are confusing.
-            return JSONResponse(
-                {"detail": "invalid settings", "errors": errors}, status_code=422
-            )
+    async def _commit_settings_update(clean: dict) -> JSONResponse:
+        """Persist validated settings, apply side-effects, audit — shared POST settings paths."""
+        # #339: refuse the whole payload on a false→true arm until floors pass and stap 2
+        # is recorded. Shared by POST /api/settings and POST /api/setup/settings.
+        if clean.get("control.allow_export_discharge") is True:
+            was_armed = bool(settings_cache.get("control.allow_export_discharge", False))
+            if not was_armed:
+                floor_block = _trading_floor_block_reason()
+                if floor_block is not None:
+                    return JSONResponse({"detail": floor_block}, status_code=409)
+                if _trading_dry_run_reviewed_at(settings_cache) is None:
+                    return JSONResponse(
+                        {"detail": _ARM_STEP2_BLOCK_DETAIL}, status_code=409,
+                    )
         # #341 / F-11: an explicit export-model save is the household's confirmation. Kept on
         # the write path so re-reading a stored model (effective_settings) cannot hide the banner.
         if "prices.export_price_model" in clean:
@@ -5445,6 +5674,79 @@ def create_app(
         return JSONResponse(
             {"values": public_values(dict(settings_cache)), "restart_required": restart_required}
         )
+
+    @app.post("/api/settings")
+    async def post_settings(request: Request, body: dict | None = None) -> JSONResponse:
+        # Auth is enforced centrally by the _enforce_access middleware (writes always gated).
+        if settings_store is None:
+            return JSONResponse(
+                {"detail": "settings store not configured"}, status_code=503
+            )
+        # Pass body straight through: validate_settings guards non-dict, so a missing/None body
+        # becomes a 422 ("expected a JSON object") rather than a silent 200 no-op.
+        # #339: the client can never fake stap 2; only POST /api/trading/dry-run-reviewed writes it.
+        if isinstance(body, dict) and _TRADING_DRY_RUN_REVIEWED_KEY in body:
+            return JSONResponse(
+                {
+                    "detail": "invalid settings",
+                    "errors": {
+                        _TRADING_DRY_RUN_REVIEWED_KEY: (
+                            "must be set via POST /api/trading/dry-run-reviewed"
+                        ),
+                    },
+                },
+                status_code=422,
+            )
+        clean, errors = validate_settings(body, dev_mode=dev_mode)
+        if errors:
+            # Reject the whole payload if ANY key is invalid — partial saves are confusing.
+            return JSONResponse(
+                {"detail": "invalid settings", "errors": errors}, status_code=422
+            )
+        return await _commit_settings_update(clean)
+
+    @app.post("/api/setup/settings")
+    async def post_setup_settings(request: Request, body: dict | None = None) -> JSONResponse:
+        """Allowlisted settings writes for the onboarding wizard (#291). ADMIN + OPERATE_PATHS."""
+        if settings_store is None:
+            return JSONResponse(
+                {"detail": "settings store not configured"}, status_code=503
+            )
+        if not isinstance(body, dict):
+            return JSONResponse(
+                {
+                    "detail": "invalid settings",
+                    "errors": {"_": "expected a JSON object of setting keys to values"},
+                },
+                status_code=422,
+            )
+        if not body:
+            return JSONResponse(
+                {
+                    "detail": "invalid settings",
+                    "errors": {"_": "minstens één instelling is vereist"},
+                },
+                status_code=422,
+            )
+        allow_errors: dict[str, str] = {}
+        for key in body:
+            if not setup_settings_key_allowed(key):
+                allow_errors[key] = SETUP_FORBIDDEN_KEY_MSG
+        if allow_errors:
+            return JSONResponse(
+                {"detail": "invalid settings", "errors": allow_errors}, status_code=422,
+            )
+        staged, ip_errors = apply_setup_private_ipv4_rules(body)
+        if ip_errors:
+            return JSONResponse(
+                {"detail": "invalid settings", "errors": ip_errors}, status_code=422,
+            )
+        clean, errors = validate_settings(staged, dev_mode=dev_mode)
+        if errors:
+            return JSONResponse(
+                {"detail": "invalid settings", "errors": errors}, status_code=422
+            )
+        return await _commit_settings_update(clean)
 
     @app.get("/api/status", response_model=StatusResponse, response_model_exclude_unset=True)
     def status() -> dict:
@@ -5543,7 +5845,13 @@ def create_app(
             return _forbidden_error()
         if audit_store is None:
             return {"entries": []}
-        entries = await audit_store.recent(limit, category)
+        # The operational cycle applies the battery mode inside its worker thread, then
+        # awaits the audit insert back on the event loop. ``control_lock`` is held across
+        # that whole window (see ControlService.run_cycle). Taking it here lets a caller
+        # that already observes the new mode read the log after that insert has committed
+        # (#379).
+        async with control._ctx.control_lock:
+            entries = await audit_store.recent(limit, category)
         if not is_admin:
             entries = [e for e in entries if e.get("category") != "auth"]
         return {"entries": entries}

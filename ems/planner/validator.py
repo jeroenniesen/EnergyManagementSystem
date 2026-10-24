@@ -488,6 +488,24 @@ def validate_plan(
                 findings.append(Finding(_UNSAFE, "daily_grid_charge_cap", message))
                 break
 
+    # #323: must-charge slots must carry target_soc and a deadline on or before the peak.
+    from ems.planner.reason import is_must_charge_slot
+    for s in slots:
+        if not is_must_charge_slot(s):
+            continue
+        if s.target_soc is None or s.deadline is None:
+            findings.append(Finding(
+                _UNSAFE, "must_charge_unsized",
+                "Voorzorgslading mist doel-laadniveau of deadline — geen net-laden.",
+            ))
+            break
+        if s.start > s.deadline:
+            findings.append(Finding(
+                _UNSAFE, "must_charge_after_deadline",
+                "Voorzorgslading na de piek-deadline — geen net-laden.",
+            ))
+            break
+
     # 9. Evening reserve (#326 / F-17+F-24). Warn only — a shortfall must not
     #    force AUTO. The below-reserve check above is unchanged.
     evening_finding = _evening_reserve_finding(

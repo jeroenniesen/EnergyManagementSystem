@@ -3,7 +3,9 @@
 // #manage/system, #manage/audit), the LEGACY redirects (#settings/#system/#audit — old bookmarks
 // and deep-links must keep working), the unknown-hash fallback, sub-tab switching, and that the
 // Settings section deep-link mechanics survive when Settings is mounted inside Manage.
-import { expect, test, type Page } from "@playwright/test";
+import { expect, test, type Page, type Route } from "@playwright/test";
+
+import { isStaleRouteError } from "./stale-route-helper";
 
 const CORE_FAIL = {
   status: 500,
@@ -12,10 +14,11 @@ const CORE_FAIL = {
 };
 
 async function mockCoreReachability(page: Page, reachable: { value: boolean }) {
-  const handler = async (route: import("@playwright/test").Route) => {
+  // Passthrough must not call route.fetch(): that holds a body navigation or
+  // teardown can dispose ("Fetch response has been disposed" / "route.fetch: Test ended").
+  const handler = async (route: Route) => {
     if (reachable.value) {
-      const response = await route.fetch();
-      await route.fulfill({ response });
+      await route.continue();
       return;
     }
     await route.fulfill(CORE_FAIL);
@@ -23,6 +26,16 @@ async function mockCoreReachability(page: Page, reachable: { value: boolean }) {
   await page.route("**/api/dashboard", handler);
   await page.route("**/api/status", handler);
 }
+
+// Drop handlers before the page/context closes, so nothing is still routed — and no
+// in-flight fulfill/continue can reject into the result — after the test ends (#401).
+test.afterEach(async ({ page }) => {
+  try {
+    await page.unrouteAll({ behavior: "ignoreErrors" });
+  } catch (error) {
+    if (!isStaleRouteError(error)) throw error;
+  }
+});
 
 test.describe("Manage view + hash routing", () => {
   test("legacy #settings redirects to Manage → Settings", async ({ page }) => {
@@ -210,5 +223,131 @@ test.describe("Audit load error (#369 AUD-01)", () => {
     await page.getByTestId("audit-retry").click();
     await expect(page.getByTestId("audit-list")).toContainText("OK");
     await expect(page.getByTestId("audit-error")).toHaveCount(0);
+  });
+});
+
+test.describe("Settings section hash (#368)", () => {
+  test("opening Control & safety sets #manage/settings/control and survives reload", async ({
+    page,
+  }) => {
+    await page.goto("/#manage");
+    await page.getByTestId("group-control").click();
+    await expect(page).toHaveURL(/#manage\/settings\/control$/);
+    await expect(page.getByRole("heading", { name: "Control & safety" })).toBeVisible();
+    await page.reload();
+    await expect(page).toHaveURL(/#manage\/settings\/control$/);
+    await expect(page.getByRole("heading", { name: "Control & safety" })).toBeVisible();
+    await expect(page.getByTestId("group-control")).toHaveAttribute("aria-current", "page");
+  });
+
+  test("a copied #manage/settings/ev URL opens the Car section", async ({ page }) => {
+    await page.goto("/#manage/settings/ev");
+    await expect(page.getByTestId("manage-tab-settings")).toHaveAttribute("aria-selected", "true");
+    await expect(page.getByTestId("group-ev")).toHaveAttribute("aria-current", "page");
+    await expect(page.getByRole("heading", { name: "Car" })).toBeVisible();
+    await expect(page.getByTestId("field-ev.advice_enabled")).toBeVisible();
+  });
+
+  test("switching sections pushes history so browser back shows the previous section", async ({
+    page,
+  }) => {
+    await page.goto("/#manage");
+    await page.getByTestId("group-control").click();
+    await expect(page).toHaveURL(/#manage\/settings\/control$/);
+    await page.getByTestId("group-planner").click();
+    await expect(page).toHaveURL(/#manage\/settings\/planner$/);
+    await expect(page.getByRole("heading", { name: "Planner economics" })).toBeVisible();
+    await page.goBack();
+    await expect(page).toHaveURL(/#manage\/settings\/control$/);
+    await expect(page.getByRole("heading", { name: "Control & safety" })).toBeVisible();
+    await expect(page.getByTestId("group-control")).toHaveAttribute("aria-current", "page");
+  });
+
+  test("Inrichten, Car and System deep links open the section and set the hash", async ({ page }) => {
+    await page.goto("/#manage/settings/battery");
+    await expect(page.getByTestId("manage-tab-settings")).toHaveAttribute("aria-selected", "true");
+    await expect(page.getByTestId("group-battery")).toHaveAttribute("aria-current", "page");
+    await expect(page.getByRole("heading", { name: "Battery (Indevolt)" })).toBeVisible();
+    await expect(page).toHaveURL(/#manage\/settings\/battery$/);
+
+    await page.goto("/#manage");
+    await page.getByTestId("group-battery").click();
+    await expect(page).toHaveURL(/#manage\/settings\/battery$/);
+    await expect(page.getByTestId("group-battery")).toHaveAttribute("aria-current", "page");
+    await expect(page.getByRole("heading", { name: "Battery (Indevolt)" })).toBeVisible();
+
+    await page.goto("/#setup");
+    await page.getByTestId("setup-btn-battery").click();
+    await expect(page.getByTestId("setup-battery-wizard")).toBeVisible();
+    await expect(page.getByTestId("setup-battery-ip")).toBeVisible();
+    await expect(page).toHaveURL(/#setup$/);
+
+    await page.goto("/#car");
+    await page.getByTestId("car-config-settings-link").click();
+    await expect(page).toHaveURL(/#manage\/settings\/ev$/);
+    await expect(page.getByTestId("group-ev")).toHaveAttribute("aria-current", "page");
+
+    await page.route("**/api/accuracy**", (route) =>
+      route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          solar: { bias_w: -12, n_slots: 10 },
+          load: { mape_pct: 8, n_hours: 10 },
+          plan_execution: { hit_rate_pct: 90, n_deadlines: 4 },
+          health: {
+            solar: "warn",
+            load: "ok",
+            plan_execution: "ok",
+            notes: ["Solar forecast bias is beyond 25% of typical output over the last 14 days."],
+          },
+        }),
+      }),
+    );
+    await page.goto("/#manage/system");
+    await page.getByTestId("health-action-link-solar").click();
+    await expect(page).toHaveURL(/#manage\/settings\/planner$/);
+    await expect(page.getByTestId("group-planner")).toHaveAttribute("aria-current", "page");
+    await expect(page.getByTestId("field-planner.solar_confidence")).toBeVisible();
+  });
+
+  test("mobile browser back from a section shows the section list", async ({ page }) => {
+    await page.setViewportSize({ width: 390, height: 844 });
+    await page.goto("/#manage");
+    await expect(page.getByTestId("settings")).toHaveAttribute("data-mobile", "list");
+    await expect(page.getByTestId("settings-back")).toBeHidden();
+    await page.getByTestId("group-control").click();
+    await expect(page).toHaveURL(/#manage\/settings\/control$/);
+    await expect(page.getByTestId("settings")).toHaveAttribute("data-mobile", "section");
+    await expect(page.getByTestId("settings-back")).toBeVisible();
+    await page.goBack();
+    await expect(page).toHaveURL(/#manage$/);
+    await expect(page.getByTestId("settings")).toHaveAttribute("data-mobile", "list");
+    await expect(page.getByTestId("group-control")).toBeVisible();
+    await expect(page.getByTestId("settings-back")).toBeHidden();
+    await expect(page.getByRole("heading", { name: "Control & safety" })).toBeHidden();
+  });
+
+  test("an unknown section id opens the first section; manage routes stay put", async ({ page }) => {
+    await page.goto("/#manage/settings/not-a-real-section");
+    await expect(page).toHaveURL(/#manage\/settings\/not-a-real-section$/);
+    await expect(page.getByTestId("settings-error")).toHaveCount(0);
+    await expect(page.getByTestId("group-connection")).toHaveAttribute("aria-current", "page");
+    await expect(page.getByRole("heading", { name: "Connection" })).toBeVisible();
+
+    await page.goto("/#manage");
+    await expect(page).toHaveURL(/#manage$/);
+    await expect(page.getByTestId("manage-tab-settings")).toHaveAttribute("aria-selected", "true");
+    await expect(page.getByTestId("settings")).toBeVisible();
+
+    await page.goto("/#manage/system");
+    await expect(page).toHaveURL(/#manage\/system$/);
+    await expect(page.getByTestId("manage-tab-system")).toHaveAttribute("aria-selected", "true");
+    await expect(page.getByTestId("system")).toBeVisible();
+
+    await page.goto("/#manage/audit");
+    await expect(page).toHaveURL(/#manage\/audit$/);
+    await expect(page.getByTestId("manage-tab-audit")).toHaveAttribute("aria-selected", "true");
+    await expect(page.getByTestId("audit")).toBeVisible();
   });
 });

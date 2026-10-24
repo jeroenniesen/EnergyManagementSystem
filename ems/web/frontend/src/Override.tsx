@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 
 import { apiFetch } from "./auth";
-import { humanize } from "./labels";
+import { MUST_CHARGE_OVERRIDE, humanize } from "./labels";
 
 type OverrideState = {
   intent: string | null;
@@ -29,6 +29,116 @@ const CONSEQUENCE: Record<string, string> = {
 // Charge/discharge meaningfully change cost or comfort → confirm first. Hold / return-to-plan don't.
 const RISKY = new Set(["grid_charge_to_target", "discharge_for_load", "export_for_profit"]);
 const intentLabel = (intent: string): string => INTENT_LABEL[intent] ?? humanize(intent);
+type MustChargeState = {
+  active: boolean;
+  target_soc: number | null;
+  deadline_hhmm: string | null;
+  unreachable_reason: string | null;
+  warning: string | null;
+  watch_only: boolean;
+  execution: string | null;
+};
+
+export function MustChargePanel({
+  state,
+  canOperate,
+  target,
+  hour,
+  busy,
+  error,
+  onTarget,
+  onHour,
+  onSubmit,
+  onCancel,
+}: {
+  state: MustChargeState | null;
+  canOperate: boolean;
+  target: string;
+  hour: string;
+  busy: boolean;
+  error: string | null;
+  onTarget: (value: string) => void;
+  onHour: (value: string) => void;
+  onSubmit: () => void;
+  onCancel: () => void;
+}) {
+  const warning = state?.unreachable_reason || state?.warning || null;
+  const watch = state?.watch_only ? state.execution || MUST_CHARGE_OVERRIDE.watchOnly : null;
+  return (
+    <div className="must-charge" data-testid="must-charge">
+      <h3>{MUST_CHARGE_OVERRIDE.title}</h3>
+      <p className="override-hint">{MUST_CHARGE_OVERRIDE.hint}</p>
+      {watch && (
+        <p className="badge badge-muted" data-testid="must-charge-watch-only">
+          {watch}
+        </p>
+      )}
+      {state?.active && state.target_soc != null && state.deadline_hhmm && (
+        <p className="badge badge-amber" data-testid="must-charge-active">
+          {MUST_CHARGE_OVERRIDE.active(state.target_soc, state.deadline_hhmm)}
+        </p>
+      )}
+      {warning && (
+        <p className="field-err must-charge-warning" data-testid="must-charge-warning" role="status">
+          {warning}
+        </p>
+      )}
+      {canOperate && (
+        <div className="override-controls">
+          <label>
+            {MUST_CHARGE_OVERRIDE.targetLabel}
+            <input
+              type="number"
+              min={1}
+              max={100}
+              step={1}
+              value={target}
+              aria-label={MUST_CHARGE_OVERRIDE.targetLabel}
+              data-testid="must-charge-target"
+              onChange={(e) => onTarget(e.target.value)}
+            />
+          </label>
+          <label>
+            {MUST_CHARGE_OVERRIDE.hourLabel}
+            <input
+              type="time"
+              value={hour}
+              aria-label={MUST_CHARGE_OVERRIDE.hourLabel}
+              data-testid="must-charge-hour"
+              onChange={(e) => onHour(e.target.value)}
+            />
+          </label>
+          <button
+            className="btn-primary"
+            type="button"
+            disabled={busy || target === "" || hour === ""}
+            onClick={onSubmit}
+            data-testid="must-charge-submit"
+          >
+            {MUST_CHARGE_OVERRIDE.submit}
+          </button>
+          {state?.active && (
+            <button
+              className="btn-ghost"
+              type="button"
+              disabled={busy}
+              onClick={onCancel}
+              data-testid="must-charge-cancel"
+            >
+              {MUST_CHARGE_OVERRIDE.cancel}
+            </button>
+          )}
+        </div>
+      )}
+      {error && (
+        <p className="field-err" data-testid="must-charge-error">
+          {error}
+        </p>
+      )}
+    </div>
+  );
+}
+
 const DURATIONS = [
   { label: "30 min", minutes: 30 },
   { label: "1 hour", minutes: 60 },
@@ -59,6 +169,11 @@ export function OverrideCard({
   const [err, setErr] = useState<string | null>(null);
   // When set, we're awaiting confirmation for a risky action (charge/discharge).
   const [confirming, setConfirming] = useState<{ intent: string; minutes: number } | null>(null);
+  const [mustCharge, setMustCharge] = useState<MustChargeState | null>(null);
+  const [mcTarget, setMcTarget] = useState("80");
+  const [mcHour, setMcHour] = useState("07:00");
+  const [mcBusy, setMcBusy] = useState(false);
+  const [mcErr, setMcErr] = useState<string | null>(null);
 
   useEffect(() => {
     let alive = true;
@@ -70,6 +185,14 @@ export function OverrideCard({
         if (alive) setState(b);
       } catch {
         // A failed poll shouldn't blank the card; keep the last known state.
+      }
+      try {
+        const r = await apiFetch("/api/override/must-charge");
+        if (!r.ok) return;
+        const b = (await r.json()) as MustChargeState;
+        if (alive) setMustCharge(b);
+      } catch {
+        // Must-charge is additive; a failed poll keeps the mode-override card usable.
       }
     }
     load();
@@ -115,6 +238,46 @@ export function OverrideCard({
     if (!intent) return;
     if (RISKY.has(intent)) setConfirming({ intent, minutes });
     else apply({ intent, minutes });
+  }
+
+  async function submitMustCharge() {
+    setMcBusy(true);
+    setMcErr(null);
+    try {
+      const r = await apiFetch("/api/override/must-charge", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ target_soc: Number(mcTarget), deadline: mcHour }),
+      });
+      const b = await r.json();
+      if (r.status === 422) {
+        const errors = b.errors ? Object.values(b.errors).join("; ") : "";
+        setMcErr(errors || b.detail || "invalid override");
+      } else if (!r.ok) {
+        throw new Error(b.detail ?? `HTTP ${r.status}`);
+      } else {
+        setMustCharge(b);
+      }
+    } catch (e) {
+      setMcErr(String(e));
+    } finally {
+      setMcBusy(false);
+    }
+  }
+
+  async function cancelMustCharge() {
+    setMcBusy(true);
+    setMcErr(null);
+    try {
+      const r = await apiFetch("/api/override/must-charge", { method: "DELETE" });
+      const b = await r.json();
+      if (!r.ok) throw new Error(b.detail ?? `HTTP ${r.status}`);
+      setMustCharge(b);
+    } catch (e) {
+      setMcErr(String(e));
+    } finally {
+      setMcBusy(false);
+    }
   }
 
   if (!state) return null;
@@ -243,6 +406,18 @@ export function OverrideCard({
           {err}
         </p>
       )}
+      <MustChargePanel
+        state={mustCharge}
+        canOperate={canOperate}
+        target={mcTarget}
+        hour={mcHour}
+        busy={mcBusy}
+        error={mcErr}
+        onTarget={setMcTarget}
+        onHour={setMcHour}
+        onSubmit={() => void submitMustCharge()}
+        onCancel={() => void cancelMustCharge()}
+      />
     </section>
   );
 }

@@ -51,6 +51,20 @@ def test_export_model_confirmed_defaults_and_validation():
     assert legacy["prices.export_model_confirmed"] is False
 
 
+def test_stale_reserve_buffer_pp_defaults_and_bounds():
+    d = defaults()
+    assert d["planner.stale_reserve_buffer_pp"] == 5.0
+    field = SETTINGS_BY_KEY["planner.stale_reserve_buffer_pp"]
+    assert field.advanced is True
+    assert field.min == 0.0 and field.max == 20.0
+    clean, errors = validate_settings({"planner.stale_reserve_buffer_pp": 20.0})
+    assert errors == {} and clean["planner.stale_reserve_buffer_pp"] == 20.0
+    _c, err = validate_settings({"planner.stale_reserve_buffer_pp": 21.0})
+    assert "planner.stale_reserve_buffer_pp" in err
+    _c, err_neg = validate_settings({"planner.stale_reserve_buffer_pp": -1.0})
+    assert "planner.stale_reserve_buffer_pp" in err_neg
+
+
 def test_trading_settings_defaults_match_e11_lock():
     """B-103 / #209: trading keys exist, default OFF / spot_minus_tax / €0.50 / uncapped."""
     d = defaults()

@@ -394,6 +394,12 @@ def test_empty_buy_pool_fixture_summary_in_decision_reason():
     # Wall clock of the Amsterdam slot, not UTC.
     assert plan.buy_pool.cheapest_slot.start.strftime("%H:%M") in summary
     assert "€0,27" in summary
+    from ems.planner.economics import max_buy_for_peak
+
+    # Default PlannerConfig: peak €0.37, rte 0.90, wear €0.05, risk €0.02 → €0.27.
+    assert plan.buy_pool.max_buy_eur_per_kwh == max_buy_for_peak(
+        0.37, rte=0.90, deg=0.05, risk=0.02,
+    )
     assert summary.count("Geen koopmoment") == 1
     assert all("Geen koopmoment" not in s.reason for s in plan.slots)
 
