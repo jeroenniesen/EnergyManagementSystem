@@ -1782,7 +1782,6 @@ body {
 .btn-primary:focus-visible, .btn-danger:focus-visible, .btn-ghost:focus-visible {
   outline: 2px solid var(--accent); outline-offset: 2px;
 }
-.btn-danger:focus-visible { outline-color: var(--danger-fill); }
 .settings-msg-ok { color: var(--green-text); font-size: 0.85rem; }
 .settings-msg-err { color: var(--error); font-size: 0.85rem; }
 .settings-dirty { color: var(--amber-text); font-size: 0.8rem; }
@@ -1985,7 +1984,8 @@ body {
   border-radius: 999px; padding: 3px 10px; white-space: nowrap;
 }
 .setup-status-ok { background: color-mix(in srgb, var(--accent) 18%, transparent); color: var(--accent-text); }
-.setup-status-miss { background: color-mix(in srgb, var(--danger) 14%, transparent); color: var(--danger); }
+/* 10% keeps light --danger (#c0392b) at 4.69:1 on --panel; 14% measures 4.41:1. */
+.setup-status-miss { background: color-mix(in srgb, var(--danger) 10%, transparent); color: var(--danger); }
 .setup-status-opt { background: var(--panel-2); color: var(--muted); }
 .setup-status-control { background: color-mix(in srgb, var(--warn-text) 16%, transparent); color: var(--warn-text); }
 .setup-checklist-sentence { margin: 0; flex: 1; min-width: 12rem; font-size: 0.9rem; line-height: 1.45; }
