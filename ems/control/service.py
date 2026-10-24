@@ -527,6 +527,8 @@ class ControlService:
         self._summer_cfg = summer_cfg if summer_cfg is not None else self.summer_cfg
         self._adaptive_cfg = adaptive_cfg if adaptive_cfg is not None else self.adaptive_cfg
         self._stale_signals = stale_signals
+        self._bought_today_memo_key: datetime | None = None
+        self._bought_today_memo_val: float | None = None
         self._decision_engine = ControlDecisionEngine(
             data_quality=self._data_quality,
             car_mode_action=self._car_mode_action,
@@ -906,6 +908,15 @@ class ControlService:
             path, now, self._site_tz, planned_charge_w=watts,
         )
 
+    def bought_today_for(self, now: datetime) -> float | None:
+        """One read per ``quantize_now`` window for planner, recovery and validator (#361)."""
+        key = self.quantize_now(now)
+        if self._bought_today_memo_key == key:
+            return self._bought_today_memo_val
+        self._bought_today_memo_val = self.already_bought_today_kwh(now)
+        self._bought_today_memo_key = key
+        return self._bought_today_memo_val
+
     def cycle_throughput_today(self, now: datetime) -> tuple[float, float] | None:
         store = self._store
         path = getattr(store, "db_path", None) if store is not None else None
@@ -1086,7 +1097,7 @@ class ControlService:
         ) if fc is not None else None
         forecast_issued_at = getattr(fc, "issued_at", None) if fc is not None else None
         mode = self._settings.get("planner.mode", "rule_based")
-        bought = self.already_bought_today_kwh(now)
+        bought = self.bought_today_for(now)
         throughput = self._cycle_throughput = self.cycle_throughput_today(now)
         stale_ev, stale_grid = stale_flags(self._stale_signals, now)
         stale_buffer_pp = float(self._settings.get("planner.stale_reserve_buffer_pp", 5.0))
@@ -1162,6 +1173,7 @@ class ControlService:
 
     def _plan_with_recovery_uncached(self, now: datetime):
         """Compute plan + recovery without touching the memoization cache."""
+        self._bought_today_memo_key = None
         pp = self.build_plan_now(now)
         if pp is None:
             return None
@@ -1179,7 +1191,7 @@ class ControlService:
             enabled=bool(self._settings["planner.recovery_enabled"]),
             max_daily_grid_charge_kwh=float(
                 self._settings.get("planner.max_daily_grid_charge_kwh", 12.0)),
-            already_bought_today_kwh=self.already_bought_today_kwh(now),
+            already_bought_today_kwh=self.bought_today_for(now),
             site_tz=self._site_tz,
             degradation_eur_per_kwh=float(self._settings["planner.degradation_eur_per_kwh"]),
             risk_margin_eur_per_kwh=float(self._settings["planner.risk_margin_eur_per_kwh"]),
