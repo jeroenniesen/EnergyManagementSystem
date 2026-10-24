@@ -534,7 +534,7 @@ async def _run_recovery(
     none of those is one `recovered` row per local day. The deadline is not part of the key.
     The plan the controller acts on is reshaped separately in `_current_plan` (a pure,
     deterministic fold), so this stays a plain, directly-testable function — like `_run_detectors`.
-    Fallback `recover_if_needed` honours `max_buy_eur_per_kwh` (planner.max_buy_eur_per_kwh, #324/#414).
+    Fallback `recover_if_needed` gets `max_buy_eur_per_kwh` (planner.max_buy_eur_per_kwh, #414).
     Returns a summary dict for tests/observability, or None when nothing was done. Never raises."""
     if not enabled or plan is None:
         return None
