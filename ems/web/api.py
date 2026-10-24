@@ -519,6 +519,8 @@ async def _run_recovery(
     dedupe_ttl_seconds: float = _RECOVERY_DEDUPE_TTL_SECONDS,
     cap_blocked: bool = False,
     max_buy_price: float | None = None,
+    degradation_eur_per_kwh: float = 0.0,
+    risk_margin_eur_per_kwh: float = 0.0,
 ) -> dict | None:
     """Missed-window recovery side effects (SPEC §8.12 / BACKLOG B-16, dedupe #316).
 
@@ -539,6 +541,8 @@ async def _run_recovery(
             plan, now, soc_pct=soc_pct, prices=prices, usable_kwh=usable_kwh,
             reserve_soc_pct=reserve_soc_pct, max_charge_w=max_charge_w,
             round_trip_efficiency=round_trip_efficiency, enabled=True, margin_pp=margin_pp,
+            degradation_eur_per_kwh=degradation_eur_per_kwh,
+            risk_margin_eur_per_kwh=risk_margin_eur_per_kwh,
         )
     else:
         catch = precomputed_catch
@@ -2588,6 +2592,10 @@ def create_app(
             validate_fn=_validate_plan_obj, precomputed_catch=catch, precomputed_status=_status,
             cap_blocked=bool(control is not None and control.charge_blocked_by_cap),
             max_buy_price=settings_cache.get("strategy.summer_max_topup_price"),
+            degradation_eur_per_kwh=float(
+                settings_cache.get("planner.degradation_eur_per_kwh", 0.05)),
+            risk_margin_eur_per_kwh=float(
+                settings_cache.get("planner.risk_margin_eur_per_kwh", 0.02)),
             **_recovery_sizing(),
         )
 
