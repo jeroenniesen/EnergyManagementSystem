@@ -2,6 +2,10 @@
 
 export const SETUP_STEP_STORAGE_KEY = "ems.setup.step";
 export const SETUP_BATTERY_IP_KEY = "ems.setup.batteryIp";
+export const SETUP_P1_IP_KEY = "ems.setup.p1Ip";
+
+export const P1_RESTART_MESSAGE =
+  "EMS start opnieuw om je P1-meter te zoeken. Dit duurt even, laat dit scherm open.";
 
 const PRIVATE_V4_HINT =
   "Gebruik een privé IPv4-adres (10.x.x.x, 172.16–172.31.x.x of 192.168.x.x).";
@@ -23,6 +27,22 @@ export function buildBatteryLinkPayload(
     payload["meters.p1_ip"] = p1Ip.trim();
   }
   return payload;
+}
+
+/** P1 wizard (#292): only meters.p1_ip when the value changes; null = restart-only. */
+export function buildP1LinkPayload(
+  p1Ip: string,
+  currentP1FromSettings: string | undefined | null,
+): Record<string, string> | null {
+  const trimmed = p1Ip.trim();
+  const current = String(currentP1FromSettings ?? "").trim();
+  if (trimmed && trimmed !== current) {
+    return { "meters.p1_ip": trimmed };
+  }
+  if (current && (!trimmed || trimmed === current)) {
+    return null;
+  }
+  return { "meters.p1_ip": trimmed };
 }
 
 function parseIpv4Octets(host: string): number[] | null {
@@ -49,9 +69,16 @@ function isPrivateIpv4(host: string): boolean {
 }
 
 /** Client-side hint only — server validation is authoritative. */
-export function privateIpv4Hint(value: string): string | null {
+export function privateIpv4Hint(
+  value: string,
+  field: "battery" | "p1" = "battery",
+): string | null {
   const v = value.trim();
-  if (!v) return "Vul het IP-adres van je batterij in.";
+  if (!v) {
+    return field === "p1"
+      ? "Vul het IP-adres van je P1-meter in."
+      : "Vul het IP-adres van je batterij in.";
+  }
   if (v.includes(":") || v.includes("/") || v.includes("://")) {
     return PRIVATE_V4_HINT;
   }
@@ -73,6 +100,7 @@ export function clearSetupPersistence(): void {
   persistSetupStep(null);
   try {
     sessionStorage.removeItem(SETUP_BATTERY_IP_KEY);
+    sessionStorage.removeItem(SETUP_P1_IP_KEY);
   } catch {
     /* best effort */
   }
@@ -102,6 +130,22 @@ export function readPersistedBatteryIp(): string {
   }
 }
 
+export function persistP1Ip(ip: string): void {
+  try {
+    sessionStorage.setItem(SETUP_P1_IP_KEY, ip);
+  } catch {
+    /* best effort */
+  }
+}
+
+export function readPersistedP1Ip(): string {
+  try {
+    return sessionStorage.getItem(SETUP_P1_IP_KEY) ?? "";
+  } catch {
+    return "";
+  }
+}
+
 export type BatteryWizardPhase =
   | "form"
   | "restarting"
@@ -125,6 +169,42 @@ export function batteryChecklistOutcome(
       message:
         `Batterij niet gevonden op ${savedIp.trim()}. `
         + "Staan de batterij en EMS op hetzelfde netwerk?",
+    };
+  }
+  return null;
+}
+
+export type P1ChecklistOutcome = {
+  phase: BatteryWizardPhase;
+  message: string;
+  linkBattery?: boolean;
+};
+
+export function p1ChecklistOutcome(
+  p1Status: string | undefined,
+  batteryStatus: string | undefined,
+  savedIp: string,
+): P1ChecklistOutcome | null {
+  if (p1Status === "Werkt") {
+    return {
+      phase: "success",
+      message: "EMS ziet je P1-meter. Je kunt verder met de volgende stap.",
+    };
+  }
+  if (batteryStatus === "Ontbreekt") {
+    return {
+      phase: "error",
+      message: "Koppel eerst je batterij",
+      linkBattery: true,
+    };
+  }
+  const ip = savedIp.trim();
+  if (ip) {
+    return {
+      phase: "error",
+      message:
+        `P1-meter niet gevonden op ${ip}. `
+        + "Staan de meter en EMS op hetzelfde netwerk?",
     };
   }
   return null;

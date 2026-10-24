@@ -418,6 +418,42 @@ def test_zero_battery_write_calls_on_setup_save(tmp_path):
     assert calls == []
 
 
+@pytest.mark.parametrize("ip", ["192.168.1.20", "10.0.0.5", "172.16.4.4"])
+def test_meters_p1_ip_private_ipv4_accepted(tmp_path, ip: str):
+    app, db = _app(tmp_path)
+    _seed_admin(db)
+    with TestClient(app) as c:
+        h = _admin_headers(c)
+        r = c.post("/api/setup/settings", json={"meters.p1_ip": ip}, headers=h)
+    assert r.status_code == 200
+    assert r.json()["values"]["meters.p1_ip"] == ip
+    assert r.json()["restart_required"] is True
+
+
+def test_meters_p1_ip_mixed_control_operational_rejected(tmp_path):
+    app, db = _app(tmp_path)
+    store = SettingsStore(db)
+
+    async def snapshot():
+        await store.init()
+        return await store.all()
+
+    before = asyncio.run(snapshot())
+    _seed_admin(db)
+    with TestClient(app) as c:
+        h = _admin_headers(c)
+        cache_before = _settings_values(c, h)
+        r = c.post(
+            "/api/setup/settings",
+            json={"meters.p1_ip": "192.168.1.20", "control.operational": True},
+            headers=h,
+        )
+        assert r.status_code == 422
+        assert _settings_values(c, h) == cache_before
+        assert _audit_entries(c, h) == []
+    assert asyncio.run(snapshot()) == before
+
+
 def test_control_flags_unchanged_after_setup(tmp_path):
     app, db = _app(tmp_path)
     _seed_admin(db)
