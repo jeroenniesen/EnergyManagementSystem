@@ -95,7 +95,7 @@ def test_zero_battery_and_http_writes_on_p1_setup_save(tmp_path, monkeypatch):
 
 
 def test_homewizard_p1_read_uses_get_only():
-    """AC 6 (#292): P1 meter adapter issues GET only (recording transport, no socket)."""
+    """AC 6 (#292): P1 meter adapter issues GET only (recording transport, no real network I/O)."""
     methods: list[str] = []
 
     def recording_get(url: str) -> dict:
