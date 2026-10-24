@@ -213,7 +213,8 @@ def test_skip_today_sets_expected_ev_zero_in_plan(tmp_path):
         assert est.source == "skipped_today"
         _, _, plan, _, _ = svc.plan_with_recovery(now)
         assert plan.input_snapshot is not None
-        assert (plan.input_snapshot.expected_ev_kwh or 0) == 0
+        # Snapshot stores a falsy EV estimate as None (see build_input_snapshot).
+        assert plan.input_snapshot.expected_ev_kwh is None
         assert svc.plan_builds == before + 1
         entries = c.get("/api/audit", params={"category": "config_change"}).json()["entries"]
         assert any("ev.skip_date" in e.get("detail", {}).get("keys", []) for e in entries)

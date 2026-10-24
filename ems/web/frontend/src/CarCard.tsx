@@ -301,7 +301,12 @@ export function CarCard({
         throw new Error(b.detail ?? `HTTP ${r.status}`);
       } else {
         const r2 = await apiFetch("/api/car/plan");
-        if (r2.ok) setData(await r2.json());
+        if (r2.ok) {
+          setData(await r2.json());
+        } else {
+          setSkipTodayPending(null);
+          setErr(`Could not refresh car plan (HTTP ${r2.status})`);
+        }
       }
     } catch (e) {
       setSkipTodayPending(null);
@@ -343,6 +348,41 @@ export function CarCard({
 
   if (!data) return null;
 
+  const skipActive = skipTodayPending ?? data.skip_today?.active === true;
+  const skipTodayRow = (
+    <div className="car-skip-today-row" data-testid="car-skip-today-row">
+      {canOperate ? (
+        <label className="switch-row car-skip-today-label">
+          <input
+            type="checkbox"
+            className="switch-input"
+            role="switch"
+            checked={skipActive}
+            disabled={skipBusy}
+            onChange={(e) => setSkipToday(e.target.checked)}
+            data-testid="car-skip-today-toggle"
+            aria-describedby={skipActive ? "car-skip-today-status" : undefined}
+          />
+          <span>Auto laadt vandaag niet</span>
+        </label>
+      ) : (
+        <p className="advisor-hint" data-testid="car-skip-today-readonly">
+          Skipping today&apos;s expected car load needs a user or admin account.
+        </p>
+      )}
+      {skipActive && (
+        <p className="override-hint" id="car-skip-today-status" data-testid="car-skip-today-status">
+          tot middernacht
+        </p>
+      )}
+    </div>
+  );
+  const carError = err ? (
+    <p className="field-err" data-testid="car-error">
+      {err}
+    </p>
+  ) : null;
+
   if (!data.enabled) {
     // Compact (dashboard): stays calm and headless, same as before — the full Car view is where
     // this gets addressed. Full (Car view): a fresh install otherwise lands on a blank tab with no
@@ -375,6 +415,7 @@ export function CarCard({
     return (
       <section className="car-card" data-testid="car-card" data-density-kind="card">
         <CardHead />
+        {skipTodayRow}
         {data.car_meter_configured === false && (
           <p className="advisor-hint" data-testid="car-meter-missing">
             No EV meter is configured, so update this after driving or charging.
@@ -387,11 +428,7 @@ export function CarCard({
             Setting the car&apos;s charge level needs a &quot;user&quot; or &quot;admin&quot; account.
           </p>
         )}
-        {err && (
-          <p className="field-err" data-testid="car-error">
-            {err}
-          </p>
-        )}
+        {carError}
       </section>
     );
   }
@@ -400,6 +437,7 @@ export function CarCard({
     return (
       <section className="car-card" data-testid="car-card" data-density-kind="card">
         <CardHead />
+        {skipTodayRow}
         {data.car_meter_configured === false && (
           <p className="advisor-hint" data-testid="car-meter-missing">
             No EV meter is configured, so update the car level after driving or charging.
@@ -422,14 +460,13 @@ export function CarCard({
             Set a weekly minimum in the schedule below.
           </p>
         )}
+        {carError}
       </section>
     );
   }
 
   const { plan, soc } = data;
   if (!plan || !soc || plan.deadlines.length === 0) return null; // defensive: contract guarantees this
-
-  const skipActive = skipTodayPending ?? data.skip_today?.active === true;
 
   const nextDeadline = plan.deadlines[0];
   const status = deadlineStatus(nextDeadline);
@@ -455,32 +492,7 @@ export function CarCard({
     >
       <CardHead />
 
-      <div className="car-skip-today-row" data-testid="car-skip-today-row">
-        {canOperate ? (
-          <label className="switch-row car-skip-today-label">
-            <input
-              type="checkbox"
-              className="switch-input"
-              role="switch"
-              checked={skipActive}
-              disabled={skipBusy}
-              onChange={(e) => setSkipToday(e.target.checked)}
-              data-testid="car-skip-today-toggle"
-              aria-describedby={skipActive ? "car-skip-today-status" : undefined}
-            />
-            <span>Auto laadt vandaag niet</span>
-          </label>
-        ) : (
-          <p className="advisor-hint" data-testid="car-skip-today-readonly">
-            Skipping today&apos;s expected car load needs a user or admin account.
-          </p>
-        )}
-        {skipActive && (
-          <p className="override-hint" id="car-skip-today-status" data-testid="car-skip-today-status">
-            tot middernacht
-          </p>
-        )}
-      </div>
+      {skipTodayRow}
 
       <div className="car-soc-row" data-testid="car-soc-row">
         <span className="car-soc-value" data-testid="car-soc-value">
@@ -520,11 +532,7 @@ export function CarCard({
           busy={busy}
         />
       )}
-      {!compact && err && (
-        <p className="field-err" data-testid="car-error">
-          {err}
-        </p>
-      )}
+      {carError}
 
       {!compact && data.car_meter_configured === false && (
         <p className="advisor-hint" data-testid="car-meter-missing">

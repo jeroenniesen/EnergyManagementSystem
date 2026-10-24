@@ -162,8 +162,27 @@ def test_unchosen_forecast_builder_stays_lazy(monkeypatch):
     assert calls == []
 
 
-def test_solcast_fallback_on_failure_stays_p50_and_real_solcast_stamps_p10():
+def test_solcast_fallback_on_failure_stays_p50_and_real_solcast_stamps_p10(monkeypatch):
     """#330: real P10 is stamped only for the source that delivered. Fallback stays P50."""
+    from datetime import UTC, datetime
+
+    from ems.tests.conftest import amsterdam_instant
+
+    frozen_utc = amsterdam_instant(2026, 10, 24, 14, 0)
+    import ems.sources.forecast_solar as forecast_solar_mod
+    import ems.sources.solcast as solcast_mod
+
+    class _FrozenDatetime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            if tz is UTC:
+                return frozen_utc
+            if tz is None:
+                return frozen_utc.replace(tzinfo=None)
+            return frozen_utc.astimezone(tz)
+
+    monkeypatch.setattr(solcast_mod, "datetime", _FrozenDatetime)
+    monkeypatch.setattr(forecast_solar_mod, "datetime", _FrozenDatetime)
     solcast = get_metadata(FORECAST_DOMAIN, "solcast")
     forecast_solar = get_metadata(FORECAST_DOMAIN, "forecast_solar")
     mock = get_metadata(FORECAST_DOMAIN, "mock")
