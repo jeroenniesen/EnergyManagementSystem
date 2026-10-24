@@ -82,6 +82,14 @@ def max_buy_for_planner_config(peak_price: float, cfg: _BuyCeilingCfg) -> float:
     )
 
 
+def apply_max_buy_cap(auto_max_buy: float, cap_eur_per_kwh: float) -> float:
+    """Resident max buy (#324 / F-15): min(auto, cap) when cap > 0; 0 leaves auto unchanged."""
+    cap = float(cap_eur_per_kwh)
+    if cap <= 0:
+        return float(auto_max_buy)
+    return min(float(auto_max_buy), cap)
+
+
 def export_value(
     price_eur_per_kwh: float,
     *,

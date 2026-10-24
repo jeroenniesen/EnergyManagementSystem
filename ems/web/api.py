@@ -4035,7 +4035,8 @@ def create_app(
         "battery.usable_kwh", "battery.min_reserve_soc", "battery.night_reserve_kwh",
         "battery.overnight_load_kwh", "battery.max_charge_w", "battery.max_discharge_w",
         "planner.round_trip_efficiency", "planner.degradation_eur_per_kwh",
-        "planner.risk_margin_eur_per_kwh", "planner.charge_slots", "planner.discharge_slots",
+        "planner.risk_margin_eur_per_kwh", "planner.max_buy_eur_per_kwh",
+        "planner.charge_slots", "planner.discharge_slots",
         "control.max_switches_per_day", "control.min_dwell_seconds",
     )
 

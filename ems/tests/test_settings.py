@@ -513,6 +513,25 @@ def test_heating_done_field_accepts_arbitrary_json_string():
     }
 
 
+def test_max_buy_eur_per_kwh_bounds_and_strategy_group():
+    """AC3 (#324): planner.max_buy_eur_per_kwh — bounds and visible in Strategy (not advanced)."""
+    field = SETTINGS_BY_KEY["planner.max_buy_eur_per_kwh"]
+    assert field.type == "number"
+    assert field.group == "strategy"
+    assert field.unit == "€/kWh"
+    assert field.advanced is False
+    assert field.min <= field.default <= field.max
+    assert field.default == 0.0 and field.min == 0.0 and field.max == 1.0
+    _low, err_low = validate_settings({"planner.max_buy_eur_per_kwh": -0.01})
+    _high, err_high = validate_settings({"planner.max_buy_eur_per_kwh": 1.01})
+    assert "planner.max_buy_eur_per_kwh" in err_low
+    assert "planner.max_buy_eur_per_kwh" in err_high
+    clean, errors = validate_settings({"planner.max_buy_eur_per_kwh": 0.20})
+    assert errors == {} and clean["planner.max_buy_eur_per_kwh"] == 0.20
+    row = next(r for r in schema_json() if r["key"] == field.key)
+    assert row["advanced"] is False and row["group"] == "strategy"
+
+
 def test_max_daily_grid_charge_bounds_and_slider():
     """AC4: planner.max_daily_grid_charge_kwh — min ≤ default ≤ max; min−1 and max+1 rejected."""
     field = SETTINGS_BY_KEY["planner.max_daily_grid_charge_kwh"]
