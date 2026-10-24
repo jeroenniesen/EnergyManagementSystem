@@ -125,8 +125,8 @@ Subtract the HomeWizard car meter from the learned baseline **only when the car 
 ### 4.6 Missing / stale meter fallback
 Per-source freshness is tracked (§6, §16). If a meter is missing or stale:
 - **Solar meter stale** → fall back to the solar *forecast* for `solar_power_w` (flag the chart).
-- **Car meter stale** → assume `ev_power_w = 0` and widen the load uncertainty band.
-- **P1 stale** → reconstruction is unreliable → **fail safe to `AUTO`** and raise an alert (§9.3).
+- **Car meter stale** → assume `ev_power_w = 0` and widen the load uncertainty band. The planner also plans more cautiously: +`planner.stale_reserve_buffer_pp` on the discharge floor, no new export/aggressive discharge, reason `Voorzichtig: meter verouderd` (clears after two fresh cycles; #332 / F-23).
+- **P1 stale** → reconstruction is unreliable → **fail safe to `AUTO`** and raise an alert (§9.3). The same cautious planner path may still run when `grid_stale` is set, but **`unsafe` fail-safe wins before any plan is applied**.
 - Any reconstruction using a stale input is flagged in the UI freshness indicators (§9.1).
 
 ### 4.7 Data quality (per-signal staleness, plausibility, source priority)
