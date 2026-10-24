@@ -17,6 +17,7 @@ from typing import Any
 
 from ems.domain import BatteryIntent
 from ems.planner.buy_pool import format_empty_buy_summary
+from ems.planner.projection import BatteryModel, ProjectedSlot, project_energy
 from ems.planner.rule_based import stale_discharge_floor_soc
 from ems.planner.schedule import Plan, PlanSlot
 from ems.savings import estimate_daily_savings_eur
@@ -609,13 +610,35 @@ def is_aggressive_discharge_slot(slot: PlanSlot) -> bool:
     )
 
 
+def _stale_hold_slot_for_projection(
+    slot: PlanSlot,
+    proj: ProjectedSlot,
+    *,
+    effective_floor: float,
+) -> bool:
+    """True when operating the slot would end SoC below the stale discharge floor."""
+    if proj.soc_pct >= effective_floor:
+        return False
+    if proj.battery_w <= 0:
+        return False
+    if slot.intent is _EXPORT:
+        return True
+    if slot.intent is _SELF:
+        return True
+    return slot.intent is _DISCHARGE and is_aggressive_discharge_slot(slot)
+
+
 def apply_stale_meter_caution(
     plan: Plan,
     *,
     base_reserve_soc_pct: float,
     buffer_pp: float,
+    start_soc_pct: float,
+    projection_model: BatteryModel,
+    solar_w_by: dict[datetime, float],
+    load_w_by: dict[datetime, float],
 ) -> Plan:
-    """Raise the discharge floor and drop export/aggressive discharge — never add grid charge."""
+    """Raise discharge floor; hold slots that would discharge below it — never add grid charge."""
     effective_floor = stale_discharge_floor_soc(
         base_reserve_soc_pct, buffer_pp=buffer_pp,
     )
@@ -623,22 +646,38 @@ def apply_stale_meter_caution(
         s.start for s in plan.slots if s.intent is _DISCHARGE or s.intent is _EXPORT
     }
     out: list[PlanSlot] = []
+    running_soc = start_soc_pct
     for s in plan.slots:
+        proj = project_energy(
+            [s],
+            start_soc_pct=running_soc,
+            solar_w_by=solar_w_by,
+            load_w_by=load_w_by,
+            model=projection_model,
+        )[0]
         floor_soc = effective_floor
         if s.floor_soc is not None:
             floor_soc = max(float(s.floor_soc), effective_floor)
         intent = s.intent
         reason = stale_meter_reason_prefix(s.reason)
-        if intent is _EXPORT or (
-            intent is _DISCHARGE and is_aggressive_discharge_slot(s)
-        ):
+        power_w = s.power_w
+        if _stale_hold_slot_for_projection(s, proj, effective_floor=effective_floor):
             intent = _HOLD
+            power_w = None
             reason = stale_meter_reason_prefix(
                 "hold reserve while meter data is uncertain",
             )
+            proj = project_energy(
+                [replace(s, intent=_HOLD, power_w=None)],
+                start_soc_pct=running_soc,
+                solar_w_by=solar_w_by,
+                load_w_by=load_w_by,
+                model=projection_model,
+            )[0]
+        running_soc = proj.soc_pct
         out.append(replace(
             s, intent=intent, reason=reason, floor_soc=floor_soc,
-            target_soc=s.target_soc, target_kwh=s.target_kwh, power_w=s.power_w,
+            target_soc=s.target_soc, target_kwh=s.target_kwh, power_w=power_w,
             deadline=s.deadline, end=s.end,
         ))
     discharge_after = {

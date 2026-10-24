@@ -14,6 +14,7 @@ from datetime import datetime
 
 from ems.domain import PlannerInputSnapshot, PlannerMode
 from ems.planner.adaptive import AdaptiveConfig
+from ems.planner.projection import BatteryModel
 from ems.planner.reason import apply_stale_meter_caution
 from ems.planner.rule_based import PlannerConfig
 from ems.planner.schedule import Plan
@@ -69,6 +70,46 @@ def base_reserve_soc_pct(request: PlannerRequest) -> float:
     if request.strategy == "winter":
         return float(getattr(request.winter_cfg, "min_reserve_soc", 10.0) or 10.0)
     return float(getattr(request.summer_cfg, "min_reserve_soc", 10.0) or 10.0)
+
+
+def stale_meter_projection_model(
+    request: PlannerRequest,
+    *,
+    base_reserve_soc_pct: float,
+) -> tuple[BatteryModel, dict[datetime, float], dict[datetime, float]]:
+    """Battery + load/solar maps for forward SoC when applying stale-meter caution (#332)."""
+    solar_w_by = {f.start: float(f.p50_w) for f in request.forecast}
+    load_w_by = dict(request.load_w_by) if request.load_w_by is not None else {}
+    if request.adaptive_cfg is not None:
+        cfg = request.adaptive_cfg
+        model = BatteryModel(
+            usable_kwh=cfg.usable_kwh,
+            max_charge_w=cfg.max_charge_w,
+            max_discharge_w=cfg.max_charge_w,
+            round_trip_efficiency=cfg.round_trip_efficiency,
+            reserve_soc_pct=base_reserve_soc_pct,
+        )
+        return model, solar_w_by, load_w_by
+    if request.strategy == "summer":
+        cfg = request.summer_cfg
+        model = BatteryModel(
+            usable_kwh=cfg.usable_kwh,
+            max_charge_w=cfg.max_charge_w,
+            max_discharge_w=cfg.max_charge_w,
+            round_trip_efficiency=cfg.round_trip_efficiency,
+            reserve_soc_pct=base_reserve_soc_pct,
+        )
+        return model, solar_w_by, load_w_by
+    cfg = request.winter_cfg
+    usable = request.summer_cfg.usable_kwh
+    model = BatteryModel(
+        usable_kwh=usable,
+        max_charge_w=4000.0,
+        max_discharge_w=4000.0,
+        round_trip_efficiency=cfg.round_trip_efficiency,
+        reserve_soc_pct=base_reserve_soc_pct,
+    )
+    return model, solar_w_by, load_w_by
 
 
 def config_hash_for_request(request: PlannerRequest, *, strategy: str) -> str:
@@ -183,10 +224,18 @@ class RuleBasedPlanner:
             trading_cfg=request.trading_cfg,
         )
         if request.ev_stale or request.grid_stale:
+            reserve = base_reserve_soc_pct(request)
+            proj_model, solar_by, load_by = stale_meter_projection_model(
+                request, base_reserve_soc_pct=reserve,
+            )
             plan = apply_stale_meter_caution(
                 plan,
-                base_reserve_soc_pct=base_reserve_soc_pct(request),
+                base_reserve_soc_pct=reserve,
                 buffer_pp=request.stale_reserve_buffer_pp,
+                start_soc_pct=request.soc_pct,
+                projection_model=proj_model,
+                solar_w_by=solar_by,
+                load_w_by=load_by,
             )
         strategy = plan.strategy or request.strategy
         snapshot = build_input_snapshot(request, strategy=strategy)

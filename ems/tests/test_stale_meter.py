@@ -84,6 +84,41 @@ def _grid_charge_kwh(plan) -> float:
     return total
 
 
+def test_ev_stale_holds_allow_when_slot_would_cross_stale_floor():
+    prices = [PriceSlot(T0 + i * SLOT, 0.10) for i in range(8)]
+    fc = [ForecastSlot(T0 + i * SLOT, 0, 0, 0) for i in range(8)]
+    load = {T0 + i * SLOT: 2500.0 for i in range(8)}
+    req = PlannerRequest(
+        now=T0,
+        prices=prices,
+        forecast=fc,
+        soc_pct=18.0,
+        strategy="summer",
+        winter_cfg=PlannerConfig(),
+        summer_cfg=SummerConfig(usable_kwh=10.0, target_soc_pct=80.0),
+        load_w_by=load,
+        adaptive_cfg=AdaptiveConfig(
+            usable_kwh=10.0, reserve_soc_pct=10.0, max_charge_w=4000.0,
+        ),
+        ev_stale=True,
+    )
+    baseline = RuleBasedPlanner().plan(replace(req, ev_stale=False))
+    stale = RuleBasedPlanner().plan(req)
+    assert stale.slots[0].intent is BatteryIntent.HOLD_RESERVE
+    _assert_grid_charge_lte_baseline(stale, baseline)
+
+
+def test_ev_stale_keeps_discharge_when_soc_stays_above_stale_floor():
+    req, _, _ = _adaptive_fixture()
+    stale = RuleBasedPlanner().plan(replace(req, soc_pct=80.0, ev_stale=True))
+    peak_starts = {T0 + i * SLOT for i in range(4, 8)}
+    for s in stale.slots:
+        if s.start not in peak_starts:
+            continue
+        assert s.intent is BatteryIntent.DISCHARGE_FOR_LOAD
+        assert STALE_METER_PLAN_REASON in (s.reason or "")
+
+
 def test_ev_stale_raises_floor_and_trims_discharge():
     req, _, _ = _adaptive_fixture()
     baseline = RuleBasedPlanner().plan(req)
@@ -91,10 +126,6 @@ def test_ev_stale_raises_floor_and_trims_discharge():
     stale = RuleBasedPlanner().plan(stale_req)
     assert any(STALE_METER_PLAN_REASON in (s.reason or "") for s in stale.slots)
     assert all(s.floor_soc == 15.0 for s in stale.slots if s.floor_soc is not None)
-    peak_starts = {T0 + i * SLOT for i in range(4, 8)}
-    for s in stale.slots:
-        if s.start in peak_starts:
-            assert s.intent is BatteryIntent.HOLD_RESERVE
     base_discharge = {
         s.start for s in baseline.slots if s.intent is BatteryIntent.DISCHARGE_FOR_LOAD
     }
@@ -103,6 +134,9 @@ def test_ev_stale_raises_floor_and_trims_discharge():
     }
     assert stale_discharge <= base_discharge
     _assert_grid_charge_lte_baseline(stale, baseline)
+    for s in stale.slots:
+        if s.intent is BatteryIntent.HOLD_RESERVE and "meter data is uncertain" in (s.reason or ""):
+            assert s.power_w is None
 
 
 def test_plan_byte_identical_without_stale_golden():
@@ -143,3 +177,4 @@ def test_stale_never_increases_grid_charge_after_recovery():
         stale = RuleBasedPlanner().plan(replace(req, **flags))
         stale_after, _, _ = recover_if_needed(stale, now, **recover_kw)
         _assert_grid_charge_lte_baseline(stale_after, base_after)
+    # Recovery catch-up slot keeps baseline reserve on floor_soc (#327); kWh/power already asserted.
