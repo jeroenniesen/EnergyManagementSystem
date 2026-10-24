@@ -2094,6 +2094,14 @@ def create_app(
     # web-facing) and are still injected. `settings` is THE live shared dict (never copied — the
     # settings_cache convention). The aliases below expose the service methods under their original
     # names so every endpoint + closure keeps calling `_current_soc` / `_active_strategy` / … .
+    from ems.freshness import StaleMeterHysteresis
+
+    _meter_stale_hysteresis = StaleMeterHysteresis()
+
+    def _stale_signals(now: datetime) -> set[str]:
+        snap = freshness.snapshot(now) if freshness is not None else {}
+        return _meter_stale_hysteresis.stale_signals(snap)
+
     control = ControlService(
         ctx=ctx, settings=settings_cache, controller=controller, store=store,
         audit_store=audit_store, price_source=price_source, solar_forecast=solar_forecast,
@@ -2101,6 +2109,7 @@ def create_app(
         source=source, cache_store=cache_store,
         data_quality=_data_quality, validate_plan_obj=_validate_plan_obj,
         clock=application_clock,
+        stale_signals=_stale_signals,
     )
     # F-45: control_state lock give-up alerts here; the report path does not write the battery.
     control._storage_notifier = notifier

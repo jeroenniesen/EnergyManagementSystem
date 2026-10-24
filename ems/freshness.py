@@ -2,11 +2,17 @@
 there is no single global 'stale' flag. All times are tz-aware datetimes."""
 from __future__ import annotations
 
+import logging
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import StrEnum
 
 from ems.timeutil import require_aware
+
+_log = logging.getLogger(__name__)
+
+METER_STALE_SIGNALS: frozenset[str] = frozenset({"ev", "grid"})
 
 # Default meter window (SPEC sense cycle ~5 min → 10 min stale). Prices/forecast update far less
 # often: a days-old Solcast cache must not read as live (issue #79).
@@ -98,3 +104,56 @@ class FreshnessTracker:
                 "age_seconds": None if ts is None else max(0.0, (now - ts).total_seconds()),
             }
         return out
+
+
+def raw_meter_stale(snapshot: dict[str, str]) -> set[str]:
+    """Instantaneous stale/missing EV or grid meter signals (no hysteresis)."""
+    return {
+        sig for sig in METER_STALE_SIGNALS
+        if snapshot.get(sig) in (Freshness.STALE.value, Freshness.MISSING.value)
+    }
+
+
+@dataclass
+class StaleMeterHysteresis:
+    """Latch meter-stale for the planner until two consecutive fresh cycles (#332 / F-23)."""
+
+    _active: set[str] = field(default_factory=set)
+    _fresh_streak: dict[str, int] = field(default_factory=dict)
+
+    def stale_signals(self, snapshot: dict[str, str]) -> set[str]:
+        """Return EV/grid signal names that should drive cautious planning after hysteresis."""
+        raw = raw_meter_stale(snapshot)
+        out: set[str] = set()
+        for sig in METER_STALE_SIGNALS:
+            if sig in raw:
+                self._active.add(sig)
+                self._fresh_streak.pop(sig, None)
+                out.add(sig)
+            elif sig in self._active:
+                streak = self._fresh_streak.get(sig, 0) + 1
+                self._fresh_streak[sig] = streak
+                if streak >= 2:
+                    self._active.discard(sig)
+                    self._fresh_streak.pop(sig, None)
+                else:
+                    out.add(sig)
+        return out
+
+
+def stale_flags(
+    stale_signals: Callable[[datetime], set[str]] | None,
+    now: datetime,
+) -> tuple[bool, bool]:
+    """Map the injected stale-signal callable to PlannerRequest booleans.
+
+    Any exception is logged and treated as both meters stale (cautious, never extra charging).
+    """
+    if stale_signals is None:
+        return False, False
+    try:
+        names = stale_signals(now)
+    except Exception:
+        _log.warning("stale_signals callable failed — treating EV and grid meters as stale")
+        return True, True
+    return ("ev" in names, "grid" in names)

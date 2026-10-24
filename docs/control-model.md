@@ -200,6 +200,7 @@ ActionDecision:         plan_id/version, desired_intent, mapped_command, reason,
 ## 11. Data quality (per-signal, with plausibility)
 
 - **Per-signal staleness (46):** each input (`grid`, `solar`, `ev`, `soc`, `price`, `forecast`) has its **own** freshness state — not one global flag.
+- **Stale EV/grid meter → cautious plan (F-23 / #332):** when `ev` or `grid` is stale (latched until **two consecutive fresh control cycles**), the rule-based planner adds `planner.stale_reserve_buffer_pp` (default 5 pp) to the **discharge floor only**, drops new `EXPORT_FOR_PROFIT` / price-driven discharge slots, and prefixes slot reasons with `Voorzichtig: meter verouderd`. It never raises a charge target or enlarges grid-charge slots. A stale **grid** meter still makes `data_quality` `unsafe` first (fail-safe `AUTO` wins before the plan acts); the main effect is **`ev_stale`**.
 - **Source priority per metric (49):** **HA sensor → direct device API → cached value (display only, never for control)**.
 - **Plausibility checks (47):** reject/flag implausible readings — SoC can't jump > `soc_max_jump_pct_per_5min` (e.g. 20%/5 min), solar can't be negative, prices must be **chronological** and within sane bounds.
 - **Timestamp hygiene (48):** handle duplicate/missing 15-min slots — dedupe by `startsAt`, fill or flag gaps; never silently shift slots.

@@ -55,6 +55,7 @@ from ems.control.override import Override
 from ems.control.reconciliation import CommandReconciliation
 from ems.control.safety import SafetyValidator, resolve_floor_anti_flap
 from ems.domain import BatteryIntent, CapabilityReport, PhysicalMode
+from ems.freshness import stale_flags
 from ems.lifecycle import Lifecycle, OwnershipState
 from ems.perf import PERF_BUDGETS, REGISTRY, atimed, timed
 from ems.planner.adaptive import AdaptiveConfig
@@ -477,6 +478,7 @@ class ControlService:
         planner_cfg: Callable[[], Any] | None = None,
         summer_cfg: Callable[[float], Any] | None = None,
         adaptive_cfg: Callable[[], Any] | None = None,
+        stale_signals: Callable[[datetime], set[str]] | None = None,
     ) -> None:
         self._ctx = ctx
         self._clock = clock if clock is not None else SystemClock()
@@ -518,6 +520,7 @@ class ControlService:
         self._planner_cfg = planner_cfg if planner_cfg is not None else self.planner_cfg
         self._summer_cfg = summer_cfg if summer_cfg is not None else self.summer_cfg
         self._adaptive_cfg = adaptive_cfg if adaptive_cfg is not None else self.adaptive_cfg
+        self._stale_signals = stale_signals
         self._decision_engine = ControlDecisionEngine(
             data_quality=self._data_quality,
             car_mode_action=self._car_mode_action,
@@ -1013,6 +1016,8 @@ class ControlService:
         mode = self._settings.get("planner.mode", "rule_based")
         bought = self.already_bought_today_kwh(now)
         throughput = self._cycle_throughput = self.cycle_throughput_today(now)
+        stale_ev, stale_grid = stale_flags(self._stale_signals, now)
+        stale_buffer_pp = float(self._settings.get("planner.stale_reserve_buffer_pp", 5.0))
         request = PlannerRequest(
             now=now,
             prices=prices,
@@ -1034,6 +1039,9 @@ class ControlService:
             forecast_provider=forecast_provider,
             forecast_issued_at=forecast_issued_at,
             baseline="load_profile" if load_by else None,
+            ev_stale=stale_ev,
+            grid_stale=stale_grid,
+            stale_reserve_buffer_pp=stale_buffer_pp,
         )
         plan = build_planner(mode).plan(request)
         return now, prices, plan

@@ -9,7 +9,8 @@ self-consumption — daytime soaks surplus, night discharges to serve the house.
 Risk-aware sizing (SPEC §6.3): the solar we *count on* to fill the battery is a configurable
 fraction of the expected (P50) forecast — `solar_confidence` (0..1). Lower = more cautious (counts
 on less sun, so a cloudy afternoon doesn't leave us short overnight, at the cost of buying more grid
-power); higher = trusts the forecast and buys less. Pure + unit-tested — the caller supplies prices,
+power); higher = trusts the forecast and buys less. Stale EV/grid meters are handled in the
+rule-based adapter (#332), not inside this module. Pure + unit-tested — the caller supplies prices,
 the solar forecast and the current SoC; no hardware, no I/O.
 """
 from __future__ import annotations

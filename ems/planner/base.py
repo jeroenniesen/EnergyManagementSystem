@@ -14,6 +14,7 @@ from datetime import datetime
 
 from ems.domain import PlannerInputSnapshot, PlannerMode
 from ems.planner.adaptive import AdaptiveConfig
+from ems.planner.reason import apply_stale_meter_caution
 from ems.planner.rule_based import PlannerConfig
 from ems.planner.schedule import Plan
 from ems.planner.strategy import build_plan
@@ -51,10 +52,23 @@ class PlannerRequest:
     forecast_issued_at: datetime | None = None
     baseline: str | None = None
     capability_report_ref: str | None = None
+    # F-23 / #332: cautious planning when EV or grid meter freshness is uncertain.
+    ev_stale: bool = False
+    grid_stale: bool = False
+    stale_reserve_buffer_pp: float = 5.0
 
 
 def _mode_value(mode: PlannerMode | str) -> str:
     return mode.value if isinstance(mode, PlannerMode) else str(mode)
+
+
+def base_reserve_soc_pct(request: PlannerRequest) -> float:
+    """Reserve floor (%) the seasonal planners used before stale-meter buffer (#332)."""
+    if request.adaptive_cfg is not None and request.load_w_by is not None:
+        return float(request.adaptive_cfg.reserve_soc_pct)
+    if request.strategy == "winter":
+        return float(getattr(request.winter_cfg, "min_reserve_soc", 10.0) or 10.0)
+    return float(getattr(request.summer_cfg, "min_reserve_soc", 10.0) or 10.0)
 
 
 def config_hash_for_request(request: PlannerRequest, *, strategy: str) -> str:
@@ -168,6 +182,12 @@ class RuleBasedPlanner:
             expected_ev_kwh=request.expected_ev_kwh,
             trading_cfg=request.trading_cfg,
         )
+        if request.ev_stale or request.grid_stale:
+            plan = apply_stale_meter_caution(
+                plan,
+                base_reserve_soc_pct=base_reserve_soc_pct(request),
+                buffer_pp=request.stale_reserve_buffer_pp,
+            )
         strategy = plan.strategy or request.strategy
         snapshot = build_input_snapshot(request, strategy=strategy)
         mode = _mode_value(request.planner_mode)
