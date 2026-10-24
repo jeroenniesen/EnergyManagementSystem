@@ -537,6 +537,13 @@ SETTINGS_SCHEMA: tuple[SettingsField, ...] = (
         advanced=True,
     ),
     SettingsField(
+        "planner.stale_reserve_buffer_pp", "Stale meter reserve buffer", "number", 5.0, "planner",
+        help="When the EV or grid meter stops updating, the planner adds this many percentage "
+        "points to the discharge floor and avoids new export or aggressive discharge until "
+        "readings are fresh again.",
+        min=0.0, max=20.0, step=1.0, unit="pp", advanced=True,
+    ),
+    SettingsField(
         "planner.recovery_enabled", "Recover a missed charge window", "bool", True, "planner",
         help="If a planned low-cost charge is missed and the deadline is still ahead, the system "
         "can use the best worthwhile slots that remain. It never bypasses the same safety checks "
