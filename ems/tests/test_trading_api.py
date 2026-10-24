@@ -283,6 +283,37 @@ def test_dry_run_reviewed_operate_gated():
     assert required_tier("/api/trading/dry-run-reviewed", "POST") == Tier.OPERATE
 
 
+def test_dry_run_reviewed_forbidden_for_reader(tmp_path):
+    import asyncio
+
+    from ems.authn import hash_password
+    from ems.storage.auth import AuthStore
+
+    db = str(tmp_path / "ems.sqlite")
+
+    async def seed() -> None:
+        s = AuthStore(db)
+        await s.init()
+        await s.create_user("rdr", hash_password("pw12345678"), "reader")
+        await s.close()
+
+    asyncio.run(seed())
+    app = create_app(
+        _Source(), dry_run=True, dev_mode="mock",
+        settings_store=SettingsStore(db),
+        auth_store=AuthStore(db),
+    )
+    with TestClient(app) as c:
+        login = c.post(
+            "/api/auth/login", json={"username": "rdr", "password": "pw12345678"},
+        )
+        tok = login.json()["token"]
+        h = {"Authorization": f"Bearer {tok}"}
+        assert (
+            c.post("/api/trading/dry-run-reviewed", json={}, headers=h).status_code == 403
+        )
+
+
 def test_export_probe_does_not_flip_arm_flag():
     """B-107: begin_export_probe must not set allow_export_discharge."""
     from datetime import UTC, datetime, timedelta

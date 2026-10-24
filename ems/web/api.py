@@ -1617,6 +1617,9 @@ def create_app(
                 await settings_store.set_many(migration_writes)
                 stored_settings = await settings_store.all()
             settings_cache.update(effective_settings(stored_settings))
+            _raw_dry_run_reviewed = stored_settings.get("trading.dry_run_reviewed_at")
+            if _raw_dry_run_reviewed is not None:
+                settings_cache["trading.dry_run_reviewed_at"] = _raw_dry_run_reviewed
             from ems.settings import live_mock_forecast_in_use
 
             if live_mock_forecast_in_use(solar_forecast, settings_cache, dev_mode):
@@ -3442,6 +3445,7 @@ def create_app(
         reviewed_at = now.isoformat()
         await settings_store.set_many({_TRADING_DRY_RUN_REVIEWED_KEY: reviewed_at})
         settings_cache.update(effective_settings(await settings_store.all()))
+        settings_cache[_TRADING_DRY_RUN_REVIEWED_KEY] = reviewed_at
         if audit_store is not None:
             await audit_store.append(
                 now.isoformat(),

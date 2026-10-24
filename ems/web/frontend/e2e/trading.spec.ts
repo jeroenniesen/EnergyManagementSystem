@@ -120,6 +120,7 @@ test.describe("Trading view", () => {
       });
     });
     await page.goto("/#trading");
+    await expect(page.getByTestId("trading-step-dry_run")).toContainText("✓");
     await page.getByTestId("trading-arm").click();
     await expect(page.getByTestId("trading-arm-confirm")).toBeVisible();
     await page.getByTestId("trading-arm-confirm").click();

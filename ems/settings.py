@@ -511,12 +511,6 @@ SETTINGS_SCHEMA: tuple[SettingsField, ...] = (
         options=("peak_slice", "full_dump"),
     ),
     SettingsField(
-        "trading.dry_run_reviewed_at", "Trading: dry-run reviewed at", "text", "", "planner",
-        help="ISO-8601 UTC timestamp when the operator confirmed they reviewed the T-vs-Z "
-        "dry-run on the Trading page. Set only via POST /api/trading/dry-run-reviewed.",
-        show_in_settings=False,
-    ),
-    SettingsField(
         "planner.max_cycles_per_day", "Max battery cycles / day", "number", 1.5, "planner",
         help=(
             "Canonical runtime cycle budget (overrides the SPEC sample "
