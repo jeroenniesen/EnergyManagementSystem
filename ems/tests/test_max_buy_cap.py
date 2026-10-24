@@ -218,7 +218,7 @@ def test_empty_buy_pool_mentions_resident_limit():
     auto = max_buy_for_peak(0.37, rte=0.90, deg=0.05, risk=0.02)
     assert auto > 0.20
     summary = build_decision_reason(plan, price_by={p.start: p.eur_per_kwh for p in prices}).summary
-    assert "jouw limiet €0,20" in summary
+    assert "ligt boven jouw limiet €0,20" in summary
 
 
 def test_max_buy_hot_apply_replans(tmp_path):
@@ -231,9 +231,10 @@ def test_max_buy_hot_apply_replans(tmp_path):
         builds_before = svc.plan_builds
         plan1 = client.get("/api/plan").json()
         mb1 = plan1["buy_pool"]["max_buy_eur_per_kwh"]
-        r = client.post("/api/settings", json={"planner.max_buy_eur_per_kwh": 0.15})
+        assert mb1 > 0.05
+        r = client.post("/api/settings", json={"planner.max_buy_eur_per_kwh": 0.05})
         assert r.status_code == 200
         plan2 = client.get("/api/plan").json()
-        mb2 = plan2["buy_pool"]["max_buy_eur_per_kwh"]
-        assert mb2 <= mb1
+        assert plan2["buy_pool"]["max_buy_eur_per_kwh"] == 0.05
+        assert plan2["buy_pool"]["resident_cap_eur_per_kwh"] == 0.05
         assert svc.plan_builds == builds_before + 1

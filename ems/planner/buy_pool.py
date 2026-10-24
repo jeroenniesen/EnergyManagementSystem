@@ -122,14 +122,16 @@ def format_empty_buy_summary(info: BuyPoolInfo) -> str:
     """One homeowner-facing line when the buy pool is empty but energy is still needed."""
     resident = _resident_cap_limits_pool(info)
     ceiling = _eur_nl(info.resident_cap_eur_per_kwh if resident else info.max_buy_eur_per_kwh)
-    ceiling_phrase = f"jouw limiet {ceiling}" if resident else f"max-inkoopprijs {ceiling}"
+    ceiling_phrase = (
+        f"jouw limiet {ceiling}" if resident else f"je max-inkoopprijs {ceiling}"
+    )
     if info.cheapest_slot is None:
         return (
-            f"Geen koopmoment: geen prijsmoment vóór de piek ligt onder je "
+            f"Geen koopmoment: geen prijsmoment vóór de piek ligt onder "
             f"{ceiling_phrase}"
         )
     cs = info.cheapest_slot
     return (
         f"Geen koopmoment: goedkoopste slot {_eur_nl(cs.eur_per_kwh)} "
-        f"({_clock_nl(cs.start)}) ligt boven je {ceiling_phrase}"
+        f"({_clock_nl(cs.start)}) ligt boven {ceiling_phrase}"
     )
