@@ -28,6 +28,11 @@ _log = logging.getLogger("ems.planner.rule_based")
 _DH = 0.25  # hours per 15-min slot
 
 
+def stale_discharge_floor_soc(reserve_soc_pct: float, *, buffer_pp: float) -> float:
+    """Discharge floor with stale-meter buffer (#332); does not raise charge targets."""
+    return min(100.0, max(0.0, float(reserve_soc_pct)) + max(0.0, float(buffer_pp)))
+
+
 def late_pack_charge_starts(
     pre_peak: list[PriceSlot],
     n_charge: int,
