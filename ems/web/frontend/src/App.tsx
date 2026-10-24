@@ -104,6 +104,7 @@ type Decision = {
   home_state?: { headline: string; tone: string; simulated: boolean };
   decision_reason?: import("./decisionWhy").DecisionReason;
   buy_pool?: import("./planStoryModel").BuyPool | null;
+  solar_basis?: string | null;
 };
 
 type ChargeNeed = {
@@ -1222,6 +1223,7 @@ export function App() {
               ?? batteryPlan?.reason?.buy_pool
               ?? null
             }
+            solarBasis={decision?.solar_basis ?? null}
           />
           {/* B-33 / #85: waarom voor batterij-acties + pauze/reserve (slice 1–2) — één tik, niet
               standaard open. Tekst uit battery-plan `reason` (#84), dry-run zegt "zou". */}

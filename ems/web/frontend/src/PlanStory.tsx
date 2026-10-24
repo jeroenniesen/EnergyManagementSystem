@@ -7,6 +7,7 @@ import {
   HOME_MUST_CHARGE,
   HOME_PLAN_STORY,
   INTELLIGENCE_COPY,
+  COMMIT_SOLAR_P10_LABEL,
   nightReserveOverridesLearned,
   PLANNER_PROVENANCE_LABEL,
 } from "./labels";
@@ -59,6 +60,17 @@ export type PlanStoryProps = {
   nightReserveLearnedKwh?: number | null;
   /** #315 / #323: buy pool + optional must-charge summary from battery-plan reason. */
   buyPool?: (BuyPool & { must_charge_summary?: string }) | null;
+  /** #330: 'p10' when committed charge was sized on a real Solcast P10. */
+  solarBasis?: string | null;
+}
+
+function SolarBasisNote({ solarBasis }: { solarBasis?: string | null }) {
+  if (solarBasis !== "p10") return null;
+  return (
+    <p className="plan-story-solar-basis" data-testid="plan-story-solar-basis">
+      {COMMIT_SOLAR_P10_LABEL}
+    </p>
+  );
 };
 
 function RecentReviewDisclosure({ message }: { message: string }) {
@@ -131,6 +143,7 @@ export function PlanStory({
   nightReserveConfiguredKwh = null,
   nightReserveLearnedKwh = null,
   buyPool = null,
+  solarBasis = null,
 }: PlanStoryProps) {
   const [hover, setHover] = useState<number | null>(null);
   const model = buildPlanStoryModel(story, PAD.l, PLOT_W);
@@ -139,6 +152,7 @@ export function PlanStory({
     return (
       <section className="plan-story" data-testid="plan-story" data-density-kind="chart">
         {recentReview && <RecentReviewDisclosure message={recentReview} />}
+        <SolarBasisNote solarBasis={solarBasis} />
         <p>{HOME_PLAN_STORY.unavailable}</p>
         <ProvenanceCaption provenance={provenance} />
       </section>
@@ -173,6 +187,7 @@ export function PlanStory({
       aria-label={model.label}
     >
       {recentReview && <RecentReviewDisclosure message={recentReview} />}
+      <SolarBasisNote solarBasis={solarBasis} />
       {shouldShowWhyNotBuy(buyPool, dataQuality) && (
         <div className="why-not-buy-tile" data-testid="why-not-buy">
           <h3 className="why-not-buy-title">{HOME_WHY_NOT_BUY.title}</h3>

@@ -61,6 +61,48 @@ class AdaptiveConfig:
     resident_must_charge_target_soc: float | None = None
     resident_must_charge_deadline: datetime | None = None
     max_buy_eur_per_kwh: float = 0.0  # #324 / F-15; 0 = automatic
+    # #330 / F-18. auto sizes on min(confidence×P50, P10) when slots carry real_p10.
+    commit_solar_basis: str = "auto"
+
+
+def committed_solar_w(
+    p50_w: float,
+    p10_w: float,
+    confidence: float,
+    *,
+    commit_solar_basis: str = "auto",
+    real_p10: bool = False,
+) -> float:
+    """Watts counted when sizing a committed grid charge (#330 / F-18).
+
+    ``auto`` plus a delivery stamped with real P10 is ``min(confidence × P50, P10)``,
+    never above today's confidence × P50. Every other case, including an unknown
+    forecast, is exactly ``confidence × P50``.
+    """
+    scaled = confidence * p50_w
+    if commit_solar_basis == "auto" and real_p10:
+        return min(scaled, max(0.0, p10_w))
+    return scaled
+
+
+def commitment_solar_basis(
+    commit_solar_basis: str = "auto",
+    real_p10: bool = False,
+) -> str | None:
+    """``p10`` when auto used a real P10, ``p50`` when that mode is explicit, else None.
+
+    None keeps plans that did not choose a P10 path identical to the pre-#330 default.
+    """
+    if commit_solar_basis == "auto" and real_p10:
+        return "p10"
+    if commit_solar_basis == "p50":
+        return "p50"
+    return None
+
+
+def _delivery_has_real_p10(forecast: list[ForecastSlot]) -> bool:
+    """True when this delivery was stamped real P10 on every slot. Empty stays false."""
+    return bool(forecast) and all(bool(getattr(slot, "real_p10", False)) for slot in forecast)
 
 
 @dataclass(frozen=True)
@@ -160,7 +202,17 @@ def _plan_adaptive(
         return Plan(created_at=now, slots=())
 
     p50 = {f.start: f.p50_w for f in forecast}
+    p10 = {f.start: f.p10_w for f in forecast}
     confidence = max(0.0, min(1.0, cfg.solar_confidence))
+    real_p10 = _delivery_has_real_p10(forecast)
+    basis = commitment_solar_basis(cfg.commit_solar_basis, real_p10)
+
+    def counted_w(start: datetime) -> float:
+        return committed_solar_w(
+            p50.get(start, 0.0), p10.get(start, 0.0), confidence,
+            commit_solar_basis=cfg.commit_solar_basis,
+            real_p10=real_p10,
+        )
     eta = math.sqrt(max(1e-6, min(1.0, cfg.round_trip_efficiency)))
     usable = cfg.usable_kwh
     reserve_kwh = cfg.reserve_soc_pct / 100.0 * usable
@@ -187,10 +239,11 @@ def _plan_adaptive(
     # `avail_now_kwh`, `solar_to_batt_kwh` and `per_slot_kwh` below.
     total_deficit_kwh = sum(max(0.0, net_w(p)) * _DH / 1000.0 for p in future)
     coverable_kwh = min(total_deficit_kwh / eta, usable - reserve_kwh)
-    # Solar we count on flowing into the battery from daytime surplus: the confidence-scaled
-    # expected (P50) forecast after the house takes its share (was a hard P10 = 0.6×P50 haircut).
+    # Solar we count on flowing into the battery from daytime surplus: confidence × P50,
+    # or min(that, P10) when auto and the delivered source has a real P10 (#330).
+    # Otherwise exactly confidence × P50 (was a hard P10 = 0.6×P50 haircut).
     solar_to_batt_kwh = sum(
-        max(0.0, confidence * p50.get(p.start, 0.0) - load_w_by.get(p.start, 0.0)) * _DH / 1000.0
+        max(0.0, counted_w(p.start) - load_w_by.get(p.start, 0.0)) * _DH / 1000.0
         * eta
         for p in future
     )
@@ -289,7 +342,7 @@ def _plan_adaptive(
     # No season label here: this planner serves both seasons. build_plan stamps the resolved
     # strategy; a direct caller gets an honest None rather than a misleading "summer".
     return Plan(created_at=now, slots=tuple(out), strategy=None, target_soc=target_soc_pct,
-                deadline=last_need, buy_pool=buy_pool)
+                deadline=last_need, buy_pool=buy_pool, solar_basis=basis)
 
 
 def _soak_negative(plan: Plan, prices: list[PriceSlot], cfg: AdaptiveConfig) -> Plan:
@@ -312,4 +365,5 @@ def _soak_negative(plan: Plan, prices: list[PriceSlot], cfg: AdaptiveConfig) -> 
         for s in plan.slots
     )
     return Plan(created_at=plan.created_at, slots=out, strategy=plan.strategy,
-                target_soc=plan.target_soc, deadline=plan.deadline, buy_pool=plan.buy_pool)
+                target_soc=plan.target_soc, deadline=plan.deadline, buy_pool=plan.buy_pool,
+                solar_basis=plan.solar_basis)

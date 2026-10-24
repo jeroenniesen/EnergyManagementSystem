@@ -707,6 +707,10 @@ export const HOME_PLAN_STORY = {
   socScale: (pct: number) => `${pct}%`,
 } as const;
 
+/** #330 / F-18: Home plan label when committed grid charge was sized on a real P10. */
+export const COMMIT_SOLAR_P10_LABEL =
+  "Lading gedimensioneerd op P10 (voorzichtige zon)";
+
 /** #315 / F-02+F-31: Home tile when EMS cannot grid-buy (empty buy pool). */
 export const HOME_MUST_CHARGE = {
   title: "Voorzorgslading",

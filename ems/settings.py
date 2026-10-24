@@ -446,6 +446,16 @@ SETTINGS_SCHEMA: tuple[SettingsField, ...] = (
         min=30.0, max=100.0, step=5.0, unit="%", slider=True,
     ),
     SettingsField(
+        "planner.commit_solar_basis", "Committed solar basis", "enum", "auto", "planner",
+        help="How much sun to count when sizing a committed grid charge. Auto uses the "
+        "lower of solar-confidence × P50 and P10 when the forecast that actually arrived "
+        "has a real P10 (Solcast). Forecast.Solar's derived bands, a fallback to those "
+        "bands, and an unknown forecast keep today's solar-confidence × P50. P50 always "
+        "uses solar-confidence × P50. Auto never counts on more sun than today.",
+        options=("auto", "p50"),
+        advanced=True,
+    ),
+    SettingsField(
         "planner.round_trip_efficiency", "Round-trip efficiency", "number", 0.90, "planner",
         help="How much energy survives a charge-then-discharge cycle (0.90 = 90%). Lower means the "
         "system only acts when the savings clearly beat the losses.",

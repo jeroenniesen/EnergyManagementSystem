@@ -889,6 +889,7 @@ class ControlService:
             resident_must_charge_target_soc=resident_target,
             resident_must_charge_deadline=resident_deadline,
             max_buy_eur_per_kwh=float(s.get("planner.max_buy_eur_per_kwh", 0.0)),
+            commit_solar_basis=str(s.get("planner.commit_solar_basis", "auto")),
         )
 
     def already_bought_today_kwh(self, now: datetime) -> float | None:
