@@ -399,4 +399,17 @@ describe("PlanStory rendering", () => {
     expect(hidden).not.toContain(COMMIT_SOLAR_P10_LABEL);
     expect(omitted).not.toContain(COMMIT_SOLAR_P10_LABEL);
   });
+
+  test("renders a 48h horizon without breaking the chart frame", () => {
+    const slots = Array.from({ length: 192 }, (_, index) => storySlot(index * 15));
+    const html = renderToStaticMarkup(createElement(PlanStory, {
+      story: storyData([], slots, 0),
+    }));
+    expect(html).toContain('data-testid="plan-story"');
+    expect(html).toContain("plan-story-axis");
+    expect(html).toContain("plan-story-chart-wrap");
+    const prices = html.split('data-testid="plan-story-price"').length - 1;
+    expect(prices).toBe(192);
+    expect(html).not.toContain("NaN");
+  });
 });

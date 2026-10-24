@@ -23,6 +23,7 @@ from zoneinfo import ZoneInfo
 from ems.domain import BatteryIntent
 from ems.planner import economics
 from ems.planner.budgets import ac_grid_kwh_per_slot, clamp_grid_charge
+from ems.planner.horizon import slice_price_horizon
 from ems.planner.rule_based import late_pack_charge_starts
 from ems.planner.schedule import SLOT, Plan, PlanSlot
 from ems.sources.forecast import ForecastSlot
@@ -99,7 +100,9 @@ def plan_summer(
     soc_pct: float,
     cfg: SummerConfig,
 ) -> Plan:
-    future = [p for p in prices if p.start + SLOT > now][: cfg.horizon_slots]
+    future = slice_price_horizon(
+        prices, now, cfg.site_tz, fallback_slots=cfg.horizon_slots,
+    )
     if not future:
         return Plan(created_at=now, slots=())
 

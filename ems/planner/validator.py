@@ -17,6 +17,7 @@ from zoneinfo import ZoneInfo
 
 from ems.domain import BatteryIntent, CapabilityReport
 from ems.planner.budgets import UNKNOWN_COUNTER_REASON, cap_reason, slot_grid_kwh
+from ems.planner.horizon import MAX_HORIZON_SLOTS
 from ems.planner.projection import ProjectedSlot, evening_reserve_kwh
 from ems.planner.schedule import Plan, PlanSlot
 
@@ -194,7 +195,7 @@ def validate_plan(
     projection: list[ProjectedSlot] | None = None,
     max_switches_per_day: int = 10,
     min_dwell: timedelta = timedelta(seconds=600),
-    slot_horizon: int = 96,
+    slot_horizon: int = MAX_HORIZON_SLOTS,
     validate_projection: bool = True,
     projection_target_margin_pp: float = 5.0,
     grid_limit_w: float | None = None,

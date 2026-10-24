@@ -21,6 +21,7 @@ from ems.planner.budgets import ac_grid_kwh_per_slot, clamp_cycle_budget, clamp_
 from ems.planner.buy_pool import build_buy_pool_info
 from ems.planner.charge_need import stored_kwh_per_slot
 from ems.planner.ev_load import format_ev_load_reason
+from ems.planner.horizon import slice_price_horizon
 from ems.planner.projection import apply_evening_reserve
 from ems.planner.schedule import SLOT, Plan, PlanSlot
 from ems.sources.prices import PriceSlot
@@ -197,7 +198,9 @@ def _plan_winter(
     max_discharge_w: float = 4000.0,
 ) -> Plan:
     """Base winter arbitrage plan (no soak): profitability gate, demand- or fixed-count charge."""
-    horizon = [p for p in prices if p.start + SLOT > now][: cfg.horizon_slots]
+    horizon = slice_price_horizon(
+        prices, now, cfg.site_tz, fallback_slots=cfg.horizon_slots,
+    )
     if not horizon:
         return Plan(created_at=now, slots=(), strategy="winter")
 

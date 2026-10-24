@@ -77,6 +77,24 @@ export function formatWhyNotBuyLine(pool: BuyPool): string {
 }
 
 export type TimedStorySlot = StorySlot & { startMs: number };
+
+/** Chart window for a plan that can see through the end of tomorrow (#329). */
+export const PLAN_STORY_HORIZON_MS = 48 * 60 * 60 * 1000;
+
+export function clipPlanStoryHorizon(
+  slots: readonly TimedStorySlot[],
+  nowMs: number,
+): TimedStorySlot[] {
+  if (slots.length === 0) return [];
+  const origin = Number.isFinite(nowMs) ? nowMs : slots[0].startMs;
+  return slots.filter((slot) => slot.startMs < origin + PLAN_STORY_HORIZON_MS);
+}
+
+function axisTickGapMs(slots: readonly TimedStorySlot[]): number {
+  if (slots.length < 2) return 4 * 60 * 60 * 1000;
+  const span = slots[slots.length - 1].startMs + SLOT_MS - slots[0].startMs;
+  return span > 26 * 60 * 60 * 1000 ? 8 * 60 * 60 * 1000 : 4 * 60 * 60 * 1000;
+}
 export type SlotPointMetric = "soc" | "solar";
 
 /**
@@ -498,8 +516,11 @@ function gapSentence(gap: GapWindow): string {
 
 export function describeCombinedPlan(story: EnergyStoryData | null): string {
   if (!story) return HOME_PLAN_STORY.loading;
-  const slots = normaliseSlots(story.recent ?? [], story.slots);
   const nowMs = Date.parse(story.now);
+  const slots = clipPlanStoryHorizon(
+    normaliseSlots(story.recent ?? [], story.slots),
+    nowMs,
+  );
   const current = story.current_soc_pct ?? slots.find((slot) => finiteNumber(slot.soc_pct))?.soc_pct;
   const events: Array<{ start: number; text: string }> = [
     ...actionWindows(slots).map((window) => ({ start: window.start, text: actionSentence(window) })),
@@ -526,8 +547,11 @@ export function describeCombinedPlan(story: EnergyStoryData | null): string {
 
 export function describeCombinedPlanLabel(story: EnergyStoryData | null): string {
   if (!story) return HOME_PLAN_STORY.loading;
-  const slots = normaliseSlots(story.recent ?? [], story.slots);
   const nowMs = Date.parse(story.now);
+  const slots = clipPlanStoryHorizon(
+    normaliseSlots(story.recent ?? [], story.slots),
+    nowMs,
+  );
   const events = [
     ...actionWindows(slots).map((window) => ({
       start: window.start,
@@ -551,7 +575,10 @@ export function buildPlanStoryModel(
   plotWidth: number,
 ): PlanStoryModel | null {
   if (!story) return null;
-  const slots = normaliseSlots(story.recent ?? [], story.slots);
+  const slots = clipPlanStoryHorizon(
+    normaliseSlots(story.recent ?? [], story.slots),
+    Date.parse(story.now),
+  );
   const scale = createTimeScale(slots, padLeft, plotWidth);
   if (!scale) return null;
   const nowMs = Date.parse(story.now);
@@ -565,7 +592,7 @@ export function buildPlanStoryModel(
     soc: socRuns(slots, nowMs),
     solar: solarRuns(slots, nowMs),
     actions: actionWindows(slots),
-    ticks: tickTimes(slots),
+    ticks: tickTimes(slots, axisTickGapMs(slots)),
     nowMs,
     nowX: nowX(scale, story.now),
     minPrice: prices.length ? Math.min(...prices) : 0,

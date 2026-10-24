@@ -20,6 +20,7 @@ from dataclasses import dataclass, replace
 from datetime import datetime, timedelta
 
 from ems.domain import BatteryIntent
+from ems.planner.horizon import MAX_HORIZON_SLOTS
 from ems.planner.reason import EVENING_RESERVE_HOLD_REASON
 from ems.planner.schedule import SLOT, Plan, PlanSlot
 
@@ -59,6 +60,7 @@ def project_energy(
     model: BatteryModel,
     charge_target_soc_pct: float | None = None,
     slot: timedelta = SLOT,
+    horizon_slots: int | None = None,
 ) -> list[ProjectedSlot]:
     """Simulate SoC + grid flow over `plan_slots` (each needs `.start` and `.intent`).
 
@@ -68,7 +70,12 @@ def project_energy(
 
     Contract: `load_w_by` MUST cover every slot start — a missing load silently reads 0 W and
     under-predicts the drain (the API builds it for every plan slot). `solar_w_by` may be sparse;
-    a missing entry means 0 W solar (correct for night/pre-dawn slots)."""
+    a missing entry means 0 W solar (correct for night/pre-dawn slots).
+
+    ``horizon_slots`` caps the walk at the shared planning horizon (192). Callers that
+    pass a shorter plan are unchanged."""
+    cap = MAX_HORIZON_SLOTS if horizon_slots is None else horizon_slots
+    plan_slots = list(plan_slots)[: max(0, cap)]
     usable = model.usable_kwh
     reserve_kwh = model.reserve_soc_pct / 100.0 * usable
     eta = math.sqrt(_clamp(model.round_trip_efficiency, 1e-6, 1.0))

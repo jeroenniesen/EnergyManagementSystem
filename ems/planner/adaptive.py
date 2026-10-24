@@ -23,9 +23,10 @@ from ems.domain import BatteryIntent
 from ems.planner import economics
 from ems.planner.budgets import ac_grid_kwh_per_slot, clamp_cycle_budget, clamp_grid_charge
 from ems.planner.buy_pool import build_buy_pool_info
+from ems.planner.horizon import slice_price_horizon
 from ems.planner.reason import is_must_charge_slot
 from ems.planner.rule_based import late_pack_charge_starts
-from ems.planner.schedule import SLOT, Plan, PlanSlot
+from ems.planner.schedule import Plan, PlanSlot
 from ems.sources.forecast import ForecastSlot
 from ems.sources.prices import PriceSlot
 
@@ -197,7 +198,9 @@ def _plan_adaptive(
     load_w_by: dict[datetime, float],
     cfg: AdaptiveConfig,
 ) -> Plan:
-    future = [p for p in prices if p.start + SLOT > now][: cfg.horizon_slots]
+    future = slice_price_horizon(
+        prices, now, cfg.site_tz, fallback_slots=cfg.horizon_slots,
+    )
     if not future:
         return Plan(created_at=now, slots=())
 
