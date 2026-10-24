@@ -3226,3 +3226,9 @@ body {
 .trading-confirm { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-top: 8px; }
 .trading-confirm p { flex: 1 1 100%; margin: 0; }
 .trading-view .muted { color: var(--muted); font-size: 0.88rem; }
+.trading-steps { list-style: none; margin: 12px 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
+.trading-step { display: flex; gap: 10px; align-items: flex-start; font-size: 0.92rem; line-height: 1.4; }
+.trading-step-mark { flex-shrink: 0; font-weight: 600; width: 1.25rem; text-align: center; }
+.trading-step.ok .trading-step-mark { color: var(--ok, #0a7); }
+.trading-step.fail .trading-step-mark { color: var(--danger, #c33); }
+.trading-step-missing { color: var(--muted); font-size: 0.85rem; }

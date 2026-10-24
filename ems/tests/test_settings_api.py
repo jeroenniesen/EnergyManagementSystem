@@ -188,12 +188,19 @@ def test_post_settings_without_store_returns_503():
 
 
 def test_control_settings_applied_to_controller_live(tmp_path):
-    controller = ModeController(MockBatteryDriver(), Lifecycle(dry_run=True), dry_run=True)
-    app = _app(tmp_path, controller=controller)
+    driver = MockBatteryDriver(armed=True)
+    controller = ModeController(driver, Lifecycle(dry_run=False), dry_run=False)
+    app = create_app(
+        MockSource(), dry_run=False, dev_mode="mock",
+        settings_store=SettingsStore(str(tmp_path / "ems.sqlite")),
+        controller=controller,
+    )
     with TestClient(app) as c:
-        c.post("/api/settings", json={"control.max_switches_per_day": 3,
-                                      "control.allow_export_discharge": True})
+        c.post("/api/settings", json={"control.max_switches_per_day": 3})
         assert controller.max_switches_per_day == 3
+        c.post("/api/settings", json={"control.operational": True})
+        c.post("/api/trading/dry-run-reviewed", json={})
+        c.post("/api/settings", json={"control.allow_export_discharge": True})
         assert controller.allow_export_discharge is True
 
 

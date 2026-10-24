@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from unittest.mock import patch
 from zoneinfo import ZoneInfo
 
 from fastapi.testclient import TestClient
@@ -15,12 +16,15 @@ from ems.sense import SIGNALS
 from ems.sources.battery import MockBatteryDriver
 from ems.sources.forecast import MockSolarForecastSource
 from ems.sources.prices import MockPriceSource
+from ems.storage.audit import AuditStore
 from ems.storage.cache import CacheStore
 from ems.storage.settings import SettingsStore
 from ems.web.api import create_app
 from ems.web.authz import Tier, required_tier
 
 AMS = ZoneInfo("Europe/Amsterdam")
+_ARM_STEP2_DETAIL = "Ontbreekt: stap 2 — bekijk de dry-run"
+_FROZEN_REVIEWED_AT = "2026-03-15T10:00:00+00:00"
 
 
 def _fresh_tracker() -> FreshnessTracker:
@@ -53,6 +57,7 @@ def _app(
     controller: ModeController | None = None,
     control_cycle_seconds: float = 3600.0,
     freshness: FreshnessTracker | None = None,
+    with_audit: bool = False,
 ):
     del operational  # applied via settings POST when needed; create_app floor is dry_run
     db = str(tmp_path / "ems.sqlite")
@@ -71,6 +76,8 @@ def _app(
         kwargs["override_store"] = SettingsStore(db, table="runtime_state")
     if freshness is not None:
         kwargs["freshness"] = freshness
+    if with_audit:
+        kwargs["audit_store"] = AuditStore(db)
     app = create_app(
         _Source(ev_power_w=ev_power_w), dry_run=dry_run, dev_mode="mock", tz=AMS,
         **kwargs,
@@ -146,12 +153,134 @@ def test_test_battery_operate_gated():
 
 
 def test_arming_flag_surfaces(tmp_path):
-    app, controller = _app(tmp_path)
+    app, controller = _app(tmp_path, dry_run=False)
     with TestClient(app) as c:
+        c.post("/api/settings", json={"control.operational": True})
+        c.post("/api/trading/dry-run-reviewed", json={})
         c.post("/api/settings", json={"control.allow_export_discharge": True})
         body = c.get("/api/trading").json()
         assert body["allow_export_discharge"] is True
         assert controller.allow_export_discharge is True
+
+
+def test_arm_without_dry_run_reviewed_returns_409(tmp_path):
+    app, _ = _app(tmp_path, dry_run=False)
+    with TestClient(app) as c:
+        c.post("/api/settings", json={"control.operational": True})
+        r = c.post("/api/settings", json={"control.allow_export_discharge": True})
+        assert r.status_code == 409
+        assert r.json()["detail"] == _ARM_STEP2_DETAIL
+        assert c.get("/api/settings").json()["values"]["control.allow_export_discharge"] is False
+
+
+def test_arm_after_dry_run_reviewed_succeeds(tmp_path):
+    app, controller = _app(tmp_path, dry_run=False)
+    with TestClient(app) as c:
+        c.post("/api/settings", json={"control.operational": True})
+        c.post("/api/trading/dry-run-reviewed", json={})
+        r = c.post("/api/settings", json={"control.allow_export_discharge": True})
+        assert r.status_code == 200
+        assert controller.allow_export_discharge is True
+
+
+def test_arm_blocked_by_watch_only_even_with_reviewed_at(tmp_path):
+    app, _ = _app(tmp_path, dry_run=False)
+    with TestClient(app) as c:
+        c.post("/api/trading/dry-run-reviewed", json={})
+        r = c.post("/api/settings", json={"control.allow_export_discharge": True})
+        assert r.status_code == 409
+        assert "watch only" in r.json()["detail"].lower()
+
+
+def test_already_armed_repost_true_still_200(tmp_path):
+    app, _ = _app(tmp_path, dry_run=False)
+    with TestClient(app) as c:
+        c.post("/api/settings", json={"control.operational": True})
+        c.post("/api/trading/dry-run-reviewed", json={})
+        c.post("/api/settings", json={"control.allow_export_discharge": True})
+        r = c.post("/api/settings", json={"control.allow_export_discharge": True})
+        assert r.status_code == 200
+
+
+def test_disarm_without_step2_and_under_watch_only_keeps_reviewed_at(tmp_path):
+    app, _ = _app(tmp_path, dry_run=False)
+    with TestClient(app) as c:
+        c.post("/api/settings", json={"control.operational": True})
+        c.post("/api/trading/dry-run-reviewed", json={})
+        c.post("/api/settings", json={"control.allow_export_discharge": True})
+        c.post("/api/settings", json={"control.operational": False})
+        r = c.post("/api/settings", json={"control.allow_export_discharge": False})
+        assert r.status_code == 200
+        body = c.get("/api/trading").json()
+        assert body["allow_export_discharge"] is False
+        assert body["dry_run_reviewed_at"] is not None
+
+
+def test_grandfathered_armed_without_reviewed_at_stays_armed(tmp_path):
+    import asyncio
+
+    db = str(tmp_path / "ems.sqlite")
+    store = SettingsStore(db)
+    asyncio.run(store.init())
+    asyncio.run(store.set_many({
+        "control.allow_export_discharge": True,
+        "control.operational": True,
+    }))
+    app, controller = _app(tmp_path, dry_run=False)
+    with TestClient(app) as c:
+        body = c.get("/api/trading").json()
+        assert body["allow_export_discharge"] is True
+        assert controller.allow_export_discharge is True
+        dry = next(s for s in body["steps"] if s["id"] == "dry_run")
+        assert dry["ok"] is False
+        assert dry["missing"] == "niet vastgelegd"
+
+
+def test_dry_run_reviewed_endpoint_persists_and_audits(tmp_path):
+    app, _ = _app(tmp_path, with_audit=True)
+    with TestClient(app) as c:
+        with patch("ems.web.api.datetime") as mock_dt:
+            mock_dt.now.return_value = datetime(2026, 3, 15, 10, 0, 0, tzinfo=UTC)
+            mock_dt.UTC = UTC
+            r = c.post("/api/trading/dry-run-reviewed", json={})
+        assert r.status_code == 200
+        assert r.json()["ok"] is True
+        assert r.json()["reviewed_at"] == _FROZEN_REVIEWED_AT
+        assert c.get("/api/trading").json()["dry_run_reviewed_at"] == _FROZEN_REVIEWED_AT
+    app2, _ = _app(tmp_path, with_audit=True)
+    with TestClient(app2) as c2:
+        assert c2.get("/api/trading").json()["dry_run_reviewed_at"] == _FROZEN_REVIEWED_AT
+    import asyncio
+
+    audit = AuditStore(str(tmp_path / "ems.sqlite"))
+    rows = asyncio.run(audit.recent(limit=5, category="trading_dry_run_reviewed"))
+    assert rows
+    assert rows[0]["detail"]["reviewed_at"] == _FROZEN_REVIEWED_AT
+
+
+def test_settings_rejects_client_dry_run_reviewed_at(tmp_path):
+    app, _ = _app(tmp_path)
+    with TestClient(app) as c:
+        r = c.post("/api/settings", json={"trading.dry_run_reviewed_at": _FROZEN_REVIEWED_AT})
+        assert r.status_code == 422
+        assert "dry-run-reviewed" in str(r.json()).lower()
+
+
+def test_trading_get_includes_arm_steps_and_legacy_fields(tmp_path):
+    app, _ = _app(tmp_path)
+    with TestClient(app) as c:
+        body = c.get("/api/trading").json()
+        assert "dry_run_reviewed_at" in body
+        assert "arm_allowed" in body
+        assert "arm_block_reason" in body
+        assert len(body["steps"]) == 3
+        assert {s["id"] for s in body["steps"]} == {"advice", "dry_run", "arm"}
+        assert body["copy"]["house"]
+        assert "evaluation" in body
+
+
+def test_dry_run_reviewed_operate_gated():
+    assert required_tier("/api/trading/dry-run-reviewed", "POST") == Tier.OPERATE
 
 
 def test_export_probe_does_not_flip_arm_flag():
