@@ -60,6 +60,7 @@ class AdaptiveConfig:
     # path. None means no override — the automatic #323 trigger is unchanged.
     resident_must_charge_target_soc: float | None = None
     resident_must_charge_deadline: datetime | None = None
+    max_buy_eur_per_kwh: float = 0.0  # #324 / F-15; 0 = automatic
 
 
 @dataclass(frozen=True)
@@ -204,16 +205,20 @@ def _plan_adaptive(
     n_charge = (math.ceil(shortfall_kwh / per_slot_kwh)
                 if per_slot_kwh > 0 and shortfall_kwh > 1e-9 else 0)
     max_buy_eur = breakeven
+    auto_max_buy_eur = breakeven
+    max_buy_eur = economics.apply_max_buy_cap(max_buy_eur, cfg.max_buy_eur_per_kwh)
     if discharge_set:
         # Shaving a peak: buy only slots that still undercut the cheapest peak after losses,
         # wear and risk. The old raw `peak_min` gate ignored that and over-bought.
         peak_price = min(p.eur_per_kwh for p in future if p.start in discharge_set)
         max_buy_eur = economics.max_buy_for_planner_config(peak_price, cfg)
+        auto_max_buy_eur = max_buy_eur
+        max_buy_eur = economics.apply_max_buy_cap(max_buy_eur, cfg.max_buy_eur_per_kwh)
         pool = [p for p in future if p.start < last_need and p.eur_per_kwh <= max_buy_eur]
         pre_peak = [p for p in future if p.start < last_need]
     else:
         # No expensive peak ahead: only charge if genuinely cheap, to avoid pointless cycling.
-        pool = [p for p in future if p.eur_per_kwh <= breakeven]
+        pool = [p for p in future if p.eur_per_kwh <= max_buy_eur]
         pre_peak = list(future)
     # Pool is already capped and still chronological. Late-pack (same helper as winter) picks the
     # cost-minimal contiguous window; max_buy is the pool's own ceiling so the existing cap is
@@ -229,6 +234,8 @@ def _plan_adaptive(
         n_charge=n_charge,
         shortfall_kwh=shortfall_kwh,
         max_buy_eur_per_kwh=max_buy_eur,
+        auto_max_buy_eur_per_kwh=auto_max_buy_eur,
+        resident_cap_eur_per_kwh=cfg.max_buy_eur_per_kwh,
         price_of=lambda p: p.eur_per_kwh,
     )
 

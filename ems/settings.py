@@ -73,6 +73,12 @@ SETTINGS_SCHEMA: tuple[SettingsField, ...] = (
         min=1.0, max=40.0, step=0.5, unit="kWh", slider=True,
     ),
     SettingsField(
+        "planner.max_buy_eur_per_kwh", "Max inkoopprijs", "number", 0.0, "strategy",
+        help="Nooit van het net laden boven deze prijs (€/kWh). 0 = automatisch: EMS gebruikt "
+        "de economische koopgrens uit piek, rendement, slijtage en risico.",
+        min=0.0, max=1.0, step=0.01, unit="€/kWh",
+    ),
+    SettingsField(
         "strategy.summer_max_topup_price", "Summer: max top-up price", "number", 0.30, "strategy",
         help="Never grid-charge in summer above this price.",
         min=0.0, max=2.0, step=0.01, unit="€/kWh", advanced=True,
