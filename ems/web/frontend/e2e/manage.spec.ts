@@ -251,11 +251,23 @@ test.describe("Settings section hash (#368)", () => {
   });
 
   test("Inrichten, Car and System deep links open the section and set the hash", async ({ page }) => {
-    await page.goto("/#setup");
-    await page.getByTestId("setup-btn-battery").click();
+    await page.goto("/#manage/settings/battery");
+    await expect(page.getByTestId("manage-tab-settings")).toHaveAttribute("aria-selected", "true");
+    await expect(page.getByTestId("group-battery")).toHaveAttribute("aria-current", "page");
+    await expect(page.getByRole("heading", { name: "Battery (Indevolt)" })).toBeVisible();
+    await expect(page).toHaveURL(/#manage\/settings\/battery$/);
+
+    await page.goto("/#manage");
+    await page.getByTestId("group-battery").click();
     await expect(page).toHaveURL(/#manage\/settings\/battery$/);
     await expect(page.getByTestId("group-battery")).toHaveAttribute("aria-current", "page");
     await expect(page.getByRole("heading", { name: "Battery (Indevolt)" })).toBeVisible();
+
+    await page.goto("/#setup");
+    await page.getByTestId("setup-btn-battery").click();
+    await expect(page.getByTestId("setup-battery-wizard")).toBeVisible();
+    await expect(page.getByTestId("setup-battery-ip")).toBeVisible();
+    await expect(page).toHaveURL(/#setup$/);
 
     await page.goto("/#car");
     await page.getByTestId("car-config-settings-link").click();
