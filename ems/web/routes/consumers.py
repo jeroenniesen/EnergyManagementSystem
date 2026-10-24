@@ -24,9 +24,14 @@ from ems.consumers.models import ConsumerState, ConsumerStatus
 from ems.consumers.ports import ConsumerPort
 from ems.consumers.selection import apply_opt_in, default_device_ids_json, filter_opted_in
 from ems.consumers.start_advice import (
+    accepted_device_ids,
     assumed_kwh_for_kind,
+    bump_w_for_assumed,
+    classify_accept_window,
+    forget_accepted_window,
     parse_preferred_windows_json,
     propose_start_window,
+    remember_accepted_window,
     scoring_from_settings,
 )
 from ems.settings import effective_settings, normalize_ha_url
@@ -160,6 +165,7 @@ def gather_start_advice(
     now: datetime,
     site_tz: ZoneInfo | None = None,
     advice_inputs: Callable[[datetime], dict[str, Any] | None] | None = None,
+    accepted_ids: frozenset[str] | None = None,
 ) -> dict[str, Any]:
     """Cheapest start windows for eligible opted-in appliances (#227). Advice only."""
     dry_run = bool(settings.get("consumers.dry_run", True))
@@ -214,6 +220,7 @@ def gather_start_advice(
             "eligible": eligible,
             "window": None,
             "skip_reason": None,
+            "accepted": device["id"] in (accepted_ids or ()),
         }
         if not eligible:
             if not caps.get("supports_delayed_start"):
@@ -283,9 +290,47 @@ def build_router(
     http_get: Any | None = None,
     ha_probe_limiter: FixedWindowRateLimiter | None = None,
     advice_inputs: Callable[[datetime], dict[str, Any] | None] | None = None,
+    now_utc: Callable[[], datetime] | None = None,
 ) -> APIRouter:
     router = APIRouter()
     wired: tuple[ConsumerPort, ...] = tuple(sources or ())
+
+    def current_time() -> datetime:
+        if now_utc is not None:
+            return now_utc()
+        return datetime.now(UTC)
+
+    def price_slots() -> list[Any]:
+        if ctx.price_source is None:
+            return []
+        try:
+            return list(ctx.price_source.slots())
+        except Exception:
+            _log.debug("consumers advice: price slots failed", exc_info=True)
+            return []
+
+    def price_starts(slots: Sequence[Any]) -> set[datetime]:
+        found: set[datetime] = set()
+        for slot in slots:
+            start = getattr(slot, "start", None)
+            if isinstance(start, datetime) and start.tzinfo is not None:
+                found.add(start)
+        return found
+
+    async def json_object(request: Request) -> dict[str, Any]:
+        try:
+            body = await request.json()
+        except Exception:
+            return {}
+        return body if isinstance(body, dict) else {}
+
+    def known_device(device_id: str) -> dict[str, Any] | None:
+        catalog = gather_consumers(wired, ctx.settings_cache)
+        for device in catalog["devices"]:
+            if device["id"] == device_id:
+                return device
+        return None
+
     probe_limiter = ha_probe_limiter or FixedWindowRateLimiter(
         max_calls=_HA_PROBE_MAX_PER_MINUTE, window_seconds=60.0,
     )
@@ -297,15 +342,9 @@ def build_router(
 
     @router.get("/api/consumers/start-advice")
     def get_start_advice() -> dict:
-        """Cheapest delayed-start windows — dry-run advice only (#227)."""
-        now = datetime.now(UTC)
-        prices: list[Any] = []
-        if ctx.price_source is not None:
-            try:
-                prices = list(ctx.price_source.slots())
-            except Exception:
-                _log.debug("consumers start-advice: price slots failed", exc_info=True)
-                prices = []
+        """Cheapest delayed-start windows — advice only (#227)."""
+        now = current_time()
+        prices = price_slots()
         return gather_start_advice(
             wired,
             ctx.settings_cache,
@@ -313,6 +352,7 @@ def build_router(
             now=now,
             site_tz=ctx.site_tz,
             advice_inputs=advice_inputs,
+            accepted_ids=accepted_device_ids(ctx.cache_store, now),
         )
 
     @router.post("/api/consumers/ha/test-connection", response_model=None)
@@ -401,5 +441,103 @@ def build_router(
             "restart_required": True,
             "summary": "Home Assistant disconnected. Apply & restart to stop using it.",
         })
+
+    def _window_error(code: str) -> JSONResponse:
+        detail = {
+            "past": "That start window is in the past.",
+            "horizon": "That start window is outside the price horizon.",
+        }.get(code, "Invalid start window.")
+        return JSONResponse({"detail": detail}, status_code=422)
+
+    @router.post("/api/consumers/advice/accept", response_model=None)
+    async def accept_start_window(request: Request):
+        """Remember an advised window so the planner counts its load. Does not start it."""
+        body = await json_object(request)
+        device_id = body.get("device_id")
+        if not isinstance(device_id, str) or not device_id.strip():
+            return JSONResponse({"detail": "Unknown appliance."}, status_code=422)
+        device_id = device_id.strip()
+        device = known_device(device_id)
+        if device is None:
+            return JSONResponse({"detail": "Unknown appliance."}, status_code=422)
+        now = current_time()
+        slots = price_slots()
+        parsed = classify_accept_window(
+            body.get("window"), now=now, price_starts=price_starts(slots),
+        )
+        if isinstance(parsed, str):
+            return _window_error(parsed)
+        start, end, count = parsed
+        if ctx.cache_store is None:
+            return JSONResponse(
+                {"detail": "Start windows can't be saved right now."}, status_code=503,
+            )
+        kwh = assumed_kwh_for_kind(str(device["kind"]))
+        watts = bump_w_for_assumed(kwh, count)
+        try:
+            await asyncio.to_thread(
+                remember_accepted_window,
+                ctx.cache_store, device_id, start, end, count, kwh, now,
+            )
+        except Exception:
+            _log.debug("accept start window failed", exc_info=True)
+            return JSONResponse(
+                {"detail": "Start windows can't be saved right now."}, status_code=503,
+            )
+        if ctx.audit_store is not None:
+            await ctx.audit_store.append(
+                now.isoformat(),
+                "consumer_advice_accepted",
+                f"Accepted start window for {device_id}",
+                {
+                    "device_id": device_id,
+                    "start": start.isoformat(),
+                    "end": end.isoformat(),
+                    "slots": count,
+                    "assumed_kwh": kwh,
+                },
+            )
+        return {
+            "ok": True,
+            "device_id": device_id,
+            "slots": count,
+            "assumed_kwh": kwh,
+            "bump_w": watts,
+        }
+
+    @router.delete("/api/consumers/advice/accept", response_model=None)
+    async def cancel_start_window(request: Request):
+        """Drop an accepted window. Does not stop the appliance."""
+        body = await json_object(request)
+        device_id = body.get("device_id")
+        if not isinstance(device_id, str) or not device_id.strip():
+            return JSONResponse({"detail": "Unknown appliance."}, status_code=422)
+        device_id = device_id.strip()
+        if ctx.cache_store is None:
+            return JSONResponse(
+                {"detail": "Start windows can't be saved right now."}, status_code=503,
+            )
+        now = current_time()
+        try:
+            removed = await asyncio.to_thread(
+                forget_accepted_window, ctx.cache_store, device_id, now,
+            )
+        except Exception:
+            _log.debug("cancel start window failed", exc_info=True)
+            return JSONResponse(
+                {"detail": "Start windows can't be saved right now."}, status_code=503,
+            )
+        if not removed:
+            return JSONResponse(
+                {"detail": "No accepted start window for that appliance."}, status_code=404,
+            )
+        if ctx.audit_store is not None:
+            await ctx.audit_store.append(
+                now.isoformat(),
+                "consumer_advice_cancelled",
+                f"Cancelled start window for {device_id}",
+                {"device_id": device_id},
+            )
+        return {"ok": True, "device_id": device_id}
 
     return router

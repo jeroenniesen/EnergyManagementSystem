@@ -1,9 +1,11 @@
 """#227 — contiguous start-window advice (pure + API, never starts appliances)."""
+import json
 from datetime import UTC, datetime, timedelta
 from zoneinfo import ZoneInfo
 
 from fastapi.testclient import TestClient
 
+from ems.clock import FrozenClock
 from ems.consumers.mock import MockConsumerSource
 from ems.consumers.models import (
     ConsumerCapabilities,
@@ -13,8 +15,12 @@ from ems.consumers.models import (
 from ems.consumers.selection import MOCK_DEVICE_IDS_KEY
 from ems.consumers.start_advice import (
     StartAdviceScoring,
+    accepted_load_bump_w,
+    accepted_windows_revision,
+    bump_w_for_assumed,
     instant_in_quiet_hours,
     propose_start_window,
+    remember_accepted_window,
     scoring_from_settings,
     window_touches_quiet_hours,
 )
@@ -576,3 +582,63 @@ def test_settings_defaults_dry_run_true():
     assert defaults()["consumers.default_duration_slots"] == 4
     assert defaults()["consumers.quiet_hours"] == ""
     assert defaults()["consumers.preferred_windows"] == "{}"
+
+
+class _Blob:
+    """KV stand-in. ``get`` returns whatever was stored, ignoring TTL."""
+
+    def __init__(self, raw=None) -> None:
+        self.raw = raw
+
+    def get(self, key: str):
+        return self.raw
+
+    def set(self, key: str, value: str, ttl_seconds: float) -> None:
+        self.raw = value
+
+
+def test_bump_watts_are_assumed_kwh_spread_over_the_slots():
+    # W = (kWh / slots) / 0.25 h × 1000. Washer 1.0 kWh / 4 slots = 1000 W.
+    assert bump_w_for_assumed(1.0, 4) == 1000.0
+    assert bump_w_for_assumed(1.2, 4) == 1200.0
+    assert bump_w_for_assumed(2.0, 4) == 2000.0
+    assert bump_w_for_assumed(0.0, 4) == 0.0
+    assert bump_w_for_assumed(-3.0, 4) == 0.0
+    assert bump_w_for_assumed(1.0, 0) == 0.0
+    assert bump_w_for_assumed(1.0, -2) == 0.0
+
+
+def test_accepted_bump_is_positive_only_and_expires_with_the_window():
+    start = BASE + timedelta(hours=2)
+    end = start + timedelta(hours=1)
+    cache = _Blob()
+    remember_accepted_window(cache, "washer", start, end, 4, 1.0, BASE)
+    slots = [start + i * SLOT for i in range(-1, 5)]
+    bump = accepted_load_bump_w(cache, slots, FrozenClock(BASE))
+    for slot in slots:
+        if start <= slot < end:
+            assert bump[slot] == 1000.0
+        else:
+            assert slot not in bump
+    assert accepted_windows_revision(cache, FrozenClock(BASE)) != ""
+    # The row is still in KV; the window end has passed, so the bump is gone.
+    assert accepted_load_bump_w(cache, slots, FrozenClock(end)) == {}
+    assert accepted_windows_revision(cache, FrozenClock(end)) == ""
+
+
+def test_bad_kv_and_negative_energy_add_no_bump():
+    slots = [BASE, BASE + SLOT]
+    assert accepted_load_bump_w(None, slots, FrozenClock(BASE)) == {}
+    assert accepted_windows_revision(None, FrozenClock(BASE)) == ""
+    assert accepted_load_bump_w(_Blob("not-json"), slots, FrozenClock(BASE)) == {}
+    assert accepted_windows_revision(_Blob("{"), FrozenClock(BASE)) == ""
+    negative = {
+        "washer": {
+            "start": BASE.isoformat(),
+            "end": (BASE + timedelta(hours=1)).isoformat(),
+            "slots": 4,
+            "assumed_kwh": -5,
+        },
+    }
+    assert accepted_load_bump_w(_Blob(json.dumps(negative)), slots, FrozenClock(BASE)) == {}
+    assert accepted_windows_revision(_Blob(json.dumps(negative)), FrozenClock(BASE)) == ""
