@@ -847,6 +847,8 @@ class ControlService:
             max_topup_price_eur_per_kwh=s["strategy.summer_max_topup_price"],
             negative_price_soak=s["planner.negative_price_soak"],
             max_daily_grid_charge_kwh=float(s.get("planner.max_daily_grid_charge_kwh", 12.0)),
+            degradation_eur_per_kwh=s["planner.degradation_eur_per_kwh"],
+            risk_margin_eur_per_kwh=s["planner.risk_margin_eur_per_kwh"],
             site_tz=self._site_tz,
         )
 
