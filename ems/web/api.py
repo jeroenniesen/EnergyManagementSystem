@@ -3018,10 +3018,12 @@ def create_app(
             # Still expose the canonical plan reason (same object as /api/battery-plan) even when
             # there is no controller to preview a physical mode.
             structured = await _canonical_decision_reason(now)
+            solar_basis = getattr((_current_plan() or (None,))[-1], "solar_basis", None)
             return {"intent": None, "desired_mode": None, "applied": False,
                     "outcome": "unconfigured", "reason": "no controller",
                     "plan_reason": None, "override_active": False,
                     "decision_reason": structured,
+                    "solar_basis": solar_basis,
                     "buy_pool": structured.get("buy_pool")}
         now = datetime.now(UTC)
 
@@ -3035,11 +3037,13 @@ def create_app(
             intent, reason, override_active, tgt, pw, val, car_action = _effective_intent(now)
             if intent is None:
                 dr = _decision_reason_dict(now)
+                solar_basis = getattr((_current_plan() or (None,))[-1], "solar_basis", None)
                 return None, {"intent": None, "desired_mode": None, "applied": False,
                               "outcome": "no_plan", "reason": "no plan slot for now",
                               "plan_reason": None, "override_active": False,
                               "car_charging": car_charging,
                               "decision_reason": dr,
+                              "solar_basis": solar_basis,
                               "buy_pool": dr.get("buy_pool")}
             # preview() is read-only — a GET must never write to the battery or mutate counters.
             # Pass the coalesced observed mode so this poll doesn't read battery mode every cycle.
@@ -3066,6 +3070,7 @@ def create_app(
         # B-74 / #84 slice 2: structured reason alongside the legacy string fields (same object as
         # /api/battery-plan) so web advanced/decision and logs can render one story.
         structured = await asyncio.to_thread(_decision_reason_dict, now)
+        solar_basis = getattr((_current_plan() or (None,))[-1], "solar_basis", None)
         return {
             "intent": d.intent,
             "desired_mode": d.desired_mode,
@@ -3076,6 +3081,7 @@ def create_app(
             "plan_reason_explained": explained["text"],
             "explanation_source": explained["source"],
             "decision_reason": structured,
+            "solar_basis": solar_basis,
             "buy_pool": structured.get("buy_pool"),
             "override_active": override_active,
             # Surfaced so the dashboard can show "car charging — battery held".
