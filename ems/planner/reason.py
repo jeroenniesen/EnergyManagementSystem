@@ -21,6 +21,38 @@ from ems.planner.schedule import Plan, PlanSlot
 from ems.savings import estimate_daily_savings_eur
 
 _CHARGE = BatteryIntent.GRID_CHARGE_TO_TARGET
+MUST_CHARGE_REASON = "Voorzorgslading: batterij staat laag voor de avondpiek"
+MUST_CHARGE_REASON_PREFIX = "Voorzorgslading"
+
+
+def is_must_charge_slot(slot: PlanSlot) -> bool:
+    return (slot.reason or "").startswith(MUST_CHARGE_REASON_PREFIX)
+
+
+def must_charge_slots(plan: Plan) -> tuple[PlanSlot, ...]:
+    return tuple(s for s in plan.slots if is_must_charge_slot(s))
+
+
+def estimate_must_charge_cost_eur(
+    slots: tuple[PlanSlot, ...],
+    price_by: dict[datetime, float],
+) -> tuple[float, float]:
+    """Return (total_kwh_ac, total_eur) for must-charge slots (AC grid energy)."""
+    total_kwh = 0.0
+    total_eur = 0.0
+    for s in slots:
+        price = price_by.get(s.start)
+        if price is None:
+            continue
+        if s.power_w is not None and s.power_w > 0:
+            kwh = float(s.power_w) * 0.25 / 1000.0
+        elif s.target_kwh is not None and s.target_kwh > 0:
+            kwh = float(s.target_kwh) / 0.95
+        else:
+            continue
+        total_kwh += kwh
+        total_eur += kwh * price
+    return total_kwh, total_eur
 _DISCHARGE = BatteryIntent.DISCHARGE_FOR_LOAD
 _HOLD = BatteryIntent.HOLD_RESERVE
 _SELF = BatteryIntent.ALLOW_SELF_CONSUMPTION
@@ -555,13 +587,31 @@ def build_decision_reason(
         unconfirmed=unconfirmed,
     )
     buy_pool_dict = plan.buy_pool.to_dict() if plan.buy_pool is not None else None
+    mc = must_charge_slots(plan)
+    if mc and price_by:
+        kwh, eur = estimate_must_charge_cost_eur(mc, price_by)
+        avg = eur / kwh if kwh > 1e-9 else 0.0
+        ceiling = max(price_by.get(s.start, 0.0) for s in mc)
+        summary_mc = (
+            f"Voorzorgslading: circa {kwh:.1f} kWh × €{avg:.2f}/kWh "
+            f"(plafond €{ceiling:.2f}/kWh)"
+        )
+        buy_pool_dict = dict(buy_pool_dict or {})
+        buy_pool_dict["must_charge_summary"] = summary_mc.replace(".", ",")
+        buy_pool_dict["must_charge_ceiling_eur_per_kwh"] = round(ceiling, 4)
     if (
         not price_fallback
         and plan.buy_pool is not None
         and plan.buy_pool.state == "empty"
         and plan.buy_pool.shortfall_kwh > 1e-9
+        and not mc
     ):
         text = format_empty_buy_summary(plan.buy_pool)
+    elif mc:
+        text = (
+            buy_pool_dict.get("must_charge_summary", MUST_CHARGE_REASON)
+            if buy_pool_dict else MUST_CHARGE_REASON
+        )
     else:
         text = (
             PRICE_FALLBACK_SAFETY_MESSAGE if price_fallback

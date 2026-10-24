@@ -696,6 +696,10 @@ export const HOME_PLAN_STORY = {
 } as const;
 
 /** #315 / F-02+F-31: Home tile when EMS cannot grid-buy (empty buy pool). */
+export const HOME_MUST_CHARGE = {
+  title: "Voorzorgslading",
+} as const;
+
 export const HOME_WHY_NOT_BUY = {
   title: "Waarom niet kopen?",
   noChanceInHorizon: "Geen koopmoment in de prijzen van vandaag/morgen",

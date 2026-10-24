@@ -13,6 +13,7 @@ from datetime import datetime
 
 from ems.domain import BatteryIntent
 from ems.economics import EconomicSnapshot
+from ems.planner.reason import is_must_charge_slot
 from ems.planner.schedule import Plan, PlanSlot
 from ems.savings import estimate_daily_savings_eur
 from ems.sources.prices import PriceSlot
@@ -213,6 +214,9 @@ def apply_daily_savings_floor(
     for slot in plan.slots:
         price = price_by.get(slot.start)
         soak = slot.intent is _CHARGE and price is not None and price < 0.0
+        if is_must_charge_slot(slot):
+            slots.append(slot)
+            continue
         if slot.intent is not _CHARGE or soak:
             slots.append(slot)
             continue

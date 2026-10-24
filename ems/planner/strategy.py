@@ -22,6 +22,7 @@ from zoneinfo import ZoneInfo
 from ems.planner.adaptive import AdaptiveConfig, plan_adaptive
 from ems.planner.budgets import ac_grid_kwh_per_slot, clamp_cycle_budget, clamp_grid_charge
 from ems.planner.economics import apply_daily_savings_floor
+from ems.planner.must_charge import MustChargeConfig, apply_must_charge
 from ems.planner.rule_based import PlannerConfig, plan_rule_based
 from ems.planner.schedule import Plan
 from ems.planner.summer import SummerConfig, plan_summer
@@ -266,11 +267,47 @@ def build_plan(
         plan = _clamp_shared_cycles(
             plan, strategy, winter_cfg, summer_cfg, adaptive_cfg, load_w_by,
         )
+    plan = _maybe_apply_must_charge(
+        plan, prices, now, soc_pct, adaptive_cfg, load_w_by,
+    )
+    bought, cap, per_slot, site_tz = _daily_cap_inputs(
+        strategy, winter_cfg, summer_cfg, adaptive_cfg, load_w_by,
+    )
+    plan = clamp_grid_charge(plan, bought, cap, per_slot, tz=site_tz)
+    if plan.strategy != "trading":
+        plan = _clamp_shared_cycles(
+            plan, strategy, winter_cfg, summer_cfg, adaptive_cfg, load_w_by,
+        )
     # #319: after the plan (and the cycle clamp) exist, drop grid charge that
     # does not clear planner.daily_min_savings_eur. Threshold 0 is off.
     return _apply_savings_floor(
         plan, prices, load_w_by, winter_cfg, adaptive_cfg,
     )
+
+
+def _maybe_apply_must_charge(
+    plan: Plan,
+    prices: list[PriceSlot],
+    now: datetime,
+    soc_pct: float,
+    adaptive_cfg: AdaptiveConfig | None,
+    load_w_by: dict[datetime, float] | None,
+) -> Plan:
+    if adaptive_cfg is None or load_w_by is None:
+        return plan
+    cfg = MustChargeConfig(
+        enabled=adaptive_cfg.must_charge_enabled,
+        target_soc_pct=adaptive_cfg.must_charge_target_soc,
+        max_price_eur_per_kwh=adaptive_cfg.must_charge_max_price_eur_per_kwh,
+        buffer_pp=adaptive_cfg.must_charge_buffer_pp,
+        usable_kwh=adaptive_cfg.usable_kwh,
+        effective_floor_soc_pct=adaptive_cfg.reserve_soc_pct,
+        max_charge_w=adaptive_cfg.max_charge_w,
+        round_trip_efficiency=adaptive_cfg.round_trip_efficiency,
+        capability_ready=adaptive_cfg.must_charge_capability_ready,
+        device_min_target_soc_pct=adaptive_cfg.must_charge_device_min_target_soc,
+    )
+    return apply_must_charge(plan, prices, now, soc_pct=soc_pct, cfg=cfg)
 
 
 def _apply_savings_floor(
