@@ -1,6 +1,7 @@
 """#330: /api/decision passes Plan.solar_basis through, read-only."""
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
@@ -19,10 +20,13 @@ AMS = ZoneInfo("Europe/Amsterdam")
 
 
 class _SolcastShapedForecast(MockSolarForecastSource):
-    """Registry name solcast: capability p10 and not synthetic."""
+    """Forecast data stamped real_p10, the same mark a delivered Solcast curve carries."""
 
     provider = "solcast"
     source_label = "solcast"
+
+    def slots(self):
+        return [replace(slot, real_p10=True) for slot in super().slots()]
 
 
 class _PlanWithoutSolarBasis:

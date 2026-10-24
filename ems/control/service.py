@@ -836,7 +836,6 @@ class ControlService:
 
     def summer_cfg(self, soc_pct: float) -> SummerConfig:
         s = self._settings
-        from ems.sources.forecast_factory import delivered_source_has_real_p10 as solar_real_p10
         return SummerConfig(
             usable_kwh=s["battery.usable_kwh"],
             target_soc_pct=self.night_target_soc(soc_pct).target_soc_pct,
@@ -849,8 +848,6 @@ class ControlService:
             negative_price_soak=s["planner.negative_price_soak"],
             max_daily_grid_charge_kwh=float(s.get("planner.max_daily_grid_charge_kwh", 12.0)),
             site_tz=self._site_tz,
-            commit_solar_basis=str(s.get("planner.commit_solar_basis", "auto")),
-            forecast_real_p10=bool(solar_real_p10(self._solar_forecast)),
         )
 
     def adaptive_cfg(self) -> AdaptiveConfig:
@@ -865,7 +862,6 @@ class ControlService:
         target_soc = float(s.get("planner.must_charge_target_soc", 30.0))
         floor = self.effective_floor_soc()
         resident_target, resident_deadline = self._resident_must_charge_inputs()
-        from ems.sources.forecast_factory import delivered_source_has_real_p10 as solar_real_p10
         if device_min is not None:
             target_soc = max(floor, device_min, min(100.0, target_soc))
         else:
@@ -894,7 +890,6 @@ class ControlService:
             resident_must_charge_deadline=resident_deadline,
             max_buy_eur_per_kwh=float(s.get("planner.max_buy_eur_per_kwh", 0.0)),
             commit_solar_basis=str(s.get("planner.commit_solar_basis", "auto")),
-            forecast_real_p10=bool(solar_real_p10(self._solar_forecast)),
         )
 
     def already_bought_today_kwh(self, now: datetime) -> float | None:

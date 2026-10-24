@@ -26,11 +26,7 @@ from ems.planner.buy_pool import build_buy_pool_info
 from ems.planner.reason import is_must_charge_slot
 from ems.planner.rule_based import late_pack_charge_starts
 from ems.planner.schedule import SLOT, Plan, PlanSlot
-from ems.sources.forecast import (
-    ForecastSlot,
-    commitment_solar_basis,
-    committed_solar_w,
-)
+from ems.sources.forecast import ForecastSlot
 from ems.sources.prices import PriceSlot
 
 _DH = 0.25  # hours / slot
@@ -65,9 +61,48 @@ class AdaptiveConfig:
     resident_must_charge_target_soc: float | None = None
     resident_must_charge_deadline: datetime | None = None
     max_buy_eur_per_kwh: float = 0.0  # #324 / F-15; 0 = automatic
-    # #330 / F-18. auto + forecast_real_p10 sizes on min(confidence×P50, P10).
+    # #330 / F-18. auto sizes on min(confidence×P50, P10) when slots carry real_p10.
     commit_solar_basis: str = "auto"
-    forecast_real_p10: bool = False
+
+
+def committed_solar_w(
+    p50_w: float,
+    p10_w: float,
+    confidence: float,
+    *,
+    commit_solar_basis: str = "auto",
+    real_p10: bool = False,
+) -> float:
+    """Watts counted when sizing a committed grid charge (#330 / F-18).
+
+    ``auto`` plus a delivery stamped with real P10 is ``min(confidence × P50, P10)``,
+    never above today's confidence × P50. Every other case, including an unknown
+    forecast, is exactly ``confidence × P50``.
+    """
+    scaled = confidence * p50_w
+    if commit_solar_basis == "auto" and real_p10:
+        return min(scaled, max(0.0, p10_w))
+    return scaled
+
+
+def commitment_solar_basis(
+    commit_solar_basis: str = "auto",
+    real_p10: bool = False,
+) -> str | None:
+    """``p10`` when auto used a real P10, ``p50`` when that mode is explicit, else None.
+
+    None keeps plans that did not choose a P10 path identical to the pre-#330 default.
+    """
+    if commit_solar_basis == "auto" and real_p10:
+        return "p10"
+    if commit_solar_basis == "p50":
+        return "p50"
+    return None
+
+
+def _delivery_has_real_p10(forecast: list[ForecastSlot]) -> bool:
+    """True when this delivery was stamped real P10 on every slot. Empty stays false."""
+    return bool(forecast) and all(bool(getattr(slot, "real_p10", False)) for slot in forecast)
 
 
 @dataclass(frozen=True)
@@ -169,13 +204,14 @@ def _plan_adaptive(
     p50 = {f.start: f.p50_w for f in forecast}
     p10 = {f.start: f.p10_w for f in forecast}
     confidence = max(0.0, min(1.0, cfg.solar_confidence))
-    basis = commitment_solar_basis(cfg.commit_solar_basis, cfg.forecast_real_p10)
+    real_p10 = _delivery_has_real_p10(forecast)
+    basis = commitment_solar_basis(cfg.commit_solar_basis, real_p10)
 
     def counted_w(start: datetime) -> float:
         return committed_solar_w(
             p50.get(start, 0.0), p10.get(start, 0.0), confidence,
             commit_solar_basis=cfg.commit_solar_basis,
-            forecast_real_p10=cfg.forecast_real_p10,
+            real_p10=real_p10,
         )
     eta = math.sqrt(max(1e-6, min(1.0, cfg.round_trip_efficiency)))
     usable = cfg.usable_kwh

@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Callable
+from dataclasses import replace
 from datetime import datetime
 from typing import Any
 from zoneinfo import ZoneInfo
@@ -267,6 +268,27 @@ def delivered_source_has_real_p10(source: object | None) -> bool:
     return "p10" in caps and "synthetic" not in caps
 
 
+def _stamp_delivered_real_p10(source: Any) -> Any:
+    """Stamp ``ForecastSlot.real_p10`` from the adapter that ``slots()`` actually delivered.
+
+    The check runs after ``slots()`` so a Solcast ``fallback_on_failure`` (its label is
+    rewritten first) stays on confidence × P50. An unknown source is left unstamped.
+    """
+    if source is None or getattr(source, "_ems_real_p10_bound", False):
+        return source
+    original = source.slots
+
+    def _slots() -> list:
+        got = original()
+        if not got or not delivered_source_has_real_p10(source):
+            return got
+        return [replace(item, real_p10=True) for item in got]
+
+    source.slots = _slots
+    source._ems_real_p10_bound = True
+    return source
+
+
 def build_solar_forecast(
     eff: dict,
     tz: ZoneInfo,
@@ -293,11 +315,11 @@ def build_solar_forecast(
     if mock_builder is None:  # pragma: no cover — registered at import
         raise RuntimeError("mock forecast adapter missing from registry")
     if not live or eff.get("site.lat") is None or eff.get("site.lon") is None:
-        return mock_builder(eff, tz, cache_store=cache_store)
+        return _stamp_delivered_real_p10(mock_builder(eff, tz, cache_store=cache_store))
 
     provider = str(eff.get("solar.forecast_provider") or "forecast_solar").strip().lower()
     if provider == "mock":
-        return mock_builder(eff, tz, cache_store=cache_store)
+        return _stamp_delivered_real_p10(mock_builder(eff, tz, cache_store=cache_store))
 
     # Forecast.Solar is always available as the keyless baseline / Solcast fallback.
     # Build via the registered builder so vendor import stays behind the registry.
@@ -306,12 +328,12 @@ def build_solar_forecast(
         raise RuntimeError("forecast_solar adapter missing from registry")
     baseline = baseline_builder(eff, tz, cache_store=cache_store, http_get=http_get)
     if provider == "forecast_solar":
-        return baseline
+        return _stamp_delivered_real_p10(baseline)
 
     builder = get_builder(FORECAST_DOMAIN, provider)
     if builder is None:
         _log.warning("unknown solar.forecast_provider=%r; using Forecast.Solar", provider)
-        return baseline
+        return _stamp_delivered_real_p10(baseline)
 
     # Only the chosen provider's builder runs here (lazy). Baseline was built because Solcast
     # needs it as SPEC fallback / incomplete-config path — not because every registered builder
@@ -321,4 +343,4 @@ def build_solar_forecast(
         eff, tz, cache_store=cache_store, fallback=baseline,
         http_get=solcast_http_get if solcast_http_get is not None else http_get,
     )
-    return built if built is not None else baseline
+    return _stamp_delivered_real_p10(built if built is not None else baseline)
