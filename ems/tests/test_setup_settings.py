@@ -26,7 +26,7 @@ from ems.web.api import create_app
 
 
 class _SetupTestSource:
-    """Minimal Source double for setup-settings API tests (without importing the mock source module)."""
+    """Minimal Source double for setup-settings API tests (no mock source import)."""
 
     def read(self) -> RawSample:
         return RawSample(

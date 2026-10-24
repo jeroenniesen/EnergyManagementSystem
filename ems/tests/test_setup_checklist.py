@@ -163,13 +163,13 @@ def test_setup_checklist_load_render_does_not_post():
     text = _setup_tsx_text()
     assert "control.operational" not in text
     assert "control.dry_run" not in text
-    marker = 'apiFetch("/api/setup/checklist")'
-    idx = text.find(marker)
-    assert idx != -1
-    load_start = text.rfind("useEffect(", 0, idx)
-    load_end = text.find("}, [fetchGen]);", idx)
-    assert load_start != -1 and load_end != -1
-    load_block = text[load_start:load_end]
+    load_end_marker = "}, [fetchGen]);"
+    load_end = text.find(load_end_marker)
+    assert load_end != -1
+    load_start = text.rfind("useEffect(", 0, load_end)
+    assert load_start != -1
+    load_block = text[load_start : load_end + len(load_end_marker)]
+    assert "loadChecklist()" in load_block
     assert 'method: "POST"' not in load_block
     assert "method: 'POST'" not in load_block
     import re
