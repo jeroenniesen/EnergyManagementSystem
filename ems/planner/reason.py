@@ -18,7 +18,6 @@ from typing import Any
 from ems.domain import BatteryIntent
 from ems.planner.buy_pool import format_empty_buy_summary
 from ems.planner.projection import BatteryModel, ProjectedSlot, project_energy
-from ems.planner.rule_based import stale_discharge_floor_soc
 from ems.planner.schedule import Plan, PlanSlot
 from ems.savings import estimate_daily_savings_eur
 
@@ -718,6 +717,8 @@ def apply_stale_meter_caution(
     load_w_by: dict[datetime, float],
 ) -> Plan:
     """Raise discharge floor; hold slots that would discharge below it — never add grid charge."""
+    from ems.planner.rule_based import stale_discharge_floor_soc
+
     effective_floor = stale_discharge_floor_soc(
         base_reserve_soc_pct, buffer_pp=buffer_pp,
     )
