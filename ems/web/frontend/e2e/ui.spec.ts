@@ -1,3 +1,4 @@
+import AxeBuilder from "@axe-core/playwright";
 import { expect, type Page, test } from "@playwright/test";
 
 import { mockInsightsDensity, waitForInsightsDensity } from "./density-fixtures";
@@ -2756,6 +2757,84 @@ test.describe("EMS dashboard", () => {
     // Default is Auto -> the Auto option is selected and the resolved season is shown.
     await expect(page.getByTestId("strategy-auto")).toHaveAttribute("aria-checked", "true");
     await expect(page.getByTestId("strategy-active")).toContainText("Auto");
+  });
+
+  test("season hold chip shows 2/3 and force-switches to solar-first (#345)", async ({ page }) => {
+    let mode = "auto";
+    const posted: string[] = [];
+    const hold = { committed: "winter", pending: "summer", count: 2, days: 3 };
+    await page.route("**/api/strategy", (route) =>
+      route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          mode,
+          active: mode === "summer" ? "summer" : "winter",
+          auto: mode === "auto",
+          summary: mode === "summer"
+            ? "Solar-first — fill the battery from your panels."
+            : "Arbitrage — charge in the cheapest hours.",
+          reason: "Holding price-smart.",
+          grid_topup: true,
+          max_topup_price: 0.3,
+          hysteresis: mode === "auto"
+            ? hold
+            : { committed: mode === "summer" ? "summer" : "winter", pending: null, count: 0, days: 3 },
+        }),
+      }),
+    );
+    await page.route("**/api/settings", async (route) => {
+      if (route.request().method() === "POST") {
+        const body = JSON.parse(route.request().postData() || "{}");
+        if (typeof body["strategy.mode"] === "string") {
+          mode = body["strategy.mode"];
+          posted.push(mode);
+        }
+        await route.fulfill({ status: 200, contentType: "application/json", body: "{\"values\":{}}" });
+      } else {
+        await route.continue();
+      }
+    });
+    await page.goto("/");
+    await openMoreNest(page, "strategy");
+    const chip = page.getByTestId("strategy-hold-chip");
+    await expect(chip).toHaveText("Winter vasthouden 2/3");
+    await expect(chip).toHaveAttribute("role", "status");
+    const force = page.getByTestId("strategy-force-summer");
+    await expect(force).toHaveText("Nu solar-first");
+    await expect(page.getByTestId("strategy-back-auto")).toHaveCount(0);
+
+    async function axeHold() {
+      await page.evaluate(() => {
+        for (const anim of document.getAnimations()) anim.finish();
+      });
+      const results = await new AxeBuilder({ page }).include(".strategy-hold").analyze();
+      expect(results.violations).toEqual([]);
+    }
+    for (const scheme of ["light", "dark"] as const) {
+      await page.emulateMedia({ colorScheme: scheme });
+      await expect(page.locator("html")).toHaveAttribute("data-theme", scheme);
+      await axeHold();
+    }
+
+    await force.focus();
+    await page.keyboard.press("Enter");
+    const back = page.getByTestId("strategy-back-auto");
+    await expect(back).toBeVisible();
+    await expect(back).toHaveText("Terug naar Auto");
+    await expect(chip).toHaveCount(0);
+    await expect(page.getByTestId("strategy-summer")).toHaveAttribute("aria-checked", "true");
+    for (const scheme of ["light", "dark"] as const) {
+      await page.emulateMedia({ colorScheme: scheme });
+      await expect(page.locator("html")).toHaveAttribute("data-theme", scheme);
+      await axeHold();
+    }
+
+    await back.focus();
+    await page.keyboard.press("Enter");
+    await expect(page.getByTestId("strategy-auto")).toHaveAttribute("aria-checked", "true");
+    await expect(chip).toHaveText("Winter vasthouden 2/3");
+    expect(posted).toEqual(["summer", "auto"]);
   });
 
   test("strategy card switches the running strategy", async ({ page }) => {

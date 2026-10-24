@@ -126,6 +126,19 @@ class HysteresisState:
             return cls()
 
 
+def hysteresis_status(state: HysteresisState, *, days: int) -> dict[str, str | int | None]:
+    """Read-only snapshot of the strategy hysteresis memory for GET /api/strategy (F-39).
+
+    `days` is the configured `strategy.hysteresis_days`. This does not call
+    `apply_hysteresis` and does not advance `count`."""
+    return {
+        "committed": state.committed,
+        "pending": state.pending,
+        "count": state.count,
+        "days": int(days),
+    }
+
+
 def apply_hysteresis(
     raw: str,
     state: HysteresisState,

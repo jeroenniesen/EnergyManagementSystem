@@ -122,7 +122,7 @@ from ems.planner.reason import (
 )
 from ems.planner.recovery import check_charge_completion, recover_if_needed
 from ems.planner.rule_based import plan_rule_based
-from ems.planner.strategy import HysteresisState
+from ems.planner.strategy import HysteresisState, hysteresis_status
 from ems.planner.summer import sunset_after
 from ems.planner.trading import evaluate_trading, trading_config_from_settings
 from ems.planner.validator import PlanValidation, clamp_plan_power, validate_plan
@@ -3901,6 +3901,11 @@ def create_app(
         now = datetime.now(UTC)
         mode = settings_cache["strategy.mode"]
         active, why = _resolve_strategy(now)
+        # F-39: read the memory the resolve above just committed. No second hysteresis pass.
+        hyst = hysteresis_status(
+            _hysteresis_box["state"],
+            days=int(settings_cache["strategy.hysteresis_days"]),
+        )
         return {
             "mode": mode,  # auto | summer | winter (the user's choice)
             "active": active,  # the resolved strategy actually running
@@ -3910,6 +3915,7 @@ def create_app(
             "reason": why,
             "grid_topup": settings_cache["strategy.summer_grid_topup"],
             "max_topup_price": settings_cache["strategy.summer_max_topup_price"],
+            "hysteresis": hyst,  # committed, pending, count, days — read-only
         }
 
     def _battery_model() -> BatteryModel:
