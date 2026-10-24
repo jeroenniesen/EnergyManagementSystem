@@ -10,9 +10,11 @@ from __future__ import annotations
 
 from dataclasses import replace
 from datetime import datetime
+from typing import Protocol
 
 from ems.domain import BatteryIntent
 from ems.economics import EconomicSnapshot
+from ems.planner.reason import is_must_charge_slot
 from ems.planner.schedule import Plan, PlanSlot
 from ems.savings import estimate_daily_savings_eur
 from ems.sources.prices import PriceSlot
@@ -39,6 +41,53 @@ def breakeven(
         risk_margin_eur_per_kwh=risk_margin_eur_per_kwh,
     )
     return snapshot.delivered_energy_cost()
+
+
+def max_buy_for_peak(peak_price: float, rte: float, deg: float, risk: float) -> float:
+    """Highest charge price that still undercuts `peak_price` after losses, wear and risk.
+
+    Inverse of `breakeven`: one kWh bought at this price and delivered at `peak_price` is
+    break-even. This is the only buy ceiling (audit F-08, F-10). Winter used to inline
+    `(peak - degradation - risk) * round_trip_efficiency`; that expression lives here now.
+    """
+    snapshot = EconomicSnapshot(
+        import_price_eur_per_kwh=float(peak_price),
+        export_price_eur_per_kwh=float(peak_price),
+        round_trip_efficiency=float(rte),
+        degradation_eur_per_kwh=float(deg),
+        risk_margin_eur_per_kwh=float(risk),
+    )
+    return snapshot.break_even_import_price(float(peak_price))
+
+
+class _BuyCeilingCfg(Protocol):
+    """PlannerConfig, AdaptiveConfig or SummerConfig: the three fields the ceiling reads."""
+
+    round_trip_efficiency: float
+    degradation_eur_per_kwh: float
+    risk_margin_eur_per_kwh: float
+
+
+def max_buy_for_planner_config(peak_price: float, cfg: _BuyCeilingCfg) -> float:
+    """PlannerConfig / AdaptiveConfig / SummerConfig adapter for `max_buy_for_peak`.
+
+    Reads `round_trip_efficiency`, `degradation_eur_per_kwh` and `risk_margin_eur_per_kwh`
+    off the config. No new settings — the same three fields the planners already carry.
+    """
+    return max_buy_for_peak(
+        float(peak_price),
+        float(cfg.round_trip_efficiency),
+        float(cfg.degradation_eur_per_kwh),
+        float(cfg.risk_margin_eur_per_kwh),
+    )
+
+
+def apply_max_buy_cap(auto_max_buy: float, cap_eur_per_kwh: float) -> float:
+    """Resident max buy (#324 / F-15): min(auto, cap) when cap > 0; 0 leaves auto unchanged."""
+    cap = float(cap_eur_per_kwh)
+    if cap <= 0:
+        return float(auto_max_buy)
+    return min(float(auto_max_buy), cap)
 
 
 def export_value(
@@ -196,8 +245,8 @@ def apply_daily_savings_floor(
     `estimate_plan_savings` is unknown and also leaves the plan unchanged.
     Only `GRID_CHARGE_TO_TARGET` at a non-negative price is rewritten to
     `ALLOW_SELF_CONSUMPTION`. Negative-price soak stays. Reserve (`floor_soc`)
-    is copied unchanged. Must-charge (#323) and manual override (#322) are not
-    plan-slot kinds on this tree; override is applied later by the decision engine.
+    is copied unchanged. Must-charge (#323) slots are exempt from this rewrite; manual override
+    (#322) is applied later by the decision engine, not as a plan-slot kind here.
     """
     if minimum_eur <= 1e-12:
         return plan
@@ -213,6 +262,9 @@ def apply_daily_savings_floor(
     for slot in plan.slots:
         price = price_by.get(slot.start)
         soak = slot.intent is _CHARGE and price is not None and price < 0.0
+        if is_must_charge_slot(slot):
+            slots.append(slot)
+            continue
         if slot.intent is not _CHARGE or soak:
             slots.append(slot)
             continue

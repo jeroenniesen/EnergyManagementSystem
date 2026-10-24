@@ -7,6 +7,11 @@ import {
   tradingTestShowBlockReason,
   tradingTestStartDisabled,
 } from "./labels";
+import {
+  type TradingStep,
+  tradingDryRunStepOk,
+  tradingStepStatusText,
+} from "./tradingSteps";
 
 type TradingStatus = {
   trading_enabled: boolean;
@@ -22,6 +27,10 @@ type TradingStatus = {
   block_reason: string | null;
   test_battery_allowed?: boolean;
   test_battery_block_reason?: string | null;
+  dry_run_reviewed_at?: string | null;
+  arm_allowed?: boolean;
+  arm_block_reason?: string | null;
+  steps?: TradingStep[];
   evaluation: {
     enabled: boolean;
     would_trade: boolean;
@@ -128,6 +137,25 @@ export function TradingView({ canOperate = true }: { canOperate?: boolean }) {
     }
   }
 
+  async function markDryRunReviewed() {
+    setBusy(true);
+    setErr(null);
+    try {
+      const r = await apiFetch("/api/trading/dry-run-reviewed", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({}),
+      });
+      const b = await r.json();
+      if (!r.ok) throw new Error(b.detail ?? `HTTP ${r.status}`);
+      await load({ force: true });
+    } catch (e) {
+      setErr(String(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
   async function runTestBattery() {
     setBusy(true);
     setErr(null);
@@ -183,6 +211,20 @@ export function TradingView({ canOperate = true }: { canOperate?: boolean }) {
     : true;
   const testBlockReason = s ? tradingTestBlockReason(s) : "";
   const testShowBlockReason = s ? tradingTestShowBlockReason(s) : false;
+  const dryRunStepOk = s ? tradingDryRunStepOk(s.steps) : false;
+  const armBlocked =
+    !!s &&
+    (!s.writes_allowed ||
+      !dryRunStepOk ||
+      (s.arm_block_reason != null && !s.allow_export_discharge));
+  const armBlockHint =
+    s && !s.allow_export_discharge
+      ? !s.writes_allowed
+        ? s.block_reason
+        : !dryRunStepOk
+          ? "Ontbreekt: stap 2 — bekijk de dry-run"
+          : s.arm_block_reason
+      : null;
 
   return (
     <section className="trading-view" data-testid="trading-view">
@@ -323,56 +365,107 @@ export function TradingView({ canOperate = true }: { canOperate?: boolean }) {
               forced grid dump). Live export is armed from this page. Arming does not
               bypass Watch only / dry-run floors.
             </p>
+            {s.steps && s.steps.length > 0 && (
+              <ol className="trading-steps" data-testid="trading-arm-steps">
+                {s.steps.map((step) => (
+                  <li
+                    key={step.id}
+                    className={`trading-step ${step.ok ? "ok" : "fail"}`}
+                    data-testid={`trading-step-${step.id}`}
+                  >
+                    <span className="trading-step-mark" aria-hidden="true">
+                      {step.ok ? "✓" : "✗"}
+                    </span>
+                    <span>
+                      <span className="sr-only">{tradingStepStatusText(step)}</span>
+                      <span aria-hidden="true">{step.label}</span>
+                      {step.missing && !step.ok && (
+                        <span className="trading-step-missing"> — {step.missing}</span>
+                      )}
+                    </span>
+                  </li>
+                ))}
+              </ol>
+            )}
+            {!dryRunStepOk && (
+              <p
+                className="muted"
+                role="status"
+                data-testid="trading-arm-step2-missing"
+              >
+                Ontbreekt: stap 2 — bekijk de dry-run
+              </p>
+            )}
             {!canOperate ? (
               <p className="muted">Operate permission required to arm.</p>
-            ) : s.allow_export_discharge ? (
-              <button
-                type="button"
-                className="btn"
-                data-testid="trading-disarm"
-                disabled={busy}
-                onClick={() =>
-                  patchSettings({ "control.allow_export_discharge": false })
-                }
-              >
-                Disarm live export
-              </button>
-            ) : armConfirm ? (
-              <div className="trading-confirm">
-                <p>
-                  Confirm: allow forced DISCHARGE into the grid when path T wins? Still
-                  needs operational mode and dry-run off.
-                </p>
-                <button
-                  type="button"
-                  className="btn btn-primary"
-                  data-testid="trading-arm-confirm"
-                  disabled={busy}
-                  onClick={() =>
-                    patchSettings({ "control.allow_export_discharge": true })
-                  }
-                >
-                  Yes, arm live export
-                </button>
-                <button
-                  type="button"
-                  className="btn"
-                  disabled={busy}
-                  onClick={() => setArmConfirm(false)}
-                >
-                  Cancel
-                </button>
-              </div>
             ) : (
-              <button
-                type="button"
-                className="btn btn-primary"
-                data-testid="trading-arm"
-                disabled={busy}
-                onClick={() => setArmConfirm(true)}
-              >
-                Arm live export…
-              </button>
+              <>
+                {!dryRunStepOk && (
+                  <button
+                    type="button"
+                    className="btn"
+                    data-testid="trading-dry-run-reviewed"
+                    disabled={busy}
+                    onClick={() => void markDryRunReviewed()}
+                  >
+                    Ik heb de vergelijking bekeken
+                  </button>
+                )}
+                {armBlockHint && !s.allow_export_discharge && (
+                  <p className="muted" data-testid="trading-arm-block-reason">
+                    {armBlockHint}
+                  </p>
+                )}
+                {s.allow_export_discharge ? (
+                  <button
+                    type="button"
+                    className="btn"
+                    data-testid="trading-disarm"
+                    disabled={busy}
+                    onClick={() =>
+                      patchSettings({ "control.allow_export_discharge": false })
+                    }
+                  >
+                    Disarm live export
+                  </button>
+                ) : armConfirm ? (
+                  <div className="trading-confirm">
+                    <p>
+                      Confirm: allow forced DISCHARGE into the grid when path T wins? Still
+                      needs operational mode and dry-run off.
+                    </p>
+                    <button
+                      type="button"
+                      className="btn btn-danger"
+                      data-testid="trading-arm-confirm"
+                      disabled={busy || armBlocked}
+                      onClick={() =>
+                        patchSettings({ "control.allow_export_discharge": true })
+                      }
+                    >
+                      Yes, arm live export
+                    </button>
+                    <button
+                      type="button"
+                      className="btn"
+                      disabled={busy}
+                      onClick={() => setArmConfirm(false)}
+                    >
+                      Cancel
+                    </button>
+                  </div>
+                ) : (
+                  <button
+                    type="button"
+                    className="btn btn-primary"
+                    data-testid="trading-arm"
+                    disabled={busy || armBlocked}
+                    onClick={() => setArmConfirm(true)}
+                  >
+                    Arm live export…
+                  </button>
+                )}
+              </>
             )}
           </div>
 

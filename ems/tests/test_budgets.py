@@ -214,7 +214,7 @@ def test_restart_recomputes_the_same_total_from_history(tmp_path):
     rows = []
     for i in range(8):
         ts = (day + timedelta(minutes=15 * i)).astimezone(ZoneInfo("UTC")).isoformat()
-        rows.append((ts, 4000.0, -4000.0))  # 1 kWh grid-charge per quarter
+        rows.append((ts, 4000.0, -4000.0))  # 1 kWh grid-charge per quarter; UTC date is 14 Jun
     db = tmp_path / "ems.sqlite"
     _write_history(db, rows)
     now = datetime(2026, 6, 15, 18, 0, tzinfo=AMS)
@@ -222,6 +222,8 @@ def test_restart_recomputes_the_same_total_from_history(tmp_path):
     second = read_already_bought_today(str(db), now, AMS)  # restart: no retained total
     assert first == 8.0
     assert second == first
+    utc = ZoneInfo("UTC")
+    assert read_already_bought_today(str(db), now, utc) == 0.0
     # Next local day does not keep yesterday's 8 kWh.
     assert read_already_bought_today(
         str(db), datetime(2026, 6, 16, 1, 0, tzinfo=AMS), AMS,

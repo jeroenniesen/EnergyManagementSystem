@@ -16,13 +16,14 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
 from ems.domain import BatteryIntent
 from ems.planner import economics
 from ems.planner.budgets import ac_grid_kwh_per_slot, clamp_cycle_budget, clamp_grid_charge
 from ems.planner.buy_pool import build_buy_pool_info
+from ems.planner.reason import is_must_charge_slot
 from ems.planner.rule_based import late_pack_charge_starts
 from ems.planner.schedule import SLOT, Plan, PlanSlot
 from ems.sources.forecast import ForecastSlot
@@ -49,6 +50,114 @@ class AdaptiveConfig:
     charged_today_kwh: float | None = 0.0
     discharged_today_kwh: float | None = 0.0
     site_tz: ZoneInfo = field(default_factory=lambda: ZoneInfo("Europe/Amsterdam"))
+    must_charge_enabled: bool = False
+    must_charge_target_soc: float = 30.0
+    must_charge_max_price_eur_per_kwh: float = 0.40
+    must_charge_buffer_pp: float = 10.0
+    must_charge_capability_ready: bool = False
+    must_charge_device_min_target_soc: float | None = None
+    # Resident override (#322): charge to this SoC before this deadline, via the must-charge
+    # path. None means no override — the automatic #323 trigger is unchanged.
+    resident_must_charge_target_soc: float | None = None
+    resident_must_charge_deadline: datetime | None = None
+    max_buy_eur_per_kwh: float = 0.0  # #324 / F-15; 0 = automatic
+    # #330 / F-18. auto sizes on min(confidence×P50, P10) when slots carry real_p10.
+    commit_solar_basis: str = "auto"
+
+
+def committed_solar_w(
+    p50_w: float,
+    p10_w: float,
+    confidence: float,
+    *,
+    commit_solar_basis: str = "auto",
+    real_p10: bool = False,
+) -> float:
+    """Watts counted when sizing a committed grid charge (#330 / F-18).
+
+    ``auto`` plus a delivery stamped with real P10 is ``min(confidence × P50, P10)``,
+    never above today's confidence × P50. Every other case, including an unknown
+    forecast, is exactly ``confidence × P50``.
+    """
+    scaled = confidence * p50_w
+    if commit_solar_basis == "auto" and real_p10:
+        return min(scaled, max(0.0, p10_w))
+    return scaled
+
+
+def commitment_solar_basis(
+    commit_solar_basis: str = "auto",
+    real_p10: bool = False,
+) -> str | None:
+    """``p10`` when auto used a real P10, ``p50`` when that mode is explicit, else None.
+
+    None keeps plans that did not choose a P10 path identical to the pre-#330 default.
+    """
+    if commit_solar_basis == "auto" and real_p10:
+        return "p10"
+    if commit_solar_basis == "p50":
+        return "p50"
+    return None
+
+
+def _delivery_has_real_p10(forecast: list[ForecastSlot]) -> bool:
+    """True when this delivery was stamped real P10 on every slot. Empty stays false."""
+    return bool(forecast) and all(bool(getattr(slot, "real_p10", False)) for slot in forecast)
+
+
+@dataclass(frozen=True)
+class MustChargeTriggerSignals:
+    shortfall_kwh: float
+    peak_deadline: datetime
+
+
+_EVENING_PEAK_HOURS = range(17, 22)
+
+
+def detect_must_charge_signals(
+    plan: Plan,
+    *,
+    soc_pct: float,
+    effective_floor_pct: float,
+    buffer_pp: float,
+    now: datetime,
+    horizon: timedelta,
+    site_tz: ZoneInfo | None = None,
+) -> MustChargeTriggerSignals | None:
+    """Shortfall + empty/insufficient arbitrage pool, low SoC, and a peak within ``horizon``."""
+    pool_info = plan.buy_pool
+    if pool_info is None or pool_info.shortfall_kwh <= 1e-9:
+        return None
+    arbitrage_charge = [
+        s for s in plan.slots
+        if s.intent is BatteryIntent.GRID_CHARGE_TO_TARGET
+        and not is_must_charge_slot(s)
+    ]
+    insufficient = (
+        pool_info.state == "empty"
+        or (pool_info.shortfall_kwh > 1e-9 and not arbitrage_charge)
+        or (pool_info.pool_size > 0 and len(arbitrage_charge) == 0
+            and pool_info.state != "not_needed")
+    )
+    if not insufficient:
+        return None
+    if soc_pct >= effective_floor_pct + max(0.0, buffer_pp) - 1e-6:
+        return None
+    tz = site_tz or ZoneInfo("Europe/Amsterdam")
+    peaks = [
+        s.start for s in plan.slots
+        if s.intent is BatteryIntent.DISCHARGE_FOR_LOAD
+        and s.start > now
+        and s.start <= now + horizon
+        and s.start.astimezone(tz).hour in _EVENING_PEAK_HOURS
+    ]
+    if not peaks:
+        return None
+    deadline = min(peaks)
+    return MustChargeTriggerSignals(
+        shortfall_kwh=pool_info.shortfall_kwh,
+        peak_deadline=deadline,
+    )
 
 
 def plan_adaptive(
@@ -93,7 +202,17 @@ def _plan_adaptive(
         return Plan(created_at=now, slots=())
 
     p50 = {f.start: f.p50_w for f in forecast}
+    p10 = {f.start: f.p10_w for f in forecast}
     confidence = max(0.0, min(1.0, cfg.solar_confidence))
+    real_p10 = _delivery_has_real_p10(forecast)
+    basis = commitment_solar_basis(cfg.commit_solar_basis, real_p10)
+
+    def counted_w(start: datetime) -> float:
+        return committed_solar_w(
+            p50.get(start, 0.0), p10.get(start, 0.0), confidence,
+            commit_solar_basis=cfg.commit_solar_basis,
+            real_p10=real_p10,
+        )
     eta = math.sqrt(max(1e-6, min(1.0, cfg.round_trip_efficiency)))
     usable = cfg.usable_kwh
     reserve_kwh = cfg.reserve_soc_pct / 100.0 * usable
@@ -120,10 +239,11 @@ def _plan_adaptive(
     # `avail_now_kwh`, `solar_to_batt_kwh` and `per_slot_kwh` below.
     total_deficit_kwh = sum(max(0.0, net_w(p)) * _DH / 1000.0 for p in future)
     coverable_kwh = min(total_deficit_kwh / eta, usable - reserve_kwh)
-    # Solar we count on flowing into the battery from daytime surplus: the confidence-scaled
-    # expected (P50) forecast after the house takes its share (was a hard P10 = 0.6×P50 haircut).
+    # Solar we count on flowing into the battery from daytime surplus: confidence × P50,
+    # or min(that, P10) when auto and the delivered source has a real P10 (#330).
+    # Otherwise exactly confidence × P50 (was a hard P10 = 0.6×P50 haircut).
     solar_to_batt_kwh = sum(
-        max(0.0, confidence * p50.get(p.start, 0.0) - load_w_by.get(p.start, 0.0)) * _DH / 1000.0
+        max(0.0, counted_w(p.start) - load_w_by.get(p.start, 0.0)) * _DH / 1000.0
         * eta
         for p in future
     )
@@ -138,17 +258,20 @@ def _plan_adaptive(
     n_charge = (math.ceil(shortfall_kwh / per_slot_kwh)
                 if per_slot_kwh > 0 and shortfall_kwh > 1e-9 else 0)
     max_buy_eur = breakeven
+    auto_max_buy_eur = breakeven
+    max_buy_eur = economics.apply_max_buy_cap(max_buy_eur, cfg.max_buy_eur_per_kwh)
     if discharge_set:
-        # Shaving a peak: any pre-peak slot CHEAPER THAN THE PEAK is worth charging in (it beats
-        # importing at the peak). Using this — not the strict break-even — avoids silently
-        # under-charging when too few slots sit below break-even, so the pack still fills.
-        peak_min = min(p.eur_per_kwh for p in future if p.start in discharge_set)
-        max_buy_eur = peak_min
-        pool = [p for p in future if p.start < last_need and p.eur_per_kwh < peak_min]
+        # Shaving a peak: buy only slots that still undercut the cheapest peak after losses,
+        # wear and risk. The old raw `peak_min` gate ignored that and over-bought.
+        peak_price = min(p.eur_per_kwh for p in future if p.start in discharge_set)
+        max_buy_eur = economics.max_buy_for_planner_config(peak_price, cfg)
+        auto_max_buy_eur = max_buy_eur
+        max_buy_eur = economics.apply_max_buy_cap(max_buy_eur, cfg.max_buy_eur_per_kwh)
+        pool = [p for p in future if p.start < last_need and p.eur_per_kwh <= max_buy_eur]
         pre_peak = [p for p in future if p.start < last_need]
     else:
         # No expensive peak ahead: only charge if genuinely cheap, to avoid pointless cycling.
-        pool = [p for p in future if p.eur_per_kwh <= breakeven]
+        pool = [p for p in future if p.eur_per_kwh <= max_buy_eur]
         pre_peak = list(future)
     # Pool is already capped and still chronological. Late-pack (same helper as winter) picks the
     # cost-minimal contiguous window; max_buy is the pool's own ceiling so the existing cap is
@@ -164,6 +287,8 @@ def _plan_adaptive(
         n_charge=n_charge,
         shortfall_kwh=shortfall_kwh,
         max_buy_eur_per_kwh=max_buy_eur,
+        auto_max_buy_eur_per_kwh=auto_max_buy_eur,
+        resident_cap_eur_per_kwh=cfg.max_buy_eur_per_kwh,
         price_of=lambda p: p.eur_per_kwh,
     )
 
@@ -217,7 +342,7 @@ def _plan_adaptive(
     # No season label here: this planner serves both seasons. build_plan stamps the resolved
     # strategy; a direct caller gets an honest None rather than a misleading "summer".
     return Plan(created_at=now, slots=tuple(out), strategy=None, target_soc=target_soc_pct,
-                deadline=last_need, buy_pool=buy_pool)
+                deadline=last_need, buy_pool=buy_pool, solar_basis=basis)
 
 
 def _soak_negative(plan: Plan, prices: list[PriceSlot], cfg: AdaptiveConfig) -> Plan:
@@ -240,4 +365,5 @@ def _soak_negative(plan: Plan, prices: list[PriceSlot], cfg: AdaptiveConfig) -> 
         for s in plan.slots
     )
     return Plan(created_at=plan.created_at, slots=out, strategy=plan.strategy,
-                target_soc=plan.target_soc, deadline=plan.deadline, buy_pool=plan.buy_pool)
+                target_soc=plan.target_soc, deadline=plan.deadline, buy_pool=plan.buy_pool,
+                solar_basis=plan.solar_basis)

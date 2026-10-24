@@ -11,6 +11,7 @@ from ems.sources.forecast import MockSolarForecastSource
 from ems.sources.forecast_factory import (
     FORECAST_DOMAIN,
     build_solar_forecast,
+    delivered_source_has_real_p10,
     register_forecast_provider,
     registered_providers,
 )
@@ -159,3 +160,79 @@ def test_unchosen_forecast_builder_stays_lazy(monkeypatch):
     fc = build_solar_forecast(effective_settings(_LIVE), AMS, use_live=True)
     assert isinstance(fc, ForecastSolarSource)
     assert calls == []
+
+
+def test_solcast_fallback_on_failure_stays_p50_and_real_solcast_stamps_p10():
+    """#330: real P10 is stamped only for the source that delivered. Fallback stays P50."""
+    solcast = get_metadata(FORECAST_DOMAIN, "solcast")
+    forecast_solar = get_metadata(FORECAST_DOMAIN, "forecast_solar")
+    mock = get_metadata(FORECAST_DOMAIN, "mock")
+    assert solcast is not None and "p10" in solcast.capabilities
+    assert "synthetic" not in solcast.capabilities
+    assert "fallback_on_failure" in solcast.capabilities
+    assert forecast_solar is not None and "p10" not in forecast_solar.capabilities
+    assert mock is not None and "synthetic" in mock.capabilities
+    assert delivered_source_has_real_p10(None) is False
+
+    watts = {"result": {"watts": {"2026-10-24 12:00:00": 1000}}}
+
+    def forecast_solar_http(url):
+        return watts
+
+    live = effective_settings({
+        **_LIVE,
+        "solar.forecast_provider": "solcast",
+        "solar.solcast_api_key": "tok",
+        "solar.solcast_resource_id": "rid-1",
+    })
+
+    def solcast_down(url, headers):
+        raise RuntimeError("solcast down")
+
+    fallen = build_solar_forecast(
+        live, AMS, use_live=True,
+        http_get=forecast_solar_http,
+        solcast_http_get=solcast_down,
+    )
+    fallback_slots = fallen.slots()
+    assert fallback_slots
+    assert "fallback" in str(fallen.source_label)
+    assert delivered_source_has_real_p10(fallen) is False
+    assert all(not slot.real_p10 for slot in fallback_slots)
+    assert any(slot.p10_w < slot.p50_w for slot in fallback_slots)
+
+    def solcast_ok(url, headers):
+        return {"forecasts": [{
+            "period_end": "2026-10-24T12:30:00Z",
+            "period": "PT30M",
+            "pv_estimate": 1.0,
+            "pv_estimate10": 0.2,
+            "pv_estimate90": 1.2,
+        }]}
+
+    delivered = build_solar_forecast(
+        live, AMS, use_live=True,
+        http_get=forecast_solar_http,
+        solcast_http_get=solcast_ok,
+    )
+    real_slots = delivered.slots()
+    assert real_slots
+    assert "solcast" in str(delivered.source_label)
+    assert "fallback" not in str(delivered.source_label)
+    assert delivered_source_has_real_p10(delivered) is True
+    assert all(slot.real_p10 for slot in real_slots)
+    assert any(slot.p10_w + 1.0 < slot.p50_w for slot in real_slots)
+
+    derived = build_solar_forecast(
+        effective_settings(_LIVE), AMS, use_live=True, http_get=forecast_solar_http,
+    )
+    derived_slots = derived.slots()
+    assert isinstance(derived, ForecastSolarSource)
+    assert derived_slots
+    assert all(not slot.real_p10 for slot in derived_slots)
+    assert delivered_source_has_real_p10(derived) is False
+
+    model = build_solar_forecast(effective_settings({}), AMS)
+    assert isinstance(model, MockSolarForecastSource)
+    assert all(not slot.real_p10 for slot in model.slots())
+    assert delivered_source_has_real_p10(model) is False

@@ -625,6 +625,18 @@ export const HOME_MORE_NEST = {
   car: "Auto",
 } as const;
 
+/** Resident must-charge override (#322). Copy is fixed — tests and the API share these strings. */
+export const MUST_CHARGE_OVERRIDE = {
+  title: "Vul tot X% vóór HH:MM",
+  hint: "Tijdelijk laden voor gasten, vorst of piekangst. Stopt vanzelf op het tijdstip of zodra het doel bereikt is.",
+  targetLabel: "Doelpercentage",
+  hourLabel: "Klaar vóór",
+  submit: "Vul de batterij",
+  cancel: "Annuleer",
+  watchOnly: "alleen kijken — niet uitgevoerd",
+  active: (pct: number, hhmm: string) => `Vul tot ${pct}% vóór ${hhmm}`,
+} as const;
+
 export const HOME_TILE = {
   sectionAria: "Tot nu toe vandaag",
   staleUpdated: "Verouderd · Bijgewerkt",
@@ -695,11 +707,20 @@ export const HOME_PLAN_STORY = {
   socScale: (pct: number) => `${pct}%`,
 } as const;
 
+/** #330 / F-18: Home plan label when committed grid charge was sized on a real P10. */
+export const COMMIT_SOLAR_P10_LABEL =
+  "Lading gedimensioneerd op P10 (voorzichtige zon)";
+
 /** #315 / F-02+F-31: Home tile when EMS cannot grid-buy (empty buy pool). */
+export const HOME_MUST_CHARGE = {
+  title: "Voorzorgslading",
+} as const;
+
 export const HOME_WHY_NOT_BUY = {
   title: "Waarom niet kopen?",
   noChanceInHorizon: "Geen koopmoment in de prijzen van vandaag/morgen",
   maxBuy: (eur: string) => `Max inkoopprijs ${eur}`,
+  residentLimit: (eur: string) => `Jouw limiet ${eur}`,
   cheapest: (time: string, eur: string) => `Goedkoopste moment ${time} (${eur})`,
   shortfall: (kwh: string) => `Tekort ${kwh}`,
   nextChance: (time: string) => `Volgende kans ${time}`,
@@ -850,6 +871,25 @@ export function exportModelMismatchWarning(exportPriceModel: string): string | n
   return null;
 }
 
+/** Week digest panel — load/error copy (#369 INS-01). */
+export const WEEK_DIGEST = {
+  sectionTitle: "Je week",
+  loadError: "De weeksamenvatting kon niet worden geladen.",
+  retry: "Opnieuw",
+} as const;
+
+/** Onboarding checklist (#369 SETP-02). */
+export const SETUP_CHECKLIST = {
+  loading: "Laden…",
+  retry: "Opnieuw proberen",
+} as const;
+
+/** Audit log (#369 AUD-01 error slice). */
+export const AUDIT_VIEW = {
+  loadError: "Het wijzigingslog kon niet worden geladen.",
+  retry: "Opnieuw",
+} as const;
+
 /** Week digest: negative savings days (audit F-49 / #325). */
 export const WEEK_DIGEST_NEGATIVE_DAY = {
   sectionTitle: "Dagen met verlies",
@@ -883,6 +923,15 @@ export const DAILY_GRID_CHARGE_CAP = {
     "Hard plafond: EMS koopt per lokale dag nooit meer dan dit aantal kWh van het net voor de batterij. "
     + "Laden bij een negatieve prijs telt mee. De teller gaat om middernacht (lokale tijd) weer naar nul.",
   reason: (capKwh: number) => `Dagplafond ${capKwh} kWh bereikt`,
+} as const;
+
+/** Resident max purchase price (#324, audit F-15). */
+export const MAX_BUY_PRICE_CAP = {
+  label: "Max. inkoopprijs",
+  help:
+    "Nooit van het net laden boven deze prijs. 0 = automatisch: EMS berekent zelf de economische "
+    + "koopgrens uit piek, rendement, slijtage en risico.",
+  residentLimit: (eur: string) => `Jouw limiet ${eur}`,
 } as const;
 
 /**

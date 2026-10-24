@@ -17,7 +17,7 @@ from zoneinfo import ZoneInfo
 
 from ems.domain import BatteryIntent, CapabilityReport
 from ems.planner.budgets import UNKNOWN_COUNTER_REASON, cap_reason, slot_grid_kwh
-from ems.planner.projection import ProjectedSlot
+from ems.planner.projection import ProjectedSlot, evening_reserve_kwh
 from ems.planner.schedule import Plan, PlanSlot
 
 # Severity order: unsafe (control-blocking) > warn (degraded, still usable) > (none).
@@ -208,6 +208,10 @@ def validate_plan(
     already_bought_today_kwh: float | None = None,
     grid_charge_per_slot_kwh: float = 0.0,
     site_tz: ZoneInfo | None = None,
+    usable_kwh: float | None = None,
+    round_trip_efficiency: float = 0.90,
+    solar_w_by: dict | None = None,
+    max_discharge_w: float | None = None,
 ) -> PlanValidation:
     """Validate `plan` against the current conditions. Returns a PlanValidation; `unsafe` ⇒ the
     controller must hold AUTO. Each check appends at most one representative finding (not one per
@@ -484,6 +488,101 @@ def validate_plan(
                 findings.append(Finding(_UNSAFE, "daily_grid_charge_cap", message))
                 break
 
+    # #323: must-charge slots must carry target_soc and a deadline on or before the peak.
+    from ems.planner.reason import is_must_charge_slot
+    for s in slots:
+        if not is_must_charge_slot(s):
+            continue
+        if s.target_soc is None or s.deadline is None:
+            findings.append(Finding(
+                _UNSAFE, "must_charge_unsized",
+                "Voorzorgslading mist doel-laadniveau of deadline — geen net-laden.",
+            ))
+            break
+        if s.start > s.deadline:
+            findings.append(Finding(
+                _UNSAFE, "must_charge_after_deadline",
+                "Voorzorgslading na de piek-deadline — geen net-laden.",
+            ))
+            break
+
+    # 9. Evening reserve (#326 / F-17+F-24). Warn only — a shortfall must not
+    #    force AUTO. The below-reserve check above is unchanged.
+    evening_finding = _evening_reserve_finding(
+        slots, projection=projection, soc_pct=soc_pct,
+        min_reserve_soc=min_reserve_soc, usable_kwh=usable_kwh,
+        round_trip_efficiency=round_trip_efficiency, load_w_by=load_w_by,
+        solar_w_by=solar_w_by, max_discharge_w=max_discharge_w,
+        capability=capability, site_tz=site_tz,
+    )
+    if evening_finding is not None:
+        findings.append(evening_finding)
+
     status = (_UNSAFE if any(f.severity == _UNSAFE for f in findings)
               else _WARN if findings else "valid")
     return PlanValidation(status=status, findings=tuple(findings))
+
+
+def _soc_entering(slots, projection, evening_start, soc_pct: float) -> float | None:
+    """SoC at ``evening_start``: end of the previous projected slot, else the start SoC."""
+    for i, slot in enumerate(slots):
+        if slot.start != evening_start:
+            continue
+        if i == 0:
+            return soc_pct
+        if i - 1 < len(projection):
+            return projection[i - 1].soc_pct
+        return None
+    return None
+
+
+def _evening_reserve_finding(
+    slots,
+    *,
+    projection,
+    soc_pct: float | None,
+    min_reserve_soc: float,
+    usable_kwh: float | None,
+    round_trip_efficiency: float,
+    load_w_by,
+    solar_w_by,
+    max_discharge_w: float | None,
+    capability,
+    site_tz,
+) -> Finding | None:
+    """Warn when projected SoC at the evening cluster is short by more than 1 pp."""
+    if (
+        usable_kwh is None or usable_kwh <= 0.0 or projection is None
+        or soc_pct is None or not slots or load_w_by is None
+    ):
+        return None
+    discharge_w = max_discharge_w
+    if discharge_w is None and capability is not None:
+        discharge_w = capability.max_discharge_w
+    if discharge_w is None:
+        return None
+    zone = site_tz or ZoneInfo("Europe/Amsterdam")
+    need, evening_start = evening_reserve_kwh(
+        slots, load_w_by=load_w_by, usable_kwh=usable_kwh,
+        reserve_soc_pct=min_reserve_soc, max_discharge_w=discharge_w,
+        round_trip_efficiency=round_trip_efficiency, site_tz=zone,
+        solar_w_by=solar_w_by,
+    )
+    if evening_start is None or need <= 1e-12:
+        return None
+    soc_at = _soc_entering(slots, projection, evening_start, soc_pct)
+    if soc_at is None:
+        return None
+    need_pp = need / usable_kwh * 100.0
+    limit = min_reserve_soc + need_pp - 1.0
+    if not soc_at < limit:
+        return None
+    when = evening_start.astimezone(zone).strftime("%H:%M")
+    return Finding(
+        _WARN, "evening_reserve",
+        (
+            f"Projected SoC {soc_at:.1f}% at {when} is below the evening reserve: "
+            f"floor {min_reserve_soc:.1f}% + {need:.2f} kWh "
+            f"({need_pp:.1f} pp) − 1 pp = {limit:.1f}%."
+        ),
+    )

@@ -8,6 +8,12 @@ import {
 import { AdminAccess } from "./Admin";
 import { AutomationBoundsCard } from "./AutomationBounds";
 import { apiFetch, clearToken } from "./auth";
+import {
+  SETTINGS_SECTION_IDS,
+  parseAppHash,
+  resolveSettingsSection,
+  serialiseAppHash,
+} from "./settingsRoute";
 import { type CarModel, type CarsResp } from "./ev";
 import { HaWizard } from "./HaWizard.tsx";
 import {
@@ -22,6 +28,7 @@ import {
   CONTROL_ARM_CONSEQUENCE,
   CONTROL_SECTION_HINT,
   DAILY_GRID_CHARGE_CAP,
+  MAX_BUY_PRICE_CAP,
   HOME_NIGHT_RESERVE,
   LIVE_WRITING_PANEL,
   learnedNightKwhFromAdvice,
@@ -315,12 +322,18 @@ function Field({
   onChange: (v: number | boolean | string) => void;
 }) {
   const id = `set-${field.key}`;
-  const labelText = field.key === "planner.max_daily_grid_charge_kwh"
-    ? DAILY_GRID_CHARGE_CAP.label
-    : field.label;
-  const helpText = field.key === "planner.max_daily_grid_charge_kwh"
-    ? DAILY_GRID_CHARGE_CAP.help
-    : field.help;
+  const labelText =
+    field.key === "planner.max_daily_grid_charge_kwh"
+      ? DAILY_GRID_CHARGE_CAP.label
+      : field.key === "planner.max_buy_eur_per_kwh"
+        ? MAX_BUY_PRICE_CAP.label
+        : field.label;
+  const helpText =
+    field.key === "planner.max_daily_grid_charge_kwh"
+      ? DAILY_GRID_CHARGE_CAP.help
+      : field.key === "planner.max_buy_eur_per_kwh"
+        ? MAX_BUY_PRICE_CAP.help
+        : field.help;
   const label = (
     <label htmlFor={id} className="field-label">
       {labelText}
@@ -566,10 +579,8 @@ export function Settings({
   identityAuth = false,
 }: {
   onSaved?: (values: Values) => void;
-  // Deep-link: open this section on mount (e.g. System's "solar" health action → "planner", or
-  // Car's "Manage → Settings → Car" → "ev"). Runtime state only — reuses the same openSection
-  // machinery a sidebar click uses, so it needs no hash segment of its own (CLAUDE.md: keep the
-  // canonical #manage/settings hash simple).
+  // Deep-link: open this section (#manage/settings/<id>, e.g. System's solar action → "planner",
+  // or Car's "Manage → Settings → Car" → "ev"). Kept in sync with the hash, including back/forward.
   initialSection?: string;
   // Reader read-only mode (auth slice 2 web): every field renders disabled and the save bar never
   // appears — mirrors the API's 403 on writes rather than inventing a new client-side rule.
@@ -602,7 +613,15 @@ export function Settings({
   const [solarAdviceApplied, setSolarAdviceApplied] = useState(false);
   const [cars, setCars] = useState<CarModel[] | null>(null);
   // --- Two-pane shell navigation state ---
-  const [activeSection, setActiveSection] = useState<string | null>(null);
+  // Seed from the hash-driven prop so a reload paints the bookmarked section (mobile included).
+  const [activeSection, setActiveSection] = useState<string | null>(() =>
+    initialSection
+      ? (resolveSettingsSection(initialSection, SETTINGS_SECTION_IDS) ?? initialSection)
+      : null,
+  );
+  // Tracks which hash section has been applied. Compared during render (below, once mobileList
+  // exists) so browser-back updates the open section in the same pass as the prop.
+  const [appliedSection, setAppliedSection] = useState(initialSection);
   const [search, setSearch] = useState("");
   // Which sections have their in-place "Advanced" disclosure expanded (collapsed by default).
   const [advancedOpen, setAdvancedOpen] = useState<Set<string>>(new Set());
@@ -615,7 +634,20 @@ export function Settings({
   // #364: extra confirm before a draft that arms live control is posted.
   const [armConfirming, setArmConfirming] = useState(false);
   // Mobile drill-in (≤700px): start on the section list, then drill into one section.
-  const [mobileList, setMobileList] = useState(true);
+  // A hash with a section opens that section; bare #manage stays on the list.
+  const [mobileList, setMobileList] = useState(() => !initialSection);
+  if (initialSection !== appliedSection) {
+    setAppliedSection(initialSection);
+    if (!initialSection) {
+      setMobileList(true);
+      setActiveSection(null);
+    } else {
+      setActiveSection(
+        resolveSettingsSection(initialSection, SETTINGS_SECTION_IDS) ?? initialSection,
+      );
+      setMobileList(false);
+    }
+  }
 
   // --- I3 "Apply & restart" (spec §B.4) ---
   // Server-computed capability + pending flag (GET /api/auth/me — I2). Independent of the
@@ -632,6 +664,10 @@ export function Settings({
   // Guards the /health/live poll's setState calls against firing after unmount (the poll is a
   // plain async loop, not itself inside an effect, so it needs its own liveness flag).
   const restartAliveRef = useRef(true);
+  // True after this view pushed #manage/settings/<id>. The mobile "All settings" button pops that
+  // entry (browser-back). A section opened from a copied URL did not push, so the button writes
+  // #manage instead of leaving the app.
+  const sectionPushedRef = useRef(false);
   useEffect(() => {
     // Reset to true on setup (not just false on cleanup): under React.StrictMode dev runs
     // setup→cleanup→setup, so without this the ref would stay false after the first cleanup and
@@ -781,13 +817,19 @@ export function Settings({
     };
   }, []);
 
-  // Deep-link on mount: open the requested section straight away (no extra click), reusing the
-  // exact openSection() a sidebar click would call — same mobileList/highlight behaviour. Runs
-  // once; later navigation is owned by the user's own clicks, not this prop.
+  // Follow the hash (reload, deep link, browser back/forward). Does not write the hash — a click
+  // already pushed it, and writing here would replace that history entry.
   useEffect(() => {
-    if (initialSection) openSection(initialSection);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+    if (!initialSection) {
+      sectionPushedRef.current = false;
+      setMobileList(true);
+      setActiveSection(null);
+      return;
+    }
+    const resolved = resolveSettingsSection(initialSection, SETTINGS_SECTION_IDS) ?? initialSection;
+    setActiveSection(resolved);
+    setMobileList(false);
+  }, [initialSection]);
 
   // Best-effort advisory fetch — hide the hint entirely on error or when there's not yet enough
   // evidence (null), never surface it as a load error.
@@ -953,6 +995,31 @@ export function Settings({
       const f = (schema ?? []).find((x) => x.key === highlight);
       if (f?.advanced) setAdvancedOpen((prev) => new Set([...prev, group]));
     }
+    // Push #manage/settings/<id>. Dispatch hashchange in this turn: the browser's own event can
+    // land after a later back/forward and would otherwise leave the previous section on screen.
+    const next = serialiseAppHash("manage", "settings", group);
+    const current = window.location.hash.replace(/^#\/?/, "");
+    if (current !== next) {
+      sectionPushedRef.current = true;
+      window.location.hash = next;
+    }
+    window.dispatchEvent(new Event("hashchange"));
+  }
+
+  // Mobile "← All settings": pop the section entry this view pushed. A bookmarked section was
+  // not pushed here, so point the hash at bare #manage (still a history step, still the list).
+  function backToAllSettings() {
+    if (sectionPushedRef.current) {
+      sectionPushedRef.current = false;
+      window.history.back();
+      return;
+    }
+    if (parseAppHash(window.location.hash).settingsSection) {
+      window.location.hash = serialiseAppHash("manage", "settings");
+      window.dispatchEvent(new Event("hashchange"));
+      return;
+    }
+    setMobileList(true);
   }
 
   function handleNavClick(group: string) {
@@ -1377,7 +1444,7 @@ export function Settings({
             type="button"
             className="settings-back"
             data-testid="settings-back"
-            onClick={() => setMobileList(true)}
+            onClick={backToAllSettings}
           >
             ← All settings
           </button>

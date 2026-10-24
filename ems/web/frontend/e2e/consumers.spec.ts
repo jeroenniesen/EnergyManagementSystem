@@ -183,4 +183,92 @@ test.describe("Consumers start advice (#333)", () => {
       .analyze();
     expect(results.violations).toEqual([]);
   });
+
+  test("accepts a start window and cancels it", async ({ page }) => {
+    await page.route("**/api/report**", (route) =>
+      route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(REPORT) }),
+    );
+    await page.route("**/api/consumers/start-advice**", (route) =>
+      route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          title: "Start window advice",
+          enabled: true,
+          summary: "1 start window from day-ahead prices.",
+          advice: [
+            {
+              device_id: "mock-washer-1",
+              device_name: "Mock washer",
+              kind: "washer",
+              eligible: true,
+              accepted: false,
+              window: {
+                start: "2026-07-11T10:00:00+00:00",
+                end: "2026-07-11T11:00:00+00:00",
+                slots: 4,
+                avg_eur_per_kwh: 0.06,
+                est_cost_eur: 0.06,
+                assumed_kwh: 1.0,
+                reason: "Best 1h window, assuming 1 kWh.",
+              },
+              skip_reason: null,
+            },
+          ],
+          footnote: "Advice only — nothing changes automatically.",
+        }),
+      }),
+    );
+    await page.route("**/api/consumers**", (route) => {
+      const url = route.request().url();
+      if (url.includes("/start-advice") || url.includes("/advice/accept")) {
+        return route.fallback();
+      }
+      return route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          title: "Appliances",
+          summary: "1 selected appliance.",
+          read_only: true,
+          devices: [
+            {
+              id: "mock-washer-1",
+              name: "Mock washer",
+              kind: "washer",
+              integration: "mock",
+              opted_in: true,
+              status: {
+                state: "idle",
+                state_label: "Idle — ready when you are",
+                power_w: 0,
+                energy_kwh: null,
+                can_start: true,
+                observed_at: null,
+                detail: null,
+              },
+            },
+          ],
+        }),
+      });
+    });
+    await page.route("**/api/consumers/advice/accept**", (route) =>
+      route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({ ok: true }),
+      }),
+    );
+    await page.goto("/");
+    await page.getByTestId("nav-insights").click();
+    const accept = page.getByRole("button", { name: "Ik start hier" });
+    await expect(accept).toBeVisible();
+    await accept.click();
+    const cancel = page.getByRole("button", { name: "Annuleer" });
+    await expect(cancel).toBeVisible();
+    await expect(accept).toHaveCount(0);
+    await cancel.click();
+    await expect(page.getByRole("button", { name: "Ik start hier" })).toBeVisible();
+    await expect(page.getByRole("button", { name: "Annuleer" })).toHaveCount(0);
+  });
 });

@@ -31,6 +31,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from ems.clock import Clock, SystemClock
+from ems.consumers.start_advice import accepted_load_bump_w, accepted_windows_revision
 from ems.control.car_mode import (
     _RESERVE_ENTER_PP,
     CarModeAction,
@@ -55,6 +56,7 @@ from ems.control.override import Override
 from ems.control.reconciliation import CommandReconciliation
 from ems.control.safety import SafetyValidator, resolve_floor_anti_flap
 from ems.domain import BatteryIntent, CapabilityReport, PhysicalMode
+from ems.freshness import stale_flags
 from ems.lifecycle import Lifecycle, OwnershipState
 from ems.perf import PERF_BUDGETS, REGISTRY, atimed, timed
 from ems.planner.adaptive import AdaptiveConfig
@@ -431,6 +433,11 @@ class ControlContext:
     # write starts in the sub-second window before the process actually exits (checked atomically
     # atomically with every writer reservation inside command_fence). A pure "stop work" flag.
     draining: bool = False
+    # Resident must-charge override (#322). ``rec`` is a MustChargeOverride or None; ``warning``
+    # is the latest unreachable-target reason from the planner (display only).
+    must_charge_box: dict[str, Any] = field(
+        default_factory=lambda: {"rec": None, "warning": None},
+    )
 
 
 class ControlService:
@@ -477,6 +484,7 @@ class ControlService:
         planner_cfg: Callable[[], Any] | None = None,
         summer_cfg: Callable[[float], Any] | None = None,
         adaptive_cfg: Callable[[], Any] | None = None,
+        stale_signals: Callable[[datetime], set[str]] | None = None,
     ) -> None:
         self._ctx = ctx
         self._clock = clock if clock is not None else SystemClock()
@@ -518,6 +526,9 @@ class ControlService:
         self._planner_cfg = planner_cfg if planner_cfg is not None else self.planner_cfg
         self._summer_cfg = summer_cfg if summer_cfg is not None else self.summer_cfg
         self._adaptive_cfg = adaptive_cfg if adaptive_cfg is not None else self.adaptive_cfg
+        self._stale_signals = stale_signals
+        self._bought_today_memo_key: datetime | None = None
+        self._bought_today_memo_val: float | None = None
         self._decision_engine = ControlDecisionEngine(
             data_quality=self._data_quality,
             car_mode_action=self._car_mode_action,
@@ -805,6 +816,7 @@ class ControlService:
             max_daily_grid_charge_kwh=float(s.get("planner.max_daily_grid_charge_kwh", 12.0)),
             max_cycles_per_day=float(s.get("planner.max_cycles_per_day", 1.5)),
             daily_min_savings_eur=float(s.get("planner.daily_min_savings_eur", 0.20)),
+            max_buy_eur_per_kwh=float(s.get("planner.max_buy_eur_per_kwh", 0.0)),
             site_tz=self._site_tz,
         )
 
@@ -840,6 +852,20 @@ class ControlService:
 
     def adaptive_cfg(self) -> AdaptiveConfig:
         s = self._settings
+        cap = self._cached_capability()
+        cap_ready = (
+            cap is not None
+            and cap.supports_grid_charge
+            and cap.max_charge_w > 0
+        )
+        device_min = cap.min_target_soc if cap is not None and cap.min_target_soc > 0 else None
+        target_soc = float(s.get("planner.must_charge_target_soc", 30.0))
+        floor = self.effective_floor_soc()
+        resident_target, resident_deadline = self._resident_must_charge_inputs()
+        if device_min is not None:
+            target_soc = max(floor, device_min, min(100.0, target_soc))
+        else:
+            target_soc = max(floor, min(100.0, target_soc))
         return AdaptiveConfig(
             usable_kwh=s["battery.usable_kwh"],
             reserve_soc_pct=self.effective_floor_soc(),
@@ -852,6 +878,18 @@ class ControlService:
             max_daily_grid_charge_kwh=float(s.get("planner.max_daily_grid_charge_kwh", 12.0)),
             max_cycles_per_day=float(s.get("planner.max_cycles_per_day", 1.5)),
             site_tz=self._site_tz,
+            must_charge_enabled=bool(s.get("planner.must_charge_enabled", False)),
+            must_charge_target_soc=target_soc,
+            must_charge_max_price_eur_per_kwh=float(
+                s.get("planner.must_charge_max_price_eur_per_kwh", 0.40),
+            ),
+            must_charge_buffer_pp=float(s.get("planner.must_charge_buffer_pp", 10.0)),
+            must_charge_capability_ready=cap_ready,
+            must_charge_device_min_target_soc=device_min,
+            resident_must_charge_target_soc=resident_target,
+            resident_must_charge_deadline=resident_deadline,
+            max_buy_eur_per_kwh=float(s.get("planner.max_buy_eur_per_kwh", 0.0)),
+            commit_solar_basis=str(s.get("planner.commit_solar_basis", "auto")),
         )
 
     def already_bought_today_kwh(self, now: datetime) -> float | None:
@@ -871,6 +909,15 @@ class ControlService:
             path, now, self._site_tz, planned_charge_w=watts,
         )
 
+    def bought_today_for(self, now: datetime) -> float | None:
+        """One read per ``quantize_now`` window for planner, recovery and validator (#361)."""
+        key = self.quantize_now(now)
+        if self._bought_today_memo_key == key:
+            return self._bought_today_memo_val
+        self._bought_today_memo_val = self.already_bought_today_kwh(now)
+        self._bought_today_memo_key = key
+        return self._bought_today_memo_val
+
     def cycle_throughput_today(self, now: datetime) -> tuple[float, float] | None:
         store = self._store
         path = getattr(store, "db_path", None) if store is not None else None
@@ -880,8 +927,11 @@ class ControlService:
         prof = self._ctx.load_profile_box["profile"]
         if prof is None:  # cold start: a flat overnight-derived baseline
             fallback = self._settings["battery.overnight_load_kwh"] * 1000.0 / 12.0
-            return {s: fallback for s in starts}
-        return {s: prof.expected_w(s) for s in starts}
+            base = {s: fallback for s in starts}
+        else:
+            base = {s: prof.expected_w(s) for s in starts}
+        bump = accepted_load_bump_w(self._cache_store, starts, self._clock)
+        return {s: base[s] + max(0.0, bump.get(s, 0.0)) for s in starts}
 
     def expected_ev_exogenous(self, now: datetime):
         """Winter EV-day estimate (#181 / SPEC §4.5). Fail-soft to 0 kWh when history/settings
@@ -968,6 +1018,43 @@ class ControlService:
             "round_trip_efficiency": s["planner.round_trip_efficiency"],
         }
 
+    def _resident_must_charge_inputs(self) -> tuple[float | None, datetime | None]:
+        """Active resident override target and deadline, or ``(None, None)``."""
+        rec = self._ctx.must_charge_box.get("rec")
+        if rec is None:
+            return None, None
+        now = self._clock.now_utc()
+        if not rec.engages(now, self._current_soc(now)):
+            return None, None
+        return rec.target_soc, rec.deadline
+
+    def _resident_override_token(self, now: datetime) -> tuple:
+        """Plan-cache identity for the resident override, including expiry and reached target."""
+        rec = self._ctx.must_charge_box.get("rec")
+        if rec is None:
+            return (None,)
+        soc = self._current_soc(now)
+        cause = rec.end_cause(now, soc)
+        if cause is not None:
+            return ("ended", cause, rec.created.isoformat())
+        if not rec.engages(now, soc):
+            return ("idle", rec.created.isoformat())
+        return ("active", rec.target_soc, rec.deadline.isoformat(), rec.created.isoformat())
+
+    def _note_resident_must_charge(self, plan, prices, now: datetime, soc: float) -> None:
+        from ems.planner.must_charge import explain_resident_override
+
+        self._ctx.must_charge_box["warning"] = explain_resident_override(
+            plan, prices, now, soc_pct=soc, adaptive_cfg=self._adaptive_cfg(),
+        )
+
+    async def _expire_resident_must_charge(self) -> None:
+        """Let the API hook audit and clear an override whose deadline passed or target was met."""
+        hook = getattr(self, "settle_resident_override", None)
+        if hook is None:
+            return
+        await hook(self._clock.now_utc())
+
     def build_plan_now(self, now: datetime | None = None):
         """The fresh plan the active strategy builds THIS instant, BEFORE any missed-window
         recovery. Goes through the Planner port (B-47): registry selects the producer by
@@ -1011,8 +1098,10 @@ class ControlService:
         ) if fc is not None else None
         forecast_issued_at = getattr(fc, "issued_at", None) if fc is not None else None
         mode = self._settings.get("planner.mode", "rule_based")
-        bought = self.already_bought_today_kwh(now)
+        bought = self.bought_today_for(now)
         throughput = self._cycle_throughput = self.cycle_throughput_today(now)
+        stale_ev, stale_grid = stale_flags(self._stale_signals, now)
+        stale_buffer_pp = float(self._settings.get("planner.stale_reserve_buffer_pp", 5.0))
         request = PlannerRequest(
             now=now,
             prices=prices,
@@ -1034,8 +1123,12 @@ class ControlService:
             forecast_provider=forecast_provider,
             forecast_issued_at=forecast_issued_at,
             baseline="load_profile" if load_by else None,
+            ev_stale=stale_ev,
+            grid_stale=stale_grid,
+            stale_reserve_buffer_pp=stale_buffer_pp,
         )
         plan = build_planner(mode).plan(request)
+        self._note_resident_must_charge(plan, prices, now, soc)
         return now, prices, plan
 
     def plan_with_recovery(self, now: datetime | None = None):
@@ -1056,7 +1149,11 @@ class ControlService:
         reuse this path and must not rebuild a divergent plan just for explain.
         """
         now = self._clock.now_utc() if now is None else now
-        key = self.quantize_now(now)
+        key = (
+            self.quantize_now(now),
+            accepted_windows_revision(self._cache_store, self._clock),
+            self._resident_override_token(now),
+        )
         cache = self._ctx.plan_cache
         if cache["key"] == key:  # fast path: no lock when this cycle's plan is warm
             return cache["result"]
@@ -1077,6 +1174,7 @@ class ControlService:
 
     def _plan_with_recovery_uncached(self, now: datetime):
         """Compute plan + recovery without touching the memoization cache."""
+        self._bought_today_memo_key = None
         pp = self.build_plan_now(now)
         if pp is None:
             return None
@@ -1094,8 +1192,11 @@ class ControlService:
             enabled=bool(self._settings["planner.recovery_enabled"]),
             max_daily_grid_charge_kwh=float(
                 self._settings.get("planner.max_daily_grid_charge_kwh", 12.0)),
-            already_bought_today_kwh=self.already_bought_today_kwh(now),
+            already_bought_today_kwh=self.bought_today_for(now),
             site_tz=self._site_tz,
+            degradation_eur_per_kwh=float(self._settings["planner.degradation_eur_per_kwh"]),
+            risk_margin_eur_per_kwh=float(self._settings["planner.risk_margin_eur_per_kwh"]),
+            max_buy_eur_per_kwh=float(self._settings.get("planner.max_buy_eur_per_kwh", 0.0)),
             **self.recovery_sizing(),
         )
         # B-22/B-16 interaction (#162): if the forward projection still can't hit the committed
@@ -2440,6 +2541,7 @@ class ControlService:
         the pre-reserved slot so the registry can't leak."""
         spawned = False  # True once the tick worker OWNS the token (releases it on real completion)
         try:
+            await self._expire_resident_must_charge()
             if self._controller is None:
                 return
             # Belt-and-suspenders: a restart just passed idle-and-safe and is about to exit — do not

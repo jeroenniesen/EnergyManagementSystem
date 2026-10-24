@@ -194,3 +194,49 @@ def test_soc_never_exceeds_100_across_a_long_charge():
     assert max(socs) <= 100.0
     assert socs[-1] == 100.0  # reaches and holds full
     assert all(a <= b + 1e-9 for a, b in zip(socs, socs[1:], strict=False))  # non-decreasing
+
+
+def test_evening_reserve_kwh_is_the_capped_evening_deficit():
+    """#326: DC deficit of the post-15:00 discharge cluster, capped at usable − floor."""
+    from datetime import timedelta
+    from zoneinfo import ZoneInfo
+
+    from ems.planner.projection import evening_reserve_kwh
+
+    ams = ZoneInfo("Europe/Amsterdam")
+    day = datetime(2026, 1, 15, 0, 0, tzinfo=ams)
+    morning = [
+        PlanSlot(day.replace(hour=7, minute=15 * i), BatteryIntent.DISCHARGE_FOR_LOAD, "x")
+        for i in range(4)
+    ]
+    evening = [
+        PlanSlot(day.replace(hour=18, minute=15 * i), BatteryIntent.DISCHARGE_FOR_LOAD, "x")
+        for i in range(4)
+    ]
+    load = {s.start: 1000.0 for s in evening}
+    load.update({s.start: 3000.0 for s in morning})
+    need, start = evening_reserve_kwh(
+        morning + evening, load_w_by=load, usable_kwh=10.0, reserve_soc_pct=10.0,
+        max_discharge_w=4000.0, round_trip_efficiency=0.90, site_tz=ams,
+    )
+    # 4 × 1000 W × 0.25 h = 1.0 kWh AC; DC = AC / √0.90. Under the 9 kWh cap.
+    assert start == evening[0].start
+    assert need == 1.0 / math.sqrt(0.90)
+    only_morning, no_start = evening_reserve_kwh(
+        morning, load_w_by={s.start: 3000.0 for s in morning}, usable_kwh=10.0,
+        reserve_soc_pct=10.0, max_discharge_w=4000.0, round_trip_efficiency=0.90,
+        site_tz=ams,
+    )
+    assert only_morning == 0.0 and no_start is None
+    heavy = [
+        PlanSlot(day.replace(hour=18) + i * timedelta(minutes=15),
+                 BatteryIntent.DISCHARGE_FOR_LOAD, "x")
+        for i in range(40)
+    ]
+    capped, capped_start = evening_reserve_kwh(
+        heavy, load_w_by={s.start: 4000.0 for s in heavy}, usable_kwh=10.0,
+        reserve_soc_pct=10.0, max_discharge_w=4000.0, round_trip_efficiency=1.0,
+        site_tz=ams,
+    )
+    assert capped_start == heavy[0].start
+    assert capped == 9.0

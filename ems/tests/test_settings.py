@@ -51,6 +51,20 @@ def test_export_model_confirmed_defaults_and_validation():
     assert legacy["prices.export_model_confirmed"] is False
 
 
+def test_stale_reserve_buffer_pp_defaults_and_bounds():
+    d = defaults()
+    assert d["planner.stale_reserve_buffer_pp"] == 5.0
+    field = SETTINGS_BY_KEY["planner.stale_reserve_buffer_pp"]
+    assert field.advanced is True
+    assert field.min == 0.0 and field.max == 20.0
+    clean, errors = validate_settings({"planner.stale_reserve_buffer_pp": 20.0})
+    assert errors == {} and clean["planner.stale_reserve_buffer_pp"] == 20.0
+    _c, err = validate_settings({"planner.stale_reserve_buffer_pp": 21.0})
+    assert "planner.stale_reserve_buffer_pp" in err
+    _c, err_neg = validate_settings({"planner.stale_reserve_buffer_pp": -1.0})
+    assert "planner.stale_reserve_buffer_pp" in err_neg
+
+
 def test_trading_settings_defaults_match_e11_lock():
     """B-103 / #209: trading keys exist, default OFF / spot_minus_tax / €0.50 / uncapped."""
     d = defaults()
@@ -497,6 +511,25 @@ def test_heating_done_field_accepts_arbitrary_json_string():
     assert json.loads(clean["heating.done"]) == {
         "balancing": "2026-07-15", "flow_temp": "2026-07-16",
     }
+
+
+def test_max_buy_eur_per_kwh_bounds_and_strategy_group():
+    """AC3 (#324): planner.max_buy_eur_per_kwh — bounds and visible in Strategy (not advanced)."""
+    field = SETTINGS_BY_KEY["planner.max_buy_eur_per_kwh"]
+    assert field.type == "number"
+    assert field.group == "strategy"
+    assert field.unit == "€/kWh"
+    assert field.advanced is False
+    assert field.min <= field.default <= field.max
+    assert field.default == 0.0 and field.min == 0.0 and field.max == 1.0
+    _low, err_low = validate_settings({"planner.max_buy_eur_per_kwh": -0.01})
+    _high, err_high = validate_settings({"planner.max_buy_eur_per_kwh": 1.01})
+    assert "planner.max_buy_eur_per_kwh" in err_low
+    assert "planner.max_buy_eur_per_kwh" in err_high
+    clean, errors = validate_settings({"planner.max_buy_eur_per_kwh": 0.20})
+    assert errors == {} and clean["planner.max_buy_eur_per_kwh"] == 0.20
+    row = next(r for r in schema_json() if r["key"] == field.key)
+    assert row["advanced"] is False and row["group"] == "strategy"
 
 
 def test_max_daily_grid_charge_bounds_and_slider():
