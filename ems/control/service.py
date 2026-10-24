@@ -841,6 +841,19 @@ class ControlService:
 
     def adaptive_cfg(self) -> AdaptiveConfig:
         s = self._settings
+        cap = self._cached_capability()
+        cap_ready = (
+            cap is not None
+            and cap.supports_grid_charge
+            and cap.max_charge_w > 0
+        )
+        device_min = cap.min_target_soc if cap is not None and cap.min_target_soc > 0 else None
+        target_soc = float(s.get("planner.must_charge_target_soc", 30.0))
+        floor = self.effective_floor_soc()
+        if device_min is not None:
+            target_soc = max(floor, device_min, min(100.0, target_soc))
+        else:
+            target_soc = max(floor, min(100.0, target_soc))
         return AdaptiveConfig(
             usable_kwh=s["battery.usable_kwh"],
             reserve_soc_pct=self.effective_floor_soc(),
@@ -853,6 +866,14 @@ class ControlService:
             max_daily_grid_charge_kwh=float(s.get("planner.max_daily_grid_charge_kwh", 12.0)),
             max_cycles_per_day=float(s.get("planner.max_cycles_per_day", 1.5)),
             site_tz=self._site_tz,
+            must_charge_enabled=bool(s.get("planner.must_charge_enabled", False)),
+            must_charge_target_soc=target_soc,
+            must_charge_max_price_eur_per_kwh=float(
+                s.get("planner.must_charge_max_price_eur_per_kwh", 0.40),
+            ),
+            must_charge_buffer_pp=float(s.get("planner.must_charge_buffer_pp", 10.0)),
+            must_charge_capability_ready=cap_ready,
+            must_charge_device_min_target_soc=device_min,
         )
 
     def already_bought_today_kwh(self, now: datetime) -> float | None:

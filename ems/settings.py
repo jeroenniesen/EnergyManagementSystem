@@ -543,6 +543,32 @@ SETTINGS_SCHEMA: tuple[SettingsField, ...] = (
         "or buys above its break-even limit. Turn it off to leave missed windows untouched.",
         advanced=True,
     ),
+    SettingsField(
+        "planner.must_charge_enabled", "Voorzorgslading vóór avondpiek", "bool", False, "strategy",
+        help="Optioneel: laad de batterij bij tot het ingestelde doel vóór een dure avondpiek "
+        "als normale arbitrage geen koopmoment vindt en het laadniveau laag is. Standaard uit.",
+    ),
+    SettingsField(
+        "planner.must_charge_target_soc", "Voorzorgslading: doel laadniveau", "number", 30.0,
+        "strategy",
+        help="Laadniveau (%) dat voorzorgslading probeert te halen vóór de piek. Blijft binnen "
+        "je reserve en batterijgrenzen.",
+        min=5.0, max=100.0, step=1.0, unit="%",
+    ),
+    SettingsField(
+        "planner.must_charge_max_price_eur_per_kwh", "Voorzorgslading: prijsplafond", "number",
+        0.40, "strategy",
+        help="Laad alleen op slots met een bekende prijs tot dit plafond (€/kWh), los van de "
+        "arbitrage-max-inkoop.",
+        min=0.0, max=2.0, step=0.01, unit="€/kWh", advanced=True,
+    ),
+    SettingsField(
+        "planner.must_charge_buffer_pp", "Voorzorgslading: buffer boven vloer", "number", 10.0,
+        "strategy",
+        help="Start voorzorgslading alleen wanneer het laadniveau onder de effectieve vloer "
+        "plus deze buffer (procentpunt) zit.",
+        min=0.0, max=50.0, step=1.0, unit="pp", advanced=True,
+    ),
     # --- AI explanations (optional, OFF by default; the one off-device feature — SPEC §12) ---
     SettingsField(
         "explainer.mode", "AI explanations", "enum", "template", "ai",

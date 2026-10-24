@@ -16,13 +16,14 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
 from ems.domain import BatteryIntent
 from ems.planner import economics
 from ems.planner.budgets import ac_grid_kwh_per_slot, clamp_cycle_budget, clamp_grid_charge
 from ems.planner.buy_pool import build_buy_pool_info
+from ems.planner.reason import is_must_charge_slot
 from ems.planner.rule_based import late_pack_charge_starts
 from ems.planner.schedule import SLOT, Plan, PlanSlot
 from ems.sources.forecast import ForecastSlot
@@ -49,6 +50,67 @@ class AdaptiveConfig:
     charged_today_kwh: float | None = 0.0
     discharged_today_kwh: float | None = 0.0
     site_tz: ZoneInfo = field(default_factory=lambda: ZoneInfo("Europe/Amsterdam"))
+    must_charge_enabled: bool = False
+    must_charge_target_soc: float = 30.0
+    must_charge_max_price_eur_per_kwh: float = 0.40
+    must_charge_buffer_pp: float = 10.0
+    must_charge_capability_ready: bool = False
+    must_charge_device_min_target_soc: float | None = None
+
+
+@dataclass(frozen=True)
+class MustChargeTriggerSignals:
+    shortfall_kwh: float
+    peak_deadline: datetime
+
+
+_EVENING_PEAK_HOURS = range(17, 22)
+
+
+def detect_must_charge_signals(
+    plan: Plan,
+    *,
+    soc_pct: float,
+    effective_floor_pct: float,
+    buffer_pp: float,
+    now: datetime,
+    horizon: timedelta,
+    site_tz: ZoneInfo | None = None,
+) -> MustChargeTriggerSignals | None:
+    """Shortfall + empty/insufficient arbitrage pool, low SoC, and a peak within ``horizon``."""
+    pool_info = plan.buy_pool
+    if pool_info is None or pool_info.shortfall_kwh <= 1e-9:
+        return None
+    arbitrage_charge = [
+        s for s in plan.slots
+        if s.intent is BatteryIntent.GRID_CHARGE_TO_TARGET
+        and not is_must_charge_slot(s)
+    ]
+    insufficient = (
+        pool_info.state == "empty"
+        or (pool_info.shortfall_kwh > 1e-9 and not arbitrage_charge)
+        or (pool_info.pool_size > 0 and len(arbitrage_charge) == 0
+            and pool_info.state != "not_needed")
+    )
+    if not insufficient:
+        return None
+    if soc_pct >= effective_floor_pct + max(0.0, buffer_pp) - 1e-6:
+        return None
+    tz = site_tz or ZoneInfo("Europe/Amsterdam")
+    peaks = [
+        s.start for s in plan.slots
+        if s.intent is BatteryIntent.DISCHARGE_FOR_LOAD
+        and s.start > now
+        and s.start <= now + horizon
+        and s.start.astimezone(tz).hour in _EVENING_PEAK_HOURS
+    ]
+    if not peaks:
+        return None
+    deadline = min(peaks)
+    return MustChargeTriggerSignals(
+        shortfall_kwh=pool_info.shortfall_kwh,
+        peak_deadline=deadline,
+    )
 
 
 def plan_adaptive(
