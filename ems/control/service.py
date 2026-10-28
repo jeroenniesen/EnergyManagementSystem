@@ -953,6 +953,8 @@ class ControlService:
         except (TypeError, ValueError):
             typical = 20.0
         rows = self._ctx.ev_daily_box.get("rows")
+        from ems.settings import ev_skip_date_active
+
         return estimate_ev_exogenous_kwh(
             now=now,
             tz=self._site_tz,
@@ -961,6 +963,7 @@ class ControlService:
             typical_charge_kwh=typical,
             schedule_raw=s.get("ev.schedule"),
             daily_ev_rows=rows if isinstance(rows, list) else None,
+            skip_today=ev_skip_date_active(s.get("ev.skip_date"), now, self._site_tz),
         )
 
     def strategy_inputs(self, now: datetime):

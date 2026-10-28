@@ -1,4 +1,6 @@
 import json
+from datetime import datetime
+from zoneinfo import ZoneInfo
 
 from ems.ev_schedule import default_schedule
 from ems.settings import (
@@ -7,11 +9,14 @@ from ems.settings import (
     VALIDATE_SETTINGS_WITHOUT_DEV_MODE,
     defaults,
     effective_settings,
+    ev_skip_date_active,
     live_mock_forecast_in_use,
     live_mock_forecast_provider_active,
     schema_json,
     validate_settings,
 )
+
+AMS = ZoneInfo("Europe/Amsterdam")
 
 
 def test_minimum_reserve_schema_bounds_and_default():
@@ -215,6 +220,8 @@ def test_schema_json_shape():
     rows = schema_json()
     shown = {f.key for f in SETTINGS_SCHEMA if f.show_in_settings}
     assert {r["key"] for r in rows} == shown
+    assert "ev.skip_date" in SETTINGS_BY_KEY
+    assert "ev.skip_date" not in shown
     # Trading owns confirm-to-arm; the key stays valid but is not a Manage checkbox.
     assert "control.allow_export_discharge" in SETTINGS_BY_KEY
     assert "control.allow_export_discharge" not in shown
@@ -610,3 +617,22 @@ def test_consumers_quiet_hours_and_preferred_windows_validation():
         "consumers.preferred_windows": '{"washer": "22:00-07:00"}',
     })
     assert "consumers.preferred_windows" in err_wrap
+
+
+def test_ev_skip_date_active_only_on_matching_local_day():
+    now = datetime(2026, 1, 12, 10, 0, tzinfo=AMS)
+    assert ev_skip_date_active("2026-01-12", now, AMS) is True
+    assert ev_skip_date_active("2026-01-11", now, AMS) is False
+    assert ev_skip_date_active("not-a-date", now, AMS) is False
+    assert ev_skip_date_active("", now, AMS) is False
+    # AC3: after local midnight the stored date is inactive without a write.
+    next_day = datetime(2026, 1, 13, 0, 5, tzinfo=AMS)
+    assert ev_skip_date_active("2026-01-12", next_day, AMS) is False
+
+
+def test_ev_skip_date_validate_rejects_invalid_iso():
+    _c, err = validate_settings({"ev.skip_date": "31-12-2026"})
+    assert "ev.skip_date" in err
+    clean, errors = validate_settings({"ev.skip_date": "2026-12-31"})
+    assert errors == {}
+    assert clean["ev.skip_date"] == "2026-12-31"

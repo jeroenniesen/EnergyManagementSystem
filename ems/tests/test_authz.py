@@ -55,6 +55,8 @@ def test_required_tier():
     assert effective_rank("admin", "access", "view") < int(
         required_tier("/api/consumers/advice/accept", "POST")
     )
+    assert required_tier("/api/ev/skip-today", "POST") == Tier.OPERATE
+    assert required_tier("/api/ev/skip-today", "GET") == Tier.VIEW
 
 
 def test_requires_session():

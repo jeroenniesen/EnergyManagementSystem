@@ -98,6 +98,7 @@ EXTRACTED_GET_ROUTES = [
 ]
 EXTRACTED_WRITE_ROUTES = [
     "/api/car/soc",                    # car
+    "/api/ev/skip-today",              # car (#320)
     "/api/notifications/read",         # notify
     "/api/consumers/advice/accept",    # accepted start window (#334)
 ]
