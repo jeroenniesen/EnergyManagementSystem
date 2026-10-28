@@ -23,6 +23,7 @@ from ems.control.service import ControlContext, ControlService
 from ems.domain import BatteryIntent, PhysicalMode
 from ems.lifecycle import Lifecycle
 from ems.planner.budgets import ac_grid_kwh_per_slot, plan_day_efc, planned_grid_charge_kwh
+from ems.planner.load_profile import build_load_profile
 from ems.planner.validator import PlanValidation
 from ems.settings import effective_settings
 from ems.sources.battery import BatteryWriteUnconfirmed, MockBatteryDriver
@@ -84,6 +85,20 @@ def _service(
         adaptive_cfg=lambda: None,
     )
     return svc, ctx
+
+
+def test_load_by_hour_golden_and_quarter_opt_in():
+    svc, ctx = _service(_controlling_controller())
+    rows = [
+        {"ts": datetime(2026, 6, day, 16, minute, tzinfo=UTC).isoformat(),
+         "non_ev_load_w": 1200.0 if minute == 0 else 200.0}
+        for day in range(1, 7) for minute in (0, 15, 30, 45)
+    ]
+    ctx.load_profile_box["profile"] = build_load_profile(rows, svc._site_tz)
+    starts = [datetime(2026, 6, 28, 16, minute, tzinfo=UTC) for minute in (0, 15, 30, 45)]
+    assert svc.load_by(starts) == dict.fromkeys(starts, 450.0)
+    svc._settings["planner.load_profile_resolution"] = "quarter"
+    assert svc.load_by(starts) == dict(zip(starts, (1200.0, 200.0, 200.0, 200.0), strict=True))
 
 
 def test_incomplete_live_prices_return_a_forced_battery_to_auto():

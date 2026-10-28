@@ -134,3 +134,52 @@ def test_last_completed_week_monday_late_sunday_night_still_the_prior_week():
 def test_last_completed_week_monday_mid_week():
     now_local = datetime(2026, 7, 8, 12, 0, tzinfo=AMS)  # a Wednesday
     assert _last_completed_week_monday(now_local) == date(2026, 6, 29)
+
+
+def _patch_solar_advice(app, advice_box: dict) -> None:
+    async def fake(_now):
+        return advice_box["advice"]
+
+    app.state.application_context.control_state["solar_confidence_advice"] = fake
+
+
+def test_digest_apply_payload_and_seven_day_hysteresis_after_settings_write(tmp_path):
+    """#337 / F-36: the digest offers exactly planner.solar_confidence, then hides that suggestion
+    for 7 days after POST /api/settings — including while the advisor oscillates."""
+    db = str(tmp_path / "ems.sqlite")
+    audit = AuditStore(db)
+    app = _app(db, audit_store=audit)
+    advice_box = {"advice": {
+        "recommended_pct": 65.0, "current_pct": 80.0, "delta_pct": -15.0,
+        "n_slots": 60, "stable": True,
+    }}
+    _patch_solar_advice(app, advice_box)
+    with TestClient(app) as c:
+        before = c.get("/api/settings").json()["values"]
+        assert before["control.dry_run"] is True
+        assert before["control.operational"] is False
+        first = c.get("/api/digest").json()
+        assert first["tweak_apply"] == {
+            "key": "planner.solar_confidence",
+            "value": 65.0,
+            "current": 80.0,
+        }
+        saved = c.post("/api/settings", json={"planner.solar_confidence": 65})
+        assert saved.status_code == 200
+        assert saved.json()["values"]["planner.solar_confidence"] == 65.0
+        assert saved.json()["values"]["control.dry_run"] is True
+        assert saved.json()["values"]["control.operational"] is False
+        entries = c.get("/api/audit").json()["entries"]
+        config_rows = [e for e in entries if e["category"] == "config_change"]
+        assert config_rows[-1]["detail"]["keys"] == ["planner.solar_confidence"]
+        for recommended, current in ((90.0, 65.0), (50.0, 65.0), (80.0, 65.0), (68.0, 65.0)):
+            advice_box["advice"] = {
+                "recommended_pct": recommended,
+                "current_pct": current,
+                "delta_pct": recommended - current,
+                "n_slots": 60,
+                "stable": True,
+            }
+            later = c.get("/api/digest").json()
+            assert "tweak_apply" not in later
+            assert "solar confidence" not in (later.get("tweak") or "").lower()

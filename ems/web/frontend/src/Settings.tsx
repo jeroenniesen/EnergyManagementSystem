@@ -35,6 +35,7 @@ import {
   nightReserveComfortHours,
   humanize,
 } from "./labels";
+import { attachNumberInputWheel, resolveNumberBlur } from "./numberInput";
 import { liveWritingConditions, type LiveWritingStatus } from "./topbarChips";
 import { SectionIcon } from "./settingsIcons";
 
@@ -258,9 +259,15 @@ function NumberInput({
 }) {
   // Hold the raw text locally so the user can transiently clear/retype without it snapping to 0.
   const [raw, setRaw] = useState(String(value));
+  const inputRef = useRef<HTMLInputElement>(null);
   useEffect(() => {
     setRaw(String(value));
   }, [value]);
+  useEffect(() => {
+    const el = inputRef.current;
+    if (!el) return;
+    return attachNumberInputWheel(el);
+  }, []);
   // A drag slider (opt-in via field.slider, needs a min+max) — easier to dial than typing, with a
   // live numeric read-out beside it since a range input shows no value of its own.
   if (field.slider && field.min != null && field.max != null) {
@@ -284,23 +291,39 @@ function NumberInput({
       </div>
     );
   }
+  const unitId = field.unit ? `unit-${field.key}` : undefined;
   return (
-    <input
-      id={`set-${field.key}`}
-      type="number"
-      value={raw}
-      disabled={disabled}
-      min={field.min ?? undefined}
-      max={field.max ?? undefined}
-      step={field.step ?? (field.type === "int" ? 1 : "any")}
-      onChange={(e) => setRaw(e.target.value)}
-      onBlur={(e) => {
-        const n = e.target.value === "" ? (field.min ?? 0) : Number(e.target.value);
-        const coerced = field.type === "int" ? Math.round(n) : n;
-        setRaw(String(coerced));
-        onChange(coerced);
-      }}
-    />
+    <span className="number-with-unit">
+      <input
+        ref={inputRef}
+        id={`set-${field.key}`}
+        type="number"
+        value={raw}
+        disabled={disabled}
+        min={field.min ?? undefined}
+        max={field.max ?? undefined}
+        step={field.step ?? (field.type === "int" ? 1 : "any")}
+        aria-describedby={unitId}
+        onChange={(e) => setRaw(e.target.value)}
+        onBlur={(e) => {
+          // Empty keeps the draft. Out of range stays typed so Save still hits the field error.
+          const result = resolveNumberBlur(e.target.value, {
+            min: field.min,
+            max: field.max,
+            integer: field.type === "int",
+          });
+          if (result.action === "restore") {
+            setRaw(String(value));
+            return;
+          }
+          setRaw(String(result.value));
+          if (result.value !== value) onChange(result.value);
+        }}
+      />
+      {field.unit && (
+        <span className="number-unit-suffix" id={unitId} data-testid={`unit-${field.key}`}>{field.unit}</span>
+      )}
+    </span>
   );
 }
 
@@ -322,6 +345,9 @@ function Field({
   onChange: (v: number | boolean | string) => void;
 }) {
   const id = `set-${field.key}`;
+  // Number boxes show the unit inside the field (#366). Sliders keep the label unit.
+  const unitInField =
+    Boolean(field.unit) && !field.slider && (field.type === "number" || field.type === "int");
   const labelText =
     field.key === "planner.max_daily_grid_charge_kwh"
       ? DAILY_GRID_CHARGE_CAP.label
@@ -337,7 +363,7 @@ function Field({
   const label = (
     <label htmlFor={id} className="field-label">
       {labelText}
-      {field.unit && <span className="field-unit"> ({field.unit})</span>}
+      {field.unit && !unitInField && <span className="field-unit"> ({field.unit})</span>}
       {field.applies === "restart" ? (
         <span
           className={`field-badge field-badge-restart${restartPending ? " field-badge-pending" : ""}`}

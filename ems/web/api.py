@@ -136,7 +136,7 @@ from ems.planner.reason import (
 )
 from ems.planner.recovery import check_charge_completion, recover_if_needed
 from ems.planner.rule_based import plan_rule_based
-from ems.planner.strategy import HysteresisState
+from ems.planner.strategy import HysteresisState, hysteresis_status
 from ems.planner.summer import sunset_after
 from ems.planner.trading import evaluate_trading, trading_config_from_settings
 from ems.planner.validator import PlanValidation, clamp_plan_power, validate_plan
@@ -220,6 +220,10 @@ from ems.web.routes.report import build_router as build_report_router
 from ems.web.routes.reserve_advice import build_router as build_reserve_advice_router
 from ems.web.routes.users import build_router as build_users_router
 from ems.web.routes.verification import build_router as build_verification_router
+from ems.web.routes.whatif import (
+    WHATIF_APPLY_HEADER,
+    prepare_whatif_live_patch,
+)
 from ems.web.routes.whatif import build_router as build_whatif_router
 
 _log = logging.getLogger("ems.recorder")
@@ -2834,7 +2838,7 @@ def create_app(
                 battery_present=battery_present,
                 p1_paired=p1_paired,
                 soc_ready=soc_ready,
-                prices_live=_prices_live(),
+                prices_live=_prices_kind() == "live",
                 forecast_ok=_forecast_ok_for_quality(),
                 grid_fuse_unset=grid_fuse_unset,
             ).to_dict()
@@ -4153,6 +4157,11 @@ def create_app(
         now = datetime.now(UTC)
         mode = settings_cache["strategy.mode"]
         active, why = _resolve_strategy(now)
+        # F-39: read the memory the resolve above just committed. No second hysteresis pass.
+        hyst = hysteresis_status(
+            _hysteresis_box["state"],
+            days=int(settings_cache["strategy.hysteresis_days"]),
+        )
         return {
             "mode": mode,  # auto | summer | winter (the user's choice)
             "active": active,  # the resolved strategy actually running
@@ -4162,6 +4171,7 @@ def create_app(
             "reason": why,
             "grid_topup": settings_cache["strategy.summer_grid_topup"],
             "max_topup_price": settings_cache["strategy.summer_max_topup_price"],
+            "hysteresis": hyst,  # committed, pending, count, days — read-only
         }
 
     def _battery_model() -> BatteryModel:
@@ -5722,6 +5732,14 @@ def create_app(
                 },
                 status_code=422,
             )
+        # #337 / F-38: the What-if confirm uses this writer's audit and cache invalidation.
+        # Its header restricts that request to WHATIF_ALLOWED_KEYS; normal saves omit it.
+        if request.headers.get(WHATIF_APPLY_HEADER) == "1":
+            body, errors = prepare_whatif_live_patch(body)
+            if errors:
+                return JSONResponse(
+                    {"detail": "invalid settings", "errors": errors}, status_code=422,
+                )
         clean, errors = validate_settings(body, dev_mode=dev_mode)
         if errors:
             # Reject the whole payload if ANY key is invalid — partial saves are confusing.

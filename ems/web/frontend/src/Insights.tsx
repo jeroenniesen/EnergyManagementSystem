@@ -362,7 +362,7 @@ export function Insights({ canOperate = true }: { canOperate?: boolean } = {}) {
     <section className="insights" data-testid="insights" data-density-surface="insights" aria-label="Insights and reporting">
       {visible && sections.length > 1 && <SectionNav sections={sections} activeId={activeId} />}
       <div id="insights-sec-week">
-        <WeekDigest />
+        <WeekDigest canOperate={canOperate} />
       </div>
       <div className="insights-head">
         <div>
@@ -569,7 +569,7 @@ export function Insights({ canOperate = true }: { canOperate?: boolean } = {}) {
 
       {report && hasData && f && (
         <div id="insights-sec-whatif">
-          <WhatIf />
+          <WhatIf canOperate={canOperate} />
         </div>
       )}
     </section>

@@ -19,12 +19,36 @@ from ems.settings import (
 AMS = ZoneInfo("Europe/Amsterdam")
 
 
+def test_minimum_reserve_schema_bounds_and_default():
+    field = SETTINGS_BY_KEY["battery.min_reserve_soc"]
+    shown = next(f for f in schema_json() if f["key"] == field.key)
+    assert shown["min"] == field.min
+    assert shown["max"] == field.max
+    assert shown["step"] == field.step
+    assert shown["unit"] == field.unit
+    assert shown["default"] == field.default
+    assert field.min <= field.default <= field.max
+
+
 def test_defaults_cover_every_field():
     d = defaults()
     assert set(d) == set(SETTINGS_BY_KEY)
     assert d["planner.round_trip_efficiency"] == 0.90
     assert d["ui.theme"] == "auto"
     assert d["control.allow_export_discharge"] is False
+
+
+def test_load_profile_resolution_setting():
+    key = "planner.load_profile_resolution"
+    field = SETTINGS_BY_KEY[key]
+    assert field.type == "enum" and field.options == ("hour", "quarter")
+    assert field.advanced is True
+    assert defaults()[key] == "hour"
+    for value in ("hour", "quarter"):
+        clean, errors = validate_settings({key: value})
+        assert errors == {} and clean[key] == value
+    _clean, errors = validate_settings({key: "minute"})
+    assert key in errors
 
 
 def test_export_model_confirmed_defaults_and_validation():

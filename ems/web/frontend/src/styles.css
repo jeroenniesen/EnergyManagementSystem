@@ -888,7 +888,30 @@ body {
 }
 .strategy-badge { background: var(--panel-2); color: var(--muted); text-transform: none; }
 .season-summer .strategy-badge { color: var(--summer-text); background: var(--summer-tint); }
-.season-winter .strategy-badge { color: var(--winter); background: var(--winter-tint); }
+.season-winter .strategy-badge { color: var(--winter-text); background: var(--winter-tint); }
+/* F-39: pending winter hold + one-tap solar-first. Text/tint follow the active theme. */
+.strategy-hold {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin-top: 12px;
+}
+.strategy-hold-chip {
+  display: inline-flex;
+  align-items: center;
+  padding: 4px 10px;
+  border-radius: 999px;
+  background: var(--winter-tint);
+  color: var(--winter-text);
+  border: 1px solid var(--line);
+  font-size: 0.82rem;
+  font-weight: 600;
+  letter-spacing: 0;
+  text-transform: none;
+}
+.strategy-hold-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.strategy-hold-btn { padding: 6px 12px; font-size: 0.85rem; }
 
 /* Inline tuning row — one contextual knob + a door to the advanced settings (progressive
    disclosure: simple by default, deep when you want it). */
@@ -1581,6 +1604,45 @@ body {
   outline: 2px solid var(--accent); outline-offset: 1px;
 }
 .field-help { color: var(--muted); font-size: 0.78rem; margin: 0; line-height: 1.45; }
+/* #366 — unit sits inside the field chrome (light and dark use the same tokens). */
+.number-with-unit {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  background: var(--panel-2);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  color: var(--text);
+}
+.field .number-with-unit input[type="number"],
+.trading-row .number-with-unit input[type="number"] {
+  flex: 1 1 auto;
+  width: auto;
+  min-width: 0;
+  border: 0;
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  padding: 7px 10px;
+}
+.number-unit-suffix {
+  flex: none;
+  padding: 0 10px 0 0;
+  color: var(--muted);
+  font-size: 0.85rem;
+  pointer-events: none;
+}
+.number-with-unit:focus-within {
+  border-color: var(--accent);
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+.number-with-unit input:focus,
+.number-with-unit input:focus-visible {
+  outline: none;
+  border-color: transparent;
+}
+.field-error .number-with-unit { border-color: rgba(220, 80, 80, 0.6); }
 .field-error input, .field-error select { border-color: rgba(220, 80, 80, 0.6); }
 .field-err { color: var(--error); font-size: 0.74rem; margin: 0; }
 
@@ -3254,9 +3316,19 @@ body {
 .trading-metrics dd { margin: 2px 0 0; font-size: 1.15rem; font-weight: 600; }
 .trading-row { display: flex; justify-content: space-between; align-items: center; gap: 12px; margin: 10px 0; font-size: 0.92rem; }
 .trading-row input[type="number"], .trading-row select { width: 9rem; }
+.trading-row .number-with-unit { width: 9.5rem; max-width: 46%; flex: 0 1 auto; }
+.trading-row .number-with-unit input[type="number"] { width: auto; }
+.trading-cap-hint { margin: -4px 0 8px; color: var(--muted); font-size: 0.78rem; }
 .trading-confirm { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-top: 8px; }
 .trading-confirm p { flex: 1 1 100%; margin: 0; }
 .trading-view .muted { color: var(--muted); font-size: 0.88rem; }
+
+/* #337 / F-36 + F-38 — digest solar apply + what-if live confirm */
+.week-digest-apply { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin: 0 0 8px; }
+.whatif-apply { margin-top: 12px; display: flex; flex-direction: column; align-items: flex-start; gap: 8px; }
+.whatif-apply-diff { margin: 0 0 8px; padding-left: 1.1rem; }
+.whatif-apply .override-confirm { width: 100%; }
+
 .trading-steps { list-style: none; margin: 12px 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
 .trading-step { display: flex; gap: 10px; align-items: flex-start; font-size: 0.92rem; line-height: 1.4; }
 .trading-step-mark { flex-shrink: 0; font-weight: 600; width: 1.25rem; text-align: center; }

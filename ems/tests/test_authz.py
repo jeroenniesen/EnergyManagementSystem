@@ -98,6 +98,14 @@ def test_effective_rank_fails_closed_on_garbage_tier():
     assert effective_rank("admin", "access", "root") == -1
 
 
+def test_reader_cannot_apply_digest_or_whatif_settings():
+    """#337 / F-36+F-38: both one-click buttons POST /api/settings, which stays OPERATE.
+    A reader is below that tier, so the API answers 403. There is no separate apply route."""
+    assert required_tier("/api/settings", "POST") == Tier.OPERATE
+    assert not role_satisfies("reader", required_tier("/api/settings", "POST"))
+    assert role_satisfies("user", required_tier("/api/settings", "POST"))
+
+
 def test_user_and_invite_management_is_session_only():
     assert requires_session("/api/users")
     assert requires_session("/api/users/5")

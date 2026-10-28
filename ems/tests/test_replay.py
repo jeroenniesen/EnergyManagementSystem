@@ -24,6 +24,7 @@ import pytest
 from ems.domain import BatteryIntent, RawSample
 from ems.economics import EconomicSnapshot
 from ems.load_model import reconstruct
+from ems.planner.load_profile import build_load_profile
 from ems.planner.projection import BatteryModel, mark_floor_holds, project_energy
 from ems.planner.schedule import SLOT, Plan, PlanSlot
 from ems.planner.strategy import HysteresisState
@@ -124,6 +125,27 @@ def _winter_price(i):  # 0.10 night(0-5) · 0.20 midday(6-16) · 0.50 peak(17-20
 
 def _winter_day(soc=0.0):
     return _raw_day(1000.0, lambda i: 0.0, soc=soc), _price_day(_winter_price)
+
+
+def test_load_profile_hour_vs_quarter_replay_mae():
+    """Replay a held-out day of 15-minute load after six training days with one short peak."""
+    train = []
+    for days_before in range(6, 0, -1):
+        day = DAY - timedelta(days=days_before)
+        raw = _raw_day(200.0, lambda i: 0.0, day=day)
+        raw[72]["grid_power_w"] = 1200.0  # 18:00 quarter only
+        train.extend({"ts": r["ts"], "non_ev_load_w": r["grid_power_w"]} for r in raw)
+    held_out = _raw_day(200.0, lambda i: 0.0)
+    held_out[72]["grid_power_w"] = 1200.0
+    assert replay_day(held_out, _price_day(_winter_price), [], cfg=_cfg()).data_ok
+    profile = build_load_profile(train, UTZ, enhanced=True, as_of=DAY)
+    actual = [(datetime.fromisoformat(r["ts"]), r["grid_power_w"]) for r in held_out]
+    hour_mae = sum(abs(profile.expected_w(t) - load) for t, load in actual) / len(actual)
+    quarter_mae = sum(
+        abs(profile.expected_w(t, resolution="quarter") - load) for t, load in actual
+    ) / len(actual)
+    assert hour_mae == pytest.approx(15.625)
+    assert quarter_mae == 0.0
 
 
 def _fc_day(p50_of_slot, *, day=DAY):

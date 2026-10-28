@@ -97,3 +97,33 @@ def test_invalid_loads_are_quarantined_from_learning():
     ]
     prof = build_load_profile(rows, AMS, min_samples=3)
     assert prof.by_hour == {}
+
+
+def test_quarter_peak_and_hour_golden():
+    # Six separate days provide six samples for each local 18:xx quarter.
+    rows = [
+        _row((datetime(2026, 6, day, 16, minute, tzinfo=UTC)).isoformat(),
+             1200.0 if minute == 0 else 200.0)
+        for day in range(1, 7) for minute in (0, 15, 30, 45)
+    ]
+    profile = build_load_profile(rows, AMS)
+    peak = datetime(2026, 6, 28, 16, 0, tzinfo=UTC)
+    rest = datetime(2026, 6, 28, 16, 15, tzinfo=UTC)
+    assert profile.expected_w(peak) == 450.0
+    assert profile.expected_w(rest, resolution="hour") == 450.0
+    assert profile.expected_w(peak, resolution="quarter") == 1200.0
+    assert profile.expected_w(rest, resolution="quarter") == 200.0
+
+
+def test_sparse_quarter_falls_back_to_exact_hourly_mean():
+    rows = [
+        _row(datetime(2026, 6, day, 16, 0, tzinfo=UTC).isoformat(), 1200.0)
+        for day in range(1, 6)
+    ] + [
+        _row(datetime(2026, 6, day, 16, 15, tzinfo=UTC).isoformat(), 200.0)
+        for day in range(1, 7)
+    ]
+    profile = build_load_profile(rows, AMS)
+    peak = datetime(2026, 6, 28, 16, 0, tzinfo=UTC)
+    assert profile.expected_w(peak, resolution="quarter") == profile.expected_w(peak)
+    assert profile.expected_w(peak) == (5 * 1200.0 + 6 * 200.0) / 11

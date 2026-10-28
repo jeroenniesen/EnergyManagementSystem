@@ -931,7 +931,10 @@ class ControlService:
             fallback = self._settings["battery.overnight_load_kwh"] * 1000.0 / 12.0
             base = {s: fallback for s in starts}
         else:
-            base = {s: prof.expected_w(s) for s in starts}
+            if self._settings.get("planner.load_profile_resolution", "hour") == "quarter":
+                base = {s: prof.expected_w(s, resolution="quarter") for s in starts}
+            else:
+                base = {s: prof.expected_w(s) for s in starts}
         bump = accepted_load_bump_w(self._cache_store, starts, self._clock)
         return {s: base[s] + max(0.0, bump.get(s, 0.0)) for s in starts}
 

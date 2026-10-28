@@ -13,6 +13,7 @@ from ems.domain import PhysicalMode, RawSample
 from ems.lifecycle import Lifecycle
 from ems.settings import (
     SECRET_KEYS,
+    SETTINGS_BY_KEY,
     SETTINGS_SCHEMA,
     SETUP_SETTINGS_BATTERY_POWER_LIMIT_KEYS,
     SETUP_SETTINGS_BATTERY_SAFE_KEYS,
@@ -136,8 +137,8 @@ def test_mixed_forbidden_key_rejects_without_persist(tmp_path):
     assert before == after
 
 
-def test_battery_power_limit_deny_keys_match_schema():
-    """AC 17: deny-set stays aligned with battery.* number fields in W / % / kWh."""
+def test_battery_numeric_setup_keys_match_schema():
+    """Reserve is the sole onboarding exception among numeric battery settings."""
     derived = {
         f.key
         for f in SETTINGS_SCHEMA
@@ -145,7 +146,7 @@ def test_battery_power_limit_deny_keys_match_schema():
         and f.type in ("number", "int")
         and f.unit in ("W", "%", "kWh")
     }
-    assert derived == set(SETUP_SETTINGS_BATTERY_POWER_LIMIT_KEYS)
+    assert derived == set(SETUP_SETTINGS_BATTERY_POWER_LIMIT_KEYS | {"battery.min_reserve_soc"})
 
 
 def test_battery_setup_keys_partition_schema():
@@ -153,6 +154,103 @@ def test_battery_setup_keys_partition_schema():
     battery_keys = {f.key for f in SETTINGS_SCHEMA if f.key.startswith("battery.")}
     allowed = SETUP_SETTINGS_BATTERY_SAFE_KEYS | SETUP_SETTINGS_BATTERY_POWER_LIMIT_KEYS
     assert battery_keys == allowed
+
+
+def test_reserve_default_within_schema_bounds():
+    field = SETTINGS_BY_KEY["battery.min_reserve_soc"]
+    assert field.min is not None and field.max is not None
+    assert field.min <= field.default <= field.max
+    assert field.applies == "live"
+
+
+@pytest.mark.parametrize("boundary", ["min", "max"])
+def test_setup_reserve_accepts_both_bounds_live_and_audits_key_only(tmp_path, boundary):
+    field = SETTINGS_BY_KEY["battery.min_reserve_soc"]
+    value = getattr(field, boundary)
+    app, db = _app(tmp_path)
+    _seed_admin(db)
+    with TestClient(app) as c:
+        h = _admin_headers(c)
+        r = c.post("/api/setup/settings", json={field.key: value}, headers=h)
+        assert r.status_code == 200
+        assert r.json()["restart_required"] is False
+        assert _settings_values(c, h)[field.key] == value
+        entries = _audit_entries(c, h)
+        assert entries and entries[0]["detail"]["keys"] == [field.key]
+        assert "values" not in entries[0]["detail"]
+
+
+@pytest.mark.parametrize("boundary", ["min", "max"])
+def test_setup_reserve_rejects_outside_bounds_atomically(tmp_path, boundary):
+    field = SETTINGS_BY_KEY["battery.min_reserve_soc"]
+    value = getattr(field, boundary) + (-1 if boundary == "min" else 1)
+    app, db = _app(tmp_path)
+    _seed_admin(db)
+    with TestClient(app) as c:
+        h = _admin_headers(c)
+        before = _settings_values(c, h)
+        r = c.post("/api/setup/settings", json={field.key: value}, headers=h)
+        assert r.status_code == 422
+        assert field.key in r.json()["errors"]
+        assert _settings_values(c, h) == before
+        assert _audit_entries(c, h) == []
+
+
+@pytest.mark.parametrize("value", ["geen getal", True, False, None])
+def test_setup_reserve_rejects_non_numeric_values(tmp_path, value):
+    key = "battery.min_reserve_soc"
+    app, db = _app(tmp_path)
+    _seed_admin(db)
+    with TestClient(app) as c:
+        h = _admin_headers(c)
+        before = _settings_values(c, h)
+        r = c.post("/api/setup/settings", json={key: value}, headers=h)
+        assert r.status_code == 422
+        assert key in r.json()["errors"]
+        assert _settings_values(c, h) == before
+
+
+@pytest.mark.parametrize("key", ["battery.night_reserve_kwh", "battery.max_charge_w"])
+def test_setup_other_battery_settings_remain_forbidden(tmp_path, key):
+    app, db = _app(tmp_path)
+    _seed_admin(db)
+    with TestClient(app) as c:
+        h = _admin_headers(c)
+        r = c.post("/api/setup/settings", json={key: SETTINGS_BY_KEY[key].default}, headers=h)
+        assert r.status_code == 422
+        assert key in r.json()["errors"]
+
+
+def test_setup_live_prices_allowed_and_mixed_control_rejected(tmp_path):
+    app, db = _app(tmp_path)
+    _seed_admin(db)
+    with TestClient(app) as c:
+        h = _admin_headers(c)
+        ok = c.post("/api/setup/settings", json={"connection.use_live_prices": True}, headers=h)
+        assert ok.status_code == 200
+        assert ok.json()["restart_required"] is True
+        before = _settings_values(c, h)
+        audit_before = _audit_entries(c, h)
+        bad = c.post("/api/setup/settings", json={
+            "prices.tibber_token": "never-save-this-token",
+            "connection.use_live_prices": False,
+            "control.operational": True,
+        }, headers=h)
+        assert bad.status_code == 422
+        assert "control.operational" in bad.json()["errors"]
+        assert "never-save-this-token" not in bad.text
+        assert _settings_values(c, h) == before
+        assert _audit_entries(c, h) == audit_before
+
+    store = SettingsStore(db)
+
+    async def stored_values():
+        await store.init()
+        values = await store.all()
+        await store.close()
+        return values
+
+    assert "prices.tibber_token" not in asyncio.run(stored_values())
 
 
 @pytest.mark.parametrize("key", sorted(SETUP_SETTINGS_BATTERY_POWER_LIMIT_KEYS))
@@ -225,8 +323,12 @@ def test_setup_tibber_token_masked_and_audited_without_value(tmp_path):
     token = "tibber-test-token-xyz"
     with TestClient(app) as c:
         h = _admin_headers(c)
-        r = c.post("/api/setup/settings", json={"prices.tibber_token": token}, headers=h)
+        r = c.post("/api/setup/settings", json={
+            "prices.tibber_token": token,
+            "connection.use_live_prices": True,
+        }, headers=h)
         assert r.status_code == 200
+        assert r.json()["restart_required"] is True
         values = r.json()["values"]
         assert values.get("prices.tibber_token") == ""
         assert values.get("prices.tibber_token.__set") is True
@@ -236,6 +338,24 @@ def test_setup_tibber_token_masked_and_audited_without_value(tmp_path):
         assert "prices.tibber_token" in entries[0]["detail"]["keys"]
         assert "prices.tibber_token" in entries[0]["detail"]["secrets"]
         assert token not in str(entries)
+
+        keep = c.post("/api/setup/settings", json={
+            "prices.tibber_token": "",
+            "connection.use_live_prices": True,
+        }, headers=h)
+        assert keep.status_code == 200
+        assert keep.json()["values"]["prices.tibber_token.__set"] is True
+        assert token not in keep.text
+
+    store = SettingsStore(db)
+
+    async def stored_token():
+        await store.init()
+        values = await store.all()
+        await store.close()
+        return values.get("prices.tibber_token")
+
+    assert asyncio.run(stored_token()) == token
 
 
 def test_setup_save_audit_lists_keys_only(tmp_path):
@@ -409,8 +529,9 @@ def test_zero_battery_write_calls_on_setup_save(tmp_path):
         r = c.post(
             "/api/setup/settings",
             json={
-                "battery.indevolt_ip": "192.168.1.77",
-                "connection.use_live_devices": True,
+                "battery.min_reserve_soc": SETTINGS_BY_KEY["battery.min_reserve_soc"].default,
+                "prices.tibber_token": "spy-test-token",
+                "connection.use_live_prices": True,
             },
             headers=h,
         )
@@ -461,7 +582,11 @@ def test_control_flags_unchanged_after_setup(tmp_path):
         h = _admin_headers(c)
         c.post(
             "/api/setup/settings",
-            json={"battery.indevolt_ip": "192.168.1.88", "connection.use_live_devices": True},
+            json={
+                "battery.min_reserve_soc": SETTINGS_BY_KEY["battery.min_reserve_soc"].default,
+                "prices.tibber_token": "watch-only-test-token",
+                "connection.use_live_prices": True,
+            },
             headers=h,
         )
         vals = c.get("/api/settings", headers=h).json()["values"]
