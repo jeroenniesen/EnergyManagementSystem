@@ -3322,6 +3322,13 @@ body {
 .trading-confirm { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-top: 8px; }
 .trading-confirm p { flex: 1 1 100%; margin: 0; }
 .trading-view .muted { color: var(--muted); font-size: 0.88rem; }
+
+/* #337 / F-36 + F-38 — digest solar apply + what-if live confirm */
+.week-digest-apply { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin: 0 0 8px; }
+.whatif-apply { margin-top: 12px; display: flex; flex-direction: column; align-items: flex-start; gap: 8px; }
+.whatif-apply-diff { margin: 0 0 8px; padding-left: 1.1rem; }
+.whatif-apply .override-confirm { width: 100%; }
+
 .trading-steps { list-style: none; margin: 12px 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
 .trading-step { display: flex; gap: 10px; align-items: flex-start; font-size: 0.92rem; line-height: 1.4; }
 .trading-step-mark { flex-shrink: 0; font-weight: 600; width: 1.25rem; text-align: center; }

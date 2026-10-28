@@ -13,6 +13,7 @@ the digest alone in 10 seconds — one headline sentence, one hero €, three fa
 from __future__ import annotations
 
 import re
+from datetime import UTC, datetime, timedelta
 from datetime import date as date_cls
 
 _MONDAY_RE = re.compile(r"(\d{4})-(\d{2})-(\d{2})\s*$")
@@ -24,6 +25,11 @@ _EXPORT_MODEL_CUTOFF = date_cls(2026, 10, 1)
 # An advisor delta below this is noise, not worth a Sunday nudge (mirrors the settings-UI advisor
 # hint, which shows the number either way but only this digest gates a TWEAK on it).
 _DELTA_THRESHOLD_PP = 5.0
+
+# After the household applies the solar-confidence nudge, do not offer another one until this
+# window has elapsed — oscillating advice must not flap the Sunday button (#337 / F-36).
+_SOLAR_HYSTERESIS = timedelta(days=7)
+_SOLAR_CONFIDENCE_KEY = "planner.solar_confidence"
 
 # Audit `category` values this module looks for — see ems/storage/audit.py + the call sites in
 # ems/web/api.py (`_audit_decision_loop`, `_control_tick`, `set_override`) for the exact strings.
@@ -135,6 +141,52 @@ def _count_actions(audit_rows: list[dict]) -> dict:
     return {"mode_switches": switches, "negative_soaks": soaks, "overrides": overrides}
 
 
+def latest_solar_confidence_apply(audit_rows: list[dict]) -> datetime | None:
+    """Newest `config_change` that touched `planner.solar_confidence`, or None.
+
+    Matches the audit row `POST /api/settings` writes (`detail.keys`, and the summary which lists
+    the same keys). Other categories are ignored so a battery decision cannot look like an apply.
+    """
+    latest: datetime | None = None
+    for row in audit_rows:
+        if row.get("category") != "config_change":
+            continue
+        detail = row.get("detail")
+        keys = detail.get("keys") if isinstance(detail, dict) else None
+        summary = str(row.get("summary") or "")
+        touched = (
+            isinstance(keys, list) and _SOLAR_CONFIDENCE_KEY in keys
+        ) or _SOLAR_CONFIDENCE_KEY in summary
+        if not touched:
+            continue
+        ts = row.get("ts")
+        if not isinstance(ts, str):
+            continue
+        try:
+            applied = datetime.fromisoformat(ts)
+        except ValueError:
+            continue
+        if applied.tzinfo is None:
+            applied = applied.replace(tzinfo=UTC)
+        if latest is None or applied > latest:
+            latest = applied
+    return latest
+
+
+def solar_tweak_suppressed(applied_at: datetime | None, now: datetime) -> bool:
+    """True while a solar-confidence apply is still inside the 7-day hysteresis window.
+
+    "Binnen 7 dagen" is strict: exactly 7×24h after the apply, a new suggestion may return.
+    """
+    if applied_at is None:
+        return False
+    if applied_at.tzinfo is None:
+        applied_at = applied_at.replace(tzinfo=UTC)
+    if now.tzinfo is None:
+        now = now.replace(tzinfo=UTC)
+    return (now - applied_at) < _SOLAR_HYSTERESIS
+
+
 def _unstable_advisor_line(advice: dict) -> str:
     """The explainability line shown INSTEAD of the advisor nudge when its suggestion would move
     the setting >= 5pp but the recommendation itself is not yet SETTLED (flips day-to-day). We hold
@@ -149,9 +201,29 @@ def _unstable_advisor_line(advice: dict) -> str:
     return f"Advisor recommendation unstable ({detail}) — holding until it settles."
 
 
+def _solar_apply_payload(advice: dict) -> dict | None:
+    """The exact `POST /api/settings` body the digest button may send: one key, the advisor's
+    recommended percent. Missing numbers mean there is nothing safe to write."""
+    recommended = advice.get("recommended_pct")
+    current = advice.get("current_pct")
+    if not isinstance(recommended, int | float) or isinstance(recommended, bool):
+        return None
+    if not isinstance(current, int | float) or isinstance(current, bool):
+        return None
+    return {
+        "key": _SOLAR_CONFIDENCE_KEY,
+        "value": float(recommended),
+        "current": float(current),
+    }
+
+
 def _tweak(
-    advice: dict | None, week_label: str, export_price_model: str
-) -> tuple[str | None, bool]:
+    advice: dict | None,
+    week_label: str,
+    export_price_model: str,
+    *,
+    suppress_solar: bool = False,
+) -> tuple[str | None, bool, dict | None]:
     """The digest's one settings line + whether it is an ACTIONABLE tweak, in precedence order
     (roadmap P2 "one suggested tweak"):
       1. The solar-confidence advisor (`ems.analysis.recommend_solar_confidence`), when its
@@ -164,31 +236,40 @@ def _tweak(
          on `net_metering`.
       3. Otherwise: nothing actionable this week — said plainly, not left blank.
 
-    Returns `(line, is_actionable)`. `is_actionable` drives the headline tail ("One tweak worth a
-    look below." vs. the calm "Steady week — settings look right."), so an unstable-advisor HOLD
-    line is shown without the headline pretending there's an action to take."""
+    Returns `(line, is_actionable, apply)`. `is_actionable` drives the headline tail ("One tweak
+    worth a look below." vs. the calm "Steady week — settings look right."), so an unstable-advisor
+    HOLD line is shown without the headline pretending there's an action to take. `apply` is the
+    one-click solar-confidence payload (only that key) or None — never set for the export-model
+    reminder, an unstable hold, a sub-5pp gap, or while hysteresis suppresses a new suggestion.
+    """
     delta = advice.get("delta_pct") if advice else None
-    if advice is not None and delta is not None and abs(delta) >= _DELTA_THRESHOLD_PP:
+    solar_due = (
+        not suppress_solar
+        and advice is not None
+        and delta is not None
+        and abs(delta) >= _DELTA_THRESHOLD_PP
+    )
+    if solar_due and advice is not None and delta is not None:
         # `stable` is absent on legacy/older advice dicts — treat only an EXPLICIT False as
         # unstable, so pre-stability-gate callers keep nudging exactly as before.
         if advice.get("stable") is False:
-            return _unstable_advisor_line(advice), False
+            return _unstable_advisor_line(advice), False, None
         running = "low" if delta > 0 else "high"
         return (
             f"Apply the advisor suggestion — your solar confidence setting has been running "
             f"{running} lately; set solar confidence to {advice['recommended_pct']:.0f}% "
             f"(from {advice['current_pct']:.0f}%) to match what the forecast actually delivered."
-        ), True
+        ), True, _solar_apply_payload(advice)
     monday = _week_monday(week_label)
     due = export_price_model == "net_metering" and monday is not None
     if due and monday >= _EXPORT_MODEL_CUTOFF:
         return (
             "Review your export model before 2027 — net metering (saldering) is expected to phase "
             "out then, and switching early beats switching in a hurry."
-        ), True
+        ), True, None
     # Null case: return None — the headline's "Steady week — settings look right." tail already
     # says it, and rendering BOTH duplicated the sentence in production. Calm = absence.
-    return None, False
+    return None, False, None
 
 
 def _marginal_import_eur_per_kwh(finance: dict) -> float | None:
@@ -447,6 +528,8 @@ def build_digest(
     day_contexts: list[dict] | None = None,
     daily_min_savings_eur: float = 0.20,
     low_spread_names_spaarvloer: bool = False,
+    now: datetime | None = None,
+    solar_confidence_applied_at: datetime | None = None,
 ) -> dict:
     """Assemble the weekly digest from already-gathered data (see the module docstring for what
     each argument is and who gathers it).
@@ -465,7 +548,12 @@ def build_digest(
     saved_eur = _sum_saved(finance_rows)
     days_measured = sum(1 for r in finance_rows if r.get("saved_eur") is not None)
     days_total = len(finance_rows)
-    tweak, tweak_is_actionable = _tweak(advice, week_label, export_price_model)
+    suppress_solar = (
+        now is not None and solar_tweak_suppressed(solar_confidence_applied_at, now)
+    )
+    tweak, tweak_is_actionable, tweak_apply = _tweak(
+        advice, week_label, export_price_model, suppress_solar=suppress_solar,
+    )
     # A held/explain line (unstable advisor) is present but NOT actionable — the headline stays
     # calm rather than promising "one tweak worth a look" for a hold.
     tweak_is_null = not tweak_is_actionable
@@ -479,7 +567,7 @@ def build_digest(
         low_spread_names_spaarvloer=low_spread_names_spaarvloer,
     )
 
-    return {
+    digest = {
         "week_label": week_label,
         "saved_eur": saved_eur,
         "best_day": _best_day(finance_rows),
@@ -496,3 +584,7 @@ def build_digest(
         "days_measured": days_measured,
         "days_total": days_total,
     }
+    # Absent unless there is a one-click solar apply — keeps the calm-week shape unchanged.
+    if tweak_apply is not None:
+        digest["tweak_apply"] = tweak_apply
+    return digest

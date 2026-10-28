@@ -220,6 +220,10 @@ from ems.web.routes.report import build_router as build_report_router
 from ems.web.routes.reserve_advice import build_router as build_reserve_advice_router
 from ems.web.routes.users import build_router as build_users_router
 from ems.web.routes.verification import build_router as build_verification_router
+from ems.web.routes.whatif import (
+    WHATIF_APPLY_HEADER,
+    prepare_whatif_live_patch,
+)
 from ems.web.routes.whatif import build_router as build_whatif_router
 
 _log = logging.getLogger("ems.recorder")
@@ -5728,6 +5732,14 @@ def create_app(
                 },
                 status_code=422,
             )
+        # #337 / F-38: the What-if confirm uses this writer's audit and cache invalidation.
+        # Its header restricts that request to WHATIF_ALLOWED_KEYS; normal saves omit it.
+        if request.headers.get(WHATIF_APPLY_HEADER) == "1":
+            body, errors = prepare_whatif_live_patch(body)
+            if errors:
+                return JSONResponse(
+                    {"detail": "invalid settings", "errors": errors}, status_code=422,
+                )
         clean, errors = validate_settings(body, dev_mode=dev_mode)
         if errors:
             # Reject the whole payload if ANY key is invalid — partial saves are confusing.
