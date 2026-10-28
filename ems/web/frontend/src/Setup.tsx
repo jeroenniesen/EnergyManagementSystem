@@ -38,6 +38,50 @@ type Checklist = {
 };
 
 type RestartAvailability = { available: boolean; reason: string };
+type ReserveField = {
+  key: string;
+  default: number;
+  min: number | null;
+  max: number | null;
+  step: number | null;
+  unit: string;
+};
+export const RESERVE_EXPLANATION =
+  "Zoveel houdt de batterij altijd achter voor 's nachts of bij storing.";
+
+export function reserveFieldFromSettings(body: {
+  schema: ReserveField[];
+  values?: Record<string, unknown>;
+}): { field: ReserveField; value: string } {
+  const field = body.schema.find((candidate) => candidate.key === "battery.min_reserve_soc");
+  if (!field || typeof field.default !== "number") throw new Error("reserve schema missing");
+  const current = body.values?.[field.key];
+  return { field, value: String(typeof current === "number" ? current : field.default) };
+}
+
+export function ReserveInput({
+  field, value, onChange,
+}: {
+  field: ReserveField;
+  value: string;
+  onChange: (value: string) => void;
+}) {
+  return (
+    <div>
+      <input
+        id="setup-reserve-value"
+        className="setup-field-input"
+        type="number"
+        min={field.min ?? undefined}
+        max={field.max ?? undefined}
+        step={field.step ?? undefined}
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+      />
+      <span>{field.unit}</span>
+    </div>
+  );
+}
 
 type Props = {
   onOpenSettings: (section: string) => void;
@@ -45,6 +89,8 @@ type Props = {
 
 const BATTERY_RESTART_MESSAGE =
   "EMS start opnieuw om je batterij te zoeken. Dit duurt even, laat dit scherm open.";
+const PRICES_RESTART_MESSAGE =
+  "EMS start opnieuw om je dynamische prijzen op te halen. Dit duurt even, laat dit scherm open.";
 
 type WizardRestartHandle = {
   requestedRef: MutableRefObject<boolean>;
@@ -144,12 +190,27 @@ export function Setup({ onOpenSettings }: Props) {
   const [p1SaveError, setP1SaveError] = useState<string | null>(null);
   const [p1RestartBusyMsg, setP1RestartBusyMsg] = useState<string | null>(null);
   const [p1PollTimedOut, setP1PollTimedOut] = useState(false);
+  const [reserveOpen, setReserveOpen] = useState(false);
+  const [reserveField, setReserveField] = useState<ReserveField | null>(null);
+  const [reserveValue, setReserveValue] = useState("");
+  const [reserveError, setReserveError] = useState<string | null>(null);
+  const [reserveMessage, setReserveMessage] = useState<string | null>(null);
+  const [reserveSaving, setReserveSaving] = useState(false);
+  const [pricesOpen, setPricesOpen] = useState(false);
+  const [tibberToken, setTibberToken] = useState("");
+  const [pricesPhase, setPricesPhase] = useState<BatteryWizardPhase>("form");
+  const [pricesMessage, setPricesMessage] = useState<string | null>(null);
+  const [pricesError, setPricesError] = useState<string | null>(null);
+  const [pricesSaving, setPricesSaving] = useState(false);
+  const [pricesPollTimedOut, setPricesPollTimedOut] = useState(false);
+  const [pricesRestartBusyMsg, setPricesRestartBusyMsg] = useState<string | null>(null);
   const [restartAvailable, setRestartAvailable] = useState<RestartAvailability | null>(null);
   const [restartBusyMsg, setRestartBusyMsg] = useState<string | null>(null);
   const [pollTimedOut, setPollTimedOut] = useState(false);
   const restartAliveRef = useRef(true);
   const restartRequestedRef = useRef(false);
   const p1RestartRequestedRef = useRef(false);
+  const pricesRestartRequestedRef = useRef(false);
 
   const retry = useCallback(() => setFetchGen((g) => g + 1), []);
 
@@ -208,6 +269,20 @@ export function Setup({ onOpenSettings }: Props) {
     }
   }
 
+  async function loadReserveField() {
+    try {
+      const r = await apiFetch("/api/settings");
+      if (!r.ok) throw new Error(`HTTP ${r.status}`);
+      const body = await r.json();
+      const { field, value } = reserveFieldFromSettings(body);
+      setReserveField(field);
+      setReserveValue(value);
+      setReserveError(null);
+    } catch {
+      setReserveError("Kon de batterijreserve niet laden. Probeer het opnieuw.");
+    }
+  }
+
   useEffect(() => {
     const step = readPersistedSetupStep();
     if (step === "battery") {
@@ -221,6 +296,10 @@ export function Setup({ onOpenSettings }: Props) {
       void refreshSettingsP1().then((fromSettings) => {
         setP1WizardIp((prev) => prev.trim() || fromSettings.trim() || readPersistedP1Ip());
       });
+      void refreshRestartCapability();
+    }
+    if (step === "prices") {
+      setPricesOpen(true);
       void refreshRestartCapability();
     }
   }, []);
@@ -253,6 +332,19 @@ export function Setup({ onOpenSettings }: Props) {
     }
   }, [p1Open, data]);
 
+  useEffect(() => {
+    if (!pricesOpen || !data || readPersistedSetupStep() !== "prices") return;
+    const prices = data.items.find((i) => i.key === "prices");
+    if (prices?.status === "Werkt") {
+      setPricesPhase("success");
+      setPricesMessage("Je dynamische prijzen komen binnen.");
+      clearSetupPersistence();
+    } else {
+      setPricesPhase("error");
+      setPricesMessage("Er komen nog geen live prijzen binnen. Controleer je Tibber-token en probeer het opnieuw.");
+    }
+  }, [pricesOpen, data]);
+
   const batteryRestartHandle: WizardRestartHandle = {
     requestedRef: restartRequestedRef,
     setPhase: setWizardPhase,
@@ -268,6 +360,102 @@ export function Setup({ onOpenSettings }: Props) {
     setBusyMsg: setP1RestartBusyMsg,
     setSaveError: setP1SaveError,
   };
+
+  const pricesRestartHandle: WizardRestartHandle = {
+    requestedRef: pricesRestartRequestedRef,
+    setPhase: setPricesPhase,
+    setPollTimedOut: setPricesPollTimedOut,
+    setBusyMsg: setPricesRestartBusyMsg,
+    setSaveError: setPricesError,
+  };
+
+  function openReserveWizard() {
+    setReserveOpen(true);
+    setReserveMessage(null);
+    void loadReserveField();
+  }
+
+  async function saveReserve() {
+    if (!reserveField || reserveSaving) return;
+    setReserveSaving(true);
+    setReserveError(null);
+    setReserveMessage(null);
+    try {
+      const r = await apiFetch("/api/setup/settings", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ "battery.min_reserve_soc": Number(reserveValue) }),
+      });
+      const body = await r.json().catch(() => ({}));
+      if (!r.ok) {
+        setReserveError(String(body.errors?.[reserveField.key] ?? body.detail ?? `HTTP ${r.status}`));
+      } else {
+        setReserveMessage("Je batterijreserve is opgeslagen en meteen actief.");
+      }
+    } catch {
+      setReserveError("Opslaan is niet gelukt. Probeer het opnieuw.");
+    } finally {
+      setReserveSaving(false);
+    }
+  }
+
+  function openPricesWizard() {
+    setPricesOpen(true);
+    setPricesPhase("form");
+    setPricesMessage(null);
+    setPricesError(null);
+    setPricesRestartBusyMsg(null);
+    setPricesPollTimedOut(false);
+    pricesRestartRequestedRef.current = false;
+    void refreshRestartCapability();
+  }
+
+  function retryPrices() {
+    setPricesPhase("form");
+    setPricesMessage(null);
+    setPricesError(null);
+    setPricesRestartBusyMsg(null);
+    setPricesPollTimedOut(false);
+    pricesRestartRequestedRef.current = false;
+    persistSetupStep(null);
+  }
+
+  async function savePrices() {
+    if (pricesSaving || pricesPhase === "restarting") return;
+    setPricesSaving(true);
+    setPricesError(null);
+    try {
+      const r = await apiFetch("/api/setup/settings", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          "prices.tibber_token": tibberToken,
+          "connection.use_live_prices": true,
+        }),
+      });
+      const body = await r.json().catch(() => ({}));
+      if (!r.ok) {
+        setPricesError(String(body.errors?.["prices.tibber_token"] ?? body.detail ?? `HTTP ${r.status}`));
+        return;
+      }
+      setTibberToken("");
+      persistSetupStep("prices");
+      if (body.restart_required) {
+        if (restartAvailable?.available === false) {
+          setPricesPhase("manual_restart");
+        } else {
+          setPricesPhase("restarting");
+          await requestRestartOnce(pricesRestartHandle);
+        }
+      } else {
+        setData(await loadChecklist());
+      }
+    } catch {
+      setPricesError("Opslaan is niet gelukt. Probeer het opnieuw.");
+    } finally {
+      setPricesSaving(false);
+    }
+  }
 
   async function pollForRestartBoot(initialBootId: string, handle: WizardRestartHandle) {
     const { intervalMs, timeoutMs } = restartPollConfig();
@@ -628,6 +816,59 @@ export function Setup({ onOpenSettings }: Props) {
                       </>
                     )}
                   </div>
+                ) : item.key === "prices" && pricesOpen ? (
+                  <div className="setup-prices-wizard" data-testid="setup-prices-wizard">
+                    <WizardRestartStatus
+                      phase={pricesPhase}
+                      restartingMessage={PRICES_RESTART_MESSAGE}
+                      restartingTestId="setup-prices-restarting"
+                      manualTestId="setup-prices-restart-manual-hint"
+                    />
+                    {pricesPhase === "success" && pricesMessage && (
+                      <p className="setup-wizard-success" role="status">{pricesMessage}</p>
+                    )}
+                    {pricesPhase === "error" && pricesMessage && (
+                      <>
+                        <p className="setup-wizard-error" role="alert">{pricesMessage}</p>
+                        <button type="button" className="btn secondary" onClick={retryPrices}>
+                          Opnieuw proberen
+                        </button>
+                      </>
+                    )}
+                    {(pricesPhase === "form" || pricesPollTimedOut) && (
+                      <>
+                        <label className="setup-field-label" htmlFor="setup-tibber-token">
+                          Tibber-token
+                        </label>
+                        <p className="setup-wizard-hint">
+                          Vul je toegangscode van Tibber in om je actuele stroomprijzen op te halen.
+                          Laat het veld leeg om je eerder opgeslagen code te behouden.
+                        </p>
+                        <input
+                          id="setup-tibber-token"
+                          className="setup-field-input"
+                          type="password"
+                          autoComplete="off"
+                          value={tibberToken}
+                          onChange={(e) => setTibberToken(e.target.value)}
+                        />
+                        {pricesError && <p className="setup-wizard-error" role="alert">{pricesError}</p>}
+                        <WizardFormRestartExtras
+                          pollTimedOut={pricesPollTimedOut}
+                          busyMsg={pricesRestartBusyMsg}
+                          reloadTestId="setup-prices-manual-reload"
+                        />
+                        <button
+                          type="button"
+                          className="btn primary"
+                          onClick={() => void savePrices()}
+                          disabled={pricesSaving}
+                        >
+                          Opslaan en testen
+                        </button>
+                      </>
+                    )}
+                  </div>
                 ) : item.key === "battery" && batteryOpen ? (
                   <div className="setup-battery-wizard" data-testid="setup-battery-wizard">
                     <WizardRestartStatus
@@ -719,6 +960,7 @@ export function Setup({ onOpenSettings }: Props) {
                     onClick={() => {
                       if (item.key === "battery") openBatteryWizard();
                       else if (item.key === "p1") openP1Wizard();
+                      else if (item.key === "prices") openPricesWizard();
                       else onOpenSettings(item.settings_section);
                     }}
                   >
@@ -727,6 +969,39 @@ export function Setup({ onOpenSettings }: Props) {
                 )}
               </li>
             ))}
+            <li className="setup-checklist-item" data-testid="setup-item-reserve">
+              <div className="setup-checklist-row">
+                <span className="setup-checklist-status setup-status-opt">Instellen</span>
+                <p className="setup-checklist-sentence">Bepaal hoeveel stroom je batterij achterhoudt.</p>
+              </div>
+              {reserveOpen ? (
+                <div className="setup-reserve-wizard" data-testid="setup-reserve-wizard">
+                  <label className="setup-field-label" htmlFor="setup-reserve-value">
+                    Batterijreserve
+                  </label>
+                  <p className="setup-wizard-hint">
+                    {RESERVE_EXPLANATION}
+                  </p>
+                  {reserveField && (
+                    <ReserveInput field={reserveField} value={reserveValue} onChange={setReserveValue} />
+                  )}
+                  {reserveError && <p className="setup-wizard-error" role="alert">{reserveError}</p>}
+                  {reserveMessage && <p className="setup-wizard-success" role="status">{reserveMessage}</p>}
+                  <button
+                    type="button"
+                    className="btn primary"
+                    onClick={() => void saveReserve()}
+                    disabled={!reserveField || reserveSaving || reserveValue.trim() === ""}
+                  >
+                    Reserve opslaan
+                  </button>
+                </div>
+              ) : (
+                <button type="button" className="btn secondary setup-checklist-btn" onClick={openReserveWizard}>
+                  Reserve instellen
+                </button>
+              )}
+            </li>
           </ul>
         </>
       )}

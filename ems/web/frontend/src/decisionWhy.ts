@@ -133,21 +133,55 @@ export function slice1ActionLabel(action: Slice1BatteryAction): string {
   return batteryActionLabel(action);
 }
 
+/** The planner puts its hold cause in summary; hold_reserve alone does not identify it. */
+function holdReasonSentence(summary: string, dryRun: boolean): string | null {
+  const text = summary.trim();
+  if (text.startsWith("Voorzichtig: meter verouderd") || text === "hold reserve while meter data is uncertain") {
+    return dryRun
+      ? "EMS zou de batterij vasthouden omdat de metergegevens verouderd zijn."
+      : "EMS houdt de batterij vast omdat de metergegevens verouderd zijn.";
+  }
+  if (text === "Ochtend ingehouden voor avondpiek") {
+    return dryRun
+      ? "EMS zou energie voor de avondpiek bewaren door de batterij nu vast te houden."
+      : "EMS bewaart energie voor de avondpiek door de batterij nu vast te houden.";
+  }
+  if (/^Op de batterijvloer \(\d+(?:[.,]\d+)?%\) — huis op net$/.test(text)) {
+    return dryRun
+      ? "EMS zou de batterij op haar minimum houden; de woning zou stroom van het net krijgen."
+      : "EMS houdt de batterij op haar minimum; de woning krijgt stroom van het net.";
+  }
+  if (/^hold cheap energy for the coming peak \(now €\d+(?:\.\d+)?\/kWh\)/.test(text)) {
+    return dryRun
+      ? "EMS zou goedkope energie in de batterij bewaren voor de komende piek."
+      : "EMS bewaart goedkope energie in de batterij voor de komende piek.";
+  }
+  if (text === "hold reserve: serving this slot would cross the reserve floor") {
+    return dryRun
+      ? "EMS zou de batterij vasthouden om boven de minimumreserve te blijven."
+      : "EMS houdt de batterij vast om boven de minimumreserve te blijven.";
+  }
+  if (/^handelen: vasthouden voor exportpiek \(nu €\d+(?:\.\d+)?\/kWh\)$/.test(text)) {
+    return dryRun
+      ? "EMS zou energie in de batterij bewaren voor de exportpiek."
+      : "EMS bewaart energie in de batterij voor de exportpiek.";
+  }
+  return null;
+}
+
 function actionSentence(action: Slice1BatteryAction, dryRun: boolean, reason: DecisionReason): string {
   const window = reason.chosen_window;
   const priceHint =
     window?.eur_per_kwh_min != null && Number.isFinite(window.eur_per_kwh_min)
       ? ` (vanaf ${eur(window.eur_per_kwh_min)}/kWh)`
       : "";
-  // `hold` action token ≡ hold_reserve — always reserve-protection copy.
-  void window?.intent;
-
   if (dryRun) {
     switch (action) {
       case "grid_charge":
         return `EMS zou nu laden van het net${priceHint}.`;
       case "hold":
-        return "EMS zou de reserve beschermen en de batterij niet verder ontladen.";
+        return holdReasonSentence(reason.summary, true)
+          ?? "EMS zou de reserve beschermen en de batterij niet verder ontladen.";
       case "discharge":
         return "EMS zou in zelfconsumptie de woning voeden om dure netstroom te vermijden.";
       case "full_speed_discharge":
@@ -158,7 +192,8 @@ function actionSentence(action: Slice1BatteryAction, dryRun: boolean, reason: De
     case "grid_charge":
       return `EMS laadt nu van het net${priceHint}.`;
     case "hold":
-      return "EMS beschermt de reserve: de batterij blijft boven je minimumreserve.";
+      return holdReasonSentence(reason.summary, false)
+        ?? "EMS beschermt de reserve: de batterij blijft boven je minimumreserve.";
     case "discharge":
       return "EMS laat de batterij in zelfconsumptie de woning voeden om dure netstroom te vermijden.";
     case "full_speed_discharge":

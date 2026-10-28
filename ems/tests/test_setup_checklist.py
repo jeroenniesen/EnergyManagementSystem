@@ -12,6 +12,7 @@ from ems.freshness import FreshnessTracker
 from ems.sense import SIGNALS
 from ems.setup_checklist import build_setup_checklist
 from ems.sources.battery import MockBatteryDriver
+from ems.sources.fixed_tariff import FixedTariffPriceSource
 from ems.sources.forecast import MockSolarForecastSource
 from ems.sources.mock import MockSource
 from ems.sources.prices import MockPriceSource
@@ -144,6 +145,21 @@ def test_setup_checklist_wired_app_mock_prices(tmp_path):
         price_source=MockPriceSource(ams),
         solar_forecast=MockSolarForecastSource(ams),
         battery=MockBatteryDriver(),
+        tz=ams,
+    )
+    with TestClient(app) as c:
+        body = c.get("/api/setup/checklist").json()
+    prices = next(i for i in body["items"] if i["key"] == "prices")
+    assert prices["status"] == "Ontbreekt"
+
+
+def test_setup_checklist_fixed_backup_is_not_live_prices(tmp_path):
+    ams = ZoneInfo("Europe/Amsterdam")
+    db = str(tmp_path / "ems.sqlite")
+    app = create_app(
+        MockSource(), dry_run=True, dev_mode="mock",
+        settings_store=SettingsStore(db),
+        price_source=FixedTariffPriceSource(0.28, tz=ams),
         tz=ams,
     )
     with TestClient(app) as c:
